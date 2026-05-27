@@ -1,0 +1,18 @@
+requests:
+- body: !!binary |
+    eyJtYXhfdG9rZW5zIjoyNTYsIm1vZGVsIjoiZ3B0LTMuNS10dXJiby1pbnN0cnVjdCIsInByb21wdCI6IlNheSBoZWxsbyIsInN0cmVhbSI6ZmFsc2UsInRlbXBlcmF0dXJlIjowLjd9
+  headers:
+    authorization:
+    - '**REDACTED**'
+  method: POST
+  uri: https://api.openai.com/v1/completions
+responses:
+- body:
+    string: !!binary |
+      eyJjaG9pY2VzIjpbeyJ0ZXh0IjoiaGVsbG8gZnJvbSByZXBsYXkifV19
+  headers:
+    content-type:
+    - application/json
+  status:
+    code: 200
+    message: OK

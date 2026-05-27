@@ -1,0 +1,99 @@
+name: Publish Hex Package
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+jobs:
+  publish_hex:
+    name: Validate and publish Hex package
+    runs-on: ubuntu-22.04
+    if: startsWith(github.ref, 'refs/tags/')
+    environment: Deploy
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v4
+
+      - name: Extract project version
+        id: project-version
+        shell: bash
+        run: |
+          project_version="$(sed -n 's/.*version: "\([^"]*\)".*/\1/p' mix.exs | head -n1)"
+          if [ -z "$project_version" ]; then
+            echo "Could not extract project version from mix.exs" >&2
+            exit 1
+          fi
+          echo "version=$project_version" >> "$GITHUB_OUTPUT"
+
+      - name: Verify tag matches project version
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          if [ "$tag" != "${{ steps.project-version.outputs.version }}" ]; then
+            echo "Tag v$tag does not match mix.exs version ${{ steps.project-version.outputs.version }}" >&2
+            exit 1
+          fi
+
+      - name: Set up Erlang and Elixir
+        uses: erlef/setup-beam@v1
+        with:
+          otp-version: "28"
+          elixir-version: "1.19.5"
+
+      - name: Install Hex and Rebar
+        run: |
+          mix local.hex --force
+          mix local.rebar --force
+
+      - name: Restore Mix cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            deps
+            _build
+          key: ${{ runner.os }}-mix-${{ hashFiles('mix.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-mix-
+
+      - name: Fetch dependencies
+        run: mix deps.get
+
+      - name: Check formatting
+        run: mix format --check-formatted
+
+      - name: Run tests
+        run: mix test --max-cases 1
+
+      - name: Check parity registry
+        run: mix beam_weaver.parity.check
+
+      - name: Build docs
+        run: mix docs
+
+      - name: Validate Hex package contents
+        run: mix hex.build --unpack
+
+      - name: Upload package preview
+        uses: actions/upload-artifact@v4
+        with:
+          name: beam_weaver-hex-package-preview
+          path: beam_weaver-${{ steps.project-version.outputs.version }}/
+
+      - name: Verify Hex API key
+        run: |
+          if [ -z "$HEX_API_KEY" ]; then
+            echo "HEX_API_KEY secret is required to publish to Hex.pm" >&2
+            exit 1
+          fi
+        env:
+          HEX_API_KEY: ${{ secrets.HEX_API_KEY }}
+
+      - name: Publish Hex package
+        run: mix hex.publish package --yes
+        env:
+          HEX_API_KEY: ${{ secrets.HEX_API_KEY }}
