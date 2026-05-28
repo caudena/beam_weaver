@@ -238,7 +238,50 @@ defmodule BeamWeaver.Models do
       |> Map.put(:profile, profile)
       |> put_openai_defaults(module, model_id)
 
-    struct(module, attrs)
+    module
+    |> provider_constructor_opts(opts, attrs)
+    |> configured_model(module)
+  end
+
+  defp provider_constructor_opts(module, opts, attrs) do
+    opts
+    |> Keyword.take(provider_option_keys(module))
+    |> Keyword.merge(Map.to_list(attrs))
+  end
+
+  defp provider_option_keys(module)
+       when module in [
+              BeamWeaver.Google.ChatModel,
+              BeamWeaver.Moonshot.ChatModel,
+              BeamWeaver.XAI.ChatModel,
+              BeamWeaver.XAI.ChatCompletionsModel
+            ],
+       do: [:base_url]
+
+  defp provider_option_keys(_module), do: []
+
+  defp configured_model(opts, BeamWeaver.OpenAI.ChatModel), do: BeamWeaver.OpenAI.chat_model(opts)
+
+  defp configured_model(opts, BeamWeaver.OpenAI.ChatCompletionsModel),
+    do: BeamWeaver.OpenAI.chat_completions_model(opts)
+
+  defp configured_model(opts, BeamWeaver.Anthropic.ChatModel), do: BeamWeaver.Anthropic.chat_model(opts)
+
+  defp configured_model(opts, BeamWeaver.Google.ChatModel), do: BeamWeaver.Google.chat_model(opts)
+
+  defp configured_model(opts, BeamWeaver.Moonshot.ChatModel), do: BeamWeaver.Moonshot.chat_model(opts)
+
+  defp configured_model(opts, BeamWeaver.XAI.ChatModel), do: BeamWeaver.XAI.chat_model(opts)
+
+  defp configured_model(opts, BeamWeaver.XAI.ChatCompletionsModel),
+    do: BeamWeaver.XAI.chat_completions_model(opts)
+
+  defp configured_model(opts, module) do
+    if function_exported?(module, :new, 1) do
+      module.new(opts)
+    else
+      struct(module, opts)
+    end
   end
 
   defp put_openai_defaults(attrs, module, model_id)
