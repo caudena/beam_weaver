@@ -118,7 +118,7 @@ defmodule BeamWeaver.Tracing.Exporters.LangSmith do
       session_name: project
     }
     |> maybe_put_raw_encoded(:serialized, langsmith_serialized(run))
-    |> maybe_put_encoded(:inputs, run.inputs)
+    |> maybe_put_encoded(:inputs, langsmith_inputs(run))
     |> maybe_put_encoded(:outputs, langsmith_outputs(run))
   end
 
@@ -335,6 +335,24 @@ defmodule BeamWeaver.Tracing.Exporters.LangSmith do
 
   defp langsmith_serialized(_run), do: nil
 
+  defp langsmith_inputs(%Run{kind: :model, inputs: inputs}) when is_map(inputs) do
+    case message_entry(inputs) do
+      {:ok, key, messages} -> Map.put(inputs, key, langchain_message_batches(messages))
+      :error -> inputs
+    end
+  end
+
+  defp langsmith_inputs(%Run{inputs: inputs}), do: inputs
+
+  defp langsmith_outputs(%Run{kind: :model, outputs: outputs}) when is_map(outputs) do
+    with {:ok, _key, messages} <- message_entry(outputs),
+         false <- has_generation_output?(outputs) do
+      Map.put(outputs, :generations, langsmith_generations(messages))
+    else
+      _other -> outputs
+    end
+  end
+
   defp langsmith_outputs(%Run{kind: :tool, outputs: outputs} = run) when is_map(outputs) do
     case output_entry(outputs) do
       {:ok, key, output} -> Map.put(outputs, key, langsmith_tool_output(run, output))
@@ -343,6 +361,107 @@ defmodule BeamWeaver.Tracing.Exporters.LangSmith do
   end
 
   defp langsmith_outputs(%Run{outputs: outputs}), do: outputs
+
+  defp message_entry(payload) do
+    cond do
+      Map.has_key?(payload, :messages) -> {:ok, :messages, Map.fetch!(payload, :messages)}
+      Map.has_key?(payload, "messages") -> {:ok, "messages", Map.fetch!(payload, "messages")}
+      true -> :error
+    end
+  end
+
+  defp has_generation_output?(outputs) do
+    Map.has_key?(outputs, :generations) or Map.has_key?(outputs, "generations")
+  end
+
+  defp langchain_message_batches(messages) do
+    messages
+    |> normalize_message_batches()
+    |> Enum.map(fn batch -> Enum.map(batch, &langchain_message_or_value/1) end)
+  end
+
+  defp langsmith_generations(messages) do
+    messages
+    |> langchain_message_batches()
+    |> Enum.map(fn batch -> Enum.map(batch, &%{message: &1}) end)
+  end
+
+  defp normalize_message_batches(messages) when is_list(messages) do
+    if Enum.all?(messages, &is_list/1) do
+      messages
+    else
+      [messages]
+    end
+  end
+
+  defp normalize_message_batches(message), do: [[message]]
+
+  defp langchain_message_or_value(%Message{} = message), do: langchain_message(message)
+  defp langchain_message_or_value(%{"lc" => _lc} = message), do: message
+  defp langchain_message_or_value(%{lc: _lc} = message), do: message
+  defp langchain_message_or_value(message), do: message
+
+  defp langchain_message(%Message{} = message) do
+    %{
+      "lc" => 1,
+      "type" => "constructor",
+      "id" => ["langchain", "schema", "messages", langchain_message_class(message.role)],
+      "kwargs" => langchain_message_kwargs(message)
+    }
+  end
+
+  defp langchain_message_class(:assistant), do: "AIMessage"
+  defp langchain_message_class(:system), do: "SystemMessage"
+  defp langchain_message_class(:tool), do: "ToolMessage"
+  defp langchain_message_class(:user), do: "HumanMessage"
+  defp langchain_message_class(_role), do: "ChatMessage"
+
+  defp langchain_message_type(:assistant), do: "ai"
+  defp langchain_message_type(:system), do: "system"
+  defp langchain_message_type(:tool), do: "tool"
+  defp langchain_message_type(:user), do: "human"
+  defp langchain_message_type(role), do: role
+
+  defp langchain_message_kwargs(%Message{} = message) do
+    %{
+      "content" => langchain_value(message.content),
+      "type" => langchain_message_type(message.role),
+      "id" => message.id,
+      "name" => message.name,
+      "response_metadata" => langchain_value(message.response_metadata),
+      "usage_metadata" => langchain_value(message.usage_metadata),
+      "tool_calls" => langchain_value(message.tool_calls),
+      "tool_call_id" => message.tool_call_id,
+      "artifact" => langchain_value(tool_message_artifact(message)),
+      "status" => langchain_value(message.status),
+      "additional_kwargs" => langchain_additional_kwargs(message)
+    }
+    |> reject_nil_or_empty_values()
+  end
+
+  defp langchain_additional_kwargs(%Message{} = message) do
+    %{
+      server_tool_calls: message.server_tool_calls,
+      server_tool_results: message.server_tool_results,
+      metadata: message.metadata
+    }
+    |> reject_nil_or_empty_values()
+    |> langchain_value()
+  end
+
+  defp langchain_value(nil), do: nil
+  defp langchain_value(value), do: value |> ValueEncoder.encode() |> string_key_maps()
+
+  defp string_key_maps(value) when is_map(value) do
+    Map.new(value, fn {key, nested} -> {langchain_key(key), string_key_maps(nested)} end)
+  end
+
+  defp string_key_maps(value) when is_list(value), do: Enum.map(value, &string_key_maps/1)
+  defp string_key_maps(value), do: value
+
+  defp langchain_key(key) when is_binary(key), do: key
+  defp langchain_key(key) when is_atom(key), do: Atom.to_string(key)
+  defp langchain_key(key), do: to_string(key)
 
   defp output_entry(outputs) do
     cond do
@@ -473,11 +592,16 @@ defmodule BeamWeaver.Tracing.Exporters.LangSmith do
     }
     |> Map.merge(run.metadata || %{})
     |> maybe_put_new(:ls_integration, langsmith_integration(run))
+    |> maybe_put_new(:ls_message_format, langsmith_message_format(run))
     |> maybe_put(:usage_metadata, usage_metadata(run))
   end
 
+  defp langsmith_integration(%Run{kind: :model}), do: "langchain_chat_model"
   defp langsmith_integration(%Run{kind: kind}) when kind in [:graph, :agent], do: "langgraph"
   defp langsmith_integration(_run), do: nil
+
+  defp langsmith_message_format(%Run{kind: :model}), do: "langchain"
+  defp langsmith_message_format(_run), do: nil
 
   defp usage_metadata(%Run{usage: usage}) when is_map(usage) and map_size(usage) > 0, do: usage
   defp usage_metadata(_run), do: nil
@@ -560,6 +684,14 @@ defmodule BeamWeaver.Tracing.Exporters.LangSmith do
 
   defp maybe_put_new(map, _key, nil), do: map
   defp maybe_put_new(map, key, value), do: Map.put_new(map, key, value)
+
+  defp reject_nil_or_empty_values(map) do
+    Map.reject(map, fn
+      {_key, nil} -> true
+      {_key, empty} when empty == %{} or empty == [] -> true
+      _entry -> false
+    end)
+  end
 
   defp export_individually(items, opts) do
     Enum.reduce_while(items, :ok, fn {event, run, item_opts}, :ok ->

@@ -104,15 +104,19 @@ the same way. These model runs include:
 
 * `inputs.messages`
 * `outputs.messages`
+* `outputs.generations`
 * `extra.invocation_params`
+* `extra.metadata.ls_integration`
+* `extra.metadata.ls_message_format`
 * `extra.metadata.ls_provider`
 * `extra.metadata.ls_model_name`
 * `extra.metadata.usage_metadata`
 
-LangSmith uses the `ls_provider`, `ls_model_name`, and `usage_metadata` fields
-to populate model and token details in the UI. BeamWeaver also stores the same
-provider/model values under `model_provider` and `model_name` for local
-correlation.
+LangSmith uses `outputs.generations`, `ls_integration`, and
+`ls_message_format` to render chat messages in the trace UI. It uses the
+`ls_provider`, `ls_model_name`, and `usage_metadata` fields to populate model
+and token details. BeamWeaver also stores the same provider/model values under
+`model_provider` and `model_name` for local correlation.
 
 Graph nodes run in BEAM tasks. BeamWeaver propagates the active tracing context
 into those tasks, so model calls inside graph nodes appear as children of the
@@ -151,9 +155,12 @@ to another tool and should not produce a nested duplicate run.
 
 The LangSmith exporter keeps this compatibility work at the export boundary.
 BeamWeaver run structs do not contain LangSmith-only `serialized` or `events`
-fields. During export, tool runs receive a LangSmith-style `serialized` shape,
-SDK-style lifecycle events, `extra.tool_call_id`, and a LangChain-like
-`outputs.output` tool-message payload. Graph and agent root payloads also get
+fields. During export, model inputs and outputs receive LangChain-compatible
+chat message constructors and `outputs.generations` while retaining
+BeamWeaver-native `outputs.messages` for local correlation. Tool runs receive a
+LangSmith-style `serialized` shape, SDK-style lifecycle events,
+`extra.tool_call_id`, and a LangChain-like `outputs.output` tool-message
+payload. Graph and agent root payloads also get
 `extra.metadata.ls_integration = "langgraph"` during export without mutating
 local BeamWeaver metadata.
 

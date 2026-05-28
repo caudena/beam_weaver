@@ -281,8 +281,16 @@ defmodule BeamWeaver.Tracing.LangSmithExporterTest do
     assert model_payload.parent_run_id == graph_payload.id
     assert model_payload.trace_id == graph_payload.trace_id
 
-    assert [%{"role" => "user", "content" => "summarize these posts"}] =
-             model_payload.inputs.messages
+    assert [
+             [
+               %{
+                 "lc" => 1,
+                 "type" => "constructor",
+                 "id" => ["langchain", "schema", "messages", "HumanMessage"],
+                 "kwargs" => %{"content" => "summarize these posts", "type" => "human"}
+               }
+             ]
+           ] = model_payload.inputs.messages
 
     encoded_usage = %{"input_tokens" => 3, "output_tokens" => 2, "total_tokens" => 5}
 
@@ -294,9 +302,33 @@ defmodule BeamWeaver.Tracing.LangSmithExporterTest do
              }
            ] = model_payload.outputs.messages
 
+    assert [
+             [
+               %{
+                 message: %{
+                   "lc" => 1,
+                   "type" => "constructor",
+                   "id" => ["langchain", "schema", "messages", "AIMessage"],
+                   "kwargs" => %{
+                     "content" => "summary",
+                     "type" => "ai",
+                     "response_metadata" => %{
+                       "model" => %{"provider" => "fake"},
+                       "usage" => ^encoded_usage,
+                       "finish_reason" => "stop"
+                     },
+                     "usage_metadata" => ^encoded_usage
+                   }
+                 }
+               }
+             ]
+           ] = model_payload.outputs.generations
+
     assert model_payload.outputs.usage_metadata == usage
     assert model_payload.extra.model_provider == "fake"
     assert model_payload.extra.model_name == "chat"
+    assert model_payload.extra.metadata.ls_integration == "langchain_chat_model"
+    assert model_payload.extra.metadata.ls_message_format == "langchain"
     assert model_payload.extra.metadata.ls_provider == "fake"
     assert model_payload.extra.metadata.ls_model_name == "chat"
     assert model_payload.extra.metadata.usage_metadata == usage
