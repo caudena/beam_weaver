@@ -13,6 +13,9 @@ defmodule BeamWeaver.Checkpoint.Ecto.Rows do
         checkpoint,
         metadata
       ]) do
+    checkpoint = saver.__struct__.load_json_value!(saver, checkpoint || %{})
+    metadata = saver.__struct__.load_json_value!(saver, metadata || %{})
+
     checkpoint_map =
       checkpoint
       |> Map.get("checkpoint_map", %{})
@@ -77,7 +80,7 @@ defmodule BeamWeaver.Checkpoint.Ecto.Rows do
               task_id: task_id,
               index: index,
               channel: channel,
-              value: value,
+              value: saver.__struct__.load_json_value!(saver, value),
               path: path || ""
             }
           end)

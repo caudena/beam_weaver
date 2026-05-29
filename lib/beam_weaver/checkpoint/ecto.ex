@@ -16,19 +16,22 @@ defmodule BeamWeaver.Checkpoint.Ecto do
   alias BeamWeaver.Checkpoint.Ecto.Maintenance
   alias BeamWeaver.Checkpoint.Ecto.SQL
   alias BeamWeaver.Checkpoint.Saver
+  alias BeamWeaver.Core.Error
 
   defstruct repo: nil,
             query_module: Ecto.Adapters.SQL,
             checkpoints_table: "beam_weaver_checkpoints",
             writes_table: "beam_weaver_checkpoint_writes",
-            shallow?: false
+            shallow?: false,
+            serialization: %BeamWeaver.Serialization.Config{}
 
   @type t :: %__MODULE__{
           repo: module(),
           query_module: module(),
           checkpoints_table: String.t(),
           writes_table: String.t(),
-          shallow?: boolean()
+          shallow?: boolean(),
+          serialization: BeamWeaver.Serialization.Config.t()
         }
 
   @spec new(keyword()) :: t()
@@ -38,7 +41,8 @@ defmodule BeamWeaver.Checkpoint.Ecto do
       query_module: Keyword.get(opts, :query_module, Ecto.Adapters.SQL),
       checkpoints_table: Keyword.get(opts, :checkpoints_table, "beam_weaver_checkpoints"),
       writes_table: Keyword.get(opts, :writes_table, "beam_weaver_checkpoint_writes"),
-      shallow?: Keyword.get(opts, :shallow?, Keyword.get(opts, :shallow, false))
+      shallow?: Keyword.get(opts, :shallow?, Keyword.get(opts, :shallow, false)),
+      serialization: BeamWeaver.Serialization.Config.new(Keyword.get(opts, :serialization))
     }
   end
 
@@ -103,15 +107,17 @@ defmodule BeamWeaver.Checkpoint.Ecto do
         DO UPDATE SET checkpoint = EXCLUDED.checkpoint, metadata = EXCLUDED.metadata
         """
 
-        with :ok <- maybe_delete_shallow_history(saver, thread_id, namespace),
+        with {:ok, stored_checkpoint} <- dump_json_value(saver, checkpoint),
+             {:ok, stored_metadata} <- dump_json_value(saver, Config.stringify_keys(metadata || %{})),
+             :ok <- maybe_delete_shallow_history(saver, thread_id, namespace),
              {:ok, _result} <-
                query(saver, sql, [
                  thread_id,
                  namespace,
                  checkpoint_id,
                  parent_id,
-                 checkpoint,
-                 Config.stringify_keys(metadata || %{})
+                 stored_checkpoint,
+                 stored_metadata
                ]) do
           {:ok,
            %{
@@ -152,17 +158,20 @@ defmodule BeamWeaver.Checkpoint.Ecto do
         DO UPDATE SET channel = EXCLUDED.channel, value = EXCLUDED.value, task_path = EXCLUDED.task_path
         """
 
-        case query(saver, sql, [
-               thread_id,
-               namespace,
-               checkpoint_id,
-               task_id,
-               index,
-               channel,
-               value,
-               task_path
-             ]) do
-          {:ok, _result} -> {:cont, :ok}
+        with {:ok, stored_value} <- dump_json_value(saver, value),
+             {:ok, _result} <-
+               query(saver, sql, [
+                 thread_id,
+                 namespace,
+                 checkpoint_id,
+                 task_id,
+                 index,
+                 channel,
+                 stored_value,
+                 task_path
+               ]) do
+          {:cont, :ok}
+        else
           error -> {:halt, error}
         end
       end)
@@ -223,6 +232,21 @@ defmodule BeamWeaver.Checkpoint.Ecto do
 
   defp query(%__MODULE__{} = saver, sql, params) do
     SQL.query(saver, sql, params)
+  end
+
+  def dump_json_value(%__MODULE__{} = saver, value) do
+    BeamWeaver.Adapter.ValueCodec.dump_json_value(value, serialization: saver.serialization)
+  end
+
+  def load_json_value(%__MODULE__{} = saver, value) do
+    BeamWeaver.Adapter.ValueCodec.load_json_value(value, serialization: saver.serialization)
+  end
+
+  def load_json_value!(%__MODULE__{} = saver, value) do
+    case load_json_value(saver, value) do
+      {:ok, decoded} -> decoded
+      {:error, %Error{} = error} -> raise ArgumentError, error.message
+    end
   end
 
   defp transaction(%__MODULE__{} = saver, fun) do

@@ -1,17 +1,18 @@
 defmodule BeamWeaver.Memory.ConformanceTest do
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: false
 
   alias BeamWeaver.Core.Async
   alias BeamWeaver.Memory
   alias BeamWeaver.Memory.Ecto
   alias BeamWeaver.Memory.ETS
-  alias BeamWeaver.Memory.FakeSQL
   alias BeamWeaver.Memory.GetOp
   alias BeamWeaver.Memory.Item
   alias BeamWeaver.Memory.ListNamespacesOp
   alias BeamWeaver.Memory.MatchCondition
   alias BeamWeaver.Memory.PutOp
   alias BeamWeaver.Memory.SearchOp
+  alias BeamWeaver.Test.LivePostgres
+  alias BeamWeaver.Test.PostgresRepo
 
   defmodule CharacterEmbeddings do
     @behaviour BeamWeaver.Core.EmbeddingModel
@@ -41,6 +42,10 @@ defmodule BeamWeaver.Memory.ConformanceTest do
 
   for adapter <- [:ets, :ecto] do
     describe "#{adapter} memory store conformance" do
+      if adapter == :ecto do
+        @describetag :postgres
+      end
+
       setup do
         {:ok, store: new_store(unquote(adapter))}
       end
@@ -168,8 +173,9 @@ defmodule BeamWeaver.Memory.ConformanceTest do
                  Memory.async_put(store, ["async"], "one", %{"body" => "alpha"}, metadata: %{m: 1})
                  |> Async.await()
 
-        assert {:ok, %{value: %{"body" => "alpha"}, metadata: %{m: 1}}} =
-                 Memory.async_get(store, ["async"], "one") |> Async.await()
+        assert {:ok, item} = Memory.async_get(store, ["async"], "one") |> Async.await()
+        assert item.value == %{"body" => "alpha"}
+        assert metadata_value(item.metadata, "m") == 1
 
         assert [%{key: "one"}] =
                  Memory.async_search(store, ["async"], query: "alpha") |> Async.await()
@@ -521,8 +527,21 @@ defmodule BeamWeaver.Memory.ConformanceTest do
   defp new_store(:ets), do: ETS.new()
 
   defp new_store(:ecto) do
-    {:ok, repo} = FakeSQL.start_link()
-    Ecto.new(repo: repo, query_module: FakeSQL)
+    assert LivePostgres.available?()
+
+    table = LivePostgres.unique_table("bw_conformance_memory")
+    version = LivePostgres.migrate(adapters: [{:memory, table: table}])
+
+    on_exit(fn ->
+      LivePostgres.drop_tables([table])
+      LivePostgres.clear_migration(version)
+    end)
+
+    Ecto.new(repo: PostgresRepo, table: table)
+  end
+
+  defp metadata_value(metadata, key) do
+    Map.get(metadata, key, Map.get(metadata, String.to_existing_atom(key)))
   end
 
   defp put!(store, namespace, key, value) do

@@ -1,17 +1,22 @@
 defmodule BeamWeaver.Checkpoint.ConformanceTest do
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: false
 
   alias BeamWeaver.Checkpoint
   alias BeamWeaver.Checkpoint.Ecto
   alias BeamWeaver.Checkpoint.ETS
-  alias BeamWeaver.Checkpoint.FakeSQL
   alias BeamWeaver.Checkpoint.PendingWrite
   alias BeamWeaver.Core.Async
   alias BeamWeaver.Graph.Channel
   alias BeamWeaver.Graph.Channels.DeltaSnapshot
+  alias BeamWeaver.Test.LivePostgres
+  alias BeamWeaver.Test.PostgresRepo
 
   for adapter <- [:ets, :ecto] do
     describe "#{adapter} checkpoint saver conformance" do
+      if adapter == :ecto do
+        @describetag :postgres
+      end
+
       setup do
         {:ok, saver: new_saver(unquote(adapter))}
       end
@@ -654,13 +659,13 @@ defmodule BeamWeaver.Checkpoint.ConformanceTest do
                  Checkpoint.put_writes(
                    saver,
                    stored,
-                   [{"__error__", "something went wrong"}, {"__interrupt__", %{reason: "human"}}],
+                   [{"__error__", "something went wrong"}, {"__interrupt__", %{"reason" => "human"}}],
                    special_task
                  )
 
         assert %{pending_writes: writes} = Checkpoint.get_tuple(saver, stored)
         assert {special_task, "__error__", "something went wrong"} in writes
-        assert {special_task, "__interrupt__", %{reason: "human"}} in writes
+        assert {special_task, "__interrupt__", %{"reason" => "human"}} in writes
 
         root_task = unique("task")
         child_task = unique("task")
@@ -996,8 +1001,19 @@ defmodule BeamWeaver.Checkpoint.ConformanceTest do
   defp new_saver(:ets), do: ETS.new()
 
   defp new_saver(:ecto) do
-    {:ok, repo} = FakeSQL.start_link()
-    Ecto.new(repo: repo, query_module: FakeSQL)
+    assert LivePostgres.available?()
+
+    checkpoints = LivePostgres.unique_table("bw_conformance_checkpoints")
+    writes = LivePostgres.unique_table("bw_conformance_writes")
+    migration = [adapters: [{:checkpoint, checkpoints_table: checkpoints, writes_table: writes}]]
+    version = LivePostgres.migrate(migration)
+
+    on_exit(fn ->
+      LivePostgres.drop_tables([writes, checkpoints])
+      LivePostgres.clear_migration(version)
+    end)
+
+    Ecto.new(repo: PostgresRepo, checkpoints_table: checkpoints, writes_table: writes)
   end
 
   defp put_checkpoint!(saver, config, channel_values, metadata) do

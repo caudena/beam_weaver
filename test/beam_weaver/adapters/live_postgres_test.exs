@@ -7,7 +7,10 @@ defmodule BeamWeaver.Adapters.LivePostgresTest do
   alias BeamWeaver.Cache.Ecto, as: EctoCache
   alias BeamWeaver.Checkpoint
   alias BeamWeaver.Checkpoint.Ecto, as: EctoCheckpoint
+  alias BeamWeaver.Core.ContentBlock
   alias BeamWeaver.Core.Document
+  alias BeamWeaver.Core.Message
+  alias BeamWeaver.Graph.Channels.DeltaSnapshot
   alias BeamWeaver.Indexing.Record
   alias BeamWeaver.Indexing.RecordManager
   alias BeamWeaver.Indexing.RecordManager.EctoPostgres, as: EctoRecordManager
@@ -144,6 +147,100 @@ defmodule BeamWeaver.Adapters.LivePostgresTest do
     assert %{checkpoint: child_checkpoint} = Checkpoint.get_tuple(saver, second)
     assert child_checkpoint["channel_values"]["__tasks__"] == ["send-1", "send-2"]
     assert Map.has_key?(child_checkpoint["channel_versions"], "__tasks__")
+  end
+
+  test "checkpoint stores BeamWeaver structs as tagged jsonb and restores them live" do
+    checkpoints = BeamWeaver.Test.LivePostgres.unique_table("bw_checkpoints_structs")
+    writes = BeamWeaver.Test.LivePostgres.unique_table("bw_writes_structs")
+
+    saver =
+      EctoCheckpoint.new(
+        repo: BeamWeaver.Test.PostgresRepo,
+        checkpoints_table: checkpoints,
+        writes_table: writes
+      )
+
+    migration = [adapters: [{:checkpoint, checkpoints_table: checkpoints, writes_table: writes}]]
+    version = BeamWeaver.Test.LivePostgres.migrate(migration)
+
+    on_exit(fn ->
+      BeamWeaver.Test.LivePostgres.drop_tables([writes, checkpoints])
+      BeamWeaver.Test.LivePostgres.clear_migration(version)
+    end)
+
+    config = %{"configurable" => %{"thread_id" => "thread-live-structs"}}
+
+    user_message =
+      Message.user("hello",
+        metadata: %{source: :live_postgres},
+        artifacts: [ContentBlock.text("artifact")]
+      )
+
+    assert {:ok, next_config} =
+             Checkpoint.put(
+               saver,
+               config,
+               %{
+                 "id" => "cp-structs",
+                 "channel_values" => %{
+                   "messages" => [user_message],
+                   "snapshot" => %DeltaSnapshot{value: ["seed"]},
+                   "block" => ContentBlock.text("inline block")
+                 }
+               },
+               %{source: "loop", run_id: "run-structs"},
+               %{}
+             )
+
+    assert :ok =
+             Checkpoint.put_writes(
+               saver,
+               next_config,
+               [{"messages", Message.assistant("pending")}],
+               "task-structs"
+             )
+
+    {:ok, %{rows: [[stored_message, stored_snapshot, stored_write]]}} =
+      Ecto.Adapters.SQL.query(
+        BeamWeaver.Test.PostgresRepo,
+        """
+        SELECT
+          checkpoint->'channel_values'->'messages'->0,
+          checkpoint->'channel_values'->'snapshot',
+          value
+        FROM #{checkpoints}
+        JOIN #{writes}
+          USING (thread_id, checkpoint_ns, checkpoint_id)
+        WHERE #{checkpoints}.checkpoint_id = $1
+        """,
+        ["cp-structs"]
+      )
+
+    assert stored_message["__beam_weaver_type__"] == "beam_weaver.core.message"
+
+    assert stored_message["artifacts"] == [
+             %{
+               "__beam_weaver_type__" => "beam_weaver.core.content_block.text",
+               "metadata" => %{},
+               "text" => "artifact",
+               "type" => %{"__beam_weaver_type__" => "atom", "value" => "text"}
+             }
+           ]
+
+    assert stored_snapshot["__beam_weaver_type__"] == "beam_weaver.graph.channels.delta_snapshot"
+    assert stored_write["__beam_weaver_type__"] == "beam_weaver.core.message"
+
+    assert %{
+             checkpoint: %{
+               "channel_values" => %{
+                 "messages" => [%Message{role: :user, metadata: %{"source" => :live_postgres}}],
+                 "snapshot" => %DeltaSnapshot{value: ["seed"]},
+                 "block" => %ContentBlock.Text{text: "inline block"}
+               }
+             },
+             metadata: %{"run_id" => "run-structs"},
+             pending_writes: [{"task-structs", "messages", %Message{role: :assistant, content: "pending"}}]
+           } = Checkpoint.get_tuple(saver, next_config)
   end
 
   test "checkpoint shallow postgres saver keeps only the latest checkpoint live" do

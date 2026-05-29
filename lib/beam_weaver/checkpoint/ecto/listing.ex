@@ -23,7 +23,12 @@ defmodule BeamWeaver.Checkpoint.Ecto.Listing do
 
   def list(saver, config, opts) do
     configurable = if config, do: Checkpoint.configurable(config), else: %{}
-    filter = Config.stringify_keys(Keyword.get(opts, :filter, %{}) || %{})
+
+    filter =
+      (Keyword.get(opts, :filter, %{}) || %{})
+      |> Config.stringify_keys()
+      |> dump_filter(saver)
+
     before_id = Config.before_checkpoint_id(Keyword.get(opts, :before))
     limit = Keyword.get(opts, :limit)
 
@@ -104,5 +109,12 @@ defmodule BeamWeaver.Checkpoint.Ecto.Listing do
   defp maybe_filter({clauses, params}, filter) do
     position = length(params) + 1
     {clauses ++ ["metadata @> $#{position}"], params ++ [filter]}
+  end
+
+  defp dump_filter(filter, saver) do
+    case saver.__struct__.dump_json_value(saver, filter) do
+      {:ok, encoded} -> encoded
+      {:error, _error} -> filter
+    end
   end
 end

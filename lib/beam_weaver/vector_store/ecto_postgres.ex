@@ -4,7 +4,7 @@ defmodule BeamWeaver.VectorStore.EctoPostgres do
 
   The adapter deliberately avoids Ecto schemas. Callers provide a Repo and a
   query module compatible with `Ecto.Adapters.SQL.query/3`, which keeps the SQL
-  boundary explicit and easy to fake in tests.
+  boundary explicit for applications that wrap or instrument database calls.
   """
 
   @behaviour BeamWeaver.VectorStore

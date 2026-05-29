@@ -1,5 +1,5 @@
 defmodule BeamWeaver.VectorStoreEctoPostgresTest do
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: false
 
   # Upstream references:
   # - langchain standard vectorstore tests for add/delete/search/filter behavior
@@ -9,6 +9,8 @@ defmodule BeamWeaver.VectorStoreEctoPostgresTest do
   alias BeamWeaver.Core.Document
   alias BeamWeaver.Models.FakeEmbeddingModel
   alias BeamWeaver.Retriever
+  alias BeamWeaver.Test.LivePostgres
+  alias BeamWeaver.Test.PostgresRepo
   alias BeamWeaver.VectorStore
   alias BeamWeaver.VectorStore.EctoPostgres
   alias BeamWeaver.VectorStore.ETS
@@ -156,14 +158,22 @@ defmodule BeamWeaver.VectorStoreEctoPostgresTest do
              Filter.to_sql(%{group: %{contains: "a"}})
   end
 
-  test "EctoPostgres adapter emits migration SQL and uses query module boundary for add/search/delete" do
-    {:ok, repo} = Agent.start_link(fn -> %{rows: %{}} end)
+  @tag :postgres
+  test "EctoPostgres adapter uses real Postgres for add/search/delete" do
+    assert LivePostgres.available?()
+
+    table = LivePostgres.unique_table("bw_vector_store_test")
+    version = LivePostgres.migrate(adapters: [{:vector_store, table: table, dimensions: 3}])
+
+    on_exit(fn ->
+      LivePostgres.drop_tables([table])
+      LivePostgres.clear_migration(version)
+    end)
 
     store =
       EctoPostgres.new(
-        repo: repo,
-        query_module: __MODULE__.FakeSQL,
-        table: "test_vectors",
+        repo: PostgresRepo,
+        table: table,
         namespace: "tenant-a",
         embedding: %FakeEmbeddingModel{dimensions: 3},
         dimensions: 3
@@ -182,83 +192,5 @@ defmodule BeamWeaver.VectorStoreEctoPostgresTest do
     assert is_number(score)
     assert :ok = VectorStore.delete(store, [id])
     assert {:ok, []} = VectorStore.similarity_search(store, "alpha", k: 1)
-  end
-
-  defmodule FakeSQL do
-    alias BeamWeaver.VectorStore.Scoring
-
-    def query(repo, sql, params) do
-      Agent.get_and_update(repo, fn state ->
-        cond do
-          String.starts_with?(String.trim(sql), "INSERT") ->
-            [id, namespace, content, metadata, vector] = params
-
-            row = %{
-              id: id,
-              namespace: namespace,
-              content: content,
-              metadata: metadata,
-              embedding: parse_vector(vector)
-            }
-
-            state = put_in(state, [:rows, {namespace, id}], row)
-            {{:ok, %{num_rows: 1, rows: []}}, state}
-
-          String.starts_with?(String.trim(sql), "DELETE") ->
-            [namespace, ids] = params
-            rows = Map.drop(state.rows, Enum.map(ids, &{namespace, &1}))
-            {{:ok, %{num_rows: length(ids), rows: []}}, %{state | rows: rows}}
-
-          String.starts_with?(String.trim(sql), "SELECT") ->
-            [namespace, vector_or_ids | _rest] = params
-
-            rows =
-              if is_list(vector_or_ids) do
-                vector_or_ids
-                |> Enum.flat_map(fn id ->
-                  case Map.get(state.rows, {namespace, id}) do
-                    nil -> []
-                    row -> [[row.id, row.content, row.metadata, encode_vector(row.embedding), 0]]
-                  end
-                end)
-              else
-                query_vector = parse_vector(vector_or_ids)
-
-                state.rows
-                |> Map.values()
-                |> Enum.filter(&(&1.namespace == namespace))
-                |> Enum.map(fn row ->
-                  score = Scoring.cosine(query_vector, row.embedding)
-                  [row.id, row.content, row.metadata, encode_vector(row.embedding), score]
-                end)
-                |> Enum.sort_by(fn [_id, _content, _metadata, _embedding, score] -> -score end)
-              end
-
-            result = %{
-              columns: ["id", "content", "metadata", "embedding", "score"],
-              rows: rows
-            }
-
-            {{:ok, result}, state}
-
-          true ->
-            {{:ok, %{rows: []}}, state}
-        end
-      end)
-    end
-
-    defp parse_vector(value) do
-      value
-      |> String.trim_leading("[")
-      |> String.trim_trailing("]")
-      |> String.split(",", trim: true)
-      |> Enum.map(fn part ->
-        {number, _rest} = Float.parse(String.trim(part))
-        number
-      end)
-    end
-
-    defp encode_vector(vector),
-      do: "[" <> Enum.map_join(vector, ",", &to_string/1) <> "]"
   end
 end

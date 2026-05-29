@@ -1,14 +1,24 @@
 defmodule BeamWeaver.Checkpoint.EctoTest do
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: false
+
+  @moduletag :postgres
 
   alias BeamWeaver.Checkpoint
   alias BeamWeaver.Checkpoint.Ecto
-  alias BeamWeaver.Checkpoint.FakeSQL
   alias BeamWeaver.Core.Async
+  alias BeamWeaver.Core.ContentBlock
+  alias BeamWeaver.Core.Message
+  alias BeamWeaver.Graph.Channels.DeltaSnapshot
+  alias BeamWeaver.Test.LivePostgres
+  alias BeamWeaver.Test.PostgresRepo
+
+  setup do
+    assert LivePostgres.available?()
+    :ok
+  end
 
   test "uses the saver contract through an Ecto/Postgres query boundary" do
-    {:ok, repo} = FakeSQL.start_link()
-    saver = Ecto.new(repo: repo, query_module: FakeSQL)
+    saver = new_saver()
     config = %{"configurable" => %{"thread_id" => "ecto-thread"}}
 
     assert {:ok, next_config} =
@@ -23,7 +33,7 @@ defmodule BeamWeaver.Checkpoint.EctoTest do
     assert :ok = Checkpoint.put_writes(saver, next_config, [{"step", 1}], "task-1", "node:step")
 
     assert %{
-             checkpoint: %{"channel_values" => %{step: 1}},
+             checkpoint: %{"channel_values" => %{"step" => 1}},
              pending_writes: pending_writes,
              pending_write_paths: pending_write_paths
            } =
@@ -31,12 +41,56 @@ defmodule BeamWeaver.Checkpoint.EctoTest do
 
     assert pending_writes == [{"task-1", "step", 1}]
     assert pending_write_paths == [{"task-1", "step", "node:step"}]
-    assert [%{checkpoint: %{"channel_values" => %{step: 1}}}] = Checkpoint.list(saver, config)
+    assert [%{checkpoint: %{"channel_values" => %{"step" => 1}}}] = Checkpoint.list(saver, config)
+  end
+
+  test "serializes BeamWeaver structs across the JSON query boundary" do
+    saver = new_saver()
+    config = %{"configurable" => %{"thread_id" => "ecto-struct-thread"}}
+
+    user_message =
+      Message.user("hello",
+        metadata: %{source: :unit},
+        artifacts: [ContentBlock.text("artifact")]
+      )
+
+    assert {:ok, next_config} =
+             Checkpoint.put(
+               saver,
+               config,
+               %{
+                 "channel_values" => %{
+                   "messages" => [user_message],
+                   "snapshot" => %DeltaSnapshot{value: ["seed"]},
+                   "block" => ContentBlock.text("inline block")
+                 }
+               },
+               %{source: "loop"},
+               %{}
+             )
+
+    assert :ok =
+             Checkpoint.put_writes(
+               saver,
+               next_config,
+               [{"messages", Message.assistant("pending")}],
+               "task-message"
+             )
+
+    assert %{
+             checkpoint: %{
+               "channel_values" => %{
+                 "messages" => [%Message{role: :user, metadata: %{"source" => :unit}}],
+                 "snapshot" => %DeltaSnapshot{value: ["seed"]},
+                 "block" => %ContentBlock.Text{text: "inline block"}
+               }
+             },
+             pending_writes: [{"task-message", "messages", %Message{role: :assistant, content: "pending"}}]
+           } = Checkpoint.get_tuple(saver, next_config)
   end
 
   test "supports shallow saver semantics through the same checkpoint facade" do
-    {:ok, repo} = FakeSQL.start_link()
-    saver = Ecto.new(repo: repo, query_module: FakeSQL, shallow?: true)
+    saver = new_saver(shallow?: true)
     config = %{"configurable" => %{"thread_id" => "shallow-thread"}}
 
     assert {:ok, first_config} =
@@ -69,8 +123,7 @@ defmodule BeamWeaver.Checkpoint.EctoTest do
   end
 
   test "shallow saver works through Task-backed checkpoint facade calls" do
-    {:ok, repo} = FakeSQL.start_link()
-    saver = Ecto.new(repo: repo, query_module: FakeSQL, shallow?: true)
+    saver = new_saver(shallow?: true)
     config = %{"configurable" => %{"thread_id" => "shallow-async-thread"}}
 
     assert {:ok, first_config} =
@@ -99,5 +152,23 @@ defmodule BeamWeaver.Checkpoint.EctoTest do
 
     assert [latest] = Checkpoint.async_list(saver, config) |> Async.await()
     assert latest.checkpoint["id"] == "cp-async-2"
+  end
+
+  defp new_saver(opts \\ []) do
+    checkpoints = LivePostgres.unique_table("bw_ecto_checkpoints")
+    writes = LivePostgres.unique_table("bw_ecto_writes")
+    migration = [adapters: [{:checkpoint, checkpoints_table: checkpoints, writes_table: writes}]]
+    version = LivePostgres.migrate(migration)
+
+    on_exit(fn ->
+      LivePostgres.drop_tables([writes, checkpoints])
+      LivePostgres.clear_migration(version)
+    end)
+
+    opts
+    |> Keyword.put(:repo, PostgresRepo)
+    |> Keyword.put(:checkpoints_table, checkpoints)
+    |> Keyword.put(:writes_table, writes)
+    |> Ecto.new()
   end
 end
