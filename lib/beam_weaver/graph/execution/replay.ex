@@ -2,6 +2,7 @@ defmodule BeamWeaver.Graph.Execution.Replay do
   @moduledoc false
 
   alias BeamWeaver.Checkpoint
+  alias BeamWeaver.Core.Error
   alias BeamWeaver.Graph.Execution
   alias BeamWeaver.Graph.Execution.CheckpointIO
   alias BeamWeaver.Graph.Execution.DeltaReplay
@@ -9,19 +10,22 @@ defmodule BeamWeaver.Graph.Execution.Replay do
   alias BeamWeaver.Graph.Execution.SubgraphRouter
   alias BeamWeaver.Graph.Execution.TaskRequest
 
-  @spec restore_checkpoint_state(map(), map()) :: Execution.checkpoint_state()
-  def restore_checkpoint_state(%{checkpointer: nil}, _config), do: Execution.checkpoint_state(nil)
+  @spec restore_checkpoint_state(map(), map()) :: {:ok, Execution.checkpoint_state()} | {:error, Error.t()}
+  def restore_checkpoint_state(%{checkpointer: nil}, _config), do: {:ok, Execution.checkpoint_state(nil)}
 
   def restore_checkpoint_state(%{checkpointer: checkpointer} = compiled, config) do
     config = SubgraphRouter.checkpoint_config(compiled, config)
 
     case CheckpointIO.get_tuple(checkpointer, config) do
       nil ->
-        Execution.checkpoint_state(nil)
+        {:ok, Execution.checkpoint_state(nil)}
 
       tuple ->
         restored = Execution.checkpoint_state(tuple)
-        %{restored | values: DeltaReplay.restore_channel_values(compiled, tuple, restored.values)}
+
+        with {:ok, values} <- DeltaReplay.restore_channel_values(compiled, tuple, restored.values) do
+          {:ok, %{restored | values: values}}
+        end
     end
   end
 

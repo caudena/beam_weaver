@@ -111,7 +111,7 @@ defmodule BeamWeaver.Graph.Compiled do
   end
 
   @doc "Returns the latest checkpointed state for a graph configuration."
-  @spec get_state(t(), map()) :: {:ok, map()} | :error
+  @spec get_state(t(), map()) :: {:ok, map()} | :error | {:error, Error.t()}
   defdelegate get_state(compiled, config), to: StateUpdate
 
   @spec async_get_state(t(), map(), keyword()) :: Async.handle()
@@ -122,7 +122,7 @@ defmodule BeamWeaver.Graph.Compiled do
   def get_state_history(compiled, config, opts \\ [])
 
   @doc "Returns checkpointed state history for a graph configuration."
-  @spec get_state_history(t(), map(), keyword()) :: [map()]
+  @spec get_state_history(t(), map(), keyword()) :: [map()] | {:error, Error.t()}
   defdelegate get_state_history(compiled, config, opts), to: StateUpdate
 
   @spec async_get_state_history(t(), map(), keyword()) :: Async.handle()

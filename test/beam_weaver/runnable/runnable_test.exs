@@ -38,6 +38,18 @@ defmodule BeamWeaver.RunnableTest do
     def invoke(%__MODULE__{value: value}, input, _opts), do: {:ok, {value, input}}
   end
 
+  defmodule FailingHistory do
+    defstruct []
+
+    def get_messages(%__MODULE__{}), do: {:ok, []}
+
+    def add_messages(%__MODULE__{}, _messages) do
+      {:error, BeamWeaver.Core.Error.new(:history_write_failed, "history write failed")}
+    end
+
+    def clear(%__MODULE__{}), do: :ok
+  end
+
   def handle_telemetry(event, measurements, metadata, parent) do
     send(parent, {:runnable_telemetry, event, measurements, metadata})
   end
@@ -1231,6 +1243,18 @@ defmodule BeamWeaver.RunnableTest do
 
     assert {:ok, [%Message{content: "prompt"}, %Message{role: :assistant, content: "hello"}]} =
              ChatHistory.get_messages(session)
+  end
+
+  test "message history stream append errors are raised during consumption" do
+    runnable =
+      Runnable.generator(fn _ -> [Messages.ai_chunk("done")] end)
+      |> Runnable.with_history(history: fn -> %FailingHistory{} end)
+
+    assert {:ok, stream} = Runnable.stream(runnable, "prompt")
+
+    assert_raise RuntimeError,
+                 ~r/message history stream persistence failed: history_write_failed: history write failed/,
+                 fn -> Enum.to_list(stream) end
   end
 
   test "message history does not append partial streamed output when consumer halts early" do

@@ -89,8 +89,14 @@ defmodule BeamWeaver.Agent.Nodes.Model do
   defp call_model_with_middleware(middleware, %ModelRequest{} = request) do
     wrappers = Enum.filter(middleware, &Middleware.hook?(&1, :wrap_model_call))
 
+    base_handler = fn request ->
+      request
+      |> execute_model()
+      |> Response.normalize_model_result()
+    end
+
     handler =
-      Enum.reduce(Enum.reverse(wrappers), &execute_model/1, fn middleware, inner ->
+      Enum.reduce(Enum.reverse(wrappers), base_handler, fn middleware, inner ->
         fn request ->
           Middleware.call_wrapper(middleware, :wrap_model_call, request, inner)
           |> Response.normalize_model_result()
@@ -128,16 +134,28 @@ defmodule BeamWeaver.Agent.Nodes.Model do
     messages = Prompt.prompt_messages(request.system_message) ++ request.messages
 
     with :ok <- ToolSet.validate(tool_set),
-         {:ok, response} <- call_model(request.model, messages, opts),
-         {:ok, model_response} <- StructuredOutput.handle_model_output(response, strategy) do
-      model_response = Response.maybe_limit_steps_response(request, model_response)
+         {:ok, response} <- call_model(request.model, messages, opts) do
+      case StructuredOutput.handle_model_output(response, strategy) do
+        {:ok, model_response} ->
+          model_response = Response.maybe_limit_steps_response(request, model_response)
 
-      model_response =
-        model_response
-        |> Response.put_agent_name(request)
-        |> Response.attach_runtime_metadata(tool_set)
+          model_response =
+            model_response
+            |> Response.put_agent_name(request)
+            |> Response.attach_runtime_metadata(tool_set)
 
-      {:ok, model_response}
+          {:ok, model_response}
+
+        {:error, %Error{} = error} ->
+          {:error, Response.attach_diagnostics(error, request, messages, opts, response)}
+      end
+    else
+      {:error, %Error{} = error} ->
+        {:error, Response.attach_diagnostics(error, request, messages, opts)}
+
+      {:error, reason} ->
+        {:error, error} = Response.normalize_model_result({:error, reason})
+        {:error, Response.attach_diagnostics(error, request, messages, opts)}
     end
   end
 

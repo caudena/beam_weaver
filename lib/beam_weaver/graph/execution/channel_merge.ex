@@ -15,20 +15,37 @@ defmodule BeamWeaver.Graph.Execution.ChannelMerge do
   @skip :__beam_weaver_skip_channel__
 
   @spec merge_update(map(), map() | nil, StateGraph.t() | map()) :: map()
-  def merge_update(state, update, %StateGraph{} = graph) do
-    Enum.reduce(update || %{}, state, fn {key, value}, acc ->
-      put_state_value(acc, key, value, graph)
-    end)
+  def merge_update(state, update, graph_or_reducers) do
+    case merge_update_result(state, update, graph_or_reducers) do
+      {:ok, state} -> state
+      {:error, %Error{} = error} -> raise RuntimeError, message: error.message
+    end
   end
 
-  def merge_update(state, update, reducers) do
+  @spec merge_update_result(map(), map() | nil, StateGraph.t() | map()) ::
+          {:ok, map()} | {:error, Error.t()}
+  def merge_update_result(state, update, %StateGraph{} = graph) do
     Enum.reduce(update || %{}, state, fn {key, value}, acc ->
-      put_state_value(acc, key, value, reducers)
+      case acc do
+        {:error, %Error{}} = error -> error
+        state -> put_state_value(state, key, value, graph)
+      end
     end)
+    |> wrap_state_result()
   end
 
-  @spec apply_pending_writes(map(), list(), StateGraph.t()) :: map()
-  def apply_pending_writes(state, [], _graph), do: state
+  def merge_update_result(state, update, reducers) do
+    Enum.reduce(update || %{}, state, fn {key, value}, acc ->
+      case acc do
+        {:error, %Error{}} = error -> error
+        state -> put_state_value(state, key, value, reducers)
+      end
+    end)
+    |> wrap_state_result()
+  end
+
+  @spec apply_pending_writes(map(), list(), StateGraph.t()) :: {:ok, map()} | {:error, Error.t()}
+  def apply_pending_writes(state, [], _graph), do: {:ok, state}
 
   def apply_pending_writes(state, pending_writes, graph) do
     updates =
@@ -48,8 +65,8 @@ defmodule BeamWeaver.Graph.Execution.ChannelMerge do
       end)
 
     case merge_step_updates(state, updates, graph) do
-      {:ok, _step_update, next_state} -> next_state
-      {:error, _error} -> state
+      {:ok, _step_update, next_state} -> {:ok, next_state}
+      {:error, %Error{} = error} -> {:error, error}
     end
   end
 
@@ -95,6 +112,9 @@ defmodule BeamWeaver.Graph.Execution.ChannelMerge do
 
   def ready_state(ready, state, graph),
     do: merge_update(state, TaskRequest.update(ready), graph)
+
+  defp wrap_state_result({:error, %Error{}} = error), do: error
+  defp wrap_state_result(state), do: {:ok, state}
 
   defp group_step_updates(updates) do
     updates
@@ -218,10 +238,12 @@ defmodule BeamWeaver.Graph.Execution.ChannelMerge do
         case merge_declared_channel(key, [value], state, channel) do
           {:ok, @skip, _state_value} -> state
           {:ok, _step_value, state_value} -> Map.put(state, key, state_value)
-          {:error, _error} -> put_state_value(state, key, value, graph.reducers)
+          {:error, %Error{} = error} -> {:error, error}
         end
     end
   end
+
+  defp put_state_value({:error, %Error{}} = error, _key, _value, _graph_or_reducers), do: error
 
   defp put_state_value(state, key, %Overwrite{value: value}, _reducers),
     do: Map.put(state, key, value)

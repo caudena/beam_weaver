@@ -30,6 +30,8 @@ defmodule BeamWeaver.Agent.StructuredOutput.Schema do
   end
 
   def schema_spec(module, opts) when is_atom(module) do
+    ensure_schema_module_compiled(module)
+
     cond do
       function_exported?(module, :json_schema, 0) ->
         schema_spec(
@@ -48,6 +50,19 @@ defmodule BeamWeaver.Agent.StructuredOutput.Schema do
           %{"title" => module |> Module.split() |> List.last(), "type" => "object"},
           opts
         )
+    end
+  end
+
+  defp ensure_schema_module_compiled(module) do
+    case Code.ensure_compiled(module) do
+      {:module, _module} ->
+        :ok
+
+      {:error, :nofile} ->
+        :error
+
+      {:error, reason} ->
+        raise ArgumentError, "schema module #{inspect(module)} could not be loaded: #{inspect(reason)}"
     end
   end
 

@@ -14,6 +14,9 @@ defmodule BeamWeaver.Graph.Execution.ChannelState do
   defdelegate merge_update(state, update, graph_or_reducers), to: ChannelMerge
 
   @doc false
+  defdelegate merge_update_result(state, update, graph_or_reducers), to: ChannelMerge
+
+  @doc false
   defdelegate apply_pending_writes(state, pending_writes, graph), to: ChannelMerge
 
   @doc false

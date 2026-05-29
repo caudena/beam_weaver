@@ -29,6 +29,111 @@ defmodule BeamWeaver.Graph.CompiledTest do
     field(:y, :string, metadata: %{"title" => "Y", "default" => "foo"})
   end
 
+  defmodule RejectingChannel do
+    use BeamWeaver.Graph.Channel
+
+    defstruct [:key, value: Channel.missing()]
+
+    def new(opts \\ []), do: %__MODULE__{key: Keyword.get(opts, :key)}
+
+    @impl true
+    def update(channel, _updates) do
+      {:error,
+       Channel.invalid_update("rejecting channel update failed", %{
+         channel: channel.key
+       })}
+    end
+
+    @impl true
+    def get(%__MODULE__{value: value, key: key}) do
+      if value == Channel.missing(), do: {:error, Channel.empty_error(key)}, else: {:ok, value}
+    end
+
+    @impl true
+    def checkpoint(%__MODULE__{value: value}), do: value
+
+    @impl true
+    def from_checkpoint(channel, checkpoint), do: %{channel | value: checkpoint}
+
+    @impl true
+    def available?(%__MODULE__{value: value}), do: value != Channel.missing()
+  end
+
+  defmodule FailingCache do
+    defstruct []
+
+    def lookup(%__MODULE__{}, _namespace, _key, _opts), do: :miss
+
+    def put(%__MODULE__{}, _namespace, _key, _value, _opts) do
+      {:error, BeamWeaver.Core.Error.new(:cache_write_failed, "cache write failed")}
+    end
+
+    def delete(%__MODULE__{}, _namespace, _key, _opts), do: :ok
+    def clear(%__MODULE__{}, _namespace, _opts), do: :ok
+  end
+
+  test "declared channel errors are returned instead of falling back to plain state writes" do
+    graph =
+      Graph.new()
+      |> Graph.add_channel(:blocked, RejectingChannel)
+      |> Graph.add_node(:echo, fn state -> state end)
+      |> Graph.add_edge(Graph.start(), :echo)
+      |> Graph.add_edge(:echo, Graph.end_node())
+      |> Graph.compile!()
+
+    assert {:error,
+            %Error{
+              type: :invalid_update,
+              message: "rejecting channel update failed",
+              details: %{channel: :blocked}
+            }} = Compiled.invoke(graph, %{blocked: "hidden"})
+  end
+
+  test "cached node put errors fail the task instead of reporting success" do
+    graph =
+      Graph.new()
+      |> Graph.add_node(:cached, fn _state -> %{answer: 42} end, cache: true)
+      |> Graph.add_edge(Graph.start(), :cached)
+      |> Graph.add_edge(:cached, Graph.end_node())
+      |> Graph.compile!(cache: %FailingCache{})
+
+    assert {:error, %Error{type: :cache_write_failed, message: "cache write failed"}} =
+             Compiled.invoke(graph, %{})
+  end
+
+  test "pending write merge errors are returned when restoring latest state" do
+    checkpointer = CheckpointETS.new()
+
+    graph =
+      Graph.new()
+      |> Graph.add_node(:fanout, fn _state ->
+        [
+          %Send{node: :first, update: %{}},
+          %Send{node: :second, update: %{}},
+          %Send{node: :fail, update: %{}}
+        ]
+      end)
+      |> Graph.add_node(:first, fn _state -> %{kept: "first"} end)
+      |> Graph.add_node(:second, fn _state -> %{kept: "second"} end)
+      |> Graph.add_node(:fail, fn _state -> {:error, Error.new(:node_failed, "boom")} end)
+      |> Graph.add_edge(Graph.start(), :fanout)
+      |> Graph.add_edge(:first, Graph.end_node())
+      |> Graph.add_edge(:second, Graph.end_node())
+      |> Graph.add_edge(:fail, Graph.end_node())
+      |> Graph.compile!(checkpointer: checkpointer)
+
+    config = %{"configurable" => %{"thread_id" => "bad-pending-write-merge"}}
+
+    assert {:error, %Error{type: :node_failed}} = Compiled.invoke(graph, %{}, config: config)
+
+    assert {:error,
+            %Error{
+              type: :invalid_update,
+              message: "last-value channel can receive only one value per step",
+              details: %{channel: :kept}
+            }} = Compiled.get_state(graph, config)
+  end
+
   test "runs a conditional graph and merges parallel node updates through reducers" do
     graph =
       Graph.new()
@@ -102,6 +207,92 @@ defmodule BeamWeaver.Graph.CompiledTest do
              },
              "required" => ["x"]
            }
+  end
+
+  test "compiled graph loads unloaded context schema modules before falling back to type schema" do
+    module = Module.concat(__MODULE__, :"UnloadedContextSchema#{System.unique_integer([:positive])}")
+    tmp_dir = Path.join(System.tmp_dir!(), "beam_weaver_graph_schema_#{System.unique_integer([:positive])}")
+    source_file = Path.join(tmp_dir, "unloaded_context_schema.ex")
+
+    File.mkdir_p!(tmp_dir)
+
+    File.write!(source_file, """
+    defmodule #{inspect(module)} do
+      def __beam_weaver_schema__ do
+        %{
+          "type" => "object",
+          "properties" => %{"value" => %{"type" => "string"}},
+          "required" => ["value"]
+        }
+      end
+    end
+    """)
+
+    assert {_output, 0} = System.cmd("elixirc", ["-o", tmp_dir, source_file], stderr_to_stdout: true)
+    true = Code.prepend_path(String.to_charlist(tmp_dir))
+
+    on_exit(fn ->
+      :code.purge(module)
+      :code.delete(module)
+      Code.delete_path(String.to_charlist(tmp_dir))
+      File.rm_rf(tmp_dir)
+    end)
+
+    :code.purge(module)
+    :code.delete(module)
+    assert :code.is_loaded(module) == false
+
+    graph =
+      Graph.new(context_schema: module)
+      |> Graph.add_node(:node, fn state -> state end)
+      |> Graph.add_edge(Graph.start(), :node)
+      |> Graph.add_edge(:node, Graph.end_node())
+      |> Graph.compile!()
+
+    assert Compiled.get_context_json_schema(graph) == %{
+             "type" => "object",
+             "properties" => %{"value" => %{"type" => "string"}},
+             "required" => ["value"]
+           }
+  end
+
+  test "compiled graph surfaces context schema module load failures" do
+    module = Module.concat(__MODULE__, :"UnloadableContextSchema#{System.unique_integer([:positive])}")
+    tmp_dir = Path.join(System.tmp_dir!(), "beam_weaver_bad_graph_schema_#{System.unique_integer([:positive])}")
+    source_file = Path.join(tmp_dir, "unloadable_context_schema.ex")
+
+    File.mkdir_p!(tmp_dir)
+
+    File.write!(source_file, """
+    defmodule #{inspect(module)} do
+      @on_load :boom
+
+      def boom, do: :erlang.error(:on_load_failed)
+
+      def __beam_weaver_schema__, do: %{"type" => "object"}
+    end
+    """)
+
+    assert {_output, 0} = System.cmd("elixirc", ["-o", tmp_dir, source_file], stderr_to_stdout: true)
+    true = Code.prepend_path(String.to_charlist(tmp_dir))
+
+    on_exit(fn ->
+      :code.purge(module)
+      :code.delete(module)
+      Code.delete_path(String.to_charlist(tmp_dir))
+      File.rm_rf(tmp_dir)
+    end)
+
+    graph =
+      Graph.new(context_schema: module)
+      |> Graph.add_node(:node, fn state -> state end)
+      |> Graph.add_edge(Graph.start(), :node)
+      |> Graph.add_edge(:node, Graph.end_node())
+      |> Graph.compile!()
+
+    assert_raise ArgumentError, ~r/:on_load_failure/, fn ->
+      Compiled.get_context_json_schema(graph)
+    end
   end
 
   test "graph input and output schemas project public state while reducers prepare node input" do

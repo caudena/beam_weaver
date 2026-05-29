@@ -282,30 +282,35 @@ defmodule BeamWeaver.Runnable.MessageHistory do
       fn -> %{items: [], completed?: false} end,
       fn item, acc ->
         if item == done do
+          persist_stream_history!(acc.items, session, input_messages, opts)
           {[], %{acc | completed?: true}}
         else
           {[item], %{acc | items: [item | acc.items]}}
         end
       end,
       fn
-        %{completed?: true, items: items} ->
-          output =
-            items
-            |> Enum.reverse()
-            |> BeamWeaver.Stream.Finalize.finalize()
-
-          case output_messages(output, opts) do
-            {:ok, output_messages} ->
-              ChatHistory.add_messages(session, input_messages ++ output_messages)
-
-            {:error, _error} ->
-              :ok
-          end
-
-        _acc ->
-          :ok
+        _acc -> :ok
       end
     )
+  end
+
+  defp persist_stream_history!(items, session, input_messages, opts) do
+    output =
+      items
+      |> Enum.reverse()
+      |> BeamWeaver.Stream.Finalize.finalize()
+
+    with {:ok, output_messages} <- output_messages(output, opts),
+         :ok <- ChatHistory.add_messages(session, input_messages ++ output_messages) do
+      :ok
+    else
+      {:error, %Error{} = error} -> raise RuntimeError, message: history_error_message(error)
+      {:error, reason} -> raise RuntimeError, message: "message history stream persistence failed: #{inspect(reason)}"
+    end
+  end
+
+  defp history_error_message(%Error{} = error) do
+    "message history stream persistence failed: #{error.type}: #{error.message}"
   end
 
   defp missing_session(session_key) do

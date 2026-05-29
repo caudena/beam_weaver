@@ -33,44 +33,41 @@ defmodule BeamWeaver.Graph.Execution.Snapshot do
     }
   end
 
-  @spec from_tuple(map(), map(), keyword()) :: map()
+  @spec from_tuple(map(), map(), keyword()) :: {:ok, map()} | {:error, BeamWeaver.Core.Error.t()}
   def from_tuple(compiled, tuple, opts) do
     snapshot = from_tuple(tuple)
 
-    snapshot = %{
-      snapshot
-      | values:
-          compiled.graph
-          |> ChannelState.public_state(DeltaReplay.restore_channel_values(compiled, tuple, snapshot.values))
-    }
+    with {:ok, values} <- DeltaReplay.restore_channel_values(compiled, tuple, snapshot.values) do
+      snapshot = %{snapshot | values: ChannelState.public_state(compiled.graph, values)}
 
-    if Keyword.get(opts, :apply_pending?, false) and snapshot.pending_writes != [] do
-      restored = Execution.checkpoint_state(tuple)
+      if Keyword.get(opts, :apply_pending?, false) and snapshot.pending_writes != [] do
+        restored = Execution.checkpoint_state(tuple)
 
-      ready =
-        Replay.initial_ready(
-          compiled,
-          snapshot.config,
-          restored,
-          Replay.replay_pending?(restored)
-        )
+        ready =
+          Replay.initial_ready(
+            compiled,
+            snapshot.config,
+            restored,
+            Replay.replay_pending?(restored)
+          )
 
-      %{
-        snapshot
-        | values:
-            compiled.graph
-            |> ChannelState.public_state(
-              ChannelState.apply_pending_writes(
-                snapshot.values,
-                snapshot.pending_writes,
-                compiled.graph
-              )
-            ),
-          next: Replay.ready_names(ready),
-          next_tasks: Replay.checkpoint_next_records(ready, compiled.graph)
-      }
-    else
-      snapshot
+        with {:ok, values} <-
+               ChannelState.apply_pending_writes(
+                 snapshot.values,
+                 snapshot.pending_writes,
+                 compiled.graph
+               ) do
+          {:ok,
+           %{
+             snapshot
+             | values: ChannelState.public_state(compiled.graph, values),
+               next: Replay.ready_names(ready),
+               next_tasks: Replay.checkpoint_next_records(ready, compiled.graph)
+           }}
+        end
+      else
+        {:ok, snapshot}
+      end
     end
   end
 

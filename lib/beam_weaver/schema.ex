@@ -15,10 +15,25 @@ end
 
 defimpl BeamWeaver.Schema, for: Atom do
   def to_json_schema(module) when is_atom(module) do
+    ensure_schema_module_compiled(module)
+
     if function_exported?(module, :__beam_weaver_schema__, 0) do
       module.__beam_weaver_schema__()
     else
       BeamWeaver.Tool.Schema.type_schema(module)
+    end
+  end
+
+  defp ensure_schema_module_compiled(module) do
+    case Code.ensure_compiled(module) do
+      {:module, _module} ->
+        :ok
+
+      {:error, :nofile} ->
+        :error
+
+      {:error, reason} ->
+        raise ArgumentError, "schema module #{inspect(module)} could not be loaded: #{inspect(reason)}"
     end
   end
 end

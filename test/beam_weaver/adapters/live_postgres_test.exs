@@ -3,10 +3,12 @@ defmodule BeamWeaver.Adapters.LivePostgresTest do
 
   @moduletag :postgres
 
+  alias BeamWeaver.Agent
   alias BeamWeaver.Cache
   alias BeamWeaver.Cache.Ecto, as: EctoCache
   alias BeamWeaver.Checkpoint
   alias BeamWeaver.Checkpoint.Ecto, as: EctoCheckpoint
+  alias BeamWeaver.Core.Error
   alias BeamWeaver.Core.ContentBlock
   alias BeamWeaver.Core.Document
   alias BeamWeaver.Core.Message
@@ -31,6 +33,32 @@ defmodule BeamWeaver.Adapters.LivePostgresTest do
   setup do
     assert BeamWeaver.Test.LivePostgres.available?()
     :ok
+  end
+
+  defmodule ProviderError do
+    defexception [:type, :message, details: %{}]
+  end
+
+  defmodule ProviderFailingModel do
+    @behaviour BeamWeaver.Core.ChatModel
+
+    defstruct []
+
+    @impl true
+    def invoke(%__MODULE__{}, _messages, _opts) do
+      {:error,
+       %ProviderError{
+         type: :http_error,
+         message: "provider authentication failed",
+         details: %{status: 401, pid: self()}
+       }}
+    end
+  end
+
+  defmodule ProviderErrorCheckpointAgent do
+    use BeamWeaver.Agent
+
+    model(%ProviderFailingModel{})
   end
 
   test "checkpoint commits checkpoint and pending writes transactionally" do
@@ -196,6 +224,49 @@ defmodule BeamWeaver.Adapters.LivePostgresTest do
       )
 
     assert Enum.map(rows, fn [nodes] -> nodes end) == [["first"], ["second"]]
+  end
+
+  test "agent provider errors with non-json details checkpoint through live Postgres" do
+    checkpoints = BeamWeaver.Test.LivePostgres.unique_table("bw_checkpoints_model_error")
+    writes = BeamWeaver.Test.LivePostgres.unique_table("bw_writes_model_error")
+
+    saver =
+      EctoCheckpoint.new(
+        repo: BeamWeaver.Test.PostgresRepo,
+        checkpoints_table: checkpoints,
+        writes_table: writes
+      )
+
+    migration = [adapters: [{:checkpoint, checkpoints_table: checkpoints, writes_table: writes}]]
+    version = BeamWeaver.Test.LivePostgres.migrate(migration)
+
+    on_exit(fn ->
+      BeamWeaver.Test.LivePostgres.drop_tables([writes, checkpoints])
+      BeamWeaver.Test.LivePostgres.clear_migration(version)
+    end)
+
+    config = %{"configurable" => %{"thread_id" => "thread-live-model-error"}}
+
+    assert {:error, %Error{type: :http_error, message: "provider authentication failed"} = error} =
+             Agent.invoke(
+               ProviderErrorCheckpointAgent,
+               %{messages: [Message.user("hi")]},
+               checkpointer: saver,
+               config: config
+             )
+
+    assert error.details.status == 401
+    assert error.details.pid =~ "#PID"
+
+    {:ok, %{rows: [[stored_error]]}} =
+      Ecto.Adapters.SQL.query(
+        BeamWeaver.Test.PostgresRepo,
+        "SELECT value FROM #{writes} WHERE channel = '__error__' LIMIT 1",
+        []
+      )
+
+    assert stored_error["__beam_weaver_type__"] == "beam_weaver.core.error"
+    assert stored_error["details"]["pid"] =~ "#PID"
   end
 
   test "checkpoint stores BeamWeaver structs as tagged jsonb and restores them live" do

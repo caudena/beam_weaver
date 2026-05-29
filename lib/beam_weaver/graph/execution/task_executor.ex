@@ -419,27 +419,32 @@ defmodule BeamWeaver.Graph.Execution.TaskExecutor do
 
     case managed_write_error(updates, run.compiled.graph.managed) do
       nil ->
-        Cache.put(run.compiled.cache, cache_key, value)
+        case Cache.put(run.compiled.cache, cache_key, value) do
+          :ok ->
+            finished =
+              Stream.task_event(
+                :finish,
+                spec.name,
+                normalized.update,
+                run.step,
+                prepared.id,
+                prepared.path
+              )
 
-        finished =
-          Stream.task_event(
-            :finish,
-            spec.name,
-            normalized.update,
-            run.step,
-            prepared.id,
-            prepared.path
-          )
+            {:ok,
+             TaskResult.ok(
+               prepared.id,
+               spec.name,
+               prepared.path,
+               run.step,
+               normalized,
+               started_events ++ [finished]
+             )}
 
-        {:ok,
-         TaskResult.ok(
-           prepared.id,
-           spec.name,
-           prepared.path,
-           run.step,
-           normalized,
-           started_events ++ [finished]
-         )}
+          {:error, %Error{} = error} ->
+            failed = Stream.task_event(:error, spec.name, error, run.step, prepared.id, prepared.path)
+            {:error, error, started_events ++ [failed]}
+        end
 
       %Error{} = error ->
         failed =

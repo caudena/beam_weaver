@@ -10,7 +10,7 @@ defmodule BeamWeaver.Graph.Execution.StateUpdate do
   alias BeamWeaver.Graph.Execution.Snapshot
   alias BeamWeaver.Graph.Execution.SubgraphRouter
 
-  @spec get_state(map(), map()) :: {:ok, map()} | :error
+  @spec get_state(map(), map()) :: {:ok, map()} | :error | {:error, Error.t()}
   def get_state(%{checkpointer: nil}, _config), do: :error
 
   def get_state(%{checkpointer: checkpointer} = compiled, config) do
@@ -26,12 +26,12 @@ defmodule BeamWeaver.Graph.Execution.StateUpdate do
             :error
 
           tuple ->
-            {:ok, Snapshot.from_tuple(compiled, tuple, apply_pending?: Snapshot.latest_state?(config))}
+            Snapshot.from_tuple(compiled, tuple, apply_pending?: Snapshot.latest_state?(config))
         end
     end
   end
 
-  @spec get_state_history(map(), map(), keyword()) :: [map()]
+  @spec get_state_history(map(), map(), keyword()) :: [map()] | {:error, Error.t()}
   def get_state_history(%{checkpointer: nil}, _config, _opts), do: []
 
   def get_state_history(%{checkpointer: checkpointer} = compiled, config, opts) do
@@ -42,9 +42,12 @@ defmodule BeamWeaver.Graph.Execution.StateUpdate do
       nil ->
         config = SubgraphRouter.checkpoint_config(compiled, config)
 
-        checkpointer
-        |> CheckpointIO.list(config, opts)
-        |> Enum.map(&Snapshot.from_tuple(compiled, &1, apply_pending?: false))
+        case checkpointer
+             |> CheckpointIO.list(config, opts)
+             |> BeamWeaver.Result.traverse(&Snapshot.from_tuple(compiled, &1, apply_pending?: false)) do
+          {:ok, snapshots} -> snapshots
+          {:error, %Error{}} = error -> error
+        end
     end
   end
 
@@ -83,56 +86,61 @@ defmodule BeamWeaver.Graph.Execution.StateUpdate do
   end
 
   defp do_update_state(%{} = compiled, config, values, opts) do
-    {current_config, current, current_versions, versions_seen, snapshot} =
+    current_state =
       case get_state(compiled, config) do
         {:ok, snapshot} ->
-          {snapshot.config, snapshot.values, snapshot.channel_versions, snapshot.versions_seen, snapshot}
+          {:ok, {snapshot.config, snapshot.values, snapshot.channel_versions, snapshot.versions_seen, snapshot}}
 
         :error ->
-          {config, %{}, %{}, %{}, nil}
-      end
-
-    with :ok <- validate_update(compiled.graph, values),
-         {:ok, as_node} <- update_as_node(compiled.graph, snapshot, opts) do
-      updated = ChannelState.merge_update(current, values, compiled.graph)
-      updated_channels = Execution.updated_channels(values)
-
-      channel_versions =
-        Execution.next_channel_versions(
-          compiled.checkpointer,
-          current_versions,
-          updated_channels,
-          compiled.graph
-        )
-
-      {next_names, next_tasks} =
-        if pending_interrupt?(snapshot) do
-          {Map.get(snapshot, :next, []), Map.get(snapshot, :next_tasks, [])}
-        else
-          next = next_after_update(compiled.graph, as_node)
-          {Replay.ready_names(next), Replay.checkpoint_next_records(next, compiled.graph)}
-        end
-
-      case CheckpointIO.write_checkpoint(compiled, current_config, updated, %{
-             source: "update",
-             step: Keyword.get(opts, :step, 0),
-             as_node: as_node,
-             next: next_names,
-             next_tasks: next_tasks,
-             tasks: [],
-             interrupts: Map.get(snapshot || %{}, :interrupts, []),
-             channel_versions: channel_versions,
-             versions_seen: versions_seen,
-             updated_channels: updated_channels,
-             step_update: values
-           }) do
-        {:ok, updated_config} ->
-          with :ok <- copy_pending_writes(compiled, updated_config, snapshot) do
-            maybe_resume_after_update(compiled, updated_config, opts)
-          end
+          {:ok, {config, %{}, %{}, %{}, nil}}
 
         {:error, %Error{}} = error ->
           error
+      end
+
+    with {:ok, {current_config, current, current_versions, versions_seen, snapshot}} <- current_state,
+         :ok <- validate_update(compiled.graph, values),
+         {:ok, as_node} <- update_as_node(compiled.graph, snapshot, opts) do
+      with {:ok, updated} <- ChannelState.merge_update_result(current, values, compiled.graph) do
+        updated_channels = Execution.updated_channels(values)
+
+        channel_versions =
+          Execution.next_channel_versions(
+            compiled.checkpointer,
+            current_versions,
+            updated_channels,
+            compiled.graph
+          )
+
+        {next_names, next_tasks} =
+          if pending_interrupt?(snapshot) do
+            {Map.get(snapshot, :next, []), Map.get(snapshot, :next_tasks, [])}
+          else
+            next = next_after_update(compiled.graph, as_node)
+            {Replay.ready_names(next), Replay.checkpoint_next_records(next, compiled.graph)}
+          end
+
+        case CheckpointIO.write_checkpoint(compiled, current_config, updated, %{
+               source: "update",
+               step: Keyword.get(opts, :step, 0),
+               as_node: as_node,
+               next: next_names,
+               next_tasks: next_tasks,
+               tasks: [],
+               interrupts: Map.get(snapshot || %{}, :interrupts, []),
+               channel_versions: channel_versions,
+               versions_seen: versions_seen,
+               updated_channels: updated_channels,
+               step_update: values
+             }) do
+          {:ok, updated_config} ->
+            with :ok <- copy_pending_writes(compiled, updated_config, snapshot) do
+              maybe_resume_after_update(compiled, updated_config, opts)
+            end
+
+          {:error, %Error{}} = error ->
+            error
+        end
       end
     end
   end
@@ -302,43 +310,48 @@ defmodule BeamWeaver.Graph.Execution.StateUpdate do
   end
 
   defp reduce_bulk_update_state(%{} = compiled, config, supersteps, opts) do
-    {initial_config, initial_values, initial_versions, initial_seen} =
+    initial_state =
       case get_state(compiled, config) do
         {:ok, snapshot} ->
-          {snapshot.config, snapshot.values, snapshot.channel_versions, snapshot.versions_seen}
+          {:ok, {snapshot.config, snapshot.values, snapshot.channel_versions, snapshot.versions_seen}}
 
         :error ->
-          {config, %{}, %{}, %{}}
+          {:ok, {config, %{}, %{}, %{}}}
+
+        {:error, %Error{}} = error ->
+          error
       end
 
-    start_step = Keyword.get(opts, :step, 0)
+    with {:ok, {initial_config, initial_values, initial_versions, initial_seen}} <- initial_state do
+      start_step = Keyword.get(opts, :step, 0)
 
-    supersteps
-    |> Enum.with_index(start_step)
-    |> Enum.reduce_while(
-      {:ok, initial_config, initial_values, initial_versions, initial_seen},
-      fn {updates, step}, {:ok, current_config, current_values, current_versions, versions_seen} ->
-        case bulk_update_superstep(
-               compiled,
-               current_config,
-               current_values,
-               current_versions,
-               versions_seen,
-               updates,
-               step,
-               opts
-             ) do
-          {:ok, next_config, next_values, next_versions} ->
-            {:cont, {:ok, next_config, next_values, next_versions, versions_seen}}
+      supersteps
+      |> Enum.with_index(start_step)
+      |> Enum.reduce_while(
+        {:ok, initial_config, initial_values, initial_versions, initial_seen},
+        fn {updates, step}, {:ok, current_config, current_values, current_versions, versions_seen} ->
+          case bulk_update_superstep(
+                 compiled,
+                 current_config,
+                 current_values,
+                 current_versions,
+                 versions_seen,
+                 updates,
+                 step,
+                 opts
+               ) do
+            {:ok, next_config, next_values, next_versions} ->
+              {:cont, {:ok, next_config, next_values, next_versions, versions_seen}}
 
-          {:error, %Error{}} = error ->
-            {:halt, error}
+            {:error, %Error{}} = error ->
+              {:halt, error}
+          end
         end
+      )
+      |> case do
+        {:ok, final_config, _values, _versions, _seen} -> {:ok, final_config}
+        {:error, %Error{}} = error -> error
       end
-    )
-    |> case do
-      {:ok, final_config, _values, _versions, _seen} -> {:ok, final_config}
-      {:error, %Error{}} = error -> error
     end
   end
 

@@ -36,13 +36,13 @@ defmodule BeamWeaver.Graph.Execution.Cache do
     end
   end
 
-  @spec put(term(), term(), term()) :: :ok
+  @spec put(term(), term(), term()) :: :ok | {:error, BeamWeaver.Core.Error.t()}
   def put(_cache, nil, _value), do: :ok
 
   def put(_compiled_cache, {cache, namespace, key, opts}, value) do
     case Cache.put(cache, namespace, key, value, opts) do
       :ok -> :ok
-      {:error, _error} -> :ok
+      {:error, error} -> {:error, error}
     end
   end
 

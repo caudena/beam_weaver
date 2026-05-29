@@ -686,6 +686,103 @@ defmodule BeamWeaver.OutputParserTest do
              )
   end
 
+  test "OpenAI functions parser loads unloaded schema modules before validation and cast" do
+    module = BeamWeaver.OutputParserTest.UnloadedFunctionArgsFixture
+    tmp_dir = Path.join(System.tmp_dir!(), "beam_weaver_output_schema_#{System.unique_integer([:positive])}")
+    source_file = Path.join(tmp_dir, "unloaded_function_args_fixture.ex")
+
+    :code.purge(module)
+    :code.delete(module)
+    File.mkdir_p!(tmp_dir)
+
+    File.write!(source_file, """
+    defmodule #{inspect(module)} do
+      defstruct [:name, :age]
+
+      def schema do
+        %{
+          "type" => "object",
+          "required" => ["name", "age"],
+          "properties" => %{
+            "name" => %{"type" => "string"},
+            "age" => %{"type" => "integer"}
+          }
+        }
+      end
+    end
+    """)
+
+    assert {_output, 0} = System.cmd("elixirc", ["-o", tmp_dir, source_file], stderr_to_stdout: true)
+    true = Code.prepend_path(String.to_charlist(tmp_dir))
+
+    on_exit(fn ->
+      :code.purge(module)
+      :code.delete(module)
+      Code.delete_path(String.to_charlist(tmp_dir))
+      File.rm_rf(tmp_dir)
+    end)
+
+    assert :code.is_loaded(module) == false
+
+    message = %{
+      "function_call" => %{
+        "name" => "function_name",
+        "arguments" => BeamWeaver.JSON.encode!(%{"name" => "Ada", "age" => 37})
+      }
+    }
+
+    assert {:ok, %{__struct__: ^module, name: "Ada", age: 37}} =
+             Runnable.invoke(OutputParser.openai_functions(args_only: true, as: module), message)
+
+    assert {:error, %Error{type: :output_parser_error, details: %{parser: :schema_parser}}} =
+             Runnable.invoke(
+               OutputParser.openai_functions(args_only: true, as: module),
+               %{"function_call" => %{"name" => "function_name", "arguments" => ~s({"age":37})}}
+             )
+  end
+
+  test "OpenAI functions parser surfaces schema module load failures" do
+    module = BeamWeaver.OutputParserTest.UnloadableFunctionArgsFixture
+    tmp_dir = Path.join(System.tmp_dir!(), "beam_weaver_bad_output_schema_#{System.unique_integer([:positive])}")
+    source_file = Path.join(tmp_dir, "unloadable_function_args_fixture.ex")
+
+    :code.purge(module)
+    :code.delete(module)
+    File.mkdir_p!(tmp_dir)
+
+    File.write!(source_file, """
+    defmodule #{inspect(module)} do
+      @on_load :boom
+
+      def boom, do: :erlang.error(:on_load_failed)
+
+      def schema, do: %{"type" => "object"}
+    end
+    """)
+
+    assert {_output, 0} = System.cmd("elixirc", ["-o", tmp_dir, source_file], stderr_to_stdout: true)
+    true = Code.prepend_path(String.to_charlist(tmp_dir))
+
+    on_exit(fn ->
+      :code.purge(module)
+      :code.delete(module)
+      Code.delete_path(String.to_charlist(tmp_dir))
+      File.rm_rf(tmp_dir)
+    end)
+
+    message = %{
+      "function_call" => %{
+        "name" => "function_name",
+        "arguments" => BeamWeaver.JSON.encode!(%{"name" => "Ada"})
+      }
+    }
+
+    assert {:error, %Error{type: :runnable_exception, message: error_message}} =
+             Runnable.invoke(OutputParser.openai_functions(args_only: true, as: module), message)
+
+    assert error_message =~ ":on_load_failure"
+  end
+
   test "OpenAI functions parser selects schema casts by function name" do
     cookie = %{
       "function_call" => %{

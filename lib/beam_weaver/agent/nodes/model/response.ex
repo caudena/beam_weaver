@@ -10,13 +10,15 @@ defmodule BeamWeaver.Agent.Nodes.Model.Response do
   alias BeamWeaver.Core.Message
   alias BeamWeaver.Core.Tool
   alias BeamWeaver.Graph.Command
+  alias BeamWeaver.Transport.Redactor
 
   def normalize_model_result({:ok, %ModelResponse{}} = result), do: result
 
   def normalize_model_result({:ok, %ExtendedModelResponse{} = response}),
     do: normalize_model_result(response)
 
-  def normalize_model_result({:error, %Error{}} = error), do: error
+  def normalize_model_result({:error, %Error{} = error}), do: {:error, sanitize_error(error)}
+  def normalize_model_result({:error, reason}), do: {:error, normalize_error(reason)}
   def normalize_model_result(%ModelResponse{} = response), do: {:ok, response}
 
   def normalize_model_result(%ExtendedModelResponse{
@@ -40,6 +42,188 @@ defmodule BeamWeaver.Agent.Nodes.Model.Response do
      Error.new(:invalid_model_response, "model middleware returned an invalid response", %{
        returned: inspect(other)
      })}
+  end
+
+  def attach_diagnostics(%Error{} = error, request, messages, opts, response \\ nil) do
+    details =
+      error.details
+      |> safe_details()
+      |> Map.put_new(:model_request, model_request_details(request, messages, opts))
+      |> maybe_put_model_response(response)
+      |> safe_details()
+
+    %{error | details: details}
+  end
+
+  defp normalize_error(%{type: type, message: message} = error)
+       when is_atom(type) and is_binary(message) do
+    Error.new(type, message, error_details(error))
+  end
+
+  defp normalize_error(%{__exception__: true} = exception) do
+    Error.new(:model_error, Exception.message(exception), %{reason: inspect(exception)})
+  end
+
+  defp normalize_error(message) when is_binary(message), do: Error.new(:model_error, message)
+
+  defp normalize_error(reason) do
+    Error.new(:model_error, "model returned an error", %{reason: inspect(reason)})
+  end
+
+  defp error_details(error) do
+    details =
+      case Map.get(error, :details) do
+        details when is_map(details) -> details
+        _other -> %{}
+      end
+
+    details
+    |> safe_details()
+    |> Map.put_new(:reason, inspect(error))
+  end
+
+  defp model_request_details(request, messages, opts) do
+    %{
+      model: model_name(request.model),
+      messages: Enum.map(messages, &message_details/1),
+      response_format: response_format_details(request.response_format),
+      tools: Enum.map(ToolSet.list(request.tool_set || ToolSet.new(request.tools)), &Tool.name/1),
+      opts: redact_and_clip(opts)
+    }
+  end
+
+  defp maybe_put_model_response(details, nil), do: details
+
+  defp maybe_put_model_response(details, %Message{} = response) do
+    Map.put_new(details, :model_response, message_details(response))
+  end
+
+  defp maybe_put_model_response(details, response) do
+    Map.put_new(details, :model_response, redact_and_clip(response))
+  end
+
+  defp model_name(%{model: model}) when is_binary(model), do: model
+
+  defp model_name(model) do
+    module = if is_map(model), do: Map.get(model, :__struct__), else: nil
+
+    cond do
+      is_atom(module) and function_exported?(module, :model_name, 1) ->
+        module.model_name(model)
+
+      is_atom(module) and function_exported?(module, :model_id, 1) ->
+        module.model_id(model)
+
+      is_atom(module) ->
+        inspect(module)
+
+      true ->
+        inspect(model)
+    end
+  rescue
+    _exception -> inspect(model)
+  end
+
+  defp message_details(%Message{} = message) do
+    %{
+      role: message.role,
+      name: message.name,
+      content: redact_and_clip(Message.text(message)),
+      metadata: redact_and_clip(message.metadata),
+      response_metadata: redact_and_clip(message.response_metadata),
+      tool_calls: redact_and_clip(message.tool_calls)
+    }
+  end
+
+  defp response_format_details(nil), do: nil
+
+  defp response_format_details(%{schema_spec: spec, strict: strict}) do
+    %{
+      strategy: :provider,
+      name: Map.get(spec, :name),
+      schema: redact_and_clip(Map.get(spec, :json_schema)),
+      strict: strict
+    }
+  end
+
+  defp response_format_details(%{schema_specs: specs}) when is_list(specs) do
+    %{
+      strategy: :tool,
+      schemas:
+        Enum.map(specs, fn spec ->
+          %{
+            name: Map.get(spec, :name),
+            schema: redact_and_clip(Map.get(spec, :json_schema))
+          }
+        end)
+    }
+  end
+
+  defp response_format_details(response_format), do: redact_and_clip(response_format)
+
+  defp redact_and_clip(value), do: value |> Redactor.redact() |> clip_value()
+
+  defp clip_value(value) when is_binary(value) do
+    max = 8_000
+
+    if byte_size(value) > max do
+      binary_part(value, 0, max) <> "\n...[truncated #{byte_size(value) - max} bytes]"
+    else
+      value
+    end
+  end
+
+  defp clip_value(values) when is_list(values), do: Enum.map(values, &clip_value/1)
+
+  defp clip_value(value) when is_tuple(value) do
+    value
+    |> Tuple.to_list()
+    |> Enum.map(&clip_value/1)
+    |> List.to_tuple()
+  end
+
+  defp clip_value(value) when is_map(value) do
+    Map.new(value, fn {key, map_value} -> {key, clip_value(map_value)} end)
+  end
+
+  defp clip_value(value), do: value
+
+  defp sanitize_error(%Error{details: details} = error), do: %{error | details: safe_details(details)}
+
+  defp safe_details(details) when is_map(details) do
+    Map.new(details, fn {key, value} -> {safe_detail_key(key), safe_detail_value(value)} end)
+  end
+
+  defp safe_details(_details), do: %{}
+
+  defp safe_detail_key(key) when is_atom(key) or is_binary(key), do: key
+  defp safe_detail_key(key), do: inspect(key)
+
+  defp safe_detail_value(%Error{} = error), do: sanitize_error(error)
+
+  defp safe_detail_value(%{__struct__: _module} = value) do
+    if serializable?(value), do: value, else: inspect(value)
+  end
+
+  defp safe_detail_value(value) when is_map(value) do
+    Map.new(value, fn {key, nested} -> {safe_detail_key(key), safe_detail_value(nested)} end)
+  end
+
+  defp safe_detail_value(values) when is_list(values), do: Enum.map(values, &safe_detail_value/1)
+
+  defp safe_detail_value(value) when is_tuple(value) do
+    value
+    |> Tuple.to_list()
+    |> Enum.map(&safe_detail_value/1)
+    |> List.to_tuple()
+  end
+
+  defp safe_detail_value(value) do
+    if serializable?(value), do: value, else: inspect(value)
+  end
+
+  defp serializable?(value) do
+    match?({:ok, _encoded}, BeamWeaver.Serialization.dump_json_value(value))
   end
 
   def to_update(%ModelResponse{commands: commands} = response) when commands != [] do

@@ -52,6 +52,26 @@ defmodule BeamWeaver.Agent.WrapModelCallTest do
       do: {:error, Error.new(:network_error, "network down")}
   end
 
+  defmodule ProviderError do
+    defexception [:type, :message, details: %{}]
+  end
+
+  defmodule ProviderFailingModel do
+    @behaviour ChatModel
+
+    defstruct []
+
+    @impl true
+    def invoke(%__MODULE__{}, _messages, _opts) do
+      {:error,
+       %ProviderError{
+         type: :http_error,
+         message: "provider authentication failed",
+         details: %{status: 401, pid: self()}
+       }}
+    end
+  end
+
   defmodule LoggingMiddleware do
     @behaviour BeamWeaver.Agent.Middleware
 
@@ -214,6 +234,19 @@ defmodule BeamWeaver.Agent.WrapModelCallTest do
     middleware([RecoverNetworkMiddleware])
   end
 
+  defmodule ProviderErrorAgent do
+    use BeamWeaver.Agent
+
+    model(%ProviderFailingModel{})
+  end
+
+  defmodule WrappedProviderErrorAgent do
+    use BeamWeaver.Agent
+
+    model(%ProviderFailingModel{})
+    middleware([SystemPromptMiddleware])
+  end
+
   defmodule CommandAgent do
     use BeamWeaver.Agent
 
@@ -254,6 +287,17 @@ defmodule BeamWeaver.Agent.WrapModelCallTest do
 
     assert {:ok, %{messages: [_user, %Message{content: "Network issue, try again later"}]}} =
              Agent.invoke(ErrorRecoveryAgent, %{messages: [Message.user("hi")]})
+  end
+
+  test "provider-specific model errors survive wrapped and unwrapped model calls" do
+    for agent <- [ProviderErrorAgent, WrappedProviderErrorAgent] do
+      assert {:error, %Error{type: :http_error, message: "provider authentication failed"} = error} =
+               Agent.invoke(agent, %{messages: [Message.user("hi")]})
+
+      assert error.details.status == 401
+      assert error.details.pid =~ "#PID"
+      assert error.details.reason =~ "ProviderError"
+    end
   end
 
   test "request overrides preserve value semantics and affect the downstream model call" do
