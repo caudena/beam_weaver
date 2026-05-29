@@ -122,7 +122,7 @@ defmodule BeamWeaver.Anthropic.Streaming do
     message_delta =
       delta
       |> Options.stringify_keys()
-      |> Map.take(["stop_reason", "stop_sequence", "container"])
+      |> Map.take(["stop_reason", "stop_details", "stop_sequence", "container"])
       |> Options.reject_nil_values()
       |> maybe_put("context_management", event["context_management"])
 

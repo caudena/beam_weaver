@@ -193,8 +193,8 @@ defmodule BeamWeaver.Anthropic.ChatModelTest do
     assert "mcp-client-2025-11-20" in count_body["betas"]
   end
 
-  test "Claude Opus 4.7 rejects deprecated sampling controls before transport" do
-    model = ChatModel.new(model: "claude-opus-4-7")
+  test "Claude Opus 4.8 rejects deprecated sampling controls before transport" do
+    model = ChatModel.new(model: "claude-opus-4-8")
 
     assert {:error, error} =
              ChatModel.request_body(model, [Message.user("hello")],
@@ -205,7 +205,7 @@ defmodule BeamWeaver.Anthropic.ChatModelTest do
 
     assert error.type == :unsupported_model_param
     assert error.details.provider == :anthropic
-    assert error.details.model == "claude-opus-4-7"
+    assert error.details.model == "claude-opus-4-8"
     assert Enum.sort(error.details.params) == [:temperature, :top_k, :top_p]
 
     assert {:ok, body} =
@@ -217,6 +217,35 @@ defmodule BeamWeaver.Anthropic.ChatModelTest do
     assert body["temperature"] == 1.0
     assert body["top_p"] == 0.99
     refute Map.has_key?(body, "top_k")
+  end
+
+  test "Claude Opus 4.8 requires adaptive thinking when thinking is enabled" do
+    model = ChatModel.new(model: "claude-opus-4-8")
+
+    assert {:error, error} =
+             ChatModel.request_body(model, [Message.user("hello")], thinking: %{type: :enabled, budget_tokens: 1024})
+
+    assert error.type == :unsupported_model_param
+    assert error.details.params == [:thinking]
+    assert error.details.reason =~ "adaptive thinking"
+
+    assert {:error, count_error} =
+             BeamWeaver.Anthropic.ChatModel.RequestBuilder.count_tokens_body(
+               model,
+               [Message.user("hello")],
+               thinking: %{type: :enabled, budget_tokens: 1024}
+             )
+
+    assert count_error.details.params == [:thinking]
+
+    assert {:ok, body} =
+             ChatModel.request_body(model, [Message.user("hello")],
+               thinking: %{type: :adaptive},
+               effort: :high
+             )
+
+    assert body["thinking"] == %{"type" => "adaptive"}
+    assert body["output_config"] == %{"effort" => "high"}
   end
 
   test "stream and stream_response consume Anthropic SSE fixtures" do
@@ -313,9 +342,10 @@ defmodule BeamWeaver.Anthropic.ChatModelTest do
     assert explicit.__struct__ == ChatModel
     assert explicit.profile.provider == :anthropic
 
-    assert {:ok, opus} = Models.init_chat_model("anthropic:claude-opus-4-7")
+    assert {:ok, opus} = Models.init_chat_model("anthropic:claude-opus-4-8")
     assert opus.profile.max_input_tokens == 1_000_000
     assert opus.profile.max_output_tokens == 128_000
+    assert opus.profile.extra.default_effort == :high
 
     assert {:ok, inferred} = Models.init_chat_model("claude-sonnet-4-6")
     assert inferred.__struct__ == ChatModel
@@ -338,6 +368,13 @@ defmodule BeamWeaver.Anthropic.ChatModelTest do
     assert retired.type == :deprecated_model
     assert retired.details.replacement == "claude-sonnet-4-6"
     assert retired.details.retirement_date == "2026-02-19"
+
+    assert {:error, opus} =
+             Models.init_chat_model("anthropic:claude-opus-4-20250514")
+
+    assert opus.type == :deprecated_model
+    assert opus.details.replacement == "claude-opus-4-8"
+    assert opus.details.expected == "anthropic:claude-opus-4-8"
   end
 
   test "output parser extracts Anthropic tool_use blocks" do

@@ -77,6 +77,11 @@ defmodule BeamWeaver.Anthropic.MessagesTest do
       "role" => "assistant",
       "model" => "claude-haiku-4-5-20251001",
       "stop_reason" => "tool_use",
+      "stop_details" => %{
+        "type" => "refusal",
+        "category" => "safety",
+        "explanation" => "policy refusal"
+      },
       "content" => [
         %{
           "type" => "text",
@@ -105,6 +110,7 @@ defmodule BeamWeaver.Anthropic.MessagesTest do
     assert message.id == "msg_123"
     assert message.status == "tool_use"
     assert message.response_metadata.model_provider == "anthropic"
+    assert message.response_metadata.stop_details["category"] == "safety"
 
     assert message.tool_calls == [
              %ToolCall{

@@ -42,6 +42,7 @@ defmodule BeamWeaver.Anthropic.ChatModel.RequestBuilder do
   def request_body(model, messages, opts \\ []) do
     with :ok <- validate_request_params(model, opts),
          :ok <- validate_sampling_params(model, opts),
+         :ok <- validate_thinking_params(model, opts),
          {:ok, {system, formatted_messages}} <- Messages.format_messages(messages),
          {:ok, output_config} <- output_config(model, opts) do
       model_kwargs = option(model, opts, :model_kwargs) || %{}
@@ -113,7 +114,8 @@ defmodule BeamWeaver.Anthropic.ChatModel.RequestBuilder do
   @spec count_tokens_body(term(), [BeamWeaver.Core.Message.t()], keyword()) ::
           {:ok, map()} | {:error, Error.t()}
   def count_tokens_body(model, messages, opts \\ []) do
-    with {:ok, {system, formatted_messages}} <- Messages.format_messages(messages),
+    with :ok <- validate_thinking_params(model, opts),
+         {:ok, {system, formatted_messages}} <- Messages.format_messages(messages),
          {:ok, output_config} <- output_config(model, opts) do
       tools = tools(opts)
 
@@ -187,7 +189,30 @@ defmodule BeamWeaver.Anthropic.ChatModel.RequestBuilder do
              provider: :anthropic,
              model: model.model,
              params: params,
-             reason: "Anthropic deprecates temperature, top_k, and top_p for models released after Claude Opus 4.6"
+             reason: "Anthropic deprecates temperature, top_k, and top_p for Claude Opus 4.7 and later"
+           })}
+      end
+    else
+      :ok
+    end
+  end
+
+  defp validate_thinking_params(model, opts) do
+    if adaptive_only_thinking_model?(model) do
+      case thinking_type(option(model, opts, :thinking)) do
+        nil ->
+          :ok
+
+        type when type in [:adaptive, "adaptive", :disabled, "disabled"] ->
+          :ok
+
+        _type ->
+          {:error,
+           Error.new(:unsupported_model_param, "model parameter is not supported by profile", %{
+             provider: :anthropic,
+             model: model.model,
+             params: [:thinking],
+             reason: "Claude Opus 4.7 and later only support adaptive thinking or disabled thinking"
            })}
       end
     else
@@ -196,14 +221,31 @@ defmodule BeamWeaver.Anthropic.ChatModel.RequestBuilder do
   end
 
   defp restricted_sampling_model?(%{profile: %{extra: extra}, model: model}) when is_map(extra),
-    do: Map.get(extra, :sampling_controls) == :restricted or opus_4_7?(model)
+    do: Map.get(extra, :sampling_controls) == :restricted or opus_4_minor_at_least?(model, 7)
 
-  defp restricted_sampling_model?(%{model: model}), do: opus_4_7?(model)
+  defp restricted_sampling_model?(%{model: model}), do: opus_4_minor_at_least?(model, 7)
 
   defp restricted_sampling_model?(_model), do: false
 
-  defp opus_4_7?(model) when is_binary(model), do: String.contains?(model, "opus-4-7")
-  defp opus_4_7?(_model), do: false
+  defp adaptive_only_thinking_model?(%{profile: %{extra: extra}, model: model}) when is_map(extra),
+    do: Map.get(extra, :thinking_mode) == :adaptive_only or opus_4_minor_at_least?(model, 7)
+
+  defp adaptive_only_thinking_model?(%{model: model}), do: opus_4_minor_at_least?(model, 7)
+
+  defp adaptive_only_thinking_model?(_model), do: false
+
+  defp thinking_type(%{"type" => type}), do: type
+  defp thinking_type(%{type: type}), do: type
+  defp thinking_type(_thinking), do: nil
+
+  defp opus_4_minor_at_least?(model, minimum) when is_binary(model) do
+    case Regex.run(~r/opus-4-(\d+)/, model) do
+      [_, minor] -> String.to_integer(minor) >= minimum
+      _other -> false
+    end
+  end
+
+  defp opus_4_minor_at_least?(_model, _minimum), do: false
 
   defp restricted_temperature_param(model, opts) do
     case option(model, opts, :temperature) do
