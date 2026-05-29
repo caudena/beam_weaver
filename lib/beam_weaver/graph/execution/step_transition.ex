@@ -98,7 +98,7 @@ defmodule BeamWeaver.Graph.Execution.StepTransition do
                source: "loop",
                step: run.step,
                run_id: run.run_id,
-               nodes: ready,
+               nodes: CheckpointIO.ready_names(ready),
                next: CheckpointIO.ready_names(next_ready),
                next_tasks: CheckpointIO.checkpoint_next_records(next_ready, compiled.graph),
                tasks: CheckpointIO.checkpoint_task_records(outcome.events),

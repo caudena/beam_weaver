@@ -10,7 +10,9 @@ defmodule BeamWeaver.Adapters.LivePostgresTest do
   alias BeamWeaver.Core.ContentBlock
   alias BeamWeaver.Core.Document
   alias BeamWeaver.Core.Message
+  alias BeamWeaver.Graph
   alias BeamWeaver.Graph.Channels.DeltaSnapshot
+  alias BeamWeaver.Graph.Compiled
   alias BeamWeaver.Indexing.Record
   alias BeamWeaver.Indexing.RecordManager
   alias BeamWeaver.Indexing.RecordManager.EctoPostgres, as: EctoRecordManager
@@ -147,6 +149,53 @@ defmodule BeamWeaver.Adapters.LivePostgresTest do
     assert %{checkpoint: child_checkpoint} = Checkpoint.get_tuple(saver, second)
     assert child_checkpoint["channel_values"]["__tasks__"] == ["send-1", "send-2"]
     assert Map.has_key?(child_checkpoint["channel_versions"], "__tasks__")
+  end
+
+  test "compiled graph checkpoints ready-node metadata through live Postgres" do
+    checkpoints = BeamWeaver.Test.LivePostgres.unique_table("bw_checkpoints_graph")
+    writes = BeamWeaver.Test.LivePostgres.unique_table("bw_writes_graph")
+
+    saver =
+      EctoCheckpoint.new(
+        repo: BeamWeaver.Test.PostgresRepo,
+        checkpoints_table: checkpoints,
+        writes_table: writes
+      )
+
+    migration = [adapters: [{:checkpoint, checkpoints_table: checkpoints, writes_table: writes}]]
+    version = BeamWeaver.Test.LivePostgres.migrate(migration)
+
+    on_exit(fn ->
+      BeamWeaver.Test.LivePostgres.drop_tables([writes, checkpoints])
+      BeamWeaver.Test.LivePostgres.clear_migration(version)
+    end)
+
+    graph =
+      Graph.new()
+      |> Graph.add_node(:first, fn _state -> %{value: 1} end)
+      |> Graph.add_node(:second, fn state -> %{done: state[:value] + 1} end)
+      |> Graph.add_edge(Graph.start(), :first)
+      |> Graph.add_edge(:first, :second)
+      |> Graph.add_edge(:second, Graph.end_node())
+      |> Graph.compile!(checkpointer: saver)
+
+    config = %{"configurable" => %{"thread_id" => "thread-live-graph"}}
+
+    assert {:ok, %{done: 2, value: 1}} = Compiled.invoke(graph, %{}, config: config)
+
+    {:ok, %{rows: rows}} =
+      Ecto.Adapters.SQL.query(
+        BeamWeaver.Test.PostgresRepo,
+        """
+        SELECT metadata->'nodes'
+        FROM #{checkpoints}
+        WHERE metadata ? 'nodes'
+        ORDER BY checkpoint_id ASC
+        """,
+        []
+      )
+
+    assert Enum.map(rows, fn [nodes] -> nodes end) == [["first"], ["second"]]
   end
 
   test "checkpoint stores BeamWeaver structs as tagged jsonb and restores them live" do
