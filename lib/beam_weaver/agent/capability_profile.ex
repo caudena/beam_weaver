@@ -43,6 +43,7 @@ defmodule BeamWeaver.Agent.CapabilityProfile do
 
   def builtin(:anthropic_haiku_4_5), do: builtin("anthropic:claude-haiku-4-5")
   def builtin(:anthropic_sonnet_4_6), do: builtin("anthropic:claude-sonnet-4-6")
+  def builtin(:anthropic_opus_4_8), do: builtin("anthropic:claude-opus-4-8")
 
   def builtin(:anthropic_opus_4_7) do
     builtin("anthropic:claude-opus-4-7")
@@ -188,7 +189,7 @@ defmodule BeamWeaver.Agent.CapabilityProfile do
       merge(
         anthropic_universal,
         new(
-          name: "anthropic:claude-opus-4-7",
+          name: "anthropic:claude-opus",
           prompt_suffix:
             anthropic_universal.prompt_suffix <>
               "\n\n<tool_usage>\nUse tools to observe files, tests, and system output directly.\n</tool_usage>\n\n<subagent_usage>\nUse subagents for isolated multi-step work and fan-out when useful.\n</subagent_usage>"
@@ -209,7 +210,8 @@ defmodule BeamWeaver.Agent.CapabilityProfile do
         anthropic_universal
         | name: "anthropic:claude-sonnet-4-6"
       },
-      "anthropic:claude-opus-4-7" => anthropic_opus,
+      "anthropic:claude-opus-4-8" => %{anthropic_opus | name: "anthropic:claude-opus-4-8"},
+      "anthropic:claude-opus-4-7" => %{anthropic_opus | name: "anthropic:claude-opus-4-7"},
       "openai:gpt-5.5" => %{codex | name: "openai:gpt-5.5"},
       "openai:gpt-5.4" => %{codex | name: "openai:gpt-5.4"},
       "openai:gpt-5.4-mini" => %{codex | name: "openai:gpt-5.4-mini"}

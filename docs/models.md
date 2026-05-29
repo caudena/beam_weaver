@@ -157,7 +157,7 @@ harnesses, not as a BeamWeaver certification list:
 |---|---|
 | Google | `gemini-3.1-pro-preview`, `gemini-3.5-flash` |
 | OpenAI | `gpt-5.5`, `gpt-5.5-pro`, `gpt-5.4`, `gpt-5.4-pro`, `gpt-5.4-mini`, `gpt-5.4-nano`, `gpt-5`, `gpt-5-mini`, `gpt-5-nano`, `gpt-4.1` |
-| Anthropic | `claude-opus-4-7`, `claude-opus-4-6`, `claude-opus-4-5`, `claude-opus-4-5-20251101`, `claude-opus-4-1-20250805`, `claude-sonnet-4-6`, `claude-sonnet-4-5`, `claude-haiku-4-5` |
+| Anthropic | `claude-opus-4-8`, `claude-opus-4-7`, `claude-opus-4-6`, `claude-opus-4-5`, `claude-opus-4-5-20251101`, `claude-opus-4-1-20250805`, `claude-sonnet-4-6`, `claude-sonnet-4-5`, `claude-haiku-4-5` |
 | Open-weight or routed | `GLM-5`, `Kimi-K2.5`, `MiniMax-M2.5`, `qwen3.5-397B-A17B`, `devstral-2-123B` |
 
 The OpenAI, Anthropic, and Google families in that list currently overlap with

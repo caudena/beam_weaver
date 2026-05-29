@@ -30,13 +30,10 @@ defmodule BeamWeaver.Models.ProfileRegistry.Fallbacks do
 
   def profile(:anthropic, "claude-" <> _rest = model) do
     anthropic_chat_family(model, "Claude family",
-      max_input_tokens:
-        if(String.contains?(model, ["opus-4-6", "opus-4-7", "sonnet-4-6"]),
-          do: 1_000_000,
-          else: 200_000
-        ),
-      max_output_tokens: if(String.contains?(model, ["opus-4-6", "opus-4-7"]), do: 128_000, else: 64_000),
-      structured_output: not String.match?(model, ~r/-\d{8}$/)
+      max_input_tokens: anthropic_max_input_tokens(model),
+      max_output_tokens: anthropic_max_output_tokens(model),
+      structured_output: not String.match?(model, ~r/-\d{8}$/),
+      extra: anthropic_extra(model)
     )
   end
 
@@ -122,8 +119,36 @@ defmodule BeamWeaver.Models.ProfileRegistry.Fallbacks do
       image_tool_message: true,
       pdf_tool_message: true,
       attachment: true,
-      supported_params: Params.anthropic()
+      supported_params: Params.anthropic(),
+      extra: Map.get(opts, :extra, %{})
     })
+  end
+
+  defp anthropic_max_input_tokens(model) do
+    if opus_4_minor_at_least?(model, 6) or String.contains?(model, "sonnet-4-6") do
+      1_000_000
+    else
+      200_000
+    end
+  end
+
+  defp anthropic_max_output_tokens(model) do
+    if opus_4_minor_at_least?(model, 6), do: 128_000, else: 64_000
+  end
+
+  defp anthropic_extra(model) do
+    if opus_4_minor_at_least?(model, 7) do
+      %{sampling_controls: :restricted, thinking_mode: :adaptive_only}
+    else
+      %{}
+    end
+  end
+
+  defp opus_4_minor_at_least?(model, minimum) when is_binary(model) do
+    case Regex.run(~r/opus-4-(\d+)/, model) do
+      [_, minor] -> String.to_integer(minor) >= minimum
+      _other -> false
+    end
   end
 
   defp xai_chat_family(model, name, opts) do

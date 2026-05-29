@@ -290,9 +290,10 @@ defmodule BeamWeaver.Models.InitializerTest do
 
     assert Enum.any?(
              anthropic,
-             &(&1.id == "claude-opus-4-7" and &1.max_input_tokens == 1_000_000)
+             &(&1.id == "claude-opus-4-8" and &1.max_input_tokens == 1_000_000)
            )
 
+    assert Enum.any?(anthropic, &(&1.id == "claude-opus-4-7" and &1.max_output_tokens == 128_000))
     assert Enum.any?(anthropic, &(&1.id == "claude-opus-4-6" and &1.max_output_tokens == 128_000))
     assert Enum.any?(anthropic, &(&1.id == "claude-sonnet-4-6" and &1.tool_calling))
     assert Enum.any?(anthropic, &(&1.id == "claude-haiku-4-5-20251001" and &1.tool_calling))

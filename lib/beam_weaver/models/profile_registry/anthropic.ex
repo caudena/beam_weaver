@@ -7,17 +7,17 @@ defmodule BeamWeaver.Models.ProfileRegistry.Anthropic do
 
   @anthropic_deprecated_models %{
     "claude-opus-4" => %{
-      replacement: "claude-opus-4-7",
+      replacement: "claude-opus-4-8",
       deprecated_at: "2026-04-14",
       retirement_date: "2026-06-15"
     },
     "claude-opus-4-0" => %{
-      replacement: "claude-opus-4-7",
+      replacement: "claude-opus-4-8",
       deprecated_at: "2026-04-14",
       retirement_date: "2026-06-15"
     },
     "claude-opus-4-20250514" => %{
-      replacement: "claude-opus-4-7",
+      replacement: "claude-opus-4-8",
       deprecated_at: "2026-04-14",
       retirement_date: "2026-06-15"
     },
@@ -56,7 +56,7 @@ defmodule BeamWeaver.Models.ProfileRegistry.Anthropic do
       retirement_date: "2025-07-21"
     },
     "claude-3-opus-20240229" => %{
-      replacement: "claude-opus-4-7",
+      replacement: "claude-opus-4-8",
       retirement_date: "2026-01-05"
     },
     "claude-3-5-haiku-20241022" => %{
@@ -67,8 +67,8 @@ defmodule BeamWeaver.Models.ProfileRegistry.Anthropic do
       replacement: "claude-haiku-4-5-20251001",
       retirement_date: "2026-04-20"
     },
-    "claude-2.0" => %{replacement: "claude-opus-4-7", retirement_date: "2025-07-21"},
-    "claude-2.1" => %{replacement: "claude-opus-4-7", retirement_date: "2025-07-21"},
+    "claude-2.0" => %{replacement: "claude-opus-4-8", retirement_date: "2025-07-21"},
+    "claude-2.1" => %{replacement: "claude-opus-4-8", retirement_date: "2025-07-21"},
     "claude-1.0" => %{
       replacement: "claude-haiku-4-5-20251001",
       retirement_date: "2024-11-06"
@@ -100,6 +100,49 @@ defmodule BeamWeaver.Models.ProfileRegistry.Anthropic do
   }
 
   @profiles %{
+    {:anthropic, "claude-opus-4-8"} =>
+      Profile.new(%{
+        provider: :anthropic,
+        id: "claude-opus-4-8",
+        name: "Claude Opus 4.8",
+        status: :active,
+        release_date: "2026-05-28",
+        last_updated: "2026-05-28",
+        max_input_tokens: 1_000_000,
+        max_output_tokens: 128_000,
+        text_inputs: true,
+        image_inputs: true,
+        image_url_inputs: true,
+        pdf_inputs: true,
+        text_outputs: true,
+        reasoning_output: true,
+        tool_calling: true,
+        tool_choice: true,
+        parallel_tool_calls: true,
+        structured_output: true,
+        streaming: true,
+        usage_metadata: true,
+        image_tool_message: true,
+        pdf_tool_message: true,
+        attachment: true,
+        supported_params: Params.anthropic(),
+        extra: %{
+          cache_read_price_per_mtok: 0.50,
+          cache_write_5m_price_per_mtok: 6.25,
+          cache_write_1h_price_per_mtok: 10.00,
+          input_price_per_mtok: 5.00,
+          output_price_per_mtok: 25.00,
+          batch_input_price_per_mtok: 2.50,
+          batch_output_price_per_mtok: 12.50,
+          default_effort: :high,
+          fast_mode_price_multiplier: 6,
+          inference_geo_us_multiplier: 1.1,
+          prompt_cache_min_tokens: 1024,
+          retirement_not_before: "2027-05-28",
+          sampling_controls: :restricted,
+          thinking_mode: :adaptive_only
+        }
+      }),
     {:anthropic, "claude-opus-4-7"} =>
       Profile.new(%{
         provider: :anthropic,
@@ -136,7 +179,8 @@ defmodule BeamWeaver.Models.ProfileRegistry.Anthropic do
           batch_output_price_per_mtok: 12.50,
           fast_mode_price_multiplier: 6,
           retirement_not_before: "2027-04-16",
-          sampling_controls: :restricted
+          sampling_controls: :restricted,
+          thinking_mode: :adaptive_only
         }
       }),
     {:anthropic, "claude-opus-4-6"} =>

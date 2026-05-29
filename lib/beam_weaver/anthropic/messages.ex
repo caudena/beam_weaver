@@ -743,6 +743,7 @@ defmodule BeamWeaver.Anthropic.Messages do
       model: response["model"],
       model_name: response["model"],
       stop_reason: response["stop_reason"],
+      stop_details: response["stop_details"],
       stop_sequence: response["stop_sequence"],
       usage: response["usage"],
       container: response["container"],
