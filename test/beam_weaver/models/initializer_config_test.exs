@@ -9,6 +9,7 @@ defmodule BeamWeaver.Models.InitializerConfigTest do
 
     assert {:ok, google} = Models.init_chat_model("google:gemini-3.5-flash")
     assert google.api_key == "google-config-secret"
+    assert Models.init_chat_model!("google:gemini-3.5-flash").api_key == "google-config-secret"
 
     assert {:ok, openai} = Models.init_chat_model("openai:gpt-5.4")
     assert openai.api_key == "openai-config-secret"

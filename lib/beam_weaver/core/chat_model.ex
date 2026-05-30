@@ -8,6 +8,7 @@ defmodule BeamWeaver.Core.ChatModel do
   alias BeamWeaver.Core.Error
   alias BeamWeaver.Core.LanguageModel
   alias BeamWeaver.Core.Message
+  alias BeamWeaver.Core.Tool
   alias BeamWeaver.MapAccess
   alias BeamWeaver.Result
   alias BeamWeaver.Stream, as: BWStream
@@ -43,7 +44,9 @@ defmodule BeamWeaver.Core.ChatModel do
     :timeout,
     :top_k,
     :top_p,
-    :verbosity
+    :verbosity,
+    :response_format,
+    :structured_output
   ]
 
   @internal_call_opt_keys [
@@ -385,6 +388,7 @@ defmodule BeamWeaver.Core.ChatModel do
     |> maybe_put(:ls_max_tokens, max_tokens(model, opts))
     |> maybe_put(:invocation_params, invocation_params(model, opts))
     |> maybe_put(:tools, tool_names(Keyword.get(opts, :tools)))
+    |> maybe_put(:tool_definitions, tool_definitions(Keyword.get(opts, :tools)))
     |> maybe_put(:structured_output, structured_output_mode(opts))
     |> maybe_put(:structured_output_strategy, Keyword.get(opts, :structured_output_strategy))
     |> maybe_put(:structured_output_tool_names, Keyword.get(opts, :structured_output_tool_names))
@@ -409,6 +413,8 @@ defmodule BeamWeaver.Core.ChatModel do
   end
 
   defp invocation_params(model, opts) do
+    identifier = model_identifier(model)
+
     model_params =
       model
       |> model_param_map()
@@ -425,6 +431,10 @@ defmodule BeamWeaver.Core.ChatModel do
 
     model_params
     |> Map.merge(call_params)
+    |> Map.drop([:response_format, :structured_output])
+    |> maybe_put(:model, identifier)
+    |> maybe_put(:model_name, identifier)
+    |> maybe_put(:response_format, Keyword.get(opts, :response_format) || Keyword.get(opts, :structured_output))
     |> reject_nil_or_empty()
   end
 
@@ -470,6 +480,7 @@ defmodule BeamWeaver.Core.ChatModel do
     cond do
       "OpenAI" in parts -> "openai"
       "Anthropic" in parts -> "anthropic"
+      "Google" in parts -> "google"
       "XAI" in parts -> "xai"
       "Moonshot" in parts -> "moonshot"
       parts == ["BeamWeaver", "Models", "FakeChatModel"] -> "fake"
@@ -509,6 +520,55 @@ defmodule BeamWeaver.Core.ChatModel do
       Keyword.has_key?(opts, :structured_output) -> :structured_output
       true -> nil
     end
+  end
+
+  defp tool_definitions(nil), do: nil
+  defp tool_definitions([]), do: nil
+
+  defp tool_definitions(tools) do
+    tools
+    |> List.wrap()
+    |> Enum.flat_map(&tool_definition_entries/1)
+    |> reject_nil_or_empty_list()
+  end
+
+  defp tool_definition_entries(tool) do
+    case trace_tools(tool) do
+      tools when is_list(tools) and tools != [] -> tools
+      _other -> [tool_definition(tool)]
+    end
+  end
+
+  defp trace_tools(tool) do
+    case safe_tool_metadata(tool) do
+      %{trace_tools: tools} -> tools
+      %{"trace_tools" => tools} -> tools
+      _metadata -> nil
+    end
+  end
+
+  defp tool_definition(%{__struct__: _module} = tool) do
+    %{
+      name: Tool.name(tool),
+      description: Tool.description(tool),
+      input_schema: Tool.input_schema(tool)
+    }
+  rescue
+    _exception -> nil
+  end
+
+  defp tool_definition(%{} = tool), do: tool
+  defp tool_definition(_tool), do: nil
+
+  defp safe_tool_metadata(tool) do
+    Tool.metadata(tool)
+  rescue
+    _exception -> %{}
+  end
+
+  defp reject_nil_or_empty_list(values) do
+    values = Enum.reject(values, &nil_or_empty?/1)
+    if values == [], do: nil, else: values
   end
 
   defp tool_names(nil), do: nil

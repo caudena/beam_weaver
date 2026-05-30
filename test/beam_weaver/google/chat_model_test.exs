@@ -90,6 +90,35 @@ defmodule BeamWeaver.Google.ChatModelTest do
            ]
   end
 
+  test "structured output requests default to the Gemini profile output limit" do
+    model = ChatModel.new(model: "gemini-3.5-flash")
+
+    assert {:ok, body} =
+             ChatModel.request_body(
+               model,
+               [Message.user("return json")],
+               response_format: %{
+                 schema: %{type: :object, properties: %{answer: %{type: :string}}}
+               }
+             )
+
+    assert body["generationConfig"]["responseMimeType"] == "application/json"
+    assert body["generationConfig"]["responseJsonSchema"]["type"] == "object"
+    assert body["generationConfig"]["maxOutputTokens"] == 65_536
+
+    assert {:ok, explicit_body} =
+             ChatModel.request_body(
+               model,
+               [Message.user("return short json")],
+               response_format: %{
+                 schema: %{type: :object, properties: %{answer: %{type: :string}}}
+               },
+               max_output_tokens: 1_024
+             )
+
+    assert explicit_body["generationConfig"]["maxOutputTokens"] == 1_024
+  end
+
   test "request body removes unsupported JSON Schema keywords from function declarations" do
     tool =
       Tool.from_function!(

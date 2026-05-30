@@ -135,6 +135,17 @@ config :beam_weaver,
 Set `LANGSMITH_API_KEY`, and optionally `LANGSMITH_ENDPOINT` and
 `LANGSMITH_PROJECT`, or pass those as exporter options.
 
+For short-lived scripts, call `BeamWeaver.Tracing.flush_exporter/1` before the
+VM exits so queued trace uploads drain:
+
+```elixir
+BeamWeaver.Tracing.flush_exporter(60_000)
+```
+
+When the queue is supervised, its child spec uses a `120_000` ms shutdown budget
+by default. Override `shutdown:` in the child spec only if your runtime has a
+different termination budget.
+
 For one-off tests you can use the synchronous HTTP exporter directly:
 
 ```elixir
@@ -173,6 +184,12 @@ UI. It uses `outputs.llm_output`, `ls_provider`, `ls_model_name`, and
 `usage_metadata` to populate model and token details. BeamWeaver also stores the
 same provider/model values under `model_provider` and `model_name` for local
 correlation.
+
+`extra.invocation_params` is rendered in a Python-compatible shape. It includes
+safe model options plus `_type`, `model`, `model_name`, provider-rendered tool
+schemas under `tools`, and structured output under `response_format`. Internal
+BeamWeaver options, credentials, transports, and duplicate
+`structured_output` aliases are not exported.
 
 Graph nodes run in BEAM tasks. BeamWeaver propagates the active tracing context
 into those tasks, so model calls inside graph nodes appear as children of the
@@ -224,13 +241,22 @@ payload. Graph and agent root payloads also get
 `extra.metadata.ls_integration = "langgraph"` during export without mutating
 local BeamWeaver metadata.
 
+Subagent task calls are exported as virtual `run_<subagent>` tools instead of
+the generic `task` implementation detail. The model invocation metadata exposes
+matching virtual tool schemas, and captured subagent `%BeamWeaver.Graph.Command{}`
+outputs export only the parent-visible compact tool message, not the captured
+state payload.
+
 Structured-output tool strategy uses pseudo tools to get schema-shaped model
 responses. Those schema calls are not executable application tools, so the
 LangSmith exporter strips them from exported tool-call lists and provider
 content blocks. Raw provider fields such as `raw_provider_block`,
 `raw_provider_response`, and `provider_metadata` are also removed at the export
 boundary. Internal graph bookkeeping channels such as `__node_outputs__` and
-`__edge_runs__` are not uploaded.
+`__edge_runs__` are not uploaded. Runtime state channels such as
+`subagent_outputs`, `subagent_cache`, `tool_set`, `remaining_steps`,
+`thread_tool_call_count`, `run_tool_call_count`, and `usage` are also removed
+from graph and agent root inputs and outputs.
 
 ### LangSmith Export Failures
 

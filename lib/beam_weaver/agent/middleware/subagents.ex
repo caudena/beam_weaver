@@ -145,7 +145,11 @@ defmodule BeamWeaver.Agent.Middleware.Subagents do
           tool_runtime: :tool_runtime
         },
         handler: fn input, _opts -> run_task(middleware, input) end,
-        metadata: %{integration: :deepagents, kind: :subagent}
+        metadata: %{
+          integration: :deepagents,
+          kind: :subagent,
+          trace_tools: subagent_trace_tools(middleware)
+        }
       )
     ]
   end
@@ -401,6 +405,33 @@ defmodule BeamWeaver.Agent.Middleware.Subagents do
     end)
 
     subagents
+  end
+
+  defp subagent_trace_tools(%__MODULE__{subagents: subagents}) do
+    Enum.map(subagents, fn %Compiled{} = subagent ->
+      %{
+        name: subagent_tool_name(subagent.name),
+        description: subagent_tool_description(subagent),
+        input_schema: %{
+          "type" => "object",
+          "properties" => %{},
+          "additionalProperties" => false
+        },
+        strict: true
+      }
+    end)
+  end
+
+  defp subagent_tool_name(name), do: "run_#{name}"
+
+  defp subagent_tool_description(%Compiled{name: name, description: description}) do
+    description = to_string(description || "")
+
+    if String.trim(description) == "" do
+      "Run the #{name} subagent with verification."
+    else
+      "Run the #{name} subagent with verification. #{description}"
+    end
   end
 
   defp run_task(%__MODULE__{subagents: subagents}, input) do

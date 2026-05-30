@@ -84,6 +84,11 @@ BeamWeaver.Core.ChatModel.invoke(model, messages,
 )
 ```
 
+When a structured-output request does not set `:max_output_tokens`,
+BeamWeaver uses the model profile's output limit for Gemini. For example,
+`google:gemini-3.5-flash` defaults structured-output calls to `65_536`
+`maxOutputTokens`, while an explicit `max_output_tokens:` value still wins.
+
 Token counting uses Gemini's count-tokens endpoint:
 
 ```elixir

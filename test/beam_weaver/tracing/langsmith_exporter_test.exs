@@ -4,7 +4,9 @@ defmodule BeamWeaver.Tracing.LangSmithExporterTest do
   alias BeamWeaver.Core.ChatModel
   alias BeamWeaver.Core.Message
   alias BeamWeaver.Core.Messages
+  alias BeamWeaver.Core.Tool
   alias BeamWeaver.Graph
+  alias BeamWeaver.Graph.Command
   alias BeamWeaver.Graph.Compiled
   alias BeamWeaver.Models.FakeChatModel
   alias BeamWeaver.Tracing
@@ -96,7 +98,14 @@ defmodule BeamWeaver.Tracing.LangSmithExporterTest do
     assert payload.extra.metadata.beam_weaver_trace_id == "trace_nested"
     assert payload.extra.metadata.usage_metadata == %{input_tokens: 3, output_tokens: 4}
     assert payload.extra.usage == %{input_tokens: 3, output_tokens: 4}
-    assert payload.extra.invocation_params == %{temperature: 0.2}
+
+    assert payload.extra.invocation_params == %{
+             _type: "openai-chat",
+             model: "gpt-test",
+             model_name: "gpt-test",
+             temperature: 0.2
+           }
+
     assert payload.extra.model_provider == "openai"
     assert payload.extra.model_name == "gpt-test"
     assert payload.extra.retriever == %{name: "docs"}
@@ -180,6 +189,240 @@ defmodule BeamWeaver.Tracing.LangSmithExporterTest do
 
     assert payload.extra.tool_call_id == "call-crm-sync"
     assert payload.outputs.output.tool_call_id == "call-crm-sync"
+  end
+
+  test "model payloads expose LangSmith tool schemas and project subagent task calls" do
+    tool_schema = %{
+      "type" => "function",
+      "function" => %{
+        "name" => "run_narrative_compressor",
+        "description" => "Run the narrative compressor subagent with verification.",
+        "parameters" => %{"type" => "object", "properties" => %{}, "additionalProperties" => false},
+        "strict" => true
+      }
+    }
+
+    message =
+      Message.assistant("",
+        tool_calls: [
+          Messages.tool_call(
+            id: "call-narrative",
+            name: "task",
+            args: %{
+              "description" => "long supervisor prompt",
+              "subagent_name" => "narrative_compressor"
+            }
+          )
+        ],
+        usage_metadata: %{input_tokens: 10, output_tokens: 2, total_tokens: 12},
+        response_metadata: %{model_provider: "google", model_name: "gemini-3.5-flash"}
+      )
+
+    run =
+      Run.new("google:gemini-3.5-flash",
+        id: "model_subagent_task",
+        trace_id: "trace_subagent_task",
+        kind: :model,
+        metadata: %{
+          invocation_params: %{
+            temperature: 0.2,
+            tools: [tool_schema],
+            response_format: %{"type" => "json_object"}
+          },
+          model_provider: "google",
+          model_name: "gemini-3.5-flash"
+        },
+        started_at: ~U[2026-05-21 00:00:00Z]
+      )
+
+    payload =
+      LangSmith.to_payload(
+        :ok,
+        %{run | status: :ok, ended_at: ~U[2026-05-21 00:00:01Z], outputs: %{messages: [message]}},
+        "beam-weaver"
+      )
+
+    assert payload.extra.invocation_params.tools == [tool_schema]
+    assert payload.extra.invocation_params.response_format == %{"type" => "json_object"}
+    assert payload.outputs.llm_output.token_usage == %{prompt_tokens: 10, completion_tokens: 2, total_tokens: 12}
+
+    assert [
+             [
+               %{
+                 message: %{
+                   "kwargs" => %{
+                     "tool_calls" => [
+                       %{"name" => "run_narrative_compressor", "args" => %{}, "id" => "call-narrative"}
+                     ]
+                   }
+                 }
+               }
+             ]
+           ] = payload.outputs.generations
+  end
+
+  test "chat model trace metadata stays neutral and LangSmith export renders virtual tool schemas" do
+    Process.register(self(), :langsmith_model_trace_test)
+
+    BeamWeaver.TestSupport.ConfigHelper.merge_config(:tracing,
+      exporter: BeamWeaver.Tracing.LangSmithModelTraceExporter
+    )
+
+    on_exit(fn ->
+      safe_unregister(:langsmith_model_trace_test)
+    end)
+
+    trace_tool = %{
+      name: "run_fact_extractor",
+      description: "Run the fact extractor subagent with verification.",
+      input_schema: %{"type" => "object", "properties" => %{}, "additionalProperties" => false},
+      strict: true
+    }
+
+    langsmith_tool = %{
+      "type" => "function",
+      "function" => %{
+        "name" => "run_fact_extractor",
+        "description" => "Run the fact extractor subagent with verification.",
+        "parameters" => %{"type" => "object", "properties" => %{}, "additionalProperties" => false},
+        "strict" => true
+      }
+    }
+
+    task_tool =
+      Tool.from_function!(
+        name: "task",
+        description: "Launch a subagent.",
+        input_schema: %{
+          "type" => "object",
+          "properties" => %{"description" => %{"type" => "string"}},
+          "required" => ["description"]
+        },
+        metadata: %{trace_tools: [trace_tool]},
+        handler: fn _input, _opts -> {:ok, "done"} end
+      )
+
+    model = %FakeChatModel{response: Message.assistant("ok")}
+
+    assert {:ok, %Message{}} =
+             ChatModel.invoke(model, [Message.user("hi")],
+               tools: [task_tool],
+               response_format: %{"type" => "json_object"},
+               temperature: 0.2
+             )
+
+    events = collect_trace_exports()
+    model_started = find_trace_event!(events, :started, :model)
+
+    assert model_started.metadata.tool_definitions == [trace_tool]
+    assert model_started.metadata.invocation_params.response_format == %{"type" => "json_object"}
+    refute Map.has_key?(model_started.metadata.invocation_params, :tools)
+    refute Map.has_key?(model_started.metadata.invocation_params, :_type)
+
+    payload = LangSmith.to_payload(:started, model_started, "beam-weaver")
+
+    assert payload.extra.invocation_params.tools == [langsmith_tool]
+    assert payload.extra.invocation_params.response_format == %{"type" => "json_object"}
+  end
+
+  test "LangSmith invocation params map Moonshot Kimi at the exporter boundary" do
+    run =
+      Run.new("moonshot:kimi-k2.6",
+        id: "llm_kimi_invocation",
+        trace_id: "trace_kimi_invocation",
+        kind: :model,
+        metadata: %{
+          provider: "moonshot",
+          model: "kimi-k2.6",
+          invocation_params: %{temperature: 0.2}
+        },
+        started_at: ~U[2026-05-21 00:00:00Z]
+      )
+
+    payload = LangSmith.to_payload(:started, run, "beam-weaver")
+
+    assert payload.extra.invocation_params == %{
+             _type: "openai-chat",
+             model: "kimi-k2.6",
+             model_name: "kimi-k2.6",
+             temperature: 0.2
+           }
+
+    assert payload.serialized["id"] == ["langchain", "chat_models", "openai", "moonshot:kimi-k2.6"]
+  end
+
+  test "chat model invocation metadata normalizes structured output to response format" do
+    Process.register(self(), :langsmith_model_trace_test)
+
+    BeamWeaver.TestSupport.ConfigHelper.merge_config(:tracing,
+      exporter: BeamWeaver.Tracing.LangSmithModelTraceExporter
+    )
+
+    on_exit(fn ->
+      safe_unregister(:langsmith_model_trace_test)
+    end)
+
+    response_format = %{
+      "type" => "json_schema",
+      "json_schema" => %{
+        "name" => "answer",
+        "schema" => %{"type" => "object", "properties" => %{"ok" => %{"type" => "boolean"}}}
+      }
+    }
+
+    model = %FakeChatModel{response: Message.assistant(~s({"ok":true}))}
+
+    assert {:ok, %Message{}} =
+             ChatModel.invoke(model, [Message.user("hi")],
+               structured_output: response_format,
+               temperature: 0.2
+             )
+
+    events = collect_trace_exports()
+    model_started = find_trace_event!(events, :started, :model)
+
+    assert model_started.metadata.invocation_params.response_format == response_format
+    refute Map.has_key?(model_started.metadata.invocation_params, :structured_output)
+  end
+
+  test "captured subagent task tool runs export compact parent-visible messages" do
+    tool_message =
+      Message.tool(~s({"status":"captured","subagent_name":"narrative_compressor"}),
+        name: "task",
+        tool_call_id: "call-narrative",
+        metadata: %{subagent_name: "narrative_compressor", kind: :subagent_result}
+      )
+
+    command =
+      %Command{
+        update: %{
+          messages: [tool_message],
+          subagent_outputs: %{"narrative_output" => %{"large" => "captured outside transcript"}}
+        }
+      }
+
+    run =
+      Run.new("task",
+        id: "tool_subagent_task",
+        trace_id: "trace_subagent_task",
+        kind: :tool,
+        inputs: %{subagent_name: "narrative_compressor", description: "long supervisor prompt"},
+        metadata: %{tool_name: "task", tool_call_id: "call-narrative"},
+        started_at: ~U[2026-05-21 00:00:00Z]
+      )
+
+    payload =
+      LangSmith.to_payload(
+        :ok,
+        %{run | status: :ok, ended_at: ~U[2026-05-21 00:00:01Z], outputs: %{output: command}},
+        "beam-weaver"
+      )
+
+    assert payload.name == "run_narrative_compressor"
+    assert payload.serialized.name == "run_narrative_compressor"
+    assert payload.outputs.output.name == "run_narrative_compressor"
+    assert payload.outputs.output.content == ~s({"status":"captured","subagent_name":"narrative_compressor"})
+    refute payload.outputs.output.content =~ "captured outside transcript"
   end
 
   test "graph LangSmith integration metadata is injected only in exported payloads" do
@@ -627,6 +870,98 @@ defmodule BeamWeaver.Tracing.LangSmithExporterTest do
     assert payload.extra.metadata.response_metadata == %{}
     refute Map.has_key?(payload.extra.metadata, :__edge_runs__)
     refute Map.has_key?(payload.inputs, :__node_outputs__)
+  end
+
+  test "graph payloads hide runtime state channels from LangSmith inputs and outputs" do
+    run =
+      Run.new("agent",
+        id: "graph_runtime_state",
+        trace_id: "trace_runtime_state",
+        kind: :graph,
+        inputs: %{
+          messages: [Message.user("hi")],
+          remaining_steps: 998,
+          tool_set: %{tools: %{task: %{handler: "#Function<0.1.2>"}}},
+          usage: %{model_calls: 1},
+          nested: %{thread_tool_call_count: %{task: 1}}
+        },
+        started_at: ~U[2026-05-21 00:00:00Z]
+      )
+
+    payload =
+      LangSmith.to_payload(
+        :ok,
+        %{
+          run
+          | status: :ok,
+            ended_at: ~U[2026-05-21 00:00:01Z],
+            outputs: %{
+              messages: [Message.assistant("done")],
+              subagent_outputs: %{narrative_output: %{large: "captured"}},
+              subagent_cache: %{cached: true},
+              run_tool_call_count: %{task: 1}
+            }
+        },
+        "beam-weaver"
+      )
+
+    assert [%{type: "human", content: "hi"}] = payload.inputs.messages
+    assert [%{type: "ai", content: "done"}] = payload.outputs.messages
+
+    refute Map.has_key?(payload.inputs, :remaining_steps)
+    refute Map.has_key?(payload.inputs, :tool_set)
+    refute Map.has_key?(payload.inputs, :usage)
+    assert payload.inputs.nested == %{}
+
+    refute Map.has_key?(payload.outputs, :subagent_outputs)
+    refute Map.has_key?(payload.outputs, :subagent_cache)
+    refute Map.has_key?(payload.outputs, :run_tool_call_count)
+  end
+
+  test "llm output normalizes nested provider model metadata to strings" do
+    message =
+      Message.assistant("ok",
+        response_metadata: %{
+          model_provider: %{provider: "xai", model_provider: "xai"},
+          model_name: %{
+            model: "grok-4.3",
+            model_name: "grok-4.3",
+            requested_model: "xai:grok-4.3"
+          },
+          token_usage: %{prompt_tokens: 1, completion_tokens: 1}
+        }
+      )
+
+    run =
+      Run.new("xai:grok-4.3",
+        id: "llm_nested_model_metadata",
+        trace_id: "trace_nested_model_metadata",
+        kind: :model,
+        metadata: %{
+          model_provider: %{provider: "xai"},
+          model_name: %{model_name: "grok-4.3"},
+          invocation_params: %{model: %{model_name: "grok-4.3"}}
+        },
+        started_at: ~U[2026-05-21 00:00:00Z]
+      )
+
+    payload =
+      LangSmith.to_payload(
+        :ok,
+        %{
+          run
+          | status: :ok,
+            ended_at: ~U[2026-05-21 00:00:01Z],
+            outputs: %{messages: [message]}
+        },
+        "beam-weaver"
+      )
+
+    assert payload.outputs.llm_output.model_provider == "xai"
+    assert payload.outputs.llm_output.model_name == "grok-4.3"
+    assert payload.extra.model_provider == "xai"
+    assert payload.extra.model_name == "grok-4.3"
+    assert payload.serialized["kwargs"]["model_name"] == "grok-4.3"
   end
 
   test "payload encoder makes arbitrary trace values JSON-safe like the LangSmith SDK" do
@@ -1442,6 +1777,47 @@ defmodule BeamWeaver.Tracing.LangSmithExporterTest do
     Process.unregister(:langsmith_queue_test)
   end
 
+  test "queue child spec uses a long shutdown budget for final trace flushes" do
+    assert %{shutdown: 120_000} = Queue.child_spec([])
+    assert %{shutdown: 30_000} = Queue.child_spec(shutdown: 30_000)
+  end
+
+  test "tracing flush_exporter drains configured LangSmith queue" do
+    Process.register(self(), :langsmith_queue_test)
+
+    {:ok, queue} =
+      Queue.start_link(
+        name: :langsmith_flush_exporter_queue,
+        api_key: "test",
+        project: "beam-weaver",
+        transport: BeamWeaver.Tracing.LangSmithQueueTransport,
+        flush_interval: 10_000
+      )
+
+    BeamWeaver.TestSupport.ConfigHelper.put_config(:tracing,
+      exporter: Queue,
+      exporter_opts: [queue: queue]
+    )
+
+    run =
+      Run.new("flushable",
+        id: "flushable_1",
+        trace_id: "trace_flushable",
+        kind: :graph,
+        started_at: ~U[2026-05-22 00:00:00Z]
+      )
+
+    assert :ok = Queue.enqueue(queue, :ok, %{run | status: :ok, ended_at: ~U[2026-05-22 00:00:01Z]})
+    assert :ok = Tracing.flush_exporter(5_000)
+
+    assert_receive {:langsmith_post, _url, payload}
+    assert %{patch: [patch]} = payload
+    assert patch.extra.metadata.beam_weaver_run_id == "flushable_1"
+
+    GenServer.stop(queue)
+    Process.unregister(:langsmith_queue_test)
+  end
+
   test "telemetry subscriber does not export stream events as pseudo-runs" do
     Process.register(self(), :langsmith_queue_test)
 
@@ -1584,7 +1960,13 @@ defmodule BeamWeaver.Tracing.LangSmithExporterTest do
     assert ids["run_vector_event"].extra.metadata.k == 3
     assert ids["run_model_event"].extra.model_provider == "openai"
     assert ids["run_model_event"].extra.model_name == "gpt-test"
-    assert ids["run_model_event"].extra.invocation_params == %{temperature: 0.2}
+
+    assert ids["run_model_event"].extra.invocation_params == %{
+             _type: "openai-chat",
+             model: "gpt-test",
+             model_name: "gpt-test",
+             temperature: 0.2
+           }
 
     GenServer.stop(subscriber)
     GenServer.stop(queue)

@@ -153,7 +153,7 @@ defmodule BeamWeaver.Google.ChatModel do
     |> Options.put_optional("topP", option(model, opts, :top_p))
     |> Options.put_optional("frequencyPenalty", option(model, opts, :frequency_penalty))
     |> Options.put_optional("presencePenalty", option(model, opts, :presence_penalty))
-    |> Options.put_optional("maxOutputTokens", option(model, opts, :max_output_tokens))
+    |> Options.put_optional("maxOutputTokens", max_output_tokens(model, opts))
     |> Options.put_optional("logprobs", option(model, opts, :logprobs))
     |> Options.put_optional("responseLogprobs", option(model, opts, :response_logprobs))
     |> Options.put_optional(
@@ -222,6 +222,21 @@ defmodule BeamWeaver.Google.ChatModel do
 
   defp response_format(opts),
     do: Keyword.get(opts, :response_format) || Keyword.get(opts, :structured_output)
+
+  defp max_output_tokens(model, opts) do
+    option(model, opts, :max_output_tokens) ||
+      if(structured_output_request?(model, opts), do: profile_max_output_tokens(model))
+  end
+
+  defp structured_output_request?(model, opts) do
+    response_format(opts) != nil or option(model, opts, :response_schema) != nil or
+      option(model, opts, :response_json_schema) != nil
+  end
+
+  defp profile_max_output_tokens(%{profile: %{max_output_tokens: value}}) when is_integer(value) and value > 0,
+    do: value
+
+  defp profile_max_output_tokens(_model), do: nil
 
   defp response_format_schema(%{"json_schema" => %{"schema" => schema}}), do: schema
   defp response_format_schema(%{json_schema: %{schema: schema}}), do: schema

@@ -11,6 +11,7 @@ defmodule BeamWeaver.Tracing.Exporters.LangSmith do
 
   alias BeamWeaver.Config
   alias BeamWeaver.Core.Message
+  alias BeamWeaver.Graph.Command
   alias BeamWeaver.Tracing.Exporters.LangSmith.ValueEncoder
   alias BeamWeaver.Tracing.Run
   import Bitwise
@@ -110,7 +111,7 @@ defmodule BeamWeaver.Tracing.Exporters.LangSmith do
       trace_id: trace_id,
       parent_run_id: langsmith_id(run.parent_id),
       dotted_order: dotted_order(run, id),
-      name: run.name,
+      name: langsmith_run_name(run),
       run_type: langsmith_run_type(run.kind),
       start_time: DateTime.to_iso8601(run.started_at),
       end_time: maybe_iso8601(run.ended_at),
@@ -287,6 +288,9 @@ defmodule BeamWeaver.Tracing.Exporters.LangSmith do
   defp langsmith_run_type(:agent), do: "chain"
   defp langsmith_run_type(_kind), do: "chain"
 
+  defp langsmith_run_name(%Run{kind: :tool} = run), do: langsmith_tool_run_name(run)
+  defp langsmith_run_name(%Run{name: name}), do: name
+
   defp dotted_order(%Run{} = run, id) do
     dotted_order(run, id, [])
   end
@@ -373,14 +377,16 @@ defmodule BeamWeaver.Tracing.Exporters.LangSmith do
       metadata: run |> langsmith_metadata() |> ValueEncoder.encode(),
       usage: (run.usage || %{}) |> ValueEncoder.encode(),
       beam_weaver_kind: ValueEncoder.encode(run.kind),
-      invocation_params: run.metadata |> metadata_value(:invocation_params) |> ValueEncoder.encode(),
+      invocation_params: run |> langsmith_invocation_params() |> empty_map_to_nil() |> ValueEncoder.encode(),
       model_provider:
         run.metadata
         |> metadata_first_value([:model_provider, :provider])
+        |> normalize_model_provider()
         |> ValueEncoder.encode(),
       model_name:
         run.metadata
         |> metadata_first_value([:model_name, :model])
+        |> normalize_model_name()
         |> ValueEncoder.encode(),
       retriever: run.metadata |> metadata_value(:retriever) |> ValueEncoder.encode(),
       vectorstore:
@@ -393,10 +399,101 @@ defmodule BeamWeaver.Tracing.Exporters.LangSmith do
     |> reject_nil_values()
   end
 
+  defp langsmith_invocation_params(%Run{} = run) do
+    params =
+      run.metadata
+      |> metadata_value(:invocation_params)
+      |> normalize_invocation_params()
+
+    provider =
+      run.metadata
+      |> metadata_first_value([:model_provider, :provider, :ls_provider])
+      |> normalize_model_provider()
+
+    tool_schemas =
+      run.metadata
+      |> metadata_value(:tool_definitions)
+      |> langsmith_invocation_tools()
+
+    params
+    |> drop_metadata_keys([:structured_output, "structured_output"])
+    |> maybe_put(:_type, langsmith_invocation_type(provider))
+    |> maybe_put(
+      :model,
+      metadata_first_value(params, [:model, :model_name]) ||
+        metadata_first_value(run.metadata, [:model, :model_name])
+    )
+    |> maybe_put(
+      :model_name,
+      metadata_first_value(params, [:model_name, :model]) ||
+        metadata_first_value(run.metadata, [:model_name, :model])
+    )
+    |> maybe_put(:tools, tool_schemas || metadata_value(params, :tools))
+    |> maybe_put(
+      :response_format,
+      metadata_value(params, :response_format) || metadata_value(params, :structured_output)
+    )
+    |> reject_nil_or_empty_values()
+  end
+
+  defp normalize_invocation_params(params) when is_map(params), do: params
+  defp normalize_invocation_params(_params), do: %{}
+
+  defp langsmith_invocation_type(provider) when provider in ["openai", "xai", "moonshot", "kimi"], do: "openai-chat"
+  defp langsmith_invocation_type("anthropic"), do: "anthropic-chat"
+  defp langsmith_invocation_type("google"), do: "google-genai-chat"
+  defp langsmith_invocation_type(_provider), do: nil
+
+  defp langsmith_invocation_tools(nil), do: nil
+  defp langsmith_invocation_tools([]), do: nil
+
+  defp langsmith_invocation_tools(tool_definitions) do
+    tool_definitions
+    |> List.wrap()
+    |> Enum.map(&langsmith_invocation_tool/1)
+    |> reject_nil_or_empty_list()
+  end
+
+  defp langsmith_invocation_tool(%{"type" => "function", "function" => function} = tool)
+       when is_map(function),
+       do: tool
+
+  defp langsmith_invocation_tool(%{type: "function", function: function} = tool)
+       when is_map(function),
+       do: string_key_maps(tool)
+
+  defp langsmith_invocation_tool(%{} = definition) do
+    name = metadata_value(definition, :name)
+
+    if is_nil(name) do
+      nil
+    else
+      function =
+        %{
+          "name" => to_string(name),
+          "description" => metadata_value(definition, :description),
+          "parameters" => metadata_value(definition, :input_schema) || metadata_value(definition, :parameters) || %{}
+        }
+        |> maybe_put("strict", metadata_value(definition, :strict))
+        |> reject_nil_values()
+        |> string_key_maps()
+
+      %{"type" => "function", "function" => function}
+    end
+  end
+
+  defp langsmith_invocation_tool(_definition), do: nil
+
+  defp reject_nil_or_empty_list(values) do
+    values = Enum.reject(values, &nil_or_empty?/1)
+    if values == [], do: nil, else: values
+  end
+
   defp langsmith_serialized(%Run{kind: :model} = run) do
     provider =
       run.metadata
       |> metadata_first_value([:model_provider, :provider, :ls_provider])
+      |> normalize_model_provider()
       |> normalize_provider_namespace()
 
     %{
@@ -410,8 +507,8 @@ defmodule BeamWeaver.Tracing.Exporters.LangSmith do
 
   defp langsmith_serialized(%Run{kind: :tool} = run) do
     %{
-      name: metadata_value(run.metadata, :tool_name) || run.name,
-      description: metadata_value(run.metadata, :description)
+      name: langsmith_tool_run_name(run),
+      description: langsmith_tool_run_description(run)
     }
     |> reject_nil_values()
   end
@@ -421,6 +518,15 @@ defmodule BeamWeaver.Tracing.Exporters.LangSmith do
   defp langsmith_inputs(%Run{kind: :model, inputs: inputs}) when is_map(inputs) do
     case message_entry(inputs) do
       {:ok, key, messages} -> Map.put(inputs, key, langchain_message_batches(messages))
+      :error -> inputs
+    end
+  end
+
+  defp langsmith_inputs(%Run{kind: kind, inputs: inputs}) when is_map(inputs) and kind in [:graph, :agent] do
+    inputs = strip_runtime_state(inputs)
+
+    case message_entry(inputs) do
+      {:ok, key, messages} -> Map.put(inputs, key, langsmith_messages(messages))
       :error -> inputs
     end
   end
@@ -455,6 +561,15 @@ defmodule BeamWeaver.Tracing.Exporters.LangSmith do
   defp langsmith_outputs(%Run{kind: :tool, outputs: outputs} = run) when is_map(outputs) do
     case output_entry(outputs) do
       {:ok, key, output} -> Map.put(outputs, key, langsmith_tool_output(run, output))
+      :error -> outputs
+    end
+  end
+
+  defp langsmith_outputs(%Run{kind: kind, outputs: outputs}) when is_map(outputs) and kind in [:graph, :agent] do
+    outputs = strip_runtime_state(outputs)
+
+    case message_entry(outputs) do
+      {:ok, key, messages} -> Map.put(outputs, key, langsmith_messages(messages))
       :error -> outputs
     end
   end
@@ -595,8 +710,8 @@ defmodule BeamWeaver.Tracing.Exporters.LangSmith do
 
   defp langchain_tool_call(call) when is_map(call) do
     %{
-      "name" => metadata_value(call, :name),
-      "args" => metadata_value(call, :args) || %{},
+      "name" => langsmith_tool_call_name(call),
+      "args" => langsmith_tool_call_args(call),
       "id" => metadata_first_value(call, [:call_id, :tool_call_id, :id, :provider_id]),
       "type" => metadata_value(call, :type) || "tool_call"
     }
@@ -786,7 +901,7 @@ defmodule BeamWeaver.Tracing.Exporters.LangSmith do
     %{
       content: message.content,
       type: "tool",
-      name: message.name || metadata_value(run.metadata, :tool_name) || run.name,
+      name: langsmith_tool_message_name(run, message),
       id: message.id,
       tool_call_id: message.tool_call_id || langsmith_tool_call_id(run),
       artifact: tool_message_artifact(message),
@@ -797,11 +912,18 @@ defmodule BeamWeaver.Tracing.Exporters.LangSmith do
     |> reject_nil_values()
   end
 
+  defp langsmith_tool_output(%Run{} = run, %Command{} = command) do
+    case command_tool_message(command) do
+      %Message{} = message -> langsmith_tool_output(run, message)
+      nil -> langsmith_tool_output(run, command_to_public_output(command))
+    end
+  end
+
   defp langsmith_tool_output(%Run{} = run, output) do
     %{
       content: tool_output_content(output),
       type: "tool",
-      name: metadata_value(run.metadata, :tool_name) || run.name,
+      name: langsmith_tool_run_name(run),
       tool_call_id: langsmith_tool_call_id(run),
       status: "success",
       additional_kwargs: %{},
@@ -831,6 +953,22 @@ defmodule BeamWeaver.Tracing.Exporters.LangSmith do
   end
 
   defp tool_output_content(output), do: json_string(output)
+
+  defp command_tool_message(%Command{update: update}) when is_map(update) do
+    update
+    |> metadata_value(:messages)
+    |> List.wrap()
+    |> Enum.find(&match?(%Message{role: :tool}, &1))
+  end
+
+  defp command_tool_message(_command), do: nil
+
+  defp command_to_public_output(%Command{update: update}) when is_map(update) do
+    update
+    |> Map.take([:messages, "messages"])
+  end
+
+  defp command_to_public_output(command), do: command
 
   defp langsmith_generation(%Run{} = run, %{"lc" => _lc} = message, index) do
     %{
@@ -888,16 +1026,20 @@ defmodule BeamWeaver.Tracing.Exporters.LangSmith do
     metadata = message.response_metadata || %{}
 
     %{}
-    |> maybe_put(:token_usage, metadata_value(metadata, :token_usage))
+    |> maybe_put(:token_usage, token_usage(metadata_value(metadata, :token_usage), message.usage_metadata))
     |> maybe_put(
       :model_provider,
-      metadata_first_value(metadata, [:model_provider, :provider]) ||
-        metadata_first_value(run.metadata, [:model_provider, :provider, :ls_provider])
+      normalize_model_provider(
+        metadata_first_value(metadata, [:model_provider, :provider]) ||
+          metadata_first_value(run.metadata, [:model_provider, :provider, :ls_provider])
+      )
     )
     |> maybe_put(
       :model_name,
-      metadata_first_value(metadata, [:model_name, :model]) ||
-        metadata_first_value(run.metadata, [:model_name, :model, :ls_model_name])
+      normalize_model_name(
+        metadata_first_value(metadata, [:model_name, :model]) ||
+          metadata_first_value(run.metadata, [:model_name, :model, :ls_model_name])
+      )
     )
     |> maybe_put(:system_fingerprint, metadata_value(metadata, :system_fingerprint))
     |> maybe_put(:id, metadata_first_value(metadata, [:id, :request_id]))
@@ -906,10 +1048,48 @@ defmodule BeamWeaver.Tracing.Exporters.LangSmith do
 
   defp llm_output_model_metadata(%Run{} = run, _message) do
     %{}
-    |> maybe_put(:model_provider, metadata_first_value(run.metadata, [:model_provider, :provider, :ls_provider]))
-    |> maybe_put(:model_name, metadata_first_value(run.metadata, [:model_name, :model, :ls_model_name]))
+    |> maybe_put(
+      :model_provider,
+      run.metadata
+      |> metadata_first_value([:model_provider, :provider, :ls_provider])
+      |> normalize_model_provider()
+    )
+    |> maybe_put(
+      :model_name,
+      run.metadata
+      |> metadata_first_value([:model_name, :model, :ls_model_name])
+      |> normalize_model_name()
+    )
     |> reject_nil_values()
   end
+
+  defp token_usage(provider_usage, _usage_metadata) when is_map(provider_usage) and map_size(provider_usage) > 0,
+    do: provider_usage
+
+  defp token_usage(_provider_usage, usage_metadata) when is_map(usage_metadata) do
+    %{}
+    |> maybe_put(:prompt_tokens, metadata_first_value(usage_metadata, [:prompt_tokens, :input_tokens]))
+    |> maybe_put(:completion_tokens, metadata_first_value(usage_metadata, [:completion_tokens, :output_tokens]))
+    |> maybe_put(:total_tokens, metadata_value(usage_metadata, :total_tokens))
+    |> maybe_put(
+      :prompt_tokens_details,
+      metadata_first_value(usage_metadata, [:prompt_tokens_details, :input_token_details])
+    )
+    |> maybe_put(
+      :completion_tokens_details,
+      metadata_first_value(usage_metadata, [:completion_tokens_details, :output_token_details])
+    )
+    |> maybe_put(:prompt_cost, metadata_first_value(usage_metadata, [:prompt_cost, :input_cost]))
+    |> maybe_put(:completion_cost, metadata_first_value(usage_metadata, [:completion_cost, :output_cost]))
+    |> maybe_put(:total_cost, metadata_value(usage_metadata, :total_cost))
+    |> reject_nil_values()
+    |> empty_map_to_nil()
+  end
+
+  defp token_usage(_provider_usage, _usage_metadata), do: nil
+
+  defp empty_map_to_nil(value) when value == %{}, do: nil
+  defp empty_map_to_nil(value), do: value
 
   defp langsmith_messages(messages) do
     messages
@@ -928,7 +1108,7 @@ defmodule BeamWeaver.Tracing.Exporters.LangSmith do
       additional_kwargs: langchain_additional_kwargs(message) || %{},
       response_metadata: langchain_value(langsmith_response_metadata(message.response_metadata || %{})),
       type: langchain_message_type(message.role),
-      name: message.name,
+      name: langsmith_message_name(message),
       id: message.id,
       tool_call_id: message.tool_call_id,
       tool_calls: langchain_tool_calls(message.tool_calls),
@@ -966,6 +1146,78 @@ defmodule BeamWeaver.Tracing.Exporters.LangSmith do
     do: metadata_first_value(metadata, [:call_id, :tool_call_id, :id, :provider_id])
 
   defp langsmith_tool_call_id(_run), do: nil
+
+  defp langsmith_tool_call_name(call) when is_map(call) do
+    name = metadata_value(call, :name)
+
+    if task_subagent_name(call), do: subagent_tool_name(task_subagent_name(call)), else: name
+  end
+
+  defp langsmith_tool_call_args(call) when is_map(call) do
+    if task_subagent_name(call), do: %{}, else: metadata_value(call, :args) || %{}
+  end
+
+  defp langsmith_tool_run_name(%Run{} = run) do
+    base = metadata_value(run.metadata, :tool_name) || run.name
+
+    if task_tool_name?(base) and run_subagent_name(run) do
+      subagent_tool_name(run_subagent_name(run))
+    else
+      base
+    end
+  end
+
+  defp langsmith_tool_run_description(%Run{} = run) do
+    if run_subagent_name(run) do
+      "Run the #{run_subagent_name(run)} subagent with verification."
+    else
+      metadata_value(run.metadata, :description)
+    end
+  end
+
+  defp langsmith_tool_message_name(%Run{} = run, %Message{} = message) do
+    base = message.name || metadata_value(run.metadata, :tool_name) || run.name
+
+    cond do
+      message_subagent_name(message) -> subagent_tool_name(message_subagent_name(message))
+      task_tool_name?(base) and run_subagent_name(run) -> subagent_tool_name(run_subagent_name(run))
+      true -> base
+    end
+  end
+
+  defp langsmith_message_name(%Message{role: :tool} = message) do
+    if message_subagent_name(message), do: subagent_tool_name(message_subagent_name(message)), else: message.name
+  end
+
+  defp langsmith_message_name(%Message{} = message), do: message.name
+
+  defp task_subagent_name(call) when is_map(call) do
+    args = metadata_value(call, :args) || %{}
+    name = metadata_value(call, :name)
+
+    if task_tool_name?(name) do
+      metadata_value(args, :subagent_name) || metadata_value(args, :subagent_type)
+    end
+  end
+
+  defp task_tool_name?(name) when is_binary(name), do: name == "task"
+  defp task_tool_name?(name) when is_atom(name), do: Atom.to_string(name) == "task"
+  defp task_tool_name?(_name), do: false
+
+  defp run_subagent_name(%Run{} = run) do
+    metadata_value(run.inputs, :subagent_name) ||
+      metadata_value(run.inputs, :subagent_type) ||
+      metadata_value(run.metadata, :subagent_name) ||
+      metadata_value(run.metadata, :subagent_type)
+  end
+
+  defp message_subagent_name(%Message{metadata: metadata}) do
+    metadata_value(metadata, :subagent_name) || metadata_value(metadata, :subagent_type)
+  end
+
+  defp subagent_tool_name(name) when is_binary(name), do: "run_#{name}"
+  defp subagent_tool_name(name) when is_atom(name), do: "run_#{name}"
+  defp subagent_tool_name(name), do: "run_#{to_string(name)}"
 
   defp maybe_iso8601(nil), do: nil
   defp maybe_iso8601(%DateTime{} = datetime), do: DateTime.to_iso8601(datetime)
@@ -1017,6 +1269,38 @@ defmodule BeamWeaver.Tracing.Exporters.LangSmith do
     Enum.find_value(keys, &metadata_value(metadata, &1))
   end
 
+  defp drop_metadata_keys(metadata, keys) when is_map(metadata) do
+    keys = keys |> Enum.map(&to_string/1) |> MapSet.new()
+
+    Map.reject(metadata, fn {key, _value} -> MapSet.member?(keys, to_string(key)) end)
+  end
+
+  defp drop_metadata_keys(_metadata, _keys), do: %{}
+
+  defp normalize_model_provider(nil), do: nil
+  defp normalize_model_provider(provider) when is_binary(provider), do: provider
+  defp normalize_model_provider(provider) when is_atom(provider), do: Atom.to_string(provider)
+
+  defp normalize_model_provider(provider) when is_map(provider) do
+    provider
+    |> metadata_first_value([:model_provider, :provider, :ls_provider])
+    |> normalize_model_provider()
+  end
+
+  defp normalize_model_provider(provider), do: to_string(provider)
+
+  defp normalize_model_name(nil), do: nil
+  defp normalize_model_name(name) when is_binary(name), do: name
+  defp normalize_model_name(name) when is_atom(name), do: Atom.to_string(name)
+
+  defp normalize_model_name(name) when is_map(name) do
+    name
+    |> metadata_first_value([:model_name, :model, :requested_model, :profile_id, :id])
+    |> normalize_model_name()
+  end
+
+  defp normalize_model_name(name), do: to_string(name)
+
   defp reject_nil_values(map), do: Map.reject(map, fn {_key, value} -> is_nil(value) end)
 
   defp reject_nil_or_empty_values(map) do
@@ -1026,6 +1310,11 @@ defmodule BeamWeaver.Tracing.Exporters.LangSmith do
       _entry -> false
     end)
   end
+
+  defp nil_or_empty?(nil), do: true
+  defp nil_or_empty?(%{} = map), do: map_size(map) == 0
+  defp nil_or_empty?([]), do: true
+  defp nil_or_empty?(_value), do: false
 
   defp langsmith_metadata(%Run{} = run) do
     %{
@@ -1077,8 +1366,48 @@ defmodule BeamWeaver.Tracing.Exporters.LangSmith do
 
   defp sanitize_langsmith_payload(value), do: value
 
-  defp internal_trace_key?(key) when key in [:__node_outputs__, "__node_outputs__", :__edge_runs__, "__edge_runs__"],
-    do: true
+  defp strip_runtime_state(%_struct{} = value), do: value
+
+  defp strip_runtime_state(value) when is_map(value) do
+    value
+    |> Enum.reject(fn {key, _value} -> runtime_state_key?(key) end)
+    |> Map.new(fn {key, nested} -> {key, strip_runtime_state(nested)} end)
+  end
+
+  defp strip_runtime_state(value) when is_list(value), do: Enum.map(value, &strip_runtime_state/1)
+  defp strip_runtime_state(value), do: value
+
+  defp runtime_state_key?(key)
+       when key in [
+              :subagent_outputs,
+              "subagent_outputs",
+              :subagent_cache,
+              "subagent_cache",
+              :tool_set,
+              "tool_set",
+              :remaining_steps,
+              "remaining_steps",
+              :thread_tool_call_count,
+              "thread_tool_call_count",
+              :run_tool_call_count,
+              "run_tool_call_count",
+              :usage,
+              "usage"
+            ],
+       do: true
+
+  defp runtime_state_key?(_key), do: false
+
+  defp internal_trace_key?(key)
+       when key in [
+              :__node_outputs__,
+              "__node_outputs__",
+              :__edge_runs__,
+              "__edge_runs__",
+              :tool_definitions,
+              "tool_definitions"
+            ],
+       do: true
 
   defp internal_trace_key?(_key), do: false
 
@@ -1153,7 +1482,10 @@ defmodule BeamWeaver.Tracing.Exporters.LangSmith do
     %{}
     |> maybe_put(
       "model_name",
-      metadata_first_value(params, [:model_name, :model]) || metadata_first_value(run.metadata, [:model_name, :model])
+      normalize_model_name(
+        metadata_first_value(params, [:model_name, :model]) ||
+          metadata_first_value(run.metadata, [:model_name, :model])
+      )
     )
     |> maybe_put("temperature", metadata_value(params, :temperature))
     |> maybe_put("max_tokens", metadata_first_value(params, [:max_tokens, :max_completion_tokens, :max_output_tokens]))
@@ -1164,6 +1496,10 @@ defmodule BeamWeaver.Tracing.Exporters.LangSmith do
   defp normalize_provider_namespace(nil), do: "base"
   defp normalize_provider_namespace(:xai), do: "openai"
   defp normalize_provider_namespace("xai"), do: "openai"
+  defp normalize_provider_namespace(:moonshot), do: "openai"
+  defp normalize_provider_namespace("moonshot"), do: "openai"
+  defp normalize_provider_namespace(:kimi), do: "openai"
+  defp normalize_provider_namespace("kimi"), do: "openai"
   defp normalize_provider_namespace(provider) when is_atom(provider), do: Atom.to_string(provider)
   defp normalize_provider_namespace(provider), do: to_string(provider)
 

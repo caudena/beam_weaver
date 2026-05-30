@@ -115,6 +115,17 @@ defmodule BeamWeaver.Tracing.Exporters.LangSmith.Queue do
     GenServer.start_link(__MODULE__, opts, name: Keyword.get(opts, :name, __MODULE__))
   end
 
+  @doc false
+  def child_spec(opts) do
+    %{
+      id: Keyword.get(opts, :id, Keyword.get(opts, :name, __MODULE__)),
+      start: {__MODULE__, :start_link, [opts]},
+      restart: :permanent,
+      shutdown: Keyword.get(opts, :shutdown, 120_000),
+      type: :worker
+    }
+  end
+
   @impl BeamWeaver.Tracing.Exporter
   def export(event, %Run{} = run, opts) do
     queue = Keyword.get(opts, :queue, __MODULE__)

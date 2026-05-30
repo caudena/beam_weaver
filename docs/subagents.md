@@ -289,6 +289,12 @@ booleans, or `nil`, and are persisted through checkpoints. Captured state is
 not inherited by child subagents, so specialist payloads do not recursively
 inflate child context.
 
+In LangSmith, captured subagents are still visible as tool runs, but BeamWeaver
+projects the generic `task` call as `run_<subagent_name>`. The exported tool
+output is the same compact acknowledgement the parent model saw; the captured
+`state.subagent_outputs` payload stays internal and is not uploaded as the tool
+message content.
+
 Repeated captured calls are deduped by `{subagent_name, input_hash}` by
 default. BeamWeaver stores cache entries in `state.subagent_cache`; repeated
 calls with the same subagent and same task input return from cache without

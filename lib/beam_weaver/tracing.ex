@@ -184,6 +184,33 @@ defmodule BeamWeaver.Tracing do
   @doc false
   defdelegate reset(), to: Store
 
+  @doc """
+  Flushes the configured tracing exporter when it supports explicit draining.
+
+  This is useful for short-lived scripts that exit immediately after a run
+  completes. Long-lived applications can rely on the supervised exporter queue.
+  """
+  @spec flush_exporter(timeout()) :: :ok | {:error, term()}
+  def flush_exporter(timeout \\ 60_000) when is_integer(timeout) and timeout > 0 do
+    exporter = Config.get([:tracing, :exporter])
+    exporter_opts = Config.get([:tracing, :exporter_opts], [])
+
+    cond do
+      is_nil(exporter) ->
+        :ok
+
+      exporter == BeamWeaver.Tracing.Exporters.LangSmith.Queue ->
+        queue = Keyword.get(exporter_opts, :queue, BeamWeaver.Tracing.Exporters.LangSmith.Queue)
+        BeamWeaver.Tracing.Exporters.LangSmith.Queue.flush(queue, timeout)
+
+      function_exported?(exporter, :flush, 1) ->
+        exporter.flush(timeout)
+
+      true ->
+        :ok
+    end
+  end
+
   defp update_run(run_ref, event, opts, updater) do
     run_id = run_id(run_ref)
 
