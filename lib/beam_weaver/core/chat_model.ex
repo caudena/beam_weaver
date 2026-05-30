@@ -386,6 +386,8 @@ defmodule BeamWeaver.Core.ChatModel do
     |> maybe_put(:invocation_params, invocation_params(model, opts))
     |> maybe_put(:tools, tool_names(Keyword.get(opts, :tools)))
     |> maybe_put(:structured_output, structured_output_mode(opts))
+    |> maybe_put(:structured_output_strategy, Keyword.get(opts, :structured_output_strategy))
+    |> maybe_put(:structured_output_tool_names, Keyword.get(opts, :structured_output_tool_names))
   end
 
   defp model_finish_metadata(model, opts, %Message{} = message, usage) do

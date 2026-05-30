@@ -12,6 +12,8 @@ defmodule BeamWeaver.Agent.Nodes.Model do
   alias BeamWeaver.Agent.Nodes.Model.Prompt
   alias BeamWeaver.Agent.Nodes.Model.Response
   alias BeamWeaver.Agent.StructuredOutput
+  alias BeamWeaver.Agent.StructuredOutput.ProviderStrategy
+  alias BeamWeaver.Agent.StructuredOutput.ToolStrategy
   alias BeamWeaver.Agent.ToolSet
   alias BeamWeaver.Core.ChatModel
   alias BeamWeaver.Core.Error
@@ -129,6 +131,7 @@ defmodule BeamWeaver.Agent.Nodes.Model do
       request.model_opts
       |> Keyword.put(:tools, tools)
       |> Keyword.put_new(:context, Map.get(request.runtime || %{}, :context))
+      |> put_structured_output_trace_opts(strategy)
       |> Keyword.merge(structured_provider_opts(strategy))
 
     messages = Prompt.prompt_messages(request.system_message) ++ request.messages
@@ -178,4 +181,16 @@ defmodule BeamWeaver.Agent.Nodes.Model do
     do: StructuredOutput.provider_opts(strategy)
 
   defp structured_provider_opts(_strategy), do: []
+
+  defp put_structured_output_trace_opts(opts, %ToolStrategy{schema_specs: specs}) do
+    opts
+    |> Keyword.put(:structured_output_strategy, :tool)
+    |> Keyword.put(:structured_output_tool_names, Enum.map(specs, & &1.name))
+  end
+
+  defp put_structured_output_trace_opts(opts, %ProviderStrategy{}) do
+    Keyword.put(opts, :structured_output_strategy, :provider)
+  end
+
+  defp put_structured_output_trace_opts(opts, _strategy), do: opts
 end

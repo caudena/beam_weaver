@@ -3,6 +3,7 @@ defmodule BeamWeaver.Tracing.LangSmithExporterTest do
 
   alias BeamWeaver.Core.ChatModel
   alias BeamWeaver.Core.Message
+  alias BeamWeaver.Core.Messages
   alias BeamWeaver.Graph
   alias BeamWeaver.Graph.Compiled
   alias BeamWeaver.Models.FakeChatModel
@@ -155,6 +156,32 @@ defmodule BeamWeaver.Tracing.LangSmithExporterTest do
     refute Map.has_key?(Map.from_struct(run), :events)
   end
 
+  test "tool payloads prefer executable call ids over provider ids" do
+    run =
+      Run.new("crm_sync",
+        id: "tool_run_call_id",
+        trace_id: "trace_tool_call_id",
+        kind: :tool,
+        metadata: %{
+          tool_name: "crm_sync",
+          call_id: "call-crm-sync",
+          id: "local-crm-sync",
+          provider_id: "fc_crm_sync"
+        },
+        started_at: ~U[2026-05-21 00:00:00Z]
+      )
+
+    payload =
+      LangSmith.to_payload(
+        :ok,
+        %{run | status: :ok, ended_at: ~U[2026-05-21 00:00:01Z], outputs: %{output: %{ok: true}}},
+        "beam-weaver"
+      )
+
+    assert payload.extra.tool_call_id == "call-crm-sync"
+    assert payload.outputs.output.tool_call_id == "call-crm-sync"
+  end
+
   test "graph LangSmith integration metadata is injected only in exported payloads" do
     run =
       Run.new("agent",
@@ -295,16 +322,11 @@ defmodule BeamWeaver.Tracing.LangSmithExporterTest do
     encoded_usage = %{"input_tokens" => 3, "output_tokens" => 2, "total_tokens" => 5}
 
     assert [
-             %{
-               "role" => "assistant",
-               "content" => "summary",
-               "usage_metadata" => ^encoded_usage
-             }
-           ] = model_payload.outputs.messages
-
-    assert [
              [
                %{
+                 text: "summary",
+                 type: "ChatGeneration",
+                 generation_info: %{finish_reason: "stop", logprobs: nil},
                  message: %{
                    "lc" => 1,
                    "type" => "constructor",
@@ -313,7 +335,6 @@ defmodule BeamWeaver.Tracing.LangSmithExporterTest do
                      "content" => "summary",
                      "type" => "ai",
                      "response_metadata" => %{
-                       "model" => %{"provider" => "fake"},
                        "usage" => ^encoded_usage,
                        "finish_reason" => "stop"
                      },
@@ -324,7 +345,9 @@ defmodule BeamWeaver.Tracing.LangSmithExporterTest do
              ]
            ] = model_payload.outputs.generations
 
-    assert model_payload.outputs.usage_metadata == usage
+    assert model_payload.outputs.type == "LLMResult"
+    assert model_payload.outputs.llm_output.model_provider == "fake"
+    assert model_payload.outputs.llm_output.model_name == "chat"
     assert model_payload.extra.model_provider == "fake"
     assert model_payload.extra.model_name == "chat"
     assert model_payload.extra.metadata.ls_integration == "langchain_chat_model"
@@ -335,6 +358,275 @@ defmodule BeamWeaver.Tracing.LangSmithExporterTest do
     assert model_payload.extra.usage == usage
     assert model_payload.extra.invocation_params.temperature == 0.1
     assert model_payload.extra.invocation_params.timeout == 15_000
+  end
+
+  test "model outputs use LangChain LLMResult shape and executable tool-call ids" do
+    message =
+      Message.assistant("",
+        response_metadata: %{
+          finish_reason: "tool_calls",
+          token_usage: %{prompt_tokens: 10, completion_tokens: 2, total_tokens: 12},
+          model_provider: "openai",
+          model_name: "gpt-test",
+          id: "response-1"
+        },
+        usage_metadata: %{input_tokens: 10, output_tokens: 2, total_tokens: 12},
+        tool_calls: [
+          Messages.tool_call(
+            id: "task_0",
+            provider_id: "task:0",
+            call_id: "call-task-0",
+            name: "task",
+            args: %{description: "do work"}
+          )
+        ]
+      )
+
+    run =
+      Run.new("ChatOpenAIForXAI",
+        id: "llm_tool_call",
+        trace_id: "trace_tool_call",
+        kind: :model,
+        inputs: %{messages: [Message.user("hi")]},
+        metadata: %{provider: "openai", model: "gpt-test"},
+        started_at: ~U[2026-05-21 00:00:00Z]
+      )
+
+    payload =
+      LangSmith.to_payload(
+        :ok,
+        %{run | status: :ok, ended_at: ~U[2026-05-21 00:00:01Z], outputs: %{messages: [message]}},
+        "beam-weaver"
+      )
+
+    assert payload.outputs.type == "LLMResult"
+    refute Map.has_key?(payload.outputs, :messages)
+
+    assert [
+             [
+               %{
+                 text: "",
+                 type: "ChatGeneration",
+                 generation_info: %{finish_reason: "tool_calls", logprobs: nil},
+                 message: %{
+                   "kwargs" => %{
+                     "tool_calls" => [
+                       %{
+                         "id" => "call-task-0",
+                         "name" => "task",
+                         "args" => %{"description" => "do work"},
+                         "type" => "tool_call"
+                       }
+                     ]
+                   }
+                 }
+               }
+             ]
+           ] = payload.outputs.generations
+
+    refute payload.outputs.generations
+           |> hd()
+           |> hd()
+           |> get_in([:message, "kwargs", "tool_calls"])
+           |> hd()
+           |> Map.has_key?("provider_id")
+
+    assert payload.outputs.llm_output == %{
+             token_usage: %{prompt_tokens: 10, completion_tokens: 2, total_tokens: 12},
+             model_provider: "openai",
+             model_name: "gpt-test",
+             id: "response-1"
+           }
+
+    assert payload.serialized["id"] == ["langchain", "chat_models", "openai", "ChatOpenAIForXAI"]
+  end
+
+  test "structured-output schema calls are not exported as executable tool calls" do
+    message =
+      Message.assistant(
+        [
+          %{type: "reasoning", text: "prepare structured answer"},
+          %{type: "tool_call", name: "answer", call_id: "call-answer", arguments: "{\"ok\":true}"},
+          %{type: "function_call", name: "search", call_id: "call-search", arguments: "{\"q\":\"docs\"}"}
+        ],
+        response_metadata: %{finish_reason: "tool_calls"},
+        tool_calls: [
+          Messages.tool_call(id: "call-answer", name: "answer", args: %{ok: true}),
+          Messages.tool_call(id: "call-search", name: "search", args: %{q: "docs"})
+        ]
+      )
+
+    run =
+      Run.new("ChatOpenAIForXAI",
+        id: "llm_structured_tool_call",
+        trace_id: "trace_structured_tool_call",
+        kind: :model,
+        inputs: %{messages: [Message.user("hi")]},
+        metadata: %{
+          provider: "openai",
+          model: "gpt-test",
+          structured_output_strategy: :tool,
+          structured_output_tool_names: ["answer"]
+        },
+        started_at: ~U[2026-05-21 00:00:00Z]
+      )
+
+    payload =
+      LangSmith.to_payload(
+        :ok,
+        %{run | status: :ok, ended_at: ~U[2026-05-21 00:00:01Z], outputs: %{messages: [message]}},
+        "beam-weaver"
+      )
+
+    kwargs =
+      payload.outputs.generations
+      |> hd()
+      |> hd()
+      |> get_in([:message, "kwargs"])
+
+    assert kwargs["tool_calls"] == [
+             %{
+               "id" => "call-search",
+               "name" => "search",
+               "args" => %{"q" => "docs"},
+               "type" => "tool_call"
+             }
+           ]
+
+    assert kwargs["content"] == [
+             %{"metadata" => %{}, "reasoning" => "prepare structured answer", "type" => "reasoning"}
+           ]
+  end
+
+  test "structured-output schema call stripping normalizes atom schema names" do
+    message =
+      Message.assistant(
+        [
+          %{type: :function_call, name: "answer", call_id: "call-answer", arguments: "{\"ok\":true}"},
+          %{type: :function_call, name: "search", call_id: "call-search", arguments: "{\"q\":\"docs\"}"}
+        ],
+        response_metadata: %{finish_reason: "tool_calls"},
+        tool_calls: [
+          Messages.tool_call(id: "call-answer", name: "answer", args: %{ok: true}),
+          Messages.tool_call(id: "call-search", name: "search", args: %{q: "docs"})
+        ]
+      )
+
+    run =
+      Run.new("ChatOpenAIForXAI",
+        id: "llm_structured_atom_name",
+        trace_id: "trace_structured_atom_name",
+        kind: :model,
+        inputs: %{messages: [Message.user("hi")]},
+        metadata: %{
+          provider: "openai",
+          model: "gpt-test",
+          structured_output_strategy: :tool,
+          structured_output_tool_names: [:answer]
+        },
+        started_at: ~U[2026-05-21 00:00:00Z]
+      )
+
+    payload =
+      LangSmith.to_payload(
+        :ok,
+        %{run | status: :ok, ended_at: ~U[2026-05-21 00:00:01Z], outputs: %{messages: [message]}},
+        "beam-weaver"
+      )
+
+    kwargs =
+      payload.outputs.generations
+      |> hd()
+      |> hd()
+      |> get_in([:message, "kwargs"])
+
+    assert kwargs["tool_calls"] == [
+             %{
+               "id" => "call-search",
+               "name" => "search",
+               "args" => %{"q" => "docs"},
+               "type" => "tool_call"
+             }
+           ]
+
+    refute Map.has_key?(kwargs, "content")
+  end
+
+  test "chain message outputs strip provider call blocks and raw response metadata" do
+    message =
+      Message.assistant(
+        [
+          %{
+            type: "reasoning",
+            text: "prepare structured answer",
+            raw_provider_block: %{id: "rs_1", type: "reasoning"}
+          },
+          %{
+            type: "function_call",
+            name: "answer",
+            call_id: "call-answer",
+            raw_provider_block: %{id: "fc_1", type: "function_call"}
+          }
+        ],
+        metadata: %{
+          structured_output_strategy: :tool,
+          structured_output_tool_names: ["answer"]
+        },
+        response_metadata: %{
+          finish_reason: "tool_calls",
+          output: [%{name: "answer", type: "function_call"}],
+          tooling: %{tool_calls: [%{name: "answer", id: "call-answer"}]},
+          raw_provider_response: %{output: [%{name: "answer"}]},
+          provider_metadata: %{raw: %{output: [%{name: "answer"}]}},
+          model_provider: "openai"
+        },
+        tool_calls: [
+          Messages.tool_call(id: "call-answer", name: "answer", args: %{ok: true})
+        ]
+      )
+
+    run =
+      Run.new("agent",
+        id: "chain_structured_output",
+        trace_id: "trace_structured_output",
+        kind: :graph,
+        inputs: %{
+          __node_outputs__: %{
+            model: %{messages: [message]}
+          },
+          messages: [Message.user("hi")]
+        },
+        metadata: %{
+          __edge_runs__: %{model: "internal"},
+          response_metadata: %{
+            output: [%{name: "answer"}],
+            raw_provider_response: %{output: [%{name: "answer"}]},
+            provider_metadata: %{raw: %{output: [%{name: "answer"}]}}
+          }
+        },
+        started_at: ~U[2026-05-21 00:00:00Z]
+      )
+
+    payload =
+      LangSmith.to_payload(
+        :ok,
+        %{
+          run
+          | status: :ok,
+            ended_at: ~U[2026-05-21 00:00:01Z],
+            outputs: %{messages: [message]}
+        },
+        "beam-weaver"
+      )
+
+    assert [message_payload] = payload.outputs.messages
+    assert message_payload.type == "ai"
+    assert message_payload.content == [%{"reasoning" => "prepare structured answer", "type" => "reasoning"}]
+    assert message_payload.response_metadata == %{"finish_reason" => "tool_calls", "model_provider" => "openai"}
+    refute Map.has_key?(message_payload, :tool_calls)
+    assert payload.extra.metadata.response_metadata == %{}
+    refute Map.has_key?(payload.extra.metadata, :__edge_runs__)
+    refute Map.has_key?(payload.inputs, :__node_outputs__)
   end
 
   test "payload encoder makes arbitrary trace values JSON-safe like the LangSmith SDK" do
@@ -626,9 +918,11 @@ defmodule BeamWeaver.Tracing.LangSmithExporterTest do
     assert :ok = Queue.flush(queue)
 
     assert_receive {:langsmith_post, _url, payload}
-    assert payload.id =~ @uuid_regex
-    assert payload.extra.metadata.beam_weaver_run_id == "queued_1"
-    assert payload.status == "success"
+    assert %{patch: [patch]} = payload
+    assert patch.id =~ @uuid_regex
+    assert patch.extra.metadata.beam_weaver_run_id == "queued_1"
+    refute Map.has_key?(patch, :status)
+    assert patch.session_id == nil
 
     Process.unregister(:langsmith_queue_test)
   end
@@ -666,17 +960,21 @@ defmodule BeamWeaver.Tracing.LangSmithExporterTest do
     assert :ok = Queue.flush(queue)
 
     assert_receive {:langsmith_post, _url, payload}
-    assert %{post: [post]} = payload
+    assert %{post: [post], patch: [patch]} = payload
     assert post.name == "x_signal_desk.post_summary"
     assert post.inputs == %{post_ids: [7254, 7274]}
-    assert post.outputs == %{summary: "market update"}
-    assert post.status == "success"
+    assert post.outputs == %{}
+    assert post.replicas == []
+    refute Map.has_key?(post, :status)
+    assert patch.outputs == %{summary: "market update"}
+    assert patch.session_id == nil
+    refute Map.has_key?(patch, :status)
 
     GenServer.stop(queue)
     Process.unregister(:langsmith_queue_test)
   end
 
-  test "queued exporter default aggregation window coalesces fast start and finish" do
+  test "queued exporter preserves start and finish operations in multipart payloads" do
     Process.register(self(), :langsmith_queue_test)
 
     {:ok, queue} =
@@ -708,12 +1006,53 @@ defmodule BeamWeaver.Tracing.LangSmithExporterTest do
     assert :ok = Queue.flush(queue)
 
     assert_receive {:langsmith_post, _url, payload}
-    assert %{post: [post]} = payload
-    refute Map.has_key?(payload, :patch)
+    assert %{post: [post], patch: [patch]} = payload
     assert post.name == "fast_graph"
     assert post.inputs == %{question: "hi"}
-    assert post.outputs == %{answer: "ok"}
-    assert post.status == "success"
+    assert post.outputs == %{}
+    assert post.replicas == []
+    refute Map.has_key?(post, :status)
+    assert patch.name == "fast_graph"
+    assert patch.outputs == %{answer: "ok"}
+    assert patch.session_id == nil
+    refute Map.has_key?(patch, :status)
+
+    GenServer.stop(queue)
+    Process.unregister(:langsmith_queue_test)
+  end
+
+  test "multipart uploads expose redacted Beam Weaver request metadata through finch_private" do
+    Process.register(self(), :langsmith_queue_test)
+
+    {:ok, queue} =
+      Queue.start_link(
+        name: :langsmith_finch_private_queue,
+        api_key: "test",
+        project: "beam-weaver",
+        transport: BeamWeaver.Tracing.LangSmithQueueOptionsTransport,
+        batch_size: 10,
+        flush_interval: 10_000
+      )
+
+    run = Run.new("queued", id: "queued_private", trace_id: "trace_private", kind: :graph)
+
+    assert :ok = Queue.enqueue(queue, :started, run)
+    assert :ok = Queue.flush(queue)
+
+    assert_receive {:langsmith_post_opts, url, opts}
+    assert String.ends_with?(url, "/runs/multipart")
+    assert {"user-agent", user_agent} = Enum.find(Keyword.fetch!(opts, :headers), &(elem(&1, 0) == "user-agent"))
+    assert user_agent =~ "beam-weaver/"
+
+    assert [beam_weaver: metadata] = Keyword.fetch!(opts, :finch_private)
+    assert metadata.provider == :langsmith
+    assert metadata.operation == :multipart
+    assert metadata.method == :post
+    assert metadata.project == "beam-weaver"
+    assert metadata.run_count == 1
+    assert metadata.post_count == 1
+    assert metadata.patch_count == 0
+    assert metadata.url == "https://api.smith.langchain.com/runs/multipart"
 
     GenServer.stop(queue)
     Process.unregister(:langsmith_queue_test)
@@ -761,7 +1100,7 @@ defmodule BeamWeaver.Tracing.LangSmithExporterTest do
     assert :ok = Queue.flush(queue)
 
     assert_receive {:langsmith_post, url, payload}
-    assert String.ends_with?(url, "/runs/batch")
+    assert String.ends_with?(url, "/runs/multipart")
     payloads = Map.get(payload, :patch) || Map.get(payload, :post) || []
 
     assert Enum.map(payloads, & &1.extra.metadata.beam_weaver_run_id) == [
@@ -994,8 +1333,9 @@ defmodule BeamWeaver.Tracing.LangSmithExporterTest do
     assert :ok = Queue.stop(queue, timeout: 500)
 
     assert_receive {:langsmith_post, _url, payload}
-    assert payload.id =~ @uuid_regex
-    assert payload.extra.metadata.beam_weaver_run_id == "run_stop"
+    assert %{patch: [patch]} = payload
+    assert patch.id =~ @uuid_regex
+    assert patch.extra.metadata.beam_weaver_run_id == "run_stop"
     refute Process.alive?(queue)
 
     Process.unregister(:langsmith_queue_test)
@@ -1093,8 +1433,9 @@ defmodule BeamWeaver.Tracing.LangSmithExporterTest do
 
     assert :ok = Queue.flush(queue)
     assert_receive {:langsmith_post, _url, payload}
-    assert payload.id =~ @uuid_regex
-    assert payload.extra.metadata.beam_weaver_run_id == "persisted_1"
+    assert %{patch: [patch]} = payload
+    assert patch.id =~ @uuid_regex
+    assert patch.extra.metadata.beam_weaver_run_id == "persisted_1"
     assert [] = BeamWeaver.Tracing.Exporters.LangSmith.QueueStore.ETS.list(store, [])
 
     GenServer.stop(queue)
@@ -1288,7 +1629,22 @@ defmodule BeamWeaver.Tracing.LangSmithQueueTransport do
   def post(url, opts) do
     send(
       Process.whereis(:langsmith_queue_test),
-      {:langsmith_post, url, Keyword.fetch!(opts, :json)}
+      {:langsmith_post, url, BeamWeaver.Tracing.LangSmithTestTransport.payload(opts)}
+    )
+
+    {:ok, %{status: 202}}
+  end
+
+  def patch(url, opts) do
+    post(url, opts)
+  end
+end
+
+defmodule BeamWeaver.Tracing.LangSmithQueueOptionsTransport do
+  def post(url, opts) do
+    send(
+      Process.whereis(:langsmith_queue_test),
+      {:langsmith_post_opts, url, Keyword.take(opts, [:headers, :finch_private])}
     )
 
     {:ok, %{status: 202}}
@@ -1313,13 +1669,13 @@ end
 
 defmodule BeamWeaver.Tracing.LangSmithBatchFallbackTransport do
   def post(url, opts) do
-    json = Keyword.fetch!(opts, :json)
+    payload = BeamWeaver.Tracing.LangSmithTestTransport.payload(opts)
 
-    if String.ends_with?(url, "/runs/batch") do
-      send(Process.whereis(:langsmith_queue_test), {:langsmith_batch_attempt, json})
+    if String.ends_with?(url, "/runs/multipart") or String.ends_with?(url, "/runs/batch") do
+      send(Process.whereis(:langsmith_queue_test), {:langsmith_batch_attempt, payload})
       {:ok, %{status: 404}}
     else
-      send(Process.whereis(:langsmith_queue_test), {:langsmith_individual_post, json})
+      send(Process.whereis(:langsmith_queue_test), {:langsmith_individual_post, payload})
       {:ok, %{status: 202}}
     end
   end
@@ -1367,6 +1723,67 @@ defmodule BeamWeaver.Tracing.LangSmithCaptureTransport do
     )
 
     {:ok, %{status: 202}}
+  end
+end
+
+defmodule BeamWeaver.Tracing.LangSmithTestTransport do
+  def payload(opts) do
+    case Keyword.fetch(opts, :json) do
+      {:ok, json} -> json
+      :error -> multipart_payload(opts)
+    end
+  end
+
+  defp multipart_payload(opts) do
+    body = Keyword.fetch!(opts, :body)
+    headers = Keyword.fetch!(opts, :headers)
+    boundary = multipart_boundary!(headers)
+
+    body
+    |> String.split("--#{boundary}")
+    |> Enum.map(&String.trim_leading(&1, "\r\n"))
+    |> Enum.reject(&(&1 in ["", "--\r\n", "--"]))
+    |> Enum.reduce({%{}, []}, fn part, {runs, order} ->
+      [header, payload] = String.split(part, "\r\n\r\n", parts: 2)
+      name = Regex.run(~r/name="([^"]+)"/, header) |> List.last()
+      value = payload |> String.trim_trailing("\r\n") |> Jason.decode!(keys: :atoms)
+
+      [operation, run_id | path] = String.split(name, ".")
+      key = {String.to_atom(operation), run_id}
+
+      runs =
+        Map.update(runs, key, value, fn existing ->
+          case path do
+            [] -> Map.merge(existing, value)
+            [field] -> Map.put(existing, String.to_atom(field), value)
+          end
+        end)
+
+      order = if key in order, do: order, else: order ++ [key]
+      {runs, order}
+    end)
+    |> then(fn {runs, order} ->
+      order
+      |> Enum.reduce(%{}, fn {operation, _run_id} = key, acc ->
+        Map.update(acc, operation, [Map.fetch!(runs, key)], &(&1 ++ [Map.fetch!(runs, key)]))
+      end)
+    end)
+  end
+
+  defp multipart_boundary!(headers) do
+    headers
+    |> Enum.find_value(fn
+      {"content-type", value} -> boundary_from_content_type(value)
+      {"Content-Type", value} -> boundary_from_content_type(value)
+      _other -> nil
+    end)
+  end
+
+  defp boundary_from_content_type(value) do
+    case Regex.run(~r/boundary=([^;]+)/, value) do
+      [_, boundary] -> boundary
+      _other -> nil
+    end
   end
 end
 

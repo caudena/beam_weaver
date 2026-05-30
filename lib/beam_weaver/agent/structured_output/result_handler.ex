@@ -53,6 +53,8 @@ defmodule BeamWeaver.Agent.StructuredOutput.ResultHandler do
 
         with {:ok, args} <- call_args(call),
              {:ok, parsed} <- Validation.parse(spec, args) do
+          message = annotate_structured_output_message(message, :tool, [spec.name])
+
           tool_message =
             Message.tool(
               strategy.tool_message_content || "Returning structured response: #{inspect(parsed)}",
@@ -109,6 +111,31 @@ defmodule BeamWeaver.Agent.StructuredOutput.ResultHandler do
   defp handle_structured_error?(type, type) when is_atom(type), do: true
   defp handle_structured_error?(allowed, type) when is_list(allowed), do: type in allowed
   defp handle_structured_error?(_handle_errors, _type), do: false
+
+  defp annotate_structured_output_message(%Message{} = message, strategy, names) do
+    metadata =
+      message.metadata
+      |> put_structured_output_metadata(strategy, names)
+
+    response_metadata =
+      message.response_metadata
+      |> put_structured_output_metadata(strategy, names)
+
+    %{message | metadata: metadata, response_metadata: response_metadata}
+  end
+
+  defp put_structured_output_metadata(metadata, strategy, names) when is_map(metadata) do
+    metadata
+    |> Map.put(:structured_output_strategy, strategy)
+    |> Map.put(:structured_output_tool_names, names)
+  end
+
+  defp put_structured_output_metadata(_metadata, strategy, names) do
+    %{
+      structured_output_strategy: strategy,
+      structured_output_tool_names: names
+    }
+  end
 
   defp structured_error_content(message, _error) when is_binary(message), do: message
 
@@ -181,6 +208,8 @@ defmodule BeamWeaver.Agent.StructuredOutput.ResultHandler do
 
   defp call_id(call),
     do:
-      Map.get(call, :id) ||
-        Map.get(call, :tool_call_id)
+      Map.get(call, :call_id) ||
+        Map.get(call, :tool_call_id) ||
+        Map.get(call, :id) ||
+        Map.get(call, :provider_id)
 end

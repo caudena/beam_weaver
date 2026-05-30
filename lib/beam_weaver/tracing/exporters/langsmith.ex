@@ -17,6 +17,8 @@ defmodule BeamWeaver.Tracing.Exporters.LangSmith do
 
   @default_endpoint "https://api.smith.langchain.com"
   @default_error_body_limit 8_192
+  @multipart_fields [:inputs, :outputs, :events, :extra, :serialized]
+  @multipart_default_fields [:outputs, :events, :extra]
   @uuid_regex ~r/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 
   @impl true
@@ -30,11 +32,11 @@ defmodule BeamWeaver.Tracing.Exporters.LangSmith do
       :ok
     else
       url = endpoint |> String.trim_trailing("/") |> Kernel.<>("/runs")
-      headers = [{"x-api-key", api_key}, {"content-type", "application/json"}]
+      headers = [{"x-api-key", api_key}, {"content-type", "application/json"}, user_agent_header()]
       payload = to_payload(event, run, project)
       operation = langsmith_operation_override(opts) || default_langsmith_export_operation(event)
 
-      case send_run_payload(transport, operation, url, payload, headers) do
+      case send_run_payload(transport, operation, url, payload, headers, project) do
         {:ok, %{status: status}} when status in 200..299 ->
           :ok
 
@@ -58,9 +60,6 @@ defmodule BeamWeaver.Tracing.Exporters.LangSmith do
   @spec export_batch([{atom(), Run.t(), keyword()}], keyword()) :: :ok | {:error, term()}
   def export_batch([], _opts), do: :ok
 
-  def export_batch([{event, run, item_opts}], opts),
-    do: export(event, run, Keyword.merge(opts, item_opts))
-
   def export_batch(items, opts) when is_list(items) do
     endpoint = Config.option(opts, :endpoint, [:langsmith, :endpoint], @default_endpoint)
     api_key = Config.option(opts, :api_key, [:langsmith, :api_key])
@@ -70,12 +69,17 @@ defmodule BeamWeaver.Tracing.Exporters.LangSmith do
     if is_nil(api_key) or api_key == "" do
       :ok
     else
-      url = endpoint |> String.trim_trailing("/") |> Kernel.<>("/runs/batch")
-      headers = [{"x-api-key", api_key}, {"content-type", "application/json"}]
+      url = endpoint |> String.trim_trailing("/") |> Kernel.<>("/runs/multipart")
+      headers = [{"x-api-key", api_key}, user_agent_header()]
+      operations = to_batch_operations(items, project)
+      {body, multipart_headers} = to_multipart_body(operations)
 
-      payload = to_batch_payload(items, project)
-
-      case transport.post(url, json: payload, headers: headers) do
+      case transport.post(
+             url,
+             body: body,
+             headers: multipart_headers ++ headers,
+             finch_private: langsmith_finch_private(:multipart, url, project, operations)
+           ) do
         {:ok, %{status: status}} when status in 200..299 ->
           :ok
 
@@ -83,7 +87,7 @@ defmodule BeamWeaver.Tracing.Exporters.LangSmith do
           :ok
 
         {:ok, %{status: 404}} ->
-          export_individually(items, opts)
+          export_batch_json(items, opts)
 
         {:ok, response} ->
           {:error, langsmith_response_error(response, opts)}
@@ -125,6 +129,20 @@ defmodule BeamWeaver.Tracing.Exporters.LangSmith do
   @doc false
   def to_batch_payload(items, project) when is_list(items) do
     items
+    |> to_batch_operations(project)
+    |> coalesce_batch_operations()
+    |> Enum.reduce(%{}, fn
+      {_operation, []}, acc ->
+        acc
+
+      {operation, payloads}, acc ->
+        Map.put(acc, operation, payloads)
+    end)
+  end
+
+  @doc false
+  def to_batch_operations(items, project) when is_list(items) do
+    items
     |> Enum.reduce({[], MapSet.new()}, fn {event, %Run{} = run, item_opts}, {ops, seen_ids} ->
       seen? = MapSet.member?(seen_ids, run.id)
       operation = langsmith_batch_operation(event, item_opts, seen?)
@@ -134,14 +152,19 @@ defmodule BeamWeaver.Tracing.Exporters.LangSmith do
     end)
     |> elem(0)
     |> Enum.reverse()
-    |> coalesce_batch_operations()
-    |> Enum.reduce(%{}, fn
-      {_operation, []}, acc ->
-        acc
+  end
 
-      {operation, payloads}, acc ->
-        Map.put(acc, operation, payloads)
-    end)
+  @doc false
+  def to_multipart_body(operations) when is_list(operations) do
+    boundary = :crypto.strong_rand_bytes(16) |> Base.encode16(case: :lower)
+
+    body =
+      operations
+      |> Enum.flat_map(fn {operation, payload} -> multipart_run_parts(operation, payload) end)
+      |> Enum.map_join("", fn {name, value} -> multipart_json_part(boundary, name, value) end)
+      |> Kernel.<>("--#{boundary}--\r\n")
+
+    {body, [{"content-type", "multipart/form-data; boundary=#{boundary}"}, {"accept", "application/json"}]}
   end
 
   defp coalesce_batch_operations(operations) do
@@ -197,18 +220,62 @@ defmodule BeamWeaver.Tracing.Exporters.LangSmith do
   defp default_langsmith_export_operation(:started), do: :post
   defp default_langsmith_export_operation(_event), do: :patch
 
-  defp send_run_payload(transport, :post, url, payload, headers) do
-    transport.post(url, json: payload, headers: headers)
+  defp send_run_payload(transport, :post, url, payload, headers, project) do
+    transport.post(
+      url,
+      json: payload,
+      headers: headers,
+      finch_private: langsmith_finch_private(:post, url, project, [{:post, payload}])
+    )
   end
 
-  defp send_run_payload(transport, :patch, url, payload, headers) do
-    transport.patch("#{url}/#{payload.id}", json: payload, headers: headers)
+  defp send_run_payload(transport, :patch, url, payload, headers, project) do
+    patch_url = "#{url}/#{payload.id}"
+
+    transport.patch(
+      patch_url,
+      json: payload,
+      headers: headers,
+      finch_private: langsmith_finch_private(:patch, patch_url, project, [{:patch, payload}])
+    )
   end
 
   defp create_missing_run(transport, url, payload, headers, opts) do
-    case transport.post(url, json: payload, headers: headers) do
+    project = Config.option(opts, :project, [:langsmith, :project], "default")
+
+    case transport.post(
+           url,
+           json: payload,
+           headers: headers,
+           finch_private: langsmith_finch_private(:post, url, project, [{:post, payload}])
+         ) do
       {:ok, %{status: status}} when status in 200..299 -> :ok
       {:ok, %{status: 409}} -> :ok
+      {:ok, response} -> {:error, langsmith_response_error(response, opts)}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp export_batch_json(items, opts) do
+    endpoint = Config.option(opts, :endpoint, [:langsmith, :endpoint], @default_endpoint)
+    api_key = Config.option(opts, :api_key, [:langsmith, :api_key])
+    project = Config.option(opts, :project, [:langsmith, :project], "default")
+    transport = Keyword.get(opts, :transport, Req)
+
+    url = endpoint |> String.trim_trailing("/") |> Kernel.<>("/runs/batch")
+    headers = [{"x-api-key", api_key}, {"content-type", "application/json"}, user_agent_header()]
+    payload = to_batch_payload(items, project)
+    operations = to_batch_operations(items, project)
+
+    case transport.post(
+           url,
+           json: payload,
+           headers: headers,
+           finch_private: langsmith_finch_private(:batch, url, project, operations)
+         ) do
+      {:ok, %{status: status}} when status in 200..299 -> :ok
+      {:ok, %{status: 409}} -> :ok
+      {:ok, %{status: 404}} -> export_individually(items, opts)
       {:ok, response} -> {:error, langsmith_response_error(response, opts)}
       {:error, reason} -> {:error, reason}
     end
@@ -320,9 +387,25 @@ defmodule BeamWeaver.Tracing.Exporters.LangSmith do
         run.metadata
         |> metadata_first_value([:vectorstore, :vector_store])
         |> ValueEncoder.encode(),
-      tool_call_id: run |> langsmith_tool_call_id() |> ValueEncoder.encode()
+      tool_call_id: run |> langsmith_tool_call_id() |> ValueEncoder.encode(),
+      runtime: langsmith_runtime()
     }
     |> reject_nil_values()
+  end
+
+  defp langsmith_serialized(%Run{kind: :model} = run) do
+    provider =
+      run.metadata
+      |> metadata_first_value([:model_provider, :provider, :ls_provider])
+      |> normalize_provider_namespace()
+
+    %{
+      "lc" => 1,
+      "type" => "constructor",
+      "id" => ["langchain", "chat_models", provider, run.name],
+      "kwargs" => langsmith_model_kwargs(run),
+      "name" => run.name
+    }
   end
 
   defp langsmith_serialized(%Run{kind: :tool} = run) do
@@ -342,20 +425,43 @@ defmodule BeamWeaver.Tracing.Exporters.LangSmith do
     end
   end
 
+  defp langsmith_inputs(%Run{inputs: inputs}) when is_map(inputs) do
+    case message_entry(inputs) do
+      {:ok, key, messages} -> Map.put(inputs, key, langsmith_messages(messages))
+      :error -> inputs
+    end
+  end
+
   defp langsmith_inputs(%Run{inputs: inputs}), do: inputs
 
-  defp langsmith_outputs(%Run{kind: :model, outputs: outputs}) when is_map(outputs) do
-    with {:ok, _key, messages} <- message_entry(outputs),
-         false <- has_generation_output?(outputs) do
-      Map.put(outputs, :generations, langsmith_generations(messages))
-    else
-      _other -> outputs
+  defp langsmith_outputs(%Run{kind: :model, outputs: outputs} = run) when is_map(outputs) do
+    case message_entry(outputs) do
+      {:ok, _key, messages} ->
+        messages = strip_structured_output_tool_calls(run, messages)
+
+        %{
+          generations: langsmith_generations(run, messages),
+          llm_output: langsmith_llm_output(run, messages),
+          run: nil,
+          type: "LLMResult"
+        }
+        |> reject_nil_values()
+
+      :error ->
+        outputs
     end
   end
 
   defp langsmith_outputs(%Run{kind: :tool, outputs: outputs} = run) when is_map(outputs) do
     case output_entry(outputs) do
       {:ok, key, output} -> Map.put(outputs, key, langsmith_tool_output(run, output))
+      :error -> outputs
+    end
+  end
+
+  defp langsmith_outputs(%Run{outputs: outputs}) when is_map(outputs) do
+    case message_entry(outputs) do
+      {:ok, key, messages} -> Map.put(outputs, key, langsmith_messages(messages))
       :error -> outputs
     end
   end
@@ -370,20 +476,20 @@ defmodule BeamWeaver.Tracing.Exporters.LangSmith do
     end
   end
 
-  defp has_generation_output?(outputs) do
-    Map.has_key?(outputs, :generations) or Map.has_key?(outputs, "generations")
-  end
-
   defp langchain_message_batches(messages) do
     messages
     |> normalize_message_batches()
     |> Enum.map(fn batch -> Enum.map(batch, &langchain_message_or_value/1) end)
   end
 
-  defp langsmith_generations(messages) do
+  defp langsmith_generations(%Run{} = run, messages) do
     messages
     |> langchain_message_batches()
-    |> Enum.map(fn batch -> Enum.map(batch, &%{message: &1}) end)
+    |> Enum.map(fn batch ->
+      batch
+      |> Enum.with_index()
+      |> Enum.map(fn {message, index} -> langsmith_generation(run, message, index) end)
+    end)
   end
 
   defp normalize_message_batches(messages) when is_list(messages) do
@@ -402,6 +508,8 @@ defmodule BeamWeaver.Tracing.Exporters.LangSmith do
   defp langchain_message_or_value(message), do: message
 
   defp langchain_message(%Message{} = message) do
+    message = langsmith_sanitized_message(message)
+
     %{
       "lc" => 1,
       "type" => "constructor",
@@ -424,33 +532,236 @@ defmodule BeamWeaver.Tracing.Exporters.LangSmith do
 
   defp langchain_message_kwargs(%Message{} = message) do
     %{
-      "content" => langchain_value(message.content),
+      "content" => langchain_value(langsmith_message_content(message.content)),
       "type" => langchain_message_type(message.role),
       "id" => message.id,
       "name" => message.name,
-      "response_metadata" => langchain_value(message.response_metadata),
+      "response_metadata" => langchain_value(langsmith_response_metadata(message.response_metadata)),
       "usage_metadata" => langchain_value(message.usage_metadata),
-      "tool_calls" => langchain_value(message.tool_calls),
+      "tool_calls" => langchain_tool_calls(message.tool_calls),
       "tool_call_id" => message.tool_call_id,
       "artifact" => langchain_value(tool_message_artifact(message)),
       "status" => langchain_value(message.status),
-      "additional_kwargs" => langchain_additional_kwargs(message)
+      "additional_kwargs" => langchain_additional_kwargs(message),
+      "invalid_tool_calls" => invalid_tool_calls(message)
     }
-    |> reject_nil_or_empty_values()
+    |> reject_langchain_message_empty(message.role)
   end
 
   defp langchain_additional_kwargs(%Message{} = message) do
     %{
       server_tool_calls: message.server_tool_calls,
-      server_tool_results: message.server_tool_results,
-      metadata: message.metadata
+      server_tool_results: message.server_tool_results
     }
     |> reject_nil_or_empty_values()
+    |> Map.merge(assistant_provider_additional_kwargs(message))
     |> langchain_value()
   end
 
+  defp assistant_provider_additional_kwargs(%Message{role: :assistant, metadata: metadata})
+       when is_map(metadata) do
+    %{
+      parsed: metadata_value(metadata, :parsed),
+      refusal: metadata_value(metadata, :refusal)
+    }
+  end
+
+  defp assistant_provider_additional_kwargs(_message), do: %{}
+
+  defp invalid_tool_calls(%Message{role: :assistant}), do: []
+  defp invalid_tool_calls(_message), do: nil
+
+  defp reject_langchain_message_empty(map, role) do
+    Map.reject(map, fn
+      {_key, nil} -> true
+      {key, empty} when empty == %{} or empty == [] -> not keep_empty_langchain_field?(role, key)
+      _entry -> false
+    end)
+  end
+
+  defp keep_empty_langchain_field?(:assistant, key),
+    do: key in ["additional_kwargs", "invalid_tool_calls"]
+
+  defp keep_empty_langchain_field?(_role, _key), do: false
+
+  defp langchain_tool_calls([]), do: nil
+  defp langchain_tool_calls(nil), do: nil
+
+  defp langchain_tool_calls(tool_calls) when is_list(tool_calls) do
+    tool_calls
+    |> Enum.map(&langchain_tool_call/1)
+    |> langchain_value()
+  end
+
+  defp langchain_tool_call(call) when is_map(call) do
+    %{
+      "name" => metadata_value(call, :name),
+      "args" => metadata_value(call, :args) || %{},
+      "id" => metadata_first_value(call, [:call_id, :tool_call_id, :id, :provider_id]),
+      "type" => metadata_value(call, :type) || "tool_call"
+    }
+    |> reject_nil_values()
+  end
+
+  defp strip_structured_output_tool_calls(%Run{} = run, messages) do
+    case structured_output_tool_names(run) do
+      [] -> messages
+      names -> strip_structured_output_tool_calls(messages, MapSet.new(names))
+    end
+  end
+
+  defp strip_structured_output_tool_calls(messages, names) when is_list(messages) do
+    Enum.map(messages, &strip_structured_output_tool_calls(&1, names))
+  end
+
+  defp strip_structured_output_tool_calls(%Message{role: :assistant} = message, names) do
+    tool_calls =
+      message.tool_calls
+      |> List.wrap()
+      |> Enum.reject(&structured_output_tool_name?(&1, names))
+
+    content = strip_structured_output_content(message.content, names)
+
+    %{message | content: content, tool_calls: tool_calls}
+  end
+
+  defp strip_structured_output_tool_calls(message, _names), do: message
+
+  defp strip_structured_output_content(content, names) when is_list(content) do
+    Enum.reject(content, fn
+      block when is_map(block) ->
+        metadata_value(block, :type) in ["function_call", :function_call, "tool_call", :tool_call] and
+          structured_output_tool_name?(block, names)
+
+      _block ->
+        false
+    end)
+  end
+
+  defp strip_structured_output_content(content, _names), do: content
+
+  defp langsmith_sanitized_message(%Message{} = message) do
+    message
+    |> strip_structured_output_tool_calls(MapSet.new(message_structured_output_tool_names(message)))
+    |> strip_provider_tool_content_blocks()
+  end
+
+  defp message_structured_output_tool_names(%Message{metadata: metadata, response_metadata: response_metadata}) do
+    metadata_names =
+      metadata
+      |> structured_output_tool_names_from_metadata()
+
+    response_metadata_names =
+      response_metadata
+      |> structured_output_tool_names_from_metadata()
+
+    Enum.uniq(metadata_names ++ response_metadata_names)
+  end
+
+  defp structured_output_tool_names_from_metadata(metadata) do
+    case metadata_value(metadata, :structured_output_tool_names) do
+      names when is_list(names) -> Enum.map(names, &to_string/1)
+      name when is_binary(name) -> [name]
+      name when is_atom(name) -> [Atom.to_string(name)]
+      _other -> []
+    end
+  end
+
+  defp strip_provider_tool_content_blocks(%Message{role: :assistant, content: content} = message) do
+    %{message | content: reject_provider_tool_content_blocks(content)}
+  end
+
+  defp strip_provider_tool_content_blocks(message), do: message
+
+  defp reject_provider_tool_content_blocks(content) when is_list(content) do
+    Enum.reject(content, &provider_tool_content_block?/1)
+  end
+
+  defp reject_provider_tool_content_blocks(content), do: content
+
+  defp provider_tool_content_block?(block) when is_map(block) do
+    metadata_value(block, :type) in ["function_call", :function_call, "tool_call", :tool_call]
+  end
+
+  defp provider_tool_content_block?(_block), do: false
+
+  defp structured_output_tool_names(%Run{metadata: metadata}) do
+    case metadata_value(metadata, :structured_output_tool_names) do
+      names when is_list(names) -> Enum.map(names, &to_string/1)
+      name when is_binary(name) -> [name]
+      name when is_atom(name) -> [Atom.to_string(name)]
+      _other -> []
+    end
+  end
+
+  defp structured_output_tool_name?(call_or_block, names) when is_map(call_or_block) do
+    case metadata_value(call_or_block, :name) do
+      nil -> false
+      name -> MapSet.member?(names, to_string(name))
+    end
+  end
+
+  defp structured_output_tool_name?(_call_or_block, _names), do: false
+
   defp langchain_value(nil), do: nil
   defp langchain_value(value), do: value |> ValueEncoder.encode() |> string_key_maps()
+
+  defp langsmith_message_content(content) when is_list(content) do
+    Enum.map(content, &drop_provider_trace_keys/1)
+  end
+
+  defp langsmith_message_content(content), do: content
+
+  defp langsmith_response_metadata(metadata) when is_map(metadata) do
+    metadata
+    |> Enum.reject(fn {key, _value} -> provider_response_metadata_key?(key) end)
+    |> Map.new(fn {key, value} -> {key, drop_provider_trace_keys(value)} end)
+  end
+
+  defp langsmith_response_metadata(metadata), do: metadata
+
+  defp provider_response_metadata_key?(key)
+       when key in [
+              :raw_provider_block,
+              "raw_provider_block",
+              :raw_provider_response,
+              "raw_provider_response",
+              :provider_metadata,
+              "provider_metadata",
+              :output,
+              "output",
+              :tooling,
+              "tooling",
+              :tools,
+              "tools"
+            ],
+       do: true
+
+  defp provider_response_metadata_key?(_key), do: false
+
+  defp drop_provider_trace_keys(%_struct{} = value), do: value
+
+  defp drop_provider_trace_keys(value) when is_map(value) do
+    value
+    |> Enum.reject(fn {key, _value} -> provider_trace_key?(key) end)
+    |> Map.new(fn {key, nested} -> {key, drop_provider_trace_keys(nested)} end)
+  end
+
+  defp drop_provider_trace_keys(value) when is_list(value), do: Enum.map(value, &drop_provider_trace_keys/1)
+  defp drop_provider_trace_keys(value), do: value
+
+  defp provider_trace_key?(key)
+       when key in [
+              :raw_provider_block,
+              "raw_provider_block",
+              :raw_provider_response,
+              "raw_provider_response",
+              :provider_metadata,
+              "provider_metadata"
+            ],
+       do: true
+
+  defp provider_trace_key?(_key), do: false
 
   defp string_key_maps(value) when is_map(value) do
     Map.new(value, fn {key, nested} -> {langchain_key(key), string_key_maps(nested)} end)
@@ -481,7 +792,7 @@ defmodule BeamWeaver.Tracing.Exporters.LangSmith do
       artifact: tool_message_artifact(message),
       status: tool_message_status(message),
       additional_kwargs: %{},
-      response_metadata: message.response_metadata || %{}
+      response_metadata: langsmith_response_metadata(message.response_metadata || %{})
     }
     |> reject_nil_values()
   end
@@ -521,6 +832,129 @@ defmodule BeamWeaver.Tracing.Exporters.LangSmith do
 
   defp tool_output_content(output), do: json_string(output)
 
+  defp langsmith_generation(%Run{} = run, %{"lc" => _lc} = message, index) do
+    %{
+      text: langchain_generation_text(message),
+      generation_info: langchain_generation_info(message),
+      type: "ChatGeneration",
+      message: put_generated_message_id(message, run, index)
+    }
+  end
+
+  defp langsmith_generation(%Run{} = run, %{lc: _lc} = message, index) do
+    message
+    |> string_key_maps()
+    |> then(&langsmith_generation(run, &1, index))
+  end
+
+  defp langsmith_generation(%Run{} = run, message, index) do
+    langsmith_generation(run, langchain_message_or_value(message), index)
+  end
+
+  defp put_generated_message_id(%{"kwargs" => kwargs} = message, %Run{} = run, index)
+       when is_map(kwargs) do
+    put_in(message, ["kwargs", "id"], Map.get(kwargs, "id") || "lc_run--#{langsmith_id(run.id)}-#{index}")
+  end
+
+  defp put_generated_message_id(message, _run, _index), do: message
+
+  defp langchain_generation_text(%{"kwargs" => %{"content" => content}}), do: message_text(content)
+  defp langchain_generation_text(_message), do: ""
+
+  defp langchain_generation_info(%{"kwargs" => %{"response_metadata" => metadata}})
+       when is_map(metadata) do
+    %{
+      finish_reason:
+        metadata["finish_reason"] || metadata[:finish_reason] || metadata["stop_reason"] ||
+          metadata[:stop_reason],
+      logprobs: metadata["logprobs"] || metadata[:logprobs]
+    }
+  end
+
+  defp langchain_generation_info(_message), do: %{}
+
+  defp langsmith_llm_output(%Run{} = run, messages) do
+    messages
+    |> normalize_message_batches()
+    |> List.first([])
+    |> List.first()
+    |> case do
+      %Message{} = message -> llm_output_model_metadata(run, message)
+      _other -> llm_output_model_metadata(run, nil)
+    end
+  end
+
+  defp llm_output_model_metadata(%Run{} = run, %Message{} = message) do
+    metadata = message.response_metadata || %{}
+
+    %{}
+    |> maybe_put(:token_usage, metadata_value(metadata, :token_usage))
+    |> maybe_put(
+      :model_provider,
+      metadata_first_value(metadata, [:model_provider, :provider]) ||
+        metadata_first_value(run.metadata, [:model_provider, :provider, :ls_provider])
+    )
+    |> maybe_put(
+      :model_name,
+      metadata_first_value(metadata, [:model_name, :model]) ||
+        metadata_first_value(run.metadata, [:model_name, :model, :ls_model_name])
+    )
+    |> maybe_put(:system_fingerprint, metadata_value(metadata, :system_fingerprint))
+    |> maybe_put(:id, metadata_first_value(metadata, [:id, :request_id]))
+    |> reject_nil_values()
+  end
+
+  defp llm_output_model_metadata(%Run{} = run, _message) do
+    %{}
+    |> maybe_put(:model_provider, metadata_first_value(run.metadata, [:model_provider, :provider, :ls_provider]))
+    |> maybe_put(:model_name, metadata_first_value(run.metadata, [:model_name, :model, :ls_model_name]))
+    |> reject_nil_values()
+  end
+
+  defp langsmith_messages(messages) do
+    messages
+    |> List.wrap()
+    |> Enum.map(&langsmith_message_or_value/1)
+  end
+
+  defp langsmith_message_or_value(%Message{} = message), do: langsmith_message(message)
+  defp langsmith_message_or_value(message), do: message
+
+  defp langsmith_message(%Message{} = message) do
+    message = langsmith_sanitized_message(message)
+
+    %{
+      content: langchain_value(langsmith_message_content(message.content)),
+      additional_kwargs: langchain_additional_kwargs(message) || %{},
+      response_metadata: langchain_value(langsmith_response_metadata(message.response_metadata || %{})),
+      type: langchain_message_type(message.role),
+      name: message.name,
+      id: message.id,
+      tool_call_id: message.tool_call_id,
+      tool_calls: langchain_tool_calls(message.tool_calls),
+      invalid_tool_calls: invalid_tool_calls(message),
+      usage_metadata: langchain_value(message.usage_metadata),
+      artifact: langchain_value(tool_message_artifact(message)),
+      status: langchain_value(message.status)
+    }
+    |> reject_nil_values()
+  end
+
+  defp message_text(content) when is_binary(content), do: content
+
+  defp message_text(content) when is_list(content) do
+    content
+    |> Enum.map(fn
+      %{"type" => "text", "text" => text} when is_binary(text) -> text
+      %{type: :text, text: text} when is_binary(text) -> text
+      text when is_binary(text) -> text
+      other -> json_string(other)
+    end)
+    |> Enum.join("")
+  end
+
+  defp message_text(_content), do: ""
+
   defp json_string(output) do
     case output |> ValueEncoder.encode() |> BeamWeaver.JSON.encode() do
       {:ok, json} -> json
@@ -529,7 +963,7 @@ defmodule BeamWeaver.Tracing.Exporters.LangSmith do
   end
 
   defp langsmith_tool_call_id(%Run{kind: :tool, metadata: metadata}),
-    do: metadata_value(metadata, :tool_call_id)
+    do: metadata_first_value(metadata, [:call_id, :tool_call_id, :id, :provider_id])
 
   defp langsmith_tool_call_id(_run), do: nil
 
@@ -545,7 +979,7 @@ defmodule BeamWeaver.Tracing.Exporters.LangSmith do
   defp maybe_put_encoded(payload, _key, nil), do: payload
 
   defp maybe_put_encoded(payload, key, value) do
-    Map.put(payload, key, value |> wrap_value() |> ValueEncoder.encode())
+    Map.put(payload, key, value |> sanitize_langsmith_payload() |> wrap_value() |> ValueEncoder.encode())
   end
 
   defp wrap_value(nil), do: %{}
@@ -585,6 +1019,14 @@ defmodule BeamWeaver.Tracing.Exporters.LangSmith do
 
   defp reject_nil_values(map), do: Map.reject(map, fn {_key, value} -> is_nil(value) end)
 
+  defp reject_nil_or_empty_values(map) do
+    Map.reject(map, fn
+      {_key, nil} -> true
+      {_key, empty} when empty == %{} or empty == [] -> true
+      _entry -> false
+    end)
+  end
+
   defp langsmith_metadata(%Run{} = run) do
     %{
       beam_weaver_run_id: run.id,
@@ -594,9 +1036,61 @@ defmodule BeamWeaver.Tracing.Exporters.LangSmith do
     |> maybe_put_new(:ls_integration, langsmith_integration(run))
     |> maybe_put_new(:ls_message_format, langsmith_message_format(run))
     |> maybe_put(:usage_metadata, usage_metadata(run))
+    |> sanitize_langsmith_metadata()
   end
 
-  defp langsmith_integration(%Run{kind: :model}), do: "langchain_chat_model"
+  defp sanitize_langsmith_metadata(%_struct{} = value), do: value
+
+  defp sanitize_langsmith_metadata(metadata) when is_map(metadata) do
+    metadata
+    |> Enum.reject(fn {key, _value} -> provider_trace_key?(key) or internal_trace_key?(key) end)
+    |> Map.new(fn
+      {key, value} when key in [:response_metadata, "response_metadata"] ->
+        {key, langsmith_response_metadata(value)}
+
+      {key, value} ->
+        {key, sanitize_langsmith_metadata(value)}
+    end)
+  end
+
+  defp sanitize_langsmith_metadata(value) when is_list(value),
+    do: Enum.map(value, &sanitize_langsmith_metadata/1)
+
+  defp sanitize_langsmith_metadata(value), do: value
+
+  defp sanitize_langsmith_payload(%_struct{} = value), do: value
+
+  defp sanitize_langsmith_payload(value) when is_map(value) do
+    value
+    |> Enum.reject(fn {key, _value} -> provider_trace_key?(key) or internal_trace_key?(key) end)
+    |> Map.new(fn
+      {key, nested} when key in [:response_metadata, "response_metadata"] ->
+        {key, langsmith_response_metadata(nested)}
+
+      {key, nested} ->
+        {key, sanitize_langsmith_payload(nested)}
+    end)
+  end
+
+  defp sanitize_langsmith_payload(value) when is_list(value),
+    do: Enum.map(value, &sanitize_langsmith_payload/1)
+
+  defp sanitize_langsmith_payload(value), do: value
+
+  defp internal_trace_key?(key) when key in [:__node_outputs__, "__node_outputs__", :__edge_runs__, "__edge_runs__"],
+    do: true
+
+  defp internal_trace_key?(_key), do: false
+
+  defp langsmith_integration(%Run{kind: :model, metadata: metadata}) do
+    case metadata_first_value(metadata, [:model_provider, :provider, :ls_provider]) do
+      provider when provider in [:openai, "openai", :xai, "xai"] -> "langchain_openai"
+      provider when provider in [:google, "google", :gemini, "gemini"] -> "langchain_google_genai"
+      provider when provider in [:anthropic, "anthropic"] -> "langchain_anthropic"
+      _other -> "langchain_chat_model"
+    end
+  end
+
   defp langsmith_integration(%Run{kind: kind}) when kind in [:graph, :agent], do: "langgraph"
   defp langsmith_integration(_run), do: nil
 
@@ -605,6 +1099,109 @@ defmodule BeamWeaver.Tracing.Exporters.LangSmith do
 
   defp usage_metadata(%Run{usage: usage}) when is_map(usage) and map_size(usage) > 0, do: usage
   defp usage_metadata(_run), do: nil
+
+  defp langsmith_runtime do
+    %{
+      sdk: "beam_weaver",
+      sdk_version: Application.spec(:beam_weaver, :vsn) |> to_string(),
+      library: "beam_weaver",
+      runtime: "elixir",
+      runtime_version: System.version(),
+      otp_release: System.otp_release()
+    }
+  end
+
+  defp user_agent_header do
+    {"user-agent", "beam-weaver/#{beam_weaver_version()} langsmith-elixir"}
+  end
+
+  defp langsmith_finch_private(operation, url, project, operations) do
+    [
+      beam_weaver: %{
+        provider: :langsmith,
+        operation: operation,
+        method: langsmith_http_method(operation),
+        url: redact_url(url),
+        project: project,
+        run_count: length(operations),
+        post_count: Enum.count(operations, &match?({:post, _payload}, &1)),
+        patch_count: Enum.count(operations, &match?({:patch, _payload}, &1))
+      }
+    ]
+  end
+
+  defp langsmith_http_method(:patch), do: :patch
+  defp langsmith_http_method(_operation), do: :post
+
+  defp redact_url(url) when is_binary(url) do
+    uri = URI.parse(url)
+
+    %URI{uri | query: nil}
+    |> URI.to_string()
+  end
+
+  defp redact_url(url), do: to_string(url)
+
+  defp beam_weaver_version do
+    Application.spec(:beam_weaver, :vsn)
+    |> to_string()
+  end
+
+  defp langsmith_model_kwargs(%Run{} = run) do
+    params = metadata_value(run.metadata, :invocation_params) || %{}
+
+    %{}
+    |> maybe_put(
+      "model_name",
+      metadata_first_value(params, [:model_name, :model]) || metadata_first_value(run.metadata, [:model_name, :model])
+    )
+    |> maybe_put("temperature", metadata_value(params, :temperature))
+    |> maybe_put("max_tokens", metadata_first_value(params, [:max_tokens, :max_completion_tokens, :max_output_tokens]))
+    |> maybe_put("stream", metadata_value(params, :stream))
+    |> reject_nil_values()
+  end
+
+  defp normalize_provider_namespace(nil), do: "base"
+  defp normalize_provider_namespace(:xai), do: "openai"
+  defp normalize_provider_namespace("xai"), do: "openai"
+  defp normalize_provider_namespace(provider) when is_atom(provider), do: Atom.to_string(provider)
+  defp normalize_provider_namespace(provider), do: to_string(provider)
+
+  defp multipart_run_parts(operation, payload) do
+    id = Map.fetch!(payload, :id)
+
+    base =
+      payload
+      |> Map.drop(@multipart_fields)
+      |> reject_nil_values()
+      |> Map.delete(:status)
+      |> maybe_put_multipart_placeholders(operation)
+
+    field_prefix = "#{operation}.#{id}"
+
+    [{field_prefix, base}] ++
+      Enum.flat_map(@multipart_fields, fn field ->
+        case Map.fetch(payload, field) do
+          {:ok, value} -> [{"#{field_prefix}.#{field}", value || %{}}]
+          :error when field in @multipart_default_fields -> [{"#{field_prefix}.#{field}", %{}}]
+          :error -> []
+        end
+      end)
+  end
+
+  defp maybe_put_multipart_placeholders(base, :post), do: Map.put_new(base, :replicas, [])
+  defp maybe_put_multipart_placeholders(base, :patch), do: Map.put_new(base, :session_id, nil)
+  defp maybe_put_multipart_placeholders(base, _operation), do: base
+
+  defp multipart_json_part(boundary, name, value) do
+    json = BeamWeaver.JSON.encode!(ValueEncoder.encode(value))
+
+    "--#{boundary}\r\n" <>
+      "Content-Disposition: form-data; name=\"#{name}\"\r\n" <>
+      "Content-Type: application/json\r\n" <>
+      "Content-Length: #{byte_size(json)}\r\n\r\n" <>
+      json <> "\r\n"
+  end
 
   defp langsmith_id(nil), do: nil
 
@@ -684,14 +1281,6 @@ defmodule BeamWeaver.Tracing.Exporters.LangSmith do
 
   defp maybe_put_new(map, _key, nil), do: map
   defp maybe_put_new(map, key, value), do: Map.put_new(map, key, value)
-
-  defp reject_nil_or_empty_values(map) do
-    Map.reject(map, fn
-      {_key, nil} -> true
-      {_key, empty} when empty == %{} or empty == [] -> true
-      _entry -> false
-    end)
-  end
 
   defp export_individually(items, opts) do
     Enum.reduce_while(items, :ok, fn {event, run, item_opts}, :ok ->

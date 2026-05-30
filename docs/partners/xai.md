@@ -21,6 +21,9 @@ BeamWeaver includes an OpenAI-compatible xAI provider under `BeamWeaver.XAI`.
   usage metadata, and xAI-specific reasoning-token accounting.
 - Streaming supports text deltas, reconstructed final assistant messages, and
   typed stream envelopes tagged with xAI invocation metadata.
+- Structured output is available on both Responses and Chat Completions. xAI
+  request rendering keeps dynamic map fields as open object schemas while
+  preserving strict closed-object validation for normal nested objects.
 - Deferred Chat Completions requests can be followed up with
   `BeamWeaver.XAI.Client.deferred_completion/3`.
 - Checked-in chat profiles cover `grok-4.3`, `grok-4.20-0309-reasoning`,

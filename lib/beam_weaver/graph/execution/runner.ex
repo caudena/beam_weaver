@@ -31,7 +31,7 @@ defmodule BeamWeaver.Graph.Execution.Runner do
               kind: :graph,
               inputs: input,
               tags: [:graph],
-              metadata: %{run_id: options.run_id}
+              metadata: trace_metadata(options)
             )
 
           case RunInit.build(compiled, input, options, resume) do
@@ -105,4 +105,54 @@ defmodule BeamWeaver.Graph.Execution.Runner do
       {:halt, result} -> result
     end
   end
+
+  defp trace_metadata(options) do
+    configurable =
+      case options.config do
+        %{} = config -> Map.get(config, "configurable") || Map.get(config, :configurable) || %{}
+        _other -> %{}
+      end
+
+    %{run_id: options.run_id}
+    |> Map.merge(public_configurable_metadata(configurable))
+  end
+
+  defp public_configurable_metadata(configurable) when is_map(configurable) do
+    configurable
+    |> Enum.filter(fn {key, _value} -> public_configurable_key?(key) end)
+    |> Map.new(fn {key, value} -> {public_configurable_key_name(key), value} end)
+  end
+
+  defp public_configurable_metadata(_configurable), do: %{}
+
+  defp public_configurable_key?(key) do
+    public_configurable_key_name(key) in [
+      :thread_id,
+      :lc_agent_name,
+      :ls_agent_type,
+      :subagent_name,
+      :execution_mode,
+      :structured_output_strategy,
+      :subagent_phase,
+      :capture_key
+    ]
+  end
+
+  defp public_configurable_key_name(key) when is_atom(key), do: key
+
+  defp public_configurable_key_name(key) when is_binary(key) do
+    case key do
+      "thread_id" -> :thread_id
+      "lc_agent_name" -> :lc_agent_name
+      "ls_agent_type" -> :ls_agent_type
+      "subagent_name" -> :subagent_name
+      "execution_mode" -> :execution_mode
+      "structured_output_strategy" -> :structured_output_strategy
+      "subagent_phase" -> :subagent_phase
+      "capture_key" -> :capture_key
+      _other -> key
+    end
+  end
+
+  defp public_configurable_key_name(key), do: key
 end

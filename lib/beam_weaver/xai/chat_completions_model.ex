@@ -88,10 +88,16 @@ defmodule BeamWeaver.XAI.ChatCompletionsModel do
     %Options{opts: builder_opts}
     |> Options.to_body(model, messages)
     |> convert_error()
+    |> normalize_xai_structured_output()
     |> maybe_put_stream_usage(model, opts)
     |> maybe_put_tools(tools)
     |> maybe_put_deferred(model, opts)
   end
+
+  defp normalize_xai_structured_output({:ok, body}),
+    do: {:ok, Messages.preserve_xai_open_object_maps(body)}
+
+  defp normalize_xai_structured_output(other), do: other
 
   def count_tokens(%__MODULE__{} = model, input, opts) do
     case model.tokenizer || BeamWeaver.Models.tokenizer_for(model) do

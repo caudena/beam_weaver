@@ -8,6 +8,7 @@ defmodule BeamWeaver.Agent.StructuredOutputStrategyTest do
   alias BeamWeaver.Agent.StructuredOutput
   alias BeamWeaver.Core.Error
   alias BeamWeaver.Core.Message
+  alias BeamWeaver.Core.Messages
   alias BeamWeaver.Core.Tool
   alias BeamWeaver.Models.FakeChatModel
 
@@ -266,6 +267,35 @@ defmodule BeamWeaver.Agent.StructuredOutputStrategyTest do
 
     assert {:ok, %{messages: [^message], structured_response: nil}} =
              StructuredOutput.handle_model_output(message, strategy)
+  end
+
+  test "tool strategy replies with executable call id when provider id differs" do
+    strategy = StructuredOutput.tool(@person_schema)
+
+    message =
+      Message.assistant("",
+        tool_calls: [
+          Messages.tool_call(
+            id: "fc_person",
+            provider_id: "fc_person",
+            call_id: "call-person",
+            name: "Person",
+            args: %{"name" => "John", "age" => 30}
+          )
+        ]
+      )
+
+    assert {:ok,
+            %{
+              messages: [
+                %Message{role: :assistant, metadata: metadata},
+                %Message{role: :tool, tool_call_id: "call-person", name: "Person"}
+              ],
+              structured_response: %{"name" => "John", "age" => 30}
+            }} = StructuredOutput.handle_model_output(message, strategy)
+
+    assert metadata.structured_output_strategy == :tool
+    assert metadata.structured_output_tool_names == ["Person"]
   end
 
   test "provider strategy returns tagged parse and validation errors" do

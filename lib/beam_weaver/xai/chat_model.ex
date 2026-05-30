@@ -82,8 +82,14 @@ defmodule BeamWeaver.XAI.ChatModel do
     model
     |> RequestBuilder.request_body(messages, opts)
     |> convert_error()
+    |> normalize_xai_structured_output()
     |> validate_tools()
   end
+
+  defp normalize_xai_structured_output({:ok, body}),
+    do: {:ok, Messages.preserve_xai_open_object_maps(body)}
+
+  defp normalize_xai_structured_output(other), do: other
 
   defp client(%__MODULE__{} = model) do
     %Client{

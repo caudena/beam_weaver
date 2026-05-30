@@ -158,8 +158,8 @@ active. Agent streaming paths that use provider `stream_response/3` are wrapped
 the same way. These model runs include:
 
 * `inputs.messages`
-* `outputs.messages`
 * `outputs.generations`
+* `outputs.llm_output`
 * `extra.invocation_params`
 * `extra.metadata.ls_integration`
 * `extra.metadata.ls_message_format`
@@ -167,11 +167,12 @@ the same way. These model runs include:
 * `extra.metadata.ls_model_name`
 * `extra.metadata.usage_metadata`
 
-LangSmith uses `outputs.generations`, `ls_integration`, and
-`ls_message_format` to render chat messages in the trace UI. It uses the
-`ls_provider`, `ls_model_name`, and `usage_metadata` fields to populate model
-and token details. BeamWeaver also stores the same provider/model values under
-`model_provider` and `model_name` for local correlation.
+LangSmith uses the exported `outputs.generations` `LLMResult` shape,
+`ls_integration`, and `ls_message_format` to render chat messages in the trace
+UI. It uses `outputs.llm_output`, `ls_provider`, `ls_model_name`, and
+`usage_metadata` to populate model and token details. BeamWeaver also stores the
+same provider/model values under `model_provider` and `model_name` for local
+correlation.
 
 Graph nodes run in BEAM tasks. BeamWeaver propagates the active tracing context
 into those tasks, so model calls inside graph nodes appear as children of the
@@ -203,6 +204,11 @@ runs because no registered tool executed. Middleware that retries by invoking
 the same handler more than once creates one tool run per attempt, all with the
 same `tool_call_id`.
 
+When provider-native IDs differ from executable tool IDs, the LangSmith exporter
+uses the executable ID for trace linking. Tool-call exports prefer `call_id`,
+then `tool_call_id`, then local `id`, then `provider_id`. This keeps OpenAI/xAI
+provider IDs such as `fc_*` out of LangSmith's executable tool edge.
+
 Handled validation or tool errors finish the tool run successfully with the
 handled error result as the output. Unhandled validation errors and exceptions
 fail the tool run. Pass `trace?: false` only inside wrapper tools that delegate
@@ -211,13 +217,20 @@ to another tool and should not produce a nested duplicate run.
 The LangSmith exporter keeps this compatibility work at the export boundary.
 BeamWeaver run structs do not contain LangSmith-only `serialized` or `events`
 fields. During export, model inputs and outputs receive LangChain-compatible
-chat message constructors and `outputs.generations` while retaining
-BeamWeaver-native `outputs.messages` for local correlation. Tool runs receive a
+chat message constructors and `outputs.generations`. Tool runs receive a
 LangSmith-style `serialized` shape, SDK-style lifecycle events,
 `extra.tool_call_id`, and a LangChain-like `outputs.output` tool-message
 payload. Graph and agent root payloads also get
 `extra.metadata.ls_integration = "langgraph"` during export without mutating
 local BeamWeaver metadata.
+
+Structured-output tool strategy uses pseudo tools to get schema-shaped model
+responses. Those schema calls are not executable application tools, so the
+LangSmith exporter strips them from exported tool-call lists and provider
+content blocks. Raw provider fields such as `raw_provider_block`,
+`raw_provider_response`, and `provider_metadata` are also removed at the export
+boundary. Internal graph bookkeeping channels such as `__node_outputs__` and
+`__edge_runs__` are not uploaded.
 
 ### LangSmith Export Failures
 
@@ -263,14 +276,19 @@ or headers for a one-off investigation, log them in a sanitizing transport
 wrapper or test transport so trace inputs, outputs, and credentials do not leak
 into application logs.
 
-Batch exports use the same `/runs/batch` object shape as the official
-LangSmith SDK: `post` and `patch` lists, rather than a top-level JSON array.
-When a create and later update for the same run are flushed in the same batch,
-BeamWeaver coalesces them into one `post` payload, matching the SDK's queue
-serialization behavior. Update payloads omit absent `inputs` and `outputs`, so
-metadata-only updates cannot erase the real graph input or final output during
-coalescing. A `422` response that says the server cannot unmarshal an array
-means the caller is sending the wrong batch JSON shape.
+Batch exports use the SDK-style `/runs/multipart` endpoint first. Each run
+operation is split into multipart fields such as `post.<id>`,
+`post.<id>.inputs`, `patch.<id>.outputs`, and `patch.<id>.extra`. If the
+server does not support multipart uploads, BeamWeaver falls back to the
+`/runs/batch` object shape with `post` and `patch` lists, and finally to
+individual run uploads if the batch endpoint is unavailable too.
+
+When a create and later update for the same run are flushed through the JSON
+batch fallback, BeamWeaver coalesces them into one `post` payload, matching the
+SDK's queue serialization behavior. Update payloads omit absent `inputs` and
+`outputs`, so metadata-only updates cannot erase the real graph input or final
+output during coalescing. A `422` response that says the server cannot unmarshal
+an array means the caller is sending the wrong batch JSON shape.
 
 Like the official SDK, run starts are sent as creates and run finishes or
 failures are sent as patches. If you only see diagnostic rows such as

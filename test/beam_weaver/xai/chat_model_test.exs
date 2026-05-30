@@ -420,8 +420,138 @@ defmodule BeamWeaver.XAI.ChatModelTest do
     assert embeddings.__struct__ == EmbeddingModel
   end
 
+  test "structured output leaves dynamic empty object maps open for xAI" do
+    format =
+      BeamWeaver.XAI.Messages.structured_output_format(
+        "crm_updates",
+        %{
+          "type" => "object",
+          "properties" => %{
+            "contacts_to_update" => %{
+              "type" => "array",
+              "items" => %{
+                "type" => "object",
+                "properties" => %{
+                  "contact_id" => %{"type" => "integer"},
+                  "properties" => %{"type" => "object"}
+                },
+                "required" => ["properties"]
+              }
+            }
+          },
+          "required" => ["contacts_to_update"]
+        },
+        strict: true
+      )
+
+    dynamic_properties =
+      get_in(format, [
+        "schema",
+        "properties",
+        "contacts_to_update",
+        "items",
+        "properties",
+        "properties"
+      ])
+
+    assert dynamic_properties == %{"type" => "object"}
+    refute Map.has_key?(dynamic_properties, "additionalProperties")
+
+    contact_update =
+      get_in(format, ["schema", "properties", "contacts_to_update", "items"])
+
+    assert contact_update["additionalProperties"] == false
+    assert Enum.sort(contact_update["required"]) == ["contact_id", "properties"]
+  end
+
+  test "Responses request body opens dynamic object maps inside nullable branches" do
+    assert {:ok, body} =
+             ChatModel.request_body(
+               ChatModel.new(model: "grok-4.3"),
+               [Message.user("update crm")],
+               response_format: %{name: "crm_updates", schema: nullable_crm_schema()}
+             )
+
+    dynamic_properties =
+      get_in(body, [
+        "text",
+        "format",
+        "schema",
+        "properties",
+        "contacts_to_update",
+        "anyOf",
+        Access.at(0),
+        "items",
+        "properties",
+        "properties"
+      ])
+
+    assert dynamic_properties == %{"type" => "object"}
+    refute Map.has_key?(dynamic_properties, "additionalProperties")
+
+    contact_update =
+      get_in(body, [
+        "text",
+        "format",
+        "schema",
+        "properties",
+        "contacts_to_update",
+        "anyOf",
+        Access.at(0),
+        "items"
+      ])
+
+    assert contact_update["additionalProperties"] == false
+  end
+
+  test "Chat Completions request body opens dynamic object maps inside json_schema format" do
+    assert {:ok, body} =
+             ChatCompletionsModel.request_body(
+               ChatCompletionsModel.new(model: "grok-4.3"),
+               [Message.user("update crm")],
+               response_format: %{name: "crm_updates", schema: nullable_crm_schema()}
+             )
+
+    dynamic_properties =
+      get_in(body, [
+        "response_format",
+        "json_schema",
+        "schema",
+        "properties",
+        "contacts_to_update",
+        "anyOf",
+        Access.at(0),
+        "items",
+        "properties",
+        "properties"
+      ])
+
+    assert dynamic_properties == %{"type" => "object"}
+    refute Map.has_key?(dynamic_properties, "additionalProperties")
+  end
+
   defp with_config(group, values, fun) do
     BeamWeaver.TestSupport.ConfigHelper.put_config(group, values)
     fun.()
+  end
+
+  defp nullable_crm_schema do
+    %{
+      "type" => "object",
+      "properties" => %{
+        "contacts_to_update" => %{
+          "type" => "array",
+          "items" => %{
+            "type" => "object",
+            "properties" => %{
+              "contact_id" => %{"type" => "integer"},
+              "properties" => %{"type" => "object"}
+            },
+            "required" => ["properties"]
+          }
+        }
+      },
+      "required" => []
+    }
   end
 end

@@ -27,7 +27,75 @@ defmodule BeamWeaver.XAI.Messages do
 
   @spec structured_output_format(String.t(), map(), keyword()) :: map()
   def structured_output_format(name, schema, opts \\ []) do
-    OpenAIMessages.structured_output_format(name, schema, opts)
+    name
+    |> OpenAIMessages.structured_output_format(schema, opts)
+    |> preserve_open_empty_object_maps()
+  end
+
+  @spec preserve_xai_open_object_maps(map()) :: map()
+  def preserve_xai_open_object_maps(%{} = body) do
+    body
+    |> update_format_in(["text", "format"])
+    |> update_format_in(["response_format"])
+  end
+
+  def preserve_xai_open_object_maps(body), do: body
+
+  defp update_format_in(body, path) do
+    case get_in(body, path) do
+      %{} = format -> put_in(body, path, preserve_open_empty_object_maps(format))
+      _other -> body
+    end
+  end
+
+  defp preserve_open_empty_object_maps(%{"schema" => schema} = format) do
+    Map.put(format, "schema", preserve_open_empty_object_maps(schema))
+  end
+
+  defp preserve_open_empty_object_maps(%{"json_schema" => %{"schema" => schema}} = format) do
+    put_in(format, ["json_schema", "schema"], preserve_open_empty_object_maps(schema))
+  end
+
+  defp preserve_open_empty_object_maps(%{} = schema) do
+    schema
+    |> maybe_open_empty_object_map()
+    |> update_schema_child("properties", fn properties ->
+      Map.new(properties, fn {key, value} -> {key, preserve_open_empty_object_maps(value)} end)
+    end)
+    |> update_schema_child("items", &preserve_open_empty_object_maps/1)
+    |> update_schema_child("anyOf", fn schemas -> Enum.map(schemas, &preserve_open_empty_object_maps/1) end)
+    |> update_schema_child("oneOf", fn schemas -> Enum.map(schemas, &preserve_open_empty_object_maps/1) end)
+    |> update_schema_child("allOf", fn schemas -> Enum.map(schemas, &preserve_open_empty_object_maps/1) end)
+    |> update_schema_child("$defs", fn defs ->
+      Map.new(defs, fn {key, value} -> {key, preserve_open_empty_object_maps(value)} end)
+    end)
+    |> update_schema_child("definitions", fn defs ->
+      Map.new(defs, fn {key, value} -> {key, preserve_open_empty_object_maps(value)} end)
+    end)
+  end
+
+  defp preserve_open_empty_object_maps(value), do: value
+
+  defp maybe_open_empty_object_map(
+         %{"type" => "object", "properties" => properties, "additionalProperties" => false} = schema
+       )
+       when properties == %{} or is_nil(properties) do
+    required = Map.get(schema, "required", [])
+
+    if required in [[], nil] do
+      Map.drop(schema, ["properties", "required", "additionalProperties"])
+    else
+      schema
+    end
+  end
+
+  defp maybe_open_empty_object_map(schema), do: schema
+
+  defp update_schema_child(schema, key, fun) do
+    case Map.fetch(schema, key) do
+      {:ok, value} -> Map.put(schema, key, fun.(value))
+      :error -> schema
+    end
   end
 
   @spec to_chat_completions_messages([Message.t()]) :: {:ok, [map()]} | {:error, Error.t()}
