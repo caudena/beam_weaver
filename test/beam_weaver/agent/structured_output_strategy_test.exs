@@ -8,6 +8,8 @@ defmodule BeamWeaver.Agent.StructuredOutputStrategyTest do
   alias BeamWeaver.Agent.StructuredOutput
   alias BeamWeaver.Core.Error
   alias BeamWeaver.Core.Message
+  alias BeamWeaver.Core.Tool
+  alias BeamWeaver.Models.FakeChatModel
 
   @person_schema %{
     "title" => "Person",
@@ -55,6 +57,63 @@ defmodule BeamWeaver.Agent.StructuredOutputStrategyTest do
 
     custom = StructuredOutput.tool(@person_schema, tool_message_content: "custom message")
     assert custom.tool_message_content == "custom message"
+  end
+
+  test "auto strategy avoids provider-native structured output when normal tools are active" do
+    lookup_tool =
+      Tool.from_function!(
+        name: "lookup",
+        description: "Lookup facts.",
+        input_schema: %{"type" => "object", "properties" => %{}},
+        handler: fn args, _opts -> args end
+      )
+
+    strategy =
+      StructuredOutput.effective_strategy(
+        StructuredOutput.auto(@person_schema),
+        %FakeChatModel{profile: %{structured_output: true}},
+        [lookup_tool]
+      )
+
+    assert %StructuredOutput.ToolStrategy{} = strategy
+
+    provider_strategy =
+      StructuredOutput.effective_strategy(
+        StructuredOutput.auto(@person_schema),
+        %FakeChatModel{profile: %{structured_output: true, structured_output_with_tools: true}},
+        [lookup_tool]
+      )
+
+    assert %StructuredOutput.ProviderStrategy{} = provider_strategy
+  end
+
+  test "provider strategy falls back to tool strategy with active tools unless provider marks support" do
+    lookup_tool =
+      Tool.from_function!(
+        name: "lookup",
+        description: "Lookup facts.",
+        input_schema: %{"type" => "object", "properties" => %{}},
+        handler: fn args, _opts -> args end
+      )
+
+    strategy =
+      StructuredOutput.effective_strategy(
+        StructuredOutput.provider(@person_schema, name: "PersonResponse"),
+        %FakeChatModel{profile: %{structured_output: true}},
+        [lookup_tool]
+      )
+
+    assert %StructuredOutput.ToolStrategy{schema_specs: [spec]} = strategy
+    assert spec.name == "PersonResponse"
+
+    provider_strategy =
+      StructuredOutput.effective_strategy(
+        StructuredOutput.provider(@person_schema, name: "PersonResponse"),
+        %FakeChatModel{profile: %{structured_output: true, structured_output_with_tools: true}},
+        [lookup_tool]
+      )
+
+    assert %StructuredOutput.ProviderStrategy{} = provider_strategy
   end
 
   test "tool strategy supports explicit oneOf schema alternatives" do

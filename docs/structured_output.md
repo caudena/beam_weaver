@@ -132,6 +132,24 @@ response_format StructuredOutput.provider(@contact_schema, strict: true)
 adherence. Provider support varies; unsupported providers may ignore strictness
 or reject the request.
 
+For OpenAI response formats, BeamWeaver normalizes strict schemas before sending
+the request: object schemas are closed with `additionalProperties: false`, every
+declared property is listed in `required`, optional properties become nullable,
+and unsupported validation/composition keywords are removed. A free-form object
+such as `%{"type" => "object"}` becomes a closed empty object in strict mode;
+model genuinely dynamic key/value payloads as arrays of entries or use
+non-strict/application validation when arbitrary keys are required.
+
+Provider-native structured output and active tool calling are not equally
+reliable across providers. When normal tools are active, BeamWeaver avoids
+provider-native structured output unless the model profile explicitly marks the
+combination as supported with `structured_output_with_tools: true`. Otherwise
+the effective strategy is the tool strategy, preserving the same schema name.
+
+For specialists that need tools and must return structured data, prefer a
+subagent with `execution_mode: :research_then_generate`: the first pass can use
+tools, and the final generation pass is tool-free structured output.
+
 Passing a raw schema lets BeamWeaver choose:
 
 ```elixir
@@ -146,7 +164,9 @@ model profile data. BeamWeaver uses its local model profile registry and any
 explicit `:profile` override you pass to `init_chat_model/2`. If a future model
 supports provider-native structured output before BeamWeaver's checked-in
 profile data knows about it, pass a profile override with
-`structured_output: true`.
+`structured_output: true`. Only add `structured_output_with_tools: true` after
+you have verified that the provider/model combination can reliably mix native
+structured output and tool calls.
 {% endhint %}
 
 Provider strategy returns the parsed structured value in `state.structured_response`:
@@ -386,7 +406,10 @@ response.metadata["parsed"]
 
 OpenAI and xAI Responses and Chat Completions use JSON Schema response formats.
 Anthropic uses `output_config.format` for structured output. Google maps
-schemas to Gemini generation config. See the [OpenAI](partners/openai.md),
+schemas to Gemini generation config. Structured-output parse errors include the
+provider finish/status reason, clipped content preview, metadata, and usage
+details so truncation and tool-call-only responses can be diagnosed without
+logging the full provider payload. See the [OpenAI](partners/openai.md),
 [Anthropic](partners/anthropic.md), [Google](partners/google.md), [xAI](partners/xai.md), and [Models](models.md)
 guides for provider-specific request details.
 

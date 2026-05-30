@@ -4,6 +4,7 @@ defmodule BeamWeaver.Moonshot.ChatModelTest do
   alias BeamWeaver.Core.ChatModel, as: CoreChatModel
   alias BeamWeaver.Core.ContentBlock
   alias BeamWeaver.Core.Message
+  alias BeamWeaver.Core.Tool
   alias BeamWeaver.Core.Messages.ToolCall
   alias BeamWeaver.Models
   alias BeamWeaver.Moonshot.ChatModel
@@ -146,6 +147,17 @@ defmodule BeamWeaver.Moonshot.ChatModelTest do
   end
 
   test "function tools and built-in web search are rendered with Kimi rules" do
+    beam_weaver_tool = %Tool{
+      name: "lookup_account",
+      description: "Lookup an account",
+      input_schema: %{
+        "type" => "object",
+        "properties" => %{"account_id" => %{"type" => "string"}},
+        "required" => ["account_id"]
+      },
+      handler: fn _args, _opts -> {:ok, "ok"} end
+    }
+
     function_tool = %{
       "type" => "function",
       "function" => %{
@@ -159,12 +171,27 @@ defmodule BeamWeaver.Moonshot.ChatModelTest do
              ChatModel.request_body(
                ChatModel.new(model: "kimi-k2.6"),
                [Message.user("search")],
-               tools: [function_tool, Tools.web_search()],
+               tools: [beam_weaver_tool, function_tool, Tools.web_search()],
                thinking: %{type: :disabled},
                tool_choice: :auto
              )
 
-    assert body["tools"] == [function_tool, Tools.web_search()]
+    assert [
+             %{
+               "type" => "function",
+               "function" => %{
+                 "name" => "lookup_account",
+                 "parameters" => %{
+                   "properties" => %{"account_id" => %{"type" => "string"}},
+                   "required" => ["account_id"],
+                   "type" => "object"
+                 }
+               }
+             },
+             ^function_tool,
+             %{"type" => "builtin_function"}
+           ] = body["tools"]
+
     assert body["tool_choice"] == "auto"
 
     assert {:error, error} =
@@ -243,6 +270,38 @@ defmodule BeamWeaver.Moonshot.ChatModelTest do
              input_token_details: %{cache_read: 6},
              output_token_details: %{reasoning: 7}
            }
+  end
+
+  test "renders assistant tool call ids with the provider id used by following tool messages" do
+    messages = [
+      Message.assistant("",
+        tool_calls: [
+          %ToolCall{
+            id: "task_0",
+            provider_id: "task:0",
+            call_id: "task:0",
+            name: "task",
+            args: %{"description" => "run subagent"}
+          }
+        ]
+      ),
+      Message.tool("done", tool_call_id: "task:0", name: "task")
+    ]
+
+    assert {:ok, moonshot_messages} = Messages.to_chat_messages(messages)
+
+    assert [
+             %{
+               "role" => "assistant",
+               "tool_calls" => [
+                 %{
+                   "id" => "task:0",
+                   "function" => %{"name" => "task"}
+                 }
+               ]
+             },
+             %{"role" => "tool", "tool_call_id" => "task:0"}
+           ] = moonshot_messages
   end
 
   test "invokes Moonshot Chat Completions through fake transport" do

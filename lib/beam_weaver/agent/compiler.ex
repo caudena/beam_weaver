@@ -26,12 +26,14 @@ defmodule BeamWeaver.Agent.Compiler do
     {:ok, middleware} = Middleware.normalize_all(spec.middleware)
     response_format = StructuredOutput.normalize(spec.response_format)
     middleware_tools = Enum.flat_map(middleware, &Middleware.tools/1)
-    structured_tools = StructuredOutput.setup_tools(response_format)
-    tools = normalize_declared_tools(spec.tools ++ middleware_tools ++ structured_tools)
+    base_tools = normalize_declared_tools(spec.tools ++ middleware_tools)
+    response_strategy = StructuredOutput.effective_strategy(response_format, spec.model, base_tools)
+    structured_tools = StructuredOutput.setup_tools(response_strategy)
+    tools = normalize_declared_tools(base_tools ++ structured_tools)
     tool_node? = tools != [] or Enum.any?(middleware, &Middleware.tool_node_required?/1)
 
     state_schema =
-      response_format
+      response_strategy
       |> is_nil()
       |> Kernel.not()
       |> Schema.default_state_schema()
@@ -63,7 +65,7 @@ defmodule BeamWeaver.Agent.Compiler do
           system_prompt: spec.system_prompt,
           middleware: middleware,
           agent_name: spec.name,
-          response_format: response_format
+          response_format: response_strategy
         ),
         model_node_opts(spec)
       )

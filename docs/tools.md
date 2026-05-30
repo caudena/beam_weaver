@@ -769,7 +769,9 @@ Render provider schemas directly when building provider-specific requests:
 ```
 
 Provider renderers strip injected fields from schemas and validate provider-safe
-names.
+names. OpenAI strict rendering closes object schemas and makes every declared
+property required; Google rendering sanitizes Gemini function declarations by
+dereferencing local `$ref` values and removing unsupported JSON Schema keywords.
 
 ## Prebuilt Tools
 

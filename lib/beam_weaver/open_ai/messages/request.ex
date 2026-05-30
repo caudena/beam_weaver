@@ -26,13 +26,18 @@ defmodule BeamWeaver.OpenAI.Messages.Request do
   @spec structured_output_format(String.t(), map(), keyword()) :: map()
   def structured_output_format(name, schema, opts \\ [])
       when is_binary(name) and is_map(schema) do
+    strict = Keyword.get(opts, :strict, true)
+
     %{
       "type" => "json_schema",
       "name" => name,
-      "schema" => Shared.stringify_keys(schema),
-      "strict" => Keyword.get(opts, :strict, true)
+      "schema" => response_schema(schema, strict),
+      "strict" => strict
     }
   end
+
+  defp response_schema(schema, true), do: Renderer.strict_json_schema(schema, optional: :nullable)
+  defp response_schema(schema, _strict), do: Shared.stringify_keys(schema)
 
   @spec normalize_input_items([map()] | nil) :: {:ok, [map()]} | {:error, Error.t()}
   def normalize_input_items(nil), do: {:ok, []}
@@ -297,7 +302,7 @@ defmodule BeamWeaver.OpenAI.Messages.Request do
   end
 
   defp assistant_content_event(%ContentBlock.Unknown{value: value}, _message_id) when is_map(value) do
-    {:item, Shared.stringify_keys(value)}
+    {:item, value |> Shared.stringify_keys() |> drop_internal_provider_fields()}
   end
 
   defp assistant_content_event(%{type: type} = block, _message_id)
@@ -311,7 +316,7 @@ defmodule BeamWeaver.OpenAI.Messages.Request do
     type = provider_type(type)
 
     if Shared.output_block_type?(type) do
-      {:item, Shared.stringify_keys(block)}
+      {:item, sanitize_output_item(block)}
     else
       :skip
     end
@@ -403,6 +408,36 @@ defmodule BeamWeaver.OpenAI.Messages.Request do
 
   defp provider_type(type) when is_atom(type), do: Atom.to_string(type)
   defp provider_type(type), do: type
+
+  defp sanitize_output_item(%{type: :reasoning} = block) do
+    block
+    |> Shared.stringify_keys()
+    |> Map.take(["type", "id", "summary", "status", "encrypted_content"])
+    |> Shared.reject_nil_values()
+  end
+
+  defp sanitize_output_item(%{type: type} = block) when type in [:function_call, :tool_call, :tool_use] do
+    block
+    |> Shared.stringify_keys()
+    |> normalize_function_call_item()
+  end
+
+  defp sanitize_output_item(block) when is_map(block) do
+    block
+    |> Shared.stringify_keys()
+    |> drop_internal_provider_fields()
+  end
+
+  defp drop_internal_provider_fields(value) when is_list(value),
+    do: Enum.map(value, &drop_internal_provider_fields/1)
+
+  defp drop_internal_provider_fields(value) when is_map(value) do
+    value
+    |> Map.drop(["raw_provider_block", "provider_id", "__struct__"])
+    |> Map.new(fn {key, nested} -> {key, drop_internal_provider_fields(nested)} end)
+  end
+
+  defp drop_internal_provider_fields(value), do: value
 
   defp assert_atom_content_blocks!(content) do
     Enum.each(content, fn

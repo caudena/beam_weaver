@@ -149,6 +149,20 @@ defmodule BeamWeaver.Tool.Renderer do
   defp maybe_strict_schema(schema, true), do: strict_schema(schema)
   defp maybe_strict_schema(schema, _strict), do: schema
 
+  @doc false
+  @spec strict_json_schema(term(), keyword()) :: term()
+  def strict_json_schema(schema, opts \\ [])
+
+  def strict_json_schema(schema, opts) when is_map(schema) do
+    optional = Keyword.get(opts, :optional, :required)
+
+    schema
+    |> BeamWeaver.MapShape.stringify_keys()
+    |> strict_schema(optional)
+  end
+
+  def strict_json_schema(value, _opts), do: value
+
   defp maybe_put_render_opt(map, provider_key, opts, opt_key) do
     if Keyword.has_key?(opts, opt_key) do
       Map.put(map, provider_key, Keyword.fetch!(opts, opt_key))
@@ -157,15 +171,18 @@ defmodule BeamWeaver.Tool.Renderer do
     end
   end
 
-  defp strict_schema(schema) when is_map(schema) do
+  defp strict_schema(schema), do: strict_schema(schema, :required)
+
+  defp strict_schema(schema, optional) when is_map(schema) do
     schema
-    |> strict_schema_children()
-    |> close_object_schema()
+    |> strip_strict_unsupported_keywords()
+    |> strict_schema_children(optional)
+    |> close_object_schema(optional)
   end
 
-  defp strict_schema(value), do: value
+  defp strict_schema(value, _optional), do: value
 
-  defp strict_schema_children(schema) do
+  defp strict_schema_children(schema, optional) do
     Enum.reduce(
       ["properties", "items", "anyOf", "oneOf", "allOf", "$defs", "definitions"],
       schema,
@@ -176,7 +193,7 @@ defmodule BeamWeaver.Tool.Renderer do
               nil
 
             children when is_map(children) ->
-              Map.new(children, fn {name, child} -> {name, strict_schema(child)} end)
+              Map.new(children, fn {name, child} -> {name, strict_schema(child, optional)} end)
 
             children ->
               children
@@ -185,15 +202,15 @@ defmodule BeamWeaver.Tool.Renderer do
         key, acc when key in ["anyOf", "oneOf", "allOf"] ->
           Map.update(acc, key, nil, fn
             nil -> nil
-            children when is_list(children) -> Enum.map(children, &strict_schema/1)
+            children when is_list(children) -> Enum.map(children, &strict_schema(&1, optional))
             children -> children
           end)
 
         "items", acc ->
           Map.update(acc, "items", nil, fn
             nil -> nil
-            children when is_list(children) -> Enum.map(children, &strict_schema/1)
-            child -> strict_schema(child)
+            children when is_list(children) -> Enum.map(children, &strict_schema(&1, optional))
+            child -> strict_schema(child, optional)
           end)
       end
     )
@@ -201,38 +218,144 @@ defmodule BeamWeaver.Tool.Renderer do
     |> Map.new()
   end
 
-  defp close_object_schema(%{"properties" => properties} = schema) when is_map(properties) do
+  defp close_object_schema(%{"properties" => properties} = schema, optional) when is_map(properties) do
+    properties = maybe_nullable_optional_properties(properties, Map.get(schema, "required", []), optional)
+
     schema
-    |> Map.put("additionalProperties", Map.get(schema, "additionalProperties", false))
+    |> Map.put("properties", properties)
+    |> Map.put("additionalProperties", false)
     |> put_strict_required(properties)
   end
 
-  defp close_object_schema(%{"type" => type} = schema) when type in ["object", :object] do
-    Map.put(schema, "additionalProperties", Map.get(schema, "additionalProperties", false))
+  defp close_object_schema(%{"type" => type} = schema, _optional) when type in ["object", :object] do
+    schema
+    |> Map.put_new("properties", %{})
+    |> Map.put_new("required", [])
+    |> Map.put("additionalProperties", false)
   end
 
-  defp close_object_schema(%{"type" => types} = schema) when is_list(types) do
+  defp close_object_schema(%{"type" => types} = schema, _optional) when is_list(types) do
     if Enum.any?(types, &(&1 in ["object", :object])) do
-      Map.put(schema, "additionalProperties", Map.get(schema, "additionalProperties", false))
+      schema
+      |> Map.put_new("properties", %{})
+      |> Map.put_new("required", [])
+      |> Map.put("additionalProperties", false)
     else
       schema
     end
   end
 
-  defp close_object_schema(schema), do: schema
+  defp close_object_schema(schema, _optional), do: schema
+
+  defp maybe_nullable_optional_properties(properties, _required, optional) when optional != :nullable,
+    do: properties
+
+  defp maybe_nullable_optional_properties(properties, required, :nullable) do
+    required = required |> List.wrap() |> Enum.map(&to_string/1) |> MapSet.new()
+
+    Map.new(properties, fn {name, property} ->
+      name = to_string(name)
+      property = if MapSet.member?(required, name), do: property, else: nullable_schema(property)
+      {name, property}
+    end)
+  end
+
+  defp nullable_schema(schema) when is_map(schema) do
+    cond do
+      nullable_schema?(schema) ->
+        schema
+
+      complex_nullable_schema?(schema) ->
+        %{"anyOf" => [schema, %{"type" => "null"}]}
+
+      Map.has_key?(schema, "type") ->
+        schema
+        |> Map.update!("type", fn type -> type |> List.wrap() |> Kernel.++(["null"]) |> Enum.uniq() end)
+        |> maybe_add_null_enum()
+
+      Map.has_key?(schema, "anyOf") ->
+        Map.update!(schema, "anyOf", &append_null_variant/1)
+
+      Map.has_key?(schema, "oneOf") ->
+        schema
+        |> Map.delete("oneOf")
+        |> Map.put("anyOf", append_null_variant(Map.fetch!(schema, "oneOf")))
+
+      true ->
+        %{"anyOf" => [schema, %{"type" => "null"}]}
+    end
+  end
+
+  defp nullable_schema(value), do: value
+
+  defp complex_nullable_schema?(%{"type" => type} = schema) do
+    types = List.wrap(type)
+    complex_type? = Enum.any?(types, &(&1 in ["object", :object, "array", :array]))
+    complex_type? and (Map.has_key?(schema, "properties") or Map.has_key?(schema, "items"))
+  end
+
+  defp complex_nullable_schema?(_schema), do: false
+
+  defp nullable_schema?(%{"type" => types}) when is_list(types),
+    do: Enum.any?(types, &(&1 in ["null", :null]))
+
+  defp nullable_schema?(%{"type" => type}) when type in ["null", :null], do: true
+
+  defp nullable_schema?(%{"anyOf" => schemas}) when is_list(schemas),
+    do: Enum.any?(schemas, &nullable_schema?/1)
+
+  defp nullable_schema?(_schema), do: false
+
+  defp append_null_variant(schemas) when is_list(schemas) do
+    if Enum.any?(schemas, &nullable_schema?/1) do
+      schemas
+    else
+      schemas ++ [%{"type" => "null"}]
+    end
+  end
+
+  defp append_null_variant(other), do: other
+
+  defp maybe_add_null_enum(%{"enum" => enum} = schema) when is_list(enum) do
+    if Enum.any?(enum, &is_nil/1), do: schema, else: Map.put(schema, "enum", enum ++ [nil])
+  end
+
+  defp maybe_add_null_enum(schema), do: schema
+
+  defp strip_strict_unsupported_keywords(schema) when is_map(schema) do
+    Map.drop(schema, [
+      "default",
+      "allOf",
+      "not",
+      "if",
+      "then",
+      "else",
+      "dependentRequired",
+      "dependentSchemas",
+      "format",
+      "minimum",
+      "maximum",
+      "exclusiveMinimum",
+      "exclusiveMaximum",
+      "multipleOf",
+      "minLength",
+      "maxLength",
+      "pattern",
+      "minItems",
+      "maxItems",
+      "uniqueItems",
+      "minProperties",
+      "maxProperties",
+      "patternProperties",
+      "propertyNames",
+      "unevaluatedProperties"
+    ])
+  end
 
   defp put_strict_required(schema, properties) when map_size(properties) == 0, do: schema
 
   defp put_strict_required(schema, properties) do
-    existing = Map.get(schema, "required", [])
     property_names = properties |> Map.keys() |> Enum.map(&to_string/1) |> Enum.sort()
-
-    required =
-      existing
-      |> Enum.map(&to_string/1)
-      |> Kernel.++(property_names)
-      |> Enum.uniq()
-
-    Map.put(schema, "required", required)
+    Map.put(schema, "required", property_names)
   end
 end

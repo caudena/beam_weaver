@@ -240,7 +240,7 @@ defmodule BeamWeaver.Agent.DSLBehaviorTest do
   defmodule ProviderStructuredToolCallModel do
     @behaviour ChatModel
 
-    defstruct [:parent, supports_structured_output: true]
+    defstruct [:parent, supports_structured_output: true, supports_structured_output_with_tools: true]
 
     @impl true
     def invoke(%__MODULE__{parent: parent}, messages, opts) do
@@ -664,7 +664,7 @@ defmodule BeamWeaver.Agent.DSLBehaviorTest do
 
     model(__MODULE__.model())
     tools(__MODULE__.tools())
-    response_format(@schema)
+    response_format(BeamWeaver.Agent.StructuredOutput.provider(@schema))
 
     def model, do: %ProviderStructuredToolCallModel{parent: self()}
 

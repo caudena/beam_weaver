@@ -322,7 +322,7 @@ defmodule BeamWeaver.Moonshot.Messages do
     call = BeamWeaver.MapShape.stringify_keys(call)
 
     %{
-      "id" => call["id"] || call["call_id"],
+      "id" => call["provider_id"] || call["call_id"] || call["id"],
       "type" => "function",
       "function" => %{
         "name" => call["name"],

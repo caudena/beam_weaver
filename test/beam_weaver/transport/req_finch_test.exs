@@ -34,6 +34,48 @@ defmodule BeamWeaver.Transport.ReqFinchTest do
     assert {:error, %Error{type: :transport_failure}} = ReqFinch.request(request, timeout: 50)
   end
 
+  test "attaches BeamWeaver provider metadata to Finch telemetry" do
+    handler_id = "req-finch-provider-metadata-#{System.unique_integer([:positive])}"
+    parent = self()
+
+    :telemetry.attach(
+      handler_id,
+      [:finch, :request, :stop],
+      &__MODULE__.handle_finch_telemetry/4,
+      parent
+    )
+
+    on_exit(fn -> :telemetry.detach(handler_id) end)
+
+    url = start_http_server("HTTP/1.1 200 OK\r\ncontent-length: 2\r\nconnection: close\r\n\r\nok")
+
+    request =
+      Request.new(
+        method: :post,
+        url: url,
+        headers: [{"authorization", "Bearer secret"}],
+        json: %{"messages" => [%{"role" => "user", "content" => "hello"}]}
+      )
+
+    provider_metadata = %{
+      provider: :moonshot,
+      url: url,
+      timeout_ms: 1_000,
+      request_body_summary: %{messages_count: 1}
+    }
+
+    assert {:ok, %Response{status: 200}} =
+             ReqFinch.request(request,
+               timeout: 1_000,
+               beam_weaver_http_metadata: provider_metadata
+             )
+
+    assert_receive {:finch_telemetry, [:finch, :request, :stop], %{duration: duration},
+                    %{request: %Finch.Request{private: %{beam_weaver: ^provider_metadata}}}}
+
+    assert is_integer(duration)
+  end
+
   test "streams successful response chunks before the response completes" do
     parent = self()
 
@@ -174,5 +216,9 @@ defmodule BeamWeaver.Transport.ReqFinchTest do
 
   defp stop_server(server) do
     if Process.alive?(server), do: Process.exit(server, :kill)
+  end
+
+  def handle_finch_telemetry(event, measurements, metadata, parent) do
+    send(parent, {:finch_telemetry, event, measurements, metadata})
   end
 end

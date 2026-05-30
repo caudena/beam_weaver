@@ -304,7 +304,7 @@ defmodule BeamWeaver.Graph.Nodes.ToolNode.Output do
     {left_messages, left} = pop_messages_update(left)
     {right_messages, right} = pop_messages_update(right)
 
-    merged = Map.merge(left, right)
+    merged = Map.merge(left, right, &merge_command_update_value/3)
     messages = left_messages ++ right_messages
 
     if messages == [] do
@@ -313,6 +313,12 @@ defmodule BeamWeaver.Graph.Nodes.ToolNode.Output do
       Map.put(merged, :messages, messages)
     end
   end
+
+  defp merge_command_update_value(_key, left, right)
+       when is_map(left) and is_map(right) and not is_struct(left) and not is_struct(right),
+       do: Map.merge(left, right)
+
+  defp merge_command_update_value(_key, _left, right), do: right
 
   defp merge_goto(nil, goto), do: goto
   defp merge_goto(goto, nil), do: goto

@@ -8,6 +8,7 @@ defmodule BeamWeaver.Google.Tools do
   alias BeamWeaver.Core.Error
   alias BeamWeaver.Core.Tool
   alias BeamWeaver.Provider.Options
+  alias BeamWeaver.Tool.Schema
 
   @builtin_tool_keys [
     "google_search",
@@ -27,6 +28,21 @@ defmodule BeamWeaver.Google.Tools do
     "mcp_servers",
     "mcpServers"
   ]
+
+  @unsupported_function_parameter_schema_keys MapSet.new([
+                                                "$defs",
+                                                "$id",
+                                                "$schema",
+                                                "additionalProperties",
+                                                "default",
+                                                "definitions",
+                                                "dependentSchemas",
+                                                "examples",
+                                                "patternProperties",
+                                                "propertyNames",
+                                                "title",
+                                                "unevaluatedProperties"
+                                              ])
 
   def google_search(opts \\ %{}), do: %{"googleSearch" => Options.stringify_keys(Map.new(opts))}
 
@@ -101,12 +117,14 @@ defmodule BeamWeaver.Google.Tools do
               "functionDeclarations must be passed as provider tools, not custom tools"
 
       Map.has_key?(tool, "name") or Map.has_key?(tool, :name) ->
+        parameters =
+          BeamWeaver.MapAccess.get(tool, :parameters) ||
+            BeamWeaver.MapAccess.get(tool, :input_schema) || %{}
+
         %{
           "name" => BeamWeaver.MapAccess.get(tool, :name),
           "description" => BeamWeaver.MapAccess.get(tool, :description),
-          "parameters" =>
-            BeamWeaver.MapAccess.get(tool, :parameters) ||
-              BeamWeaver.MapAccess.get(tool, :input_schema) || %{}
+          "parameters" => function_parameters(parameters)
         }
         |> Options.reject_nil_values()
 
@@ -119,10 +137,44 @@ defmodule BeamWeaver.Google.Tools do
     %{
       "name" => Tool.name(tool),
       "description" => Tool.description(tool),
-      "parameters" => Tool.input_schema(tool)
+      "parameters" => function_parameters(Tool.input_schema(tool))
     }
     |> Options.reject_nil_values()
   end
+
+  defp function_parameters(schema) when is_map(schema) do
+    schema = Options.stringify_keys(schema)
+
+    case Schema.dereference_refs(schema) do
+      {:ok, dereferenced} -> sanitize_function_parameter_schema(dereferenced)
+      {:error, %Error{} = error} -> raise ArgumentError, error.message
+    end
+  end
+
+  defp function_parameters(schema), do: schema
+
+  defp sanitize_function_parameter_schema(schema) when is_map(schema) do
+    schema
+    |> Enum.reject(fn {key, _value} ->
+      MapSet.member?(@unsupported_function_parameter_schema_keys, key)
+    end)
+    |> Map.new(fn
+      {"properties", properties} when is_map(properties) ->
+        {"properties",
+         Map.new(properties, fn {name, property_schema} ->
+           {to_string(name), sanitize_schema_value(property_schema)}
+         end)}
+
+      {key, value} ->
+        {key, sanitize_schema_value(value)}
+    end)
+  end
+
+  defp sanitize_function_parameter_schema(value), do: value
+
+  defp sanitize_schema_value(value) when is_map(value), do: sanitize_function_parameter_schema(value)
+  defp sanitize_schema_value(value) when is_list(value), do: Enum.map(value, &sanitize_schema_value/1)
+  defp sanitize_schema_value(value), do: value
 
   defp builtin_tool?(tool) when is_map(tool) do
     keys = Enum.map(Map.keys(tool), &to_string/1)

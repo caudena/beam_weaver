@@ -65,6 +65,88 @@ defmodule BeamWeaver.AgentCapabilitiesTest.OverflowOnceModel do
   end
 end
 
+defmodule BeamWeaver.AgentCapabilitiesTest.ResearchThenGenerateModel do
+  @behaviour BeamWeaver.Core.ChatModel
+
+  alias BeamWeaver.Core.Message
+  alias BeamWeaver.Core.Tool
+
+  defstruct [:parent]
+
+  @impl true
+  def invoke(%__MODULE__{parent: parent}, messages, opts) do
+    if parent do
+      send(parent, {
+        :research_then_generate_call,
+        Enum.map(messages, & &1.role),
+        opts |> Keyword.get(:tools, []) |> Enum.map(&Tool.name/1),
+        Keyword.has_key?(opts, :response_format)
+      })
+    end
+
+    cond do
+      Keyword.has_key?(opts, :response_format) ->
+        {:ok, Message.assistant("", metadata: %{parsed: %{"answer" => "generated", "facts" => []}})}
+
+      Enum.any?(messages, &match?(%Message{role: :tool, name: "lookup"}, &1)) ->
+        {:ok, Message.assistant([%{type: :text, text: "research notes"}])}
+
+      true ->
+        {:ok,
+         Message.assistant("",
+           tool_calls: [
+             %{id: "call-lookup", name: "lookup", args: %{"query" => "deal"}}
+           ]
+         )}
+    end
+  end
+end
+
+defmodule BeamWeaver.AgentCapabilitiesTest.InputEchoStructuredModel do
+  @behaviour BeamWeaver.Core.ChatModel
+
+  alias BeamWeaver.Core.Message
+
+  defstruct [:parent, supports_structured_output: true]
+
+  @impl true
+  def invoke(%__MODULE__{parent: parent}, messages, _opts) do
+    description =
+      messages
+      |> List.last()
+      |> Message.text()
+
+    answer =
+      cond do
+        String.contains?(description, "first") -> "first"
+        String.contains?(description, "second") -> "second"
+        true -> "unknown"
+      end
+
+    if parent, do: send(parent, {:input_echo_structured_call, answer})
+
+    {:ok, Message.assistant("", metadata: %{parsed: %{"answer" => answer, "facts" => []}})}
+  end
+end
+
+defmodule BeamWeaver.AgentCapabilitiesTest.ChildStateRecorderMiddleware do
+  @behaviour BeamWeaver.Agent.Middleware
+
+  alias BeamWeaver.Agent.ModelRequest
+
+  defstruct [:parent]
+
+  def new(opts \\ []), do: %__MODULE__{parent: Keyword.get(opts, :parent)}
+
+  @impl true
+  def name(_middleware), do: :child_state_recorder
+
+  def wrap_model_call(%__MODULE__{parent: parent}, %ModelRequest{state: state} = request, handler) do
+    if parent, do: send(parent, {:child_subagent_state, state})
+    handler.(request)
+  end
+end
+
 defmodule BeamWeaver.AgentCapabilitiesTest do
   use ExUnit.Case, async: true
 
@@ -1574,6 +1656,549 @@ defmodule BeamWeaver.AgentCapabilitiesTest do
     assert "write_file" in tool_names
   end
 
+  test "task subagent can inherit parent messages without copying them through task input" do
+    middleware =
+      Middleware.Subagents.new(
+        model: %FakeChatModel{response: "child saw context", parent: self()},
+        summarization: false,
+        compact_conversation: false,
+        subagents: [
+          %Spec{
+            name: "worker",
+            description: "Worker",
+            system_prompt: "You are a worker.",
+            inherit_messages: true,
+            base_middleware: []
+          }
+        ]
+      )
+
+    task_tool = middleware |> Middleware.Subagents.tools() |> hd()
+
+    assert {:ok, %Command{update: %{messages: [%Message{content: "child saw context"}]}}} =
+             Tool.invoke(task_tool, %{
+               "subagent_name" => "worker",
+               "description" => "use the inherited source context",
+               state: %{messages: [Message.user("parent source context")]},
+               tool_call_id: "call-inherit"
+             })
+
+    assert_receive {:fake_chat_model_call, messages, _opts}
+    assert Enum.any?(messages, &match?(%Message{role: :user, content: "parent source context"}, &1))
+    assert Enum.any?(messages, &match?(%Message{role: :user, content: "use the inherited source context"}, &1))
+  end
+
+  test "inherited subagent messages exclude parent tool protocol messages" do
+    middleware =
+      Middleware.Subagents.new(
+        model: %FakeChatModel{response: "child saw clean context", parent: self()},
+        summarization: false,
+        compact_conversation: false,
+        subagents: [
+          %Spec{
+            name: "worker",
+            description: "Worker",
+            system_prompt: "You are a worker.",
+            inherit_messages: true,
+            base_middleware: []
+          }
+        ]
+      )
+
+    task_tool = middleware |> Middleware.Subagents.tools() |> hd()
+
+    parent_call =
+      BeamWeaver.Core.Messages.tool_call(
+        id: "call-parent-task",
+        name: "task",
+        args: %{"subagent_name" => "worker", "description" => "parent task"}
+      )
+
+    parent_messages = [
+      Message.user("parent source context"),
+      Message.assistant("", tool_calls: [parent_call]),
+      Message.tool("prior task result", name: "task", tool_call_id: "call-parent-task"),
+      Message.assistant("stable parent answer")
+    ]
+
+    assert {:ok, %Command{update: %{messages: [%Message{content: "child saw clean context"}]}}} =
+             Tool.invoke(task_tool, %{
+               "subagent_name" => "worker",
+               "description" => "use inherited context without parent task protocol",
+               state: %{messages: parent_messages},
+               tool_call_id: "call-inherit-clean"
+             })
+
+    assert_receive {:fake_chat_model_call, messages, _opts}
+    assert Enum.any?(messages, &match?(%Message{role: :user, content: "parent source context"}, &1))
+    assert Enum.any?(messages, &match?(%Message{role: :assistant, content: "stable parent answer"}, &1))
+
+    assert Enum.any?(
+             messages,
+             &match?(%Message{role: :user, content: "use inherited context without parent task protocol"}, &1)
+           )
+
+    refute Enum.any?(messages, &match?(%Message{role: :tool}, &1))
+
+    refute Enum.any?(messages, fn
+             %Message{role: :assistant, tool_calls: calls} -> calls != []
+             _message -> false
+           end)
+  end
+
+  test "captured task subagent stores structured output and returns a compact ack" do
+    middleware =
+      Middleware.Subagents.new(
+        model: %FakeChatModel{
+          structured_response: %{"answer" => "42", "facts" => [%{"label" => "budget", "value" => "known"}]},
+          profile: %{structured_output: true},
+          parent: self()
+        },
+        summarization: false,
+        compact_conversation: false,
+        subagents: [
+          %Spec{
+            name: "worker",
+            description: "Worker",
+            system_prompt: "You are a worker.",
+            response_format: worker_output_schema(),
+            capture_output: :worker_output,
+            execution_mode: :structured_once,
+            base_middleware: [],
+            tools: []
+          }
+        ]
+      )
+
+    task_tool = middleware |> Middleware.Subagents.tools() |> hd()
+
+    assert {:ok, %Command{update: update}} =
+             Tool.invoke(task_tool, %{
+               "subagent_name" => "worker",
+               "description" => "return structured output",
+               state: %{},
+               tool_call_id: "call-capture"
+             })
+
+    assert update.subagent_outputs == %{
+             "worker_output" => %{
+               "answer" => "42",
+               "facts" => [%{"label" => "budget", "value" => "known"}]
+             }
+           }
+
+    assert [%Message{content: content, metadata: metadata}] = update.messages
+
+    assert %{"status" => "captured", "capture_key" => "worker_output", "cache_hit" => false} =
+             BeamWeaver.JSON.decode!(content)
+
+    refute content =~ "budget"
+    assert metadata.capture_key == "worker_output"
+    assert metadata.execution_mode == :structured_once
+    assert metadata.structured_output_strategy == :provider
+
+    assert_receive {:fake_chat_model_call, _messages, opts}
+    assert Keyword.fetch!(opts, :tools) == []
+    assert Keyword.fetch!(opts, :response_format).name == "WorkerOutput"
+  end
+
+  test "parallel captured task calls preserve all captured outputs" do
+    middleware =
+      Middleware.Subagents.new(
+        model: %BeamWeaver.AgentCapabilitiesTest.InputEchoStructuredModel{parent: self()},
+        summarization: false,
+        compact_conversation: false,
+        subagents: [
+          %Spec{
+            name: "first_worker",
+            description: "First worker",
+            system_prompt: "You are the first worker.",
+            response_format: worker_output_schema(),
+            capture_output: :first_output,
+            execution_mode: :structured_once,
+            base_middleware: [],
+            tools: []
+          },
+          %Spec{
+            name: "second_worker",
+            description: "Second worker",
+            system_prompt: "You are the second worker.",
+            response_format: worker_output_schema(),
+            capture_output: :second_output,
+            execution_mode: :structured_once,
+            base_middleware: [],
+            tools: []
+          }
+        ]
+      )
+
+    task_tool = middleware |> Middleware.Subagents.tools() |> hd()
+    node = ToolNode.new([task_tool], timeout: 30_000)
+
+    first_call =
+      BeamWeaver.Core.Messages.tool_call(
+        id: "call-first-worker",
+        name: "task",
+        args: %{"subagent_name" => "first_worker", "description" => "first input"}
+      )
+
+    second_call =
+      BeamWeaver.Core.Messages.tool_call(
+        id: "call-second-worker",
+        name: "task",
+        args: %{"subagent_name" => "second_worker", "description" => "second input"}
+      )
+
+    assert %Command{update: update} =
+             ToolNode.invoke(%{node | timeout: 30_000}, %{
+               messages: [Message.assistant("", tool_calls: [first_call, second_call])]
+             })
+
+    assert update.subagent_outputs == %{
+             "first_output" => %{"answer" => "first", "facts" => []},
+             "second_output" => %{"answer" => "second", "facts" => []}
+           }
+
+    assert [%Message{content: first_ack}, %Message{content: second_ack}] = update.messages
+    assert %{"capture_key" => "first_output", "status" => "captured"} = BeamWeaver.JSON.decode!(first_ack)
+    assert %{"capture_key" => "second_output", "status" => "captured"} = BeamWeaver.JSON.decode!(second_ack)
+
+    assert_receive {:input_echo_structured_call, "first"}
+    assert_receive {:input_echo_structured_call, "second"}
+  end
+
+  test "captured task subagent dedupes repeated calls by input hash" do
+    middleware =
+      Middleware.Subagents.new(
+        model: %FakeChatModel{
+          structured_response: %{"answer" => "cached", "facts" => []},
+          profile: %{structured_output: true},
+          parent: self()
+        },
+        summarization: false,
+        compact_conversation: false,
+        subagents: [
+          %Spec{
+            name: "worker",
+            description: "Worker",
+            system_prompt: "You are a worker.",
+            response_format: worker_output_schema(),
+            capture_output: :worker_output,
+            execution_mode: :structured_once,
+            base_middleware: [],
+            tools: []
+          }
+        ]
+      )
+
+    task_tool = middleware |> Middleware.Subagents.tools() |> hd()
+    args = %{"subagent_name" => "worker", "description" => "same input"}
+
+    assert {:ok, %Command{update: first_update}} =
+             Tool.invoke(task_tool, Map.merge(args, %{state: %{}, tool_call_id: "call-capture-1"}))
+
+    assert_receive {:fake_chat_model_call, _messages, _opts}
+
+    assert {:ok, %Command{update: second_update}} =
+             Tool.invoke(
+               task_tool,
+               Map.merge(args, %{
+                 state: %{
+                   subagent_outputs: first_update.subagent_outputs,
+                   subagent_cache: first_update.subagent_cache
+                 },
+                 tool_call_id: "call-capture-2"
+               })
+             )
+
+    assert %{"cache_hit" => true, "capture_key" => "worker_output"} =
+             second_update.messages |> hd() |> Map.fetch!(:content) |> BeamWeaver.JSON.decode!()
+
+    refute_receive {:fake_chat_model_call, _messages, _opts}, 50
+  end
+
+  test "captured task subagent cache keeps per-input snapshots when capture key is reused" do
+    middleware =
+      Middleware.Subagents.new(
+        model: %BeamWeaver.AgentCapabilitiesTest.InputEchoStructuredModel{parent: self()},
+        summarization: false,
+        compact_conversation: false,
+        subagents: [
+          %Spec{
+            name: "worker",
+            description: "Worker",
+            system_prompt: "You are a worker.",
+            response_format: worker_output_schema(),
+            capture_output: [key: :worker_output, parent_result: :full],
+            execution_mode: :structured_once,
+            base_middleware: [],
+            tools: []
+          }
+        ]
+      )
+
+    task_tool = middleware |> Middleware.Subagents.tools() |> hd()
+
+    assert {:ok, %Command{update: first_update}} =
+             Tool.invoke(task_tool, %{
+               "subagent_name" => "worker",
+               "description" => "first input",
+               state: %{},
+               tool_call_id: "call-first"
+             })
+
+    assert {:ok, %Command{update: second_update}} =
+             Tool.invoke(task_tool, %{
+               "subagent_name" => "worker",
+               "description" => "second input",
+               state: %{
+                 subagent_outputs: first_update.subagent_outputs,
+                 subagent_cache: first_update.subagent_cache
+               },
+               tool_call_id: "call-second"
+             })
+
+    merged_state = %{
+      subagent_outputs: Map.merge(first_update.subagent_outputs, second_update.subagent_outputs),
+      subagent_cache: Map.merge(first_update.subagent_cache, second_update.subagent_cache)
+    }
+
+    assert {:ok, %Command{update: cached_update}} =
+             Tool.invoke(task_tool, %{
+               "subagent_name" => "worker",
+               "description" => "first input",
+               state: merged_state,
+               tool_call_id: "call-first-again"
+             })
+
+    assert %{"answer" => "first", "facts" => []} =
+             cached_update.messages |> hd() |> Map.fetch!(:content) |> BeamWeaver.JSON.decode!()
+
+    assert cached_update.subagent_outputs == %{
+             "worker_output" => %{"answer" => "first", "facts" => []}
+           }
+
+    assert_receive {:input_echo_structured_call, "first"}
+    assert_receive {:input_echo_structured_call, "second"}
+    refute_receive {:input_echo_structured_call, "first"}, 50
+  end
+
+  test "task subagent does not inherit captured state restored with string keys" do
+    middleware =
+      Middleware.Subagents.new(
+        model: %FakeChatModel{structured_response: %{"answer" => "ok", "facts" => []}},
+        summarization: false,
+        compact_conversation: false,
+        subagents: [
+          %Spec{
+            name: "worker",
+            description: "Worker",
+            system_prompt: "You are a worker.",
+            response_format: worker_output_schema(),
+            capture_output: :worker_output,
+            execution_mode: :structured_once,
+            base_middleware: [],
+            tools: [],
+            middleware: [
+              {BeamWeaver.AgentCapabilitiesTest.ChildStateRecorderMiddleware, parent: self()}
+            ]
+          }
+        ]
+      )
+
+    task_tool = middleware |> Middleware.Subagents.tools() |> hd()
+
+    assert {:ok, %Command{}} =
+             Tool.invoke(task_tool, %{
+               "subagent_name" => "worker",
+               "description" => "inspect child state",
+               state: %{
+                 "subagent_outputs" => %{"worker_output" => %{"answer" => "old"}},
+                 "subagent_cache" => %{"worker:old" => %{"output" => %{"answer" => "old"}}}
+               },
+               tool_call_id: "call-state"
+             })
+
+    assert_receive {:child_subagent_state, child_state}
+    refute Map.has_key?(child_state, :subagent_outputs)
+    refute Map.has_key?(child_state, "subagent_outputs")
+    refute Map.has_key?(child_state, :subagent_cache)
+    refute Map.has_key?(child_state, "subagent_cache")
+  end
+
+  test "captured task subagent can preserve full parent result when requested" do
+    middleware =
+      Middleware.Subagents.new(
+        model: %FakeChatModel{
+          structured_response: %{"answer" => "full", "facts" => []},
+          profile: %{structured_output: true}
+        },
+        summarization: false,
+        compact_conversation: false,
+        subagents: [
+          %Spec{
+            name: "worker",
+            description: "Worker",
+            system_prompt: "You are a worker.",
+            response_format: worker_output_schema(),
+            capture_output: [key: :worker_output, parent_result: :full],
+            execution_mode: :structured_once,
+            base_middleware: [],
+            tools: []
+          }
+        ]
+      )
+
+    task_tool = middleware |> Middleware.Subagents.tools() |> hd()
+
+    assert {:ok, %Command{update: %{messages: [%Message{content: content}], subagent_outputs: outputs}}} =
+             Tool.invoke(task_tool, %{
+               "subagent_name" => "worker",
+               "description" => "return full output",
+               state: %{},
+               tool_call_id: "call-capture-full"
+             })
+
+    assert %{"answer" => "full", "facts" => []} = BeamWeaver.JSON.decode!(content)
+    assert outputs["worker_output"]["answer"] == "full"
+  end
+
+  test "research_then_generate runs tool research before one structured generation pass" do
+    lookup =
+      Tool.from_function!(
+        name: "lookup",
+        description: "Lookup deal context.",
+        input_schema: %{
+          "type" => "object",
+          "required" => ["query"],
+          "properties" => %{"query" => %{"type" => "string"}}
+        },
+        handler: fn %{"query" => query}, _opts -> "lookup result for #{query}" end
+      )
+
+    middleware =
+      Middleware.Subagents.new(
+        model: %BeamWeaver.AgentCapabilitiesTest.ResearchThenGenerateModel{parent: self()},
+        summarization: false,
+        compact_conversation: false,
+        subagents: [
+          %Spec{
+            name: "worker",
+            description: "Worker",
+            system_prompt: "You are a worker.",
+            tools: [lookup],
+            response_format: BeamWeaver.Agent.StructuredOutput.provider(worker_output_schema()),
+            capture_output: :worker_output,
+            execution_mode: :research_then_generate
+          }
+        ]
+      )
+
+    task_tool = middleware |> Middleware.Subagents.tools() |> hd()
+
+    assert {:ok, %Command{update: %{messages: [%Message{content: ack}], subagent_outputs: outputs}}} =
+             Tool.invoke(task_tool, %{
+               "subagent_name" => "worker",
+               "description" => "research then answer",
+               state: %{},
+               tool_call_id: "call-research-generate"
+             })
+
+    assert %{"status" => "captured", "capture_key" => "worker_output"} = BeamWeaver.JSON.decode!(ack)
+    assert outputs["worker_output"] == %{"answer" => "generated", "facts" => []}
+
+    assert_receive {:research_then_generate_call, [:system, :user], research_tools, false}
+    assert "lookup" in research_tools
+    assert "write_todos" in research_tools
+    assert "read_file" in research_tools
+
+    assert_receive {:research_then_generate_call, [:system, :user, :assistant, :tool], research_tools, false}
+    assert "lookup" in research_tools
+    assert_receive {:research_then_generate_call, [:system, :user], [], true}
+  end
+
+  test "research_then_generate generate pass does not inherit parent transcript" do
+    lookup =
+      Tool.from_function!(
+        name: "lookup",
+        description: "Lookup deal context.",
+        input_schema: %{
+          "type" => "object",
+          "required" => ["query"],
+          "properties" => %{"query" => %{"type" => "string"}}
+        },
+        handler: fn %{"query" => query}, _opts -> "lookup result for #{query}" end
+      )
+
+    middleware =
+      Middleware.Subagents.new(
+        model: %BeamWeaver.AgentCapabilitiesTest.ResearchThenGenerateModel{parent: self()},
+        summarization: false,
+        compact_conversation: false,
+        subagents: [
+          %Spec{
+            name: "worker",
+            description: "Worker",
+            system_prompt: "You are a worker.",
+            tools: [lookup],
+            response_format: BeamWeaver.Agent.StructuredOutput.provider(worker_output_schema()),
+            capture_output: :worker_output,
+            execution_mode: :research_then_generate,
+            inherit_messages: true
+          }
+        ]
+      )
+
+    task_tool = middleware |> Middleware.Subagents.tools() |> hd()
+
+    assert {:ok, %Command{update: %{subagent_outputs: outputs}}} =
+             Tool.invoke(task_tool, %{
+               "subagent_name" => "worker",
+               "description" => "research then answer",
+               state: %{messages: [Message.user("large parent context")]},
+               tool_call_id: "call-research-generate"
+             })
+
+    assert outputs["worker_output"] == %{"answer" => "generated", "facts" => []}
+
+    assert_receive {:research_then_generate_call, [:system, :user, :user], _research_tools, false}
+    assert_receive {:research_then_generate_call, [:system, :user, :user, :assistant, :tool], _research_tools, false}
+    assert_receive {:research_then_generate_call, [:system, :user], [], true}
+  end
+
+  test "subagent base_middleware empty removes DeepAgents filesystem and todo tools" do
+    middleware =
+      Middleware.Subagents.new(
+        model: %FakeChatModel{response: "plain child done", parent: self()},
+        summarization: false,
+        compact_conversation: false,
+        subagents: [
+          %Spec{
+            name: "worker",
+            description: "Worker",
+            system_prompt: "You are a worker.",
+            base_middleware: [],
+            filesystem: false,
+            todo_list: false,
+            tools: []
+          }
+        ]
+      )
+
+    task_tool = middleware |> Middleware.Subagents.tools() |> hd()
+
+    assert {:ok, %Command{update: %{messages: [%Message{content: "plain child done"}]}}} =
+             Tool.invoke(task_tool, %{
+               "subagent_name" => "worker",
+               "description" => "no base tools",
+               state: %{},
+               tool_call_id: "call-no-base"
+             })
+
+    assert_receive {:fake_chat_model_call, _messages, opts}
+    assert Keyword.fetch!(opts, :tools) == []
+  end
+
   test "task subagent preserves checkpoint config and writes under an isolated namespace" do
     checkpointer = Checkpoint.ETS.new()
 
@@ -2026,5 +2651,27 @@ defmodule BeamWeaver.AgentCapabilitiesTest do
     on_exit(fn -> File.rm_rf!(root) end)
 
     root
+  end
+
+  defp worker_output_schema do
+    %{
+      "title" => "WorkerOutput",
+      "type" => "object",
+      "required" => ["answer", "facts"],
+      "properties" => %{
+        "answer" => %{"type" => "string"},
+        "facts" => %{
+          "type" => "array",
+          "items" => %{
+            "type" => "object",
+            "required" => ["label", "value"],
+            "properties" => %{
+              "label" => %{"type" => "string"},
+              "value" => %{"type" => "string"}
+            }
+          }
+        }
+      }
+    }
   end
 end

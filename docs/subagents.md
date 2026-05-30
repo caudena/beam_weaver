@@ -1,10 +1,12 @@
 # Subagents
 
 Subagents let a BeamWeaver agent delegate isolated work through the `task`
-tool. A subagent receives a fresh message context, runs as a normal BeamWeaver
-agent, and returns one final result to the parent. This is useful when a task
-would otherwise fill the parent context with intermediate searches, file reads,
-tool outputs, or domain-specific reasoning.
+tool. A subagent receives a fresh message context and runs as a normal
+BeamWeaver agent. By default it returns one final result to the parent; for
+structured specialists it can also capture the full output in graph state and
+return only a compact acknowledgement. This is useful when a task would
+otherwise fill the parent context with intermediate searches, file reads, tool
+outputs, or large specialist payloads.
 
 Use subagents for multi-step work, specialized tool sets, or tasks that should
 use a different model or prompt. Do not use them for simple one-step lookups, or
@@ -117,6 +119,11 @@ It accepts keyword lists, atom-keyed maps, and string-keyed maps.
 | `:skills` | list | Optional. Inherits parent skills when `nil`; use `[]` to opt out, or provide a list to replace the inherited skills. |
 | `:permissions` | list | Optional. Inherits parent filesystem permissions when omitted; a list replaces the inherited rules. |
 | `:response_format` | structured output config | Optional. Configures structured output for the child agent. The parent receives the structured response as JSON text in the `task` tool result. |
+| `:capture_output` | atom, string, or keyword | Optional. Stores the child output in `state.subagent_outputs[key]` and returns a compact acknowledgement to the parent. |
+| `:execution_mode` | atom | Optional. `:agent_loop` by default; use `:structured_once` or `:research_then_generate` for specialist patterns. |
+| `:base_middleware` | `:deepagents` or `[]` | Optional. Keeps or removes the default DeepAgents harness middleware for this child. |
+| `:filesystem` | backend or `false` | Optional. Overrides the inherited filesystem backend; use `false` to remove filesystem tools for the child. |
+| `:todo_list` | keyword, boolean | Optional. Configure the child TODO tool, or use `false` to remove it. |
 
 Synchronous subagents automatically get useful harness middleware: `write_todos`,
 filesystem tools, optional skills, summarization, conversation compaction, tool
@@ -222,6 +229,143 @@ researcher =
 
 Without `response_format`, the parent receives the last assistant message text
 from the child.
+
+## Captured Specialist Outputs
+
+Use `capture_output` when the parent should coordinate specialists without
+re-emitting their full structured payloads through the supervisor model. The
+child output is written to `state.subagent_outputs[key]`, while the `task` tool
+message contains a short JSON acknowledgement.
+
+```elixir
+alias BeamWeaver.Agent.StructuredOutput
+alias BeamWeaver.Agent.Subagent
+
+@narrative_schema %{
+  "title" => "narrative_output",
+  "type" => "object",
+  "required" => ["summary", "timeline"],
+  "properties" => %{
+    "summary" => %{"type" => "string"},
+    "timeline" => %{"type" => "array", "items" => %{"type" => "object"}}
+  }
+}
+
+subagents [
+  Subagent.Spec.new(
+    name: "narrative_compressor",
+    description: "Builds the authoritative relationship narrative and timeline.",
+    system_prompt: "Return only the requested structured narrative output.",
+    response_format: StructuredOutput.provider(@narrative_schema, strict: true),
+    capture_output: :narrative_output,
+    execution_mode: :structured_once,
+    base_middleware: [],
+    tools: []
+  )
+]
+```
+
+After the parent calls `task`, the graph state includes:
+
+```elixir
+state.subagent_outputs["narrative_output"]
+# %{"summary" => "...", "timeline" => [...]}
+```
+
+The parent model sees only an acknowledgement similar to:
+
+```json
+{
+  "status": "captured",
+  "subagent_name": "narrative_compressor",
+  "capture_key": "narrative_output",
+  "cache_hit": false,
+  "input_hash": "..."
+}
+```
+
+Captured values are normalized to JSON-safe maps, lists, strings, numbers,
+booleans, or `nil`, and are persisted through checkpoints. Captured state is
+not inherited by child subagents, so specialist payloads do not recursively
+inflate child context.
+
+Repeated captured calls are deduped by `{subagent_name, input_hash}` by
+default. BeamWeaver stores cache entries in `state.subagent_cache`; repeated
+calls with the same subagent and same task input return from cache without
+rerunning the child.
+
+Override this only when needed:
+
+```elixir
+Subagent.Spec.new(
+  name: "volatile_researcher",
+  description: "Fetches live market data.",
+  capture_output: [key: :market_snapshot, dedupe: false],
+  response_format: StructuredOutput.provider(@market_schema, strict: true),
+  execution_mode: :structured_once,
+  base_middleware: [],
+  tools: []
+)
+
+Subagent.Spec.new(
+  name: "small_classifier",
+  description: "Returns a tiny classification object.",
+  capture_output: [key: :classification, parent_result: :full],
+  response_format: StructuredOutput.provider(@classification_schema, strict: true),
+  execution_mode: :structured_once,
+  base_middleware: [],
+  tools: []
+)
+```
+
+Use `parent_result: :full` only for small outputs that the supervisor genuinely
+needs to read directly. The default acknowledgement keeps the supervisor
+context small.
+
+## Execution Modes
+
+`execution_mode` controls how the child agent runs:
+
+| Mode | Behavior |
+| --- | --- |
+| `:agent_loop` | Default behavior. The child can use tools and loop until it produces a final answer. |
+| `:structured_once` | Runs one model call and enforces a one-call limit. Use this for specialists that should directly produce structured output without autonomous filesystem or TODO loops. |
+| `:research_then_generate` | Runs a tool-enabled research pass, then a separate tool-free structured generation pass. Use this for tool-enabled structured specialists. |
+
+For lean specialists, opt out of the default DeepAgents harness:
+
+```elixir
+Subagent.Spec.new(
+  name: "stage_recommender",
+  description: "Recommends the correct pipeline stage.",
+  response_format: StructuredOutput.provider(@stage_schema, strict: true),
+  capture_output: :stage_recommendation,
+  execution_mode: :structured_once,
+  base_middleware: [],
+  filesystem: false,
+  todo_list: false,
+  tools: []
+)
+```
+
+If a specialist needs tools before producing structured output, prefer
+`:research_then_generate` instead of combining provider-native structured
+output with active tools:
+
+```elixir
+Subagent.Spec.new(
+  name: "deal_fact_extractor",
+  description: "Researches related records, then emits structured facts.",
+  tools: [MyApp.Tools.RelatedDeals],
+  response_format: StructuredOutput.provider(@facts_schema, strict: true),
+  capture_output: :facts_output,
+  execution_mode: :research_then_generate
+)
+```
+
+The generation pass receives the original task plus concise research notes and
+has no tools. This keeps structured-output parsing bounded and avoids provider
+tool/JSON interaction problems.
 
 ## Runtime Context
 
@@ -369,6 +513,10 @@ custom client details.
   dumps.
 - Use structured output when the parent needs to parse the result or pass it to
   another tool.
+- Use `capture_output` for large structured specialist payloads that should be
+  authoritative in state but not re-serialized through the supervisor model.
+- Prefer `:research_then_generate` for specialists that need tools and must
+  end with structured output.
 - Have subagents write large artifacts to the filesystem and return file paths
   plus summaries.
 - Use subgraphs rather than task subagents when you need static graph
@@ -381,6 +529,8 @@ custom client details.
 | The parent does the work itself. | Make the subagent `description` more specific and tell the parent prompt when to delegate. |
 | The `task` tool is missing. | Configure at least one synchronous subagent. Async-only configuration exposes async tools, not `task`. |
 | Context is still bloated. | Instruct subagents to return concise summaries and write raw data to the filesystem. |
+| Captured output is missing. | Check `state.subagent_outputs["your_key"]`; the parent model only receives the acknowledgement unless `parent_result: :full` is configured. |
+| A captured subagent does not rerun. | Repeated captured calls are cached by subagent name and task input. Use `capture_output: [key: :your_key, dedupe: false]` for volatile work. |
 | The wrong subagent is selected. | Make descriptions mutually exclusive, for example separate "quick facts" from "deep research". |
 | A subagent cannot access an expected tool. | Check whether `:tools` was set. A list replaces inherited tools; `nil` inherits parent tools. |
 | A child cannot resume after HITL. | Ensure the parent has a checkpointer and the same thread configuration is used for resume. |
@@ -395,7 +545,7 @@ custom client details.
 | A default synchronous `general-purpose` subagent is always available | BeamWeaver does not auto-inject it in normal agent builds. Declare a `general-purpose` spec explicitly when wanted. |
 | Disable default subagents with `GeneralPurposeSubagentProfile(enabled=False)` | Omit synchronous `subagents`, pass `[]`, or pass `false`. |
 | Custom subagents do not inherit skills by default | BeamWeaver sync subagents inherit parent skills when `skills` is `nil`; use `skills: []` to opt out. |
-| `lc_agent_name` tracing metadata identifies child runs | BeamWeaver uses typed events plus task tool metadata such as `subagent_name`, `subagent_type`, and `lc_agent_type`; use `StreamTransformer` for subagent stream summaries. |
+| `lc_agent_name` tracing metadata identifies child runs | BeamWeaver includes subagent trace metadata such as `lc_agent_name`, `ls_agent_type`, `subagent_name`, `execution_mode`, `capture_key`, `cache_hit`, and structured-output strategy on child runs and task results; use `StreamTransformer` for subagent stream summaries. |
 | Pydantic, `ToolStrategy(...)`, and `ProviderStrategy(...)` schemas | Use JSON Schema maps and `BeamWeaver.Agent.StructuredOutput.tool/2`, `provider/2`, or `auto/2`. |
 | Tavily/web search examples are built around Python callables | BeamWeaver has no built-in Tavily tool in this guide. Provide a normal `BeamWeaver.Core.Tool` or `use BeamWeaver.Tool` module. |
 | Async subagents are documented on a separate page | BeamWeaver documents them in [Async Subagents](async_subagents.md). |

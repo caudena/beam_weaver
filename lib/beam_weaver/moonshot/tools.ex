@@ -34,6 +34,8 @@ defmodule BeamWeaver.Moonshot.Tools do
 
   @doc "Converts one tool to a Moonshot Chat Completions declaration."
   @spec to_chat_tool(term()) :: map()
+  def to_chat_tool(%{__struct__: _module} = tool), do: ChatCompletions.Messages.tool_to_openai(tool)
+
   def to_chat_tool(tool) when is_map(tool) do
     tool = BeamWeaver.MapShape.stringify_keys(tool)
 

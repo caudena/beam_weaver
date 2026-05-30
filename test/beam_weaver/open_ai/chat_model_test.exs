@@ -10,6 +10,7 @@ defmodule BeamWeaver.OpenAI.ChatModelTest do
   alias BeamWeaver.Models.ParamPolicy
   alias BeamWeaver.Models.Profile
   alias BeamWeaver.OpenAI.ChatModel
+  alias BeamWeaver.OpenAI.Messages
   alias BeamWeaver.OpenAI.ModelPolicy
   alias BeamWeaver.OpenAI.Responses
   alias BeamWeaver.OpenAI.ToolCalling
@@ -257,19 +258,7 @@ defmodule BeamWeaver.OpenAI.ChatModelTest do
         }
       ],
       "text" => %{
-        "format" => %{
-          "type" => "json_schema",
-          "name" => "WeatherAnswer",
-          "schema" => %{
-            "type" => "object",
-            "properties" => %{
-              "city" => %{"type" => "string"},
-              "unit" => %{"type" => "string"}
-            },
-            "required" => ["city"]
-          },
-          "strict" => true
-        }
+        "format" => Messages.structured_output_format("WeatherAnswer", schema)
       }
     }
 
@@ -311,16 +300,7 @@ defmodule BeamWeaver.OpenAI.ChatModelTest do
       ],
       "stream" => false,
       "text" => %{
-        "format" => %{
-          "type" => "json_schema",
-          "name" => "BadModel",
-          "schema" => %{
-            "type" => "object",
-            "properties" => %{"response" => %{"type" => "string"}},
-            "required" => ["response"]
-          },
-          "strict" => true
-        }
+        "format" => Messages.structured_output_format("BadModel", schema)
       }
     }
 
@@ -361,8 +341,8 @@ defmodule BeamWeaver.OpenAI.ChatModelTest do
 
     assert error.type == :structured_output_parse_error
     assert error.details.parsed == %{"response" => "good"}
-    assert %Message{} = error.details.response
-    assert Message.text(error.details.response) == ~s({"response":"good"})
+    assert error.details.response.role == :assistant
+    assert error.details.response.content_preview == ~s({"response":"good"})
 
     task =
       ChatModel.async_invoke(model, [Message.user("respond with good")],
@@ -386,18 +366,7 @@ defmodule BeamWeaver.OpenAI.ChatModelTest do
       "input" => [%{"type" => "message", "role" => "user", "content" => "empty lunchbox"}],
       "stream" => false,
       "text" => %{
-        "format" => %{
-          "type" => "json_schema",
-          "name" => "LunchBox",
-          "schema" => %{
-            "type" => "object",
-            "properties" => %{
-              "sandwiches" => %{"type" => "array", "items" => %{"type" => "string"}}
-            },
-            "required" => ["sandwiches"]
-          },
-          "strict" => true
-        }
+        "format" => Messages.structured_output_format("LunchBox", schema)
       }
     }
 
@@ -428,16 +397,7 @@ defmodule BeamWeaver.OpenAI.ChatModelTest do
       "input" => [%{"type" => "message", "role" => "user", "content" => "refuse"}],
       "stream" => false,
       "text" => %{
-        "format" => %{
-          "type" => "json_schema",
-          "name" => "Answer",
-          "schema" => %{
-            "type" => "object",
-            "properties" => %{"answer" => %{"type" => "string"}},
-            "required" => ["answer"]
-          },
-          "strict" => true
-        }
+        "format" => Messages.structured_output_format("Answer", schema)
       }
     }
 
@@ -456,7 +416,8 @@ defmodule BeamWeaver.OpenAI.ChatModelTest do
              CoreChatModel.invoke(model, [Message.user("refuse")], response_format: %{name: "Answer", schema: schema})
 
     assert %{type: :refusal, refusal: "I cannot comply."} = error.details.refusal
-    assert %Message{} = error.details.response
+    assert error.details.response.role == :assistant
+    assert error.details.response.content_preview == ""
   end
 
   test "include_response_headers attaches transport headers to chat metadata" do

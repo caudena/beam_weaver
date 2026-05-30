@@ -11,6 +11,20 @@ defmodule BeamWeaver.OpenAI.ToolCallingTest do
     defstruct [:data]
   end
 
+  defmodule ModuleTool do
+    use BeamWeaver.Tool
+
+    name("module_tool")
+    description("Tool declared as a module")
+
+    schema do
+      field(:query, :string)
+    end
+
+    @impl true
+    def invoke(_tool, input, _opts), do: {:ok, input}
+  end
+
   test "builds OpenAI built-in tool declarations from idiomatic helpers" do
     assert ToolCalling.web_search() == %{"type" => "web_search_preview"}
 
@@ -92,6 +106,19 @@ defmodule BeamWeaver.OpenAI.ToolCallingTest do
            }
   end
 
+  test "renders BeamWeaver DSL tool modules for Responses API" do
+    assert ToolCalling.to_openai_tool(ModuleTool) == %{
+             "type" => "function",
+             "name" => "module_tool",
+             "description" => "Tool declared as a module",
+             "parameters" => %{
+               "type" => "object",
+               "properties" => %{"query" => %{"type" => "string"}},
+               "required" => ["query"]
+             }
+           }
+  end
+
   test "strict BeamWeaver function rendering closes nested provider schemas" do
     tool =
       Tool.from_function!(
@@ -125,10 +152,12 @@ defmodule BeamWeaver.OpenAI.ToolCallingTest do
 
     assert rendered["strict"] == true
     assert rendered["parameters"]["additionalProperties"] == false
-    assert rendered["parameters"]["required"] == ["query", "filters", "payload"]
+    assert MapSet.new(rendered["parameters"]["required"]) == MapSet.new(["query", "filters", "payload"])
 
     assert rendered["parameters"]["properties"]["filters"]["additionalProperties"] == false
-    assert rendered["parameters"]["properties"]["filters"]["required"] == ["section", "metadata"]
+
+    assert MapSet.new(rendered["parameters"]["properties"]["filters"]["required"]) ==
+             MapSet.new(["section", "metadata"])
 
     assert rendered["parameters"]["properties"]["filters"]["properties"]["metadata"][
              "additionalProperties"

@@ -806,6 +806,56 @@ defmodule BeamWeaver.Graph.ToolNodeTest do
     assert Enum.map(update.messages, & &1.tool_call_id) == ["call-first", "call-second"]
   end
 
+  test "merges sibling map updates from concurrent command-returning tool calls" do
+    first =
+      Tool.from_function!(
+        name: "first",
+        description: "First command",
+        input_schema: %{required: [:tool_call_id]},
+        injected: [tool_call_id: :tool_call_id],
+        handler: fn input, _opts ->
+          %Command{
+            update: %{
+              subagent_outputs: %{"first_output" => %{"answer" => "first"}},
+              subagent_cache: %{"first:hash" => %{"output" => %{"answer" => "first"}}},
+              messages: [Message.tool("first captured", tool_call_id: input.tool_call_id)]
+            }
+          }
+        end
+      )
+
+    second =
+      Tool.from_function!(
+        name: "second",
+        description: "Second command",
+        input_schema: %{required: [:tool_call_id]},
+        injected: [tool_call_id: :tool_call_id],
+        handler: fn input, _opts ->
+          %Command{
+            update: %{
+              subagent_outputs: %{"second_output" => %{"answer" => "second"}},
+              subagent_cache: %{"second:hash" => %{"output" => %{"answer" => "second"}}},
+              messages: [Message.tool("second captured", tool_call_id: input.tool_call_id)]
+            }
+          }
+        end
+      )
+
+    assert %Command{update: update} =
+             ToolNode.invoke(ToolNode.new([first, second]), [
+               %{id: "call-first", name: "first", args: %{}},
+               %{id: "call-second", name: "second", args: %{}}
+             ])
+
+    assert update.subagent_outputs == %{
+             "first_output" => %{"answer" => "first"},
+             "second_output" => %{"answer" => "second"}
+           }
+
+    assert update.subagent_cache |> Map.keys() |> Enum.sort() == ["first:hash", "second:hash"]
+    assert Enum.map(update.messages, & &1.content) == ["first captured", "second captured"]
+  end
+
   test "tool command can remove all messages without a matching tool terminator" do
     clear =
       Tool.from_function!(

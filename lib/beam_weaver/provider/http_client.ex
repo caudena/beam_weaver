@@ -1,6 +1,7 @@
 defmodule BeamWeaver.Provider.HTTPClient do
   @moduledoc false
 
+  alias BeamWeaver.Provider.HTTPMetadata
   alias BeamWeaver.Provider.Options
   alias BeamWeaver.Provider.Streaming
   alias BeamWeaver.Transport
@@ -56,11 +57,13 @@ defmodule BeamWeaver.Provider.HTTPClient do
         ) :: {:ok, Enumerable.t()}
   def stream_sse(%__MODULE__{} = client, body, opts, parser, error_decoder)
       when is_map(body) and is_function(parser, 1) and is_function(error_decoder, 1) do
+    request = request(client, body, opts)
+
     stream =
       Streaming.live_sse(
         transport(client),
-        request(client, body, opts),
-        transport_opts(client, opts),
+        request,
+        transport_opts(client, request, opts),
         opts,
         parser,
         error_decoder
@@ -73,10 +76,12 @@ defmodule BeamWeaver.Provider.HTTPClient do
           {:ok, term()} | {:error, term()}
   def collect_sse(%__MODULE__{} = client, body, opts, decoder)
       when is_map(body) and is_function(decoder, 1) do
+    request = request(client, body, opts)
+
     Streaming.collect(
       transport(client),
-      request(client, body, opts),
-      transport_opts(client, opts),
+      request,
+      transport_opts(client, request, opts),
       decoder
     )
   end
@@ -107,15 +112,22 @@ defmodule BeamWeaver.Provider.HTTPClient do
   end
 
   defp do_request(%Request{} = request, %__MODULE__{} = client, opts) do
-    Transport.request(transport(client), request, transport_opts(client, opts))
+    Transport.request(transport(client), request, transport_opts(client, request, opts))
   end
 
   defp transport(%__MODULE__{} = client), do: Options.default_transport(client.transport)
 
-  @spec transport_opts(t(), keyword()) :: keyword()
-  def transport_opts(%__MODULE__{} = client, opts) do
+  @spec transport_opts(t(), Request.t(), keyword()) :: keyword()
+  def transport_opts(%__MODULE__{} = client, %Request{} = request, opts) do
     timeout = Keyword.get(opts, :timeout, client.timeout)
-    client.transport_opts ++ Keyword.put_new(opts, :timeout, timeout)
+
+    transport_opts = client.transport_opts ++ Keyword.put_new(opts, :timeout, timeout)
+
+    Keyword.put(
+      transport_opts,
+      :beam_weaver_http_metadata,
+      HTTPMetadata.build(client.provider, request, timeout: Keyword.get(transport_opts, :timeout))
+    )
   end
 
   defp headers(%__MODULE__{} = client, opts) do

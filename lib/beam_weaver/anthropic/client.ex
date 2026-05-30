@@ -9,7 +9,6 @@ defmodule BeamWeaver.Anthropic.Client do
   alias BeamWeaver.Provider.HTTPClient
   alias BeamWeaver.Provider.Options, as: ProviderOptions
   alias BeamWeaver.Provider.ResponseDecoder
-  alias BeamWeaver.Provider.Streaming, as: ProviderStreaming
   alias BeamWeaver.Transport.Response
 
   @default_base_url "https://api.anthropic.com"
@@ -110,38 +109,15 @@ defmodule BeamWeaver.Anthropic.Client do
   end
 
   defp do_stream(%__MODULE__{} = client, body, opts, parser) do
-    http_client = http_client(client, opts)
-    request = HTTPClient.request(http_client, body, opts)
-
-    transport_opts =
-      http_client.transport_opts ++ Keyword.put_new(opts, :timeout, http_client.timeout)
-
-    stream =
-      ProviderStreaming.live_sse(
-        ProviderOptions.default_transport(http_client.transport),
-        request,
-        transport_opts,
-        opts,
-        parser,
-        &decode_stream(&1, parser)
-      )
-
-    {:ok, stream}
+    client
+    |> http_client(opts)
+    |> HTTPClient.stream_sse(body, opts, parser, &decode_stream(&1, parser))
   end
 
   defp do_stream_collect(%__MODULE__{} = client, body, opts, parser) do
-    http_client = http_client(client, opts)
-    request = HTTPClient.request(http_client, body, opts)
-
-    transport_opts =
-      http_client.transport_opts ++ Keyword.put_new(opts, :timeout, http_client.timeout)
-
-    ProviderStreaming.collect(
-      ProviderOptions.default_transport(http_client.transport),
-      request,
-      transport_opts,
-      &decode_stream(&1, parser)
-    )
+    client
+    |> http_client(opts)
+    |> HTTPClient.collect_sse(body, opts, &decode_stream(&1, parser))
   end
 
   defp http_client(%__MODULE__{} = client, opts) do

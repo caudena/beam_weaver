@@ -90,6 +90,81 @@ defmodule BeamWeaver.Google.ChatModelTest do
            ]
   end
 
+  test "request body removes unsupported JSON Schema keywords from function declarations" do
+    tool =
+      Tool.from_function!(
+        name: "lookup",
+        description: "Lookup a record",
+        input_schema: %{
+          "title" => "lookup_input",
+          "type" => "object",
+          "additionalProperties" => false,
+          "properties" => %{
+            "status" => %{"$ref" => "#/$defs/Status"},
+            "filters" => %{
+              "title" => "filters",
+              "type" => "object",
+              "additionalProperties" => false,
+              "properties" => %{
+                "query" => %{"title" => "query", "type" => "string"},
+                "tags" => %{
+                  "type" => "array",
+                  "items" => %{
+                    "title" => "tag",
+                    "type" => "string"
+                  }
+                }
+              },
+              "required" => ["query"]
+            }
+          },
+          "required" => ["status", "filters"],
+          "$defs" => %{
+            "Status" => %{
+              "title" => "status",
+              "type" => "string",
+              "enum" => ["open", "closed"],
+              "default" => "open"
+            }
+          }
+        },
+        handler: fn _input, _opts -> :ok end
+      )
+
+    assert {:ok, body} =
+             ChatModel.request_body(
+               %ChatModel{model: "gemini-3.5-flash"},
+               [Message.user("ping")],
+               tools: [tool]
+             )
+
+    assert [%{"functionDeclarations" => [declaration]}] = body["tools"]
+    parameters = declaration["parameters"]
+    filters = parameters["properties"]["filters"]
+    status = parameters["properties"]["status"]
+    query = filters["properties"]["query"]
+    tag = filters["properties"]["tags"]["items"]
+
+    assert parameters["type"] == "object"
+    assert status == %{"type" => "string", "enum" => ["open", "closed"]}
+    assert filters["type"] == "object"
+    assert query["type"] == "string"
+    assert tag["type"] == "string"
+    assert parameters["required"] == ["status", "filters"]
+    assert filters["required"] == ["query"]
+
+    refute Map.has_key?(parameters, "$defs")
+    refute Map.has_key?(parameters, "title")
+    refute Map.has_key?(parameters, "additionalProperties")
+    refute Map.has_key?(status, "title")
+    refute Map.has_key?(status, "default")
+    refute Map.has_key?(status, "$ref")
+    refute Map.has_key?(filters, "title")
+    refute Map.has_key?(filters, "additionalProperties")
+    refute Map.has_key?(query, "title")
+    refute Map.has_key?(tag, "title")
+  end
+
   test "request body ignores internal tracing metadata for Google param validation" do
     assert {:ok, body} =
              ChatModel.request_body(

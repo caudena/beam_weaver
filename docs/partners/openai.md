@@ -18,6 +18,10 @@ LangChain OpenAI package.
 - `BeamWeaver.OpenAI.Responses` builds raw multi-turn input items and extracts
   preserved output items from assistant responses.
 - Structured output options become `text.format` JSON schema requests.
+- Strict structured-output schemas are normalized for OpenAI: object schemas
+  are closed, optional properties become nullable required fields, stale
+  `required` entries are dropped, and unsupported validation/composition
+  keywords are removed before request rendering.
 - Responses API request options include reasoning, include, previous response
   IDs, raw input items, tool choice, truncation, text verbosity, context
   management, audio/modalities, metadata, service tier, store, model kwargs, and
@@ -37,6 +41,9 @@ LangChain OpenAI package.
 - Multi-turn helpers preserve custom tool calls, image generation calls, MCP
   approval requests, encrypted reasoning items, and assistant message output
   items so they can be sent back in the next Responses API turn.
+- Assistant output items replayed through normal messages strip BeamWeaver
+  internal fields such as `raw_provider_block`, while reasoning blocks keep only
+  OpenAI-accepted replay fields.
 - Embeddings support document/query calls, dimensions, caller chunk size,
   Task-backed async calls, and opt-in `skip_empty` handling.
 - Responses API and chat-completions SSE bodies are parsed into text deltas.

@@ -152,6 +152,99 @@ defmodule BeamWeaver.OpenAI.MessagesTest do
            ] = input
   end
 
+  test "strict structured output format closes nested schemas and preserves optional fields as nullable" do
+    schema = %{
+      type: "object",
+      properties: %{
+        required_name: %{type: "string"},
+        optional_count: %{type: "number"},
+        event_date: %{type: "string", format: "date"},
+        crm_updates: %{
+          type: "object",
+          properties: %{
+            company_to_create: %{
+              type: "object",
+              properties: %{
+                name: %{type: "string"},
+                properties: %{type: "object"}
+              },
+              required: [:name]
+            }
+          },
+          required: []
+        }
+      },
+      required: [:required_name]
+    }
+
+    format = Messages.structured_output_format("narrative_output", schema)
+    rendered = format["schema"]
+
+    assert format["strict"] == true
+    assert rendered["additionalProperties"] == false
+
+    assert MapSet.new(rendered["required"]) ==
+             MapSet.new(["required_name", "optional_count", "event_date", "crm_updates"])
+
+    assert rendered["properties"]["optional_count"]["type"] == ["number", "null"]
+    refute Map.has_key?(rendered["properties"]["event_date"], "format")
+    assert rendered["properties"]["event_date"]["type"] == ["string", "null"]
+
+    crm_updates = rendered["properties"]["crm_updates"]
+
+    assert [%{"type" => "object"} = crm_updates_schema, %{"type" => "null"}] =
+             crm_updates["anyOf"]
+
+    crm_updates = crm_updates_schema
+    assert crm_updates["additionalProperties"] == false
+    assert crm_updates["required"] == ["company_to_create"]
+
+    company_to_create = crm_updates["properties"]["company_to_create"]
+
+    assert [%{"type" => "object"} = company_to_create_schema, %{"type" => "null"}] =
+             company_to_create["anyOf"]
+
+    company_to_create = company_to_create_schema
+    assert company_to_create["additionalProperties"] == false
+    assert MapSet.new(company_to_create["required"]) == MapSet.new(["name", "properties"])
+    assert company_to_create["properties"]["name"]["type"] == "string"
+
+    assert [%{"type" => "object"} = properties_schema, %{"type" => "null"}] =
+             company_to_create["properties"]["properties"]["anyOf"]
+
+    assert properties_schema["properties"] == %{}
+    assert properties_schema["required"] == []
+    assert properties_schema["additionalProperties"] == false
+  end
+
+  test "strict structured output format drops stale required keys and unsupported composition keywords" do
+    schema = %{
+      "type" => "object",
+      "properties" => %{
+        "known" => %{"type" => "string", "allOf" => [%{"type" => "string"}]},
+        "maybe_payload" => %{
+          "type" => ["object"],
+          "properties" => %{"id" => %{"type" => "string"}},
+          "required" => ["id"],
+          "dependentRequired" => %{"id" => ["other"]}
+        }
+      },
+      "required" => ["known", "removed"]
+    }
+
+    rendered = Messages.structured_output_format("strict_shape", schema)["schema"]
+
+    assert rendered["required"] == ["known", "maybe_payload"]
+    refute Map.has_key?(rendered["properties"]["known"], "allOf")
+
+    assert [%{"type" => ["object"]} = payload_schema, %{"type" => "null"}] =
+             rendered["properties"]["maybe_payload"]["anyOf"]
+
+    refute Map.has_key?(payload_schema, "dependentRequired")
+    assert payload_schema["additionalProperties"] == false
+    assert payload_schema["required"] == ["id"]
+  end
+
   test "converts assistant text and tool calls into Responses API output items" do
     message =
       Message.assistant("I'll check the weather for you.",
@@ -185,6 +278,53 @@ defmodule BeamWeaver.OpenAI.MessagesTest do
                "arguments" => ~s({"location":"San Francisco"})
              }
            ] = input
+  end
+
+  test "strips internal provider fields when replaying Responses output items" do
+    message =
+      Message.assistant([
+        %{
+          type: :reasoning,
+          id: "rs_1",
+          reasoning: "private summary text",
+          summary: [%{"type" => "summary_text", "text" => "summary"}],
+          raw_provider_block: %{"type" => "reasoning", "id" => "rs_1", "summary" => []}
+        },
+        %{
+          type: :image_generation_call,
+          id: "ig_1",
+          result: "...",
+          raw_provider_block: %{"type" => "image_generation_call", "id" => "ig_1"}
+        }
+      ])
+
+    assert {:ok, input} = Messages.to_responses_input([message])
+
+    assert [
+             %{"type" => "reasoning", "id" => "rs_1", "summary" => [%{"text" => "summary", "type" => "summary_text"}]},
+             %{"type" => "image_generation_call", "id" => "ig_1", "result" => "..."}
+           ] = input
+
+    refute input |> BeamWeaver.JSON.encode!() |> String.contains?("raw_provider_block")
+    refute input |> BeamWeaver.JSON.encode!() |> String.contains?("private summary text")
+  end
+
+  test "strips internal provider fields from unknown output blocks on replay" do
+    message =
+      Message.assistant([
+        %BeamWeaver.Core.ContentBlock.Unknown{
+          provider_type: "image_generation_call",
+          value: %{
+            "type" => "image_generation_call",
+            "id" => "ig_2",
+            "result" => "...",
+            "raw_provider_block" => %{"type" => "image_generation_call"}
+          }
+        }
+      ])
+
+    assert {:ok, [%{"type" => "image_generation_call", "id" => "ig_2", "result" => "..."}]} =
+             Messages.to_responses_input([message])
   end
 
   test "keeps assistant function_call content blocks without duplicating tool_calls" do
@@ -663,6 +803,40 @@ defmodule BeamWeaver.OpenAI.MessagesTest do
              },
              %{"type" => "file", "file" => %{"file_id" => "<file id>"}}
            ]
+  end
+
+  test "Chat Completions translator preserves provider tool call ids for assistant/tool continuity" do
+    alias BeamWeaver.OpenAI.ChatCompletions.Messages, as: ChatMessages
+
+    messages = [
+      Message.assistant("",
+        tool_calls: [
+          %ToolCall{
+            id: "task_0",
+            provider_id: "task:0",
+            call_id: "task:0",
+            name: "task",
+            args: %{"description" => "run subagent"}
+          }
+        ]
+      ),
+      Message.tool("done", tool_call_id: "task:0")
+    ]
+
+    assert {:ok, openai_messages} = ChatMessages.to_openai_messages(messages)
+
+    assert [
+             %{
+               "role" => "assistant",
+               "tool_calls" => [
+                 %{
+                   "id" => "task:0",
+                   "function" => %{"name" => "task"}
+                 }
+               ]
+             },
+             %{"role" => "tool", "tool_call_id" => "task:0"}
+           ] = openai_messages
   end
 
   test "OpenAI dict roles round-trip through native message structs" do

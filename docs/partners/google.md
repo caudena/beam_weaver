@@ -20,6 +20,10 @@ BeamWeaver includes a Gemini Developer API provider under `BeamWeaver.Google`.
   Google Search, Google Maps, URL context, code execution, File Search, MCP
   servers, and model-specific computer use are pass-through provider request
   values.
+- Gemini function parameter schemas are provider-sanitized: local `$ref`
+  entries are dereferenced, unsupported JSON Schema annotation/object keywords
+  such as `$defs`, `title`, `default`, and `additionalProperties` are removed,
+  and nested property schemas are cleaned recursively.
 - `google:gemini-3.5-flash` is checked in with Google's published text-only
   output profile: text, image, video, audio, and PDF input are supported; text
   output, thinking, structured output, function calling, code execution, File

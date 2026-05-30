@@ -48,6 +48,61 @@ Inputs, outputs, metadata, usage, and errors are redacted before they are stored
 The redactor protects authorization headers, API keys, bearer tokens, OpenAI-style
 secret keys, and common nested secret fields.
 
+## Provider HTTP Telemetry
+
+Live provider calls run through Req and Finch. BeamWeaver does not enable
+environment-variable HTTP debug logging. Instead, attach telemetry handlers to
+the standard Finch events and read BeamWeaver's redacted provider metadata from
+`metadata.request.private[:beam_weaver]`.
+
+Useful events include:
+
+| Event | Use |
+| --- | --- |
+| `[:finch, :request, :stop]` | Overall request duration and final Req/Finch result. |
+| `[:finch, :request, :exception]` | Request-level exceptions. |
+| `[:finch, :recv, :stop]` | Response status, response headers, and receive duration. |
+| `[:finch, :recv, :exception]` | Receive timeout or protocol failures. |
+
+Example:
+
+```elixir
+require Logger
+
+:telemetry.attach_many(
+  "beam-weaver-provider-http",
+  [
+    [:finch, :request, :stop],
+    [:finch, :request, :exception],
+    [:finch, :recv, :stop],
+    [:finch, :recv, :exception]
+  ],
+  fn event, measurements, metadata, _config ->
+    provider =
+      case metadata[:request] do
+        %{private: private} -> private[:beam_weaver]
+        _other -> nil
+      end
+
+    if provider do
+      Logger.info(
+        "provider_http event=#{Enum.join(event, ".")} " <>
+          "provider=#{inspect(provider.provider)} " <>
+          "url=#{inspect(provider.url)} " <>
+          "timeout_ms=#{inspect(provider.timeout_ms)} " <>
+          "duration=#{inspect(measurements[:duration])} " <>
+          "summary=#{inspect(provider.request_body_summary)}"
+      )
+    end
+  end,
+  nil
+)
+```
+
+The BeamWeaver metadata is redacted and summarized. The raw Finch request and
+response are still present in telemetry metadata/results, so do not log
+`metadata.request` or `metadata.result` wholesale in production handlers.
+
 ## Exporters
 
 Exporters implement `BeamWeaver.Tracing.Exporter`. Exporter errors are swallowed

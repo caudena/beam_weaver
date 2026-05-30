@@ -65,8 +65,38 @@ defmodule BeamWeaver.Transport.ReqFinch do
       receive_timeout: Keyword.get(opts, :timeout, Keyword.get(request.options, :timeout, 15_000)),
       retry: false
     ]
+    |> maybe_put_finch_private(opts)
     |> maybe_put_body(request)
   end
+
+  defp maybe_put_finch_private(options, opts) do
+    private =
+      opts
+      |> Keyword.get(:finch_private)
+      |> normalize_private()
+      |> maybe_put_beam_weaver_metadata(Keyword.get(opts, :beam_weaver_http_metadata))
+
+    if private == [] do
+      options
+    else
+      Keyword.put(options, :finch_private, private)
+    end
+  end
+
+  defp normalize_private(nil), do: []
+  defp normalize_private(private) when is_map(private), do: Map.to_list(private)
+  defp normalize_private(private) when is_list(private), do: private
+
+  defp maybe_put_beam_weaver_metadata(private, nil), do: private
+
+  defp maybe_put_beam_weaver_metadata(private, metadata) when is_map(metadata) do
+    Keyword.update(private, :beam_weaver, metadata, &merge_metadata(&1, metadata))
+  end
+
+  defp maybe_put_beam_weaver_metadata(private, _metadata), do: private
+
+  defp merge_metadata(existing, metadata) when is_map(existing), do: Map.merge(existing, metadata)
+  defp merge_metadata(_existing, metadata), do: metadata
 
   defp maybe_put_body(options, %Request{json: json}) when not is_nil(json) do
     Keyword.put(options, :json, json)

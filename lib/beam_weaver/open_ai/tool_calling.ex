@@ -23,6 +23,8 @@ defmodule BeamWeaver.OpenAI.ToolCalling do
   @spec to_openai_tool(term()) :: map()
   def to_openai_tool(%Tool{} = tool), do: Messages.tool_to_openai(tool)
 
+  def to_openai_tool(tool) when is_atom(tool), do: Messages.tool_to_openai(tool)
+
   def to_openai_tool(%{__struct__: _module} = tool), do: Messages.tool_to_openai(tool)
 
   def to_openai_tool(tool) when is_map(tool) do

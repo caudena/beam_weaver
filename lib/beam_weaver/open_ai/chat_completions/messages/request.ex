@@ -18,15 +18,20 @@ defmodule BeamWeaver.OpenAI.ChatCompletions.Messages.Request do
 
   def structured_output_format(name, schema, opts \\ [])
       when is_binary(name) and is_map(schema) do
+    strict = Keyword.get(opts, :strict, true)
+
     %{
       "type" => "json_schema",
       "json_schema" => %{
         "name" => name,
-        "schema" => MessageParts.stringify_keys(schema),
-        "strict" => Keyword.get(opts, :strict, true)
+        "schema" => response_schema(schema, strict),
+        "strict" => strict
       }
     }
   end
+
+  defp response_schema(schema, true), do: Renderer.strict_json_schema(schema, optional: :nullable)
+  defp response_schema(schema, _strict), do: MessageParts.stringify_keys(schema)
 
   def tools_to_openai(tools) when is_list(tools), do: Enum.map(tools, &tool_to_openai/1)
 
@@ -247,7 +252,7 @@ defmodule BeamWeaver.OpenAI.ChatCompletions.Messages.Request do
 
   defp assistant_tool_call(tool_call) do
     %{
-      "id" => Map.get(tool_call, :id) || Map.get(tool_call, :call_id),
+      "id" => Map.get(tool_call, :provider_id) || Map.get(tool_call, :call_id) || Map.get(tool_call, :id),
       "type" => "function",
       "function" => %{
         "name" => Map.get(tool_call, :name),

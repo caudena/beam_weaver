@@ -46,11 +46,27 @@ defmodule BeamWeaver.Agent.StructuredOutput do
   @spec effective_strategy(term(), term(), [term()]) :: term()
   def effective_strategy(nil, _model, _tools), do: nil
   def effective_strategy(%ToolStrategy{} = strategy, _model, _tools), do: strategy
-  def effective_strategy(%ProviderStrategy{} = strategy, _model, _tools), do: strategy
+
+  def effective_strategy(%ProviderStrategy{} = strategy, model, tools) do
+    if tools_active?(tools) and not Schema.provider_supported?(model, tools) do
+      provider_to_tool_strategy(strategy)
+    else
+      strategy
+    end
+  end
 
   def effective_strategy(%AutoStrategy{schema: schema}, model, tools) do
     if Schema.provider_supported?(model, tools), do: provider(schema), else: tool(schema)
   end
+
+  defp provider_to_tool_strategy(%ProviderStrategy{schema: schema, schema_spec: spec}) do
+    %ToolStrategy{
+      schema: schema,
+      schema_specs: [spec || Schema.schema_spec(schema)]
+    }
+  end
+
+  defp tools_active?(tools), do: List.wrap(tools) != []
 
   @spec setup_tools(term()) :: [Tool.t()]
   def setup_tools(%AutoStrategy{schema: schema}), do: setup_tools(tool(schema))

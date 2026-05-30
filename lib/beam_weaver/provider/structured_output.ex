@@ -24,6 +24,7 @@ defmodule BeamWeaver.Provider.StructuredOutput do
   @doc false
   def parse(%Message{} = message, parser, opts \\ []) do
     with :ok <- maybe_ensure_not_refusal(message, opts),
+         :ok <- maybe_ensure_complete(message, opts),
          {:ok, parsed} <- decode_json(message),
          {:ok, parsed} <- run_parser(parser, parsed, message, opts) do
       {:ok, %{message | metadata: Map.put(message.metadata, :parsed, parsed)}}
@@ -75,7 +76,7 @@ defmodule BeamWeaver.Provider.StructuredOutput do
            opts,
            %{
              refusal: refusal,
-             response: message
+             response: response_details(message)
            }
          )}
     end
@@ -88,6 +89,74 @@ defmodule BeamWeaver.Provider.StructuredOutput do
   end
 
   defp refusal_block(_content), do: nil
+
+  defp maybe_ensure_complete(%Message{} = message, opts) do
+    case finish_reason(message) do
+      reason when reason in ["max_tokens", "length", "max_output_tokens", "incomplete"] ->
+        {:error,
+         provider_error(
+           :structured_output_parse_error,
+           "#{provider_name(opts)} structured output was truncated before valid JSON",
+           opts,
+           %{
+             reason: "finish_reason=#{reason}",
+             finish_reason: reason,
+             response: response_details(message)
+           }
+         )}
+
+      _reason ->
+        :ok
+    end
+  end
+
+  defp finish_reason(%Message{status: status}) when is_binary(status), do: normalize_finish_reason(status)
+
+  defp finish_reason(%Message{status: status}) when is_atom(status) and not is_nil(status),
+    do: normalize_finish_reason(status)
+
+  defp finish_reason(%Message{metadata: metadata, response_metadata: response_metadata}) do
+    metadata_reason(metadata) || metadata_reason(response_metadata) ||
+      incomplete_reason(metadata) || incomplete_reason(response_metadata)
+  end
+
+  defp metadata_reason(metadata) when is_map(metadata) do
+    case metadata_value(metadata, :finish_reason) do
+      reason when is_binary(reason) -> normalize_finish_reason(reason)
+      reason when is_atom(reason) -> normalize_finish_reason(reason)
+      _other -> nil
+    end
+  end
+
+  defp metadata_reason(_metadata), do: nil
+
+  defp incomplete_reason(metadata) when is_map(metadata) do
+    details = metadata_value(metadata, :incomplete_details)
+
+    cond do
+      is_map(details) and not is_nil(metadata_value(details, :reason)) ->
+        normalize_finish_reason(metadata_value(details, :reason))
+
+      normalize_finish_reason(metadata_value(metadata, :status)) == "incomplete" ->
+        "incomplete"
+
+      true ->
+        nil
+    end
+  end
+
+  defp incomplete_reason(_metadata), do: nil
+
+  defp metadata_value(map, key) when is_atom(key),
+    do: Map.get(map, key, Map.get(map, Atom.to_string(key)))
+
+  defp normalize_finish_reason(reason) when is_atom(reason),
+    do: reason |> Atom.to_string() |> normalize_finish_reason()
+
+  defp normalize_finish_reason(reason) when is_binary(reason),
+    do: reason |> String.downcase() |> String.replace("-", "_")
+
+  defp normalize_finish_reason(reason), do: reason
 
   defp decode_json(message) do
     case BeamWeaver.JSON.decode(Message.text(message)) do
@@ -107,7 +176,7 @@ defmodule BeamWeaver.Provider.StructuredOutput do
          opts,
          %{
            reason: Exception.message(error),
-           response: message
+           response: response_details(message)
          }
        )}
     end
@@ -137,10 +206,72 @@ defmodule BeamWeaver.Provider.StructuredOutput do
        opts,
        %{
          reason: inspect(reason),
-         parsed: parsed,
-         response: message
+         parsed: clip_value(parsed),
+         response: response_details(message)
        }
      )}
+  end
+
+  defp response_details(%Message{} = message) do
+    text = Message.text(message)
+
+    %{
+      role: message.role,
+      name: message.name,
+      status: message.status,
+      content_length: byte_size(text),
+      content_preview: clip_text(text),
+      metadata: clip_value(message.metadata || %{}),
+      response_metadata: clip_value(message.response_metadata || %{}),
+      usage_metadata: clip_value(message.usage_metadata || %{})
+    }
+  end
+
+  defp clip_value(value), do: clip_value(value, 0)
+
+  defp clip_value(_value, depth) when depth > 6, do: "[truncated depth]"
+  defp clip_value(value, _depth) when is_binary(value), do: clip_text(value)
+
+  defp clip_value(value, depth) when is_list(value) do
+    max_items = 20
+
+    clipped =
+      value
+      |> Enum.take(max_items)
+      |> Enum.map(&clip_value(&1, depth + 1))
+
+    if length(value) > max_items do
+      clipped ++ ["[truncated #{length(value) - max_items} items]"]
+    else
+      clipped
+    end
+  end
+
+  defp clip_value(value, depth) when is_map(value) do
+    max_entries = 80
+
+    clipped =
+      value
+      |> Enum.take(max_entries)
+      |> Map.new(fn {key, nested} -> {key, clip_value(nested, depth + 1)} end)
+
+    if map_size(value) > max_entries do
+      Map.put(clipped, :__truncated_entries__, map_size(value) - max_entries)
+    else
+      clipped
+    end
+  end
+
+  defp clip_value(value, _depth), do: value
+
+  defp clip_text(text) when is_binary(text) do
+    max = 4_000
+
+    if byte_size(text) > max do
+      String.slice(text, 0, max) <> "\n...[truncated #{byte_size(text) - max} bytes]"
+    else
+      text
+    end
   end
 
   defp provider_error(type, message, opts, details) do

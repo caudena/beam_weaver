@@ -66,11 +66,14 @@ defmodule BeamWeaver.Agent.StructuredOutput.Schema do
     end
   end
 
-  def provider_supported?(model, _tools) do
+  def provider_supported?(model, tools) do
     profile =
       if is_map(model), do: BeamWeaver.MapAccess.get(model, :profile), else: nil
 
     cond do
+      tool_enabled?(tools) and not provider_supports_structured_output_with_tools?(model, profile) ->
+        false
+
       is_map(model) and Map.get(model, :supports_structured_output) ->
         true
 
@@ -80,6 +83,14 @@ defmodule BeamWeaver.Agent.StructuredOutput.Schema do
       true ->
         false
     end
+  end
+
+  defp tool_enabled?(tools), do: List.wrap(tools) != []
+
+  defp provider_supports_structured_output_with_tools?(model, profile) do
+    (is_map(model) and Map.get(model, :supports_structured_output_with_tools)) ||
+      (is_map(profile) and BeamWeaver.MapAccess.get(profile, :structured_output_with_tools)) ||
+      false
   end
 
   def nonempty_description(description) when is_binary(description) and description != "",

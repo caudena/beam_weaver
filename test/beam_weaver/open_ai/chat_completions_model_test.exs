@@ -130,7 +130,8 @@ defmodule BeamWeaver.OpenAI.ChatCompletionsModelTest do
                "schema" => %{
                  "type" => "object",
                  "properties" => %{"answer" => %{"type" => "string"}},
-                 "required" => ["answer"]
+                 "required" => ["answer"],
+                 "additionalProperties" => false
                },
                "strict" => true
              }

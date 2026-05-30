@@ -6,6 +6,7 @@ defmodule BeamWeaver.Google.Client do
   alias BeamWeaver.Config
   alias BeamWeaver.Google.Error
   alias BeamWeaver.Google.Streaming
+  alias BeamWeaver.Provider.HTTPMetadata
   alias BeamWeaver.Provider.Options, as: ProviderOptions
   alias BeamWeaver.Provider.ResponseDecoder
   alias BeamWeaver.Provider.Streaming, as: ProviderStreaming
@@ -73,7 +74,7 @@ defmodule BeamWeaver.Google.Client do
       ProviderStreaming.live_sse(
         transport(client),
         request,
-        transport_opts(client, opts),
+        transport_opts(client, request, opts),
         opts,
         &Streaming.text_deltas/1,
         &decode_result(&1, opts)
@@ -89,7 +90,7 @@ defmodule BeamWeaver.Google.Client do
     ProviderStreaming.collect(
       transport(client),
       request,
-      transport_opts(client, opts),
+      transport_opts(client, request, opts),
       &decode_sse_result(&1, opts)
     )
   end
@@ -103,7 +104,7 @@ defmodule BeamWeaver.Google.Client do
       ProviderStreaming.live_sse(
         transport(client),
         request,
-        transport_opts(client, opts),
+        transport_opts(client, request, opts),
         opts,
         &Streaming.typed_events/1,
         &decode_result(&1, opts)
@@ -137,7 +138,7 @@ defmodule BeamWeaver.Google.Client do
   defp do_json_request(%Request{} = request, %__MODULE__{} = client, opts) do
     client
     |> transport()
-    |> Transport.request(request, transport_opts(client, opts))
+    |> Transport.request(request, transport_opts(client, request, opts))
     |> decode_result(opts)
   end
 
@@ -178,9 +179,16 @@ defmodule BeamWeaver.Google.Client do
 
   defp maybe_put_api_key(headers, api_key), do: [{"x-goog-api-key", api_key} | headers]
 
-  defp transport_opts(%__MODULE__{} = client, opts) do
+  defp transport_opts(%__MODULE__{} = client, %Request{} = request, opts) do
     timeout = Keyword.get(opts, :timeout, client.timeout)
-    client.transport_opts ++ Keyword.put_new(opts, :timeout, timeout)
+
+    transport_opts = client.transport_opts ++ Keyword.put_new(opts, :timeout, timeout)
+
+    Keyword.put(
+      transport_opts,
+      :beam_weaver_http_metadata,
+      HTTPMetadata.build(:google, request, timeout: Keyword.get(transport_opts, :timeout))
+    )
   end
 
   defp context_overflow?(_status, provider_error, message) do

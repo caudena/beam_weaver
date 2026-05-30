@@ -981,6 +981,64 @@ defmodule BeamWeaver.Adapters.LivePostgresTest do
            end)
   end
 
+  test "captured subagent output survives parent checkpoint insert and read live" do
+    checkpoints = BeamWeaver.Test.LivePostgres.unique_table("bw_checkpoints_subagent_capture")
+    writes = BeamWeaver.Test.LivePostgres.unique_table("bw_writes_subagent_capture")
+
+    saver =
+      EctoCheckpoint.new(
+        repo: BeamWeaver.Test.PostgresRepo,
+        checkpoints_table: checkpoints,
+        writes_table: writes
+      )
+
+    migration = [adapters: [{:checkpoint, checkpoints_table: checkpoints, writes_table: writes}]]
+    version = BeamWeaver.Test.LivePostgres.migrate(migration)
+
+    on_exit(fn ->
+      BeamWeaver.Test.LivePostgres.drop_tables([writes, checkpoints])
+      BeamWeaver.Test.LivePostgres.clear_migration(version)
+    end)
+
+    {:ok, agent} =
+      Agent.build(
+        name: "postgres_subagent_capture_parent",
+        model: %SubagentCheckpointParentModel{},
+        checkpointer: saver,
+        compact_conversation: false,
+        subagents: [
+          %Spec{
+            name: "worker",
+            description: "Worker",
+            model: %FakeChatModel{
+              structured_response: %{"answer" => "live capture", "facts" => []},
+              profile: %{structured_output: true}
+            },
+            system_prompt: "You are a worker.",
+            response_format: captured_worker_output_schema(),
+            capture_output: :worker_output,
+            execution_mode: :structured_once,
+            base_middleware: [],
+            tools: []
+          }
+        ]
+      )
+
+    thread_id = "thread-live-subagent-capture-#{System.unique_integer([:positive])}"
+
+    assert {:ok, %{subagent_outputs: %{"worker_output" => %{"answer" => "live capture"}}}} =
+             Agent.invoke(agent, %{messages: [Message.user("parent")]},
+               config: %{"configurable" => %{"thread_id" => thread_id}}
+             )
+
+    records = Checkpoint.list(saver, %{"configurable" => %{"thread_id" => thread_id}})
+
+    assert Enum.any?(records, fn record ->
+             get_in(record.checkpoint, ["channel_values", "subagent_outputs", "worker_output", "answer"]) ==
+               "live capture"
+           end)
+  end
+
   test "checkpoint shallow postgres saver keeps only the latest checkpoint live" do
     checkpoints = BeamWeaver.Test.LivePostgres.unique_table("bw_checkpoints_shallow")
     writes = BeamWeaver.Test.LivePostgres.unique_table("bw_writes_shallow")
@@ -1295,5 +1353,27 @@ defmodule BeamWeaver.Adapters.LivePostgresTest do
 
     assert :ok = LangSmithQueueEcto.delete(store, "queue-item-1")
     assert [] = LangSmithQueueEcto.list(store, [])
+  end
+
+  defp captured_worker_output_schema do
+    %{
+      "title" => "CapturedWorkerOutput",
+      "type" => "object",
+      "required" => ["answer", "facts"],
+      "properties" => %{
+        "answer" => %{"type" => "string"},
+        "facts" => %{
+          "type" => "array",
+          "items" => %{
+            "type" => "object",
+            "required" => ["label", "value"],
+            "properties" => %{
+              "label" => %{"type" => "string"},
+              "value" => %{"type" => "string"}
+            }
+          }
+        }
+      }
+    }
   end
 end

@@ -11,7 +11,13 @@ defmodule BeamWeaver.Agent.Subagent.Spec do
     interrupt_on: nil,
     skills: nil,
     permissions: nil,
-    response_format: nil
+    response_format: nil,
+    capture_output: nil,
+    execution_mode: :agent_loop,
+    base_middleware: :deepagents,
+    filesystem: nil,
+    todo_list: nil,
+    inherit_messages: false
   ]
 
   def new(opts \\ []) do
@@ -35,6 +41,12 @@ defmodule BeamWeaver.Agent.Subagent.Spec do
       {"skills", value} -> {:skills, value}
       {"permissions", value} -> {:permissions, value}
       {"response_format", value} -> {:response_format, value}
+      {"capture_output", value} -> {:capture_output, value}
+      {"execution_mode", value} -> {:execution_mode, value}
+      {"base_middleware", value} -> {:base_middleware, value}
+      {"filesystem", value} -> {:filesystem, value}
+      {"todo_list", value} -> {:todo_list, value}
+      {"inherit_messages", value} -> {:inherit_messages, value}
       pair -> pair
     end)
   end
