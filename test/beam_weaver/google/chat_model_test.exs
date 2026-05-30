@@ -3,6 +3,7 @@ defmodule BeamWeaver.Google.ChatModelTest do
 
   alias BeamWeaver.Core.ChatModel, as: CoreChatModel
   alias BeamWeaver.Core.Message
+  alias BeamWeaver.Core.Messages.ToolCall
   alias BeamWeaver.Core.Tool
   alias BeamWeaver.Google.ChatModel
   alias BeamWeaver.Google.Client
@@ -87,6 +88,175 @@ defmodule BeamWeaver.Google.ChatModelTest do
                "threshold" => "BLOCK_ONLY_HIGH"
              }
            ]
+  end
+
+  test "request body ignores internal tracing metadata for Google param validation" do
+    assert {:ok, body} =
+             ChatModel.request_body(
+               %ChatModel{model: "gemini-3.5-flash"},
+               [Message.user("ping")],
+               metadata: %{lc_source: "compact_conversation"}
+             )
+
+    assert body["contents"] == [%{"role" => "user", "parts" => [%{"text" => "ping"}]}]
+    refute Map.has_key?(body, "metadata")
+  end
+
+  test "request body keeps conversation summaries in contents before replayed tool calls" do
+    call = %ToolCall{
+      id: "call-1",
+      name: "lookup",
+      args: %{"q" => "beam"},
+      thought_signature: "sig-a"
+    }
+
+    assert {:ok, body} =
+             ChatModel.request_body(
+               %ChatModel{model: "gemini-3.5-flash"},
+               [
+                 Message.system("follow policy"),
+                 Message.system("Conversation summary:\nprevious context",
+                   metadata: %{conversation_history_path: "/conversation_history/summary.md"}
+                 ),
+                 Message.assistant("", tool_calls: [call]),
+                 Message.tool("found", tool_call_id: "call-1", name: "lookup")
+               ]
+             )
+
+    assert body["systemInstruction"] == %{"parts" => [%{"text" => "follow policy"}]}
+
+    assert body["contents"] == [
+             %{"role" => "user", "parts" => [%{"text" => "Conversation summary:\nprevious context"}]},
+             %{
+               "role" => "model",
+               "parts" => [
+                 %{
+                   "functionCall" => %{"name" => "lookup", "args" => %{"q" => "beam"}},
+                   "thoughtSignature" => "sig-a"
+                 }
+               ]
+             },
+             %{
+               "role" => "user",
+               "parts" => [
+                 %{
+                   "functionResponse" => %{
+                     "name" => "lookup",
+                     "response" => %{"content" => "found"}
+                   }
+                 }
+               ]
+             }
+           ]
+  end
+
+  test "request body encodes assistant tool-call history as Gemini function calls" do
+    call = %ToolCall{
+      id: "call-1",
+      name: "lookup",
+      args: %{"q" => "beam"},
+      thought_signature: "sig-a"
+    }
+
+    assert {:ok, body} =
+             ChatModel.request_body(
+               %ChatModel{model: "gemini-3.5-flash"},
+               [
+                 Message.user("ping"),
+                 Message.assistant(
+                   [
+                     %{
+                       type: :tool_call,
+                       id: "call-1",
+                       name: "lookup",
+                       args: %{"q" => "beam"},
+                       thought_signature: "sig-a"
+                     }
+                   ],
+                   tool_calls: [call]
+                 )
+               ]
+             )
+
+    assert body["contents"] == [
+             %{"role" => "user", "parts" => [%{"text" => "ping"}]},
+             %{
+               "role" => "model",
+               "parts" => [
+                 %{
+                   "functionCall" => %{"name" => "lookup", "args" => %{"q" => "beam"}},
+                   "thoughtSignature" => "sig-a"
+                 }
+               ]
+             }
+           ]
+  end
+
+  test "request body preserves thought signatures from restored content metadata" do
+    message =
+      Message.assistant([
+        %{
+          "type" => "reasoning",
+          "reasoning" => "thinking",
+          "metadata" => %{"thoughtSignature" => "sig-reasoning"}
+        },
+        %{
+          "type" => "tool_call",
+          "id" => "call-1",
+          "name" => "lookup",
+          "args" => %{"q" => "beam"},
+          "metadata" => %{"thoughtSignature" => "sig-call"}
+        }
+      ])
+
+    assert {:ok, body} =
+             ChatModel.request_body(
+               %ChatModel{model: "gemini-3.5-flash"},
+               [Message.user("ping"), message]
+             )
+
+    assert body["contents"] == [
+             %{"role" => "user", "parts" => [%{"text" => "ping"}]},
+             %{
+               "role" => "model",
+               "parts" => [
+                 %{
+                   "thought" => true,
+                   "text" => "thinking",
+                   "thoughtSignature" => "sig-reasoning"
+                 },
+                 %{
+                   "functionCall" => %{"name" => "lookup", "args" => %{"q" => "beam"}},
+                   "thoughtSignature" => "sig-call"
+                 }
+               ]
+             }
+           ]
+  end
+
+  test "decoded Gemini function calls preserve thought signatures for replay" do
+    assert {:ok, decoded} =
+             DecodeMessage.decode(
+               %{
+                 "candidates" => [
+                   %{
+                     "content" => %{
+                       "role" => "model",
+                       "parts" => [
+                         %{
+                           "functionCall" => %{"name" => "lookup", "args" => %{"q" => "beam"}},
+                           "thoughtSignature" => "sig-a"
+                         }
+                       ]
+                     }
+                   }
+                 ]
+               },
+               provider: :google
+             )
+
+    assert [%{type: :tool_call, name: "lookup", thought_signature: "sig-a"}] = decoded.content
+    assert [%ToolCall{name: "lookup", thought_signature: "sig-a"}] = decoded.tool_calls
   end
 
   test "request body covers Gemini OpenAPI generation and tool config fields" do

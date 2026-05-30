@@ -13,6 +13,7 @@ defmodule BeamWeaver.Agent.WrapModelCallTest do
   alias BeamWeaver.Core.Error
   alias BeamWeaver.Core.Message
   alias BeamWeaver.Graph.Command
+  alias BeamWeaver.Graph.Overwrite
 
   defmodule RecordingModel do
     @behaviour ChatModel
@@ -206,6 +207,25 @@ defmodule BeamWeaver.Agent.WrapModelCallTest do
     end
   end
 
+  defmodule MessageOverwriteMiddleware do
+    @behaviour BeamWeaver.Agent.Middleware
+
+    def name(_middleware), do: :message_overwrite
+
+    def wrap_model_call(request, handler) do
+      with {:ok, %ModelResponse{} = response} <- handler.(request) do
+        %ExtendedModelResponse{
+          model_response: response,
+          command: %Command{
+            update: %{
+              messages: Overwrite.new([Message.user("Compacted input", id: "compacted")])
+            }
+          }
+        }
+      end
+    end
+  end
+
   defmodule OrderAgent do
     use BeamWeaver.Agent
 
@@ -266,6 +286,13 @@ defmodule BeamWeaver.Agent.WrapModelCallTest do
 
     model(%RecordingModel{reply: "model"})
     middleware([StructuredConflictMiddleware])
+  end
+
+  defmodule MessageOverwriteAgent do
+    use BeamWeaver.Agent
+
+    model(%RecordingModel{reply: "model"})
+    middleware([MessageOverwriteMiddleware])
   end
 
   test "model wrappers compose outside-in around the immutable request" do
@@ -336,5 +363,15 @@ defmodule BeamWeaver.Agent.WrapModelCallTest do
   test "separate model and command state updates preserve last-value conflicts" do
     assert {:error, %Error{type: :invalid_update}} =
              Agent.invoke(StructuredConflictAgent, %{messages: [Message.user("hi")]})
+  end
+
+  test "message overwrite commands preserve the model response message" do
+    assert {:ok, %{messages: messages}} =
+             Agent.invoke(MessageOverwriteAgent, %{messages: [Message.user("hi")]})
+
+    assert Enum.map(messages, &{&1.role, &1.content}) == [
+             {:user, "Compacted input"},
+             {:assistant, "model"}
+           ]
   end
 end

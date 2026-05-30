@@ -120,7 +120,7 @@ defmodule BeamWeaver.Agent.Middleware.CompactConversation do
   end
 
   defp compact_messages(%__MODULE__{} = middleware, input, messages, tool_call_id) do
-    cutoff = max(length(messages) - middleware.keep_messages, 0)
+    cutoff = safe_cutoff(messages, max(length(messages) - middleware.keep_messages, 0))
 
     if cutoff <= 0 do
       tool_command(
@@ -134,7 +134,7 @@ defmodule BeamWeaver.Agent.Middleware.CompactConversation do
            {:ok, summary} <- create_summary(middleware, rendered),
            {file_path, files_update} <- offload_history(middleware, input, rendered) do
         summary_message =
-          Message.system("Conversation summary:\n" <> summary,
+          Message.user("Conversation summary:\n" <> summary,
             id: ID.uuidv7(),
             metadata: %{conversation_history_path: file_path}
           )
@@ -181,7 +181,7 @@ defmodule BeamWeaver.Agent.Middleware.CompactConversation do
         %{}
 
       true ->
-        %{messages: Overwrite.new([summary_message | Enum.drop(messages, cutoff)])}
+        %{messages: Overwrite.new([summary_message | Enum.drop(messages, safe_cutoff(messages, cutoff))])}
     end
   end
 
@@ -221,6 +221,51 @@ defmodule BeamWeaver.Agent.Middleware.CompactConversation do
       _error -> {:ok, inspect(messages)}
     end
   end
+
+  defp safe_cutoff(messages, index) when index >= length(messages), do: index
+
+  defp safe_cutoff(messages, index) do
+    case Enum.at(messages, index) do
+      %Message{role: :tool, tool_call_id: id} when is_binary(id) ->
+        case matching_assistant_index(messages, index, id) do
+          nil -> skip_tool_messages(messages, index)
+          assistant_index -> assistant_index
+        end
+
+      _message ->
+        index
+    end
+  end
+
+  defp matching_assistant_index(messages, index, tool_call_id) do
+    messages
+    |> Enum.take(index)
+    |> Enum.with_index()
+    |> Enum.reverse()
+    |> Enum.find_value(fn
+      {%Message{role: :assistant, tool_calls: calls}, assistant_index} when is_list(calls) ->
+        if Enum.any?(calls, &(tool_call_id(&1) == tool_call_id)), do: assistant_index
+
+      _other ->
+        nil
+    end)
+  end
+
+  defp skip_tool_messages(messages, index) do
+    messages
+    |> Enum.drop(index)
+    |> Enum.take_while(&match?(%Message{role: :tool}, &1))
+    |> length()
+    |> Kernel.+(index)
+  end
+
+  defp tool_call_id(%{id: id}) when is_binary(id), do: id
+  defp tool_call_id(%{call_id: id}) when is_binary(id), do: id
+  defp tool_call_id(%{provider_id: id}) when is_binary(id), do: id
+  defp tool_call_id(%{"id" => id}) when is_binary(id), do: id
+  defp tool_call_id(%{"call_id" => id}) when is_binary(id), do: id
+  defp tool_call_id(%{"provider_id" => id}) when is_binary(id), do: id
+  defp tool_call_id(_call), do: nil
 
   defp tool_command(content, tool_call_id, opts \\ []) do
     metadata =

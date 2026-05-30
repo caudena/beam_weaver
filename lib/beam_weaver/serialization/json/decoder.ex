@@ -112,7 +112,7 @@ defmodule BeamWeaver.Serialization.JSON.Decoder do
           |> decode_struct_fields(module, registry)
 
         case fields do
-          {:ok, fields} -> {:ok, struct(module, fields)}
+          {:ok, fields} -> decode_struct(module, fields)
           error -> error
         end
     end
@@ -167,4 +167,10 @@ defmodule BeamWeaver.Serialization.JSON.Decoder do
   defp existing_field(key, allowed) when is_atom(key) do
     if MapSet.member?(allowed, key), do: key
   end
+
+  defp decode_struct(BeamWeaver.Core.Message, fields) do
+    BeamWeaver.Core.MessageLike.to_message(fields)
+  end
+
+  defp decode_struct(module, fields), do: {:ok, struct(module, fields)}
 end

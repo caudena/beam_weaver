@@ -98,6 +98,13 @@ defmodule BeamWeaver.RetryPolicyTest do
     assert RetryPolicy.retry?(RetryPolicy.new!(retry_on: :transient), transient)
     refute RetryPolicy.retry?(RetryPolicy.new!(retry_on: :transient), permanent)
 
+    assert RetryPolicy.retry?(
+             RetryPolicy.new!(retry_on: :transient),
+             Error.new(:transport_error, "Google transport request failed", %{
+               reason: "%Req.TransportError{reason: :nxdomain}"
+             })
+           )
+
     assert RetryPolicy.retry?(RetryPolicy.new!(retry_on: [:transient, :rate_limit]), transient)
     refute RetryPolicy.retry?(RetryPolicy.new!(retry_on: []), transient)
 

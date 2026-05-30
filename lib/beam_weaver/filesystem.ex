@@ -308,8 +308,19 @@ defmodule BeamWeaver.Filesystem.Executable do
   def execute_accepts_timeout?(_backend), do: false
 
   def executable?(backend) when is_struct(backend) do
-    not is_nil(ExecutableBackend.impl_for(backend))
+    case ExecutableBackend.impl_for(backend) do
+      nil -> false
+      _impl -> executable_enabled?(backend)
+    end
   end
 
   def executable?(_backend), do: false
+
+  defp executable_enabled?(%{__struct__: module} = backend) do
+    if function_exported?(module, :executable?, 1) do
+      module.executable?(backend) == true
+    else
+      true
+    end
+  end
 end

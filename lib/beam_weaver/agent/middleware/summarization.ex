@@ -73,7 +73,7 @@ defmodule BeamWeaver.Agent.Middleware.Summarization do
           %{
             messages:
               Overwrite.new([
-                Message.system(middleware.summary_prefix <> "\n" <> Message.text(summary))
+                Message.user(middleware.summary_prefix <> "\n" <> Message.text(summary))
                 | recent
               ])
           }

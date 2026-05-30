@@ -30,8 +30,10 @@ defmodule BeamWeaver.Graph.Execution.ChannelLookup do
       Map.get(visibility, to_string(key)) == :private or
       case key do
         key when is_binary(key) ->
-          atom = existing_atom(key)
-          atom && Map.get(visibility, atom) == :private
+          case existing_atom(key) do
+            nil -> false
+            atom -> Map.get(visibility, atom) == :private
+          end
 
         _other ->
           false
@@ -44,8 +46,10 @@ defmodule BeamWeaver.Graph.Execution.ChannelLookup do
       Map.has_key?(managed, to_string(key)) or
       case key do
         key when is_binary(key) ->
-          atom = existing_atom(key)
-          atom && Map.has_key?(managed, atom)
+          case existing_atom(key) do
+            nil -> false
+            atom -> Map.has_key?(managed, atom)
+          end
 
         _other ->
           false

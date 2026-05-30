@@ -10,6 +10,7 @@ defmodule BeamWeaver.Agent.Nodes.Model.Response do
   alias BeamWeaver.Core.Message
   alias BeamWeaver.Core.Tool
   alias BeamWeaver.Graph.Command
+  alias BeamWeaver.Graph.Overwrite
   alias BeamWeaver.Transport.Redactor
 
   def normalize_model_result({:ok, %ModelResponse{}} = result), do: result
@@ -227,7 +228,13 @@ defmodule BeamWeaver.Agent.Nodes.Model.Response do
   end
 
   def to_update(%ModelResponse{commands: commands} = response) when commands != [] do
-    [base_response_update(response) | commands]
+    base_update = base_response_update(response)
+    {pre_response_commands, post_response_commands} = Enum.split_with(commands, &message_overwrite_command?/1)
+
+    {pre_response_commands, base_update} =
+      prepare_message_overwrite_commands(pre_response_commands, base_update, response.messages)
+
+    pre_response_commands ++ [base_update] ++ post_response_commands
   end
 
   def to_update(%ModelResponse{} = response), do: base_response_update(response)
@@ -284,6 +291,57 @@ defmodule BeamWeaver.Agent.Nodes.Model.Response do
       response
       | commands: response.commands ++ [%{command | update: normalize_command_update(command.update)}]
     }
+  end
+
+  defp message_overwrite_command?(%Command{update: update}) when is_map(update) do
+    case fetch_update_value(update, :messages) do
+      {:ok, _key, value} -> match?({:ok, _value}, Overwrite.get(value))
+      :error -> false
+    end
+  end
+
+  defp message_overwrite_command?(_command), do: false
+
+  defp prepare_message_overwrite_commands([], base_update, _messages), do: {[], base_update}
+
+  defp prepare_message_overwrite_commands(commands, base_update, messages) when is_list(messages) do
+    commands = Enum.map(commands, &append_messages_to_overwrite(&1, messages))
+    {commands, Map.delete(base_update, :messages)}
+  end
+
+  defp append_messages_to_overwrite(%Command{update: update} = command, messages)
+       when is_map(update) and messages != [] do
+    case fetch_update_value(update, :messages) do
+      {:ok, key, value} ->
+        case Overwrite.get(value) do
+          {:ok, overwritten} ->
+            %{command | update: Map.put(update, key, Overwrite.new(List.wrap(overwritten) ++ messages))}
+
+          :error ->
+            command
+        end
+
+      :error ->
+        command
+    end
+  end
+
+  defp append_messages_to_overwrite(command, _messages), do: command
+
+  defp fetch_update_value(update, key) do
+    case Map.fetch(update, key) do
+      {:ok, value} -> {:ok, key, value}
+      :error -> fetch_string_update_value(update, key)
+    end
+  end
+
+  defp fetch_string_update_value(update, key) do
+    string_key = to_string(key)
+
+    case Map.fetch(update, string_key) do
+      {:ok, value} -> {:ok, string_key, value}
+      :error -> :error
+    end
   end
 
   defp put_agent_name_to_message(%Message{role: :assistant, name: nil} = message, name),

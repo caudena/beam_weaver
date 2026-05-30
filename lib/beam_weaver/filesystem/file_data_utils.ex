@@ -143,7 +143,7 @@ defmodule BeamWeaver.Filesystem.FileDataUtils do
       end
 
     if offset > length(lines) do
-      {:error, "Line offset #{offset} exceeds file length (#{length(lines)} lines)"}
+      ""
     else
       lines
       |> Enum.drop(offset)

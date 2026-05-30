@@ -39,11 +39,21 @@ defmodule BeamWeaver.Agent.State do
   end
 
   @spec messages(map()) :: term()
-  def messages(state) when is_map(state), do: Map.get(state, :messages, []) || []
+  def messages(state) when is_map(state) do
+    atom_messages = Map.get(state, :messages)
+    string_messages = Map.get(state, "messages")
+
+    cond do
+      is_list(atom_messages) and is_list(string_messages) -> atom_messages ++ string_messages
+      is_list(atom_messages) -> atom_messages
+      is_list(string_messages) -> string_messages
+      true -> atom_messages || string_messages || []
+    end
+  end
 
   @spec jump_to(map()) :: :model | :tools | :end | nil
   def jump_to(state) when is_map(state) do
-    case Map.get(state, :jump_to) do
+    case Map.get(state, :jump_to, Map.get(state, "jump_to")) do
       value when value in [:model, "model"] -> :model
       value when value in [:tools, "tools"] -> :tools
       value when value in [:end, "end"] -> :end
@@ -52,7 +62,8 @@ defmodule BeamWeaver.Agent.State do
   end
 
   @spec structured_response?(map()) :: boolean()
-  def structured_response?(state) when is_map(state), do: Map.has_key?(state, :structured_response)
+  def structured_response?(state) when is_map(state),
+    do: Map.has_key?(state, :structured_response) or Map.has_key?(state, "structured_response")
 
   defp schema_keys(nil), do: MapSet.new(@core_keys)
 

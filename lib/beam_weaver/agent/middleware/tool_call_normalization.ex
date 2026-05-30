@@ -65,6 +65,7 @@ defmodule BeamWeaver.Agent.Middleware.ToolCallNormalization do
       provider_id: Map.get(call, :provider_id),
       call_id: Map.get(call, :call_id),
       name: sanitize_name(Map.get(call, :name)),
+      thought_signature: Map.get(call, :thought_signature),
       args: call |> call_args() |> truncate_args(middleware.max_argument_chars)
     )
   end
@@ -75,6 +76,9 @@ defmodule BeamWeaver.Agent.Middleware.ToolCallNormalization do
       provider_id: Map.get(public_call, :provider_id) || Map.get(public_call, "provider_id"),
       call_id: Map.get(public_call, :call_id) || Map.get(public_call, "call_id"),
       name: Map.get(public_call, :name) || Map.get(public_call, "name"),
+      thought_signature:
+        Map.get(public_call, :thought_signature) || Map.get(public_call, "thought_signature") ||
+          Map.get(public_call, :thoughtSignature) || Map.get(public_call, "thoughtSignature"),
       args:
         Map.get(public_call, :args) || Map.get(public_call, "args") ||
           Map.get(public_call, :arguments) || Map.get(public_call, "arguments") || %{}

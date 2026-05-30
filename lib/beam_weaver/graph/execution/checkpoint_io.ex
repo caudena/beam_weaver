@@ -88,6 +88,15 @@ defmodule BeamWeaver.Graph.Execution.CheckpointIO do
     channel_versions = metadata_value(metadata, :channel_versions, %{})
     versions_seen = metadata_value(metadata, :versions_seen, %{})
     parent_tuple = get_tuple(checkpointer, config)
+    step_update = metadata_value(metadata, :step_update, %{})
+    persisted_step_update = ChannelState.persisted_update(compiled.graph, step_update)
+    persisted_updated_channels = persisted_updated_channels(compiled.graph, updated_channels)
+
+    metadata =
+      metadata
+      |> put_metadata_value(:step_update, persisted_step_update)
+      |> put_metadata_value(:updated_channels, persisted_updated_channels)
+
     {counters, snapshot_channels} = delta_snapshot_state(compiled.graph, parent_tuple, metadata)
 
     channel_values =
@@ -95,8 +104,7 @@ defmodule BeamWeaver.Graph.Execution.CheckpointIO do
       |> ChannelState.checkpoint_channel_values(state)
       |> Map.merge(ChannelState.checkpoint_snapshot_values(compiled.graph, state, snapshot_channels))
 
-    step_update = metadata_value(metadata, :step_update, %{})
-    channel_deltas = ChannelState.checkpoint_channel_deltas(compiled.graph, step_update)
+    channel_deltas = ChannelState.checkpoint_channel_deltas(compiled.graph, persisted_step_update)
     metadata = Map.put(metadata, :counters_since_delta_snapshot, counters)
 
     checkpoint = %{
@@ -105,7 +113,7 @@ defmodule BeamWeaver.Graph.Execution.CheckpointIO do
       "channel_deltas" => channel_deltas,
       "channel_versions" => channel_versions,
       "versions_seen" => versions_seen,
-      "updated_channels" => Execution.normalize_channels(updated_channels),
+      "updated_channels" => Execution.normalize_channels(persisted_updated_channels),
       "next" => metadata_value(metadata, :next, []),
       "next_tasks" => metadata_value(metadata, :next_tasks, []),
       "tasks" => metadata_value(metadata, :tasks, []),
@@ -184,6 +192,21 @@ defmodule BeamWeaver.Graph.Execution.CheckpointIO do
 
   defp metadata_value(metadata, key, default) do
     Map.get(metadata, key, Map.get(metadata, to_string(key), default))
+  end
+
+  defp put_metadata_value(metadata, key, value) do
+    metadata
+    |> Map.delete(key)
+    |> Map.delete(to_string(key))
+    |> Map.put(key, value)
+  end
+
+  defp persisted_updated_channels(graph, updated_channels) do
+    updated_channels
+    |> List.wrap()
+    |> Map.new(&{&1, true})
+    |> then(&ChannelState.persisted_update(graph, &1))
+    |> Map.keys()
   end
 
   defp merge_checkpoint_map(checkpoint_config, source_config) do

@@ -23,6 +23,8 @@ defmodule BeamWeaver.Filesystem.Composite do
     }
   end
 
+  def executable?(%__MODULE__{} = backend), do: Executable.executable?(backend.default)
+
   @impl true
   def ls(%__MODULE__{} = backend, "/", opts) do
     default_entries =

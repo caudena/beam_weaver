@@ -54,7 +54,7 @@ defmodule BeamWeaver.Agent.Compiler do
         output_schema: spec.output_schema
       )
       |> add_middleware_nodes(middleware, :before_agent)
-      |> add_middleware_nodes(middleware, :before_model)
+      |> add_middleware_nodes(middleware, :before_model, model_node_opts(spec))
       |> Graph.add_node(
         @model_node,
         BeamWeaver.Agent.Nodes.Model.new(spec.model,
@@ -69,7 +69,7 @@ defmodule BeamWeaver.Agent.Compiler do
       )
       |> add_middleware_nodes(middleware, :after_model)
       |> add_validation_node(tools, spec, tool_node?)
-      |> add_tools_node(tools, middleware, tool_node?)
+      |> add_tools_node(tools, middleware, tool_node?, spec)
       |> add_middleware_nodes(middleware, :after_agent)
 
     graph
@@ -148,14 +148,15 @@ defmodule BeamWeaver.Agent.Compiler do
     Routing.middleware_router(state, default)
   end
 
-  defp add_middleware_nodes(graph, middleware, hook) do
+  defp add_middleware_nodes(graph, middleware, hook, node_opts \\ []) do
     middleware
     |> Enum.filter(&Middleware.hook?(&1, hook))
     |> Enum.reduce(graph, fn middleware, graph ->
       Graph.add_node(
         graph,
         middleware_node_name(middleware, hook),
-        MiddlewareNode.new(middleware, hook)
+        MiddlewareNode.new(middleware, hook),
+        node_opts
       )
     end)
   end
@@ -176,16 +177,30 @@ defmodule BeamWeaver.Agent.Compiler do
   defp fetch_model_timeout(%{timeout: timeout}), do: {:ok, timeout}
   defp fetch_model_timeout(_model), do: :error
 
-  defp add_tools_node(graph, [], middleware, tool_node?) do
+  defp add_tools_node(graph, [], middleware, tool_node?, spec) do
     if tool_node? or Enum.any?(middleware, &Middleware.hook?(&1, :wrap_tool_call)) do
-      Graph.add_node(graph, @tools_node, ToolNode.new([], wrap_tool_call: middleware))
+      tool_node_opts = model_node_opts(spec)
+
+      Graph.add_node(
+        graph,
+        @tools_node,
+        ToolNode.new([], Keyword.merge([wrap_tool_call: middleware], tool_node_opts)),
+        tool_node_opts
+      )
     else
       graph
     end
   end
 
-  defp add_tools_node(graph, tools, middleware, _tool_node?) do
-    Graph.add_node(graph, @tools_node, ToolNode.new(tools, wrap_tool_call: middleware))
+  defp add_tools_node(graph, tools, middleware, _tool_node?, spec) do
+    tool_node_opts = model_node_opts(spec)
+
+    Graph.add_node(
+      graph,
+      @tools_node,
+      ToolNode.new(tools, Keyword.merge([wrap_tool_call: middleware], tool_node_opts)),
+      tool_node_opts
+    )
   end
 
   defp add_validation_node(graph, tools, %Spec{validate_tools: true}, true) do

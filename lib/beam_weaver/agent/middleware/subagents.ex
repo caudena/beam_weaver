@@ -16,10 +16,13 @@ defmodule BeamWeaver.Agent.Middleware.Subagents do
   alias BeamWeaver.Agent.State, as: AgentState
   alias BeamWeaver.Agent.Subagent.Compiled
   alias BeamWeaver.Agent.Subagent.Spec
+  alias BeamWeaver.Checkpoint
+  alias BeamWeaver.Core.Error
   alias BeamWeaver.Core.Message
   alias BeamWeaver.Core.Tool
   alias BeamWeaver.Filesystem.State
   alias BeamWeaver.Graph.Command
+  alias BeamWeaver.Graph.Execution.Namespace
 
   import BeamWeaver.Agent.Subagent.Helpers,
     only: [append_prompt: 2, available_agents: 1, value: 2, value: 3]
@@ -54,6 +57,8 @@ defmodule BeamWeaver.Agent.Middleware.Subagents do
     :skills_load_errors,
     :memory_contents
   ]
+
+  @child_state_exclusion_names MapSet.new(Enum.map(@child_state_exclusions, &Atom.to_string/1))
 
   defstruct subagents: [],
             model: nil,
@@ -232,8 +237,8 @@ defmodule BeamWeaver.Agent.Middleware.Subagents do
           {:interrupted, state} ->
             "Subagent interrupted: #{inspect(state)}"
 
-          {:error, error} ->
-            "Subagent error: #{error.message}"
+          {:error, %Error{} = error} ->
+            format_subagent_error(error)
         end
 
       nil ->
@@ -338,27 +343,127 @@ defmodule BeamWeaver.Agent.Middleware.Subagents do
   end
 
   defp child_invoke_opts(input, subagent_name) do
-    runtime = value(input, :runtime) || tool_runtime_runtime(input) || %{}
-    config = runtime_value(runtime, :config, %{})
+    runtime = runtime_from_input(input)
+    config = child_config(runtime, input, subagent_name)
 
     config =
       put_in(
         config,
-        [Access.key(:configurable, %{}), :ls_agent_type],
+        [Access.key("configurable", %{}), "ls_agent_type"],
         "subagent"
       )
-      |> put_in([Access.key(:configurable, %{}), :subagent_name], subagent_name)
+      |> put_in([Access.key("configurable", %{}), "subagent_name"], subagent_name)
 
     []
     |> maybe_put_opt(:context, runtime_value(runtime, :context))
     |> Keyword.put(:config, config)
   end
 
+  defp child_config(runtime, input, subagent_name) do
+    parent_config =
+      runtime
+      |> runtime_value(:config, %{})
+      |> normalize_config()
+
+    execution = runtime_value(runtime, :execution) || runtime_value(runtime, :execution_info) || %{}
+
+    configurable =
+      parent_config
+      |> Checkpoint.configurable()
+      |> put_configurable_from_execution("thread_id", execution, :thread_id)
+      |> put_configurable_from_execution("checkpoint_ns", execution, :checkpoint_ns)
+      |> put_configurable_from_execution("checkpoint_id", execution, :checkpoint_id)
+
+    parent_config = Map.put(parent_config, "configurable", configurable)
+    parent_ns = Map.get(configurable, "checkpoint_ns", "")
+    child_ns = child_namespace(parent_ns, runtime, input, subagent_name)
+
+    checkpoint_map =
+      configurable
+      |> Map.get("checkpoint_map", %{})
+      |> normalize_checkpoint_map()
+      |> maybe_put_namespace_checkpoint(parent_ns, Map.get(configurable, "checkpoint_id"))
+
+    child_configurable =
+      configurable
+      |> Map.put("checkpoint_ns", child_ns)
+      |> Map.put("checkpoint_map", checkpoint_map)
+      |> Map.delete("checkpoint_id")
+      |> maybe_put_checkpoint_id(Map.get(checkpoint_map, child_ns))
+
+    Map.put(parent_config, "configurable", child_configurable)
+  end
+
+  defp child_namespace(parent_ns, runtime, input, subagent_name) do
+    parent_ns
+    |> Namespace.child(runtime_value(runtime, :node, "task"), runtime_task_id(runtime, input))
+    |> Namespace.child("subagent.#{subagent_name}", value(input, :tool_call_id))
+    |> Namespace.serialize()
+  end
+
+  defp runtime_task_id(runtime, input) do
+    runtime_value(runtime, :task_id) ||
+      runtime_value(runtime_value(runtime, :execution, %{}), :task_id) ||
+      value(input, :tool_call_id)
+  end
+
+  defp normalize_config(config) when is_list(config), do: normalize_config(Map.new(config))
+
+  defp normalize_config(config) when is_map(config) do
+    Map.new(config, fn {key, value} ->
+      key = to_string(key)
+
+      if key == "configurable" and is_map(value) do
+        {key, stringify_keys(value)}
+      else
+        {key, value}
+      end
+    end)
+  end
+
+  defp normalize_config(_config), do: %{}
+
+  defp stringify_keys(map) when is_map(map) do
+    Map.new(map, fn {key, value} -> {to_string(key), value} end)
+  end
+
+  defp normalize_checkpoint_map(map) when is_map(map) do
+    Map.new(map, fn {namespace, checkpoint_id} ->
+      {Namespace.recast(namespace), checkpoint_id}
+    end)
+  end
+
+  defp normalize_checkpoint_map(_other), do: %{}
+
+  defp maybe_put_namespace_checkpoint(map, _namespace, nil), do: map
+
+  defp maybe_put_namespace_checkpoint(map, namespace, checkpoint_id),
+    do: Map.put(map, Namespace.recast(namespace), checkpoint_id)
+
+  defp maybe_put_checkpoint_id(configurable, nil), do: configurable
+
+  defp maybe_put_checkpoint_id(configurable, checkpoint_id),
+    do: Map.put(configurable, "checkpoint_id", checkpoint_id)
+
+  defp format_subagent_error(%Error{} = error) do
+    details = error.details || %{}
+
+    ["Subagent error: #{error.message}", "type=#{inspect(error.type)}"]
+    |> maybe_append_error_details(details)
+    |> Enum.join(" ")
+  end
+
+  defp maybe_append_error_details(parts, details) when details in [%{}, nil], do: parts
+
+  defp maybe_append_error_details(parts, details) do
+    parts ++ ["details=#{inspect(details, limit: 20, printable_limit: 2_000)}"]
+  end
+
   defp child_state_update(parent_state, child_state)
        when is_map(parent_state) and is_map(child_state) do
     child_state
-    |> Map.drop(@child_state_exclusions)
-    |> Enum.reject(fn {key, value} -> Map.get(parent_state, key) == value end)
+    |> Enum.reject(fn {key, _value} -> child_state_excluded_key?(key) end)
+    |> Enum.reject(fn {key, value} -> parent_state_value(parent_state, key) == value end)
     |> Map.new()
   end
 
@@ -379,12 +484,24 @@ defmodule BeamWeaver.Agent.Middleware.Subagents do
 
   defp blank?(value), do: is_nil(value) or String.trim(to_string(value)) == ""
 
-  defp tool_runtime_runtime(input) do
-    case value(input, :tool_runtime) do
-      %{runtime: runtime} -> runtime
-      %{"runtime" => runtime} -> runtime
-      _missing -> nil
-    end
+  defp runtime_from_input(input) do
+    tool_runtime = value(input, :tool_runtime)
+
+    runtime =
+      value(input, :runtime) ||
+        runtime_value(tool_runtime, :runtime) ||
+        %{}
+
+    runtime
+    |> normalize_runtime()
+    |> maybe_put_runtime(:config, runtime_value(tool_runtime, :config))
+    |> maybe_put_runtime(:context, runtime_value(tool_runtime, :context))
+    |> maybe_put_runtime(:store, runtime_value(tool_runtime, :store))
+    |> maybe_put_runtime(:checkpointer, runtime_value(tool_runtime, :checkpointer))
+    |> maybe_put_runtime(
+      :execution,
+      runtime_value(tool_runtime, :execution) || runtime_value(tool_runtime, :execution_info)
+    )
   end
 
   defp runtime_value(runtime, key, default \\ nil)
@@ -393,6 +510,48 @@ defmodule BeamWeaver.Agent.Middleware.Subagents do
     do: BeamWeaver.MapAccess.get(runtime, key, default)
 
   defp runtime_value(_runtime, _key, default), do: default
+
+  defp normalize_runtime(%{__struct__: _module} = runtime), do: Map.from_struct(runtime)
+  defp normalize_runtime(runtime) when is_map(runtime), do: runtime
+  defp normalize_runtime(_runtime), do: %{}
+
+  defp maybe_put_runtime(runtime, _key, nil), do: runtime
+
+  defp maybe_put_runtime(runtime, key, value) do
+    if runtime_value(runtime, key) in [nil, ""] do
+      Map.put(runtime, key, value)
+    else
+      runtime
+    end
+  end
+
+  defp put_configurable_from_execution(configurable, key, execution, execution_key) do
+    case {Map.get(configurable, key), runtime_value(execution, execution_key)} do
+      {missing, value} when missing in [nil, ""] and value not in [nil, ""] ->
+        Map.put(configurable, key, value)
+
+      _other ->
+        configurable
+    end
+  end
+
+  defp child_state_excluded_key?(key), do: MapSet.member?(@child_state_exclusion_names, to_string(key))
+
+  defp parent_state_value(parent_state, key) when is_atom(key) do
+    Map.get(parent_state, key, Map.get(parent_state, Atom.to_string(key)))
+  end
+
+  defp parent_state_value(parent_state, key) when is_binary(key) do
+    Map.get(parent_state, key) || parent_state_atom_value(parent_state, key)
+  end
+
+  defp parent_state_value(parent_state, key), do: Map.get(parent_state, key)
+
+  defp parent_state_atom_value(parent_state, key) do
+    Map.get(parent_state, String.to_existing_atom(key))
+  rescue
+    ArgumentError -> nil
+  end
 
   defp maybe_put_opt(opts, _key, nil), do: opts
   defp maybe_put_opt(opts, key, value), do: Keyword.put(opts, key, value)

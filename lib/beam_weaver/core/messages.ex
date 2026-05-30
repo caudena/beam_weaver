@@ -30,13 +30,14 @@ end
 
 defmodule BeamWeaver.Core.Messages.ToolCall do
   @moduledoc "Normalized model tool call."
-  defstruct [:id, :provider_id, :call_id, :name, args: %{}, type: :tool_call]
+  defstruct [:id, :provider_id, :call_id, :name, :thought_signature, args: %{}, type: :tool_call]
 
   @type t :: %__MODULE__{
           id: String.t() | nil,
           provider_id: String.t() | nil,
           call_id: String.t() | nil,
           name: String.t() | nil,
+          thought_signature: String.t() | nil,
           args: map(),
           type: atom()
         }

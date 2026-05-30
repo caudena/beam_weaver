@@ -254,6 +254,7 @@ defmodule BeamWeaver.Core.Message do
       provider_id: Map.get(call, :provider_id),
       call_id: Map.get(call, :call_id),
       name: Map.get(call, :name),
+      thought_signature: Map.get(call, :thought_signature),
       args: Map.get(call, :args, %{})
     }
     |> Enum.reject(fn {_key, value} -> is_nil(value) end)

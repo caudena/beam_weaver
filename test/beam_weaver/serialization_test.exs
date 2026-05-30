@@ -2,11 +2,25 @@ defmodule BeamWeaver.SerializationTest do
   use ExUnit.Case, async: true
 
   alias BeamWeaver.Adapter.ValueCodec
+  alias BeamWeaver.Agent.Subagent.AsyncTask
+  alias BeamWeaver.Agent.Usage
+  alias BeamWeaver.Core.ContentBlock
   alias BeamWeaver.Core.Document
   alias BeamWeaver.Core.Error
   alias BeamWeaver.Core.Message
+  alias BeamWeaver.Core.Messages.InvalidToolCall
+  alias BeamWeaver.Core.Messages.ToolCall
+  alias BeamWeaver.Core.Messages.ToolCallChunk
+  alias BeamWeaver.Filesystem
   alias BeamWeaver.Graph.Command
+  alias BeamWeaver.Graph.Execution.TaskRequest
+  alias BeamWeaver.Graph.ExecutionInfo
+  alias BeamWeaver.Graph.Interrupt
+  alias BeamWeaver.Graph.Messages.Remove
+  alias BeamWeaver.Graph.Overwrite
+  alias BeamWeaver.Graph.Resume
   alias BeamWeaver.Graph.Send
+  alias BeamWeaver.Google.Messages, as: GoogleMessages
   alias BeamWeaver.Serialization
   alias BeamWeaver.Serialization.Encrypted
   alias BeamWeaver.Serialization.Registry
@@ -20,7 +34,18 @@ defmodule BeamWeaver.SerializationTest do
   test "round trips registered BeamWeaver structs through safe JSON tags" do
     value = %{
       document: %Document{id: "d1", content: "source text", metadata: %{source: "test"}},
-      message: %Message{id: "m1", role: :assistant, content: "hello"},
+      message: %Message{
+        id: "m1",
+        role: :assistant,
+        content: "hello",
+        tool_calls: [%ToolCall{id: "call-1", name: "lookup", args: %{"q" => "beam"}}],
+        metadata: %{
+          invalid_tool_calls: [
+            %InvalidToolCall{id: "bad-1", name: "broken", args: "{", error: "invalid json"}
+          ],
+          tool_call_chunks: [%ToolCallChunk{id: "chunk-1", index: 0, name: "lookup"}]
+        }
+      },
       command: %Command{update: %{answer: 1}, goto: :done},
       send: %Send{node: :worker, update: %{item: "a"}, timeout: 250},
       send_with_policy: %Send{
@@ -29,6 +54,12 @@ defmodule BeamWeaver.SerializationTest do
         timeout: TimeoutPolicy.new!(idle_timeout: 250, refresh_on: :heartbeat)
       },
       error: Error.new(:example, "failed", %{reason: :known}),
+      file_data: %Filesystem.FileData{
+        content: "agent notes",
+        encoding: "utf-8",
+        created_at: "2026-05-29T10:00:00Z",
+        modified_at: "2026-05-29T10:01:00Z"
+      },
       run:
         Run.new("serializer",
           id: "run_1",
@@ -46,6 +77,9 @@ defmodule BeamWeaver.SerializationTest do
     assert decoded["document"].content == "source text"
     assert decoded["message"].id == "m1"
     assert decoded["message"].role == :assistant
+    assert [%ToolCall{id: "call-1", name: "lookup"}] = decoded["message"].tool_calls
+    assert [%InvalidToolCall{id: "bad-1"}] = decoded["message"].metadata["invalid_tool_calls"]
+    assert [%ToolCallChunk{id: "chunk-1"}] = decoded["message"].metadata["tool_call_chunks"]
     assert decoded["command"].goto == :done
     assert decoded["send"].node == :worker
     assert decoded["send"].timeout == 250
@@ -55,9 +89,146 @@ defmodule BeamWeaver.SerializationTest do
              decoded["send_with_policy"].timeout
 
     assert decoded["error"].type == :example
+    assert %Filesystem.FileData{content: "agent notes", encoding: "utf-8"} = decoded["file_data"]
     assert decoded["run"].id == "run_1"
     assert decoded["run"].started_at == ~U[2026-05-22 00:00:00Z]
     assert decoded["run"].metadata["provider"] == :openai
+  end
+
+  test "restored assistant tool-call content remains provider encodable" do
+    message =
+      Message.assistant(
+        [
+          %{
+            type: :tool_call,
+            id: "call-1",
+            name: "lookup",
+            args: %{"q" => "beam"},
+            thought_signature: "sig-1"
+          }
+        ],
+        tool_calls: [
+          %ToolCall{
+            id: "call-1",
+            provider_id: "call-1",
+            call_id: "call-1",
+            name: "lookup",
+            thought_signature: "sig-1",
+            args: %{"q" => "beam"}
+          }
+        ]
+      )
+
+    assert {:ok, encoded} = Serialization.dump(message)
+    assert {:ok, %Message{} = decoded} = Serialization.load(encoded)
+
+    assert [%{type: :tool_call, id: "call-1", name: "lookup", args: %{"q" => "beam"}}] =
+             decoded.content
+
+    assert [%ToolCall{id: "call-1", thought_signature: "sig-1"}] = decoded.tool_calls
+
+    assert {:ok,
+            {nil,
+             [
+               %{
+                 "parts" => [
+                   %{
+                     "functionCall" => %{
+                       "name" => "lookup",
+                       "args" => %{"q" => "beam"}
+                     }
+                   }
+                 ]
+               }
+             ]}} = GoogleMessages.encode_messages([decoded])
+  end
+
+  test "round trips framework structs that can appear inside checkpoint state" do
+    value = %{
+      "channel_values" => %{
+        "async_tasks" => %{
+          "async-1" => %AsyncTask{
+            id: "async-1",
+            task_id: "async-1",
+            subagent_name: "research",
+            status: "running",
+            updates: [%{message: "started"}]
+          }
+        },
+        "execution_info" => %ExecutionInfo{
+          checkpoint_id: "cp-1",
+          checkpoint_ns: "",
+          task_id: "task-1",
+          thread_id: "thread-1",
+          run_id: "run-1"
+        },
+        "messages" => [
+          %Message{
+            id: "assistant-1",
+            role: :assistant,
+            content: "",
+            tool_calls: [%ToolCall{id: "call-1", name: "lookup", args: %{}}],
+            artifacts: [ContentBlock.tool_result(content: "done", tool_call_id: "call-1")]
+          }
+        ]
+      },
+      "channel_deltas" => %{"messages" => [%Remove{id: "old-message"}]},
+      "metadata" => %{
+        "step_update" => %{
+          "usage" => %Usage{
+            input_tokens: 12,
+            output_tokens: 3,
+            total_tokens: 15,
+            model_calls: 1
+          }
+        }
+      },
+      "next_tasks" => [
+        TaskRequest.send(
+          "worker",
+          %{messages: [%Remove{id: "stale-message"}]},
+          ["__tasks__"],
+          timeout: 500
+        )
+      ],
+      "interrupts" => [
+        %Interrupt{
+          id: "interrupt-1",
+          task_id: "task-1",
+          node: "worker",
+          step: 1,
+          value: %{action_requests: [%{name: "lookup", args: %{}}]},
+          resumes: [%Resume{value: %{decisions: [%{type: "approve"}]}}]
+        }
+      ],
+      "pending_writes" => [{"task-1", "messages", [%Remove{id: "pending-remove"}]}],
+      "command" => %Command{
+        update: %{messages: %Overwrite{value: [Message.user("replacement")]}},
+        goto: [%Send{node: :finish, update: %{done: true}}]
+      }
+    }
+
+    assert {:ok, encoded} = Serialization.dump(value)
+    assert {:ok, decoded} = Serialization.load(encoded)
+
+    assert %AsyncTask{id: "async-1", status: "running"} =
+             decoded["channel_values"]["async_tasks"]["async-1"]
+
+    assert %ExecutionInfo{checkpoint_id: "cp-1", task_id: "task-1"} =
+             decoded["channel_values"]["execution_info"]
+
+    assert [%Message{tool_calls: [%ToolCall{id: "call-1"}]}] =
+             decoded["channel_values"]["messages"]
+
+    assert [%Remove{id: "old-message"}] = decoded["channel_deltas"]["messages"]
+
+    assert %Usage{input_tokens: 12, output_tokens: 3, total_tokens: 15, model_calls: 1} =
+             decoded["metadata"]["step_update"]["usage"]
+
+    assert [%TaskRequest{node: "worker", kind: :send, timeout: 500}] = decoded["next_tasks"]
+    assert [%Interrupt{id: "interrupt-1", resumes: [%Resume{}]}] = decoded["interrupts"]
+    assert [{"task-1", "messages", [%Remove{id: "pending-remove"}]}] = decoded["pending_writes"]
+    assert %Command{update: %{"messages" => %Overwrite{value: [%Message{}]}}} = decoded["command"]
   end
 
   test "round trips portable scalar edge cases without public ETF loading" do

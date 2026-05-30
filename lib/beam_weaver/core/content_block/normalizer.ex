@@ -271,11 +271,12 @@ defmodule BeamWeaver.Core.ContentBlock.Normalizer do
 
   defp reasoning_block(map) do
     reasoning = ContentBlock.get(map, :reasoning) || ContentBlock.get(map, :text)
+    metadata = put_metadata_thought_signature(metadata(map), thought_signature(map))
 
     if is_binary(reasoning) and is_nil(ContentBlock.get(map, :id)) and
          is_nil(ContentBlock.get(map, :summary)) and is_nil(ContentBlock.get(map, :status)) and
          is_nil(ContentBlock.get(map, :raw_provider_block)) do
-      ContentBlock.reasoning(reasoning, metadata(map))
+      ContentBlock.reasoning(reasoning, metadata)
     else
       %{
         type: :reasoning,
@@ -283,6 +284,7 @@ defmodule BeamWeaver.Core.ContentBlock.Normalizer do
         reasoning: reasoning,
         summary: ContentBlock.get(map, :summary),
         status: ContentBlock.get(map, :status),
+        thought_signature: thought_signature(map),
         raw_provider_block: ContentBlock.get(map, :raw_provider_block)
       }
       |> MapShape.reject_nil_values()
@@ -298,6 +300,7 @@ defmodule BeamWeaver.Core.ContentBlock.Normalizer do
       name: ContentBlock.get(map, :name),
       arguments: ContentBlock.get(map, :arguments) || ContentBlock.get(map, :args),
       status: ContentBlock.get(map, :status),
+      thought_signature: thought_signature(map),
       raw_provider_block: ContentBlock.get(map, :raw_provider_block)
     }
     |> MapShape.reject_nil_values()
@@ -312,6 +315,7 @@ defmodule BeamWeaver.Core.ContentBlock.Normalizer do
       name: ContentBlock.get(map, :name),
       args: ContentBlock.get(map, :input) || ContentBlock.get(map, :args),
       arguments: ContentBlock.get(map, :arguments),
+      thought_signature: thought_signature(map),
       raw_provider_block: ContentBlock.get(map, :raw_provider_block)
     }
     |> MapShape.reject_nil_values()
@@ -452,6 +456,31 @@ defmodule BeamWeaver.Core.ContentBlock.Normalizer do
   end
 
   defp raw_provider_block(%{} = map), do: map
+
+  defp thought_signature(map) when is_map(map) do
+    ContentBlock.get(map, :thought_signature) ||
+      Map.get(map, "thoughtSignature") ||
+      Map.get(map, :thoughtSignature) ||
+      metadata_thought_signature(metadata(map))
+  end
+
+  defp thought_signature(_map), do: nil
+
+  defp metadata_thought_signature(metadata) when is_map(metadata) do
+    ContentBlock.get(metadata, :thought_signature) ||
+      Map.get(metadata, "thoughtSignature") ||
+      Map.get(metadata, :thoughtSignature)
+  end
+
+  defp metadata_thought_signature(_metadata), do: nil
+
+  defp put_metadata_thought_signature(metadata, nil), do: metadata
+
+  defp put_metadata_thought_signature(metadata, signature) when is_binary(signature) and signature != "" do
+    Map.put(metadata, :thought_signature, signature)
+  end
+
+  defp put_metadata_thought_signature(metadata, _signature), do: metadata
 
   defp encode_binary_data(data) when is_binary(data), do: Base.encode64(data)
   defp encode_binary_data(data), do: data

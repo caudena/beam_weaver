@@ -51,7 +51,22 @@ defmodule BeamWeaver.Agent.Compiler.Routing do
       :model -> :model
       :tools -> :tools
       :end -> :end
-      _other -> default
+      _other -> route_middleware_messages(state, default)
+    end
+  end
+
+  defp route_middleware_messages(state, default) do
+    messages = State.messages(state)
+
+    cond do
+      pending_tool_calls(messages) != [] ->
+        :tools
+
+      State.structured_response?(state) ->
+        :end
+
+      true ->
+        default
     end
   end
 

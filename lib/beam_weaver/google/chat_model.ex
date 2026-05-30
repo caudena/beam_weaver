@@ -301,6 +301,13 @@ defmodule BeamWeaver.Google.ChatModel do
       :store
     ])
     |> Map.merge(Map.new(opts))
+    |> Map.drop(internal_call_opts())
+  end
+
+  defp internal_call_opts do
+    [
+      :metadata
+    ]
   end
 
   defp client(%__MODULE__{} = model) do

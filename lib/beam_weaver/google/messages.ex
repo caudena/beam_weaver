@@ -23,7 +23,7 @@ defmodule BeamWeaver.Google.Messages do
   def encode_messages(messages, opts \\ [])
 
   def encode_messages(messages, _opts) when is_list(messages) do
-    {system_messages, content_messages} = Enum.split_with(messages, &(&1.role == :system))
+    {system_messages, content_messages} = split_system_messages(messages)
 
     system =
       system_messages
@@ -45,6 +45,35 @@ defmodule BeamWeaver.Google.Messages do
 
   def encode_messages(_messages, _opts),
     do: {:error, Error.new(:invalid_message, "Google messages must be a list")}
+
+  defp split_system_messages(messages) do
+    {system_messages, content_messages, _saw_content?} =
+      Enum.reduce(messages, {[], [], false}, fn
+        %Message{role: :system} = message, {system_messages, content_messages, false} ->
+          if conversation_summary_message?(message) do
+            {system_messages, [demote_system_message(message) | content_messages], true}
+          else
+            {[message | system_messages], content_messages, false}
+          end
+
+        %Message{role: :system} = message, {system_messages, content_messages, true} ->
+          {system_messages, [demote_system_message(message) | content_messages], true}
+
+        message, {system_messages, content_messages, _saw_content?} ->
+          {system_messages, [message | content_messages], true}
+      end)
+
+    {Enum.reverse(system_messages), Enum.reverse(content_messages)}
+  end
+
+  defp conversation_summary_message?(%Message{content: content, metadata: metadata}) do
+    (is_binary(content) and String.starts_with?(content, "Conversation summary:")) or
+      value(metadata, :conversation_history_path) != nil
+  end
+
+  defp demote_system_message(%Message{metadata: metadata} = message) do
+    %{message | role: :user, metadata: Map.put(metadata || %{}, :google_demoted_system, true)}
+  end
 
   @spec response_to_message(map(), keyword()) :: {:ok, Message.t()} | {:error, Error.t()}
   def response_to_message(response, _opts \\ [])
@@ -78,10 +107,19 @@ defmodule BeamWeaver.Google.Messages do
   def response_to_message(_response, _opts),
     do: {:error, Error.new(:invalid_response, "Google response must be a JSON object")}
 
+  defp content(%Message{role: :tool} = message) do
+    %{
+      "role" => provider_role(:tool),
+      "parts" => tool_result_parts(message)
+    }
+  end
+
   defp content(%Message{role: role, content: message_content} = message) do
     %{
       "role" => provider_role(role),
-      "parts" => parts(message_content) ++ tool_call_parts(message) ++ tool_result_parts(message)
+      "parts" =>
+        parts(message_content) ++
+          message_tool_call_parts(message_content, message) ++ tool_result_parts(message)
     }
   end
 
@@ -114,7 +152,9 @@ defmodule BeamWeaver.Google.Messages do
   defp part(%ContentBlock.File{} = block),
     do: media_part(block.file_id, block.data, block.mime_type || "application/octet-stream")
 
-  defp part(%ContentBlock.Reasoning{reasoning: text}), do: [%{"thought" => true, "text" => text}]
+  defp part(%ContentBlock.Reasoning{reasoning: text, metadata: metadata}) do
+    [%{"thought" => true, "text" => text} |> put_thought_signature(thought_signature(metadata))]
+  end
 
   defp part(%ContentBlock.ToolResult{} = block) do
     [
@@ -179,10 +219,53 @@ defmodule BeamWeaver.Google.Messages do
           })
         )
 
+      type when type in ["function_call", "tool_call", "tool_use"] ->
+        function_call_part(block)
+
       _other ->
         [Map.drop(provider_block, ["type"])]
     end
   end
+
+  defp function_call_part(call) do
+    [
+      %{
+        "functionCall" => %{
+          "name" => function_call_name(call),
+          "args" => function_call_args(call)
+        }
+      }
+      |> put_thought_signature(thought_signature(call))
+    ]
+  end
+
+  defp function_call_name(call) when is_map(call),
+    do: value(call, :name) || "tool"
+
+  defp function_call_args(call) do
+    call
+    |> function_call_argument_value()
+    |> normalize_function_call_args()
+  end
+
+  defp function_call_argument_value(call) when is_map(call) do
+    value(call, :args) || value(call, :arguments) || value(call, :input) || %{}
+  end
+
+  defp value(map, key) when is_map(map), do: BeamWeaver.MapAccess.get(map, key)
+  defp value(_map, _key), do: nil
+
+  defp normalize_function_call_args(args) when is_map(args), do: Options.stringify_keys(args)
+
+  defp normalize_function_call_args(args) when is_binary(args) do
+    case BeamWeaver.JSON.decode(args) do
+      {:ok, decoded} when is_map(decoded) -> Options.stringify_keys(decoded)
+      _error -> %{"input" => args}
+    end
+  end
+
+  defp normalize_function_call_args(nil), do: %{}
+  defp normalize_function_call_args(args), do: %{"input" => args}
 
   defp media_part(nil, data, mime_type) when is_binary(data) do
     [%{"inlineData" => %{"mimeType" => mime_type, "data" => data}}]
@@ -194,15 +277,24 @@ defmodule BeamWeaver.Google.Messages do
 
   defp media_part(_uri, _data, _mime_type), do: []
 
-  defp tool_call_parts(%Message{tool_calls: calls}) when is_list(calls) do
-    Enum.map(calls, fn call ->
-      %{
-        "functionCall" => %{
-          "name" => Map.get(call, :name),
-          "args" => Map.get(call, :args, %{})
-        }
-      }
+  defp message_tool_call_parts(content, %Message{} = message) do
+    if content_has_tool_call?(content), do: [], else: tool_call_parts(message)
+  end
+
+  defp content_has_tool_call?(content) when is_list(content) do
+    Enum.any?(content, fn
+      %{type: type} when type in [:function_call, "function_call", :tool_call, "tool_call", :tool_use, "tool_use"] ->
+        true
+
+      _block ->
+        false
     end)
+  end
+
+  defp content_has_tool_call?(_content), do: false
+
+  defp tool_call_parts(%Message{tool_calls: calls}) when is_list(calls) do
+    Enum.flat_map(calls, &function_call_part/1)
   end
 
   defp tool_call_parts(_message), do: []
@@ -259,14 +351,16 @@ defmodule BeamWeaver.Google.Messages do
   defp response_block(%{"text" => text}) when is_binary(text),
     do: [%{type: :text, text: text}]
 
-  defp response_block(%{"functionCall" => %{"name" => name} = raw_call}) do
+  defp response_block(%{"functionCall" => %{"name" => name} = raw_call} = part) do
     [
       %{
         type: :tool_call,
         id: raw_call["id"] || "call_#{name}",
         name: name,
-        args: raw_call["args"] || %{}
+        args: raw_call["args"] || %{},
+        thought_signature: thought_signature(part) || thought_signature(raw_call)
       }
+      |> Options.reject_nil_values()
     ]
   end
 
@@ -311,10 +405,33 @@ defmodule BeamWeaver.Google.Messages do
         provider_id: block[:id],
         call_id: block[:id],
         name: block[:name],
+        thought_signature: block[:thought_signature],
         args: block[:args] || %{}
       )
     end)
   end
+
+  defp thought_signature(map) when is_map(map) do
+    value(map, :thought_signature) ||
+      Map.get(map, "thoughtSignature") ||
+      Map.get(map, :thoughtSignature) ||
+      metadata_thought_signature(value(map, :metadata))
+  end
+
+  defp thought_signature(_map), do: nil
+
+  defp metadata_thought_signature(metadata) when is_map(metadata) do
+    value(metadata, :thought_signature) ||
+      value(metadata, :thoughtSignature)
+  end
+
+  defp metadata_thought_signature(_metadata), do: nil
+
+  defp put_thought_signature(part, signature) when is_binary(signature) and signature != "" do
+    Map.put(part, "thoughtSignature", signature)
+  end
+
+  defp put_thought_signature(part, _signature), do: part
 
   defp server_tool_calls(blocks),
     do: Enum.filter(blocks, &(Map.get(&1, :type) == :server_tool_call))

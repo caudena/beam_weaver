@@ -15,6 +15,11 @@ defmodule BeamWeaver.Agent.StructuredOutput.ResultHandler do
     {:ok, %ModelResponse{messages: [message]}}
   end
 
+  def handle_model_output(%Message{tool_calls: calls} = message, %ProviderStrategy{})
+      when is_list(calls) and calls != [] do
+    {:ok, %ModelResponse{messages: [message]}}
+  end
+
   def handle_model_output(%Message{} = message, %ProviderStrategy{schema_spec: spec}) do
     with {:ok, data} <- parsed_provider_data(message),
          {:ok, parsed} <- Validation.parse(spec, data) do

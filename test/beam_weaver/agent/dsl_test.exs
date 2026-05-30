@@ -82,6 +82,14 @@ defmodule BeamWeaver.Agent.DSLTest do
     def model, do: %ToolCallingModel{timeout: 1_000}
   end
 
+  defmodule MiddlewareTimeoutAgent do
+    use BeamWeaver.Agent
+
+    model(%ToolCallingModel{timeout: 1_000}, timeout: 45_000)
+    tools([])
+    middleware([{BeamWeaver.Agent.Middleware.Summarization, model: %ToolCallingModel{}, trigger: nil}])
+  end
+
   test "agent modules invoke through the generated graph" do
     assert {:ok, %{messages: ["hi, Ada"], done: true}} =
              GreetingAgent.invoke(%{name: "Ada"}, context: %{greeting: "hi"})
@@ -141,8 +149,26 @@ defmodule BeamWeaver.Agent.DSLTest do
     assert CalculatorAgent.graph().nodes["model"].timeout == 15_000
   end
 
+  test "model/tools DSL uses the model timeout for the generated tools node" do
+    tools_node = CalculatorAgent.graph().nodes["tools"]
+
+    assert tools_node.timeout == 15_000
+    assert tools_node.fun.timeout == 15_000
+  end
+
   test "model/tools DSL timeout option overrides the generated model node timeout" do
     assert ExplicitTimeoutAgent.graph().nodes["model"].timeout == 30_000
+  end
+
+  test "model/tools DSL applies the model timeout to before-model middleware nodes" do
+    assert MiddlewareTimeoutAgent.graph().nodes["summarization.before_model"].timeout == 45_000
+  end
+
+  test "middleware router treats structured responses as terminal" do
+    assert BeamWeaver.Agent.Compiler.Routing.middleware_router(
+             %{messages: [Message.assistant("{}")], structured_response: %{"ok" => true}},
+             :model
+           ) == :end
   end
 
   test "runtime agent build uses model timeout for the generated model node" do

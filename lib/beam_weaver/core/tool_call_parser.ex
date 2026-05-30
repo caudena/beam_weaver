@@ -73,6 +73,7 @@ defmodule BeamWeaver.Core.ToolCallParser do
              provider_id: BeamWeaver.MapAccess.get(call, :provider_id),
              call_id: BeamWeaver.MapAccess.get(call, :call_id),
              name: BeamWeaver.MapAccess.get(call, :name),
+             thought_signature: BeamWeaver.MapAccess.get(call, :thought_signature),
              args:
                BeamWeaver.MapAccess.get(call, :args) ||
                  BeamWeaver.MapAccess.get(call, :arguments) || %{}

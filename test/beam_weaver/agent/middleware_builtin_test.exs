@@ -1675,7 +1675,7 @@ defmodule BeamWeaver.Agent.MiddlewareBuiltinTest do
              })
 
     assert [
-             %Message{role: :system, content: content},
+             %Message{role: :user, content: content},
              %Message{role: :user, content: "three"},
              _assistant
            ] =
@@ -1710,7 +1710,7 @@ defmodule BeamWeaver.Agent.MiddlewareBuiltinTest do
              BeamWeaver.Agent.Middleware.Summarization.before_model(middleware, state, nil)
 
     assert [
-             %Message{role: :system, content: "Conversation summary:\nprofile summary"},
+             %Message{role: :user, content: "Conversation summary:\nprofile summary"},
              %Message{content: "Message 3"},
              %Message{content: "Message 4"}
            ] = rewritten
@@ -1856,7 +1856,7 @@ defmodule BeamWeaver.Agent.MiddlewareBuiltinTest do
              )
 
     assert [
-             %Message{role: :system},
+             %Message{role: :user},
              %Message{role: :assistant, tool_calls: [%ToolCall{id: "call_1"}, %ToolCall{id: "call_2"}]},
              %Message{role: :tool, tool_call_id: "call_1"},
              %Message{role: :tool, tool_call_id: "call_2"},

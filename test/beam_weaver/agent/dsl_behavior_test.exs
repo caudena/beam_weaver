@@ -237,6 +237,33 @@ defmodule BeamWeaver.Agent.DSLBehaviorTest do
     end
   end
 
+  defmodule ProviderStructuredToolCallModel do
+    @behaviour ChatModel
+
+    defstruct [:parent, supports_structured_output: true]
+
+    @impl true
+    def invoke(%__MODULE__{parent: parent}, messages, opts) do
+      if parent,
+        do:
+          send(
+            parent,
+            {:provider_tool_call_model, Enum.map(messages, & &1.role), Keyword.get(opts, :response_format)}
+          )
+
+      if Enum.any?(messages, &match?(%Message{role: :tool, name: "regular_tool"}, &1)) do
+        {:ok, Message.assistant("", metadata: %{parsed: %{"value" => "after tool"}})}
+      else
+        {:ok,
+         Message.assistant("",
+           tool_calls: [
+             %{id: "call-regular", name: "regular_tool", args: %{"query" => "test query"}}
+           ]
+         )}
+      end
+    end
+  end
+
   defmodule OrderMiddleware do
     @behaviour BeamWeaver.Agent.Middleware
 
@@ -625,6 +652,37 @@ defmodule BeamWeaver.Agent.DSLBehaviorTest do
     def model, do: %ProviderStructuredModel{parent: self()}
   end
 
+  defmodule ProviderStructuredToolCallAgent do
+    use BeamWeaver.Agent
+
+    @schema %{
+      "title" => "provider_answer",
+      "type" => "object",
+      "required" => ["value"],
+      "properties" => %{"value" => %{"type" => "string"}}
+    }
+
+    model(__MODULE__.model())
+    tools(__MODULE__.tools())
+    response_format(@schema)
+
+    def model, do: %ProviderStructuredToolCallModel{parent: self()}
+
+    def tools do
+      [
+        Tool.from_function!(
+          name: "regular_tool",
+          description: "A regular tool.",
+          input_schema: %{
+            "required" => ["query"],
+            "properties" => %{"query" => %{"type" => "string"}}
+          },
+          handler: fn %{"query" => query}, _opts -> "regular result for #{query}" end
+        )
+      ]
+    end
+  end
+
   defmodule JumpAgent do
     use BeamWeaver.Agent
 
@@ -908,6 +966,21 @@ defmodule BeamWeaver.Agent.DSLBehaviorTest do
 
     assert schema["required"] == ["value"]
     assert is_function(validator, 1)
+  end
+
+  test "provider structured output allows tool-call turns before final JSON" do
+    assert {:ok, %{structured_response: %{"value" => "after tool"}, messages: messages}} =
+             ProviderStructuredToolCallAgent.invoke(%{messages: [Message.user("answer and search")]})
+
+    assert [
+             %Message{role: :user},
+             %Message{role: :assistant, content: "", tool_calls: [%{name: "regular_tool"}]},
+             %Message{role: :tool, name: "regular_tool", content: "regular result for test query"},
+             %Message{role: :assistant}
+           ] = messages
+
+    assert_receive {:provider_tool_call_model, [:user], %{name: "provider_answer"}}
+    assert_receive {:provider_tool_call_model, [:user, :assistant, :tool], %{name: "provider_answer"}}
   end
 
   test "middleware jump routes to end and private jump channel is not exposed" do

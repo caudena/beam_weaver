@@ -83,9 +83,11 @@ defmodule BeamWeaver.AgentCapabilitiesTest do
   alias BeamWeaver.Agent.Subagent.AsyncSpec
   alias BeamWeaver.Agent.Subagent.Spec
   alias BeamWeaver.Agent.ToolCallRequest
+  alias BeamWeaver.Checkpoint
   alias BeamWeaver.Core.Message
   alias BeamWeaver.Core.Messages.ToolCall
   alias BeamWeaver.Core.Tool
+  alias BeamWeaver.Core.ToolRuntime
   alias BeamWeaver.Filesystem
   alias BeamWeaver.Filesystem.Composite
   alias BeamWeaver.Filesystem.Local
@@ -93,9 +95,13 @@ defmodule BeamWeaver.AgentCapabilitiesTest do
   alias BeamWeaver.Filesystem.Permission
   alias BeamWeaver.Filesystem.State
   alias BeamWeaver.Filesystem.Store
+  alias BeamWeaver.Graph
   alias BeamWeaver.Graph.Command
+  alias BeamWeaver.Graph.ExecutionInfo
   alias BeamWeaver.Graph.MessagesReducer
+  alias BeamWeaver.Graph.Nodes.ToolNode
   alias BeamWeaver.Graph.Overwrite
+  alias BeamWeaver.Graph.Runtime
   alias BeamWeaver.Models.FakeChatModel
   alias BeamWeaver.Tools.Filesystem, as: FilesystemTools
   alias BeamWeaver.Tools.Helpers, as: DeepAgentTools
@@ -222,6 +228,9 @@ defmodule BeamWeaver.AgentCapabilitiesTest do
 
     assert %Filesystem.ReadResult{file_data: %Filesystem.FileData{content: "hello\nneedle"}} =
              State.read(backend, "/notes/a.txt", state: state)
+
+    assert %Filesystem.ReadResult{file_data: %Filesystem.FileData{content: ""}} =
+             State.read(backend, "/notes/a.txt", state: state, offset: 99, limit: 10)
 
     assert %Filesystem.EditResult{error: nil, files_update: edited} =
              State.edit(backend, "/notes/a.txt", "needle", "thread", state: state)
@@ -611,7 +620,7 @@ defmodule BeamWeaver.AgentCapabilitiesTest do
     assert %Message{role: :tool, name: "compact_conversation"} = tool_message
     assert tool_message.content =~ "Conversation compacted"
 
-    assert %Message{role: :system, content: summary} = event.summary_message
+    assert %Message{role: :user, content: summary} = event.summary_message
     assert summary =~ "short summary"
     assert String.starts_with?(event.file_path, "/conversation_history/")
     assert files[event.file_path].content =~ "Human: one"
@@ -625,8 +634,102 @@ defmodule BeamWeaver.AgentCapabilitiesTest do
              Middleware.CompactConversation.before_model(middleware, state, %{})
 
     assert {:ok, compacted} = Overwrite.get(overwrite)
-    assert [%Message{role: :system, content: ^summary} | recent] = compacted
+    assert [%Message{role: :user, content: ^summary} | recent] = compacted
     assert Enum.map(recent, & &1.content) == ["four", "five", tool_message.content]
+  end
+
+  test "compact conversation preserves assistant tool-call pairs at the retention boundary" do
+    middleware =
+      Middleware.CompactConversation.new(
+        model: %FakeChatModel{response: "short summary"},
+        backend: State.new(),
+        minimum_messages: 4,
+        keep_messages: 3
+      )
+
+    [tool] = Middleware.CompactConversation.tools(middleware)
+
+    messages = [
+      Message.user("one"),
+      Message.assistant("checking",
+        tool_calls: [%ToolCall{id: "call-1", name: "lookup", args: %{}}]
+      ),
+      Message.tool("result", tool_call_id: "call-1"),
+      Message.user("four"),
+      Message.assistant("five")
+    ]
+
+    assert {:ok, %Command{update: update}} =
+             Tool.invoke(tool, %{
+               state: %{messages: messages},
+               tool_call_id: "compact-1"
+             })
+
+    state = %{
+      messages: messages ++ update.messages,
+      _summarization_event: update._summarization_event
+    }
+
+    assert %{messages: %Overwrite{} = overwrite} =
+             Middleware.CompactConversation.before_model(middleware, state, %{})
+
+    assert {:ok, [summary | recent]} = Overwrite.get(overwrite)
+    assert %Message{role: :user, content: "Conversation summary:\nshort summary"} = summary
+
+    assert [
+             %Message{role: :assistant, tool_calls: [%ToolCall{id: "call-1"}]},
+             %Message{role: :tool, tool_call_id: "call-1"},
+             %Message{role: :user, content: "four"},
+             %Message{role: :assistant, content: "five"},
+             %Message{role: :tool, name: "compact_conversation"}
+           ] = recent
+  end
+
+  test "compact conversation drops orphan tool messages at the retention boundary" do
+    middleware =
+      Middleware.CompactConversation.new(
+        model: %FakeChatModel{response: "short summary"},
+        backend: State.new(),
+        minimum_messages: 4,
+        keep_messages: 4
+      )
+
+    [tool] = Middleware.CompactConversation.tools(middleware)
+
+    messages = [
+      Message.user("one"),
+      Message.tool("orphan one", tool_call_id: "missing-1", name: "lookup"),
+      Message.tool("orphan two", tool_call_id: "missing-2", name: "lookup"),
+      Message.user("after orphan"),
+      Message.assistant("final")
+    ]
+
+    assert {:ok, %Command{update: update}} =
+             Tool.invoke(tool, %{
+               state: %{messages: messages},
+               tool_call_id: "compact-orphan"
+             })
+
+    state = %{
+      messages: messages ++ update.messages,
+      _summarization_event: update._summarization_event
+    }
+
+    assert %{messages: %Overwrite{} = overwrite} =
+             Middleware.CompactConversation.before_model(middleware, state, %{})
+
+    assert {:ok, [_summary | recent]} = Overwrite.get(overwrite)
+
+    refute Enum.any?(recent, fn
+             %Message{role: :tool, tool_call_id: "missing-" <> _rest} -> true
+             _message -> false
+           end)
+
+    assert [
+             %Message{role: :user, content: "after orphan"},
+             %Message{role: :assistant, content: "final"},
+             %Message{role: :tool, name: "compact_conversation"}
+           ] = recent
   end
 
   test "compact conversation tool is a no-op before the message threshold" do
@@ -803,6 +906,23 @@ defmodule BeamWeaver.AgentCapabilitiesTest do
                backend,
                "printf \"$DEEPAGENTS_TEST\\n\""
              )
+  end
+
+  test "composite backend without an executable default does not expose execute tools" do
+    backend =
+      Composite.new(
+        default: State.new(),
+        routes: %{"/memory/" => State.new()}
+      )
+
+    refute BeamWeaver.Filesystem.Executable.executable?(backend)
+
+    tool_names =
+      backend
+      |> FilesystemTools.tools()
+      |> Enum.map(&Tool.name/1)
+
+    refute "execute" in tool_names
   end
 
   test "filesystem backend blocks symlink escapes and lists missing directories as empty" do
@@ -1452,6 +1572,160 @@ defmodule BeamWeaver.AgentCapabilitiesTest do
     assert "write_todos" in tool_names
     assert "read_file" in tool_names
     assert "write_file" in tool_names
+  end
+
+  test "task subagent preserves checkpoint config and writes under an isolated namespace" do
+    checkpointer = Checkpoint.ETS.new()
+
+    middleware =
+      Middleware.Subagents.new(
+        model: %FakeChatModel{response: "checkpointed child done"},
+        summarization: false,
+        compact_conversation: false,
+        checkpointer: checkpointer,
+        subagents: [
+          %Spec{
+            name: "worker",
+            description: "Worker",
+            system_prompt: "You are a worker."
+          }
+        ]
+      )
+
+    task_tool = middleware |> Middleware.Subagents.tools() |> hd()
+
+    assert {:ok, %Command{update: %{messages: [%Message{content: "checkpointed child done"}]}}} =
+             Tool.invoke(task_tool, %{
+               "subagent_name" => "worker",
+               "description" => "do checkpointed child work",
+               state: %{},
+               runtime: %{
+                 node: "tools",
+                 task_id: "tool-node-task",
+                 config: %{
+                   "configurable" => %{
+                     "thread_id" => "subagent-thread",
+                     "checkpoint_map" => %{}
+                   }
+                 }
+               },
+               tool_call_id: "call-task-checkpoint"
+             })
+
+    records = Checkpoint.list(checkpointer, %{"configurable" => %{"thread_id" => "subagent-thread"}})
+    namespaces = Enum.map(records, &get_in(&1.config, ["configurable", "checkpoint_ns"]))
+
+    assert records != []
+    refute "" in namespaces
+    assert Enum.any?(namespaces, &String.contains?(&1, "subagent.worker"))
+  end
+
+  test "task subagent recovers checkpoint config from tool runtime execution info" do
+    checkpointer = Checkpoint.ETS.new()
+
+    middleware =
+      Middleware.Subagents.new(
+        model: %FakeChatModel{response: "checkpointed child done"},
+        summarization: false,
+        compact_conversation: false,
+        checkpointer: checkpointer,
+        subagents: [
+          %Spec{
+            name: "worker",
+            description: "Worker",
+            system_prompt: "You are a worker."
+          }
+        ]
+      )
+
+    task_tool = middleware |> Middleware.Subagents.tools() |> hd()
+
+    tool_runtime = %ToolRuntime{
+      config: %{"configurable" => %{}},
+      execution_info: %ExecutionInfo{
+        thread_id: "subagent-execution-thread",
+        checkpoint_ns: "",
+        checkpoint_id: "parent-checkpoint",
+        task_id: "tool-node-task"
+      }
+    }
+
+    assert {:ok, %Command{update: %{messages: [%Message{content: "checkpointed child done"}]}}} =
+             Tool.invoke(task_tool, %{
+               "subagent_name" => "worker",
+               "description" => "do checkpointed child work",
+               state: %{},
+               tool_runtime: tool_runtime,
+               tool_call_id: "call-task-checkpoint"
+             })
+
+    records =
+      Checkpoint.list(checkpointer, %{
+        "configurable" => %{"thread_id" => "subagent-execution-thread"}
+      })
+
+    namespaces = Enum.map(records, &get_in(&1.config, ["configurable", "checkpoint_ns"]))
+
+    assert records != []
+    refute "" in namespaces
+    assert Enum.any?(namespaces, &String.contains?(&1, "subagent.worker"))
+  end
+
+  test "task subagent parent command excludes child string-keyed messages and todos" do
+    child_graph =
+      Graph.new(name: "StringKeyedChild")
+      |> Graph.add_node(:done, fn _state ->
+        %{
+          "messages" => [Message.assistant("child result")],
+          "todos" => [%{"text" => "child todo"}],
+          "custom_child_value" => "kept"
+        }
+      end)
+      |> Graph.add_edge(Graph.start(), :done)
+      |> Graph.compile!()
+
+    child_agent = %Built{
+      spec: %BeamWeaver.Agent.Spec{name: "string-keyed-child"},
+      compiled: child_graph
+    }
+
+    middleware =
+      Middleware.Subagents.new(
+        model: %FakeChatModel{response: "unused"},
+        summarization: false,
+        compact_conversation: false,
+        subagents: [
+          %BeamWeaver.Agent.Subagent.Compiled{
+            name: "worker",
+            description: "Worker",
+            agent: child_agent
+          }
+        ]
+      )
+
+    task_tool = middleware |> Middleware.Subagents.tools() |> hd()
+    node = ToolNode.new([task_tool], timeout: 30_000)
+
+    call =
+      BeamWeaver.Core.Messages.tool_call(
+        id: "call-task",
+        name: "task",
+        args: %{"subagent_name" => "worker", "description" => "do child work"}
+      )
+
+    state = %{messages: [Message.user("parent"), Message.assistant("", tool_calls: [call])]}
+
+    assert %Command{update: update} =
+             ToolNode.invoke(node, state, %Runtime{
+               config: %{"configurable" => %{"thread_id" => "parent-thread"}},
+               node: "tools",
+               task_id: "tool-node-task"
+             })
+
+    refute Map.has_key?(update, "messages")
+    refute Map.has_key?(update, "todos")
+    assert update["custom_child_value"] == "kept"
+    assert %{messages: [%Message{name: "task", content: "child result"}]} = update
   end
 
   test "subagent middleware injects task guidance and available agent names" do

@@ -55,9 +55,9 @@ defmodule BeamWeaver.Agent.StateTest do
     assert state == %{messages: messages}
   end
 
-  test "normalizes jump routing from atom-key state only" do
+  test "normalizes jump routing from atom and string aliases" do
     assert State.jump_to(%{jump_to: "model"}) == :model
     assert State.jump_to(%{jump_to: :tools}) == :tools
-    assert State.jump_to(%{"jump_to" => "end"}) == nil
+    assert State.jump_to(%{"jump_to" => "end"}) == :end
   end
 end

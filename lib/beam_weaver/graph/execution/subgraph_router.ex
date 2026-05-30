@@ -202,7 +202,7 @@ defmodule BeamWeaver.Graph.Execution.SubgraphRouter do
 
   defp namespace_targets_subgraph?(compiled, namespace) do
     case Namespace.recast(namespace) |> Namespace.normalize() do
-      [node | _rest] -> Map.has_key?(compiled.graph.nodes, node)
+      [_node | _rest] = path -> not is_nil(find_subgraph(compiled, path))
       [] -> false
     end
   end

@@ -195,6 +195,20 @@ defmodule BeamWeaver.Agent.StructuredOutputStrategyTest do
              StructuredOutput.handle_model_output(message, strategy)
   end
 
+  test "provider strategy preserves tool-call turns for normal tool routing" do
+    strategy = StructuredOutput.provider(@person_schema)
+
+    message =
+      Message.assistant("",
+        tool_calls: [
+          %{id: "call-todo", name: "write_todos", args: %{"action" => "add", "text" => "Read context"}}
+        ]
+      )
+
+    assert {:ok, %{messages: [^message], structured_response: nil}} =
+             StructuredOutput.handle_model_output(message, strategy)
+  end
+
   test "provider strategy returns tagged parse and validation errors" do
     strategy = StructuredOutput.provider(@person_schema)
 
