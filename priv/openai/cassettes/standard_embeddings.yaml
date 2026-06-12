@@ -1,0 +1,50 @@
+requests:
+- body: !!binary |
+    eyJpbnB1dCI6WyJhbHBoYSIsImJldGEiXSwibW9kZWwiOiJ0ZXh0LWVtYmVkZGluZy0zLXNtYWxsIn0=
+  headers:
+    authorization:
+    - '**REDACTED**'
+  method: POST
+  uri: https://api.openai.com/v1/embeddings
+- body: !!binary |
+    eyJpbnB1dCI6WyJhbHBoYSJdLCJtb2RlbCI6InRleHQtZW1iZWRkaW5nLTMtc21hbGwifQ==
+  headers:
+    authorization:
+    - '**REDACTED**'
+  method: POST
+  uri: https://api.openai.com/v1/embeddings
+- body: !!binary |
+    eyJpbnB1dCI6ImFscGhhIiwibW9kZWwiOiJ0ZXh0LWVtYmVkZGluZy0zLXNtYWxsIn0=
+  headers:
+    authorization:
+    - '**REDACTED**'
+  method: POST
+  uri: https://api.openai.com/v1/embeddings
+responses:
+- body:
+    string: !!binary |
+      eyJkYXRhIjpbeyJlbWJlZGRpbmciOlswLjEsMC4yXSwiaW5kZXgiOjB9LHsiZW1iZWRkaW5nIjpbMC4zLDAuNF0sImluZGV4IjoxfV19
+  headers:
+    content-type:
+    - application/json
+  status:
+    code: 200
+    message: OK
+- body:
+    string: !!binary |
+      eyJkYXRhIjpbeyJlbWJlZGRpbmciOlswLjEsMC4yXSwiaW5kZXgiOjB9XX0=
+  headers:
+    content-type:
+    - application/json
+  status:
+    code: 200
+    message: OK
+- body:
+    string: !!binary |
+      eyJkYXRhIjpbeyJlbWJlZGRpbmciOlswLjEsMC4yXSwiaW5kZXgiOjB9XX0=
+  headers:
+    content-type:
+    - application/json
+  status:
+    code: 200
+    message: OK

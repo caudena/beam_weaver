@@ -1,0 +1,70 @@
+{
+  "expected": {
+    "error": {
+      "details": {
+        "code": "invalid_json_schema",
+        "error_type": "invalid_request_error",
+        "param": "text.format.schema",
+        "retryable": false,
+        "status": 400
+      },
+      "message": "Invalid schema fixture",
+      "type": "http_error"
+    }
+  },
+  "provider": "xai",
+  "request": {
+    "headers": [
+      ["authorization", "**REDACTED**"],
+      ["content-type", "application/json"]
+    ],
+    "json": {
+      "input": [
+        {
+          "content": "bad schema",
+          "role": "user",
+          "type": "message"
+        }
+      ],
+      "model": "grok-4.3",
+      "stream": false,
+      "text": {
+        "format": {
+          "name": "answer_output",
+          "schema": {
+            "additionalProperties": false,
+            "description": "A short answer.",
+            "properties": {
+              "answer": {
+                "type": "string"
+              }
+            },
+            "required": ["answer"],
+            "title": "answer_output",
+            "type": "object"
+          },
+          "strict": true,
+          "type": "json_schema"
+        }
+      }
+    },
+    "method": "POST",
+    "url": "https://api.x.ai/v1/responses"
+  },
+  "response": {
+    "body": {
+      "error": {
+        "code": "invalid_json_schema",
+        "message": "Invalid schema fixture",
+        "param": "text.format.schema",
+        "type": "invalid_request_error"
+      }
+    },
+    "headers": [
+      ["content-type", "application/json"],
+      ["x-request-id", "**REDACTED**"]
+    ],
+    "status": 400
+  },
+  "scenario": "http_invalid_schema"
+}

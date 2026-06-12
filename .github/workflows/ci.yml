@@ -1,0 +1,196 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  hermetic-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: erlef/setup-beam@v1
+        with:
+          elixir-version: "1.19.5"
+          otp-version: "28.4"
+
+      - name: Install dependencies
+        run: mix deps.get
+
+      - name: Check formatting
+        run: mix format --check-formatted
+
+      - name: Run hermetic test suite
+        run: mix test
+
+      - name: Check provider matrix
+        run: mix beam_weaver.providers.matrix --check
+
+  docs-build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: erlef/setup-beam@v1
+        with:
+          elixir-version: "1.19.5"
+          otp-version: "28.4"
+
+      - name: Install dependencies
+        run: mix deps.get
+
+      - name: Build HexDocs
+        run: mix docs
+
+  package:
+    runs-on: ubuntu-latest
+    env:
+      HEX_API_KEY: ${{ secrets.HEX_API_KEY }}
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: erlef/setup-beam@v1
+        with:
+          elixir-version: "1.19.5"
+          otp-version: "28.4"
+
+      - name: Install dependencies
+        run: mix deps.get
+
+      - name: Build Hex package
+        run: mix hex.build
+
+      - name: Verify Hex publish dry-run
+        if: ${{ env.HEX_API_KEY != '' }}
+        run: mix hex.publish --yes --dry-run
+
+      - name: Skip Hex publish dry-run
+        if: ${{ env.HEX_API_KEY == '' }}
+        run: echo "Skipping Hex publish --dry-run because HEX_API_KEY is not configured."
+
+  publish-hex:
+    if: ${{ startsWith(github.ref, 'refs/tags/v') }}
+    needs: [hermetic-test, docs-build, package]
+    runs-on: ubuntu-latest
+    environment: Deploy
+    permissions:
+      contents: read
+    env:
+      HEX_API_KEY: ${{ secrets.HEX_API_KEY }}
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Extract project version
+        id: project-version
+        shell: bash
+        run: |
+          project_version="$(sed -n 's/.*version: "\([^"]*\)".*/\1/p' mix.exs | head -n1)"
+          if [ -z "$project_version" ]; then
+            echo "Could not extract project version from mix.exs" >&2
+            exit 1
+          fi
+          echo "version=$project_version" >> "$GITHUB_OUTPUT"
+
+      - name: Verify tag matches project version
+        shell: bash
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          if [ "$tag" != "${{ steps.project-version.outputs.version }}" ]; then
+            echo "Tag v$tag does not match mix.exs version ${{ steps.project-version.outputs.version }}" >&2
+            exit 1
+          fi
+
+      - uses: erlef/setup-beam@v1
+        with:
+          elixir-version: "1.19.5"
+          otp-version: "28.4"
+
+      - name: Install dependencies
+        run: mix deps.get
+
+      - name: Build Hex package preview
+        run: mix hex.build --unpack
+
+      - name: Upload package preview
+        uses: actions/upload-artifact@v6
+        with:
+          name: beam_weaver-hex-package-preview
+          path: beam_weaver-${{ steps.project-version.outputs.version }}/
+
+      - name: Verify Hex API key
+        run: |
+          if [ -z "$HEX_API_KEY" ]; then
+            echo "HEX_API_KEY secret is required to publish to Hex.pm" >&2
+            exit 1
+          fi
+
+      - name: Publish Hex package
+        run: mix hex.publish package --yes
+
+  postgres:
+    if: ${{ vars.BEAM_WEAVER_POSTGRES_CI == 'true' || github.event_name == 'workflow_dispatch' }}
+    needs: hermetic-test
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: beam_weaver_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      BEAM_WEAVER_POSTGRES_URL: ecto://postgres:postgres@localhost:5432/beam_weaver_test
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: erlef/setup-beam@v1
+        with:
+          elixir-version: "1.19.5"
+          otp-version: "28.4"
+
+      - name: Install dependencies
+        run: mix deps.get
+
+      - name: Run Postgres suite
+        run: mix test --only postgres
+
+  docker-sandbox:
+    if: ${{ vars.BEAM_WEAVER_DOCKER_CI == 'true' || github.event_name == 'workflow_dispatch' }}
+    needs: hermetic-test
+    runs-on: ubuntu-latest
+
+    env:
+      BEAM_WEAVER_DOCKER_TEST_IMAGE: python:3.11-slim
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: erlef/setup-beam@v1
+        with:
+          elixir-version: "1.19.5"
+          otp-version: "28.4"
+
+      - name: Install dependencies
+        run: mix deps.get
+
+      - name: Pull Docker test image
+        run: docker pull "$BEAM_WEAVER_DOCKER_TEST_IMAGE"
+
+      - name: Run Docker sandbox suite
+        run: mix test --only docker

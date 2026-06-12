@@ -1,0 +1,76 @@
+{
+  "expected": {
+    "error": {
+      "message": "Google structured output was truncated before valid JSON",
+      "type": "structured_output_parse_error"
+    }
+  },
+  "provider": "google",
+  "request": {
+    "headers": [
+      ["content-type", "application/json"],
+      ["user-agent", "beam_weaver-google/0.1"],
+      ["x-goog-api-key", "**REDACTED**"]
+    ],
+    "json": {
+      "contents": [
+        {
+          "parts": [
+            {
+              "text": "answer as JSON"
+            }
+          ],
+          "role": "user"
+        }
+      ],
+      "generationConfig": {
+        "maxOutputTokens": 65536,
+        "responseJsonSchema": {
+          "additionalProperties": false,
+          "description": "A short answer.",
+          "properties": {
+            "answer": {
+              "type": "string"
+            }
+          },
+          "required": ["answer"],
+          "title": "answer_output",
+          "type": "object"
+        },
+        "responseMimeType": "application/json"
+      }
+    },
+    "method": "POST",
+    "url": "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent"
+  },
+  "response": {
+    "body": {
+      "candidates": [
+        {
+          "content": {
+            "parts": [
+              {
+                "text": "{"
+              }
+            ],
+            "role": "model"
+          },
+          "finishReason": "MAX_TOKENS",
+          "index": 0
+        }
+      ],
+      "modelVersion": "gemini-3.5-flash",
+      "responseId": "resp_google_truncated",
+      "usageMetadata": {
+        "candidatesTokenCount": 1,
+        "promptTokenCount": 5,
+        "totalTokenCount": 6
+      }
+    },
+    "headers": [
+      ["content-type", "application/json"]
+    ],
+    "status": 200
+  },
+  "scenario": "truncated_structured_output"
+}

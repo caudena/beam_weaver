@@ -1,0 +1,92 @@
+{
+  "expected": {
+    "message": {
+      "id": "chatcmpl_kimi_structured",
+      "metadata": {
+        "finish_reason": "stop",
+        "id": "chatcmpl_kimi_structured",
+        "model": "kimi-k2.6",
+        "model_name": "kimi-k2.6",
+        "model_provider": "moonshot",
+        "parsed": {
+          "answer": "pong from Kimi fixture"
+        },
+        "provider": "moonshot"
+      },
+      "role": "assistant",
+      "status": "stop",
+      "text": "{\"answer\":\"pong from Kimi fixture\"}",
+      "tool_calls": [],
+      "usage_metadata": {
+        "input_tokens": 5,
+        "output_tokens": 6,
+        "total_tokens": 11
+      }
+    }
+  },
+  "provider": "moonshot",
+  "request": {
+    "headers": [
+      ["authorization", "**REDACTED**"],
+      ["content-type", "application/json"],
+      ["user-agent", "beam_weaver-moonshot/0.1"]
+    ],
+    "json": {
+      "messages": [
+        {
+          "content": "answer as JSON",
+          "role": "user"
+        }
+      ],
+      "model": "kimi-k2.6",
+      "response_format": {
+        "json_schema": {
+          "name": "answer_output",
+          "schema": {
+            "additionalProperties": false,
+            "description": "A short answer.",
+            "properties": {
+              "answer": {
+                "type": "string"
+              }
+            },
+            "required": ["answer"],
+            "title": "answer_output",
+            "type": "object"
+          },
+          "strict": true
+        },
+        "type": "json_schema"
+      },
+      "stream": false
+    },
+    "method": "POST",
+    "url": "https://api.moonshot.ai/v1/chat/completions"
+  },
+  "response": {
+    "body": {
+      "choices": [
+        {
+          "finish_reason": "stop",
+          "index": 0,
+          "message": {
+            "content": "{\"answer\":\"pong from Kimi fixture\"}",
+            "role": "assistant"
+          }
+        }
+      ],
+      "id": "chatcmpl_kimi_structured",
+      "model": "kimi-k2.6",
+      "usage": {
+        "completion_tokens": 6,
+        "prompt_tokens": 5,
+        "total_tokens": 11
+      }
+    },
+    "headers": [
+      ["content-type", "application/json"]
+    ],
+    "status": 200
+  },
+  "scenario": "provider_structured_success"
+}

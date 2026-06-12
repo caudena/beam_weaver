@@ -1,0 +1,91 @@
+{
+  "expected": {
+    "message": {
+      "id": "resp_openai_followup",
+      "role": "assistant",
+      "status": "completed",
+      "text": "Paris is clear and 18C.",
+      "tool_calls": []
+    }
+  },
+  "provider": "openai",
+  "request": {
+    "headers": [
+      ["authorization", "**REDACTED**"],
+      ["content-type", "application/json"]
+    ],
+    "json": {
+      "input": [
+        {
+          "content": "weather in Paris",
+          "role": "user",
+          "type": "message"
+        },
+        {
+          "arguments": "{\"city\":\"Paris\"}",
+          "call_id": "call_weather_paris",
+          "id": "fc_weather_paris",
+          "name": "get_weather",
+          "type": "function_call"
+        },
+        {
+          "call_id": "call_weather_paris",
+          "output": "{\"condition\":\"clear\",\"temperature\":\"18C\"}",
+          "type": "function_call_output"
+        }
+      ],
+      "model": "gpt-5.4-mini",
+      "stream": false,
+      "tools": [
+        {
+          "description": "Return current weather for a city.",
+          "name": "get_weather",
+          "parameters": {
+            "additionalProperties": false,
+            "properties": {
+              "city": {
+                "type": "string"
+              }
+            },
+            "required": ["city"],
+            "type": "object"
+          },
+          "type": "function"
+        }
+      ]
+    },
+    "method": "POST",
+    "url": "https://api.openai.com/v1/responses"
+  },
+  "response": {
+    "body": {
+      "id": "resp_openai_followup",
+      "model": "gpt-5.4-mini",
+      "output": [
+        {
+          "content": [
+            {
+              "annotations": [],
+              "text": "Paris is clear and 18C.",
+              "type": "output_text"
+            }
+          ],
+          "id": "msg_openai_followup",
+          "role": "assistant",
+          "type": "message"
+        }
+      ],
+      "status": "completed",
+      "usage": {
+        "input_tokens": 12,
+        "output_tokens": 6,
+        "total_tokens": 18
+      }
+    },
+    "headers": [
+      ["content-type", "application/json"]
+    ],
+    "status": 200
+  },
+  "scenario": "tool_result_followup"
+}

@@ -1,0 +1,80 @@
+{
+  "expected": {
+    "message": {
+      "id": "resp_openai_basic",
+      "metadata": {
+        "id": "resp_openai_basic",
+        "model": "gpt-5.4-mini",
+        "model_provider": "openai",
+        "provider": "openai",
+        "status": "completed",
+        "usage": {
+          "input_tokens": 3,
+          "output_tokens": 4,
+          "total_tokens": 7
+        }
+      },
+      "role": "assistant",
+      "status": "completed",
+      "text": "pong from OpenAI fixture",
+      "tool_calls": [],
+      "usage_metadata": {
+        "input_tokens": 3,
+        "output_tokens": 4,
+        "total_tokens": 7
+      }
+    }
+  },
+  "provider": "openai",
+  "request": {
+    "headers": [
+      ["authorization", "**REDACTED**"],
+      ["content-type", "application/json"]
+    ],
+    "json": {
+      "input": [
+        {
+          "content": "ping",
+          "role": "user",
+          "type": "message"
+        }
+      ],
+      "model": "gpt-5.4-mini",
+      "stream": false
+    },
+    "method": "POST",
+    "url": "https://api.openai.com/v1/responses"
+  },
+  "response": {
+    "body": {
+      "id": "resp_openai_basic",
+      "model": "gpt-5.4-mini",
+      "output": [
+        {
+          "content": [
+            {
+              "annotations": [],
+              "text": "pong from OpenAI fixture",
+              "type": "output_text"
+            }
+          ],
+          "id": "msg_openai_basic",
+          "role": "assistant",
+          "type": "message"
+        }
+      ],
+      "status": "completed",
+      "usage": {
+        "input_tokens": 3,
+        "output_tokens": 4,
+        "total_tokens": 7
+      }
+    },
+    "headers": [
+      ["content-type", "application/json"],
+      ["x-request-id", "**REDACTED**"]
+    ],
+    "status": 200
+  },
+  "scenario": "basic_chat"
+}

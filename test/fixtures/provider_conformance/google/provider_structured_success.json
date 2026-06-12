@@ -1,0 +1,85 @@
+{
+  "expected": {
+    "message": {
+      "id": "resp_google_structured",
+      "metadata": {
+        "parsed": {
+          "answer": "gemini-answer"
+        },
+        "provider": "google"
+      },
+      "role": "assistant",
+      "status": "STOP",
+      "text": "{\"answer\":\"gemini-answer\"}",
+      "tool_calls": []
+    }
+  },
+  "provider": "google",
+  "request": {
+    "headers": [
+      ["content-type", "application/json"],
+      ["user-agent", "beam_weaver-google/0.1"],
+      ["x-goog-api-key", "**REDACTED**"]
+    ],
+    "json": {
+      "contents": [
+        {
+          "parts": [
+            {
+              "text": "answer as JSON"
+            }
+          ],
+          "role": "user"
+        }
+      ],
+      "generationConfig": {
+        "maxOutputTokens": 65536,
+        "responseJsonSchema": {
+          "additionalProperties": false,
+          "description": "A short answer.",
+          "properties": {
+            "answer": {
+              "type": "string"
+            }
+          },
+          "required": ["answer"],
+          "title": "answer_output",
+          "type": "object"
+        },
+        "responseMimeType": "application/json"
+      }
+    },
+    "method": "POST",
+    "url": "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent"
+  },
+  "response": {
+    "body": {
+      "candidates": [
+        {
+          "content": {
+            "parts": [
+              {
+                "text": "{\"answer\":\"gemini-answer\"}"
+              }
+            ],
+            "role": "model"
+          },
+          "finishReason": "STOP",
+          "index": 0
+        }
+      ],
+      "modelVersion": "gemini-3.5-flash",
+      "responseId": "resp_google_structured",
+      "usageMetadata": {
+        "candidatesTokenCount": 5,
+        "promptTokenCount": 5,
+        "totalTokenCount": 10
+      }
+    },
+    "headers": [
+      ["content-type", "application/json"]
+    ],
+    "status": 200
+  },
+  "scenario": "provider_structured_success"
+}

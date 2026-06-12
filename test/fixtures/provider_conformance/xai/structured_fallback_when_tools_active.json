@@ -1,0 +1,17 @@
+{
+  "expected": {
+    "policy": {
+      "effective_strategy": "tool",
+      "fallback_reason": "tools_not_supported",
+      "requested_strategy": "provider"
+    }
+  },
+  "provider": "xai",
+  "request": {},
+  "response": {
+    "body": {},
+    "headers": [],
+    "status": 200
+  },
+  "scenario": "structured_fallback_when_tools_active"
+}

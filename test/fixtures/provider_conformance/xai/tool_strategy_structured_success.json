@@ -1,0 +1,93 @@
+{
+  "expected": {
+    "message": {
+      "id": "resp_xai_structured_tool",
+      "metadata": {
+        "id": "resp_xai_structured_tool",
+        "model": "grok-4.3",
+        "model_provider": "xai",
+        "provider": "xai"
+      },
+      "role": "assistant",
+      "status": "completed",
+      "text": "",
+      "tool_calls": [
+        {
+          "args": {
+            "answer": "tool-answer"
+          },
+          "call_id": "call_xai_answer",
+          "id": "call_xai_answer",
+          "name": "answer_output",
+          "provider_id": "fc_xai_answer"
+        }
+      ]
+    }
+  },
+  "provider": "xai",
+  "request": {
+    "headers": [
+      ["authorization", "**REDACTED**"],
+      ["content-type", "application/json"]
+    ],
+    "json": {
+      "input": [
+        {
+          "content": "answer through the schema tool",
+          "role": "user",
+          "type": "message"
+        }
+      ],
+      "model": "grok-4.3",
+      "stream": false,
+      "tools": [
+        {
+          "description": "A short answer.",
+          "name": "answer_output",
+          "parameters": {
+            "additionalProperties": false,
+            "description": "A short answer.",
+            "properties": {
+              "answer": {
+                "type": "string"
+              }
+            },
+            "required": ["answer"],
+            "title": "answer_output",
+            "type": "object"
+          },
+          "type": "function"
+        }
+      ]
+    },
+    "method": "POST",
+    "url": "https://api.x.ai/v1/responses"
+  },
+  "response": {
+    "body": {
+      "id": "resp_xai_structured_tool",
+      "model": "grok-4.3",
+      "output": [
+        {
+          "arguments": "{\"answer\":\"tool-answer\"}",
+          "call_id": "call_xai_answer",
+          "id": "fc_xai_answer",
+          "name": "answer_output",
+          "status": "completed",
+          "type": "function_call"
+        }
+      ],
+      "status": "completed",
+      "usage": {
+        "input_tokens": 8,
+        "output_tokens": 4,
+        "total_tokens": 12
+      }
+    },
+    "headers": [
+      ["content-type", "application/json"]
+    ],
+    "status": 200
+  },
+  "scenario": "tool_strategy_structured_success"
+}

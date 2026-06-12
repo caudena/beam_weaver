@@ -1,0 +1,75 @@
+{
+  "expected": {
+    "message": {
+      "id": "chatcmpl_kimi_basic",
+      "metadata": {
+        "id": "chatcmpl_kimi_basic",
+        "model": "kimi-k2.6",
+        "model_name": "kimi-k2.6",
+        "model_provider": "moonshot",
+        "provider": "moonshot",
+        "reasoning_content": "brief thought"
+      },
+      "role": "assistant",
+      "status": "stop",
+      "text": "pong from Kimi fixture",
+      "tool_calls": [],
+      "usage_metadata": {
+        "input_token_details": {
+          "cache_read": 1
+        },
+        "input_tokens": 3,
+        "output_tokens": 4,
+        "total_tokens": 7
+      }
+    }
+  },
+  "provider": "moonshot",
+  "request": {
+    "headers": [
+      ["authorization", "**REDACTED**"],
+      ["content-type", "application/json"],
+      ["user-agent", "beam_weaver-moonshot/0.1"]
+    ],
+    "json": {
+      "messages": [
+        {
+          "content": "ping",
+          "role": "user"
+        }
+      ],
+      "model": "kimi-k2.6",
+      "stream": false
+    },
+    "method": "POST",
+    "url": "https://api.moonshot.ai/v1/chat/completions"
+  },
+  "response": {
+    "body": {
+      "choices": [
+        {
+          "finish_reason": "stop",
+          "index": 0,
+          "message": {
+            "content": "pong from Kimi fixture",
+            "reasoning_content": "brief thought",
+            "role": "assistant"
+          }
+        }
+      ],
+      "id": "chatcmpl_kimi_basic",
+      "model": "kimi-k2.6",
+      "usage": {
+        "cached_tokens": 1,
+        "completion_tokens": 4,
+        "prompt_tokens": 3,
+        "total_tokens": 7
+      }
+    },
+    "headers": [
+      ["content-type", "application/json"]
+    ],
+    "status": 200
+  },
+  "scenario": "basic_chat"
+}

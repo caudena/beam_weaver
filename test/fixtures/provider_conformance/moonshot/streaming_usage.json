@@ -1,0 +1,57 @@
+{
+  "expected": {
+    "message": {
+      "metadata": {
+        "id": "chatcmpl_kimi_stream",
+        "model": "kimi-k2.6",
+        "model_name": "kimi-k2.6",
+        "model_provider": "moonshot",
+        "provider": "moonshot",
+        "reasoning_content": "plan "
+      },
+      "role": "assistant",
+      "status": "stop",
+      "text": "pong",
+      "tool_calls": [],
+      "usage_metadata": {
+        "input_token_details": {
+          "cache_read": 1
+        },
+        "input_tokens": 2,
+        "output_tokens": 2,
+        "total_tokens": 4
+      }
+    }
+  },
+  "provider": "moonshot",
+  "request": {
+    "headers": [
+      ["authorization", "**REDACTED**"],
+      ["content-type", "application/json"],
+      ["user-agent", "beam_weaver-moonshot/0.1"]
+    ],
+    "json": {
+      "messages": [
+        {
+          "content": "stream pong",
+          "role": "user"
+        }
+      ],
+      "model": "kimi-k2.6",
+      "stream": true,
+      "stream_options": {
+        "include_usage": true
+      }
+    },
+    "method": "POST",
+    "url": "https://api.moonshot.ai/v1/chat/completions"
+  },
+  "response": {
+    "headers": [
+      ["content-type", "text/event-stream"]
+    ],
+    "sse": "data: {\"id\":\"chatcmpl_kimi_stream\",\"model\":\"kimi-k2.6\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"reasoning_content\":\"plan \"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl_kimi_stream\",\"model\":\"kimi-k2.6\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"po\"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl_kimi_stream\",\"model\":\"kimi-k2.6\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ng\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":2,\"completion_tokens\":2,\"total_tokens\":4,\"cached_tokens\":1}}\n\ndata: [DONE]\n\n",
+    "status": 200
+  },
+  "scenario": "streaming_usage"
+}

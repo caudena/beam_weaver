@@ -1,0 +1,81 @@
+{
+  "expected": {
+    "message": {
+      "id": "resp_google_basic",
+      "metadata": {
+        "finish_reason": "STOP",
+        "id": "resp_google_basic",
+        "model": "gemini-3.5-flash",
+        "model_name": "gemini-3.5-flash",
+        "model_provider": "google",
+        "provider": "google",
+        "usage": {
+          "candidatesTokenCount": 4,
+          "promptTokenCount": 3,
+          "totalTokenCount": 7
+        }
+      },
+      "role": "assistant",
+      "status": "STOP",
+      "text": "pong from Gemini fixture",
+      "tool_calls": [],
+      "usage_metadata": {
+        "input_tokens": 3,
+        "output_tokens": 4,
+        "total_tokens": 7
+      }
+    }
+  },
+  "provider": "google",
+  "request": {
+    "headers": [
+      ["content-type", "application/json"],
+      ["user-agent", "beam_weaver-google/0.1"],
+      ["x-goog-api-key", "**REDACTED**"]
+    ],
+    "json": {
+      "contents": [
+        {
+          "parts": [
+            {
+              "text": "ping"
+            }
+          ],
+          "role": "user"
+        }
+      ]
+    },
+    "method": "POST",
+    "url": "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent"
+  },
+  "response": {
+    "body": {
+      "candidates": [
+        {
+          "content": {
+            "parts": [
+              {
+                "text": "pong from Gemini fixture"
+              }
+            ],
+            "role": "model"
+          },
+          "finishReason": "STOP",
+          "index": 0
+        }
+      ],
+      "modelVersion": "gemini-3.5-flash",
+      "responseId": "resp_google_basic",
+      "usageMetadata": {
+        "candidatesTokenCount": 4,
+        "promptTokenCount": 3,
+        "totalTokenCount": 7
+      }
+    },
+    "headers": [
+      ["content-type", "application/json"]
+    ],
+    "status": 200
+  },
+  "scenario": "basic_chat"
+}

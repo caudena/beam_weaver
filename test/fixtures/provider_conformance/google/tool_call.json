@@ -1,0 +1,110 @@
+{
+  "expected": {
+    "message": {
+      "id": "resp_google_tool",
+      "metadata": {
+        "finish_reason": "STOP",
+        "id": "resp_google_tool",
+        "model_provider": "google",
+        "provider": "google"
+      },
+      "role": "assistant",
+      "status": "STOP",
+      "text": "",
+      "tool_calls": [
+        {
+          "args": {
+            "city": "Paris"
+          },
+          "call_id": "call_get_weather",
+          "id": "call_get_weather",
+          "name": "get_weather",
+          "provider_id": "call_get_weather",
+          "thought_signature": "sig_google_weather"
+        }
+      ]
+    }
+  },
+  "provider": "google",
+  "request": {
+    "headers": [
+      ["content-type", "application/json"],
+      ["user-agent", "beam_weaver-google/0.1"],
+      ["x-goog-api-key", "**REDACTED**"]
+    ],
+    "json": {
+      "contents": [
+        {
+          "parts": [
+            {
+              "text": "weather in Paris"
+            }
+          ],
+          "role": "user"
+        }
+      ],
+      "toolConfig": {
+        "functionCallingConfig": {
+          "mode": "AUTO"
+        }
+      },
+      "tools": [
+        {
+          "functionDeclarations": [
+            {
+              "description": "Return current weather for a city.",
+              "name": "get_weather",
+              "parameters": {
+                "properties": {
+                  "city": {
+                    "type": "string"
+                  }
+                },
+                "required": ["city"],
+                "type": "object"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "method": "POST",
+    "url": "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent"
+  },
+  "response": {
+    "body": {
+      "candidates": [
+        {
+          "content": {
+            "parts": [
+              {
+                "functionCall": {
+                  "args": {
+                    "city": "Paris"
+                  },
+                  "name": "get_weather"
+                },
+                "thoughtSignature": "sig_google_weather"
+              }
+            ],
+            "role": "model"
+          },
+          "finishReason": "STOP",
+          "index": 0
+        }
+      ],
+      "modelVersion": "gemini-3.5-flash",
+      "responseId": "resp_google_tool",
+      "usageMetadata": {
+        "candidatesTokenCount": 2,
+        "promptTokenCount": 7,
+        "totalTokenCount": 9
+      }
+    },
+    "headers": [
+      ["content-type", "application/json"]
+    ],
+    "status": 200
+  },
+  "scenario": "tool_call"
+}

@@ -1,0 +1,91 @@
+{
+  "expected": {
+    "message": {
+      "id": "resp_xai_tool",
+      "metadata": {
+        "id": "resp_xai_tool",
+        "model": "grok-4.3",
+        "model_provider": "xai",
+        "provider": "xai"
+      },
+      "role": "assistant",
+      "status": "completed",
+      "text": "",
+      "tool_calls": [
+        {
+          "args": {
+            "city": "Tokyo"
+          },
+          "call_id": "call_xai_weather_tokyo",
+          "id": "call_xai_weather_tokyo",
+          "name": "get_weather",
+          "provider_id": "fc_xai_weather_tokyo"
+        }
+      ]
+    }
+  },
+  "provider": "xai",
+  "request": {
+    "headers": [
+      ["authorization", "**REDACTED**"],
+      ["content-type", "application/json"]
+    ],
+    "json": {
+      "input": [
+        {
+          "content": "weather in Tokyo",
+          "role": "user",
+          "type": "message"
+        }
+      ],
+      "model": "grok-4.3",
+      "stream": false,
+      "tools": [
+        {
+          "description": "Return current weather for a city.",
+          "name": "get_weather",
+          "parameters": {
+            "additionalProperties": false,
+            "properties": {
+              "city": {
+                "type": "string"
+              }
+            },
+            "required": ["city"],
+            "type": "object"
+          },
+          "type": "function"
+        }
+      ]
+    },
+    "method": "POST",
+    "url": "https://api.x.ai/v1/responses"
+  },
+  "response": {
+    "body": {
+      "id": "resp_xai_tool",
+      "model": "grok-4.3",
+      "output": [
+        {
+          "arguments": "{\"city\":\"Tokyo\"}",
+          "call_id": "call_xai_weather_tokyo",
+          "id": "fc_xai_weather_tokyo",
+          "name": "get_weather",
+          "status": "completed",
+          "type": "function_call"
+        }
+      ],
+      "status": "completed",
+      "usage": {
+        "input_tokens": 7,
+        "output_tokens": 3,
+        "total_tokens": 10
+      }
+    },
+    "headers": [
+      ["content-type", "application/json"]
+    ],
+    "status": 200
+  },
+  "scenario": "single_tool_call"
+}

@@ -1,0 +1,109 @@
+{
+  "expected": {
+    "message": {
+      "id": "resp_openai_tools",
+      "metadata": {
+        "id": "resp_openai_tools",
+        "model": "gpt-5.4-mini",
+        "model_provider": "openai",
+        "provider": "openai",
+        "status": "completed"
+      },
+      "role": "assistant",
+      "status": "completed",
+      "text": "",
+      "tool_calls": [
+        {
+          "args": {
+            "city": "Paris"
+          },
+          "call_id": "call_weather_paris",
+          "id": "call_weather_paris",
+          "name": "get_weather",
+          "provider_id": "fc_weather_paris"
+        },
+        {
+          "args": {
+            "city": "Berlin"
+          },
+          "call_id": "call_weather_berlin",
+          "id": "call_weather_berlin",
+          "name": "get_weather",
+          "provider_id": "fc_weather_berlin"
+        }
+      ]
+    }
+  },
+  "provider": "openai",
+  "request": {
+    "headers": [
+      ["authorization", "**REDACTED**"],
+      ["content-type", "application/json"]
+    ],
+    "json": {
+      "input": [
+        {
+          "content": "weather in Paris and Berlin",
+          "role": "user",
+          "type": "message"
+        }
+      ],
+      "model": "gpt-5.4-mini",
+      "stream": false,
+      "tools": [
+        {
+          "description": "Return current weather for a city.",
+          "name": "get_weather",
+          "parameters": {
+            "additionalProperties": false,
+            "properties": {
+              "city": {
+                "type": "string"
+              }
+            },
+            "required": ["city"],
+            "type": "object"
+          },
+          "type": "function"
+        }
+      ]
+    },
+    "method": "POST",
+    "url": "https://api.openai.com/v1/responses"
+  },
+  "response": {
+    "body": {
+      "id": "resp_openai_tools",
+      "model": "gpt-5.4-mini",
+      "output": [
+        {
+          "arguments": "{\"city\":\"Paris\"}",
+          "call_id": "call_weather_paris",
+          "id": "fc_weather_paris",
+          "name": "get_weather",
+          "status": "completed",
+          "type": "function_call"
+        },
+        {
+          "arguments": "{\"city\":\"Berlin\"}",
+          "call_id": "call_weather_berlin",
+          "id": "fc_weather_berlin",
+          "name": "get_weather",
+          "status": "completed",
+          "type": "function_call"
+        }
+      ],
+      "status": "completed",
+      "usage": {
+        "input_tokens": 8,
+        "output_tokens": 6,
+        "total_tokens": 14
+      }
+    },
+    "headers": [
+      ["content-type", "application/json"]
+    ],
+    "status": 200
+  },
+  "scenario": "multiple_tool_calls"
+}

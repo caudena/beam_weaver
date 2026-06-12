@@ -1,0 +1,43 @@
+{
+  "expected": {
+    "error": {
+      "message": "Quota exceeded fixture",
+      "type": "quota_error"
+    }
+  },
+  "provider": "moonshot",
+  "request": {
+    "headers": [
+      ["authorization", "**REDACTED**"],
+      ["content-type", "application/json"],
+      ["user-agent", "beam_weaver-moonshot/0.1"]
+    ],
+    "json": {
+      "messages": [
+        {
+          "content": "quota",
+          "role": "user"
+        }
+      ],
+      "model": "kimi-k2.6",
+      "stream": false
+    },
+    "method": "POST",
+    "url": "https://api.moonshot.ai/v1/chat/completions"
+  },
+  "response": {
+    "body": {
+      "error": {
+        "code": "exceeded_current_quota_error",
+        "message": "Quota exceeded fixture",
+        "type": "exceeded_current_quota_error"
+      }
+    },
+    "headers": [
+      ["content-type", "application/json"],
+      ["x-request-id", "**REDACTED**"]
+    ],
+    "status": 429
+  },
+  "scenario": "http_quota_error"
+}

@@ -1,0 +1,109 @@
+{
+  "expected": {
+    "message": {
+      "id": "chatcmpl_kimi_tool",
+      "metadata": {
+        "finish_reason": "tool_calls",
+        "id": "chatcmpl_kimi_tool",
+        "model": "kimi-k2.6",
+        "model_name": "kimi-k2.6",
+        "model_provider": "moonshot",
+        "provider": "moonshot"
+      },
+      "role": "assistant",
+      "status": "tool_calls",
+      "text": "",
+      "tool_calls": [
+        {
+          "args": {
+            "city": "Tokyo"
+          },
+          "call_id": "call_kimi_weather",
+          "id": "call_kimi_weather",
+          "name": "get_weather",
+          "provider_id": "call_kimi_weather"
+        }
+      ],
+      "usage_metadata": {
+        "input_tokens": 6,
+        "output_tokens": 2,
+        "total_tokens": 8
+      }
+    }
+  },
+  "provider": "moonshot",
+  "request": {
+    "headers": [
+      ["authorization", "**REDACTED**"],
+      ["content-type", "application/json"],
+      ["user-agent", "beam_weaver-moonshot/0.1"]
+    ],
+    "json": {
+      "messages": [
+        {
+          "content": "weather in Tokyo",
+          "role": "user"
+        }
+      ],
+      "model": "kimi-k2.6",
+      "stream": false,
+      "tools": [
+        {
+          "function": {
+            "description": "Return current weather for a city.",
+            "name": "get_weather",
+            "parameters": {
+              "additionalProperties": false,
+              "properties": {
+                "city": {
+                  "type": "string"
+                }
+              },
+              "required": ["city"],
+              "type": "object"
+            }
+          },
+          "type": "function"
+        }
+      ]
+    },
+    "method": "POST",
+    "url": "https://api.moonshot.ai/v1/chat/completions"
+  },
+  "response": {
+    "body": {
+      "choices": [
+        {
+          "finish_reason": "tool_calls",
+          "index": 0,
+          "message": {
+            "content": null,
+            "role": "assistant",
+            "tool_calls": [
+              {
+                "function": {
+                  "arguments": "{\"city\":\"Tokyo\"}",
+                  "name": "get_weather"
+                },
+                "id": "call_kimi_weather",
+                "type": "function"
+              }
+            ]
+          }
+        }
+      ],
+      "id": "chatcmpl_kimi_tool",
+      "model": "kimi-k2.6",
+      "usage": {
+        "completion_tokens": 2,
+        "prompt_tokens": 6,
+        "total_tokens": 8
+      }
+    },
+    "headers": [
+      ["content-type", "application/json"]
+    ],
+    "status": 200
+  },
+  "scenario": "single_tool_call"
+}

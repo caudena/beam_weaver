@@ -1,0 +1,87 @@
+{
+  "expected": {
+    "message": {
+      "id": "resp_openai_structured",
+      "metadata": {
+        "parsed": {
+          "answer": "forty-two"
+        },
+        "provider": "openai"
+      },
+      "role": "assistant",
+      "status": "completed",
+      "text": "{\"answer\":\"forty-two\"}",
+      "tool_calls": []
+    }
+  },
+  "provider": "openai",
+  "request": {
+    "headers": [
+      ["authorization", "**REDACTED**"],
+      ["content-type", "application/json"]
+    ],
+    "json": {
+      "input": [
+        {
+          "content": "answer as JSON",
+          "role": "user",
+          "type": "message"
+        }
+      ],
+      "model": "gpt-5.4-mini",
+      "stream": false,
+      "text": {
+        "format": {
+          "name": "answer_output",
+          "schema": {
+            "additionalProperties": false,
+            "description": "A short answer.",
+            "properties": {
+              "answer": {
+                "type": "string"
+              }
+            },
+            "required": ["answer"],
+            "title": "answer_output",
+            "type": "object"
+          },
+          "strict": true,
+          "type": "json_schema"
+        }
+      }
+    },
+    "method": "POST",
+    "url": "https://api.openai.com/v1/responses"
+  },
+  "response": {
+    "body": {
+      "id": "resp_openai_structured",
+      "model": "gpt-5.4-mini",
+      "output": [
+        {
+          "content": [
+            {
+              "annotations": [],
+              "text": "{\"answer\":\"forty-two\"}",
+              "type": "output_text"
+            }
+          ],
+          "id": "msg_openai_structured",
+          "role": "assistant",
+          "type": "message"
+        }
+      ],
+      "status": "completed",
+      "usage": {
+        "input_tokens": 5,
+        "output_tokens": 5,
+        "total_tokens": 10
+      }
+    },
+    "headers": [
+      ["content-type", "application/json"]
+    ],
+    "status": 200
+  },
+  "scenario": "provider_structured_success"
+}

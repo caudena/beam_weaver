@@ -1,0 +1,77 @@
+{
+  "expected": {
+    "error": {
+      "type": "structured_output_parse_error"
+    }
+  },
+  "provider": "xai",
+  "request": {
+    "headers": [
+      ["authorization", "**REDACTED**"],
+      ["content-type", "application/json"]
+    ],
+    "json": {
+      "input": [
+        {
+          "content": "return malformed JSON",
+          "role": "user",
+          "type": "message"
+        }
+      ],
+      "model": "grok-4.3",
+      "stream": false,
+      "text": {
+        "format": {
+          "name": "answer_output",
+          "schema": {
+            "additionalProperties": false,
+            "description": "A short answer.",
+            "properties": {
+              "answer": {
+                "type": "string"
+              }
+            },
+            "required": ["answer"],
+            "title": "answer_output",
+            "type": "object"
+          },
+          "strict": true,
+          "type": "json_schema"
+        }
+      }
+    },
+    "method": "POST",
+    "url": "https://api.x.ai/v1/responses"
+  },
+  "response": {
+    "body": {
+      "id": "resp_xai_malformed",
+      "model": "grok-4.3",
+      "output": [
+        {
+          "content": [
+            {
+              "annotations": [],
+              "text": "{\"answer\":",
+              "type": "output_text"
+            }
+          ],
+          "id": "msg_xai_malformed",
+          "role": "assistant",
+          "type": "message"
+        }
+      ],
+      "status": "completed",
+      "usage": {
+        "input_tokens": 5,
+        "output_tokens": 2,
+        "total_tokens": 7
+      }
+    },
+    "headers": [
+      ["content-type", "application/json"]
+    ],
+    "status": 200
+  },
+  "scenario": "malformed_structured_json"
+}
