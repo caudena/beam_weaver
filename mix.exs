@@ -93,8 +93,7 @@ defmodule BeamWeaver.MixProject do
         "docs/replay.md",
         "docs/going_to_production.md",
         "docs/rate_limiting.md",
-        "docs/tracing.md",
-        "docs/standard_tests.md"
+        "docs/tracing.md"
       ],
       groups_for_extras: [
         "Start Here": [
@@ -157,8 +156,7 @@ defmodule BeamWeaver.MixProject do
           "docs/going_to_production.md",
           "docs/rate_limiting.md",
           "docs/replay.md",
-          "docs/tracing.md",
-          "docs/standard_tests.md"
+          "docs/tracing.md"
         ]
       ],
       groups_for_modules: [
