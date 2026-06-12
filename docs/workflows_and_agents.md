@@ -18,16 +18,6 @@ flowchart LR
   B --> C["Agent: model decides tool use"]
 ```
 
-{% hint style="info" %}
-**BeamWeaver Shape**
-
-LangGraph documents both a Python Graph API and a Python Functional API with
-`@entrypoint` and `@task` decorators. BeamWeaver uses the graph API and ordinary
-Elixir functions. Use local functions or `Task` for simple functional control
-flow; use `BeamWeaver.Graph` when you need checkpointing, streaming, state
-history, interrupts, retries, fan-out, or traceable orchestration metadata.
-{% endhint %}
-
 ## Setup
 
 Workflow examples can use any model that implements `BeamWeaver.Core.ChatModel`.
@@ -41,17 +31,6 @@ model = BeamWeaver.Models.init_chat_model!("anthropic:claude-sonnet-4-6")
 For deterministic workflow tests, put exact business logic in Elixir nodes and
 test those nodes without a live provider. For model behavior, use your
 application's model adapter and credentials.
-
-{% hint style="warning" %}
-**Provider And Hosted Scope**
-
-The LangGraph page uses Anthropic and links to hosted tracing, deployment,
-and hosted LangGraph Platform features. BeamWeaver currently documents native
-OpenAI, Anthropic, Google, xAI, fake-model, graph, checkpoint, memory,
-telemetry, and tracing boundaries. Hosted products, remote LangGraph Platform
-APIs, and the
-Python SDK/CLI contract are not BeamWeaver features.
-{% endhint %}
 
 ## LLMs And Augmentations
 

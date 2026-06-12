@@ -421,22 +421,6 @@ the inner implementation. See
 example and the interaction between path rules, composite filesystems, and
 executable backends.
 
-## Unsupported Or Different From Official Deep Agents Docs
-
-| Official Deep Agents docs | BeamWeaver behavior |
-| --- | --- |
-| Page and API call the concept "backends" | BeamWeaver documents the concept as `Filesystem`; `backend:` is only a runtime compatibility alias. |
-| `create_deep_agent(model=..., backend=...)` | Use `BeamWeaver.Agent.build(model: ..., filesystem: ...)` or DSL `filesystem ...`. |
-| `StateBackend` | `BeamWeaver.Filesystem.State`. |
-| `FilesystemBackend(root_dir=..., virtual_mode=True)` | `BeamWeaver.Filesystem.Local.new(root: ... or root_dir: ...)`; BeamWeaver always exposes virtual absolute paths and does not have a `virtual_mode` option. |
-| `LocalShellBackend` | `BeamWeaver.Filesystem.LocalShell`; it is unsafe host execution and should be treated separately from path permissions. |
-| `StoreBackend` backed by LangGraph `BaseStore` | `BeamWeaver.Filesystem.Store` backed by `BeamWeaver.Memory.Store`. |
-| `ContextHubBackend` for hosted prompt repos | Not currently implemented in BeamWeaver. Use `Store`, `Local`, or a custom filesystem. |
-| Python `BackendProtocol` and result classes | Elixir `BeamWeaver.Filesystem` behaviour and structs such as `%ReadResult{}` and `%WriteResult{}`. |
-| Backend factory and `BackendContext` migration notes | Not applicable to BeamWeaver. Use filesystem structs directly; namespace factories receive runtime when invoked through tools. |
-| Multimodal extension table for images, video, audio, PDF, PPT/PPTX | BeamWeaver supports UTF-8 text, base64 binary reads, and raw byte downloads. It does not yet classify every media/document extension into provider-specific content blocks. |
-| Python subclass examples for policy hooks | Use an Elixir wrapper module or `BeamWeaver.Filesystem.Permission`. |
-
 ## Related Guides
 
 - [Composed Agent Capabilities](agent_harness.md)

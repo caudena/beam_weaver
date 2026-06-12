@@ -20,21 +20,6 @@ Public helpers validate inputs and returned shapes before provider-specific code
 can claim success. Recoverable failures return tagged `BeamWeaver.Core.Error`
 values.
 
-## Standard Tests
-
-Provider test modules can use shared cases:
-
-```elixir
-defmodule MyChatModelTest do
-  use BeamWeaver.TestSupport.Conformance.ChatModelCase,
-    model: {MyProvider.ChatModel, model: "example"}
-end
-```
-
-The shared cases exercise provider behavior through the public core wrappers:
-message validation, tool schema validation, embedding vector shape, and text
-completion shape.
-
 ## Async
 
 Core model wrappers expose Task-backed async helpers:
@@ -71,4 +56,3 @@ session = BeamWeaver.Core.ChatHistory.ETS.for_session(history, "thread-1")
 - [Tools](tools.md)
 - [Models](models.md)
 - [Adapters](adapters.md)
-- [Standard Tests](standard_tests.md)

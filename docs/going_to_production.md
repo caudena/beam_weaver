@@ -85,7 +85,7 @@ as external services only where your application explicitly chooses to.
 | Sensitive data | Redact tracing data and avoid putting credentials in model-visible state. | [Tracing](tracing.md), [Guardrails](guardrails.md), [Sandboxes](sandboxes.md) |
 | Streaming UI | Consume one event stream and route typed envelopes to your UI or transport. | [Event Streaming](event_streaming.md) |
 | Observability | Attach telemetry, export traces intentionally, and monitor exporter queues. | [Tracing](tracing.md) |
-| Tests | Run standard conformance and integration tests for the adapters you deploy. | [Standard Tests](standard_tests.md) |
+| Tests | Run integration tests for the adapters and workflows you deploy. | [Replay](replay.md) |
 
 ## Invocation Patterns
 
@@ -151,18 +151,6 @@ Use normal Elixir scheduling and jobs for production maintenance:
 These are application jobs, not BeamWeaver-specific hosted cron features. Use
 Oban or your existing scheduler and invoke BeamWeaver agents, graphs, memory
 stores, and checkpoint APIs from those jobs.
-
-## Unsupported Or Different From Official Deep Agents Docs
-
-| Official Deep Agents production topic | BeamWeaver status |
-| --- | --- |
-| Managed Deep Agents, hosted deployments, agent servers, hosted threads, hosted runs, and `langgraph.json`. | Not built in. Run BeamWeaver inside your own Elixir/OTP application and expose your chosen API. |
-| Hosted custom auth and authorization handlers. | Use your application's auth layer and pass trusted identity through `context:` or `server_info:`. |
-| Agent Auth OAuth flow. | Not built in. Implement OAuth in your application or host-side tools. |
-| Hosted workspace secrets and sandbox auth proxy. | Not built in. Use your deployment secret manager and keep secrets out of model-visible state and sandboxes. |
-| Python async method pairs such as `ainvoke`, `astream`, and async middleware hooks. | BeamWeaver uses BEAM processes, supervised tasks, and OTP boundaries. Async subagents and async graph helpers are documented separately. |
-| `useStream` frontend hook and LangGraph SDK client. | Not provided. Build your UI transport around `stream_events/3` typed envelopes. |
-| Hosted cron jobs for memory consolidation. | Use Oban, Quantum, Kubernetes CronJobs, or another application scheduler. |
 
 ## Related Guides
 

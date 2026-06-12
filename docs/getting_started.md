@@ -1,31 +1,21 @@
 # Quickstart
 
-Build your first BeamWeaver agent and graph in minutes. BeamWeaver combines the
-agent-facing pieces covered by LangChain's quickstart with the orchestration
-pieces covered by LangGraph's quickstart.
+Build your first BeamWeaver agent and graph in minutes. BeamWeaver gives Elixir
+applications a native model/tool loop, explicit workflow graphs, streaming,
+memory, checkpointing, and tracing.
 
 Use an agent when you want the standard model/tool loop. Use a graph when you
 want explicit nodes, edges, routing, state reducers, checkpoints, interrupts, or
 custom workflow control.
 
-{% hint style="info" %}
-**Using An AI Coding Assistant**
-
-LangChain's quickstarts point to the LangChain Docs MCP server and LangChain
-Skills. BeamWeaver does not ship those packages. For BeamWeaver work, use the
-native docs in this repository and generate `doc/llms.txt` with `mix docs` when
-you want an LLM-friendly local documentation index.
-{% endhint %}
-
 ## Install Dependencies
 
-BeamWeaver is not published to Hex yet. Add it as a local path dependency from
-another Mix project:
+Add BeamWeaver to your Mix project:
 
 ```elixir
 def deps do
   [
-    {:beam_weaver, path: "../beam_weaver"}
+    {:beam_weaver, "~> 0.1.0"}
   ]
 end
 ```
@@ -35,13 +25,6 @@ Then run:
 ```bash
 mix deps.get
 mix compile
-```
-
-Inside this repository, run:
-
-```bash
-mix deps.get
-mix test
 ```
 
 ## Set Up API Keys
@@ -58,22 +41,10 @@ config :beam_weaver,
   xai: [api_key: System.fetch_env!("XAI_API_KEY")]
 ```
 
-{% hint style="warning" %}
-**Provider Scope**
-
-LangChain's quickstart shows tabs for OpenAI, Gemini, Anthropic, OpenRouter,
-Fireworks, Baseten, Ollama, Azure, AWS Bedrock, HuggingFace, and other provider
-packages. BeamWeaver currently documents first-class paths for OpenAI,
-Anthropic, Google Gemini, xAI, fake models, and replay-backed tests. Other
-provider adapters need native transport, message translation, streaming, model
-profile, replay, and documentation coverage before being presented as supported
-workflows.
-{% endhint %}
-
 ## Build A Basic Agent
 
-Start with a small weather tool and a model. This mirrors LangChain's
-`create_agent` example, but uses BeamWeaver's Elixir tool and agent APIs.
+Start with a small weather tool and a model using BeamWeaver's Elixir tool and
+agent APIs.
 
 ```elixir
 alias BeamWeaver.Agent
@@ -123,10 +94,30 @@ state.messages
 You can also define the same agent as an application module:
 
 ```elixir
+defmodule MyApp.Tools.GetWeather do
+  use BeamWeaver.Tool
+
+  name "get_weather"
+  description "Get weather for a given city."
+
+  schema do
+    field :city, :string, required: true, description: "City name"
+  end
+
+  @impl true
+  def invoke(_tool, input, _opts) do
+    city = Map.get(input, :city) || Map.get(input, "city")
+    {:ok, "It's always sunny in #{city}."}
+  end
+end
+
 defmodule MyApp.WeatherAgent do
   use BeamWeaver.Agent
 
-  model BeamWeaver.Models.init_chat_model!("openai:gpt-5.4")
+  model BeamWeaver.Models.init_chat_model!("openai:gpt-5.4",
+    temperature: 0.2,
+    timeout: 30_000
+  )
 
   tools do
     tool MyApp.Tools.GetWeather
@@ -134,12 +125,23 @@ defmodule MyApp.WeatherAgent do
 
   system_prompt "You are a helpful assistant."
 end
+
+alias BeamWeaver.Core.Message
+
+{:ok, state} =
+  MyApp.WeatherAgent.invoke(%{
+    messages: [Message.user("What's the weather in San Francisco?")]
+  })
+
+state.messages
+|> List.last()
+|> Message.text()
 ```
 
 ## Add Conversation Memory
 
 Short-term memory is graph state persisted by a checkpointer. Reuse the same
-checkpointer and `thread_id` across invocations:
+checkpointer and `thread_id` across invocations of the same agent module:
 
 ```elixir
 alias BeamWeaver.Checkpoint.ETS, as: CheckpointETS
@@ -148,21 +150,23 @@ alias BeamWeaver.Core.Message
 checkpointer = CheckpointETS.new()
 config = %{"configurable" => %{"thread_id" => "weather-thread-1"}}
 
-{:ok, first_state} =
-  Agent.invoke(
-    agent,
+{:ok, _first_state} =
+  MyApp.WeatherAgent.invoke(
     %{messages: [Message.user("My name is Ada.")]},
     checkpointer: checkpointer,
     config: config
   )
 
 {:ok, second_state} =
-  Agent.invoke(
-    agent,
+  MyApp.WeatherAgent.invoke(
     %{messages: [Message.user("What did I tell you my name was?")]},
     checkpointer: checkpointer,
     config: config
   )
+
+second_state.messages
+|> List.last()
+|> Message.text()
 ```
 
 Use `BeamWeaver.Checkpoint.ETS` for tests and local workflows. Use
@@ -170,8 +174,7 @@ Use `BeamWeaver.Checkpoint.ETS` for tests and local workflows. Use
 
 ## Build A Calculator Graph
 
-LangGraph's quickstart builds a calculator agent with explicit graph nodes.
-BeamWeaver uses the same graph idea with Elixir data and functions. For static
+A calculator workflow is a good fit for explicit graph nodes. For static
 workflows, define the graph in a module:
 
 ```elixir
@@ -222,8 +225,7 @@ hybrid deterministic and agentic system.
 {% hint style="info" %}
 **State Reducers**
 
-LangGraph's Python examples use `Annotated[..., operator.add]` to append
-messages. BeamWeaver uses explicit reducers:
+When multiple nodes update list-like state, use explicit reducers:
 
 ```elixir
 BeamWeaver.Graph.add_reducer(graph, :messages, fn existing, update ->
@@ -236,10 +238,9 @@ Reducers make state merge behavior visible and testable.
 
 ## Functional Style
 
-LangGraph also has a Python Functional API with `@entrypoint` and `@task`
-decorators. BeamWeaver does not copy those decorators. Use ordinary Elixir
-functions for local control flow, and switch to `BeamWeaver.Graph` when you need
-checkpointing, interrupts, streaming, state history, or orchestration metadata.
+Use ordinary Elixir functions for local control flow, and switch to
+`BeamWeaver.Graph` when you need checkpointing, interrupts, streaming, state
+history, or orchestration metadata.
 
 ```elixir
 defmodule MyApp.Calculator do
@@ -249,82 +250,80 @@ defmodule MyApp.Calculator do
 end
 ```
 
-{% hint style="warning" %}
-**Functional API Deviation**
-
-Python's LangGraph Functional API turns decorated functions into graph tasks.
-BeamWeaver keeps task and supervision behavior explicit through graph nodes,
-`BeamWeaver.Core.Async`, `Task.Supervisor`, and normal Elixir modules. There is
-no BeamWeaver `@entrypoint` or `@task` decorator API.
-{% endhint %}
-
 ## Build A Research Agent
 
-For a more realistic agent, add a tool that fetches approved URLs and a
+For a more realistic agent, add a tool that fetches approved URLs and reuse a
 checkpointer for conversation state:
 
 ```elixir
-alias BeamWeaver.Agent
 alias BeamWeaver.Checkpoint.ETS, as: CheckpointETS
-alias BeamWeaver.Core.{Message, Tool}
+alias BeamWeaver.Core.Message
 
-fetch_text_from_url =
-  Tool.from_function!(
-    name: "fetch_text_from_url",
-    description: "Fetch UTF-8 text from an approved URL.",
-    input_schema: %{
-      "type" => "object",
-      "properties" => %{"url" => %{"type" => "string"}},
-      "required" => ["url"]
-    },
-    handler: fn input, _opts ->
-      url = input["url"] || input[:url]
+defmodule MyApp.Tools.FetchTextFromURL do
+  use BeamWeaver.Tool
 
-      case URI.parse(url) do
-        %URI{scheme: "https", host: "www.gutenberg.org"} ->
-          {:ok, response} = Req.get(url, receive_timeout: 120_000)
-          response.body
+  name "fetch_text_from_url"
+  description "Fetch UTF-8 text from an approved URL."
 
-        _other ->
-          {:error, "URL is not allowed"}
-      end
+  schema do
+    field :url, :string, required: true
+  end
+
+  @impl true
+  def invoke(_tool, input, _opts) do
+    url = Map.get(input, :url) || Map.get(input, "url")
+
+    case URI.parse(url) do
+      %URI{scheme: "https", host: "www.gutenberg.org"} ->
+        {:ok, response} = Req.get(url, receive_timeout: 120_000)
+        {:ok, response.body}
+
+      _other ->
+        {:error, "URL is not allowed"}
     end
+  end
+end
+
+defmodule MyApp.ResearchAgent do
+  use BeamWeaver.Agent
+
+  model BeamWeaver.Models.init_chat_model!("anthropic:claude-sonnet-4-6",
+    temperature: 0.5,
+    timeout: 120_000
   )
 
-system_prompt = """
-You are a literary data assistant.
+  tools do
+    tool MyApp.Tools.FetchTextFromURL
+  end
 
-Use fetch_text_from_url when you need source text. Do not invent exact line
-counts or positions unless a tool or graph node computed them.
-"""
+  system_prompt """
+  You are a literary data assistant.
 
-{:ok, research_agent} =
-  Agent.build(
-    name: "research_agent",
-    model: BeamWeaver.Models.init_chat_model!("anthropic:claude-sonnet-4-6",
-      temperature: 0.5,
-      timeout: 120_000
-    ),
-    tools: [fetch_text_from_url],
-    system_prompt: system_prompt
-  )
+  Use fetch_text_from_url when you need source text. Do not invent exact line
+  counts or positions unless a tool or graph node computed them.
+  """
+end
 
 checkpointer = CheckpointETS.new()
 config = %{"configurable" => %{"thread_id" => "great-gatsby"}}
 
-Agent.invoke(
-  research_agent,
-  %{
-    messages: [
-      Message.user("""
-      Fetch https://www.gutenberg.org/files/64317/64317-0.txt and summarize the text.
-      If you cannot verify exact counts, say so.
-      """)
-    ]
-  },
-  checkpointer: checkpointer,
-  config: config
-)
+{:ok, state} =
+  MyApp.ResearchAgent.invoke(
+    %{
+      messages: [
+        Message.user("""
+        Fetch https://www.gutenberg.org/files/64317/64317-0.txt and summarize the text.
+        If you cannot verify exact counts, say so.
+        """)
+      ]
+    },
+    checkpointer: checkpointer,
+    config: config
+  )
+
+state.messages
+|> List.last()
+|> Message.text()
 ```
 
 Exact line counting over a large file should be done by deterministic code, a
@@ -334,39 +333,13 @@ tokens in its context window.
 {% hint style="info" %}
 **Integrated Deep Agents Capabilities**
 
-LangChain's quickstart compares a basic LangChain agent with Deep Agents, which
-adds planning, a virtual filesystem, file search, and subagents. BeamWeaver does
-not expose a separate `create_deep_agent` constructor. Instead, those
-capabilities are positive declarations on `BeamWeaver.Agent`: add the tools,
-middleware, filesystem, memory, checkpointing, and subagents you need, and omit
-the ones you do not.
+BeamWeaver does not expose a separate deep-agent constructor. Planning, a
+virtual filesystem, file search, memory, checkpointing, middleware, and
+subagents are positive declarations on `BeamWeaver.Agent`: add the capabilities
+you need and omit the ones you do not.
 Use [Deep Agents Quickstart](deep_agents_quickstart.md) for a focused
 research-agent walkthrough with planning, filesystem tools, and a subagent.
 Use [Composed Agent Capabilities](agent_harness.md) for the full capability map.
-{% endhint %}
-
-## Trace And Debug Calls
-
-BeamWeaver exposes telemetry and tracing boundaries through
-`BeamWeaver.Tracing`. Generate ExDoc reference locally with:
-
-```bash
-mix docs
-```
-
-Then inspect:
-
-```bash
-open doc/index.html
-```
-
-{% hint style="info" %}
-**Hosted Product Scope**
-
-LangChain's quickstarts use hosted tracing and deployment links.
-BeamWeaver has telemetry and tracing/export boundaries, but it does not
-implement hosted engines, deployments, Studio, or remote LangGraph Platform APIs
-as built-in product features.
 {% endhint %}
 
 ## Next Steps

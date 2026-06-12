@@ -27,7 +27,7 @@ BeamWeaver is installed as an Elixir dependency, not with `pip` or `uv`:
 ```elixir
 def deps do
   [
-    {:beam_weaver, path: "../beam_weaver"}
+    {:beam_weaver, "~> 0.1.0"}
   ]
 end
 ```
@@ -340,22 +340,6 @@ BeamWeaver subgraph events are already present in typed graph event streams
 when the subgraph runs as a graph node. Use envelope namespaces or
 `BeamWeaver.Stream.Subgraphs` instead of enabling a separate stream flag.
 {% endhint %}
-
-## Unsupported Or Different From Official LangGraph Docs
-
-| Official LangGraph Docs | BeamWeaver Status |
-| --- | --- |
-| `pip install -U langgraph` / `uv add langgraph` | Use a Mix dependency. BeamWeaver is not a Python package. |
-| `StateGraph(TypedDict)` schemas | Use `BeamWeaver.Graph` state maps, optional schemas, channels, reducers, and projections. |
-| `START` / `END` constants | Use `Graph.add_edge(Graph.start(), node)` and `Graph.add_edge(node, Graph.end_node())`. |
-| Wrapper function that calls `subgraph.invoke(...)` | Supported manually, but the BeamWeaver-native persistent shape is a compiled subgraph node with `input:` and `output:` projections. |
-| `checkpointer=None`, `True`, `False` wording | Mapped to omitted or `nil` / `true` / `false`; BeamWeaver also accepts `:inherit`, `:shared`, `:disabled`, or a local checkpointer adapter. |
-| `graph.get_state(config, subgraphs=True)` | Not exposed. Use `Compiled.get_state_history/3` and filter checkpoint namespace configs, then call `Compiled.get_state/2`. |
-| `graph.stream(..., subgraphs=True, stream_mode="updates", version="v2")` | Not exposed in that shape. Use `Compiled.stream_events/3` and inspect envelope namespaces or `BeamWeaver.Stream.Subgraphs`. |
-| LangChain `create_agent` examples | Use `use BeamWeaver.Agent`, `BeamWeaver.Agent.build/1`, or `BeamWeaver.Agent.compiled_graph/1`. |
-| `ToolCallLimitMiddleware` | BeamWeaver has `BeamWeaver.Agent.Middleware.ToolCallLimit`; its defaults and exit behavior are documented in [Prebuilt Middleware](prebuilt_middleware.md). |
-| Subgraphs called inside tools are statically discoverable | Not guaranteed. Manual tool-level graph calls are application code; parent graph introspection and subgraph stream projections only know about graph nodes they can observe. |
-| Hosted setup prompts and Studio-style subgraph inspection | Not built in. Use BeamWeaver tracing/export boundaries, checkpoint APIs, and your application UI. |
 
 ## Related Guides
 

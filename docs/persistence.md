@@ -434,20 +434,6 @@ adapter serialization options. Do not assume every adapter encrypts all columns
 unless that adapter documents and tests the serialization option you pass.
 {% endhint %}
 
-## Unsupported Or Different From Official LangGraph Docs
-
-| Official LangGraph Feature | BeamWeaver Status |
-| --- | --- |
-| Hosted agent servers automatically handle checkpoint/store infrastructure. | Not built in. Configure adapters explicitly. |
-| LangGraph API / Studio default base store. | Not built in. Pass `store:` explicitly. |
-| `checkpointer.setup()` / `store.setup()` in application code. | Use Ecto migrations via `BeamWeaver.Migrations.up/1`. |
-| SQLite, Redis, MongoDB, Azure Cosmos DB checkpointers. | Not currently documented as BeamWeaver adapters. |
-| Python async saver methods like `.aput` and `.alist`. | BeamWeaver uses synchronous callbacks plus `async_*` facade helpers backed by `BeamWeaver.Core.Async`. |
-| Python `StateSnapshot`, `PregelTask`, `RunnableConfig`. | BeamWeaver returns Elixir maps/records and config maps. |
-| `pickle_fallback`. | Not supported. |
-| Hosted semantic-search store config in `langgraph.json`. | Not supported. Configure BeamWeaver memory adapters in Elixir. |
-| Postgres memory vector index managed by `PostgresStore`. | `Memory.Ecto` stores/searches JSONB records but does not manage pgvector semantic indexing. |
-
 ## Related Guides
 
 - [Durable Execution](durable_execution.md)

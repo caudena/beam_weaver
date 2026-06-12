@@ -667,22 +667,6 @@ custom client details.
 | A subagent cannot use `write_todos` or filesystem tools. | Add the corresponding middleware or filesystem configuration to the child agent. These tools are not implicit. |
 | A child cannot resume after HITL. | Ensure the parent has a checkpointer and the same thread configuration is used for resume. |
 
-## Unsupported Or Different From Official Deep Agents Docs
-
-| Official Deep Agents docs | BeamWeaver behavior |
-| --- | --- |
-| `create_deep_agent(..., subagents=[...])` | Use `BeamWeaver.Agent.build/1` or `use BeamWeaver.Agent` with `subagents`. |
-| Python dictionary `SubAgent` objects | Use `BeamWeaver.Agent.Subagent.Spec`; keyword lists and maps are accepted for convenience. |
-| `CompiledSubAgent(runnable=...)` can wrap a LangGraph runnable | `BeamWeaver.Agent.Subagent.Compiled` expects a BeamWeaver agent module or `%BeamWeaver.Agent.Built{}`. Use graph subgraphs for compiled graph nodes. |
-| A default synchronous `general-purpose` subagent is always available | BeamWeaver does not auto-inject it in normal agent builds. Declare a `general-purpose` spec explicitly when wanted. |
-| Disable default subagents with `GeneralPurposeSubagentProfile(enabled=False)` | Omit synchronous `subagents`, pass `[]`, or pass `false`. |
-| Custom subagents automatically receive the full Deep Agents child capability stack | BeamWeaver child agents compose capabilities explicitly. New code should list the child middleware and tools it needs. Legacy compatibility bundles are covered in the migration guide. |
-| Custom subagents do not inherit skills by default | BeamWeaver sync subagents inherit parent skills when `skills` is `nil`; use `skills: []` to opt out. |
-| Child run tracing metadata identifies subagent runs | BeamWeaver includes subagent trace metadata such as `subagent_name`, `execution_mode`, `capture_key`, `cache_hit`, and structured-output strategy on child runs and task results; use `StreamTransformer` for subagent stream summaries. |
-| Pydantic, `ToolStrategy(...)`, and `ProviderStrategy(...)` schemas | Use JSON Schema maps and `BeamWeaver.Agent.StructuredOutput.tool/2`, `provider/2`, or `auto/2`. |
-| Tavily/web search examples are built around Python callables | BeamWeaver has no built-in Tavily tool in this guide. Provide a normal `BeamWeaver.Core.Tool` or `use BeamWeaver.Tool` module. |
-| Async subagents are documented on a separate page | BeamWeaver documents them in [Async Subagents](async_subagents.md). |
-
 ## Related Guides
 
 - [Composed Agent Capabilities](agent_harness.md)

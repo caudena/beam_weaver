@@ -3,7 +3,6 @@
 * [Overview](README.md)
 * [Getting Started](getting_started.md)
 * [Semantic DSL](semantic_dsl.md)
-* [DSL Migration Guide](dsl_migration.md)
 * [Thinking In BeamWeaver](thinking_in_beamweaver.md)
 * [Workflows And Agents](workflows_and_agents.md)
 
@@ -67,4 +66,3 @@
 * [Rate Limiting](rate_limiting.md)
 * [Replay](replay.md)
 * [Tracing](tracing.md)
-* [Standard Tests](standard_tests.md)

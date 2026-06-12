@@ -354,19 +354,6 @@ Use tools when:
 Most production agents use both: tools perform actions, while skills teach the
 agent when and how to combine them.
 
-## Unsupported Or Different From Official Skills Docs
-
-| Official docs | BeamWeaver status |
-| --- | --- |
-| `create_deep_agent(..., skills=...)` | Use `use BeamWeaver.Agent` with `skills [...]` or `BeamWeaver.Agent.build/1` with `skills:`. |
-| Python `StateBackend`, `StoreBackend`, `FilesystemBackend` | Use `BeamWeaver.Filesystem.State`, `BeamWeaver.Filesystem.Store`, and `BeamWeaver.Filesystem.Local`. |
-| `create_file_data()` | Use `%BeamWeaver.Filesystem.FileData{}` values when seeding state-backed skill files. |
-| SDK auto-scanning of CLI skill directories | Not built in. Pass all desired skill sources explicitly. |
-| `langchain_quickjs` interpreter skills and `module: index.ts` imports | Not implemented. Use Elixir tools/middleware or executable filesystems for scripts. |
-| `allowed-tools` enforcement | Advisory only. Enforce access with tool configuration, tool filters, filesystem permissions, or custom middleware. |
-| Deep Agents 10 MB skill-file skip rule | BeamWeaver currently loads metadata with line limits and does not enforce the same file-size skip rule. Keep `SKILL.md` small anyway. |
-| Custom sandbox sync middleware examples | Use normal BeamWeaver middleware or application setup code to copy files between filesystems. No Daytona/LangGraph-specific middleware is provided. |
-
 ## Related
 
 - [Composed Agent Capabilities](agent_harness.md)

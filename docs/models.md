@@ -1,13 +1,9 @@
 # BeamWeaver Models
 
 Models are the reasoning engines used directly by applications and by
-BeamWeaver agents. BeamWeaver follows the LangChain model behavior where it is
-useful, but the public API is Elixir-native: structs, behaviours, keyword
-options, Task-backed async helpers, `Enumerable` streams, typed stream envelopes,
-telemetry, and tagged errors.
-
-Use Python model docs as behavioral examples, not as package or callback API
-requirements.
+BeamWeaver agents. The public API is Elixir-native: structs, behaviours,
+keyword options, Task-backed async helpers, `Enumerable` streams, typed stream
+envelopes, telemetry, and tagged errors.
 
 ## Basic Usage
 
@@ -126,63 +122,27 @@ identifiers use permissive fallback profiles unless they are known
 deprecated/unsupported slugs. Bare `gemini-*` and `kimi-*` IDs are rejected so
 provider routing is explicit.
 
-{% hint style="warning" %}
-**Provider Scope**
+## Composed Agent Model Recommendations
 
-LangChain can expose many providers through separate Python integration
-packages. BeamWeaver only documents a provider after it has a native transport
-boundary, message translator, model profile behavior, fake/replay tests, and
-provider-specific option handling. That work exists for OpenAI, Anthropic,
-Google Gemini, Moonshot/Kimi, xAI, and fake models. Azure OpenAI, Vertex AI,
-Bedrock, HuggingFace, OpenRouter/LiteLLM, Ollama, and local model runtimes need
-dedicated BeamWeaver adapters before they can be treated as supported providers.
+For composed agents, choose a model with reliable tool calling, structured
+output, streaming, and token-budget support. The
+[Composed Agent model matrix](partners.md#composed-agent-model-matrix) maps
+supported BeamWeaver model strings to the capabilities that matter for planning,
+tools, virtual filesystems, subagents, structured output, human review,
+streaming, and context management.
 
-OpenAI-compatible HTTP routers can sometimes be reached with an explicit
-`:endpoint`, but that only changes the URL. It does not add router-specific
-request fields, response metadata, pricing metadata, or block translation.
-{% endhint %}
+Recommended starting points:
 
-## Composed Agent Model Suggestions
+| Provider family | BeamWeaver model strings |
+| --- | --- |
+| OpenAI GPT | `openai:gpt-5.4`, `openai:gpt-5.4-mini` |
+| Anthropic Claude | `anthropic:claude-sonnet-4-6`, `anthropic:claude-opus-*`, `anthropic:claude-haiku-*` |
+| Google Gemini | `google:gemini-3.5-flash`, explicit `google:gemini-*` profiles |
+| Moonshot/Kimi | `moonshot:kimi-k2.6` |
+| xAI Grok | `xai:grok-4.3`, `xai:grok-4.20-0309-reasoning` |
 
-The official Deep Agents models page says Deep Agents can use any LangChain chat
-model with tool calling, then lists models that performed well on LangChain's
-Deep Agents eval suite. BeamWeaver does not run or publish that eval matrix, so
-the table from the official page is not copied here as BeamWeaver benchmark
-data.
-
-Treat the following as LangChain's external guidance for Deep Agents-style
-composed agents, not as a BeamWeaver certification list:
-
-| Provider family | Suggested models from LangChain |
-|---|---|
-| Google | `gemini-3.1-pro-preview`, `gemini-3.5-flash` |
-| OpenAI | `gpt-5.5`, `gpt-5.5-pro`, `gpt-5.4`, `gpt-5.4-pro`, `gpt-5.4-mini`, `gpt-5.4-nano`, `gpt-5`, `gpt-5-mini`, `gpt-5-nano`, `gpt-4.1` |
-| Anthropic | `claude-fable-5`, `claude-mythos-5`, `claude-opus-4-8`, `claude-opus-4-7`, `claude-opus-4-6`, `claude-opus-4-5`, `claude-opus-4-5-20251101`, `claude-opus-4-1-20250805`, `claude-sonnet-4-6`, `claude-sonnet-4-5`, `claude-haiku-4-5` |
-| Open-weight or routed | `GLM-5`, `Kimi-K2.5`, `MiniMax-M2.5`, `qwen3.5-397B-A17B`, `devstral-2-123B` |
-
-The OpenAI, Anthropic, and Google families in that list currently overlap with
-native BeamWeaver provider adapters. Use `google:gemini-*` for Gemini Developer
-API models. Baseten, Fireworks, OpenRouter, Ollama, and other routed or
-open-weight providers need dedicated BeamWeaver adapters before their
-`provider:model` strings should be documented as supported BeamWeaver
-identifiers.
-
-For BeamWeaver-specific composed-agent support, use the
-[Composed Agent model matrix](partners.md#composed-agent-model-matrix). That table
-maps supported BeamWeaver model strings to the agent capabilities that matter
-for planning, tools, virtual filesystems, subagents, structured output,
-streaming, and token-budget management.
-
-{% hint style="warning" %}
-**No BeamWeaver Eval Matrix**
-
-LangChain's Deep Agents eval suite is useful external signal for special
-composed capability behavior such as file operations, tool use, memory, conversation, and
-summarization. BeamWeaver has local unit and docs coverage for its composed
-agent middleware, but it does not currently publish comparable cross-model eval
-scores. Use the LangChain suggestions to choose candidate models, then validate
-them against your own BeamWeaver tasks and providers.
-{% endhint %}
+Use the matrix as capability guidance, then validate model quality against your
+own prompts, tools, latency, and cost constraints.
 
 ## Key Methods
 
@@ -674,11 +634,10 @@ underlying provider returns it.
 {% hint style="info" %}
 **`thinking_level` Is Provider-Specific**
 
-The official Deep Agents models page shows `thinking_level` in a Google GenAI
-example. BeamWeaver exposes it only on the Google provider surface. It is not a
-portable BeamWeaver option. Use the native control for the provider you are
-calling: `:reasoning_effort` or `:reasoning` for OpenAI/xAI, `:thinking` or
-`:effort` for Anthropic, and `:thinking_level` or `:thinking_budget` for Google.
+`thinking_level` is a Google provider control. It is not a portable BeamWeaver
+option. Use the native control for the provider you are calling:
+`:reasoning_effort` or `:reasoning` for OpenAI/xAI, `:thinking` or `:effort` for
+Anthropic, and `:thinking_level` or `:thinking_budget` for Google.
 {% endhint %}
 
 ## Prompt Caching

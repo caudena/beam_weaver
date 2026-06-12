@@ -920,20 +920,6 @@ instead of going through a virtual file path.
 - Observe context decisions with [Event Streaming](event_streaming.md) and
   [Tracing](tracing.md).
 
-## Unsupported Or Different From Official Deep Agents Docs
-
-| Official Deep Agents docs | BeamWeaver behavior |
-| --- | --- |
-| `create_deep_agent(...)` | Use `use BeamWeaver.Agent` or `BeamWeaver.Agent.build/1`; deep-agent capabilities are integrated into normal agents. |
-| Python `@dynamic_prompt` | Use `BeamWeaver.Agent.Middleware.DynamicPrompt` or custom `wrap_model_call` middleware. |
-| Dataclass/TypedDict context schemas | Use JSON Schema-shaped `context_schema` maps or agent DSL schema blocks. |
-| Annotation-hidden `ToolRuntime` parameters | Use explicit tool injection such as `injected: [context: :context, store: :store, tool_runtime: :tool_runtime]`. |
-| Fixed Deep Agents prompt assembly order | BeamWeaver prompt additions follow the configured middleware pipeline. Declare middleware explicitly when order matters. |
-| CLI-only local context prompt | BeamWeaver has no implicit CLI local-context prompt; add current-directory or project metadata yourself if the model needs it. |
-| Automatic 85% summarization by default | BeamWeaver exposes summarization, manual compaction, and overflow recovery as explicit middleware or agent options. |
-| LangChain streaming metadata such as `lc_source == "summarization"` | BeamWeaver uses typed stream envelopes and provider/middleware metadata; filter on BeamWeaver event metadata instead of LangChain callback metadata. |
-| Hosted store API pre-seeding | Use `BeamWeaver.Memory` adapters or your application's store setup path. |
-
 ## Related Guides
 
 - [Agents](agents.md)

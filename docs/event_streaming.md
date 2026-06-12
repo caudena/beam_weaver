@@ -893,24 +893,6 @@ extension point is simpler: emit typed or custom events, then transform the
 `Enumerable` with Elixir stream functions or a small reducer module.
 {% endhint %}
 
-## Unsupported Or Different From Official LangGraph Docs
-
-| Official LangGraph Feature | BeamWeaver Status |
-| --- | --- |
-| `graph.stream_events(input, version="v3")`. | Use `BeamWeaver.Graph.Compiled.stream_events/3` or `BeamWeaver.Agent.stream_events/3`; no version argument. |
-| Python run object with `stream.messages`, `stream.values`, `stream.subgraphs`, `stream.output`, `stream.interrupts`, and `stream.extensions`. | Not exposed. BeamWeaver returns an `Enumerable` of `%BeamWeaver.Stream.Envelope{}` values and provides reducer modules for projections. |
-| Concurrent projection consumers over one run object. | Not exposed as shared projection drains. Use one live consumer that routes events, or collect bounded events and run immutable projections multiple times. |
-| `astream_events` as an async iterator. | Use `BeamWeaver.Graph.Compiled.async_stream_events/3` for graphs, or run `BeamWeaver.Agent.stream_events/3` in a supervised task. BeamWeaver async helpers return `BeamWeaver.Core.Async` handles, not Python async iterators. |
-| `stream.interleave(...)`. | Use a single `Enum.reduce/3` or `Stream.transform/3` over the typed envelope stream to preserve arrival order. |
-| `Command(resume=...)` passed back into `stream_events`. | Resume with `BeamWeaver.Graph.Compiled.resume/3` or `BeamWeaver.Agent.resume/3` using the same checkpointer and `thread_id`. |
-| `ProtocolEvent` dictionaries as the main public shape. | BeamWeaver's public shape is `%BeamWeaver.Stream.Envelope{event: typed_struct}`. Build any application transport from typed envelopes at the boundary. |
-| `message.reasoning` and `message.tool_calls` live sub-iterators. | Reasoning and streamed tool-call arguments are available in `%Events.MessageChunk{}` and `%Events.ToolCallChunk{}`; use pattern matching or reducers. |
-| `StreamTransformer`, `StreamChannel`, `required_stream_modes`, named `custom:<name>` channels. | Not supported. Use Elixir stream functions, reducer modules, and `%Events.Custom{}`. |
-| Compile-time or call-time transformer registration on graphs. | Not supported as a graph option. Keep projections at the application/read side. |
-| Built-in `ToolCallTransformer`. | Not exposed. Tool execution is already represented by `%Events.ToolStart{}`, `%Events.ToolDelta{}`, `%Events.ToolFinish{}`, and `%Events.ToolError{}`. |
-| Hosted agent-server streaming. | BeamWeaver does not implement hosted agent-server streaming. Use in-process streams or build an application transport around typed envelopes. |
-| Deep Agents `stream.subagents` live handles. | No independent live handle projection. Use `BeamWeaver.Agent.Subagent.StreamTransformer` for task subagent summaries and `BeamWeaver.Stream.Subgraphs` for static graph subgraphs. |
-
 ## Related Guides
 
 - [Agents](agents.md)

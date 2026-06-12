@@ -482,23 +482,6 @@ Use ordinary Elixir functions for local control flow. Use `BeamWeaver.Graph`
 when you need durable state, retries, timeouts, error handlers, streaming,
 interrupts, or checkpoint history.
 
-## Unsupported Or Different From Official LangGraph Docs
-
-| Official LangGraph Feature | BeamWeaver Status |
-| --- | --- |
-| `retry_policy=` keyword. | Use `retry:` with `BeamWeaver.RetryPolicy` or an integer retry count. |
-| Python `default_retry_on` and exception-class filtering. | Not exposed. BeamWeaver uses tagged `%BeamWeaver.Core.Error{}` values and `retry_on` predicates. |
-| `initial_interval`, `backoff_factor`, `max_interval` seconds. | Use `initial_delay`, `backoff`, and `max_delay`; integer durations are milliseconds. |
-| Python `NodeTimeoutError`. | Use `%BeamWeaver.Core.Error{type: :node_timeout}`. |
-| Python `NodeError` injected by type annotation. | Error handlers receive `%BeamWeaver.Core.Error{}` directly, with Elixir function arity deciding the arguments. |
-| Async-only timeout limitation. | Not applicable. BeamWeaver executes graph nodes as BEAM tasks and can timeout normal Elixir node functions. |
-| Progress-resetting idle timeout and `runtime.heartbeat()`. | Not currently implemented as LangGraph semantics. `TimeoutPolicy` reduces to the earliest hard task timeout. |
-| `set_node_defaults()` applies regardless of call order. | BeamWeaver defaults affect nodes added after the defaults are set. |
-| Error-handler retry by graph policy. | Node retry policy does not automatically retry handler failures. Handler crashes surface as `:node_error_handler_failed`; checkpointed graphs can resume the handler. |
-| Functional API `@task` and `@entrypoint`. | Not supported. Use `BeamWeaver.Graph` or ordinary Elixir functions. |
-| JavaScript/TypeScript SDK limitations. | Not relevant to BeamWeaver's Elixir API. |
-| Graceful shutdown via `RunControl` / `GraphDrained`. | Not currently exposed as a graph API. See [Durable Execution](durable_execution.md#graceful-shutdown). |
-
 ## Related Guides
 
 - [Durable Execution](durable_execution.md)
