@@ -29,12 +29,12 @@ interrupts, or long-running workflows.
 
 ## Install
 
-BeamWeaver is not published to Hex yet. Use a local path dependency:
+Add BeamWeaver to your Mix project:
 
 ```elixir
 def deps do
   [
-    {:beam_weaver, path: "../beam_weaver"}
+    {:beam_weaver, "~> 0.1.0"}
   ]
 end
 ```
@@ -226,6 +226,6 @@ with:
 mix docs
 ```
 
-When BeamWeaver is published to Hex, ExDoc output is published to HexDocs from
-the same module docs and `@doc` annotations. Keep conceptual tutorials in
-GitBook and code-level contracts in the modules that implement them.
+HexDocs is published from the same module docs and `@doc` annotations. Keep
+conceptual tutorials in GitBook and code-level contracts in the modules that
+implement them.

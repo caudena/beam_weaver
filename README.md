@@ -14,6 +14,8 @@ runtime boundaries.
 
 BeamWeaver is not affiliated with LangChain.
 
+Documentation: [weavescope.gitbook.io/beam_weaver](https://weavescope.gitbook.io/beam_weaver/)
+
 ## What You Can Build
 
 - Customer support agents with tools, structured output, memory, and traceable

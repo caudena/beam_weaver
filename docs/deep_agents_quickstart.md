@@ -26,12 +26,12 @@ provider strings, model configuration, and capability support notes.
 
 ## Step 1: Install Dependencies
 
-BeamWeaver is not published to Hex yet. Add it from a local checkout:
+Add BeamWeaver to your Mix project:
 
 ```elixir
 def deps do
   [
-    {:beam_weaver, path: "../beam_weaver"},
+    {:beam_weaver, "~> 0.1.0"},
     {:req, "~> 0.5"}
   ]
 end

@@ -27,7 +27,7 @@ BeamWeaver is installed as an Elixir dependency, not with `pip` or `uv`:
 ```elixir
 def deps do
   [
-    {:beam_weaver, path: "../beam_weaver"}
+    {:beam_weaver, "~> 0.1.0"}
   ]
 end
 ```
