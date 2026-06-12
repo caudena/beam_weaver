@@ -464,41 +464,6 @@ an overlay; direct agent options remain the runtime source of truth. See
 [Profiles](profiles.md) for the full split between capability, provider, and
 model profiles.
 
-## Unsupported Or Different From Official Deep Agents Docs
-
-BeamWeaver intentionally differs from the official Python Deep Agents API
-in these places:
-
-- No separate `create_deep_agent`: use `BeamWeaver.Agent.build/1` or
-  `use BeamWeaver.Agent`.
-- No implicit default model: `BeamWeaver.Agent.build/1` requires `:model` so
-  deployments do not silently select a provider or spend credentials.
-- Planning is normal middleware. The top-level default tool name is `todo`, and
-  TODO statuses are `open` and `complete`; configure `tool_name: "write_todos"`
-  when you want the official tool name.
-- No automatic `general-purpose` subagent is injected by normal agent build.
-  Pass explicit `subagents` or `async_subagents`.
-- Generated subagents do not automatically receive the full child capability
-  stack. Add only the middleware they need. Legacy compatibility bundles are
-  documented in [DSL Migration](dsl_migration.md).
-- `CapabilityProfile` exists as native profile data and registry, but normal
-  agent options remain the runtime source of truth. Python entry-point plugin
-  packaging for capability profiles is not a BeamWeaver API.
-- QuickJS-style interpreter support and an `eval` tool are not implemented.
-  Use executable filesystem backends or `ShellTool` for code execution.
-- Multimodal `read_file` handling is narrower than the official extension
-  table. BeamWeaver supports UTF-8 text, base64 binary file data, and raw
-  byte downloads, but it does not yet classify every video, audio, PDF, and
-  presentation extension into provider-specific content blocks.
-- Filesystem permissions do not secure arbitrary shell execution. Treat
-  `execute` and shell tools as separate sandbox or policy decisions.
-- Managed Deep Agents, Harbor, hosted agent servers, and deployment
-  workflows are outside BeamWeaver's built-in scope.
-- Subagent work launched by the `task` tool is a tool invocation, not a
-  statically declared graph subgraph node. Graph introspection can discover
-  compiled graph nodes; it cannot infer arbitrary agent calls hidden inside
-  tool handlers.
-
 ## Related
 
 - [Agents](agents.md)

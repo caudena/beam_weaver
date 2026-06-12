@@ -147,19 +147,6 @@ model =
   )
 ```
 
-{% hint style="warning" %}
-**Provider Scope**
-
-LangChain examples show many provider strings because Python integrations are
-packaged independently. BeamWeaver documents an agent provider only after its
-model, message translation, streaming behavior, tools, profiles, and
-fake/replay tests have native coverage. Today that path exists for OpenAI,
-Anthropic, Google Gemini, xAI, and fake models. Azure OpenAI, Vertex AI,
-Bedrock, OpenRouter, Fireworks, Baseten, Ollama, and other provider-specific
-translators need their own BeamWeaver adapters before they should be used as
-supported agent models.
-{% endhint %}
-
 You can also configure an agent as a normal module:
 
 ```elixir

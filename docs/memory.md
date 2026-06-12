@@ -642,31 +642,6 @@ BeamWeaver exposes versioned migration helpers through `BeamWeaver.Migrations`:
 Run these from your application's normal Ecto migrations or deployment flow.
 Do not rely on graph startup or agent invocation to create tables.
 
-## Unsupported Or Different From Official Memory Docs
-
-| Official docs | BeamWeaver status |
-| --- | --- |
-| Deep Agents `create_deep_agent(..., memory=..., backend=...)` | Use `use BeamWeaver.Agent` or `BeamWeaver.Agent.build/1` with `memory:`, `filesystem:`, and `store:`. |
-| Deep Agents "backends" terminology | BeamWeaver documents the agent-facing storage as [Filesystem](filesystem.md); `BeamWeaver.Filesystem.Store` bridges memory files to `BeamWeaver.Memory` stores. |
-| Hosted `rt.server_info.user.identity` / `assistant_id` | Use `runtime.context`, `runtime.server_info`, or application-provided context depending on deployment. BeamWeaver does not provide hosted identity automatically. |
-| LangGraph SDK `threads.search` for episodic memory | Not built in. Expose a tool over `BeamWeaver.Checkpoint` or your application's conversation index. |
-| Hosted cron jobs for background consolidation | Not built in. Use your application scheduler and invoke a normal BeamWeaver agent. |
-| Hosted store API seeding | Seed with `BeamWeaver.Memory.put/5`, `BeamWeaver.Filesystem.write/4`, migrations, or application admin workflows. |
-| Built-in optimistic conflict handling for memory files | Store adapters may behave differently. Structure memory to reduce same-file contention or consolidate in one background writer. |
-| `InMemorySaver` | Use `BeamWeaver.Checkpoint.ETS` for local/test checkpointing. |
-| `PostgresSaver` | Use `BeamWeaver.Checkpoint.Ecto` with application-owned Ecto migrations. |
-| MongoDB, Redis, Oracle, SQLite, Azure Cosmos checkpointers | Not built in as BeamWeaver adapters today. Implement `BeamWeaver.Checkpoint.Saver` for another backend. |
-| `checkpointer.setup()` and `store.setup()` | Not supported as runtime setup calls. Use Ecto migrations. |
-| `MessagesState` and `add_messages` reducer | Use BeamWeaver state maps and `BeamWeaver.Graph.Messages.channel/1` for message state. |
-| Python `RemoveMessage` and `REMOVE_ALL_MESSAGES` | Use `BeamWeaver.Graph.Messages.remove/1` and `BeamWeaver.Graph.Messages.remove_all/0`. |
-| LangMem `SummarizationNode` and `RunningSummary` | Use `BeamWeaver.Agent.Middleware.Summarization`. |
-| Python `Runtime[Context]` type injection | Use the `BeamWeaver.Graph.Runtime` struct in two-argument nodes and middleware, or explicit tool injection. |
-| `stream_mode="values"` examples | Use `stream_events/3` for typed streaming or normal `invoke`/`resume` calls for final state. |
-| `PostgresStore` vector index and Oracle AI Vector Search examples | `Memory.Ecto` does not manage pgvector or Oracle vector indexes. Use `Memory.ETS` for local semantic search or a custom store adapter for production vector memory. |
-| Provider-specific memory tabs | BeamWeaver's memory store API is provider-independent. First-class provider docs currently cover OpenAI, Anthropic, Google, xAI, fake, and OpenAI-compatible paths. |
-| Functional API memory examples | BeamWeaver does not expose LangGraph's Python Functional API. Use `BeamWeaver.Graph` or `BeamWeaver.Agent`. |
-| Hosted agent-server automatic persistence | Not built in. Applications pass explicit checkpointer and store adapters. |
-
 ## Related Guides
 
 - [Short-Term Memory](short_term_memory.md)

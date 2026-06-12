@@ -46,13 +46,6 @@ mix deps.get
 mix compile
 ```
 
-Inside this repository:
-
-```bash
-mix deps.get
-mix test
-```
-
 ## Create An Agent
 
 Use `use BeamWeaver.Agent` for stable application modules and
@@ -68,18 +61,6 @@ Agent features include model and tool calling, middleware, structured output,
 short-term memory through checkpoints, long-term memory through stores,
 Deep Agents-style composed capabilities, human-in-the-loop interrupts, typed
 streaming, retries, fallbacks, and runtime context injection.
-
-{% hint style="warning" %}
-**Provider Scope**
-
-LangChain's overview shows many provider tabs because Python integrations are
-distributed across many packages. BeamWeaver currently documents first-class
-agent model paths for OpenAI, Anthropic, Google Gemini, xAI, and fake/replay
-models. Azure OpenAI, Vertex AI, Bedrock, OpenRouter, Fireworks, Baseten,
-Ollama, HuggingFace, and other provider-specific adapters need native
-transport, message translation, streaming, profile, replay, and documentation
-coverage before being presented as supported BeamWeaver workflows.
-{% endhint %}
 
 ## Build A Graph
 
@@ -128,44 +109,30 @@ history, and `stream_events/3`. Agents use the same graph runtime underneath.
 | Memory | Short-term memory through checkpoints; long-term memory through `BeamWeaver.Memory` stores. |
 | Composed agent capabilities | Planning, virtual filesystems, permissions, subagents, context compaction, code execution, HITL, skills, and memory files through normal composable agent options and middleware. |
 | Deep Agents quickstart | Build a composed research agent with planning, filesystem tools, and a subagent. |
-| Customization | Crosswalk from Deep Agents `create_deep_agent(...)` options to BeamWeaver module macros and `Agent.build/1` options. |
+| Customization | Configure tools, middleware, models, filesystem access, skills, subagents, tracing, and runtime context with module macros or `Agent.build/1` options. |
 | Streaming | Typed `%BeamWeaver.Stream.Envelope{}` values exposed as Elixir `Enumerable` streams. |
 | Observability | Telemetry and tracing/export boundaries under `BeamWeaver.Tracing`. |
 | Retrieval | Document loaders, splitters, embeddings, vector stores, retrievers, and indexing primitives. |
 
-## Concept Mapping
+## Core Surfaces
 
-| Python concept | BeamWeaver concept |
+| Surface | Use |
 | --- | --- |
-| `create_agent` | `use BeamWeaver.Agent` or `BeamWeaver.Agent.build/1` |
-| `StateGraph` | `BeamWeaver.Graph` |
-| `MessagesState` | State maps with reducers, usually `:messages` |
-| `HumanMessage`, `AIMessage`, `ToolMessage` | `BeamWeaver.Core.Message` |
-| Python `@tool` | `%BeamWeaver.Core.Tool{}`, `Tool.from_function!/1`, or `use BeamWeaver.Tool` |
-| Middleware hooks | `BeamWeaver.Agent.Middleware` callbacks and middleware modules |
-| `create_deep_agent(...)` customization | Compose the same capabilities with `use BeamWeaver.Agent` macros or `BeamWeaver.Agent.build/1` options |
-| LangGraph checkpointer | `BeamWeaver.Checkpoint.Saver` adapters |
-| LangGraph store | `BeamWeaver.Memory.Store` adapters |
-| Stream modes | Typed event envelopes from `stream_events/3` |
-| observability | BeamWeaver telemetry and native WeaveScope tracing/export boundaries |
-
-{% hint style="warning" %}
-**Hosted Product Scope**
-
-LangChain's overview links to Deep Agents, hosted engines, deployment products,
-Studio, SDKs, and remote LangGraph Platform APIs. BeamWeaver does not implement
-those hosted products or their Python SDK/CLI contracts. It provides native
-Elixir building blocks for agents, graphs,
-middleware, memory, streaming, tracing boundaries, and adapters. Product-level
-deployment, evaluation, patch generation, no-code builders, and remote platform
-APIs should be integrated explicitly by the application.
-{% endhint %}
+| `use BeamWeaver.Agent` | Stable application agents and graph modules. |
+| `BeamWeaver.Agent.build/1` | Runtime-configured agents. |
+| `BeamWeaver.Graph` | Explicit workflows, reducers, branches, subgraphs, checkpoints, and interrupts. |
+| `BeamWeaver.Core.Message` | System, user, assistant, and tool messages. |
+| `BeamWeaver.Core.Tool` and `use BeamWeaver.Tool` | Runtime and module-defined tools. |
+| `BeamWeaver.Agent.Middleware` | Lifecycle behavior around agent, model, and tool execution. |
+| `BeamWeaver.Checkpoint.Saver` | Short-term memory and resumable execution. |
+| `BeamWeaver.Memory.Store` | Long-term memory and application stores. |
+| `stream_events/3` | Typed event envelopes for UI, logs, and tracing pipelines. |
+| `BeamWeaver.Tracing` | Local traces and native WeaveScope export. |
 
 ## Start Here
 
 - [Getting Started](getting_started.md)
 - [Semantic DSL](semantic_dsl.md)
-- [DSL Migration Guide](dsl_migration.md)
 - [Thinking In BeamWeaver](thinking_in_beamweaver.md)
 - [Workflows And Agents](workflows_and_agents.md)
 - [Persistence](persistence.md)
@@ -214,18 +181,8 @@ APIs should be integrated explicitly by the application.
 - [Going To Production](going_to_production.md)
 - [Rate Limiting](rate_limiting.md)
 - [Tracing](tracing.md)
-- [Standard Tests](standard_tests.md)
 
 ## API Reference
 
-GitBook hosts the workflow documentation in this `docs/` directory. Public
-module and function reference belongs in Elixir code docs. Generate it locally
-with:
-
-```bash
-mix docs
-```
-
-HexDocs is published from the same module docs and `@doc` annotations. Keep
-conceptual tutorials in GitBook and code-level contracts in the modules that
-implement them.
+Use [HexDocs](https://hexdocs.pm/beam_weaver/) for module and function
+reference. GitBook is focused on concepts, workflows, and implementation guides.

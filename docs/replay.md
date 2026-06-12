@@ -88,5 +88,4 @@ contract would break.
 ## Related Guides
 
 - [OpenAI](partners/openai.md#replay-usage)
-- [Standard Tests](standard_tests.md)
 - [Tracing](tracing.md)

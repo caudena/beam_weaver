@@ -281,20 +281,6 @@ worker configuration.
 | Remote auth fails. | The built-in HTTP client only sends the configured `headers`. | Add the correct headers or implement a custom client for the provider. |
 | Launches queue or hang. | Worker capacity is exhausted or remote runs are serialized. | Increase worker capacity in the worker service. |
 
-## Unsupported Or Different From Official Deep Agents Docs
-
-| Official Deep Agents docs | BeamWeaver behavior |
-| --- | --- |
-| `AsyncSubAgent` | Use `BeamWeaver.Agent.Subagent.AsyncSpec`. |
-| `create_deep_agent(..., subagents=async_subagents)` | Use `async_subagents: [...]` or include `%AsyncSpec{}` values in `subagents`. |
-| Omitting `url` selects ASGI in-process transport | Not implemented. Omitted `url` means no built-in remote client unless you provide `client:`. |
-| LangGraph SDK manages threads, runs, update strategy, and cancellation | BeamWeaver delegates those semantics to `BeamWeaver.Agent.Protocol.Client`; the built-in client is a minimal HTTP adapter. |
-| `langgraph.json` co-deployment setup | Not a BeamWeaver configuration file. Use application supervision, custom clients, or remote URLs. |
-| Hosted deployment auth | Not built into `ReqClient`. Pass `headers:` or implement a client. |
-| `langgraph dev --n-jobs-per-worker` | Not applicable to BeamWeaver. Size the worker runtime you actually use. |
-| Hosted trace correlation by thread ID | BeamWeaver keeps task IDs, thread IDs, and run IDs in `:async_tasks`; export/correlation is up to the tracing integration or custom client. |
-| Reference `async-deep-agents` repository | Useful conceptual reference, but it is not a BeamWeaver runtime fixture. |
-
 ## Related Guides
 
 - [Subagents](subagents.md)

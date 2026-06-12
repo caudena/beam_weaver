@@ -910,24 +910,6 @@ Use `BeamWeaver.Graph.interrupt/1` or `HumanInTheLoop` middleware for user-facin
 human review. Static breakpoints are a developer debugging tool.
 {% endhint %}
 
-## Unsupported Or Different From Official LangGraph And Deep Agents Docs
-
-| Official LangGraph / Deep Agents feature | BeamWeaver status |
-| --- | --- |
-| `create_deep_agent(..., interrupt_on=...)`. | Use `BeamWeaver.Agent.build(..., interrupt_on: ...)` or the agent DSL `interrupt_on`. |
-| `MemorySaver` checkpointer examples. | Use `BeamWeaver.Checkpoint.ETS` for local work or `BeamWeaver.Checkpoint.Ecto` for durable Postgres-backed deployments. |
-| `interrupt()` function inside Python graph nodes. | Supported as `BeamWeaver.Graph.interrupt/1` inside graph nodes and graph-backed middleware. |
-| `GraphOutput.interrupts` with `version="v2"`. | Not supported. BeamWeaver returns `{:interrupted, interrupt}`. |
-| v1 `result["__interrupt__"]`. | Not supported. Use the tagged interrupt result. |
-| `Command(resume=...)` as the primary resume input. | BeamWeaver has `%BeamWeaver.Graph.Command{resume: value}` for graph control, but the clearer public resume API is `BeamWeaver.Graph.Compiled.resume/3`; agent HITL uses your agent module's generated `resume/3` or `resume_review/3`. |
-| Passing `Command(update=...)`, `Command(goto=...)`, or `Command(graph=...)` to continue normal conversations. | For agents, pass a normal input map for new turns or use the agent resume helpers for HITL. Graph commands are low-level graph control. |
-| `stream_mode=["messages", "updates", "values"]`, `version="v2"`, and `subgraphs=True` chunks. | Not supported in that shape. Use `stream_events/3` and typed BeamWeaver stream envelopes. |
-| Multiple simultaneous interrupts. | Supported. Resume with a map keyed by interrupt ID when more than one interrupt is pending. |
-| Subagent `interrupt_on=False` overriding a parent policy. | Not currently supported for generated `Subagent.Spec` children because `false` inherits the parent policy. Provide a child map, remove the tool, or use a compiled subagent with its own stack. |
-| Interrupts placed directly in reusable Python `@tool` functions. | Prefer `HumanInTheLoop` middleware. Raw `Graph.interrupt/1` is only defined inside graph execution context and does not produce standard tool-review payloads. |
-| Runtime `interrupt_before` and `interrupt_after` arguments on each invocation. | Not currently exposed. Configure static breakpoints at graph compile time or in the agent DSL. |
-| Hosted static interrupt UI and debugging. | Not implemented as a BeamWeaver product surface. Use checkpoint state APIs, stream events, tracing, and application tooling. |
-
 ## Related Guides
 
 - [Prebuilt Middleware](prebuilt_middleware.md)

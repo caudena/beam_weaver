@@ -354,19 +354,6 @@ end
 Use this pattern when the decision depends on content, tenant policy, quotas,
 auditing, or any context beyond a path glob.
 
-## Unsupported Or Different From Official Deep Agents Docs
-
-| Official Deep Agents docs | BeamWeaver behavior |
-| --- | --- |
-| `FilesystemPermission` from `deepagents` | `BeamWeaver.Filesystem.Permission`. |
-| `create_deep_agent(..., permissions=...)` | Use `filesystem_permissions:` or DSL `filesystem_permissions [...]`; `permissions:` is a runtime compatibility alias. |
-| Permissions require `deepagents>=0.5.2` | Version note is Python-specific and does not apply to BeamWeaver. |
-| Permissions do not apply to sandbox backends | BeamWeaver applies rules to built-in file tools even when the filesystem is `BeamWeaver.Filesystem.Sandbox`; rules still do not restrict `execute`. |
-| Composite backend with sandbox default raises `NotImplementedError` for broad paths | BeamWeaver does not perform this construction-time rejection. Treat `execute` as the separate boundary. |
-| Custom tools and MCP tools are outside permission scope | Same. BeamWeaver permissions only govern the built-in filesystem tools. |
-| Backend policy hooks via Python subclassing | Use an Elixir filesystem wrapper module, custom middleware, or command policy. |
-| `permissions: []` on a subagent grants unrestricted access | Same for synchronous generated subagents. Omitted `:permissions` inherits the parent; an explicit empty list replaces it. |
-
 ## Related Guides
 
 - [Filesystem](filesystem.md)

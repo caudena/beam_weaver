@@ -281,7 +281,7 @@ end
 The module exposes `json_schema/0`, `schema/0`, and
 `__beam_weaver_schema__/0`. In stable agent modules, prefer schema modules with
 `response_schema/2`. Raw JSON Schema maps belong at wire boundaries,
-runtime-generated dynamic tools/agents, or compatibility migrations.
+runtime-generated dynamic tools, or provider payloads.
 
 ```elixir
 response_schema MyApp.Schemas.FactsOutput,

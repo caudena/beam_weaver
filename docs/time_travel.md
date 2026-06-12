@@ -338,20 +338,6 @@ The async graph APIs support the same patterns:
 
 Use `Compiled.async_resume/3` for interrupted checkpoints.
 
-## Unsupported Or Different From Official LangGraph Docs
-
-| Official LangGraph Feature | BeamWeaver Status |
-| --- | --- |
-| `graph.invoke(None, checkpoint_config)` for replay or fork continuation. | Not supported. `Compiled.invoke/3` requires a map or graph command. Use `%{}` as the empty continuation input. |
-| `Command(resume=...)` for replayed interrupts. | Use `BeamWeaver.Graph.Compiled.resume/3` or generated agent resume helpers. |
-| Python `StateSnapshot` object with tuple `next`. | BeamWeaver returns Elixir maps. `snapshot.next` is a list of node names. |
-| `InvalidUpdateError` when `as_node` is ambiguous. | BeamWeaver returns `{:error, %BeamWeaver.Core.Error{type: :ambiguous_state_update}}`. |
-| `get_state(config, subgraphs=True)`. | Not exposed. Use `Compiled.get_state_history/3` and filter checkpoint namespace configs. |
-| LangGraph subgraph checkpoint wording. | BeamWeaver exposes explicit checkpoint scopes: inherited task-scoped, shared, disabled, or local adapter. |
-| Hosted UI for exploring checkpoint branches. | Not built in. Use BeamWeaver checkpoint APIs, tracing, and application UI. |
-| Replay from final checkpoint. | Supported as a no-op when `snapshot.next == []`. |
-| `update_state` fork semantics. | Supported. It creates a new checkpoint and leaves original history intact. |
-
 ## Related Guides
 
 - [Persistence](persistence.md)

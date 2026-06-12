@@ -369,18 +369,6 @@ If a product needs cooperative drain semantics, add an application-level
 shutdown flag that nodes check before starting expensive optional work. That is
 not the same as LangGraph's `RunControl`; it is ordinary application logic.
 
-## Unsupported Or Different From Official LangGraph Docs
-
-| Official LangGraph Feature | BeamWeaver Status |
-| --- | --- |
-| Python `@task` decorator for durable replay inside a node or Functional API entrypoint. | Not supported. Use graph nodes, tools, and application idempotency boundaries. |
-| Python Functional API `@entrypoint`. | Not supported. Use `BeamWeaver.Graph` or ordinary Elixir functions. |
-| Per-call `durability` modes (`"exit"`, `"async"`, `"sync"`). | Not currently exposed. Choose adapters and node granularity instead. |
-| `graph.invoke(None, config)` failure resume. | `BeamWeaver.Graph.Compiled.invoke/3` requires map input or a command. Use `%{}` or `BeamWeaver.Graph.Compiled.resume/3` depending on the continuation. |
-| `RunControl`, `GraphDrained`, `request_drain()`, `runtime.drain_requested`. | Not implemented as a BeamWeaver graph API. |
-| Hosted agent-server persistence. | Not built in. Configure checkpoint adapters explicitly. |
-| Automatic Hosted LangGraph deployment behavior. | Not a BeamWeaver feature. Run BeamWeaver under your Elixir/OTP application supervision. |
-
 ## Related Guides
 
 - [Persistence](persistence.md)

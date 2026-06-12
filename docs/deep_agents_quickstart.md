@@ -5,10 +5,11 @@ research task, call a search tool, write notes into a virtual filesystem, and
 delegate focused work to a subagent.
 
 {% hint style="info" %}
-**No Separate Constructor**
+**Composed Agent Capabilities**
 
-The Python docs use `create_deep_agent(...)`. BeamWeaver integrates those
-capabilities into normal agents. Use `BeamWeaver.Agent.build/1` for a runtime
+Deep-agent behavior in BeamWeaver is composed from normal agent capabilities:
+planning middleware, filesystem tools, skills, memory, subagents, structured
+output, checkpoints, and tracing. Use `BeamWeaver.Agent.build/1` for a runtime
 quickstart or `use BeamWeaver.Agent` for application modules.
 {% endhint %}
 
@@ -42,13 +43,6 @@ Then run:
 ```bash
 mix deps.get
 mix compile
-```
-
-Inside this repository, use:
-
-```bash
-mix deps.get
-mix test
 ```
 
 ## Step 2: Set API Keys

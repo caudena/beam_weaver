@@ -314,20 +314,6 @@ the sandbox environment directly. Enforce command policy in the sandbox adapter,
 with `ShellTool`, through provider network/filesystem controls, or with human
 review.
 
-## Unsupported Or Different From Official Sandboxes Docs
-
-| Official docs | BeamWeaver status |
-| --- | --- |
-| Deep Agents calls sandboxes "backends" | BeamWeaver documents agent-facing storage as `BeamWeaver.Filesystem`; sandboxes adapt into that filesystem surface. |
-| `create_deep_agent(..., backend=DaytonaSandbox(...))` | Use `BeamWeaver.Agent.build/1` or `use BeamWeaver.Agent` with `filesystem: BeamWeaver.Filesystem.Sandbox.new(...)`. |
-| Modal, Runloop, Daytona, AgentCore, and hosted sandbox packages | Not built in. Implement a `BeamWeaver.Sandbox` adapter or wrap a provider SDK in application code. |
-| Hosted sandboxes private beta | Not implemented in BeamWeaver. |
-| LangGraph graph factories and `langgraph.json` sandbox wiring | Not applicable. Use application supervision, runtime config, or your own factory code. |
-| Provider labels such as `thread_id` / `assistant_id` lifecycle examples | BeamWeaver leaves lifecycle storage to your application. |
-| Python `BaseSandbox` builds all file operations from `execute()` | BeamWeaver's behaviour includes explicit file callbacks; adapters may implement them natively or compose them from `execute`. |
-| Provider-native `blockNetwork` options | No generic option. Configure network policy in the selected sandbox provider or adapter. Docker starts with `--network none` by default. |
-| Deep Agents Code `--sandbox`, `--sandbox-id`, `--sandbox-setup` flags | Not BeamWeaver APIs. Build CLI flags in your application if needed. |
-
 ## Related
 
 - [Composed Agent Capabilities](agent_harness.md)
