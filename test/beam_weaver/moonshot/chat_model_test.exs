@@ -146,6 +146,71 @@ defmodule BeamWeaver.Moonshot.ChatModelTest do
     assert partial_error.type == :invalid_request
   end
 
+  test "K2.5 uses the same fixed sampling params as K2.6" do
+    assert {:error, temp_error} =
+             ChatModel.request_body(ChatModel.new(model: "kimi-k2.5"), [Message.user("hi")], temperature: 0.2)
+
+    assert temp_error.type == :unsupported_model_param
+    assert temp_error.details.model == "kimi-k2.5"
+    assert temp_error.details.param == :temperature
+    assert temp_error.details.supported == 1.0
+
+    assert {:ok, body} =
+             ChatModel.request_body(ChatModel.new(model: "kimi-k2.5"), [Message.user("hi")],
+               thinking: %{type: :disabled},
+               temperature: 0.6,
+               top_p: 0.95,
+               n: 1,
+               presence_penalty: 0,
+               frequency_penalty: 0
+             )
+
+    assert body["model"] == "kimi-k2.5"
+    assert body["thinking"] == %{"type" => "disabled"}
+    assert body["temperature"] == 0.6
+  end
+
+  test "K2.7 Code supports only enabled thinking and automatic tool choice" do
+    assert {:ok, body} =
+             ChatModel.request_body(ChatModel.new(model: "kimi-k2.7-code"), [Message.user("hi")],
+               temperature: 1.0,
+               top_p: 0.95,
+               n: 1,
+               presence_penalty: 0,
+               frequency_penalty: 0
+             )
+
+    assert body["model"] == "kimi-k2.7-code"
+
+    assert {:error, thinking_error} =
+             ChatModel.request_body(ChatModel.new(model: "kimi-k2.7-code"), [Message.user("hi")],
+               thinking: %{type: :disabled}
+             )
+
+    assert thinking_error.type == :unsupported_model_param
+    assert thinking_error.details.model == "kimi-k2.7-code"
+    assert thinking_error.details.param == :thinking
+    assert thinking_error.details.supported == [%{"type" => "enabled"}]
+
+    assert {:error, tool_choice_error} =
+             ChatModel.request_body(ChatModel.new(model: "kimi-k2.7-code-highspeed"), [Message.user("hi")],
+               tool_choice: %{type: "function", function: %{name: "lookup_weather"}}
+             )
+
+    assert tool_choice_error.type == :unsupported_model_param
+    assert tool_choice_error.details.model == "kimi-k2.7-code-highspeed"
+    assert tool_choice_error.details.param == :tool_choice
+    assert tool_choice_error.details.supported == ["auto", "none"]
+
+    assert {:error, temp_error} =
+             ChatModel.request_body(ChatModel.new(model: "kimi-k2.7-code"), [Message.user("hi")], temperature: 0.6)
+
+    assert temp_error.type == :unsupported_model_param
+    assert temp_error.details.model == "kimi-k2.7-code"
+    assert temp_error.details.param == :temperature
+    assert temp_error.details.supported == 1.0
+  end
+
   test "function tools and built-in web search are rendered with Kimi rules" do
     beam_weaver_tool = %Tool{
       name: "lookup_account",
@@ -500,12 +565,26 @@ defmodule BeamWeaver.Moonshot.ChatModelTest do
   end
 
   test "model initializer supports Moonshot prefix, rejects aliases, and reports deprecated models" do
+    assert {:ok, code_model} = Models.init_chat_model("moonshot:kimi-k2.7-code")
+    assert code_model.__struct__ == ChatModel
+    assert code_model.model == "kimi-k2.7-code"
+    assert code_model.profile.extra.thinking_modes == [:enabled]
+    assert code_model.profile.extra.model_category == :coding
+
+    assert {:ok, highspeed_model} = Models.init_chat_model("moonshot:kimi-k2.7-code-highspeed")
+    assert highspeed_model.model == "kimi-k2.7-code-highspeed"
+    assert highspeed_model.profile.extra.highspeed
+
     assert {:ok, model} = Models.init_chat_model("moonshot:kimi-k2.6")
     assert model.__struct__ == ChatModel
     assert model.model == "kimi-k2.6"
     assert model.profile.provider == :moonshot
     assert model.profile.chat_completions_api
     refute model.profile.responses_api
+
+    assert {:ok, k25_model} = Models.init_chat_model("moonshot:kimi-k2.5")
+    assert k25_model.model == "kimi-k2.5"
+    assert k25_model.profile.extra.thinking_modes == [:enabled, :disabled]
 
     assert {:error, invalid} = Models.init_chat_model("kimi-k2.6")
     assert invalid.type == :invalid_model

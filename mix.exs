@@ -4,7 +4,7 @@ defmodule BeamWeaver.MixProject do
   def project do
     [
       app: :beam_weaver,
-      version: "0.1.0",
+      version: "0.1.1",
       description: "From-scratch OTP-native Elixir implementation of LangChain, LangGraph, and Deep Agents concepts",
       source_url: "https://github.com/caudena/beam_weaver",
       homepage_url: "https://github.com/caudena/beam_weaver",
@@ -45,6 +45,7 @@ defmodule BeamWeaver.MixProject do
       source_url: "https://github.com/caudena/beam_weaver",
       extras: [
         "README.md",
+        "CHANGELOG.md",
         "docs/getting_started.md",
         "docs/thinking_in_beamweaver.md",
         "docs/workflows_and_agents.md",
@@ -98,6 +99,7 @@ defmodule BeamWeaver.MixProject do
       groups_for_extras: [
         "Start Here": [
           "README.md",
+          "CHANGELOG.md",
           "docs/getting_started.md",
           "docs/thinking_in_beamweaver.md",
           "docs/workflows_and_agents.md"
@@ -293,6 +295,8 @@ defmodule BeamWeaver.MixProject do
       name: "beam_weaver",
       files: [
         ".formatter.exs",
+        "CHANGELOG.md",
+        "LICENSE",
         "README.md",
         "docs",
         "examples",

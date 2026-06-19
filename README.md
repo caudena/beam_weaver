@@ -53,7 +53,7 @@ prefixes when a model name is ambiguous.
 | OpenAI | `openai:gpt-5.5`, `openai:gpt-5.5-pro`, `openai:gpt-5.4`, `openai:gpt-5.4-mini`, `openai:gpt-5`, `openai:gpt-4.1`, `openai:text-embedding-3-large`, `openai:text-embedding-3-small` |
 | Anthropic | `anthropic:claude-opus-4-8`, `anthropic:claude-opus-4-7`, `anthropic:claude-opus-4-6`, `anthropic:claude-opus-4-5`, `anthropic:claude-sonnet-4-6`, `anthropic:claude-sonnet-4-5`, `anthropic:claude-haiku-4-5`, `anthropic:claude-fable-5`, `anthropic:claude-mythos-5` |
 | Google Gemini | `google:gemini-3.5-flash`, `google:gemini-3.1-pro-preview` |
-| Moonshot/Kimi | `moonshot:kimi-k2.6` |
+| Moonshot/Kimi | `moonshot:kimi-k2.7-code`, `moonshot:kimi-k2.7-code-highspeed`, `moonshot:kimi-k2.6`, `moonshot:kimi-k2.5` |
 | xAI | `xai:grok-4.3`, `xai:grok-4.20-0309-reasoning`, `xai:grok-4.20-0309-non-reasoning`, `xai:grok-4.20-multi-agent-0309`, `xai:grok-build-0.1`, `xai:v1` embeddings |
 | Test models | Fake chat and embedding models, plus replay transports for deterministic provider tests. |
 
@@ -70,7 +70,7 @@ Add BeamWeaver to your application:
 ```elixir
 def deps do
   [
-    {:beam_weaver, "~> 0.1.0"}
+    {:beam_weaver, "~> 0.1.1"}
   ]
 end
 ```
