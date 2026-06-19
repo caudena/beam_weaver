@@ -6,7 +6,12 @@ defmodule BeamWeaver.Moonshot.Options do
   alias BeamWeaver.Moonshot.Messages
   alias BeamWeaver.OpenAI.MessageParts
 
-  @sample_locked_model "kimi-k2.6"
+  @kimi_model_policies %{
+    "kimi-k2.7-code" => %{thinking: :enabled_only},
+    "kimi-k2.7-code-highspeed" => %{thinking: :enabled_only},
+    "kimi-k2.6" => %{thinking: :toggle},
+    "kimi-k2.5" => %{thinking: :toggle}
+  }
 
   @spec to_body(term(), [BeamWeaver.Core.Message.t()], keyword()) ::
           {:ok, map()} | {:error, Error.t()}
@@ -16,7 +21,7 @@ defmodule BeamWeaver.Moonshot.Options do
          {:ok, response_format} <- response_format(model, opts),
          :ok <- validate_partial_response_format(moonshot_messages, response_format),
          {:ok, body} <- build_body(model, moonshot_messages, response_format, opts),
-         :ok <- validate_kimi_sampling(body),
+         :ok <- validate_kimi_policy(body),
          :ok <- validate_stop(body["stop"]) do
       {:ok, body}
     end
@@ -147,21 +152,103 @@ defmodule BeamWeaver.Moonshot.Options do
 
   defp validate_partial_response_format(_messages, _response_format), do: :ok
 
-  defp validate_kimi_sampling(%{"model" => @sample_locked_model} = body) do
-    thinking_type = get_in(body, ["thinking", "type"]) || "enabled"
-    expected_temperature = if thinking_type == "disabled", do: 0.6, else: 1.0
+  defp validate_kimi_policy(%{"model" => model_name} = body) do
+    case Map.fetch(@kimi_model_policies, model_name) do
+      {:ok, policy} ->
+        with :ok <- validate_kimi_thinking(body, policy),
+             :ok <- validate_kimi_tool_choice(body, policy) do
+          validate_kimi_sampling(body, policy)
+        end
 
-    with :ok <- validate_fixed_number(body, "temperature", expected_temperature),
-         :ok <- validate_fixed_number(body, "top_p", 0.95),
-         :ok <- validate_fixed_number(body, "n", 1),
-         :ok <- validate_fixed_number(body, "presence_penalty", 0) do
-      validate_fixed_number(body, "frequency_penalty", 0)
+      :error ->
+        :ok
     end
   end
 
-  defp validate_kimi_sampling(_body), do: :ok
+  defp validate_kimi_policy(_body), do: :ok
 
-  defp validate_fixed_number(body, key, expected) do
+  defp validate_kimi_thinking(%{"model" => model_name} = body, %{thinking: :enabled_only}) do
+    case get_in(body, ["thinking", "type"]) do
+      nil ->
+        :ok
+
+      "enabled" ->
+        :ok
+
+      value ->
+        {:error,
+         Error.new(:unsupported_model_param, "Moonshot Kimi model requires thinking mode", %{
+           provider: :moonshot,
+           model: model_name,
+           param: :thinking,
+           value: %{"type" => value},
+           supported: [%{"type" => "enabled"}]
+         })}
+    end
+  end
+
+  defp validate_kimi_thinking(%{"model" => model_name} = body, %{thinking: :toggle}) do
+    case get_in(body, ["thinking", "type"]) do
+      nil ->
+        :ok
+
+      value when value in ["enabled", "disabled"] ->
+        :ok
+
+      value ->
+        {:error,
+         Error.new(:unsupported_model_param, "Moonshot Kimi model received unsupported thinking mode", %{
+           provider: :moonshot,
+           model: model_name,
+           param: :thinking,
+           value: %{"type" => value},
+           supported: [%{"type" => "enabled"}, %{"type" => "disabled"}]
+         })}
+    end
+  end
+
+  defp validate_kimi_tool_choice(%{"model" => model_name} = body, _policy) do
+    thinking_type = get_in(body, ["thinking", "type"]) || "enabled"
+    tool_choice = Map.get(body, "tool_choice")
+
+    if thinking_type == "disabled" or tool_choice in [nil, "auto", "none"] do
+      :ok
+    else
+      {:error,
+       Error.new(
+         :unsupported_model_param,
+         "Moonshot Kimi thinking mode supports only automatic tool choice",
+         %{
+           provider: :moonshot,
+           model: model_name,
+           param: :tool_choice,
+           value: tool_choice,
+           supported: ["auto", "none"],
+           when_thinking: "enabled"
+         }
+       )}
+    end
+  end
+
+  defp validate_kimi_sampling(%{"model" => model_name} = body, policy) do
+    thinking_type = get_in(body, ["thinking", "type"]) || "enabled"
+
+    expected_temperature =
+      if policy.thinking == :toggle and thinking_type == "disabled" do
+        0.6
+      else
+        1.0
+      end
+
+    with :ok <- validate_fixed_number(body, "temperature", expected_temperature, model_name),
+         :ok <- validate_fixed_number(body, "top_p", 0.95, model_name),
+         :ok <- validate_fixed_number(body, "n", 1, model_name),
+         :ok <- validate_fixed_number(body, "presence_penalty", 0, model_name) do
+      validate_fixed_number(body, "frequency_penalty", 0, model_name)
+    end
+  end
+
+  defp validate_fixed_number(body, key, expected, model_name) do
     case Map.get(body, key) do
       nil ->
         :ok
@@ -170,19 +257,19 @@ defmodule BeamWeaver.Moonshot.Options do
         if abs(value * 1.0 - expected * 1.0) < 1.0e-9 do
           :ok
         else
-          fixed_number_error(key, value, expected)
+          fixed_number_error(key, value, expected, model_name)
         end
 
       value ->
-        fixed_number_error(key, value, expected)
+        fixed_number_error(key, value, expected, model_name)
     end
   end
 
-  defp fixed_number_error(key, value, expected) do
+  defp fixed_number_error(key, value, expected, model_name) do
     {:error,
-     Error.new(:unsupported_model_param, "Moonshot Kimi K2.6 uses fixed sampling params", %{
+     Error.new(:unsupported_model_param, "Moonshot Kimi model uses fixed sampling params", %{
        provider: :moonshot,
-       model: @sample_locked_model,
+       model: model_name,
        param: fixed_param(key),
        value: value,
        supported: expected

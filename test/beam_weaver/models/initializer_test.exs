@@ -87,6 +87,20 @@ defmodule BeamWeaver.Models.InitializerTest do
   end
 
   test "init_chat_model accepts explicit Moonshot identifiers but not Kimi aliases" do
+    assert {:ok, code_model} = Models.init_chat_model("moonshot:kimi-k2.7-code")
+    assert code_model.__struct__ == BeamWeaver.Moonshot.ChatModel
+    assert code_model.model == "kimi-k2.7-code"
+    assert code_model.profile.provider == :moonshot
+    assert code_model.profile.max_input_tokens == 262_144
+    assert code_model.profile.reasoning_output
+    assert code_model.profile.video_inputs
+    assert code_model.profile.extra.thinking_modes == [:enabled]
+    refute code_model.profile.extra.web_search_supported
+
+    assert {:ok, highspeed_model} = Models.init_chat_model("moonshot:kimi-k2.7-code-highspeed")
+    assert highspeed_model.model == "kimi-k2.7-code-highspeed"
+    assert highspeed_model.profile.extra.highspeed
+
     assert {:ok, moonshot} = Models.init_chat_model("moonshot:kimi-k2.6")
     assert moonshot.__struct__ == BeamWeaver.Moonshot.ChatModel
     assert moonshot.model == "kimi-k2.6"
@@ -96,6 +110,10 @@ defmodule BeamWeaver.Models.InitializerTest do
     assert moonshot.profile.video_inputs
     assert moonshot.profile.chat_completions_api
     refute moonshot.profile.responses_api
+
+    assert {:ok, k25_model} = Models.init_chat_model("moonshot:kimi-k2.5")
+    assert k25_model.model == "kimi-k2.5"
+    assert k25_model.profile.extra.thinking_modes == [:enabled, :disabled]
 
     assert {:error, bare} = Models.init_chat_model("kimi-k2.6")
     assert bare.type == :invalid_model
@@ -321,8 +339,11 @@ defmodule BeamWeaver.Models.InitializerTest do
 
     assert Enum.any?(google, &(&1.id == "gemini-3.5-flash" and &1.structured_output))
     assert Enum.any?(google, &(&1.id == "gemini-3.1-pro-preview" and &1.structured_output))
+    assert Enum.any?(moonshot, &(&1.id == "kimi-k2.7-code" and &1.extra.thinking_modes == [:enabled]))
+    assert Enum.any?(moonshot, &(&1.id == "kimi-k2.7-code-highspeed" and &1.extra.highspeed))
     assert Enum.any?(moonshot, &(&1.id == "kimi-k2.6" and &1.video_inputs))
     assert Enum.any?(moonshot, &(&1.id == "kimi-k2.6" and &1.tool_calling))
+    assert Enum.any?(moonshot, &(&1.id == "kimi-k2.5" and &1.video_inputs))
 
     refute Enum.any?(
              google,

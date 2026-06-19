@@ -80,6 +80,11 @@ defmodule BeamWeaver.Provider.RegistryTest do
     assert moonshot.provider == :moonshot
     assert moonshot.chat_completions_api
     refute moonshot.responses_api
+
+    assert {:ok, kimi_code} = Registry.profile(:moonshot, "kimi-k2.7-code")
+    assert kimi_code.provider == :moonshot
+    assert kimi_code.extra.thinking_modes == [:enabled]
+    assert kimi_code.extra.model_category == :coding
   end
 
   test "runtime providers can be registered, inferred, initialized, and unregistered" do
@@ -114,8 +119,11 @@ defmodule BeamWeaver.Provider.RegistryTest do
 
     refute Compatibility.supports?({:google, "gemini-3.5-flash"}, :image_output)
     assert Compatibility.supports?({:google, "gemini-3.1-pro-preview"}, :tool_calling)
+    assert Compatibility.supports?({:moonshot, "kimi-k2.7-code"}, :tool_calling)
+    assert Compatibility.supports?({:moonshot, "kimi-k2.7-code-highspeed"}, :video_input)
     assert Compatibility.supports?({:moonshot, "kimi-k2.6"}, :video_input)
     assert Compatibility.supports?({:moonshot, "kimi-k2.6"}, :reasoning)
+    assert Compatibility.supports?({:moonshot, "kimi-k2.5"}, :reasoning)
     refute Compatibility.supports?({:xai, "grok-2"}, :reasoning)
   end
 
