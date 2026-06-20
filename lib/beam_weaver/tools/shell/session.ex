@@ -205,13 +205,14 @@ defmodule BeamWeaver.Tools.Shell.Session do
 
   defp run_allowed(state, command, opts) do
     timeout = Keyword.get(opts, :timeout, state.policy.timeout)
+    scratch = scratch_dir()
+    metadata_path = Path.join(scratch, "metadata")
+    env_path = Path.join(scratch, "env")
+    stderr_path = Path.join(scratch, "stderr")
 
     task =
       Task.async(fn ->
-        metadata = temp_path("metadata")
-        env_path = temp_path("env")
-        stderr_path = temp_path("stderr")
-        script = session_script(command, metadata, env_path)
+        script = session_script(command, metadata_path, env_path)
         script = redirect_stderr(script, stderr_path, state.policy)
 
         {output, status} =
@@ -221,16 +222,17 @@ defmodule BeamWeaver.Tools.Shell.Session do
             stderr_to_stdout: state.policy.stderr == :merge
           )
 
-        metadata = read_metadata(metadata)
+        metadata = read_metadata(metadata_path)
         env = read_env(env_path, state.env)
         stderr = read_stderr(stderr_path, state.policy)
-
-        cleanup_paths([metadata_path(metadata), env_path, stderr_path])
 
         {output, status, metadata, env, stderr}
       end)
 
-    case Task.yield(task, yield_timeout(timeout)) || Task.shutdown(task, :brutal_kill) do
+    result = Task.yield(task, yield_timeout(timeout)) || Task.shutdown(task, :brutal_kill)
+    File.rm_rf(scratch)
+
+    case result do
       {:ok, {output, status, metadata, env, stderr}} ->
         status = Map.get(metadata, :status, status)
 
@@ -299,14 +301,12 @@ defmodule BeamWeaver.Tools.Shell.Session do
     case File.read(path) do
       {:ok, data} ->
         [status | rest] = String.split(data, "\n", parts: 3)
-        %{status: safe_int(status), cwd: rest |> List.first() |> blank_to_nil(), path: path}
+        %{status: safe_int(status), cwd: rest |> List.first() |> blank_to_nil()}
 
       {:error, _reason} ->
-        %{path: path}
+        %{}
     end
   end
-
-  defp metadata_path(%{path: path}), do: path
 
   defp read_env(path, fallback) do
     case File.read(path) do
@@ -368,12 +368,6 @@ defmodule BeamWeaver.Tools.Shell.Session do
     binary_part(output, 0, max_bytes) <> indicator
   end
 
-  defp cleanup_paths(paths) do
-    Enum.each(paths, fn path ->
-      if is_binary(path), do: File.rm(path)
-    end)
-  end
-
   defp cleanup_temp_root(%__MODULE__{temp_root: nil}), do: :ok
   defp cleanup_temp_root(%__MODULE__{temp_root: root}), do: File.rm_rf(root)
 
@@ -407,11 +401,15 @@ defmodule BeamWeaver.Tools.Shell.Session do
   defp yield_timeout(:infinity), do: :infinity
   defp yield_timeout(timeout), do: timeout
 
-  defp temp_path(label) do
-    Path.join(
-      System.tmp_dir!(),
-      "beam_weaver_shell_#{label}_#{System.unique_integer([:positive])}"
-    )
+  defp scratch_dir do
+    dir =
+      Path.join(
+        System.tmp_dir!(),
+        "beam_weaver_shell_scratch_#{System.unique_integer([:positive])}"
+      )
+
+    File.mkdir_p!(dir)
+    dir
   end
 
   defp safe_int(value) do

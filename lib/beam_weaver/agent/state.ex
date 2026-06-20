@@ -65,6 +65,10 @@ defmodule BeamWeaver.Agent.State do
   def structured_response?(state) when is_map(state),
     do: Map.has_key?(state, :structured_response) or Map.has_key?(state, "structured_response")
 
+  @spec structured_response(map()) :: term()
+  def structured_response(state) when is_map(state),
+    do: Map.get(state, :structured_response, Map.get(state, "structured_response"))
+
   defp schema_keys(nil), do: MapSet.new(@core_keys)
 
   defp schema_keys(schema) when is_map(schema) do

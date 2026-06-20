@@ -140,8 +140,6 @@ defmodule BeamWeaver.Graph.Execution.Collection do
     Enum.flat_map(updates, &TaskWrite.from_update(entry.prepared, &1))
   end
 
-  defp task_pending_writes(_entry, _update), do: []
-
   defp waiting_edge_updates([], _graph), do: []
 
   defp waiting_edge_updates(completed_nodes, graph) do

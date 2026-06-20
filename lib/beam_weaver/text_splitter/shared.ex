@@ -371,13 +371,16 @@ defmodule BeamWeaver.TextSplitter.Shared do
 
     case :binary.match(search, chunk) do
       {index, length} ->
-        {offset + index, offset + index + length}
+        byte_start = offset + index
+        {char_index(text, byte_start), byte_start + length}
 
       :nomatch ->
         case :binary.match(text, chunk) do
-          {index, length} -> {index, index + length}
+          {index, length} -> {char_index(text, index), index + length}
           :nomatch -> {nil, offset}
         end
     end
   end
+
+  defp char_index(text, byte_offset), do: String.length(binary_part(text, 0, byte_offset))
 end

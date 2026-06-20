@@ -464,8 +464,6 @@ defmodule BeamWeaver.Core.ContentBlock.Normalizer do
       metadata_thought_signature(metadata(map))
   end
 
-  defp thought_signature(_map), do: nil
-
   defp metadata_thought_signature(metadata) when is_map(metadata) do
     ContentBlock.get(metadata, :thought_signature) ||
       Map.get(metadata, "thoughtSignature") ||

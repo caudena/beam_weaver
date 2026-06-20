@@ -58,6 +58,9 @@ defmodule BeamWeaver.DocumentIndex do
         |> Keyword.merge(opts)
       )
     end
+  rescue
+    exception ->
+      {:error, Error.new(:document_index_error, Exception.message(exception))}
   end
 
   defp load_documents(%__MODULE__{} = index, nil, opts) do

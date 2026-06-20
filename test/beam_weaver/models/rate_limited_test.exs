@@ -53,6 +53,22 @@ defmodule BeamWeaver.Models.RateLimitedTest do
     end
   end
 
+  defmodule LazyStreamingModel do
+    @behaviour ChatModel
+
+    defstruct [:parent]
+
+    def invoke(%__MODULE__{parent: parent}, _messages, _opts) do
+      send(parent, :lazy_invoke_fallback)
+      {:ok, Message.assistant("fallback")}
+    end
+
+    def stream(%__MODULE__{parent: parent}, _messages, _opts) do
+      send(parent, :lazy_model_streamed)
+      {:ok, [Message.assistant("chunk")]}
+    end
+  end
+
   defmodule RejectingLimiter do
     defstruct [:parent]
 
@@ -183,6 +199,24 @@ defmodule BeamWeaver.Models.RateLimitedTest do
     assert_received {:acquire, 1, _opts}
     assert_received :model_streamed
     refute_received :invoke_fallback
+  end
+
+  test "rate-limited model delegates streaming to the wrapped model instead of falling back to invoke" do
+    parent = self()
+
+    model =
+      %LazyStreamingModel{parent: parent}
+      |> Models.with_rate_limiter(
+        limiter: %Limiter{parent: parent},
+        amount: 1,
+        key: {:openai, "gpt"}
+      )
+
+    assert {:ok, [%Message{content: "chunk"}]} = ChatModel.stream(model, [Message.user("hi")])
+
+    assert_received {:acquire, 1, _opts}
+    assert_received :lazy_model_streamed
+    refute_received :lazy_invoke_fallback
   end
 
   test "cache hits skip the inner rate limiter in the explicit native wrapper order" do

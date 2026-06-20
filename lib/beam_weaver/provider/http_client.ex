@@ -121,7 +121,7 @@ defmodule BeamWeaver.Provider.HTTPClient do
   def transport_opts(%__MODULE__{} = client, %Request{} = request, opts) do
     timeout = Keyword.get(opts, :timeout, client.timeout)
 
-    transport_opts = client.transport_opts ++ Keyword.put_new(opts, :timeout, timeout)
+    transport_opts = client.transport_opts |> Keyword.merge(opts) |> Keyword.put(:timeout, timeout)
 
     Keyword.put(
       transport_opts,

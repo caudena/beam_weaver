@@ -205,7 +205,11 @@ defmodule BeamWeaver.Stream do
     )
   end
 
-  defp start_live_resource_task(nil, fun), do: Task.async(fun)
+  defp start_live_resource_task(nil, fun) do
+    task = Task.async(fun)
+    Process.unlink(task.pid)
+    task
+  end
 
   defp start_live_resource_task(supervisor, fun),
     do: Task.Supervisor.async_nolink(supervisor, fun)

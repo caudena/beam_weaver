@@ -81,22 +81,21 @@ defmodule BeamWeaver.Filesystem.Format do
 
   def truncate_if_too_long(content, _max_bytes, _guidance), do: {content, false}
 
-  defp chunk_line(line, line_number, width, max_line_length)
-       when byte_size(line) <= max_line_length do
-    [String.pad_leading(to_string(line_number), width) <> "\t" <> line]
-  end
-
   defp chunk_line(line, line_number, width, max_line_length) do
-    line
-    |> chunk_binary(max_line_length)
-    |> Enum.with_index()
-    |> Enum.map(fn
-      {chunk, 0} ->
-        String.pad_leading(to_string(line_number), width) <> "\t" <> chunk
+    if String.length(line) <= max_line_length do
+      [String.pad_leading(to_string(line_number), width) <> "\t" <> line]
+    else
+      line
+      |> chunk_binary(max_line_length)
+      |> Enum.with_index()
+      |> Enum.map(fn
+        {chunk, 0} ->
+          String.pad_leading(to_string(line_number), width) <> "\t" <> chunk
 
-      {chunk, index} ->
-        String.pad_leading("#{line_number}.#{index}", width) <> "\t" <> chunk
-    end)
+        {chunk, index} ->
+          String.pad_leading("#{line_number}.#{index}", width) <> "\t" <> chunk
+      end)
+    end
   end
 
   defp chunk_binary("", _size), do: [""]
@@ -107,11 +106,10 @@ defmodule BeamWeaver.Filesystem.Format do
 
   defp do_chunk_binary("", _size, chunks), do: Enum.reverse(chunks)
 
-  defp do_chunk_binary(binary, size, chunks) when byte_size(binary) <= size,
-    do: Enum.reverse([binary | chunks])
-
   defp do_chunk_binary(binary, size, chunks) do
-    <<chunk::binary-size(size), rest::binary>> = binary
-    do_chunk_binary(rest, size, [chunk | chunks])
+    case String.split_at(binary, size) do
+      {chunk, ""} -> Enum.reverse([chunk | chunks])
+      {chunk, rest} -> do_chunk_binary(rest, size, [chunk | chunks])
+    end
   end
 end

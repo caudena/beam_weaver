@@ -150,6 +150,40 @@ defmodule BeamWeaver.Anthropic.ChatModelTest do
     assert "mcp-client-2025-11-20" in body["betas"]
   end
 
+  test "inferred betas are sent as the anthropic-beta header, not in the request body" do
+    model =
+      ChatModel.new(
+        model: "claude-sonnet-4-5",
+        api_key: "anthropic-secret",
+        transport: BeamWeaver.TestSupport.Conformance.Fakes.Transport,
+        transport_opts: [
+          parent: self(),
+          body: %{
+            "id" => "msg_fake",
+            "type" => "message",
+            "role" => "assistant",
+            "model" => "claude-sonnet-4-5",
+            "content" => [%{"type" => "text", "text" => "ok"}],
+            "usage" => %{"input_tokens" => 1, "output_tokens" => 1}
+          }
+        ]
+      )
+
+    assert {:ok, %Message{}} =
+             CoreChatModel.invoke(model, [Message.user("go")], tools: [Tools.web_fetch()])
+
+    assert_received {:fake_transport_request, request}
+
+    # The inferred beta is enabled via the anthropic-beta header...
+    assert Enum.any?(request.headers, fn
+             {"anthropic-beta", value} -> String.contains?(value, "web-fetch-2026-03-09")
+             _ -> false
+           end)
+
+    # ...and is no longer left in the JSON body, where Anthropic would ignore it.
+    refute Map.has_key?(request.json, "betas")
+  end
+
   test "explicit container and count-token-only options match Anthropic schema" do
     model = ChatModel.new(model: "claude-sonnet-4-6")
 

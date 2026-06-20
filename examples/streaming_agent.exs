@@ -1,23 +1,20 @@
-alias BeamWeaver.Core.ChatModel
+Code.require_file("support.exs", __DIR__)
+
 alias BeamWeaver.Core.Message
+alias BeamWeaver.Examples.Support
 alias BeamWeaver.Stream.Envelope
-
-defmodule BeamWeaver.Examples.StreamingAgent.Model do
-  @behaviour ChatModel
-
-  defstruct []
-
-  def invoke(%__MODULE__{}, _messages, _opts), do: {:ok, Message.assistant("streamed")}
-end
 
 defmodule BeamWeaver.Examples.StreamingAgent do
   use BeamWeaver.Agent
 
-  model(%BeamWeaver.Examples.StreamingAgent.Model{})
+  name("streaming_agent")
+  model(Support.model())
 end
 
 {:ok, events} =
-  BeamWeaver.Examples.StreamingAgent.stream_events(%{messages: [Message.user("hello")]})
+  BeamWeaver.Examples.StreamingAgent.stream_events(%{
+    messages: [Message.user("Say hello in one short sentence.")]
+  })
 
 events
 |> Enum.filter(&match?(%Envelope{}, &1))

@@ -64,9 +64,9 @@ defmodule BeamWeaver.Checkpoint.ETS do
     saver.checkpoints
     |> :ets.tab2list()
     |> Enum.map(fn {_key, record} -> record end)
-    |> Enum.filter(&matches_config?(&1, configurable))
-    |> Enum.filter(&matches_filter?(&1, filter))
-    |> Enum.filter(&before_checkpoint?(&1, before_id))
+    |> Enum.filter(
+      &(matches_config?(&1, configurable) and matches_filter?(&1, filter) and before_checkpoint?(&1, before_id))
+    )
     |> Enum.sort_by(fn record -> record.checkpoint["id"] end, :desc)
     |> maybe_take(limit)
     |> Enum.map(&put_pending_writes(saver, &1))

@@ -148,8 +148,7 @@ defmodule BeamWeaver.Graph.Validation do
 
     missing =
       referenced
-      |> Enum.reject(&(&1 in ["__start__", "__end__"]))
-      |> Enum.reject(&MapSet.member?(known, &1))
+      |> Enum.reject(&(&1 in ["__start__", "__end__"] or MapSet.member?(known, &1)))
       |> Enum.uniq()
 
     if missing == [], do: nil, else: missing
@@ -270,8 +269,7 @@ defmodule BeamWeaver.Graph.Validation do
     unreachable =
       graph.nodes
       |> Map.keys()
-      |> Enum.reject(&MapSet.member?(graph.finish_points, &1))
-      |> Enum.reject(&MapSet.member?(reachable, &1))
+      |> Enum.reject(&(MapSet.member?(graph.finish_points, &1) or MapSet.member?(reachable, &1)))
       |> Enum.sort()
 
     if unreachable == [], do: nil, else: unreachable
@@ -310,9 +308,10 @@ defmodule BeamWeaver.Graph.Validation do
     dead =
       graph.nodes
       |> Map.keys()
-      |> Enum.reject(&MapSet.member?(can_finish, &1))
-      |> Enum.reject(&Map.has_key?(graph.conditional_edges, &1))
-      |> Enum.reject(&Map.has_key?(graph.guarded_edges, &1))
+      |> Enum.reject(
+        &(MapSet.member?(can_finish, &1) or Map.has_key?(graph.conditional_edges, &1) or
+            Map.has_key?(graph.guarded_edges, &1))
+      )
       |> Enum.sort()
 
     if dead == [], do: nil, else: dead
@@ -345,8 +344,7 @@ defmodule BeamWeaver.Graph.Validation do
           spec.path_map
           |> Map.values()
           |> Kernel.++(List.wrap(spec.then))
-          |> Enum.reject(&is_nil/1)
-          |> Enum.reject(&(&1 == "__end__"))
+          |> Enum.reject(&(is_nil(&1) or &1 == "__end__"))
 
         {source, targets}
       end)

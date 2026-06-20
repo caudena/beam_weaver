@@ -54,7 +54,13 @@ defmodule BeamWeaver.Memory.Ecto do
     RETURNING namespace, key, value, metadata, created_at, updated_at, expires_at
     """
 
-    params = [namespace, key, value, metadata, Query.expires_at(Keyword.get(opts, :ttl))]
+    ttl =
+      case Keyword.get(opts, :ttl, :not_provided) do
+        :not_provided -> store.default_ttl
+        ttl -> ttl
+      end
+
+    params = [namespace, key, value, metadata, Query.expires_at(ttl)]
 
     case query(store, sql, params) do
       {:ok, %{rows: [row]}} -> {:ok, item_from_row(row)}
@@ -252,12 +258,12 @@ defmodule BeamWeaver.Memory.Ecto do
 
     sql = """
     UPDATE #{store.table}
-    SET expires_at = $3, updated_at = now()
+    SET expires_at = $3
     WHERE namespace = $1 AND key = $2
     """
 
     case query(store, sql, [item.namespace, item.key, expires_at]) do
-      {:ok, _result} -> {:ok, %{item | expires_at: expires_at, updated_at: DateTime.utc_now()}}
+      {:ok, _result} -> {:ok, %{item | expires_at: expires_at}}
       error -> error
     end
   end

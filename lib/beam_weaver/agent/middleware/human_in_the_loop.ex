@@ -255,7 +255,6 @@ defmodule BeamWeaver.Agent.Middleware.HumanInTheLoop do
 
   defp edited_action(%{edited_action: action}) when is_map(action), do: {:ok, action}
   defp edited_action(%{"edited_action" => action}) when is_map(action), do: {:ok, action}
-  defp edited_action(%Decision{edited_action: action}) when is_map(action), do: {:ok, action}
 
   defp edited_action(decision) do
     {:error,

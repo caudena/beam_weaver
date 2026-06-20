@@ -20,6 +20,8 @@ defmodule BeamWeaver.Indexing.Planner do
     end)
     |> case do
       {:ok, planned} ->
+        planned = dedupe_planned(planned)
+
         {:ok,
          %{
            namespace: namespace,

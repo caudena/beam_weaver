@@ -65,13 +65,17 @@ defmodule BeamWeaver.Tracing.Options do
 
   defp custom_fields(value) when is_map(value) or is_list(value) do
     value
-    |> Enum.reduce(%{}, fn {key, value}, acc ->
-      with key when is_binary(key) <- normalize_field_key(key),
-           value when is_binary(value) <- normalize_field_value(value) do
-        Map.put(acc, key, value)
-      else
-        _other -> acc
-      end
+    |> Enum.reduce(%{}, fn
+      {key, value}, acc ->
+        with key when is_binary(key) <- normalize_field_key(key),
+             value when is_binary(value) <- normalize_field_value(value) do
+          Map.put(acc, key, value)
+        else
+          _other -> acc
+        end
+
+      _other, acc ->
+        acc
     end)
   end
 
@@ -122,7 +126,7 @@ defmodule BeamWeaver.Tracing.Options do
   end
 
   defp has_configurable_key?(configurable, key) do
-    Map.has_key?(configurable, key) or Map.has_key?(configurable, String.to_atom(key))
+    Map.has_key?(configurable, key) or Map.has_key?(configurable, String.to_existing_atom(key))
   rescue
     ArgumentError -> Map.has_key?(configurable, key)
   end

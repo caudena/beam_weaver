@@ -110,14 +110,25 @@ if config_env() != :test do
            Application.get_env(:beam_weaver, :evals, []),
            eval_overrides
          )
-
-  config :beam_weaver,
-         :examples,
-         Keyword.merge(
-           Application.get_env(:beam_weaver, :examples, []),
-           compact.(
-             deep_agents_live?: bool_env.("BEAM_WEAVER_DEEPAGENTS_EXAMPLES_LIVE"),
-             deep_agents_model: non_blank.("BEAM_WEAVER_DEEPAGENTS_EXAMPLES_MODEL")
-           )
-         )
 end
+
+examples_env = fn name ->
+  case System.get_env(name) do
+    value when is_binary(value) ->
+      trimmed = String.trim(value)
+      if trimmed == "", do: nil, else: trimmed
+
+    _missing ->
+      nil
+  end
+end
+
+config :beam_weaver, :examples,
+  model: examples_env.("BEAM_WEAVER_EXAMPLES_MODEL"),
+  api_keys: %{
+    "openai" => examples_env.("OPENAI_API_KEY"),
+    "anthropic" => examples_env.("ANTHROPIC_API_KEY"),
+    "google" => examples_env.("GOOGLE_API_KEY") || examples_env.("GEMINI_API_KEY"),
+    "xai" => examples_env.("XAI_API_KEY"),
+    "moonshot" => examples_env.("MOONSHOT_API_KEY") || examples_env.("KIMI_API_KEY")
+  }

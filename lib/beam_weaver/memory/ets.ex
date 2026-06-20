@@ -164,6 +164,7 @@ defmodule BeamWeaver.Memory.ETS do
         %MatchCondition{type: "prefix", path: path}, {_prefix, suffix} -> {path, suffix}
         %MatchCondition{type: :suffix, path: path}, {prefix, _suffix} -> {prefix, path}
         %MatchCondition{type: "suffix", path: path}, {prefix, _suffix} -> {prefix, path}
+        _other, acc -> acc
       end)
 
     [

@@ -64,7 +64,7 @@ defmodule BeamWeaver.OutputParser.XML do
   defp parse_element("<" <> rest) do
     case Regex.run(~r/^([A-Za-z_][\w:\.-]*)([^>]*)>/, rest) do
       [match, name, attrs] ->
-        after_start = String.slice(rest, byte_size(match)..-1//1)
+        after_start = binary_part(rest, byte_size(match), byte_size(rest) - byte_size(match))
         self_closing? = String.ends_with?(String.trim(attrs), "/")
         attrs = attrs |> String.trim_trailing("/") |> parse_attrs()
 
@@ -116,7 +116,7 @@ defmodule BeamWeaver.OutputParser.XML do
 
   defp take_until_tag(text) do
     case :binary.match(text, "<") do
-      {index, _length} -> {String.slice(text, 0, index), String.slice(text, index..-1//1)}
+      {index, _length} -> {binary_part(text, 0, index), binary_part(text, index, byte_size(text) - index)}
       :nomatch -> {text, ""}
     end
   end

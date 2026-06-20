@@ -1,68 +1,60 @@
+Code.require_file("support.exs", __DIR__)
+
 alias BeamWeaver.Agent.HITL
-alias BeamWeaver.Agent.Middleware.HumanInTheLoop
 alias BeamWeaver.Checkpoint.ETS, as: CheckpointETS
-alias BeamWeaver.Core.ChatModel
 alias BeamWeaver.Core.Message
 alias BeamWeaver.Core.Tool
-
-defmodule BeamWeaver.Examples.HITLAgent.Model do
-  @behaviour ChatModel
-
-  defstruct []
-
-  def invoke(%__MODULE__{}, messages, _opts) do
-    if Enum.any?(messages, &match?(%Message{role: :tool}, &1)) do
-      {:ok, Message.assistant("human reviewed")}
-    else
-      {:ok,
-       Message.assistant("",
-         tool_calls: [%{id: "call-lookup", name: "lookup", args: %{"query" => "docs"}}]
-       )}
-    end
-  end
-end
+alias BeamWeaver.Examples.Support
 
 defmodule BeamWeaver.Examples.HITLAgent do
   use BeamWeaver.Agent
 
-  model(%BeamWeaver.Examples.HITLAgent.Model{})
-
-  def tools do
-    [
-      Tool.from_function!(
-        name: "lookup",
-        description: "Lookup docs",
-        input_schema: %{"type" => "object", "required" => ["query"]},
-        handler: fn %{"query" => query}, _opts -> "lookup:#{query}" end
-      )
-    ]
-  end
+  name("hitl_agent")
+  model(Support.model())
+  system_prompt("Look up documentation with the lookup tool before answering.")
 
   tools do
-    include(__MODULE__.tools())
+    tool(
+      Tool.from_function!(
+        name: "lookup",
+        description: "Look up documentation for a query.",
+        input_schema: %{
+          "type" => "object",
+          "properties" => %{"query" => %{"type" => "string"}},
+          "required" => ["query"]
+        },
+        handler: fn %{"query" => query}, _opts -> "Docs for #{query}: authentication uses bearer API keys." end
+      )
+    )
   end
 
-  middleware do
-    use HumanInTheLoop, interrupt_on: %{"lookup" => true}, tools: __MODULE__.tools()
+  interrupt_on(%{"lookup" => true})
+end
+
+defmodule BeamWeaver.Examples.HITLAgent.Review do
+  # Approve each paused tool call until the agent finishes.
+  def run({:ok, state}, _opts), do: state
+
+  def run({:error, error}, _opts), do: raise(ArgumentError, "agent error: #{inspect(error)}")
+
+  def run({:interrupted, interrupt}, opts) do
+    {:ok, review} = HITL.from_interrupt(interrupt)
+    IO.puts("review requested: #{hd(review.action_requests).name}")
+
+    decisions = Enum.map(review.action_requests, fn _request -> %{type: :approve} end)
+
+    BeamWeaver.Examples.HITLAgent.resume(%{decisions: decisions}, opts)
+    |> run(opts)
   end
 end
 
-checkpointer = CheckpointETS.new()
-config = %{"configurable" => %{"thread_id" => "example-hitl"}}
+opts = [checkpointer: CheckpointETS.new(), config: %{"configurable" => %{"thread_id" => "example-hitl"}}]
 
-{:interrupted, interrupt} =
-  BeamWeaver.Examples.HITLAgent.invoke(%{messages: [Message.user("lookup")]},
-    checkpointer: checkpointer,
-    config: config
+%{messages: messages} =
+  BeamWeaver.Examples.HITLAgent.invoke(
+    %{messages: [Message.user("Look up the authentication docs and summarize them.")]},
+    opts
   )
+  |> BeamWeaver.Examples.HITLAgent.Review.run(opts)
 
-{:ok, review} = HITL.from_interrupt(interrupt)
-IO.puts(hd(review.action_requests).name)
-
-{:ok, %{messages: messages}} =
-  BeamWeaver.Examples.HITLAgent.resume_review([HITL.decision(:respond, message: "approved")],
-    checkpointer: checkpointer,
-    config: config
-  )
-
-messages |> List.last() |> Message.text() |> IO.puts()
+IO.puts(Message.text(List.last(messages)))

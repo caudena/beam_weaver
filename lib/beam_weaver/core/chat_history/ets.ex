@@ -17,10 +17,32 @@ defmodule BeamWeaver.Core.ChatHistory.ETS.Session do
   end
 
   @impl true
-  def add_messages(%__MODULE__{} = session, messages) when is_list(messages) do
-    {:ok, existing} = get_messages(session)
-    :ets.insert(session.table, {session.session_id, existing ++ messages})
-    :ok
+  def add_messages(%__MODULE__{table: table, session_id: session_id}, messages) when is_list(messages) do
+    if :ets.insert_new(table, {session_id, messages}) do
+      :ok
+    else
+      append(table, session_id, messages)
+    end
+  end
+
+  defp append(table, session_id, messages) do
+    case :ets.lookup(table, session_id) do
+      [{^session_id, existing} = current] ->
+        replacement = {session_id, existing ++ messages}
+
+        if :ets.select_replace(table, [{current, [], [{:const, replacement}]}]) == 1 do
+          :ok
+        else
+          append(table, session_id, messages)
+        end
+
+      [] ->
+        if :ets.insert_new(table, {session_id, messages}) do
+          :ok
+        else
+          append(table, session_id, messages)
+        end
+    end
   end
 
   @impl true

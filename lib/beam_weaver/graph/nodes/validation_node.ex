@@ -35,8 +35,15 @@ defmodule BeamWeaver.Graph.Nodes.ValidationNode do
 
       messages =
         tool_calls
-        |> Task.async_stream(&validate_call(node, normalize_tool_call(&1)), ordered: true)
-        |> Enum.map(fn {:ok, message} -> message end)
+        |> Task.async_stream(&validate_call(node, normalize_tool_call(&1)),
+          ordered: true,
+          on_timeout: :kill_task
+        )
+        |> Enum.zip(tool_calls)
+        |> Enum.map(fn
+          {{:ok, message}, _call} -> message
+          {{:exit, reason}, call} -> exited_call_message(call, reason)
+        end)
         |> Enum.reject(&is_nil/1)
 
       if output_shape == :state, do: %{messages: messages}, else: messages
@@ -104,6 +111,23 @@ defmodule BeamWeaver.Graph.Nodes.ValidationNode do
       %Message{tool_calls: tool_calls} when is_list(tool_calls) -> {:ok, tool_calls, shape}
       _other -> {:ok, [], shape}
     end
+  end
+
+  defp exited_call_message(raw_call, reason) do
+    {id, name} = tool_call_identity(raw_call)
+
+    Message.tool("Tool validation failed: #{inspect(reason)}",
+      tool_call_id: id,
+      name: name,
+      metadata: %{status: "error", error_type: :validation_node_crash, is_error: true}
+    )
+  end
+
+  defp tool_call_identity(raw_call) do
+    call = normalize_tool_call(raw_call)
+    {call.id, call.name}
+  rescue
+    _exception -> {nil, nil}
   end
 
   defp validate_call(%__MODULE__{} = node, call) do

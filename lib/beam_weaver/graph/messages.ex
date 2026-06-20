@@ -46,7 +46,7 @@ defmodule BeamWeaver.Graph.Messages do
     left = left |> message_list() |> ensure_ids()
     right = right |> message_list() |> ensure_ids()
 
-    case Enum.find_index(right, &match?(%Remove{id: @remove_all}, &1)) do
+    case last_remove_all_index(right) do
       nil -> merge_messages(left, right)
       index -> right |> Enum.drop(index + 1) |> reject_remove_markers()
     end
@@ -199,11 +199,11 @@ defmodule BeamWeaver.Graph.Messages do
     {tool_calls, blocks} =
       Enum.reduce(content, {[], []}, fn
         %{"type" => "tool_use", "name" => name, "input" => input, "id" => id}, {calls, blocks} ->
-          call = %{"name" => name, "type" => "tool_calls", "args" => input || %{}, "id" => id}
+          call = %{"name" => name, "type" => "tool_call", "args" => input || %{}, "id" => id}
           {[call | calls], blocks}
 
         %{type: :tool_use, name: name, args: args, id: id}, {calls, blocks} ->
-          call = %{"name" => name, "type" => "tool_calls", "args" => args || %{}, "id" => id}
+          call = %{"name" => name, "type" => "tool_call", "args" => args || %{}, "id" => id}
           {[call | calls], blocks}
 
         block, {calls, blocks} ->

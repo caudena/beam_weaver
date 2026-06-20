@@ -34,8 +34,8 @@ defmodule BeamWeaver.TestSupport.Conformance.RetrieverCase do
         end
       end
 
-      defp beamweaver_standard_value(value) when is_function(value, 0), do: value.()
-      defp beamweaver_standard_value(value), do: value
+      defp beamweaver_standard_value(value),
+        do: BeamWeaver.TestSupport.Conformance.Subject.standard_value(value)
     end
   end
 end

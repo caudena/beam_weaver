@@ -3,6 +3,8 @@ defmodule BeamWeaver.Memory.ETSTest do
 
   alias BeamWeaver.Memory
   alias BeamWeaver.Memory.ETS
+  alias BeamWeaver.Memory.ListNamespacesOp
+  alias BeamWeaver.Memory.MatchCondition
 
   test "stores, filters, searches, and deletes namespaced memory items" do
     store = ETS.new()
@@ -29,5 +31,21 @@ defmodule BeamWeaver.Memory.ETSTest do
 
     assert :ok = Memory.delete(store, [:users, "u1"], :preference)
     assert Memory.get(store, [:users, "u1"], :preference) == :error
+  end
+
+  test "list_namespaces batch op ignores unknown match-condition types instead of crashing" do
+    store = ETS.new()
+
+    assert {:ok, _} = Memory.put(store, [:users, "u1"], :preference, %{style: "technical"})
+    assert {:ok, _} = Memory.put(store, [:users, "u2"], :preference, %{style: "brief"})
+
+    op = %ListNamespacesOp{
+      match_conditions: [
+        %MatchCondition{type: :prefix, path: ["users"]},
+        %MatchCondition{type: :exact, path: ["users"]}
+      ]
+    }
+
+    assert [[["users", "u1"], ["users", "u2"]]] = Memory.batch(store, [op])
   end
 end

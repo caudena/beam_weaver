@@ -15,6 +15,14 @@ defmodule BeamWeaver.TestSupport.Conformance.Subject do
           assertions: map()
         }
 
+  @doc """
+  Resolves a conformance subject value: calls it when it is a 0-arity builder,
+  otherwise returns it as-is.
+  """
+  @spec standard_value(term()) :: term()
+  def standard_value(value) when is_function(value, 0), do: value.()
+  def standard_value(value), do: value
+
   @spec new(keyword() | map() | t(), atom()) :: t()
   def new(%__MODULE__{} = subject, kind) do
     %{subject | fixtures: default_fixtures(kind) |> Map.merge(subject.fixtures || %{})}

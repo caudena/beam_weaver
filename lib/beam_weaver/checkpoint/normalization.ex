@@ -35,6 +35,8 @@ defmodule BeamWeaver.Checkpoint.Normalization do
     end)
   end
 
+  defp stringify_config(_other), do: %{}
+
   defp normalize_checkpoint(checkpoint) do
     checkpoint
     |> Map.put_new("channel_values", %{})

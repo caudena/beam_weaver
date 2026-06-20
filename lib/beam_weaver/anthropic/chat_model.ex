@@ -77,6 +77,7 @@ defmodule BeamWeaver.Anthropic.ChatModel do
   def count_tokens(%__MODULE__{} = model, input, opts \\ []) do
     with {:ok, messages} <- LanguageModel.normalize_chat_input(input),
          {:ok, body} <- RequestBuilder.count_tokens_body(model, messages, opts),
+         {body, opts} = thread_betas(body, opts),
          {:ok, response} <- Client.count_tokens(client(model), body, opts) do
       {:ok, response["input_tokens"] || response[:input_tokens] || 0}
     else
@@ -91,6 +92,7 @@ defmodule BeamWeaver.Anthropic.ChatModel do
   @impl true
   def stream_events(%__MODULE__{} = model, messages, opts \\ []) do
     with {:ok, body} <- request_body(model, messages, Keyword.put(opts, :stream, true)) do
+      {body, opts} = thread_betas(body, opts)
       Client.messages_stream_events(client(model), body, opts)
     end
   end
@@ -114,12 +116,36 @@ defmodule BeamWeaver.Anthropic.ChatModel do
     }
   end
 
+  defp thread_betas(body, opts) do
+    case Map.pop(body, "betas") do
+      {nil, body} ->
+        {body, opts}
+
+      {betas, body} ->
+        betas = List.wrap(betas)
+
+        opts =
+          Keyword.update(opts, :betas, betas, fn existing ->
+            Enum.uniq(List.wrap(existing) ++ betas)
+          end)
+
+        {body, opts}
+    end
+  end
+
   defp runtime_adapter do
     %ChatRuntime.Adapter{
       request: &request_body/3,
-      invoke: fn model, body, opts -> Client.messages(client(model), body, opts) end,
-      stream: fn model, body, opts -> Client.messages_stream(client(model), body, opts) end,
+      invoke: fn model, body, opts ->
+        {body, opts} = thread_betas(body, opts)
+        Client.messages(client(model), body, opts)
+      end,
+      stream: fn model, body, opts ->
+        {body, opts} = thread_betas(body, opts)
+        Client.messages_stream(client(model), body, opts)
+      end,
       stream_response: fn model, body, opts ->
+        {body, opts} = thread_betas(body, opts)
         Client.messages_stream_response(client(model), body, opts)
       end,
       decode: fn response, _opts -> Messages.response_to_message(response) end,

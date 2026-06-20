@@ -22,7 +22,7 @@ defmodule BeamWeaver.Runnable.Parallel do
       end,
       ordered: true,
       max_concurrency: config.max_concurrency,
-      timeout: Keyword.get(opts, :timeout, 5_000),
+      timeout: Keyword.get(opts, :timeout, 300_000),
       on_timeout: :kill_task
     )
     |> Stream.map(fn

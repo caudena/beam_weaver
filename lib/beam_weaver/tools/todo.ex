@@ -212,5 +212,4 @@ defmodule BeamWeaver.Tools.Todo do
 
   defp get_value(map, key, default \\ nil)
   defp get_value(map, key, default) when is_map(map), do: Map.get(map, key, Map.get(map, to_string(key), default))
-  defp get_value(_map, _key, default), do: default
 end

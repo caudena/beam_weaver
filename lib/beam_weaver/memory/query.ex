@@ -36,9 +36,9 @@ defmodule BeamWeaver.Memory.Query do
     offset = Keyword.get(opts, :offset, 0)
 
     items
-    |> Enum.filter(&namespace_prefix?(&1.namespace, namespace_prefix))
-    |> Enum.filter(&matches_query?(&1, query))
-    |> Enum.filter(&matches_filter?(&1, filter))
+    |> Enum.filter(
+      &(namespace_prefix?(&1.namespace, namespace_prefix) and matches_query?(&1, query) and matches_filter?(&1, filter))
+    )
     |> Enum.sort_by(&DateTime.to_unix(&1.updated_at, :microsecond), :desc)
     |> Enum.drop(offset)
     |> Enum.take(limit)
@@ -51,8 +51,7 @@ defmodule BeamWeaver.Memory.Query do
     scored = Map.new(scored_items)
 
     items
-    |> Enum.filter(&namespace_prefix?(&1.namespace, namespace_prefix))
-    |> Enum.filter(&matches_filter?(&1, filter))
+    |> Enum.filter(&(namespace_prefix?(&1.namespace, namespace_prefix) and matches_filter?(&1, filter)))
     |> Enum.map(fn item ->
       SearchItem.from_item(item, Map.get(scored, {item.namespace, item.key}))
     end)
@@ -77,8 +76,7 @@ defmodule BeamWeaver.Memory.Query do
     offset = Keyword.get(opts, :offset, 0)
 
     namespaces
-    |> Enum.filter(&namespace_path_match?(&1, prefix, :prefix))
-    |> Enum.filter(&namespace_path_match?(&1, suffix, :suffix))
+    |> Enum.filter(&(namespace_path_match?(&1, prefix, :prefix) and namespace_path_match?(&1, suffix, :suffix)))
     |> Enum.map(&truncate_namespace(&1, max_depth))
     |> Enum.uniq()
     |> Enum.sort()
@@ -221,10 +219,18 @@ defmodule BeamWeaver.Memory.Query do
   defp compare(:missing, _expected), do: false
 
   defp compare(value, expected) when is_map(expected) do
-    Enum.all?(expected, fn {op, op_value} -> apply_operator(value, to_string(op), op_value) end)
+    if operator_map?(expected) do
+      Enum.all?(expected, fn {op, op_value} -> apply_operator(value, to_string(op), op_value) end)
+    else
+      value == expected
+    end
   end
 
   defp compare(value, expected), do: value == expected
+
+  defp operator_map?(expected) do
+    map_size(expected) > 0 and Enum.all?(Map.keys(expected), &(to_string(&1) =~ ~r/^\$/))
+  end
 
   defp apply_operator(value, "$eq", expected), do: value == expected
   defp apply_operator(value, "$ne", expected), do: value != expected

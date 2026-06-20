@@ -15,7 +15,7 @@ defmodule BeamWeaver.Examples.DeepAgents.DeployGtmAgent do
         description: "Analyzes competitors, segments, and positioning.",
         system_prompt: "Return GTM findings as bullets with risks.",
         tools: [competitor_tool()],
-        model: Support.model("competitor analysis complete")
+        model: Support.model()
       )
 
     async_pipeline =
@@ -29,7 +29,7 @@ defmodule BeamWeaver.Examples.DeepAgents.DeployGtmAgent do
     {:ok, agent} =
       Support.create(
         name: "deploy-gtm-agent",
-        model: Support.model("deploy_gtm_agent: GTM strategist ready"),
+        model: Support.model(),
         tools: [competitor_tool()],
         subagents: [market_researcher],
         async_subagents: [async_pipeline]

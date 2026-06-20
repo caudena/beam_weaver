@@ -19,13 +19,13 @@ defmodule BeamWeaver.Examples.DeepAgents.NvidiaDeepAgent do
         system_prompt: "Use cuDF/cuML skills when GPU context is available.",
         tools: [run_analysis_tool()],
         skills: ["/skills"],
-        model: Support.model("GPU analysis complete with chart artifacts")
+        model: Support.model()
       )
 
     {:ok, agent} =
       Support.create(
         name: "nvidia-deep-agent",
-        model: Support.model("nvidia_deep_agent: frontier planner delegated RAPIDS analysis"),
+        model: Support.model(),
         filesystem: Local.new(root: root),
         skills: ["/skills"],
         tools: [run_analysis_tool()],

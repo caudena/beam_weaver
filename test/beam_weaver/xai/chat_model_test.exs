@@ -35,6 +35,16 @@ defmodule BeamWeaver.XAI.ChatModelTest do
     )
   end
 
+  test "ChatCompletionsModel.new/1 accepts the streaming flag without crashing" do
+    # :streaming is a validation-only flag; it must not reach struct!/2 (no such field).
+    assert %ChatCompletionsModel{} = ChatCompletionsModel.new(streaming: true)
+    assert %ChatCompletionsModel{} = ChatCompletionsModel.new(streaming: true, n: 1)
+
+    assert_raise ArgumentError, "n must be 1 when streaming", fn ->
+      ChatCompletionsModel.new(streaming: true, n: 2)
+    end
+  end
+
   test "model constructors accept xAI base_url alias" do
     responses = ChatModel.new(base_url: "https://proxy.test/v1")
     chat_completions = ChatCompletionsModel.new(base_url: "https://proxy.test/v1")

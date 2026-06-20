@@ -4,9 +4,37 @@ defmodule BeamWeaver.Graph.DeltaChannelTest do
   alias BeamWeaver.Checkpoint
   alias BeamWeaver.Checkpoint.ETS, as: CheckpointETS
   alias BeamWeaver.Graph
+  alias BeamWeaver.Checkpoint.PendingWrite
   alias BeamWeaver.Graph.Channels.DeltaChannel
   alias BeamWeaver.Graph.Channels.DeltaSnapshot
   alias BeamWeaver.Graph.Compiled
+  alias BeamWeaver.Graph.Overwrite
+
+  test "update keeps an explicit nil overwrite instead of resetting to initial" do
+    reducer = fn state, writes -> state ++ List.wrap(writes) end
+    channel = DeltaChannel.new(reducer, initial: ["seed"])
+
+    assert {:ok, updated, true} = DeltaChannel.update(channel, [Overwrite.new(nil)])
+    assert {:ok, nil} = DeltaChannel.get(updated)
+  end
+
+  test "update keeps an explicit false overwrite instead of resetting to initial" do
+    reducer = fn state, writes -> state ++ List.wrap(writes) end
+    channel = DeltaChannel.new(reducer, initial: ["seed"])
+
+    assert {:ok, updated, true} = DeltaChannel.update(channel, [Overwrite.new(false)])
+    assert {:ok, false} = DeltaChannel.get(updated)
+  end
+
+  test "replay_writes keeps an explicit nil overwrite instead of resetting to initial" do
+    reducer = fn state, writes -> state ++ List.wrap(writes) end
+    channel = DeltaChannel.new(reducer, initial: ["seed"])
+
+    pending = [%PendingWrite{task_id: "t", channel: "items", value: Overwrite.new(nil)}]
+
+    assert {:ok, updated, true} = DeltaChannel.replay_writes(channel, pending)
+    assert {:ok, nil} = DeltaChannel.get(updated)
+  end
 
   test "snapshot frequency stores DeltaSnapshot without changing restored state" do
     saver = CheckpointETS.new()

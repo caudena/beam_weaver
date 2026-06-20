@@ -33,7 +33,7 @@ defmodule BeamWeaver.Agent.FinalResponsePolicy do
 
   def extract(%__MODULE__{mode: :structured}, state) do
     if State.structured_response?(state) do
-      {:ok, Map.fetch!(state, :structured_response)}
+      {:ok, State.structured_response(state)}
     else
       latest_assistant(state)
     end

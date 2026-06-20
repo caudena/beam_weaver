@@ -487,7 +487,7 @@ defmodule BeamWeaver.Agent.StructuredOutputStrategyTest do
     defmodule #{inspect(module)} do
       @on_load :boom
 
-      def boom, do: :erlang.error(:on_load_failed)
+      def boom, do: {:error, :on_load_failure}
 
       def json_schema, do: %{"type" => "object"}
     end

@@ -27,8 +27,10 @@ defmodule BeamWeaver.OpenAI.Provider do
   def profile(model), do: ProfileRegistry.fetch(:openai, model)
 
   @impl true
-  def infer_provider?("gpt-" <> _rest, :chat), do: true
-  def infer_provider?("o" <> _rest, :chat), do: true
+  def infer_provider?(model, :chat) when is_binary(model) do
+    String.starts_with?(model, ["gpt-", "o1", "o3", "o4", "chatgpt"])
+  end
+
   def infer_provider?("text-embedding" <> _rest, :embedding), do: true
   def infer_provider?(_model, _kind), do: false
 

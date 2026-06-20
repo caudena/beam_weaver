@@ -282,9 +282,10 @@ defmodule BeamWeaver.Transport.URLPolicy do
       a == 172 and b in 16..31 -> :private
       a == 192 and b == 168 -> :private
       a == 0 -> :reserved
-      a == 192 and b in [0, 2] -> :reserved
-      a == 198 and b in [18, 19, 51] -> :reserved
-      a == 203 and b == 0 -> :reserved
+      a == 192 and b == 0 and c in [0, 2] -> :reserved
+      a == 198 and b in 18..19 -> :reserved
+      a == 198 and b == 51 and c == 100 -> :reserved
+      a == 203 and b == 0 and c == 113 -> :reserved
       a >= 224 -> :reserved
       true -> :public
     end
@@ -304,7 +305,7 @@ defmodule BeamWeaver.Transport.URLPolicy do
     cond do
       aws_ipv6_metadata?(address) -> :metadata
       (first &&& 0xFE00) == 0xFC00 -> :private
-      (first &&& 0xFFC0) == 0xFE80 -> :metadata
+      (first &&& 0xFFC0) == 0xFE80 -> :reserved
       (first &&& 0xFF00) == 0xFF00 -> :reserved
       true -> :public
     end

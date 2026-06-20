@@ -43,6 +43,29 @@ defmodule BeamWeaver.Memory.EctoTest do
     assert 0 = count_rows(table)
   end
 
+  test "put applies the store default_ttl when no :ttl option is given" do
+    {table, store} = new_store(default_ttl: 0.0001)
+
+    assert {:ok, item} = Memory.put(store, [:ttl], :k, %{value: true})
+    refute is_nil(item.expires_at)
+
+    assert {:ok, sweeper} = Ecto.start_ttl_sweeper(store, interval: 10)
+    Process.sleep(30)
+    assert :ok = Ecto.stop_ttl_sweeper(sweeper)
+
+    assert 0 = count_rows(table)
+  end
+
+  test "refresh-on-read updates expires_at without bumping updated_at" do
+    {_table, store} = new_store(default_ttl: 60, refresh_on_read?: true)
+
+    assert {:ok, item} = Memory.put(store, [:rt], :k, %{value: 1})
+    Process.sleep(10)
+
+    assert {:ok, read} = Memory.get(store, [:rt], :k)
+    assert read.updated_at == item.updated_at
+  end
+
   defp new_store(opts \\ []) do
     table = LivePostgres.unique_table("bw_ecto_memory")
     version = LivePostgres.migrate(adapters: [{:memory, table: table}])

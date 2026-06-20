@@ -175,6 +175,7 @@ defmodule BeamWeaver.Sandbox.Docker do
 
   @impl true
   def edit(%__MODULE__{} = sandbox, path, old, new, opts) do
+    sandbox = start!(sandbox)
     container_path = container_path!(sandbox, path)
 
     case read(sandbox, path, []) do
@@ -201,8 +202,7 @@ defmodule BeamWeaver.Sandbox.Docker do
             tmp_path = path <> ".beam_weaver_tmp"
             tmp_container_path = container_path!(sandbox, tmp_path)
 
-            %Sandbox.WriteResult{} =
-              write(%{sandbox | container: sandbox.container}, tmp_path, updated, [])
+            %Sandbox.WriteResult{} = write(sandbox, tmp_path, updated, [])
 
             execute(
               sandbox,
@@ -224,7 +224,7 @@ defmodule BeamWeaver.Sandbox.Docker do
   @impl true
   def ls(%__MODULE__{} = sandbox, path, _opts) do
     container_path = container_path!(sandbox, path)
-    cmd = "find #{shell_quote(container_path)} -maxdepth 1 -mindepth 1 -printf '%p|%y\\n'"
+    cmd = "find #{shell_quote(container_path)} -maxdepth 1 -mindepth 1 -printf '%y|%p\\n'"
 
     case execute(sandbox, cmd, []) do
       %Sandbox.ExecuteResult{exit_code: 0, output: output} ->
@@ -232,7 +232,7 @@ defmodule BeamWeaver.Sandbox.Docker do
           output
           |> String.split("\n", trim: true)
           |> Enum.map(fn line ->
-            [entry_path, type] = String.split(line, "|", parts: 2)
+            [type, entry_path] = String.split(line, "|", parts: 2)
             %{"path" => virtual_path(sandbox, entry_path), "is_dir" => type == "d"}
           end)
 
@@ -248,7 +248,7 @@ defmodule BeamWeaver.Sandbox.Docker do
     path = Keyword.get(opts, :path, "/")
     container_path = container_path!(sandbox, path)
     quoted_pattern = shell_quote("./" <> pattern)
-    cmd = "cd #{shell_quote(container_path)} && find . -path #{quoted_pattern} -printf '%P|%y\\n'"
+    cmd = "cd #{shell_quote(container_path)} && find . -path #{quoted_pattern} -printf '%y|%P\\n'"
 
     case execute(sandbox, cmd, []) do
       %Sandbox.ExecuteResult{exit_code: 0, output: output} ->
@@ -256,7 +256,7 @@ defmodule BeamWeaver.Sandbox.Docker do
           output
           |> String.split("\n", trim: true)
           |> Enum.map(fn line ->
-            [entry_path, type] = String.split(line, "|", parts: 2)
+            [type, entry_path] = String.split(line, "|", parts: 2)
             %{"path" => join_virtual(path, entry_path), "is_dir" => type == "d"}
           end)
 
@@ -378,7 +378,15 @@ defmodule BeamWeaver.Sandbox.Docker do
   defp truncate(output, :unlimited), do: {output, false}
 
   defp truncate(output, max_bytes) when is_integer(max_bytes) and byte_size(output) > max_bytes do
-    {binary_part(output, 0, max_bytes) <> "\n\n... Output truncated at #{max_bytes} bytes.", true}
+    prefix = binary_part(output, 0, max_bytes)
+
+    prefix =
+      case :unicode.characters_to_binary(prefix) do
+        {:incomplete, valid, _rest} -> valid
+        _other -> prefix
+      end
+
+    {prefix <> "\n\n... Output truncated at #{max_bytes} bytes.", true}
   end
 
   defp truncate(output, _max_bytes), do: {output, false}

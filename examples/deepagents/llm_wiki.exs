@@ -24,7 +24,7 @@ defmodule BeamWeaver.Examples.DeepAgents.LlmWiki do
     {:ok, agent} =
       Support.create(
         name: "llm-wiki",
-        model: Support.model("llm_wiki: indexed local wiki pages and answered from them"),
+        model: Support.model(),
         filesystem: Local.new(root: root),
         tools: [wiki_query_tool(root)]
       )
@@ -49,9 +49,7 @@ defmodule BeamWeaver.Examples.DeepAgents.LlmWiki do
         |> Path.join("wiki/*.md")
         |> Path.wildcard()
         |> Enum.map(&File.read!/1)
-        |> Enum.filter(
-          &(String.contains?(String.downcase(&1), String.downcase(query)) or query == "")
-        )
+        |> Enum.filter(&(String.contains?(String.downcase(&1), String.downcase(query)) or query == ""))
         |> Enum.join("\n")
       end
     )

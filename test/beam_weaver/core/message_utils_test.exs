@@ -472,7 +472,7 @@ defmodule BeamWeaver.Core.MessageUtilsTest do
              output_tokens: 10,
              total_tokens: 15,
              input_token_details: %{audio: 2, cache_read: 1},
-             output_token_details: %{reasoning: 5, audio: 1}
+             output_token_details: %{reasoning: 5, audio: 0}
            }
 
     assert Utils.subtract_usage(right, left).input_tokens == 0

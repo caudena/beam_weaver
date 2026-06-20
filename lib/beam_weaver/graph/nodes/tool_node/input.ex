@@ -69,7 +69,14 @@ defmodule BeamWeaver.Graph.Nodes.ToolNode.Input do
     end
   end
 
-  @spec normalize_call(map()) :: %{id: term(), name: term(), args: map()}
+  @spec normalize_call(map()) :: %{
+          id: term(),
+          name: term(),
+          args: map(),
+          call_id: term(),
+          provider_id: term(),
+          index: term()
+        }
   def normalize_call(call) do
     %{
       id: tool_call_id(call),

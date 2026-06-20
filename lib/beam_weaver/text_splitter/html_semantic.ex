@@ -137,6 +137,8 @@ defmodule BeamWeaver.TextSplitter.HTMLSemantic do
     end
   end
 
+  defp html_level(_other), do: 999
+
   defp strip_unsafe(html) do
     html
     |> String.replace(~r/<!--.*?-->/su, " ")

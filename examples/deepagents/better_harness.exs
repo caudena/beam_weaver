@@ -22,7 +22,7 @@ defmodule BeamWeaver.Examples.DeepAgents.BetterHarness do
     {:ok, outer_agent} =
       Support.create(
         name: "better-harness",
-        model: Support.model("better_harness: candidate kept after train improvement"),
+        model: Support.model(),
         filesystem: Local.new(root: root),
         system_prompt: "Improve only declared harness surfaces, then run train and holdout evals."
       )

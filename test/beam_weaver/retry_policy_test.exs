@@ -88,6 +88,48 @@ defmodule BeamWeaver.RetryPolicyTest do
     assert delays |> MapSet.new() |> MapSet.size() > 1
   end
 
+  test "jitter never pushes the delay above max_delay" do
+    policy =
+      RetryPolicy.new!(
+        max_attempts: 5,
+        initial_delay: 100,
+        max_delay: 250,
+        backoff: 10.0,
+        jitter: true
+      )
+
+    delays = Enum.map(1..200, fn _ -> RetryPolicy.delay(policy, 3) end)
+
+    assert Enum.all?(delays, &(&1 <= 250))
+
+    integer_jitter_policy =
+      RetryPolicy.new!(
+        max_attempts: 5,
+        initial_delay: 100,
+        max_delay: 250,
+        backoff: 10.0,
+        jitter: 1_000
+      )
+
+    integer_delays = Enum.map(1..200, fn _ -> RetryPolicy.delay(integer_jitter_policy, 3) end)
+
+    assert Enum.all?(integer_delays, &(&1 <= 250))
+  end
+
+  test "constant-delay policy still caps at max_delay when initial_delay exceeds it" do
+    policy =
+      RetryPolicy.new!(
+        max_attempts: 3,
+        initial_delay: 10_000,
+        max_delay: 5_000,
+        backoff: 0,
+        jitter: false
+      )
+
+    assert RetryPolicy.delay(policy, 1) == 5_000
+    assert RetryPolicy.delay(policy, 2) == 5_000
+  end
+
   test "retry predicates cover defaults atoms lists functions and mfa predicates" do
     transient = Error.new(:transient, "try again")
     permanent = Error.new(:permanent, "stop")

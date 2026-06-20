@@ -42,8 +42,7 @@ defmodule BeamWeaver.Core.HTML do
     |> Regex.scan(raw_html)
     |> Enum.map(&link_from_match/1)
     |> Enum.map(&String.trim/1)
-    |> Enum.reject(&(&1 == ""))
-    |> Enum.reject(&ignored_link?/1)
+    |> Enum.reject(&(&1 == "" or ignored_link?(&1)))
     |> Enum.uniq()
     |> Enum.sort()
   end
@@ -59,8 +58,9 @@ defmodule BeamWeaver.Core.HTML do
     raw_html
     |> find_all_links(pattern: Keyword.get(opts, :pattern, @default_link_regex))
     |> Enum.map(&absolute_link(&1, url, parsed_url))
-    |> Enum.reject(&excluded_prefix?(&1, exclude_prefixes))
-    |> Enum.reject(&outside_base?(&1, base_url, parsed_base, prevent_outside?))
+    |> Enum.reject(
+      &(excluded_prefix?(&1, exclude_prefixes) or outside_base?(&1, base_url, parsed_base, prevent_outside?))
+    )
     |> Enum.uniq()
     |> Enum.sort()
   end

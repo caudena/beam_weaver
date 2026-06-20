@@ -16,33 +16,32 @@ defmodule BeamWeaver.Template.Simple do
          :ok <- reject_nested_replacement_fields(template),
          protected <- protect_escaped_braces(template),
          :ok <- validate_placeholders(protected) do
-      @placeholder_pattern
-      |> Regex.scan(protected)
-      |> Enum.map(fn [_match, placeholder] -> placeholder end)
-      |> Enum.reduce_while({:ok, protected}, fn placeholder, {:ok, acc} ->
-        {variable, format_spec} = split_placeholder(placeholder)
+      placeholders =
+        @placeholder_pattern
+        |> Regex.scan(protected)
+        |> Enum.map(fn [_match, placeholder] -> placeholder end)
 
-        case fetch_path(vars, String.split(variable, ".")) do
-          {:ok, value} ->
-            {:cont,
-             {:ok,
-              String.replace(
-                acc,
-                "{" <> placeholder <> "}",
-                format_value(value, format_spec)
-              )}}
+      missing =
+        Enum.find(placeholders, fn placeholder ->
+          {variable, _format_spec} = split_placeholder(placeholder)
+          match?(:error, fetch_path(vars, String.split(variable, ".")))
+        end)
 
-          :error ->
-            {:halt,
-             {:error,
-              Error.new(:prompt_missing_variable, "prompt variable is missing", %{
-                variable: variable
-              })}}
-        end
-      end)
-      |> case do
-        {:ok, rendered} -> {:ok, restore_escaped_braces(rendered)}
-        error -> error
+      case missing do
+        nil ->
+          rendered =
+            Regex.replace(@placeholder_pattern, protected, fn _full, placeholder ->
+              {variable, format_spec} = split_placeholder(placeholder)
+              {:ok, value} = fetch_path(vars, String.split(variable, "."))
+              format_value(value, format_spec)
+            end)
+
+          {:ok, restore_escaped_braces(rendered)}
+
+        placeholder ->
+          {variable, _format_spec} = split_placeholder(placeholder)
+
+          {:error, Error.new(:prompt_missing_variable, "prompt variable is missing", %{variable: variable})}
       end
     end
   end

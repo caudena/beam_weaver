@@ -77,9 +77,8 @@ defmodule BeamWeaver.Agent.Usage do
     %{usage | details: usage.details ++ [%{role: role, usage_metadata: metadata}]}
   end
 
-  defp increment(%__MODULE__{} = usage, field) do
-    Map.update!(usage, field, &(&1 + 1))
-  end
+  defp increment(%__MODULE__{} = usage, :model_calls), do: %{usage | model_calls: usage.model_calls + 1}
+  defp increment(%__MODULE__{} = usage, :tool_calls), do: %{usage | tool_calls: usage.tool_calls + 1}
 
   defp normalize(%__MODULE__{} = usage), do: usage
   defp normalize(nil), do: new()

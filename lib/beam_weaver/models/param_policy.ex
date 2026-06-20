@@ -214,8 +214,6 @@ defmodule BeamWeaver.Models.ParamPolicy do
 
   defp supported?(profile, key, _api), do: supported?(profile, key)
 
-  defp supported?(%Profile{} = profile, :stream), do: profile.streaming == true
-  defp supported?(%Profile{} = profile, key), do: Profile.supports_param?(profile, aliased(key))
   defp supported?(_profile, _key), do: true
 
   defp aliased(key), do: Map.get(@aliases, key, key)

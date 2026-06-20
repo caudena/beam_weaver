@@ -17,7 +17,7 @@ defmodule BeamWeaver.Examples.DeepAgents.RalphMode do
     {:ok, agent} =
       Support.create(
         name: "ralph-mode",
-        model: Support.model("ralph_mode: completed one fresh-context loop"),
+        model: Support.model(),
         filesystem: Local.new(root: root),
         memory: ["/PROMPT.md"],
         recursion_limit: 20

@@ -409,12 +409,13 @@ defmodule BeamWeaver.VectorStore do
     defstruct [:store, :policy]
 
     def retrieve(%__MODULE__{store: store, policy: policy}, query, opts) do
-      opts = Keyword.merge([k: policy.k, filter: policy.filter], opts)
+      opts =
+        Keyword.merge(
+          [k: policy.k, filter: policy.filter, score_threshold: policy.score_threshold],
+          opts
+        )
 
-      case policy.search_type do
-        :mmr -> BeamWeaver.VectorStore.max_marginal_relevance_search(store, query, opts)
-        _other -> BeamWeaver.VectorStore.similarity_search(store, query, opts)
-      end
+      BeamWeaver.VectorStore.search(store, query, policy.search_type, opts)
     end
   end
 end

@@ -160,11 +160,6 @@ defimpl BeamWeaver.Core.MessageLike, for: Map do
 
   defp put_metadata(map, extra) when extra == %{}, do: map
 
-  defp put_metadata(map, extra) do
-    metadata = MapAccess.get(map, :metadata) || %{}
-    Map.put(map, "metadata", Map.merge(metadata, extra))
-  end
-
   defp role("developer"), do: {:system, [metadata: %{openai_role: :developer}]}
   defp role("human"), do: {:user, []}
   defp role("user"), do: {:user, []}

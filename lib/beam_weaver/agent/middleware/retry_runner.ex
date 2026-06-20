@@ -63,6 +63,7 @@ defmodule BeamWeaver.Agent.Middleware.RetryRunner do
     end
   end
 
+  defp normalize_retry_on({m, f, a}) when is_atom(m) and is_atom(f) and is_list(a), do: {m, f, a}
   defp normalize_retry_on(value) when is_tuple(value), do: Tuple.to_list(value)
   defp normalize_retry_on(value), do: value
 

@@ -8,11 +8,11 @@ defmodule BeamWeaver.Agent.Server do
   end
 
   def invoke(server, input, opts \\ []) do
-    GenServer.call(server, {:invoke, input, opts}, Keyword.get(opts, :timeout, 5_000))
+    GenServer.call(server, {:invoke, input, opts}, Keyword.get(opts, :timeout, 300_000))
   end
 
   def stream_events(server, input, opts \\ []) do
-    GenServer.call(server, {:stream_events, input, opts}, Keyword.get(opts, :timeout, 5_000))
+    GenServer.call(server, {:stream_events, input, opts}, Keyword.get(opts, :timeout, 300_000))
   end
 
   @impl true

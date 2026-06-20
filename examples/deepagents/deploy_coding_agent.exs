@@ -23,7 +23,7 @@ defmodule BeamWeaver.Examples.DeepAgents.DeployCodingAgent do
     {:ok, agent} =
       Support.create(
         name: "deploy-coding-agent",
-        model: Support.model("deploy_coding_agent: sandbox-backed coding agent ready"),
+        model: Support.model(),
         filesystem: Local.new(root: root),
         memory: ["/AGENTS.md"],
         permissions: permissions

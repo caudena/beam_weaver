@@ -179,9 +179,11 @@ defmodule BeamWeaver.Tools.FileSearch.Filesystem do
   defp trim_file(content, max_bytes), do: binary_part(content, 0, max_bytes)
 
   defp snippet(content, {:literal, needle}, max_bytes) do
-    case :binary.match(String.downcase(content), needle) do
+    downcased = String.downcase(content)
+
+    case :binary.match(downcased, needle) do
       {index, length} ->
-        snippet_at(content, index, length, max_bytes)
+        snippet_at(downcased, index, length, max_bytes)
 
       :nomatch ->
         trim_file(content, max_bytes)

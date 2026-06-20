@@ -236,6 +236,13 @@ defmodule BeamWeaver.Stream.Mux do
     |> queue_trim_to(max_buffer)
   end
 
+  defp handle_overflow(%{mux: mux} = state, ref, pid, name, _item)
+       when mux.policy.overflow == :drop_oldest do
+    send(pid, {:beam_weaver_mux_ack, ref, {:dropped, :newest}})
+    event = debug_event(mux, name, :backpressure_drop, %{dropped: :newest})
+    maybe_append_debug(state, event, mux.policy)
+  end
+
   defp handle_overflow(%{mux: mux} = state, ref, pid, name, _item) do
     error = Error.new(:stream_backpressure, "stream buffer is full")
     send(pid, {:beam_weaver_mux_ack, ref, {:error, error}})
@@ -299,7 +306,7 @@ defmodule BeamWeaver.Stream.Mux do
 
     if heartbeat_due_on_finish?(mux, task_info, state) do
       heartbeat =
-        debug_event(mux, task_info && task_info.name, :heartbeat, mux.policy.heartbeat.payload)
+        debug_event(mux, task_info.name, :heartbeat, mux.policy.heartbeat.payload)
 
       state =
         state

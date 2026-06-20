@@ -72,6 +72,23 @@ defmodule BeamWeaver.OpenAI.MessagesTest do
            ] = input
   end
 
+  test "converts an image_url block whose image_url is a bare string" do
+    assert {:ok, input} =
+             Messages.to_responses_input([
+               Message.user([
+                 %{type: :image_url, image_url: "https://example.test/image.jpg"}
+               ])
+             ])
+
+    assert [
+             %{
+               "content" => [
+                 %{"type" => "input_image", "image_url" => "https://example.test/image.jpg"}
+               ]
+             }
+           ] = input
+  end
+
   test "converts Responses API image, audio, and file data blocks" do
     # Upstream reference:
     # - test_convert_to_openai_data_block

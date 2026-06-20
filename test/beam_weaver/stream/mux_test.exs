@@ -183,6 +183,31 @@ defmodule BeamWeaver.StreamMuxTest do
     assert_receive {:emit_result, {:dropped, :newest}}, 200
   end
 
+  test "drop_oldest backpressure policy drops newest when buffer cannot hold any items" do
+    parent = self()
+
+    stream =
+      Stream.mux(
+        [
+          {:sink, :fast,
+           fn sink ->
+             for index <- 1..8 do
+               result = Sink.emit(sink, Stream.event(:custom, {:overflow, index}))
+               send(parent, {:emit_result, result})
+             end
+
+             :ok
+           end}
+        ],
+        max_buffer: 0,
+        overflow: :drop_oldest
+      )
+
+    Enum.to_list(stream)
+    assert_receive {:emit_result, {:dropped, :newest}}, 200
+    refute_receive {:emit_result, {:error, %{type: :stream_backpressure}}}, 50
+  end
+
   test "block backpressure policy preserves order after waiting for consumer demand" do
     parent = self()
 

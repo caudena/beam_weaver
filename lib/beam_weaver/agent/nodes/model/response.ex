@@ -168,7 +168,7 @@ defmodule BeamWeaver.Agent.Nodes.Model.Response do
     max = 8_000
 
     if byte_size(value) > max do
-      binary_part(value, 0, max) <> "\n...[truncated #{byte_size(value) - max} bytes]"
+      clip_to_valid(value, max) <> "\n...[truncated #{byte_size(value) - max} bytes]"
     else
       value
     end
@@ -188,6 +188,19 @@ defmodule BeamWeaver.Agent.Nodes.Model.Response do
   end
 
   defp clip_value(value), do: value
+
+  defp clip_to_valid(value, max) do
+    candidate = binary_part(value, 0, max)
+
+    if String.valid?(candidate) do
+      candidate
+    else
+      Enum.reduce_while(1..3, candidate, fn n, acc ->
+        shrunk = binary_part(value, 0, max - n)
+        if String.valid?(shrunk), do: {:halt, shrunk}, else: {:cont, acc}
+      end)
+    end
+  end
 
   defp sanitize_error(%Error{details: details} = error), do: %{error | details: safe_details(details)}
 

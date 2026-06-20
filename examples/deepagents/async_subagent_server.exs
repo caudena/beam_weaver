@@ -44,7 +44,7 @@ defmodule BeamWeaver.Examples.DeepAgents.AsyncSubagentServer do
 
     {:ok, agent} =
       Support.create(
-        model: Support.model("async_subagent_server: remote researcher registered"),
+        model: Support.model(),
         async_subagents: [async_researcher]
       )
 

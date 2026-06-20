@@ -29,8 +29,6 @@ defmodule BeamWeaver.Adapters.EctoPostgres do
     exception -> {:error, normalize_error(exception)}
   end
 
-  defp normalize_error(%Error{} = error), do: error
-
   defp normalize_error(error) do
     AdapterError.normalize(error, :ecto_postgres_error, "Ecto/Postgres adapter error")
   end

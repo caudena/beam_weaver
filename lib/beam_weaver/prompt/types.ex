@@ -35,7 +35,6 @@ defmodule BeamWeaver.Prompt.Value do
   def to_messages(%__MODULE__{text: text}) when is_binary(text), do: [Message.user(text)]
 
   def data(%__MODULE__{text: text}), do: text
-  def data(%__MODULE__{messages: messages}) when messages != [], do: messages
   def data(value), do: value
 
   def structured_data(%__MODULE__{text: text}) when is_binary(text) do

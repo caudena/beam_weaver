@@ -16,13 +16,13 @@ defmodule BeamWeaver.Examples.DeepAgents.ReplSwarm do
         name: "general-purpose",
         description: "Handles one independent swarm item.",
         system_prompt: "Complete the assigned swarm item and return a compact result.",
-        model: Support.model("swarm item complete")
+        model: Support.model()
       )
 
     {:ok, agent} =
       Support.create(
         name: "repl-swarm",
-        model: Support.model("repl_swarm: dispatched three bounded parallel tasks"),
+        model: Support.model(),
         filesystem: Local.new(root: root),
         skills: ["/skills"],
         subagents: [worker]

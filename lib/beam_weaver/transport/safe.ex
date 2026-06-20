@@ -32,12 +32,12 @@ defmodule BeamWeaver.Transport.Safe do
 
   @impl true
   def stream(%Request{} = request, opts, on_chunk) when is_function(on_chunk, 1) do
-    policy = URLPolicy.new(Keyword.get(opts, :url_policy, opts))
-    transport = ProviderOptions.default_transport(Keyword.get(opts, :transport))
-    opts = Keyword.drop(opts, [:transport, :url_policy])
-
-    with :ok <- validate_url(request.url, policy) do
-      Transport.stream(transport, request, opts, on_chunk)
+    case stream_reduce(request, opts, :ok, fn acc, chunk ->
+           on_chunk.(chunk)
+           acc
+         end) do
+      {:ok, response, _acc} -> {:ok, response}
+      {:error, %Error{} = error, _acc} -> {:error, error}
     end
   end
 
@@ -48,7 +48,7 @@ defmodule BeamWeaver.Transport.Safe do
     opts = Keyword.drop(opts, [:transport, :url_policy])
 
     case validate_url(request.url, policy) do
-      :ok -> Transport.stream_reduce(transport, request, opts, acc, reducer)
+      :ok -> do_stream_reduce(transport, request, opts, acc, reducer, policy, 0)
       {:error, %Error{} = error} -> {:error, error, acc}
     end
   end
@@ -83,6 +83,72 @@ defmodule BeamWeaver.Transport.Safe do
       true ->
         with :ok <- validate_url(location, policy) do
           do_request(transport, %{request | url: location}, opts, policy, redirect_count + 1)
+        end
+    end
+  end
+
+  defp do_stream_reduce(transport, %Request{} = request, opts, acc, reducer, policy, redirect_count) do
+    case Transport.stream_reduce(transport, request, opts, acc, reducer) do
+      {:ok, %Response{} = response, result_acc} ->
+        maybe_follow_redirect_stream(
+          transport,
+          request,
+          response,
+          opts,
+          acc,
+          result_acc,
+          reducer,
+          policy,
+          redirect_count
+        )
+
+      {:error, %Error{} = error, error_acc} ->
+        {:error, error, error_acc}
+    end
+  end
+
+  defp maybe_follow_redirect_stream(
+         transport,
+         request,
+         response,
+         opts,
+         original_acc,
+         result_acc,
+         reducer,
+         policy,
+         redirect_count
+       ) do
+    location = response.headers |> header("location") |> absolute_redirect_url(request.url)
+
+    cond do
+      response.status not in @redirect_statuses or is_nil(location) ->
+        {:ok, response, result_acc}
+
+      not policy.follow_redirects? ->
+        {:ok, response, result_acc}
+
+      redirect_count >= policy.max_redirects ->
+        {:error,
+         Error.new(:too_many_redirects, "transport exceeded the configured redirect limit", %{
+           url: request.url,
+           max_redirects: policy.max_redirects
+         }), original_acc}
+
+      true ->
+        case validate_url(location, policy) do
+          :ok ->
+            do_stream_reduce(
+              transport,
+              %{request | url: location},
+              opts,
+              original_acc,
+              reducer,
+              policy,
+              redirect_count + 1
+            )
+
+          {:error, %Error{} = error} ->
+            {:error, error, original_acc}
         end
     end
   end

@@ -106,6 +106,7 @@ defmodule BeamWeaver.Agent.Middleware.ToolEmulator do
 
   defp tool_name(%ToolCallRequest{tool_call: %{name: name}}), do: to_string(name)
   defp tool_name(%ToolCallRequest{tool_call: %{"name" => name}}), do: to_string(name)
+  defp tool_name(_request), do: "unknown_tool"
 
   defp tool_args(%ToolCallRequest{tool_call: %{args: args}}), do: args || %{}
   defp tool_args(%ToolCallRequest{tool_call: %{"args" => args}}), do: args || %{}

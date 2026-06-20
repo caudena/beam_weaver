@@ -301,6 +301,37 @@ defmodule BeamWeaver.Agent.PIIMiddlewareTest do
     end
   end
 
+  describe "overlapping detector matches (a URL containing an IP address)" do
+    test "redact does not crash and removes both the URL and embedded IP" do
+      middleware = PII.new(detectors: [:url, :ip], strategy: :redact)
+      content = sanitize(middleware, Message.user("Visit http://192.168.1.1/path now"))
+
+      refute content =~ "192.168.1.1"
+      refute content =~ "http://192.168.1.1"
+    end
+
+    test "mask does not crash and removes the embedded IP" do
+      middleware = PII.new(detectors: [:url, :ip], strategy: :mask)
+      content = sanitize(middleware, Message.user("Visit http://192.168.1.1/path now"))
+
+      refute content =~ "192.168.1.1"
+    end
+
+    test "hash does not crash and removes the embedded IP" do
+      middleware = PII.new(detectors: [:url, :ip], strategy: :hash)
+      content = sanitize(middleware, Message.user("Visit http://192.168.1.1/path now"))
+
+      refute content =~ "192.168.1.1"
+    end
+
+    test "mask on a URL spanning the whole string does not raise ArgumentError" do
+      middleware = PII.new(detectors: [:url, :ip], strategy: :mask)
+      content = sanitize(middleware, Message.user("http://192.168.1.1/aaaa"))
+
+      refute content =~ "192.168.1.1"
+    end
+  end
+
   defp sanitize(middleware, message) do
     assert %{messages: %Overwrite{} = overwrite} =
              PII.before_model(middleware, %{messages: [message]}, nil)

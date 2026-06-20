@@ -314,16 +314,11 @@ defmodule BeamWeaver.Anthropic.Streaming do
       }
       |> Options.reject_nil_values()
 
-    chunk =
-      CoreMessages.ai_chunk("",
-        metadata: %{
-          usage_metadata: Messages.response_to_message(%{"content" => [], "usage" => usage || %{}})
-        }
-      )
+    metadata = Map.put(response_metadata, :usage_metadata, Messages.usage_metadata(usage))
 
     {
       [
-        %Events.MessageChunk{chunk: %{chunk | metadata: response_metadata}},
+        %Events.MessageChunk{chunk: CoreMessages.ai_chunk("", metadata: metadata)},
         %Events.Done{result: delta, usage: usage}
       ],
       state

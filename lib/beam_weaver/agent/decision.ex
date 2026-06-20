@@ -50,6 +50,15 @@ defmodule BeamWeaver.Agent.Decision do
   def normalize(%Jump{destination: destination} = decision)
       when destination in [:model, :tools, :end], do: {:ok, decision}
 
+  def normalize(%Jump{destination: destination}) do
+    {:error,
+     BeamWeaver.Core.Error.new(
+       :invalid_agent_middleware_return,
+       "jump decision requires a destination of :model, :tools, or :end",
+       %{destination: destination}
+     )}
+  end
+
   def normalize(%Halt{} = decision), do: {:ok, decision}
   def normalize(%Error{error: %BeamWeaver.Core.Error{} = error}), do: {:error, error}
   def normalize(%{} = update), do: {:ok, %Update{update: update}}

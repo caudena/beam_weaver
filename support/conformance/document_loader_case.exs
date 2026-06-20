@@ -20,8 +20,8 @@ defmodule BeamWeaver.TestSupport.Conformance.DocumentLoaderCase do
         assert Enum.all?(Enum.to_list(stream), &match?(%Document{}, &1))
       end
 
-      defp beamweaver_standard_value(value) when is_function(value, 0), do: value.()
-      defp beamweaver_standard_value(value), do: value
+      defp beamweaver_standard_value(value),
+        do: BeamWeaver.TestSupport.Conformance.Subject.standard_value(value)
     end
   end
 end

@@ -16,12 +16,11 @@ defmodule BeamWeaver.Core.Messages.Usage do
   def subtract(nil, right), do: subtract(zero(), right)
 
   def subtract(left, right) when is_map(left) and is_map(right) do
-    deep_merge(normalize(left), normalize(right), fn a, b -> max(a - b, 0) end)
+    deep_subtract(normalize(left), normalize(right))
   end
 
   defp zero, do: %{input_tokens: 0, output_tokens: 0, total_tokens: 0}
 
-  defp normalize(nil), do: zero()
   defp normalize(usage) when is_map(usage), do: usage
 
   defp deep_merge(left, right, numeric_fun) do
@@ -41,4 +40,20 @@ defmodule BeamWeaver.Core.Messages.Usage do
       end
     end)
   end
+
+  defp deep_subtract(left, right) do
+    keys = Enum.uniq(Map.keys(left) ++ Map.keys(right))
+
+    Map.new(keys, fn key ->
+      a = Map.get(left, key)
+      b = Map.get(right, key)
+
+      {key, subtract_value(a, b)}
+    end)
+  end
+
+  defp subtract_value(a, b) when is_map(a) and is_map(b), do: deep_subtract(a, b)
+  defp subtract_value(a, _b) when is_map(a), do: a
+  defp subtract_value(_a, b) when is_map(b), do: deep_subtract(%{}, b)
+  defp subtract_value(a, b), do: max((a || 0) - (b || 0), 0)
 end

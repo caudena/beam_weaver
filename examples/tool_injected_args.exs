@@ -1,5 +1,7 @@
-alias BeamWeaver.Core.ChatModel
+Code.require_file("support.exs", __DIR__)
+
 alias BeamWeaver.Core.Message
+alias BeamWeaver.Examples.Support
 
 defmodule BeamWeaver.Examples.ToolInjectedArgs.RecordEvent do
   use BeamWeaver.Tool
@@ -17,34 +19,17 @@ defmodule BeamWeaver.Examples.ToolInjectedArgs.RecordEvent do
   def invoke(_tool, input, _opts) do
     state = Map.get(input, :state, %{})
     context = Map.get(input, :context, %{})
-
     messages = Map.get(state, :messages, Map.get(state, "messages", []))
 
     {:ok, "recorded #{input["event"]} for #{Map.get(context, :workspace, "unknown")} with #{length(messages)} messages"}
   end
 end
 
-defmodule BeamWeaver.Examples.ToolInjectedArgs.Model do
-  @behaviour ChatModel
-
-  defstruct []
-
-  def invoke(%__MODULE__{}, messages, _opts) do
-    if Enum.any?(messages, &match?(%Message{role: :tool}, &1)) do
-      {:ok, Message.assistant("event recorded")}
-    else
-      {:ok,
-       Message.assistant("",
-         tool_calls: [%{id: "call-record", name: "record_event", args: %{"event" => "demo"}}]
-       )}
-    end
-  end
-end
-
 defmodule BeamWeaver.Examples.ToolInjectedArgs.Agent do
   use BeamWeaver.Agent
 
-  model(%BeamWeaver.Examples.ToolInjectedArgs.Model{})
+  name("tool_injected_args")
+  model(Support.model())
 
   tools do
     tool(BeamWeaver.Examples.ToolInjectedArgs.RecordEvent)
@@ -52,7 +37,8 @@ defmodule BeamWeaver.Examples.ToolInjectedArgs.Agent do
 end
 
 {:ok, %{messages: messages}} =
-  BeamWeaver.Examples.ToolInjectedArgs.Agent.invoke(%{messages: [Message.user("record")]},
+  BeamWeaver.Examples.ToolInjectedArgs.Agent.invoke(
+    %{messages: [Message.user("Record an event named 'demo'.")]},
     context: %{workspace: "docs"}
   )
 

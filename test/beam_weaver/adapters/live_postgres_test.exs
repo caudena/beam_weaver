@@ -111,7 +111,7 @@ defmodule BeamWeaver.Adapters.LivePostgresTest do
           call_id: "call-child",
           name: "task",
           args: %{
-            "subagent_name" => "worker",
+            "subagent_type" => "worker",
             "description" => "complete isolated child work"
           }
         }
@@ -605,15 +605,7 @@ defmodule BeamWeaver.Adapters.LivePostgresTest do
 
     assistant_message =
       Message.assistant(
-        [
-          %{
-            type: :tool_call,
-            id: "call-live",
-            name: "lookup",
-            args: %{"q" => "beam"},
-            thought_signature: "sig-live"
-          }
-        ],
+        "",
         tool_calls: [
           %ToolCall{
             id: "call-live",
@@ -875,7 +867,7 @@ defmodule BeamWeaver.Adapters.LivePostgresTest do
 
     assert {:ok, %Command{update: %{messages: [%Message{content: "live child done"}]}}} =
              Tool.invoke(task_tool, %{
-               "subagent_name" => "worker",
+               "subagent_type" => "worker",
                "description" => "do live child work",
                state: %{},
                runtime: %{

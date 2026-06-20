@@ -112,7 +112,8 @@ defmodule BeamWeaver.Agent.Middleware.OverflowRecovery do
   end
 
   def derive_threshold_tokens({kind, _value}, _max_input_tokens) when is_binary(kind) do
-    Options.atom_enum!("keep kind", kind, [:tokens, :fraction, :messages])
+    {:error, message} = Options.atom_enum_error("keep kind", kind, [:tokens, :fraction, :messages])
+    raise ArgumentError, message
   end
 
   def derive_threshold_tokens(_keep, _max_input_tokens), do: 5_000

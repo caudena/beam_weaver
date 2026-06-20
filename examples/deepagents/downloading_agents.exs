@@ -15,7 +15,7 @@ defmodule BeamWeaver.Examples.DeepAgents.DownloadingAgents do
     {:ok, agent} =
       Support.create(
         name: "downloaded-content-writer",
-        model: Support.model("downloading_agents: unpacked folder agent is runnable"),
+        model: Support.model(),
         filesystem: Local.new(root: package_dir),
         memory: ["/AGENTS.md"]
       )

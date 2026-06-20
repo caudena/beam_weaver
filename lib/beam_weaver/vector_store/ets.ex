@@ -59,7 +59,7 @@ defmodule BeamWeaver.VectorStore.ETS do
 
   @impl true
   def delete(%__MODULE__{} = store, ids, _opts) do
-    Enum.each(ids, &:ets.delete(store.table, {store.namespace, &1}))
+    Enum.each(ids, &:ets.delete(store.table, {store.namespace, to_string(&1)}))
     :ok
   end
 
@@ -67,7 +67,7 @@ defmodule BeamWeaver.VectorStore.ETS do
     documents =
       ids
       |> Enum.flat_map(fn id ->
-        case :ets.lookup(store.table, {store.namespace, id}) do
+        case :ets.lookup(store.table, {store.namespace, to_string(id)}) do
           [{_key, %{document: document}}] -> [document]
           [] -> []
         end

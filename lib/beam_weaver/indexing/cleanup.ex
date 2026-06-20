@@ -24,8 +24,6 @@ defmodule BeamWeaver.Indexing.Cleanup do
     end
   end
 
-  defp stale_ids(_manager, _planned, _namespace, :none, _opts), do: {:ok, []}
-
   defp stale_ids(manager, planned, namespace, :incremental, _opts) do
     source_ids = planned.documents |> Enum.map(& &1.source_id) |> Enum.uniq()
     stale_ids_for_sources(manager, namespace, source_ids, planned.current_ids)

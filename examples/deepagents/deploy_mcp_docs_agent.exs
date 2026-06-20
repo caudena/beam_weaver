@@ -14,7 +14,7 @@ defmodule BeamWeaver.Examples.DeepAgents.DeployMcpDocsAgent do
     {:ok, agent} =
       Support.create(
         name: "deploy-mcp-docs-agent",
-        model: Support.model("deploy_mcp_docs_agent: docs search tool and memory are configured"),
+        model: Support.model(),
         filesystem: Local.new(root: root),
         memory: ["/AGENTS.md"],
         tools: [docs_search_tool()]

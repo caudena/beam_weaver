@@ -64,6 +64,9 @@ defmodule BeamWeaver.Agent.Middleware.SubagentOutputs do
   defp response(%__MODULE__{response: response}, _outputs) when is_map(response),
     do: response
 
+  defp response(%__MODULE__{response: response}, _outputs) when not is_nil(response),
+    do: response
+
   defp response(_middleware, outputs),
     do: %{"status" => "completed", "captured_outputs" => Map.keys(outputs)}
 

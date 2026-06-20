@@ -261,12 +261,9 @@ defmodule BeamWeaver.Anthropic.Messages do
 
   defp content_block_to_anthropic!(block) when is_map(block) do
     BeamWeaver.MapShape.assert_atom_keys!(block)
-    provider_block = Options.stringify_keys(block)
+    provider_block = block |> Options.stringify_keys() |> Map.drop(["raw_provider_block"])
 
     case provider_type(Map.get(block, :type)) do
-      nil ->
-        raise ArgumentError, "Anthropic content block maps require a type"
-
       "input_text" ->
         %{"type" => "text", "text" => Map.get(block, :text) || Map.get(block, :content) || ""}
 
@@ -401,7 +398,9 @@ defmodule BeamWeaver.Anthropic.Messages do
   end
 
   defp image_source(_url, _data, _mime_type, block) when is_map(block) do
-    if file_id = block["file_id"] || block["id"] do
+    file_id = block["file_id"] || block["id"]
+
+    if file_id do
       %{"type" => "file", "file_id" => file_id}
     else
       raise ArgumentError, "Anthropic image blocks require url, base64/data, or file_id/id"
@@ -686,9 +685,10 @@ defmodule BeamWeaver.Anthropic.Messages do
     end
   end
 
-  defp usage_metadata(nil), do: nil
+  @doc false
+  def usage_metadata(nil), do: nil
 
-  defp usage_metadata(usage) when is_map(usage) do
+  def usage_metadata(usage) when is_map(usage) do
     usage = Options.stringify_keys(usage)
     cache_creation = usage["cache_creation"] || %{}
 
