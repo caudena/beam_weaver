@@ -12,6 +12,8 @@ defmodule BeamWeaver.Graph.Match do
   def match?(predicate, output, state) when is_function(predicate, 2),
     do: predicate.(output, state) == true
 
+  def match?([], output, _state), do: output in []
+
   def match?(expected, output, state) when is_list(expected) do
     if Keyword.keyword?(expected),
       do: match?(Map.new(expected), output, state),
@@ -39,6 +41,8 @@ defmodule BeamWeaver.Graph.Match do
     do: expected.(value, state) == true
 
   defp value_match?(%Range{} = range, value, _state), do: value in range
+
+  defp value_match?([], value, _state), do: value in []
 
   defp value_match?(expected, value, state) when is_list(expected) do
     if Keyword.keyword?(expected),

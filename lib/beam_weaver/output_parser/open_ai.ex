@@ -115,6 +115,10 @@ defmodule BeamWeaver.OutputParser.OpenAI do
   defp extract_tool_calls(%Messages.Chunk{tool_call_chunks: chunks}) when chunks != [],
     do: {:ok, chunks}
 
+  defp extract_tool_calls(%Messages.AIChunk{}), do: {:ok, []}
+  defp extract_tool_calls(%Messages.Chunk{}), do: {:ok, []}
+  defp extract_tool_calls(%Message{tool_calls: nil}), do: {:ok, []}
+
   defp extract_tool_calls(calls) when is_list(calls), do: {:ok, calls}
 
   defp extract_tool_calls(_input),

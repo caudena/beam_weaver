@@ -27,4 +27,24 @@ defmodule BeamWeaver.VectorStore.FilterTest do
     assert {:ok, {sql, _params}} = Filter.to_sql(%{or: [%{"a" => 1}, %{"b" => 2}]})
     assert sql =~ "OR"
   end
+
+  test "to_sql $like passes the user pattern through unchanged" do
+    assert {:ok, {sql, params}} = Filter.to_sql(%{"name" => %{"$like" => "foo%"}})
+    assert sql =~ "ILIKE $1"
+    assert params == ["foo%"]
+  end
+
+  test "to_sql $contain wraps the value in substring wildcards" do
+    assert {:ok, {sql, params}} = Filter.to_sql(%{"name" => %{"$contain" => "foo"}})
+    assert sql =~ "ILIKE $1"
+    assert params == ["%foo%"]
+  end
+
+  test "to_sql $like and $contain produce different params for the same value" do
+    assert {:ok, {_like_sql, like_params}} = Filter.to_sql(%{"name" => %{"$like" => "foo"}})
+    assert {:ok, {_contain_sql, contain_params}} = Filter.to_sql(%{"name" => %{"$contain" => "foo"}})
+    assert like_params == ["foo"]
+    assert contain_params == ["%foo%"]
+    refute like_params == contain_params
+  end
 end

@@ -6,6 +6,7 @@ defmodule BeamWeaver.Tool.Schema.Fields do
   def from_fields(fields) when is_list(fields) do
     {properties, required} =
       fields
+      |> Enum.map(&normalize_field/1)
       |> Enum.reduce({%{}, []}, fn {name, type, opts}, {properties, required} ->
         schema =
           type
@@ -28,6 +29,9 @@ defmodule BeamWeaver.Tool.Schema.Fields do
       required: required
     }
   end
+
+  defp normalize_field({name, type}), do: {name, type, []}
+  defp normalize_field({name, type, opts}), do: {name, type, opts}
 
   def type_schema(:string), do: %{type: "string"}
   def type_schema(:integer), do: %{type: "integer"}

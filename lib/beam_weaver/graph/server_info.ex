@@ -34,13 +34,24 @@ defmodule BeamWeaver.Graph.ServerInfo do
       map = to_access_map(user)
 
       case Access.get_and_update(map, key, fun) do
-        {current, updated} -> {current, %{user | metadata: Map.merge(user.metadata, updated)}}
+        {current, updated} -> {current, %{user | metadata: strip_injected(user, updated)}}
       end
     end
 
     def pop(%__MODULE__{} = user, key) do
-      {value, metadata} = Map.pop(to_access_map(user), key)
-      {value, %{user | metadata: metadata}}
+      value =
+        case fetch(user, key) do
+          {:ok, fetched} -> fetched
+          :error -> nil
+        end
+
+      {value, %{user | metadata: Map.delete(user.metadata, key)}}
+    end
+
+    defp strip_injected(%__MODULE__{} = user, map) do
+      Enum.reduce(["identity", "display_name", "is_authenticated", "permissions"], map, fn key, acc ->
+        if Map.has_key?(user.metadata, key), do: acc, else: Map.delete(acc, key)
+      end)
     end
 
     defp to_access_map(%__MODULE__{} = user) do

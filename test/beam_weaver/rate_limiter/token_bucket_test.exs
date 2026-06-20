@@ -143,6 +143,32 @@ defmodule BeamWeaver.RateLimiter.TokenBucketTest do
     assert :ok = RateLimiter.acquire(name)
   end
 
+  test "rejects an invalid mode even when tokens are available" do
+    limiter = start_bucket!(capacity: 2, initial_tokens: 2, refill_interval: 1_000)
+
+    assert {:error, %Error{type: :invalid_mode}} =
+             RateLimiter.acquire(limiter, 1, mode: :bogus)
+
+    assert %{tokens: 2} = RateLimiter.snapshot(limiter)
+  end
+
+  test "rejects a negative timeout instead of silently waiting" do
+    limiter =
+      start_bucket!(
+        capacity: 1,
+        initial_tokens: 0,
+        refill_amount: 1,
+        refill_interval: 1_000
+      )
+
+    started_at = System.monotonic_time(:millisecond)
+
+    assert {:error, %Error{type: :invalid_option}} =
+             RateLimiter.acquire(limiter, 1, timeout: -1)
+
+    assert System.monotonic_time(:millisecond) - started_at < 500
+  end
+
   defp start_bucket!(opts) do
     start_supervised!({TokenBucket, opts})
   end

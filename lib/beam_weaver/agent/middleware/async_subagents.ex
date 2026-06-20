@@ -315,22 +315,24 @@ defmodule BeamWeaver.Agent.Middleware.AsyncSubagents do
 
   defp list_tasks(%__MODULE__{} = middleware, input) do
     all_tasks = tasks(input)
-    filtered = filter_tasks(all_tasks, value(input, :status_filter, "all"))
+    now = timestamp()
+
+    refreshed =
+      Map.new(all_tasks, fn {task_id, task} -> {task_id, live_task(middleware, task, now)} end)
+
+    filtered = filter_tasks(refreshed, value(input, :status_filter, "all"))
 
     if filtered == [] do
       "No async subagent tasks tracked."
     else
-      now = timestamp()
-
       {updated, entries} =
         Enum.reduce(filtered, {%{}, []}, fn task, {tasks_acc, entries} ->
-          live_task = live_task(middleware, task, now)
-          task_id = task_value(live_task, :task_id) || task_value(live_task, :id)
+          task_id = task_value(task, :task_id) || task_value(task, :id)
 
           {
-            Map.put(tasks_acc, task_id, live_task),
+            Map.put(tasks_acc, task_id, task),
             [
-              "- task_id: #{task_id}  subagent: #{task_value(live_task, :subagent_name)}  status: #{task_value(live_task, :status)}"
+              "- task_id: #{task_id}  subagent: #{task_value(task, :subagent_name)}  status: #{task_value(task, :status)}"
               | entries
             ]
           }

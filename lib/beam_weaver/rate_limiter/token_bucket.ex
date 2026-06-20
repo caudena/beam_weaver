@@ -89,6 +89,12 @@ defmodule BeamWeaver.RateLimiter.TokenBucket do
     timeout = Keyword.get(opts, :timeout, 5_000)
 
     cond do
+      mode not in [:wait, :drop, :reject] ->
+        {:reply, {:error, Error.new(:invalid_mode, "mode must be :wait, :drop, or :reject")}, state}
+
+      timeout != :infinity and (not is_integer(timeout) or timeout < 0) ->
+        {:reply, {:error, Error.new(:invalid_option, "timeout must be a non-negative integer or :infinity")}, state}
+
       not is_integer(amount) or amount <= 0 ->
         {:reply, {:error, Error.new(:invalid_amount, "amount must be a positive integer")}, state}
 
@@ -108,9 +114,6 @@ defmodule BeamWeaver.RateLimiter.TokenBucket do
 
       mode == :wait ->
         {:noreply, enqueue_waiter(state, from, amount, timeout)}
-
-      true ->
-        {:reply, {:error, Error.new(:invalid_mode, "mode must be :wait, :drop, or :reject")}, state}
     end
   end
 

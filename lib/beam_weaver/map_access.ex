@@ -30,12 +30,15 @@ defmodule BeamWeaver.MapAccess do
   def first(map, keys, default \\ nil)
 
   def first(map, keys, default) when is_map(map) and is_list(keys) do
-    Enum.find_value(keys, default, fn key ->
-      case fetch(map, key) do
-        {:ok, value} -> value
-        :error -> nil
-      end
-    end)
+    case Enum.find_value(keys, fn key ->
+           case fetch(map, key) do
+             {:ok, value} -> {:ok, value}
+             :error -> nil
+           end
+         end) do
+      {:ok, value} -> value
+      nil -> default
+    end
   end
 
   def first(_map, _keys, default), do: default

@@ -144,7 +144,7 @@ defmodule BeamWeaver.Graph.Channels.DeltaChannel do
     if value == Channel.missing(), do: initial, else: value
   end
 
-  defp split_overwrite(channel, updates) do
+  defp split_overwrite(_channel, updates) do
     overwrites =
       updates
       |> Enum.with_index()
@@ -166,7 +166,7 @@ defmodule BeamWeaver.Graph.Channels.DeltaChannel do
           |> Enum.reject(fn {_value, update_index} -> update_index == index end)
           |> Enum.map(fn {value, _index} -> value end)
 
-        {:ok, value || channel.initial, remaining}
+        {:ok, value, remaining}
 
       _many ->
         {:error, "delta channel can receive only one overwrite per step"}
@@ -175,12 +175,12 @@ defmodule BeamWeaver.Graph.Channels.DeltaChannel do
 
   defp replay_split(_channel, []), do: {:ok, :current, []}
 
-  defp replay_split(channel, updates) do
+  defp replay_split(_channel, updates) do
     updates
     |> Enum.with_index()
     |> Enum.reduce({:current, 0}, fn {value, index}, {base, start} ->
       case Overwrite.get(value) do
-        {:ok, overwrite_value} -> {overwrite_value || channel.initial, index + 1}
+        {:ok, overwrite_value} -> {overwrite_value, index + 1}
         :error -> {base, start}
       end
     end)

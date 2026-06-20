@@ -117,13 +117,14 @@ defmodule BeamWeaver.RetryPolicy do
 
   @spec delay(t(), pos_integer()) :: non_neg_integer()
   def delay(%__MODULE__{backoff: backoff} = policy, _attempt) when backoff == 0,
-    do: add_jitter(policy.initial_delay, policy.jitter)
+    do: policy.initial_delay |> min(policy.max_delay) |> add_jitter(policy.jitter) |> min(policy.max_delay)
 
   def delay(%__MODULE__{} = policy, attempt) when attempt >= 1 do
     policy.initial_delay
     |> multiply_delay(policy.backoff, attempt - 1)
     |> min(policy.max_delay)
     |> add_jitter(policy.jitter)
+    |> min(policy.max_delay)
   end
 
   defp multiply_delay(delay, _backoff, 0), do: delay

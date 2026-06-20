@@ -137,9 +137,15 @@ defmodule BeamWeaver.Schema do
     schema
     |> maybe_put("description", Keyword.get(opts, :description))
     |> maybe_put("enum", Keyword.get(opts, :enum))
-    |> maybe_put("default", Keyword.get(opts, :default), Keyword.has_key?(opts, :default))
+    |> maybe_put_default(opts)
     |> maybe_nullable(Keyword.get(opts, :nullable, false))
     |> maybe_put("additionalProperties", false, Keyword.get(opts, :strict, false))
+  end
+
+  defp maybe_put_default(schema, opts) do
+    if Keyword.has_key?(opts, :default),
+      do: Map.put(schema, "default", Keyword.get(opts, :default)),
+      else: schema
   end
 
   defp maybe_nullable(schema, false), do: schema
@@ -152,7 +158,6 @@ defmodule BeamWeaver.Schema do
   defp maybe_put(schema, _key, nil), do: schema
   defp maybe_put(schema, key, value), do: Map.put(schema, key, value)
 
-  defp maybe_put(schema, _key, "", true), do: schema
   defp maybe_put(schema, key, value, true), do: maybe_put(schema, key, value)
   defp maybe_put(schema, _key, _value, false), do: schema
 

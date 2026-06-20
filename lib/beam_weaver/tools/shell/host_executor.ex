@@ -18,9 +18,10 @@ defmodule BeamWeaver.Tools.Shell.HostExecutor do
   end
 
   defp run_allowed(command, policy) do
+    {shell_command, after_run, scratch} = prepare_command(command, policy)
+
     task =
       Task.async(fn ->
-        {shell_command, after_run} = prepare_command(command, policy)
         {output, status} = System.cmd(shell(), ["-c", shell_command], system_opts(policy))
         {output, status, after_run.()}
       end)
@@ -33,9 +34,12 @@ defmodule BeamWeaver.Tools.Shell.HostExecutor do
          |> maybe_put_stderr(stderr, policy)}
 
       nil ->
+        cleanup_scratch(scratch)
         {:error, Error.new(:shell_timeout, "shell command timed out", %{command: command})}
 
       {:exit, reason} ->
+        cleanup_scratch(scratch)
+
         {:error,
          Error.new(:shell_execution_error, "shell command failed", %{
            command: command,
@@ -43,6 +47,9 @@ defmodule BeamWeaver.Tools.Shell.HostExecutor do
          })}
     end
   end
+
+  defp cleanup_scratch(nil), do: :ok
+  defp cleanup_scratch(path), do: File.rm_rf(path)
 
   defp yield_timeout(nil), do: :infinity
   defp yield_timeout(:infinity), do: :infinity
@@ -56,12 +63,14 @@ defmodule BeamWeaver.Tools.Shell.HostExecutor do
   end
 
   defp prepare_command(command, %ShellPolicy{stderr: :separate}) do
-    path =
+    scratch =
       Path.join(
         System.tmp_dir!(),
-        "beam_weaver_shell_stderr_#{System.unique_integer([:positive])}"
+        "beam_weaver_shell_scratch_#{System.unique_integer([:positive])}"
       )
 
+    File.mkdir_p!(scratch)
+    path = Path.join(scratch, "stderr")
     shell_command = "(" <> command <> ") 2> " <> shell_quote(path)
 
     {shell_command,
@@ -72,16 +81,16 @@ defmodule BeamWeaver.Tools.Shell.HostExecutor do
            {:error, _reason} -> ""
          end
 
-       File.rm(path)
+       File.rm_rf(scratch)
        stderr
-     end}
+     end, scratch}
   end
 
   defp prepare_command(command, %ShellPolicy{stderr: :discard}) do
-    {"(" <> command <> ") 2> /dev/null", fn -> nil end}
+    {"(" <> command <> ") 2> /dev/null", fn -> nil end, nil}
   end
 
-  defp prepare_command(command, _policy), do: {command, fn -> nil end}
+  defp prepare_command(command, _policy), do: {command, fn -> nil end, nil}
 
   defp base_result(command, status, output, policy) do
     %{

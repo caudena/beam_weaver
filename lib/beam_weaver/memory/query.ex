@@ -219,10 +219,18 @@ defmodule BeamWeaver.Memory.Query do
   defp compare(:missing, _expected), do: false
 
   defp compare(value, expected) when is_map(expected) do
-    Enum.all?(expected, fn {op, op_value} -> apply_operator(value, to_string(op), op_value) end)
+    if operator_map?(expected) do
+      Enum.all?(expected, fn {op, op_value} -> apply_operator(value, to_string(op), op_value) end)
+    else
+      value == expected
+    end
   end
 
   defp compare(value, expected), do: value == expected
+
+  defp operator_map?(expected) do
+    map_size(expected) > 0 and Enum.all?(Map.keys(expected), &(to_string(&1) =~ ~r/^\$/))
+  end
 
   defp apply_operator(value, "$eq", expected), do: value == expected
   defp apply_operator(value, "$ne", expected), do: value != expected

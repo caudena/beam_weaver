@@ -105,6 +105,36 @@ defmodule BeamWeaver.Transport.URLPolicyTest do
              )
   end
 
+  test "reserved IPv4 ranges only block their precise CIDRs, not whole /16 blocks" do
+    for url <- [
+          "https://192.0.2.1",
+          "https://198.18.0.1",
+          "https://198.19.255.1",
+          "https://198.51.100.1",
+          "https://203.0.113.1"
+        ] do
+      assert {:error, %Error{type: :unsafe_url}} = URLPolicy.validate(url)
+    end
+
+    for url <- [
+          "https://192.2.0.1",
+          "https://198.51.99.1",
+          "https://198.51.101.1",
+          "https://203.0.112.1",
+          "https://203.0.114.1"
+        ] do
+      assert {:ok, ^url} = URLPolicy.validate(url)
+    end
+  end
+
+  test "IPv6 link-local fe80::/10 stays blocked even when metadata is allowed" do
+    assert {:error, %Error{type: :unsafe_url}} =
+             URLPolicy.validate("https://[fe80::a9fe:a9fe]", allow_metadata?: true)
+
+    assert {:ok, "https://169.254.169.254/latest/meta-data/"} =
+             URLPolicy.validate("https://169.254.169.254/latest/meta-data/", allow_metadata?: true)
+  end
+
   test "safe? exposes non-raising validation result" do
     assert URLPolicy.safe?("https://example.com/hook")
     refute URLPolicy.safe?("https://127.0.0.1/hook")

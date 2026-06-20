@@ -36,6 +36,14 @@ defmodule BeamWeaver.MapAccessTest do
     refute existing_atom?(key)
   end
 
+  test "first returns the first present key including falsey values" do
+    assert MapAccess.first(%{enabled: false, fallback: true}, [:enabled, :fallback], :default) == false
+    assert MapAccess.first(%{value: nil, other: 1}, [:value, :other], :default) == nil
+    assert MapAccess.first(%{"value" => false}, [:value], :default) == false
+    assert MapAccess.first(%{other: 1}, [:value, :other], :default) == 1
+    assert MapAccess.first(%{}, [:value, :other], :default) == :default
+  end
+
   test "normalizes only allowlisted string keys" do
     key = "beam_weaver_map_access_normalize_unknown_#{System.unique_integer([:positive])}"
 

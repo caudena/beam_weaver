@@ -110,4 +110,6 @@ defmodule BeamWeaver.Provider.ChatRuntime do
 
   defp stream_metadata(model, body, opts, %Adapter{metadata: metadata}) when is_function(metadata, 3),
     do: metadata.(model, body, opts)
+
+  defp stream_metadata(_model, _body, _opts, %Adapter{}), do: %{}
 end

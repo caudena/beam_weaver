@@ -214,7 +214,9 @@ defmodule BeamWeaver.Tool.Renderer do
           end)
       end
     )
-    |> Enum.reject(fn {_key, value} -> is_nil(value) end)
+    |> Enum.reject(fn {key, value} ->
+      is_nil(value) and key in ["properties", "items", "anyOf", "oneOf", "allOf", "$defs", "definitions"]
+    end)
     |> Map.new()
   end
 

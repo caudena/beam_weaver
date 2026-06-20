@@ -198,16 +198,16 @@ defmodule BeamWeaver.Core.Messages.Trim do
   defp words(text), do: String.split(text, ~r/\s+/, trim: true)
 
   defp partial_content(content, remaining, :first),
-    do: partial_content_forward(content, remaining)
+    do: partial_content_forward(content, remaining, :first)
 
   defp partial_content(content, remaining, :last) do
     content
     |> Enum.reverse()
-    |> partial_content_forward(remaining)
+    |> partial_content_forward(remaining, :last)
     |> Enum.reverse()
   end
 
-  defp partial_content_forward(content, remaining) do
+  defp partial_content_forward(content, remaining, direction) do
     content
     |> Enum.reduce_while({[], remaining}, fn block, {acc, remaining} ->
       count = content_block_token_count(block)
@@ -220,7 +220,7 @@ defmodule BeamWeaver.Core.Messages.Trim do
           {:cont, {[block | acc], remaining - count}}
 
         text_block?(block) ->
-          {:halt, {[truncate_text_block(block, remaining) | acc], 0}}
+          {:halt, {[truncate_text_block(block, remaining, direction) | acc], 0}}
 
         true ->
           {:halt, {acc, remaining}}
@@ -240,20 +240,23 @@ defmodule BeamWeaver.Core.Messages.Trim do
 
   defp content_block_token_count(_block), do: 1
 
-  defp truncate_text_block(%ContentBlock.Text{} = block, remaining) do
-    %{block | text: block.text |> to_string() |> words() |> Enum.take(remaining) |> Enum.join(" ")}
+  defp truncate_text_block(%ContentBlock.Text{} = block, remaining, direction) do
+    %{block | text: block.text |> to_string() |> take_words(remaining, direction) |> Enum.join(" ")}
   end
 
-  defp truncate_text_block(%ContentBlock.PlainText{} = block, remaining) do
-    %{block | text: block.text |> to_string() |> words() |> Enum.take(remaining) |> Enum.join(" ")}
+  defp truncate_text_block(%ContentBlock.PlainText{} = block, remaining, direction) do
+    %{block | text: block.text |> to_string() |> take_words(remaining, direction) |> Enum.join(" ")}
   end
 
-  defp truncate_text_block(block, remaining) when is_map(block) do
+  defp truncate_text_block(block, remaining, direction) when is_map(block) do
     text = block |> Map.get(:text) |> to_string()
-    truncated = text |> words() |> Enum.take(remaining) |> Enum.join(" ")
+    truncated = text |> take_words(remaining, direction) |> Enum.join(" ")
 
     Map.put(block, :text, truncated)
   end
+
+  defp take_words(text, remaining, :first), do: text |> words() |> Enum.take(remaining)
+  defp take_words(text, remaining, :last), do: text |> words() |> Enum.take(-remaining)
 
   defp tool_call_id(call) when is_map(call), do: Map.get(call, :id)
 

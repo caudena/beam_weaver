@@ -17,4 +17,23 @@ defmodule BeamWeaver.Tools.Shell.HostExecutorTest do
     assert {:ok, result} = HostExecutor.run("echo ok", policy)
     assert result.output =~ "ok"
   end
+
+  test "does not leak stderr temp files when a separate-stderr command times out" do
+    policy = ShellPolicy.new!(allow: ["sleep"], stderr: :separate, timeout: 50)
+
+    before = stderr_temp_files()
+
+    assert {:error, %{type: :shell_timeout}} = HostExecutor.run("sleep 5", policy)
+
+    Process.sleep(100)
+
+    assert stderr_temp_files() == before
+  end
+
+  defp stderr_temp_files do
+    System.tmp_dir!()
+    |> Path.join("beam_weaver_shell_stderr_*")
+    |> Path.wildcard()
+    |> MapSet.new()
+  end
 end

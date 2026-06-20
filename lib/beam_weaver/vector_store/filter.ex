@@ -276,8 +276,13 @@ defmodule BeamWeaver.VectorStore.Filter do
        do: numeric_sql(path, "<=", expected, index)
 
   defp single_operator_sql(path, operator, expected, index)
-       when operator in [:contain, "contain", "$contain", :like, "like", "$like"] do
+       when operator in [:contain, "contain", "$contain"] do
     {:ok, {"#{json_path(path)} ILIKE $#{index}", ["%#{to_string(expected)}%"], index + 1}}
+  end
+
+  defp single_operator_sql(path, operator, expected, index)
+       when operator in [:like, "like", "$like"] do
+    {:ok, {"#{json_path(path)} ILIKE $#{index}", [to_string(expected)], index + 1}}
   end
 
   defp single_operator_sql(_path, operator, _expected, _index),

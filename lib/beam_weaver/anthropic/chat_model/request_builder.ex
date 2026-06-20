@@ -278,6 +278,9 @@ defmodule BeamWeaver.Anthropic.ChatModel.RequestBuilder do
 
       tools when is_list(tools) ->
         Tools.to_anthropic_tools(tools, strict: Keyword.get(opts, :strict))
+
+      _other ->
+        nil
     end
   end
 

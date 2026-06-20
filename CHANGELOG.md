@@ -4,75 +4,142 @@
 
 ### Fixed
 
-Security and safety guarantees:
+Security and transport:
 
-- Transport: stopped Req from following redirects internally and now validate
-  every redirect hop — including on the streaming paths — against the URL policy,
-  so the SSRF boundary actually applies to redirects instead of being bypassed.
-- Agents: preserved the `interrupt_before`/`interrupt_after: :all` sentinel
-  instead of turning it into `[:all]`, which had silently disabled all
-  human-in-the-loop interrupts.
-- PII middleware: overlapping detector spans (for example a URL containing an IP
-  address) no longer crash with an `ArgumentError` or leak/garble redacted text;
-  spans are pruned to stay disjoint before splicing.
+- SSRF: Req no longer auto-follows redirects. Every redirect hop is validated
+  against the URL policy, including on streaming paths.
+- PII: overlapping detector spans (such as a URL containing an IP) no longer
+  crash or garble output. Spans are pruned to stay disjoint.
+- IPv4 reserved-range checks no longer over-block public `/16` ranges.
+- IPv6 `fe80::/10` is treated as reserved, so it stays blocked when
+  `allow_metadata?` is on.
+- Per-call request options (including `:timeout`) override client transport
+  defaults instead of being shadowed.
 
-Provider request/response correctness:
+Providers:
 
-- Anthropic: inferred beta flags are sent via the `anthropic-beta` header instead
-  of the request body (covers invoke, stream, stream_events, and count_tokens);
-  the final streaming `message_delta` reports usage as a proper usage map merged
-  into chunk metadata rather than a discarded message struct.
-- Google: streaming tolerates chunks without `candidates`/`content`/`parts`
-  (usage- or finish-only chunks); `countTokens` sends exactly one of `contents`
-  or `generateContentRequest` (they are mutually exclusive).
-- xAI: `ChatCompletionsModel.new/1` no longer crashes with a `KeyError` when given
-  `streaming: true`.
-- OpenAI: an `:image_url` content block whose `image_url` is a bare string is
-  handled instead of crashing on map access.
-- Moonshot: the function-tool name regex accepts short and digit/hyphen-leading
-  names.
+- Anthropic: beta flags go in the `anthropic-beta` header, not the body. This
+  covers invoke, stream, stream_events, and count_tokens.
+- Anthropic: final streaming usage is a proper usage map merged into metadata.
+- Anthropic: a non-list `:tools` option (such as `nil`) no longer raises; tools
+  are omitted.
+- Google: streaming tolerates chunks with no candidates, content, or parts.
+- Google: `countTokens` sends exactly one of `contents` or
+  `generateContentRequest`.
+- OpenAI: a bare-string `:image_url` block is handled instead of crashing.
+- OpenAI: model inference is limited to `o1`/`o3`/`o4`/`chatgpt` prefixes, so
+  other models are not misrouted.
+- OpenAI: parsing a chunk with no tool calls returns `[]`, not an error.
+- xAI: `ChatCompletionsModel.new/1` no longer crashes on `streaming: true`.
+- Moonshot: the tool-name regex accepts short and digit/hyphen-leading names.
+- Provider runtime: stream-metadata returns `%{}` instead of crashing when an
+  adapter has no metadata function.
+- Cached models keep usage cost on a cache miss, for both stream and
+  stream_events.
 
-Correctness, crashes, and data integrity:
+Agents and middleware:
 
-- Output parser: XML slicing uses byte offsets consistently, fixing corruption of
-  multibyte text and attribute values.
-- Sandboxes: Docker `edit/5` starts the container once and threads it through
-  read/write/execute — the edit previously landed in throwaway containers, never
-  modified the real file, and leaked containers; execute/read output truncation
-  now respects UTF-8 codepoint boundaries.
-- Shell tools: a host command no longer crashes when the policy timeout is `nil`.
-- Graph execution: validation-node tasks that exit are turned into error
-  messages instead of crashing the node; pending checkpoint-map merging no longer
-  crashes when the config lacks a `configurable` key.
-- Memory (Ecto): the store `default_ttl` is applied on write so configured TTLs
-  expire; refresh-on-read updates `expires_at` only and no longer bumps
-  `updated_at`.
-- Serialization: maps with colliding atom/string keys raise instead of silently
-  dropping an entry; the pretty JSON encoder escapes all control characters so it
-  always emits valid JSON.
-- Retrieval: vector-store SQL filters render `$and`/`$or`/`$not` logical
-  operators; the policy-based retriever honors `:similarity_score` and
-  `score_threshold`.
-- Other: structured-output `oneOf` variants get distinct spec names; cached models
-  no longer zero usage cost on a cache miss; a nullable typeless tool field
-  becomes `anyOf[…, null]` instead of a null-only schema; prompt partials and the
-  simple template renderer no longer mis-handle supplied/brace values; partial
-  JSON repair is no longer cubic on long input; and assorted dead or edge-case
-  clauses were fixed (agent decision normalization, transient-error predicates,
-  MFA retry predicates, the HTML header splitter, and more).
+- `interrupt_before`/`interrupt_after: :all` is preserved instead of becoming
+  `[:all]`, which had disabled all human-in-the-loop interrupts.
+- Structured final-response extraction handles string-keyed state instead of
+  crashing.
+- `list_async_tasks` refreshes live status before filtering, not stale status.
+- A configured subagent-output response that is not a map or function is honored,
+  not dropped.
+- The tool emulator falls back to `"unknown_tool"` when a tool call has no name.
+
+Graph:
+
+- Validation-node task exits become error messages instead of crashing the node.
+- Pending checkpoint-map merging tolerates a missing `configurable` key.
+- Delta channels keep `nil`/`false` overwrite values instead of resetting to the
+  initial value.
+- `input_channels` hides private channels (such as `__node_outputs__`) when there
+  is no `input_schema`.
+- An empty-list edge condition is treated as membership, not a match-anything map.
+- `add_messages` honors the last `remove_all` marker, not the first.
+- OpenAI message formatting tags tool calls as `"tool_call"`, not `"tool_calls"`.
+- `ServerInfo.User` Access no longer leaks struct-field keys into user metadata.
+
+Memory, retrieval, and indexing:
+
+- Ecto memory applies `default_ttl` on write. Refresh-on-read updates only
+  `expires_at`, not `updated_at`.
+- ETS chat history no longer drops messages under concurrent `add_messages`;
+  writes are atomic.
+- Indexing without a record manager deduplicates documents that share an id.
+- ETS memory namespace listing ignores unknown match-condition types instead of
+  crashing.
+- Memory metadata filters match a plain-map value by equality instead of always
+  failing.
+- Vector-store SQL filters render `$and`/`$or`/`$not`.
+- The policy retriever honors `:similarity_score` and `score_threshold`.
+- The SQL `$like` filter keeps the user pattern verbatim, matching ETS `like`.
+- ETS vector store stringifies ids in `delete`/`get_by_ids`, so non-string ids
+  match.
+- File-search snippets slice with correct offsets, fixing garbled multibyte text.
+- `add_start_index` reports a character index, not a byte offset.
+
+Rate limiting:
+
+- The rate-limited wrapper streams through `ChatModel.stream/3` instead of
+  degrading to invoke when the provider module is not loaded.
+- Token-bucket `acquire` rejects negative or non-integer timeouts and invalid
+  modes up front.
+- Retry delays are re-clamped to `max_delay` after jitter, including the
+  zero-backoff path.
+
+Serialization and schema:
+
+- Maps with colliding atom/string keys raise instead of silently dropping one.
+- The pretty JSON encoder escapes all control characters.
+- Structured-output `oneOf` variants get distinct spec names.
+- A nullable typeless tool field becomes `anyOf[…, null]`, not null-only.
+- Checkpoint config normalization returns `%{}` when `configurable` is `nil`.
+- `MapAccess.first` returns a `false`/`nil` value instead of the default.
+- Empty-string schema defaults are emitted, not dropped.
+- Strict tool-schema rendering keeps user keys with `nil` values.
+- Schema fields given as 2-tuples normalize instead of crashing.
+- Tracing `custom_fields` skips non-pair list entries instead of crashing.
+
+Core messages and text:
+
+- XML output parsing slices on byte offsets, fixing multibyte corruption.
+- Tool-result truncation backs off to a valid UTF-8 boundary.
+- Trimming with `:last` keeps the last words, not the first.
+- Usage subtraction clamps right-only token counts to zero, including nested maps.
+- The `drop_oldest` mux drops the newest item instead of erroring when the buffer
+  is full.
+- Prompt partials and the simple template renderer no longer mishandle supplied
+  or brace values.
+- Partial JSON repair is no longer cubic on long input.
+- Fixed assorted dead and edge-case clauses: agent decision normalization,
+  transient-error and MFA retry predicates, and the HTML header splitter.
+
+Sandbox and shell:
+
+- Docker `edit/5` starts the container once and threads it through
+  read/write/execute. Edits previously hit throwaway containers and leaked
+  containers.
+- Docker execute/read truncation respects UTF-8 codepoint boundaries.
+- The Docker sandbox prints the entry type before the path, so `ls`/`glob` handle
+  paths containing `|`.
+- File-formatting long-line chunking splits on character boundaries, not raw
+  bytes.
+- A host shell command no longer crashes when the policy timeout is `nil`.
+- Shell host-executor and session temp files are cleaned up even on timeout or
+  kill.
 
 ### Changed
 
-- Raised the default operation timeout for runnable `batch`/`map`/`parallel`/
-  fallback and the agent `GenServer.call` from 5 seconds to 5 minutes so real
-  model calls are not aborted prematurely; an explicit `:timeout` option still
-  overrides it.
+- Default operation timeout raised from 5 seconds to 5 minutes for runnable
+  `batch`/`map`/`parallel`/fallback and the agent `GenServer.call`. An explicit
+  `:timeout` still overrides it.
 
 ### Internal
 
-- Removed dead and redundant clauses and other sources of Elixir 1.19 compiler
-  warnings; `mix compile` and `mix test` now run free of warnings and stray error
-  logs.
+- Removed dead clauses and other compiler-warning sources. `mix compile` and
+  `mix test` now run clean.
 
 ## 0.1.1 - 2026-06-20
 
@@ -87,4 +154,3 @@ Correctness, crashes, and data integrity:
 ### Changed
 
 - Updated Moonshot/Kimi docs and install snippets for the `0.1.1` release.
-

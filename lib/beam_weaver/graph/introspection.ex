@@ -159,8 +159,15 @@ defmodule BeamWeaver.Graph.Introspection do
     graph.input_schema
     |> schema_keys()
     |> case do
-      [] -> graph.channels |> Map.keys() |> Enum.map(&to_string/1) |> Enum.sort()
-      keys -> keys
+      [] ->
+        graph.channels
+        |> Map.keys()
+        |> Enum.reject(&(Map.get(graph.channel_visibility, &1, :public) == :private or internal_channel?(&1)))
+        |> Enum.map(&to_string/1)
+        |> Enum.sort()
+
+      keys ->
+        keys
     end
   end
 

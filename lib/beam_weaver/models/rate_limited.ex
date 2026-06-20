@@ -20,14 +20,7 @@ defmodule BeamWeaver.Models.RateLimited do
   @impl true
   def stream(%__MODULE__{} = wrapper, messages, opts) do
     with :ok <- acquire(wrapper, opts) do
-      if function_exported?(wrapper.model.__struct__, :stream, 3) do
-        wrapper.model.__struct__.stream(wrapper.model, messages, opts)
-      else
-        case ChatModel.invoke(wrapper.model, messages, opts) do
-          {:ok, message} -> {:ok, [message]}
-          {:error, error} -> {:error, error}
-        end
-      end
+      ChatModel.stream(wrapper.model, messages, opts)
     end
   end
 
