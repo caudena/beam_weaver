@@ -49,7 +49,7 @@ defmodule BeamWeaver.Models.Cached do
         :miss ->
           with {:ok, message} <- ChatModel.invoke(wrapper.model, messages, opts),
                :ok <- Cache.put(cache, namespace, key, message, wrapper.opts) do
-            {:ok, [zero_cached_cost(message)]}
+            {:ok, [message]}
           end
 
         {:error, %Error{}} = error ->
@@ -211,7 +211,7 @@ defmodule BeamWeaver.Models.Cached do
   defp model_name(other), do: inspect(other)
 
   defp cached_event_stream(message, cache_status, cache_metadata) do
-    message = zero_cached_cost(message)
+    message = if cache_status == :hit, do: zero_cached_cost(message), else: message
 
     [
       Stream.envelope(%Events.Debug{payload: %{type: :cache_replay, cache: cache_status}},

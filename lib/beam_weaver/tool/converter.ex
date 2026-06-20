@@ -182,8 +182,6 @@ defmodule BeamWeaver.Tool.Converter do
     Code.ensure_loaded?(module) and function_exported?(module, :invoke, 3)
   end
 
-  defp runnable?(_term), do: false
-
   defp reject_duplicate_names(tools) do
     names = Enum.map(tools, &Tool.name/1)
     duplicates = names -- Enum.uniq(names)

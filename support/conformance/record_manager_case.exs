@@ -37,8 +37,8 @@ defmodule BeamWeaver.TestSupport.Conformance.RecordManagerCase do
         assert {:ok, nil} = RecordManager.get(manager, "doc-1", namespace: :case)
       end
 
-      defp beamweaver_standard_value(value) when is_function(value, 0), do: value.()
-      defp beamweaver_standard_value(value), do: value
+      defp beamweaver_standard_value(value),
+        do: BeamWeaver.TestSupport.Conformance.Subject.standard_value(value)
     end
   end
 end

@@ -299,7 +299,7 @@ defmodule BeamWeaver.Stream.Mux do
 
     if heartbeat_due_on_finish?(mux, task_info, state) do
       heartbeat =
-        debug_event(mux, task_info && task_info.name, :heartbeat, mux.policy.heartbeat.payload)
+        debug_event(mux, task_info.name, :heartbeat, mux.policy.heartbeat.payload)
 
       state =
         state

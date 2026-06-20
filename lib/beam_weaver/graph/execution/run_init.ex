@@ -14,9 +14,8 @@ defmodule BeamWeaver.Graph.Execution.RunInit do
 
   @spec build(map(), map(), RunOptions.t(), term()) :: {:ok, Run.t()} | {:error, Error.t()}
   def build(compiled, input, %RunOptions{} = options, resume) do
-    with {:ok, restored} <- Replay.restore_checkpoint_state(compiled, options.config),
-         {:ok, run} <- build_from_restored(compiled, input, options, resume, restored) do
-      {:ok, run}
+    with {:ok, restored} <- Replay.restore_checkpoint_state(compiled, options.config) do
+      build_from_restored(compiled, input, options, resume, restored)
     end
   end
 
@@ -194,9 +193,10 @@ defmodule BeamWeaver.Graph.Execution.RunInit do
       end)
 
     if map_size(checkpoint_map) > 0 do
-      update_in(config, ["configurable", "checkpoint_map"], fn existing ->
-        Map.merge(checkpoint_map, existing || %{})
-      end)
+      configurable = Map.get(config, "configurable") || %{}
+      existing = Map.get(configurable, "checkpoint_map") || %{}
+      configurable = Map.put(configurable, "checkpoint_map", Map.merge(checkpoint_map, existing))
+      Map.put(config, "configurable", configurable)
     else
       config
     end

@@ -111,7 +111,7 @@ defmodule BeamWeaver.Filesystem.Format do
     do: Enum.reverse([binary | chunks])
 
   defp do_chunk_binary(binary, size, chunks) do
-    <<chunk::binary-size(size), rest::binary>> = binary
+    <<chunk::binary-size(^size), rest::binary>> = binary
     do_chunk_binary(rest, size, [chunk | chunks])
   end
 end

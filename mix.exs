@@ -4,7 +4,7 @@ defmodule BeamWeaver.MixProject do
   def project do
     [
       app: :beam_weaver,
-      version: "0.1.1",
+      version: "0.1.2",
       description: "From-scratch OTP-native Elixir implementation of LangChain, LangGraph, and Deep Agents concepts",
       source_url: "https://github.com/caudena/beam_weaver",
       homepage_url: "https://github.com/caudena/beam_weaver",

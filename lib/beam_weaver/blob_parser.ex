@@ -91,7 +91,7 @@ defmodule BeamWeaver.BlobParser do
     def document(%{} = item, blob, content_key, metadata_key) do
       content = fetch_field(item, content_key) || inspect(item)
       metadata = fetch_field(item, metadata_key) || %{}
-      Document.new!(to_string(content), metadata: Map.merge(blob.metadata, metadata || %{}))
+      Document.new!(to_string(content), metadata: Map.merge(blob.metadata, metadata))
     rescue
       ArgumentError -> Document.new!(inspect(item), metadata: blob.metadata)
     end

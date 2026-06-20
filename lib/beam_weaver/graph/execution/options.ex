@@ -10,8 +10,10 @@ defmodule BeamWeaver.Graph.Execution.Options do
   @spec normalize_failure_policy(term()) :: :panic | :proceed
   def normalize_failure_policy(policy) when policy in [:panic, :proceed], do: policy
 
-  def normalize_failure_policy(policy) when is_binary(policy),
-    do: Options.atom_enum!("failure_policy", policy, [:panic, :proceed])
+  def normalize_failure_policy(policy) when is_binary(policy) do
+    {:error, message} = Options.atom_enum_error("failure_policy", policy, [:panic, :proceed])
+    raise ArgumentError, message
+  end
 
   def normalize_failure_policy(_policy), do: :panic
 

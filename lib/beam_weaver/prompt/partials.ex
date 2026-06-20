@@ -24,7 +24,15 @@ defmodule BeamWeaver.Prompt.Partials do
 
   def validate_input(%StringTemplate{validate?: true} = prompt, vars) do
     expected = MapSet.new(Variables.variables(prompt))
-    actual = MapSet.new(Enum.map(Map.keys(vars), &Kernel.to_string/1))
+    partial_keys = MapSet.new(Map.keys(prompt.partials || %{}), &Kernel.to_string/1)
+
+    actual =
+      vars
+      |> Map.keys()
+      |> Enum.map(&Kernel.to_string/1)
+      |> MapSet.new()
+      |> MapSet.difference(partial_keys)
+
     extra = MapSet.difference(actual, expected) |> MapSet.to_list()
 
     if extra == [] do

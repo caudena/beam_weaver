@@ -359,6 +359,4 @@ defmodule BeamWeaver.Graph.Execution.ChannelMerge do
   rescue
     ArgumentError -> nil
   end
-
-  defp existing_atom(_value), do: nil
 end

@@ -148,18 +148,7 @@ defmodule BeamWeaver.OutputParser.JSON do
   end
 
   defp repaired_json_candidates(candidate) do
-    repaired = repair_json(candidate)
-
-    [candidate, repaired]
-    |> Enum.flat_map(fn value ->
-      value
-      |> String.graphemes()
-      |> then(fn graphemes ->
-        0..length(graphemes)
-        |> Enum.reverse()
-        |> Enum.map(fn count -> graphemes |> Enum.take(count) |> Enum.join() |> repair_json() end)
-      end)
-    end)
+    [candidate, repair_json(candidate)]
     |> Enum.uniq()
   end
 

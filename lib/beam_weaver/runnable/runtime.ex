@@ -73,7 +73,7 @@ defmodule BeamWeaver.Runnable.Runtime do
     config = Config.normalize(opts)
     call_opts = Config.to_opts(config)
     max_concurrency = config.max_concurrency
-    timeout = Keyword.get(call_opts, :timeout, 5_000)
+    timeout = Keyword.get(call_opts, :timeout, 300_000)
 
     stream =
       inputs
@@ -302,7 +302,7 @@ defmodule BeamWeaver.Runnable.Runtime do
     |> Task.async_stream(&invoke(runnable, &1, opts),
       ordered: true,
       max_concurrency: max_concurrency,
-      timeout: Keyword.get(opts, :timeout, 5_000),
+      timeout: Keyword.get(opts, :timeout, 300_000),
       on_timeout: :kill_task
     )
     |> Stream.map(fn
@@ -419,7 +419,6 @@ defmodule BeamWeaver.Runnable.Runtime do
 
   defp normalize_filter_value(value) when is_atom(value), do: Atom.to_string(value)
   defp normalize_filter_value(value) when is_binary(value), do: value
-  defp normalize_filter_value(nil), do: nil
   defp normalize_filter_value(value), do: to_string(value)
 
   defp exception_error(type, exception) do

@@ -51,7 +51,6 @@ defmodule BeamWeaver.Options do
 
   defp format_allowed(allowed) do
     allowed
-    |> Enum.map(&inspect/1)
-    |> Enum.join(", ")
+    |> Enum.map_join(", ", &inspect/1)
   end
 end

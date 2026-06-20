@@ -69,6 +69,24 @@ defmodule BeamWeaver.VectorStore.Filter do
   def to_sql(filter, start_index \\ 1)
   def to_sql(filter, _start_index) when filter in [%{}, nil], do: {:ok, {"TRUE", []}}
 
+  def to_sql(%{"$and" => filters}, start_index) when is_list(filters),
+    do: combine_sql(filters, start_index, "AND", "TRUE")
+
+  def to_sql(%{and: filters}, start_index) when is_list(filters),
+    do: combine_sql(filters, start_index, "AND", "TRUE")
+
+  def to_sql(%{"$or" => filters}, start_index) when is_list(filters),
+    do: combine_sql(filters, start_index, "OR", "FALSE")
+
+  def to_sql(%{or: filters}, start_index) when is_list(filters),
+    do: combine_sql(filters, start_index, "OR", "FALSE")
+
+  def to_sql(%{"$not" => filter}, start_index) when is_map(filter),
+    do: negate_sql(filter, start_index)
+
+  def to_sql(%{not: filter}, start_index) when is_map(filter),
+    do: negate_sql(filter, start_index)
+
   def to_sql(filter, start_index) when is_map(filter) do
     Enum.reduce_while(filter, {:ok, {[], [], start_index}}, fn {path, condition}, {:ok, {clauses, params, index}} ->
       case condition_sql(path, condition, index) do
@@ -90,6 +108,37 @@ defmodule BeamWeaver.VectorStore.Filter do
 
   def to_sql(_filter, _start_index),
     do: {:error, Error.new(:unsupported_vector_filter, "metadata filter must be a map")}
+
+  defp combine_sql(filters, start_index, joiner, empty_sql) do
+    filters
+    |> Enum.reduce_while({:ok, {[], [], start_index}}, fn filter, {:ok, {clauses, params, index}} ->
+      case to_sql(filter, index) do
+        {:ok, {clause, new_params}} ->
+          {:cont, {:ok, {[clause | clauses], params ++ new_params, index + length(new_params)}}}
+
+        {:error, error} ->
+          {:halt, {:error, error}}
+      end
+    end)
+    |> case do
+      {:ok, {[], _params, _index}} ->
+        {:ok, {empty_sql, []}}
+
+      {:ok, {clauses, params, _index}} ->
+        combined = clauses |> Enum.reverse() |> Enum.map_join(" #{joiner} ", &"(#{&1})")
+        {:ok, {combined, params}}
+
+      other ->
+        other
+    end
+  end
+
+  defp negate_sql(filter, start_index) do
+    case to_sql(filter, start_index) do
+      {:ok, {clause, params}} -> {:ok, {"NOT (#{clause})", params}}
+      {:error, error} -> {:error, error}
+    end
+  end
 
   defp match_condition?(actual, condition) when is_map(condition) do
     if operator_map?(condition) do

@@ -21,7 +21,6 @@ defmodule BeamWeaver.Core.Messages.Usage do
 
   defp zero, do: %{input_tokens: 0, output_tokens: 0, total_tokens: 0}
 
-  defp normalize(nil), do: zero()
   defp normalize(usage) when is_map(usage), do: usage
 
   defp deep_merge(left, right, numeric_fun) do

@@ -63,7 +63,8 @@ defmodule BeamWeaver.Transport.ReqFinch do
       headers: request.headers,
       finch: Keyword.get(opts, :finch, BeamWeaver.Transport.Finch),
       receive_timeout: Keyword.get(opts, :timeout, Keyword.get(request.options, :timeout, 15_000)),
-      retry: false
+      retry: false,
+      redirect: false
     ]
     |> maybe_put_finch_private(opts)
     |> maybe_put_body(request)

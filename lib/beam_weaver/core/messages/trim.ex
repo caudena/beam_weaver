@@ -240,10 +240,6 @@ defmodule BeamWeaver.Core.Messages.Trim do
 
   defp content_block_token_count(_block), do: 1
 
-  defp truncate_text_block(text, remaining) when is_binary(text) do
-    text |> words() |> Enum.take(remaining) |> Enum.join(" ")
-  end
-
   defp truncate_text_block(%ContentBlock.Text{} = block, remaining) do
     %{block | text: block.text |> to_string() |> words() |> Enum.take(remaining) |> Enum.join(" ")}
   end

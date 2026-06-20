@@ -241,10 +241,22 @@ defmodule BeamWeaver.Agent.Middleware.PII do
     matches
     |> Enum.map(&Detector.normalize_match(&1, nil))
     |> Enum.reject(&is_nil/1)
+    |> reject_overlaps()
     |> Enum.sort_by(& &1.start, :desc)
     |> Enum.reduce(text, fn match, acc ->
       binary_part(acc, 0, match.start) <>
         fun.(match) <> binary_part(acc, match.end, byte_size(acc) - match.end)
+    end)
+  end
+
+  defp reject_overlaps(matches) do
+    matches
+    |> Enum.sort_by(&{&1.start, -&1.end})
+    |> Enum.reduce([], fn match, kept ->
+      case kept do
+        [%{end: prev_end} | _] when match.start < prev_end -> kept
+        _ -> [match | kept]
+      end
     end)
   end
 

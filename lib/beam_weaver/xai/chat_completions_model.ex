@@ -74,6 +74,7 @@ defmodule BeamWeaver.XAI.ChatCompletionsModel do
     struct!(
       __MODULE__,
       opts
+      |> Keyword.delete(:streaming)
       |> Keyword.put(:model, model)
       |> Keyword.put(:profile, profile)
     )

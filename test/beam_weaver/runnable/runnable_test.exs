@@ -442,6 +442,20 @@ defmodule BeamWeaver.RunnableTest do
              Runnable.invoke(flaky, :fail)
   end
 
+  test "batch honors an explicit :timeout and otherwise uses a generous default" do
+    slow =
+      Runnable.lambda(fn _input ->
+        Process.sleep(120)
+        42
+      end)
+
+    # An explicit short timeout still aborts the slow task...
+    assert {:error, %Error{type: :runnable_batch_exit}} = Runnable.batch(slow, [:x], timeout: 30)
+
+    # ...while the default (300_000ms, not the old 5_000) lets it complete.
+    assert {:ok, [42]} = Runnable.batch(slow, [:x])
+  end
+
   test "fallbacks propagate handled errors through exception_key and respect handled types" do
     runnable =
       Runnable.lambda(fn

@@ -4,9 +4,24 @@ defmodule BeamWeaver.Agent.StructuredOutput.Schema do
   alias BeamWeaver.Agent.StructuredOutput.SchemaSpec
 
   @spec schema_specs(term()) :: [SchemaSpec.t()]
-  def schema_specs(%{"oneOf" => variants}), do: Enum.map(variants, &schema_spec/1)
-  def schema_specs(%{oneOf: variants}), do: Enum.map(variants, &schema_spec/1)
+  def schema_specs(%{"oneOf" => variants}), do: variant_specs(variants)
+  def schema_specs(%{oneOf: variants}), do: variant_specs(variants)
   def schema_specs(schema), do: [schema_spec(schema)]
+
+  defp variant_specs(variants) do
+    variants
+    |> Enum.with_index()
+    |> Enum.map(fn {variant, index} -> variant_spec(variant, index) end)
+  end
+
+  defp variant_spec(variant, index) when is_map(variant) do
+    case Map.get(variant, :title) || Map.get(variant, "title") do
+      nil -> schema_spec(variant, name: "response_format_#{index}")
+      _title -> schema_spec(variant)
+    end
+  end
+
+  defp variant_spec(variant, _index), do: schema_spec(variant)
 
   @spec schema_spec(term(), keyword()) :: SchemaSpec.t()
   def schema_spec(schema, opts \\ [])

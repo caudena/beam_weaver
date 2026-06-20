@@ -136,16 +136,24 @@ defmodule BeamWeaver.Google.ChatModel do
 
   def count_tokens_body(%__MODULE__{} = model, messages, opts \\ []) do
     with {:ok, {system, contents}} <- Messages.encode_messages(messages, opts) do
-      generate_content_request =
+      request =
         %{"contents" => contents}
-        |> Options.put_optional("generationConfig", generation_config(model, opts))
+        |> Options.put_optional("systemInstruction", empty_map_to_nil(system))
+        |> Options.put_optional("generationConfig", empty_map_to_nil(generation_config(model, opts)))
 
-      {:ok,
-       %{"contents" => contents}
-       |> Options.put_optional("systemInstruction", system)
-       |> Options.put_optional("generateContentRequest", generate_content_request)}
+      body =
+        if map_size(request) > 1 do
+          %{"generateContentRequest" => request}
+        else
+          request
+        end
+
+      {:ok, body}
     end
   end
+
+  defp empty_map_to_nil(value) when is_map(value) and map_size(value) == 0, do: nil
+  defp empty_map_to_nil(value), do: value
 
   defp generation_config(%__MODULE__{} = model, opts) do
     %{}

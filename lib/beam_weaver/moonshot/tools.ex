@@ -8,7 +8,7 @@ defmodule BeamWeaver.Moonshot.Tools do
   alias BeamWeaver.OpenAI.ToolCalling
 
   @allowed_types MapSet.new(["function", "builtin_function"])
-  @function_name ~r/^[a-zA-Z_][a-zA-Z0-9_-]{2,63}$/
+  @function_name ~r/^[a-zA-Z0-9_-]{1,64}$/
   @max_tools 128
 
   @doc "Builds Kimi's built-in web-search tool declaration."

@@ -159,8 +159,7 @@ defmodule BeamWeaver.XAI.Tools do
     unsupported =
       tools
       |> Enum.map(&Map.get(&1, "type"))
-      |> Enum.reject(&is_nil/1)
-      |> Enum.reject(&(&1 in allowed))
+      |> Enum.reject(&(is_nil(&1) or &1 in allowed))
       |> Enum.uniq()
 
     case unsupported do

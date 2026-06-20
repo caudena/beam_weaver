@@ -577,4 +577,15 @@ defmodule BeamWeaver.SerializationTest do
     assert decoded == payload
     refute inspect(decoded) =~ "encrypted-secret-file-content"
   end
+
+  test "dump errors on a map with colliding atom and string keys instead of dropping one" do
+    assert {:error, %Error{type: :unsupported_serialization_type}} =
+             Serialization.dump(%{:a => 1, "a" => 2})
+  end
+
+  test "dump still succeeds for a map without key collisions" do
+    assert {:ok, encoded} = Serialization.dump(%{:a => 1, "b" => 2})
+    assert {:ok, decoded} = Serialization.load(encoded)
+    assert decoded == %{"a" => 1, "b" => 2}
+  end
 end

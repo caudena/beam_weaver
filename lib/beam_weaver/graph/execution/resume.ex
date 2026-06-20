@@ -40,7 +40,7 @@ defmodule BeamWeaver.Graph.Execution.Resume do
   def normalize(compiled, config, {:ok, resume}) do
     pending = Replay.pending_interrupt_records(compiled, config)
 
-    if length(pending) > 1 and not match?(%GraphResume{}, resume) do
+    if length(pending) > 1 do
       {:error,
        Error.new(
          :invalid_resume,

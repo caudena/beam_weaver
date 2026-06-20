@@ -168,8 +168,7 @@ defmodule BeamWeaver.Graph.Introspection do
     public =
       graph.channels
       |> Map.keys()
-      |> Enum.reject(&(Map.get(graph.channel_visibility, &1, :public) == :private))
-      |> Enum.reject(&internal_channel?/1)
+      |> Enum.reject(&(Map.get(graph.channel_visibility, &1, :public) == :private or internal_channel?(&1)))
       |> Enum.map(&to_string/1)
 
     graph.output_schema

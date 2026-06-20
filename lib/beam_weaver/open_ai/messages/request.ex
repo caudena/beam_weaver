@@ -162,6 +162,16 @@ defmodule BeamWeaver.OpenAI.Messages.Request do
     |> Shared.put_optional("detail", Map.get(metadata || %{}, :detail))
   end
 
+  defp content_block_to_openai(%{type: :image_url, image_url: image_url} = block)
+       when is_binary(image_url) do
+    %{
+      "type" => "input_image",
+      "image_url" => image_url,
+      "detail" => Map.get(block, :detail)
+    }
+    |> Shared.reject_nil_values()
+  end
+
   defp content_block_to_openai(%{type: :image_url, image_url: image_url} = block) do
     image_url = Shared.stringify_value(image_url)
 
@@ -425,12 +435,6 @@ defmodule BeamWeaver.OpenAI.Messages.Request do
     |> Shared.stringify_keys()
     |> Map.take(["type", "id", "summary", "status", "encrypted_content"])
     |> Shared.reject_nil_values()
-  end
-
-  defp sanitize_output_item(%{type: type} = block) when type in [:function_call, :tool_call, :tool_use] do
-    block
-    |> Shared.stringify_keys()
-    |> normalize_function_call_item()
   end
 
   defp sanitize_output_item(block) when is_map(block) do

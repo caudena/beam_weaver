@@ -520,9 +520,9 @@ defmodule BeamWeaver.Agent.Compiler do
   defp final_response_middleware(middleware) do
     Enum.filter(middleware, fn middleware ->
       Middleware.name(middleware) in [
-        :structured_output_retry,
-        :model_retry,
-        :deepagents_overflow_clip
+        "structured_output_retry",
+        "model_retry",
+        "deepagents_overflow_clip"
       ]
     end)
   end

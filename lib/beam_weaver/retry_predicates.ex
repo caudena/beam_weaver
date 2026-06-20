@@ -20,8 +20,9 @@ defmodule BeamWeaver.RetryPredicates do
   ]
 
   @spec transient?(term()) :: boolean()
-  def transient?(%{details: details, type: type}) when is_map(details) do
-    retryable_details?(details) or type in @transient_types or transient_message?(details)
+  def transient?(%{details: details, type: type} = error) when is_map(details) do
+    retryable_details?(details) or type in @transient_types or transient_message?(details) or
+      transient_message?(Map.get(error, :message))
   end
 
   def transient?(%{type: type}) when type in @transient_types, do: true

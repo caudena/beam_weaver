@@ -162,8 +162,17 @@ defmodule BeamWeaver.Tool.Schema.Fields do
 
   defp put_nullable(schema, opts) do
     if Keyword.get(opts, :nullable, false) do
-      type = BeamWeaver.MapAccess.get(schema, :type)
-      Map.put(schema, :type, List.wrap(type) ++ ["null"])
+      cond do
+        not is_nil(BeamWeaver.MapAccess.get(schema, :type)) ->
+          type = BeamWeaver.MapAccess.get(schema, :type)
+          Map.put(schema, :type, List.wrap(type) ++ ["null"])
+
+        is_list(BeamWeaver.MapAccess.get(schema, :anyOf)) ->
+          Map.put(schema, :anyOf, BeamWeaver.MapAccess.get(schema, :anyOf) ++ [%{type: "null"}])
+
+        true ->
+          %{anyOf: [schema, %{type: "null"}]}
+      end
     else
       schema
     end

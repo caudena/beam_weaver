@@ -77,7 +77,9 @@ defmodule BeamWeaver.Google.Streaming do
   defp merge_responses(responses) do
     parts =
       responses
-      |> Enum.flat_map(&get_in(&1, ["candidates", Access.at(0), "content", "parts"]))
+      |> Enum.flat_map(fn response ->
+        get_in(response, ["candidates", Access.at(0), "content", "parts"]) || []
+      end)
       |> merge_response_parts()
 
     final = List.last(responses) || %{}

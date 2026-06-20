@@ -138,7 +138,7 @@ defmodule BeamWeaver.Tracing.Exporters.WeaveScope do
   end
 
   defp native_run_type(kind) when is_atom(kind), do: Atom.to_string(kind)
-  defp native_run_type(kind), do: to_string(kind || "operation")
+  defp native_run_type(kind), do: to_string(kind)
 
   defp event_status(:started, _status), do: "running"
   defp event_status(:ok, _status), do: "success"

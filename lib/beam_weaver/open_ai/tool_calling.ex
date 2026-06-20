@@ -184,8 +184,6 @@ defmodule BeamWeaver.OpenAI.ToolCalling do
   defp function_tool(%{__struct__: _module} = tool, render_opts),
     do: Renderer.openai_tool!(tool, render_opts)
 
-  defp function_tool(tool, _render_opts), do: Messages.tool_to_openai(tool)
-
   defp beamweaver_tool?(%Tool{}), do: true
   defp beamweaver_tool?(%{__struct__: module}), do: function_exported?(module, :name, 1)
   defp beamweaver_tool?(_tool), do: false

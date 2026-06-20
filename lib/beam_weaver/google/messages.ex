@@ -264,7 +264,6 @@ defmodule BeamWeaver.Google.Messages do
     end
   end
 
-  defp normalize_function_call_args(nil), do: %{}
   defp normalize_function_call_args(args), do: %{"input" => args}
 
   defp media_part(nil, data, mime_type) when is_binary(data) do

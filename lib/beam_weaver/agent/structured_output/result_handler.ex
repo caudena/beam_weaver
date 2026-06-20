@@ -105,7 +105,6 @@ defmodule BeamWeaver.Agent.StructuredOutput.ResultHandler do
   end
 
   defp handle_structured_error?(true, _type), do: true
-  defp handle_structured_error?(false, _type), do: false
   defp handle_structured_error?(message, _type) when is_binary(message), do: true
   defp handle_structured_error?(formatter, _type) when is_function(formatter, 1), do: true
   defp handle_structured_error?(type, type) when is_atom(type), do: true

@@ -34,7 +34,7 @@ Add BeamWeaver to your Mix project:
 ```elixir
 def deps do
   [
-    {:beam_weaver, "~> 0.1.1"}
+    {:beam_weaver, "~> 0.1.2"}
   ]
 end
 ```

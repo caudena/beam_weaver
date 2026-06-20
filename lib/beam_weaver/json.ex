@@ -160,9 +160,21 @@ defmodule BeamWeaver.JSON do
     value
     |> String.replace("\\", "\\\\")
     |> String.replace("\"", "\\\"")
-    |> String.replace("\n", "\\n")
-    |> String.replace("\r", "\\r")
-    |> String.replace("\t", "\\t")
+    |> escape_control_chars()
+  end
+
+  defp escape_control_chars(value) do
+    for <<codepoint::utf8 <- value>>, into: "" do
+      case codepoint do
+        ?\n -> "\\n"
+        ?\r -> "\\r"
+        ?\t -> "\\t"
+        ?\b -> "\\b"
+        ?\f -> "\\f"
+        c when c < 0x20 -> "\\u" <> (c |> Integer.to_string(16) |> String.downcase() |> String.pad_leading(4, "0"))
+        c -> <<c::utf8>>
+      end
+    end
   end
 
   defp spaces(0), do: ""

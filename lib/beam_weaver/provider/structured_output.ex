@@ -221,8 +221,8 @@ defmodule BeamWeaver.Provider.StructuredOutput do
       status: message.status,
       content_length: byte_size(text),
       content_preview: clip_text(text),
-      metadata: clip_value(message.metadata || %{}),
-      response_metadata: clip_value(message.response_metadata || %{}),
+      metadata: clip_value(message.metadata),
+      response_metadata: clip_value(message.response_metadata),
       usage_metadata: clip_value(message.usage_metadata || %{})
     }
   end

@@ -145,7 +145,7 @@ defmodule BeamWeaver.Agent.SemanticDSLTest do
 
   test "graph state channel merge accepts atoms only" do
     assert_raise ArgumentError, ~s/unknown graph state channel merge "map"/, fn ->
-      Agent.__add_graph_channel__(Graph.new(), :summary, "map", [])
+      apply(Agent, :__add_graph_channel__, [Graph.new(), :summary, "map", []])
     end
   end
 

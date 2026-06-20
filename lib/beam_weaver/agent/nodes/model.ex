@@ -214,8 +214,6 @@ defmodule BeamWeaver.Agent.Nodes.Model do
     put_structured_policy_opts(opts, structured_policy)
   end
 
-  defp put_structured_policy_opts(opts, nil), do: opts
-
   defp put_structured_policy_opts(opts, structured_policy) do
     Enum.reduce(StructuredOutput.Policy.to_metadata(structured_policy), opts, fn {key, value}, acc ->
       Keyword.put(acc, key, value)
@@ -302,7 +300,6 @@ defmodule BeamWeaver.Agent.Nodes.Model do
 
   defp structured_strategy_name(%ToolStrategy{}), do: :tool
   defp structured_strategy_name(%ProviderStrategy{}), do: :provider
-  defp structured_strategy_name(_strategy), do: nil
 
   defp model_name(%{model: model}) when is_binary(model), do: model
 

@@ -98,10 +98,10 @@ defmodule BeamWeaver.Tool do
       def provider_opts(_tool), do: __beam_weaver_tool_definition__().provider_opts
 
       @impl true
-      def return_direct(_tool), do: !!__beam_weaver_tool_definition__().return_direct
+      def return_direct(_tool), do: __beam_weaver_tool_definition__().return_direct
 
       @impl true
-      def concurrent?(_tool), do: !!__beam_weaver_tool_definition__().concurrent
+      def concurrent?(_tool), do: __beam_weaver_tool_definition__().concurrent
 
       @impl true
       def max_result_chars(_tool), do: __beam_weaver_tool_definition__().max_result_chars

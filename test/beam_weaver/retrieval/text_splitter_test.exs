@@ -405,6 +405,17 @@ defmodule BeamWeaver.TextSplitterTest do
            end)
   end
 
+  test "html splitter tolerates non-heading header tags (html_level fallback)" do
+    splitter = TextSplitter.html_semantic(headers: [{"div", "Section"}])
+
+    # Before the fix, html_level("div") crashed with FunctionClauseError.
+    assert {:ok, stream} =
+             TextSplitter.split_documents(splitter, ["<div>Heading</div>Some body text"])
+
+    docs = Enum.to_list(stream)
+    assert Enum.any?(docs, &(&1.content =~ "body text"))
+  end
+
   test "semantic html splitter preserves links, media, custom handlers, filters, metadata, and chunks" do
     iframe = fn %{attrs: attrs} -> "[iframe:#{attrs["src"]}](#{attrs["src"]})" end
 

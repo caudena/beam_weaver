@@ -402,6 +402,21 @@ defmodule BeamWeaver.Google.ChatModelTest do
     refute Map.has_key?(decoded.response_metadata, "raw_provider_response")
   end
 
+  test "merging streamed responses tolerates chunks without candidates or parts" do
+    body = """
+    data: {"candidates":[{"content":{"role":"model","parts":[{"text":"hello"}]}}]}
+
+    data: {"usageMetadata":{"promptTokenCount":3,"candidatesTokenCount":2,"totalTokenCount":5}}
+    """
+
+    # A usageMetadata-only / finishReason-only chunk has no candidates.content.parts;
+    # previously get_in returned nil and Enum.flat_map raised on the Atom.
+    assert {:ok, %BeamWeaver.Core.Message{content: content}} =
+             BeamWeaver.Google.Streaming.final_message_from_sse(body)
+
+    assert inspect(content) =~ "hello"
+  end
+
   test "stream_response reconstructs Gemini function calls from SSE parts" do
     body = """
     data: {"responseId":"google-stream-1","candidates":[{"index":0,"content":{"role":"model","parts":[{"text":"plan ","thought":true},{"functionCall":{"id":"call-1","name":"lookup","args":{"q":"beam"}},"thoughtSignature":"sig-call"}]},"finishReason":"STOP","finishMessage":"Model generated function call(s)."}],"usageMetadata":{"promptTokenCount":3,"candidatesTokenCount":4,"thoughtsTokenCount":2,"totalTokenCount":9}}
@@ -729,11 +744,10 @@ defmodule BeamWeaver.Google.ChatModelTest do
           expect: %{
             method: :post,
             path: "/models/gemini-3.5-flash:countTokens",
+            # `contents` and `generateContentRequest` are mutually exclusive; with
+            # no systemInstruction/generationConfig the body carries only contents.
             json: %{
-              "contents" => [%{"role" => "user", "parts" => [%{"text" => "count me"}]}],
-              "generateContentRequest" => %{
-                "contents" => [%{"role" => "user", "parts" => [%{"text" => "count me"}]}]
-              }
+              "contents" => [%{"role" => "user", "parts" => [%{"text" => "count me"}]}]
             }
           },
           body: %{"totalTokens" => 4}
@@ -741,6 +755,31 @@ defmodule BeamWeaver.Google.ChatModelTest do
       )
 
     assert {:ok, 4} = ChatModel.count_tokens(model, "count me")
+  end
+
+  test "token counting wraps system instruction in a single generateContentRequest" do
+    model =
+      ChatModel.new(
+        model: "gemini-3.5-flash",
+        api_key: "google-secret",
+        transport: BeamWeaver.TestSupport.Conformance.Fakes.Transport,
+        transport_opts: [
+          expect: %{
+            method: :post,
+            path: "/models/gemini-3.5-flash:countTokens",
+            json: %{
+              "generateContentRequest" => %{
+                "contents" => [%{"role" => "user", "parts" => [%{"text" => "count me"}]}],
+                "systemInstruction" => %{"parts" => [%{"text" => "be terse"}]}
+              }
+            }
+          },
+          body: %{"totalTokens" => 7}
+        ]
+      )
+
+    messages = [BeamWeaver.Core.Message.system("be terse"), BeamWeaver.Core.Message.user("count me")]
+    assert {:ok, 7} = ChatModel.count_tokens(model, messages)
   end
 
   defp with_config(group, values, fun) do

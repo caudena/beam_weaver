@@ -119,7 +119,8 @@ defmodule BeamWeaver.Agent.Spec do
     debug: false
   }
 
-  @list_attrs [:tools, :middleware, :interrupt_before, :interrupt_after]
+  @list_attrs [:tools, :middleware]
+  @interrupt_attrs [:interrupt_before, :interrupt_after]
 
   @doc false
   @spec from_dsl_attrs(module(), map()) :: t()
@@ -128,6 +129,7 @@ defmodule BeamWeaver.Agent.Spec do
     |> Map.take(@dsl_attrs)
     |> apply_defaults()
     |> normalize_list_attrs()
+    |> normalize_interrupt_attrs()
     |> Map.put(:module, module)
     |> put_default_name(module)
     |> then(&struct(__MODULE__, &1))
@@ -144,6 +146,16 @@ defmodule BeamWeaver.Agent.Spec do
       Map.update(acc, key, [], &List.wrap(&1 || []))
     end)
   end
+
+  defp normalize_interrupt_attrs(attrs) do
+    Enum.reduce(@interrupt_attrs, attrs, fn key, acc ->
+      Map.update(acc, key, [], &normalize_interrupt_value/1)
+    end)
+  end
+
+  defp normalize_interrupt_value(:all), do: :all
+  defp normalize_interrupt_value("*"), do: :all
+  defp normalize_interrupt_value(value), do: List.wrap(value || [])
 
   defp put_default_name(attrs, module), do: Map.update(attrs, :name, inspect(module), &(&1 || inspect(module)))
 end

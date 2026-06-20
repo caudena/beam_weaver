@@ -39,7 +39,7 @@ defmodule BeamWeaver.Runnable.Fallback do
         end,
         ordered: true,
         max_concurrency: Keyword.get(opts, :max_concurrency, System.schedulers_online()),
-        timeout: Keyword.get(opts, :timeout, 5_000),
+        timeout: Keyword.get(opts, :timeout, 300_000),
         on_timeout: :kill_task
       )
       |> Stream.map(fn

@@ -210,9 +210,8 @@ defmodule BeamWeaver.Graph.Execution.Scheduler do
     |> Enum.filter(fn {_node, spec} ->
       spec.condition && spec.deps != [] && Enum.any?(spec.deps, &(&1 in completed))
     end)
-    |> Enum.filter(fn {_node, spec} -> deps_ready?(state, spec.deps) end)
     |> Enum.filter(fn {_node, spec} ->
-      dependency_condition_matches?(state, spec.deps, spec.condition)
+      deps_ready?(state, spec.deps) and dependency_condition_matches?(state, spec.deps, spec.condition)
     end)
     |> Enum.map(fn {node, _spec} -> node end)
   end

@@ -25,7 +25,7 @@ defmodule BeamWeaver.Tools.Shell.HostExecutor do
         {output, status, after_run.()}
       end)
 
-    case Task.yield(task, policy.timeout) || Task.shutdown(task, :brutal_kill) do
+    case Task.yield(task, yield_timeout(policy.timeout)) || Task.shutdown(task, :brutal_kill) do
       {:ok, {output, status, stderr}} ->
         {:ok,
          command
@@ -43,6 +43,10 @@ defmodule BeamWeaver.Tools.Shell.HostExecutor do
          })}
     end
   end
+
+  defp yield_timeout(nil), do: :infinity
+  defp yield_timeout(:infinity), do: :infinity
+  defp yield_timeout(timeout), do: timeout
 
   defp system_opts(policy) do
     []

@@ -94,9 +94,19 @@ defmodule BeamWeaver.Serialization.JSON.Encoder do
   defp encode_map_entries(map, registry) do
     map
     |> Enum.reduce_while({:ok, %{}}, fn {key, value}, {:ok, acc} ->
-      case encode(value, registry) do
-        {:ok, encoded_value} -> {:cont, {:ok, Map.put(acc, encode_key(key), encoded_value)}}
-        {:error, %Error{} = error} -> {:halt, {:error, error}}
+      encoded_key = encode_key(key)
+
+      if Map.has_key?(acc, encoded_key) do
+        {:halt,
+         {:error,
+          Error.new(:unsupported_serialization_type, "map has colliding string/atom keys", %{
+            key: encoded_key
+          })}}
+      else
+        case encode(value, registry) do
+          {:ok, encoded_value} -> {:cont, {:ok, Map.put(acc, encoded_key, encoded_value)}}
+          {:error, %Error{} = error} -> {:halt, {:error, error}}
+        end
       end
     end)
   end

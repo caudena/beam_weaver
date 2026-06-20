@@ -27,6 +27,37 @@ defmodule BeamWeaver.Transport.SafeTest do
       do: {:ok, Response.new(status: 302, headers: [{"location", location}])}
   end
 
+  defmodule StreamFakeTransport do
+    @behaviour BeamWeaver.Transport
+
+    @impl true
+    def request(_request, _opts), do: raise("unused")
+
+    @impl true
+    def stream(_request, _opts, _on_chunk), do: raise("unused")
+
+    @impl true
+    def stream_reduce(%Request{} = request, opts, acc, reducer) do
+      agent = Keyword.fetch!(opts, :agent)
+
+      response =
+        Agent.get_and_update(agent, fn state ->
+          {[entry | rest], calls} = state
+          {entry, {rest, calls ++ [request.url]}}
+        end)
+
+      case response do
+        {:redirect, location} ->
+          # Redirect responses never feed the reducer; acc is unchanged.
+          {:ok, Response.new(status: 302, headers: [{"location", location}]), acc}
+
+        {:ok, status, chunks} ->
+          final = Enum.reduce(chunks, acc, fn chunk, a -> reducer.(a, chunk) end)
+          {:ok, Response.new(status: status, body: ""), final}
+      end
+    end
+  end
+
   test "blocks unsafe initial URLs before delegate transport I/O" do
     {:ok, agent} = start_agent([{:ok, 200, "ok"}])
 
@@ -98,6 +129,90 @@ defmodule BeamWeaver.Transport.SafeTest do
              )
 
     assert calls(agent) == ["https://start.example/path"]
+  end
+
+  test "stream_reduce blocks unsafe initial URLs before delegate transport I/O" do
+    {:ok, agent} = start_agent([{:ok, 200, ["chunk"]}])
+
+    assert {:error, %Error{type: :unsafe_url}, :acc} =
+             Safe.stream_reduce(
+               Request.new(method: :get, url: "https://127.0.0.1/secret"),
+               [transport: StreamFakeTransport, agent: agent],
+               :acc,
+               fn acc, chunk -> [chunk | List.wrap(acc)] end
+             )
+
+    assert calls(agent) == []
+  end
+
+  test "stream_reduce follows safe redirects through the same URL policy" do
+    {:ok, agent} =
+      start_agent([
+        {:redirect, "https://final.example/done"},
+        {:ok, 200, ["a", "b"]}
+      ])
+
+    resolver =
+      resolver(%{
+        "start.example" => [{93, 184, 216, 34}],
+        "final.example" => [{93, 184, 216, 35}]
+      })
+
+    assert {:ok, %Response{status: 200}, ["b", "a"]} =
+             Safe.stream_reduce(
+               Request.new(method: :get, url: "https://start.example/path"),
+               [transport: StreamFakeTransport, agent: agent, resolve?: true, resolver: resolver],
+               [],
+               fn acc, chunk -> [chunk | acc] end
+             )
+
+    assert calls(agent) == ["https://start.example/path", "https://final.example/done"]
+  end
+
+  test "stream_reduce blocks redirects that resolve to private or metadata addresses" do
+    {:ok, agent} = start_agent([{:redirect, "https://private.example/pwned"}])
+
+    resolver =
+      resolver(%{
+        "start.example" => [{93, 184, 216, 34}],
+        "private.example" => [{169, 254, 169, 254}]
+      })
+
+    assert {:error, %Error{type: :unsafe_url}, []} =
+             Safe.stream_reduce(
+               Request.new(method: :get, url: "https://start.example/path"),
+               [transport: StreamFakeTransport, agent: agent, resolve?: true, resolver: resolver],
+               [],
+               fn acc, chunk -> [chunk | acc] end
+             )
+
+    assert calls(agent) == ["https://start.example/path"]
+  end
+
+  test "stream/3 unwraps the redirect-validated streaming response" do
+    {:ok, agent} =
+      start_agent([
+        {:redirect, "https://final.example/done"},
+        {:ok, 200, ["x"]}
+      ])
+
+    resolver =
+      resolver(%{
+        "start.example" => [{93, 184, 216, 34}],
+        "final.example" => [{93, 184, 216, 35}]
+      })
+
+    {:ok, collector} = Agent.start_link(fn -> [] end)
+
+    assert {:ok, %Response{status: 200}} =
+             Safe.stream(
+               Request.new(method: :get, url: "https://start.example/path"),
+               [transport: StreamFakeTransport, agent: agent, resolve?: true, resolver: resolver],
+               fn chunk -> Agent.update(collector, &[chunk | &1]) end
+             )
+
+    assert Agent.get(collector, & &1) == ["x"]
+    assert calls(agent) == ["https://start.example/path", "https://final.example/done"]
   end
 
   defp start_agent(responses), do: Agent.start_link(fn -> {responses, []} end)

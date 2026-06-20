@@ -74,7 +74,7 @@ defmodule BeamWeaver.Transport.Replay do
 
   defp do_chunks(body, size, acc) do
     case body do
-      <<chunk::binary-size(size), rest::binary>> -> do_chunks(rest, size, [chunk | acc])
+      <<chunk::binary-size(^size), rest::binary>> -> do_chunks(rest, size, [chunk | acc])
       chunk -> Enum.reverse([chunk | acc])
     end
   end

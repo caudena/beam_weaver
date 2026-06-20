@@ -59,4 +59,24 @@ defmodule BeamWeaver.Anthropic.StreamingTest do
              &match?(%BeamWeaver.Stream.Envelope{event: %Events.MessageChunk{}}, &1)
            )
   end
+
+  test "message_delta carries usage metadata as a map and preserves response metadata" do
+    body = """
+    event: message_delta
+    data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"input_tokens":5,"output_tokens":2}}
+    """
+
+    chunk =
+      Streaming.typed_events(body)
+      |> Enum.find_value(fn
+        %BeamWeaver.Stream.Envelope{event: %Events.MessageChunk{chunk: chunk}} -> chunk
+        _other -> nil
+      end)
+
+    assert chunk
+    # response metadata is retained (not overwritten by usage)...
+    assert chunk.metadata.stop_reason == "end_turn"
+    # ...and usage_metadata is a plain usage map, not a Message struct.
+    assert %{input_tokens: 5, output_tokens: 2, total_tokens: 7} = chunk.metadata.usage_metadata
+  end
 end

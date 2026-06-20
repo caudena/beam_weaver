@@ -329,7 +329,7 @@ defmodule BeamWeaver.Agent.Middleware.Subagents do
   defp subagent_name(%Compiled{name: name}), do: name
   defp subagent_name(%Spec{name: name}), do: name
   defp subagent_name(map) when is_map(map), do: value(map, :name)
-  defp subagent_name(opts) when is_list(opts), do: Keyword.get(opts, :name) || Keyword.get(opts, "name")
+  defp subagent_name(opts) when is_list(opts), do: Keyword.get(opts, :name)
   defp subagent_name(_other), do: nil
 
   defp normalize_subagent(%Compiled{} = subagent, _opts), do: subagent
@@ -505,8 +505,7 @@ defmodule BeamWeaver.Agent.Middleware.Subagents do
 
     system_prompt =
       [subagent.system_prompt, prompt_suffix]
-      |> Enum.reject(&is_nil/1)
-      |> Enum.reject(&blank?/1)
+      |> Enum.reject(&(is_nil(&1) or blank?(&1)))
       |> Enum.join("\n\n")
 
     {:ok, agent} =
@@ -1196,8 +1195,6 @@ defmodule BeamWeaver.Agent.Middleware.Subagents do
     end
   end
 
-  defp captured_result(_child_state, result), do: maybe_decode_json_result(result)
-
   defp maybe_decode_json_result(result) when is_binary(result) do
     case BeamWeaver.JSON.decode(result) do
       {:ok, decoded} -> decoded
@@ -1340,14 +1337,14 @@ defmodule BeamWeaver.Agent.Middleware.Subagents do
     do: Map.put(configurable, "checkpoint_id", checkpoint_id)
 
   defp format_subagent_error(%Error{} = error) do
-    details = error.details || %{}
+    details = error.details
 
     ["Subagent error: #{error.message}", "type=#{inspect(error.type)}"]
     |> maybe_append_error_details(details)
     |> Enum.join(" ")
   end
 
-  defp maybe_append_error_details(parts, details) when details in [%{}, nil], do: parts
+  defp maybe_append_error_details(parts, details) when details == %{}, do: parts
 
   defp maybe_append_error_details(parts, details) do
     parts ++ ["details=#{inspect(details, limit: 20, printable_limit: 2_000)}"]
@@ -1356,8 +1353,9 @@ defmodule BeamWeaver.Agent.Middleware.Subagents do
   defp child_state_update(parent_state, child_state)
        when is_map(parent_state) and is_map(child_state) do
     child_state
-    |> Enum.reject(fn {key, _value} -> child_state_excluded_key?(key) end)
-    |> Enum.reject(fn {key, value} -> parent_state_value(parent_state, key) == value end)
+    |> Enum.reject(fn {key, value} ->
+      child_state_excluded_key?(key) or parent_state_value(parent_state, key) == value
+    end)
     |> Map.new()
   end
 

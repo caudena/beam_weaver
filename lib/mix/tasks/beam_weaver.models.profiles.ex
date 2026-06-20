@@ -30,6 +30,7 @@ defmodule Mix.Tasks.BeamWeaver.Models.Profiles do
       )
 
     if opts[:refresh] do
+      Mix.Task.run("app.start")
       refresh_profiles!(opts)
     else
       print_profiles!(opts)

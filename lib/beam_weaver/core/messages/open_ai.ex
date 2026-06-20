@@ -298,20 +298,6 @@ defmodule BeamWeaver.Core.Messages.OpenAI do
          }
        }
 
-  defp content_block_to_chat_completion(%{type: :audio, source_type: :base64, data: data} = block, _opts)
-       when is_binary(data),
-       do: %{
-         "type" => "input_audio",
-         "input_audio" => %{"data" => data, "format" => audio_format(Map.get(block, :mime_type))}
-       }
-
-  defp content_block_to_chat_completion(%{type: :audio, source_type: "base64", data: data} = block, _opts)
-       when is_binary(data),
-       do: %{
-         "type" => "input_audio",
-         "input_audio" => %{"data" => data, "format" => audio_format(Map.get(block, :mime_type))}
-       }
-
   defp content_block_to_chat_completion(%{type: :input_audio} = block, _opts),
     do: MapShape.stringify_keys(block)
 
