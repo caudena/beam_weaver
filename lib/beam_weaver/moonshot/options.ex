@@ -123,7 +123,7 @@ defmodule BeamWeaver.Moonshot.Options do
         :tool_choice,
         :top_p
       ])
-      |> Map.merge(Map.new(opts))
+      |> Map.merge(Map.new(Keyword.drop(opts, [:metadata])))
 
     ParamPolicy.validate(
       Map.get(model, :profile),

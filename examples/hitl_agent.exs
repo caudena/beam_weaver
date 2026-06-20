@@ -31,25 +31,30 @@ defmodule BeamWeaver.Examples.HITLAgent do
   interrupt_on(%{"lookup" => true})
 end
 
-checkpointer = CheckpointETS.new()
-config = %{"configurable" => %{"thread_id" => "example-hitl"}}
+defmodule BeamWeaver.Examples.HITLAgent.Review do
+  # Approve each paused tool call until the agent finishes.
+  def run({:ok, state}, _opts), do: state
 
-{:interrupted, interrupt} =
+  def run({:error, error}, _opts), do: raise(ArgumentError, "agent error: #{inspect(error)}")
+
+  def run({:interrupted, interrupt}, opts) do
+    {:ok, review} = HITL.from_interrupt(interrupt)
+    IO.puts("review requested: #{hd(review.action_requests).name}")
+
+    decisions = Enum.map(review.action_requests, fn _request -> %{type: :approve} end)
+
+    BeamWeaver.Examples.HITLAgent.resume(%{decisions: decisions}, opts)
+    |> run(opts)
+  end
+end
+
+opts = [checkpointer: CheckpointETS.new(), config: %{"configurable" => %{"thread_id" => "example-hitl"}}]
+
+%{messages: messages} =
   BeamWeaver.Examples.HITLAgent.invoke(
     %{messages: [Message.user("Look up the authentication docs and summarize them.")]},
-    checkpointer: checkpointer,
-    config: config
+    opts
   )
-
-{:ok, review} = HITL.from_interrupt(interrupt)
-request = hd(review.action_requests)
-IO.puts("review requested: #{request.name} #{inspect(request.args)}")
-
-{:ok, %{messages: messages}} =
-  BeamWeaver.Examples.HITLAgent.resume(
-    %{decisions: [%{type: :respond, message: "Approved. The docs say authentication uses bearer API keys."}]},
-    checkpointer: checkpointer,
-    config: config
-  )
+  |> BeamWeaver.Examples.HITLAgent.Review.run(opts)
 
 IO.puts(Message.text(List.last(messages)))
