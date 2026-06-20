@@ -122,7 +122,7 @@ defmodule BeamWeaver.Tracing.Options do
   end
 
   defp has_configurable_key?(configurable, key) do
-    Map.has_key?(configurable, key) or Map.has_key?(configurable, String.to_atom(key))
+    Map.has_key?(configurable, key) or Map.has_key?(configurable, String.to_existing_atom(key))
   rescue
     ArgumentError -> Map.has_key?(configurable, key)
   end
