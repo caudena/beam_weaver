@@ -296,9 +296,9 @@ defmodule BeamWeaver.Anthropic.ChatModel.RequestBuilder do
     end
   end
 
-  defp forced_tool_choice?(choice) when choice in [:any, "any"], do: true
-  defp forced_tool_choice?(choice) when is_binary(choice), do: choice not in ["auto", "any"]
-  defp forced_tool_choice?(choice) when is_atom(choice), do: choice not in [:auto, :any]
+  defp forced_tool_choice?(choice) when choice in [:any, "any", :required, "required"], do: true
+  defp forced_tool_choice?(choice) when is_binary(choice), do: choice not in ["auto", "any", "none"]
+  defp forced_tool_choice?(choice) when is_atom(choice), do: choice not in [:auto, :any, :none]
   defp forced_tool_choice?(%{"type" => type}), do: type in ["any", "tool"]
   defp forced_tool_choice?(%{type: type}), do: type in [:any, :tool, "any", "tool"]
   defp forced_tool_choice?(_choice), do: false

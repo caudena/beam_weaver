@@ -261,7 +261,7 @@ defmodule BeamWeaver.Anthropic.Messages do
 
   defp content_block_to_anthropic!(block) when is_map(block) do
     BeamWeaver.MapShape.assert_atom_keys!(block)
-    provider_block = Options.stringify_keys(block)
+    provider_block = block |> Options.stringify_keys() |> Map.drop(["raw_provider_block"])
 
     case provider_type(Map.get(block, :type)) do
       "input_text" ->

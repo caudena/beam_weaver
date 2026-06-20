@@ -19,10 +19,7 @@ defmodule BeamWeaver.Examples.DeepAgents.TextToSqlAgent do
 
     {:ok, agent} =
       Support.create(
-        model:
-          Support.model(
-            "text_to_sql: inspected schema, checked the query, and returned Canada = 8"
-          ),
+        model: Support.model(),
         filesystem: Local.new(root: root),
         memory: ["/AGENTS.md"],
         skills: ["/skills"],

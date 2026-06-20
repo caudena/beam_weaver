@@ -1,26 +1,22 @@
 # BeamWeaver DeepAgents Port Examples
 
-Elixir ports of the upstream Python DeepAgents examples. Each `.exs` file is
-offline-safe by default: it uses `BeamWeaver.Agent.build/1` with native
-capability options, fake models, local filesystem adapters, or in-memory stubs
-so the example can run in tests without provider credentials.
+Elixir ports of the upstream Python DeepAgents examples. They use BeamWeaver's
+normal composed agent surface — there is no separate DeepAgent type or runtime
+mode; planning, filesystem, subagents, memory, and tracing are ordinary tools,
+middleware, state, and runtime options.
 
-These examples use BeamWeaver's normal composed agent surface. There is no
-separate DeepAgent type or dedicated runtime mode; planning, filesystem, subagents,
-memory, and tracing are ordinary tools, middleware, state, and runtime options.
-
-Run an example from the BeamWeaver project root:
+The examples run against a **live provider model**. Set a provider API key and,
+optionally, the model to use, then run any example from the project root:
 
 ```bash
+export OPENAI_API_KEY=sk-...                 # or ANTHROPIC_API_KEY / GOOGLE_API_KEY / XAI_API_KEY / KIMI_API_KEY
+export BEAM_WEAVER_EXAMPLES_MODEL=openai:gpt-5.4-mini   # default; switch provider/model here
 mix run examples/deepagents/deep_research.exs
 ```
 
-To smoke-test against OpenAI instead of fake models:
-
-```bash
-set -a && . ./.env && set +a
-BEAM_WEAVER_DEEPAGENTS_EXAMPLES_LIVE=true mix run examples/deepagents/deep_research.exs
-```
+`BEAM_WEAVER_EXAMPLES_MODEL` selects the provider and model for every example
+(top-level and DeepAgents); the matching provider key is read from the
+environment. The same applies to the top-level `examples/*.exs`.
 
 ## Port Map
 

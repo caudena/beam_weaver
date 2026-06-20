@@ -20,13 +20,12 @@ defmodule BeamWeaver.Examples.DeepAgents.ContentBuilderAgent do
         description: "Researches topics before content is drafted.",
         system_prompt: "Return concise research notes with links and facts.",
         tools: [web_search_stub()],
-        model: Support.model("research saved to /research/prompt-engineering.md")
+        model: Support.model()
       )
 
     {:ok, agent} =
       Support.create(
-        model:
-          Support.model("content_builder: drafted blog post and cover image plan under /blogs/"),
+        model: Support.model(),
         filesystem: backend,
         memory: ["/AGENTS.md"],
         skills: ["/skills"],

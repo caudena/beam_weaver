@@ -15,7 +15,7 @@ defmodule BeamWeaver.Examples.DeepAgents.DeployContentWriter do
     {:ok, agent} =
       Support.create(
         name: "deploy-content-writer",
-        model: Support.model("deploy_content_writer: loaded global and per-user memory"),
+        model: Support.model(),
         filesystem: Local.new(root: root),
         memory: ["/AGENTS.md", "/user/AGENTS.md"]
       )

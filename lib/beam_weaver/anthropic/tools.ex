@@ -49,6 +49,8 @@ defmodule BeamWeaver.Anthropic.Tools do
   def to_anthropic_tool(tool, opts \\ [])
   def to_anthropic_tool(%Tool{} = tool, opts), do: Renderer.anthropic_tool!(tool, opts)
 
+  def to_anthropic_tool(tool, opts) when is_atom(tool), do: Renderer.anthropic_tool!(tool, opts)
+
   def to_anthropic_tool(%{__struct__: module} = tool, opts) do
     if function_exported?(module, :name, 1) do
       Renderer.anthropic_tool!(tool, opts)
@@ -163,7 +165,10 @@ defmodule BeamWeaver.Anthropic.Tools do
         choice in [:auto, "auto"] ->
           %{"type" => "auto"}
 
-        choice in [:any, "any"] ->
+        choice in [:none, "none"] ->
+          %{"type" => "none"}
+
+        choice in [:any, "any", :required, "required"] ->
           %{"type" => "any"}
 
         is_atom(choice) or is_binary(choice) ->

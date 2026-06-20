@@ -14,10 +14,6 @@ config :beam_weaver,
   execution: [
     delta_max_supersteps_since_snapshot: 5_000
   ],
-  examples: [
-    deep_agents_live?: false,
-    deep_agents_model: "openai:gpt-5.4-mini"
-  ],
   test: []
 
 env_config = Path.join(__DIR__, "#{config_env()}.exs")

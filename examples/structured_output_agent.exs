@@ -1,20 +1,7 @@
-alias BeamWeaver.Core.ChatModel
+Code.require_file("support.exs", __DIR__)
+
 alias BeamWeaver.Core.Message
-
-defmodule BeamWeaver.Examples.StructuredOutputAgent.Model do
-  @behaviour ChatModel
-
-  defstruct []
-
-  def invoke(%__MODULE__{}, _messages, _opts) do
-    {:ok,
-     Message.assistant("",
-       tool_calls: [
-         %{id: "call-answer", name: "answer_schema", args: %{"answer" => "42"}}
-       ]
-     )}
-  end
-end
+alias BeamWeaver.Examples.Support
 
 defmodule BeamWeaver.Examples.StructuredOutputAgent.AnswerSchema do
   use BeamWeaver.Schema
@@ -28,15 +15,18 @@ end
 defmodule BeamWeaver.Examples.StructuredOutputAgent do
   use BeamWeaver.Agent
 
-  model(%BeamWeaver.Examples.StructuredOutputAgent.Model{})
+  name("structured_output_agent")
+  model(Support.model())
 
   response_schema(BeamWeaver.Examples.StructuredOutputAgent.AnswerSchema,
     name: "answer_schema",
-    strategy: :tool
+    strategy: :auto
   )
 end
 
 {:ok, %{structured_response: %{"answer" => answer}}} =
-  BeamWeaver.Examples.StructuredOutputAgent.invoke(%{messages: [Message.user("answer")]})
+  BeamWeaver.Examples.StructuredOutputAgent.invoke(%{
+    messages: [Message.user("What is 2 + 2? Reply with just the number.")]
+  })
 
 IO.puts(answer)

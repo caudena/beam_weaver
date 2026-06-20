@@ -16,15 +16,12 @@ defmodule BeamWeaver.Examples.DeepAgents.DeepResearch do
         description: "Searches and summarizes source material for one focused research question.",
         system_prompt: "Use search first, reflect with think_tool, then return sourced notes.",
         tools: tools,
-        model: Support.model("researcher notes: source A and source B agree")
+        model: Support.model()
       )
 
     {:ok, agent} =
       Support.create(
-        model:
-          Support.model(
-            "deep research: planned the request, delegated focused searches, and synthesized a short brief"
-          ),
+        model: Support.model(),
         system_prompt: """
         You are a research lead. Save the user request, create a plan, delegate independent
         searches, and synthesize the final answer with citations.

@@ -1,42 +1,34 @@
-alias BeamWeaver.Core.ChatModel
+Code.require_file("support.exs", __DIR__)
+
 alias BeamWeaver.Core.Message
 alias BeamWeaver.Core.Tool
-
-defmodule BeamWeaver.Examples.ReactAgent.Model do
-  @behaviour ChatModel
-
-  defstruct []
-
-  def invoke(%__MODULE__{}, messages, _opts) do
-    if Enum.any?(messages, &match?(%Message{role: :tool}, &1)) do
-      {:ok, Message.assistant("weather checked")}
-    else
-      {:ok,
-       Message.assistant("",
-         tool_calls: [%{id: "call-weather", name: "weather", args: %{"city" => "Nicosia"}}]
-       )}
-    end
-  end
-end
+alias BeamWeaver.Examples.Support
 
 defmodule BeamWeaver.Examples.ReactAgent do
   use BeamWeaver.Agent
 
-  model(%BeamWeaver.Examples.ReactAgent.Model{})
+  name("react_agent")
+  description("Answer questions, calling tools when useful.")
+  model(Support.model())
+  system_prompt("You are a helpful assistant. Use the weather tool when asked about the weather.")
 
   tools do
     tool(
       Tool.from_function!(
         name: "weather",
-        description: "Get weather",
-        input_schema: %{"type" => "object", "required" => ["city"]},
-        handler: fn %{"city" => city}, _opts -> "sunny in #{city}" end
+        description: "Get the current weather for a city.",
+        input_schema: %{
+          "type" => "object",
+          "properties" => %{"city" => %{"type" => "string"}},
+          "required" => ["city"]
+        },
+        handler: fn %{"city" => city}, _opts -> "Sunny, 25°C in #{city}." end
       )
     )
   end
 end
 
 {:ok, %{messages: messages}} =
-  BeamWeaver.Examples.ReactAgent.invoke(%{messages: [Message.user("check weather")]})
+  BeamWeaver.Examples.ReactAgent.invoke(%{messages: [Message.user("What is the weather in Nicosia?")]})
 
 messages |> List.last() |> Message.text() |> IO.puts()

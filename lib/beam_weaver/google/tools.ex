@@ -95,6 +95,8 @@ defmodule BeamWeaver.Google.Tools do
   def render_tool_choice(false, _tools, _opts), do: {:ok, nil}
   def render_tool_choice(:auto, _tools, _opts), do: {:ok, function_calling_config("AUTO")}
   def render_tool_choice("auto", _tools, _opts), do: {:ok, function_calling_config("AUTO")}
+  def render_tool_choice(:none, _tools, _opts), do: {:ok, function_calling_config("NONE")}
+  def render_tool_choice("none", _tools, _opts), do: {:ok, function_calling_config("NONE")}
   def render_tool_choice(:any, tools, opts), do: render_tool_choice(:required, tools, opts)
   def render_tool_choice("any", tools, opts), do: render_tool_choice(:required, tools, opts)
   def render_tool_choice(:required, _tools, _opts), do: {:ok, function_calling_config("ANY")}

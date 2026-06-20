@@ -54,9 +54,10 @@ defmodule BeamWeaver.Tool.Renderer do
         }
 
         function =
-          if Keyword.has_key?(opts, :strict),
-            do: Map.put(function, "strict", Keyword.fetch!(opts, :strict)),
-            else: function
+          case Keyword.get(opts, :strict) do
+            nil -> function
+            strict -> Map.put(function, "strict", strict)
+          end
 
         {:ok, function}
       end
@@ -164,10 +165,9 @@ defmodule BeamWeaver.Tool.Renderer do
   def strict_json_schema(value, _opts), do: value
 
   defp maybe_put_render_opt(map, provider_key, opts, opt_key) do
-    if Keyword.has_key?(opts, opt_key) do
-      Map.put(map, provider_key, Keyword.fetch!(opts, opt_key))
-    else
-      map
+    case Keyword.get(opts, opt_key) do
+      nil -> map
+      value -> Map.put(map, provider_key, value)
     end
   end
 

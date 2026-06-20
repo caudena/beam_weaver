@@ -8,8 +8,7 @@ defmodule BeamWeaver.Examples.DeepAgents.RlmAgent do
   alias BeamWeaver.Examples.DeepAgents.Support
 
   def run do
-    depth = if Support.live?(), do: 0, else: 2
-    {:ok, agent} = create_rlm_agent(max_depth: depth)
+    {:ok, agent} = create_rlm_agent(max_depth: 1)
 
     {:ok, %{messages: messages}} =
       Agent.invoke(agent, %{messages: [Message.user("Fan out two arithmetic subtasks.")]})
@@ -36,13 +35,13 @@ defmodule BeamWeaver.Examples.DeepAgents.RlmAgent do
           Spec.new(
             name: "general-purpose",
             description: "Bottomed-out general-purpose worker.",
-            model: Support.model("bottom worker complete")
+            model: Support.model()
           )
         ]
       end
 
     Support.create(
-      model: Support.model("rlm_agent: recursive REPL-style chain depth #{depth} ready"),
+      model: Support.model(),
       subagents: subagents
     )
   end
