@@ -123,6 +123,28 @@ defmodule BeamWeaver.Models.InitializerTest do
     assert unsupported.type == :unsupported_provider
   end
 
+  test "init_chat_model accepts explicit Z.ai identifiers but not bare GLM aliases" do
+    assert {:ok, zai} = Models.init_chat_model("zai:glm-5.2")
+    assert zai.__struct__ == BeamWeaver.ZAI.ChatModel
+    assert zai.model == "glm-5.2"
+    assert zai.profile.provider == :zai
+    assert zai.profile.max_input_tokens == 1_000_000
+    assert zai.profile.max_output_tokens == 131_072
+    assert zai.profile.reasoning_output
+    assert zai.profile.tool_calling
+    assert zai.profile.structured_output
+    assert zai.profile.chat_completions_api
+    refute zai.profile.responses_api
+
+    assert {:error, bare} = Models.init_chat_model("glm-5.2")
+    assert bare.type == :invalid_model
+    assert bare.details.expected == "zai:glm-5.2"
+
+    assert {:error, unsupported} = Models.init_chat_model("zai:glm-5.1")
+    assert unsupported.type == :unsupported_model
+    assert unsupported.details.expected == "zai:glm-5.2"
+  end
+
   test "init_chat_model rejects discontinued Moonshot identifiers with replacements" do
     assert {:error, error} = Models.init_chat_model("moonshot:kimi-latest")
 
@@ -284,7 +306,7 @@ defmodule BeamWeaver.Models.InitializerTest do
   end
 
   test "profile registry exposes deterministic checked-in profile introspection" do
-    assert ProfileRegistry.providers() == [:anthropic, :fake, :google, :moonshot, :openai, :xai]
+    assert ProfileRegistry.providers() == [:anthropic, :fake, :google, :moonshot, :openai, :xai, :zai]
 
     all = ProfileRegistry.all()
     openai = ProfileRegistry.profiles(:openai)
@@ -292,6 +314,7 @@ defmodule BeamWeaver.Models.InitializerTest do
     google = ProfileRegistry.profiles(:google)
     moonshot = ProfileRegistry.profiles(:moonshot)
     xai = ProfileRegistry.profiles(:xai)
+    zai = ProfileRegistry.profiles(:zai)
 
     assert Enum.map(all, &{&1.provider, &1.id}) == Enum.sort(Enum.map(all, &{&1.provider, &1.id}))
     assert Enum.all?(openai, &(&1.provider == :openai))
@@ -299,6 +322,7 @@ defmodule BeamWeaver.Models.InitializerTest do
     assert Enum.all?(google, &(&1.provider == :google))
     assert Enum.all?(moonshot, &(&1.provider == :moonshot))
     assert Enum.all?(xai, &(&1.provider == :xai))
+    assert Enum.all?(zai, &(&1.provider == :zai))
     assert Enum.any?(openai, &(&1.id == "gpt-5.5" and &1.tool_calling))
     assert Enum.any?(openai, &(&1.id == "gpt-5.4-mini" and &1.tool_calling))
     assert Enum.any?(openai, &(&1.id == "gpt-4.1" and &1.tool_calling))
@@ -369,6 +393,9 @@ defmodule BeamWeaver.Models.InitializerTest do
     assert Enum.any?(xai, &(&1.id == "grok-build-0.1" and &1.tool_calling))
     assert Enum.any?(xai, &(&1.id == "grok-4.20-multi-agent-0309" and &1.tool_calling))
     assert Enum.any?(xai, &(&1.id == "v1" and &1.extra.embedding_model))
+    assert Enum.any?(zai, &(&1.id == "glm-5.2" and &1.max_input_tokens == 1_000_000))
+    assert Enum.any?(zai, &(&1.id == "glm-5.2" and &1.max_output_tokens == 131_072))
+    assert Enum.any?(zai, &(&1.id == "glm-5.2" and &1.extra.input_price_per_mtok == 1.40))
 
     refute Enum.any?(
              xai,

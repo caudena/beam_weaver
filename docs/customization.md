@@ -383,7 +383,7 @@ official Deep Agents profile API.
 | Python docs pattern | BeamWeaver shape |
 | --- | --- |
 | One `create_deep_agent(...)` call | `use BeamWeaver.Agent` module macros or `BeamWeaver.Agent.build/1` options. |
-| Provider packages installed independently | Use documented native providers: OpenAI, Anthropic, Google, xAI, fake, and replay-backed tests. |
+| Provider packages installed independently | Use documented native providers: OpenAI, Anthropic, Google, xAI, Z.ai, fake, and replay-backed tests. |
 | Python decorators such as `@wrap_model_call` | Implement `BeamWeaver.Agent.Middleware` callbacks or use prebuilt middleware modules. |
 | Dataclass or typed `Runtime[Context]` | Pass `context:` maps and validate with `context_schema`. |
 | Python `BaseStore` and checkpointers | Pass `BeamWeaver.Memory.Store` and `BeamWeaver.Checkpoint.Saver` adapters explicitly. |

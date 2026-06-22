@@ -36,7 +36,7 @@ defmodule Mix.Tasks.BeamWeaver.Providers.Matrix do
 
   defp check!(matrix) do
     providers = matrix |> Enum.map(& &1.provider) |> Enum.uniq() |> Enum.sort()
-    required = [:anthropic, :fake, :google, :openai, :xai]
+    required = [:anthropic, :fake, :google, :openai, :xai, :zai]
     missing = required -- providers
 
     case missing do

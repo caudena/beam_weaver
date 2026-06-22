@@ -1,0 +1,64 @@
+{
+  "expected": {
+    "message": {
+      "metadata": {
+        "finish_reason": "length",
+        "id": "chatcmpl_zai_reasoning_length",
+        "model": "glm-5.2",
+        "model_name": "glm-5.2",
+        "model_provider": "zai",
+        "provider": "zai",
+        "reasoning_content": "Need multiply 12 by 11."
+      },
+      "role": "assistant",
+      "status": "length",
+      "text": "",
+      "tool_calls": [],
+      "usage_metadata": {
+        "input_tokens": 10,
+        "output_token_details": {
+          "reasoning": 32
+        },
+        "output_tokens": 32,
+        "total_tokens": 42
+      }
+    }
+  },
+  "provider": "zai",
+  "request": {
+    "headers": [
+      ["authorization", "**REDACTED**"],
+      ["content-type", "application/json"],
+      ["user-agent", "beam_weaver-zai/0.1"]
+    ],
+    "json": {
+      "max_tokens": 32,
+      "messages": [
+        {
+          "content": "think until length",
+          "role": "user"
+        }
+      ],
+      "model": "glm-5.2",
+      "reasoning_effort": "low",
+      "stream": true,
+      "stream_options": {
+        "include_usage": true
+      },
+      "thinking": {
+        "type": "enabled"
+      }
+    },
+    "method": "POST",
+    "url": "https://api.z.ai/api/paas/v4/chat/completions"
+  },
+  "response": {
+    "headers": [
+      ["content-type", "text/event-stream;charset=UTF-8"],
+      ["x-log-id", "chatcmpl_zai_reasoning_length"]
+    ],
+    "sse": "data: {\"id\":\"chatcmpl_zai_reasoning_length\",\"created\":1782040004,\"model\":\"glm-5.2\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"reasoning_content\":\"Need multiply \"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl_zai_reasoning_length\",\"created\":1782040004,\"model\":\"glm-5.2\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"reasoning_content\":\"12 by 11.\"},\"finish_reason\":\"length\"}],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":32,\"total_tokens\":42,\"completion_tokens_details\":{\"reasoning_tokens\":32}}}\n\ndata: [DONE]\n\n",
+    "status": 200
+  },
+  "scenario": "reasoning_stream_truncated"
+}

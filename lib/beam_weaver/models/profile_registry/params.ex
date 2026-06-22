@@ -185,6 +185,30 @@ defmodule BeamWeaver.Models.ProfileRegistry.Params do
     :top_p
   ]
 
+  @zai_params [
+    :do_sample,
+    :max_completion_tokens,
+    :max_output_tokens,
+    :max_tokens,
+    :metadata,
+    :model_kwargs,
+    :reasoning_effort,
+    :request_id,
+    :response_format,
+    :stop,
+    :stream,
+    :stream_options,
+    :stream_usage,
+    :structured_output,
+    :temperature,
+    :thinking,
+    :tool_choice,
+    :tool_stream,
+    :tools,
+    :top_p,
+    :user_id
+  ]
+
   @google_params [
     :cached_content,
     :candidate_count,
@@ -237,5 +261,6 @@ defmodule BeamWeaver.Models.ProfileRegistry.Params do
   def xai_chat_completions, do: @xai_chat_completions_params
   def xai_embedding, do: @xai_embedding_params
   def moonshot, do: @moonshot_params
+  def zai, do: @zai_params
   def google, do: @google_params
 end

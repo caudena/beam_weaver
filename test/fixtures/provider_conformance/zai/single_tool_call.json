@@ -1,0 +1,113 @@
+{
+  "expected": {
+    "message": {
+      "id": "chatcmpl_zai_tool",
+      "metadata": {
+        "finish_reason": "tool_calls",
+        "id": "chatcmpl_zai_tool",
+        "model": "glm-5.2",
+        "model_name": "glm-5.2",
+        "model_provider": "zai",
+        "provider": "zai"
+      },
+      "role": "assistant",
+      "status": "tool_calls",
+      "text": "",
+      "tool_calls": [
+        {
+          "args": {
+            "city": "Tokyo"
+          },
+          "call_id": "call_zai_weather",
+          "id": "call_zai_weather",
+          "name": "get_weather",
+          "provider_id": "call_zai_weather"
+        }
+      ],
+      "usage_metadata": {
+        "input_tokens": 6,
+        "output_tokens": 2,
+        "total_tokens": 8
+      }
+    }
+  },
+  "provider": "zai",
+  "request": {
+    "headers": [
+      ["authorization", "**REDACTED**"],
+      ["content-type", "application/json"],
+      ["user-agent", "beam_weaver-zai/0.1"]
+    ],
+    "json": {
+      "messages": [
+        {
+          "content": "weather in Tokyo",
+          "role": "user"
+        }
+      ],
+      "model": "glm-5.2",
+      "stream": false,
+      "tools": [
+        {
+          "function": {
+            "description": "Return current weather for a city.",
+            "name": "get_weather",
+            "parameters": {
+              "additionalProperties": false,
+              "properties": {
+                "city": {
+                  "type": "string"
+                }
+              },
+              "required": ["city"],
+              "type": "object"
+            }
+          },
+          "type": "function"
+        }
+      ]
+    },
+    "method": "POST",
+    "url": "https://api.z.ai/api/paas/v4/chat/completions"
+  },
+  "response": {
+    "body": {
+      "choices": [
+        {
+          "finish_reason": "tool_calls",
+          "index": 0,
+          "message": {
+            "content": null,
+            "role": "assistant",
+            "tool_calls": [
+              {
+                "function": {
+                  "arguments": "{\"city\":\"Tokyo\"}",
+                  "name": "get_weather"
+                },
+                "id": "call_zai_weather",
+                "type": "function"
+              }
+            ]
+          }
+        }
+      ],
+      "created": 1782040002,
+      "id": "chatcmpl_zai_tool",
+      "model": "glm-5.2",
+      "object": "chat.completion",
+      "request_id": "chatcmpl_zai_tool",
+      "usage": {
+        "completion_tokens": 2,
+        "prompt_tokens": 6,
+        "total_tokens": 8
+      }
+    },
+    "headers": [
+      ["content-type", "application/json"],
+      ["x-log-id", "chatcmpl_zai_tool"]
+    ],
+    "status": 200
+  },
+  "scenario": "single_tool_call"
+}

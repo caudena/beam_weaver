@@ -9,7 +9,7 @@ The examples run against a **live provider model**. Set a provider API key and,
 optionally, the model to use, then run any example from the project root:
 
 ```bash
-export OPENAI_API_KEY=sk-...                 # or ANTHROPIC_API_KEY / GOOGLE_API_KEY / XAI_API_KEY / KIMI_API_KEY
+export OPENAI_API_KEY=sk-...                 # or ANTHROPIC_API_KEY / GOOGLE_API_KEY / XAI_API_KEY / KIMI_API_KEY / ZAI_API_KEY
 export BEAM_WEAVER_EXAMPLES_MODEL=openai:gpt-5.4-mini   # default; switch provider/model here
 mix run examples/deepagents/deep_research.exs
 ```

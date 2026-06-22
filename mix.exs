@@ -4,7 +4,7 @@ defmodule BeamWeaver.MixProject do
   def project do
     [
       app: :beam_weaver,
-      version: "0.1.2",
+      version: "0.1.3",
       description: "From-scratch OTP-native Elixir implementation of LangChain, LangGraph, and Deep Agents concepts",
       source_url: "https://github.com/caudena/beam_weaver",
       homepage_url: "https://github.com/caudena/beam_weaver",
@@ -31,7 +31,7 @@ defmodule BeamWeaver.MixProject do
       {:ecto_sql, "~> 3.13"},
       {:postgrex, "~> 0.20"},
       {:req, "~> 0.6.1"},
-      {:finch, "~> 0.22.0"},
+      {:finch, "~> 0.23.0"},
       {:fastest_tiktoken, "~> 0.1.1"},
       {:telemetry, "~> 1.2"},
       {:yamerl, "~> 0.10.0"}
@@ -91,6 +91,7 @@ defmodule BeamWeaver.MixProject do
         "docs/partners/google.md",
         "docs/partners/moonshot.md",
         "docs/partners/xai.md",
+        "docs/partners/zai.md",
         "docs/replay.md",
         "docs/going_to_production.md",
         "docs/rate_limiting.md",
@@ -152,7 +153,8 @@ defmodule BeamWeaver.MixProject do
           "docs/partners/anthropic.md",
           "docs/partners/google.md",
           "docs/partners/moonshot.md",
-          "docs/partners/xai.md"
+          "docs/partners/xai.md",
+          "docs/partners/zai.md"
         ],
         Operations: [
           "docs/going_to_production.md",
@@ -240,6 +242,11 @@ defmodule BeamWeaver.MixProject do
           BeamWeaver.XAI.ChatModel,
           BeamWeaver.XAI.ChatCompletionsModel,
           BeamWeaver.XAI.EmbeddingModel,
+          BeamWeaver.ZAI,
+          BeamWeaver.ZAI.ChatModel,
+          BeamWeaver.ZAI.Client,
+          BeamWeaver.ZAI.Tools,
+          BeamWeaver.ZAI.Error,
           BeamWeaver.Models.FakeChatModel
         ],
         "Tools, Filesystems, And Sandboxes": [
@@ -306,6 +313,7 @@ defmodule BeamWeaver.MixProject do
       ],
       licenses: ["Apache-2.0"],
       links: %{
+        "Changelog" => "https://github.com/caudena/beam_weaver/blob/master/CHANGELOG.md",
         "GitHub" => "https://github.com/caudena/beam_weaver"
       }
     ]

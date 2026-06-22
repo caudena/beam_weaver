@@ -1,0 +1,85 @@
+{
+  "expected": {
+    "message": {
+      "metadata": {
+        "finish_reason": "tool_calls",
+        "id": "chatcmpl_zai_stream_tool",
+        "model": "glm-5.2",
+        "model_name": "glm-5.2",
+        "model_provider": "zai",
+        "provider": "zai"
+      },
+      "role": "assistant",
+      "status": "tool_calls",
+      "text": "",
+      "tool_calls": [
+        {
+          "args": {
+            "city": "Tokyo"
+          },
+          "id": "call_stream_weather",
+          "name": "get_weather",
+          "provider_id": "call_stream_weather"
+        }
+      ],
+      "usage_metadata": {
+        "input_tokens": 6,
+        "output_tokens": 3,
+        "total_tokens": 9
+      }
+    }
+  },
+  "provider": "zai",
+  "request": {
+    "headers": [
+      ["authorization", "**REDACTED**"],
+      ["content-type", "application/json"],
+      ["user-agent", "beam_weaver-zai/0.1"]
+    ],
+    "json": {
+      "messages": [
+        {
+          "content": "stream tool",
+          "role": "user"
+        }
+      ],
+      "model": "glm-5.2",
+      "stream": true,
+      "stream_options": {
+        "include_usage": true
+      },
+      "tool_choice": "auto",
+      "tool_stream": true,
+      "tools": [
+        {
+          "function": {
+            "description": "Return current weather for a city.",
+            "name": "get_weather",
+            "parameters": {
+              "additionalProperties": false,
+              "properties": {
+                "city": {
+                  "type": "string"
+                }
+              },
+              "required": ["city"],
+              "type": "object"
+            }
+          },
+          "type": "function"
+        }
+      ]
+    },
+    "method": "POST",
+    "url": "https://api.z.ai/api/paas/v4/chat/completions"
+  },
+  "response": {
+    "headers": [
+      ["content-type", "text/event-stream;charset=UTF-8"],
+      ["x-log-id", "chatcmpl_zai_stream_tool"]
+    ],
+    "sse": "data: {\"id\":\"chatcmpl_zai_stream_tool\",\"created\":1782040005,\"model\":\"glm-5.2\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"tool_calls\":[{\"index\":0,\"id\":\"call_stream_weather\",\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"arguments\":\"{\\\"city\\\":\"}}]},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl_zai_stream_tool\",\"created\":1782040005,\"model\":\"glm-5.2\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"type\":\"function\",\"function\":{\"arguments\":\"\\\"Tokyo\\\"}\"}}]},\"finish_reason\":\"tool_calls\"}],\"usage\":{\"prompt_tokens\":6,\"completion_tokens\":3,\"total_tokens\":9}}\n\ndata: [DONE]\n\n",
+    "status": 200
+  },
+  "scenario": "streaming_tool_call"
+}

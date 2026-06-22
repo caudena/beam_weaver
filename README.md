@@ -55,6 +55,7 @@ prefixes when a model name is ambiguous.
 | Google Gemini | `google:gemini-3.5-flash`, `google:gemini-3.1-pro-preview` |
 | Moonshot/Kimi | `moonshot:kimi-k2.7-code`, `moonshot:kimi-k2.7-code-highspeed`, `moonshot:kimi-k2.6`, `moonshot:kimi-k2.5` |
 | xAI | `xai:grok-4.3`, `xai:grok-4.20-0309-reasoning`, `xai:grok-4.20-0309-non-reasoning`, `xai:grok-4.20-multi-agent-0309`, `xai:grok-build-0.1`, `xai:v1` embeddings |
+| Z.ai | `zai:glm-5.2` |
 | Test models | Fake chat and embedding models, plus replay transports for deterministic provider tests. |
 
 Inspect the exact profile set in your checkout:
@@ -70,7 +71,7 @@ Add BeamWeaver to your application:
 ```elixir
 def deps do
   [
-    {:beam_weaver, "~> 0.1.2"}
+    {:beam_weaver, "~> 0.1.3"}
   ]
 end
 ```
@@ -83,7 +84,8 @@ config :beam_weaver,
   anthropic: [api_key: System.fetch_env!("ANTHROPIC_API_KEY")],
   google: [api_key: System.fetch_env!("GOOGLE_API_KEY")],
   xai: [api_key: System.fetch_env!("XAI_API_KEY")],
-  moonshot: [api_key: System.fetch_env!("MOONSHOT_API_KEY")]
+  moonshot: [api_key: System.fetch_env!("MOONSHOT_API_KEY")],
+  zai: [api_key: System.fetch_env!("ZAI_API_KEY")]
 ```
 
 ## Quickstart
@@ -226,3 +228,4 @@ Provider guides:
 - [Google](docs/partners/google.md)
 - [Moonshot/Kimi](docs/partners/moonshot.md)
 - [xAI](docs/partners/xai.md)
+- [Z.ai](docs/partners/zai.md)

@@ -34,7 +34,7 @@ Add BeamWeaver to your Mix project:
 ```elixir
 def deps do
   [
-    {:beam_weaver, "~> 0.1.2"}
+    {:beam_weaver, "~> 0.1.3"}
   ]
 end
 ```
@@ -100,7 +100,7 @@ history, and `stream_events/3`. Agents use the same graph runtime underneath.
 
 | Capability | BeamWeaver surface |
 | --- | --- |
-| Standard model interface | `BeamWeaver.Core.ChatModel` plus provider adapters for OpenAI, Anthropic, Google, xAI, fake, and replay-backed tests. |
+| Standard model interface | `BeamWeaver.Core.ChatModel` plus provider adapters for OpenAI, Anthropic, Google, xAI, Z.ai, fake, and replay-backed tests. |
 | Agent architecture | `use BeamWeaver.Agent` and `BeamWeaver.Agent.build/1` for graph-backed model/tool loops. |
 | Low-level orchestration | `BeamWeaver.Graph` for deterministic, agentic, or hybrid workflows. |
 | Durable execution | [Checkpoint-backed resumable graph execution](durable_execution.md). |
@@ -177,6 +177,7 @@ history, and `stream_events/3`. Agents use the same graph runtime underneath.
 - [Google](partners/google.md)
 - [Moonshot/Kimi](partners/moonshot.md)
 - [xAI](partners/xai.md)
+- [Z.ai](partners/zai.md)
 - [Replay](replay.md)
 - [Going To Production](going_to_production.md)
 - [Rate Limiting](rate_limiting.md)

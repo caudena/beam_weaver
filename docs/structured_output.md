@@ -129,8 +129,8 @@ Strategy values are atoms. Public Elixir config rejects string aliases such as
 ## Provider Strategy
 
 Provider strategy uses the model provider's native structured-output API.
-OpenAI, Anthropic, Google, and xAI provider adapters accept structured output
-request options, and agent auto-selection uses the model profile's
+OpenAI, Anthropic, Google, xAI, and Z.ai provider adapters accept structured
+output request options, and agent auto-selection uses the model profile's
 `:structured_output` capability.
 
 ```elixir
@@ -445,12 +445,13 @@ response.metadata["parsed"]
 
 OpenAI and xAI Responses and Chat Completions use JSON Schema response formats.
 Anthropic uses `output_config.format` for structured output. Google maps
-schemas to Gemini generation config. Structured-output parse errors include the
-provider finish/status reason, clipped content preview, metadata, and usage
-details so truncation and tool-call-only responses can be diagnosed without
-logging the full provider payload. See the [OpenAI](partners/openai.md),
-[Anthropic](partners/anthropic.md), [Google](partners/google.md), [xAI](partners/xai.md), and [Models](models.md)
-guides for provider-specific request details.
+schemas to Gemini generation config. Z.ai uses JSON object mode and BeamWeaver
+parsing. Structured-output parse errors include the provider finish/status
+reason, clipped content preview, metadata, and usage details so truncation and
+tool-call-only responses can be diagnosed without logging the full provider
+payload. See the [OpenAI](partners/openai.md), [Anthropic](partners/anthropic.md),
+[Google](partners/google.md), [xAI](partners/xai.md), [Z.ai](partners/zai.md),
+and [Models](models.md) guides for provider-specific request details.
 
 ## Related
 

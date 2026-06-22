@@ -1,0 +1,88 @@
+{
+  "expected": {
+    "message": {
+      "id": "chatcmpl_zai_basic",
+      "metadata": {
+        "finish_reason": "stop",
+        "id": "chatcmpl_zai_basic",
+        "model": "glm-5.2",
+        "model_name": "glm-5.2",
+        "model_provider": "zai",
+        "provider": "zai",
+        "reasoning_content": "brief thought"
+      },
+      "role": "assistant",
+      "status": "stop",
+      "text": "pong from GLM fixture",
+      "tool_calls": [],
+      "usage_metadata": {
+        "input_token_details": {
+          "cache_read": 1
+        },
+        "input_tokens": 3,
+        "output_token_details": {
+          "reasoning": 1
+        },
+        "output_tokens": 4,
+        "total_tokens": 7
+      }
+    }
+  },
+  "provider": "zai",
+  "request": {
+    "headers": [
+      ["authorization", "**REDACTED**"],
+      ["content-type", "application/json"],
+      ["user-agent", "beam_weaver-zai/0.1"]
+    ],
+    "json": {
+      "messages": [
+        {
+          "content": "ping",
+          "role": "user"
+        }
+      ],
+      "model": "glm-5.2",
+      "stream": false
+    },
+    "method": "POST",
+    "url": "https://api.z.ai/api/paas/v4/chat/completions"
+  },
+  "response": {
+    "body": {
+      "choices": [
+        {
+          "finish_reason": "stop",
+          "index": 0,
+          "message": {
+            "content": "pong from GLM fixture",
+            "reasoning_content": "brief thought",
+            "role": "assistant"
+          }
+        }
+      ],
+      "created": 1782040000,
+      "id": "chatcmpl_zai_basic",
+      "model": "glm-5.2",
+      "object": "chat.completion",
+      "request_id": "chatcmpl_zai_basic",
+      "usage": {
+        "completion_tokens": 4,
+        "completion_tokens_details": {
+          "reasoning_tokens": 1
+        },
+        "prompt_tokens": 3,
+        "prompt_tokens_details": {
+          "cached_tokens": 1
+        },
+        "total_tokens": 7
+      }
+    },
+    "headers": [
+      ["content-type", "application/json"],
+      ["x-log-id", "chatcmpl_zai_basic"]
+    ],
+    "status": 200
+  },
+  "scenario": "basic_chat"
+}

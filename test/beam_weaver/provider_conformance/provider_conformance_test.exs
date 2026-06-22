@@ -227,6 +227,93 @@ defmodule BeamWeaver.ProviderConformanceTest do
     end
   end
 
+  describe "Z.ai GLM fixtures" do
+    test "basic chat response normalizes text, reasoning, usage, and metadata" do
+      model = Fixtures.model(:zai, "basic_chat")
+
+      assert {:ok, message} = ChatModel.invoke(model, [Message.user("ping")])
+
+      Fixtures.assert_request!(:zai, "basic_chat")
+      Fixtures.assert_message!(message, Fixtures.load!(:zai, "basic_chat")["expected"]["message"])
+    end
+
+    test "provider-native JSON mode parses structured output" do
+      model = Fixtures.model(:zai, "provider_structured_success")
+
+      assert {:ok, message} =
+               ChatModel.invoke(model, [Message.user("answer as JSON")],
+                 response_format: %{name: "answer_output", schema: Fixtures.answer_schema()}
+               )
+
+      Fixtures.assert_request!(:zai, "provider_structured_success")
+
+      Fixtures.assert_message!(
+        message,
+        Fixtures.load!(:zai, "provider_structured_success")["expected"]["message"]
+      )
+    end
+
+    test "single tool call preserves GLM chat-completions IDs" do
+      model = Fixtures.model(:zai, "single_tool_call")
+
+      assert {:ok, message} =
+               ChatModel.invoke(model, [Message.user("weather in Tokyo")], tools: [Fixtures.weather_tool()])
+
+      Fixtures.assert_request!(:zai, "single_tool_call")
+      Fixtures.assert_message!(message, Fixtures.load!(:zai, "single_tool_call")["expected"]["message"])
+    end
+
+    test "streaming response captures final usage metadata" do
+      model = Fixtures.model(:zai, "streaming_usage")
+
+      assert {:ok, message} = model.__struct__.stream_response(model, [Message.user("stream pong")])
+
+      Fixtures.assert_request!(:zai, "streaming_usage")
+      Fixtures.assert_message!(message, Fixtures.load!(:zai, "streaming_usage")["expected"]["message"])
+    end
+
+    test "reasoning-only stream truncation is surfaced as length" do
+      model = Fixtures.model(:zai, "reasoning_stream_truncated")
+
+      assert {:ok, message} =
+               model.__struct__.stream_response(
+                 model,
+                 [Message.user("think until length")],
+                 thinking: %{type: "enabled"},
+                 reasoning_effort: "low",
+                 max_tokens: 32
+               )
+
+      Fixtures.assert_request!(:zai, "reasoning_stream_truncated")
+      Fixtures.assert_message!(message, Fixtures.load!(:zai, "reasoning_stream_truncated")["expected"]["message"])
+    end
+
+    test "streamed tool-call argument chunks merge by index" do
+      model = Fixtures.model(:zai, "streaming_tool_call")
+
+      assert {:ok, message} =
+               model.__struct__.stream_response(
+                 model,
+                 [Message.user("stream tool")],
+                 tools: [Fixtures.weather_tool()],
+                 tool_choice: "auto",
+                 tool_stream: true
+               )
+
+      Fixtures.assert_request!(:zai, "streaming_tool_call")
+      Fixtures.assert_message!(message, Fixtures.load!(:zai, "streaming_tool_call")["expected"]["message"])
+    end
+
+    test "provider HTTP errors normalize retryability and log IDs" do
+      model = Fixtures.model(:zai, "http_rate_limit_error")
+
+      result = ChatModel.invoke(model, [Message.user("rate limit")])
+
+      Fixtures.assert_request!(:zai, "http_rate_limit_error")
+      Fixtures.assert_error!(result, Fixtures.load!(:zai, "http_rate_limit_error")["expected"]["error"])
+    end
+  end
+
   describe "structured-output strategy policy fixtures" do
     test "fallback fixture records provider profile decision when native output is unsafe" do
       fixture = Fixtures.load!(:xai, "structured_fallback_when_tools_active")

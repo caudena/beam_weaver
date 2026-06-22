@@ -397,7 +397,7 @@ render the provider's external string names at the HTTP boundary.
 ```
 
 Reasoning fields vary by provider. BeamWeaver normalizes common OpenAI,
-Anthropic, Google, and xAI reasoning shapes into reasoning blocks where provider
+Anthropic, Google, xAI, and Z.ai reasoning shapes into reasoning blocks where provider
 translators have coverage, and preserves unknown provider data instead of
 dropping it.
 
@@ -429,9 +429,10 @@ Data URIs are parsed into typed blocks:
 
 The core message struct can hold more block types than any one model provider
 accepts. OpenAI, Anthropic, Google, and xAI translators cover the scoped block
-shapes tested for those providers. Other provider-native formats belong in
-provider translators or `ContentBlock.unknown/3` until a native adapter defines
-how the data should be rendered.
+shapes tested for those providers. Z.ai currently accepts text input in
+BeamWeaver. Other provider-native formats belong in provider translators or
+`ContentBlock.unknown/3` until a native adapter defines how the data should be
+rendered.
 {% endhint %}
 
 ### Tool Calling Blocks

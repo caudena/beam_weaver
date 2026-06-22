@@ -113,6 +113,9 @@ defmodule BeamWeaver.Agent.ModelResolver do
       module == BeamWeaver.Moonshot.ChatModel ->
         "moonshot"
 
+      module == BeamWeaver.ZAI.ChatModel ->
+        "zai"
+
       module == BeamWeaver.Models.FakeChatModel ->
         "fake"
 

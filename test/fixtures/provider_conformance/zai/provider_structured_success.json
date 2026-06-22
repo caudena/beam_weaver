@@ -1,0 +1,80 @@
+{
+  "expected": {
+    "message": {
+      "id": "chatcmpl_zai_structured",
+      "metadata": {
+        "finish_reason": "stop",
+        "id": "chatcmpl_zai_structured",
+        "model": "glm-5.2",
+        "model_name": "glm-5.2",
+        "model_provider": "zai",
+        "parsed": {
+          "answer": "pong from GLM fixture"
+        },
+        "provider": "zai"
+      },
+      "role": "assistant",
+      "status": "stop",
+      "text": "{\"answer\":\"pong from GLM fixture\"}",
+      "tool_calls": [],
+      "usage_metadata": {
+        "input_tokens": 5,
+        "output_tokens": 6,
+        "total_tokens": 11
+      }
+    }
+  },
+  "provider": "zai",
+  "request": {
+    "headers": [
+      ["authorization", "**REDACTED**"],
+      ["content-type", "application/json"],
+      ["user-agent", "beam_weaver-zai/0.1"]
+    ],
+    "json": {
+      "messages": [
+        {
+          "content": "answer as JSON",
+          "role": "user"
+        }
+      ],
+      "model": "glm-5.2",
+      "response_format": {
+        "type": "json_object"
+      },
+      "stream": false
+    },
+    "method": "POST",
+    "url": "https://api.z.ai/api/paas/v4/chat/completions"
+  },
+  "response": {
+    "body": {
+      "choices": [
+        {
+          "finish_reason": "stop",
+          "index": 0,
+          "message": {
+            "content": "{\"answer\":\"pong from GLM fixture\"}",
+            "role": "assistant"
+          }
+        }
+      ],
+      "created": 1782040001,
+      "id": "chatcmpl_zai_structured",
+      "model": "glm-5.2",
+      "object": "chat.completion",
+      "request_id": "chatcmpl_zai_structured",
+      "usage": {
+        "completion_tokens": 6,
+        "prompt_tokens": 5,
+        "total_tokens": 11
+      }
+    },
+    "headers": [
+      ["content-type", "application/json"],
+      ["x-log-id", "chatcmpl_zai_structured"]
+    ],
+    "status": 200
+  },
+  "scenario": "provider_structured_success"
+}

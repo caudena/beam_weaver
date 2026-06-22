@@ -975,3 +975,4 @@ provider already performed.
 - [Anthropic](partners/anthropic.md)
 - [Google](partners/google.md)
 - [xAI](partners/xai.md)
+- [Z.ai](partners/zai.md)
