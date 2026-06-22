@@ -335,7 +335,7 @@ Agent.invoke(
 LangChain repeats the same memory examples across Google, OpenAI, Anthropic,
 OpenRouter, Fireworks, Baseten, and Ollama. BeamWeaver's store API is
 provider-independent, so the examples are shown once. BeamWeaver currently has
-first-class OpenAI, Anthropic, Google, xAI, fake, and explicit
+first-class OpenAI, Anthropic, Google, xAI, Z.ai, fake, and explicit
 OpenAI-compatible HTTP paths; the other provider labels are not presented as
 supported BeamWeaver workflows until adapters exist.
 {% endhint %}

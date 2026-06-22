@@ -5,6 +5,7 @@ config :beam_weaver,
   anthropic: [],
   google: [],
   xai: [],
+  zai: [],
   tracing: [],
   evals: [
     provider_api_keys: [],

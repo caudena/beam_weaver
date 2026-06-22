@@ -59,6 +59,7 @@
 * [Google](partners/google.md)
 * [Moonshot/Kimi](partners/moonshot.md)
 * [xAI](partners/xai.md)
+* [Z.ai](partners/zai.md)
 
 ## Operations
 

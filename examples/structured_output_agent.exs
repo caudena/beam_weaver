@@ -26,7 +26,7 @@ end
 
 {:ok, %{structured_response: %{"answer" => answer}}} =
   BeamWeaver.Examples.StructuredOutputAgent.invoke(%{
-    messages: [Message.user("What is 2 + 2? Reply with just the number.")]
+    messages: [Message.user(~s(What is 2 + 2? Return JSON with answer as the string "4".))]
   })
 
 IO.puts(answer)

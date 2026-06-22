@@ -80,13 +80,24 @@ if config_env() != :test do
            )
          )
 
+  config :beam_weaver,
+         :zai,
+         Keyword.merge(
+           Application.get_env(:beam_weaver, :zai, []),
+           compact.(
+             api_key: non_blank.("ZAI_API_KEY"),
+             base_url: first_env.(["ZAI_BASE_URL", "ZAI_API_URL"])
+           )
+         )
+
   provider_api_keys =
     compact.(
       openai: non_blank.("OPENAI_API_KEY"),
       anthropic: non_blank.("ANTHROPIC_API_KEY"),
       google: google_api_key,
       xai: non_blank.("XAI_API_KEY"),
-      moonshot: non_blank.("MOONSHOT_API_KEY")
+      moonshot: non_blank.("MOONSHOT_API_KEY"),
+      zai: non_blank.("ZAI_API_KEY")
     )
 
   sandbox_env = non_blank.("BEAM_WEAVER_DEEPAGENTS_SANDBOX")
@@ -130,5 +141,6 @@ config :beam_weaver, :examples,
     "anthropic" => examples_env.("ANTHROPIC_API_KEY"),
     "google" => examples_env.("GOOGLE_API_KEY") || examples_env.("GEMINI_API_KEY"),
     "xai" => examples_env.("XAI_API_KEY"),
-    "moonshot" => examples_env.("MOONSHOT_API_KEY") || examples_env.("KIMI_API_KEY")
+    "moonshot" => examples_env.("MOONSHOT_API_KEY") || examples_env.("KIMI_API_KEY"),
+    "zai" => examples_env.("ZAI_API_KEY")
   }

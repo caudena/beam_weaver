@@ -154,6 +154,13 @@ defmodule BeamWeaver.Models do
            expected: "moonshot:#{model_id}"
          })}
 
+      ["glm-" <> _rest = model_id] when kind == :chat ->
+        {:error,
+         Error.new(:invalid_model, "GLM model identifiers require the zai: prefix", %{
+           model: model_id,
+           expected: "zai:glm-5.2"
+         })}
+
       [model_id] when model_id != "" ->
         {:ok, ProviderRegistry.infer_provider(model_id, kind), model_id}
 
@@ -253,6 +260,7 @@ defmodule BeamWeaver.Models do
        when module in [
               BeamWeaver.Google.ChatModel,
               BeamWeaver.Moonshot.ChatModel,
+              BeamWeaver.ZAI.ChatModel,
               BeamWeaver.XAI.ChatModel,
               BeamWeaver.XAI.ChatCompletionsModel
             ],
@@ -270,6 +278,8 @@ defmodule BeamWeaver.Models do
   defp configured_model(opts, BeamWeaver.Google.ChatModel), do: BeamWeaver.Google.chat_model(opts)
 
   defp configured_model(opts, BeamWeaver.Moonshot.ChatModel), do: BeamWeaver.Moonshot.chat_model(opts)
+
+  defp configured_model(opts, BeamWeaver.ZAI.ChatModel), do: BeamWeaver.ZAI.chat_model(opts)
 
   defp configured_model(opts, BeamWeaver.XAI.ChatModel), do: BeamWeaver.XAI.chat_model(opts)
 

@@ -1,0 +1,50 @@
+{
+  "expected": {
+    "error": {
+      "details": {
+        "code": "rate_limit",
+        "error_type": "rate_limit_error",
+        "request_id": "chatcmpl_zai_rate_limit",
+        "retryable": true,
+        "status": 429
+      },
+      "message": "rate limited",
+      "type": "rate_limit_error"
+    }
+  },
+  "provider": "zai",
+  "request": {
+    "headers": [
+      ["authorization", "**REDACTED**"],
+      ["content-type", "application/json"],
+      ["user-agent", "beam_weaver-zai/0.1"]
+    ],
+    "json": {
+      "messages": [
+        {
+          "content": "rate limit",
+          "role": "user"
+        }
+      ],
+      "model": "glm-5.2",
+      "stream": false
+    },
+    "method": "POST",
+    "url": "https://api.z.ai/api/paas/v4/chat/completions"
+  },
+  "response": {
+    "body": {
+      "error": {
+        "code": "rate_limit",
+        "message": "rate limited",
+        "type": "rate_limit_error"
+      }
+    },
+    "headers": [
+      ["content-type", "application/json"],
+      ["x-log-id", "chatcmpl_zai_rate_limit"]
+    ],
+    "status": 429
+  },
+  "scenario": "http_rate_limit_error"
+}

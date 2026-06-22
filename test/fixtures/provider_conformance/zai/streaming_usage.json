@@ -1,0 +1,58 @@
+{
+  "expected": {
+    "message": {
+      "metadata": {
+        "finish_reason": "stop",
+        "id": "chatcmpl_zai_stream",
+        "model": "glm-5.2",
+        "model_name": "glm-5.2",
+        "model_provider": "zai",
+        "provider": "zai"
+      },
+      "role": "assistant",
+      "status": "stop",
+      "text": "streamed pong",
+      "tool_calls": [],
+      "usage_metadata": {
+        "input_token_details": {
+          "cache_read": 1
+        },
+        "input_tokens": 3,
+        "output_tokens": 4,
+        "total_tokens": 7
+      }
+    }
+  },
+  "provider": "zai",
+  "request": {
+    "headers": [
+      ["authorization", "**REDACTED**"],
+      ["content-type", "application/json"],
+      ["user-agent", "beam_weaver-zai/0.1"]
+    ],
+    "json": {
+      "messages": [
+        {
+          "content": "stream pong",
+          "role": "user"
+        }
+      ],
+      "model": "glm-5.2",
+      "stream": true,
+      "stream_options": {
+        "include_usage": true
+      }
+    },
+    "method": "POST",
+    "url": "https://api.z.ai/api/paas/v4/chat/completions"
+  },
+  "response": {
+    "headers": [
+      ["content-type", "text/event-stream;charset=UTF-8"],
+      ["x-log-id", "chatcmpl_zai_stream"]
+    ],
+    "sse": "data: {\"id\":\"chatcmpl_zai_stream\",\"created\":1782040003,\"model\":\"glm-5.2\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"streamed \"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl_zai_stream\",\"created\":1782040003,\"model\":\"glm-5.2\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"pong\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":4,\"total_tokens\":7,\"prompt_tokens_details\":{\"cached_tokens\":1}}}\n\ndata: [DONE]\n\n",
+    "status": 200
+  },
+  "scenario": "streaming_usage"
+}

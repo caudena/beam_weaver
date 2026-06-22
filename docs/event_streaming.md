@@ -19,7 +19,7 @@ For standalone chat models, use `BeamWeaver.Core.ChatModel.stream_events/3`
 when you need provider semantic events directly. Wrap model calls in an agent or
 compiled graph when you want a unified typed envelope stream.
 
-Standalone OpenAI, Anthropic, Google, and xAI model streams are lazy live
+Standalone OpenAI, Anthropic, Google, xAI, and Z.ai model streams are lazy live
 enumerables when using the live transport. Provider chunks are parsed
 incrementally as server-sent events arrive. In tests, fake or replay transports
 can emit deterministic typed stream events from fixtures. If a lazy provider
@@ -297,7 +297,7 @@ events in one pass for live UI updates, or reduce collected events into
 
 ## Reasoning Content
 
-Reasoning output is provider-dependent. OpenAI, Anthropic, Google, and xAI can
+Reasoning output is provider-dependent. OpenAI, Anthropic, Google, xAI, and Z.ai can
 surface reasoning as content blocks in `%Events.MessageChunk{}` events, and
 final assistant messages preserve reasoning blocks in their content.
 

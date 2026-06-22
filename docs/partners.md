@@ -20,6 +20,7 @@ streaming.
 | [Google](partners/google.md) | `BeamWeaver.Google.*` | Yes | No | No | No | Function declarations and Gemini built-ins | Gemini generation config schema | Text deltas, typed events, reconstructed messages | Gemini count-tokens endpoint |
 | [Moonshot/Kimi](partners/moonshot.md) | `BeamWeaver.Moonshot.*` | Yes | Yes | No | No | OpenAI-compatible function tools and Kimi `$web_search` | JSON object/schema request options | Text/reasoning deltas, typed events, reconstructed messages | Moonshot estimate-token endpoint |
 | [xAI](partners/xai.md) | `BeamWeaver.XAI.*` | Yes | Yes | Yes | Yes | OpenAI-compatible function tools and xAI built-ins | JSON schema request options | Text deltas, typed events, reconstructed messages | Tokenizer/profile or approximate fallback |
+| [Z.ai](partners/zai.md) | `BeamWeaver.ZAI.*` | Yes | Yes | No | No | OpenAI-compatible function tools | JSON object request option | Text/reasoning/tool-call deltas, usage chunks, reconstructed messages | Approximate fallback |
 
 ## Composed Agent Model Matrix
 
@@ -36,6 +37,7 @@ output, stream useful events, and count enough tokens for context management.
 | Google Gemini | `google:gemini-3.5-flash`, other explicit `google:gemini-*` profiles | Supported | Function declarations and Gemini built-ins | Gemini generation config schema | Text, typed Gemini events, reconstructed messages | Gemini count-tokens endpoint | Gemini identifiers must use the `google:` prefix; use workload tests for long tool chains. |
 | Moonshot/Kimi | `moonshot:kimi-k2.7-code`, `moonshot:kimi-k2.7-code-highspeed`, `moonshot:kimi-k2.6`, `moonshot:kimi-k2.5` | Supported with Kimi constraints | OpenAI-compatible functions plus Kimi `$web_search` where thinking can be disabled | JSON object/schema request options | Text, reasoning, tool-call chunks, usage chunks, reconstructed messages | Moonshot estimate-token endpoint | K2.7 Code is thinking-only; `$web_search` requires thinking disabled on K2.6/K2.5; old Kimi slugs are rejected before transport. |
 | xAI Grok | `xai:grok-4.3`, `xai:grok-4.20-0309-reasoning`, explicit `BeamWeaver.XAI.*` structs | Supported | OpenAI-compatible functions and xAI built-ins | JSON schema request options | Text, reasoning/citation metadata, typed events, reconstructed messages | Tokenizer/profile or approximate fallback | Useful when Grok-specific reasoning/citation behavior matters; provider metadata is normalized. |
+| Z.ai GLM | `zai:glm-5.2`, explicit `BeamWeaver.ZAI.ChatModel` structs | Supported | OpenAI-compatible functions with `tool_stream` for streamed arguments | JSON object mode with BeamWeaver parsing | Text, reasoning, tool-call chunks, usage chunks, reconstructed messages | Approximate fallback | GLM identifiers must use `zai:`; only `glm-5.2` is enabled. Usage includes cached-input and reasoning-token details for cost metadata. |
 | Fake chat | `fake:chat` | Test only | Fixture tool calls | Fixture structured responses | Fixture text/events | Fake or approximate | Use for deterministic composed-agent middleware, checkpoint, HITL, and subagent tests. |
 
 This matrix is not a benchmark table. BeamWeaver verifies the runtime surfaces

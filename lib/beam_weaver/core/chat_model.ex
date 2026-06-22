@@ -478,6 +478,7 @@ defmodule BeamWeaver.Core.ChatModel do
       "Google" in parts -> "google"
       "XAI" in parts -> "xai"
       "Moonshot" in parts -> "moonshot"
+      "ZAI" in parts -> "zai"
       parts == ["BeamWeaver", "Models", "FakeChatModel"] -> "fake"
       true -> nil
     end

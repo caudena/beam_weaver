@@ -70,7 +70,7 @@ defmodule BeamWeaver.Provider.RegistryTest do
   end
 
   test "built-in provider surface exposes expected provider IDs and profiles" do
-    assert Registry.providers() == [:anthropic, :fake, :google, :moonshot, :openai, :xai]
+    assert Registry.providers() == [:anthropic, :fake, :google, :moonshot, :openai, :xai, :zai]
     assert {:ok, profile} = Registry.profile(:google, "gemini-3.5-flash")
     assert profile.provider == :google
     assert profile.structured_output
@@ -85,6 +85,13 @@ defmodule BeamWeaver.Provider.RegistryTest do
     assert kimi_code.provider == :moonshot
     assert kimi_code.extra.thinking_modes == [:enabled]
     assert kimi_code.extra.model_category == :coding
+
+    assert {:ok, glm} = Registry.profile(:zai, "glm-5.2")
+    assert glm.provider == :zai
+    assert glm.chat_completions_api
+    assert glm.max_input_tokens == 1_000_000
+    assert glm.max_output_tokens == 131_072
+    assert glm.extra.input_price_per_mtok == 1.40
   end
 
   test "runtime providers can be registered, inferred, initialized, and unregistered" do
@@ -124,6 +131,9 @@ defmodule BeamWeaver.Provider.RegistryTest do
     assert Compatibility.supports?({:moonshot, "kimi-k2.6"}, :video_input)
     assert Compatibility.supports?({:moonshot, "kimi-k2.6"}, :reasoning)
     assert Compatibility.supports?({:moonshot, "kimi-k2.5"}, :reasoning)
+    assert Compatibility.supports?({:zai, "glm-5.2"}, :tool_calling)
+    assert Compatibility.supports?({:zai, "glm-5.2"}, :structured_output)
+    assert Compatibility.supports?({:zai, "glm-5.2"}, :reasoning)
     refute Compatibility.supports?({:xai, "grok-2"}, :reasoning)
   end
 

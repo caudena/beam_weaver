@@ -12,6 +12,7 @@ defmodule BeamWeaver.Models.ProfileRegistry do
   alias BeamWeaver.Models.ProfileRegistry.Moonshot
   alias BeamWeaver.Models.ProfileRegistry.OpenAI
   alias BeamWeaver.Models.ProfileRegistry.XAI
+  alias BeamWeaver.Models.ProfileRegistry.ZAI
 
   @provider_modules %{
     anthropic: Anthropic,
@@ -19,10 +20,11 @@ defmodule BeamWeaver.Models.ProfileRegistry do
     google: Google,
     moonshot: Moonshot,
     openai: OpenAI,
-    xai: XAI
+    xai: XAI,
+    zai: ZAI
   }
 
-  @profile_modules [OpenAI, Anthropic, XAI, Moonshot, Google, Fake]
+  @profile_modules [OpenAI, Anthropic, XAI, Moonshot, ZAI, Google, Fake]
 
   @doc """
   Returns all checked-in model profiles sorted by provider and id.

@@ -26,13 +26,14 @@ config :beam_weaver,
   openai: [api_key: System.fetch_env!("OPENAI_API_KEY")],
   anthropic: [api_key: System.fetch_env!("ANTHROPIC_API_KEY")],
   xai: [api_key: System.fetch_env!("XAI_API_KEY")],
-  google: [api_key: System.fetch_env!("GOOGLE_API_KEY")]
+  google: [api_key: System.fetch_env!("GOOGLE_API_KEY")],
+  zai: [api_key: System.fetch_env!("ZAI_API_KEY")]
 ```
 
 `BeamWeaver.Models.init_chat_model/2` accepts provider-prefixed identifiers.
 Unprefixed `gpt-*` and `o*` names infer OpenAI. Unprefixed `claude-*` names infer
-Anthropic. Unprefixed `grok-*` names infer xAI. Gemini models must use the
-explicit `google:` prefix.
+Anthropic. Unprefixed `grok-*` names infer xAI. Gemini and GLM models must use
+the explicit `google:` and `zai:` prefixes.
 
 ```elixir
 {:ok, model} =
@@ -64,6 +65,12 @@ Google:
   BeamWeaver.Models.init_chat_model("google:gemini-3.5-flash",
     thinking_budget: 512
   )
+```
+
+Z.ai:
+
+```elixir
+{:ok, model} = BeamWeaver.Models.init_chat_model("zai:glm-5.2")
 ```
 
 Fake model for tests:
@@ -109,20 +116,22 @@ Provider scope is intentionally narrow:
 - `BeamWeaver.XAI.ChatModel` for xAI Responses API
 - `BeamWeaver.XAI.ChatCompletionsModel` for xAI Chat Completions
 - `BeamWeaver.XAI.EmbeddingModel` for xAI embeddings
+- `BeamWeaver.ZAI.ChatModel` for Z.ai GLM-5.2 Chat Completions
 - `BeamWeaver.Models.FakeChatModel` and `FakeEmbeddingModel` for tests
 
 Checked-in model profiles cover common OpenAI, Anthropic, Google Gemini,
-Moonshot/Kimi, and xAI families. Moonshot chat supports
+Moonshot/Kimi, xAI, and Z.ai families. Moonshot chat supports
 `moonshot:kimi-k2.7-code`, `moonshot:kimi-k2.7-code-highspeed`,
 `moonshot:kimi-k2.6`, and `moonshot:kimi-k2.5`. xAI chat defaults to
 `grok-4.3`; current checked-in xAI profiles also
 include `grok-4.20-0309-reasoning`, `grok-4.20-0309-non-reasoning`,
 `grok-4.20-multi-agent-0309`, `grok-build-0.1`, and embedding model `v1`.
+Z.ai chat currently supports only `zai:glm-5.2`.
 Future OpenAI `gpt-*`/`o*`, Anthropic `claude-*`, explicit Google
 `google:gemini-*`, explicit Moonshot `moonshot:kimi-*`, and xAI `grok-*`
 identifiers use permissive fallback profiles unless they are known
-deprecated/unsupported slugs. Bare `gemini-*` and `kimi-*` IDs are rejected so
-provider routing is explicit.
+deprecated/unsupported slugs. Bare `gemini-*`, `kimi-*`, and `glm-*` IDs are
+rejected so provider routing is explicit.
 
 ## Composed Agent Model Recommendations
 
@@ -142,6 +151,7 @@ Recommended starting points:
 | Google Gemini | `google:gemini-3.5-flash`, explicit `google:gemini-*` profiles |
 | Moonshot/Kimi | `moonshot:kimi-k2.7-code`, `moonshot:kimi-k2.7-code-highspeed`, `moonshot:kimi-k2.6`, `moonshot:kimi-k2.5` |
 | xAI Grok | `xai:grok-4.3`, `xai:grok-4.20-0309-reasoning` |
+| Z.ai GLM | `zai:glm-5.2` |
 
 Use the matrix as capability guidance, then validate model quality against your
 own prompts, tools, latency, and cost constraints.
@@ -347,10 +357,11 @@ code should prefer `%BeamWeaver.Core.Message{}` constructors.
 ## Streaming
 
 `stream/3` returns an `Enumerable` of provider text deltas for scoped live
-providers. OpenAI, Anthropic, Google, and xAI live transports emit chunks as the
-provider sends them; replay transports emit deterministic chunks from the saved
-stream body for tests. Use `stream_events/3` when you need provider semantic
-events such as tool-call chunks, reasoning, usage, or lifecycle metadata.
+providers. OpenAI, Anthropic, Google, xAI, and Z.ai live transports emit chunks
+as the provider sends them; replay transports emit deterministic chunks from
+the saved stream body for tests. Use `stream_events/3` when you need provider
+semantic events such as tool-call chunks, reasoning, usage, or lifecycle
+metadata.
 
 ```elixir
 {:ok, deltas} = BeamWeaver.Core.ChatModel.stream(model, "Draft a short release note.")
@@ -379,7 +390,7 @@ for event <- events do
 end
 ```
 
-OpenAI, Anthropic, Google, and xAI provider modules also expose
+OpenAI, Anthropic, Google, xAI, and Z.ai provider modules also expose
 `stream_response/3` when a caller wants the reconstructed final assistant message
 from a streamed call.
 Provider HTTP errors returned before any successful stream body are represented
@@ -525,8 +536,9 @@ response.metadata.structured_response
 Provider-native structured output is selected when the model profile advertises
 support. Otherwise BeamWeaver can fall back to tool-strategy behavior.
 
-For direct provider calls, OpenAI, Anthropic, Google, and xAI also accept
-`:response_format`/`:structured_output` options shaped as JSON Schema data.
+For direct provider calls, OpenAI, Anthropic, Google, xAI, and Z.ai also accept
+`:response_format`/`:structured_output` options. Z.ai maps schema-shaped input
+to JSON object mode and parses locally.
 
 ## Model Profiles
 
@@ -590,7 +602,7 @@ BeamWeaver.Core.ChatModel.invoke(model, [message])
 
 OpenAI, Anthropic, Google, and xAI translators support the scoped image, audio,
 file/document, reasoning, citation, server-tool, and unknown provider blocks
-covered by tests.
+covered by tests. Z.ai GLM-5.2 currently exposes text-only input in BeamWeaver.
 Video and arbitrary provider-native formats require provider-specific
 translation before they should be used in portable BeamWeaver code.
 
@@ -627,6 +639,15 @@ Google thinking controls are Gemini generation config options:
 BeamWeaver.Core.ChatModel.invoke(model, "Plan the migration.",
   thinking_budget: 512,
   include_thoughts: true
+)
+```
+
+Z.ai GLM-5.2 accepts `thinking` plus `reasoning_effort`:
+
+```elixir
+BeamWeaver.Core.ChatModel.invoke(model, "Plan the migration.",
+  thinking: %{type: :enabled},
+  reasoning_effort: :low
 )
 ```
 

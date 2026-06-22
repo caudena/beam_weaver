@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.3 - 2026-06-23
+
+### Added
+
+- Added a first-class Z.ai provider for `zai:glm-5.2`, including runtime
+  config from `ZAI_API_KEY`, optional Z.ai base URL overrides, provider/model
+  registry entries, model profile metadata, and provider matrix support.
+- Added native Z.ai chat-completions support for non-streaming and streaming
+  responses, JSON mode, function tools, streamed tool-call argument merging,
+  reasoning deltas, request metadata, raw usage, and estimated cost metadata.
+
 ## 0.1.2 - 2026-06-20
 
 ### Fixed

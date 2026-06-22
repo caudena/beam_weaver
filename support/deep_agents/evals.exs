@@ -46,21 +46,23 @@ defmodule BeamWeaver.TestSupport.DeepAgents.Evals do
     "unit_test" => 9
   }
 
-  @supported_providers ~w(fake openai anthropic google xai)
+  @supported_providers ~w(fake openai anthropic google xai zai)
 
   @provider_env %{
     "openai" => "OPENAI_API_KEY",
     "anthropic" => "ANTHROPIC_API_KEY",
     "google" => "GOOGLE_API_KEY",
     "xai" => "XAI_API_KEY",
-    "moonshot" => "MOONSHOT_API_KEY"
+    "moonshot" => "MOONSHOT_API_KEY",
+    "zai" => "ZAI_API_KEY"
   }
 
   @provider_config_key %{
     "openai" => :openai,
     "anthropic" => :anthropic,
     "google" => :google,
-    "xai" => :xai
+    "xai" => :xai,
+    "zai" => :zai
   }
 
   @model_groups %{
@@ -102,6 +104,7 @@ defmodule BeamWeaver.TestSupport.DeepAgents.Evals do
     ],
     "google" => ["google:gemini-3.5-flash", "google:gemini-3.1-pro-preview"],
     "xai" => ["xai:grok-4.3", "xai:grok-4.20-0309-non-reasoning"],
+    "zai" => ["zai:glm-5.2"],
     "unsupported_cataloged" => [
       "baseten:MiniMaxAI/MiniMax-M2.5",
       "fireworks:accounts/fireworks/models/deepseek-v3-0324",
