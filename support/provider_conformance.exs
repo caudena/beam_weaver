@@ -48,7 +48,9 @@ defmodule BeamWeaver.TestSupport.ProviderConformance do
 
   @provider_modules %{
     openai: BeamWeaver.OpenAI.ChatModel,
+    openai_chat_completions: BeamWeaver.OpenAI.ChatCompletionsModel,
     xai: BeamWeaver.XAI.ChatModel,
+    xai_chat_completions: BeamWeaver.XAI.ChatCompletionsModel,
     google: BeamWeaver.Google.ChatModel,
     moonshot: BeamWeaver.Moonshot.ChatModel,
     zai: BeamWeaver.ZAI.ChatModel
@@ -56,7 +58,9 @@ defmodule BeamWeaver.TestSupport.ProviderConformance do
 
   @provider_models %{
     openai: "gpt-5.4-mini",
+    openai_chat_completions: "gpt-5.4-mini",
     xai: "grok-4.3",
+    xai_chat_completions: "grok-4.3",
     google: "gemini-3.5-flash",
     moonshot: "kimi-k2.6",
     zai: "glm-5.2"
@@ -64,7 +68,9 @@ defmodule BeamWeaver.TestSupport.ProviderConformance do
 
   @provider_api_keys %{
     openai: "sk-provider-conformance",
+    openai_chat_completions: "sk-provider-conformance",
     xai: "xai-provider-conformance",
+    xai_chat_completions: "xai-provider-conformance",
     google: "google-provider-conformance",
     moonshot: "moonshot-provider-conformance",
     zai: "zai-provider-conformance"
@@ -280,16 +286,29 @@ defmodule BeamWeaver.TestSupport.ProviderConformance do
     write_json!(path, fixture)
   end
 
-  def provider_atom!(provider) when provider in [:openai, :xai, :google, :moonshot, :zai], do: provider
+  def provider_atom!(provider)
+      when provider in [
+             :openai,
+             :openai_chat_completions,
+             :xai,
+             :xai_chat_completions,
+             :google,
+             :moonshot,
+             :zai
+           ],
+      do: provider
+
   def provider_atom!("openai"), do: :openai
+  def provider_atom!("openai_chat_completions"), do: :openai_chat_completions
   def provider_atom!("xai"), do: :xai
+  def provider_atom!("xai_chat_completions"), do: :xai_chat_completions
   def provider_atom!("google"), do: :google
   def provider_atom!("moonshot"), do: :moonshot
   def provider_atom!("zai"), do: :zai
 
   def provider_atom!(other) do
     raise ArgumentError,
-          "unsupported provider #{inspect(other)}; expected :openai, :xai, :google, :moonshot, or :zai"
+          "unsupported provider #{inspect(other)}; expected :openai, :openai_chat_completions, :xai, :xai_chat_completions, :google, :moonshot, or :zai"
   end
 
   def provider_name!(provider), do: provider_atom!(provider) |> Atom.to_string()

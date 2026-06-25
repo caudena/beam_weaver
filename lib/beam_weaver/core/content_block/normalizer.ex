@@ -284,6 +284,7 @@ defmodule BeamWeaver.Core.ContentBlock.Normalizer do
         reasoning: reasoning,
         summary: ContentBlock.get(map, :summary),
         status: ContentBlock.get(map, :status),
+        encrypted_content: ContentBlock.get(map, :encrypted_content),
         thought_signature: thought_signature(map),
         raw_provider_block: ContentBlock.get(map, :raw_provider_block)
       }

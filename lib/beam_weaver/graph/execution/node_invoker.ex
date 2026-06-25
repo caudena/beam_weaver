@@ -296,6 +296,7 @@ defmodule BeamWeaver.Graph.Execution.NodeInvoker do
       {:error,
        Error.new(:node_exit, "node exited before returning", %{
          kind: kind,
+         root_cause: reason,
          reason: inspect(reason)
        })}
   end

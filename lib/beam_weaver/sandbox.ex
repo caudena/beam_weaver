@@ -28,7 +28,10 @@ defmodule BeamWeaver.Sandbox do
 
   alias BeamWeaver.Core.Async
   alias BeamWeaver.Core.Error
+  alias BeamWeaver.Core.ID
   alias BeamWeaver.Sandbox.Backend, as: SandboxBackend
+  alias BeamWeaver.Telemetry
+  alias BeamWeaver.Tracing.Redactor
 
   defmodule WriteResult do
     @moduledoc false
@@ -44,13 +47,14 @@ defmodule BeamWeaver.Sandbox do
 
   defmodule ExecuteResult do
     @moduledoc false
-    defstruct [:exit_code, output: "", error: nil, truncated: false]
+    defstruct [:exit_code, output: "", error: nil, truncated: false, metadata: %{}]
 
     @type t :: %__MODULE__{
             exit_code: integer() | nil,
             output: String.t(),
             error: String.t() | nil,
-            truncated: boolean()
+            truncated: boolean(),
+            metadata: map()
           }
   end
 
@@ -135,8 +139,51 @@ defmodule BeamWeaver.Sandbox do
 
   def read(sandbox, path, opts \\ []), do: SandboxBackend.read(sandbox, path, opts)
 
-  def execute(sandbox, command, opts \\ []),
-    do: SandboxBackend.execute(sandbox, command, opts)
+  def execute(sandbox, command, opts \\ []) do
+    start = System.monotonic_time()
+    metadata = execute_metadata(sandbox, command, opts)
+
+    Telemetry.emit(
+      [:beam_weaver, :sandbox, :execute, :start],
+      %{system_time: System.system_time()},
+      metadata
+    )
+
+    try do
+      result =
+        sandbox
+        |> SandboxBackend.execute(command, opts)
+        |> put_execute_metadata(metadata, opts)
+
+      event = if timeout_result?(result), do: :timeout, else: :stop
+
+      Telemetry.emit(
+        [:beam_weaver, :sandbox, :execute, event],
+        %{duration: System.monotonic_time() - start},
+        Map.merge(metadata, result_metadata(result))
+      )
+
+      result
+    rescue
+      exception ->
+        Telemetry.emit(
+          [:beam_weaver, :sandbox, :execute, :exception],
+          %{duration: System.monotonic_time() - start},
+          Map.merge(metadata, %{error: Exception.message(exception)})
+        )
+
+        reraise exception, __STACKTRACE__
+    catch
+      kind, reason ->
+        Telemetry.emit(
+          [:beam_weaver, :sandbox, :execute, :exception],
+          %{duration: System.monotonic_time() - start},
+          Map.merge(metadata, %{kind: kind, reason: inspect(reason)})
+        )
+
+        :erlang.raise(kind, reason, __STACKTRACE__)
+    end
+  end
 
   def edit(sandbox, path, old, new, opts \\ []),
     do: SandboxBackend.edit(sandbox, path, old, new, opts)
@@ -166,6 +213,81 @@ defmodule BeamWeaver.Sandbox do
     do: Async.run_call(opts, &download_files(sandbox, paths, &1))
 
   def error(type, message, details \\ %{}), do: Error.new(type, message, details)
+
+  defp execute_metadata(sandbox, command, opts) do
+    base =
+      %{
+        sandbox: sandbox_module(sandbox),
+        command: command,
+        command_id: Keyword.get_lazy(opts, :command_id, fn -> ID.uuidv7() end),
+        timeout_ms: timeout_option_ms(Keyword.get(opts, :timeout))
+      }
+      |> clean_metadata()
+
+    base
+    |> Map.merge(Keyword.get(opts, :metadata, %{}) || %{})
+    |> Redactor.redact()
+  end
+
+  defp put_execute_metadata(%ExecuteResult{} = result, metadata, _opts) do
+    result_metadata =
+      metadata
+      |> Map.merge(result.metadata || %{})
+      |> maybe_put(:exit_code, result.exit_code)
+      |> maybe_put(:truncated, result.truncated)
+      |> maybe_put(:error, result.error)
+      |> clean_metadata()
+      |> Redactor.redact()
+
+    %{result | metadata: result_metadata}
+  end
+
+  defp put_execute_metadata(other, _metadata, _opts), do: other
+
+  defp result_metadata(%ExecuteResult{} = result) do
+    %{
+      result: if(result.error in [nil, ""], do: :ok, else: :error),
+      exit_code: result.exit_code,
+      truncated: result.truncated,
+      error: result.error,
+      metadata: result.metadata || %{}
+    }
+    |> clean_metadata()
+    |> Redactor.redact()
+  end
+
+  defp result_metadata(result) do
+    %{result: :invalid, value: inspect(result)}
+    |> clean_metadata()
+    |> Redactor.redact()
+  end
+
+  defp timeout_result?(%ExecuteResult{error: "timeout"}), do: true
+  defp timeout_result?(%ExecuteResult{exit_code: 124, error: error}), do: error in ["timeout", :timeout]
+  defp timeout_result?(_result), do: false
+
+  defp sandbox_module(%{__struct__: module}), do: module
+  defp sandbox_module(other), do: inspect(other)
+
+  defp timeout_option_ms(nil), do: nil
+  defp timeout_option_ms(:infinity), do: :infinity
+  defp timeout_option_ms(timeout) when is_integer(timeout) and timeout > 3_600, do: timeout
+  defp timeout_option_ms(timeout) when is_integer(timeout), do: timeout * 1_000
+  defp timeout_option_ms(timeout), do: timeout
+
+  defp clean_metadata(map) do
+    map
+    |> Enum.reject(fn
+      {_key, nil} -> true
+      {_key, ""} -> true
+      {_key, value} when is_map(value) and map_size(value) == 0 -> true
+      _entry -> false
+    end)
+    |> Map.new()
+  end
+
+  defp maybe_put(map, _key, nil), do: map
+  defp maybe_put(map, key, value), do: Map.put(map, key, value)
 end
 
 defmodule BeamWeaver.Sandbox.Local do

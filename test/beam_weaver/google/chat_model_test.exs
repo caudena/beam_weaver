@@ -231,7 +231,7 @@ defmodule BeamWeaver.Google.ChatModelTest do
              ChatModel.request_body(
                %ChatModel{model: "gemini-3.5-flash"},
                [Message.user("ping")],
-               metadata: %{lc_source: "compact_conversation"}
+               metadata: %{source: :compact_conversation}
              )
 
     assert body["contents"] == [%{"role" => "user", "parts" => [%{"text" => "ping"}]}]

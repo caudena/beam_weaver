@@ -14,6 +14,8 @@ defmodule BeamWeaver.OpenAI.Messages.Shared do
                         "tool_search_output",
                         "custom_tool_call",
                         "custom_tool_call_output",
+                        "apply_patch_call",
+                        "apply_patch_call_output",
                         "compaction",
                         "function_call"
                       ])

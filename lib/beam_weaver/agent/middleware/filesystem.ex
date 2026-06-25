@@ -338,7 +338,7 @@ defmodule BeamWeaver.Agent.Middleware.Filesystem do
   defp tag_evicted_human_message(%Message{} = message, file_path) do
     metadata =
       message.metadata
-      |> Map.put(:lc_evicted_to, file_path)
+      |> Map.put(:offloaded_to, file_path)
 
     %{message | id: message.id || ID.uuidv7(), metadata: metadata}
   end
@@ -357,7 +357,7 @@ defmodule BeamWeaver.Agent.Middleware.Filesystem do
   defp user_message?(_message), do: false
 
   defp evicted_to(%Message{metadata: metadata}) when is_map(metadata),
-    do: Map.get(metadata, :lc_evicted_to)
+    do: Map.get(metadata, :offloaded_to)
 
   defp evicted_to(_message), do: nil
 

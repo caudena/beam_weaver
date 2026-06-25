@@ -269,13 +269,14 @@ defmodule BeamWeaver.Filesystem.Executable do
 
   defmodule ExecuteResult do
     @moduledoc false
-    defstruct [:exit_code, output: "", error: nil, truncated: false]
+    defstruct [:exit_code, output: "", error: nil, truncated: false, metadata: %{}]
 
     @type t :: %__MODULE__{
             exit_code: non_neg_integer() | nil,
             output: String.t(),
             error: term(),
-            truncated: boolean()
+            truncated: boolean(),
+            metadata: map()
           }
   end
 

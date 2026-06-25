@@ -79,6 +79,8 @@ defmodule BeamWeaver.XAI.ChatModel do
   @spec request_body(t(), [BeamWeaver.Core.Message.t()], keyword()) ::
           {:ok, map()} | {:error, Error.t()}
   def request_body(%__MODULE__{} = model, messages, opts \\ []) do
+    opts = maybe_drop_stop_for_reasoning(model, opts)
+
     model
     |> RequestBuilder.request_body(messages, opts)
     |> convert_error()
@@ -116,6 +118,11 @@ defmodule BeamWeaver.XAI.ChatModel do
   end
 
   defp validate_tools(other), do: other
+
+  defp maybe_drop_stop_for_reasoning(%__MODULE__{profile: %{reasoning_output: true}}, opts),
+    do: Keyword.delete(opts, :stop)
+
+  defp maybe_drop_stop_for_reasoning(_model, opts), do: opts
 
   defp normalize_endpoint_opts(opts, endpoint_path) do
     case {Keyword.fetch(opts, :base_url), Keyword.has_key?(opts, :endpoint)} do

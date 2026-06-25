@@ -1,0 +1,69 @@
+{
+  "expected": {
+    "message": {
+      "id": "resp_xai_reasoning_stop",
+      "metadata": {
+        "id": "resp_xai_reasoning_stop",
+        "model": "grok-4.3",
+        "model_provider": "xai",
+        "provider": "xai",
+        "status": "completed"
+      },
+      "role": "assistant",
+      "status": "completed",
+      "text": "stop omitted",
+      "tool_calls": []
+    }
+  },
+  "provider": "xai",
+  "request": {
+    "headers": [
+      ["authorization", "**REDACTED**"],
+      ["content-type", "application/json"]
+    ],
+    "json": {
+      "input": [
+        {
+          "content": "stop check",
+          "role": "user",
+          "type": "message"
+        }
+      ],
+      "model": "grok-4.3",
+      "stream": false
+    },
+    "method": "POST",
+    "url": "https://api.x.ai/v1/responses"
+  },
+  "response": {
+    "body": {
+      "id": "resp_xai_reasoning_stop",
+      "model": "grok-4.3",
+      "output": [
+        {
+          "content": [
+            {
+              "annotations": [],
+              "text": "stop omitted",
+              "type": "output_text"
+            }
+          ],
+          "id": "msg_xai_reasoning_stop",
+          "role": "assistant",
+          "type": "message"
+        }
+      ],
+      "status": "completed",
+      "usage": {
+        "input_tokens": 3,
+        "output_tokens": 3,
+        "total_tokens": 6
+      }
+    },
+    "headers": [
+      ["content-type", "application/json"]
+    ],
+    "status": 200
+  },
+  "scenario": "reasoning_omits_stop"
+}

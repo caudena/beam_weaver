@@ -11,7 +11,9 @@ defmodule BeamWeaver.Tools.Shell.Session do
   use GenServer
 
   alias BeamWeaver.Core.Error
+  alias BeamWeaver.Core.ID
   alias BeamWeaver.ShellPolicy
+  alias BeamWeaver.Tracing.Redactor
 
   defstruct [
     :policy,
@@ -205,6 +207,7 @@ defmodule BeamWeaver.Tools.Shell.Session do
 
   defp run_allowed(state, command, opts) do
     timeout = Keyword.get(opts, :timeout, state.policy.timeout)
+    command_metadata = command_metadata(:session, command, timeout, opts)
     scratch = scratch_dir()
     metadata_path = Path.join(scratch, "metadata")
     env_path = Path.join(scratch, "env")
@@ -243,17 +246,22 @@ defmodule BeamWeaver.Tools.Shell.Session do
 
         {:ok,
          command
-         |> base_result(status, output, state.policy)
+         |> base_result(status, output, state.policy, Map.put(command_metadata, :exit_code, status))
          |> maybe_put_stderr(stderr, state.policy), state}
 
       nil ->
-        {:error, Error.new(:shell_timeout, "shell command timed out", %{command: command}), state}
+        {:error,
+         Error.new(:shell_timeout, "shell command timed out", %{
+           command: command,
+           metadata: Map.merge(command_metadata, %{kill_attempted: true, error: "timeout"})
+         }), state}
 
       {:exit, reason} ->
         {:error,
          Error.new(:shell_execution_error, "shell command failed", %{
            command: command,
-           reason: inspect(reason)
+           reason: inspect(reason),
+           metadata: Map.put(command_metadata, :reason, inspect(reason))
          }), state}
     end
   end
@@ -284,11 +292,12 @@ defmodule BeamWeaver.Tools.Shell.Session do
 
   defp redirect_stderr(script, _path, _policy), do: script
 
-  defp base_result(command, status, output, policy) do
+  defp base_result(command, status, output, policy, metadata) do
     %{
       command: command,
       status: status,
-      output: format_output(output, policy)
+      output: format_output(output, policy),
+      metadata: Redactor.redact(metadata)
     }
   end
 
@@ -428,4 +437,14 @@ defmodule BeamWeaver.Tools.Shell.Session do
   end
 
   defp shell, do: System.find_executable("sh") || "/bin/sh"
+
+  defp command_metadata(backend, command, timeout, opts) do
+    %{
+      backend: backend,
+      command: command,
+      command_id: Keyword.get_lazy(opts, :command_id, fn -> ID.uuidv7() end),
+      timeout_ms: timeout
+    }
+    |> Redactor.redact()
+  end
 end

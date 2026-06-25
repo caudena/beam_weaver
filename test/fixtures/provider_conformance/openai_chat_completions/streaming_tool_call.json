@@ -1,0 +1,57 @@
+{
+  "expected": {
+    "message": {
+      "role": "assistant",
+      "status": "tool_calls",
+      "text": "",
+      "tool_calls": [
+        {
+          "args": {
+            "query": "beam"
+          },
+          "id": "call_lookup",
+          "name": "lookup",
+          "provider_id": "call_lookup"
+        }
+      ],
+      "usage_metadata": {
+        "input_tokens": 2,
+        "output_token_details": {
+          "reasoning": 1
+        },
+        "output_tokens": 3,
+        "total_tokens": 5
+      }
+    }
+  },
+  "provider": "openai_chat_completions",
+  "request": {
+    "headers": [
+      ["authorization", "**REDACTED**"],
+      ["content-type", "application/json"]
+    ],
+    "json": {
+      "messages": [
+        {
+          "content": "stream tools",
+          "role": "user"
+        }
+      ],
+      "model": "gpt-5.4-mini",
+      "stream": true,
+      "stream_options": {
+        "include_usage": true
+      }
+    },
+    "method": "POST",
+    "url": "https://api.openai.com/v1/chat/completions"
+  },
+  "response": {
+    "headers": [
+      ["content-type", "text/event-stream"]
+    ],
+    "sse": "data: {\"id\":\"chatcmpl_openai_tools\",\"model\":\"gpt-5.4-mini\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl_openai_tools\",\"model\":\"gpt-5.4-mini\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"\"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl_openai_tools\",\"model\":\"gpt-5.4-mini\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_lookup\",\"type\":\"function\",\"function\":{\"name\":\"lookup\",\"arguments\":\"{\\\"query\\\"\"}}]},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl_openai_tools\",\"model\":\"gpt-5.4-mini\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"type\":\"function\",\"function\":{\"arguments\":\":\\\"beam\\\"}\"}}]},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl_openai_tools\",\"model\":\"gpt-5.4-mini\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}],\"usage\":{\"prompt_tokens\":2,\"completion_tokens\":3,\"total_tokens\":5,\"completion_tokens_details\":{\"reasoning_tokens\":1}}}\n\ndata: [DONE]\n\n",
+    "status": 200
+  },
+  "scenario": "streaming_tool_call"
+}

@@ -156,6 +156,12 @@ Recommended starting points:
 Use the matrix as capability guidance, then validate model quality against your
 own prompts, tools, latency, and cost constraints.
 
+Model profiles expose `tool_call_streaming` separately from `streaming` and
+`tool_calling`. Use it when a UI or replay test needs incremental tool argument
+chunks instead of waiting for the final assistant message. Current checked-in
+profiles enable it for OpenAI GPT and xAI Grok chat profiles with provider
+stream evidence; unsupported or unknown provider fallbacks leave it `false`.
+
 ## Key Methods
 
 Use the behaviour modules as the stable call boundary:
@@ -395,6 +401,10 @@ OpenAI, Anthropic, Google, xAI, and Z.ai provider modules also expose
 from a streamed call.
 Provider HTTP errors returned before any successful stream body are represented
 as stream error events when consuming a lazy stream.
+OpenAI and xAI streams preserve empty initial role-only chunks, incremental
+tool-call arguments, final reconstructed tool calls, finish reasons, and detailed
+usage metadata. Check `model.profile.tool_call_streaming` before building UI that
+depends on live tool argument chunks.
 
 {% hint style="info" %}
 **Streaming Is Explicit**

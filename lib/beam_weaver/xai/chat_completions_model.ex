@@ -84,7 +84,11 @@ defmodule BeamWeaver.XAI.ChatCompletionsModel do
           {:ok, map()} | {:error, Error.t()}
   def request_body(%__MODULE__{} = model, messages, opts \\ []) do
     tools = Keyword.get(opts, :tools, [])
-    builder_opts = Keyword.delete(opts, :tools)
+
+    builder_opts =
+      opts
+      |> Keyword.delete(:tools)
+      |> maybe_drop_stop_for_reasoning(model)
 
     %Options{opts: builder_opts}
     |> Options.to_body(model, messages)
@@ -179,6 +183,11 @@ defmodule BeamWeaver.XAI.ChatCompletionsModel do
   end
 
   defp maybe_put_deferred(other, _model, _opts), do: other
+
+  defp maybe_drop_stop_for_reasoning(opts, %__MODULE__{profile: %{reasoning_output: true}}),
+    do: Keyword.delete(opts, :stop)
+
+  defp maybe_drop_stop_for_reasoning(opts, _model), do: opts
 
   defp convert_error({:error, %BeamWeaver.OpenAI.Error{} = error}) do
     {:error, Error.new(error.type, error.message, error.details)}

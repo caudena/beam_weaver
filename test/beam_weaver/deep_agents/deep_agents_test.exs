@@ -720,7 +720,7 @@ defmodule BeamWeaver.AgentCapabilitiesTest do
              Overwrite.get(overwrite)
 
     assert is_binary(id)
-    path = Map.fetch!(metadata, :lc_evicted_to)
+    path = Map.fetch!(metadata, :offloaded_to)
     assert String.starts_with?(path, "/conversation_history/")
     assert files[path].content == large_message
   end
@@ -733,7 +733,7 @@ defmodule BeamWeaver.AgentCapabilitiesTest do
       ModelRequest.new(
         messages: [
           Message.user("very large remembered content",
-            metadata: %{lc_evicted_to: "/conversation_history/original.md"}
+            metadata: %{offloaded_to: "/conversation_history/original.md"}
           )
         ],
         state: %{},

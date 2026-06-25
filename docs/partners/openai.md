@@ -14,7 +14,7 @@ LangChain OpenAI package.
 - BeamWeaver tools become OpenAI `function` tool declarations.
 - `BeamWeaver.OpenAI.ToolCalling` builds Responses API built-in tool
   declarations for web search, file search, code interpreter, image generation,
-  MCP, custom tools, and tool search.
+  MCP, custom tools, tool search, and OpenAI's `apply_patch` tool.
 - `BeamWeaver.OpenAI.Responses` builds raw multi-turn input items and extracts
   preserved output items from assistant responses.
 - Structured output options become `text.format` JSON schema requests.
@@ -44,9 +44,18 @@ LangChain OpenAI package.
 - Assistant output items replayed through normal messages strip BeamWeaver
   internal fields such as `raw_provider_block`, while reasoning blocks keep only
   OpenAI-accepted replay fields.
+- `store: false` replay sanitization is applied before the request body is sent:
+  provider-only output item IDs are dropped, encrypted reasoning is preserved,
+  non-replayable reasoning is skipped, and empty image-generation placeholders
+  are not sent back to OpenAI.
+- Responses API output parsing preserves `apply_patch_call` and
+  `apply_patch_call_output` items as provider-scoped content blocks so cached or
+  streamed turns can be replayed without losing patch metadata.
 - Embeddings support document/query calls, dimensions, caller chunk size,
   Task-backed async calls, and opt-in `skip_empty` handling.
 - Responses API and chat-completions SSE bodies are parsed into text deltas.
+- OpenAI GPT model profiles expose `tool_call_streaming: true` when the checked-in
+  profile supports incremental streamed tool-call arguments.
 - `BeamWeaver.OpenAI.Streaming.response/1` reconstructs final Responses API
   output items from SSE streams for text, reasoning summaries, function calls,
   and terminal built-in tool output items.
@@ -64,6 +73,9 @@ LangChain OpenAI package.
   `BeamWeaver.OpenAI.ChatModel.stream_events/3` expose message and content-block
   lifecycle events for streamed text, reasoning, tool calls, and built-in output
   blocks.
+- Chat Completions streams preserve empty initial role-only chunks, incremental
+  tool argument deltas, final assistant tool calls, finish reasons, and detailed
+  usage metadata.
 - OpenAI namespace constructors load defaults from `config :beam_weaver,
   :openai`; put any OS environment reads in your `config/runtime.exs`.
   Explicit options still win. Custom routing uses explicit `:endpoint` options
@@ -108,7 +120,8 @@ Built-in tool declarations are plain request values:
 tools = [
   BeamWeaver.OpenAI.ToolCalling.web_search(),
   BeamWeaver.OpenAI.ToolCalling.file_search(["vs_123"]),
-  BeamWeaver.OpenAI.ToolCalling.code_interpreter(%{type: :auto})
+  BeamWeaver.OpenAI.ToolCalling.code_interpreter(%{type: :auto}),
+  BeamWeaver.OpenAI.ToolCalling.apply_patch()
 ]
 ```
 
@@ -130,10 +143,29 @@ tools, structured output, reasoning, MCP approvals, and tool search intentionall
 depend on that matcher so request shape regressions fail before a live provider
 call is involved.
 
+For cached multi-turn Responses replay, pass `store: false` through model
+options or `extra_body`. BeamWeaver will keep the replayable parts of assistant
+history while removing provider-generated item IDs that OpenAI rejects when
+storage is disabled:
+
+```elixir
+BeamWeaver.Core.ChatModel.invoke(model, messages, extra_body: %{store: false})
+```
+
+Replay-backed provider conformance fixtures cover this request shape, including
+encrypted reasoning preservation and provider-only ID removal.
+
 Run the supervised replay demo with:
 
 ```bash
 mix run examples/supervised_openai_agent.exs
+```
+
+Inspect the OpenAI `apply_patch` built-in tool request shape without live
+credentials:
+
+```bash
+mix run examples/openai_apply_patch_tool.exs
 ```
 
 ## Required Remaining OpenAI Work

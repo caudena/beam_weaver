@@ -33,6 +33,12 @@ Canonical JSON matching is intentional. Tests should fail when a provider drops
 important request fields such as tools, structured output, `stream`, reasoning,
 context management, raw Responses API input items, or follow-up tool outputs.
 
+For OpenAI Responses `store: false` replay, BeamWeaver sanitizes assistant
+history before matching or sending the request: provider-only IDs are removed,
+encrypted reasoning is preserved, non-replayable reasoning is skipped, and empty
+image-generation placeholders are dropped. This keeps replay tests aligned with
+the actual provider wire contract instead of cached local message internals.
+
 ## Cassette Shape
 
 BeamWeaver reads Python VCR-style cassettes with parallel `requests` and
@@ -80,10 +86,19 @@ Use replay tests for behavior that catches real regressions:
 - multi-turn Responses API raw output item preservation
 - stream reconstruction from SSE events
 - error and mismatch behavior
+- provider-specific request-shape exceptions, such as OpenAI `store: false`
+  replay sanitization or xAI reasoning models omitting unsupported `stop`
+  parameters
 
 Avoid tests that only assert a variable equals the literal value just created in
 the same test. The useful signal is whether a caller-visible behavior or provider
 contract would break.
+
+BeamWeaver also has provider conformance fixtures under
+`test/fixtures/provider_conformance`. Those fixtures are local JSON
+request/response pairs, not live captures. Use them when a provider contract
+should be asserted without credentials and the expected request body is the main
+regression signal.
 
 ## Related Guides
 

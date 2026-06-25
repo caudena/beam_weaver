@@ -11,8 +11,10 @@ defmodule BeamWeaver.OpenAI.ChatModel.RequestBuilder do
   def request_body(model, messages, opts \\ []) do
     {messages, previous_response_id} = previous_response_context(messages, opts)
 
+    store = effective_store(model, opts)
+
     with :ok <- validate_request_params(model, opts),
-         {:ok, message_input} <- Messages.to_responses_input(messages),
+         {:ok, message_input} <- Messages.to_responses_input(messages, store: store),
          {:ok, input_items} <- Messages.normalize_input_items(Keyword.get(opts, :input_items)),
          {:ok, structured_output} <- StructuredOutput.format(opts) do
       input = message_input ++ input_items
@@ -238,6 +240,14 @@ defmodule BeamWeaver.OpenAI.ChatModel.RequestBuilder do
   end
 
   defp option(model, opts, key), do: Keyword.get(opts, key, Map.get(model, key))
+
+  defp effective_store(model, opts) do
+    case Keyword.get(opts, :extra_body, %{}) do
+      %{store: store} -> store
+      %{"store" => store} -> store
+      _extra_body -> option(model, opts, :store)
+    end
+  end
 
   defp merge_model_kwargs(body, model_kwargs) when map_size(model_kwargs) == 0, do: body
 

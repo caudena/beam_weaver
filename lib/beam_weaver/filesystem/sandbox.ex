@@ -31,7 +31,8 @@ defmodule BeamWeaver.Filesystem.Sandbox do
       exit_code: result.exit_code,
       output: result.output || "",
       error: result.error,
-      truncated: result.truncated == true
+      truncated: result.truncated == true,
+      metadata: result.metadata || %{}
     }
   end
 

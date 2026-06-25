@@ -2,6 +2,7 @@ defmodule BeamWeaver.OpenAI.BuiltInToolsTest do
   use ExUnit.Case
 
   alias BeamWeaver.Core.ChatModel, as: CoreChatModel
+  alias BeamWeaver.Core.ContentBlock
   alias BeamWeaver.Core.Message
   alias BeamWeaver.Core.Messages.ToolCall
   alias BeamWeaver.OpenAI.ChatModel
@@ -64,6 +65,61 @@ defmodule BeamWeaver.OpenAI.BuiltInToolsTest do
                action: %{"query" => "positive news stories today"}
              },
              %{type: :text, annotations: [%{"type" => "url_citation"}]}
+           ] = response.content
+  end
+
+  test "apply_patch request shape and output items round-trip through replay" do
+    request_body = %{
+      "model" => "gpt-5.5",
+      "input" => [
+        %{
+          "type" => "message",
+          "role" => "user",
+          "content" => "Patch the typo."
+        }
+      ],
+      "stream" => false,
+      "tools" => [%{"type" => "apply_patch"}]
+    }
+
+    response_body = %{
+      "id" => "resp_apply_patch",
+      "output" => [
+        %{
+          "type" => "apply_patch_call",
+          "id" => "apc_123",
+          "status" => "completed",
+          "patch" => "*** Begin Patch\n*** End Patch\n"
+        },
+        %{
+          "type" => "apply_patch_call_output",
+          "id" => "apco_123",
+          "status" => "completed",
+          "output" => "Success."
+        },
+        %{
+          "type" => "message",
+          "role" => "assistant",
+          "content" => [%{"type" => "output_text", "text" => "Patched."}]
+        }
+      ]
+    }
+
+    model = replay_model(write_gzip_cassette(request_body, response_body), model: "gpt-5.5")
+
+    assert {:ok, response} =
+             CoreChatModel.invoke(model, [Message.user("Patch the typo.")], tools: [ToolCalling.apply_patch()])
+
+    assert [
+             %ContentBlock.Unknown{
+               provider_type: "apply_patch_call",
+               value: %{patch: "*** Begin Patch\n*** End Patch\n"}
+             },
+             %ContentBlock.Unknown{
+               provider_type: "apply_patch_call_output",
+               value: %{output: "Success."}
+             },
+             %{type: :text, text: "Patched."}
            ] = response.content
   end
 

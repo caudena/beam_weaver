@@ -15,6 +15,7 @@ defmodule BeamWeaver.Models.ProfileCompilerTest do
         "open_weights" => false,
         "reasoning" => true,
         "tool_call" => true,
+        "tool_call_streaming" => true,
         "tool_choice" => true,
         "structured_output" => true,
         "attachment" => true,
@@ -35,6 +36,7 @@ defmodule BeamWeaver.Models.ProfileCompilerTest do
     assert profile.max_output_tokens == 64_000
     assert profile.reasoning_output == true
     assert profile.tool_calling == true
+    assert profile.tool_call_streaming == true
     assert profile.tool_choice == true
     assert profile.structured_output == true
     assert profile.attachment == true
@@ -94,6 +96,7 @@ defmodule BeamWeaver.Models.ProfileCompilerTest do
         "open_weights" => true,
         "reasoning" => true,
         "tool_call" => true,
+        "tool_call_streaming" => true,
         "tool_choice" => true,
         "structured_output" => true,
         "attachment" => true,
@@ -122,7 +125,10 @@ defmodule BeamWeaver.Models.ProfileCompilerTest do
     assert error.type == :undeclared_profile_keys
     assert error.details.keys == [:another_key, "future_key"]
 
-    assert :ok = ProfileCompiler.validate_keys([%{max_input_tokens: 100, tool_calling: true}])
+    assert :ok =
+             ProfileCompiler.validate_keys([
+               %{max_input_tokens: 100, tool_calling: true, tool_call_streaming: true}
+             ])
   end
 
   test "compile_provider applies overrides, includes override-only models, and sorts output" do

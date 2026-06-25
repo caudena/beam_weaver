@@ -120,6 +120,14 @@ defmodule BeamWeaver.OpenAI.ToolCalling do
   end
 
   @doc """
+  Builds an OpenAI apply_patch built-in tool declaration.
+  """
+  @spec apply_patch(keyword()) :: map()
+  def apply_patch(opts \\ []) do
+    build("apply_patch", opts)
+  end
+
+  @doc """
   Builds native BeamWeaver few-shot messages for examples that include tool calls.
 
   This mirrors the behavior expected by OpenAI tool-calling examples while keeping

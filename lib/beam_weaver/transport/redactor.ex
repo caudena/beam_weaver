@@ -10,6 +10,7 @@ defmodule BeamWeaver.Transport.Redactor do
   @secret_header_names MapSet.new([
                          "authorization",
                          "cookie",
+                         "set_cookie",
                          "set-cookie",
                          "x-api-key",
                          "api-key",
@@ -20,13 +21,28 @@ defmodule BeamWeaver.Transport.Redactor do
   @secret_key_parts [
     "api_key",
     "apikey",
+    "private_key",
     "authorization",
+    "token",
     "access_token",
     "refresh_token",
     "secret",
     "password",
     "credential"
   ]
+
+  @usage_token_keys MapSet.new([
+                      "input_tokens",
+                      "output_tokens",
+                      "total_tokens",
+                      "prompt_tokens",
+                      "completion_tokens",
+                      "cached_tokens",
+                      "reasoning_tokens",
+                      "input_token_details",
+                      "output_token_details",
+                      "token_usage"
+                    ])
 
   @doc """
   Redacts known secret shapes inside a term.
@@ -108,13 +124,49 @@ defmodule BeamWeaver.Transport.Redactor do
       |> String.downcase()
       |> String.replace("-", "_")
 
-    MapSet.member?(@secret_header_names, normalized) or
-      Enum.any?(@secret_key_parts, &String.contains?(normalized, &1))
+    if MapSet.member?(@usage_token_keys, normalized) do
+      false
+    else
+      MapSet.member?(@secret_header_names, normalized) or
+        Enum.any?(@secret_key_parts, &String.contains?(normalized, &1))
+    end
   end
 
   defp redact_string(value) do
     value
+    |> redact_private_key_blocks()
+    |> redact_url_credentials()
+    |> redact_url_secret_params()
+    |> redact_secret_assignments()
     |> String.replace(~r/Bearer\s+[A-Za-z0-9._~+\/=-]+/, "Bearer #{@redacted}")
     |> String.replace(~r/sk-[A-Za-z0-9_\-]+/, @redacted)
+  end
+
+  defp redact_private_key_blocks(value) do
+    String.replace(
+      value,
+      ~r/-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----/s,
+      @redacted
+    )
+  end
+
+  defp redact_url_credentials(value) do
+    String.replace(value, ~r/(https?:\/\/)[^\/@\s]+@/, "\\1#{@redacted}@")
+  end
+
+  defp redact_url_secret_params(value) do
+    String.replace(
+      value,
+      ~r/([?&](?:api[_-]?key|access[_-]?token|refresh[_-]?token|token|secret|password|key)=)[^&\s'"]+/i,
+      "\\1#{@redacted}"
+    )
+  end
+
+  defp redact_secret_assignments(value) do
+    String.replace(
+      value,
+      ~r/\b([A-Za-z0-9_]*(?:API_KEY|TOKEN|SECRET|PASSWORD|PRIVATE_KEY|CREDENTIAL)[A-Za-z0-9_]*\s*=\s*)([^\s'"&]+)/i,
+      "\\1#{@redacted}"
+    )
   end
 end

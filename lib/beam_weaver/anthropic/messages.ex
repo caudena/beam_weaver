@@ -130,7 +130,7 @@ defmodule BeamWeaver.Anthropic.Messages do
             %{
               type: :tool_result,
               content: content,
-              tool_use_id: message.tool_call_id || message.id,
+              tool_use_id: anthropic_tool_use_id(message.tool_call_id || message.id),
               is_error: message.status in [:error, "error"]
             }
             |> Options.reject_nil_values()
@@ -246,7 +246,7 @@ defmodule BeamWeaver.Anthropic.Messages do
   defp content_block_to_anthropic!(%ContentBlock.ToolResult{} = block) do
     %{
       "type" => "tool_result",
-      "tool_use_id" => block.tool_call_id,
+      "tool_use_id" => anthropic_tool_use_id(block.tool_call_id),
       "content" => tool_result_content(block.content),
       "is_error" => Map.get(block.metadata || %{}, :is_error)
     }
@@ -314,7 +314,7 @@ defmodule BeamWeaver.Anthropic.Messages do
       "tool_call" ->
         %{
           "type" => "tool_use",
-          "id" => Map.get(block, :id),
+          "id" => anthropic_tool_use_id(tool_call_id(block)),
           "name" => Map.get(block, :name),
           "input" => Map.get(block, :args) || Map.get(block, :arguments) || Map.get(block, :input) || %{}
         }
@@ -332,6 +332,7 @@ defmodule BeamWeaver.Anthropic.Messages do
       "tool_result" ->
         provider_block
         |> Map.put_new("tool_use_id", provider_block["tool_call_id"] || provider_block["id"])
+        |> Map.update("tool_use_id", nil, &anthropic_tool_use_id/1)
         |> Map.drop(["tool_call_id"])
 
       type
@@ -351,7 +352,9 @@ defmodule BeamWeaver.Anthropic.Messages do
              "web_fetch_tool_result",
              "compaction"
            ] ->
-        normalize_server_tool_input(provider_block)
+        provider_block
+        |> normalize_anthropic_tool_ids()
+        |> normalize_server_tool_input()
 
       _other ->
         provider_block
@@ -478,7 +481,7 @@ defmodule BeamWeaver.Anthropic.Messages do
     missing =
       calls
       |> Enum.reject(fn call ->
-        id = BeamWeaver.MapAccess.get(call, :id)
+        id = call |> tool_call_id() |> anthropic_tool_use_id()
         not is_nil(id) and MapSet.member?(existing_ids, id)
       end)
       |> Enum.map(&tool_call_to_tool_use/1)
@@ -491,7 +494,7 @@ defmodule BeamWeaver.Anthropic.Messages do
   defp tool_call_to_tool_use(call) when is_map(call) do
     %{
       "type" => "tool_use",
-      "id" => BeamWeaver.MapAccess.get(call, :id),
+      "id" => call |> tool_call_id() |> anthropic_tool_use_id(),
       "name" => BeamWeaver.MapAccess.get(call, :name),
       "input" =>
         BeamWeaver.MapAccess.get(call, :args) ||
@@ -500,6 +503,32 @@ defmodule BeamWeaver.Anthropic.Messages do
     }
     |> Options.reject_nil_values()
   end
+
+  defp tool_call_id(call) when is_map(call) do
+    BeamWeaver.MapAccess.get(call, :call_id) ||
+      BeamWeaver.MapAccess.get(call, :id) ||
+      BeamWeaver.MapAccess.get(call, :provider_id)
+  end
+
+  defp normalize_anthropic_tool_ids(%{"type" => "tool_use"} = block) do
+    Map.update(block, "id", nil, &anthropic_tool_use_id/1)
+  end
+
+  defp normalize_anthropic_tool_ids(block), do: block
+
+  defp anthropic_tool_use_id(nil), do: nil
+  defp anthropic_tool_use_id("toolu_" <> _rest = id), do: id
+
+  defp anthropic_tool_use_id(id) when is_binary(id) do
+    digest =
+      :crypto.hash(:sha256, id)
+      |> Base.encode16(case: :lower)
+      |> binary_part(0, 24)
+
+    "toolu_bw_" <> digest
+  end
+
+  defp anthropic_tool_use_id(id), do: id |> to_string() |> anthropic_tool_use_id()
 
   defp trim_final_assistant_content(content) when is_binary(content),
     do: String.trim_trailing(content)

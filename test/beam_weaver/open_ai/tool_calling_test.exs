@@ -52,6 +52,8 @@ defmodule BeamWeaver.OpenAI.ToolCallingTest do
              "size" => "1024x1024"
            }
 
+    assert ToolCalling.apply_patch() == %{"type" => "apply_patch"}
+
     assert ToolCalling.custom("execute_code", description: "Execute python code.") == %{
              "type" => "custom",
              "name" => "execute_code",

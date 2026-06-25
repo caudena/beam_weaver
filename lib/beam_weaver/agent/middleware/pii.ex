@@ -13,8 +13,11 @@ defmodule BeamWeaver.Agent.Middleware.PII do
   alias BeamWeaver.Agent.State
   alias BeamWeaver.Core.Error
   alias BeamWeaver.Core.Message
+  alias BeamWeaver.Core.Messages.AIChunk
   alias BeamWeaver.Graph.Overwrite
   alias BeamWeaver.Options
+  alias BeamWeaver.Stream.Envelope
+  alias BeamWeaver.Stream.Events
 
   @default_detectors [:email, :credit_card, :ip, :mac_address, :url]
   @strategies [:block, :redact, :mask, :hash]
@@ -28,6 +31,8 @@ defmodule BeamWeaver.Agent.Middleware.PII do
             apply_to_input: true,
             apply_to_output: false,
             apply_to_tool_results: false
+
+  @type t :: %__MODULE__{}
 
   def new(opts \\ []) do
     opts =
@@ -133,12 +138,85 @@ defmodule BeamWeaver.Agent.Middleware.PII do
     end
   end
 
+  @doc """
+  Returns a pre-projection stream transform that applies the middleware strategy
+  to streamed text before message projection.
+  """
+  @spec stream_transform(t() | keyword()) :: (term() -> term() | {:ok, term()} | {:error, Error.t()})
+  def stream_transform(%__MODULE__{} = middleware), do: &redact_stream_event(middleware, &1)
+  def stream_transform(opts) when is_list(opts), do: opts |> new() |> stream_transform()
+
   defp edit_before_model(messages, middleware) do
     with {:ok, messages, changed?} <-
            maybe_edit_last_input(messages, middleware, middleware.apply_to_input),
          {:ok, messages, tool_changed?} <-
            maybe_edit_tool_results(messages, middleware, middleware.apply_to_tool_results) do
       {:ok, messages, changed? or tool_changed?}
+    end
+  end
+
+  defp redact_stream_event(%__MODULE__{} = middleware, %Envelope{event: %Events.Token{text: text} = event} = envelope) do
+    with {:ok, edited} <- edit_text(text, middleware) do
+      {:ok, %{envelope | event: %{event | text: edited}}}
+    end
+  end
+
+  defp redact_stream_event(
+         %__MODULE__{} = middleware,
+         %Envelope{event: %Events.MessageChunk{chunk: %AIChunk{content: content} = chunk} = event} =
+           envelope
+       )
+       when is_binary(content) do
+    with {:ok, edited} <- edit_text(content, middleware) do
+      {:ok, %{envelope | event: %{event | chunk: %{chunk | content: edited}}}}
+    end
+  end
+
+  defp redact_stream_event(
+         %__MODULE__{} = middleware,
+         %Envelope{event: %Events.Message{message: %Message{content: content} = message} = event} = envelope
+       )
+       when is_binary(content) do
+    with {:ok, edited} <- edit_text(content, middleware) do
+      {:ok, %{envelope | event: %{event | message: %{message | content: edited}}}}
+    end
+  end
+
+  defp redact_stream_event(
+         %__MODULE__{} = middleware,
+         %{"params" => %{"data" => {%{} = payload, metadata}} = params} = event
+       ) do
+    with {:ok, payload} <- redact_protocol_payload(middleware, payload) do
+      {:ok, %{event | "params" => %{params | "data" => {payload, metadata}}}}
+    end
+  end
+
+  defp redact_stream_event(
+         %__MODULE__{} = middleware,
+         %{params: %{data: {%{} = payload, metadata}} = params} = event
+       ) do
+    with {:ok, payload} <- redact_protocol_payload(middleware, payload) do
+      {:ok, %{event | params: %{params | data: {payload, metadata}}}}
+    end
+  end
+
+  defp redact_stream_event(_middleware, event), do: {:ok, event}
+
+  defp redact_protocol_payload(%__MODULE__{} = middleware, payload) do
+    case map_get(payload, :content_block) do
+      block when is_map(block) ->
+        case map_get(block, :text) do
+          text when is_binary(text) ->
+            with {:ok, edited} <- edit_text(text, middleware) do
+              {:ok, put_map_value(payload, :content_block, put_map_value(block, :text, edited))}
+            end
+
+          _other ->
+            {:ok, payload}
+        end
+
+      _other ->
+        {:ok, payload}
     end
   end
 
@@ -339,6 +417,23 @@ defmodule BeamWeaver.Agent.Middleware.PII do
       "Detected #{length(matches)} instance(s) of #{first.type} in text content",
       %{pii_type: first.type, matches: matches}
     )
+  end
+
+  defp map_get(map, key, default \\ nil)
+
+  defp map_get(map, key, default) when is_map(map),
+    do: Map.get(map, key, Map.get(map, Atom.to_string(key), default))
+
+  defp map_get(_map, _key, default), do: default
+
+  defp put_map_value(map, key, value) when is_map(map) do
+    string_key = Atom.to_string(key)
+
+    cond do
+      Map.has_key?(map, key) -> Map.put(map, key, value)
+      Map.has_key?(map, string_key) -> Map.put(map, string_key, value)
+      true -> Map.put(map, key, value)
+    end
   end
 
   defp normalize_strategy!(strategy),

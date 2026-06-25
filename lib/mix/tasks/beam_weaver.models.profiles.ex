@@ -87,6 +87,7 @@ defmodule Mix.Tasks.BeamWeaver.Models.Profiles do
         {:responses, profile.responses_api},
         {:chat_completions, profile.chat_completions_api},
         {:tools, profile.tool_calling},
+        {:tool_call_streaming, profile.tool_call_streaming},
         {:structured, profile.structured_output},
         {:streaming, profile.streaming},
         {:reasoning, profile.reasoning_output}

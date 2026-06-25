@@ -193,7 +193,7 @@ defmodule BeamWeaver.Agent.Middleware.CompactConversation do
   defp create_summary(%__MODULE__{} = middleware, rendered) do
     prompt = Message.user("Summarize this conversation concisely:\n\n" <> rendered)
 
-    case ChatModel.invoke(middleware.model, [prompt], metadata: %{lc_source: "compact_conversation"}) do
+    case ChatModel.invoke(middleware.model, [prompt], metadata: %{source: :compact_conversation}) do
       {:ok, %Message{} = message} -> {:ok, Message.text(message)}
       {:error, error} -> {:error, error.message}
     end

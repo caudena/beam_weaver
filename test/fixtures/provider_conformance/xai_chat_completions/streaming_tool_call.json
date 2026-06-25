@@ -1,0 +1,54 @@
+{
+  "expected": {
+    "message": {
+      "role": "assistant",
+      "status": "tool_calls",
+      "text": "",
+      "tool_calls": [
+        {
+          "args": {
+            "city": "Nicosia"
+          },
+          "id": "call_weather",
+          "name": "weather",
+          "provider_id": "call_weather"
+        }
+      ],
+      "usage_metadata": {
+        "input_tokens": 2,
+        "output_tokens": 3,
+        "total_tokens": 5
+      }
+    }
+  },
+  "provider": "xai_chat_completions",
+  "request": {
+    "headers": [
+      ["authorization", "**REDACTED**"],
+      ["content-type", "application/json"]
+    ],
+    "json": {
+      "messages": [
+        {
+          "content": "tools",
+          "role": "user"
+        }
+      ],
+      "model": "grok-4.3",
+      "stream": true,
+      "stream_options": {
+        "include_usage": true
+      }
+    },
+    "method": "POST",
+    "url": "https://api.x.ai/v1/chat/completions"
+  },
+  "response": {
+    "headers": [
+      ["content-type", "text/event-stream"]
+    ],
+    "sse": "data: {\"id\":\"chatcmpl_xai_tools\",\"model\":\"grok-4.3\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl_xai_tools\",\"model\":\"grok-4.3\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_weather\",\"type\":\"function\",\"function\":{\"name\":\"weather\",\"arguments\":\"{\\\"city\\\"\"}}]},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl_xai_tools\",\"model\":\"grok-4.3\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"type\":\"function\",\"function\":{\"arguments\":\":\\\"Nicosia\\\"}\"}}]},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl_xai_tools\",\"model\":\"grok-4.3\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}],\"usage\":{\"prompt_tokens\":2,\"completion_tokens\":3,\"total_tokens\":5}}\n\ndata: [DONE]\n\n",
+    "status": 200
+  },
+  "scenario": "streaming_tool_call"
+}

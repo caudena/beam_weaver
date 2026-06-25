@@ -38,10 +38,14 @@ defmodule BeamWeaver.Agent.Middleware.HumanInTheLoop do
     defstruct [:message, details: %{}]
   end
 
-  defstruct interrupt_on: %{}, description_prefix: "Tool execution requires approval", tools: %{}
+  defstruct interrupt_on: %{},
+            interrupt_mode: :all,
+            description_prefix: "Tool execution requires approval",
+            tools: %{}
 
   @type t :: %__MODULE__{
           interrupt_on: map(),
+          interrupt_mode: :all | :first,
           description_prefix: String.t(),
           tools: map()
         }
@@ -55,6 +59,7 @@ defmodule BeamWeaver.Agent.Middleware.HumanInTheLoop do
 
     %__MODULE__{
       interrupt_on: interrupt_on,
+      interrupt_mode: opts |> Keyword.get(:interrupt_mode, :all) |> normalize_interrupt_mode!(),
       description_prefix: Keyword.get(opts, :description_prefix, "Tool execution requires approval"),
       tools: tool_map(Keyword.get(opts, :tools, []))
     }
@@ -109,26 +114,44 @@ defmodule BeamWeaver.Agent.Middleware.HumanInTheLoop do
   end
 
   defp review_requests(middleware, calls, state, runtime) do
-    calls
-    |> Enum.with_index()
-    |> Enum.reduce(%{action_requests: [], review_configs: [], interrupt_indices: []}, fn {call, idx}, acc ->
+    reducer = fn {call, idx}, acc ->
       name = tool_call_name(call)
 
       case Map.get(middleware.interrupt_on, name) do
         nil ->
-          acc
+          {:cont, acc}
 
         config ->
-          {action_request, review_config} =
-            create_action_and_config(middleware, call, config, state, runtime)
+          if reviewable?(config, call, state, runtime) do
+            {action_request, review_config} =
+              create_action_and_config(middleware, call, config, state, runtime)
 
-          %{
-            action_requests: acc.action_requests ++ [action_request],
-            review_configs: acc.review_configs ++ [review_config],
-            interrupt_indices: acc.interrupt_indices ++ [{idx, config}]
-          }
+            acc = %{
+              action_requests: acc.action_requests ++ [action_request],
+              review_configs: acc.review_configs ++ [review_config],
+              interrupt_indices: acc.interrupt_indices ++ [{idx, config}]
+            }
+
+            if middleware.interrupt_mode == :first, do: {:halt, acc}, else: {:cont, acc}
+          else
+            {:cont, acc}
+          end
       end
-    end)
+    end
+
+    calls
+    |> Enum.with_index()
+    |> Enum.reduce_while(%{action_requests: [], review_configs: [], interrupt_indices: []}, reducer)
+  end
+
+  defp reviewable?(config, call, state, runtime) do
+    case Map.get(config, :when) || Map.get(config, :predicate) do
+      nil -> true
+      predicate when is_function(predicate, 3) -> predicate.(call, state, runtime) == true
+      predicate when is_function(predicate, 2) -> predicate.(call, state) == true
+      predicate when is_function(predicate, 1) -> predicate.(call) == true
+      _other -> true
+    end
   end
 
   defp create_action_and_config(middleware, call, config, state, runtime) do
@@ -366,12 +389,20 @@ defmodule BeamWeaver.Agent.Middleware.HumanInTheLoop do
       nil
     else
       %{
+        :when => Map.get(config, :when, Map.get(config, "when")),
         allowed_decisions: allowed,
         description: Map.get(config, :description, Map.get(config, "description")),
-        args_schema: Map.get(config, :args_schema, Map.get(config, "args_schema"))
+        args_schema: Map.get(config, :args_schema, Map.get(config, "args_schema")),
+        predicate: Map.get(config, :predicate, Map.get(config, "predicate"))
       }
     end
   end
+
+  defp normalize_interrupt_mode!(mode) when mode in [:all, "all", :batch, "batch"], do: :all
+  defp normalize_interrupt_mode!(mode) when mode in [:first, "first"], do: :first
+
+  defp normalize_interrupt_mode!(mode),
+    do: raise(ArgumentError, "interrupt_mode must be :all or :first, got #{inspect(mode)}")
 
   defp tool_map(tools) do
     tools

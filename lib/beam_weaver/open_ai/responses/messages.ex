@@ -8,8 +8,8 @@ defmodule BeamWeaver.OpenAI.Responses.Messages do
 
   alias BeamWeaver.OpenAI.Messages
 
-  defdelegate to_input(messages), to: Messages, as: :to_responses_input
-  defdelegate to_responses_input(messages), to: Messages
+  defdelegate to_input(messages, opts \\ []), to: Messages, as: :to_responses_input
+  defdelegate to_responses_input(messages, opts \\ []), to: Messages
   defdelegate response_to_message(response), to: Messages
   defdelegate normalize_input_items(items), to: Messages
   defdelegate structured_output_format(name, schema, opts \\ []), to: Messages

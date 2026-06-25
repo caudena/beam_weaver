@@ -104,8 +104,8 @@ end
 
 `true` enables the default decisions for a tool: `:approve`, `:edit`,
 `:reject`, and `:respond`. `false` disables review for that tool. A map can
-restrict decisions with `:allowed_decisions` and add review metadata such as
-`:description` or `:args_schema`.
+restrict decisions with `:allowed_decisions`, gate review with `:when` or
+`:predicate`, and add review metadata such as `:description` or `:args_schema`.
 
 {% hint style="warning" %}
 **Checkpoint Required**
@@ -386,6 +386,7 @@ Useful middleware options:
 | Option | Meaning |
 | --- | --- |
 | `:interrupt_on` | Required map of tool names to `true`, `false`, or a review config map. |
+| `:interrupt_mode` | `:all` reviews all matching calls in a model response; `:first` pauses on the first matching call. |
 | `:description_prefix` | Prefix used for generated review descriptions. Defaults to `"Tool execution requires approval"`. |
 | `:tools` | Tool modules or structs used to validate edited tool arguments against tool schemas. |
 
@@ -396,6 +397,7 @@ Review config options:
 | `:allowed_decisions` | List of allowed decision atoms or strings: `:approve`, `:edit`, `:reject`, `:respond`. |
 | `:description` | Static description string, or a function with arity 2 or 3. |
 | `:args_schema` | Optional argument schema included in the review config for UI validation. |
+| `:when` / `:predicate` | Function with arity 1, 2, or 3. Return `true` to review this call. |
 
 `description` functions receive the tool call and state. Arity-3 functions also
 receive runtime:
@@ -416,6 +418,11 @@ middleware do
     }
 end
 ```
+
+Predicate functions receive the tool call, optionally the graph state, and
+optionally runtime. Use `interrupt_mode: :first` with predicates when one
+approval should pause a multi-tool response before any later matching calls are
+reviewed.
 
 {% hint style="warning" %}
 **Checkpoint Required**

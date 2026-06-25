@@ -77,7 +77,8 @@ defmodule BeamWeaver.Stream.MessagesTransformer do
             open_order: [],
             ignored_runs: [],
             async?: false,
-            pump: nil
+            pump: nil,
+            pre_projection: []
 
   @type t :: %__MODULE__{
           by_run: %{optional(term()) => MessageStream.t()},
@@ -85,13 +86,19 @@ defmodule BeamWeaver.Stream.MessagesTransformer do
           open_order: [term()],
           ignored_runs: [term()],
           async?: boolean(),
-          pump: (-> boolean()) | nil
+          pump: (-> boolean()) | nil,
+          pre_projection: [function()]
         }
 
   @spec new(keyword() | map()) :: t()
   def new(opts \\ []) do
     opts = if is_map(opts), do: Map.to_list(opts), else: opts
-    %__MODULE__{async?: Keyword.get(opts, :async?, false), pump: Keyword.get(opts, :pump)}
+
+    %__MODULE__{
+      async?: Keyword.get(opts, :async?, false),
+      pump: Keyword.get(opts, :pump),
+      pre_projection: normalize_pre_projection(Keyword.get(opts, :pre_projection, []))
+    }
   end
 
   @spec bind_pump(t(), (-> boolean())) :: t()
@@ -100,6 +107,15 @@ defmodule BeamWeaver.Stream.MessagesTransformer do
 
   @spec process(t(), term()) :: {:ok, t(), [MessageStream.t()]} | {:pass, t()}
   def process(%__MODULE__{} = transformer, event) do
+    with {:ok, event} <- apply_pre_projection(transformer, event) do
+      do_process(transformer, event)
+    else
+      :drop -> {:ok, transformer, []}
+      {:error, error} -> {:ok, fail(transformer, error), []}
+    end
+  end
+
+  defp do_process(%__MODULE__{} = transformer, event) do
     case Parser.parse(event) do
       :pass ->
         {:pass, transformer}
@@ -113,6 +129,20 @@ defmodule BeamWeaver.Stream.MessagesTransformer do
       {:whole_message, %Message{} = message, metadata} ->
         process_whole_message(transformer, message, metadata)
     end
+  end
+
+  defp apply_pre_projection(%__MODULE__{pre_projection: []}, event), do: {:ok, event}
+
+  defp apply_pre_projection(%__MODULE__{pre_projection: transforms}, event) do
+    Enum.reduce_while(transforms, {:ok, event}, fn transform, {:ok, current} ->
+      case transform.(current) do
+        {:ok, next} -> {:cont, {:ok, next}}
+        {:drop, _reason} -> {:halt, :drop}
+        :drop -> {:halt, :drop}
+        {:error, error} -> {:halt, {:error, error}}
+        next -> {:cont, {:ok, next}}
+      end
+    end)
   end
 
   @spec process_many(t() | [term()], [term()] | keyword(), keyword()) ::
@@ -356,6 +386,23 @@ defmodule BeamWeaver.Stream.MessagesTransformer do
 
   defp append_unique(values, value) do
     if value in values, do: values, else: values ++ [value]
+  end
+
+  defp normalize_pre_projection(nil), do: []
+  defp normalize_pre_projection(fun) when is_function(fun, 1), do: [fun]
+
+  defp normalize_pre_projection(funs) when is_list(funs) do
+    Enum.map(funs, fn
+      fun when is_function(fun, 1) ->
+        fun
+
+      other ->
+        raise ArgumentError, "pre_projection transforms must be unary functions, got #{inspect(other)}"
+    end)
+  end
+
+  defp normalize_pre_projection(other) do
+    raise ArgumentError, "pre_projection transforms must be a function or list, got #{inspect(other)}"
   end
 
   defp map_get(map, key, default \\ nil)

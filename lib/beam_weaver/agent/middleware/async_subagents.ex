@@ -347,7 +347,13 @@ defmodule BeamWeaver.Agent.Middleware.AsyncSubagents do
           %Command{
             update: %{
               async_tasks: Map.merge(all_tasks, updated),
-              messages: [Message.tool(message, tool_call_id: id, name: "list_async_tasks")]
+              messages: [
+                Message.tool(message,
+                  tool_call_id: id,
+                  name: "list_async_tasks",
+                  metadata: %{async_subagents: Enum.map(updated, fn {_id, task} -> task_metadata(task) end)}
+                )
+              ]
             }
           }
 
@@ -364,7 +370,8 @@ defmodule BeamWeaver.Agent.Middleware.AsyncSubagents do
     message =
       Message.tool(encode_task(task),
         tool_call_id: value(input, :tool_call_id),
-        name: tool_name
+        name: tool_name,
+        metadata: %{async_subagent: task_metadata(task)}
       )
 
     %Command{update: %{async_tasks: tasks, messages: [message]}}
@@ -518,6 +525,13 @@ defmodule BeamWeaver.Agent.Middleware.AsyncSubagents do
 
   defp format_error(reason) when is_binary(reason), do: reason
   defp format_error(reason), do: inspect(reason)
+
+  defp task_metadata(task) do
+    task
+    |> AsyncTask.to_map()
+    |> Map.take([:id, :task_id, :subagent_name, :graph_id, :thread_id, :run_id, :status])
+    |> Map.reject(fn {_key, value} -> is_nil(value) end)
+  end
 
   defp start_description(subagents) do
     """

@@ -11,12 +11,12 @@ defmodule BeamWeaver.Agent.Middleware.ModelRetry do
   alias BeamWeaver.Options
   alias BeamWeaver.RetryPolicy
 
-  defstruct policy: RetryPolicy.new!(),
+  defstruct policy: RetryPolicy.new!(retry_on: :transient),
             on_failure: :error
 
   def new(opts \\ []) do
     %__MODULE__{
-      policy: RetryPolicy.new!(RetryRunner.policy_opts(opts, [:name, :on_failure])),
+      policy: RetryPolicy.new!(model_policy_opts(opts)),
       on_failure: opts |> Keyword.get(:on_failure, :error) |> normalize_on_failure()
     }
   end
@@ -59,4 +59,19 @@ defmodule BeamWeaver.Agent.Middleware.ModelRetry do
 
   defp normalize_on_failure(value),
     do: Options.atom_enum!("on_failure", value, [:error, :continue])
+
+  defp model_policy_opts(opts) do
+    case RetryRunner.policy_opts(opts, [:name, :on_failure]) do
+      %RetryPolicy{} = policy -> policy
+      policy_opts when is_list(policy_opts) -> put_default_retry_on(opts, policy_opts)
+    end
+  end
+
+  defp put_default_retry_on(opts, policy_opts) do
+    if Keyword.has_key?(opts, :policy) or Keyword.has_key?(opts, :retry_on) do
+      policy_opts
+    else
+      Keyword.put(policy_opts, :retry_on, :transient)
+    end
+  end
 end

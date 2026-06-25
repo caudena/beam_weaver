@@ -496,13 +496,17 @@ content and on the dedicated fields:
 Message.assistant([
   %{type: :server_tool_call, id: "srv_1", name: "web_search", args: %{"query" => "news"}},
   %{type: :server_tool_result, tool_call_id: "srv_1", status: "success"},
+  %{type: :apply_patch_call, call_id: "patch_1", input: "*** Begin Patch\n..."},
+  %{type: :apply_patch_call_output, call_id: "patch_1", output: "applied"},
   ContentBlock.text("Here is the summary.")
 ])
 ```
 
 Client-side tools still use assistant `tool_calls` followed by `:tool` messages.
 Server-side tool blocks represent provider work that already happened during
-the model request.
+the model request. Provider-specific blocks such as OpenAI `apply_patch_call`
+and `apply_patch_call_output` are preserved so a later provider turn can replay
+the same assistant history.
 
 ### Unknown Provider Blocks
 

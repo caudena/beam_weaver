@@ -33,7 +33,7 @@ defmodule BeamWeaver.Agent.MiddlewareBuiltinTest do
       count = :ets.update_counter(table, :calls, 1, {:calls, 0})
 
       if count == 1 do
-        {:error, Error.new(:temporary_model_error, "temporary")}
+        {:error, Error.new(:rate_limit_error, "temporary", %{retryable: true})}
       else
         {:ok, Message.assistant("recovered")}
       end
@@ -1008,6 +1008,27 @@ defmodule BeamWeaver.Agent.MiddlewareBuiltinTest do
              )
   end
 
+  test "model retry default does not retry explicit non-retryable quota errors" do
+    table = :ets.new(:model_retry_quota, [:set, :public])
+
+    assert {:error, %Error{type: :quota_error}} =
+             ModelRetry.wrap_model_call(
+               ModelRetry.new(max_retries: 2, initial_delay: 0),
+               %ModelRequest{},
+               fn _request ->
+                 :ets.update_counter(table, :calls, 1, {:calls, 0})
+
+                 {:error,
+                  Error.new(:quota_error, "Insufficient balance or no resource package. Please recharge.", %{
+                    retryable: false,
+                    status: 429
+                  })}
+               end
+             )
+
+    assert :ets.lookup(table, :calls) == [{:calls, 1}]
+  end
+
   test "model retry composes with other model-call wrappers" do
     parent = self()
 
@@ -1873,7 +1894,7 @@ defmodule BeamWeaver.Agent.MiddlewareBuiltinTest do
     assert prompt =~ "AI: I'll check."
     assert prompt =~ "Tool: 72F and sunny"
     refute prompt =~ "metadata metadata"
-    assert Keyword.fetch!(opts, :metadata) == %{lc_source: "summarization"}
+    assert Keyword.fetch!(opts, :metadata) == %{source: :summarization}
   end
 
   test "summarization can trigger from matching provider usage metadata" do
@@ -1944,6 +1965,41 @@ defmodule BeamWeaver.Agent.MiddlewareBuiltinTest do
                },
                nil
              )
+  end
+
+  test "summarization supports AND-capable trigger conditions" do
+    middleware =
+      BeamWeaver.Agent.Middleware.Summarization.new(
+        model: %CapturingSummaryModel{parent: self()},
+        trigger: {:all, [{:messages, 3}, {:tokens, 10}]},
+        keep: {:messages, 1},
+        token_counter: fn messages -> length(messages) * 4 end
+      )
+
+    assert %{} =
+             BeamWeaver.Agent.Middleware.Summarization.before_model(
+               middleware,
+               %{messages: [Message.user("one"), Message.assistant("two")]},
+               nil
+             )
+
+    assert %{messages: %BeamWeaver.Graph.Overwrite{value: rewritten}} =
+             BeamWeaver.Agent.Middleware.Summarization.before_model(
+               middleware,
+               %{
+                 messages: [
+                   Message.user("one"),
+                   Message.assistant("two"),
+                   Message.user("three")
+                 ]
+               },
+               nil
+             )
+
+    assert [
+             %Message{content: "Conversation summary:\ncaptured summary"},
+             %Message{content: "three"}
+           ] = rewritten
   end
 
   test "summarization token retention preserves assistant tool-call pairs" do

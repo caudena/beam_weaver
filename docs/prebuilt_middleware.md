@@ -95,7 +95,7 @@ Useful options:
 | Option | Meaning |
 | --- | --- |
 | `:model` | Required chat model used to create summaries. |
-| `:trigger` | `{:messages, n}`, `{:tokens, n}`, `{:fraction, f}`, a list of triggers, or `nil`. |
+| `:trigger` | `{:messages, n}`, `{:tokens, n}`, `{:fraction, f}`, `{:all, triggers}`, `{:any, triggers}`, a list of triggers, or `nil`. |
 | `:keep` | `{:messages, n}`, `{:tokens, n}`, `{:fraction, f}`, or `nil`. |
 | `:token_counter` | `:approximate`, a counting function, or a model/counter accepted by `BeamWeaver.Core.LanguageModel.count_tokens/2`. |
 | `:summary_prompt` | Prompt template containing `{messages}`. |
@@ -106,11 +106,15 @@ Useful options:
 middleware do
   use BeamWeaver.Agent.Middleware.Summarization,
    model: summary_model,
-   trigger: [{:tokens, 3_000}, {:messages, 12}],
+   trigger: {:all, [{:tokens, 3_000}, {:messages, 12}]},
    keep: {:tokens, 1_500},
    summary_prompt: "Summarize the relevant facts:\n\n{messages}"
 end
 ```
+
+Plain trigger lists are treated as OR conditions. Use `{:all, triggers}` for
+AND behavior when both token pressure and message count should be true before a
+summary is inserted.
 
 {% hint style="warning" %}
 **Fractional Limits Need Model Profiles**
@@ -186,8 +190,13 @@ Useful options:
 | Option | Meaning |
 | --- | --- |
 | `:interrupt_on` | Map of tool names to `true`, `false`, or review config. |
+| `:interrupt_mode` | `:all` to review every matching tool call, or `:first` to pause on the first matching call. |
 | `:description_prefix` | Default prefix for generated review descriptions. |
 | `:tools` | Tool list used to validate edited arguments against tool schemas. |
+
+Review configs can include `:when` or `:predicate` with a function of arity 1,
+2, or 3. The function receives the tool call, optionally the graph state, and
+optionally the runtime; returning `true` enables review for that call.
 
 {% hint style="info" %}
 **Decision Payloads Are Elixir Data**
@@ -296,6 +305,10 @@ end
 
 Useful retry options:
 
+`ModelRetry` defaults `:retry_on` to `:transient` so authentication, quota, and
+account-state provider failures are not retried unless you explicitly broaden
+the policy. `ToolRetry` uses the shared `BeamWeaver.RetryPolicy` default.
+
 | Option | Meaning |
 | --- | --- |
 | `:max_retries` | Compatibility option translated to `max_attempts: max_retries + 1`. |
@@ -344,6 +357,9 @@ end
 
 Built-in detector types are `:email`, `:credit_card`, `:ip`, `:mac_address`,
 and `:url`. Strategies are `:block`, `:redact`, `:mask`, and `:hash`.
+For typed event streams, pass `PII.stream_transform/1` into
+`BeamWeaver.Stream.MessagesTransformer.new(pre_projection: ...)` to redact token
+and message chunks before final message projection.
 
 Custom detectors can be regex strings, one-argument functions, or MFA tuples:
 

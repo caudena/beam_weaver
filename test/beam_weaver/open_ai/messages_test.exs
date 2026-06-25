@@ -325,6 +325,87 @@ defmodule BeamWeaver.OpenAI.MessagesTest do
     refute input |> BeamWeaver.JSON.encode!() |> String.contains?("private summary text")
   end
 
+  test "store false sanitizes replay-only Responses item ids and non-replayable blocks" do
+    message =
+      Message.assistant([
+        %{type: :text, id: "msg_1", text: "cached answer"},
+        %{type: :reasoning, id: "rs_plain", summary: []},
+        %{type: :reasoning, id: "rs_enc", encrypted_content: "encrypted-reasoning", summary: []},
+        %{type: :image_generation_call, id: "ig_empty", status: "completed"},
+        %{type: :image_generation_call, id: "ig_result", result: "..."},
+        %{
+          type: :function_call,
+          id: "fc_123",
+          call_id: "call_123",
+          name: "lookup",
+          arguments: %{"query" => "beam"}
+        }
+      ])
+
+    assert {:ok, input} = Messages.to_responses_input([message], store: false)
+
+    assert [
+             %{
+               "type" => "message",
+               "role" => "assistant",
+               "content" => [
+                 %{"type" => "output_text", "text" => "cached answer", "annotations" => []}
+               ]
+             },
+             %{"type" => "reasoning", "summary" => [], "encrypted_content" => "encrypted-reasoning"},
+             %{"type" => "image_generation_call", "result" => "..."},
+             %{
+               "type" => "function_call",
+               "call_id" => "call_123",
+               "name" => "lookup",
+               "arguments" => ~s({"query":"beam"})
+             }
+           ] = input
+
+    encoded = BeamWeaver.JSON.encode!(input)
+    refute encoded =~ "msg_1"
+    refute encoded =~ "rs_plain"
+    refute encoded =~ "rs_enc"
+    refute encoded =~ "ig_empty"
+    refute encoded =~ "ig_result"
+    refute encoded =~ "fc_123"
+  end
+
+  test "preserves OpenAI apply_patch output items for replay" do
+    message =
+      Message.assistant([
+        %{
+          type: :apply_patch_call,
+          id: "apc_123",
+          status: "completed",
+          patch: "*** Begin Patch\n*** End Patch\n"
+        },
+        %{
+          type: :apply_patch_call_output,
+          id: "apco_123",
+          status: "completed",
+          output: "Success."
+        }
+      ])
+
+    assert {:ok, input} = Messages.to_responses_input([message])
+
+    assert input == [
+             %{
+               "type" => "apply_patch_call",
+               "id" => "apc_123",
+               "status" => "completed",
+               "patch" => "*** Begin Patch\n*** End Patch\n"
+             },
+             %{
+               "type" => "apply_patch_call_output",
+               "id" => "apco_123",
+               "status" => "completed",
+               "output" => "Success."
+             }
+           ]
+  end
+
   test "strips internal provider fields from unknown output blocks on replay" do
     message =
       Message.assistant([

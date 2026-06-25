@@ -454,6 +454,42 @@ defmodule BeamWeaver.SerializationTest do
     assert {:error, %Error{type: :serialization_error}} = ValueCodec.load_json_value(corrupt)
   end
 
+  test "checkpoint-shaped payloads allow only registered BeamWeaver tags and keep foreign constructors inert" do
+    foreign_constructor = %{
+      "lc" => 2,
+      "type" => "constructor",
+      "id" => ["pathlib", "Path"],
+      "method" => "read_text",
+      "args" => ["/tmp/secret"],
+      "kwargs" => %{}
+    }
+
+    checkpoint_value = %{
+      "channel_values" => %{"messages" => [foreign_constructor]},
+      "pending_writes" => [
+        [
+          "task-1",
+          "messages",
+          %{"__beam_weaver_type__" => "beam_weaver.graph.messages.remove", "id" => "m-1"}
+        ]
+      ]
+    }
+
+    assert {:ok, decoded} = ValueCodec.load_json_value(checkpoint_value)
+    assert decoded["channel_values"]["messages"] == [foreign_constructor]
+    assert [["task-1", "messages", %Remove{id: "m-1"}]] = decoded["pending_writes"]
+
+    unsafe =
+      put_in(
+        checkpoint_value,
+        ["channel_values", "messages"],
+        [%{"__beam_weaver_type__" => "beam_weaver.graph.unknown", "value" => %{}}]
+      )
+
+    assert {:error, %Error{type: :unsupported_serialization_type}} =
+             ValueCodec.load_json_value(unsafe)
+  end
+
   test "encrypted codec wraps safe JSON serialization with explicit AES-256-GCM keys" do
     key = :crypto.strong_rand_bytes(32)
     value = %{message: Message.user("secret"), tuple: {:ok, [:known]}}

@@ -17,6 +17,10 @@ defmodule BeamWeaver.Graph.RuntimeSurfaceTest do
   alias BeamWeaver.RetryPolicy
   alias BeamWeaver.Runnable
 
+  def handle_graph_telemetry(event, measurements, metadata, pid) do
+    send(pid, {:graph_telemetry, event, measurements, metadata})
+  end
+
   defmodule RuntimeStructNode do
     defstruct [:caller]
 
@@ -744,6 +748,51 @@ defmodule BeamWeaver.Graph.RuntimeSurfaceTest do
              Compiled.invoke(graph, %{})
   end
 
+  test "node exits preserve BEAM root cause and emit native telemetry" do
+    attach_graph_telemetry([:node_exit])
+
+    graph =
+      Graph.new()
+      |> Graph.add_node(:exit_node, fn _state -> exit({:shutdown, :root_cause}) end)
+      |> Graph.add_edge(Graph.start(), :exit_node)
+      |> Graph.add_edge(:exit_node, Graph.end_node())
+      |> Graph.compile!()
+
+    assert {:error, %Error{type: :node_exit} = error} = Compiled.invoke(graph, %{})
+    assert error.details.kind == :exit
+    assert error.details.root_cause == {:shutdown, :root_cause}
+    assert error.details.reason == "{:shutdown, :root_cause}"
+
+    assert_receive {:graph_telemetry, [:beam_weaver, :graph, :node_exit], %{count: 1},
+                    %{node: "exit_node", error: ^error}}
+  end
+
+  test "step timeout cancels running node and emits native telemetry" do
+    attach_graph_telemetry([:node_cancel, :step_timeout])
+    parent = self()
+
+    graph =
+      Graph.new()
+      |> Graph.add_node(:slow, fn _state ->
+        send(parent, :slow_started)
+        Process.sleep(:infinity)
+      end)
+      |> Graph.add_edge(Graph.start(), :slow)
+      |> Graph.add_edge(:slow, Graph.end_node())
+      |> Graph.compile!()
+
+    assert {:error, %Error{type: :step_timeout} = error} =
+             Compiled.invoke(graph, %{}, step_timeout: 20)
+
+    assert error.details.node == "slow"
+    assert_receive :slow_started
+
+    assert_receive {:graph_telemetry, [:beam_weaver, :graph, :node_cancel], %{count: 1}, %{node: "slow"}}
+
+    assert_receive {:graph_telemetry, [:beam_weaver, :graph, :step_timeout], %{duration: 20},
+                    %{node: "slow", error: ^error}}
+  end
+
   test "update_state returns a tagged ambiguity error when continuation cannot be inferred" do
     checkpointer = CheckpointETS.new()
 
@@ -799,5 +848,20 @@ defmodule BeamWeaver.Graph.RuntimeSurfaceTest do
 
     assert {:error, %Error{type: :invalid_update, message: "bulk update supersteps cannot be empty"}} =
              Compiled.bulk_update_state(graph, config, [[]])
+  end
+
+  defp attach_graph_telemetry(events) do
+    id = {__MODULE__, make_ref()}
+    parent = self()
+    event_names = Enum.map(events, &[:beam_weaver, :graph, &1])
+
+    :telemetry.attach_many(
+      id,
+      event_names,
+      &__MODULE__.handle_graph_telemetry/4,
+      parent
+    )
+
+    on_exit(fn -> :telemetry.detach(id) end)
   end
 end

@@ -72,18 +72,41 @@ defmodule BeamWeaver.ZAI.Client.ResponseDecoder do
 
     type =
       cond do
+        quota_error?(status, code, error_type, error.message) -> :quota_error
         status == 401 -> :authentication_error
-        status == 429 -> :rate_limit_error
         status in [502, 503, 504] -> :overloaded_error
-        code in ["insufficient_quota", "quota_exceeded"] -> :quota_error
+        status == 429 -> :rate_limit_error
         error_type == "content_filter" or code == "content_filter" -> :content_filter
         true -> :http_error
       end
 
-    %{error | type: type}
+    %{error | type: type, details: normalize_retryable_details(details, type)}
   end
 
   defp normalize_error_value(error), do: error
+
+  defp quota_error?(status, code, error_type, message) do
+    status == 429 and
+      (code in ["1113", "insufficient_quota", "quota_exceeded"] or
+         error_type in ["insufficient_quota", "quota_exceeded"] or
+         quota_message?(message))
+  end
+
+  defp quota_message?(message) when is_binary(message) do
+    normalized = String.downcase(message)
+
+    String.contains?(normalized, "insufficient balance") or
+      String.contains?(normalized, "no resource package") or
+      String.contains?(normalized, "please recharge") or
+      String.contains?(normalized, "quota exceeded")
+  end
+
+  defp quota_message?(_message), do: false
+
+  defp normalize_retryable_details(details, :quota_error) when is_map(details),
+    do: Map.put(details, :retryable, false)
+
+  defp normalize_retryable_details(details, _type), do: details
 
   defp decoder_opts(opts \\ []) do
     [

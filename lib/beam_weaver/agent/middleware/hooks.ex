@@ -103,8 +103,8 @@ defmodule BeamWeaver.Agent.Middleware.Hooks do
     not is_nil(Tracing.capture_context()) or Tracing.exporter_configured?()
   end
 
-  defp finish_middleware_run(run, {:error, error} = result) do
-    Tracing.fail_run(run, error, outputs: trace_outputs(result))
+  defp finish_middleware_run(run, {:error, error}) do
+    Tracing.fail_run(run, error)
   end
 
   defp finish_middleware_run(run, result) do
@@ -193,7 +193,6 @@ defmodule BeamWeaver.Agent.Middleware.Hooks do
   defp trace_outputs(result), do: %{output: trace_output(result)}
 
   defp trace_output({:ok, value}), do: %{status: "ok", value: trace_output(value)}
-  defp trace_output({:error, error}), do: %{status: "error", error: inspect(error)}
 
   defp trace_output(%ModelResponse{} = response) do
     %{
