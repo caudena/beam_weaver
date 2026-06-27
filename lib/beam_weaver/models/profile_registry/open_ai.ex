@@ -31,6 +31,7 @@ defmodule BeamWeaver.Models.ProfileRegistry.OpenAI do
                                    responses_api: true,
                                    chat_completions_api: true,
                                    tool_calling: true,
+                                   tool_call_streaming: true,
                                    tool_choice: true,
                                    parallel_tool_calls: true,
                                    structured_output: true,

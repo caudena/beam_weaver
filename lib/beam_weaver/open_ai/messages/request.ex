@@ -8,12 +8,14 @@ defmodule BeamWeaver.OpenAI.Messages.Request do
   alias BeamWeaver.Result
   alias BeamWeaver.Tool.Renderer
 
-  @spec to_responses_input([Message.t()]) :: {:ok, [map()]} | {:error, Error.t()}
-  def to_responses_input(messages) when is_list(messages) do
-    Result.flat_traverse(messages, &to_response_input/1)
+  @spec to_responses_input([Message.t()], keyword()) :: {:ok, [map()]} | {:error, Error.t()}
+  def to_responses_input(messages, opts \\ [])
+
+  def to_responses_input(messages, opts) when is_list(messages) and is_list(opts) do
+    Result.flat_traverse(messages, &to_response_input(&1, opts))
   end
 
-  def to_responses_input(_messages) do
+  def to_responses_input(_messages, _opts) do
     {:error, Error.new(:invalid_messages, "OpenAI input messages must be a list")}
   end
 
@@ -76,7 +78,7 @@ defmodule BeamWeaver.OpenAI.Messages.Request do
       Map.get(message.metadata || %{}, :id)
   end
 
-  defp to_response_input(%Message{role: :tool} = message) do
+  defp to_response_input(%Message{role: :tool} = message, _opts) do
     call_id = message.tool_call_id || message.id
 
     if is_binary(call_id) and call_id != "" do
@@ -91,8 +93,8 @@ defmodule BeamWeaver.OpenAI.Messages.Request do
     end
   end
 
-  defp to_response_input(%Message{role: :assistant} = message) do
-    items = assistant_content_items(message) ++ assistant_tool_call_items(message)
+  defp to_response_input(%Message{role: :assistant} = message, opts) do
+    items = assistant_content_items(message, opts) ++ assistant_tool_call_items(message, opts)
 
     if items == [] do
       {:ok, %{"type" => "message", "role" => "assistant", "content" => ""}}
@@ -101,7 +103,7 @@ defmodule BeamWeaver.OpenAI.Messages.Request do
     end
   end
 
-  defp to_response_input(%Message{} = message) do
+  defp to_response_input(%Message{} = message, _opts) do
     {:ok,
      %{
        "type" => "message",
@@ -110,7 +112,7 @@ defmodule BeamWeaver.OpenAI.Messages.Request do
      }}
   end
 
-  defp to_response_input(_message) do
+  defp to_response_input(_message, _opts) do
     {:error, Error.new(:invalid_message, "expected a BeamWeaver message")}
   end
 
@@ -278,7 +280,7 @@ defmodule BeamWeaver.OpenAI.Messages.Request do
     Shared.stringify_keys(block)
   end
 
-  defp assistant_content_items(%Message{content: content, id: message_id})
+  defp assistant_content_items(%Message{content: content, id: message_id}, opts)
        when is_binary(content) do
     case content do
       "" ->
@@ -288,26 +290,27 @@ defmodule BeamWeaver.OpenAI.Messages.Request do
         [
           assistant_message_item(
             [%{"type" => "output_text", "text" => text, "annotations" => []}],
-            message_id
+            message_id,
+            opts
           )
         ]
     end
   end
 
-  defp assistant_content_items(%Message{content: content, id: message_id})
+  defp assistant_content_items(%Message{content: content, id: message_id}, opts)
        when is_list(content) do
     content
     |> Enum.reduce({[], nil, []}, fn block, state ->
-      case assistant_content_event(block, message_id) do
-        {:message_part, id, part} -> add_assistant_message_part(state, id, part)
-        {:item, item} -> add_assistant_raw_item(state, item)
+      case assistant_content_event(block, message_id, opts) do
+        {:message_part, id, part} -> add_assistant_message_part(state, id, part, opts)
+        {:item, item} -> add_assistant_raw_item(state, item, opts)
         :skip -> state
       end
     end)
-    |> flush_assistant_message_parts()
+    |> flush_assistant_message_parts(opts)
   end
 
-  defp assistant_content_event(%{type: type, text: text} = block, message_id)
+  defp assistant_content_event(%{type: type, text: text} = block, message_id, _opts)
        when type in [:text, :output_text] and is_binary(text) do
     {:message_part, Map.get(block, :id) || message_id,
      %{
@@ -317,64 +320,78 @@ defmodule BeamWeaver.OpenAI.Messages.Request do
      }}
   end
 
-  defp assistant_content_event(%{type: :refusal, refusal: refusal} = block, message_id)
+  defp assistant_content_event(%{type: :refusal, refusal: refusal} = block, message_id, _opts)
        when is_binary(refusal) do
     {:message_part, Map.get(block, :id) || message_id, %{"type" => "refusal", "refusal" => refusal}}
   end
 
-  defp assistant_content_event(%ContentBlock.Unknown{value: value}, _message_id) when is_map(value) do
-    {:item, value |> Shared.stringify_keys() |> drop_internal_provider_fields()}
+  defp assistant_content_event(%ContentBlock.Unknown{value: value}, _message_id, opts)
+       when is_map(value) do
+    value
+    |> Shared.stringify_keys()
+    |> drop_internal_provider_fields()
+    |> sanitize_store_replay_item(opts)
   end
 
-  defp assistant_content_event(%{type: type} = block, _message_id)
+  defp assistant_content_event(%{type: type} = block, _message_id, opts)
        when type in [:function_call, :tool_call, :tool_use] do
     BeamWeaver.MapShape.assert_atom_keys!(block)
-    {:item, block |> Shared.stringify_keys() |> normalize_function_call_item()}
+
+    {:item,
+     block
+     |> Shared.stringify_keys()
+     |> normalize_function_call_item()
+     |> maybe_drop_store_false_id(opts)}
   end
 
-  defp assistant_content_event(%{type: type} = block, _message_id) do
+  defp assistant_content_event(%{type: type} = block, _message_id, opts) do
     BeamWeaver.MapShape.assert_atom_keys!(block)
     type = provider_type(type)
 
     if Shared.output_block_type?(type) do
-      {:item, sanitize_output_item(block)}
+      block
+      |> sanitize_output_item(opts)
+      |> sanitize_store_replay_item(opts)
     else
       :skip
     end
   end
 
-  defp assistant_content_event(_block, _message_id), do: :skip
+  defp assistant_content_event(_block, _message_id, _opts), do: :skip
 
-  defp add_assistant_message_part({items, nil, []}, id, part), do: {items, id, [part]}
-  defp add_assistant_message_part({items, id, parts}, id, part), do: {items, id, [part | parts]}
+  defp add_assistant_message_part({items, nil, []}, id, part, _opts), do: {items, id, [part]}
 
-  defp add_assistant_message_part({items, id, parts}, next_id, part) do
-    {[assistant_message_item(Enum.reverse(parts), id) | items], next_id, [part]}
+  defp add_assistant_message_part({items, id, parts}, id, part, _opts),
+    do: {items, id, [part | parts]}
+
+  defp add_assistant_message_part({items, id, parts}, next_id, part, opts) do
+    {[assistant_message_item(Enum.reverse(parts), id, opts) | items], next_id, [part]}
   end
 
-  defp add_assistant_raw_item({items, nil, []}, item), do: {[item | items], nil, []}
+  defp add_assistant_raw_item({items, nil, []}, item, _opts), do: {[item | items], nil, []}
 
-  defp add_assistant_raw_item({items, id, parts}, item) do
-    {[item, assistant_message_item(Enum.reverse(parts), id) | items], nil, []}
+  defp add_assistant_raw_item({items, id, parts}, item, opts) do
+    {[item, assistant_message_item(Enum.reverse(parts), id, opts) | items], nil, []}
   end
 
-  defp flush_assistant_message_parts({items, nil, []}), do: Enum.reverse(items)
+  defp flush_assistant_message_parts({items, nil, []}, _opts), do: Enum.reverse(items)
 
-  defp flush_assistant_message_parts({items, id, parts}) do
-    Enum.reverse([assistant_message_item(Enum.reverse(parts), id) | items])
+  defp flush_assistant_message_parts({items, id, parts}, opts) do
+    Enum.reverse([assistant_message_item(Enum.reverse(parts), id, opts) | items])
   end
 
-  defp assistant_message_item(parts, id) do
+  defp assistant_message_item(parts, id, opts) do
     %{"type" => "message", "role" => "assistant", "content" => parts}
     |> Shared.put_optional("id", id)
+    |> maybe_drop_store_false_id(opts)
   end
 
-  defp assistant_tool_call_items(%Message{content: content, tool_calls: tool_calls})
+  defp assistant_tool_call_items(%Message{content: content, tool_calls: tool_calls}, opts)
        when is_list(tool_calls) do
     if assistant_content_has_function_call?(content) do
       []
     else
-      Enum.map(tool_calls, &tool_call_to_function_call_item/1)
+      Enum.map(tool_calls, &tool_call_to_function_call_item(&1, opts))
     end
   end
 
@@ -390,7 +407,7 @@ defmodule BeamWeaver.OpenAI.Messages.Request do
 
   defp assistant_content_has_function_call?(_content), do: false
 
-  defp tool_call_to_function_call_item(tool_call) when is_map(tool_call) do
+  defp tool_call_to_function_call_item(tool_call, opts) when is_map(tool_call) do
     %{
       "type" => "function_call",
       "id" => Map.get(tool_call, :provider_id) || Map.get(tool_call, :id),
@@ -399,6 +416,7 @@ defmodule BeamWeaver.OpenAI.Messages.Request do
       "arguments" => function_call_arguments(tool_call)
     }
     |> Shared.reject_nil_values()
+    |> maybe_drop_store_false_id(opts)
   end
 
   defp function_call_arguments(%{arguments: arguments}) when is_binary(arguments),
@@ -430,17 +448,54 @@ defmodule BeamWeaver.OpenAI.Messages.Request do
   defp provider_type(type) when is_atom(type), do: Atom.to_string(type)
   defp provider_type(type), do: type
 
-  defp sanitize_output_item(%{type: :reasoning} = block) do
+  defp sanitize_output_item(%{type: :reasoning} = block, _opts) do
     block
     |> Shared.stringify_keys()
     |> Map.take(["type", "id", "summary", "status", "encrypted_content"])
     |> Shared.reject_nil_values()
   end
 
-  defp sanitize_output_item(block) when is_map(block) do
+  defp sanitize_output_item(block, _opts) when is_map(block) do
     block
     |> Shared.stringify_keys()
     |> drop_internal_provider_fields()
+  end
+
+  defp sanitize_store_replay_item(%{"type" => "reasoning", "encrypted_content" => encrypted} = item, opts)
+       when is_binary(encrypted) and encrypted != "" do
+    {:item, maybe_drop_store_false_id(item, opts)}
+  end
+
+  defp sanitize_store_replay_item(%{"type" => "reasoning"} = item, opts) do
+    if store_false?(opts), do: :skip, else: {:item, maybe_drop_store_false_id(item, opts)}
+  end
+
+  defp sanitize_store_replay_item(%{"type" => "image_generation_call"} = item, opts) do
+    if store_false?(opts) and id_only_output_item?(item) do
+      :skip
+    else
+      {:item, maybe_drop_store_false_id(item, opts)}
+    end
+  end
+
+  defp sanitize_store_replay_item(%{"type" => type} = item, opts)
+       when type in ["message", "function_call"] do
+    {:item, maybe_drop_store_false_id(item, opts)}
+  end
+
+  defp sanitize_store_replay_item(item, _opts), do: {:item, item}
+
+  defp maybe_drop_store_false_id(item, opts) when is_map(item) do
+    if store_false?(opts), do: Map.drop(item, ["id"]), else: item
+  end
+
+  defp store_false?(opts), do: Keyword.get(opts, :store) == false
+
+  defp id_only_output_item?(item) do
+    item
+    |> Map.drop(["type", "id", "status"])
+    |> map_size()
+    |> Kernel.==(0)
   end
 
   defp drop_internal_provider_fields(value) when is_list(value),

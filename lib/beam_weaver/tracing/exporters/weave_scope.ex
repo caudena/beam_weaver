@@ -103,6 +103,10 @@ defmodule BeamWeaver.Tracing.Exporters.WeaveScope do
       "custom_fields",
       metadata_value(metadata, "custom_fields") || metadata_value(context_metadata, "custom_fields")
     )
+    |> maybe_put(
+      "scores",
+      metadata_value(metadata, "scores") || metadata_value(context_metadata, "scores")
+    )
     |> reject_blank_values()
   end
 

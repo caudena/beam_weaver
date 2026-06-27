@@ -224,8 +224,15 @@ defmodule BeamWeaver.Graph.Execution.TaskAwaiter do
       Error.new(:node_exit, "node task exited before returning", %{
         node: entry.node,
         step: entry.step,
+        root_cause: reason,
         reason: inspect(reason)
       })
+
+    Telemetry.execute(:node_exit, %{count: 1}, %{
+      node: entry.node,
+      step: entry.step,
+      error: error
+    })
 
     {:error, error, [Stream.task_event(:error, entry.node, error, entry.step, entry.id, entry.path)]}
   end

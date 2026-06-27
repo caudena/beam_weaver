@@ -137,6 +137,35 @@ defmodule BeamWeaver.XAI.ChatModelTest do
     refute Map.has_key?(body, "deferred")
   end
 
+  test "xAI reasoning profiles omit unsupported stop while non-reasoning chat models preserve it" do
+    assert {:ok, responses_body} =
+             ChatModel.request_body(
+               ChatModel.new(model: "grok-4.3"),
+               [Message.user("stop check")],
+               stop: ["END"]
+             )
+
+    refute Map.has_key?(responses_body, "stop")
+
+    assert {:ok, reasoning_chat_body} =
+             ChatCompletionsModel.request_body(
+               ChatCompletionsModel.new(model: "grok-4.20-0309-reasoning"),
+               [Message.user("stop check")],
+               stop: ["END"]
+             )
+
+    refute Map.has_key?(reasoning_chat_body, "stop")
+
+    assert {:ok, non_reasoning_chat_body} =
+             ChatCompletionsModel.request_body(
+               ChatCompletionsModel.new(model: "grok-4.20-0309-non-reasoning"),
+               [Message.user("stop check")],
+               stop: ["END"]
+             )
+
+    assert non_reasoning_chat_body["stop"] == ["END"]
+  end
+
   test "Responses request body rejects deferred mode before transport" do
     assert {:error, error} =
              ChatModel.request_body(
@@ -273,6 +302,38 @@ defmodule BeamWeaver.XAI.ChatModelTest do
     assert {:ok, response} = ChatCompletionsModel.stream_response(model, [Message.user("stream")])
     assert Message.text(response) == "pong"
     assert response.metadata.model_provider == "xai"
+  end
+
+  test "xAI Chat Completions stream_response reconstructs streamed tool-call chunks" do
+    body = """
+    data: {"id":"chatcmpl_xai_tools","model":"grok-4.3","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}
+
+    data: {"id":"chatcmpl_xai_tools","model":"grok-4.3","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_weather","function":{"name":"weather","arguments":"{\\"city\\""}}]},"finish_reason":null}]}
+
+    data: {"id":"chatcmpl_xai_tools","model":"grok-4.3","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":":\\"Nicosia\\"}"}}]},"finish_reason":null}]}
+
+    data: {"id":"chatcmpl_xai_tools","model":"grok-4.3","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":2,"completion_tokens":3,"total_tokens":5}}
+
+    data: [DONE]
+    """
+
+    model =
+      ChatCompletionsModel.new(
+        model: "grok-4.3",
+        api_key: "xai-secret",
+        transport: BeamWeaver.TestSupport.Conformance.Fakes.Transport,
+        transport_opts: [
+          expect: %{method: :post, path: "/v1/chat/completions"},
+          headers: [{"content-type", "text/event-stream"}],
+          body: body
+        ]
+      )
+
+    assert {:ok, response} = ChatCompletionsModel.stream_response(model, [Message.user("tools")])
+
+    assert response.status == "tool_calls"
+    assert response.metadata.model_provider == "xai"
+    assert [%{id: "call_weather", name: "weather", args: %{"city" => "Nicosia"}}] = response.tool_calls
   end
 
   test "Chat Completions stream decoder reads atom-key message metadata" do

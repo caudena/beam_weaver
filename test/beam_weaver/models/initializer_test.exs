@@ -37,6 +37,8 @@ defmodule BeamWeaver.Models.InitializerTest do
     assert %Profile{provider: :openai, tool_calling: true, structured_output: true} =
              openai.profile
 
+    assert openai.profile.tool_call_streaming
+
     assert {:ok, inferred} = Models.init_chat_model("gpt-5.4")
     assert inferred.__struct__ == BeamWeaver.OpenAI.ChatModel
   end
@@ -326,6 +328,7 @@ defmodule BeamWeaver.Models.InitializerTest do
     assert Enum.any?(openai, &(&1.id == "gpt-5.5" and &1.tool_calling))
     assert Enum.any?(openai, &(&1.id == "gpt-5.4-mini" and &1.tool_calling))
     assert Enum.any?(openai, &(&1.id == "gpt-4.1" and &1.tool_calling))
+    assert Enum.any?(openai, &(&1.id == "gpt-5.4-mini" and &1.tool_call_streaming))
     refute Enum.any?(openai, &(&1.id in ["gpt-4o", "gpt-4o-mini", "o3", "o4-mini"]))
 
     assert Enum.any?(
@@ -392,6 +395,7 @@ defmodule BeamWeaver.Models.InitializerTest do
     assert Enum.any?(xai, &(&1.id == "grok-4.3" and &1.tool_calling))
     assert Enum.any?(xai, &(&1.id == "grok-build-0.1" and &1.tool_calling))
     assert Enum.any?(xai, &(&1.id == "grok-4.20-multi-agent-0309" and &1.tool_calling))
+    assert Enum.any?(xai, &(&1.id == "grok-4.3" and &1.tool_call_streaming))
     assert Enum.any?(xai, &(&1.id == "v1" and &1.extra.embedding_model))
     assert Enum.any?(zai, &(&1.id == "glm-5.2" and &1.max_input_tokens == 1_000_000))
     assert Enum.any?(zai, &(&1.id == "glm-5.2" and &1.max_output_tokens == 131_072))

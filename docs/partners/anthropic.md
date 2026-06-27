@@ -16,6 +16,10 @@ BeamWeaver includes a direct Anthropic Messages API provider under
 - BeamWeaver messages become Anthropic `messages` plus top-level `system`.
 - Tool result messages become user-role `tool_result` blocks.
 - Assistant `tool_calls` become Anthropic `tool_use` content blocks.
+- Tool-call IDs are normalized at the Anthropic provider boundary. Existing
+  Anthropic `toolu_*` IDs are preserved, and cross-provider call IDs are mapped
+  deterministically to Anthropic-safe IDs without mutating BeamWeaver's native
+  message structs.
 - Text, image, file/document, thinking, redacted thinking, citations, server tool
   calls/results, and unknown provider blocks are preserved where possible.
 - Responses become assistant messages with normalized usage metadata, cache
@@ -64,6 +68,11 @@ tools = [
 
 BeamWeaver.Core.ChatModel.invoke(model, messages, tools: tools, tool_choice: :auto)
 ```
+
+When forwarding tool history from another provider into Anthropic, keep the
+native `Message.tool/2` or assistant `tool_calls` history. The Anthropic request
+builder normalizes IDs only for the outgoing wire payload, so later BeamWeaver
+middleware and tracing still see the original native IDs.
 
 Token counting uses Anthropic's count-tokens endpoint:
 

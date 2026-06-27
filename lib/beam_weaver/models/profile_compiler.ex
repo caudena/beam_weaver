@@ -44,6 +44,7 @@ defmodule BeamWeaver.Models.ProfileCompiler do
       video_outputs: "video" in output_modalities,
       reasoning_output: get_value(model_data, "reasoning"),
       tool_calling: get_value(model_data, "tool_call"),
+      tool_call_streaming: get_value(model_data, "tool_call_streaming"),
       tool_choice: get_value(model_data, "tool_choice"),
       structured_output: get_value(model_data, "structured_output"),
       structured_output_with_tools: get_value(model_data, "structured_output_with_tools"),

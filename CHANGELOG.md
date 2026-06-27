@@ -1,5 +1,75 @@
 # Changelog
 
+## 0.1.4 - 2026-06-25
+
+### Added
+
+- Added OpenAI Responses `store: false` replay sanitization for cached
+  assistant messages. Replay now drops provider-only item IDs, skips
+  non-replayable reasoning and empty image-generation blocks, and preserves
+  encrypted reasoning content that can safely round-trip.
+- Added OpenAI `apply_patch` built-in tool rendering and replay parsing for
+  `apply_patch_call` and `apply_patch_call_output` provider items.
+- Added an offline OpenAI `apply_patch` example that shows request rendering and
+  replayable assistant patch history without requiring live credentials.
+- Added replay-backed provider conformance fixtures for OpenAI replay
+  sanitization and xAI reasoning request-shape handling.
+- Added WeaveScope exporter queue telemetry coverage for retry, flush,
+  rejection, and dead-letter paths.
+- Added `tool_call_streaming` to model capability profiles and exposed it through
+  profile compilation, compatibility checks, and the profile matrix task.
+- Added pre-projection message stream transforms, including a PII stream
+  redaction helper that edits typed token/message envelopes before projection.
+- Added Agent Protocol client hardening for encoded task paths,
+  JSON-string/map body normalization, non-2xx error payloads, and async-subagent
+  native trace metadata.
+- Added a native sandbox provider registry with validated provider specs,
+  builtin local provider construction, lifecycle capability checks, and redacted
+  provider metadata.
+- Added explicit interpreter adapter contracts and a supervised interpreter
+  session boundary for adapter-owned eval, snapshot, restore, timeout, cancel,
+  and close behavior without adding a default unsafe interpreter runtime.
+
+### Changed
+
+- Anthropic tool-call IDs are now normalized deterministically at the Anthropic
+  provider boundary while preserving BeamWeaver's native message and tool-call
+  structs.
+- xAI reasoning profiles omit unsupported `stop` request parameters while
+  non-reasoning xAI chat-completions models continue to send supported stop
+  sequences.
+- Deep Agents offload and model-request metadata now use BeamWeaver-native keys
+  such as `:offloaded_to` and `:source` instead of Python ecosystem labels.
+- WeaveScope trace payload tests now assert native BeamWeaver/WeaveScope fields
+  for run envelopes, model generation details, tool payloads, usage, lifecycle
+  status, event versions, tags, and metadata.
+- OpenAI and xAI stream handling now preserves empty initial chunks,
+  incremental tool-call arguments, reconstructed final assistant tool calls, and
+  detailed usage metadata.
+- Summarization triggers now support explicit AND/OR composition with
+  `{:all, triggers}` and `{:any, triggers}`.
+- Human-in-the-loop middleware now supports predicate-gated review configs and
+  `interrupt_mode: :first` for reviewing only the first matching tool call.
+- Sandbox and filesystem command execution results now carry additive native
+  metadata such as provider ID, sandbox ID, command ID, snapshot ID, reconnect
+  count, timeout, exit status, retryability, and raw provider status when the
+  backend supplies it.
+
+### Fixed
+
+- Graph task exits, timeouts, and cancellations now preserve the BEAM root cause
+  in normalized graph errors and emit native graph telemetry for failure paths.
+- Checkpoint serialization tests now guard that only known BeamWeaver tagged
+  structs decode, while foreign constructor-shaped maps remain inert data.
+- Transport and trace redaction now cover nested bearer tokens, provider keys,
+  URL credentials, query-string secrets, env-style assignments, private key
+  blocks, and secret headers without redacting token-count usage fields.
+- `list_async_tasks` refreshes active async tasks while leaving terminal task
+  records cached, so completed/cancelled/error tasks are not re-polled.
+- Sandbox execution, remote-provider fakes, interpreter sessions, and shell
+  commands now normalize timeout/crash metadata and emit native telemetry while
+  redacting credential-shaped fields before tracing.
+
 ## 0.1.3 - 2026-06-23
 
 ### Added

@@ -21,9 +21,17 @@ BeamWeaver includes an OpenAI-compatible xAI provider under `BeamWeaver.XAI`.
   usage metadata, and xAI-specific reasoning-token accounting.
 - Streaming supports text deltas, reconstructed final assistant messages, and
   typed stream envelopes tagged with xAI invocation metadata.
+- xAI chat profiles expose `tool_call_streaming: true` when the checked-in
+  profile supports incremental streamed tool-call arguments.
+- Chat Completions streaming preserves empty initial role-only chunks,
+  incremental tool argument deltas, final assistant tool calls, finish reasons,
+  and detailed usage metadata.
 - Structured output is available on both Responses and Chat Completions. xAI
   request rendering keeps dynamic map fields as open object schemas while
   preserving strict closed-object validation for normal nested objects.
+- Reasoning profiles omit unsupported `stop` request parameters at the xAI
+  provider boundary. Non-reasoning chat-completions models keep supported
+  `stop` sequences.
 - Deferred Chat Completions requests can be followed up with
   `BeamWeaver.XAI.Client.deferred_completion/3`.
 - Checked-in chat profiles cover `grok-4.3`, `grok-4.20-0309-reasoning`,
@@ -89,6 +97,11 @@ xAI recommends `grok-4.3` for most chat and coding use cases. BeamWeaver keeps
 profiles for the other current chat models listed above, plus embedding model
 `v1`. Imagine and voice models are not chat or embedding models and are not
 constructed through `init_chat_model/2`.
+
+Reasoning profiles can still be invoked with shared model options from a generic
+caller. If those options include `stop`, BeamWeaver removes it only for xAI
+reasoning request shapes, avoiding provider-side request rejection without
+changing caller data for other providers or non-reasoning xAI chat models.
 
 The retired May 15, 2026 slugs are rejected with `:deprecated_model`:
 `grok-4-1-fast-reasoning`, `grok-4-1-fast-non-reasoning`,

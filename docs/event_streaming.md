@@ -285,6 +285,28 @@ for message_stream <- MessagesTransformer.streams(transformer) do
 end
 ```
 
+Use `:pre_projection` when a transform must mutate typed stream envelopes before
+they become message projections. This is intentionally narrow and pure: each
+function receives one event and returns the event, `{:ok, event}`, `:drop`, or
+`{:error, reason}`.
+
+```elixir
+alias BeamWeaver.Agent.Middleware.PII
+alias BeamWeaver.Stream.{MessageStream, MessagesTransformer}
+
+transformer =
+  MessagesTransformer.new(
+    pre_projection: PII.stream_transform(type: :email, strategy: :redact)
+  )
+
+{:ok, transformer, _emitted} =
+  MessagesTransformer.process_many(transformer, event_list)
+
+for stream <- MessagesTransformer.streams(transformer) do
+  IO.puts(MessageStream.text(stream))
+end
+```
+
 {% hint style="info" %}
 **Immutable Message Projections**
 
@@ -364,6 +386,13 @@ for envelope <- events do
   end
 end
 ```
+
+OpenAI and xAI streams preserve role-only empty chunks and incremental
+tool-call argument chunks. Consumers should treat empty chunks as lifecycle
+evidence rather than text, and should rely on the final `%Events.Message{}` or
+`stream_response/3` result for the reconstructed assistant tool calls.
+See `examples/streaming_tool_call_chunks.exs` for an offline reconstruction
+example.
 
 To reconstruct finalized tool calls from streamed message chunks, collect the
 chunks and finalize them:
@@ -883,6 +912,8 @@ end
 
 Because events are ordinary Elixir values, custom projections can be ordinary
 functions, reducers, or `Stream.map/2` pipelines.
+See `examples/streaming_redaction.exs` for a credential-free pre-projection
+redaction example.
 
 {% hint style="info" %}
 **Custom Transformers**

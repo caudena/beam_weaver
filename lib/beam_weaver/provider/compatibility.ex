@@ -20,6 +20,7 @@ defmodule BeamWeaver.Provider.Compatibility do
     :video_output,
     :reasoning,
     :tool_calling,
+    :tool_call_streaming,
     :tool_choice,
     :parallel_tool_calls,
     :structured_output,

@@ -546,6 +546,31 @@ defmodule BeamWeaver.OpenAI.ChatCompletionsModelTest do
            ] = response.tool_calls
   end
 
+  test "streamed tool-call chunks survive empty initial role-only chunks" do
+    body = """
+    data: {"choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}
+
+    data: {"choices":[{"index":0,"delta":{"content":""},"finish_reason":null}]}
+
+    data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_lookup","function":{"name":"lookup","arguments":"{\\"query\\""}}]},"finish_reason":null}]}
+
+    data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":":\\"beam\\"}"}}]},"finish_reason":null}]}
+
+    data: {"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":2,"completion_tokens":3,"total_tokens":5,"completion_tokens_details":{"reasoning_tokens":1}}}
+
+    data: [DONE]
+    """
+
+    assert {:ok, response} = ChatCompletions.Messages.stream_body_to_message(body)
+
+    assert response.status == "tool_calls"
+    assert response.usage_metadata.output_token_details == %{reasoning: 1}
+
+    assert [
+             %ToolCall{id: "call_lookup", name: "lookup", args: %{"query" => "beam"}}
+           ] = response.tool_calls
+  end
+
   test "malformed streamed tool-call JSON becomes invalid tool-call metadata instead of crashing" do
     # Upstream reference:
     # - malformed streamed tool-call chunks are retained as invalid tool calls.

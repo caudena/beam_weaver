@@ -160,14 +160,16 @@ Windows drive paths, and null bytes.
 
 ## Command Execution
 
-`execute` returns an exit code, output, optional error, and truncation flag:
+`execute` returns an exit code, output, optional error, truncation flag, and
+redacted native metadata:
 
 ```elixir
 %BeamWeaver.Filesystem.Executable.ExecuteResult{
   exit_code: 0,
   output: "Python 3.11.8\n",
   error: nil,
-  truncated: false
+  truncated: false,
+  metadata: %{command_id: command_id}
 } =
   BeamWeaver.Filesystem.Executable.execute(filesystem, "python --version")
 ```
@@ -193,6 +195,69 @@ BeamWeaver.Filesystem.Sandbox.max_output_bytes()
 
 For a narrower command surface, use `BeamWeaver.Agent.Middleware.ShellTool`
 with an allow-list policy instead of exposing a general-purpose `execute` tool.
+
+## Execution Metadata And Telemetry
+
+`BeamWeaver.Sandbox.execute/3` adds native execution metadata without changing
+successful return semantics. Local adapters get command IDs and timeout
+metadata automatically. Remote adapters can add provider-specific facts such as:
+
+- `:provider_id`
+- `:sandbox_id`
+- `:snapshot_id`
+- `:command_id`
+- `:reconnect_count`
+- `:timeout_ms`
+- `:exit_code`
+- `:retryable`
+- `:raw_status`
+- `:output_unavailable`
+
+Credential-shaped fields such as API keys, tokens, private keys, signed URLs,
+and secret mount/env fields are redacted before metadata reaches telemetry or
+tracing.
+
+Sandbox execution emits native telemetry:
+
+| Event | Use |
+| --- | --- |
+| `[:beam_weaver, :sandbox, :execute, :start]` | Command execution started. |
+| `[:beam_weaver, :sandbox, :execute, :stop]` | Command execution completed. |
+| `[:beam_weaver, :sandbox, :execute, :timeout]` | Backend reported a timeout-shaped result. |
+| `[:beam_weaver, :sandbox, :execute, :exception]` | The adapter raised or exited before returning a result. |
+
+## Provider Registry
+
+Use `BeamWeaver.Sandbox.Registry` when sandbox providers come from runtime
+configuration:
+
+```elixir
+alias BeamWeaver.Sandbox.Registry
+
+{:ok, registry} =
+  Registry.new(
+    providers: [
+      %{
+        id: :remote,
+        module: MyApp.RemoteSandboxProvider,
+        config: %{region: "us-east-1", api_key: System.fetch_env!("SANDBOX_API_KEY")},
+        capabilities: %{sandbox_id: true, snapshot: true, mounts: true}
+      }
+    ]
+  )
+
+{:ok, sandbox} =
+  Registry.build(registry, :remote,
+    sandbox_id: "sbx_123",
+    snapshot_id: "snap_456",
+    mounts: [%{name: "repo", path: "/workspace"}]
+  )
+```
+
+Provider modules implement `BeamWeaver.Sandbox.Provider.build/2` and return a
+normal sandbox backend. The registry validates duplicate IDs, provider modules,
+unsupported lifecycle options, and whether the built value implements
+`BeamWeaver.Sandbox`.
 
 ## Lifecycle And Scoping
 
@@ -260,11 +325,25 @@ defmodule MyApp.RemoteSandbox do
 
   def execute(%__MODULE__{} = sandbox, command, opts) do
     case MyProvider.run_command(sandbox.client, sandbox.id, command, opts) do
-      {:ok, %{exit_code: code, output: output}} ->
-        %Sandbox.ExecuteResult{exit_code: code, output: output}
+      {:ok, %{exit_code: code, output: output, command_id: command_id}} ->
+        %Sandbox.ExecuteResult{
+          exit_code: code,
+          output: output,
+          metadata: %{
+            provider_id: "my_provider",
+            sandbox_id: sandbox.id,
+            command_id: command_id,
+            raw_status: "finished"
+          }
+        }
 
       {:error, reason} ->
-        %Sandbox.ExecuteResult{exit_code: nil, output: "", error: to_string(reason)}
+        %Sandbox.ExecuteResult{
+          exit_code: nil,
+          output: "",
+          error: to_string(reason),
+          metadata: %{provider_id: "my_provider", sandbox_id: sandbox.id}
+        }
     end
   end
 

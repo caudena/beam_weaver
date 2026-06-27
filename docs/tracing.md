@@ -127,6 +127,28 @@ outputs, usage, errors, tags, standard trace metadata, and custom fields.
 Exporter errors are swallowed by tracing calls so observability failures do not
 break user flows.
 
+Exported observations use native BeamWeaver and WeaveScope fields, including
+`observation_id`, `trace_id`, `parent_observation_id`, `kind`, `run_type`,
+`status`, timestamps, `event_version`, tags, metadata, provider, model,
+`request_id`, `finish_reason`, usage, tool-call IDs, and structured outputs.
+BeamWeaver does not expose Python ecosystem labels or LangSmith wire contracts
+as public tracing fields.
+
+The queued exporter is a supervised GenServer. It batches observations, retries
+transient transport failures, treats WeaveScope rejections as terminal dead
+letters, and emits native telemetry:
+
+| Event | Use |
+| --- | --- |
+| `[:beam_weaver, :weave_scope, :queue, :enqueue]` | Observation accepted by the local queue. |
+| `[:beam_weaver, :weave_scope, :queue, :flush_start]` | Flush started with queue depth in measurements. |
+| `[:beam_weaver, :weave_scope, :queue, :upload_success]` | Observation batch item uploaded or accepted. |
+| `[:beam_weaver, :weave_scope, :queue, :upload_failure]` | Transient upload failure before retry or dead-letter. |
+| `[:beam_weaver, :weave_scope, :queue, :retry]` | Observation scheduled for retry. |
+| `[:beam_weaver, :weave_scope, :queue, :upload_rejected]` | WeaveScope rejected an event as invalid. |
+| `[:beam_weaver, :weave_scope, :queue, :dead_letter]` | Observation moved to dead letters after terminal failure. |
+| `[:beam_weaver, :weave_scope, :queue, :flush_stop]` | Flush completed. |
+
 ## Model And Tool Runs
 
 Calls made through `BeamWeaver.Core.ChatModel.invoke/3` create child model runs
@@ -144,16 +166,46 @@ When tracing is active, `BeamWeaver.Core.Tool.invoke/3` records child tool runs.
 Tool inputs contain only public model arguments; runtime-injected state, stores,
 runtime structs, and tool runtime fields are filtered out. Tool metadata
 includes `tool_name`, `tool_call_id`, description, tags, and safe tool metadata.
+Shell and sandbox-backed tool outputs can include native execution metadata
+such as provider ID, sandbox ID, command ID, snapshot ID, reconnect count,
+timeout, exit status, retryability, and raw provider status. Those fields are
+redacted before trace storage and export.
 
 Pass `trace?: false` only when you deliberately want to suppress a child run,
 such as wrapper tools that delegate to another tool and should not produce a
 duplicate nested run.
 
+## Sandbox And Interpreter Telemetry
+
+Sandbox execution emits native telemetry events:
+
+| Event | Use |
+| --- | --- |
+| `[:beam_weaver, :sandbox, :execute, :start]` | Command execution started. |
+| `[:beam_weaver, :sandbox, :execute, :stop]` | Command execution completed. |
+| `[:beam_weaver, :sandbox, :execute, :timeout]` | Backend reported timeout metadata. |
+| `[:beam_weaver, :sandbox, :execute, :exception]` | Adapter raised or exited before returning a result. |
+
+Interpreter sessions emit operation-scoped telemetry:
+
+| Event | Use |
+| --- | --- |
+| `[:beam_weaver, :sandbox, :interpreter, :eval, :start]` | Adapter eval started. |
+| `[:beam_weaver, :sandbox, :interpreter, :eval, :stop]` | Adapter eval completed. |
+| `[:beam_weaver, :sandbox, :interpreter, :eval, :timeout]` | Eval exceeded the configured timeout and was cancelled. |
+| `[:beam_weaver, :sandbox, :interpreter, :eval, :exception]` | Adapter eval crashed or threw. |
+
+The same `:snapshot` and `:restore` operation names are used for interpreter
+snapshot and restore lifecycle telemetry.
+
 ## Redaction
 
 Inputs, outputs, metadata, usage, and errors are redacted before they are stored.
 The redactor protects authorization headers, API keys, bearer tokens,
-OpenAI-style secret keys, and common nested secret fields.
+OpenAI-style secret keys, URL credentials, query-string secrets, env-style
+secret assignments in shell commands, private-key blocks, secret response
+headers, and common nested secret fields. Token-count usage fields such as
+`input_tokens`, `output_tokens`, and `output_token_details` are preserved.
 
 ## Provider HTTP Telemetry
 

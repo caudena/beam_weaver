@@ -4,6 +4,7 @@ defmodule BeamWeaver.Stream.MessagesTransformerTest do
   alias BeamWeaver.Core.Async
   alias BeamWeaver.Core.Message
   alias BeamWeaver.Core.Messages
+  alias BeamWeaver.Agent.Middleware.PII
   alias BeamWeaver.Stream.Envelope
   alias BeamWeaver.Stream.Events
   alias BeamWeaver.Stream.MessagesTransformer
@@ -209,6 +210,50 @@ defmodule BeamWeaver.Stream.MessagesTransformerTest do
     transformer = MessagesTransformer.bind_pump(MessagesTransformer.new(), fn -> false end)
     assert is_function(transformer.pump, 0)
     refute transformer.pump.()
+  end
+
+  test "pre-projection transform redacts typed message chunks before projection" do
+    transformer =
+      MessagesTransformer.new(pre_projection: PII.stream_transform(type: :email, strategy: :redact))
+
+    events = [
+      proto(%{"event" => "message-start", "role" => "ai", "message_id" => "run-1"}),
+      %Envelope{
+        event: %Events.MessageChunk{chunk: Messages.ai_chunk("contact ada@example.com")},
+        node: "llm",
+        run_id: "run-1"
+      },
+      proto(%{"event" => "message-finish", "reason" => "stop"})
+    ]
+
+    assert {:ok, t, _emitted} = MessagesTransformer.process_many(transformer, events)
+    assert [%MessageStream{done: true} = stream] = MessagesTransformer.streams(t)
+    assert MessageStream.text(stream) == "contact [REDACTED_EMAIL]"
+    assert MessageStream.output!(stream).content == "contact [REDACTED_EMAIL]"
+  end
+
+  test "pre-projection transforms can pass through, drop, or fail stream events explicitly" do
+    pass = fn event -> {:ok, event} end
+    drop = fn _event -> :drop end
+    error = RuntimeError.exception("redaction failed")
+    fail = fn _event -> {:error, error} end
+
+    assert {:ok, _t, []} =
+             MessagesTransformer.process(
+               MessagesTransformer.new(pre_projection: [pass, drop]),
+               proto(%{"event" => "message-start", "message_id" => "dropped"})
+             )
+
+    assert {:ok, t, _emitted} =
+             MessagesTransformer.process(
+               MessagesTransformer.new(),
+               proto(%{"event" => "message-start", "message_id" => "run-1"})
+             )
+
+    assert {:ok, failed, []} =
+             MessagesTransformer.process(%{t | pre_projection: [fail]}, proto(%{"event" => "message-finish"}))
+
+    assert [%MessageStream{error: ^error, done: true}] = MessagesTransformer.streams(failed)
   end
 
   defp lifecycle(text, opts \\ []) do

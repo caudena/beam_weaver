@@ -21,6 +21,7 @@ defmodule BeamWeaver.Tracing.WeaveScopeExporterTest do
           request_id: "req-123",
           finish_reason: :stop,
           custom_fields: %{"probe_id" => "probe-123"},
+          scores: [%{key: "correctness", value: 0.91, source: :evaluator}],
           response_format: %{
             strategy: :provider,
             validator: fn value -> {:ok, value} end
@@ -64,6 +65,7 @@ defmodule BeamWeaver.Tracing.WeaveScopeExporterTest do
     assert event["request_id"] == "req-123"
     assert event["finish_reason"] == "stop"
     assert event["custom_fields"] == %{"probe_id" => "probe-123"}
+    assert event["scores"] == [%{key: "correctness", source: "evaluator", value: 0.91}]
     assert event["event_version"] == DateTime.to_unix(~U[2026-06-04 10:00:03Z], :microsecond) * 10 + 2
     beam_weaver_version = Application.spec(:beam_weaver, :vsn) |> to_string()
 
@@ -72,7 +74,9 @@ defmodule BeamWeaver.Tracing.WeaveScopeExporterTest do
     assert is_binary(event["metadata"][:response_format][:validator])
     assert "beam_weaver:#{beam_weaver_version}" in event["tags"]
 
-    assert Jason.encode!(event)
+    encoded = Jason.encode!(event)
+    assert encoded
+    refute encoded =~ ~r/"(?:lc_|ls_|LS_)/
   end
 
   test "does not use exporter options as environment fallback" do
@@ -152,6 +156,102 @@ defmodule BeamWeaver.Tracing.WeaveScopeExporterTest do
     GenServer.stop(pid)
   end
 
+  test "queue emits native retry dead-letter and flush telemetry" do
+    handler_id = {__MODULE__, self(), make_ref()}
+
+    :telemetry.attach_many(
+      handler_id,
+      [
+        [:beam_weaver, :weave_scope, :queue, :flush_start],
+        [:beam_weaver, :weave_scope, :queue, :retry],
+        [:beam_weaver, :weave_scope, :queue, :upload_success],
+        [:beam_weaver, :weave_scope, :queue, :dead_letter],
+        [:beam_weaver, :weave_scope, :queue, :flush_stop]
+      ],
+      &__MODULE__.handle_queue_telemetry/4,
+      self()
+    )
+
+    on_exit(fn -> :telemetry.detach(handler_id) end)
+
+    {:ok, attempts} =
+      Agent.start_link(fn -> 0 end, name: BeamWeaver.Tracing.WeaveScopeFlakyTransportAgent)
+
+    name = :"weavescope_queue_#{System.unique_integer([:positive])}"
+
+    {:ok, pid} =
+      Queue.start_link(
+        name: name,
+        api_key: "ws_test",
+        endpoint: "http://weavescope.local",
+        transport: BeamWeaver.Tracing.WeaveScopeFlakyTransport,
+        flush_interval: 0,
+        retry_delay: 0,
+        backoff: 1.0,
+        max_attempts: 2
+      )
+
+    run =
+      Run.new("retrying_export",
+        id: "retry-run",
+        trace_id: "trace-retry",
+        kind: :model,
+        started_at: ~U[2026-06-04 10:00:00Z]
+      )
+
+    Queue.enqueue(pid, :started, run)
+    assert Queue.flush(pid) == :ok
+
+    assert_receive {:queue_event, [:beam_weaver, :weave_scope, :queue, :flush_start], %{count: 1},
+                    %{operation: :flush_start, queue: ^pid}}
+
+    assert_receive {:queue_event, [:beam_weaver, :weave_scope, :queue, :retry], %{count: 1},
+                    %{operation: :retry, queue: ^pid, run_id: "retry-run", trace_id: "trace-retry", attempts: 1}}
+
+    assert_receive {:queue_event, [:beam_weaver, :weave_scope, :queue, :upload_success], %{count: 1},
+                    %{operation: :upload_success, queue: ^pid, run_id: "retry-run", result: :ok}}
+
+    assert_receive {:queue_event, [:beam_weaver, :weave_scope, :queue, :flush_stop], %{count: 1},
+                    %{operation: :flush_stop, queue: ^pid, result: :ok}}
+
+    GenServer.stop(pid)
+    Agent.stop(attempts)
+
+    {:ok, _attempts} =
+      Agent.start_link(fn -> 0 end, name: BeamWeaver.Tracing.WeaveScopeAlwaysFailTransportAgent)
+
+    name = :"weavescope_queue_#{System.unique_integer([:positive])}"
+
+    {:ok, pid} =
+      Queue.start_link(
+        name: name,
+        api_key: "ws_test",
+        endpoint: "http://weavescope.local",
+        transport: BeamWeaver.Tracing.WeaveScopeAlwaysFailTransport,
+        flush_interval: 0,
+        retry_delay: 0,
+        max_attempts: 1
+      )
+
+    Queue.enqueue(pid, :started, %{run | id: "dead-run", trace_id: "trace-dead"})
+    assert Queue.flush(pid) == :ok
+
+    assert_receive {:queue_event, [:beam_weaver, :weave_scope, :queue, :dead_letter], %{count: 1},
+                    %{
+                      operation: :dead_letter,
+                      queue: ^pid,
+                      run_id: "dead-run",
+                      trace_id: "trace-dead",
+                      attempts: 1,
+                      reason: :max_attempts
+                    }}
+
+    assert [%{reason: :max_attempts, attempts: 1}] = Queue.dead_letters(pid)
+
+    GenServer.stop(pid)
+    Agent.stop(BeamWeaver.Tracing.WeaveScopeAlwaysFailTransportAgent)
+  end
+
   test "queue coalesces buffered lifecycle events for the same observation" do
     {:ok, capture} =
       Agent.start_link(fn -> [] end, name: BeamWeaver.Tracing.WeaveScopeCaptureTransportAgent)
@@ -189,6 +289,10 @@ defmodule BeamWeaver.Tracing.WeaveScopeExporterTest do
     GenServer.stop(pid)
     Agent.stop(capture)
   end
+
+  def handle_queue_telemetry(event, measurements, metadata, test_pid) do
+    send(test_pid, {:queue_event, event, measurements, metadata})
+  end
 end
 
 defmodule BeamWeaver.Tracing.WeaveScopeRejectTransport do
@@ -215,5 +319,27 @@ defmodule BeamWeaver.Tracing.WeaveScopeCaptureTransport do
   def post(_url, opts) do
     Agent.update(BeamWeaver.Tracing.WeaveScopeCaptureTransportAgent, &[opts[:json] | &1])
     {:ok, %{status: 202, body: %{"results" => []}}}
+  end
+end
+
+defmodule BeamWeaver.Tracing.WeaveScopeFlakyTransport do
+  def post(_url, _opts) do
+    attempt =
+      Agent.get_and_update(BeamWeaver.Tracing.WeaveScopeFlakyTransportAgent, fn attempt ->
+        {attempt, attempt + 1}
+      end)
+
+    if attempt == 0 do
+      {:error, :closed}
+    else
+      {:ok, %{status: 202, body: %{"results" => []}}}
+    end
+  end
+end
+
+defmodule BeamWeaver.Tracing.WeaveScopeAlwaysFailTransport do
+  def post(_url, _opts) do
+    Agent.update(BeamWeaver.Tracing.WeaveScopeAlwaysFailTransportAgent, &(&1 + 1))
+    {:error, :closed}
   end
 end

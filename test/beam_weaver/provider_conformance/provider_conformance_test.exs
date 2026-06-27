@@ -55,6 +55,37 @@ defmodule BeamWeaver.ProviderConformanceTest do
       Fixtures.assert_message!(message, Fixtures.load!(:openai, "tool_result_followup")["expected"]["message"])
     end
 
+    test "store false replay drops provider-only IDs and preserves replayable encrypted reasoning" do
+      model = Fixtures.model(:openai, "store_false_replay_sanitization")
+
+      messages = [
+        Message.user("resume cached response"),
+        Message.assistant([
+          %{type: :text, id: "msg_cached", text: "cached answer"},
+          %{type: :reasoning, id: "rs_plain", summary: []},
+          %{type: :reasoning, id: "rs_enc", encrypted_content: "encrypted-reasoning", summary: []},
+          %{type: :image_generation_call, id: "ig_empty", status: "completed"},
+          %{type: :image_generation_call, id: "ig_result", result: "..."},
+          %{
+            type: :function_call,
+            id: "fc_cached",
+            call_id: "call_lookup",
+            name: "lookup",
+            arguments: %{"query" => "beam"}
+          }
+        ])
+      ]
+
+      assert {:ok, message} = ChatModel.invoke(model, messages, extra_body: %{store: false})
+
+      Fixtures.assert_request!(:openai, "store_false_replay_sanitization")
+
+      Fixtures.assert_message!(
+        message,
+        Fixtures.load!(:openai, "store_false_replay_sanitization")["expected"]["message"]
+      )
+    end
+
     test "provider-native structured output parses into metadata" do
       model = Fixtures.model(:openai, "provider_structured_success")
 
@@ -72,6 +103,24 @@ defmodule BeamWeaver.ProviderConformanceTest do
     end
   end
 
+  describe "OpenAI Chat Completions fixtures" do
+    test "streaming response reconstructs tool-call chunks and detailed usage" do
+      model = Fixtures.model(:openai_chat_completions, "streaming_tool_call")
+
+      assert {:ok, message} =
+               model.__struct__.stream_response(model, [Message.user("stream tools")],
+                 stream_options: %{include_usage: true}
+               )
+
+      Fixtures.assert_request!(:openai_chat_completions, "streaming_tool_call")
+
+      Fixtures.assert_message!(
+        message,
+        Fixtures.load!(:openai_chat_completions, "streaming_tool_call")["expected"]["message"]
+      )
+    end
+  end
+
   describe "xAI Responses fixtures" do
     test "single tool call keeps xAI call_id mapping" do
       model = Fixtures.model(:xai, "single_tool_call")
@@ -81,6 +130,15 @@ defmodule BeamWeaver.ProviderConformanceTest do
 
       Fixtures.assert_request!(:xai, "single_tool_call")
       Fixtures.assert_message!(message, Fixtures.load!(:xai, "single_tool_call")["expected"]["message"])
+    end
+
+    test "reasoning request shape omits unsupported stop sequences" do
+      model = Fixtures.model(:xai, "reasoning_omits_stop")
+
+      assert {:ok, message} = ChatModel.invoke(model, [Message.user("stop check")], stop: ["END"])
+
+      Fixtures.assert_request!(:xai, "reasoning_omits_stop")
+      Fixtures.assert_message!(message, Fixtures.load!(:xai, "reasoning_omits_stop")["expected"]["message"])
     end
 
     test "tool-strategy structured output appears as a normal provider tool call" do
@@ -120,6 +178,22 @@ defmodule BeamWeaver.ProviderConformanceTest do
 
       Fixtures.assert_request!(:xai, "http_invalid_schema")
       Fixtures.assert_error!(result, Fixtures.load!(:xai, "http_invalid_schema")["expected"]["error"])
+    end
+  end
+
+  describe "xAI Chat Completions fixtures" do
+    test "streaming response reconstructs tool-call chunks and usage" do
+      model = Fixtures.model(:xai_chat_completions, "streaming_tool_call")
+
+      assert {:ok, message} =
+               model.__struct__.stream_response(model, [Message.user("tools")])
+
+      Fixtures.assert_request!(:xai_chat_completions, "streaming_tool_call")
+
+      Fixtures.assert_message!(
+        message,
+        Fixtures.load!(:xai_chat_completions, "streaming_tool_call")["expected"]["message"]
+      )
     end
   end
 

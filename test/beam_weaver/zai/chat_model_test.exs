@@ -300,6 +300,32 @@ defmodule BeamWeaver.ZAI.ChatModelTest do
     assert error.details.request_id == "chatcmpl_zai_rate_limit"
   end
 
+  test "insufficient balance is normalized as non-retryable quota error" do
+    error_model =
+      ChatModel.new(
+        transport: BeamWeaver.TestSupport.Conformance.Fakes.Transport,
+        transport_opts: [
+          expect: %{method: :post, path: "/api/paas/v4/chat/completions"},
+          status: 429,
+          headers: [{"x-log-id", "chatcmpl_zai_balance"}],
+          body: %{
+            "error" => %{
+              "code" => "1113",
+              "message" => "Insufficient balance or no resource package. Please recharge."
+            }
+          }
+        ]
+      )
+
+    assert {:error, %Error{type: :quota_error} = error} =
+             CoreChatModel.invoke(error_model, [Message.user("balance")])
+
+    assert error.message == "Insufficient balance or no resource package. Please recharge."
+    assert error.details.status == 429
+    refute error.details.retryable
+    refute BeamWeaver.RetryPredicates.transient?(error)
+  end
+
   test "model initializer supports only explicit zai:glm-5.2" do
     assert {:ok, model} = Models.init_chat_model("zai:glm-5.2")
     assert model.__struct__ == ChatModel

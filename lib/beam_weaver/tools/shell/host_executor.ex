@@ -6,19 +6,22 @@ defmodule BeamWeaver.Tools.Shell.HostExecutor do
   @behaviour BeamWeaver.Tools.Shell.Executor
 
   alias BeamWeaver.Core.Error
+  alias BeamWeaver.Core.ID
   alias BeamWeaver.ShellPolicy
+  alias BeamWeaver.Tracing.Redactor
 
   @impl true
-  def run(command, %ShellPolicy{} = policy, _opts \\ []) do
+  def run(command, %ShellPolicy{} = policy, opts \\ []) do
     if ShellPolicy.allowed?(policy, command) do
-      run_allowed(command, policy)
+      run_allowed(command, policy, opts)
     else
       {:error, Error.new(:shell_command_rejected, "shell command is not allowed", %{command: command})}
     end
   end
 
-  defp run_allowed(command, policy) do
+  defp run_allowed(command, policy, opts) do
     {shell_command, after_run, scratch} = prepare_command(command, policy)
+    metadata = command_metadata(:host, command, policy.timeout, opts)
 
     task =
       Task.async(fn ->
@@ -30,12 +33,17 @@ defmodule BeamWeaver.Tools.Shell.HostExecutor do
       {:ok, {output, status, stderr}} ->
         {:ok,
          command
-         |> base_result(status, output, policy)
+         |> base_result(status, output, policy, Map.put(metadata, :exit_code, status))
          |> maybe_put_stderr(stderr, policy)}
 
       nil ->
         cleanup_scratch(scratch)
-        {:error, Error.new(:shell_timeout, "shell command timed out", %{command: command})}
+
+        {:error,
+         Error.new(:shell_timeout, "shell command timed out", %{
+           command: command,
+           metadata: Map.merge(metadata, %{kill_attempted: true, error: "timeout"})
+         })}
 
       {:exit, reason} ->
         cleanup_scratch(scratch)
@@ -43,7 +51,8 @@ defmodule BeamWeaver.Tools.Shell.HostExecutor do
         {:error,
          Error.new(:shell_execution_error, "shell command failed", %{
            command: command,
-           reason: inspect(reason)
+           reason: inspect(reason),
+           metadata: Map.put(metadata, :reason, inspect(reason))
          })}
     end
   end
@@ -92,11 +101,12 @@ defmodule BeamWeaver.Tools.Shell.HostExecutor do
 
   defp prepare_command(command, _policy), do: {command, fn -> nil end, nil}
 
-  defp base_result(command, status, output, policy) do
+  defp base_result(command, status, output, policy, metadata) do
     %{
       command: command,
       status: status,
-      output: format_output(output, policy)
+      output: format_output(output, policy),
+      metadata: Redactor.redact(metadata)
     }
   end
 
@@ -148,4 +158,14 @@ defmodule BeamWeaver.Tools.Shell.HostExecutor do
   end
 
   defp shell, do: System.find_executable("sh") || "/bin/sh"
+
+  defp command_metadata(backend, command, timeout, opts) do
+    %{
+      backend: backend,
+      command: command,
+      command_id: Keyword.get_lazy(opts, :command_id, fn -> ID.uuidv7() end),
+      timeout_ms: timeout
+    }
+    |> Redactor.redact()
+  end
 end

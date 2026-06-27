@@ -17,6 +17,8 @@ defmodule BeamWeaver.OpenAI.Streaming.Lifecycle do
     "tool_search_call",
     "tool_search_output",
     "custom_tool_call",
+    "apply_patch_call",
+    "apply_patch_call_output",
     "compaction"
   ]
 

@@ -45,6 +45,41 @@ defmodule BeamWeaver.Anthropic.MessagesTest do
            }
   end
 
+  test "normalizes cross-provider tool ids only at the Anthropic boundary" do
+    openai_call_id = "call_openai_weather_123"
+
+    assistant =
+      Message.assistant("calling",
+        tool_calls: [%ToolCall{id: openai_call_id, name: "lookup", args: %{"q" => "beam"}}]
+      )
+
+    tool_result = Message.tool("Beam is an Elixir VM", tool_call_id: openai_call_id)
+
+    assert {:ok, {_system, formatted}} =
+             Messages.format_messages([
+               Message.user("lookup beam"),
+               assistant,
+               tool_result
+             ])
+
+    assert [
+             %{"role" => "user"},
+             %{"role" => "assistant", "content" => [_text, tool_use]},
+             %{"role" => "user", "content" => [result]}
+           ] = formatted
+
+    assert %{"type" => "tool_use", "id" => "toolu_bw_" <> _digest} = tool_use
+    assert result["tool_use_id"] == tool_use["id"]
+    refute tool_use["id"] == openai_call_id
+    assert hd(assistant.tool_calls).id == openai_call_id
+    assert tool_result.tool_call_id == openai_call_id
+
+    assert {:ok, {_system, repeated}} = Messages.format_messages([assistant, tool_result])
+    [%{"content" => [_text, repeated_tool_use]}, %{"content" => [repeated_result]}] = repeated
+    assert repeated_tool_use["id"] == tool_use["id"]
+    assert repeated_result["tool_use_id"] == tool_use["id"]
+  end
+
   test "formats image and document blocks for Anthropic" do
     assert {:ok, {_system, [%{"content" => content}]}} =
              Messages.format_messages([

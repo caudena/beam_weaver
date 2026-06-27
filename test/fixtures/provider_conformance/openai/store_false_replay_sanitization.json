@@ -1,0 +1,96 @@
+{
+  "expected": {
+    "message": {
+      "id": "resp_openai_store_false",
+      "metadata": {
+        "id": "resp_openai_store_false",
+        "model": "gpt-5.4-mini",
+        "model_provider": "openai",
+        "provider": "openai",
+        "status": "completed"
+      },
+      "role": "assistant",
+      "status": "completed",
+      "text": "replayed safely",
+      "tool_calls": []
+    }
+  },
+  "provider": "openai",
+  "request": {
+    "headers": [
+      ["authorization", "**REDACTED**"],
+      ["content-type", "application/json"]
+    ],
+    "json": {
+      "input": [
+        {
+          "content": "resume cached response",
+          "role": "user",
+          "type": "message"
+        },
+        {
+          "content": [
+            {
+              "annotations": [],
+              "text": "cached answer",
+              "type": "output_text"
+            }
+          ],
+          "role": "assistant",
+          "type": "message"
+        },
+        {
+          "encrypted_content": "encrypted-reasoning",
+          "summary": [],
+          "type": "reasoning"
+        },
+        {
+          "result": "...",
+          "type": "image_generation_call"
+        },
+        {
+          "arguments": "{\"query\":\"beam\"}",
+          "call_id": "call_lookup",
+          "name": "lookup",
+          "type": "function_call"
+        }
+      ],
+      "model": "gpt-5.4-mini",
+      "store": false,
+      "stream": false
+    },
+    "method": "POST",
+    "url": "https://api.openai.com/v1/responses"
+  },
+  "response": {
+    "body": {
+      "id": "resp_openai_store_false",
+      "model": "gpt-5.4-mini",
+      "output": [
+        {
+          "content": [
+            {
+              "annotations": [],
+              "text": "replayed safely",
+              "type": "output_text"
+            }
+          ],
+          "id": "msg_openai_store_false",
+          "role": "assistant",
+          "type": "message"
+        }
+      ],
+      "status": "completed",
+      "usage": {
+        "input_tokens": 16,
+        "output_tokens": 4,
+        "total_tokens": 20
+      }
+    },
+    "headers": [
+      ["content-type", "application/json"]
+    ],
+    "status": 200
+  },
+  "scenario": "store_false_replay_sanitization"
+}

@@ -25,6 +25,7 @@ defmodule BeamWeaver.Provider.Capability do
     reasoning: :reasoning_output,
     thinking: :reasoning_output,
     tool_calling: :tool_calling,
+    tool_call_streaming: :tool_call_streaming,
     tools: :tool_calling,
     tool_choice: :tool_choice,
     parallel_tool_calls: :parallel_tool_calls,

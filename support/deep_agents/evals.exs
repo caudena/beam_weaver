@@ -829,10 +829,12 @@ defmodule BeamWeaver.TestSupport.DeepAgents.Evals.Metadata do
   def collect_sandbox_metadata(nil), do: %{"enabled" => false}
 
   def collect_sandbox_metadata(sandbox) do
-    case BeamWeaver.Sandbox.execute(sandbox, "uname -a", timeout: 5) do
-      %{exit_code: 0, output: output} -> %{"enabled" => true, "uname" => String.trim(output)}
-      %{error: error} -> %{"enabled" => true, "error" => error}
-      _other -> %{"enabled" => true}
+    result = BeamWeaver.Sandbox.execute(sandbox, "uname -a", timeout: 5)
+
+    cond do
+      result.exit_code == 0 -> %{"enabled" => true, "uname" => String.trim(result.output || "")}
+      result.error -> %{"enabled" => true, "error" => result.error}
+      true -> %{"enabled" => true}
     end
   rescue
     exception -> %{"enabled" => true, "error" => Exception.message(exception)}

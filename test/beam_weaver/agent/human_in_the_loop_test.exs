@@ -148,6 +148,85 @@ defmodule BeamWeaver.Agent.HumanInTheLoopTest do
     end
   end
 
+  defmodule PredicateReviewAgent do
+    use BeamWeaver.Agent
+
+    context_schema do
+      field(:parent, :any, required: true)
+      field(:review?, :boolean, required: true)
+    end
+
+    model(%ReviewModel{
+      parent: :context,
+      tool_calls: [
+        %{id: "call-lookup", name: "lookup", args: %{"query" => "predicate"}}
+      ]
+    })
+
+    tools(ReviewAgent.tools())
+
+    middleware([
+      {HumanInTheLoop,
+       interrupt_on: %{
+         "lookup" => %{
+           :when => fn call, _state, runtime ->
+             Map.get(runtime.context, :review?) == true and call.args["query"] == "predicate"
+           end,
+           allowed_decisions: [:approve, :reject]
+         }
+       },
+       tools: ReviewAgent.tools()}
+    ])
+  end
+
+  defmodule FirstModeAgent do
+    use BeamWeaver.Agent
+
+    context_schema do
+      field(:parent, :any, required: true)
+    end
+
+    model(%ReviewModel{
+      parent: :context,
+      tool_calls: [
+        %{id: "call-lookup", name: "lookup", args: %{"query" => "first"}},
+        %{id: "call-audit", name: "audit", args: %{"value" => "second"}}
+      ]
+    })
+
+    tools(__MODULE__.tools())
+
+    middleware([
+      {HumanInTheLoop,
+       interrupt_mode: :first,
+       interrupt_on: %{
+         "lookup" => true,
+         "audit" => true
+       },
+       tools: __MODULE__.tools()}
+    ])
+
+    def tools do
+      ReviewAgent.tools() ++
+        [
+          Tool.from_function!(
+            name: "audit",
+            description: "Audit a value",
+            input_schema: %{
+              "type" => "object",
+              "required" => ["value"],
+              "properties" => %{"value" => %{"type" => "string"}}
+            },
+            injected: %{"context" => :context},
+            handler: fn %{"value" => value, "context" => context}, _opts ->
+              send(context.parent, {:audit_executed, value})
+              "audit:#{value}"
+            end
+          )
+        ]
+    end
+  end
+
   defmodule NoCheckpointAgent do
     use BeamWeaver.Agent
 
@@ -309,6 +388,53 @@ defmodule BeamWeaver.Agent.HumanInTheLoopTest do
     assert Enum.any?(messages, &match?(%Message{role: :tool, content: "blocked"}, &1))
     assert_receive {:auto_executed, "free"}
     refute_received {:lookup_executed, "blocked"}
+  end
+
+  test "HITL when predicate can skip review without blocking tool execution" do
+    assert {:ok, %{messages: messages}} =
+             PredicateReviewAgent.invoke(%{messages: [Message.user("lookup")]},
+               checkpointer: CheckpointETS.new(),
+               config: thread("hitl-predicate-skip"),
+               context: %{parent: self(), review?: false}
+             )
+
+    assert Enum.any?(messages, &match?(%Message{role: :tool, content: "lookup:predicate"}, &1))
+    assert_receive {:lookup_executed, "predicate"}
+
+    assert {:interrupted, interrupt} =
+             PredicateReviewAgent.invoke(%{messages: [Message.user("lookup")]},
+               checkpointer: CheckpointETS.new(),
+               config: thread("hitl-predicate-review"),
+               context: %{parent: self(), review?: true}
+             )
+
+    assert [%{name: "lookup"}] = interrupt.value.action_requests
+  end
+
+  test "HITL first interrupt mode reviews only the first matching tool call" do
+    checkpointer = CheckpointETS.new()
+    config = thread("hitl-first-mode")
+
+    assert {:interrupted, interrupt} =
+             FirstModeAgent.invoke(%{messages: [Message.user("both")]},
+               checkpointer: checkpointer,
+               config: config,
+               context: %{parent: self()}
+             )
+
+    assert [%{name: "lookup"}] = interrupt.value.action_requests
+
+    assert {:ok, %{messages: messages}} =
+             FirstModeAgent.resume(%{decisions: [%{type: "approve"}]},
+               checkpointer: checkpointer,
+               config: config,
+               context: %{parent: self()}
+             )
+
+    assert Enum.any?(messages, &match?(%Message{role: :tool, content: "lookup:first"}, &1))
+    assert Enum.any?(messages, &match?(%Message{role: :tool, content: "audit:second"}, &1))
+    assert_receive {:lookup_executed, "first"}
+    assert_receive {:audit_executed, "second"}
   end
 
   test "invalid decisions return tagged errors" do

@@ -244,6 +244,24 @@ Using `BeamWeaver.RetryPolicy.new!()` without a custom `retry_on` also retries
 `:node_timeout`, because the default `retry_on: :error` matches any
 `%BeamWeaver.Core.Error{}`.
 
+## Graph Error Telemetry
+
+Graph execution emits native telemetry for task failures and budget stops:
+
+| Event | Meaning |
+| --- | --- |
+| `[:beam_weaver, :graph, :node_exit]` | A node task exited, threw, or was killed before returning. |
+| `[:beam_weaver, :graph, :node_timeout]` | A node attempt exceeded its timeout. |
+| `[:beam_weaver, :graph, :node_failure]` | A node returned another tagged error. |
+| `[:beam_weaver, :graph, :node_cancel]` | A running node task was cancelled by a hard graph budget. |
+| `[:beam_weaver, :graph, :step_timeout]` | A graph super-step exceeded `step_timeout`. |
+
+`%BeamWeaver.Core.Error{type: :node_exit}` details include the original BEAM
+`root_cause` term when available, plus an inspected string reason for logging.
+Telemetry metadata includes the graph, node, step, and normalized error. Attach
+handlers to these events when you need operational alerts; use WeaveScope
+tracing for product-facing run trees.
+
 ## Dynamic Send Timeouts
 
 Dynamic fan-out can override the target node timeout for one send:

@@ -213,6 +213,7 @@ defmodule BeamWeaver.OpenAI.Messages.Response do
       reasoning: reasoning_text(item),
       summary: item["summary"],
       status: item["status"],
+      encrypted_content: item["encrypted_content"],
       raw_provider_block: item
     }
     |> Shared.reject_nil_values()
@@ -265,6 +266,10 @@ defmodule BeamWeaver.OpenAI.Messages.Response do
       results: item["results"],
       result: item["result"],
       action: item["action"],
+      input: item["input"],
+      patch: item["patch"],
+      output: item["output"],
+      error: item["error"],
       tools: item["tools"],
       execution: item["execution"],
       raw_provider_block: item

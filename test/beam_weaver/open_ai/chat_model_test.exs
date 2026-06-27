@@ -591,6 +591,36 @@ defmodule BeamWeaver.OpenAI.ChatModelTest do
     assert Message.text(response) == "options accepted"
   end
 
+  test "Responses request builder applies store false replay sanitization before extra body merge" do
+    model = ChatModel.new(model: "gpt-5.5")
+
+    messages = [
+      Message.assistant([
+        %{type: :text, id: "msg_cached", text: "cached"},
+        %{type: :reasoning, id: "rs_cached", encrypted_content: "encrypted", summary: []}
+      ])
+    ]
+
+    assert {:ok, body} =
+             ChatModel.request_body(model, messages, extra_body: %{store: false, custom_non_openai_param: "kept"})
+
+    assert body["store"] == false
+    assert body["custom_non_openai_param"] == "kept"
+
+    assert [
+             %{
+               "type" => "message",
+               "role" => "assistant",
+               "content" => [%{"type" => "output_text", "text" => "cached"}]
+             },
+             %{"type" => "reasoning", "encrypted_content" => "encrypted"}
+           ] = body["input"]
+
+    encoded = BeamWeaver.JSON.encode!(body["input"])
+    refute encoded =~ "msg_cached"
+    refute encoded =~ "rs_cached"
+  end
+
   test "profile param policy rejects unsupported request params before transport" do
     profile =
       Profile.new(%{

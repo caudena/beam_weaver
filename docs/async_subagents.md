@@ -163,6 +163,14 @@ The built-in HTTP client maps operations to these endpoints:
 | Update | `POST /runs/:task_id/input` with `%{message: message}`. |
 | Cancel | `POST /runs/:task_id/cancel`. |
 
+Task IDs are encoded as individual path segments before check, update, or
+cancel requests, so IDs containing `/`, spaces, or provider separators do not
+change the endpoint shape. Response bodies may be maps or JSON strings. Non-2xx
+responses return `{:error, %{status: status, body: normalized_body}}` to custom
+middleware or tests instead of leaking raw transport details.
+See `examples/async_subagent_protocol_client.exs` for an offline request-shape
+example.
+
 Remote responses can include `status`, `result`, `thread_id`, `run_id`, `id`,
 or nested `values.messages`. When no explicit result exists, BeamWeaver tries to
 extract the final non-empty message content from `values.messages`.
@@ -191,6 +199,10 @@ Each task record includes:
 Terminal statuses are cached. BeamWeaver treats `cancelled`, `success`, `error`,
 `timeout`, `interrupted`, `complete`, and `completed` as terminal for refresh
 purposes.
+Tool messages returned by async-subagent commands include native metadata under
+`:async_subagent` or `:async_subagents` with task IDs, graph/run/thread IDs,
+subagent name, and status. Tracing and UIs should read that metadata instead of
+parsing the JSON text.
 
 ## Custom Clients
 

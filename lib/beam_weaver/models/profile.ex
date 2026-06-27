@@ -25,6 +25,7 @@ defmodule BeamWeaver.Models.Profile do
     video_outputs: false,
     reasoning_output: false,
     tool_calling: false,
+    tool_call_streaming: false,
     tool_choice: false,
     parallel_tool_calls: false,
     structured_output: false,

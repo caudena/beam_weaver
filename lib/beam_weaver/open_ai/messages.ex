@@ -11,8 +11,8 @@ defmodule BeamWeaver.OpenAI.Messages do
   @doc """
   Converts BeamWeaver messages into Responses API `input` items.
   """
-  @spec to_responses_input([Message.t()]) :: {:ok, [map()]} | {:error, Error.t()}
-  defdelegate to_responses_input(messages), to: Request
+  @spec to_responses_input([Message.t()], keyword()) :: {:ok, [map()]} | {:error, Error.t()}
+  defdelegate to_responses_input(messages, opts \\ []), to: Request
 
   @doc """
   Converts a BeamWeaver tool into an OpenAI function tool declaration.

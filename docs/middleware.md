@@ -22,7 +22,7 @@ defmodule MyApp.SupportAgent do
 
   middleware do
     use Middleware.DynamicPrompt, prompt: &__MODULE__.system_prompt/1
-    use Middleware.ModelRetry, max_retries: 2, initial_delay: 25
+    use Middleware.ModelRetry, max_retries: 2, initial_delay: 25, retry_on: :transient
     use Middleware.ToolSelection, deny: ["internal_admin_tool"]
   end
 
@@ -289,7 +289,7 @@ filesystem tools, provider middleware, subagents, and guardrails.
 middleware do
   use BeamWeaver.Agent.Middleware.Summarization,
    model: BeamWeaver.Models.init_chat_model!("openai:gpt-5.4-mini"),
-   trigger: {:messages, 30},
+   trigger: {:all, [{:messages, 30}, {:tokens, 8_000}]},
    keep: {:messages, 10}
 
   use BeamWeaver.Agent.Middleware.PII,
@@ -299,6 +299,19 @@ middleware do
    apply_to_output: true
 end
 ```
+
+Summarization trigger lists are OR by default. Use `{:all, triggers}` when a run
+should satisfy every condition before summarizing, and `{:any, triggers}` when
+the intent should be explicit in configuration.
+
+`HumanInTheLoop` review configs can include a `:when` or `:predicate` function
+with arity 1, 2, or 3 to gate review per emitted tool call. Set
+`interrupt_mode: :first` when only the first matching call should pause the run.
+
+For streamed output redaction, use
+`BeamWeaver.Agent.Middleware.PII.stream_transform/1` with
+`BeamWeaver.Stream.MessagesTransformer.new(pre_projection: ...)` so text is
+edited before message projection.
 
 {% hint style="warning" %}
 **Provider Middleware Integrations**

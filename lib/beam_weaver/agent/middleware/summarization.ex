@@ -72,7 +72,7 @@ defmodule BeamWeaver.Agent.Middleware.Summarization do
     {old, recent} = Enum.split(messages, cutoff)
 
     with {:ok, summary_prompt} <- summary_prompt(middleware, old) do
-      case ChatModel.invoke(middleware.model, [summary_prompt], metadata: %{lc_source: "summarization"}) do
+      case ChatModel.invoke(middleware.model, [summary_prompt], metadata: %{source: :summarization}) do
         {:ok, %Message{} = summary} ->
           %{
             messages:
@@ -104,6 +104,16 @@ defmodule BeamWeaver.Agent.Middleware.Summarization do
     middleware.trigger
     |> List.wrap()
     |> Enum.any?(&triggered?(&1, middleware, messages, token_count))
+  end
+
+  defp triggered?({kind, triggers}, middleware, messages, token_count)
+       when kind in [:all, "all"] and is_list(triggers) do
+    Enum.all?(triggers, &triggered?(&1, middleware, messages, token_count))
+  end
+
+  defp triggered?({kind, triggers}, middleware, messages, token_count)
+       when kind in [:any, "any"] and is_list(triggers) do
+    Enum.any?(triggers, &triggered?(&1, middleware, messages, token_count))
   end
 
   defp triggered?({:messages, count}, _middleware, messages, _token_count),
@@ -346,6 +356,11 @@ defmodule BeamWeaver.Agent.Middleware.Summarization do
     Enum.each(values, &validate_context_size!(&1, field, false))
   end
 
+  defp validate_context_size!({kind, values}, field, _allow_list?)
+       when kind in [:all, "all", :any, "any"] and is_list(values) do
+    Enum.each(values, &validate_context_size!(&1, field, false))
+  end
+
   defp validate_context_size!({kind, value}, field, _allow_list?)
        when kind in [:messages, "messages", :tokens, "tokens"] do
     unless is_integer(value) and value > 0 do
@@ -365,6 +380,7 @@ defmodule BeamWeaver.Agent.Middleware.Summarization do
   end
 
   defp fractional?(values) when is_list(values), do: Enum.any?(values, &fractional?/1)
+  defp fractional?({kind, values}) when kind in [:all, "all", :any, "any"], do: fractional?(values)
   defp fractional?({kind, _value}), do: kind in [:fraction, "fraction"]
   defp fractional?(_other), do: false
 end

@@ -906,7 +906,8 @@ OpenAI:
 tools = [
   BeamWeaver.OpenAI.ToolCalling.web_search(),
   BeamWeaver.OpenAI.ToolCalling.code_interpreter(%{"type" => "auto"}),
-  BeamWeaver.OpenAI.ToolCalling.file_search(["vs_123"])
+  BeamWeaver.OpenAI.ToolCalling.file_search(["vs_123"]),
+  BeamWeaver.OpenAI.ToolCalling.apply_patch()
 ]
 
 BeamWeaver.Core.ChatModel.invoke(model, "Find current release notes.", tools: tools)

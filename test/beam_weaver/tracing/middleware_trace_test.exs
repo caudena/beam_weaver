@@ -5,6 +5,8 @@ defmodule BeamWeaver.Tracing.MiddlewareTraceTest do
   alias BeamWeaver.Agent.Middleware.Filesystem
   alias BeamWeaver.Agent.Middleware.TodoList
   alias BeamWeaver.Agent.Middleware.ToolCallLimit
+  alias BeamWeaver.Agent.ModelRequest
+  alias BeamWeaver.Core.Error
   alias BeamWeaver.Agent.Nodes.Model, as: ModelNode
   alias BeamWeaver.Agent.StructuredOutput
   alias BeamWeaver.Core.Message
@@ -23,6 +25,16 @@ defmodule BeamWeaver.Tracing.MiddlewareTraceTest do
     def name(_middleware), do: :tool_wrapper
 
     def wrap_tool_call(request, handler) do
+      handler.(request)
+    end
+  end
+
+  defmodule ModelWrapper do
+    @behaviour BeamWeaver.Agent.Middleware
+
+    def name(_middleware), do: :model_wrapper
+
+    def wrap_model_call(request, handler) do
       handler.(request)
     end
   end
@@ -116,6 +128,40 @@ defmodule BeamWeaver.Tracing.MiddlewareTraceTest do
     assert model.metadata.thread_id == "thread-1"
     refute Map.has_key?(model.metadata, :middleware)
     refute Map.has_key?(model.metadata, :middleware_hook)
+  end
+
+  test "failed wrapper traces keep provider errors structured instead of writing fake outputs" do
+    request = ModelRequest.new(messages: [Message.user("hi")])
+
+    error =
+      Error.new(:rate_limit_error, "Insufficient balance or no resource package.", %{
+        status: 429,
+        code: "1113",
+        provider: "zai"
+      })
+
+    {:ok, parent} = Tracing.start_run("agent", kind: :graph, metadata: %{thread_id: "thread-1"})
+
+    assert {:error, ^error} =
+             Middleware.call_wrapper(ModelWrapper, :wrap_model_call, request, fn _request ->
+               {:error, error}
+             end)
+
+    assert {:ok, _finished_parent} = Tracing.finish_run(parent)
+
+    wrapper = run_by_name!("ModelWrapperMiddleware.wrap_model_call")
+
+    assert wrapper.parent_id == parent.id
+    assert wrapper.status == :error
+
+    assert wrapper.error == %{
+             type: :rate_limit_error,
+             message: "Insufficient balance or no resource package.",
+             details: %{status: 429, code: "1113", provider: "zai"}
+           }
+
+    assert wrapper.outputs == nil
+    refute inspect(wrapper) =~ "%BeamWeaver.Core.Error{"
   end
 
   test "normal hooks emit short middleware spans" do

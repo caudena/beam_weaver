@@ -124,15 +124,38 @@ and [Custom Middleware](custom_middleware.md).
 
 ### Interpreters And Code Execution
 
-BeamWeaver does not expose the Python QuickJS interpreter middleware as a
-separate first-class option. Use one of these instead:
+BeamWeaver does not ship Python QuickJS middleware or a default unsafe local
+runtime. Code execution remains explicit:
 
 - Custom tools for narrow, application-owned computation.
 - `BeamWeaver.Filesystem.LocalShell` or another executable filesystem backend
   when the agent needs an `execute` tool.
 - Sandbox-backed filesystems for isolated command execution.
+- `BeamWeaver.Sandbox.Interpreter.Session` when your application provides an
+  explicit interpreter adapter.
 
-See [Filesystem](filesystem.md), [Sandboxes](sandboxes.md), and
+Interpreter adapters implement `BeamWeaver.Sandbox.Interpreter` and are owned by
+a supervised session process. The session handles timeout/cancel behavior,
+adapter crash normalization, tagged snapshots, restore, close, and native
+telemetry. The adapter owns the language runtime:
+
+```elixir
+{:ok, session} =
+  BeamWeaver.Sandbox.Interpreter.Session.start(
+    adapter: MyApp.SafeInterpreter,
+    timeout: 5_000,
+    max_snapshot_bytes: 1_000_000
+  )
+
+{:ok, result} =
+  BeamWeaver.Sandbox.Interpreter.Session.eval(session, "state.answer = 42")
+
+{:ok, snapshot} =
+  BeamWeaver.Sandbox.Interpreter.Session.snapshot(session)
+```
+
+See [Filesystem](filesystem.md), [Sandboxes](sandboxes.md),
+[Tracing](tracing.md), and
 [Composed Agent Capabilities](agent_harness.md#code-execution).
 
 ### Subagents
@@ -388,7 +411,7 @@ official Deep Agents profile API.
 | Dataclass or typed `Runtime[Context]` | Pass `context:` maps and validate with `context_schema`. |
 | Python `BaseStore` and checkpointers | Pass `BeamWeaver.Memory.Store` and `BeamWeaver.Checkpoint.Saver` adapters explicitly. |
 | LangChain `stream_events(..., version="v3")` projection object | Use versionless typed envelope streams from `BeamWeaver.Agent.stream_events/3`. |
-| QuickJS interpreter middleware | Use tools, executable filesystem backends, or sandbox-backed filesystems when code execution is required. |
+| QuickJS interpreter middleware | Provide an explicit `BeamWeaver.Sandbox.Interpreter` adapter for supervised interpreter sessions, or use tools/executable filesystem/sandbox-backed execution. |
 | Automatic hosted deployment infrastructure | Configure checkpointers, stores, cache, tracing exporters, auth boundaries, and sandbox lifecycle in Elixir. |
 
 ## Related

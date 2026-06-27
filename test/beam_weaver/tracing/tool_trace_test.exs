@@ -6,9 +6,11 @@ defmodule BeamWeaver.Tracing.ToolTraceTest do
   alias BeamWeaver.Core.Message
   alias BeamWeaver.Core.Tool
   alias BeamWeaver.Graph.Nodes.ToolNode
+  alias BeamWeaver.ShellPolicy
   alias BeamWeaver.Tracing
   alias BeamWeaver.Tracing.Context
   alias BeamWeaver.Tracing.Store
+  alias BeamWeaver.Tools.Shell
 
   defmodule UnregisteredToolInterceptor do
     @behaviour BeamWeaver.Agent.Middleware
@@ -268,6 +270,41 @@ defmodule BeamWeaver.Tracing.ToolTraceTest do
     assert second.parent_id == wrapper.id
     assert Enum.map([first, second], & &1.metadata.tool_call_id) == ["call-retry", "call-retry"]
     assert Enum.map([first, second], & &1.inputs) == [%{"value" => "beam"}, %{"value" => "beam"}]
+  end
+
+  test "shell tool traces include native execution metadata without leaking secrets" do
+    shell =
+      Shell.new(
+        policy:
+          ShellPolicy.new!(
+            allow: ["printf "],
+            max_output_bytes: 200
+          )
+      )
+
+    {:ok, parent} = Tracing.start_run("agent", kind: :graph)
+
+    assert {:ok, %{metadata: metadata, output: output}} =
+             Tool.invoke(shell, %{"command" => "printf 'API_KEY=secret-value'"},
+               command_id: "cmd-shell",
+               tool_call_id: "call-shell"
+             )
+
+    assert metadata.command_id == "cmd-shell"
+    assert metadata.backend == :host
+    assert metadata.command =~ "**REDACTED**"
+    assert output == "API_KEY=secret-value"
+
+    assert {:ok, _finished_parent} = Tracing.finish_run(parent)
+
+    assert [tool_run] = tool_runs()
+    assert tool_run.parent_id == parent.id
+    assert tool_run.metadata.tool_name == "shell"
+    assert tool_run.metadata.tool_call_id == "call-shell"
+    assert tool_run.outputs.output.metadata.command_id == "cmd-shell"
+    assert tool_run.outputs.output.metadata.command =~ "**REDACTED**"
+    refute inspect(tool_run.outputs) =~ "secret-value"
+    refute inspect(tool_run.metadata) =~ "API_KEY"
   end
 
   defp tool_runs do

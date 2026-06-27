@@ -142,6 +142,7 @@ defmodule BeamWeaver.Graph.Execution.TaskExecutor do
         finish_successful_task(task_run, cache_key, value, [started])
 
       {:error, %Error{} = error} ->
+        emit_error_telemetry(error, task_run)
         failed = Stream.task_event(:error, spec.name, error, run.step, prepared.id, prepared.path)
 
         {:error, error, [started, failed]}
@@ -264,6 +265,7 @@ defmodule BeamWeaver.Graph.Execution.TaskExecutor do
          Error.new(:node_exit, "node task exited before returning", %{
            node: task_run.spec.name,
            step: task_run.run.step,
+           root_cause: reason,
            reason: inspect(reason)
          })}
 
@@ -284,6 +286,22 @@ defmodule BeamWeaver.Graph.Execution.TaskExecutor do
       node_timeout: task_run.timeout,
       step_timeout: task_run.run.step_timeout,
       run_timeout: task_run.run.run_timeout
+    })
+  end
+
+  defp emit_error_telemetry(%Error{} = error, %TaskRun{} = task_run) do
+    event =
+      case error.type do
+        :node_exit -> :node_exit
+        :node_timeout -> :node_timeout
+        _other -> :node_failure
+      end
+
+    Telemetry.execute(event, %{count: 1}, %{
+      graph: task_run.run.compiled.name,
+      node: task_run.spec.name,
+      step: task_run.run.step,
+      error: error
     })
   end
 
