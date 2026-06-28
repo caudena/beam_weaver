@@ -88,3 +88,8 @@ GLM-5.2 cost metadata:
 - JSON Schema request mode is not enabled until live or documented support is
   clear for this endpoint.
 - Z.ai media, built-in tools, and non-chat APIs are not exposed in BeamWeaver.
+
+## Related Guides
+
+- [Models](../models.md)
+- [Prompt Caching](../prompt_caching.md#zai-glm)

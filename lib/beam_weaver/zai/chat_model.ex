@@ -71,9 +71,8 @@ defmodule BeamWeaver.ZAI.ChatModel do
     builder_opts = Keyword.delete(opts, :tools)
 
     with {:ok, body} <- Options.to_body(model, messages, builder_opts),
-         {:ok, body} <- maybe_put_stream_usage(body, model, opts),
-         {:ok, body} <- maybe_put_tools(body, tools) do
-      {:ok, body}
+         {:ok, body} <- maybe_put_stream_usage(body, model, opts) do
+      maybe_put_tools(body, tools)
     end
   end
 

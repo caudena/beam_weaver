@@ -21,6 +21,7 @@ defmodule BeamWeaver.XAI.Client do
             chat_completions_endpoint: @default_chat_completions_endpoint,
             deferred_completion_endpoint: @default_deferred_completion_endpoint,
             api_key: nil,
+            x_grok_conv_id: nil,
             default_headers: [],
             transport: nil,
             transport_opts: [],
@@ -46,6 +47,7 @@ defmodule BeamWeaver.XAI.Client do
           endpoint(base_url, "chat/deferred-completion")
         ),
       api_key: Config.option(opts, :api_key, [:xai, :api_key]),
+      x_grok_conv_id: Keyword.get(opts, :x_grok_conv_id),
       default_headers: Keyword.get(opts, :default_headers, []),
       transport: ProviderOptions.default_transport(Keyword.get(opts, :transport)),
       transport_opts: Keyword.get(opts, :transport_opts, []),
@@ -253,10 +255,15 @@ defmodule BeamWeaver.XAI.Client do
     )
   end
 
-  defp headers(%__MODULE__{} = client, _opts) do
+  defp headers(%__MODULE__{} = client, opts) do
     client.default_headers
     |> BeamWeaver.Transport.Request.normalize_headers()
+    |> maybe_put_x_grok_conv_id(Keyword.get(opts, :x_grok_conv_id, client.x_grok_conv_id))
+    |> Kernel.++(BeamWeaver.Transport.Request.normalize_headers(Keyword.get(opts, :headers, [])))
   end
+
+  defp maybe_put_x_grok_conv_id(headers, value) when value in [nil, ""], do: headers
+  defp maybe_put_x_grok_conv_id(headers, value), do: [{"x-grok-conv-id", to_string(value)} | headers]
 
   defp normalize_client(client_or_opts, opts),
     do:
@@ -266,6 +273,7 @@ defmodule BeamWeaver.XAI.Client do
         :chat_completions_endpoint,
         :deferred_completion_endpoint,
         :api_key,
+        :x_grok_conv_id,
         :default_headers,
         :transport,
         :transport_opts,

@@ -4,7 +4,7 @@ defmodule BeamWeaver.MixProject do
   def project do
     [
       app: :beam_weaver,
-      version: "0.1.4",
+      version: "0.1.5",
       description: "From-scratch OTP-native Elixir implementation of LangChain, LangGraph, and Deep Agents concepts",
       source_url: "https://github.com/caudena/beam_weaver",
       homepage_url: "https://github.com/caudena/beam_weaver",
@@ -65,9 +65,11 @@ defmodule BeamWeaver.MixProject do
         "docs/time_travel.md",
         "docs/durable_execution.md",
         "docs/fault_tolerance.md",
+        "docs/semantic_dsl.md",
         "docs/agents.md",
         "docs/context_engineering.md",
         "docs/models.md",
+        "docs/prompt_caching.md",
         "docs/messages.md",
         "docs/tools.md",
         "docs/middleware.md",
@@ -125,9 +127,11 @@ defmodule BeamWeaver.MixProject do
           "docs/event_streaming.md"
         ],
         "Core Components": [
+          "docs/semantic_dsl.md",
           "docs/agents.md",
           "docs/context_engineering.md",
           "docs/models.md",
+          "docs/prompt_caching.md",
           "docs/messages.md",
           "docs/tools.md",
           "docs/middleware.md",

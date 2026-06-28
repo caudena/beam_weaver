@@ -538,44 +538,6 @@ defmodule MyApp.AuditTools do
 end
 ```
 
-### Prompt Caching With Anthropic
-
-Anthropic prompt caching is provider-specific in BeamWeaver. The helper modules
-under `BeamWeaver.Anthropic.Middleware` produce Anthropic call options; they are
-not general `BeamWeaver.Agent.Middleware` callbacks.
-
-Use model options or a custom wrapper to add provider call options:
-
-```elixir
-defmodule MyApp.AnthropicPromptCacheMiddleware do
-  @behaviour BeamWeaver.Agent.Middleware
-
-  alias BeamWeaver.Agent.ModelRequest
-  alias BeamWeaver.Anthropic.Middleware.PromptCaching
-
-  def name(_middleware), do: :anthropic_prompt_cache
-
-  def wrap_model_call(request, handler) do
-    cache_opts =
-      PromptCaching.new()
-      |> PromptCaching.call_opts()
-
-    request
-    |> ModelRequest.override(model_opts: Keyword.merge(request.model_opts, cache_opts))
-    |> handler.()
-  end
-end
-```
-
-{% hint style="warning" %}
-**Provider-Specific Middleware Scope**
-
-Python's custom middleware page shows provider content blocks and links to
-provider middleware integrations. BeamWeaver keeps provider-specific behavior
-near provider modules and model options. Use the [Anthropic](partners/anthropic.md) and
-[OpenAI](partners/openai.md) guides for supported provider behavior.
-{% endhint %}
-
 ## Async Hooks
 
 BeamWeaver does not define separate `abefore_model`, `aafter_model`, or async

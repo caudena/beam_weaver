@@ -419,12 +419,8 @@ defmodule BeamWeaver.Agent.Middleware.PII do
     )
   end
 
-  defp map_get(map, key, default \\ nil)
-
-  defp map_get(map, key, default) when is_map(map),
+  defp map_get(map, key, default \\ nil) when is_map(map),
     do: Map.get(map, key, Map.get(map, Atom.to_string(key), default))
-
-  defp map_get(_map, _key, default), do: default
 
   defp put_map_value(map, key, value) when is_map(map) do
     string_key = Atom.to_string(key)

@@ -110,6 +110,7 @@ BeamWeaver.Google.ChatModel.count_tokens(model, [
 ## Related Guides
 
 - [Models](../models.md)
+- [Prompt Caching](../prompt_caching.md#google-gemini)
 - [Tools](../tools.md#server-side-provider-tools)
 - [Messages](../messages.md#standard-content-blocks)
 - [Structured Output](../structured_output.md)

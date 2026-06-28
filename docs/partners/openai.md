@@ -184,6 +184,7 @@ mix run examples/openai_apply_patch_tool.exs
 ## Related Guides
 
 - [Models](../models.md)
+- [Prompt Caching](../prompt_caching.md#openai-responses)
 - [Tools](../tools.md#server-side-provider-tools)
 - [Structured Output](../structured_output.md)
 - [Replay](../replay.md)

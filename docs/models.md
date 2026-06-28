@@ -677,19 +677,27 @@ Anthropic, and `:thinking_level` or `:thinking_budget` for Google.
 
 Prompt caching is provider-specific:
 
-- OpenAI Responses requests support `:prompt_cache_key`.
-- Anthropic supports explicit cache blocks through
-  `BeamWeaver.Anthropic.Middleware.PromptCaching` and message block metadata.
+- OpenAI Responses and Chat Completions requests support `:prompt_cache_key`.
+- xAI Responses supports `:prompt_cache_key`.
+- xAI Chat Completions supports `:x_grok_conv_id`, which BeamWeaver maps to
+  the `x-grok-conv-id` header.
+- Anthropic agents can use `BeamWeaver.Agent.Middleware.PromptCaching` to mark
+  the static system prompt with `cache_control`.
+- Moonshot/Kimi supports `:prompt_cache_key`.
+- Gemini and Z.ai cached-token usage is normalized when providers report it.
 - Usage metadata preserves cache-read/cache-creation token details when
   providers return them.
+
+See [Prompt Caching](prompt_caching.md) for provider-specific examples.
 
 {% hint style="info" %}
 **Prompt Cache Scope**
 
-Prompt caching is not portable across providers. OpenAI and Anthropic expose
-different request fields, cache markers, and usage metadata. BeamWeaver keeps
-those controls at the provider boundary instead of inventing a universal cache
-wrapper that would hide important provider behavior.
+Prompt caching is not portable across providers. OpenAI, xAI, Anthropic,
+Gemini, Moonshot/Kimi, and Z.ai expose different request fields, cache markers,
+and usage metadata. BeamWeaver keeps those controls at the provider boundary
+instead of inventing a universal cache wrapper that would hide important
+provider behavior.
 {% endhint %}
 
 ## Rate Limiting

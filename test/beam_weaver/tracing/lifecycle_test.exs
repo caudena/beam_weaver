@@ -1,11 +1,17 @@
 defmodule BeamWeaver.Tracing.LifecycleTest do
   use ExUnit.Case
 
+  alias BeamWeaver.Anthropic
   alias BeamWeaver.Core.Message
+  alias BeamWeaver.Google
+  alias BeamWeaver.Moonshot
+  alias BeamWeaver.OpenAI
   alias BeamWeaver.Tracing
   alias BeamWeaver.Tracing.Context
   alias BeamWeaver.Tracing.Run
   alias BeamWeaver.Tracing.Runner
+  alias BeamWeaver.XAI
+  alias BeamWeaver.ZAI
 
   @uuidv7_regex ~r/^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
 
@@ -224,6 +230,121 @@ defmodule BeamWeaver.Tracing.LifecycleTest do
     Application.put_env(:beam_weaver, :weave_scope, api_key: nil, endpoint: "http://weavescope.local")
 
     refute Tracing.exporter_configured?()
+  end
+
+  test "model traces preserve provider-specific invocation params without client config" do
+    cases = [
+      {
+        OpenAI.ChatModel.new(
+          model: "gpt-5.5",
+          api_key: "sk-nope",
+          endpoint: "https://example.invalid",
+          temperature: 0.2,
+          max_output_tokens: 512,
+          service_tier: :flex,
+          prompt_cache_key: "openai-cache"
+        ),
+        [reasoning: %{effort: "low"}, instructions: "raw prompt text"],
+        %{
+          temperature: 0.2,
+          max_output_tokens: 512,
+          service_tier: :flex,
+          prompt_cache_key: "openai-cache",
+          reasoning: %{effort: "low"}
+        }
+      },
+      {
+        Anthropic.ChatModel.new(
+          model: "claude-haiku-4-5-20251001",
+          api_key: "sk-ant-nope",
+          thinking: %{type: "enabled", budget_tokens: 1_024},
+          top_k: 40,
+          stop_sequences: ["done"]
+        ),
+        [],
+        %{thinking: %{type: "enabled", budget_tokens: 1_024}, top_k: 40, stop_sequences: ["done"]}
+      },
+      {
+        Google.ChatModel.new(
+          model: "gemini-3.5-flash",
+          api_key: "google-nope",
+          thinking_budget: 2_048,
+          thinking_level: :high,
+          candidate_count: 2
+        ),
+        [],
+        %{thinking_budget: 2_048, thinking_level: :high, candidate_count: 2}
+      },
+      {
+        XAI.ChatModel.new(
+          model: "grok-4.3",
+          api_key: "xai-nope",
+          x_grok_conv_id: "xai-conv",
+          prompt_cache_key: "xai-cache",
+          reasoning_effort: :low,
+          search_parameters: %{mode: "auto"}
+        ),
+        [],
+        %{
+          x_grok_conv_id: "xai-conv",
+          prompt_cache_key: "xai-cache",
+          reasoning_effort: :low,
+          search_parameters: %{mode: "auto"}
+        }
+      },
+      {
+        Moonshot.ChatModel.new(
+          model: "kimi-k2.6",
+          api_key: "moonshot-nope",
+          stream_usage: false,
+          prompt_cache_key: "cache-1"
+        ),
+        [],
+        %{stream_usage: false, prompt_cache_key: "cache-1"}
+      },
+      {
+        ZAI.ChatModel.new(
+          model: "glm-5.2",
+          api_key: "zai-nope",
+          do_sample: true,
+          tool_stream: true,
+          request_id: "req-1"
+        ),
+        [],
+        %{do_sample: true, tool_stream: true, request_id: "req-1"}
+      }
+    ]
+
+    for {model, opts, expected_params} <- cases do
+      Tracing.reset()
+      Context.clear()
+
+      assert {:ok, %Message{content: "ok"}} =
+               BeamWeaver.Core.ChatModel.trace_call(
+                 model,
+                 [Message.user("hello")],
+                 opts ++ [exporter: BeamWeaver.Tracing.TestExporter, exporter_opts: [test_pid: self()]],
+                 fn -> {:ok, Message.assistant("ok")} end
+               )
+
+      assert_receive {:trace_export, :started, %Run{kind: :model}}
+      assert_receive {:trace_export, :ok, %Run{kind: :model} = run}
+
+      for {key, value} <- expected_params do
+        assert Map.get(run.metadata.invocation_params, key) == value
+      end
+
+      assert run.metadata.invocation_params.model == run.metadata.model_name
+      assert run.metadata.invocation_params.model_name == run.metadata.model_name
+      refute Map.has_key?(run.metadata.invocation_params, :api_key)
+      refute Map.has_key?(run.metadata.invocation_params, :endpoint)
+      refute Map.has_key?(run.metadata.invocation_params, :transport)
+      refute Map.has_key?(run.metadata.invocation_params, :metadata)
+      refute Map.has_key?(run.metadata.invocation_params, :instructions)
+    end
+
+    Tracing.reset()
+    Context.clear()
   end
 
   def handle_telemetry(event, measurements, metadata, test_pid) do
