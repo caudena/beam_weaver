@@ -93,7 +93,7 @@ defmodule BeamWeaver.Examples.Support do
         []
 
       %BeamWeaver.Google.ChatModel{} ->
-        case env("GOOGLE_CACHED_CONTENT") || env("GEMINI_CACHED_CONTENT") do
+        case Config.get([:examples, :cached_content]) do
           nil -> []
           cached_content -> [cached_content: cached_content]
         end
@@ -108,17 +108,6 @@ defmodule BeamWeaver.Examples.Support do
   end
 
   def cache_read_tokens(_message), do: 0
-
-  defp env(name) do
-    case System.get_env(name) do
-      value when is_binary(value) ->
-        value = String.trim(value)
-        if value == "", do: nil, else: value
-
-      _missing ->
-        nil
-    end
-  end
 
   defp maybe_put_zai_defaults(opts) do
     if provider() == "zai" do
