@@ -405,8 +405,9 @@ updates, and completion all appear as typed stream envelopes.
 **Testing Platform Scope**
 
 LangChain's guardrails page links to hosted testing. BeamWeaver's current
-testing path is ExUnit plus BeamWeaver tracing and conformance helpers. There
-is no BeamWeaver-specific hosted agent test runner.
+testing path is ordinary ExUnit tests plus BeamWeaver tracing. Use fake or
+replay models for deterministic guardrail behavior; there is no
+BeamWeaver-specific hosted agent test runner.
 {% endhint %}
 
 ## Related Guides

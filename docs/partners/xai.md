@@ -108,10 +108,8 @@ The retired May 15, 2026 slugs are rejected with `:deprecated_model`:
 `grok-4-fast-reasoning`, `grok-4-fast-non-reasoning`, `grok-4-0709`,
 `grok-code-fast-1`, `grok-3`, and `grok-imagine-image-pro`.
 
-## Remaining xAI Work
+## Unsupported xAI Surfaces
 
-- Live-cassette expansion against the xAI API once credentials and stable
-  fixtures are available.
 - xAI image/video generation APIs. LangChain's xAI partner currently exposes
   chat behavior; BeamWeaver does not expose image/video provider APIs.
 - Exact Python class identity and serialization compatibility. BeamWeaver keeps

@@ -74,7 +74,8 @@ defmodule BeamWeaver.Filesystem do
   end
 
   defmodule LsResult do
-    @moduledoc false
+    @moduledoc "Result returned by filesystem directory listing calls."
+
     defstruct entries: nil, error: nil
 
     @type t :: %__MODULE__{
@@ -84,7 +85,8 @@ defmodule BeamWeaver.Filesystem do
   end
 
   defmodule ReadResult do
-    @moduledoc false
+    @moduledoc "Result returned by filesystem read calls."
+
     defstruct file_data: nil, error: nil
 
     @type t :: %__MODULE__{
@@ -94,7 +96,8 @@ defmodule BeamWeaver.Filesystem do
   end
 
   defmodule WriteResult do
-    @moduledoc false
+    @moduledoc "Result returned by filesystem write calls."
+
     defstruct [:path, :files_update, error: nil]
 
     @type t :: %__MODULE__{
@@ -105,7 +108,8 @@ defmodule BeamWeaver.Filesystem do
   end
 
   defmodule EditResult do
-    @moduledoc false
+    @moduledoc "Result returned by filesystem edit calls."
+
     defstruct [:path, :files_update, occurrences: nil, error: nil]
 
     @type t :: %__MODULE__{
@@ -117,7 +121,8 @@ defmodule BeamWeaver.Filesystem do
   end
 
   defmodule GlobResult do
-    @moduledoc false
+    @moduledoc "Result returned by filesystem glob calls."
+
     defstruct matches: nil, error: nil
 
     @type t :: %__MODULE__{
@@ -127,7 +132,8 @@ defmodule BeamWeaver.Filesystem do
   end
 
   defmodule GrepResult do
-    @moduledoc false
+    @moduledoc "Result returned by filesystem grep calls."
+
     defstruct matches: nil, error: nil
 
     @type t :: %__MODULE__{
@@ -137,7 +143,8 @@ defmodule BeamWeaver.Filesystem do
   end
 
   defmodule UploadResult do
-    @moduledoc false
+    @moduledoc "Result returned for one uploaded file."
+
     defstruct [:path, :error]
 
     @type t :: %__MODULE__{
@@ -147,7 +154,8 @@ defmodule BeamWeaver.Filesystem do
   end
 
   defmodule DownloadResult do
-    @moduledoc false
+    @moduledoc "Result returned for one downloaded file."
+
     defstruct [:path, :content, :error]
 
     @type t :: %__MODULE__{
@@ -268,7 +276,8 @@ defmodule BeamWeaver.Filesystem.Executable do
   alias BeamWeaver.Filesystem.ExecutableBackend
 
   defmodule ExecuteResult do
-    @moduledoc false
+    @moduledoc "Result returned by executable filesystem backends."
+
     defstruct [:exit_code, output: "", error: nil, truncated: false, metadata: %{}]
 
     @type t :: %__MODULE__{

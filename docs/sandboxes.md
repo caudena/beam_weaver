@@ -254,7 +254,7 @@ alias BeamWeaver.Sandbox.Registry
   )
 ```
 
-Provider modules implement `BeamWeaver.Sandbox.Provider.build/2` and return a
+Provider modules implement `c:BeamWeaver.Sandbox.Provider.build/2` and return a
 normal sandbox backend. The registry validates duplicate IDs, provider modules,
 unsupported lifecycle options, and whether the built value implements
 `BeamWeaver.Sandbox`.

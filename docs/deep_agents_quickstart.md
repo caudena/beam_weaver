@@ -22,7 +22,7 @@ You need:
 - Optional: a search provider API key if you keep the live search tool.
 
 Deep agents need a model that supports tool calling. See [Models](models.md)
-and the [Deep Agents model matrix](partners.md#deep-agents-model-matrix) for
+and the [composed agent model matrix](partners.md#composed-agent-model-matrix) for
 provider strings, model configuration, and capability support notes.
 
 ## Step 1: Install Dependencies
@@ -32,7 +32,7 @@ Add BeamWeaver to your Mix project:
 ```elixir
 def deps do
   [
-    {:beam_weaver, "~> 0.1.4"},
+    {:beam_weaver, "~> 0.1.6"},
     {:req, "~> 0.5"}
   ]
 end

@@ -4,8 +4,9 @@ defmodule BeamWeaver.MixProject do
   def project do
     [
       app: :beam_weaver,
-      version: "0.1.5",
-      description: "From-scratch OTP-native Elixir implementation of LangChain, LangGraph, and Deep Agents concepts",
+      version: "0.1.6",
+      description:
+        "Elixir-native LangChain, LangGraph, and DeepAgents for traceable LLM apps: OTP workflows, tools, memory, human-in-the-loop, streaming, custom clients/adapters, minimal deps, and WeaveScope tracing.",
       source_url: "https://github.com/caudena/beam_weaver",
       homepage_url: "https://github.com/caudena/beam_weaver",
       elixir: "~> 1.19",
@@ -210,7 +211,26 @@ defmodule BeamWeaver.MixProject do
           BeamWeaver.Graph.Channels.BinaryOperatorAggregate,
           BeamWeaver.Graph.Channels.DeltaChannel,
           BeamWeaver.Runtime,
-          BeamWeaver.Stream
+          BeamWeaver.Stream,
+          BeamWeaver.Stream.Envelope,
+          BeamWeaver.Stream.Events,
+          BeamWeaver.Stream.Events.Token,
+          BeamWeaver.Stream.Events.MessageChunk,
+          BeamWeaver.Stream.Events.Message,
+          BeamWeaver.Stream.Events.ToolCallChunk,
+          BeamWeaver.Stream.Events.ToolStart,
+          BeamWeaver.Stream.Events.ToolDelta,
+          BeamWeaver.Stream.Events.ToolFinish,
+          BeamWeaver.Stream.Events.ToolError,
+          BeamWeaver.Stream.Events.GraphUpdate,
+          BeamWeaver.Stream.Events.GraphValue,
+          BeamWeaver.Stream.Events.Checkpoint,
+          BeamWeaver.Stream.Events.Task,
+          BeamWeaver.Stream.Events.Lifecycle,
+          BeamWeaver.Stream.Events.Debug,
+          BeamWeaver.Stream.Events.Custom,
+          BeamWeaver.Stream.Events.Error,
+          BeamWeaver.Stream.Events.Done
         ],
         "Memory, Storage, And Retrieval": [
           BeamWeaver.Checkpoint,

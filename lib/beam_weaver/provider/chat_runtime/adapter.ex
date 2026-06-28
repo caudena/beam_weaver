@@ -3,8 +3,8 @@ defmodule BeamWeaver.Provider.ChatRuntime.Adapter do
   Runtime adapter used by provider chat models.
 
   The adapter keeps provider-specific request, transport, decode, and stream
-  functions explicit while allowing `BeamWeaver.Provider.ChatRuntime` to own
-  the common invocation flow.
+  functions explicit while allowing the shared provider chat runtime to own the
+  common invocation flow.
   """
 
   alias BeamWeaver.Core.Error

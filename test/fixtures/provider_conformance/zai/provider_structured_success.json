@@ -34,6 +34,10 @@
     "json": {
       "messages": [
         {
+          "content": "BeamWeaver structured output contract:\n- Return exactly one JSON object and no markdown, prose, code fences, or commentary.\n- Strictly validate against this schema.\n- Include every required key. Required keys: answer.\n- If information is unavailable, still include the key with a value compatible with the schema.\n\nSchema name: answer_output\nJSON Schema:\n{\n  \"additionalProperties\": false,\n  \"description\": \"A short answer.\",\n  \"properties\": {\n    \"answer\": {\n      \"type\": \"string\"\n    }\n  },\n  \"required\": [\n    \"answer\"\n  ],\n  \"title\": \"answer_output\",\n  \"type\": \"object\"\n}",
+          "role": "system"
+        },
+        {
           "content": "answer as JSON",
           "role": "user"
         }

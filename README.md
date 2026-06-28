@@ -2,11 +2,16 @@
 
 [![ci](https://github.com/caudena/beam_weaver/actions/workflows/ci.yml/badge.svg)](https://github.com/caudena/beam_weaver/actions/workflows/ci.yml)
 
-Build AI agents and durable LLM workflows in Elixir.
+Elixir-native LangChain, LangGraph, and Deep Agents for traceable LLM apps:
+OTP workflows, tools, memory, human-in-the-loop, streaming, custom
+clients/adapters, minimal deps, and WeaveScope tracing.
 
 BeamWeaver brings the practical parts of LangChain, LangGraph, and Deep Agents
-to the BEAM: agents, tools, graph workflows, streaming, memory, persistence,
-retrieval, provider adapters, tracing, and production supervision.
+to the BEAM without a Python runtime, hosted control plane, or framework lock-in.
+Agents, tools, graph workflows, subagents, memory, persistence, retrieval,
+structured output, streaming, and tracing are native Elixir modules built around
+OTP supervision, explicit adapters, tagged errors, telemetry, and Ecto/ETS
+storage boundaries.
 
 It is not a Python wrapper. It is an Elixir library designed for applications
 that already rely on OTP, supervision trees, Ecto, telemetry, and explicit
@@ -15,6 +20,22 @@ runtime boundaries.
 BeamWeaver is not affiliated with LangChain.
 
 Documentation: [weavescope.gitbook.io/beam_weaver](https://weavescope.gitbook.io/beam_weaver/)
+
+## Why Switch To BeamWeaver
+
+- **Elixir-native runtime:** build agents and workflows inside your existing
+  OTP supervision tree instead of running a separate Python service.
+- **One system for agents and graphs:** use the agent DSL for common model/tool
+  loops, or drop to graph workflows for deterministic branching, fan-out,
+  interrupts, time travel, and durable execution.
+- **Traceability from day one:** local traces, typed event streams, token and
+  cost metadata, redaction, and native queued export to WeaveScope.
+- **Bring your own boundaries:** use built-in provider adapters or plug in your
+  own clients, transports, models, tools, filesystems, stores, and sandboxes.
+- **Production state:** checkpoints, memory, caches, record managers, vector
+  stores, and replay transports with ETS and Ecto-backed adapters.
+- **Small dependency surface:** no app framework requirement, no Python sidecar,
+  and no hidden hosted runtime.
 
 ## What You Can Build
 
@@ -28,6 +49,56 @@ Documentation: [weavescope.gitbook.io/beam_weaver](https://weavescope.gitbook.io
   stores, record managers, and incremental indexing.
 - Production LLM services with provider fallback, rate limits, redaction,
   telemetry, event streams, and WeaveScope tracing.
+
+## Native WeaveScope Tracing
+
+BeamWeaver traces agents, graphs, model calls, tool calls, subagents, retries,
+token usage, costs, errors, custom fields, and run trees. Use it locally during
+development, or configure WeaveScope export when you want production traces your
+team can inspect.
+
+![WeaveScope tracing view](docs/assets/weavescope-tracing.png)
+
+Configure WeaveScope once:
+
+```elixir
+config :beam_weaver,
+  weave_scope: [
+    endpoint: "https://app.weavescope.com",
+    api_key: System.fetch_env!("WEAVESCOPE_API_KEY")
+  ]
+```
+
+Then attach trace identity and custom fields at call sites. Put IDs and
+dimensions you want to filter by in `fields`; keep extra, non-indexed context in
+`metadata`.
+
+```elixir
+def run_report(report, user) do
+  input = %{
+    topic: report.topic,
+    sources: report.source_urls,
+    audience: report.audience
+  }
+
+  MyApp.Agents.ReportAgent.invoke(input,
+    trace: [
+      name: "report.workflow",
+      user_id: user.id,
+      thread_id: report.id,
+      execution_mode: "production",
+      fields: %{
+        account_id: user.account_id,
+        project_id: report.project_id,
+        report_id: report.id,
+        plan: user.plan,
+        source_count: length(input.sources)
+      },
+      metadata: %{trigger: "scheduled_report"}
+    ]
+  )
+end
+```
 
 ## Core Capabilities
 
@@ -71,7 +142,7 @@ Add BeamWeaver to your application:
 ```elixir
 def deps do
   [
-    {:beam_weaver, "~> 0.1.4"}
+    {:beam_weaver, "~> 0.1.6"}
   ]
 end
 ```
@@ -178,19 +249,9 @@ end
 Tracing is local by default. Add WeaveScope credentials when you want run trees,
 model calls, tool calls, token usage, costs, errors, and custom fields in the
 WeaveScope UI. BeamWeaver automatically uses the queued WeaveScope exporter when
-both `endpoint` and `api_key` are configured.
-
-```elixir
-config :beam_weaver,
-  weave_scope: [
-    endpoint: "https://app.weavescope.com",
-    api_key: System.fetch_env!("WEAVESCOPE_API_KEY")
-  ]
-```
-
-Use `trace:` on agent, graph, runnable, model, or tool calls to attach
-application identity such as `user_id`, `thread_id`, `execution_mode`, and
-indexed custom fields.
+both `endpoint` and `api_key` are configured. Use `trace:` on agent, graph,
+runnable, model, or tool calls to attach application identity such as `user_id`,
+`thread_id`, `execution_mode`, and indexed custom fields.
 
 ## Documentation
 

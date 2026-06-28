@@ -17,8 +17,9 @@ Completions.
   argument chunks and requires `stream: true`.
 - Structured output uses JSON object mode:
   `response_format: %{type: "json_object"}`. BeamWeaver schema requests are
-  mapped to JSON object mode and parsed locally; JSON Schema request mode is
-  not enabled for this provider.
+  mapped to JSON object mode, the schema is injected as provider-visible
+  instructions, and the response is parsed and validated locally. JSON Schema
+  request mode is not enabled for this provider.
 - Streaming reconstructs text, reasoning content, streamed tool-call chunks,
   final usage chunks, and `finish_reason: "length"` truncation.
 - Usage metadata tracks prompt, completion, total, cached input, and reasoning
@@ -82,7 +83,7 @@ GLM-5.2 cost metadata:
 - cached input: `$0.26 / 1M tokens`
 - output: `$4.40 / 1M tokens`
 
-## Remaining Z.ai Work
+## Unsupported Z.ai Surfaces
 
 - Additional Z.ai models are intentionally not routed yet.
 - JSON Schema request mode is not enabled until live or documented support is

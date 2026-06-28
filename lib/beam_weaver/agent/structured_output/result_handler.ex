@@ -70,7 +70,7 @@ defmodule BeamWeaver.Agent.StructuredOutput.ResultHandler do
            }}
         else
           {:error, %Error{} = error} ->
-            structured_error(strategy, error.type, error.message, call)
+            structured_error(strategy, error, call)
         end
     end
   end
@@ -80,15 +80,21 @@ defmodule BeamWeaver.Agent.StructuredOutput.ResultHandler do
     handle_model_output(message, strategy)
   end
 
-  defp structured_error(strategy, type, message, call \\ nil)
-
-  defp structured_error(%ToolStrategy{handle_errors: false}, type, message, _call) do
-    {:error, Error.new(type, message)}
+  defp structured_error(strategy, %Error{} = error, call) do
+    structured_error(strategy, error.type, error.message, call, error.details)
   end
 
-  defp structured_error(%ToolStrategy{} = strategy, type, message, call) do
+  defp structured_error(strategy, type, message) do
+    structured_error(strategy, type, message, nil, %{})
+  end
+
+  defp structured_error(%ToolStrategy{handle_errors: false}, type, message, _call, details) do
+    {:error, Error.new(type, message, details)}
+  end
+
+  defp structured_error(%ToolStrategy{} = strategy, type, message, call, details) do
     if handle_structured_error?(strategy.handle_errors, type) do
-      error = Error.new(type, message)
+      error = Error.new(type, message, details)
       content = structured_error_content(strategy.handle_errors, error)
 
       tool_message =
@@ -100,7 +106,7 @@ defmodule BeamWeaver.Agent.StructuredOutput.ResultHandler do
 
       {:ok, %ModelResponse{messages: [tool_message]}}
     else
-      {:error, Error.new(type, message)}
+      {:error, Error.new(type, message, details)}
     end
   end
 

@@ -186,8 +186,9 @@ from older text-completion LLMs, which return strings. BeamWeaver's provider
 surface is centered on chat/message APIs because OpenAI Responses, OpenAI Chat
 Completions, Anthropic Messages, Gemini Developer API, and xAI chat APIs all
 carry roles, tool calls, multimodal blocks, usage metadata, and provider
-metadata. Test-only LLM fakes and the core behaviour may exist for conformance
-work, but provider text-completion wrappers are not a public workflow.
+metadata. Test-only fakes may exist for deterministic checks, but provider
+text-completion wrappers are not a public workflow. Use chat models for
+provider integrations.
 {% endhint %}
 
 ## Parameters
@@ -548,7 +549,8 @@ support. Otherwise BeamWeaver can fall back to tool-strategy behavior.
 
 For direct provider calls, OpenAI, Anthropic, Google, xAI, and Z.ai also accept
 `:response_format`/`:structured_output` options. Z.ai maps schema-shaped input
-to JSON object mode and parses locally.
+to JSON object mode, injects the schema into the provider-visible messages, and
+parses locally.
 
 ## Model Profiles
 

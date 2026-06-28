@@ -6,6 +6,11 @@ finishes a run. Use middleware for logging, dynamic prompts, tool selection,
 retries, fallbacks, rate and call limits, context editing, PII handling,
 summarization, human review, and policy checks.
 
+This page explains the lifecycle and execution model. Use
+[Prebuilt Middleware](prebuilt_middleware.md) for the module catalog and
+[Custom Middleware](custom_middleware.md) when you are implementing your own
+middleware.
+
 Add middleware to module-defined agents with a `middleware do` block:
 
 ```elixir
@@ -361,9 +366,10 @@ APIs. Use normal OTP supervision and release tooling for deployed services.
 **Testing And Tracing**
 
 The Python middleware overview links to hosted agent testing. BeamWeaver's
-current testing path is ExUnit plus the conformance helpers under
-`support/conformance`. Use `BeamWeaver.Tracing` for telemetry/export
-boundaries; there is no BeamWeaver-specific hosted agent test runner.
+testing path is ordinary ExUnit tests around your agents, tools, and
+middleware. Use fake or replay transports for deterministic provider behavior
+and `BeamWeaver.Tracing` for telemetry/export boundaries; there is no
+BeamWeaver-specific hosted agent test runner.
 {% endhint %}
 
 ## Related Guides

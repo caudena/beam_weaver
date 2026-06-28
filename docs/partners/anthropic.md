@@ -82,9 +82,8 @@ BeamWeaver.Anthropic.ChatModel.count_tokens(model, [
 ])
 ```
 
-## Remaining Anthropic Work
+## Unsupported Anthropic Surfaces
 
-- Live-cassette expansion for every upstream Anthropic integration cassette.
 - Bedrock/Vertex Anthropic routing. The direct Anthropic provider is implemented
   first.
 - Provider-specific files API helpers beyond message/document block support.
