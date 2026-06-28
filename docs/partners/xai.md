@@ -120,6 +120,7 @@ The retired May 15, 2026 slugs are rejected with `:deprecated_model`:
 ## Related Guides
 
 - [Models](../models.md)
+- [Prompt Caching](../prompt_caching.md#xai-grok)
 - [Tools](../tools.md#server-side-provider-tools)
 - [Structured Output](../structured_output.md)
 - [Messages](../messages.md)

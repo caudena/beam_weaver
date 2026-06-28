@@ -20,6 +20,7 @@ defmodule BeamWeaver.XAI.ChatModel do
   defstruct model: @default_model,
             endpoint: @default_endpoint,
             api_key: nil,
+            x_grok_conv_id: nil,
             default_headers: [],
             model_kwargs: %{},
             reasoning: nil,
@@ -39,6 +40,7 @@ defmodule BeamWeaver.XAI.ChatModel do
             metadata: nil,
             user: nil,
             service_tier: nil,
+            prompt_cache_key: nil,
             modalities: nil,
             audio: nil,
             store: nil,
@@ -97,6 +99,7 @@ defmodule BeamWeaver.XAI.ChatModel do
     %Client{
       endpoint: model.endpoint,
       api_key: model.api_key,
+      x_grok_conv_id: model.x_grok_conv_id,
       default_headers: model.default_headers || [],
       transport: model.transport,
       transport_opts: model.transport_opts,

@@ -9,6 +9,7 @@ defmodule BeamWeaver.Core.ChatModel do
   alias BeamWeaver.Core.Message
   alias BeamWeaver.Core.Tool
   alias BeamWeaver.MapAccess
+  alias BeamWeaver.Models.ProfileRegistry.Params, as: ProfileParams
   alias BeamWeaver.Result
   alias BeamWeaver.Stream, as: BWStream
   alias BeamWeaver.Stream.Events
@@ -16,7 +17,7 @@ defmodule BeamWeaver.Core.ChatModel do
   alias BeamWeaver.Tracing.Options, as: TraceOptions
   alias BeamWeaver.Tracing.Runner, as: TraceRunner
 
-  @safe_model_param_keys [
+  @generic_model_param_keys [
     :audio,
     :context_management,
     :deferred,
@@ -26,27 +27,62 @@ defmodule BeamWeaver.Core.ChatModel do
     :max_completion_tokens,
     :max_output_tokens,
     :max_tokens,
-    :mcp_servers,
     :modalities,
     :n,
     :parallel_tool_calls,
     :reasoning,
     :reasoning_effort,
-    :reuse_last_container,
     :search_parameters,
     :seed,
     :service_tier,
+    :stop,
     :stop_sequences,
     :store,
     :stream,
+    :stream_options,
+    :stream_usage,
     :temperature,
     :thinking,
-    :timeout,
+    :tool_choice,
     :top_k,
     :top_p,
     :verbosity,
     :response_format,
     :structured_output
+  ]
+
+  @excluded_invocation_param_keys [
+    :api_key,
+    :base_url,
+    :callbacks,
+    :context,
+    :count_tokens_endpoint,
+    :default_headers,
+    :endpoint,
+    :exporter,
+    :exporter_opts,
+    :extra_body,
+    :functions,
+    :input,
+    :input_items,
+    :instructions,
+    :messages,
+    :metadata,
+    :mcp_servers,
+    :model_kwargs,
+    :organization,
+    :project,
+    :prompt,
+    :runtime,
+    :task_supervisor,
+    :tools,
+    :tokenizer,
+    :trace,
+    :trace?,
+    :trace_metadata,
+    :transport,
+    :transport_opts,
+    :usage
   ]
 
   @internal_call_opt_keys [
@@ -419,29 +455,114 @@ defmodule BeamWeaver.Core.ChatModel do
 
   defp invocation_params(model, opts) do
     identifier = model_identifier(model)
+    param_keys = invocation_param_keys(model)
 
     model_params =
       model
       |> model_param_map()
-      |> Map.take(@safe_model_param_keys)
+      |> approved_param_map(param_keys)
       |> reject_nil_or_empty()
-      |> maybe_merge_model_kwargs(model)
+      |> maybe_merge_model_kwargs(model, param_keys)
 
     call_params =
       opts
       |> Keyword.drop(@internal_call_opt_keys)
-      |> Keyword.take(@safe_model_param_keys)
+      |> approved_param_map(param_keys)
       |> Enum.reject(fn {_key, value} -> nil_or_empty?(value) end)
       |> Map.new()
 
     model_params
     |> Map.merge(call_params)
-    |> Map.drop([:response_format, :structured_output])
     |> maybe_put(:model, identifier)
     |> maybe_put(:model_name, identifier)
     |> maybe_put(:response_format, Keyword.get(opts, :response_format) || Keyword.get(opts, :structured_output))
     |> reject_nil_or_empty()
   end
+
+  defp invocation_param_keys(model) do
+    model
+    |> provider_param_sources()
+    |> Enum.flat_map(&provider_params/1)
+    |> Kernel.++(@generic_model_param_keys)
+    |> Enum.uniq()
+    |> Enum.reject(&(&1 in @excluded_invocation_param_keys))
+  end
+
+  defp provider_param_sources(%{__struct__: module}) do
+    case Module.split(module) do
+      ["BeamWeaver", "OpenAI", "ChatModel"] -> [:openai_responses]
+      ["BeamWeaver", "OpenAI", "ChatCompletionsModel"] -> [:openai_chat_completions]
+      ["BeamWeaver", "Anthropic", "ChatModel"] -> [:anthropic]
+      ["BeamWeaver", "Google", "ChatModel"] -> [:google]
+      ["BeamWeaver", "XAI", "ChatModel"] -> [:xai_responses]
+      ["BeamWeaver", "XAI", "ChatCompletionsModel"] -> [:xai_chat_completions]
+      ["BeamWeaver", "Moonshot", "ChatModel"] -> [:moonshot]
+      ["BeamWeaver", "ZAI", "ChatModel"] -> [:zai]
+      ["BeamWeaver", "Models", "FakeChatModel"] -> [:all]
+      _other -> [:generic]
+    end
+  end
+
+  defp provider_param_sources(_model), do: [:generic]
+
+  defp provider_params(:openai_responses), do: ProfileParams.responses()
+  defp provider_params(:openai_chat_completions), do: ProfileParams.chat_completions()
+  defp provider_params(:anthropic), do: ProfileParams.anthropic()
+  defp provider_params(:google), do: ProfileParams.google()
+  defp provider_params(:xai_responses), do: ProfileParams.xai_responses()
+  defp provider_params(:xai_chat_completions), do: ProfileParams.xai_chat_completions()
+  defp provider_params(:moonshot), do: ProfileParams.moonshot()
+  defp provider_params(:zai), do: ProfileParams.zai()
+  defp provider_params(:generic), do: @generic_model_param_keys
+
+  defp provider_params(:all) do
+    [
+      ProfileParams.responses(),
+      ProfileParams.chat_completions(),
+      ProfileParams.anthropic(),
+      ProfileParams.google(),
+      ProfileParams.xai_responses(),
+      ProfileParams.xai_chat_completions(),
+      ProfileParams.moonshot(),
+      ProfileParams.zai()
+    ]
+    |> List.flatten()
+  end
+
+  defp approved_param_map(values, param_keys) when is_list(values) do
+    values
+    |> Enum.reduce(%{}, fn
+      {key, value}, acc ->
+        case approved_param_key(key, param_keys) do
+          nil -> acc
+          key -> Map.put(acc, key, value)
+        end
+
+      _entry, acc ->
+        acc
+    end)
+  end
+
+  defp approved_param_map(values, param_keys) when is_map(values) do
+    values
+    |> Enum.reduce(%{}, fn {key, value}, acc ->
+      case approved_param_key(key, param_keys) do
+        nil -> acc
+        key -> Map.put(acc, key, value)
+      end
+    end)
+  end
+
+  defp approved_param_key(key, param_keys) when is_atom(key) do
+    if key in param_keys, do: key
+  end
+
+  defp approved_param_key(key, param_keys) when is_binary(key) do
+    key_lookup = Map.new(param_keys, &{Atom.to_string(&1), &1})
+    Map.get(key_lookup, key)
+  end
+
+  defp approved_param_key(_key, _param_keys), do: nil
 
   defp model_param_map(%{__struct__: _module} = model) do
     model
@@ -452,10 +573,10 @@ defmodule BeamWeaver.Core.ChatModel do
   defp model_param_map(model) when is_map(model), do: model
   defp model_param_map(_model), do: %{}
 
-  defp maybe_merge_model_kwargs(params, model) do
+  defp maybe_merge_model_kwargs(params, model, param_keys) do
     case field_value(model, :model_kwargs) do
       kwargs when is_map(kwargs) and map_size(kwargs) > 0 ->
-        Map.put(params, :model_kwargs, kwargs)
+        Map.merge(params, approved_param_map(kwargs, param_keys))
 
       _other ->
         params

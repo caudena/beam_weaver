@@ -32,6 +32,10 @@ defmodule BeamWeaver.Transport.Redactor do
   ]
 
   @usage_token_keys MapSet.new([
+                      "budget_tokens",
+                      "max_completion_tokens",
+                      "max_output_tokens",
+                      "max_tokens",
                       "input_tokens",
                       "output_tokens",
                       "total_tokens",
@@ -124,12 +128,19 @@ defmodule BeamWeaver.Transport.Redactor do
       |> String.downcase()
       |> String.replace("-", "_")
 
-    if MapSet.member?(@usage_token_keys, normalized) do
+    if usage_or_limit_token_key?(normalized) do
       false
     else
       MapSet.member?(@secret_header_names, normalized) or
         Enum.any?(@secret_key_parts, &String.contains?(normalized, &1))
     end
+  end
+
+  defp usage_or_limit_token_key?(normalized) do
+    MapSet.member?(@usage_token_keys, normalized) or
+      String.ends_with?(normalized, "_tokens") or
+      String.ends_with?(normalized, "_token_count") or
+      String.ends_with?(normalized, "_token_limit")
   end
 
   defp redact_string(value) do

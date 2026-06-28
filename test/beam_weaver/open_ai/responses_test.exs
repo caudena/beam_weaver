@@ -135,17 +135,18 @@ defmodule BeamWeaver.OpenAI.ResponsesTest do
     assert body["vendor_flag"] == true
   end
 
-  test "Responses prompt_cache_key follows upstream inclusion and per-call precedence" do
+  test "Responses prompt_cache_key follows first-class, model kwargs, and per-call precedence" do
     # Upstream reference:
     model = %BeamWeaver.OpenAI.ChatModel{
       model: "gpt-5.4-mini",
+      prompt_cache_key: "first-class-cache",
       model_kwargs: %{prompt_cache_key: "model-level-cache"}
     }
 
     assert {:ok, from_model_kwargs} =
              BeamWeaver.OpenAI.ChatModel.request_body(model, [Message.user("Hello")])
 
-    assert from_model_kwargs["prompt_cache_key"] == "model-level-cache"
+    assert from_model_kwargs["prompt_cache_key"] == "first-class-cache"
 
     assert {:ok, per_call} =
              BeamWeaver.OpenAI.ChatModel.request_body(model, [Message.user("Hello")],
@@ -153,16 +154,6 @@ defmodule BeamWeaver.OpenAI.ResponsesTest do
              )
 
     assert per_call["prompt_cache_key"] == "per-call-cache"
-
-    assert {:ok, explicit_nil} =
-             BeamWeaver.OpenAI.ChatModel.request_body(
-               %BeamWeaver.OpenAI.ChatModel{model: "gpt-5.4-mini"},
-               [Message.user("Hello")],
-               prompt_cache_key: nil
-             )
-
-    assert Map.has_key?(explicit_nil, "prompt_cache_key")
-    assert explicit_nil["prompt_cache_key"] == nil
   end
 
   test "Responses request body can continue after previous response id" do

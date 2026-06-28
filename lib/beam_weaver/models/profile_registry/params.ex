@@ -133,7 +133,8 @@ defmodule BeamWeaver.Models.ProfileRegistry.Params do
     :top_p,
     :truncation,
     :use_previous_response_id,
-    :user
+    :user,
+    :x_grok_conv_id
   ]
 
   @xai_chat_completions_params [
@@ -158,7 +159,8 @@ defmodule BeamWeaver.Models.ProfileRegistry.Params do
     :tools,
     :top_p,
     :user,
-    :web_search_options
+    :web_search_options,
+    :x_grok_conv_id
   ]
 
   @xai_embedding_params [:dimensions, :encoding_format, :preview, :user]

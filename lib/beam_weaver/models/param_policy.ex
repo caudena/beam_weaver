@@ -103,7 +103,8 @@ defmodule BeamWeaver.Models.ParamPolicy do
                      :user,
                      :user_profile_id,
                      :verbosity,
-                     :web_search_options
+                     :web_search_options,
+                     :x_grok_conv_id
                    ])
 
   @escape_hatches MapSet.new([:extra_body, :model_kwargs, :provider_opts])

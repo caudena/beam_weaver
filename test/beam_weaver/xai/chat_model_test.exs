@@ -53,6 +53,23 @@ defmodule BeamWeaver.XAI.ChatModelTest do
     assert chat_completions.endpoint == "https://proxy.test/v1/chat/completions"
   end
 
+  test "client supports per-call headers and x-grok conversation routing" do
+    client = Client.new(api_key: "xai-secret", x_grok_conv_id: "model-conv")
+
+    model_request = Client.request(client, %{})
+    assert {"x-grok-conv-id", "model-conv"} in model_request.headers
+
+    call_request =
+      Client.request(client, %{},
+        x_grok_conv_id: "call-conv",
+        headers: [{"x-custom-cache", "enabled"}]
+      )
+
+    assert {"x-grok-conv-id", "call-conv"} in call_request.headers
+    refute {"x-grok-conv-id", "model-conv"} in call_request.headers
+    assert {"x-custom-cache", "enabled"} in call_request.headers
+  end
+
   test "invokes xAI Responses API through fake transport" do
     model =
       ChatModel.new(
@@ -117,7 +134,7 @@ defmodule BeamWeaver.XAI.ChatModelTest do
   test "Responses request body supports tools, structured output, reasoning, and search controls" do
     assert {:ok, body} =
              ChatModel.request_body(
-               ChatModel.new(model: "grok-4.3", max_turns: 2),
+               ChatModel.new(model: "grok-4.3", max_turns: 2, prompt_cache_key: "model-cache"),
                [Message.user("search")],
                tools: [Tools.web_search()],
                search_parameters: %{mode: :auto},
@@ -133,8 +150,18 @@ defmodule BeamWeaver.XAI.ChatModelTest do
     assert body["text"]["format"]["type"] == "json_schema"
     assert body["reasoning"] == %{"effort" => "high"}
     assert body["max_turns"] == 2
+    assert body["prompt_cache_key"] == "model-cache"
     assert body["search_parameters"] == %{"mode" => "auto"}
     refute Map.has_key?(body, "deferred")
+
+    assert {:ok, per_call_body} =
+             ChatModel.request_body(
+               ChatModel.new(model: "grok-4.3", prompt_cache_key: "model-cache"),
+               [Message.user("search")],
+               prompt_cache_key: "call-cache"
+             )
+
+    assert per_call_body["prompt_cache_key"] == "call-cache"
   end
 
   test "xAI reasoning profiles omit unsupported stop while non-reasoning chat models preserve it" do

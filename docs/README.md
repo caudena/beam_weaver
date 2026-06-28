@@ -110,6 +110,7 @@ history, and `stream_events/3`. Agents use the same graph runtime underneath.
 | Composed agent capabilities | Planning, virtual filesystems, permissions, subagents, context compaction, code execution, HITL, skills, and memory files through normal composable agent options and middleware. |
 | Deep Agents quickstart | Build a composed research agent with planning, filesystem tools, and a subagent. |
 | Customization | Configure tools, middleware, models, filesystem access, skills, subagents, tracing, and runtime context with module macros or `Agent.build/1` options. |
+| Prompt caching | Provider-specific cache keys, Anthropic system-prompt cache control, and normalized cache-read usage metadata. |
 | Streaming | Typed `%BeamWeaver.Stream.Envelope{}` values exposed as Elixir `Enumerable` streams. |
 | Observability | Telemetry and tracing/export boundaries under `BeamWeaver.Tracing`. |
 | Retrieval | Document loaders, splitters, embeddings, vector stores, retrievers, and indexing primitives. |
@@ -154,6 +155,7 @@ history, and `stream_events/3`. Agents use the same graph runtime underneath.
 - [Agents](agents.md)
 - [Graph](graph.md)
 - [Models](models.md)
+- [Prompt Caching](prompt_caching.md)
 - [Tools](tools.md)
 - [Messages](messages.md)
 - [Runtime](runtime.md)

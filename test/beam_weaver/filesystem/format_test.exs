@@ -15,8 +15,7 @@ defmodule BeamWeaver.Filesystem.FormatTest do
       rejoined =
         result
         |> String.split("\n")
-        |> Enum.map(fn part -> part |> String.split("\t", parts: 2) |> List.last() end)
-        |> Enum.join()
+        |> Enum.map_join(fn part -> part |> String.split("\t", parts: 2) |> List.last() end)
 
       assert rejoined == line
     end
@@ -31,8 +30,7 @@ defmodule BeamWeaver.Filesystem.FormatTest do
       rejoined =
         result
         |> String.split("\n")
-        |> Enum.map(fn part -> part |> String.split("\t", parts: 2) |> List.last() end)
-        |> Enum.join()
+        |> Enum.map_join(fn part -> part |> String.split("\t", parts: 2) |> List.last() end)
 
       assert rejoined == line
     end

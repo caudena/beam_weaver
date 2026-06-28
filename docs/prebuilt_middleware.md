@@ -720,6 +720,8 @@ nested agent to travel as a graph node, and use
 Provider-specific behavior is intentionally narrow and lives near provider
 adapters.
 
+For provider prompt caching see [Prompt Caching](prompt_caching.md).
+
 ### OpenAI Moderation
 
 `BeamWeaver.OpenAI.ModerationMiddleware` calls OpenAI's moderation endpoint at
@@ -760,7 +762,8 @@ BeamWeaver includes Anthropic call-option helpers:
 
 These helpers produce provider call options, such as server-tool declarations or
 cache-control metadata. They are not general `BeamWeaver.Agent.Middleware`
-callbacks.
+callbacks. For the common agent-level static system prompt cache path, use
+`BeamWeaver.Agent.Middleware.PromptCaching`.
 
 ```elixir
 opts =

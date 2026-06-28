@@ -107,11 +107,15 @@ defmodule BeamWeaver.Stream.MessagesTransformer do
 
   @spec process(t(), term()) :: {:ok, t(), [MessageStream.t()]} | {:pass, t()}
   def process(%__MODULE__{} = transformer, event) do
-    with {:ok, event} <- apply_pre_projection(transformer, event) do
-      do_process(transformer, event)
-    else
-      :drop -> {:ok, transformer, []}
-      {:error, error} -> {:ok, fail(transformer, error), []}
+    case apply_pre_projection(transformer, event) do
+      {:ok, event} ->
+        do_process(transformer, event)
+
+      :drop ->
+        {:ok, transformer, []}
+
+      {:error, error} ->
+        {:ok, fail(transformer, error), []}
     end
   end
 

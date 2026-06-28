@@ -38,6 +38,27 @@ defmodule BeamWeaver.Transport.RedactorTest do
     assert redacted =~ Redactor.redacted()
   end
 
+  test "keeps token count and generation limit fields while redacting credential tokens" do
+    redacted =
+      Redactor.redact(%{
+        max_output_tokens: 512,
+        max_completion_tokens: 128,
+        max_tokens: 256,
+        output_tokens: 42,
+        thinking: %{budget_tokens: 1_024},
+        access_token: "access-secret",
+        credential_token: "credential-secret"
+      })
+
+    assert redacted.max_output_tokens == 512
+    assert redacted.max_completion_tokens == 128
+    assert redacted.max_tokens == 256
+    assert redacted.output_tokens == 42
+    assert redacted.thinking.budget_tokens == 1_024
+    assert redacted.access_token == Redactor.redacted()
+    assert redacted.credential_token == Redactor.redacted()
+  end
+
   test "redacts URL credentials, query secrets, env-style assignments, and private keys" do
     redacted =
       Redactor.redact(%{

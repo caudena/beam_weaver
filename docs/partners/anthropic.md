@@ -98,7 +98,7 @@ BeamWeaver.Anthropic.ChatModel.count_tokens(model, [
 ## Related Guides
 
 - [Models](../models.md)
+- [Prompt Caching](../prompt_caching.md#anthropic)
 - [Tools](../tools.md#server-side-provider-tools)
 - [Messages](../messages.md#standard-content-blocks)
 - [Structured Output](../structured_output.md)
-- [Custom Middleware](../custom_middleware.md#prompt-caching-with-anthropic)

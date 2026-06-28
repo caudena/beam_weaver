@@ -36,7 +36,7 @@ Documentation: [weavescope.gitbook.io/beam_weaver](https://weavescope.gitbook.io
 | Agents | Module-defined agents and runtime-built agents with tools, middleware, structured output, memory, and HITL interrupts. |
 | Graph workflows | LangGraph-style state graphs with reducers, commands, subgraphs, checkpoints, pending writes, and durable execution. |
 | Deep agents | Planning tools, TODO state, virtual filesystems, skills, subagents, async subagents, context engineering, and summarization. |
-| Models | Provider adapters, model profiles, parameter validation, streaming, structured output, token usage, and cost metadata. |
+| Models | Provider adapters, model profiles, parameter validation, prompt caching, streaming, structured output, token usage, and cost metadata. |
 | Tools | Typed tools, injected runtime arguments, tool nodes, tool middleware, shell/filesystem tools, and tool-call tracing. |
 | Retrieval | Document loaders, text splitters, embeddings, vector stores, retrievers, record managers, and indexing flows. |
 | Persistence | ETS and Ecto-backed memory, checkpoints, caches, record managers, and vector stores. |

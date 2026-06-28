@@ -83,6 +83,7 @@ BeamWeaver yet. Chat can still reference provider-hosted media with documented
 ## Related Guides
 
 - [Models](../models.md)
+- [Prompt Caching](../prompt_caching.md#moonshotkimi)
 - [Tools](../tools.md#server-side-provider-tools)
 - [Structured Output](../structured_output.md)
 - [Messages](../messages.md)

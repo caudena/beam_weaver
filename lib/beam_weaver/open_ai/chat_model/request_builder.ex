@@ -69,7 +69,7 @@ defmodule BeamWeaver.OpenAI.ChatModel.RequestBuilder do
         |> Options.put_optional("max_turns", option(model, opts, :max_turns))
         |> Options.put_optional("previous_response_id", previous_response_id)
         |> Options.put_optional("prompt", Options.normalize_value(Keyword.get(opts, :prompt)))
-        |> put_explicit_optional("prompt_cache_key", opts, :prompt_cache_key)
+        |> Options.put_optional("prompt_cache_key", option(model, opts, :prompt_cache_key))
         |> Options.put_optional(
           "prompt_cache_retention",
           Options.normalize_value(option(model, opts, :prompt_cache_retention))
@@ -230,14 +230,6 @@ defmodule BeamWeaver.OpenAI.ChatModel.RequestBuilder do
   end
 
   defp streaming_tool(tool), do: tool
-
-  defp put_explicit_optional(body, key, opts, opt_key) do
-    if Keyword.has_key?(opts, opt_key) do
-      Map.put(body, key, Keyword.get(opts, opt_key))
-    else
-      body
-    end
-  end
 
   defp option(model, opts, key), do: Keyword.get(opts, key, Map.get(model, key))
 
