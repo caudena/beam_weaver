@@ -1,6 +1,7 @@
 defmodule BeamWeaver.ZAI.Options do
   @moduledoc false
 
+  alias BeamWeaver.JSON
   alias BeamWeaver.Models.ParamPolicy
   alias BeamWeaver.OpenAI.MessageParts
   alias BeamWeaver.ZAI.Error
@@ -14,7 +15,8 @@ defmodule BeamWeaver.ZAI.Options do
   def to_body(model, messages, opts \\ []) do
     with :ok <- validate_profile_params(model, opts),
          {:ok, zai_messages} <- Messages.to_chat_messages(messages),
-         {:ok, response_format} <- response_format(model, opts),
+         {:ok, response_format, schema_instruction} <- response_format(model, opts),
+         zai_messages <- maybe_inject_schema_instruction(zai_messages, schema_instruction),
          {:ok, body} <- build_body(model, zai_messages, response_format, opts),
          :ok <- validate_model(body),
          :ok <- validate_thinking(body),
@@ -68,22 +70,22 @@ defmodule BeamWeaver.ZAI.Options do
   defp response_format(model, opts) do
     case option(model, opts, :response_format) || option(model, opts, :structured_output) do
       nil ->
-        {:ok, nil}
+        {:ok, nil, nil}
 
       %{"type" => "json_object"} ->
-        {:ok, %{"type" => "json_object"}}
+        {:ok, %{"type" => "json_object"}, nil}
 
       %{type: type} when type in [:json_object, "json_object"] ->
-        {:ok, %{"type" => "json_object"}}
+        {:ok, %{"type" => "json_object"}, nil}
 
-      %{name: name, schema: schema} when is_binary(name) and is_map(schema) ->
-        {:ok, %{"type" => "json_object"}}
+      %{name: name, schema: schema} = format when is_binary(name) and is_map(schema) ->
+        {:ok, %{"type" => "json_object"}, schema_instruction(name, schema, Map.get(format, :strict))}
 
-      %{"name" => name, "schema" => schema} when is_binary(name) and is_map(schema) ->
-        {:ok, %{"type" => "json_object"}}
+      %{"name" => name, "schema" => schema} = format when is_binary(name) and is_map(schema) ->
+        {:ok, %{"type" => "json_object"}, schema_instruction(name, schema, Map.get(format, "strict"))}
 
       {name, schema} when is_binary(name) and is_map(schema) ->
-        {:ok, %{"type" => "json_object"}}
+        {:ok, %{"type" => "json_object"}, schema_instruction(name, schema, nil)}
 
       other ->
         {:error,
@@ -92,6 +94,45 @@ defmodule BeamWeaver.ZAI.Options do
            supported: [%{"type" => "json_object"}]
          })}
     end
+  end
+
+  defp schema_instruction(name, schema, strict) do
+    %{
+      "role" => "system",
+      "content" => schema_instruction_text(name, schema, strict)
+    }
+  end
+
+  defp schema_instruction_text(name, schema, strict) do
+    required = schema |> BeamWeaver.MapAccess.get(:required, []) |> List.wrap()
+    required_text = if required == [], do: "none", else: Enum.map_join(required, ", ", &to_string/1)
+
+    strict_text =
+      if strict == false, do: "Validate against this schema.", else: "Strictly validate against this schema."
+
+    """
+    BeamWeaver structured output contract:
+    - Return exactly one JSON object and no markdown, prose, code fences, or commentary.
+    - #{strict_text}
+    - Include every required key. Required keys: #{required_text}.
+    - If information is unavailable, still include the key with a value compatible with the schema.
+
+    Schema name: #{name}
+    JSON Schema:
+    #{JSON.encode!(schema, pretty: true)}
+    """
+    |> String.trim()
+  end
+
+  defp maybe_inject_schema_instruction(messages, nil), do: messages
+
+  defp maybe_inject_schema_instruction(messages, instruction) do
+    {system_messages, rest} =
+      Enum.split_while(messages, fn message ->
+        Map.get(message, "role") == "system"
+      end)
+
+    system_messages ++ [instruction] ++ rest
   end
 
   defp validate_profile_params(model, opts) do

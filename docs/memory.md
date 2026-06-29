@@ -295,86 +295,9 @@ background agent.
 
 ## Short-Term Memory
 
-Short-term memory is graph state scoped by `thread_id`. Agents already include a
-`:messages` state channel. Add memory by passing a checkpointer and reusing the
-same thread ID for each turn:
-
-```elixir
-alias BeamWeaver.Checkpoint.ETS, as: CheckpointETS
-alias BeamWeaver.Core.Message
-
-checkpointer = CheckpointETS.new()
-config = %{"configurable" => %{"thread_id" => "thread-1"}}
-
-{:ok, _state} =
-  MyApp.Agent.invoke(
-    %{messages: [Message.user("hi! i am Bob")]},
-    checkpointer: checkpointer,
-    config: config
-  )
-
-{:ok, state} =
-  MyApp.Agent.invoke(
-    %{messages: [Message.user("what is my name?")]},
-    checkpointer: checkpointer,
-    config: config
-  )
-
-state.messages
-```
-
-When building a graph directly, compile it with a checkpointer:
-
-```elixir
-alias BeamWeaver.Graph
-
-checkpointer = BeamWeaver.Checkpoint.ETS.new()
-
-graph =
-  Graph.new(name: "MemoryGraph")
-  |> Graph.add_reducer(:messages, fn existing, update ->
-    existing ++ List.wrap(update)
-  end)
-  |> Graph.add_node(:respond, fn state ->
-    %{messages: [BeamWeaver.Core.Message.assistant("Saw #{length(state.messages)} messages")]}
-  end)
-  |> Graph.add_edge(Graph.start(), :respond)
-  |> Graph.add_edge(:respond, Graph.end_node())
-  |> Graph.compile!(checkpointer: checkpointer)
-```
-
-`thread_id` is the persistent cursor. Reusing it resumes the same checkpointed
-history. A new `thread_id` starts a separate thread.
-
-## Production Checkpointing
-
-Use `BeamWeaver.Checkpoint.Ecto` for durable production checkpointing:
-
-```elixir
-checkpointer = BeamWeaver.Checkpoint.Ecto.new(repo: MyApp.Repo)
-
-MyApp.Agent.invoke(
-  %{messages: [BeamWeaver.Core.Message.user("remember this")]},
-  checkpointer: checkpointer,
-  config: %{"configurable" => %{"thread_id" => "customer-123"}}
-)
-```
-
-Install the schema with an Ecto migration:
-
-```elixir
-defmodule MyApp.Repo.Migrations.CreateBeamWeaverCheckpoints do
-  use Ecto.Migration
-
-  def up do
-    BeamWeaver.Migrations.up(adapters: [:checkpoint])
-  end
-
-  def down do
-    BeamWeaver.Migrations.down(adapters: [:checkpoint], version: 1)
-  end
-end
-```
+Short-term memory is graph state scoped by `thread_id`. Use a checkpointer when
+the next turn should resume the previous messages, pending interrupts, or graph
+state for the same thread.
 
 {% hint style="warning" %}
 **Database Setup**
@@ -388,71 +311,18 @@ and database permissions stay explicit.
 ## Subgraphs
 
 Parent graph checkpointers propagate to subgraphs by default. Compile a child
-graph with `checkpointer: true` when it should keep stable subgraph checkpoint
-namespaces for inspection, interrupts, or time travel inside the subgraph:
-
-```elixir
-child =
-  BeamWeaver.Graph.new(name: "Child")
-  |> BeamWeaver.Graph.add_node(:step, fn state -> state end)
-  |> BeamWeaver.Graph.add_edge(BeamWeaver.Graph.start(), :step)
-  |> BeamWeaver.Graph.add_edge(:step, BeamWeaver.Graph.end_node())
-  |> BeamWeaver.Graph.compile!(checkpointer: true)
-```
-
-See [Time Travel](time_travel.md) and [Persistence](persistence.md) for
-checkpoint scope and subgraph replay details.
+graph with `checkpointer: true` only when it should keep stable subgraph
+checkpoint namespaces for inspection, interrupts, or time travel inside the
+subgraph. See [Time Travel](time_travel.md) and [Persistence](persistence.md)
+for checkpoint scope and subgraph replay details.
 
 ## Long-Term Memory
 
 Long-term memory stores user-specific or application-specific data across
-threads. Configure a store when building an agent:
-
-```elixir
-defmodule MyApp.MemoryAgent do
-  use BeamWeaver.Agent
-
-  model BeamWeaver.Models.init_chat_model!("openai:gpt-5.4")
-  store BeamWeaver.Memory.ETS.new()
-end
-```
-
-Runtime-built agents use the same store option:
-
-```elixir
-store = BeamWeaver.Memory.ETS.new()
-
-{:ok, agent} =
-  BeamWeaver.Agent.build(
-    name: "memory_agent",
-    model: BeamWeaver.Models.init_chat_model!("openai:gpt-5.4"),
-    tools: [],
-    store: store,
-    context_schema: %{user_id: %{type: :string, required: true}}
-  )
-```
-
-For production Postgres-backed memory, use the Ecto store:
-
-```elixir
-store = BeamWeaver.Memory.Ecto.new(repo: MyApp.Repo)
-```
-
-Install its schema with an Ecto migration:
-
-```elixir
-defmodule MyApp.Repo.Migrations.CreateBeamWeaverMemory do
-  use Ecto.Migration
-
-  def up do
-    BeamWeaver.Migrations.up(adapters: [:memory])
-  end
-
-  def down do
-    BeamWeaver.Migrations.down(adapters: [:memory], version: 1)
-  end
-end
-```
+threads. Use a `BeamWeaver.Memory` store when memory should be shared across
+threads, searched by namespace, written from tools, or exposed as memory-backed
+files. See [Long-Term Memory](long_term_memory.md) for store setup, TTL, batch
+operations, tool injection, and namespace patterns.
 
 ## Access The Store Inside Nodes
 

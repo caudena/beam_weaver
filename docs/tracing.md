@@ -96,6 +96,10 @@ task =
   end)
 ```
 
+`BeamWeaver.Runtime.TaskSupervisor` is the registered `Task.Supervisor` started
+by the BeamWeaver application. Pass your own supervisor name when the task is
+owned by your application supervision tree.
+
 Graph nodes run in BEAM tasks. BeamWeaver propagates the active tracing context
 into those tasks, so model and tool calls inside graph nodes appear as children
 of the root graph or agent run instead of detached top-level runs. Child runs

@@ -97,9 +97,8 @@ BeamWeaver.Google.ChatModel.count_tokens(model, [
 ])
 ```
 
-## Remaining Google Work
+## Unsupported Google Surfaces
 
-- Live-cassette expansion against the Gemini Developer API.
 - Vertex AI. That should be a separate explicit adapter/prefix rather than an
   alias of `google:*`.
 - Dedicated image, audio, and video generation model modules beyond chat

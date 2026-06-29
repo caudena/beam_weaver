@@ -13,12 +13,14 @@ model =
     api_key: "sk-replay",
     transport: BeamWeaver.Transport.Replay,
     transport_opts: [
-      cassette_path: "priv/openai/cassettes/supervised_openai_agent.yaml"
+      cassette_path: "path/to/my_agent_response.yaml"
     ]
   )
 ```
 
 The transport loads plain YAML or gzipped YAML cassettes.
+Replace the cassette path with a cassette recorded for the provider request
+shape you are testing.
 
 ## Matching
 
@@ -94,11 +96,10 @@ Avoid tests that only assert a variable equals the literal value just created in
 the same test. The useful signal is whether a caller-visible behavior or provider
 contract would break.
 
-BeamWeaver also has provider conformance fixtures under
-`test/fixtures/provider_conformance`. Those fixtures are local JSON
-request/response pairs, not live captures. Use them when a provider contract
-should be asserted without credentials and the expected request body is the main
-regression signal.
+For application tests, keep request-shape examples as local JSON or YAML
+fixtures when credentials are not required. Use live provider calls only for the
+small set of checks where provider availability, account configuration, or
+current model behavior is the thing being tested.
 
 ## Related Guides
 

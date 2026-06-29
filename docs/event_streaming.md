@@ -13,6 +13,12 @@ BeamWeaver's event stream is an `Enumerable` of typed
 - `metadata`: provider, tracing, usage, tags, or app-specific metadata
 - `timestamp`
 
+`BeamWeaver.Stream.Events` is the documented namespace for stream event
+structs such as `Token`, `Message`, `ToolStart`, `GraphValue`, and `Done`.
+Pattern match on those structs when you need raw stream detail, or pass the
+same event list through projection reducers when you need messages, values,
+subgraph summaries, or lifecycle views.
+
 For agents, use `BeamWeaver.Agent.stream_events/3`.
 For compiled graphs, use `BeamWeaver.Graph.Compiled.stream_events/3`.
 For standalone chat models, use `BeamWeaver.Core.ChatModel.stream_events/3`

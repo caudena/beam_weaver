@@ -1,5 +1,7 @@
 defmodule BeamWeaver.Agent.StructuredOutput.Policy do
-  @moduledoc false
+  @moduledoc """
+  Decision metadata for the effective structured-output strategy.
+  """
 
   alias BeamWeaver.Agent.StructuredOutput.AutoStrategy
   alias BeamWeaver.Agent.StructuredOutput.ProviderStrategy

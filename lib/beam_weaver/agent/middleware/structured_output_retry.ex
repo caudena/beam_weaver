@@ -90,9 +90,22 @@ defmodule BeamWeaver.Agent.Middleware.StructuredOutputRetry do
     Message.user(
       "Your previous response could not be parsed as structured output.\n\n" <>
         "Error: #{error.message}\n" <>
+        error_details_text(error) <>
         "Please try again with a valid response."
     )
   end
+
+  defp error_details_text(%Error{details: details}) when is_map(details) and map_size(details) > 0 do
+    details
+    |> Map.take([:schema, :missing, :key, :expected, :actual, :reason])
+    |> Enum.reject(fn {_key, value} -> is_nil(value) end)
+    |> case do
+      [] -> ""
+      safe_details -> "Details: #{inspect(Map.new(safe_details))}\n"
+    end
+  end
+
+  defp error_details_text(%Error{}), do: ""
 
   defp normalize_retry_on(:all), do: :all
   defp normalize_retry_on(%MapSet{} = set), do: set

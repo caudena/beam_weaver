@@ -15,7 +15,7 @@ Add BeamWeaver to your Mix project:
 ```elixir
 def deps do
   [
-    {:beam_weaver, "~> 0.1.4"}
+    {:beam_weaver, "~> 0.1.6"}
   ]
 end
 ```
@@ -210,9 +210,10 @@ state.result
 The same graph can stream typed events:
 
 ```elixir
-MyApp.CalculatorGraph.graph()
-|> BeamWeaver.Graph.Compiled.stream_events(%{operation: :multiply, a: 6, b: 7})
-|> Enum.each(fn envelope -> IO.inspect(envelope.event) end)
+{:ok, events} =
+  MyApp.CalculatorGraph.stream_events(%{operation: :multiply, a: 6, b: 7})
+
+Enum.each(events, fn envelope -> IO.inspect(envelope.event) end)
 ```
 
 Use `BeamWeaver.Graph` builder functions when the topology is generated from

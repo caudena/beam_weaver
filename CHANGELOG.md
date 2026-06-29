@@ -1,5 +1,61 @@
 # Changelog
 
+## 0.1.6 - 2026-06-29
+
+### Changed
+
+- Cleaned user-facing docs to reduce duplicate coverage, clarify provider and
+  adapter responsibilities, and keep development-only implementation notes out
+  of public guides.
+
+### Fixed
+
+- Z.ai structured-output requests now inject the JSON Schema contract into the
+  prompt when BeamWeaver has a schema but the provider request can only enforce
+  JSON object mode.
+- Structured-output retries now include safe validation details such as missing
+  required keys in the retry prompt, making provider retries more likely to
+  repair invalid JSON shapes.
+- Structured-output result handling now preserves parser error details when
+  converting validation failures into BeamWeaver errors or tool feedback.
+
+## 0.1.5 - 2026-06-28
+
+### Added
+
+- Added a dedicated prompt-caching guide and runnable example covering stable
+  cache-key construction, provider-specific cache controls, and cache-hit
+  inspection across OpenAI, xAI/Grok, Anthropic, Moonshot/Kimi, Gemini, and
+  Z.ai.
+- Added first-class OpenAI Responses and Chat Completions `prompt_cache_key` and
+  `prompt_cache_retention` model options, while keeping per-call overrides.
+- Added xAI/Grok cache routing support: Responses accepts `prompt_cache_key`,
+  and Chat Completions accepts `x_grok_conv_id`, which BeamWeaver sends as the
+  `x-grok-conv-id` header.
+- Added prompt-cache example helpers, including `GOOGLE_CACHED_CONTENT` /
+  `GEMINI_CACHED_CONTENT` support for externally managed Gemini cached-content
+  resources.
+
+### Changed
+
+- Model traces now preserve provider-specific invocation parameters from the
+  checked-in profile registry, including cache keys and cache-routing options,
+  while still omitting client configuration and secrets.
+- Prompt-cache documentation now lives in the main model documentation and
+  dedicated guide instead of the custom-middleware page; the prebuilt middleware
+  guide points Anthropic static-system-prompt caching to
+  `BeamWeaver.Agent.Middleware.PromptCaching`.
+- Redaction now keeps token counts and generation limits such as
+  `max_output_tokens`, `budget_tokens`, and `*_token_count` fields so cache and
+  usage telemetry remain inspectable.
+
+### Fixed
+
+- OpenAI Responses `prompt_cache_key` now respects first-class model options
+  ahead of `model_kwargs`, while per-call options continue to take precedence.
+- xAI requests now merge per-call headers with default headers and let per-call
+  `x_grok_conv_id` override the model-level conversation/cache routing header.
+
 ## 0.1.4 - 2026-06-25
 
 ### Added

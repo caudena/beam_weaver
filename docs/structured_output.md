@@ -141,8 +141,8 @@ response_schema MyApp.ContactInfo,
 ```
 
 `strict: true` is passed to providers that support strict JSON Schema
-adherence. Provider support varies; unsupported providers may ignore strictness
-or reject the request.
+adherence. Provider support varies; unsupported providers may ignore strictness,
+emulate it with instructions plus local validation, or reject the request.
 
 For OpenAI response formats, BeamWeaver normalizes strict schemas before sending
 the request: object schemas are closed with `additionalProperties: false`, every
@@ -445,11 +445,12 @@ response.metadata["parsed"]
 
 OpenAI and xAI Responses and Chat Completions use JSON Schema response formats.
 Anthropic uses `output_config.format` for structured output. Google maps
-schemas to Gemini generation config. Z.ai uses JSON object mode and BeamWeaver
-parsing. Structured-output parse errors include the provider finish/status
-reason, clipped content preview, metadata, and usage details so truncation and
-tool-call-only responses can be diagnosed without logging the full provider
-payload. See the [OpenAI](partners/openai.md), [Anthropic](partners/anthropic.md),
+schemas to Gemini generation config. Z.ai uses JSON object mode with
+BeamWeaver-injected schema instructions and local validation. Structured-output
+parse errors include the provider finish/status reason, clipped content
+preview, metadata, and usage details so truncation and tool-call-only responses
+can be diagnosed without logging the full provider payload. See the
+[OpenAI](partners/openai.md), [Anthropic](partners/anthropic.md),
 [Google](partners/google.md), [xAI](partners/xai.md), [Z.ai](partners/zai.md),
 and [Models](models.md) guides for provider-specific request details.
 

@@ -6,35 +6,50 @@ defmodule BeamWeaver.Agent.Decision do
   alias BeamWeaver.Core.Error
 
   defmodule Continue do
-    @moduledoc false
+    @moduledoc """
+    Normalized middleware decision that continues with an optional state update.
+    """
+
     defstruct update: %{}
 
     @type t :: %__MODULE__{update: map()}
   end
 
   defmodule Update do
-    @moduledoc false
+    @moduledoc """
+    Normalized middleware decision that applies a state update.
+    """
+
     defstruct update: %{}
 
     @type t :: %__MODULE__{update: map()}
   end
 
   defmodule Jump do
-    @moduledoc false
+    @moduledoc """
+    Normalized middleware decision that jumps to another agent loop stage.
+    """
+
     defstruct destination: nil, update: %{}
 
     @type t :: %__MODULE__{destination: :model | :tools | :end | nil, update: map()}
   end
 
   defmodule Halt do
-    @moduledoc false
+    @moduledoc """
+    Normalized middleware decision that ends the agent loop.
+    """
+
     defstruct update: %{}
 
     @type t :: %__MODULE__{update: map()}
   end
 
   defmodule Error do
-    @moduledoc false
+    @moduledoc """
+    Normalized middleware decision that returns a BeamWeaver error.
+    """
+
     defstruct [:error]
 
     @type t :: %__MODULE__{error: BeamWeaver.Core.Error.t()}

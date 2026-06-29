@@ -165,7 +165,7 @@ defmodule BeamWeaver.Agent.StructuredOutputRetryTest do
 
     model =
       model(table, [
-        weather_call("1", %{"temperature" => "invalid", "conditions" => "rainy"}),
+        weather_call("1", %{"temperature" => 75.0}),
         weather_call("2", %{"temperature" => 75.0, "conditions" => "rainy"})
       ])
 
@@ -179,6 +179,11 @@ defmodule BeamWeaver.Agent.StructuredOutputRetryTest do
     assert_received {:structured_retry_call, 2, second_messages, _opts}
     refute Enum.any?(first_messages, &feedback_message?/1)
     assert Enum.any?(second_messages, &feedback_message?/1)
+
+    feedback = Enum.find_value(second_messages, &feedback_content/1)
+    assert feedback =~ "Details:"
+    assert feedback =~ "missing"
+    assert feedback =~ "conditions"
   end
 
   test "validates retry options" do
@@ -260,4 +265,10 @@ defmodule BeamWeaver.Agent.StructuredOutputRetryTest do
   end
 
   defp feedback_message?(_message), do: false
+
+  defp feedback_content(%Message{role: :user, content: content}) when is_binary(content) do
+    if feedback_message?(%Message{role: :user, content: content}), do: content
+  end
+
+  defp feedback_content(_message), do: nil
 end

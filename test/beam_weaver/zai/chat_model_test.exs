@@ -39,6 +39,16 @@ defmodule BeamWeaver.ZAI.ChatModelTest do
   end
 
   test "request body maps GLM-5.2 params to Z.ai chat-completions shape" do
+    response_schema = %{
+      "title" => "Answer",
+      "type" => "object",
+      "required" => ["answer", "skip"],
+      "properties" => %{
+        "answer" => %{"type" => "string"},
+        "skip" => %{"type" => "boolean"}
+      }
+    }
+
     assert {:ok, body} =
              ChatModel.request_body(
                ChatModel.new(),
@@ -56,12 +66,21 @@ defmodule BeamWeaver.ZAI.ChatModelTest do
                stream_options: %{include_usage: true},
                request_id: "request-123",
                user_id: "user-123",
-               response_format: %{name: "Answer", schema: %{type: :object}},
+               response_format: %{name: "Answer", schema: response_schema, strict: true},
                tool_choice: :auto
              )
 
     assert body["model"] == "glm-5.2"
-    assert body["messages"] == [%{"role" => "user", "content" => "answer as JSON"}]
+
+    assert [
+             %{"role" => "system", "content" => schema_instruction},
+             %{"role" => "user", "content" => "answer as JSON"}
+           ] = body["messages"]
+
+    assert schema_instruction =~ "BeamWeaver structured output contract"
+    assert schema_instruction =~ "Required keys: answer, skip"
+    assert schema_instruction =~ ~s("answer")
+    assert schema_instruction =~ ~s("skip")
     assert body["do_sample"] == true
     assert body["temperature"] == 0.7
     assert body["top_p"] == 0.9
@@ -76,6 +95,18 @@ defmodule BeamWeaver.ZAI.ChatModelTest do
     assert body["user_id"] == "user-123"
     assert body["response_format"] == %{"type" => "json_object"}
     assert body["tool_choice"] == "auto"
+  end
+
+  test "plain Z.ai JSON object response format does not inject schema instructions" do
+    assert {:ok, body} =
+             ChatModel.request_body(
+               ChatModel.new(),
+               [Message.user("answer as JSON")],
+               response_format: %{type: :json_object}
+             )
+
+    assert body["messages"] == [%{"role" => "user", "content" => "answer as JSON"}]
+    assert body["response_format"] == %{"type" => "json_object"}
   end
 
   test "request validation rejects unsupported GLM-5.2 options before transport" do

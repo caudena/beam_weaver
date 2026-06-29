@@ -41,7 +41,7 @@ defmodule MyApp.Agents.FactExtractor do
   name "fact_extractor"
   description "Extract verified facts from source context."
 
-  model "openai:gpt-5.1", temperature: 0.2, timeout: 120_000
+  model "openai:gpt-5.4", temperature: 0.2, timeout: 120_000
   checkpointer MyApp.Checkpointer.new()
   store MyApp.MemoryStore.new()
 
@@ -151,7 +151,7 @@ defmodule MyApp.Agents.MeddicEvaluator do
   name "meddic_evaluator"
   description "Evaluate the deal using MEDDIC."
 
-  model "openai:gpt-5.1", temperature: 0.1
+  model "openai:gpt-5.4", temperature: 0.1
 
   tools do
     tool MyApp.Tools.RelatedDeals
@@ -165,7 +165,7 @@ defmodule MyApp.Agents.FrameworkSupervisor do
   use BeamWeaver.Agent
 
   name "framework_supervisor"
-  model "openai:gpt-5.1"
+  model "openai:gpt-5.4"
 
   subagents do
     subagent MyApp.Agents.MeddicEvaluator, capture_output: :meddic_output

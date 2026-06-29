@@ -106,7 +106,7 @@ model =
   BeamWeaver.OpenAI.chat_model(
     api_key: "sk-replay",
     transport: BeamWeaver.Transport.Replay,
-    transport_opts: [cassette_path: "priv/openai/cassettes/supervised_openai_agent.yaml"]
+    transport_opts: [cassette_path: "path/to/my_agent_response.yaml"]
   )
 
 BeamWeaver.Core.ChatModel.invoke(model, [
@@ -152,13 +152,13 @@ storage is disabled:
 BeamWeaver.Core.ChatModel.invoke(model, messages, extra_body: %{store: false})
 ```
 
-Replay-backed provider conformance fixtures cover this request shape, including
-encrypted reasoning preservation and provider-only ID removal.
+Replay coverage for this request shape includes encrypted reasoning
+preservation and provider-only ID removal.
 
-Run the supervised replay demo with:
+Run the supervised demo with:
 
 ```bash
-mix run examples/supervised_openai_agent.exs
+mix run examples/supervised_agent.exs
 ```
 
 Inspect the OpenAI `apply_patch` built-in tool request shape without live
@@ -168,18 +168,18 @@ credentials:
 mix run examples/openai_apply_patch_tool.exs
 ```
 
-## Required Remaining OpenAI Work
+## Unsupported OpenAI Surfaces
 
 - Azure OpenAI.
-- The remaining `ChatOpenAI`, `OpenAIEmbeddings`, and `OpenAI` option surfaces
-  not yet covered by replay-backed tests.
-- Remaining async edge cases beyond the Task-backed public APIs, including
-  callback/client wrapper behavior and stream chunk timeout behavior.
-- Remaining audio API surfaces beyond the current chat audio request/response shape.
-- Remaining LangChain v3 protocol edge cases not covered by the current
-  Responses message conversion tests.
-- WeaveScope exporter hardening against live API fixtures beyond the current
-  native trace payload boundary.
+- `ChatOpenAI`, `OpenAIEmbeddings`, and `OpenAI` Python compatibility surfaces
+  that do not map to the current BeamWeaver chat, embeddings, and Responses
+  APIs.
+- Callback/client wrapper behavior outside the Task-backed async public APIs.
+- Audio API surfaces beyond the current chat audio request/response shape.
+- LangChain v3 protocol edge cases outside the current Responses message
+  conversion layer.
+- WeaveScope exporter behavior beyond the native BeamWeaver trace payload
+  boundary.
 
 ## Related Guides
 

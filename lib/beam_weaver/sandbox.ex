@@ -34,19 +34,22 @@ defmodule BeamWeaver.Sandbox do
   alias BeamWeaver.Tracing.Redactor
 
   defmodule WriteResult do
-    @moduledoc false
+    @moduledoc "Result returned by sandbox write calls."
+
     defstruct [:path, :error]
     @type t :: %__MODULE__{path: String.t() | nil, error: String.t() | nil}
   end
 
   defmodule ReadResult do
-    @moduledoc false
+    @moduledoc "Result returned by sandbox read calls."
+
     defstruct [:file_data, :error]
     @type t :: %__MODULE__{file_data: binary() | nil, error: String.t() | nil}
   end
 
   defmodule ExecuteResult do
-    @moduledoc false
+    @moduledoc "Result returned by sandbox command execution calls."
+
     defstruct [:exit_code, output: "", error: nil, truncated: false, metadata: %{}]
 
     @type t :: %__MODULE__{
@@ -59,7 +62,8 @@ defmodule BeamWeaver.Sandbox do
   end
 
   defmodule EditResult do
-    @moduledoc false
+    @moduledoc "Result returned by sandbox edit calls."
+
     defstruct [:path, occurrences: 0, error: nil]
 
     @type t :: %__MODULE__{
@@ -70,31 +74,36 @@ defmodule BeamWeaver.Sandbox do
   end
 
   defmodule ListResult do
-    @moduledoc false
+    @moduledoc "Result returned by sandbox directory listing calls."
+
     defstruct entries: nil, error: nil
     @type t :: %__MODULE__{entries: [map()] | nil, error: String.t() | nil}
   end
 
   defmodule GlobResult do
-    @moduledoc false
+    @moduledoc "Result returned by sandbox glob calls."
+
     defstruct matches: nil, error: nil
     @type t :: %__MODULE__{matches: [String.t()] | nil, error: String.t() | nil}
   end
 
   defmodule GrepResult do
-    @moduledoc false
+    @moduledoc "Result returned by sandbox grep calls."
+
     defstruct matches: nil, error: nil
     @type t :: %__MODULE__{matches: [map()] | nil, error: String.t() | nil}
   end
 
   defmodule UploadResult do
-    @moduledoc false
+    @moduledoc "Result returned for one uploaded sandbox file."
+
     defstruct [:path, :error]
     @type t :: %__MODULE__{path: String.t() | nil, error: String.t() | nil}
   end
 
   defmodule DownloadResult do
-    @moduledoc false
+    @moduledoc "Result returned for one downloaded sandbox file."
+
     defstruct [:path, :content, :error]
 
     @type t :: %__MODULE__{

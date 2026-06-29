@@ -36,7 +36,7 @@ defmodule MyApp.SupportAgent do
   name "support_agent"
   description "Answer support questions from approved sources."
 
-  model "openai:gpt-5.1", temperature: 0.2, timeout: 120_000
+  model "openai:gpt-5.4", temperature: 0.2, timeout: 120_000
 
   tools do
     tool MyApp.Tools.SearchDocs

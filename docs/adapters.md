@@ -43,8 +43,9 @@ serialization: [
 ]
 ```
 
-Live Postgres tests use `BEAM_WEAVER_POSTGRES_URL`; point it at a disposable
-BeamWeaver test database.
+Keep application database setup in migrations and release tasks. Runtime calls
+should receive already-configured adapters rather than creating tables or
+inferring database URLs.
 
 ## Related Guides
 
