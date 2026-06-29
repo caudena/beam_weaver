@@ -6,7 +6,7 @@ defmodule BeamWeaver.Anthropic.Middleware.PromptCaching do
   the request. Agent integrations can merge these options into a model call.
   """
 
-  defstruct cache_control: %{"type" => "ephemeral"}
+  defstruct cache_control: %{type: :ephemeral}
 
   @type t :: %__MODULE__{cache_control: map()}
 

@@ -29,6 +29,7 @@ defmodule BeamWeaver.Graph.RuntimeSurfaceTest do
         :runtime_seen,
         %{
           context: runtime.context,
+          model_opts: runtime.model_opts,
           config: runtime.config,
           graph_name: runtime.graph_name,
           node: runtime.node,
@@ -254,6 +255,23 @@ defmodule BeamWeaver.Graph.RuntimeSurfaceTest do
     assert runtime.server_info.graph_id == "runtime-graph"
     assert runtime.server_info.user.identity == "user-runtime"
     assert runtime.server_info.user["display_name"] == "Runtime User"
+  end
+
+  test "compiled graph runtime carries model opts into nodes" do
+    parent = self()
+
+    graph =
+      Graph.new()
+      |> Graph.add_node(:seen, fn _state, runtime ->
+        send(parent, {:runtime_model_opts, runtime.model_opts})
+        %{seen: true}
+      end)
+      |> Graph.add_edge(Graph.start(), :seen)
+      |> Graph.add_edge(:seen, Graph.end_node())
+      |> Graph.compile!()
+
+    assert {:ok, %{seen: true}} = Compiled.invoke(graph, %{}, model_opts: [prompt_cache_key: "graph-cache"])
+    assert_receive {:runtime_model_opts, [prompt_cache_key: "graph-cache"]}
   end
 
   test "runtime merge override and server info hydration stay immutable" do

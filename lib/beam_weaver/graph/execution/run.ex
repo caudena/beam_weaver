@@ -13,6 +13,7 @@ defmodule BeamWeaver.Graph.Execution.Run do
     :ready,
     :config,
     :context,
+    :model_opts,
     :stream_modes,
     :events,
     :step,

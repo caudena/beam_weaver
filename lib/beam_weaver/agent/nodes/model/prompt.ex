@@ -86,11 +86,32 @@ defmodule BeamWeaver.Agent.Nodes.Model.Prompt do
   def model_opts(node, runtime) do
     node.model_opts
     |> Keyword.drop([:tool_timeout])
+    |> Keyword.merge(runtime_model_opts(runtime))
     |> Keyword.put_new(:tools, node.tools)
     |> Keyword.put_new(:context, Map.get(runtime || %{}, :context))
     |> Keyword.put_new(:cache, Map.get(runtime || %{}, :cache))
     |> Keyword.put_new(:assistant_name, node.assistant_name)
   end
+
+  @runtime_model_opt_blocklist [:tools, :context, :cache, :assistant_name, :tool_timeout]
+
+  defp runtime_model_opts(%{model_opts: opts}), do: sanitize_runtime_model_opts(opts)
+  defp runtime_model_opts(_runtime), do: []
+
+  defp sanitize_runtime_model_opts(opts) when is_list(opts) do
+    opts
+    |> Enum.filter(fn {key, _value} -> is_atom(key) end)
+    |> Keyword.drop(@runtime_model_opt_blocklist)
+  end
+
+  defp sanitize_runtime_model_opts(opts) when is_map(opts) do
+    opts
+    |> Enum.filter(fn {key, _value} -> is_atom(key) end)
+    |> Keyword.new()
+    |> Keyword.drop(@runtime_model_opt_blocklist)
+  end
+
+  defp sanitize_runtime_model_opts(_opts), do: []
 
   def prompt_messages(nil), do: []
   def prompt_messages(messages) when is_list(messages), do: messages

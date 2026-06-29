@@ -679,12 +679,14 @@ Anthropic, and `:thinking_level` or `:thinking_budget` for Google.
 
 Prompt caching is provider-specific:
 
+- Agent calls can pass explicit provider overrides with `model_opts: [...]`.
 - OpenAI Responses and Chat Completions requests support `:prompt_cache_key`.
 - xAI Responses supports `:prompt_cache_key`.
 - xAI Chat Completions supports `:x_grok_conv_id`, which BeamWeaver maps to
   the `x-grok-conv-id` header.
-- Anthropic agents can use `BeamWeaver.Agent.Middleware.PromptCaching` to mark
-  the static system prompt with `cache_control`.
+- `prompt_caching` and `BeamWeaver.Agent.Middleware.PromptCaching` route cache
+  controls for supported providers; Anthropic marks the static system prompt
+  with `cache_control`.
 - Moonshot/Kimi supports `:prompt_cache_key`.
 - Gemini and Z.ai cached-token usage is normalized when providers report it.
 - Usage metadata preserves cache-read/cache-creation token details when

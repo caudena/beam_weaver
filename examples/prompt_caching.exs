@@ -1,10 +1,8 @@
 Code.require_file("support.exs", __DIR__)
 
-alias BeamWeaver.Core.ChatModel
+alias BeamWeaver.Agent
 alias BeamWeaver.Core.Message
 alias BeamWeaver.Examples.Support
-
-model = Support.model()
 
 system_prompt = """
 You are a support analysis agent.
@@ -15,17 +13,27 @@ and stable so repeated calls can reuse provider prompt caches.
 #{String.duplicate("- Verify account ownership, preserve audit trails, cite the support rule id, and never invent data.\n", 240)}
 """
 
-messages =
-  Support.prompt_cache_messages(model, system_prompt, [
-    Message.user("Ticket SUP-42 asks whether deleted exports can be restored.")
-  ])
+{:ok, agent} =
+  Agent.build(
+    name: "prompt_caching_example",
+    model: Support.model(),
+    system_prompt: system_prompt,
+    prompt_caching: [scope: "support-agent", version: "v1"]
+  )
 
-cache_opts = Support.prompt_cache_opts(model, "support-agent", system_prompt)
+input = %{
+  messages: [
+    Message.user("Ticket SUP-42 asks whether deleted exports can be restored. Answer in one sentence.")
+  ]
+}
 
-{:ok, first} = ChatModel.invoke(model, messages, cache_opts)
-{:ok, second} = ChatModel.invoke(model, messages, cache_opts)
+{:ok, first} = Agent.invoke(agent, input)
+{:ok, second} = Agent.invoke(agent, input)
 
-IO.puts(Message.text(second))
+first_message = List.last(first.messages)
+second_message = List.last(second.messages)
+
+IO.puts(Message.text(second_message))
 IO.puts("")
-IO.puts("First cached input tokens: #{Support.cache_read_tokens(first)}")
-IO.puts("Second cached input tokens: #{Support.cache_read_tokens(second)}")
+IO.puts("First cached input tokens: #{Support.cache_read_tokens(first_message)}")
+IO.puts("Second cached input tokens: #{Support.cache_read_tokens(second_message)}")

@@ -47,6 +47,45 @@ defmodule BeamWeaver.OpenAI.FakeTransportTest do
     assert {"authorization", "Bearer sk-secret-test"} in request.headers
   end
 
+  test "fake transport asserts OpenAI prompt cache key request shape" do
+    model = %ResponsesModel{
+      model: "gpt-5.4-mini",
+      api_key: "sk-secret-test",
+      transport: BeamWeaver.TestSupport.Conformance.Fakes.Transport,
+      transport_opts: [
+        parent: self(),
+        expect: %{
+          method: :post,
+          path: "/responses",
+          json: %{
+            "model" => "gpt-5.4-mini",
+            "input" => [%{"type" => "message", "role" => "user", "content" => "cache me"}],
+            "stream" => false,
+            "prompt_cache_key" => "cache-run"
+          }
+        },
+        body: %{
+          "id" => "resp_fake",
+          "status" => "completed",
+          "output" => [
+            %{
+              "type" => "message",
+              "role" => "assistant",
+              "content" => [%{"type" => "output_text", "text" => "cached"}]
+            }
+          ]
+        }
+      ]
+    }
+
+    assert {:ok, response} =
+             ChatModel.invoke(model, [Message.user("cache me")], prompt_cache_key: "cache-run")
+
+    assert Message.text(response) == "cached"
+    assert_received {:fake_transport_request, request}
+    assert request.json["prompt_cache_key"] == "cache-run"
+  end
+
   test "fake transport reports redacted request mismatches" do
     model = %ResponsesModel{
       model: "gpt-5.4-mini",

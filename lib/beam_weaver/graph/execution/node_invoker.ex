@@ -61,7 +61,8 @@ defmodule BeamWeaver.Graph.Execution.NodeInvoker do
     opts =
       [
         config: SubgraphRouter.config(runtime, compiled),
-        context: runtime.context
+        context: runtime.context,
+        model_opts: runtime.model_opts || []
       ]
       |> maybe_continue_subgraph_checkpoint()
       |> maybe_collect_subgraph_stream(runtime)
