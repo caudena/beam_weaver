@@ -1,34 +1,94 @@
 defmodule BeamWeaver.Agent.Middleware.PromptCaching do
-  @moduledoc "Applies Anthropic prompt-cache control to the static system prompt."
+  @moduledoc "Applies provider-aware prompt-cache controls to model calls."
 
   @behaviour BeamWeaver.Agent.Middleware
 
   alias BeamWeaver.Agent.ModelRequest
   alias BeamWeaver.Anthropic.Middleware.PromptCaching, as: AnthropicPromptCaching
   alias BeamWeaver.Core.Message
+  alias BeamWeaver.PromptCache
 
-  defstruct helper: AnthropicPromptCaching.new()
+  defstruct helper: AnthropicPromptCaching.new(), scope: nil, version: "v1"
 
-  def new(opts \\ []),
-    do: %__MODULE__{helper: AnthropicPromptCaching.new(opts)}
+  def new(opts \\ []) do
+    attrs = if is_map(opts), do: opts, else: Map.new(opts)
+    cache_control = Map.get(attrs, :cache_control, %{type: :ephemeral})
+
+    %__MODULE__{
+      helper: AnthropicPromptCaching.new(cache_control: cache_control),
+      scope: Map.get(attrs, :scope),
+      version: Map.get(attrs, :version, "v1")
+    }
+  end
 
   @impl true
   def name(_middleware), do: :deepagents_prompt_caching
 
   def wrap_model_call(%__MODULE__{} = middleware, %ModelRequest{} = request, handler) do
-    if anthropic_model?(request.model) do
-      cache_control = middleware.helper.cache_control
-
-      request
-      |> ModelRequest.override(system_message: cache_system_message(request.system_message, cache_control))
-      |> handler.()
-    else
-      handler.(request)
-    end
+    request
+    |> maybe_cache_anthropic_system_message(middleware)
+    |> maybe_put_provider_cache_opts(middleware)
+    |> handler.()
   end
 
   defp anthropic_model?(%BeamWeaver.Anthropic.ChatModel{}), do: true
   defp anthropic_model?(_model), do: false
+
+  defp maybe_cache_anthropic_system_message(%ModelRequest{} = request, %__MODULE__{} = middleware) do
+    if anthropic_model?(request.model) do
+      ModelRequest.override(request,
+        system_message: cache_system_message(request.system_message, middleware.helper.cache_control)
+      )
+    else
+      request
+    end
+  end
+
+  defp maybe_put_provider_cache_opts(%ModelRequest{} = request, %__MODULE__{} = middleware) do
+    case provider_cache_opts(request, middleware) do
+      [] ->
+        request
+
+      opts ->
+        model_opts = Keyword.merge(opts, request.model_opts || [])
+        ModelRequest.override(request, model_opts: model_opts)
+    end
+  end
+
+  defp provider_cache_opts(%ModelRequest{model: %BeamWeaver.OpenAI.ChatModel{}} = request, middleware),
+    do: [prompt_cache_key: cache_key(request, middleware)]
+
+  defp provider_cache_opts(%ModelRequest{model: %BeamWeaver.OpenAI.ChatCompletionsModel{}} = request, middleware),
+    do: [prompt_cache_key: cache_key(request, middleware)]
+
+  defp provider_cache_opts(%ModelRequest{model: %BeamWeaver.OpenAI.ResponsesModel{}} = request, middleware),
+    do: [prompt_cache_key: cache_key(request, middleware)]
+
+  defp provider_cache_opts(%ModelRequest{model: %BeamWeaver.XAI.ChatModel{}} = request, middleware) do
+    key = cache_key(request, middleware)
+    [prompt_cache_key: key, x_grok_conv_id: key]
+  end
+
+  defp provider_cache_opts(%ModelRequest{model: %BeamWeaver.XAI.ChatCompletionsModel{}} = request, middleware),
+    do: [x_grok_conv_id: cache_key(request, middleware)]
+
+  defp provider_cache_opts(%ModelRequest{model: %BeamWeaver.Moonshot.ChatModel{}} = request, middleware),
+    do: [prompt_cache_key: cache_key(request, middleware)]
+
+  defp provider_cache_opts(_request, _middleware), do: []
+
+  defp cache_key(%ModelRequest{} = request, %__MODULE__{} = middleware) do
+    PromptCache.key(
+      middleware.scope || default_scope(request.runtime),
+      PromptCache.provider_model(request.model),
+      ModelRequest.system_prompt(request) || "",
+      version: middleware.version
+    )
+  end
+
+  defp default_scope(%{graph_name: graph_name}) when graph_name not in [nil, ""], do: graph_name
+  defp default_scope(%{node: node}) when node not in [nil, ""], do: node
+  defp default_scope(_runtime), do: "agent"
 
   defp cache_system_message(nil, _cache_control), do: nil
 

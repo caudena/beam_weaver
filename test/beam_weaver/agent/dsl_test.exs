@@ -6,6 +6,7 @@ defmodule BeamWeaver.Agent.DSLTest do
   alias BeamWeaver.Core.ChatModel
   alias BeamWeaver.Core.Message
   alias BeamWeaver.Core.Tool
+  alias BeamWeaver.Models.FakeChatModel
 
   defmodule GreetingAgent do
     use BeamWeaver.Agent
@@ -97,6 +98,49 @@ defmodule BeamWeaver.Agent.DSLTest do
     model(%ToolCallingModel{timeout: 1_000}, timeout: 45_000)
     tools([])
     middleware([{BeamWeaver.Agent.Middleware.Summarization, model: %ToolCallingModel{}, trigger: nil}])
+  end
+
+  defmodule RuntimeModelOptsAgent do
+    use BeamWeaver.Agent
+
+    model(__MODULE__.model(), timeout: 30_000, reasoning_effort: "low")
+    system_prompt("Runtime model opts test.")
+
+    def model, do: %FakeChatModel{parent: self(), response: "ok"}
+  end
+
+  defmodule RuntimeStreamModelOptsModel do
+    @behaviour ChatModel
+
+    defstruct [:parent]
+
+    @impl true
+    def invoke(%__MODULE__{parent: parent}, _messages, opts) do
+      if parent, do: send(parent, {:stream_model_invoke, opts})
+      {:ok, Message.assistant("invoke")}
+    end
+
+    def stream_response(%__MODULE__{parent: parent}, _messages, opts) do
+      if parent, do: send(parent, {:stream_model_response, opts})
+      {:ok, Message.assistant("stream")}
+    end
+  end
+
+  defmodule RuntimeStreamModelOptsAgent do
+    use BeamWeaver.Agent
+
+    model(__MODULE__.model(), stream: true)
+    system_prompt("Runtime stream model opts test.")
+
+    def model, do: %RuntimeStreamModelOptsModel{parent: self()}
+  end
+
+  defmodule PromptCachingSettingsAgent do
+    use BeamWeaver.Agent
+
+    model(%FakeChatModel{})
+    system_prompt("Prompt caching settings test.")
+    prompt_caching(scope: "ai_report", version: "v2")
   end
 
   test "agent modules invoke through the generated graph" do
@@ -206,6 +250,59 @@ defmodule BeamWeaver.Agent.DSLTest do
              )
 
     assert agent.compiled.graph.nodes["model"].timeout == 45_000
+  end
+
+  test "agent invocation forwards explicit runtime model opts without leaking internal overrides" do
+    assert {:ok, %{messages: messages}} =
+             RuntimeModelOptsAgent.invoke(
+               %{messages: [Message.user("hi")]},
+               context: %{tenant: "acme"},
+               model_opts: [
+                 reasoning_effort: "high",
+                 prompt_cache_key: "run-cache",
+                 tools: [:bad],
+                 context: :bad,
+                 cache: :bad,
+                 assistant_name: "bad"
+               ]
+             )
+
+    assert [%Message{role: :user}, %Message{role: :assistant, content: "ok"}] = messages
+    assert_receive {:fake_chat_model_call, _messages, opts}
+
+    assert Keyword.fetch!(opts, :reasoning_effort) == "high"
+    assert Keyword.fetch!(opts, :prompt_cache_key) == "run-cache"
+    assert Keyword.fetch!(opts, :timeout) == 30_000
+    assert Keyword.fetch!(opts, :tools) == []
+    assert Keyword.fetch!(opts, :context) == %{tenant: "acme"}
+    assert Keyword.fetch!(opts, :cache) == nil
+    assert Keyword.fetch!(opts, :assistant_name) == inspect(RuntimeModelOptsAgent)
+  end
+
+  test "agent stream events forwards explicit runtime model opts" do
+    assert {:ok, events} =
+             RuntimeStreamModelOptsAgent.stream_events(
+               %{messages: [Message.user("hi")]},
+               model_opts: [x_grok_conv_id: "stream-cache"]
+             )
+
+    assert Enum.to_list(events) != []
+    assert_receive {:stream_model_response, opts}
+    assert Keyword.fetch!(opts, :x_grok_conv_id) == "stream-cache"
+    assert Keyword.fetch!(opts, :stream) == true
+  end
+
+  test "prompt_caching DSL passes provider-aware settings into middleware" do
+    spec =
+      PromptCachingSettingsAgent.__beam_weaver_agent_spec__()
+      |> BeamWeaver.Agent.Capabilities.apply()
+
+    assert %BeamWeaver.Agent.Middleware.PromptCaching{} =
+             middleware =
+             Enum.find(spec.middleware, &match?(%BeamWeaver.Agent.Middleware.PromptCaching{}, &1))
+
+    assert middleware.scope == "ai_report"
+    assert middleware.version == "v2"
   end
 
   test "model/tools DSL cannot be mixed with manual graph nodes" do

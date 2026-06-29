@@ -105,6 +105,7 @@ defmodule BeamWeaver.Graph.Execution.RunInit do
            ready: initial_ready,
            config: config,
            context: options.context,
+           model_opts: options.model_opts,
            stream_modes: options.stream_modes,
            events: [],
            step: initial_step,

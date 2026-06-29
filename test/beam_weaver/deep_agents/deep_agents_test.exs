@@ -936,7 +936,7 @@ defmodule BeamWeaver.AgentCapabilitiesTest do
              Middleware.PromptCaching.wrap_model_call(middleware, anthropic_request, & &1)
 
     assert block.text == "base"
-    assert block.cache_control == %{"type" => "ephemeral"}
+    assert block.cache_control == %{type: :ephemeral}
 
     fake_request = ModelRequest.new(model: %FakeChatModel{}, system_prompt: "base")
 

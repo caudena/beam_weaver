@@ -205,6 +205,7 @@ defmodule BeamWeaver.Agent.Runner do
   defp agent_runtime(agent_module, %Compiled{} = compiled, opts) do
     %Runtime{
       context: Keyword.get(opts, :context),
+      model_opts: Keyword.get(opts, :model_opts, []),
       store: compiled.store,
       checkpointer: compiled.checkpointer,
       cache: compiled.cache,
@@ -220,6 +221,7 @@ defmodule BeamWeaver.Agent.Runner do
   defp built_runtime(%Built{} = agent, opts) do
     %Runtime{
       context: Keyword.get(opts, :context),
+      model_opts: Keyword.get(opts, :model_opts, []),
       store: agent.compiled.store,
       checkpointer: agent.compiled.checkpointer,
       cache: agent.compiled.cache,

@@ -65,7 +65,7 @@ defmodule BeamWeaver.Examples.Support do
         %{
           type: :text,
           text: static_prompt,
-          cache_control: %{"type" => "ephemeral"}
+          cache_control: %{type: :ephemeral}
         }
       ])
       | messages

@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.1.7 - 2026-06-29
+
+### Added
+
+- Added Agent per-call `model_opts:` overrides for `invoke/3` and
+  `stream_events/3`, so provider request options such as `prompt_cache_key`,
+  `x_grok_conv_id`, and `reasoning_effort` can be passed through Agent calls
+  without leaking internal runtime keys.
+- Added provider-aware Agent prompt caching via `prompt_caching true`,
+  `prompt_caching scope: ..., version: ...`, and
+  `BeamWeaver.Agent.Middleware.PromptCaching`, with generated cache keys for
+  OpenAI, xAI/Grok, Moonshot/Kimi, and Anthropic static-system-prompt cache
+  control.
+- Added `BeamWeaver.PromptCache` for stable cache-key construction across
+  examples and application code.
+
+### Changed
+
+- Prompt caching middleware now fills only missing provider cache options;
+  explicit model-level or per-call options keep precedence.
+- The prompt-caching example now exercises the Agent path instead of direct
+  `ChatModel.invoke/3`.
+
+### Fixed
+
+- xAI Responses Agent calls now receive both `prompt_cache_key` and
+  `x_grok_conv_id` when prompt caching is enabled, while xAI Chat Completions
+  receives the `x-grok-conv-id` routing header.
+- Runtime-built agents, module agents, streams, and subgraph invocations now
+  preserve per-call model options through the graph runtime.
+
 ## 0.1.6 - 2026-06-29
 
 ### Changed

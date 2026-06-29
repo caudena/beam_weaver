@@ -7,10 +7,10 @@ defmodule BeamWeaver.Anthropic.MiddlewareTest do
   alias BeamWeaver.Anthropic.Middleware.PromptCaching
 
   test "prompt caching middleware exposes Anthropic cache_control call opts" do
-    assert PromptCaching.new().cache_control == %{"type" => "ephemeral"}
+    assert PromptCaching.new().cache_control == %{type: :ephemeral}
 
     assert PromptCaching.new() |> PromptCaching.call_opts() == [
-             cache_control: %{"type" => "ephemeral"}
+             cache_control: %{type: :ephemeral}
            ]
   end
 

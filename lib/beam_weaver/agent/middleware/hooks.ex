@@ -130,7 +130,7 @@ defmodule BeamWeaver.Agent.Middleware.Hooks do
       "Subagents" -> "SubAgentMiddleware"
       "AsyncSubagents" -> "AsyncSubAgentMiddleware"
       "CompactConversation" -> "SummarizationMiddleware"
-      "PromptCaching" -> "AnthropicPromptCachingMiddleware"
+      "PromptCaching" -> "PromptCachingMiddleware"
       name when is_binary(name) -> ensure_middleware_suffix(name)
     end
   end

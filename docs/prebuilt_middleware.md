@@ -72,7 +72,7 @@ directly.
 | Remote async subagent tools | `BeamWeaver.Agent.Middleware.AsyncSubagents` |
 | Manual conversation compaction | `BeamWeaver.Agent.Middleware.CompactConversation` |
 | Context-overflow recovery | `BeamWeaver.Agent.Middleware.OverflowRecovery` |
-| Anthropic prompt caching | `BeamWeaver.Agent.Middleware.PromptCaching` |
+| Provider-aware prompt caching | `BeamWeaver.Agent.Middleware.PromptCaching` |
 | Policy-governed shell session | `BeamWeaver.Agent.Middleware.ShellTool` |
 | Tool-result emulation for tests | `BeamWeaver.Agent.Middleware.ToolEmulator` |
 
@@ -762,7 +762,7 @@ BeamWeaver includes Anthropic call-option helpers:
 
 These helpers produce provider call options, such as server-tool declarations or
 cache-control metadata. They are not general `BeamWeaver.Agent.Middleware`
-callbacks. For the common agent-level static system prompt cache path, use
+callbacks. For agent-level prompt cache routing across supported providers, use
 `BeamWeaver.Agent.Middleware.PromptCaching`.
 
 ```elixir

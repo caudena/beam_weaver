@@ -307,7 +307,7 @@ BeamWeaver combines several context controls:
 | Retry context overflow with clipped/offloaded tool results | `overflow_recovery: true` or `overflow_recovery true` |
 | Save oversized tool results to the filesystem | `BeamWeaver.Agent.Middleware.Filesystem` |
 | Save oversized user messages to conversation-history files | `BeamWeaver.Agent.Middleware.Filesystem` |
-| Mark static Anthropic system prompts for cache control | `prompt_caching: true` or `prompt_caching true` |
+| Enable provider-aware prompt cache controls | `prompt_caching: true` or `prompt_caching true` |
 | Isolate heavy subtasks | `subagents` and `async_subagents` |
 
 `compact_conversation` adds a `compact_conversation` tool that summarizes older

@@ -17,30 +17,58 @@ unless you intentionally want separate cache buckets. The provider still hashes
 the request prefix, but stable keys help providers route equivalent requests to
 the same cache entry when they support explicit keys.
 
-## Stable Cache Keys
+## Agent Prompt Caching
 
-Build keys from the stable prompt, provider/model, and a version you control.
-Change the version when the static prompt changes semantically.
+For agents, prefer the `prompt_caching` DSL. BeamWeaver derives a stable cache
+key from the static system prompt, scope, provider/model, and version, then sends
+the right provider-specific cache option at model-call time.
 
 ```elixir
-defmodule MyApp.PromptCache do
-  @version "v1"
+defmodule MyApp.AIReportAgent do
+  use BeamWeaver.Agent
 
-  def key(scope, provider_model, static_prompt) do
-    digest =
-      static_prompt
-      |> then(fn prompt -> :crypto.hash(:sha256, prompt) end)
-      |> Base.url_encode64(padding: false)
-      |> String.slice(0, 18)
-
-    "my_app:prompt-cache:#{@version}:#{scope}:#{provider_model}:#{digest}"
-  end
+  model("xai:grok-4.3", timeout: 300_000, reasoning_effort: "high")
+  prompt_caching(scope: "ai_report", version: "v1")
+  system_prompt(MyApp.Prompts.ai_report())
 end
 ```
 
 This scope is deliberately about the static prompt, not the current user,
 thread, project, or record. That lets repeated reports or chats share cache hits
 while the provider keeps correctness tied to the actual request prefix.
+
+Equivalent middleware form:
+
+```elixir
+middleware do
+  use BeamWeaver.Agent.Middleware.PromptCaching, scope: "ai_report", version: "v1"
+end
+```
+
+Per-call provider options can be passed explicitly with `:model_opts`. These
+override agent-level model options and middleware-generated cache keys.
+
+```elixir
+MyApp.AIReportAgent.invoke(input,
+  model_opts: [prompt_cache_key: "manual-cache-key", reasoning_effort: "high"]
+)
+```
+
+For manual direct model calls, use `BeamWeaver.PromptCache.key/4`:
+
+```elixir
+cache_key =
+  BeamWeaver.PromptCache.key(
+    "support-agent",
+    "openai:gpt-5.4-mini",
+    MyApp.Prompts.support_policy(),
+    version: "v1"
+  )
+```
+
+The generated key shape is `bwpc:<version>:<scope>:<provider-model>:<digest>`.
+
+The following sections show lower-level direct model-call controls.
 
 ## OpenAI Responses
 
@@ -52,7 +80,7 @@ alias BeamWeaver.Core.ChatModel
 alias BeamWeaver.Core.Message
 
 system_prompt = MyApp.Prompts.support_policy()
-cache_key = MyApp.PromptCache.key("support-agent", "openai:gpt-5.4-mini", system_prompt)
+cache_key = BeamWeaver.PromptCache.key("support-agent", "openai:gpt-5.4-mini", system_prompt)
 
 model =
   BeamWeaver.OpenAI.ChatModel.new(
@@ -79,7 +107,7 @@ When the provider reports a hit, BeamWeaver preserves it in
 Chat Completions uses the same BeamWeaver option:
 
 ```elixir
-cache_key = MyApp.PromptCache.key("support-agent", "openai:gpt-5.4-mini", system_prompt)
+cache_key = BeamWeaver.PromptCache.key("support-agent", "openai:gpt-5.4-mini", system_prompt)
 
 model =
   BeamWeaver.OpenAI.ChatCompletionsModel.new(
@@ -97,7 +125,7 @@ model =
 xAI Responses accepts `:prompt_cache_key`:
 
 ```elixir
-cache_key = MyApp.PromptCache.key("support-agent", "xai:grok-4.3", system_prompt)
+cache_key = BeamWeaver.PromptCache.key("support-agent", "xai:grok-4.3", system_prompt)
 
 model =
   BeamWeaver.XAI.ChatModel.new(
@@ -113,7 +141,7 @@ xAI Chat Completions uses the `x-grok-conv-id` header. BeamWeaver exposes that
 as `:x_grok_conv_id`:
 
 ```elixir
-cache_key = MyApp.PromptCache.key("support-agent", "xai:grok-4.3", system_prompt)
+cache_key = BeamWeaver.PromptCache.key("support-agent", "xai:grok-4.3", system_prompt)
 
 model =
   BeamWeaver.XAI.ChatCompletionsModel.new(
@@ -125,19 +153,20 @@ model =
 {:ok, response} = BeamWeaver.Core.ChatModel.invoke(model, messages)
 ```
 
-Per-call overrides are supported for flows where the model is shared:
+Per-call overrides are supported for flows where the model is shared. Agent
+calls use the explicit `:model_opts` wrapper; direct model calls pass provider
+options directly:
 
 ```elixir
 BeamWeaver.Core.ChatModel.invoke(model, messages, x_grok_conv_id: cache_key)
+MyApp.Agent.invoke(input, model_opts: [x_grok_conv_id: cache_key])
 ```
 
 ## Anthropic
 
-Anthropic prompt caching is block-based. Use
-`BeamWeaver.Agent.Middleware.PromptCaching` on agents with a static system
-prompt. BeamWeaver marks the static system prompt with Anthropic
-`cache_control`; user messages and tool outputs are not marked by this
-middleware.
+Anthropic prompt caching is block-based. With `prompt_caching`, BeamWeaver marks
+the static system prompt with Anthropic `cache_control`; user messages and tool
+outputs are not marked by this middleware.
 
 ```elixir
 defmodule MyApp.SupportAgent do
@@ -173,7 +202,7 @@ input = %{messages: [BeamWeaver.Core.Message.user("Ticket SUP-42 needs review.")
 Moonshot/Kimi supports `:prompt_cache_key` on chat completions:
 
 ```elixir
-cache_key = MyApp.PromptCache.key("support-agent", "moonshot:kimi-k2.6", system_prompt)
+cache_key = BeamWeaver.PromptCache.key("support-agent", "moonshot:kimi-k2.6", system_prompt)
 
 model =
   BeamWeaver.Moonshot.ChatModel.new(

@@ -113,6 +113,52 @@ defmodule BeamWeaver.XAI.ChatModelTest do
     assert {"authorization", "Bearer xai-secret"} in request.headers
   end
 
+  test "xAI Responses fake transport asserts prompt cache key and conversation header" do
+    model =
+      ChatModel.new(
+        model: "grok-4.3",
+        api_key: "xai-secret",
+        transport: BeamWeaver.TestSupport.Conformance.Fakes.Transport,
+        transport_opts: [
+          parent: self(),
+          expect: %{
+            method: :post,
+            path: "/v1/responses",
+            json: %{
+              "model" => "grok-4.3",
+              "input" => [%{"type" => "message", "role" => "user", "content" => "cache me"}],
+              "stream" => false,
+              "prompt_cache_key" => "cache-run"
+            }
+          },
+          body: %{
+            "id" => "resp_xai_cache",
+            "model" => "grok-4.3",
+            "status" => "completed",
+            "output" => [
+              %{
+                "id" => "msg_1",
+                "type" => "message",
+                "role" => "assistant",
+                "content" => [%{"type" => "output_text", "text" => "cached"}]
+              }
+            ]
+          }
+        ]
+      )
+
+    assert {:ok, response} =
+             CoreChatModel.invoke(model, [Message.user("cache me")],
+               prompt_cache_key: "cache-run",
+               x_grok_conv_id: "conv-run"
+             )
+
+    assert Message.text(response) == "cached"
+    assert_received {:fake_transport_request, request}
+    assert request.json["prompt_cache_key"] == "cache-run"
+    assert {"x-grok-conv-id", "conv-run"} in request.headers
+  end
+
   test "tool helpers cover xAI Responses and Chat Completions built-ins" do
     assert Tools.code_execution() == %{"type" => "code_execution"}
 

@@ -64,6 +64,7 @@ defmodule BeamWeaver.Graph.Execution.TaskRun do
       store: run.compiled.store,
       checkpointer: run.compiled.checkpointer,
       cache: run.compiled.cache,
+      model_opts: run.model_opts,
       config: run.config,
       graph_name: run.compiled.name,
       node: spec.name,
