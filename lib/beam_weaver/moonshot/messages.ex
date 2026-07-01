@@ -63,10 +63,11 @@ defmodule BeamWeaver.Moonshot.Messages do
   @spec metadata(map(), map()) :: map()
   def metadata(response, choice) do
     message = choice["message"] || %{}
-    headers = response["_beamweaver_response_headers"]
+    header_metadata = response["_beamweaver_response_header_metadata"] || %{}
 
     %{
       id: response["id"],
+      request_id: header_metadata[:request_id],
       model: response["model"],
       model_name: response["model"],
       model_provider: "moonshot",
@@ -78,21 +79,29 @@ defmodule BeamWeaver.Moonshot.Messages do
       service_tier: response["service_tier"],
       logprobs: choice["logprobs"],
       reasoning_content: message["reasoning_content"],
-      headers: headers,
+      headers: header_metadata[:headers],
+      transport: transport_metadata(header_metadata),
       raw_provider_response: response
     }
     |> MessageParts.reject_nil_values()
   end
+
+  defp transport_metadata(%{request_id: request_id}) when is_binary(request_id) and request_id != "" do
+    %{request_id: request_id}
+  end
+
+  defp transport_metadata(_metadata), do: nil
 
   @spec usage_metadata(map()) :: map() | nil
   def usage_metadata(%{"usage" => usage}) when is_map(usage) do
     %{
       input_tokens: usage["prompt_tokens"] || usage["input_tokens"] || 0,
       output_tokens: usage["completion_tokens"] || usage["output_tokens"] || 0,
-      total_tokens: usage["total_tokens"] || 0
+      total_tokens: usage["total_tokens"] || 0,
+      input_token_details: input_token_details(usage),
+      output_token_details: output_token_details(usage)
     }
-    |> put_usage_details(:input_token_details, input_token_details(usage))
-    |> put_usage_details(:output_token_details, output_token_details(usage))
+    |> BeamWeaver.MapShape.reject_nil_or_empty()
   end
 
   def usage_metadata(_response), do: nil
@@ -409,23 +418,23 @@ defmodule BeamWeaver.Moonshot.Messages do
   defp tool_calls(_message), do: []
 
   defp input_token_details(usage) do
-    %{}
-    |> put_detail(:cache_read, usage["cached_tokens"])
-    |> put_detail(:cache_read, get_in(usage, ["prompt_tokens_details", "cached_tokens"]))
-    |> put_detail(:cache_read, get_in(usage, ["input_tokens_details", "cached_tokens"]))
+    %{
+      cache_read:
+        get_in(usage, ["input_tokens_details", "cached_tokens"]) ||
+          get_in(usage, ["prompt_tokens_details", "cached_tokens"]) ||
+          usage["cached_tokens"]
+    }
+    |> BeamWeaver.MapShape.reject_nil_or_empty()
   end
 
   defp output_token_details(usage) do
-    %{}
-    |> put_detail(:reasoning, get_in(usage, ["completion_tokens_details", "reasoning_tokens"]))
-    |> put_detail(:reasoning, get_in(usage, ["output_tokens_details", "reasoning_tokens"]))
+    %{
+      reasoning:
+        get_in(usage, ["output_tokens_details", "reasoning_tokens"]) ||
+          get_in(usage, ["completion_tokens_details", "reasoning_tokens"])
+    }
+    |> BeamWeaver.MapShape.reject_nil_or_empty()
   end
-
-  defp put_usage_details(metadata, _key, details) when details == %{}, do: metadata
-  defp put_usage_details(metadata, key, details), do: Map.put(metadata, key, details)
-
-  defp put_detail(details, _key, nil), do: details
-  defp put_detail(details, key, value), do: Map.put(details, key, value)
 
   defp encode_arguments(arguments) when is_binary(arguments), do: arguments
   defp encode_arguments(arguments), do: BeamWeaver.JSON.encode!(arguments || %{})

@@ -7,6 +7,12 @@ defmodule BeamWeaver.XAI.Client.ResponseDecoder do
   alias BeamWeaver.Transport.Response
   alias BeamWeaver.XAI.Error
 
+  def json({:ok, %Response{} = response} = result, opts) do
+    with {:ok, decoded} <- ResponseDecoder.json(result, decoder_opts(opts)) do
+      {:ok, attach_header_metadata(decoded, response.headers)}
+    end
+  end
+
   def json(result, opts), do: ResponseDecoder.json(result, decoder_opts(opts))
 
   def text_stream({:ok, %Response{status: status, body: body}})
@@ -136,11 +142,54 @@ defmodule BeamWeaver.XAI.Client.ResponseDecoder do
   defp context_overflow?(_status, _provider_error, _message), do: false
 
   defp maybe_attach_response_headers(decoded, %Response{} = response, opts) do
-    if Keyword.get(opts, :include_response_headers, false) do
-      Map.put(decoded, "_beamweaver_response_headers", Map.new(response.headers))
-    else
-      decoded
-    end
+    decoded = attach_header_metadata(decoded, response.headers)
+
+    if Keyword.get(opts, :include_response_headers, false),
+      do: Map.put(decoded, "_beamweaver_response_headers", Map.new(response.headers)),
+      else: decoded
+  end
+
+  defp attach_header_metadata(decoded, headers) when is_map(decoded) do
+    metadata = header_metadata(headers)
+
+    if map_size(metadata) > 0,
+      do: Map.put(decoded, "_beamweaver_response_header_metadata", metadata),
+      else: decoded
+  end
+
+  defp header_metadata(headers) do
+    headers = response_headers(headers)
+
+    decoded =
+      %{
+        request_id: headers["x-request-id"],
+        x_ratelimit_limit_requests: headers["x-ratelimit-limit-requests"],
+        x_ratelimit_limit_tokens: headers["x-ratelimit-limit-tokens"],
+        x_ratelimit_remaining_requests: headers["x-ratelimit-remaining-requests"],
+        x_ratelimit_remaining_tokens: headers["x-ratelimit-remaining-tokens"],
+        x_zero_data_retention: headers["x-zero-data-retention"],
+        x_metrics_e2e_ms: headers["x-metrics-e2e-ms"],
+        x_metrics_mean_itl_ms: headers["x-metrics-mean-itl-ms"],
+        x_metrics_ttft_ms: headers["x-metrics-ttft-ms"]
+      }
+      |> reject_empty_header_values()
+
+    %{headers: decoded, request_id: decoded[:request_id]}
+    |> reject_empty_header_values()
+  end
+
+  defp response_headers(headers) when is_list(headers) do
+    Map.new(headers)
+  end
+
+  defp response_headers(_headers), do: %{}
+
+  defp reject_empty_header_values(map) do
+    Map.reject(map, fn
+      {_key, value} when value in [nil, ""] -> true
+      {_key, value} when is_map(value) and map_size(value) == 0 -> true
+      _entry -> false
+    end)
   end
 
   defp error_field(%{} = error, field),

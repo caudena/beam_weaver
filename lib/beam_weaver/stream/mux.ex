@@ -14,6 +14,7 @@ defmodule BeamWeaver.Stream.Mux do
   alias BeamWeaver.Stream.Events
   alias BeamWeaver.Stream.Policy
   alias BeamWeaver.Stream.Sink
+  alias BeamWeaver.Tracing
 
   defstruct producers: [],
             policy: %Policy{},
@@ -74,6 +75,7 @@ defmodule BeamWeaver.Stream.Mux do
 
   defp start_producers(%__MODULE__{} = mux) do
     owner = self()
+    trace_context = Tracing.capture_context()
 
     {tasks, queue, queue_size} =
       mux.producers
@@ -91,7 +93,7 @@ defmodule BeamWeaver.Stream.Mux do
           namespace: mux.namespace
         }
 
-        task = start_task(mux, spec, sink)
+        task = start_task(mux, spec, sink, trace_context)
 
         task_info =
           {task.pid,
@@ -375,12 +377,14 @@ defmodule BeamWeaver.Stream.Mux do
 
   defp queue_trim_to(state, _max_size), do: state
 
-  defp start_task(%__MODULE__{policy: %{producer_supervisor: nil}}, spec, sink) do
-    Task.async(fn -> run_producer(spec, sink) end)
+  defp start_task(%__MODULE__{policy: %{producer_supervisor: nil}}, spec, sink, trace_context) do
+    Task.async(fn -> Tracing.attach_context(trace_context, fn -> run_producer(spec, sink) end) end)
   end
 
-  defp start_task(%__MODULE__{policy: %{producer_supervisor: supervisor}}, spec, sink) do
-    Task.Supervisor.async_nolink(supervisor, fn -> run_producer(spec, sink) end)
+  defp start_task(%__MODULE__{policy: %{producer_supervisor: supervisor}}, spec, sink, trace_context) do
+    Task.Supervisor.async_nolink(supervisor, fn ->
+      Tracing.attach_context(trace_context, fn -> run_producer(spec, sink) end)
+    end)
   end
 
   defp run_producer(spec, %Sink{} = sink) do

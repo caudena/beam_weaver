@@ -344,11 +344,26 @@ defmodule BeamWeaver.Google.Messages do
   end
 
   defp response_block(%{"text" => text, "thought" => true} = part) when is_binary(text) do
-    [%{type: :reasoning, reasoning: text, signature: part["thoughtSignature"]}]
+    [
+      %{
+        type: :reasoning,
+        reasoning: text,
+        thought_signature: part["thoughtSignature"]
+      }
+      |> Options.reject_nil_values()
+    ]
   end
 
-  defp response_block(%{"text" => text}) when is_binary(text),
-    do: [%{type: :text, text: text}]
+  defp response_block(%{"text" => text} = part) when is_binary(text) do
+    [
+      %{
+        type: :text,
+        text: text,
+        thought_signature: thought_signature(part)
+      }
+      |> Options.reject_nil_values()
+    ]
+  end
 
   defp response_block(%{"functionCall" => %{"name" => name} = raw_call} = part) do
     [
@@ -512,6 +527,8 @@ defmodule BeamWeaver.Google.Messages do
   end
 
   defp response_metadata(response, candidate) do
+    header_metadata = response["_beamweaver_response_header_metadata"] || %{}
+
     %{
       model_provider: "google",
       provider: :google,
@@ -534,7 +551,8 @@ defmodule BeamWeaver.Google.Messages do
       candidate_token_count: candidate["tokenCount"],
       candidate_index: candidate["index"],
       usage: response["usageMetadata"],
-      headers: response["_beamweaver_response_headers"]
+      headers: header_metadata[:headers],
+      service_tier: header_metadata[:service_tier]
     }
     |> Options.reject_nil_values()
   end

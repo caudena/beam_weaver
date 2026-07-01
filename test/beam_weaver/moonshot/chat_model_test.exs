@@ -441,7 +441,11 @@ defmodule BeamWeaver.Moonshot.ChatModelTest do
               "stream_options" => %{"include_usage" => true}
             }
           },
-          headers: [{"content-type", "text/event-stream"}],
+          headers: [
+            {"content-type", "text/event-stream"},
+            {"msh-request-id", "req-moonshot-stream"},
+            {"msh-org-id", "org-moonshot"}
+          ],
           body: body
         ]
       )
@@ -453,6 +457,8 @@ defmodule BeamWeaver.Moonshot.ChatModelTest do
     assert response.status == "tool_calls"
     assert [%ToolCall{name: "lookup_weather", args: %{}}] = response.tool_calls
     assert response.usage_metadata.input_token_details.cache_read == 1
+    assert response.response_metadata.headers.msh_request_id == "req-moonshot-stream"
+    assert response.response_metadata.headers.msh_org_id == "org-moonshot"
   end
 
   test "stream_events returns envelopes tagged with Moonshot invocation metadata" do

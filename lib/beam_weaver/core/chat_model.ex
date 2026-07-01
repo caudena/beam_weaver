@@ -106,6 +106,12 @@ defmodule BeamWeaver.Core.ChatModel do
     :input_tokens,
     :output_tokens,
     :total_tokens,
+    :cache_read_tokens,
+    :cache_creation_tokens,
+    :reasoning_tokens,
+    :thinking_tokens,
+    :service_tier,
+    :inference_geo,
     :input_cost,
     :output_cost,
     :total_cost,
@@ -444,8 +450,16 @@ defmodule BeamWeaver.Core.ChatModel do
       :finish_reason,
       metadata_first(response_metadata, [:finish_reason, :stop_reason])
     )
-    |> maybe_put(:request_id, metadata_first(response_metadata, [:request_id, :id]))
+    |> maybe_put(:request_id, response_request_id(response_metadata))
     |> maybe_put(:usage_metadata, usage)
+  end
+
+  defp response_request_id(response_metadata) do
+    metadata_first(response_metadata, [:request_id]) ||
+      response_metadata
+      |> metadata_first([:transport])
+      |> metadata_first([:request_id]) ||
+      metadata_first(response_metadata, [:id])
   end
 
   defp model_outputs(%Message{} = message, usage) do
@@ -729,17 +743,39 @@ defmodule BeamWeaver.Core.ChatModel do
   end
 
   defp normalize_usage_metadata(usage) when is_map(usage) do
-    %{}
-    |> maybe_put(:input_tokens, metadata_first(usage, [:input_tokens, :prompt_tokens]))
-    |> maybe_put(:output_tokens, metadata_first(usage, [:output_tokens, :completion_tokens]))
-    |> maybe_put(:total_tokens, metadata_first(usage, [:total_tokens]))
-    |> maybe_put(:input_cost, metadata_first(usage, [:input_cost]))
-    |> maybe_put(:output_cost, metadata_first(usage, [:output_cost]))
-    |> maybe_put(:total_cost, metadata_first(usage, [:total_cost]))
-    |> maybe_put(:input_token_details, metadata_first(usage, [:input_token_details]))
-    |> maybe_put(:output_token_details, metadata_first(usage, [:output_token_details]))
-    |> maybe_put(:input_cost_details, metadata_first(usage, [:input_cost_details]))
-    |> maybe_put(:output_cost_details, metadata_first(usage, [:output_cost_details]))
+    input_details = metadata_first(usage, [:input_token_details, :input_tokens_details]) || %{}
+    output_details = metadata_first(usage, [:output_token_details, :output_tokens_details]) || %{}
+
+    %{
+      input_tokens: metadata_first(usage, [:input_tokens, :prompt_tokens]),
+      output_tokens: metadata_first(usage, [:output_tokens, :completion_tokens]),
+      total_tokens: metadata_first(usage, [:total_tokens]),
+      cache_read_tokens:
+        metadata_first(usage, [:cache_read_tokens, :cache_read_input_tokens]) ||
+          metadata_first(input_details, [:cache_read, :cache_read_tokens, :cache_read_input_tokens]),
+      cache_creation_tokens:
+        metadata_first(usage, [:cache_creation_tokens, :cache_creation_input_tokens]) ||
+          metadata_first(input_details, [
+            :cache_creation,
+            :cache_creation_tokens,
+            :cache_creation_input_tokens
+          ]),
+      reasoning_tokens:
+        metadata_first(usage, [:reasoning_tokens]) ||
+          metadata_first(output_details, [:reasoning, :reasoning_tokens]),
+      thinking_tokens:
+        metadata_first(usage, [:thinking_tokens]) ||
+          metadata_first(output_details, [:thinking, :thinking_tokens]),
+      service_tier: metadata_first(usage, [:service_tier, :pricing_tier, :speed]),
+      inference_geo: metadata_first(usage, [:inference_geo]),
+      input_cost: metadata_first(usage, [:input_cost]),
+      output_cost: metadata_first(usage, [:output_cost]),
+      total_cost: metadata_first(usage, [:total_cost]),
+      input_token_details: input_details,
+      output_token_details: output_details,
+      input_cost_details: metadata_first(usage, [:input_cost_details]),
+      output_cost_details: metadata_first(usage, [:output_cost_details])
+    }
     |> Map.take(@usage_metadata_keys)
     |> reject_nil_or_empty()
   end

@@ -12,6 +12,7 @@ defmodule BeamWeaver.Google.Client do
   alias BeamWeaver.Provider.Streaming, as: ProviderStreaming
   alias BeamWeaver.Transport
   alias BeamWeaver.Transport.Request
+  alias BeamWeaver.Transport.Response
 
   @default_base_url "https://generativelanguage.googleapis.com/v1beta"
 
@@ -62,7 +63,7 @@ defmodule BeamWeaver.Google.Client do
   def count_tokens(%__MODULE__{} = client, model, body, opts \\ []) do
     client
     |> request(model, :count_tokens, body, opts)
-    |> do_json_request(client, opts)
+    |> do_json_request(client, Keyword.put(opts, :decode_response_headers, false))
   end
 
   @spec stream_text(t(), String.t(), map(), keyword()) ::
@@ -144,6 +145,24 @@ defmodule BeamWeaver.Google.Client do
 
   defp transport(%__MODULE__{} = client), do: ProviderOptions.default_transport(client.transport)
 
+  defp decode_result({:ok, %Response{} = response} = result, opts) do
+    with {:ok, decoded} <-
+           ResponseDecoder.json(result,
+             provider: :google,
+             error_module: Error,
+             request_id_header: "x-request-id",
+             include_response_headers: Keyword.get(opts, :include_response_headers, false),
+             context_overflow?: &context_overflow?/3
+           ) do
+      decoded =
+        if Keyword.get(opts, :decode_response_headers, true),
+          do: attach_header_metadata(decoded, response.headers),
+          else: decoded
+
+      {:ok, decoded}
+    end
+  end
+
   defp decode_result(result, opts) do
     ResponseDecoder.json(result,
       provider: :google,
@@ -154,12 +173,57 @@ defmodule BeamWeaver.Google.Client do
     )
   end
 
-  defp decode_sse_result({:ok, %BeamWeaver.Transport.Response{status: status, body: body}}, _opts)
+  defp decode_sse_result({:ok, %Response{status: status, body: body} = response}, opts)
        when status in 200..299 do
-    {:ok, Streaming.response_from_sse_body(body)}
+    decoded =
+      body
+      |> Streaming.response_from_sse_body()
+      |> attach_header_metadata(response.headers)
+
+    decoded =
+      if Keyword.get(opts, :include_response_headers, false),
+        do: Map.put(decoded, "_beamweaver_response_headers", Map.new(response.headers)),
+        else: decoded
+
+    {:ok, decoded}
   end
 
   defp decode_sse_result(result, opts), do: decode_result(result, opts)
+
+  defp attach_header_metadata(decoded, headers) when is_map(decoded) do
+    metadata = header_metadata(headers)
+
+    if map_size(metadata) > 0,
+      do: Map.put(decoded, "_beamweaver_response_header_metadata", metadata),
+      else: decoded
+  end
+
+  defp header_metadata(headers) do
+    headers = response_headers(headers)
+
+    decoded =
+      %{
+        x_gemini_service_tier: headers["x-gemini-service-tier"]
+      }
+      |> reject_empty_header_values()
+
+    %{headers: decoded, service_tier: decoded[:x_gemini_service_tier]}
+    |> reject_empty_header_values()
+  end
+
+  defp response_headers(headers) when is_list(headers) do
+    Map.new(headers)
+  end
+
+  defp response_headers(_headers), do: %{}
+
+  defp reject_empty_header_values(map) do
+    Map.reject(map, fn
+      {_key, value} when value in [nil, ""] -> true
+      {_key, value} when is_map(value) and map_size(value) == 0 -> true
+      _entry -> false
+    end)
+  end
 
   defp headers(%__MODULE__{} = client, opts) do
     [

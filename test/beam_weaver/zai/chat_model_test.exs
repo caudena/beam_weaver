@@ -186,7 +186,10 @@ defmodule BeamWeaver.ZAI.ChatModelTest do
 
   test "Chat Completions response preserves log IDs, usage details, and estimated cost" do
     response = %{
-      "_beamweaver_response_headers" => %{"x-log-id" => "chatcmpl_zai"},
+      "_beamweaver_response_header_metadata" => %{
+        headers: %{x_log_id: "chatcmpl_zai"},
+        request_id: "chatcmpl_zai"
+      },
       "id" => "chatcmpl_zai",
       "request_id" => "chatcmpl_zai",
       "created" => 1_782_040_000,
@@ -222,6 +225,7 @@ defmodule BeamWeaver.ZAI.ChatModelTest do
     assert Message.text(message) == "done"
     assert message.metadata.request_id == "chatcmpl_zai"
     assert message.metadata.x_log_id == "chatcmpl_zai"
+    assert message.metadata.headers == %{x_log_id: "chatcmpl_zai"}
     assert message.metadata.model_provider == "zai"
     assert message.metadata.reasoning_content == "plan"
     assert message.status == "tool_calls"
@@ -245,11 +249,20 @@ defmodule BeamWeaver.ZAI.ChatModelTest do
     """
 
     assert Streaming.text_deltas(body) == ["po", "ng"]
-    assert {:ok, message} = Streaming.stream_body_to_message(body, headers: [{"x-log-id", "chatcmpl_zai_stream"}])
+
+    assert {:ok, message} =
+             Streaming.stream_body_to_message(body,
+               header_metadata: %{
+                 headers: %{x_log_id: "chatcmpl_zai_stream"},
+                 request_id: "chatcmpl_zai_stream"
+               }
+             )
+
     assert Message.text(message) == "pong"
     assert message.status == "length"
     assert message.metadata.request_id == "chatcmpl_zai_stream"
     assert message.metadata.x_log_id == "chatcmpl_zai_stream"
+    assert message.response_metadata.headers == %{x_log_id: "chatcmpl_zai_stream"}
     assert message.metadata.reasoning_content == "plan "
     assert message.usage_metadata.input_token_details.cache_read == 1
     assert message.usage_metadata.output_token_details.reasoning == 1
@@ -291,6 +304,8 @@ defmodule BeamWeaver.ZAI.ChatModelTest do
     assert {:ok, response} = CoreChatModel.invoke(model, [Message.user("ping")])
     assert Message.text(response) == "pong"
     assert response.metadata.x_log_id == "chatcmpl_zai"
+    assert response.response_metadata.headers == %{x_log_id: "chatcmpl_zai"}
+    refute Map.has_key?(response.response_metadata.transport, :headers)
 
     assert response.usage_metadata == %{
              input_cost: 0.0000014,

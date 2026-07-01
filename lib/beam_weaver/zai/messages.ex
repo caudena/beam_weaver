@@ -54,13 +54,14 @@ defmodule BeamWeaver.ZAI.Messages do
   @spec metadata(map(), map()) :: map()
   def metadata(response, choice) do
     message = choice["message"] || %{}
-    headers = response["_beamweaver_response_headers"]
-    x_log_id = header(headers, "x-log-id")
+    header_metadata = response["_beamweaver_response_header_metadata"] || %{}
+    decoded_headers = header_metadata[:headers] || %{}
+    x_log_id = decoded_headers[:x_log_id]
     usage = usage_metadata(response)
 
     %{
       id: response["id"],
-      request_id: response["request_id"] || response["id"] || x_log_id,
+      request_id: response["request_id"] || response["id"] || header_metadata[:request_id],
       x_log_id: x_log_id,
       created: response["created"],
       object: response["object"],
@@ -73,7 +74,8 @@ defmodule BeamWeaver.ZAI.Messages do
       token_usage: response["usage"],
       finish_reason: choice["finish_reason"],
       reasoning_content: message["reasoning_content"],
-      headers: headers,
+      headers: header_metadata[:headers],
+      transport: transport_metadata(header_metadata),
       raw_provider_response: response,
       estimated_cost: usage && usage[:total_cost],
       cost_currency: "USD"
@@ -105,10 +107,11 @@ defmodule BeamWeaver.ZAI.Messages do
       },
       output_cost_details: %{
         text: output_cost
-      }
+      },
+      input_token_details: input_token_details(usage),
+      output_token_details: output_token_details(usage)
     }
-    |> put_usage_details(:input_token_details, input_token_details(usage))
-    |> put_usage_details(:output_token_details, output_token_details(usage))
+    |> BeamWeaver.MapShape.reject_nil_or_empty()
   end
 
   def usage_metadata(_response), do: nil
@@ -365,14 +368,21 @@ defmodule BeamWeaver.ZAI.Messages do
   end
 
   defp input_token_details(usage) do
-    %{}
-    |> put_detail(:cache_read, cached_tokens(usage))
+    %{
+      cache_read: positive(cached_tokens(usage))
+    }
+    |> BeamWeaver.MapShape.reject_nil_or_empty()
   end
 
   defp output_token_details(usage) do
-    %{}
-    |> put_detail(:reasoning, get_in(usage, ["completion_tokens_details", "reasoning_tokens"]))
-    |> put_detail(:reasoning, get_in(usage, ["output_tokens_details", "reasoning_tokens"]))
+    %{
+      reasoning:
+        positive(
+          get_in(usage, ["output_tokens_details", "reasoning_tokens"]) ||
+            get_in(usage, ["completion_tokens_details", "reasoning_tokens"])
+        )
+    }
+    |> BeamWeaver.MapShape.reject_nil_or_empty()
   end
 
   defp mtok_cost(tokens, price_per_mtok) when is_number(tokens) do
@@ -381,12 +391,8 @@ defmodule BeamWeaver.ZAI.Messages do
 
   defp mtok_cost(_tokens, _price_per_mtok), do: 0
 
-  defp put_usage_details(metadata, _key, details) when details == %{}, do: metadata
-  defp put_usage_details(metadata, key, details), do: Map.put(metadata, key, details)
-
-  defp put_detail(details, _key, nil), do: details
-  defp put_detail(details, _key, 0), do: details
-  defp put_detail(details, key, value), do: Map.put(details, key, value)
+  defp positive(value) when is_number(value) and value > 0, do: value
+  defp positive(_value), do: nil
 
   defp encode_arguments(arguments) when is_binary(arguments), do: arguments
   defp encode_arguments(arguments), do: BeamWeaver.JSON.encode!(arguments || %{})
@@ -420,8 +426,11 @@ defmodule BeamWeaver.ZAI.Messages do
 
   defp response_content_block(block), do: block
 
-  defp header(headers, name) when is_map(headers), do: Map.get(headers, name) || Map.get(headers, String.downcase(name))
-  defp header(_headers, _name), do: nil
+  defp transport_metadata(%{request_id: request_id}) when is_binary(request_id) and request_id != "" do
+    %{request_id: request_id}
+  end
+
+  defp transport_metadata(_metadata), do: nil
 
   defp metadata_value(metadata, key) when is_map(metadata),
     do: Map.get(metadata, key) || Map.get(metadata, Atom.to_string(key))

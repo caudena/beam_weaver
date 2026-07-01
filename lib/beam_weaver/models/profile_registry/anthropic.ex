@@ -100,6 +100,48 @@ defmodule BeamWeaver.Models.ProfileRegistry.Anthropic do
   }
 
   @profiles %{
+    {:anthropic, "claude-sonnet-5"} =>
+      Profile.new(%{
+        provider: :anthropic,
+        id: "claude-sonnet-5",
+        name: "Claude Sonnet 5",
+        status: :active,
+        release_date: "2026-06-29",
+        last_updated: "2026-06-30",
+        max_input_tokens: 1_000_000,
+        max_output_tokens: 128_000,
+        text_inputs: true,
+        image_inputs: true,
+        image_url_inputs: true,
+        pdf_inputs: true,
+        text_outputs: true,
+        reasoning_output: true,
+        tool_calling: true,
+        tool_choice: true,
+        parallel_tool_calls: true,
+        structured_output: true,
+        streaming: true,
+        usage_metadata: true,
+        image_tool_message: true,
+        pdf_tool_message: true,
+        attachment: true,
+        supported_params: Params.anthropic(),
+        extra: %{
+          cache_read_price_per_mtok: 0.20,
+          cache_write_5m_price_per_mtok: 2.50,
+          cache_write_1h_price_per_mtok: 4.00,
+          input_price_per_mtok: 2.00,
+          output_price_per_mtok: 10.00,
+          batch_input_price_per_mtok: 1.00,
+          batch_output_price_per_mtok: 5.00,
+          default_effort: :high,
+          inference_geo_us_multiplier: 1.1,
+          prompt_cache_min_tokens: 1024,
+          retirement_not_before: "2027-06-29",
+          sampling_controls: :restricted,
+          thinking_mode: :adaptive_only
+        }
+      }),
     {:anthropic, "claude-fable-5"} =>
       Profile.new(%{
         provider: :anthropic,

@@ -61,6 +61,25 @@ defmodule BeamWeaver.Provider.ResponseDecoderTest do
              )
   end
 
+  test "json does not decode provider headers in the shared decoder" do
+    response =
+      Response.new(
+        status: 200,
+        headers: [
+          {"x-request-id", "req-openai"},
+          {"x-ratelimit-remaining-tokens", "99"},
+          {"content-type", "application/json"}
+        ],
+        body: ~s({"ok":true})
+      )
+
+    assert {:ok, %{"ok" => true} = decoded} =
+             ResponseDecoder.json({:ok, response}, provider: :openai, provider_name: "OpenAI")
+
+    refute Map.has_key?(decoded, "_beamweaver_response_headers")
+    refute Map.has_key?(decoded, "_beamweaver_response_header_metadata")
+  end
+
   test "http errors preserve context-overflow and request metadata" do
     response =
       Response.new(

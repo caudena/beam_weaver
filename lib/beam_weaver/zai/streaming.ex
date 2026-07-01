@@ -64,7 +64,7 @@ defmodule BeamWeaver.ZAI.Streaming do
         message = MessageChunk.to_message(chunk)
         usage = stream_usage(events)
         finish_reason = stream_finish_reason(events)
-        metadata = stream_metadata(events, message, Keyword.get(opts, :headers, []))
+        metadata = stream_metadata(events, message, opts)
 
         {:ok,
          %{
@@ -233,9 +233,11 @@ defmodule BeamWeaver.ZAI.Streaming do
     end)
   end
 
-  defp stream_metadata(events, message, headers) do
+  defp stream_metadata(events, message, opts) do
     reasoning_content = reasoning_content(message)
-    x_log_id = header(headers, "x-log-id")
+    header_metadata = Keyword.get(opts, :header_metadata, %{})
+    decoded_headers = header_metadata[:headers] || %{}
+    x_log_id = decoded_headers[:x_log_id]
 
     events
     |> Enum.reduce(%{model_provider: "zai", provider: :zai, api: :chat_completions}, fn
@@ -258,8 +260,25 @@ defmodule BeamWeaver.ZAI.Streaming do
         acc
     end)
     |> put_optional(:reasoning_content, reasoning_content)
-    |> put_optional(:headers, Map.new(headers))
+    |> put_optional(:headers, header_metadata[:headers])
+    |> put_optional(:transport, transport_metadata(header_metadata))
+    |> maybe_put_raw_headers(
+      Keyword.get(opts, :raw_response_headers, []),
+      Keyword.get(opts, :include_response_headers, false)
+    )
   end
+
+  defp maybe_put_raw_headers(metadata, _headers, false), do: metadata
+
+  defp maybe_put_raw_headers(metadata, headers, true) do
+    put_optional(metadata, :_beamweaver_response_headers, Map.new(headers))
+  end
+
+  defp transport_metadata(%{request_id: request_id}) when is_binary(request_id) and request_id != "" do
+    %{request_id: request_id}
+  end
+
+  defp transport_metadata(_metadata), do: nil
 
   defp first_choice(%{"choices" => [choice | _rest]}) when is_map(choice), do: choice
   defp first_choice(_data), do: nil
@@ -275,14 +294,6 @@ defmodule BeamWeaver.ZAI.Streaming do
     |> Enum.join("")
     |> empty_to_nil()
   end
-
-  defp header(headers, name) when is_list(headers) do
-    headers
-    |> Map.new(fn {key, value} -> {String.downcase(to_string(key)), value} end)
-    |> Map.get(String.downcase(name))
-  end
-
-  defp header(_headers, _name), do: nil
 
   defp empty_to_nil(""), do: nil
   defp empty_to_nil(value), do: value

@@ -6,7 +6,7 @@ defmodule BeamWeaver.Models.ProfileRegistry.Moonshot do
   alias BeamWeaver.Models.ProfileRegistry.Params
 
   @context_window 262_144
-  @profile_last_updated "2026-06-20"
+  @profile_last_updated "2026-07-01"
 
   @moonshot_deprecated_models %{
     "kimi-latest" => %{
@@ -97,6 +97,7 @@ defmodule BeamWeaver.Models.ProfileRegistry.Moonshot do
                    Map.merge(@base_extra, @thinking_required_extra)
                    |> Map.merge(%{
                      model_category: :coding,
+                     pricing_source_url: "https://platform.kimi.ai/docs/pricing/chat-k27-code",
                      input_cache_hit_price_per_mtok: 0.19,
                      input_cache_miss_price_per_mtok: 0.95,
                      output_price_per_mtok: 4.00
@@ -111,6 +112,10 @@ defmodule BeamWeaver.Models.ProfileRegistry.Moonshot do
                    |> Map.merge(%{
                      model_category: :coding,
                      highspeed: true,
+                     same_model_as: "kimi-k2.7-code",
+                     pricing_source_url: "https://platform.kimi.ai/docs/pricing/chat-k27-code",
+                     output_speed_tokens_per_second: 180,
+                     short_context_output_speed_tokens_per_second: 260,
                      input_cache_hit_price_per_mtok: 0.38,
                      input_cache_miss_price_per_mtok: 1.90,
                      output_price_per_mtok: 8.00

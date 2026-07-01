@@ -87,6 +87,12 @@ defmodule BeamWeaver.XAI.ChatModelTest do
               "stream" => false
             }
           },
+          headers: [
+            {"x-request-id", "req-xai"},
+            {"x-metrics-ttft-ms", "42"},
+            {"x-ratelimit-limit-requests", "3600"},
+            {"x-ratelimit-remaining-requests", "3599"}
+          ],
           body: %{
             "id" => "resp_xai",
             "model" => "grok-4.3",
@@ -107,6 +113,10 @@ defmodule BeamWeaver.XAI.ChatModelTest do
     assert {:ok, response} = CoreChatModel.invoke(model, [Message.user("ping")])
     assert Message.text(response) == "pong"
     assert response.metadata.model_provider == "xai"
+    assert response.response_metadata.headers.request_id == "req-xai"
+    assert response.response_metadata.headers.x_metrics_ttft_ms == "42"
+    assert response.response_metadata.headers.x_ratelimit_limit_requests == "3600"
+    assert response.response_metadata.headers.x_ratelimit_remaining_requests == "3599"
     assert response.usage_metadata == %{input_tokens: 2, output_tokens: 3, total_tokens: 5}
 
     assert_received {:fake_transport_request, request}

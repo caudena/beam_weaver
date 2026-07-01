@@ -72,9 +72,13 @@ defmodule BeamWeaver.Tracing.Exporters.WeaveScope do
       run.metadata
       |> library_metadata()
       |> ValueEncoder.encode()
+      |> scrub_export_value()
 
-    context_metadata = ValueEncoder.encode(run.context_metadata || %{})
-    usage = ValueEncoder.encode(run.usage || %{})
+    context_metadata = (run.context_metadata || %{}) |> ValueEncoder.encode() |> scrub_export_value()
+    inputs = run.inputs |> ValueEncoder.encode() |> scrub_export_value()
+    outputs = run.outputs |> ValueEncoder.encode() |> scrub_export_value()
+    usage = (run.usage || %{}) |> ValueEncoder.encode() |> scrub_export_value()
+    error = run.error |> ValueEncoder.encode() |> scrub_export_value()
 
     %{
       "operation" => operation(event),
@@ -91,14 +95,14 @@ defmodule BeamWeaver.Tracing.Exporters.WeaveScope do
       "tags" => ValueEncoder.encode(library_tags(run.tags)),
       "metadata" => metadata,
       "context_metadata" => context_metadata,
-      "inputs" => ValueEncoder.encode(run.inputs),
-      "outputs" => ValueEncoder.encode(run.outputs),
+      "inputs" => inputs,
+      "outputs" => outputs,
       "usage" => usage,
-      "error" => ValueEncoder.encode(run.error),
+      "error" => error,
       "environment" => environment(metadata, context_metadata),
       "version" => version(metadata, context_metadata, opts)
     }
-    |> maybe_put_model_fields(metadata, context_metadata)
+    |> maybe_put_model_fields(metadata, context_metadata, usage)
     |> maybe_put(
       "custom_fields",
       metadata_value(metadata, "custom_fields") || metadata_value(context_metadata, "custom_fields")
@@ -209,6 +213,55 @@ defmodule BeamWeaver.Tracing.Exporters.WeaveScope do
 
   defp library_metadata(_metadata), do: %{beam_weaver_version: beam_weaver_version()}
 
+  defp scrub_export_value(value, path \\ [])
+
+  defp scrub_export_value(value, path) when is_map(value) do
+    value
+    |> drop_duplicate_header_containers(path)
+    |> Enum.reject(fn {key, _value} -> internal_response_key?(key) end)
+    |> Map.new(fn {key, value} -> {key, scrub_export_value(value, [key | path])} end)
+  end
+
+  defp scrub_export_value(value, path) when is_list(value) do
+    Enum.map(value, &scrub_export_value(&1, path))
+  end
+
+  defp scrub_export_value(value, _path), do: value
+
+  defp drop_duplicate_header_containers(value, path) when is_map(value) do
+    cond do
+      path_key?(List.first(path), :transport) ->
+        Map.drop(value, [:headers, "headers"])
+
+      provider_metadata_raw_path?(path) ->
+        Map.drop(value, [:headers, "headers"])
+
+      true ->
+        value
+    end
+  end
+
+  defp provider_metadata_raw_path?([raw_key, provider_metadata_key | _path]) do
+    path_key?(raw_key, :raw) and path_key?(provider_metadata_key, :provider_metadata)
+  end
+
+  defp provider_metadata_raw_path?(_path), do: false
+
+  defp path_key?(key, expected) when is_atom(key), do: key == expected
+  defp path_key?(key, expected) when is_binary(key), do: key == Atom.to_string(expected)
+  defp path_key?(_key, _expected), do: false
+
+  defp internal_response_key?(key) do
+    key in [
+      :_beamweaver_response_headers,
+      "_beamweaver_response_headers",
+      :_beamweaver_response_header_metadata,
+      "_beamweaver_response_header_metadata",
+      :_beamweaver_provider_headers,
+      "_beamweaver_provider_headers"
+    ]
+  end
+
   defp library_tags(tags) do
     tags
     |> List.wrap()
@@ -225,14 +278,17 @@ defmodule BeamWeaver.Tracing.Exporters.WeaveScope do
     end
   end
 
-  defp maybe_put_model_fields(event, metadata, context_metadata) do
+  defp maybe_put_model_fields(event, metadata, context_metadata, usage) do
     metadata = metadata || %{}
     context_metadata = context_metadata || %{}
+    response_metadata = metadata_value(metadata, "response_metadata") || %{}
+    response_usage = metadata_value(response_metadata, "usage") || %{}
 
     event
     |> maybe_put(
       "model_provider",
-      metadata_value(metadata, "provider") || metadata_value(context_metadata, "provider")
+      metadata_value(metadata, "provider") || metadata_value(metadata, "model_provider") ||
+        metadata_value(context_metadata, "provider") || metadata_value(context_metadata, "model_provider")
     )
     |> maybe_put(
       "model_name",
@@ -243,6 +299,18 @@ defmodule BeamWeaver.Tracing.Exporters.WeaveScope do
     |> maybe_put(
       "finish_reason",
       metadata_value(metadata, "finish_reason") || metadata_value(context_metadata, "finish_reason")
+    )
+    |> maybe_put(
+      "service_tier",
+      metadata_value(usage, "service_tier") || metadata_value(metadata, "service_tier") ||
+        metadata_value(response_usage, "service_tier") ||
+        metadata_value(context_metadata, "service_tier")
+    )
+    |> maybe_put(
+      "inference_geo",
+      metadata_value(usage, "inference_geo") || metadata_value(metadata, "inference_geo") ||
+        metadata_value(response_usage, "inference_geo") ||
+        metadata_value(context_metadata, "inference_geo")
     )
   end
 

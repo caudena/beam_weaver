@@ -40,7 +40,7 @@ defmodule BeamWeaver.ZAI.ChatModel do
             profile: nil,
             tokenizer: nil,
             param_policy: nil,
-            include_response_headers: true,
+            include_response_headers: false,
             transport: nil,
             transport_opts: [],
             timeout: 15_000

@@ -20,6 +20,39 @@ defmodule BeamWeaver.Tracing.WeaveScopeExporterTest do
           version: "trace-version-1",
           request_id: "req-123",
           finish_reason: :stop,
+          response_metadata: %{
+            headers: %{
+              request_id: "req-123",
+              x_gemini_service_tier: "priority"
+            },
+            usage: %{
+              service_tier: "priority",
+              inference_geo: "us",
+              output_token_details: %{thinking_tokens: 37}
+            },
+            transport: %{
+              request_id: "req-123",
+              headers: %{"request-id" => "req-123", "x-ratelimit-remaining-tokens" => "99"}
+            },
+            provider_metadata: %{
+              raw: %{
+                "id" => "provider-response-1",
+                "headers" => %{"request-id" => "req-123"},
+                "raw_provider_response" => %{
+                  "_beamweaver_response_headers" => %{"request-id" => "req-123"},
+                  "_beamweaver_response_header_metadata" => %{headers: %{request_id: "req-123"}},
+                  "_beamweaver_provider_headers" => %{request_id: "req-123"},
+                  "id" => "provider-response-1"
+                }
+              }
+            },
+            raw_provider_response: %{
+              "_beamweaver_response_headers" => %{"request-id" => "req-123"},
+              "_beamweaver_response_header_metadata" => %{headers: %{request_id: "req-123"}},
+              "_beamweaver_provider_headers" => %{request_id: "req-123"},
+              "id" => "provider-response-1"
+            }
+          },
           custom_fields: %{"probe_id" => "probe-123"},
           scores: [%{key: "correctness", value: 0.91, source: :evaluator}],
           response_format: %{
@@ -35,6 +68,12 @@ defmodule BeamWeaver.Tracing.WeaveScopeExporterTest do
           input_tokens: 359,
           output_tokens: 2441,
           total_tokens: 2800,
+          cache_read_tokens: 40,
+          cache_creation_tokens: 12,
+          reasoning_tokens: 37,
+          thinking_tokens: 37,
+          service_tier: "priority",
+          inference_geo: "us",
           output_token_details: %{reasoning: 511}
         },
         started_at: ~U[2026-06-04 10:00:00Z]
@@ -45,7 +84,33 @@ defmodule BeamWeaver.Tracing.WeaveScopeExporterTest do
         run
         | status: :ok,
           ended_at: ~U[2026-06-04 10:00:03Z],
-          outputs: %{structured_response: %{domain: "example.com"}}
+          outputs: %{
+            structured_response: %{domain: "example.com"},
+            messages: [
+              %{
+                response_metadata: %{
+                  headers: %{request_id: "req-123"},
+                  transport: %{
+                    request_id: "req-123",
+                    headers: %{"request-id" => "req-123"}
+                  },
+                  provider_metadata: %{
+                    raw: %{
+                      "headers" => %{"request-id" => "req-123"},
+                      "raw_provider_response" => %{
+                        "_beamweaver_response_headers" => %{"request-id" => "req-123"},
+                        "id" => "nested-provider-response"
+                      }
+                    }
+                  },
+                  raw_provider_response: %{
+                    "_beamweaver_response_headers" => %{"request-id" => "req-123"},
+                    "id" => "nested-provider-response"
+                  }
+                }
+              }
+            ]
+          }
       }
 
     event = WeaveScope.to_event(:ok, run, environment: "staging")
@@ -64,18 +129,66 @@ defmodule BeamWeaver.Tracing.WeaveScopeExporterTest do
     assert event["model_name"] == "gemini-3.5-flash"
     assert event["request_id"] == "req-123"
     assert event["finish_reason"] == "stop"
+    assert event["service_tier"] == "priority"
+    assert event["inference_geo"] == "us"
     assert event["custom_fields"] == %{"probe_id" => "probe-123"}
     assert event["scores"] == [%{key: "correctness", source: "evaluator", value: 0.91}]
     assert event["event_version"] == DateTime.to_unix(~U[2026-06-04 10:00:03Z], :microsecond) * 10 + 2
     beam_weaver_version = Application.spec(:beam_weaver, :vsn) |> to_string()
 
     assert event["usage"][:output_token_details] == %{reasoning: 511}
+    assert event["usage"][:cache_read_tokens] == 40
+    assert event["usage"][:cache_creation_tokens] == 12
+    assert event["usage"][:service_tier] == "priority"
+    assert event["usage"][:inference_geo] == "us"
     assert event["metadata"][:beam_weaver_version] == beam_weaver_version
+
+    assert event["metadata"][:response_metadata][:headers] == %{
+             request_id: "req-123",
+             x_gemini_service_tier: "priority"
+           }
+
+    refute Map.has_key?(event["metadata"][:response_metadata][:transport], :headers)
+    refute Map.has_key?(event["metadata"][:response_metadata][:raw_provider_response], "_beamweaver_response_headers")
+
+    refute Map.has_key?(
+             event["metadata"][:response_metadata][:raw_provider_response],
+             "_beamweaver_response_header_metadata"
+           )
+
+    refute Map.has_key?(event["metadata"][:response_metadata][:raw_provider_response], "_beamweaver_provider_headers")
+
+    refute Map.has_key?(
+             event["metadata"][:response_metadata][:provider_metadata][:raw]["raw_provider_response"],
+             "_beamweaver_response_headers"
+           )
+
+    refute Map.has_key?(
+             event["metadata"][:response_metadata][:provider_metadata][:raw]["raw_provider_response"],
+             "_beamweaver_response_header_metadata"
+           )
+
+    refute Map.has_key?(event["metadata"][:response_metadata][:provider_metadata][:raw], "headers")
+    assert event["metadata"][:response_metadata][:provider_metadata][:raw]["id"] == "provider-response-1"
+    assert [%{response_metadata: output_response_metadata}] = event["outputs"][:messages]
+    assert output_response_metadata[:headers] == %{request_id: "req-123"}
+    refute Map.has_key?(output_response_metadata[:transport], :headers)
+    refute Map.has_key?(output_response_metadata[:provider_metadata][:raw], "headers")
+
+    refute Map.has_key?(
+             output_response_metadata[:provider_metadata][:raw]["raw_provider_response"],
+             "_beamweaver_response_headers"
+           )
+
+    refute Map.has_key?(output_response_metadata[:raw_provider_response], "_beamweaver_response_headers")
     assert is_binary(event["metadata"][:response_format][:validator])
     assert "beam_weaver:#{beam_weaver_version}" in event["tags"]
 
     encoded = Jason.encode!(event)
     assert encoded
+    refute encoded =~ "_beamweaver_response_headers"
+    refute encoded =~ "_beamweaver_response_header_metadata"
+    refute encoded =~ "_beamweaver_provider_headers"
     refute encoded =~ ~r/"(?:lc_|ls_|LS_)/
   end
 

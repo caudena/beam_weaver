@@ -743,30 +743,43 @@ defmodule BeamWeaver.Anthropic.Messages do
         ephemeral_5m_input_tokens: positive(ephemeral_5m),
         ephemeral_1h_input_tokens: positive(ephemeral_1h)
       }
-      |> Enum.reject(fn {_key, value} -> is_nil(value) end)
-      |> Map.new()
+      |> BeamWeaver.MapShape.reject_nil_or_empty()
 
     %{
       input_tokens: input_tokens,
       output_tokens: output_tokens,
-      total_tokens: input_tokens + output_tokens
+      total_tokens: input_tokens + output_tokens,
+      input_token_details: input_details,
+      output_token_details: output_token_details(usage["output_tokens_details"]),
+      service_tier: usage["service_tier"],
+      inference_geo: usage["inference_geo"]
     }
-    |> maybe_put_input_details(input_details)
+    |> BeamWeaver.MapShape.reject_nil_or_empty()
   end
 
   defp positive(value) when is_number(value) and value > 0, do: value
   defp positive(_value), do: nil
 
-  defp maybe_put_input_details(metadata, details) when details == %{}, do: metadata
+  defp output_token_details(details) when is_map(details) do
+    details = Options.stringify_keys(details)
 
-  defp maybe_put_input_details(metadata, details),
-    do: Map.put(metadata, :input_token_details, details)
+    %{
+      thinking_tokens: positive(details["thinking_tokens"]),
+      reasoning: positive(details["reasoning_tokens"])
+    }
+    |> BeamWeaver.MapShape.reject_nil_or_empty()
+  end
+
+  defp output_token_details(_details), do: %{}
 
   defp response_metadata(response) do
+    header_metadata = response["_beamweaver_response_header_metadata"] || %{}
+
     %{
       model_provider: "anthropic",
       provider: :anthropic,
       id: response["id"],
+      request_id: header_metadata[:request_id],
       type: response["type"],
       role: response["role"],
       model: response["model"],
@@ -777,9 +790,16 @@ defmodule BeamWeaver.Anthropic.Messages do
       usage: response["usage"],
       container: response["container"],
       context_management: response["context_management"],
-      headers: response["_beamweaver_response_headers"],
+      headers: header_metadata[:headers],
+      transport: transport_metadata(header_metadata),
       raw_provider_response: response
     }
     |> Options.reject_nil_values()
   end
+
+  defp transport_metadata(%{request_id: request_id}) when is_binary(request_id) and request_id != "" do
+    %{request_id: request_id}
+  end
+
+  defp transport_metadata(_metadata), do: nil
 end

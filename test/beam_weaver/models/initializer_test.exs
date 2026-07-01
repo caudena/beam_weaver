@@ -102,6 +102,8 @@ defmodule BeamWeaver.Models.InitializerTest do
     assert {:ok, highspeed_model} = Models.init_chat_model("moonshot:kimi-k2.7-code-highspeed")
     assert highspeed_model.model == "kimi-k2.7-code-highspeed"
     assert highspeed_model.profile.extra.highspeed
+    assert highspeed_model.profile.extra.same_model_as == "kimi-k2.7-code"
+    assert highspeed_model.profile.extra.output_speed_tokens_per_second == 180
 
     assert {:ok, moonshot} = Models.init_chat_model("moonshot:kimi-k2.6")
     assert moonshot.__struct__ == BeamWeaver.Moonshot.ChatModel

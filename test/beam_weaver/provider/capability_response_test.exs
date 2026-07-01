@@ -81,7 +81,9 @@ defmodule BeamWeaver.Provider.CapabilityResponseTest do
           model_provider: "fake",
           id: "resp_123",
           finish_reason: "stop",
-          headers: [{"x-request-id", "req_123"}, {"x-ratelimit-remaining-tokens", "99"}]
+          request_id: "req_123",
+          transport: %{request_id: "req_123"},
+          limits: %{remaining_tokens: "99"}
         }
       )
 
@@ -103,5 +105,44 @@ defmodule BeamWeaver.Provider.CapabilityResponseTest do
     assert normalized.response_metadata.model.provider == :fake
     assert normalized.response_metadata.transport.request_id == "req_123"
     assert normalized.response_metadata.limits.remaining_tokens == "99"
+  end
+
+  test "response normalization preserves client-provided decoded headers and limits" do
+    model = %{provider: :anthropic, model: "claude-sonnet-5"}
+
+    message =
+      Message.assistant("pong",
+        response_metadata: %{
+          model_provider: "anthropic",
+          provider: :anthropic,
+          model: "claude-sonnet-5",
+          headers: %{
+            request_id: "req_anthropic",
+            anthropic_organization_id: "org_123",
+            anthropic_ratelimit_requests_remaining: "49",
+            anthropic_ratelimit_tokens_remaining: "999"
+          },
+          request_id: "req_anthropic",
+          transport: %{request_id: "req_anthropic"},
+          limits: %{
+            remaining_requests: "49",
+            remaining_tokens: "999"
+          }
+        }
+      )
+
+    normalized = Response.normalize_message(model, message)
+
+    assert normalized.response_metadata.headers == %{
+             request_id: "req_anthropic",
+             anthropic_organization_id: "org_123",
+             anthropic_ratelimit_requests_remaining: "49",
+             anthropic_ratelimit_tokens_remaining: "999"
+           }
+
+    assert normalized.response_metadata.request_id == "req_anthropic"
+    assert normalized.response_metadata.transport.request_id == "req_anthropic"
+    assert normalized.response_metadata.limits.remaining_requests == "49"
+    assert normalized.response_metadata.limits.remaining_tokens == "999"
   end
 end

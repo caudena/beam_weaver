@@ -23,3 +23,9 @@ erl_crash.dump
 beam_weaver-*.tar
 
 .env
+
+# Local/internal provider metadata captures.
+/model_meta.md
+/scripts/capture_model_meta.exs
+/support/model_meta.exs
+/test/fixtures/model_meta/

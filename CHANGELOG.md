@@ -1,5 +1,48 @@
 # Changelog
 
+## 0.1.8 - 2026-07-01
+
+### Added
+
+- Added Anthropic `claude-sonnet-5` profile support with adaptive thinking
+  effort configuration, Sonnet 5 capability metadata, and validation for manual
+  thinking budgets and restricted sampling options.
+- Added normalized model tooling metadata that separates user-defined tool
+  calls from provider-hosted tools under `response_metadata.tooling.user` and
+  `response_metadata.tooling.hosted`, including compact hosted tool summaries
+  and OpenAI hosted usage metrics for image generation and web search.
+- Added WeaveScope trace detail rendering for user tools, hosted tools, and
+  hosted usage as separate sections from provider response headers.
+- Refreshed Moonshot/Kimi `kimi-k2.7-code` and
+  `kimi-k2.7-code-highspeed` model metadata, including the highspeed variant's
+  official pricing source and throughput metadata.  
+
+### Changed
+
+- Normal successful model calls now let each provider client decode its own
+  allowlisted response headers into canonical `response_metadata.headers`
+  without requiring `include_response_headers`, and use those headers to
+  populate request IDs and shared rate-limit summaries where applicable. Raw
+  full response headers remain controlled by `include_response_headers` inside
+  BeamWeaver and are stripped from WeaveScope export payloads.
+- WeaveScope trace export now preserves richer model response metadata,
+  including provider response headers, model ids, stop details, nested cache
+  usage, thinking token counts, service tier, inference geo, and raw provider
+  metadata needed for trace inspection and pricing.
+- Google Gemini response decoding now preserves `thoughtSignature` values on
+  text and reasoning parts and exposes reasoning/text signatures through
+  normalized response metadata.
+- WeaveScope trace export now recursively scrubs BeamWeaver debug/raw header
+  containers from metadata, inputs, outputs, usage, and error payloads while
+  preserving canonical decoded provider headers at `response_metadata.headers`.
+
+### Fixed
+
+- Live stream mux producers now inherit the active tracing context, so nested
+  live streams started inside graph nodes remain attached to the parent trace
+  instead of creating separate root traces. This keeps streamed final-agent
+  responses grouped under the surrounding workflow in WeaveScope.
+
 ## 0.1.7 - 2026-06-29
 
 ### Added

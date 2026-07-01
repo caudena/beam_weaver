@@ -347,6 +347,47 @@ defmodule BeamWeaver.Tracing.LifecycleTest do
     Context.clear()
   end
 
+  test "model trace usage keeps provider pricing and token detail fields" do
+    model = Anthropic.ChatModel.new(model: "claude-sonnet-5", api_key: "anthropic-nope")
+
+    assert {:ok, %Message{content: "ok"}} =
+             BeamWeaver.Core.ChatModel.trace_call(
+               model,
+               [Message.user("hello")],
+               [
+                 exporter: BeamWeaver.Tracing.TestExporter,
+                 exporter_opts: [test_pid: self()]
+               ],
+               fn ->
+                 {:ok,
+                  Message.assistant("ok",
+                    usage_metadata: %{
+                      input_tokens: 100,
+                      output_tokens: 20,
+                      total_tokens: 120,
+                      input_token_details: %{cache_read: 80, cache_creation: 10},
+                      output_token_details: %{thinking_tokens: 12},
+                      service_tier: "batch",
+                      inference_geo: "us"
+                    }
+                  )}
+               end
+             )
+
+    assert_receive {:trace_export, :started, %Run{kind: :model}}
+    assert_receive {:trace_export, :ok, %Run{kind: :model} = run}
+
+    assert run.usage.input_tokens == 100
+    assert run.usage.output_tokens == 20
+    assert run.usage.cache_read_tokens == 80
+    assert run.usage.cache_creation_tokens == 10
+    assert run.usage.thinking_tokens == 12
+    assert run.usage.service_tier == "batch"
+    assert run.usage.inference_geo == "us"
+    assert run.metadata.usage_metadata.service_tier == "batch"
+    assert run.metadata.usage_metadata.inference_geo == "us"
+  end
+
   def handle_telemetry(event, measurements, metadata, test_pid) do
     send(test_pid, {:tracing_event, event, measurements, metadata})
   end

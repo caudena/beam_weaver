@@ -42,53 +42,45 @@ defmodule BeamWeaver.OpenAI.Messages.Response do
     %{
       input_tokens: usage["input_tokens"] || usage["prompt_tokens"] || 0,
       output_tokens: usage["output_tokens"] || usage["completion_tokens"] || 0,
-      total_tokens: usage["total_tokens"] || 0
+      total_tokens: usage["total_tokens"] || 0,
+      input_token_details: input_token_details(usage),
+      output_token_details: output_token_details(usage)
     }
-    |> put_usage_details(:input_token_details, input_token_details(usage))
-    |> put_usage_details(:output_token_details, output_token_details(usage))
+    |> BeamWeaver.MapShape.reject_nil_or_empty()
   end
 
   defp usage_metadata(_response), do: nil
 
-  defp input_token_details(%{"input_tokens_details" => details}) when is_map(details) do
-    %{}
-    |> put_detail(:cache_read, details["cached_tokens"])
-    |> put_detail(:flex, details["flex"])
+  defp input_token_details(usage) when is_map(usage) do
+    case usage["input_tokens_details"] || usage["prompt_tokens_details"] do
+      details when is_map(details) ->
+        %{
+          cache_read: details["cached_tokens"],
+          flex: details["flex"]
+        }
+        |> BeamWeaver.MapShape.reject_nil_or_empty()
+
+      _details ->
+        %{}
+    end
   end
 
-  defp input_token_details(%{"prompt_tokens_details" => details}) when is_map(details) do
-    %{}
-    |> put_detail(:cache_read, details["cached_tokens"])
-    |> put_detail(:flex, details["flex"])
+  defp output_token_details(usage) when is_map(usage) do
+    case usage["output_tokens_details"] || usage["completion_tokens_details"] do
+      details when is_map(details) ->
+        %{
+          reasoning: details["reasoning_tokens"],
+          accepted_prediction: details["accepted_prediction_tokens"],
+          rejected_prediction: details["rejected_prediction_tokens"],
+          flex: details["flex"],
+          flex_reasoning: details["flex_reasoning"]
+        }
+        |> BeamWeaver.MapShape.reject_nil_or_empty()
+
+      _details ->
+        %{}
+    end
   end
-
-  defp input_token_details(_usage), do: %{}
-
-  defp output_token_details(%{"output_tokens_details" => details}) when is_map(details) do
-    %{}
-    |> put_detail(:reasoning, details["reasoning_tokens"])
-    |> put_detail(:accepted_prediction, details["accepted_prediction_tokens"])
-    |> put_detail(:rejected_prediction, details["rejected_prediction_tokens"])
-    |> put_detail(:flex, details["flex"])
-    |> put_detail(:flex_reasoning, details["flex_reasoning"])
-  end
-
-  defp output_token_details(%{"completion_tokens_details" => details}) when is_map(details) do
-    %{}
-    |> put_detail(:reasoning, details["reasoning_tokens"])
-    |> put_detail(:accepted_prediction, details["accepted_prediction_tokens"])
-    |> put_detail(:rejected_prediction, details["rejected_prediction_tokens"])
-    |> put_detail(:flex, details["flex"])
-    |> put_detail(:flex_reasoning, details["flex_reasoning"])
-  end
-
-  defp output_token_details(_usage), do: %{}
-
-  defp put_usage_details(metadata, _key, details) when details == %{}, do: metadata
-  defp put_usage_details(metadata, key, details), do: Map.put(metadata, key, details)
-
-  defp put_detail(details, _key, nil), do: details
-  defp put_detail(details, key, value), do: Map.put(details, key, value)
 
   defp put_invalid_tool_calls(metadata, []), do: metadata
 
@@ -393,8 +385,11 @@ defmodule BeamWeaver.OpenAI.Messages.Response do
     do: {:error, "function call arguments are not decodable: #{inspect(arguments)}"}
 
   defp response_metadata(response) do
+    header_metadata = response["_beamweaver_response_header_metadata"] || %{}
+
     %{
       id: response["id"],
+      request_id: header_metadata[:request_id],
       model: response["model"],
       model_provider: "openai",
       provider: :openai,
@@ -402,7 +397,8 @@ defmodule BeamWeaver.OpenAI.Messages.Response do
       output: normalize_output(response["output"]),
       audio: first_message_part(response, ["output_audio", "audio"]),
       reasoning: first_output_item(response, "reasoning"),
-      headers: response["_beamweaver_response_headers"],
+      headers: header_metadata[:headers],
+      transport: transport_metadata(header_metadata),
       provider_metadata: response["metadata"],
       incomplete_details: response["incomplete_details"],
       status: response["status"],
@@ -412,6 +408,12 @@ defmodule BeamWeaver.OpenAI.Messages.Response do
     }
     |> Shared.reject_nil_values()
   end
+
+  defp transport_metadata(%{request_id: request_id}) when is_binary(request_id) and request_id != "" do
+    %{request_id: request_id}
+  end
+
+  defp transport_metadata(_metadata), do: nil
 
   defp normalize_output(output) when is_list(output),
     do: output

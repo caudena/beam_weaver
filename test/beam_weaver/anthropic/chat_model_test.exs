@@ -102,6 +102,89 @@ defmodule BeamWeaver.Anthropic.ChatModelTest do
     assert {"anthropic-version", "2023-06-01"} in request.headers
   end
 
+  test "Claude Sonnet 5 responses preserve headers, usage, thinking, and model metadata" do
+    model =
+      ChatModel.new(
+        model: "claude-sonnet-5",
+        api_key: "anthropic-secret",
+        transport: BeamWeaver.TestSupport.Conformance.Fakes.Transport,
+        transport_opts: [
+          parent: self(),
+          expect: %{
+            method: :post,
+            path: "/v1/messages",
+            json: %{
+              "model" => "claude-sonnet-5",
+              "max_tokens" => 128_000,
+              "messages" => [%{"role" => "user", "content" => "ping"}],
+              "stream" => false,
+              "thinking" => %{"type" => "adaptive"},
+              "output_config" => %{"effort" => "xhigh"}
+            }
+          },
+          headers: [
+            {"content-type", "application/json"},
+            {"request-id", "req-sonnet-5"},
+            {"anthropic-ratelimit-requests-remaining", "99"},
+            {"anthropic-organization-id", "org_123"}
+          ],
+          body: %{
+            "id" => "msg_sonnet_5",
+            "type" => "message",
+            "role" => "assistant",
+            "model" => "claude-sonnet-5",
+            "content" => [%{"type" => "text", "text" => "OK"}],
+            "stop_reason" => "end_turn",
+            "stop_details" => nil,
+            "usage" => %{
+              "input_tokens" => 2,
+              "cache_read_input_tokens" => 3,
+              "cache_creation_input_tokens" => 5,
+              "cache_creation" => %{
+                "ephemeral_5m_input_tokens" => 1,
+                "ephemeral_1h_input_tokens" => 4
+              },
+              "output_tokens" => 8,
+              "output_tokens_details" => %{"thinking_tokens" => 7},
+              "service_tier" => "standard",
+              "inference_geo" => "global"
+            }
+          }
+        ]
+      )
+
+    assert {:ok, %Message{} = response} =
+             CoreChatModel.invoke(model, [Message.user("ping")],
+               thinking: %{type: :adaptive},
+               effort: :xhigh
+             )
+
+    assert Message.text(response) == "OK"
+    assert response.response_metadata.model.model == "claude-sonnet-5"
+    assert response.response_metadata.model.requested_model == "claude-sonnet-5"
+    assert response.response_metadata.reasoning.requested_effort == :xhigh
+    assert response.response_metadata.transport.request_id == "req-sonnet-5"
+    assert response.response_metadata.request_id == "req-sonnet-5"
+
+    assert response.response_metadata.headers == %{
+             request_id: "req-sonnet-5",
+             anthropic_ratelimit_requests_remaining: "99",
+             anthropic_organization_id: "org_123"
+           }
+
+    refute Map.has_key?(response.response_metadata.transport, :headers)
+    assert response.response_metadata.provider_metadata.raw.raw_provider_response["model"] == "claude-sonnet-5"
+    assert response.response_metadata.provider_metadata.raw.raw_provider_response["usage"]["service_tier"] == "standard"
+    assert response.response_metadata.usage.reasoning_tokens == 7
+    assert response.response_metadata.usage.output_token_details.thinking_tokens == 7
+    assert response.response_metadata.usage.service_tier == "standard"
+    assert response.response_metadata.usage.inference_geo == "global"
+    assert response.usage_metadata.output_token_details.thinking_tokens == 7
+
+    assert_received {:fake_transport_request, request}
+    assert {"anthropic-version", "2023-06-01"} in request.headers
+  end
+
   test "request body includes tools, structured output, thinking, mcp betas, and reused container" do
     model =
       ChatModel.new(
@@ -282,6 +365,37 @@ defmodule BeamWeaver.Anthropic.ChatModelTest do
     assert body["output_config"] == %{"effort" => "high"}
   end
 
+  test "Claude Sonnet 5 uses adaptive thinking effort and rejects deprecated controls" do
+    model = ChatModel.new(model: "claude-sonnet-5")
+
+    assert {:error, sampling_error} =
+             ChatModel.request_body(model, [Message.user("hello")],
+               temperature: 0.5,
+               top_k: 5,
+               top_p: 0.9
+             )
+
+    assert sampling_error.type == :unsupported_model_param
+    assert sampling_error.details.model == "claude-sonnet-5"
+    assert Enum.sort(sampling_error.details.params) == [:temperature, :top_k, :top_p]
+
+    assert {:error, thinking_error} =
+             ChatModel.request_body(model, [Message.user("hello")], thinking: %{type: :enabled, budget_tokens: 1024})
+
+    assert thinking_error.type == :unsupported_model_param
+    assert thinking_error.details.params == [:thinking]
+    assert thinking_error.details.reason =~ "adaptive thinking"
+
+    assert {:ok, body} =
+             ChatModel.request_body(model, [Message.user("hello")],
+               thinking: %{type: :adaptive},
+               effort: :max
+             )
+
+    assert body["thinking"] == %{"type" => "adaptive"}
+    assert body["output_config"] == %{"effort" => "max"}
+  end
+
   test "stream and stream_response consume Anthropic SSE fixtures" do
     body = """
     event: message_start
@@ -315,7 +429,10 @@ defmodule BeamWeaver.Anthropic.ChatModelTest do
               "stream" => true
             }
           },
-          headers: [{"content-type", "text/event-stream"}],
+          headers: [
+            {"content-type", "text/event-stream"},
+            {"request-id", "req-anthropic-stream"}
+          ],
           body: body
         ]
       )
@@ -326,6 +443,7 @@ defmodule BeamWeaver.Anthropic.ChatModelTest do
     assert {:ok, response} = ChatModel.stream_response(model, [Message.user("stream")])
     assert Message.text(response) == "pong"
     assert response.status == "end_turn"
+    assert response.response_metadata.headers.request_id == "req-anthropic-stream"
   end
 
   test "count_tokens uses Anthropic count_tokens endpoint" do
@@ -382,6 +500,18 @@ defmodule BeamWeaver.Anthropic.ChatModelTest do
     assert opus.profile.max_input_tokens == 1_000_000
     assert opus.profile.max_output_tokens == 128_000
     assert opus.profile.extra.default_effort == :high
+
+    assert {:ok, sonnet} = Models.init_chat_model("anthropic:claude-sonnet-5")
+    assert sonnet.profile.name == "Claude Sonnet 5"
+    assert sonnet.profile.max_input_tokens == 1_000_000
+    assert sonnet.profile.max_output_tokens == 128_000
+    assert sonnet.profile.extra.default_effort == :high
+    assert sonnet.profile.extra.input_price_per_mtok == 2.00
+    assert sonnet.profile.extra.output_price_per_mtok == 10.00
+    assert sonnet.profile.extra.batch_input_price_per_mtok == 1.00
+    assert sonnet.profile.extra.batch_output_price_per_mtok == 5.00
+    assert sonnet.profile.extra.sampling_controls == :restricted
+    assert sonnet.profile.extra.thinking_mode == :adaptive_only
 
     assert {:ok, fable} = Models.init_chat_model("anthropic:claude-fable-5")
     assert fable.profile.max_input_tokens == 1_000_000

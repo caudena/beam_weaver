@@ -48,9 +48,11 @@ defmodule BeamWeaver.Moonshot.Streaming do
 
   def typed_events(_body), do: []
 
-  @spec stream_body_to_message(binary()) ::
+  @spec stream_body_to_message(binary(), keyword()) ::
           {:ok, BeamWeaver.Core.Message.t()} | {:error, Error.t()}
-  def stream_body_to_message(body) when is_binary(body) do
+  def stream_body_to_message(body, opts \\ [])
+
+  def stream_body_to_message(body, opts) when is_binary(body) do
     events = SSE.events(body)
     chunks = message_chunks(events)
 
@@ -62,7 +64,7 @@ defmodule BeamWeaver.Moonshot.Streaming do
         message = MessageChunk.to_message(chunk)
         usage = stream_usage(events)
         finish_reason = stream_finish_reason(events)
-        metadata = stream_metadata(events, message)
+        metadata = stream_metadata(events, message, opts)
 
         {:ok,
          %{
@@ -79,7 +81,7 @@ defmodule BeamWeaver.Moonshot.Streaming do
     end
   end
 
-  def stream_body_to_message(_body) do
+  def stream_body_to_message(_body, _opts) do
     {:error, Error.new(:invalid_response, "Moonshot chat-completions stream body must be binary")}
   end
 
@@ -232,7 +234,7 @@ defmodule BeamWeaver.Moonshot.Streaming do
     end)
   end
 
-  defp stream_metadata(events, message) do
+  defp stream_metadata(events, message, opts) do
     reasoning_content = reasoning_content(message)
 
     events
@@ -253,7 +255,37 @@ defmodule BeamWeaver.Moonshot.Streaming do
         acc
     end)
     |> put_optional(:reasoning_content, reasoning_content)
+    |> put_headers(opts)
   end
+
+  defp put_headers(metadata, opts) do
+    header_metadata = Keyword.get(opts, :header_metadata, %{})
+
+    metadata
+    |> put_optional(:headers, header_metadata[:headers])
+    |> put_optional(:request_id, header_metadata[:request_id])
+    |> put_optional(:transport, transport_metadata(header_metadata))
+    |> maybe_put_raw_headers(
+      Keyword.get(opts, :raw_response_headers, []),
+      Keyword.get(opts, :include_response_headers, false)
+    )
+  end
+
+  defp maybe_put_raw_headers(metadata, _headers, false), do: metadata
+
+  defp maybe_put_raw_headers(metadata, headers, true) do
+    put_optional(
+      metadata,
+      :_beamweaver_response_headers,
+      Map.new(BeamWeaver.Transport.Request.normalize_headers(headers))
+    )
+  end
+
+  defp transport_metadata(%{request_id: request_id}) when is_binary(request_id) and request_id != "" do
+    %{request_id: request_id}
+  end
+
+  defp transport_metadata(_metadata), do: nil
 
   defp first_choice(%{"choices" => [choice | _rest]}) when is_map(choice), do: choice
   defp first_choice(_data), do: nil
