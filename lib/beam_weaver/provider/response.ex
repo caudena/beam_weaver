@@ -190,7 +190,7 @@ defmodule BeamWeaver.Provider.Response do
   end
 
   defp normalize_tooling(%Message{} = message, metadata) do
-    user_calls = message.tool_calls || []
+    user_calls = message.tool_calls
     hosted_calls = hosted_tool_calls(message)
     hosted_results = hosted_tool_results(message)
     hosted_usage = hosted_tool_usage(metadata)
@@ -205,8 +205,8 @@ defmodule BeamWeaver.Provider.Response do
         usage: hosted_usage
       },
       tool_call_count: length(user_calls),
-      server_tool_call_count: length(message.server_tool_calls || []),
-      server_tool_result_count: length(message.server_tool_results || []),
+      server_tool_call_count: length(message.server_tool_calls),
+      server_tool_result_count: length(message.server_tool_results),
       tool_calls: user_calls
     }
     |> reject_empty_values()
@@ -222,8 +222,6 @@ defmodule BeamWeaver.Provider.Response do
     |> reject_empty_values()
   end
 
-  defp normalize_safety(_metadata), do: %{}
-
   defp normalize_grounding(metadata) when is_map(metadata) do
     grounding_metadata = metadata[:grounding_metadata]
 
@@ -235,8 +233,6 @@ defmodule BeamWeaver.Provider.Response do
     }
     |> reject_empty_values()
   end
-
-  defp normalize_grounding(_metadata), do: %{}
 
   defp web_search_queries(raw) when is_map(raw) do
     raw["web_search_queries"] || raw["webSearchQueries"]
@@ -255,12 +251,10 @@ defmodule BeamWeaver.Provider.Response do
     |> reject_empty_values()
   end
 
-  defp normalize_transport(_metadata), do: %{}
-
-  defp provider_metadata(nil, metadata), do: %{raw: metadata || %{}}
+  defp provider_metadata(nil, metadata), do: %{raw: metadata}
 
   defp provider_metadata(provider, metadata) do
-    %{provider: provider, raw: metadata || %{}}
+    %{provider: provider, raw: metadata}
   end
 
   defp provider(model, message, opts) do
@@ -321,34 +315,34 @@ defmodule BeamWeaver.Provider.Response do
     ]
   end
 
-  @hosted_content_block_types MapSet.new([
-                                :file_search_call,
-                                :image_generation_call,
-                                :mcp_approval_request,
-                                :mcp_call,
-                                :mcp_list_tools,
-                                :server_tool_call,
-                                :tool_search_call,
-                                :web_search_call
-                              ])
+  @hosted_content_block_types %{
+    file_search_call: true,
+    image_generation_call: true,
+    mcp_approval_request: true,
+    mcp_call: true,
+    mcp_list_tools: true,
+    server_tool_call: true,
+    tool_search_call: true,
+    web_search_call: true
+  }
 
-  @hosted_result_block_types MapSet.new([
-                               :custom_tool_call_output,
-                               :server_tool_result,
-                               :tool_search_output
-                             ])
+  @hosted_result_block_types %{
+    custom_tool_call_output: true,
+    server_tool_result: true,
+    tool_search_output: true
+  }
 
   @hosted_summary_keys [:type, :id, :call_id, :tool_call_id, :name, :status, :provider_type]
 
   defp hosted_tool_calls(%Message{} = message) do
-    ((message.server_tool_calls || []) ++ hosted_content_blocks(message, @hosted_content_block_types))
+    (message.server_tool_calls ++ hosted_content_blocks(message, @hosted_content_block_types))
     |> Enum.map(&hosted_tool_summary/1)
     |> Enum.reject(&(&1 == %{}))
     |> Enum.uniq()
   end
 
   defp hosted_tool_results(%Message{} = message) do
-    ((message.server_tool_results || []) ++ hosted_content_blocks(message, @hosted_result_block_types))
+    (message.server_tool_results ++ hosted_content_blocks(message, @hosted_result_block_types))
     |> Enum.map(&hosted_tool_summary/1)
     |> Enum.reject(&(&1 == %{}))
     |> Enum.uniq()
@@ -360,7 +354,7 @@ defmodule BeamWeaver.Provider.Response do
     |> case do
       {:ok, blocks} ->
         Enum.filter(blocks, fn
-          %{type: type} -> MapSet.member?(types, type)
+          %{type: type} -> Map.has_key?(types, type)
           _block -> false
         end)
 
@@ -387,8 +381,6 @@ defmodule BeamWeaver.Provider.Response do
     |> raw_provider_response()
     |> tool_usage()
   end
-
-  defp hosted_tool_usage(_metadata), do: %{}
 
   defp raw_provider_response(metadata) when is_map(metadata) do
     metadata[:raw_provider_response] ||
@@ -498,8 +490,6 @@ defmodule BeamWeaver.Provider.Response do
       end
     end)
   end
-
-  defp first_number(_map, _keys), do: nil
 
   defp parse_number(value) do
     case Integer.parse(value) do

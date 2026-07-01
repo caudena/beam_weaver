@@ -303,7 +303,6 @@ defmodule BeamWeaver.Moonshot.Streaming do
 
   defp reasoning_content(_message), do: nil
 
-  defp empty_to_nil(value) when is_map(value) and map_size(value) == 0, do: nil
   defp empty_to_nil(""), do: nil
   defp empty_to_nil(value), do: value
 

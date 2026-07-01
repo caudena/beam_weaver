@@ -10,6 +10,9 @@
   and OpenAI hosted usage metrics for image generation and web search.
 - Added WeaveScope trace detail rendering for user tools, hosted tools, and
   hosted usage as separate sections from provider response headers.
+- Refreshed Moonshot/Kimi `kimi-k2.7-code` and
+  `kimi-k2.7-code-highspeed` model metadata, including the highspeed variant's
+  official pricing source and throughput metadata.
 
 ### Changed
 
