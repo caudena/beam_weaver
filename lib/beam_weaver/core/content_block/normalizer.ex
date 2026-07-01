@@ -162,6 +162,7 @@ defmodule BeamWeaver.Core.ContentBlock.Normalizer do
       phase: ContentBlock.get(map, :phase),
       annotations: ContentBlock.get(map, :annotations),
       cache_control: ContentBlock.get(map, :cache_control),
+      thought_signature: thought_signature(map),
       raw_provider_block: ContentBlock.get(map, :raw_provider_block)
     }
     |> MapShape.reject_nil_values()

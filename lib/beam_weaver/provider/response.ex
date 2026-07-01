@@ -44,7 +44,7 @@ defmodule BeamWeaver.Provider.Response do
       limits: normalize_limits(model, message.response_metadata),
       model: normalize_model(model, message, provider),
       reasoning: normalize_reasoning(model, message, opts),
-      tooling: normalize_tooling(message),
+      tooling: normalize_tooling(message, message.response_metadata),
       safety: normalize_safety(message.response_metadata),
       grounding: normalize_grounding(message.response_metadata),
       transport: normalize_transport(message.response_metadata),
@@ -183,17 +183,31 @@ defmodule BeamWeaver.Provider.Response do
       include_thoughts: Keyword.get(opts, :include_thoughts) || Map.get(model, :include_thoughts),
       tokens: usage[:reasoning_tokens],
       content: reasoning_content(message),
+      thought_signatures: thought_signatures(message),
       raw: metadata[:reasoning]
     }
     |> reject_empty_values()
   end
 
-  defp normalize_tooling(%Message{} = message) do
+  defp normalize_tooling(%Message{} = message, metadata) do
+    user_calls = message.tool_calls || []
+    hosted_calls = hosted_tool_calls(message)
+    hosted_results = hosted_tool_results(message)
+    hosted_usage = hosted_tool_usage(metadata)
+
     %{
-      tool_call_count: length(message.tool_calls || []),
+      user: %{call_count: length(user_calls), calls: user_calls},
+      hosted: %{
+        call_count: length(hosted_calls),
+        result_count: length(hosted_results),
+        calls: hosted_calls,
+        results: hosted_results,
+        usage: hosted_usage
+      },
+      tool_call_count: length(user_calls),
       server_tool_call_count: length(message.server_tool_calls || []),
       server_tool_result_count: length(message.server_tool_results || []),
-      tool_calls: message.tool_calls
+      tool_calls: user_calls
     }
     |> reject_empty_values()
   end
@@ -279,8 +293,169 @@ defmodule BeamWeaver.Provider.Response do
     end
   end
 
+  defp thought_signatures(%Message{} = message) do
+    message
+    |> Message.content_blocks()
+    |> case do
+      {:ok, blocks} ->
+        blocks
+        |> Enum.flat_map(fn
+          %{type: type} = block when type in [:reasoning, :text] -> thought_signature_values(block)
+          _block -> []
+        end)
+        |> Enum.reject(&(&1 in [nil, ""]))
+        |> Enum.uniq()
+
+      _error ->
+        []
+    end
+  end
+
+  defp thought_signature_values(%{} = block) do
+    [
+      Map.get(block, :thought_signature),
+      Map.get(block, "thought_signature"),
+      Map.get(block, :signature),
+      Map.get(block, "signature"),
+      metadata_value(Map.get(block, :metadata), :thought_signature)
+    ]
+  end
+
+  @hosted_content_block_types MapSet.new([
+                                :file_search_call,
+                                :image_generation_call,
+                                :mcp_approval_request,
+                                :mcp_call,
+                                :mcp_list_tools,
+                                :server_tool_call,
+                                :tool_search_call,
+                                :web_search_call
+                              ])
+
+  @hosted_result_block_types MapSet.new([
+                               :custom_tool_call_output,
+                               :server_tool_result,
+                               :tool_search_output
+                             ])
+
+  @hosted_summary_keys [:type, :id, :call_id, :tool_call_id, :name, :status, :provider_type]
+
+  defp hosted_tool_calls(%Message{} = message) do
+    ((message.server_tool_calls || []) ++ hosted_content_blocks(message, @hosted_content_block_types))
+    |> Enum.map(&hosted_tool_summary/1)
+    |> Enum.reject(&(&1 == %{}))
+    |> Enum.uniq()
+  end
+
+  defp hosted_tool_results(%Message{} = message) do
+    ((message.server_tool_results || []) ++ hosted_content_blocks(message, @hosted_result_block_types))
+    |> Enum.map(&hosted_tool_summary/1)
+    |> Enum.reject(&(&1 == %{}))
+    |> Enum.uniq()
+  end
+
+  defp hosted_content_blocks(%Message{} = message, types) do
+    message
+    |> Message.content_blocks()
+    |> case do
+      {:ok, blocks} ->
+        Enum.filter(blocks, fn
+          %{type: type} -> MapSet.member?(types, type)
+          _block -> false
+        end)
+
+      _error ->
+        []
+    end
+  end
+
+  defp hosted_tool_summary(%{} = block) do
+    @hosted_summary_keys
+    |> Enum.reduce(%{}, fn key, acc ->
+      case Map.get(block, key) || Map.get(block, to_string(key)) do
+        nil -> acc
+        "" -> acc
+        value -> Map.put(acc, key, value)
+      end
+    end)
+  end
+
+  defp hosted_tool_summary(_block), do: %{}
+
+  defp hosted_tool_usage(metadata) when is_map(metadata) do
+    metadata
+    |> raw_provider_response()
+    |> tool_usage()
+  end
+
+  defp hosted_tool_usage(_metadata), do: %{}
+
+  defp raw_provider_response(metadata) when is_map(metadata) do
+    metadata[:raw_provider_response] ||
+      metadata["raw_provider_response"] ||
+      get_in(metadata, [:provider_metadata, :raw, :raw_provider_response]) ||
+      get_in(metadata, ["provider_metadata", "raw", "raw_provider_response"]) ||
+      metadata
+  end
+
+  defp tool_usage(%{} = response) do
+    response
+    |> Map.get("tool_usage")
+    |> normalize_tool_usage()
+  end
+
+  defp tool_usage(_response), do: %{}
+
+  defp normalize_tool_usage(%{} = usage) do
+    %{
+      image_gen: normalize_image_gen_usage(Map.get(usage, "image_gen")),
+      web_search: normalize_web_search_usage(Map.get(usage, "web_search"))
+    }
+    |> reject_empty_values()
+  end
+
+  defp normalize_tool_usage(_usage), do: %{}
+
+  defp normalize_image_gen_usage(%{} = usage) do
+    %{
+      input_tokens: first_number(usage, ["input_tokens"]),
+      output_tokens: first_number(usage, ["output_tokens"]),
+      total_tokens: first_number(usage, ["total_tokens"]),
+      input_token_details: static_tool_usage_details(Map.get(usage, "input_tokens_details")),
+      output_token_details: static_tool_usage_details(Map.get(usage, "output_tokens_details"))
+    }
+    |> reject_empty_values()
+  end
+
+  defp normalize_image_gen_usage(_usage), do: %{}
+
+  defp normalize_web_search_usage(%{} = usage) do
+    %{
+      num_requests: first_number(usage, ["num_requests"])
+    }
+    |> reject_empty_values()
+  end
+
+  defp normalize_web_search_usage(_usage), do: %{}
+
+  defp static_tool_usage_details(%{} = details) do
+    %{
+      image_tokens: first_number(details, ["image_tokens"]),
+      text_tokens: first_number(details, ["text_tokens"])
+    }
+    |> reject_empty_values()
+  end
+
+  defp static_tool_usage_details(_details), do: %{}
+
   defp empty_to_nil(""), do: nil
   defp empty_to_nil(value), do: value
+
+  defp metadata_value(map, key) when is_map(map) do
+    Map.get(map, key) || Map.get(map, to_string(key))
+  end
+
+  defp metadata_value(_map, _key), do: nil
 
   defp normalize_headers(metadata) when is_map(metadata) do
     metadata

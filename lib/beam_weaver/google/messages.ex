@@ -344,11 +344,26 @@ defmodule BeamWeaver.Google.Messages do
   end
 
   defp response_block(%{"text" => text, "thought" => true} = part) when is_binary(text) do
-    [%{type: :reasoning, reasoning: text, signature: part["thoughtSignature"]}]
+    [
+      %{
+        type: :reasoning,
+        reasoning: text,
+        thought_signature: part["thoughtSignature"]
+      }
+      |> Options.reject_nil_values()
+    ]
   end
 
-  defp response_block(%{"text" => text}) when is_binary(text),
-    do: [%{type: :text, text: text}]
+  defp response_block(%{"text" => text} = part) when is_binary(text) do
+    [
+      %{
+        type: :text,
+        text: text,
+        thought_signature: thought_signature(part)
+      }
+      |> Options.reject_nil_values()
+    ]
+  end
 
   defp response_block(%{"functionCall" => %{"name" => name} = raw_call} = part) do
     [

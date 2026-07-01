@@ -37,6 +37,7 @@ defmodule BeamWeaver.Tracing.WeaveScopeExporterTest do
             provider_metadata: %{
               raw: %{
                 "id" => "provider-response-1",
+                "headers" => %{"request-id" => "req-123"},
                 "raw_provider_response" => %{
                   "_beamweaver_response_headers" => %{"request-id" => "req-123"},
                   "_beamweaver_response_header_metadata" => %{headers: %{request_id: "req-123"}},
@@ -83,7 +84,33 @@ defmodule BeamWeaver.Tracing.WeaveScopeExporterTest do
         run
         | status: :ok,
           ended_at: ~U[2026-06-04 10:00:03Z],
-          outputs: %{structured_response: %{domain: "example.com"}}
+          outputs: %{
+            structured_response: %{domain: "example.com"},
+            messages: [
+              %{
+                response_metadata: %{
+                  headers: %{request_id: "req-123"},
+                  transport: %{
+                    request_id: "req-123",
+                    headers: %{"request-id" => "req-123"}
+                  },
+                  provider_metadata: %{
+                    raw: %{
+                      "headers" => %{"request-id" => "req-123"},
+                      "raw_provider_response" => %{
+                        "_beamweaver_response_headers" => %{"request-id" => "req-123"},
+                        "id" => "nested-provider-response"
+                      }
+                    }
+                  },
+                  raw_provider_response: %{
+                    "_beamweaver_response_headers" => %{"request-id" => "req-123"},
+                    "id" => "nested-provider-response"
+                  }
+                }
+              }
+            ]
+          }
       }
 
     event = WeaveScope.to_event(:ok, run, environment: "staging")
@@ -141,7 +168,19 @@ defmodule BeamWeaver.Tracing.WeaveScopeExporterTest do
              "_beamweaver_response_header_metadata"
            )
 
+    refute Map.has_key?(event["metadata"][:response_metadata][:provider_metadata][:raw], "headers")
     assert event["metadata"][:response_metadata][:provider_metadata][:raw]["id"] == "provider-response-1"
+    assert [%{response_metadata: output_response_metadata}] = event["outputs"][:messages]
+    assert output_response_metadata[:headers] == %{request_id: "req-123"}
+    refute Map.has_key?(output_response_metadata[:transport], :headers)
+    refute Map.has_key?(output_response_metadata[:provider_metadata][:raw], "headers")
+
+    refute Map.has_key?(
+             output_response_metadata[:provider_metadata][:raw]["raw_provider_response"],
+             "_beamweaver_response_headers"
+           )
+
+    refute Map.has_key?(output_response_metadata[:raw_provider_response], "_beamweaver_response_headers")
     assert is_binary(event["metadata"][:response_format][:validator])
     assert "beam_weaver:#{beam_weaver_version}" in event["tags"]
 

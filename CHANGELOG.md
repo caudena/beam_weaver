@@ -1,5 +1,25 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Added normalized model tooling metadata that separates user-defined tool
+  calls from provider-hosted tools under `response_metadata.tooling.user` and
+  `response_metadata.tooling.hosted`, including compact hosted tool summaries
+  and OpenAI hosted usage metrics for image generation and web search.
+- Added WeaveScope trace detail rendering for user tools, hosted tools, and
+  hosted usage as separate sections from provider response headers.
+
+### Changed
+
+- Google Gemini response decoding now preserves `thoughtSignature` values on
+  text and reasoning parts and exposes reasoning/text signatures through
+  normalized response metadata.
+- WeaveScope trace export now recursively scrubs BeamWeaver debug/raw header
+  containers from metadata, inputs, outputs, usage, and error payloads while
+  preserving canonical decoded provider headers at `response_metadata.headers`.
+
 ## 0.1.8 - 2026-06-29
 
 ### Added

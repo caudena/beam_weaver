@@ -70,11 +70,15 @@ defmodule BeamWeaver.Tracing.Exporters.WeaveScope do
   def to_event(event, %Run{} = run, opts \\ []) do
     metadata =
       run.metadata
-      |> weavescope_metadata()
+      |> library_metadata()
       |> ValueEncoder.encode()
+      |> scrub_export_value()
 
-    context_metadata = ValueEncoder.encode(run.context_metadata || %{})
-    usage = ValueEncoder.encode(run.usage || %{})
+    context_metadata = (run.context_metadata || %{}) |> ValueEncoder.encode() |> scrub_export_value()
+    inputs = run.inputs |> ValueEncoder.encode() |> scrub_export_value()
+    outputs = run.outputs |> ValueEncoder.encode() |> scrub_export_value()
+    usage = (run.usage || %{}) |> ValueEncoder.encode() |> scrub_export_value()
+    error = run.error |> ValueEncoder.encode() |> scrub_export_value()
 
     %{
       "operation" => operation(event),
@@ -91,10 +95,10 @@ defmodule BeamWeaver.Tracing.Exporters.WeaveScope do
       "tags" => ValueEncoder.encode(library_tags(run.tags)),
       "metadata" => metadata,
       "context_metadata" => context_metadata,
-      "inputs" => ValueEncoder.encode(run.inputs),
-      "outputs" => ValueEncoder.encode(run.outputs),
+      "inputs" => inputs,
+      "outputs" => outputs,
       "usage" => usage,
-      "error" => ValueEncoder.encode(run.error),
+      "error" => error,
       "environment" => environment(metadata, context_metadata),
       "version" => version(metadata, context_metadata, opts)
     }
@@ -203,62 +207,49 @@ defmodule BeamWeaver.Tracing.Exporters.WeaveScope do
     end
   end
 
-  defp weavescope_metadata(metadata) do
-    metadata
-    |> library_metadata()
-    |> scrub_response_transport_headers()
-    |> scrub_internal_response_keys()
-  end
-
   defp library_metadata(metadata) when is_map(metadata) do
     Map.put(metadata, :beam_weaver_version, beam_weaver_version())
   end
 
   defp library_metadata(_metadata), do: %{beam_weaver_version: beam_weaver_version()}
 
-  defp scrub_response_transport_headers(metadata) when is_map(metadata) do
-    metadata
-    |> scrub_response_metadata(:response_metadata)
-    |> scrub_response_metadata("response_metadata")
-  end
+  defp scrub_export_value(value, path \\ [])
 
-  defp scrub_response_metadata(metadata, key) do
-    case Map.fetch(metadata, key) do
-      {:ok, response_metadata} when is_map(response_metadata) ->
-        Map.put(metadata, key, scrub_response_metadata(response_metadata))
-
-      _other ->
-        metadata
-    end
-  end
-
-  defp scrub_response_metadata(response_metadata) do
-    response_metadata
-    |> scrub_transport_headers(:transport)
-    |> scrub_transport_headers("transport")
-  end
-
-  defp scrub_transport_headers(response_metadata, key) do
-    case Map.fetch(response_metadata, key) do
-      {:ok, transport} when is_map(transport) ->
-        Map.put(response_metadata, key, Map.drop(transport, [:headers, "headers"]))
-
-      _other ->
-        response_metadata
-    end
-  end
-
-  defp scrub_internal_response_keys(value) when is_map(value) do
+  defp scrub_export_value(value, path) when is_map(value) do
     value
+    |> drop_duplicate_header_containers(path)
     |> Enum.reject(fn {key, _value} -> internal_response_key?(key) end)
-    |> Map.new(fn {key, value} -> {key, scrub_internal_response_keys(value)} end)
+    |> Map.new(fn {key, value} -> {key, scrub_export_value(value, [key | path])} end)
   end
 
-  defp scrub_internal_response_keys(value) when is_list(value) do
-    Enum.map(value, &scrub_internal_response_keys/1)
+  defp scrub_export_value(value, path) when is_list(value) do
+    Enum.map(value, &scrub_export_value(&1, path))
   end
 
-  defp scrub_internal_response_keys(value), do: value
+  defp scrub_export_value(value, _path), do: value
+
+  defp drop_duplicate_header_containers(value, path) when is_map(value) do
+    cond do
+      path_key?(List.first(path), :transport) ->
+        Map.drop(value, [:headers, "headers"])
+
+      provider_metadata_raw_path?(path) ->
+        Map.drop(value, [:headers, "headers"])
+
+      true ->
+        value
+    end
+  end
+
+  defp provider_metadata_raw_path?([raw_key, provider_metadata_key | _path]) do
+    path_key?(raw_key, :raw) and path_key?(provider_metadata_key, :provider_metadata)
+  end
+
+  defp provider_metadata_raw_path?(_path), do: false
+
+  defp path_key?(key, expected) when is_atom(key), do: key == expected
+  defp path_key?(key, expected) when is_binary(key), do: key == Atom.to_string(expected)
+  defp path_key?(_key, _expected), do: false
 
   defp internal_response_key?(key) do
     key in [
