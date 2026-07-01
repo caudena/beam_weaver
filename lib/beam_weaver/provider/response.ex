@@ -5,6 +5,11 @@ defmodule BeamWeaver.Provider.Response do
   Public chat model APIs still return `BeamWeaver.Core.Message`; the normalized
   envelope is copied onto `usage_metadata` and `response_metadata` so traces and
   stream events can consume one stable shape across providers.
+
+  Provider clients own response-header decoding. Core preserves
+  `response_metadata.headers` only when the client already supplied an
+  atom-keyed, allowlisted decoded header map; raw/full HTTP transport headers
+  must stay in debug-only metadata and are not interpreted here.
   """
 
   alias BeamWeaver.Core.Message
@@ -19,6 +24,7 @@ defmodule BeamWeaver.Provider.Response do
             safety: %{},
             grounding: %{},
             transport: %{},
+            headers: %{},
             provider_metadata: %{},
             raw: nil
 
@@ -30,6 +36,7 @@ defmodule BeamWeaver.Provider.Response do
   @spec from_message(term(), Message.t(), keyword()) :: t()
   def from_message(model, %Message{} = message, opts \\ []) do
     provider = provider(model, message, opts)
+    headers = normalize_headers(message.response_metadata)
 
     %__MODULE__{
       message: message,
@@ -41,6 +48,7 @@ defmodule BeamWeaver.Provider.Response do
       safety: normalize_safety(message.response_metadata),
       grounding: normalize_grounding(message.response_metadata),
       transport: normalize_transport(message.response_metadata),
+      headers: headers,
       provider_metadata: provider_metadata(provider, message.response_metadata),
       raw: message.response_metadata
     }
@@ -62,8 +70,10 @@ defmodule BeamWeaver.Provider.Response do
         safety: response.safety,
         grounding: response.grounding,
         transport: response.transport,
+        headers: response.headers,
         provider_metadata: response.provider_metadata
       })
+      |> put_if_absent(:request_id, response.transport[:request_id])
       |> reject_empty_values()
 
     %{
@@ -91,25 +101,25 @@ defmodule BeamWeaver.Provider.Response do
   end
 
   defp normalize_usage(usage, _response_metadata) when is_map(usage) do
+    usage = usage_key_map(usage)
+    input_details = usage |> Map.get(:input_token_details, %{}) |> usage_key_map()
+    output_details = usage |> Map.get(:output_token_details, %{}) |> usage_key_map()
+
     input = first_number(usage, [:input_tokens, :prompt_tokens])
-
     output = first_number(usage, [:output_tokens, :completion_tokens])
-
     total = first_number(usage, [:total_tokens, :total]) || sum_present(input, output)
-
-    input_details = Map.get(usage, :input_token_details) || %{}
-    output_details = Map.get(usage, :output_token_details) || %{}
 
     %{
       input_tokens: input,
       output_tokens: output,
       total_tokens: total,
-      cache_read_tokens: first_number(input_details, [:cache_read, :cache_read_tokens]),
+      cache_read_tokens: first_number(input_details, [:cache_read, :cache_read_tokens, :cache_read_input_tokens]),
       cache_creation_tokens: first_number(input_details, [:cache_creation, :cache_creation_tokens]),
-      reasoning_tokens: first_number(output_details, [:reasoning, :reasoning_tokens]),
-      input_token_details: atom_key_map(input_details),
-      output_token_details: atom_key_map(output_details),
-      service_tier: Map.get(usage, :service_tier)
+      reasoning_tokens: first_number(output_details, [:reasoning, :reasoning_tokens, :thinking_tokens]),
+      input_token_details: input_details,
+      output_token_details: output_details,
+      service_tier: Map.get(usage, :service_tier),
+      inference_geo: Map.get(usage, :inference_geo)
     }
     |> reject_empty_values()
   end
@@ -128,20 +138,13 @@ defmodule BeamWeaver.Provider.Response do
 
   defp normalize_limits(model, response_metadata) do
     profile = Map.get(model, :profile)
-    headers = headers(response_metadata)
 
     %{
       max_input_tokens: profile_value(profile, :max_input_tokens),
       max_output_tokens: profile_value(profile, :max_output_tokens),
-      requested_max_output_tokens: first_number(model, [:max_output_tokens, :max_completion_tokens, :max_tokens]),
-      rate_limit_requests: header(headers, "x-ratelimit-limit-requests"),
-      rate_limit_tokens: header(headers, "x-ratelimit-limit-tokens"),
-      remaining_requests: header(headers, "x-ratelimit-remaining-requests"),
-      remaining_tokens: header(headers, "x-ratelimit-remaining-tokens"),
-      reset_requests: header(headers, "x-ratelimit-reset-requests"),
-      reset_tokens: header(headers, "x-ratelimit-reset-tokens"),
-      retry_after: header(headers, "retry-after")
+      requested_max_output_tokens: first_number(model, [:max_output_tokens, :max_completion_tokens, :max_tokens])
     }
+    |> Map.merge(existing_limits(response_metadata))
     |> reject_empty_values()
   end
 
@@ -169,8 +172,11 @@ defmodule BeamWeaver.Provider.Response do
 
     %{
       requested_effort:
-        Keyword.get(opts, :reasoning_effort) || Map.get(model, :reasoning_effort) ||
-          nested_value(Map.get(model, :reasoning), ["effort", :effort]),
+        Keyword.get(opts, :effort) || Keyword.get(opts, :reasoning_effort) ||
+          Map.get(model, :effort) || Map.get(model, :reasoning_effort) ||
+          effort_from_config(Keyword.get(opts, :output_config)) ||
+          effort_from_config(Map.get(model, :output_config)) ||
+          effort_from_config(Map.get(model, :reasoning)),
       requested_thinking: Keyword.get(opts, :thinking) || Map.get(model, :thinking),
       thinking_level: Keyword.get(opts, :thinking_level) || Map.get(model, :thinking_level),
       thinking_budget: Keyword.get(opts, :thinking_budget) || Map.get(model, :thinking_budget),
@@ -225,15 +231,12 @@ defmodule BeamWeaver.Provider.Response do
   defp web_search_queries(_metadata), do: nil
 
   defp normalize_transport(metadata) when is_map(metadata) do
-    headers = headers(metadata)
+    transport = if is_map(metadata[:transport]), do: metadata[:transport], else: %{}
 
     %{
-      request_id:
-        metadata[:request_id] || header(headers, "x-request-id") ||
-          header(headers, "request-id") || metadata[:id],
+      request_id: metadata[:request_id] || transport[:request_id] || transport["request_id"] || metadata[:id],
       response_id: metadata[:id],
-      status: metadata[:status],
-      headers: headers
+      status: metadata[:status]
     }
     |> reject_empty_values()
   end
@@ -279,32 +282,34 @@ defmodule BeamWeaver.Provider.Response do
   defp empty_to_nil(""), do: nil
   defp empty_to_nil(value), do: value
 
-  defp headers(metadata) when is_map(metadata) do
+  defp normalize_headers(metadata) when is_map(metadata) do
     metadata
     |> Map.get(:headers, %{})
-    |> case do
-      headers when is_map(headers) ->
-        Map.new(headers, fn {key, value} -> {String.downcase(to_string(key)), value} end)
+    |> atom_keyed_map()
+  end
 
-      headers when is_list(headers) ->
-        headers
-        |> BeamWeaver.Transport.Request.normalize_headers()
-        |> Map.new()
+  defp normalize_headers(_metadata), do: %{}
 
-      _other ->
-        %{}
+  defp atom_keyed_map(headers) when is_map(headers) do
+    headers
+    |> Enum.filter(fn {key, _value} -> is_atom(key) end)
+    |> Map.new()
+  end
+
+  defp atom_keyed_map(_headers), do: %{}
+
+  defp existing_limits(metadata) when is_map(metadata) do
+    case metadata[:limits] do
+      limits when is_map(limits) -> limits
+      _limits -> %{}
     end
   end
 
-  defp headers(_metadata), do: %{}
+  defp existing_limits(_metadata), do: %{}
 
-  defp header(headers, key) when is_map(headers), do: Map.get(headers, String.downcase(key))
-
-  defp nested_value(map, keys) when is_map(map) and is_list(keys) do
-    Enum.find_value(keys, &Map.get(map, &1))
-  end
-
-  defp nested_value(_value, _keys), do: nil
+  defp effort_from_config(config) when is_list(config), do: Keyword.get(config, :effort)
+  defp effort_from_config(config) when is_map(config), do: Map.get(config, :effort)
+  defp effort_from_config(_config), do: nil
 
   defp profile_value(%Profile{} = profile, key), do: Map.get(profile, key)
   defp profile_value(_profile, _key), do: nil
@@ -333,20 +338,64 @@ defmodule BeamWeaver.Provider.Response do
   defp sum_present(nil, right), do: right
   defp sum_present(left, right), do: left + right
 
-  defp atom_key_map(map) when is_map(map) do
+  defp usage_key_map(map) when is_map(map) do
     map
     |> Enum.flat_map(fn
-      {key, value} when is_atom(key) -> [{key, atom_key_value(value)}]
-      {_key, _value} -> []
+      {key, value} ->
+        case usage_key(key) do
+          nil -> []
+          normalized_key -> [{normalized_key, usage_key_value(value)}]
+        end
     end)
     |> Map.new()
   end
 
-  defp atom_key_map(_value), do: %{}
+  defp usage_key_map(_value), do: %{}
 
-  defp atom_key_value(value) when is_map(value), do: atom_key_map(value)
-  defp atom_key_value(value) when is_list(value), do: Enum.map(value, &atom_key_value/1)
-  defp atom_key_value(value), do: value
+  defp usage_key_value(value) when is_map(value), do: usage_key_map(value)
+  defp usage_key_value(value) when is_list(value), do: Enum.map(value, &usage_key_value/1)
+  defp usage_key_value(value), do: value
+
+  defp usage_key(key) when is_atom(key), do: key
+  defp usage_key("input_tokens"), do: :input_tokens
+  defp usage_key("prompt_tokens"), do: :prompt_tokens
+  defp usage_key("output_tokens"), do: :output_tokens
+  defp usage_key("completion_tokens"), do: :completion_tokens
+  defp usage_key("total_tokens"), do: :total_tokens
+  defp usage_key("total"), do: :total
+  defp usage_key("input_token_details"), do: :input_token_details
+  defp usage_key("input_tokens_details"), do: :input_token_details
+  defp usage_key("prompt_token_details"), do: :input_token_details
+  defp usage_key("prompt_tokens_details"), do: :input_token_details
+  defp usage_key("output_token_details"), do: :output_token_details
+  defp usage_key("output_tokens_details"), do: :output_token_details
+  defp usage_key("completion_token_details"), do: :output_token_details
+  defp usage_key("completion_tokens_details"), do: :output_token_details
+  defp usage_key("cache_read"), do: :cache_read
+  defp usage_key("cache_read_tokens"), do: :cache_read_tokens
+  defp usage_key("cache_read_input_tokens"), do: :cache_read_input_tokens
+  defp usage_key("cache_creation"), do: :cache_creation
+  defp usage_key("cache_creation_tokens"), do: :cache_creation_tokens
+  defp usage_key("cache_creation_input_tokens"), do: :cache_creation_input_tokens
+  defp usage_key("ephemeral_5m_input_tokens"), do: :ephemeral_5m_input_tokens
+  defp usage_key("ephemeral_1h_input_tokens"), do: :ephemeral_1h_input_tokens
+  defp usage_key("reasoning"), do: :reasoning
+  defp usage_key("reasoning_tokens"), do: :reasoning_tokens
+  defp usage_key("thinking_tokens"), do: :thinking_tokens
+  defp usage_key("service_tier"), do: :service_tier
+  defp usage_key("inference_geo"), do: :inference_geo
+  defp usage_key(_key), do: nil
+
+  defp put_if_absent(map, _key, nil), do: map
+  defp put_if_absent(map, _key, ""), do: map
+
+  defp put_if_absent(map, key, value) do
+    case Map.get(map, key) do
+      nil -> Map.put(map, key, value)
+      "" -> Map.put(map, key, value)
+      _existing -> map
+    end
+  end
 
   defp reject_empty_values(map) when is_map(map) do
     Map.reject(map, fn

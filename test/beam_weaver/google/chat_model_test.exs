@@ -553,7 +553,7 @@ defmodule BeamWeaver.Google.ChatModelTest do
         transport: BeamWeaver.TestSupport.Conformance.Fakes.Transport,
         transport_opts: [
           parent: self(),
-          headers: [{"x-request-id", "req_google"}],
+          headers: [{"x-request-id", "req_google"}, {"x-gemini-service-tier", "priority-header"}],
           expect: %{
             method: :post,
             path: "/models/gemini-3.5-flash:generateContent",
@@ -624,6 +624,8 @@ defmodule BeamWeaver.Google.ChatModelTest do
            }
 
     assert response.response_metadata.model.provider == :google
+    assert response.response_metadata.headers == %{x_gemini_service_tier: "priority-header"}
+    assert response.response_metadata.service_tier == "priority-header"
     assert response.response_metadata.usage.reasoning_tokens == 1
     assert response.response_metadata.usage.service_tier == "PRIORITY"
     assert response.response_metadata.usage.input_token_details.tool_use_prompt == 2

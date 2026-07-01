@@ -27,8 +27,8 @@ BeamWeaver includes a direct Anthropic Messages API provider under
 - Streaming SSE bodies are parsed into text deltas, lifecycle events, typed
   stream envelopes, and reconstructed final assistant messages.
 - The token counting endpoint is exposed through `ChatModel.count_tokens/3`.
-- Checked-in model profiles cover Claude Fable 5, Claude Mythos 5, current
-  Claude Opus 4.8/4.7/4.6/4.5/4.1, Claude Sonnet 4.6/4.5,
+- Checked-in model profiles cover Claude Sonnet 5, Claude Fable 5,
+  Claude Mythos 5, current Claude Opus 4.8/4.7/4.6/4.5/4.1, Claude Sonnet 4.6/4.5,
   and Claude Haiku 4.5 models, with a permissive fallback for future
   `claude-*` models.
 - Deprecated or retired Claude IDs return tagged `:deprecated_model` errors
@@ -38,16 +38,22 @@ BeamWeaver includes a direct Anthropic Messages API provider under
   `:container`, `:metadata`, `:service_tier`, `:diagnostics`, `:speed`,
   `:user_profile_id`, `:inference_geo`, `:context_management`, `:mcp_servers`,
   `:thinking`, and `:output_config`.
-- Claude Opus 4.7 and later follow Anthropic's current request restrictions:
+- Claude Sonnet 5, Claude Opus 4.7, and later models follow Anthropic's current request restrictions:
   non-`1.0` `:temperature`, any `:top_k`, `:top_p` below `0.99`, and
   non-adaptive enabled `:thinking` fail before the transport call.
+- Claude Sonnet 5 supports thinking levels through adaptive thinking:
+  use `thinking: %{type: :adaptive}` with `effort: :high`, `:xhigh`, or `:max`.
+  BeamWeaver records the requested effort and Anthropic usage details in trace
+  metadata for WeaveScope ingestion.
 
 ## Usage
 
 ```elixir
 model =
   BeamWeaver.Anthropic.chat_model(
-    model: "claude-haiku-4-5-20251001",
+    model: "claude-sonnet-5",
+    thinking: %{type: :adaptive},
+    effort: :high,
     api_key: "sk-ant-test"
   )
 

@@ -70,7 +70,7 @@ defmodule BeamWeaver.Tracing.Exporters.WeaveScope do
   def to_event(event, %Run{} = run, opts \\ []) do
     metadata =
       run.metadata
-      |> library_metadata()
+      |> weavescope_metadata()
       |> ValueEncoder.encode()
 
     context_metadata = ValueEncoder.encode(run.context_metadata || %{})
@@ -98,7 +98,7 @@ defmodule BeamWeaver.Tracing.Exporters.WeaveScope do
       "environment" => environment(metadata, context_metadata),
       "version" => version(metadata, context_metadata, opts)
     }
-    |> maybe_put_model_fields(metadata, context_metadata)
+    |> maybe_put_model_fields(metadata, context_metadata, usage)
     |> maybe_put(
       "custom_fields",
       metadata_value(metadata, "custom_fields") || metadata_value(context_metadata, "custom_fields")
@@ -203,11 +203,73 @@ defmodule BeamWeaver.Tracing.Exporters.WeaveScope do
     end
   end
 
+  defp weavescope_metadata(metadata) do
+    metadata
+    |> library_metadata()
+    |> scrub_response_transport_headers()
+    |> scrub_internal_response_keys()
+  end
+
   defp library_metadata(metadata) when is_map(metadata) do
     Map.put(metadata, :beam_weaver_version, beam_weaver_version())
   end
 
   defp library_metadata(_metadata), do: %{beam_weaver_version: beam_weaver_version()}
+
+  defp scrub_response_transport_headers(metadata) when is_map(metadata) do
+    metadata
+    |> scrub_response_metadata(:response_metadata)
+    |> scrub_response_metadata("response_metadata")
+  end
+
+  defp scrub_response_metadata(metadata, key) do
+    case Map.fetch(metadata, key) do
+      {:ok, response_metadata} when is_map(response_metadata) ->
+        Map.put(metadata, key, scrub_response_metadata(response_metadata))
+
+      _other ->
+        metadata
+    end
+  end
+
+  defp scrub_response_metadata(response_metadata) do
+    response_metadata
+    |> scrub_transport_headers(:transport)
+    |> scrub_transport_headers("transport")
+  end
+
+  defp scrub_transport_headers(response_metadata, key) do
+    case Map.fetch(response_metadata, key) do
+      {:ok, transport} when is_map(transport) ->
+        Map.put(response_metadata, key, Map.drop(transport, [:headers, "headers"]))
+
+      _other ->
+        response_metadata
+    end
+  end
+
+  defp scrub_internal_response_keys(value) when is_map(value) do
+    value
+    |> Enum.reject(fn {key, _value} -> internal_response_key?(key) end)
+    |> Map.new(fn {key, value} -> {key, scrub_internal_response_keys(value)} end)
+  end
+
+  defp scrub_internal_response_keys(value) when is_list(value) do
+    Enum.map(value, &scrub_internal_response_keys/1)
+  end
+
+  defp scrub_internal_response_keys(value), do: value
+
+  defp internal_response_key?(key) do
+    key in [
+      :_beamweaver_response_headers,
+      "_beamweaver_response_headers",
+      :_beamweaver_response_header_metadata,
+      "_beamweaver_response_header_metadata",
+      :_beamweaver_provider_headers,
+      "_beamweaver_provider_headers"
+    ]
+  end
 
   defp library_tags(tags) do
     tags
@@ -225,14 +287,17 @@ defmodule BeamWeaver.Tracing.Exporters.WeaveScope do
     end
   end
 
-  defp maybe_put_model_fields(event, metadata, context_metadata) do
+  defp maybe_put_model_fields(event, metadata, context_metadata, usage) do
     metadata = metadata || %{}
     context_metadata = context_metadata || %{}
+    response_metadata = metadata_value(metadata, "response_metadata") || %{}
+    response_usage = metadata_value(response_metadata, "usage") || %{}
 
     event
     |> maybe_put(
       "model_provider",
-      metadata_value(metadata, "provider") || metadata_value(context_metadata, "provider")
+      metadata_value(metadata, "provider") || metadata_value(metadata, "model_provider") ||
+        metadata_value(context_metadata, "provider") || metadata_value(context_metadata, "model_provider")
     )
     |> maybe_put(
       "model_name",
@@ -243,6 +308,18 @@ defmodule BeamWeaver.Tracing.Exporters.WeaveScope do
     |> maybe_put(
       "finish_reason",
       metadata_value(metadata, "finish_reason") || metadata_value(context_metadata, "finish_reason")
+    )
+    |> maybe_put(
+      "service_tier",
+      metadata_value(usage, "service_tier") || metadata_value(metadata, "service_tier") ||
+        metadata_value(response_usage, "service_tier") ||
+        metadata_value(context_metadata, "service_tier")
+    )
+    |> maybe_put(
+      "inference_geo",
+      metadata_value(usage, "inference_geo") || metadata_value(metadata, "inference_geo") ||
+        metadata_value(response_usage, "inference_geo") ||
+        metadata_value(context_metadata, "inference_geo")
     )
   end
 

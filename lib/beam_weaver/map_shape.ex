@@ -1,12 +1,13 @@
 defmodule BeamWeaver.MapShape do
   @moduledoc false
 
-  @type compact_rule :: nil | :empty_list | :empty_map
+  @type compact_rule :: nil | :empty_string | :empty_list | :empty_map
 
   @spec compact(map(), [compact_rule()]) :: map()
   def compact(map, rules \\ [nil]) when is_map(map) do
     Map.reject(map, fn
       {_key, nil} -> nil in rules
+      {_key, ""} -> :empty_string in rules
       {_key, []} -> :empty_list in rules
       {_key, value} when is_map(value) and map_size(value) == 0 -> :empty_map in rules
       _entry -> false
@@ -27,7 +28,7 @@ defmodule BeamWeaver.MapShape do
   def reject_nil_values(map), do: compact(map, [nil])
 
   @spec reject_nil_or_empty(map()) :: map()
-  def reject_nil_or_empty(map), do: compact(map, [nil, :empty_list, :empty_map])
+  def reject_nil_or_empty(map), do: compact(map, [nil, :empty_string, :empty_list, :empty_map])
 
   @spec empty_to_nil(term()) :: term() | nil
   def empty_to_nil(map) when is_map(map) and map_size(map) == 0, do: nil

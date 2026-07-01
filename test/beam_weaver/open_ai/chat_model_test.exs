@@ -420,7 +420,7 @@ defmodule BeamWeaver.OpenAI.ChatModelTest do
     assert error.details.response.content_preview == ""
   end
 
-  test "include_response_headers attaches transport headers to chat metadata" do
+  test "include_response_headers keeps public chat headers decoded" do
     request_body = %{
       "model" => "gpt-5.4-mini",
       "input" => [
@@ -440,8 +440,18 @@ defmodule BeamWeaver.OpenAI.ChatModelTest do
 
     cassette_path =
       write_gzip_cassette([
-        {request_body, response_body},
-        {request_body, response_body}
+        {request_body, response_body,
+         response_headers: [
+           {"x-request-id", "req-openai-1"},
+           {"openai-processing-ms", "17"},
+           {"content-type", "application/json"}
+         ]},
+        {request_body, response_body,
+         response_headers: [
+           {"x-request-id", "req-openai-2"},
+           {"openai-processing-ms", "19"},
+           {"content-type", "application/json"}
+         ]}
       ])
 
     model = %{replay_model(cassette_path) | include_response_headers: true}
@@ -449,12 +459,15 @@ defmodule BeamWeaver.OpenAI.ChatModelTest do
     assert {:ok, response} = CoreChatModel.invoke(model, [Message.user("headers")])
 
     assert Message.text(response) == "header pong"
-    assert response.metadata.headers["content-type"] == "application/json"
+    assert response.metadata.headers == %{request_id: "req-openai-1", openai_processing_ms: "17"}
+    assert response.metadata.request_id == "req-openai-1"
+    refute Map.has_key?(response.metadata.headers, "content-type")
 
     task = ChatModel.async_invoke(model, [Message.user("headers")])
 
     assert {:ok, async_response} = Async.await(task)
-    assert async_response.metadata.headers["content-type"] == "application/json"
+    assert async_response.metadata.headers == %{request_id: "req-openai-1", openai_processing_ms: "17"}
+    assert async_response.metadata.request_id == "req-openai-1"
   end
 
   test "audio input and output modality shape round-trips through replay" do
@@ -1370,15 +1383,14 @@ defmodule BeamWeaver.OpenAI.ChatModelTest do
     responses =
       Enum.map_join(interactions, "\n", fn interaction ->
         {_request_body, response_body, opts} = normalize_interaction(interaction)
-        content_type = Keyword.get(opts, :content_type, "application/json")
+        headers = response_headers_yaml(opts)
 
         """
         - body:
             string: !!binary |
               #{Base.encode64(response_body(response_body))}
           headers:
-            content-type:
-            - #{content_type}
+        #{headers}
           status:
             code: 200
             message: OK
@@ -1397,6 +1409,20 @@ defmodule BeamWeaver.OpenAI.ChatModelTest do
 
   defp normalize_interaction({request_body, response_body, opts}),
     do: {request_body, response_body, opts}
+
+  defp response_headers_yaml(opts) do
+    headers =
+      opts
+      |> Keyword.get(:response_headers, [{"content-type", Keyword.get(opts, :content_type, "application/json")}])
+      |> BeamWeaver.Transport.Request.normalize_headers()
+
+    Enum.map_join(headers, "\n", fn {name, value} ->
+      """
+            #{name}:
+            - #{BeamWeaver.JSON.encode!(to_string(value))}\
+      """
+    end)
+  end
 
   defp response_body(response_body) when is_binary(response_body), do: response_body
   defp response_body(response_body), do: BeamWeaver.JSON.encode!(response_body)

@@ -5,6 +5,8 @@ defmodule BeamWeaver.StreamMuxTest do
   alias BeamWeaver.Stream.Envelope
   alias BeamWeaver.Stream.Events
   alias BeamWeaver.Stream.Sink
+  alias BeamWeaver.Tracing
+  alias BeamWeaver.Tracing.Context
 
   test "mux emits typed envelopes with producer lifecycle metadata" do
     events =
@@ -27,6 +29,38 @@ defmodule BeamWeaver.StreamMuxTest do
            ] = events
 
     assert Enum.all?(events, &(&1.namespace == [:agent]))
+  end
+
+  test "mux producers inherit the active trace context" do
+    on_exit(fn -> Context.clear() end)
+
+    {:ok, parent} = Tracing.start_run("parent stream", metadata: %{tenant: "alpha"})
+
+    events =
+      Stream.mux(
+        traced: fn emit ->
+          {:ok, child} = Tracing.start_run("producer child", kind: :chain)
+          Tracing.finish_run(child)
+
+          emit.(Stream.event(:custom, {child.id, child.trace_id, child.parent_id}))
+          :ok
+        end
+      )
+      |> Enum.to_list()
+
+    Tracing.finish_run(parent)
+
+    assert Enum.any?(events, fn
+             %Envelope{event: %Events.Custom{payload: {child_id, trace_id, parent_id}}} ->
+               child_id != parent.id and trace_id == parent.trace_id and parent_id == parent.id
+
+             _event ->
+               false
+           end)
+
+    assert {:ok, %{children: [%{run: child}]}} = Tracing.get_tree(parent.id)
+    assert child.name == "producer child"
+    assert child.metadata == %{tenant: "alpha"}
   end
 
   test "mux timeout returns a tagged stream timeout error and closes producers" do

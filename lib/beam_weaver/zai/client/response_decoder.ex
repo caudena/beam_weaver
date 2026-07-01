@@ -7,6 +7,13 @@ defmodule BeamWeaver.ZAI.Client.ResponseDecoder do
   alias BeamWeaver.ZAI.Error
   alias BeamWeaver.ZAI.Streaming
 
+  def json({:ok, %Response{} = response} = result, opts) do
+    result
+    |> ResponseDecoder.json(decoder_opts(opts))
+    |> attach_result_header_metadata(response.headers)
+    |> normalize_error()
+  end
+
   def json(result, opts) do
     result
     |> ResponseDecoder.json(decoder_opts(opts))
@@ -26,9 +33,13 @@ defmodule BeamWeaver.ZAI.Client.ResponseDecoder do
     {:error, ResponseDecoder.transport_error(error, decoder_opts())}
   end
 
-  def stream_message({:ok, %Response{status: status, body: body, headers: headers}}, _opts)
+  def stream_message({:ok, %Response{status: status, body: body, headers: headers}}, opts)
       when status in 200..299 do
-    Streaming.stream_body_to_message(body, headers: headers)
+    Streaming.stream_body_to_message(body,
+      header_metadata: header_metadata(headers),
+      raw_response_headers: headers,
+      include_response_headers: Keyword.get(opts, :include_response_headers, false)
+    )
   end
 
   def stream_message({:ok, %Response{} = response}, _opts) do
@@ -108,17 +119,56 @@ defmodule BeamWeaver.ZAI.Client.ResponseDecoder do
 
   defp normalize_retryable_details(details, _type), do: details
 
+  defp attach_result_header_metadata({:ok, decoded}, headers) when is_map(decoded) do
+    {:ok, attach_header_metadata(decoded, headers)}
+  end
+
+  defp attach_result_header_metadata(result, _headers), do: result
+
+  defp attach_header_metadata(decoded, headers) when is_map(decoded) do
+    metadata = header_metadata(headers)
+
+    if map_size(metadata) > 0,
+      do: Map.put(decoded, "_beamweaver_response_header_metadata", metadata),
+      else: decoded
+  end
+
+  defp header_metadata(headers) do
+    headers = response_headers(headers)
+
+    decoded =
+      %{
+        x_log_id: headers["x-log-id"]
+      }
+      |> reject_empty_header_values()
+
+    %{headers: decoded, request_id: decoded[:x_log_id]}
+    |> reject_empty_header_values()
+  end
+
+  defp response_headers(headers) when is_list(headers) do
+    Map.new(headers)
+  end
+
+  defp response_headers(_headers), do: %{}
+
+  defp reject_empty_header_values(map) do
+    Map.reject(map, fn
+      {_key, value} when value in [nil, ""] -> true
+      {_key, value} when is_map(value) and map_size(value) == 0 -> true
+      _entry -> false
+    end)
+  end
+
   defp decoder_opts(opts \\ []) do
     [
       provider: :zai,
       provider_name: "Z.ai",
       error_module: Error,
-      include_response_headers: true,
+      include_response_headers: Keyword.get(opts, :include_response_headers, false),
       context_overflow?: &context_overflow?/3,
       request_id_header: "x-log-id"
     ]
-    |> Keyword.merge(Keyword.take(opts, [:include_response_headers]))
-    |> Keyword.put(:include_response_headers, true)
   end
 
   defp context_overflow?(400, provider_error, message) when is_binary(message) do

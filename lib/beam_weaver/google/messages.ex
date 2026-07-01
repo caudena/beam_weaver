@@ -512,6 +512,8 @@ defmodule BeamWeaver.Google.Messages do
   end
 
   defp response_metadata(response, candidate) do
+    header_metadata = response["_beamweaver_response_header_metadata"] || %{}
+
     %{
       model_provider: "google",
       provider: :google,
@@ -534,7 +536,8 @@ defmodule BeamWeaver.Google.Messages do
       candidate_token_count: candidate["tokenCount"],
       candidate_index: candidate["index"],
       usage: response["usageMetadata"],
-      headers: response["_beamweaver_response_headers"]
+      headers: header_metadata[:headers],
+      service_tier: header_metadata[:service_tier]
     }
     |> Options.reject_nil_values()
   end

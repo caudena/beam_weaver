@@ -415,7 +415,9 @@ defmodule BeamWeaver.IndexingTest do
     records = RecordETS.new(namespace: :records)
 
     start = RecordManager.get_time(records)
-    assert :ok = RecordManager.update(records, ["a", "b"], group_ids: ["s1", "s2"])
+    assert :ok = RecordManager.update(records, ["a"], group_ids: ["s1"])
+    Process.sleep(1)
+    assert :ok = RecordManager.update(records, ["b"], group_ids: ["s2"])
     assert [true, false, true] = RecordManager.exists(records, ["a", "missing", "b"])
 
     assert ["a"] = RecordManager.list_keys(records, group_ids: ["s1"])
