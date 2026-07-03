@@ -851,6 +851,107 @@ defmodule BeamWeaver.Graph.CompiledTest do
     assert {:ok, %{finished: true}} = Compiled.invoke(graph, %{}, config: update_config)
   end
 
+  test "update_state routes guarded edges from the manual node update" do
+    checkpointer = CheckpointETS.new()
+
+    graph =
+      Graph.new()
+      |> Graph.add_node(:route, fn state -> %{route: state.route} end)
+      |> Graph.add_node(:left, fn _state -> %{path: :left} end)
+      |> Graph.add_node(:right, fn _state -> %{path: :right} end)
+      |> Graph.add_edge(Graph.start(), :route)
+      |> Graph.add_edge(:route, :left, when: %{route: :left})
+      |> Graph.add_edge(:route, :right, when: %{route: :right})
+      |> Graph.add_edge(:left, Graph.end_node())
+      |> Graph.add_edge(:right, Graph.end_node())
+      |> Graph.compile!(checkpointer: checkpointer)
+
+    config = %{"configurable" => %{"thread_id" => "manual-update-guarded-route"}}
+
+    assert {:ok, %{path: :left}} = Compiled.invoke(graph, %{route: :left}, config: config)
+
+    before_route =
+      graph
+      |> Compiled.get_state_history(config)
+      |> Enum.find(&(&1.next == ["route"]))
+
+    assert {:ok, update_config} =
+             Compiled.update_state(graph, before_route.config, %{route: :right}, as_node: :route)
+
+    assert {:ok, snapshot} = Compiled.get_state(graph, update_config)
+    assert snapshot.next == ["right"]
+    assert snapshot.next_tasks == [%{"node" => "right"}]
+
+    assert {:ok, %{path: :right, route: :right}} =
+             Compiled.invoke(graph, %{}, config: update_config)
+  end
+
+  test "update_state infers guarded-edge source nodes" do
+    checkpointer = CheckpointETS.new()
+
+    graph =
+      Graph.new()
+      |> Graph.add_node(:route, fn state -> %{route: state.route} end)
+      |> Graph.add_node(:left, fn _state -> %{path: :left} end)
+      |> Graph.add_node(:right, fn _state -> %{path: :right} end)
+      |> Graph.add_edge(Graph.start(), :route)
+      |> Graph.add_edge(:route, :left, when: %{route: :left})
+      |> Graph.add_edge(:route, :right, when: %{route: :right})
+      |> Graph.add_edge(:left, Graph.end_node())
+      |> Graph.add_edge(:right, Graph.end_node())
+      |> Graph.compile!(checkpointer: checkpointer, interrupt_after: [:route])
+
+    config = %{"configurable" => %{"thread_id" => "manual-update-infer-guarded-route"}}
+
+    assert {:interrupted, %{timing: :after, nodes: ["route"]}} =
+             Compiled.invoke(graph, %{route: :left}, config: config)
+
+    assert {:ok, update_config} = Compiled.update_state(graph, config, %{route: :right})
+    assert {:ok, snapshot} = Compiled.get_state(graph, update_config)
+    assert snapshot.next == ["right"]
+
+    assert {:ok, %{path: :right, route: :right}} =
+             Compiled.invoke(graph, %{}, config: update_config)
+  end
+
+  test "update_state routes conditional edges from the manual node update" do
+    checkpointer = CheckpointETS.new()
+
+    graph =
+      Graph.new()
+      |> Graph.add_node(:route, fn state -> %{route: state.route} end)
+      |> Graph.add_node(:left, fn _state -> %{path: :left} end)
+      |> Graph.add_node(:right, fn _state -> %{path: :right} end)
+      |> Graph.add_edge(Graph.start(), :route)
+      |> BeamWeaver.Graph.StateGraph.put_branch_routes(
+        :route,
+        fn state -> state.route end,
+        %{left: :left, right: :right}
+      )
+      |> Graph.add_edge(:left, Graph.end_node())
+      |> Graph.add_edge(:right, Graph.end_node())
+      |> Graph.compile!(checkpointer: checkpointer)
+
+    config = %{"configurable" => %{"thread_id" => "manual-update-conditional-route"}}
+
+    assert {:ok, %{path: :left}} = Compiled.invoke(graph, %{route: :left}, config: config)
+
+    before_route =
+      graph
+      |> Compiled.get_state_history(config)
+      |> Enum.find(&(&1.next == ["route"]))
+
+    assert {:ok, update_config} =
+             Compiled.update_state(graph, before_route.config, %{route: :right}, as_node: :route)
+
+    assert {:ok, snapshot} = Compiled.get_state(graph, update_config)
+    assert snapshot.next == ["right"]
+    assert snapshot.next_tasks == [%{"node" => "right"}]
+
+    assert {:ok, %{path: :right, route: :right}} =
+             Compiled.invoke(graph, %{}, config: update_config)
+  end
+
   test "update_state can preserve interrupt pending writes and resume" do
     checkpointer = CheckpointETS.new()
 

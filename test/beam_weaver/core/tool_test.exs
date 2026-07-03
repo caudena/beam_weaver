@@ -21,6 +21,22 @@ defmodule BeamWeaver.Core.ToolTest do
     assert error.details.missing == [:b]
   end
 
+  test "applies schema defaults before validating required input" do
+    tool =
+      Tool.from_function!(
+        name: "defaulted_limit",
+        description: "Uses a schema default",
+        input_schema: %{
+          type: "object",
+          properties: %{limit: %{type: "integer", default: 3}},
+          required: [:limit]
+        },
+        handler: fn input, _opts -> input.limit end
+      )
+
+    assert {:ok, 3} = Tool.invoke(tool, %{})
+  end
+
   test "normalizes handler errors to tagged core errors" do
     tool =
       Tool.from_function!(

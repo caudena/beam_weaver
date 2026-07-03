@@ -139,12 +139,20 @@ defmodule BeamWeaver.Tools.FileSearch.Filesystem do
   end
 
   defp file_document(file, content, matcher, :count, _tool) do
-    count = matching_line_count(content, matcher)
+    line_count = matching_line_count(content, matcher)
+    path_match? = matches?(matcher, file.relative_path)
+    count = line_count + if path_match?, do: 1, else: 0
 
     if count > 0 do
       document =
         Document.new!(Integer.to_string(count),
-          metadata: file_metadata(file, %{match_count: count, output_mode: "count"})
+          metadata:
+            file_metadata(file, %{
+              match_count: count,
+              line_match_count: line_count,
+              path_match?: path_match?,
+              output_mode: "count"
+            })
         )
 
       Map.from_struct(document)
@@ -178,14 +186,15 @@ defmodule BeamWeaver.Tools.FileSearch.Filesystem do
   defp trim_file(content, max_bytes) when byte_size(content) <= max_bytes, do: content
   defp trim_file(content, max_bytes), do: binary_part(content, 0, max_bytes)
 
-  defp snippet(content, {:literal, needle}, max_bytes) do
-    downcased = String.downcase(content)
-
-    case :binary.match(downcased, needle) do
+  defp snippet(content, {:literal, regex}, max_bytes) do
+    case Regex.run(regex, content, return: :index) do
       {index, length} ->
-        snippet_at(downcased, index, length, max_bytes)
+        snippet_at(content, index, length, max_bytes)
 
-      :nomatch ->
+      [{index, length} | _captures] ->
+        snippet_at(content, index, length, max_bytes)
+
+      _nomatch ->
         trim_file(content, max_bytes)
     end
   end
@@ -203,10 +212,37 @@ defmodule BeamWeaver.Tools.FileSearch.Filesystem do
     after_bytes = context_bytes - before
     start = max(index - before, 0)
     stop = min(index + length + after_bytes, byte_size(content))
-    binary_part(content, start, stop - start)
+    valid_binary_part(content, start, stop)
   end
 
-  defp matches?({:literal, needle}, text), do: String.contains?(String.downcase(text), needle)
+  defp valid_binary_part(content, start, stop) do
+    start = next_utf8_boundary(content, start)
+    stop = previous_utf8_boundary(content, stop)
+
+    if stop > start, do: binary_part(content, start, stop - start), else: ""
+  end
+
+  defp next_utf8_boundary(_content, index) when index <= 0, do: 0
+
+  defp next_utf8_boundary(content, index) when index >= byte_size(content),
+    do: byte_size(content)
+
+  defp next_utf8_boundary(content, index) do
+    if utf8_boundary?(content, index), do: index, else: next_utf8_boundary(content, index + 1)
+  end
+
+  defp previous_utf8_boundary(_content, index) when index <= 0, do: 0
+
+  defp previous_utf8_boundary(content, index) when index >= byte_size(content),
+    do: byte_size(content)
+
+  defp previous_utf8_boundary(content, index) do
+    if utf8_boundary?(content, index), do: index, else: previous_utf8_boundary(content, index - 1)
+  end
+
+  defp utf8_boundary?(content, index), do: String.valid?(binary_part(content, 0, index))
+
+  defp matches?({:literal, regex}, text), do: Regex.match?(regex, text)
   defp matches?({:regex, regex}, text), do: Regex.match?(regex, text)
 
   defp matching_line_count(content, matcher) do
@@ -231,7 +267,7 @@ defmodule BeamWeaver.Tools.FileSearch.Filesystem do
 
     case normalize_mode(mode, :query_mode, [:literal, :regex]) do
       {:ok, :literal} ->
-        {:ok, {:literal, String.downcase(query)}}
+        {:ok, {:literal, Regex.compile!(Regex.escape(query), "iu")}}
 
       {:ok, :regex} ->
         case Regex.compile(query) do

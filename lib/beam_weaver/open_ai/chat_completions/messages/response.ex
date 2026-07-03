@@ -64,10 +64,13 @@ defmodule BeamWeaver.OpenAI.ChatCompletions.Messages.Response do
   defp transport_metadata(_metadata), do: nil
 
   def usage_metadata(%{"usage" => usage}) when is_map(usage) do
+    input_tokens = usage["prompt_tokens"] || usage["input_tokens"]
+    output_tokens = usage["completion_tokens"] || usage["output_tokens"]
+
     %{
-      input_tokens: usage["prompt_tokens"] || usage["input_tokens"] || 0,
-      output_tokens: usage["completion_tokens"] || usage["output_tokens"] || 0,
-      total_tokens: usage["total_tokens"] || 0,
+      input_tokens: input_tokens || 0,
+      output_tokens: output_tokens || 0,
+      total_tokens: total_tokens(usage["total_tokens"], input_tokens, output_tokens),
       input_token_details: input_token_details(usage),
       output_token_details: output_token_details(usage)
     }
@@ -75,6 +78,10 @@ defmodule BeamWeaver.OpenAI.ChatCompletions.Messages.Response do
   end
 
   def usage_metadata(_response), do: nil
+
+  defp total_tokens(total, _input, _output) when is_integer(total), do: total
+  defp total_tokens(_total, input, output) when is_integer(input) and is_integer(output), do: input + output
+  defp total_tokens(_total, _input, _output), do: nil
 
   defp content(%{"content" => content}) when is_binary(content), do: content
   defp content(%{"content" => content}) when is_list(content), do: Enum.map(content, &content_block/1)

@@ -32,6 +32,7 @@ defmodule BeamWeaver.Stream.Mux do
               queue_size: 0,
               blocked: :queue.new(),
               heartbeat_sent?: false,
+              timeout_deadline: :infinity,
               done?: false
   end
 
@@ -117,6 +118,7 @@ defmodule BeamWeaver.Stream.Mux do
       queue_size: queue_size,
       blocked: :queue.new(),
       heartbeat_sent?: false,
+      timeout_deadline: timeout_deadline(mux.policy.timeout),
       done?: false
     }
   end
@@ -182,7 +184,7 @@ defmodule BeamWeaver.Stream.Mux do
               {[event], new_state}
           end
       after
-        heartbeat_timeout(mux) ->
+        receive_timeout(state) ->
           handle_timeout(state)
       end
     end
@@ -278,19 +280,26 @@ defmodule BeamWeaver.Stream.Mux do
   defp maybe_append_debug(state, event, _policy), do: queue_in(state, event)
 
   defp handle_timeout(%{mux: mux} = state) do
-    case mux.policy.heartbeat do
-      %{interval_ms: interval} when is_integer(interval) and interval > 0 ->
+    cond do
+      timeout_expired?(state) ->
+        stream_timeout(state)
+
+      heartbeat_enabled?(mux) ->
         {[debug_event(mux, nil, :heartbeat, mux.policy.heartbeat.payload)], %{state | heartbeat_sent?: true}}
 
-      _other ->
-        event =
-          envelope(mux, %Events.Error{
-            error: Error.new(:stream_timeout, "stream producer timed out")
-          })
-
-        cleanup(state)
-        {[event], %{state | tasks: %{}, done?: true}}
+      true ->
+        stream_timeout(state)
     end
+  end
+
+  defp stream_timeout(%{mux: mux} = state) do
+    event =
+      envelope(mux, %Events.Error{
+        error: Error.new(:stream_timeout, "stream producer timed out")
+      })
+
+    cleanup(state)
+    {[event], %{state | tasks: %{}, done?: true}}
   end
 
   defp finish_task(%{mux: mux} = state, pid, result) do
@@ -483,11 +492,42 @@ defmodule BeamWeaver.Stream.Mux do
 
   defp cancelled_error, do: Error.new(:stream_cancelled, "stream producer was cancelled")
 
-  defp heartbeat_timeout(%__MODULE__{policy: %{heartbeat: %{interval_ms: interval}}})
+  defp receive_timeout(%{mux: mux, timeout_deadline: timeout_deadline}) do
+    mux
+    |> heartbeat_interval()
+    |> min_timeout(remaining_timeout(timeout_deadline))
+  end
+
+  defp heartbeat_interval(%__MODULE__{policy: %{heartbeat: %{interval_ms: interval}}})
        when is_integer(interval) and interval > 0,
        do: interval
 
-  defp heartbeat_timeout(%__MODULE__{policy: %{timeout: timeout}}), do: timeout
+  defp heartbeat_interval(_mux), do: :infinity
+
+  defp timeout_deadline(:infinity), do: :infinity
+
+  defp timeout_deadline(timeout) when is_integer(timeout) and timeout >= 0,
+    do: System.monotonic_time(:millisecond) + timeout
+
+  defp remaining_timeout(:infinity), do: :infinity
+
+  defp remaining_timeout(deadline) when is_integer(deadline),
+    do: max(deadline - System.monotonic_time(:millisecond), 0)
+
+  defp min_timeout(:infinity, timeout), do: timeout
+  defp min_timeout(timeout, :infinity), do: timeout
+  defp min_timeout(left, right), do: min(left, right)
+
+  defp timeout_expired?(%{timeout_deadline: :infinity}), do: false
+
+  defp timeout_expired?(%{timeout_deadline: deadline}) when is_integer(deadline),
+    do: deadline <= System.monotonic_time(:millisecond)
+
+  defp heartbeat_enabled?(%__MODULE__{policy: %{heartbeat: %{interval_ms: interval}}})
+       when is_integer(interval) and interval > 0,
+       do: true
+
+  defp heartbeat_enabled?(_mux), do: false
 
   defp task_token?(tasks, pid, token) do
     case Map.get(tasks, pid) do

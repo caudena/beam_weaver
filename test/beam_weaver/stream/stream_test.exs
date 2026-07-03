@@ -142,7 +142,7 @@ defmodule BeamWeaver.StreamTest do
            end}
         ],
         heartbeat: [interval_ms: 10, payload: %{source: :test}],
-        timeout: 10
+        timeout: 50
       )
 
     assert %Envelope{event: %Events.Debug{payload: %{type: :heartbeat, source: :test}}} =

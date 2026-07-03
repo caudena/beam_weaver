@@ -53,6 +53,7 @@ defmodule BeamWeaver.Tracing.MiddlewareTraceTest do
 
   test "graph run traces include native trace fields and custom fields" do
     parent = self()
+    callback = fn -> :ok end
 
     graph =
       Graph.new(name: "native_trace_graph")
@@ -64,8 +65,8 @@ defmodule BeamWeaver.Tracing.MiddlewareTraceTest do
       |> Graph.add_edge(:done, Graph.end_node())
       |> Graph.compile!()
 
-    assert {:ok, %{ok: true}} =
-             Compiled.invoke(graph, %{},
+    assert {:ok, result} =
+             Compiled.invoke(graph, %{callback: callback, graph: %{nodes: [1], edges: [2]}},
                trace: [
                  name: "customer_support_agent",
                  thread_id: "thread-1",
@@ -86,9 +87,15 @@ defmodule BeamWeaver.Tracing.MiddlewareTraceTest do
                ]
              )
 
+    assert result.ok == true
+    assert result.callback == callback
+    assert result.graph == %{nodes: [1], edges: [2]}
+
     run = run_by_name!("customer_support_agent")
 
     assert run.kind == :graph
+    assert run.inputs == nil
+    assert run.outputs == nil
     assert run.metadata.thread_id == "thread-1"
     assert run.metadata.user_id == 42
     assert run.metadata.execution_mode == "support_chat"

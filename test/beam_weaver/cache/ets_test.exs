@@ -128,6 +128,18 @@ defmodule BeamWeaver.Cache.ETSTest do
     end
   end
 
+  test "ETS cache max_entries pruning stays bounded under concurrent puts" do
+    cache = Cache.ETS.new(max_entries: 5)
+
+    1..50
+    |> Enum.map(fn index ->
+      Task.async(fn -> Cache.put(cache, :concurrent, index, index) end)
+    end)
+    |> Task.await_many(5_000)
+
+    assert :ets.info(cache.table, :size) <= 5
+  end
+
   test "cache helpers reject non-adapter globals" do
     assert {:error, %Error{type: :explicit_cache_required}} = Cache.lookup(true, :ns, :key)
     assert {:error, %Error{type: :invalid_cache}} = Cache.lookup(%{}, :ns, :key)

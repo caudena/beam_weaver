@@ -419,14 +419,15 @@ defmodule BeamWeaver.OpenAI.Messages.Request do
     |> maybe_drop_store_false_id(opts)
   end
 
-  defp function_call_arguments(%{arguments: arguments}) when is_binary(arguments),
-    do: arguments
-
   defp function_call_arguments(%{arguments: arguments}),
-    do: BeamWeaver.JSON.encode!(arguments)
+    do: normalize_function_call_arguments(arguments)
 
-  defp function_call_arguments(%{args: args}), do: BeamWeaver.JSON.encode!(args)
+  defp function_call_arguments(%{args: args}), do: normalize_function_call_arguments(args)
   defp function_call_arguments(_call), do: "{}"
+
+  defp normalize_function_call_arguments(nil), do: "{}"
+  defp normalize_function_call_arguments(arguments) when is_binary(arguments), do: arguments
+  defp normalize_function_call_arguments(arguments), do: BeamWeaver.JSON.encode!(arguments)
 
   defp normalize_function_call_item(item) do
     item
@@ -438,10 +439,7 @@ defmodule BeamWeaver.OpenAI.Messages.Request do
     |> Map.update("id", item["provider_id"] || item["id"], fn id -> item["provider_id"] || id end)
     |> Map.put_new("arguments", item["args"] || item["input"])
     |> Map.take(["type", "id", "call_id", "name", "arguments"])
-    |> Map.update("arguments", "{}", fn
-      arguments when is_binary(arguments) -> arguments
-      arguments -> BeamWeaver.JSON.encode!(arguments)
-    end)
+    |> Map.update("arguments", "{}", &normalize_function_call_arguments/1)
     |> Shared.reject_nil_values()
   end
 

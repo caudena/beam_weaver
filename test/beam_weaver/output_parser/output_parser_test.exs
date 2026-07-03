@@ -99,6 +99,26 @@ defmodule BeamWeaver.OutputParserTest do
     end
   end
 
+  test "json parser repairs large partial strings without prefix explosion" do
+    payload = ~s({"text":") <> String.duplicate("a", 8_192)
+
+    assert {us, {:ok, %{"text" => text}}} =
+             :timer.tc(fn -> OutputParser.parse_partial_json(payload) end)
+
+    assert byte_size(text) == 8_192
+    assert us < 500_000
+  end
+
+  test "json parser caps oversized partial repair input" do
+    payload = ~s({"text":") <> String.duplicate("a", 262_145)
+
+    assert {:error,
+            %Error{
+              type: :output_parser_error,
+              details: %{parser: :json_parser, max_partial_json_bytes: 262_144}
+            }} = OutputParser.parse_partial_json(payload)
+  end
+
   test "json parser handles unicode, Python-like dicts, and deterministic diff streams" do
     assert {:ok, %{"answer" => "λ", "flag" => true, "none" => nil}} =
              Runnable.invoke(OutputParser.json(), "{'answer':'λ','flag':True,'none':None}")
@@ -550,6 +570,21 @@ defmodule BeamWeaver.OutputParserTest do
                args: %{"names" => ["suzy", "alex"]}
              }
            ]
+  end
+
+  test "OpenAI tools parser repairs large partial streamed tool arguments quickly" do
+    args = ~s({"text":") <> String.duplicate("a", 8_192)
+
+    chunk =
+      Messages.ai_chunk("",
+        tool_call_chunks: [Messages.tool_call_chunk(id: "call_large", index: 0, name: "LargeArgs", args: args)]
+      )
+
+    assert {us, {:ok, [%{id: "call_large", name: "LargeArgs", args: %{"text" => text}}]}} =
+             :timer.tc(fn -> OutputParser.parse_openai_tools(chunk, partial: true, return_id: true) end)
+
+    assert byte_size(text) == 8_192
+    assert us < 500_000
   end
 
   test "OpenAI functions parser returns the first function call" do

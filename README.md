@@ -142,7 +142,7 @@ Add BeamWeaver to your application:
 ```elixir
 def deps do
   [
-    {:beam_weaver, "~> 0.1.8"}
+    {:beam_weaver, "~> 0.1.9"}
   ]
 end
 ```

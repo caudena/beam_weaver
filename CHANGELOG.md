@@ -1,5 +1,59 @@
 # Changelog
 
+## 0.1.9 - 2026-07-04
+
+### Fixed
+
+- Vector-store metadata filters now bind JSON path segments as query
+  parameters, preventing metadata filter keys from being interpolated into raw
+  Postgres SQL while preserving nested metadata lookup support.
+- Local sandbox file operations now resolve symlinks before containment checks,
+  blocking reads, writes, listings, globs, and recursive grep matches that
+  would escape the sandbox root through symlinked paths.
+- Shell policy string allow rules now require a command boundary and reject
+  unquoted shell chaining or command substitution, so an allowed prefix cannot
+  authorize `allowed_cmd; malicious_cmd`.
+- Local sandbox command execution now streams stdout/stderr into a bounded
+  buffer controlled by `max_output_bytes` and marks oversized output as
+  truncated instead of accumulating unbounded command output in memory.
+- Recursive text splitting now rejoins chunks with the separator that actually
+  split each level, preserving source whitespace and valid `add_start_index`
+  metadata for word-level splits.
+- OpenAI chat message conversion now deduplicates assistant tool calls by
+  request id when the same call is present in both `tool_calls` and content
+  blocks, avoiding duplicate ids in provider requests.
+- Manual graph state updates now compute next tasks through the normal
+  scheduler, so conditional and guarded edges route correctly after
+  `update_state/4`.
+- Subagent stream handles now route child values, updates, and errors only to
+  the most specific active subagent handle, preventing nested child events from
+  leaking onto ancestor handles.
+- Anthropic usage parsing now reports ephemeral 5m/1h prompt-cache writes under
+  canonical cache-creation usage, so cost and telemetry accounting no longer
+  treat those cache writes as zero.
+- Memory full-text queries now search canonical value and metadata text instead
+  of Elixir `inspect/1` output, avoiding matches on wrapper field names and
+  struct implementation details.
+- Stream mux heartbeats now respect finite stream timeouts, so a hung producer
+  cannot keep a live stream open forever by emitting heartbeat events.
+- PII middleware now redacts assistant tool-call arguments and buffers streamed
+  text across chunk boundaries, preventing split PII from bypassing streaming
+  redaction.
+- Fixed low-severity edge cases in provider and tool adapters: OpenAI nil
+  tool-call arguments now encode as `{}`, OpenAI usage totals are inferred when
+  omitted, Z.ai streams keep id-less delta chunks, Moonshot rejects unsupported
+  audio/file blocks, file search preserves snippet case and counts filename
+  matches, tool defaults apply before validation, stream lifecycle routing
+  tolerates payload-only message ids, and ETS cache pruning is serialized.
+- Partial JSON parsing now repairs truncated JSON in a single capped structural
+  pass, avoiding superlinear prefix scans on streamed tool-call arguments.
+- Stream/message transforms, Google SSE merging, text-splitter start-index
+  tracking, and Z.ai response conversion avoid repeated list appends or
+  full-document rescans on streaming hot paths.
+- WeaveScope trace export now disables Req's internal retry loop and logs
+  failed uploads with BeamWeaver exporter context, so timeout diagnostics point
+  at the trace export path instead of only `Req.Steps`.
+  
 ## 0.1.8 - 2026-07-01
 
 ### Added

@@ -296,6 +296,23 @@ defmodule BeamWeaver.OpenAI.MessagesTest do
            ] = input
   end
 
+  test "converts nil assistant tool call arguments to an empty object" do
+    message =
+      Message.assistant("",
+        tool_calls: [
+          %ToolCall{id: "call_nil_args", name: "no_args", args: nil},
+          %{id: "call_nil_arguments", name: "no_arguments", arguments: nil}
+        ]
+      )
+
+    assert {:ok, input} = Messages.to_responses_input([message])
+
+    assert [
+             %{"type" => "function_call", "call_id" => "call_nil_args", "arguments" => "{}"},
+             %{"type" => "function_call", "call_id" => "call_nil_arguments", "arguments" => "{}"}
+           ] = input
+  end
+
   test "strips internal provider fields when replaying Responses output items" do
     message =
       Message.assistant([
@@ -557,6 +574,7 @@ defmodule BeamWeaver.OpenAI.MessagesTest do
            ] = message.tool_calls
 
     assert BeamWeaver.MapShape.assert_string_keys!(hd(message.tool_calls).args)
+    assert message.usage_metadata.total_tokens == 16
   end
 
   test "maps Responses API usage token details without dropping explicit zero totals" do

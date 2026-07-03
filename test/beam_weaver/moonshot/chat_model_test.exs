@@ -116,6 +116,24 @@ defmodule BeamWeaver.Moonshot.ChatModelTest do
     assert error.details.feature == :image_url
   end
 
+  test "request body rejects audio and file blocks instead of forwarding malformed parts" do
+    assert {:error, audio_error} =
+             ChatModel.request_body(ChatModel.new(model: "kimi-k2.6"), [
+               Message.user([ContentBlock.audio(%{data: "audio-bytes", mime_type: "audio/wav"})])
+             ])
+
+    assert audio_error.type == :unsupported_feature
+    assert audio_error.details.feature == :audio_input
+
+    assert {:error, file_error} =
+             ChatModel.request_body(ChatModel.new(model: "kimi-k2.6"), [
+               Message.user([%{type: :file, file_id: "file_123"}])
+             ])
+
+    assert file_error.type == :unsupported_feature
+    assert file_error.details.feature == :file_input
+  end
+
   test "K2.6 fixed sampling params and partial JSON mode fail before transport" do
     assert {:error, temp_error} =
              ChatModel.request_body(ChatModel.new(model: "kimi-k2.6"), [Message.user("hi")], temperature: 0.2)

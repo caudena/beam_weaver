@@ -134,6 +134,26 @@ defmodule BeamWeaver.TextSplitterTest do
     assert Enum.all?(chunks, &is_integer(&1.metadata.start_index))
   end
 
+  test "recursive character splitter rejoins chunks with the active separator" do
+    text = "alpha beta gamma delta"
+
+    splitter =
+      TextSplitter.recursive_character(
+        chunk_size: 12,
+        chunk_overlap: 0,
+        add_start_index: true
+      )
+
+    assert TextSplitter.split_text(splitter, text) == ["alpha beta", "gamma delta"]
+
+    assert {:ok, stream} = TextSplitter.create_documents(splitter, [text])
+
+    assert [
+             %Document{content: "alpha beta", metadata: %{start_index: 0}},
+             %Document{content: "gamma delta", metadata: %{start_index: 11}}
+           ] = Enum.to_list(stream)
+  end
+
   test "document-like maps and binaries are accepted without global conversion state" do
     splitter = TextSplitter.character(chunk_size: 6, chunk_overlap: 1)
 

@@ -54,11 +54,52 @@ defmodule BeamWeaver.Tools.PolicyToolsTest do
     refute ShellPolicy.allowed?(policy, "echo secret")
   end
 
+  test "shell policy string allow rules reject chained commands" do
+    assert {:ok, policy} = ShellPolicy.new(allow: ["printf ", "echo"])
+
+    assert ShellPolicy.allowed?(policy, "printf safe")
+    assert ShellPolicy.allowed?(policy, "printf 'safe; literal'")
+    assert ShellPolicy.allowed?(policy, "printf \"$VISIBLE\\n\"")
+    assert ShellPolicy.allowed?(policy, "printf err >&2")
+    assert ShellPolicy.allowed?(policy, "echo safe")
+
+    refute ShellPolicy.allowed?(policy, "printf safe; touch /tmp/beam_weaver_shell_policy")
+    refute ShellPolicy.allowed?(policy, "printf safe && touch /tmp/beam_weaver_shell_policy")
+    refute ShellPolicy.allowed?(policy, "printf safe || touch /tmp/beam_weaver_shell_policy")
+    refute ShellPolicy.allowed?(policy, "printf safe | sh")
+    refute ShellPolicy.allowed?(policy, "printf safe\ntouch /tmp/beam_weaver_shell_policy")
+    refute ShellPolicy.allowed?(policy, "printf $(touch /tmp/beam_weaver_shell_policy)")
+    refute ShellPolicy.allowed?(policy, "printf `touch /tmp/beam_weaver_shell_policy`")
+    refute ShellPolicy.allowed?(policy, "echoevil safe")
+  end
+
+  test "shell policy string deny rules still match chained commands" do
+    assert {:ok, policy} = ShellPolicy.new(allow: [~r/.*/], deny: ["rm "])
+
+    refute ShellPolicy.allowed?(policy, "rm -rf /tmp/beam_weaver_shell_policy")
+    refute ShellPolicy.allowed?(policy, "rm -rf /tmp/beam_weaver_shell_policy; printf safe")
+    assert ShellPolicy.allowed?(policy, "printf safe")
+  end
+
   test "shell tool rejects unsafe commands before execution" do
     shell = Shell.new(policy: ShellPolicy.new!(allow: ["echo "]))
 
     assert {:error, error} = Tool.invoke(shell, %{"command" => "rm -rf /"})
     assert error.type == :shell_command_rejected
+  end
+
+  test "shell tool rejects chained commands that share an allowed prefix" do
+    marker =
+      Path.join(System.tmp_dir!(), "beam_weaver_shell_policy_#{System.unique_integer([:positive])}")
+
+    on_exit(fn -> File.rm(marker) end)
+
+    shell = Shell.new(policy: ShellPolicy.new!(allow: ["printf "]))
+
+    assert {:error, %{type: :shell_command_rejected}} =
+             Tool.invoke(shell, %{"command" => "printf safe; touch #{marker}"})
+
+    refute File.exists?(marker)
   end
 
   test "shell tool executes an explicitly allowed command" do
@@ -136,7 +177,7 @@ defmodule BeamWeaver.Tools.PolicyToolsTest do
       Shell.new(
         policy:
           ShellPolicy.new!(
-            allow: ["printf "],
+            allow: [~r/^printf out; printf err >&2$/],
             stderr: :separate,
             max_output_bytes: 20
           )
@@ -149,7 +190,7 @@ defmodule BeamWeaver.Tools.PolicyToolsTest do
       Shell.new(
         policy:
           ShellPolicy.new!(
-            allow: ["printf "],
+            allow: [~r/^printf out; printf err >&2$/],
             stderr: :discard,
             max_output_bytes: 20
           )
@@ -164,7 +205,7 @@ defmodule BeamWeaver.Tools.PolicyToolsTest do
       Shell.new(
         policy:
           ShellPolicy.new!(
-            allow: ["printf "],
+            allow: [~r/^printf out; printf err >&2$/],
             stderr: :merge,
             max_output_bytes: 20
           )

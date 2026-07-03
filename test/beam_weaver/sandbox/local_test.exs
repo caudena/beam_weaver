@@ -257,6 +257,42 @@ defmodule BeamWeaver.Sandbox.LocalTest do
              Sandbox.upload_files(sandbox, [{"relative.txt", "nope"}])
   end
 
+  test "blocks symlink escapes for reads, writes, listings, and recursive grep", %{
+    sandbox: sandbox,
+    root: root
+  } do
+    outside =
+      Path.join(System.tmp_dir!(), "beam_weaver_sandbox_escape_#{System.unique_integer([:positive])}")
+
+    File.mkdir_p!(outside)
+    on_exit(fn -> File.rm_rf(outside) end)
+
+    secret = Path.join(outside, "secret.txt")
+    File.write!(secret, "needle outside-secret")
+
+    assert :ok = File.ln_s(secret, Path.join(root, "escape"))
+    assert :ok = File.ln_s(outside, Path.join(root, "outdir"))
+
+    assert %Sandbox.ReadResult{file_data: nil, error: "invalid_path"} =
+             Sandbox.read(sandbox, "/escape")
+
+    assert %Sandbox.ReadResult{file_data: nil, error: "invalid_path"} =
+             Sandbox.read(sandbox, Path.join(root, "escape"))
+
+    assert %Sandbox.WriteResult{path: "/outdir/owned.txt", error: "invalid_path"} =
+             Sandbox.write(sandbox, "/outdir/owned.txt", "owned")
+
+    refute File.exists?(Path.join(outside, "owned.txt"))
+
+    assert %Sandbox.ListResult{entries: entries} = Sandbox.ls(sandbox, "/")
+    refute Enum.any?(entries, &(&1["path"] in ["/escape", "/outdir"]))
+
+    assert %Sandbox.GlobResult{matches: matches} = Sandbox.glob(sandbox, "*", path: "/")
+    refute Enum.any?(matches, &(&1["path"] in ["escape", "outdir"]))
+
+    assert %Sandbox.GrepResult{matches: []} = Sandbox.grep(sandbox, "outside-secret", path: "/")
+  end
+
   test "large payloads and async helpers preserve full contents", %{sandbox: sandbox, root: root} do
     path = Path.join(root, "large.txt")
     content = 1..2_500 |> Enum.map_join("\n", &"#{&1}:0123456789abcdef")
@@ -284,6 +320,16 @@ defmodule BeamWeaver.Sandbox.LocalTest do
              |> Task.await()
 
     assert byte_size(output) == 500 * 1024
+  end
+
+  test "execute caps command output while preserving exit status", %{root: root} do
+    sandbox = Sandbox.local(root: root, max_output_bytes: 1_024)
+
+    assert %Sandbox.ExecuteResult{exit_code: 0, output: output, truncated: true} =
+             Sandbox.execute(sandbox, "python3 -c \"import sys; sys.stdout.write('x' * 2048)\"")
+
+    assert byte_size(output) == 1_024
+    assert output == :binary.copy("x", 1_024)
   end
 
   test "large upload and download preserve bytes and report expected size", %{

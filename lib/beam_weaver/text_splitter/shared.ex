@@ -114,7 +114,7 @@ defmodule BeamWeaver.TextSplitter.Shared do
     case validate(splitter) do
       :ok ->
         recursive_split(text, splitter, Map.get(splitter, :separators, @default_separators))
-        |> merge_splits(splitter)
+        |> maybe_strip(splitter)
         |> reject_empty()
 
       {:error, error} ->
@@ -155,20 +155,21 @@ defmodule BeamWeaver.TextSplitter.Shared do
     |> chunks_to_documents(document, Map.get(splitter, :add_start_index, false))
   end
 
-  def chunks_to_documents(chunks, %Document{} = document, add_start_index?) do
-    {_offset, docs} =
-      Enum.reduce(chunks, {0, []}, fn chunk, {offset, acc} ->
-        {start, next_offset} = start_index(document.content, chunk, offset)
+  def chunks_to_documents(chunks, %Document{} = document, true) do
+    {_position, docs} =
+      Enum.reduce(chunks, {{0, 0}, []}, fn chunk, {position, acc} ->
+        {start, next_position} = start_index(document.content, chunk, position)
 
-        metadata =
-          if add_start_index?,
-            do: Map.put(document.metadata, :start_index, start),
-            else: document.metadata
+        metadata = Map.put(document.metadata, :start_index, start)
 
-        {next_offset, [Document.new!(chunk, id: document.id, metadata: metadata) | acc]}
+        {next_position, [Document.new!(chunk, id: document.id, metadata: metadata) | acc]}
       end)
 
     Enum.reverse(docs)
+  end
+
+  def chunks_to_documents(chunks, %Document{} = document, _add_start_index?) do
+    Enum.map(chunks, &Document.new!(&1, id: document.id, metadata: document.metadata))
   end
 
   def strip_markup(text) do
@@ -186,11 +187,12 @@ defmodule BeamWeaver.TextSplitter.Shared do
 
   defp recursive_split(text, splitter, [separator | rest]) do
     pieces = split_by_separator(text, separator, splitter)
+    merge_separator = merge_separator(splitter, separator)
 
-    if Enum.any?(pieces, &(measure(splitter, &1) > splitter.chunk_size)) and rest != [] do
-      Enum.flat_map(pieces, &recursive_split(&1, splitter, rest))
+    if rest == [] do
+      merge_splits(pieces, splitter, merge_separator)
     else
-      pieces
+      merge_recursive_pieces(pieces, splitter, rest, merge_separator)
     end
   end
 
@@ -256,13 +258,31 @@ defmodule BeamWeaver.TextSplitter.Shared do
     {Enum.reverse(pieces), Enum.reverse(seps)}
   end
 
-  defp merge_splits(pieces, splitter) do
+  defp merge_recursive_pieces(pieces, splitter, separators, separator) do
+    {chunks, current} =
+      Enum.reduce(pieces, {[], []}, fn piece, {chunks, current} ->
+        if measure(splitter, piece) > splitter.chunk_size do
+          chunks =
+            chunks ++
+              merge_splits(current, splitter, separator) ++
+              recursive_split(piece, splitter, separators)
+
+          {chunks, []}
+        else
+          {chunks, current ++ [piece]}
+        end
+      end)
+
+    chunks ++ merge_splits(current, splitter, separator)
+  end
+
+  defp merge_splits(pieces, splitter, separator) do
     pieces
     |> maybe_strip(splitter)
     |> Enum.reduce({[], [], 0}, fn piece, {chunks, current, total} ->
-      append_split(piece, chunks, current, total, splitter, merge_separator(splitter))
+      append_split(piece, chunks, current, total, splitter, separator)
     end)
-    |> flush_current(splitter, merge_separator(splitter))
+    |> flush_current(splitter, separator)
     |> Enum.reverse()
   end
 
@@ -313,20 +333,15 @@ defmodule BeamWeaver.TextSplitter.Shared do
   defp join_current(current, separator, splitter),
     do: current |> Enum.join(separator) |> then(&maybe_strip([&1], splitter)) |> hd()
 
-  defp merge_separator(splitter) do
+  defp merge_separator(splitter, separator) do
     if keep_separator_mode(Map.get(splitter, :keep_separator, false)) do
-      separators = Map.get(splitter, :separators, @default_separators)
-
       cond do
         Map.get(splitter, :separator_regex?, false) -> ""
-        " " in separators -> " "
+        Map.get(splitter, :strip_whitespace, true) and String.trim(separator) == "" -> separator
         true -> ""
       end
     else
-      case Map.get(splitter, :separators, @default_separators) do
-        [separator | _rest] when is_binary(separator) -> separator
-        _other -> ""
-      end
+      separator
     end
   end
 
@@ -364,22 +379,44 @@ defmodule BeamWeaver.TextSplitter.Shared do
   defp measure(%{length_function: fun}, text) when is_function(fun, 1), do: fun.(text)
   defp measure(_splitter, text), do: String.length(text)
 
-  defp start_index(text, chunk, offset) do
-    search =
-      text
-      |> binary_part(min(offset, byte_size(text)), max(byte_size(text) - offset, 0))
-
-    case :binary.match(search, chunk) do
-      {index, length} ->
-        byte_start = offset + index
-        {char_index(text, byte_start), byte_start + length}
+  defp start_index(text, chunk, {byte_offset, char_offset}) do
+    case binary_match_from(text, chunk, byte_offset) do
+      {byte_start, _length} ->
+        char_start = char_offset + char_length_between(text, byte_offset, byte_start)
+        {char_start, next_search_position(text, byte_start, char_start)}
 
       :nomatch ->
         case :binary.match(text, chunk) do
-          {index, length} -> {char_index(text, index), index + length}
-          :nomatch -> {nil, offset}
+          {byte_start, _length} ->
+            char_start = char_index(text, byte_start)
+            {char_start, next_search_position(text, byte_start, char_start)}
+
+          :nomatch ->
+            {nil, {byte_offset, char_offset}}
         end
     end
+  end
+
+  defp binary_match_from(text, chunk, byte_offset) do
+    byte_offset = min(byte_offset, byte_size(text))
+    :binary.match(text, chunk, scope: {byte_offset, byte_size(text) - byte_offset})
+  end
+
+  defp next_search_position(text, byte_start, char_start) do
+    rest = binary_part(text, byte_start, byte_size(text) - byte_start)
+
+    case String.next_grapheme(rest) do
+      {grapheme, _rest} -> {byte_start + byte_size(grapheme), char_start + 1}
+      nil -> {byte_start, char_start}
+    end
+  end
+
+  defp char_length_between(_text, byte_start, byte_end) when byte_end <= byte_start, do: 0
+
+  defp char_length_between(text, byte_start, byte_end) do
+    text
+    |> binary_part(byte_start, byte_end - byte_start)
+    |> String.length()
   end
 
   defp char_index(text, byte_offset), do: String.length(binary_part(text, 0, byte_offset))

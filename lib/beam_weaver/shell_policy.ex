@@ -108,16 +108,88 @@ defmodule BeamWeaver.ShellPolicy do
   end
 
   def allowed?(%__MODULE__{} = policy, command) when is_binary(command) do
-    allowed = Enum.any?(policy.allow, &rule_match?(&1, command))
-    denied = Enum.any?(policy.deny, &rule_match?(&1, command))
+    allowed = Enum.any?(policy.allow, &allow_rule_match?(&1, command))
+    denied = Enum.any?(policy.deny, &deny_rule_match?(&1, command))
     allowed and not denied
   end
 
   defp rule?(rule), do: is_binary(rule) or match?(%Regex{}, rule)
-  defp rule_match?(%Regex{} = regex, command), do: Regex.match?(regex, command)
+  defp allow_rule_match?(%Regex{} = regex, command), do: Regex.match?(regex, command)
 
-  defp rule_match?(prefix, command) when is_binary(prefix),
-    do: String.starts_with?(command, prefix)
+  defp allow_rule_match?(prefix, command) when is_binary(prefix),
+    do: String.starts_with?(command, prefix) and prefix_boundary?(prefix, command) and shell_single_command?(command)
+
+  defp deny_rule_match?(%Regex{} = regex, command), do: Regex.match?(regex, command)
+
+  defp deny_rule_match?(prefix, command) when is_binary(prefix),
+    do: String.starts_with?(command, prefix) and prefix_boundary?(prefix, command)
+
+  defp prefix_boundary?(prefix, command) do
+    prefix_size = byte_size(prefix)
+
+    cond do
+      byte_size(command) == prefix_size ->
+        true
+
+      String.match?(prefix, ~r/\s$/u) ->
+        true
+
+      true ->
+        command
+        |> binary_part(prefix_size, byte_size(command) - prefix_size)
+        |> String.first()
+        |> whitespace?()
+    end
+  end
+
+  defp shell_single_command?(command), do: shell_single_command?(command, :normal, false)
+
+  defp shell_single_command?("", _state, _escaped), do: true
+
+  defp shell_single_command?(<<_char::utf8, rest::binary>>, state, true),
+    do: shell_single_command?(rest, state, false)
+
+  defp shell_single_command?(<<"\\", rest::binary>>, :single_quote, false),
+    do: shell_single_command?(rest, :single_quote, false)
+
+  defp shell_single_command?(<<"\\", rest::binary>>, state, false),
+    do: shell_single_command?(rest, state, true)
+
+  defp shell_single_command?(<<"'", rest::binary>>, :normal, false),
+    do: shell_single_command?(rest, :single_quote, false)
+
+  defp shell_single_command?(<<"'", rest::binary>>, :single_quote, false),
+    do: shell_single_command?(rest, :normal, false)
+
+  defp shell_single_command?(<<"\"", rest::binary>>, :normal, false),
+    do: shell_single_command?(rest, :double_quote, false)
+
+  defp shell_single_command?(<<"\"", rest::binary>>, :double_quote, false),
+    do: shell_single_command?(rest, :normal, false)
+
+  defp shell_single_command?(<<"`", _rest::binary>>, state, false) when state != :single_quote,
+    do: false
+
+  defp shell_single_command?(<<"$(", _rest::binary>>, state, false) when state != :single_quote,
+    do: false
+
+  defp shell_single_command?(<<char::utf8, _rest::binary>>, :normal, false) when char in [?;, ?|, ?\n, ?\r],
+    do: false
+
+  defp shell_single_command?(<<">&", rest::binary>>, :normal, false),
+    do: shell_single_command?(rest, :normal, false)
+
+  defp shell_single_command?(<<"<&", rest::binary>>, :normal, false),
+    do: shell_single_command?(rest, :normal, false)
+
+  defp shell_single_command?(<<"&&", _rest::binary>>, :normal, false), do: false
+  defp shell_single_command?(<<"&", _rest::binary>>, :normal, false), do: false
+
+  defp shell_single_command?(<<_char::utf8, rest::binary>>, state, false),
+    do: shell_single_command?(rest, state, false)
+
+  defp whitespace?(value) when value in [" ", "\t", "\n", "\r"], do: true
+  defp whitespace?(_value), do: false
 
   defp valid_timeout?(nil), do: true
   defp valid_timeout?(:infinity), do: true

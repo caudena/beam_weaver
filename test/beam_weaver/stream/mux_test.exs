@@ -95,6 +95,38 @@ defmodule BeamWeaver.StreamMuxTest do
     assert %Envelope{event: %Events.Debug{payload: %{type: :heartbeat}}} = heartbeat
   end
 
+  test "mux finite timeout stops heartbeat-only hung producers" do
+    parent = self()
+
+    events =
+      Stream.mux(
+        [
+          {:sink, :slow,
+           fn _sink ->
+             Process.flag(:trap_exit, true)
+
+             receive do
+               {:beam_weaver_mux_cancel, _token} ->
+                 send(parent, :producer_cancelled)
+                 :ok
+
+               {:EXIT, _from, :shutdown} ->
+                 send(parent, :producer_cancelled)
+                 :ok
+             end
+           end}
+        ],
+        heartbeat: 10,
+        timeout: 60,
+        cancel_timeout: 100
+      )
+      |> Enum.take(12)
+
+    assert Enum.any?(events, &match?(%Envelope{event: %Events.Debug{payload: %{type: :heartbeat}}}, &1))
+    assert Enum.any?(events, &match?(%Envelope{event: %Events.Error{error: %{type: :stream_timeout}}}, &1))
+    assert_receive :producer_cancelled, 500
+  end
+
   test "early halt cancels unresolved producer tasks" do
     stream =
       Stream.mux(

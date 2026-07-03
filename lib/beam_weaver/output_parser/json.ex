@@ -3,6 +3,8 @@ defmodule BeamWeaver.OutputParser.JSON do
 
   alias BeamWeaver.Core.Error
 
+  @max_partial_json_bytes 256 * 1024
+
   @spec parse(String.t(), keyword()) :: {:ok, term()} | {:error, Error.t()}
   def parse(text, opts \\ []) when is_binary(text) do
     text = String.trim(text)
@@ -65,24 +67,25 @@ defmodule BeamWeaver.OutputParser.JSON do
   end
 
   defp parse_partial_json(text, original_error) do
-    text
-    |> json_candidates()
-    |> Enum.flat_map(&partial_candidates/1)
-    |> Enum.find_value(&decode_repaired_json/1) ||
-      text
-      |> json_candidates()
-      |> Enum.find_value(&decode_repaired_json/1) ||
+    candidates = json_candidates(text)
+
+    candidates
+    |> Enum.find_value(&decode_partial_json_candidate/1) ||
       parser_error(:json_parser, "partial output was not valid JSON", %{
         reason: Exception.message(original_error),
-        input: preview(text)
+        input: preview(text),
+        max_partial_json_bytes: @max_partial_json_bytes
       })
   end
 
-  defp decode_repaired_json(candidate) do
+  defp decode_partial_json_candidate(candidate) when byte_size(candidate) > @max_partial_json_bytes,
+    do: nil
+
+  defp decode_partial_json_candidate(candidate) do
     candidate
-    |> repaired_json_candidates()
+    |> partial_json_candidates()
     |> Enum.find_value(fn candidate ->
-      case decode_first_json_candidate(candidate) do
+      case BeamWeaver.JSON.decode(candidate) do
         {:ok, data} -> {:ok, data}
         {:error, _error} -> nil
       end
@@ -129,14 +132,6 @@ defmodule BeamWeaver.OutputParser.JSON do
     end
   end
 
-  defp partial_candidates(text) do
-    graphemes = String.graphemes(text)
-
-    0..length(graphemes)
-    |> Enum.reverse()
-    |> Enum.map(fn count -> Enum.take(graphemes, count) |> Enum.join() end)
-  end
-
   defp python_dict?(text), do: Regex.match?(~r/^\s*[{[]/, text) and String.contains?(text, "'")
 
   defp python_dict_to_json(text) do
@@ -147,63 +142,137 @@ defmodule BeamWeaver.OutputParser.JSON do
     |> String.replace("False", "false")
   end
 
-  defp repaired_json_candidates(candidate) do
-    [candidate, repair_json(candidate)]
+  defp partial_json_candidates(candidate) do
+    [candidate, complete_json_prefix(candidate), repair_json(candidate)]
+    |> Enum.reject(&is_nil/1)
     |> Enum.uniq()
+  end
+
+  defp complete_json_prefix(candidate) do
+    candidate
+    |> String.trim_leading()
+    |> complete_json_prefix(0, [], false, false, false, nil)
+  end
+
+  defp complete_json_prefix(candidate, index, _stack, _in_string, _escaped, _started, _root)
+       when index >= byte_size(candidate),
+       do: nil
+
+  defp complete_json_prefix(candidate, index, stack, in_string, escaped, started, root) do
+    byte = :binary.at(candidate, index)
+    next_index = index + 1
+
+    cond do
+      not started and whitespace?(byte) ->
+        complete_json_prefix(candidate, next_index, stack, false, false, false, nil)
+
+      not started and byte == ?{ ->
+        complete_json_prefix(candidate, next_index, [?} | stack], false, false, true, :container)
+
+      not started and byte == ?[ ->
+        complete_json_prefix(candidate, next_index, [?] | stack], false, false, true, :container)
+
+      not started and byte == ?" ->
+        complete_json_prefix(candidate, next_index, stack, true, false, true, :string)
+
+      not started ->
+        nil
+
+      in_string and escaped ->
+        complete_json_prefix(candidate, next_index, stack, true, false, true, root)
+
+      in_string and byte == ?\\ ->
+        complete_json_prefix(candidate, next_index, stack, true, true, true, root)
+
+      in_string and byte == ?" and root == :string ->
+        binary_part(candidate, 0, next_index)
+
+      in_string and byte == ?" ->
+        complete_json_prefix(candidate, next_index, stack, false, false, true, root)
+
+      in_string ->
+        complete_json_prefix(candidate, next_index, stack, true, false, true, root)
+
+      byte == ?" ->
+        complete_json_prefix(candidate, next_index, stack, true, false, true, root)
+
+      byte == ?{ ->
+        complete_json_prefix(candidate, next_index, [?} | stack], false, false, true, root)
+
+      byte == ?[ ->
+        complete_json_prefix(candidate, next_index, [?] | stack], false, false, true, root)
+
+      byte in [?}, ?]] ->
+        case pop_matching(stack, byte) do
+          {:ok, []} -> binary_part(candidate, 0, next_index)
+          {:ok, rest} -> complete_json_prefix(candidate, next_index, rest, false, false, true, root)
+          :error -> nil
+        end
+
+      true ->
+        complete_json_prefix(candidate, next_index, stack, false, false, true, root)
+    end
   end
 
   defp repair_json(candidate) do
     {out, stack, in_string, escaped} =
       candidate
       |> String.graphemes()
-      |> Enum.reduce({"", [], false, false}, fn char, {out, stack, in_string, escaped} ->
+      |> Enum.reduce({[], [], false, false}, fn char, {out, stack, in_string, escaped} ->
         cond do
           in_string and escaped ->
-            {out <> char, stack, true, false}
+            {[char | out], stack, true, false}
 
           in_string and char == "\\" ->
-            {out <> char, stack, true, true}
+            {[char | out], stack, true, true}
 
           in_string and char == "\"" ->
-            {out <> char, stack, false, false}
+            {[char | out], stack, false, false}
 
           in_string and char == "\n" ->
-            {out <> "\\n", stack, true, false}
+            {["\\n" | out], stack, true, false}
 
           in_string and char == "\r" ->
-            {out <> "\\r", stack, true, false}
+            {["\\r" | out], stack, true, false}
 
           in_string and char == "\t" ->
-            {out <> "\\t", stack, true, false}
+            {["\\t" | out], stack, true, false}
 
           in_string ->
-            {out <> char, stack, true, false}
+            {[char | out], stack, true, false}
 
           char == "\"" ->
-            {out <> char, stack, true, false}
+            {[char | out], stack, true, false}
 
           char == "{" ->
-            {out <> char, ["}" | stack], false, false}
+            {[char | out], ["}" | stack], false, false}
 
           char == "[" ->
-            {out <> char, ["]" | stack], false, false}
+            {[char | out], ["]" | stack], false, false}
 
           char in ["}", "]"] ->
-            {out <> char, tl_if_matches(stack, char), false, false}
+            {[char | out], tl_if_matches(stack, char), false, false}
 
           true ->
-            {out <> char, stack, false, false}
+            {[char | out], stack, false, false}
         end
       end)
 
-    out =
+    {out, close_string?} =
       out
+      |> Enum.reverse()
+      |> IO.iodata_to_binary()
       |> maybe_drop_trailing_escape(in_string, escaped)
-      |> trim_incomplete_json_tail()
+      |> trim_incomplete_json_tail(stack, in_string)
 
-    out = if in_string, do: out <> "\"", else: out
+    out = if close_string?, do: out <> "\"", else: out
     out <> Enum.join(stack)
   end
+
+  defp whitespace?(byte), do: byte in [?\s, ?\n, ?\r, ?\t]
+
+  defp pop_matching([char | rest], char), do: {:ok, rest}
+  defp pop_matching(_stack, _char), do: :error
 
   defp tl_if_matches([char | rest], char), do: rest
   defp tl_if_matches(stack, _char), do: stack
@@ -211,13 +280,27 @@ defmodule BeamWeaver.OutputParser.JSON do
   defp maybe_drop_trailing_escape(out, true, true), do: String.trim_trailing(out, "\\")
   defp maybe_drop_trailing_escape(out, _in_string, _escaped), do: out
 
-  defp trim_incomplete_json_tail(out) do
+  defp trim_incomplete_json_tail(out, stack, in_string) do
+    original = String.trim_trailing(out)
+    trimmed = if object_context?(stack), do: trim_incomplete_object_tail(original), else: original
+
+    out =
+      trimmed
+      |> String.replace(~r/,\s*$/, "")
+      |> String.replace(~r/,\s*"[^"]*"\s*:\s*$/, "")
+      |> String.replace(~r/"[^"]*"\s*:\s*$/, "")
+      |> String.replace(~r/:\s*$/, "")
+
+    {out, in_string and trimmed == original}
+  end
+
+  defp object_context?(["}" | _rest]), do: true
+  defp object_context?(_stack), do: false
+
+  defp trim_incomplete_object_tail(out) do
     out
-    |> String.trim_trailing()
-    |> String.replace(~r/,\s*$/, "")
-    |> String.replace(~r/,\s*"[^"]*"\s*:\s*$/, "")
-    |> String.replace(~r/"[^"]*"\s*:\s*$/, "")
-    |> String.replace(~r/:\s*$/, "")
+    |> String.replace(~r/([{,])\s*"[^"]*"\s*$/, "\\1")
+    |> String.replace(~r/([{,])\s*"[^"]*$/, "\\1")
   end
 
   defp preview(text), do: String.slice(text, 0, 200)

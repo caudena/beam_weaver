@@ -274,6 +274,32 @@ defmodule BeamWeaver.Core.MessageUtilsTest do
     assert BeamWeaver.JSON.decode!(json) == %{"key" => "value"}
   end
 
+  test "OpenAI chat conversion deduplicates assistant tool calls already present as content blocks" do
+    message =
+      Message.assistant(
+        [
+          %{type: :text, text: "checking"},
+          %{type: :tool_call, id: "call-1", name: "lookup", args: %{q: "beam"}},
+          %{
+            type: :function_call,
+            call_id: "call-2",
+            name: "math",
+            arguments: %{"n" => 1}
+          }
+        ],
+        tool_calls: [
+          %ToolCall{id: "call-1", name: "lookup", args: %{q: "beam"}},
+          %ToolCall{id: "call-3", name: "search", args: %{q: "docs"}}
+        ]
+      )
+
+    assert {:ok, [assistant]} = Utils.convert_to_openai_messages([message], text_format: :block)
+
+    assert assistant["content"] == [%{"type" => "text", "text" => "checking"}]
+    assert Enum.map(assistant["tool_calls"], & &1["id"]) == ["call-1", "call-3", "call-2"]
+    assert Enum.map(assistant["tool_calls"], & &1["function"]["name"]) == ["lookup", "search", "math"]
+  end
+
   test "OpenAI chat conversion normalizes provider media, files, audio, and tool results" do
     image_data = Base.encode64("image-bytes")
     raw_image = <<1, 2, 3, 4>>

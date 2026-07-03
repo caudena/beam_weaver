@@ -140,9 +140,12 @@ defmodule BeamWeaver.VectorStoreEctoPostgresTest do
     assert {:ok, {sql, params}} =
              Filter.to_sql(%{"nested.rank" => %{gte: 2}, group: "a", tag: %{in: ["x", "y"]}}, 3)
 
-    assert sql =~ "metadata #>> '{group}'"
-    assert sql =~ "(metadata #>> '{nested,rank}')::numeric >="
-    assert sql =~ "metadata #>> '{tag}' = ANY"
+    assert sql =~ "metadata #>> $"
+    assert sql =~ "::text[]"
+    refute sql =~ "#>> '{"
+    assert ["group"] in params
+    assert ["nested", "rank"] in params
+    assert ["tag"] in params
     assert "a" in params
     assert 2 in params
     assert ["x", "y"] in params
@@ -183,6 +186,16 @@ defmodule BeamWeaver.VectorStoreEctoPostgresTest do
              VectorStore.similarity_search_with_score(store, "alpha", k: 1)
 
     assert is_number(score)
+
+    assert {:ok, [%Document{content: "alpha document"}]} =
+             VectorStore.similarity_search(store, "alpha", k: 1, filter: %{"group" => "a"})
+
+    assert {:ok, []} =
+             VectorStore.similarity_search(store, "alpha",
+               k: 1,
+               filter: %{"x}' AND '1'='1' -- " => "y"}
+             )
+
     assert :ok = VectorStore.delete(store, [id])
     assert {:ok, []} = VectorStore.similarity_search(store, "alpha", k: 1)
   end

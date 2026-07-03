@@ -19,6 +19,8 @@ defmodule BeamWeaver.Stream.MessageStream do
     :error,
     events: [],
     text_deltas: [],
+    events_reversed?: false,
+    text_deltas_reversed?: false,
     done: false,
     metadata: %{}
   ]
@@ -32,11 +34,16 @@ defmodule BeamWeaver.Stream.MessageStream do
           error: term(),
           events: [map()],
           text_deltas: [String.t()],
+          events_reversed?: boolean(),
+          text_deltas_reversed?: boolean(),
           done: boolean(),
           metadata: map()
         }
 
   @spec text(t()) :: String.t()
+  def text(%__MODULE__{text_deltas: deltas, text_deltas_reversed?: true}),
+    do: deltas |> Enum.reverse() |> Enum.join("")
+
   def text(%__MODULE__{text_deltas: deltas}), do: Enum.join(deltas, "")
 
   @spec output(t()) :: {:ok, Message.t()} | {:error, term()} | nil
@@ -108,6 +115,9 @@ defmodule BeamWeaver.Stream.MessagesTransformer do
   @spec process(t(), term()) :: {:ok, t(), [MessageStream.t()]} | {:pass, t()}
   def process(%__MODULE__{} = transformer, event) do
     case apply_pre_projection(transformer, event) do
+      {:ok, events} when is_list(events) ->
+        process_projected_events(transformer, events)
+
       {:ok, event} ->
         do_process(transformer, event)
 
@@ -135,19 +145,55 @@ defmodule BeamWeaver.Stream.MessagesTransformer do
     end
   end
 
+  defp process_projected_events(transformer, events) do
+    Enum.reduce(events, {:ok, transformer, []}, fn event, {:ok, acc, emitted} ->
+      case do_process(acc, event) do
+        {:ok, next, streams} -> {:ok, next, prepend_all(emitted, streams)}
+        {:pass, next} -> {:ok, next, emitted}
+      end
+    end)
+    |> then(fn {:ok, next, emitted} -> {:ok, next, Enum.reverse(emitted)} end)
+  end
+
   defp apply_pre_projection(%__MODULE__{pre_projection: []}, event), do: {:ok, event}
 
   defp apply_pre_projection(%__MODULE__{pre_projection: transforms}, event) do
-    Enum.reduce_while(transforms, {:ok, event}, fn transform, {:ok, current} ->
-      case transform.(current) do
-        {:ok, next} -> {:cont, {:ok, next}}
-        {:drop, _reason} -> {:halt, :drop}
+    transforms
+    |> Enum.reduce_while({:ok, [event]}, fn transform, {:ok, current_events} ->
+      case apply_pre_projection_transform(transform, current_events) do
+        {:ok, []} -> {:halt, :drop}
+        {:ok, next_events} -> {:cont, {:ok, next_events}}
         :drop -> {:halt, :drop}
         {:error, error} -> {:halt, {:error, error}}
-        next -> {:cont, {:ok, next}}
       end
     end)
+    |> case do
+      {:ok, [single]} -> {:ok, single}
+      {:ok, events} -> {:ok, events}
+      other -> other
+    end
   end
+
+  defp apply_pre_projection_transform(transform, events) do
+    Enum.reduce_while(events, {:ok, []}, fn event, {:ok, acc} ->
+      case normalize_pre_projection_result(transform.(event)) do
+        {:ok, next_events} -> {:cont, {:ok, prepend_all(acc, next_events)}}
+        :drop -> {:cont, {:ok, acc}}
+        {:error, error} -> {:halt, {:error, error}}
+      end
+    end)
+    |> case do
+      {:ok, next_events} -> {:ok, Enum.reverse(next_events)}
+      other -> other
+    end
+  end
+
+  defp normalize_pre_projection_result({:ok, events}) when is_list(events), do: {:ok, events}
+  defp normalize_pre_projection_result({:ok, event}), do: {:ok, [event]}
+  defp normalize_pre_projection_result({:drop, _reason}), do: :drop
+  defp normalize_pre_projection_result(:drop), do: :drop
+  defp normalize_pre_projection_result({:error, error}), do: {:error, error}
+  defp normalize_pre_projection_result(event), do: {:ok, [event]}
 
   @spec process_many(t() | [term()], [term()] | keyword(), keyword()) ::
           {:ok, t(), [MessageStream.t()]}
@@ -156,10 +202,11 @@ defmodule BeamWeaver.Stream.MessagesTransformer do
   def process_many(%__MODULE__{} = transformer, events, _opts) when is_list(events) do
     Enum.reduce(events, {:ok, transformer, []}, fn event, {:ok, acc, emitted} ->
       case process(acc, event) do
-        {:ok, next, new_streams} -> {:ok, next, emitted ++ new_streams}
+        {:ok, next, new_streams} -> {:ok, next, prepend_all(emitted, new_streams)}
         {:pass, next} -> {:ok, next, emitted}
       end
     end)
+    |> then(fn {:ok, next, emitted} -> {:ok, next, Enum.reverse(emitted)} end)
   end
 
   def process_many(events, opts, async_opts) when is_list(events) do
@@ -183,12 +230,12 @@ defmodule BeamWeaver.Stream.MessagesTransformer do
       transformer.open_order
       |> Enum.flat_map(fn run_id ->
         case Map.fetch(transformer.by_run, run_id) do
-          {:ok, stream} -> [stream]
+          {:ok, stream} -> [normalize_stream(stream)]
           :error -> []
         end
       end)
 
-    transformer.completed ++ active
+    Enum.map(transformer.completed, &normalize_stream/1) ++ active
   end
 
   @spec fail(t(), term()) :: t()
@@ -197,7 +244,7 @@ defmodule BeamWeaver.Stream.MessagesTransformer do
       transformer.open_order
       |> Enum.flat_map(fn run_id ->
         case Map.fetch(transformer.by_run, run_id) do
-          {:ok, stream} -> [%{stream | error: error, done: true}]
+          {:ok, stream} -> [%{normalize_stream(stream) | error: error, done: true}]
           :error -> []
         end
       end)
@@ -217,17 +264,17 @@ defmodule BeamWeaver.Stream.MessagesTransformer do
         finish_message(transformer, payload, metadata)
 
       "content-block-start" ->
-        update_open_stream(transformer, metadata, &record_event(&1, payload))
+        update_open_stream(transformer, payload, metadata, &record_event(&1, payload))
 
       "content-block-delta" ->
-        update_open_stream(transformer, metadata, fn stream ->
+        update_open_stream(transformer, payload, metadata, fn stream ->
           stream
           |> record_event(payload)
           |> append_text_delta(text_from_content_block(map_get(payload, :content_block)))
         end)
 
       "content-block-finish" ->
-        update_open_stream(transformer, metadata, fn stream ->
+        update_open_stream(transformer, payload, metadata, fn stream ->
           stream =
             record_event(stream, payload)
 
@@ -244,7 +291,7 @@ defmodule BeamWeaver.Stream.MessagesTransformer do
   end
 
   defp start_message(transformer, payload, metadata) do
-    run_id = run_id(metadata) || map_get(payload, :message_id)
+    run_id = event_run_id(metadata, payload)
     role = map_get(payload, :role) || :assistant
 
     if assistant_role?(role) and not is_nil(run_id) do
@@ -275,7 +322,7 @@ defmodule BeamWeaver.Stream.MessagesTransformer do
   end
 
   defp finish_message(transformer, payload, metadata) do
-    run_id = run_id(metadata)
+    run_id = open_run_id(transformer, metadata, payload)
 
     case Map.fetch(transformer.by_run, run_id) do
       {:ok, stream} ->
@@ -299,8 +346,8 @@ defmodule BeamWeaver.Stream.MessagesTransformer do
     end
   end
 
-  defp update_open_stream(transformer, metadata, fun) do
-    run_id = run_id(metadata)
+  defp update_open_stream(transformer, payload, metadata, fun) do
+    run_id = open_run_id(transformer, metadata, payload)
 
     case Map.fetch(transformer.by_run, run_id) do
       {:ok, stream} ->
@@ -349,21 +396,25 @@ defmodule BeamWeaver.Stream.MessagesTransformer do
     do: Map.has_key?(transformer.by_run, run_id)
 
   defp record_event(%MessageStream{} = stream, event),
-    do: %{stream | events: stream.events ++ [event]}
+    do: %{stream | events: [event | stream.events], events_reversed?: true}
 
   defp append_text_delta(stream, nil), do: stream
   defp append_text_delta(stream, ""), do: stream
-  defp append_text_delta(stream, text), do: %{stream | text_deltas: stream.text_deltas ++ [text]}
+
+  defp append_text_delta(stream, text),
+    do: %{stream | text_deltas: [text | stream.text_deltas], text_deltas_reversed?: true}
 
   defp complete_stream(%MessageStream{} = stream, reason) do
+    text = MessageStream.text(stream)
+
     message =
-      Message.assistant(MessageStream.text(stream),
+      Message.assistant(text,
         id: stream.message_id,
         metadata: stream.metadata,
         response_metadata: if(is_nil(reason), do: %{}, else: %{finish_reason: reason})
       )
 
-    %{stream | done: true, output: message}
+    %{normalize_stream(stream) | done: true, output: message}
   end
 
   defp lifecycle_events(message_id, text) do
@@ -383,10 +434,54 @@ defmodule BeamWeaver.Stream.MessagesTransformer do
   defp text_from_content_block(_block), do: nil
 
   defp run_id(metadata), do: map_get(metadata, :run_id) || map_get(metadata, :message_id)
+
+  defp event_run_id(metadata, payload) do
+    run_id(metadata) || map_get(payload, :run_id) || map_get(payload, :message_id)
+  end
+
+  defp open_run_id(%__MODULE__{} = transformer, metadata, payload) do
+    case event_run_id(metadata, payload) do
+      nil ->
+        single_open_run_id(transformer)
+
+      run_id ->
+        cond do
+          Map.has_key?(transformer.by_run, run_id) -> run_id
+          message_run_id = run_id_for_message_id(transformer, run_id) -> message_run_id
+          true -> run_id
+        end
+    end
+  end
+
+  defp run_id_for_message_id(%__MODULE__{by_run: by_run}, message_id) do
+    Enum.find_value(by_run, fn
+      {run_id, %MessageStream{message_id: ^message_id}} -> run_id
+      _other -> nil
+    end)
+  end
+
+  defp single_open_run_id(%__MODULE__{open_order: [run_id]}), do: run_id
+  defp single_open_run_id(_transformer), do: nil
+
   defp node_name(metadata), do: map_get(metadata, :node)
 
   defp assistant_role?(role) when role in [:assistant, :ai, "assistant", "ai", nil], do: true
   defp assistant_role?(_role), do: false
+
+  defp normalize_stream(%MessageStream{} = stream) do
+    %{
+      stream
+      | events: normalize_order(stream.events, stream.events_reversed?),
+        text_deltas: normalize_order(stream.text_deltas, stream.text_deltas_reversed?),
+        events_reversed?: false,
+        text_deltas_reversed?: false
+    }
+  end
+
+  defp normalize_order(values, true), do: Enum.reverse(values)
+  defp normalize_order(values, _false), do: values
+
+  defp prepend_all(acc, values), do: Enum.reduce(values, acc, fn value, acc -> [value | acc] end)
 
   defp append_unique(values, value) do
     if value in values, do: values, else: values ++ [value]

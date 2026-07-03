@@ -91,34 +91,53 @@ defmodule BeamWeaver.Google.Streaming do
   end
 
   defp merge_response_parts(parts) do
-    Enum.reduce(parts, [], fn
+    parts
+    |> Enum.reduce({[], nil}, fn
       %{"text" => ""}, acc ->
         acc
 
       %{"text" => text} = part, acc when is_binary(text) ->
-        append_text_part(acc, part)
+        append_response_part(acc, part)
 
       part, acc when is_map(part) ->
-        acc ++ [part]
+        append_response_part(acc, part)
 
       _part, acc ->
         acc
     end)
+    |> finish_response_parts()
   end
 
-  defp append_text_part(parts, %{"text" => text} = part) do
-    case List.last(parts) do
-      %{"text" => previous} = previous_part when is_binary(previous) ->
+  defp append_response_part({parts, nil}, %{"text" => text} = part),
+    do: {parts, {:text, Map.delete(part, "text"), [text]}}
+
+  defp append_response_part({parts, nil}, part), do: {parts, {:part, part}}
+
+  defp append_response_part({parts, previous_part}, %{"text" => text} = part) do
+    case previous_part do
+      {:text, previous_part, chunks} = pending ->
         if text_part_mergeable?(previous_part, part) do
-          List.update_at(parts, -1, &Map.put(&1, "text", previous <> text))
+          {parts, {:text, previous_part, [text | chunks]}}
         else
-          parts ++ [part]
+          {[materialize_response_part(pending) | parts], {:text, Map.delete(part, "text"), [text]}}
         end
 
       _other ->
-        parts ++ [part]
+        {[materialize_response_part(previous_part) | parts], {:text, Map.delete(part, "text"), [text]}}
     end
   end
+
+  defp append_response_part({parts, previous_part}, part),
+    do: {[materialize_response_part(previous_part) | parts], {:part, part}}
+
+  defp finish_response_parts({parts, nil}), do: Enum.reverse(parts)
+  defp finish_response_parts({parts, part}), do: Enum.reverse([materialize_response_part(part) | parts])
+
+  defp materialize_response_part({:text, part, chunks}) do
+    Map.put(part, "text", chunks |> Enum.reverse() |> IO.iodata_to_binary())
+  end
+
+  defp materialize_response_part({:part, part}), do: part
 
   defp text_part_mergeable?(left, right) do
     Map.get(left, "thought") == Map.get(right, "thought") and

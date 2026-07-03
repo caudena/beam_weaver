@@ -205,6 +205,12 @@ defmodule BeamWeaver.Moonshot.Messages do
     media_part("video_url", block.url, block.data, block.mime_type || "video/mp4")
   end
 
+  defp content_part(%ContentBlock.Audio{}, _skip_reasoning?),
+    do: unsupported_content_block(:audio)
+
+  defp content_part(%ContentBlock.File{}, _skip_reasoning?),
+    do: unsupported_content_block(:file)
+
   defp content_part(%ContentBlock.Reasoning{}, true), do: {:ok, nil}
 
   defp content_part(%ContentBlock.Reasoning{reasoning: text}, _skip_reasoning?),
@@ -242,6 +248,12 @@ defmodule BeamWeaver.Moonshot.Messages do
 
       "video_url" ->
         validate_url_part(provider_block, "video_url")
+
+      type when type in ["audio", "audio_url", "input_audio"] ->
+        unsupported_content_block(:audio)
+
+      type when type in ["file", "input_file"] ->
+        unsupported_content_block(:file)
 
       "reasoning" when skip_reasoning? ->
         {:ok, nil}
@@ -317,6 +329,22 @@ defmodule BeamWeaver.Moonshot.Messages do
   defp media_feature("video"), do: :video
   defp media_feature("video_url"), do: :video_url
   defp media_feature(kind), do: kind
+
+  defp unsupported_content_block(:audio) do
+    {:error,
+     Error.new(:unsupported_feature, "Moonshot Kimi does not support audio content blocks", %{
+       provider: :moonshot,
+       feature: :audio_input
+     })}
+  end
+
+  defp unsupported_content_block(:file) do
+    {:error,
+     Error.new(:unsupported_feature, "Moonshot Kimi does not support file content blocks", %{
+       provider: :moonshot,
+       feature: :file_input
+     })}
+  end
 
   defp provider_type(type) when is_atom(type), do: Atom.to_string(type)
   defp provider_type(type), do: type
