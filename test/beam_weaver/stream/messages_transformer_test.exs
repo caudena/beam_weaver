@@ -42,6 +42,30 @@ defmodule BeamWeaver.Stream.MessagesTransformerTest do
            ]
   end
 
+  test "protocol lifecycle keeps many token deltas in public order" do
+    deltas = Enum.map(1..1_000, &Integer.to_string/1)
+
+    events =
+      [
+        proto(%{"event" => "message-start", "role" => "ai", "message_id" => "run-1"})
+        | Enum.map(deltas, fn text ->
+            proto(%{
+              "event" => "content-block-delta",
+              "content_block" => %{"type" => "text", "text" => text}
+            })
+          end)
+      ] ++
+        [proto(%{"event" => "message-finish", "reason" => "stop"})]
+
+    assert {:ok, t, _emitted} = MessagesTransformer.process_many(MessagesTransformer.new(), events)
+    assert [%MessageStream{done: true} = stream] = MessagesTransformer.streams(t)
+    assert MessageStream.text(stream) == Enum.join(deltas, "")
+
+    assert Enum.map(stream.events, &event_name/1) ==
+             ["message-start"] ++
+               List.duplicate("content-block-delta", 1_000) ++ ["message-finish"]
+  end
+
   test "message-finish cleans active routing while preserving completed streams" do
     assert {:ok, t, _emitted} =
              MessagesTransformer.process_many(MessagesTransformer.new(), lifecycle("done"))
@@ -49,6 +73,52 @@ defmodule BeamWeaver.Stream.MessagesTransformerTest do
     assert t.by_run == %{}
     assert t.open_order == []
     assert [%MessageStream{message_id: "run-1"}] = t.completed
+  end
+
+  test "protocol lifecycle routes by payload message_id when metadata run_id is absent" do
+    events = [
+      protocol_without_run_id(%{"event" => "message-start", "role" => "ai", "message_id" => "msg-1"}),
+      protocol_without_run_id(%{
+        "event" => "content-block-delta",
+        "message_id" => "msg-1",
+        "content_block" => %{"type" => "text", "text" => "hel"}
+      }),
+      protocol_without_run_id(%{
+        "event" => "content-block-delta",
+        "message_id" => "msg-1",
+        "content_block" => %{"type" => "text", "text" => "lo"}
+      }),
+      protocol_without_run_id(%{"event" => "message-finish", "message_id" => "msg-1", "reason" => "stop"})
+    ]
+
+    assert {:ok, t, _emitted} = MessagesTransformer.process_many(MessagesTransformer.new(), events)
+    assert t.by_run == %{}
+    assert t.open_order == []
+    assert [%MessageStream{done: true, message_id: "msg-1"} = stream] = MessagesTransformer.streams(t)
+    assert MessageStream.text(stream) == "hello"
+  end
+
+  test "protocol lifecycle routes payload message_id back to streams keyed by metadata run_id" do
+    events = [
+      protocol_event(%{"event" => "message-start", "role" => "ai", "message_id" => "msg-1"}, %{
+        "node" => "llm",
+        "run_id" => "run-1"
+      }),
+      protocol_without_run_id(%{
+        "event" => "content-block-delta",
+        "message_id" => "msg-1",
+        "content_block" => %{"type" => "text", "text" => "he"}
+      }),
+      protocol_without_run_id(%{"event" => "message-finish", "message_id" => "msg-1", "reason" => "stop"})
+    ]
+
+    assert {:ok, t, _emitted} = MessagesTransformer.process_many(MessagesTransformer.new(), events)
+    assert t.by_run == %{}
+
+    assert [%MessageStream{done: true, run_id: "run-1", message_id: "msg-1"} = stream] =
+             MessagesTransformer.streams(t)
+
+    assert MessageStream.text(stream) == "he"
   end
 
   test "orphan deltas, tool-role runs, subgraph namespaces, and v1 chunks are ignored" do
@@ -232,6 +302,31 @@ defmodule BeamWeaver.Stream.MessagesTransformerTest do
     assert MessageStream.output!(stream).content == "contact [REDACTED_EMAIL]"
   end
 
+  test "pre-projection PII transform redacts text spanning chunk boundaries" do
+    transformer =
+      MessagesTransformer.new(pre_projection: PII.stream_transform(type: :email, strategy: :redact))
+
+    events = [
+      proto(%{"event" => "message-start", "role" => "ai", "message_id" => "run-1"}),
+      %Envelope{
+        event: %Events.MessageChunk{chunk: Messages.ai_chunk("contact ada@")},
+        node: "llm",
+        run_id: "run-1"
+      },
+      %Envelope{
+        event: %Events.MessageChunk{chunk: Messages.ai_chunk("example.com now")},
+        node: "llm",
+        run_id: "run-1"
+      },
+      proto(%{"event" => "message-finish", "reason" => "stop"})
+    ]
+
+    assert {:ok, t, _emitted} = MessagesTransformer.process_many(transformer, events)
+    assert [%MessageStream{done: true} = stream] = MessagesTransformer.streams(t)
+    assert MessageStream.text(stream) == "contact [REDACTED_EMAIL] now"
+    assert MessageStream.output!(stream).content == "contact [REDACTED_EMAIL] now"
+  end
+
   test "pre-projection transforms can pass through, drop, or fail stream events explicitly" do
     pass = fn event -> {:ok, event} end
     drop = fn _event -> :drop end
@@ -314,6 +409,22 @@ defmodule BeamWeaver.Stream.MessagesTransformerTest do
         "namespace" => namespace,
         "timestamp" => 1,
         "data" => {payload, %{"node" => node, "run_id" => run_id}}
+      }
+    }
+  end
+
+  defp protocol_without_run_id(payload) do
+    protocol_event(payload, %{"node" => "llm"})
+  end
+
+  defp protocol_event(payload, metadata) do
+    %{
+      "type" => "event",
+      "method" => "messages",
+      "params" => %{
+        "namespace" => [],
+        "timestamp" => 1,
+        "data" => {payload, metadata}
       }
     }
   end

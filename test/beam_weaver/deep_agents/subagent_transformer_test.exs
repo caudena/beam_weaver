@@ -110,6 +110,44 @@ defmodule BeamWeaver.Agent.Subagent.StreamTransformerTest do
            ] = transformer.log
   end
 
+  test "nested child values updates and errors stay on the child handle" do
+    {:ok, transformer, _handles} =
+      StreamTransformer.process_many(transformer(), [
+        tools_start(parent_task_id: "p", subagent_type: "researcher", tool_call_id: "tc-p"),
+        child_start(["tools:p"]),
+        values(%{parent: true}, namespace: ["tools:p"]),
+        tools_start(
+          namespace: ["tools:p"],
+          parent_task_id: "c",
+          subagent_type: "coder",
+          tool_call_id: "tc-c"
+        ),
+        child_start(["tools:p", "tools:c"]),
+        values(%{child: true}, namespace: ["tools:p", "tools:c"]),
+        updates(%{child_update: true}, namespace: ["tools:p", "tools:c"]),
+        error(%{message: "child boom"}, namespace: ["tools:p", "tools:c"])
+      ])
+
+    assert [
+             %{
+               path: ["tools:p"],
+               values: [%{parent: true}],
+               updates: [],
+               status: :started,
+               error: nil,
+               subagents: [
+                 %{
+                   path: ["tools:p", "tools:c"],
+                   values: [%{child: true}],
+                   updates: [%{child_update: true}],
+                   status: :failed,
+                   error: "child boom"
+                 }
+               ]
+             }
+           ] = transformer.log
+  end
+
   test "nested nondeclared subagents are not surfaced" do
     {:ok, transformer, _handles} =
       StreamTransformer.process_many(transformer(), [
@@ -256,6 +294,28 @@ defmodule BeamWeaver.Agent.Subagent.StreamTransformerTest do
     %{
       "type" => "event",
       "method" => "values",
+      "params" => %{
+        "namespace" => Keyword.fetch!(opts, :namespace),
+        "data" => payload
+      }
+    }
+  end
+
+  defp updates(payload, opts) do
+    %{
+      "type" => "event",
+      "method" => "updates",
+      "params" => %{
+        "namespace" => Keyword.fetch!(opts, :namespace),
+        "data" => payload
+      }
+    }
+  end
+
+  defp error(payload, opts) do
+    %{
+      "type" => "event",
+      "method" => "error",
       "params" => %{
         "namespace" => Keyword.fetch!(opts, :namespace),
         "data" => payload

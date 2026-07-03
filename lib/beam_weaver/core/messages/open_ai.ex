@@ -363,7 +363,10 @@ defmodule BeamWeaver.Core.Messages.OpenAI do
   defp put_tool_call_id(map, _message), do: map
 
   defp put_assistant_tool_calls(map, %Message{role: :assistant} = message, _opts) do
-    calls = message.tool_calls ++ content_tool_calls(message.content)
+    calls =
+      (message.tool_calls || [])
+      |> Kernel.++(content_tool_calls(message.content))
+      |> deduplicate_tool_calls()
 
     if calls == [] do
       map
@@ -381,6 +384,25 @@ defmodule BeamWeaver.Core.Messages.OpenAI do
   end
 
   defp content_tool_calls(_content), do: []
+
+  defp deduplicate_tool_calls(calls) do
+    calls
+    |> Enum.reduce({[], MapSet.new()}, fn call, {deduped, seen} ->
+      case tool_call_request_id(call) do
+        id when is_binary(id) and id != "" ->
+          if MapSet.member?(seen, id) do
+            {deduped, seen}
+          else
+            {[call | deduped], MapSet.put(seen, id)}
+          end
+
+        _missing ->
+          {[call | deduped], seen}
+      end
+    end)
+    |> elem(0)
+    |> Enum.reverse()
+  end
 
   defp content_tool_call(%{type: :tool_use} = block) do
     %{
@@ -401,13 +423,17 @@ defmodule BeamWeaver.Core.Messages.OpenAI do
   defp tool_call_to_chat_completion(call) when is_map(call) do
     %{
       "type" => "function",
-      "id" => Map.get(call, :id) || Map.get(call, :call_id),
+      "id" => tool_call_request_id(call),
       "function" => %{
         "name" => Map.get(call, :name),
         "arguments" => function_arguments(call)
       }
     }
     |> reject_nil_values()
+  end
+
+  defp tool_call_request_id(call) when is_map(call) do
+    Map.get(call, :id) || Map.get(call, :call_id)
   end
 
   defp function_arguments(%{arguments: arguments}) when is_binary(arguments), do: arguments

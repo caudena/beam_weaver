@@ -21,6 +21,7 @@ defmodule BeamWeaver.Agent.Middleware.PII do
 
   @default_detectors [:email, :credit_card, :ip, :mac_address, :url]
   @strategies [:block, :redact, :mask, :hash]
+  @stream_tail_graphemes 512
 
   defstruct pii_type: nil,
             detectors: @default_detectors,
@@ -142,8 +143,14 @@ defmodule BeamWeaver.Agent.Middleware.PII do
   Returns a pre-projection stream transform that applies the middleware strategy
   to streamed text before message projection.
   """
-  @spec stream_transform(t() | keyword()) :: (term() -> term() | {:ok, term()} | {:error, Error.t()})
-  def stream_transform(%__MODULE__{} = middleware), do: &redact_stream_event(middleware, &1)
+  @spec stream_transform(t() | keyword()) :: (term() ->
+                                                term() | [term()] | {:ok, term() | [term()]} | {:error, Error.t()})
+  def stream_transform(%__MODULE__{} = middleware) do
+    state_key = {__MODULE__, make_ref()}
+
+    fn event -> redact_stream_event(middleware, state_key, event) end
+  end
+
   def stream_transform(opts) when is_list(opts), do: opts |> new() |> stream_transform()
 
   defp edit_before_model(messages, middleware) do
@@ -155,68 +162,152 @@ defmodule BeamWeaver.Agent.Middleware.PII do
     end
   end
 
-  defp redact_stream_event(%__MODULE__{} = middleware, %Envelope{event: %Events.Token{text: text} = event} = envelope) do
-    with {:ok, edited} <- edit_text(text, middleware) do
-      {:ok, %{envelope | event: %{event | text: edited}}}
-    end
+  defp redact_stream_event(
+         %__MODULE__{} = middleware,
+         state_key,
+         %Envelope{event: %Events.Token{text: text} = event} = envelope
+       )
+       when is_binary(text) do
+    redact_stream_text(middleware, state_key, text, fn updated ->
+      %{envelope | event: %{event | text: updated}}
+    end)
   end
 
   defp redact_stream_event(
          %__MODULE__{} = middleware,
+         state_key,
          %Envelope{event: %Events.MessageChunk{chunk: %AIChunk{content: content} = chunk} = event} =
            envelope
        )
        when is_binary(content) do
-    with {:ok, edited} <- edit_text(content, middleware) do
-      {:ok, %{envelope | event: %{event | chunk: %{chunk | content: edited}}}}
-    end
+    redact_stream_text(middleware, state_key, content, fn updated ->
+      %{envelope | event: %{event | chunk: %{chunk | content: updated}}}
+    end)
   end
 
   defp redact_stream_event(
          %__MODULE__{} = middleware,
+         state_key,
          %Envelope{event: %Events.Message{message: %Message{content: content} = message} = event} = envelope
        )
        when is_binary(content) do
     with {:ok, edited} <- edit_text(content, middleware) do
-      {:ok, %{envelope | event: %{event | message: %{message | content: edited}}}}
+      event = %{envelope | event: %{event | message: %{message | content: edited}}}
+      flush_stream_pending(state_key, event)
     end
   end
 
   defp redact_stream_event(
          %__MODULE__{} = middleware,
+         state_key,
          %{"params" => %{"data" => {%{} = payload, metadata}} = params} = event
        ) do
-    with {:ok, payload} <- redact_protocol_payload(middleware, payload) do
-      {:ok, %{event | "params" => %{params | "data" => {payload, metadata}}}}
+    case protocol_payload_text(payload) do
+      text when is_binary(text) ->
+        redact_stream_text(middleware, state_key, text, fn updated ->
+          payload = put_protocol_payload_text(payload, updated)
+          %{event | "params" => %{params | "data" => {payload, metadata}}}
+        end)
+
+      _other ->
+        maybe_flush_stream_pending(middleware, state_key, event, payload)
     end
   end
 
   defp redact_stream_event(
          %__MODULE__{} = middleware,
+         state_key,
          %{params: %{data: {%{} = payload, metadata}} = params} = event
        ) do
-    with {:ok, payload} <- redact_protocol_payload(middleware, payload) do
-      {:ok, %{event | params: %{params | data: {payload, metadata}}}}
+    case protocol_payload_text(payload) do
+      text when is_binary(text) ->
+        redact_stream_text(middleware, state_key, text, fn updated ->
+          payload = put_protocol_payload_text(payload, updated)
+          %{event | params: %{params | data: {payload, metadata}}}
+        end)
+
+      _other ->
+        maybe_flush_stream_pending(middleware, state_key, event, payload)
     end
   end
 
-  defp redact_stream_event(_middleware, event), do: {:ok, event}
+  defp redact_stream_event(_middleware, state_key, %Envelope{event: %Events.Done{}} = event),
+    do: flush_stream_pending(state_key, event)
 
-  defp redact_protocol_payload(%__MODULE__{} = middleware, payload) do
-    case map_get(payload, :content_block) do
-      block when is_map(block) ->
-        case map_get(block, :text) do
-          text when is_binary(text) ->
-            with {:ok, edited} <- edit_text(text, middleware) do
-              {:ok, put_map_value(payload, :content_block, put_map_value(block, :text, edited))}
-            end
+  defp redact_stream_event(_middleware, state_key, %Envelope{event: %Events.Error{}} = event),
+    do: flush_stream_pending(state_key, event)
 
-          _other ->
-            {:ok, payload}
-        end
+  defp redact_stream_event(_middleware, _state_key, event), do: {:ok, event}
+
+  defp redact_stream_text(%__MODULE__{} = middleware, state_key, text, put_text) do
+    combined = stream_pending_text(state_key) <> text
+
+    with {:ok, edited} <- edit_text(combined, middleware) do
+      {emit_text, pending_text} = split_stream_text(edited)
+      pending_event = put_text.(pending_text)
+      store_stream_pending(state_key, pending_text, pending_event)
+
+      {:ok, put_text.(emit_text)}
+    end
+  end
+
+  defp maybe_flush_stream_pending(_middleware, state_key, event, payload) do
+    if protocol_terminal_event?(payload) do
+      flush_stream_pending(state_key, event)
+    else
+      {:ok, event}
+    end
+  end
+
+  defp protocol_payload_text(payload) do
+    with block when is_map(block) <- map_get(payload, :content_block),
+         text when is_binary(text) <- map_get(block, :text) do
+      text
+    else
+      _other -> nil
+    end
+  end
+
+  defp put_protocol_payload_text(payload, text) do
+    block = payload |> map_get(:content_block, %{}) |> put_map_value(:text, text)
+    put_map_value(payload, :content_block, block)
+  end
+
+  defp protocol_terminal_event?(payload) do
+    map_get(payload, :event) in ["message-finish", :message_finish, :message_finish]
+  end
+
+  defp stream_pending_text(state_key) do
+    state_key
+    |> Process.get(%{})
+    |> Map.get(:pending_text, "")
+  end
+
+  defp store_stream_pending(state_key, "", _pending_event), do: Process.delete(state_key)
+
+  defp store_stream_pending(state_key, pending_text, pending_event) do
+    Process.put(state_key, %{pending_text: pending_text, pending_event: pending_event})
+  end
+
+  defp flush_stream_pending(state_key, event) do
+    case Process.get(state_key) do
+      %{pending_text: pending_text, pending_event: pending_event} when pending_text != "" ->
+        Process.delete(state_key)
+        {:ok, [pending_event, event]}
 
       _other ->
-        {:ok, payload}
+        Process.delete(state_key)
+        {:ok, event}
+    end
+  end
+
+  defp split_stream_text(text) do
+    length = String.length(text)
+
+    if length <= @stream_tail_graphemes do
+      {"", text}
+    else
+      String.split_at(text, length - @stream_tail_graphemes)
     end
   end
 
@@ -270,28 +361,148 @@ defmodule BeamWeaver.Agent.Middleware.PII do
         {:ok, messages, false}
 
       index ->
-        case Enum.at(messages, index) do
-          %Message{content: content} = message when is_binary(content) and content != "" ->
-            case edit_text(content, middleware) do
-              {:ok, ^content} ->
-                {:ok, messages, false}
-
-              {:ok, edited} ->
-                {:ok, List.replace_at(messages, index, %{message | content: edited}), true}
-
-              {:error, %Error{} = error} ->
-                {:error, error}
-            end
-
-          _message ->
+        with {:ok, message, changed?} <- edit_message(Enum.at(messages, index), middleware) do
+          if changed? do
+            {:ok, List.replace_at(messages, index, message), true}
+          else
             {:ok, messages, false}
+          end
         end
     end
   end
 
+  defp edit_message(%Message{} = message, middleware) do
+    with {:ok, message, content_changed?} <- edit_message_content(message, middleware),
+         {:ok, message, tool_calls_changed?} <- edit_message_tool_calls(message, middleware) do
+      {:ok, message, content_changed? or tool_calls_changed?}
+    end
+  end
+
+  defp edit_message(message, _middleware), do: {:ok, message, false}
+
+  defp edit_message_content(%Message{content: content} = message, middleware)
+       when is_binary(content) and content != "" do
+    case edit_text(content, middleware) do
+      {:ok, ^content} -> {:ok, message, false}
+      {:ok, edited} -> {:ok, %{message | content: edited}, true}
+      {:error, %Error{} = error} -> {:error, error}
+    end
+  end
+
+  defp edit_message_content(%Message{content: content} = message, middleware) when is_list(content) do
+    with {:ok, content, changed?} <- edit_content_tool_calls(content, middleware) do
+      {:ok, %{message | content: content}, changed?}
+    end
+  end
+
+  defp edit_message_content(%Message{} = message, _middleware), do: {:ok, message, false}
+
+  defp edit_message_tool_calls(%Message{tool_calls: calls} = message, middleware)
+       when is_list(calls) and calls != [] do
+    with {:ok, calls, changed?} <- edit_tool_call_list(calls, middleware) do
+      {:ok, %{message | tool_calls: calls}, changed?}
+    end
+  end
+
+  defp edit_message_tool_calls(%Message{} = message, _middleware), do: {:ok, message, false}
+
   defp format_update({:ok, _messages, false}, _original), do: nil
   defp format_update({:ok, messages, true}, _original), do: %{messages: Overwrite.new(messages)}
   defp format_update({:error, %Error{} = error}, _original), do: {:error, error}
+
+  defp edit_content_tool_calls(content, middleware) do
+    Enum.reduce_while(content, {:ok, [], false}, fn block, {:ok, acc, changed?} ->
+      case edit_content_tool_call(block, middleware) do
+        {:ok, edited, block_changed?} -> {:cont, {:ok, [edited | acc], changed? or block_changed?}}
+        {:error, %Error{} = error} -> {:halt, {:error, error}}
+      end
+    end)
+    |> case do
+      {:ok, edited, changed?} -> {:ok, Enum.reverse(edited), changed?}
+      {:error, %Error{} = error} -> {:error, error}
+    end
+  end
+
+  defp edit_content_tool_call(%{} = block, middleware) do
+    if tool_call_block?(block) do
+      edit_tool_call(block, middleware)
+    else
+      {:ok, block, false}
+    end
+  end
+
+  defp edit_content_tool_call(block, _middleware), do: {:ok, block, false}
+
+  defp edit_tool_call_list(calls, middleware) do
+    Enum.reduce_while(calls, {:ok, [], false}, fn call, {:ok, acc, changed?} ->
+      case edit_tool_call(call, middleware) do
+        {:ok, edited, call_changed?} -> {:cont, {:ok, [edited | acc], changed? or call_changed?}}
+        {:error, %Error{} = error} -> {:halt, {:error, error}}
+      end
+    end)
+    |> case do
+      {:ok, edited, changed?} -> {:ok, Enum.reverse(edited), changed?}
+      {:error, %Error{} = error} -> {:error, error}
+    end
+  end
+
+  defp edit_tool_call(%{} = call, middleware) do
+    call
+    |> tool_argument_keys()
+    |> Enum.reduce_while({:ok, call, false}, fn key, {:ok, acc, changed?} ->
+      value = Map.fetch!(acc, key)
+
+      case edit_tool_argument_value(value, middleware) do
+        {:ok, ^value, false} -> {:cont, {:ok, acc, changed?}}
+        {:ok, edited, _arg_changed?} -> {:cont, {:ok, Map.put(acc, key, edited), true}}
+        {:error, %Error{} = error} -> {:halt, {:error, error}}
+      end
+    end)
+  end
+
+  defp edit_tool_call(call, _middleware), do: {:ok, call, false}
+
+  defp tool_argument_keys(call) do
+    [:args, "args", :arguments, "arguments", :input, "input"]
+    |> Enum.filter(&Map.has_key?(call, &1))
+  end
+
+  defp tool_call_block?(block) do
+    map_get(block, :type) in [:tool_call, "tool_call", :tool_use, "tool_use"]
+  end
+
+  defp edit_tool_argument_value(value, middleware) when is_binary(value) do
+    case edit_text(value, middleware) do
+      {:ok, ^value} -> {:ok, value, false}
+      {:ok, edited} -> {:ok, edited, true}
+      {:error, %Error{} = error} -> {:error, error}
+    end
+  end
+
+  defp edit_tool_argument_value(value, middleware) when is_list(value) do
+    Enum.reduce_while(value, {:ok, [], false}, fn item, {:ok, acc, changed?} ->
+      case edit_tool_argument_value(item, middleware) do
+        {:ok, edited, item_changed?} -> {:cont, {:ok, [edited | acc], changed? or item_changed?}}
+        {:error, %Error{} = error} -> {:halt, {:error, error}}
+      end
+    end)
+    |> case do
+      {:ok, edited, changed?} -> {:ok, Enum.reverse(edited), changed?}
+      {:error, %Error{} = error} -> {:error, error}
+    end
+  end
+
+  defp edit_tool_argument_value(%{} = value, middleware) do
+    Enum.reduce_while(value, {:ok, value, false}, fn {key, item}, {:ok, acc, changed?} ->
+      case edit_tool_argument_value(item, middleware) do
+        {:ok, ^item, false} -> {:cont, {:ok, acc, changed?}}
+        {:ok, edited, _item_changed?} -> {:cont, {:ok, Map.put(acc, key, edited), true}}
+        {:error, %Error{} = error} -> {:halt, {:error, error}}
+      end
+    end)
+  end
+
+  defp edit_tool_argument_value(value, _middleware), do: {:ok, value, false}
 
   defp edit_text(text, %__MODULE__{} = middleware) do
     matches = Detector.detect(text, middleware)

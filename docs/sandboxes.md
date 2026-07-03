@@ -184,9 +184,9 @@ BeamWeaver.Filesystem.Executable.execute(
 )
 ```
 
-`BeamWeaver.Sandbox.Docker` truncates large command output according to
-`max_output_bytes`. `BeamWeaver.Filesystem.Sandbox` exposes constants for the
-current adapter limits used by the filesystem bridge:
+`BeamWeaver.Sandbox.Local` and `BeamWeaver.Sandbox.Docker` truncate large
+command output according to `max_output_bytes`. `BeamWeaver.Filesystem.Sandbox`
+exposes constants for the current adapter limits used by the filesystem bridge:
 
 ```elixir
 BeamWeaver.Filesystem.Sandbox.max_binary_bytes()

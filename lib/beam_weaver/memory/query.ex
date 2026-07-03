@@ -125,12 +125,15 @@ defmodule BeamWeaver.Memory.Query do
   def matches_query?(_item, nil), do: true
 
   def matches_query?(item, query) do
-    haystack =
-      %{value: item.value, metadata: item.metadata}
-      |> inspect()
-      |> String.downcase()
+    query = query |> to_string() |> String.downcase()
 
-    String.contains?(haystack, String.downcase(to_string(query)))
+    item
+    |> query_texts()
+    |> Enum.any?(fn text ->
+      text
+      |> String.downcase()
+      |> String.contains?(query)
+    end)
   end
 
   def get_text_at_path(nil, _path), do: []
@@ -425,9 +428,70 @@ defmodule BeamWeaver.Memory.Query do
   defp string_values(value) when is_map(value) and map_size(value) == 0, do: [json_text(value)]
   defp string_values(value) when is_list(value) and value == [], do: [json_text(value)]
   defp string_values(value) when is_map(value) or is_list(value), do: [json_text(value)]
-  defp string_values(value), do: [to_string(value)]
 
-  defp json_text(value), do: value |> sort_json_value() |> BeamWeaver.JSON.encode!()
+  defp string_values(value) do
+    case safe_to_string(value) do
+      {:ok, string} -> [string]
+      :error -> []
+    end
+  end
+
+  defp query_texts(item) do
+    [
+      Map.get(item, :value),
+      Map.get(item, :metadata, %{}) || %{}
+    ]
+    |> Enum.flat_map(&string_values/1)
+  end
+
+  defp json_text(value) do
+    value
+    |> json_search_value()
+    |> sort_json_value()
+    |> BeamWeaver.JSON.encode!()
+  end
+
+  defp json_search_value(%_struct{} = value) do
+    case BeamWeaver.JSON.encode(value) do
+      {:ok, encoded} -> BeamWeaver.JSON.decode!(encoded)
+      {:error, _error} -> value |> Map.from_struct() |> json_search_value()
+    end
+  end
+
+  defp json_search_value(map) when is_map(map) do
+    Map.new(map, fn {key, value} ->
+      {json_key(key), json_search_value(value)}
+    end)
+  end
+
+  defp json_search_value(values) when is_list(values), do: Enum.map(values, &json_search_value/1)
+
+  defp json_search_value(value) when is_binary(value) or is_number(value) or is_boolean(value) or is_nil(value),
+    do: value
+
+  defp json_search_value(value) when is_atom(value), do: Atom.to_string(value)
+  defp json_search_value(value) when is_tuple(value), do: value |> Tuple.to_list() |> json_search_value()
+
+  defp json_search_value(value) do
+    case safe_to_string(value) do
+      {:ok, string} -> string
+      :error -> nil
+    end
+  end
+
+  defp json_key(key) do
+    case safe_to_string(key) do
+      {:ok, string} -> string
+      :error -> ""
+    end
+  end
+
+  defp safe_to_string(value) do
+    {:ok, to_string(value)}
+  rescue
+    Protocol.UndefinedError -> :error
+    ArgumentError -> :error
+  end
 
   defp sort_json_value(map) when is_map(map) do
     map

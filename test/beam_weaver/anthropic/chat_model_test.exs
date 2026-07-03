@@ -179,6 +179,8 @@ defmodule BeamWeaver.Anthropic.ChatModelTest do
     assert response.response_metadata.usage.output_token_details.thinking_tokens == 7
     assert response.response_metadata.usage.service_tier == "standard"
     assert response.response_metadata.usage.inference_geo == "global"
+    assert response.response_metadata.usage.cache_creation_tokens == 5
+    assert response.usage_metadata.input_token_details.cache_creation == 5
     assert response.usage_metadata.output_token_details.thinking_tokens == 7
 
     assert_received {:fake_transport_request, request}

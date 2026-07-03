@@ -299,6 +299,54 @@ defmodule BeamWeaver.Sandbox do
   defp maybe_put(map, key, value), do: Map.put(map, key, value)
 end
 
+defmodule BeamWeaver.Sandbox.OutputBuffer do
+  @moduledoc false
+
+  defstruct chunks: [], bytes: 0, max_bytes: 0, truncated?: false
+
+  def collect(%__MODULE__{max_bytes: max_bytes} = buffer, chunk) when max_bytes <= 0 do
+    %{buffer | truncated?: buffer.truncated? or byte_size(IO.iodata_to_binary(chunk)) > 0}
+  end
+
+  def collect(%__MODULE__{} = buffer, chunk) do
+    chunk = IO.iodata_to_binary(chunk)
+    chunk_size = byte_size(chunk)
+
+    cond do
+      chunk_size == 0 ->
+        buffer
+
+      buffer.bytes >= buffer.max_bytes ->
+        %{buffer | truncated?: true}
+
+      buffer.bytes + chunk_size <= buffer.max_bytes ->
+        %{buffer | chunks: [chunk | buffer.chunks], bytes: buffer.bytes + chunk_size}
+
+      true ->
+        remaining = buffer.max_bytes - buffer.bytes
+        prefix = binary_part(chunk, 0, remaining)
+
+        %{buffer | chunks: [prefix | buffer.chunks], bytes: buffer.max_bytes, truncated?: true}
+    end
+  end
+
+  def finish(%__MODULE__{} = buffer) do
+    {buffer.chunks |> Enum.reverse() |> IO.iodata_to_binary(), buffer.truncated?}
+  end
+end
+
+defimpl Collectable, for: BeamWeaver.Sandbox.OutputBuffer do
+  def into(%BeamWeaver.Sandbox.OutputBuffer{} = buffer) do
+    collector = fn
+      buffer, {:cont, chunk} -> BeamWeaver.Sandbox.OutputBuffer.collect(buffer, chunk)
+      buffer, :done -> BeamWeaver.Sandbox.OutputBuffer.finish(buffer)
+      _buffer, :halt -> :ok
+    end
+
+    {buffer, collector}
+  end
+end
+
 defmodule BeamWeaver.Sandbox.Local do
   @moduledoc """
   Local filesystem sandbox adapter.
@@ -306,9 +354,12 @@ defmodule BeamWeaver.Sandbox.Local do
 
   use BeamWeaver.Sandbox
 
+  alias BeamWeaver.Filesystem.Path, as: FilesystemPath
   alias BeamWeaver.Sandbox
 
-  defstruct root: nil, max_binary_preview: 512_000
+  @default_max_output_bytes 512_000
+
+  defstruct root: nil, max_binary_preview: 512_000, max_output_bytes: @default_max_output_bytes
 
   def new(opts \\ []) do
     root =
@@ -317,7 +368,12 @@ defmodule BeamWeaver.Sandbox.Local do
       |> Path.expand()
 
     File.mkdir_p!(root)
-    %__MODULE__{root: root, max_binary_preview: Keyword.get(opts, :max_binary_preview, 512_000)}
+
+    %__MODULE__{
+      root: root,
+      max_binary_preview: Keyword.get(opts, :max_binary_preview, 512_000),
+      max_output_bytes: Keyword.get(opts, :max_output_bytes, @default_max_output_bytes)
+    }
   end
 
   @impl true
@@ -349,15 +405,19 @@ defmodule BeamWeaver.Sandbox.Local do
       {:ok, timeout} ->
         task =
           Task.async(fn ->
-            System.cmd("sh", ["-c", command],
-              cd: sandbox.root,
-              stderr_to_stdout: true
-            )
+            {{output, truncated?}, exit_code} =
+              System.cmd("sh", ["-c", command],
+                cd: sandbox.root,
+                stderr_to_stdout: true,
+                into: %BeamWeaver.Sandbox.OutputBuffer{max_bytes: sandbox.max_output_bytes}
+              )
+
+            {output, exit_code, truncated?}
           end)
 
         case Task.yield(task, timeout) || Task.shutdown(task, :brutal_kill) do
-          {:ok, {output, exit_code}} ->
-            %Sandbox.ExecuteResult{exit_code: exit_code, output: output, truncated: false}
+          {:ok, {output, exit_code, truncated?}} ->
+            %Sandbox.ExecuteResult{exit_code: exit_code, output: output, truncated: truncated?}
 
           nil ->
             %Sandbox.ExecuteResult{exit_code: 124, output: "", error: "timeout", truncated: false}
@@ -413,9 +473,9 @@ defmodule BeamWeaver.Sandbox.Local do
       entries =
         names
         |> Enum.sort()
-        |> Enum.map(fn name ->
-          full = Path.join(resolved, name)
-
+        |> Enum.map(fn name -> {name, Path.join(resolved, name)} end)
+        |> Enum.filter(fn {_name, full} -> safe_resolved_path?(sandbox, full) end)
+        |> Enum.map(fn {name, full} ->
           entry_path =
             if host_path?(sandbox, path),
               do: Path.join(path, name),
@@ -445,6 +505,7 @@ defmodule BeamWeaver.Sandbox.Local do
           resolved
           |> Path.join(pattern)
           |> Path.wildcard(match_dot: true)
+          |> Enum.filter(&safe_resolved_path?(sandbox, &1))
           |> Enum.sort()
           |> Enum.map(fn path ->
             %{"path" => glob_path(sandbox, base, path, resolved), "is_dir" => File.dir?(path)}
@@ -471,6 +532,7 @@ defmodule BeamWeaver.Sandbox.Local do
           resolved
           |> Path.join(include)
           |> Path.wildcard(match_dot: true)
+          |> Enum.filter(&safe_resolved_path?(sandbox, &1))
           |> Enum.reject(&File.dir?/1)
           |> Enum.flat_map(&grep_file(&1, pattern, resolved, base, host_path?(sandbox, base)))
 
@@ -512,29 +574,36 @@ defmodule BeamWeaver.Sandbox.Local do
   end
 
   defp resolve(%__MODULE__{root: root}, path) when is_binary(path) do
-    cond do
-      Path.type(path) != :absolute ->
-        {:error, "invalid_path"}
+    with {:ok, virtual_path, candidate} <- sandbox_path(root, path),
+         {:ok, _resolved, _virtual} <- FilesystemPath.virtual_to_real(root, virtual_path) do
+      {:ok, candidate}
+    end
+  end
 
-      String.contains?(path, ["\0", "~"]) ->
-        {:error, "invalid_path"}
+  defp resolve(_sandbox, _path), do: {:error, "invalid_path"}
 
-      Enum.member?(Path.split(path), "..") ->
-        {:error, "invalid_path"}
+  defp safe_resolved_path?(%__MODULE__{root: root}, path) do
+    with {:ok, virtual_path, _candidate} <- sandbox_path(root, path),
+         {:ok, _resolved, _virtual} <- FilesystemPath.virtual_to_real(root, virtual_path) do
+      true
+    else
+      _error -> false
+    end
+  end
 
-      true ->
-        expanded_input = Path.expand(path)
+  defp sandbox_path(root, path) when is_binary(path) do
+    with {:ok, clean_path} <- FilesystemPath.clean_path(path) do
+      root = Path.expand(root)
+      expanded = Path.expand(clean_path)
 
-        expanded =
-          if expanded_input == root or String.starts_with?(expanded_input, root <> "/") do
-            expanded_input
-          else
-            path |> String.trim_leading("/") |> then(&Path.expand(Path.join(root, &1)))
-          end
+      if expanded == root or String.starts_with?(expanded, root <> "/") do
+        relative = Path.relative_to(expanded, root)
 
-        if expanded == root or String.starts_with?(expanded, root <> "/"),
-          do: {:ok, expanded},
-          else: {:error, "invalid_path"}
+        {:ok, if(relative == ".", do: "/", else: "/" <> relative), expanded}
+      else
+        relative = String.trim_leading(clean_path, "/")
+        {:ok, clean_path, Path.expand(Path.join(root, relative))}
+      end
     end
   end
 

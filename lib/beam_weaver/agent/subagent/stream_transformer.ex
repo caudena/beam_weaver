@@ -350,10 +350,11 @@ defmodule BeamWeaver.Agent.Subagent.StreamTransformer do
     case Map.fetch(transformer.handles, path) do
       {:ok, handle} ->
         new_handle = fun.(handle)
+        handles = replace_handle_map(transformer.handles, path, new_handle)
 
         %{
           transformer
-          | handles: Map.put(transformer.handles, path, new_handle),
+          | handles: handles,
             log: replace_handle(transformer.log, path, new_handle)
         }
 
@@ -375,11 +376,25 @@ defmodule BeamWeaver.Agent.Subagent.StreamTransformer do
     end)
   end
 
+  defp replace_handle_map(handles, path, new_handle) do
+    Map.new(handles, fn
+      {^path, _handle} -> {path, new_handle}
+      {handle_path, handle} -> {handle_path, replace_handle_in_parent(handle, path, new_handle)}
+    end)
+  end
+
+  defp replace_handle_in_parent(%{subagents: subagents} = handle, path, new_handle) do
+    %{handle | subagents: replace_handle(subagents, path, new_handle)}
+  end
+
+  defp replace_handle_in_parent(handle, _path, _new_handle), do: handle
+
   defp matching_paths(%__MODULE__{} = transformer, namespace) do
     transformer.handles
     |> Map.keys()
     |> Enum.filter(&prefix?(&1, namespace))
-    |> Enum.sort_by(&length/1)
+    |> Enum.sort_by(&length/1, :desc)
+    |> Enum.take(1)
   end
 
   defp parent_scope?(%__MODULE__{scope: scope, handles: handles}, namespace) do

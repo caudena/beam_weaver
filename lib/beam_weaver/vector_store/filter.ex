@@ -217,7 +217,8 @@ defmodule BeamWeaver.VectorStore.Filter do
   defp condition_sql(path, condition, index), do: equality_sql(path, condition, index)
 
   defp equality_sql(path, value, index) do
-    {:ok, {"#{json_path(path)} = $#{index}", [to_string(value)], index + 1}}
+    {path_sql, path_params, value_index} = json_path(path, index)
+    {:ok, {"#{path_sql} = $#{value_index}", path_params ++ [to_string(value)], value_index + 1}}
   end
 
   defp operator_sql(path, condition, index) do
@@ -246,17 +247,22 @@ defmodule BeamWeaver.VectorStore.Filter do
 
   defp single_operator_sql(path, operator, expected, index)
        when operator in [:ne, "ne", "$ne"] do
-    {:ok, {"#{json_path(path)} != $#{index}", [to_string(expected)], index + 1}}
+    {path_sql, path_params, value_index} = json_path(path, index)
+    {:ok, {"#{path_sql} != $#{value_index}", path_params ++ [to_string(expected)], value_index + 1}}
   end
 
   defp single_operator_sql(path, operator, expected, index)
        when operator in [:in, "in", "$in"] and is_list(expected) do
-    {:ok, {"#{json_path(path)} = ANY($#{index})", [Enum.map(expected, &to_string/1)], index + 1}}
+    {path_sql, path_params, value_index} = json_path(path, index)
+    {:ok, {"#{path_sql} = ANY($#{value_index})", path_params ++ [Enum.map(expected, &to_string/1)], value_index + 1}}
   end
 
   defp single_operator_sql(path, operator, expected, index)
        when operator in [:nin, "nin", "$nin"] and is_list(expected) do
-    {:ok, {"NOT (#{json_path(path)} = ANY($#{index}))", [Enum.map(expected, &to_string/1)], index + 1}}
+    {path_sql, path_params, value_index} = json_path(path, index)
+
+    {:ok,
+     {"NOT (#{path_sql} = ANY($#{value_index}))", path_params ++ [Enum.map(expected, &to_string/1)], value_index + 1}}
   end
 
   defp single_operator_sql(path, operator, expected, index)
@@ -277,12 +283,14 @@ defmodule BeamWeaver.VectorStore.Filter do
 
   defp single_operator_sql(path, operator, expected, index)
        when operator in [:contain, "contain", "$contain"] do
-    {:ok, {"#{json_path(path)} ILIKE $#{index}", ["%#{to_string(expected)}%"], index + 1}}
+    {path_sql, path_params, value_index} = json_path(path, index)
+    {:ok, {"#{path_sql} ILIKE $#{value_index}", path_params ++ ["%#{to_string(expected)}%"], value_index + 1}}
   end
 
   defp single_operator_sql(path, operator, expected, index)
        when operator in [:like, "like", "$like"] do
-    {:ok, {"#{json_path(path)} ILIKE $#{index}", [to_string(expected)], index + 1}}
+    {path_sql, path_params, value_index} = json_path(path, index)
+    {:ok, {"#{path_sql} ILIKE $#{value_index}", path_params ++ [to_string(expected)], value_index + 1}}
   end
 
   defp single_operator_sql(_path, operator, _expected, _index),
@@ -293,7 +301,8 @@ defmodule BeamWeaver.VectorStore.Filter do
        })}
 
   defp numeric_sql(path, op, value, index) do
-    {:ok, {"(#{json_path(path)})::numeric #{op} $#{index}", [value], index + 1}}
+    {path_sql, path_params, value_index} = json_path(path, index)
+    {:ok, {"(#{path_sql})::numeric #{op} $#{value_index}", path_params ++ [value], value_index + 1}}
   end
 
   defp operator_map?(map), do: Enum.any?(Map.keys(map), &(&1 in @operators))
@@ -321,13 +330,13 @@ defmodule BeamWeaver.VectorStore.Filter do
     end)
   end
 
-  defp json_path(path) do
+  defp json_path(path, index) do
     segments =
       path
       |> path_segments()
-      |> Enum.map_join(",", &to_string/1)
+      |> Enum.map(&to_string/1)
 
-    "metadata #>> '{#{segments}}'"
+    {"metadata #>> $#{index}::text[]", [segments], index + 1}
   end
 
   defp path_segments(path) when is_list(path), do: path

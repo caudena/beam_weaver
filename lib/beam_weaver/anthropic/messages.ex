@@ -729,17 +729,17 @@ defmodule BeamWeaver.Anthropic.Messages do
     ephemeral_5m = cache_creation["ephemeral_5m_input_tokens"] || 0
     ephemeral_1h = cache_creation["ephemeral_1h_input_tokens"] || 0
     specific_cache_creation = ephemeral_5m + ephemeral_1h
+    cache_creation_tokens = cache_creation_tokens(cache_creation_total, specific_cache_creation)
 
     input_tokens =
-      (usage["input_tokens"] || 0) + cache_read +
-        if(specific_cache_creation > 0, do: specific_cache_creation, else: cache_creation_total)
+      (usage["input_tokens"] || 0) + cache_read + cache_creation_tokens
 
     output_tokens = usage["output_tokens"] || 0
 
     input_details =
       %{
         cache_read: if(cache_read > 0, do: cache_read),
-        cache_creation: if(specific_cache_creation > 0, do: 0, else: positive(cache_creation_total)),
+        cache_creation: positive(cache_creation_tokens),
         ephemeral_5m_input_tokens: positive(ephemeral_5m),
         ephemeral_1h_input_tokens: positive(ephemeral_1h)
       }
@@ -756,6 +756,13 @@ defmodule BeamWeaver.Anthropic.Messages do
     }
     |> BeamWeaver.MapShape.reject_nil_or_empty()
   end
+
+  defp cache_creation_tokens(_cache_creation_total, specific_cache_creation)
+       when is_number(specific_cache_creation) and specific_cache_creation > 0,
+       do: specific_cache_creation
+
+  defp cache_creation_tokens(cache_creation_total, _specific_cache_creation),
+    do: cache_creation_total
 
   defp positive(value) when is_number(value) and value > 0, do: value
   defp positive(_value), do: nil

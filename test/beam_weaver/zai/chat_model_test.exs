@@ -269,6 +269,23 @@ defmodule BeamWeaver.ZAI.ChatModelTest do
     assert [%ToolCall{name: "get_weather", args: %{"city" => "Paris"}}] = message.tool_calls
   end
 
+  test "stream body keeps deltas from chunks without top-level ids" do
+    body = """
+    data: {"id":"chatcmpl_zai_no_id","model":"glm-5.2","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}
+
+    data: {"choices":[{"index":0,"delta":{"content":"po"},"finish_reason":null}]}
+
+    data: {"choices":[{"index":0,"delta":{"content":"ng"},"finish_reason":"stop"}],"usage":{"prompt_tokens":2,"completion_tokens":3,"total_tokens":5}}
+
+    data: [DONE]
+    """
+
+    assert {:ok, message} = Streaming.stream_body_to_message(body)
+    assert message.id == "chatcmpl_zai_no_id"
+    assert Message.text(message) == "pong"
+    assert message.usage_metadata.total_tokens == 5
+  end
+
   test "invokes Z.ai Chat Completions through fake transport and normalizes errors" do
     model =
       ChatModel.new(

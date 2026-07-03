@@ -103,11 +103,9 @@ defmodule BeamWeaver.Core.Tool.Invocation do
     schema = api.input_schema.(tool)
 
     with {:ok, parsed_input} <- parse_input(tool, call.input, api),
-         :ok <- Schema.validate(schema, parsed_input),
-         input <-
-           parsed_input
-           |> Schema.apply_defaults(schema)
-           |> inject_call_id(tool, call, api),
+         defaulted_input <- Schema.apply_defaults(parsed_input, schema),
+         :ok <- Schema.validate(schema, defaulted_input),
+         input <- inject_call_id(defaulted_input, tool, call, api),
          {:ok, result} <- api.do_invoke.(tool, input, opts) do
       {:ok, format_invocation_result(result, tool, call, api)}
     else

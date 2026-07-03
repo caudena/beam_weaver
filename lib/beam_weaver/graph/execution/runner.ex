@@ -30,7 +30,7 @@ defmodule BeamWeaver.Graph.Execution.Runner do
           {:ok, trace_run} =
             Tracing.start_run(TraceOptions.name(options.trace, compiled.name),
               kind: :graph,
-              inputs: input,
+              inputs: nil,
               tags: [:graph],
               metadata: trace_metadata(options),
               context_metadata: trace_metadata(options)
@@ -61,7 +61,7 @@ defmodule BeamWeaver.Graph.Execution.Runner do
     output = ChannelState.public_state(compiled.graph, state)
 
     Tracing.finish_run(trace_run,
-      outputs: output,
+      outputs: nil,
       metadata: %{checkpoint_config: final_config}
     )
 
@@ -74,13 +74,13 @@ defmodule BeamWeaver.Graph.Execution.Runner do
   end
 
   defp finish_result({:interrupted, interrupt, events}, trace_run, _compiled) do
-    Tracing.finish_run(trace_run, outputs: interrupt)
+    Tracing.finish_run(trace_run, outputs: nil)
     Telemetry.execute(:interrupt, %{system_time: System.system_time()}, interrupt)
     {:interrupted, interrupt, Enum.reverse(events)}
   end
 
   defp finish_result({:parent_command, command, events}, trace_run, _compiled) do
-    Tracing.finish_run(trace_run, outputs: command)
+    Tracing.finish_run(trace_run, outputs: nil)
 
     Telemetry.execute(:parent_command, %{system_time: System.system_time()}, %{
       command: command

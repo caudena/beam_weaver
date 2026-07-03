@@ -50,8 +50,11 @@ defmodule BeamWeaver.Cache.ETS do
       expires_at: expires_at
     }
 
-    evict_oldest_if_needed(cache, {namespace, key})
-    :ets.insert(cache.table, {{namespace, key}, entry})
+    with_table_lock(cache, fn ->
+      :ets.insert(cache.table, {{namespace, key}, entry})
+      prune_to_limit(cache, {namespace, key})
+    end)
+
     :ok
   end
 
@@ -78,16 +81,23 @@ defmodule BeamWeaver.Cache.ETS do
   defp expired?(%{expires_at: nil}), do: false
   defp expired?(%{expires_at: expires_at}), do: System.system_time(:millisecond) >= expires_at
 
-  defp evict_oldest_if_needed(%__MODULE__{max_entries: nil}, _new_key), do: :ok
+  defp with_table_lock(%__MODULE__{} = cache, fun) do
+    :global.trans({__MODULE__, cache.table}, fun, [node()], :infinity)
+  end
 
-  defp evict_oldest_if_needed(%__MODULE__{} = cache, new_key) do
+  defp prune_to_limit(%__MODULE__{max_entries: nil}, _new_key), do: :ok
+
+  defp prune_to_limit(%__MODULE__{} = cache, new_key) do
     entries = :ets.tab2list(cache.table)
 
-    if length(entries) >= cache.max_entries and not Enum.any?(entries, &match?({^new_key, _}, &1)) do
+    if length(entries) > cache.max_entries do
       entries
+      |> Enum.reject(&match?({^new_key, _}, &1))
       |> Enum.min_by(fn {_key, entry} -> Map.get(entry, :inserted_at, 0) end)
       |> elem(0)
       |> then(&:ets.delete(cache.table, &1))
+
+      prune_to_limit(cache, new_key)
     end
 
     :ok

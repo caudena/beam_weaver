@@ -417,6 +417,20 @@ defmodule BeamWeaver.Google.ChatModelTest do
     assert inspect(content) =~ "hello"
   end
 
+  test "merging streamed responses coalesces many adjacent text parts in order" do
+    body =
+      1..1_000
+      |> Enum.map_join("\n\n", fn _index ->
+        ~s(data: {"candidates":[{"content":{"role":"model","parts":[{"text":"x"}]}}]})
+      end)
+
+    response = BeamWeaver.Google.Streaming.response_from_sse_body(body)
+
+    assert [%{"text" => text}] = get_in(response, ["candidates", Access.at(0), "content", "parts"])
+    assert byte_size(text) == 1_000
+    assert text == String.duplicate("x", 1_000)
+  end
+
   test "stream_response reconstructs Gemini function calls from SSE parts" do
     body = """
     data: {"responseId":"google-stream-1","candidates":[{"index":0,"content":{"role":"model","parts":[{"text":"plan ","thought":true},{"functionCall":{"id":"call-1","name":"lookup","args":{"q":"beam"}},"thoughtSignature":"sig-call"}]},"finishReason":"STOP","finishMessage":"Model generated function call(s)."}],"usageMetadata":{"promptTokenCount":3,"candidatesTokenCount":4,"thoughtsTokenCount":2,"totalTokenCount":9}}

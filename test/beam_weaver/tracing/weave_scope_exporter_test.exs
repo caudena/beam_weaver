@@ -1,6 +1,8 @@
 defmodule BeamWeaver.Tracing.WeaveScopeExporterTest do
   use ExUnit.Case, async: false
 
+  import ExUnit.CaptureLog
+
   alias BeamWeaver.Tracing.Exporters.WeaveScope
   alias BeamWeaver.Tracing.Exporters.WeaveScope.Queue
   alias BeamWeaver.Tracing.Run
@@ -238,6 +240,60 @@ defmodule BeamWeaver.Tracing.WeaveScopeExporterTest do
              )
   end
 
+  test "disables Req retries for WeaveScope export because the queue owns retries" do
+    {:ok, capture} =
+      Agent.start_link(fn -> [] end, name: BeamWeaver.Tracing.WeaveScopeRequestOptionsTransportAgent)
+
+    run =
+      Run.new("export_options_agent",
+        id: "request-options-run",
+        trace_id: "trace-request-options",
+        kind: :graph,
+        started_at: ~U[2026-06-04 10:00:00Z]
+      )
+
+    assert :ok =
+             WeaveScope.export_batch(
+               [{:started, run, []}],
+               api_key: "ws_test",
+               endpoint: "http://weavescope.local",
+               transport: BeamWeaver.Tracing.WeaveScopeRequestOptionsTransport
+             )
+
+    assert [{url, opts}] = Agent.get(capture, & &1)
+    assert url == "http://weavescope.local/api/v1/observations/batch"
+    assert opts[:retry] == false
+    assert [%{"operation" => "start"}] = opts[:json]["events"]
+
+    Agent.stop(capture)
+  end
+
+  test "logs WeaveScope export failures with endpoint and event context" do
+    run =
+      Run.new("failing_export_agent",
+        id: "failing-export-run",
+        trace_id: "trace-failing-export",
+        kind: :graph,
+        started_at: ~U[2026-06-04 10:00:00Z]
+      )
+
+    log =
+      capture_log([level: :debug], fn ->
+        assert {:error, :closed} =
+                 WeaveScope.export_batch(
+                   [{:started, run, []}],
+                   api_key: "ws_test",
+                   endpoint: "http://weavescope.local",
+                   transport: BeamWeaver.Tracing.WeaveScopeImmediateFailTransport
+                 )
+      end)
+
+    assert log =~ "BeamWeaver WeaveScope export failed"
+    assert log =~ "endpoint=\"http://weavescope.local/api/v1/observations/batch\""
+    assert log =~ "event_count=1"
+    assert log =~ "error=:closed"
+  end
+
   test "queue dead-letters WeaveScope rejections without retrying them" do
     name = :"weavescope_queue_#{System.unique_integer([:positive])}"
 
@@ -260,8 +316,10 @@ defmodule BeamWeaver.Tracing.WeaveScopeExporterTest do
         started_at: ~U[2026-06-04 10:00:00Z]
       )
 
-    Queue.enqueue(pid, :started, run)
-    assert Queue.flush(pid) == :ok
+    capture_log([level: :debug], fn ->
+      Queue.enqueue(pid, :started, run)
+      assert Queue.flush(pid) == :ok
+    end)
 
     assert [%{reason: :rejected, rejection: %{"code" => "invalid_kind", "id" => "bad-run"}}] =
              Queue.dead_letters(pid)
@@ -346,8 +404,10 @@ defmodule BeamWeaver.Tracing.WeaveScopeExporterTest do
         max_attempts: 1
       )
 
-    Queue.enqueue(pid, :started, %{run | id: "dead-run", trace_id: "trace-dead"})
-    assert Queue.flush(pid) == :ok
+    capture_log([level: :debug], fn ->
+      Queue.enqueue(pid, :started, %{run | id: "dead-run", trace_id: "trace-dead"})
+      assert Queue.flush(pid) == :ok
+    end)
 
     assert_receive {:queue_event, [:beam_weaver, :weave_scope, :queue, :dead_letter], %{count: 1},
                     %{
@@ -406,6 +466,17 @@ defmodule BeamWeaver.Tracing.WeaveScopeExporterTest do
   def handle_queue_telemetry(event, measurements, metadata, test_pid) do
     send(test_pid, {:queue_event, event, measurements, metadata})
   end
+end
+
+defmodule BeamWeaver.Tracing.WeaveScopeRequestOptionsTransport do
+  def post(url, opts) do
+    Agent.update(BeamWeaver.Tracing.WeaveScopeRequestOptionsTransportAgent, &[{url, opts} | &1])
+    {:ok, %{status: 202, body: %{"results" => []}}}
+  end
+end
+
+defmodule BeamWeaver.Tracing.WeaveScopeImmediateFailTransport do
+  def post(_url, _opts), do: {:error, :closed}
 end
 
 defmodule BeamWeaver.Tracing.WeaveScopeRejectTransport do

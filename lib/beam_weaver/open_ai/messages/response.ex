@@ -39,10 +39,13 @@ defmodule BeamWeaver.OpenAI.Messages.Response do
   end
 
   defp usage_metadata(%{"usage" => usage}) when is_map(usage) do
+    input_tokens = usage["input_tokens"] || usage["prompt_tokens"]
+    output_tokens = usage["output_tokens"] || usage["completion_tokens"]
+
     %{
-      input_tokens: usage["input_tokens"] || usage["prompt_tokens"] || 0,
-      output_tokens: usage["output_tokens"] || usage["completion_tokens"] || 0,
-      total_tokens: usage["total_tokens"] || 0,
+      input_tokens: input_tokens || 0,
+      output_tokens: output_tokens || 0,
+      total_tokens: total_tokens(usage["total_tokens"], input_tokens, output_tokens),
       input_token_details: input_token_details(usage),
       output_token_details: output_token_details(usage)
     }
@@ -50,6 +53,10 @@ defmodule BeamWeaver.OpenAI.Messages.Response do
   end
 
   defp usage_metadata(_response), do: nil
+
+  defp total_tokens(total, _input, _output) when is_integer(total), do: total
+  defp total_tokens(_total, input, output) when is_integer(input) and is_integer(output), do: input + output
+  defp total_tokens(_total, _input, _output), do: nil
 
   defp input_token_details(usage) when is_map(usage) do
     case usage["input_tokens_details"] || usage["prompt_tokens_details"] do

@@ -88,13 +88,16 @@ defmodule BeamWeaver.ZAI.Streaming do
 
   defp message_chunks(events) when is_list(events) do
     events
-    |> Enum.reduce(%{chunks: []}, &apply_message_chunk_event/2)
+    |> Enum.reduce(%{chunks: [], id: nil}, &apply_message_chunk_event/2)
     |> Map.fetch!(:chunks)
     |> Enum.reverse()
   end
 
-  defp apply_message_chunk_event(%{"data" => %{"id" => id, "choices" => choices}}, state)
+  defp apply_message_chunk_event(%{"data" => %{"choices" => choices} = data}, state)
        when is_list(choices) do
+    id = data["id"] || state.id
+    state = %{state | id: id}
+
     Enum.reduce(choices, state, fn choice, acc ->
       delta = choice["delta"] || %{}
 

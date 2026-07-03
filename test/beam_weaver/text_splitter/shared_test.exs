@@ -19,4 +19,14 @@ defmodule BeamWeaver.TextSplitter.SharedTest do
     assert Enum.map(docs, &String.slice(text, &1.metadata.start_index, String.length(&1.content))) ==
              chunks
   end
+
+  test "chunks_to_documents advances start_index through repeated overlapping chunks" do
+    text = "foo foo foo"
+    document = Document.new!(text)
+    chunks = ["foo foo", "foo foo"]
+
+    docs = Shared.chunks_to_documents(chunks, document, true)
+
+    assert Enum.map(docs, & &1.metadata.start_index) == [0, 4]
+  end
 end

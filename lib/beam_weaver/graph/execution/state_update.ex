@@ -7,8 +7,10 @@ defmodule BeamWeaver.Graph.Execution.StateUpdate do
   alias BeamWeaver.Graph.Execution.CheckpointIO
   alias BeamWeaver.Graph.Execution.Replay
   alias BeamWeaver.Graph.Execution.Runner
+  alias BeamWeaver.Graph.Execution.Scheduler
   alias BeamWeaver.Graph.Execution.Snapshot
   alias BeamWeaver.Graph.Execution.SubgraphRouter
+  alias BeamWeaver.Graph.Send
 
   @spec get_state(map(), map()) :: {:ok, map()} | :error | {:error, Error.t()}
   def get_state(%{checkpointer: nil}, _config), do: :error
@@ -102,65 +104,111 @@ defmodule BeamWeaver.Graph.Execution.StateUpdate do
          :ok <- validate_update(compiled.graph, values),
          {:ok, as_node} <- update_as_node(compiled.graph, snapshot, opts) do
       with {:ok, updated} <- ChannelState.merge_update_result(current, values, compiled.graph) do
-        updated_channels = Execution.updated_channels(values)
+        with {:ok, scheduled, next_names, next_tasks, updated_channels, step_update} <-
+               schedule_after_update(compiled, updated, values, as_node, snapshot) do
+          channel_versions =
+            Execution.next_channel_versions(
+              compiled.checkpointer,
+              current_versions,
+              updated_channels,
+              compiled.graph
+            )
 
-        channel_versions =
-          Execution.next_channel_versions(
-            compiled.checkpointer,
-            current_versions,
-            updated_channels,
-            compiled.graph
-          )
+          case CheckpointIO.write_checkpoint(compiled, current_config, scheduled, %{
+                 source: "update",
+                 step: Keyword.get(opts, :step, 0),
+                 as_node: as_node,
+                 next: next_names,
+                 next_tasks: next_tasks,
+                 tasks: [],
+                 interrupts: Map.get(snapshot || %{}, :interrupts, []),
+                 channel_versions: channel_versions,
+                 versions_seen: versions_seen,
+                 updated_channels: updated_channels,
+                 step_update: step_update
+               }) do
+            {:ok, updated_config} ->
+              with :ok <- copy_pending_writes(compiled, updated_config, snapshot) do
+                maybe_resume_after_update(compiled, updated_config, opts)
+              end
 
-        {next_names, next_tasks} =
-          if pending_interrupt?(snapshot) do
-            {Map.get(snapshot, :next, []), Map.get(snapshot, :next_tasks, [])}
-          else
-            next = next_after_update(compiled.graph, as_node)
-            {Replay.ready_names(next), Replay.checkpoint_next_records(next, compiled.graph)}
+            {:error, %Error{}} = error ->
+              error
           end
-
-        case CheckpointIO.write_checkpoint(compiled, current_config, updated, %{
-               source: "update",
-               step: Keyword.get(opts, :step, 0),
-               as_node: as_node,
-               next: next_names,
-               next_tasks: next_tasks,
-               tasks: [],
-               interrupts: Map.get(snapshot || %{}, :interrupts, []),
-               channel_versions: channel_versions,
-               versions_seen: versions_seen,
-               updated_channels: updated_channels,
-               step_update: values
-             }) do
-          {:ok, updated_config} ->
-            with :ok <- copy_pending_writes(compiled, updated_config, snapshot) do
-              maybe_resume_after_update(compiled, updated_config, opts)
-            end
-
-          {:error, %Error{}} = error ->
-            error
         end
       end
     end
   end
 
-  defp next_after_update(_graph, nil), do: []
-
-  defp next_after_update(graph, as_node) do
-    node = to_string(as_node)
-
-    cond do
-      Map.has_key?(graph.edges, node) ->
-        Map.get(graph.edges, node, [])
-
-      MapSet.member?(graph.finish_points, node) ->
-        []
-
-      true ->
-        []
+  defp schedule_after_update(compiled, updated, values, as_node, snapshot) do
+    if pending_interrupt?(snapshot) do
+      {:ok, updated, Map.get(snapshot, :next, []), Map.get(snapshot, :next_tasks, []),
+       Execution.updated_channels(values), values}
+    else
+      schedule_routed_after_update(compiled, updated, values, as_node)
     end
   end
+
+  defp schedule_routed_after_update(compiled, updated, values, as_node) do
+    completed = if is_nil(as_node), do: [], else: [to_string(as_node)]
+
+    with {:ok, routing_state} <- routing_state_for_update(compiled, updated, as_node, values),
+         schedule <-
+           Scheduler.prepare_next_tasks(
+             compiled.plan || compiled.graph,
+             completed,
+             routing_state,
+             [],
+             [],
+             &route_condition/2
+           ),
+         {:ok, schedule_step_update, scheduled} <-
+           ChannelState.merge_step_updates(updated, schedule.updates, compiled.graph) do
+      step_update = Map.merge(values, hide_ephemeral_internal_update(schedule_step_update))
+
+      updated_channels =
+        (Execution.updated_channels(step_update) ++ schedule.channels)
+        |> Execution.normalize_channels()
+        |> Enum.reject(&ephemeral_internal_channel?/1)
+
+      {:ok, scheduled, Replay.ready_names(schedule.ready),
+       Replay.checkpoint_next_records(schedule.ready, compiled.graph), updated_channels, step_update}
+    end
+  end
+
+  defp routing_state_for_update(_compiled, updated, nil, _values), do: {:ok, updated}
+
+  defp routing_state_for_update(compiled, updated, as_node, values) do
+    ChannelState.merge_update_result(
+      updated,
+      %{__node_outputs__: %{to_string(as_node) => values}},
+      compiled.graph
+    )
+  end
+
+  defp route_condition(spec, state) do
+    result =
+      case :erlang.fun_info(spec.router, :arity) do
+        {:arity, 1} -> spec.router.(state)
+        {:arity, 2} -> spec.router.(state, spec.path_map)
+      end
+
+    result
+    |> List.wrap()
+    |> Enum.map(fn
+      %Send{} = send -> send
+      route -> Map.get(spec.path_map, route, to_string(route))
+    end)
+    |> Enum.reject(&(&1 == "__end__"))
+  end
+
+  defp hide_ephemeral_internal_update(update) do
+    update
+    |> Map.delete(:__node_outputs__)
+    |> Map.delete("__node_outputs__")
+  end
+
+  defp ephemeral_internal_channel?(channel), do: to_string(channel) == "__node_outputs__"
 
   defp update_as_node(graph, snapshot, opts) do
     if Keyword.has_key?(opts, :as_node) do
@@ -169,7 +217,7 @@ defmodule BeamWeaver.Graph.Execution.StateUpdate do
       candidates =
         snapshot
         |> last_finished_task_nodes()
-        |> Enum.filter(&Map.has_key?(graph.edges, &1))
+        |> Enum.filter(&routes_after_update?(graph, &1))
         |> Enum.uniq()
 
       case candidates do
@@ -193,6 +241,11 @@ defmodule BeamWeaver.Graph.Execution.StateUpdate do
     |> Enum.filter(&(Map.get(&1, :kind) == :finish or Map.get(&1, "kind") == "finish"))
     |> Enum.map(&(Map.get(&1, :node) || Map.get(&1, "node")))
     |> Enum.reject(&is_nil/1)
+  end
+
+  defp routes_after_update?(graph, node) do
+    Map.has_key?(graph.edges, node) or Map.has_key?(graph.conditional_edges, node) or
+      Map.has_key?(graph.guarded_edges, node)
   end
 
   defp validate_update(graph, values) do

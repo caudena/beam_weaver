@@ -31,13 +31,14 @@ defmodule BeamWeaver.ZAI.Messages do
 
   def chat_response_to_message(%{"choices" => [choice | _rest]} = response) do
     message = choice["message"] || %{}
-    metadata = metadata(response, choice)
+    usage = usage_metadata(response)
+    metadata = metadata(response, choice, usage)
 
     Message.new(:assistant, response_content(message),
       id: response["id"],
       metadata: metadata,
       response_metadata: metadata,
-      usage_metadata: usage_metadata(response),
+      usage_metadata: usage,
       status: choice["finish_reason"],
       tool_calls: tool_calls(message)
     )
@@ -53,11 +54,14 @@ defmodule BeamWeaver.ZAI.Messages do
 
   @spec metadata(map(), map()) :: map()
   def metadata(response, choice) do
+    metadata(response, choice, usage_metadata(response))
+  end
+
+  defp metadata(response, choice, usage) do
     message = choice["message"] || %{}
     header_metadata = response["_beamweaver_response_header_metadata"] || %{}
     decoded_headers = header_metadata[:headers] || %{}
     x_log_id = decoded_headers[:x_log_id]
-    usage = usage_metadata(response)
 
     %{
       id: response["id"],

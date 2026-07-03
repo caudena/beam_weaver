@@ -8,6 +8,8 @@ defmodule BeamWeaver.Tracing.Exporters.WeaveScope do
 
   @behaviour BeamWeaver.Tracing.Exporter
 
+  require Logger
+
   alias BeamWeaver.Config
   alias BeamWeaver.Tracing.Run
   alias BeamWeaver.Tracing.ValueEncoder
@@ -43,7 +45,8 @@ defmodule BeamWeaver.Tracing.Exporters.WeaveScope do
              url,
              json: payload,
              headers: headers(api_key),
-             finch_private: finch_private(:batch, url, payload)
+             finch_private: finch_private(:batch, url, payload),
+             retry: false
            ) do
         {:ok, %{status: status, body: body}} when status in 200..299 ->
           rejected = rejected_results(body)
@@ -55,9 +58,12 @@ defmodule BeamWeaver.Tracing.Exporters.WeaveScope do
           end
 
         {:ok, response} ->
-          {:error, response_error(response, opts)}
+          error = response_error(response, opts)
+          log_export_failure(url, length(events), error)
+          {:error, error}
 
         {:error, reason} ->
+          log_export_failure(url, length(events), reason)
           {:error, reason}
       end
     end
@@ -118,6 +124,12 @@ defmodule BeamWeaver.Tracing.Exporters.WeaveScope do
   defp operation(:ok), do: "finish"
   defp operation(:error), do: "error"
   defp operation(event), do: to_string(event)
+
+  defp log_export_failure(url, event_count, reason) do
+    Logger.debug(fn ->
+      "BeamWeaver WeaveScope export failed endpoint=#{inspect(url)} event_count=#{event_count} error=#{inspect(reason)}"
+    end)
+  end
 
   defp observation_kind(:graph), do: "agent"
   defp observation_kind(:model), do: "generation"

@@ -842,6 +842,10 @@ tool =
 
 Use narrow allow rules and prefer deterministic commands. Session-backed shell
 tools can use graph state to keep a supervised shell session.
+String allow rules match a single command prefix, require a command boundary,
+and reject unquoted shell chaining such as `;`, `&&`, pipes, or command
+substitution. Use an anchored regex only when a specific compound command is
+intended.
 
 ### Todo
 

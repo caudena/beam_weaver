@@ -7,6 +7,8 @@ defmodule BeamWeaver.Agent.PIIMiddlewareTest do
   alias BeamWeaver.Core.Error
   alias BeamWeaver.Core.Message
   alias BeamWeaver.Graph.Overwrite
+  alias BeamWeaver.Stream.Envelope
+  alias BeamWeaver.Stream.Events
 
   test "detector helpers return typed matches with offsets" do
     assert [%{type: "email", value: "john.doe@example.com", start: 14, end: 34}] =
@@ -208,6 +210,60 @@ defmodule BeamWeaver.Agent.PIIMiddlewareTest do
     assert {:ok, [%Message{content: "AI [REDACTED_EMAIL]"}]} = Overwrite.get(overwrite)
     assert is_nil(PII.before_model(both, %{messages: [Message.user("No PII here")]}, nil))
     assert is_nil(PII.before_model(both, %{messages: []}, nil))
+  end
+
+  test "output processing redacts assistant tool call arguments" do
+    middleware = PII.new(type: :email, strategy: :redact, apply_to_input: false, apply_to_output: true)
+
+    message =
+      Message.assistant("",
+        tool_calls: [
+          %{id: "call_1", name: "email_user", args: %{"email" => "ada@example.com"}},
+          %{
+            id: "call_2",
+            name: "log_user",
+            arguments: ~s({"email":"grace@example.com"})
+          }
+        ]
+      )
+
+    assert %{messages: %Overwrite{} = overwrite} =
+             PII.after_model(middleware, %{messages: [message]}, nil)
+
+    assert {:ok, [%Message{tool_calls: [first, second]}]} = Overwrite.get(overwrite)
+    assert first.args["email"] == "[REDACTED_EMAIL]"
+    assert second.arguments == ~s({"email":"[REDACTED_EMAIL]"})
+  end
+
+  test "output processing redacts assistant tool call content blocks" do
+    middleware = PII.new(type: :email, strategy: :redact, apply_to_input: false, apply_to_output: true)
+
+    message =
+      Message.assistant([
+        %{type: :tool_call, id: "call_1", name: "email_user", args: %{"email" => "ada@example.com"}}
+      ])
+
+    assert %{messages: %Overwrite{} = overwrite} =
+             PII.after_model(middleware, %{messages: [message]}, nil)
+
+    assert {:ok, [%Message{content: [%{args: %{"email" => "[REDACTED_EMAIL]"}}]}]} =
+             Overwrite.get(overwrite)
+  end
+
+  test "stream transform redacts token PII spanning chunk boundaries" do
+    transform = PII.stream_transform(type: :email, strategy: :redact)
+
+    assert {:ok, %Envelope{event: %Events.Token{text: ""}}} =
+             transform.(%Envelope{event: %Events.Token{text: "contact ada@"}})
+
+    assert {:ok, %Envelope{event: %Events.Token{text: ""}}} =
+             transform.(%Envelope{event: %Events.Token{text: "example.com now"}})
+
+    assert {:ok,
+            [
+              %Envelope{event: %Events.Token{text: "contact [REDACTED_EMAIL] now"}},
+              %Envelope{event: %Events.Done{}}
+            ]} = transform.(%Envelope{event: %Events.Done{}})
   end
 
   test "custom regex and callable detectors normalize values for all strategies" do
