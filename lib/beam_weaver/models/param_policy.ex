@@ -62,6 +62,7 @@ defmodule BeamWeaver.Models.ParamPolicy do
                      :previous_response_id,
                      :prompt,
                      :prompt_cache_key,
+                     :prompt_cache_options,
                      :prompt_cache_retention,
                      :reasoning,
                      :reasoning_effort,

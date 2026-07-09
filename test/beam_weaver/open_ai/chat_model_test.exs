@@ -63,6 +63,15 @@ defmodule BeamWeaver.OpenAI.ChatModelTest do
     assert gpt5.profile.tool_calling
     assert gpt5.profile.max_input_tokens == 272_000
 
+    sol = ChatModel.new(model: "gpt-5.6-sol")
+    assert %Profile{provider: :openai, id: "gpt-5.6-sol"} = sol.profile
+    assert sol.profile.max_input_tokens == 1_050_000
+    assert sol.profile.extra.reasoning_modes == [:standard, :pro]
+
+    alias_model = ChatModel.new(model: "gpt-5.6")
+    assert alias_model.profile.id == "gpt-5.6"
+    assert alias_model.profile.extra.canonical_model == "gpt-5.6-sol"
+
     changed_copy = %{gpt5.profile | tool_calling: false}
     refute changed_copy.tool_calling
     assert ChatModel.new(model: "gpt-5").profile.tool_calling
@@ -124,6 +133,10 @@ defmodule BeamWeaver.OpenAI.ChatModelTest do
 
   test "model policy records OpenAI Responses-preferred families" do
     for model <- [
+          "gpt-5.6",
+          "gpt-5.6-sol",
+          "gpt-5.6-terra",
+          "gpt-5.6-luna",
           "gpt-5.4-pro",
           "gpt-5.5-pro"
         ] do
@@ -735,6 +748,21 @@ defmodule BeamWeaver.OpenAI.ChatModelTest do
              )
 
     refute Map.has_key?(deprecated_chat, "temperature")
+  end
+
+  test "GPT-5.6 request builder passes max effort, pro mode, and persisted reasoning context" do
+    assert {:ok, body} =
+             ChatModel.request_body(
+               ChatModel.new(model: "gpt-5.6-sol"),
+               [Message.user("solve this")],
+               reasoning: %{effort: :max, mode: :pro, context: :all_turns}
+             )
+
+    assert body["reasoning"] == %{
+             "effort" => "max",
+             "mode" => "pro",
+             "context" => "all_turns"
+           }
   end
 
   test "structured output verbosity is merged into the Responses API text options" do

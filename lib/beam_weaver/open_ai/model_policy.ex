@@ -54,7 +54,8 @@ defmodule BeamWeaver.OpenAI.ModelPolicy do
   def prefers_responses_api?(model) when is_binary(model) do
     normalized = String.downcase(model)
 
-    normalized in ["gpt-5.5-pro", "gpt-5.4-pro"]
+    String.starts_with?(normalized, "gpt-5.6") or
+      normalized in ["gpt-5.5-pro", "gpt-5.4-pro"]
   end
 
   def prefers_responses_api?(_model), do: false

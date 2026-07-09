@@ -133,6 +133,12 @@ Anthropic includes `anthropic:claude-sonnet-5`. Sonnet 5 uses adaptive
 thinking; pass `thinking: %{type: :adaptive}` with `effort: :high`, `:xhigh`,
 or `:max` to control thinking effort. Manual enabled thinking budgets are
 rejected before transport for models that only support adaptive thinking.
+OpenAI profiles include `openai:gpt-5.6-sol`, `openai:gpt-5.6-terra`, and
+`openai:gpt-5.6-luna`; `openai:gpt-5.6` is the official alias for Sol. All
+three advertise a 1.05M-token context window, 128K maximum output, text and
+image input, function tools, structured output, streaming, and reasoning
+efforts from `none` through `max`. BeamWeaver keeps its existing `gpt-5.5`
+constructor default so adding the family does not silently migrate callers.
 Future OpenAI `gpt-*`/`o*`, Anthropic `claude-*`, explicit Google
 `google:gemini-*`, explicit Moonshot `moonshot:kimi-*`, and xAI `grok-*`
 identifiers use permissive fallback profiles unless they are known
@@ -152,7 +158,7 @@ Recommended starting points:
 
 | Provider family | BeamWeaver model strings |
 | --- | --- |
-| OpenAI GPT | `openai:gpt-5.4`, `openai:gpt-5.4-mini` |
+| OpenAI GPT | `openai:gpt-5.6-sol`, `openai:gpt-5.6-terra`, `openai:gpt-5.6-luna`, `openai:gpt-5.4-mini` |
 | Anthropic Claude | `anthropic:claude-sonnet-5`, `anthropic:claude-sonnet-4-6`, `anthropic:claude-opus-*`, `anthropic:claude-haiku-*` |
 | Google Gemini | `google:gemini-3.5-flash`, explicit `google:gemini-*` profiles |
 | Moonshot/Kimi | `moonshot:kimi-k2.7-code`, `moonshot:kimi-k2.7-code-highspeed`, `moonshot:kimi-k2.6`, `moonshot:kimi-k2.5` |
@@ -691,6 +697,8 @@ Prompt caching is provider-specific:
 
 - Agent calls can pass explicit provider overrides with `model_opts: [...]`.
 - OpenAI Responses and Chat Completions requests support `:prompt_cache_key`.
+  GPT-5.6 additionally supports `:prompt_cache_options` and explicit
+  `prompt_cache_breakpoint` metadata on supported content blocks.
 - xAI Responses supports `:prompt_cache_key`.
 - xAI Chat Completions supports `:x_grok_conv_id`, which BeamWeaver maps to
   the `x-grok-conv-id` header.
@@ -699,7 +707,7 @@ Prompt caching is provider-specific:
   with `cache_control`.
 - Moonshot/Kimi supports `:prompt_cache_key`.
 - Gemini and Z.ai cached-token usage is normalized when providers report it.
-- Usage metadata preserves cache-read/cache-creation token details when
+- Usage metadata preserves cache-read/cache-write/cache-creation token details when
   providers return them.
 
 See [Prompt Caching](prompt_caching.md) for provider-specific examples.

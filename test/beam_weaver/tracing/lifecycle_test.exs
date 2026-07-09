@@ -388,6 +388,42 @@ defmodule BeamWeaver.Tracing.LifecycleTest do
     assert run.metadata.usage_metadata.inference_geo == "us"
   end
 
+  test "OpenAI model traces promote cache writes and response-level service tier for WeaveScope" do
+    model = OpenAI.ChatModel.new(model: "gpt-5.6-luna", api_key: "openai-nope")
+
+    assert {:ok, %Message{content: "ok"}} =
+             BeamWeaver.Core.ChatModel.trace_call(
+               model,
+               [Message.user("hello")],
+               [
+                 exporter: BeamWeaver.Tracing.TestExporter,
+                 exporter_opts: [test_pid: self()]
+               ],
+               fn ->
+                 {:ok,
+                  Message.assistant("ok",
+                    usage_metadata: %{
+                      input_tokens: 4_696,
+                      output_tokens: 6,
+                      total_tokens: 4_702,
+                      input_token_details: %{cache_read: 0, cache_write: 4_684}
+                    },
+                    response_metadata: %{service_tier: "default"}
+                  )}
+               end
+             )
+
+    assert_receive {:trace_export, :started, %Run{kind: :model}}
+    assert_receive {:trace_export, :ok, %Run{kind: :model} = run}
+
+    assert run.usage.cache_creation_tokens == 4_684
+    assert run.usage.service_tier == "default"
+
+    event = BeamWeaver.Tracing.Exporters.WeaveScope.to_event(:ok, run)
+    assert event["usage"][:cache_creation_tokens] == 4_684
+    assert event["service_tier"] == "default"
+  end
+
   def handle_telemetry(event, measurements, metadata, test_pid) do
     send(test_pid, {:tracing_event, event, measurements, metadata})
   end

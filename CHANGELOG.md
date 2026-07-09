@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.1.11 - 2026-07-08
+
+### Added
+
+- Added first-class OpenAI GPT-5.6 Sol, Terra, and Luna profiles plus the
+  official `gpt-5.6` alias, including 1.05M context limits, reasoning modes,
+  provider capability metadata, and standard/cache/long-context pricing data.
+- Added GPT-5.6 `prompt_cache_options`, explicit content-block cache
+  breakpoints, Responses file detail, cache-write usage normalization, and
+  persisted reasoning-context metadata for OpenAI requests and responses.
+  Responses models now also accept `safety_identifier` as a model-level option.
+
+### Changed
+
+- GPT-5.6 models now prefer the Responses API, and Chat Completions rejects
+  function-tool requests before transport unless reasoning effort is `none`.
+
+### Fixed
+
+- OpenAI cache-write usage now populates canonical `cache_creation_tokens`, and
+  response-level service tier/region metadata now reaches model traces and
+  WeaveScope event fields instead of remaining only in raw provider metadata.
+
 ## 0.1.10 - 2026-07-08
 
 ### Added

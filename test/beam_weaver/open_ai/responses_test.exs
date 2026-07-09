@@ -137,6 +137,21 @@ defmodule BeamWeaver.OpenAI.ResponsesTest do
     assert body["vendor_flag"] == true
   end
 
+  test "GPT-5.6 Responses requests support explicit prompt cache options" do
+    assert {:ok, model} =
+             Models.init_chat_model("openai:gpt-5.6-sol",
+               prompt_cache_options: %{mode: :explicit, ttl: "30m"},
+               safety_identifier: "hashed-user-123"
+             )
+
+    assert {:ok, body} =
+             ChatModel.request_body(model, [Message.user("cached prompt")], prompt_cache_key: "tenant:acme:prompt-v1")
+
+    assert body["prompt_cache_key"] == "tenant:acme:prompt-v1"
+    assert body["prompt_cache_options"] == %{"mode" => "explicit", "ttl" => "30m"}
+    assert body["safety_identifier"] == "hashed-user-123"
+  end
+
   test "explicit Responses model delegates typed stream events" do
     body = """
     event: response.output_text.delta

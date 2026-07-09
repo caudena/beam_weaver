@@ -38,6 +38,7 @@ defmodule BeamWeaver.OpenAI.ChatCompletionsModel do
             user: nil,
             service_tier: nil,
             prompt_cache_key: nil,
+            prompt_cache_options: nil,
             prompt_cache_retention: nil,
             safety_identifier: nil,
             verbosity: nil,

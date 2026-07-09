@@ -5,6 +5,12 @@ defmodule BeamWeaver.Models.ProfileRegistry.OpenAI do
   alias BeamWeaver.Models.Profile
   alias BeamWeaver.Models.ProfileRegistry.Params
 
+  @openai_5_6_specs [
+    {"gpt-5.6-sol", "GPT-5.6 Sol", 5.00, 0.50, 30.00},
+    {"gpt-5.6-terra", "GPT-5.6 Terra", 2.50, 0.25, 15.00},
+    {"gpt-5.6-luna", "GPT-5.6 Luna", 1.00, 0.10, 6.00}
+  ]
+
   @openai_frontier_specs [
     {"gpt-5.5", "GPT-5.5", 400_000, 128_000, true},
     {"gpt-5.5-pro", "GPT-5.5 Pro", 400_000, 128_000, true},
@@ -18,7 +24,74 @@ defmodule BeamWeaver.Models.ProfileRegistry.OpenAI do
     {"gpt-4.1", "GPT-4.1", 1_000_000, 32_768, false}
   ]
 
-  @openai_frontier_ids MapSet.new(Enum.map(@openai_frontier_specs, &elem(&1, 0)))
+  @openai_frontier_ids MapSet.new(
+                         Enum.map(@openai_5_6_specs, &elem(&1, 0)) ++
+                           Enum.map(@openai_frontier_specs, &elem(&1, 0))
+                       )
+
+  @openai_5_6_profiles Map.new(
+                         @openai_5_6_specs,
+                         fn {id, name, input_price, cached_input_price, output_price} ->
+                           {{:openai, id},
+                            Profile.new(%{
+                              provider: :openai,
+                              id: id,
+                              name: name,
+                              status: :active,
+                              release_date: "2026-07-09",
+                              last_updated: "2026-07-09",
+                              responses_api: true,
+                              chat_completions_api: true,
+                              tool_calling: true,
+                              tool_call_streaming: true,
+                              tool_choice: true,
+                              parallel_tool_calls: true,
+                              structured_output: true,
+                              streaming: true,
+                              usage_metadata: true,
+                              supported_params: Params.responses(),
+                              supported_params_by_api: %{
+                                responses: Params.responses(),
+                                chat_completions: Params.chat_completions()
+                              },
+                              max_input_tokens: 1_050_000,
+                              max_output_tokens: 128_000,
+                              image_inputs: true,
+                              image_url_inputs: true,
+                              audio_inputs: false,
+                              reasoning_output: true,
+                              tokenizer: :o200k_base,
+                              extra: %{
+                                frontier: true,
+                                input_price_per_mtok: input_price,
+                                cached_input_price_per_mtok: cached_input_price,
+                                cache_write_30m_price_per_mtok: input_price * 1.25,
+                                output_price_per_mtok: output_price,
+                                cost_currency: "USD",
+                                default_reasoning_effort: :medium,
+                                reasoning_efforts: [:none, :low, :medium, :high, :xhigh, :max],
+                                reasoning_modes: [:standard, :pro],
+                                persisted_reasoning_contexts: [:auto, :current_turn, :all_turns],
+                                prompt_cache_modes: [:implicit, :explicit],
+                                prompt_cache_ttl: "30m",
+                                prompt_cache_write_multiplier: 1.25,
+                                prompt_cache_read_discount_rate: 0.90,
+                                higher_context_pricing_threshold_tokens: 272_000,
+                                higher_context_input_multiplier: 2.0,
+                                higher_context_output_multiplier: 1.5,
+                                regional_processing_multiplier: 1.1,
+                                provider_capabilities: [
+                                  :programmatic_tool_calling,
+                                  :multi_agent_beta,
+                                  :explicit_prompt_caching,
+                                  :persisted_reasoning,
+                                  :pro_reasoning_mode,
+                                  :original_image_detail
+                                ]
+                              }
+                            })}
+                         end
+                       )
 
   @openai_frontier_profiles Map.new(
                               @openai_frontier_specs,
@@ -76,6 +149,10 @@ defmodule BeamWeaver.Models.ProfileRegistry.OpenAI do
     "text-embedding-ada-002" => "text-embedding-3-small"
   }
 
+  @openai_chat_aliases %{
+    "gpt-5.6" => "gpt-5.6-sol"
+  }
+
   @openai_non_frontier_replacements %{
     "gpt-5.3-codex" => "gpt-5.5",
     "gpt-5.2-codex" => "gpt-5.5",
@@ -92,7 +169,9 @@ defmodule BeamWeaver.Models.ProfileRegistry.OpenAI do
     "o3" => "gpt-5"
   }
 
-  @profiles Map.merge(@openai_frontier_profiles, %{
+  @profiles @openai_5_6_profiles
+            |> Map.merge(@openai_frontier_profiles)
+            |> Map.merge(%{
               {:openai, "text-embedding-3-small"} =>
                 Profile.new(%{
                   provider: :openai,
@@ -122,6 +201,9 @@ defmodule BeamWeaver.Models.ProfileRegistry.OpenAI do
     cond do
       Map.has_key?(@openai_deprecated_models, model) ->
         deprecated_model_error(model)
+
+      Map.has_key?(@openai_chat_aliases, model) ->
+        alias_profile(model, Map.fetch!(@openai_chat_aliases, model))
 
       restricted_chat_model?(model) and not MapSet.member?(@openai_frontier_ids, model) ->
         non_frontier_model_error(model)
@@ -154,6 +236,21 @@ defmodule BeamWeaver.Models.ProfileRegistry.OpenAI do
        expected: "openai:#{replacement}",
        supported: MapSet.to_list(@openai_frontier_ids) |> Enum.sort()
      })}
+  end
+
+  defp alias_profile(alias_id, canonical_id) do
+    case Map.fetch(@profiles, {:openai, canonical_id}) do
+      {:ok, profile} ->
+        extra =
+          profile.extra
+          |> Map.put(:canonical_model, canonical_id)
+          |> Map.put(:alias_model, alias_id)
+
+        {:ok, %{profile | id: alias_id, name: "#{profile.name} (alias)", extra: extra}}
+
+      :error ->
+        {:fallback, :openai, alias_id}
+    end
   end
 
   defp restricted_chat_model?("gpt-" <> _rest), do: true

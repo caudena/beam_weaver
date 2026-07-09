@@ -139,6 +139,7 @@ defmodule BeamWeaver.OpenAI.ChatCompletions.Messages.Response do
       details when is_map(details) ->
         %{
           cache_read: details["cached_tokens"],
+          cache_write: details["cache_write_tokens"],
           flex: details["flex"]
         }
         |> BeamWeaver.MapShape.reject_nil_or_empty()

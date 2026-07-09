@@ -80,6 +80,12 @@ defmodule BeamWeaver.Examples.Support do
     key = prompt_cache_key(scope, static_prompt)
 
     case model do
+      %BeamWeaver.OpenAI.ChatModel{model: "gpt-5.6" <> _suffix} ->
+        [
+          prompt_cache_key: key,
+          prompt_cache_options: %{mode: :implicit, ttl: "30m"}
+        ]
+
       %BeamWeaver.OpenAI.ChatModel{} ->
         [prompt_cache_key: key, prompt_cache_retention: :in_memory]
 

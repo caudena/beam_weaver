@@ -71,10 +71,14 @@ defmodule BeamWeaver.OpenAI.ChatModel.RequestBuilder do
         |> Options.put_optional("prompt", Options.normalize_value(Keyword.get(opts, :prompt)))
         |> Options.put_optional("prompt_cache_key", option(model, opts, :prompt_cache_key))
         |> Options.put_optional(
+          "prompt_cache_options",
+          Options.normalize_option_map(option(model, opts, :prompt_cache_options))
+        )
+        |> Options.put_optional(
           "prompt_cache_retention",
           Options.normalize_value(option(model, opts, :prompt_cache_retention))
         )
-        |> Options.put_optional("safety_identifier", Keyword.get(opts, :safety_identifier))
+        |> Options.put_optional("safety_identifier", option(model, opts, :safety_identifier))
         |> Options.put_optional(
           "stream_options",
           Options.normalize_option_map(Keyword.get(opts, :stream_options))
@@ -134,6 +138,7 @@ defmodule BeamWeaver.OpenAI.ChatModel.RequestBuilder do
         :parallel_tool_calls,
         :prompt,
         :prompt_cache_key,
+        :prompt_cache_options,
         :prompt_cache_retention,
         :presence_penalty,
         :reasoning,
@@ -173,6 +178,7 @@ defmodule BeamWeaver.OpenAI.ChatModel.RequestBuilder do
         :parallel_tool_calls,
         :prompt,
         :prompt_cache_key,
+        :prompt_cache_options,
         :prompt_cache_retention,
         :presence_penalty,
         :previous_response_id,

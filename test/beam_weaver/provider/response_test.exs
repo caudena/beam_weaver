@@ -89,6 +89,26 @@ defmodule BeamWeaver.Provider.ResponseTest do
            }
   end
 
+  test "normalizes OpenAI cache writes and response-level service tier into canonical usage" do
+    message =
+      Message.assistant("done",
+        usage_metadata: %{
+          input_tokens: 4_696,
+          output_tokens: 6,
+          total_tokens: 4_702,
+          input_token_details: %{cache_read: 0, cache_write: 4_684}
+        },
+        response_metadata: %{service_tier: "default", reasoning_context: "all_turns"}
+      )
+
+    message = Response.normalize_message(%{model: "gpt-5.6-luna"}, message, provider: :openai)
+
+    assert message.response_metadata.usage.cache_read_tokens == 0
+    assert message.response_metadata.usage.cache_creation_tokens == 4_684
+    assert message.response_metadata.usage.service_tier == "default"
+    assert message.response_metadata.reasoning.context == "all_turns"
+  end
+
   test "preserves Google thought signatures on text and reasoning parts" do
     response = %{
       "responseId" => "resp_google",

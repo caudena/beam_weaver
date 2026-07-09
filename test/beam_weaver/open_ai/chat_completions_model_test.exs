@@ -3,6 +3,7 @@ defmodule BeamWeaver.OpenAI.ChatCompletionsModelTest do
 
   alias BeamWeaver.Core.Async
   alias BeamWeaver.Core.ChatModel, as: CoreChatModel
+  alias BeamWeaver.Core.ContentBlock
   alias BeamWeaver.Core.Message
   alias BeamWeaver.Core.Messages.InvalidToolCall
   alias BeamWeaver.Core.Messages.ToolCall
@@ -211,6 +212,68 @@ defmodule BeamWeaver.OpenAI.ChatCompletionsModelTest do
     assert error.details.replacement == "gpt-5-mini"
   end
 
+  test "GPT-5.6 Chat Completions function tools require reasoning effort none" do
+    assert {:ok, model} =
+             Models.init_chat_model("openai:gpt-5.6-luna", api: :chat_completions)
+
+    assert {:error, error} =
+             ChatCompletionsModel.request_body(model, [Message.user("weather?")], tools: [weather_tool()])
+
+    assert error.type == :invalid_model_option
+    assert error.details.expected == :none
+    assert error.details.alternative_api == :responses
+
+    assert {:error, model_option_error} =
+             model
+             |> Map.put(:functions, [%{name: "legacy_weather", parameters: %{type: :object}}])
+             |> ChatCompletionsModel.request_body([Message.user("weather?")])
+
+    assert model_option_error.type == :invalid_model_option
+
+    assert {:ok, body} =
+             ChatCompletionsModel.request_body(
+               model,
+               [
+                 Message.user([
+                   %{
+                     type: :text,
+                     text: "weather?",
+                     metadata: %{prompt_cache_breakpoint: %{mode: :explicit}}
+                   },
+                   ContentBlock.image(%{
+                     url: "https://example.test/weather.png",
+                     metadata: %{
+                       "detail" => :original,
+                       "prompt_cache_breakpoint" => %{mode: :explicit}
+                     }
+                   })
+                 ])
+               ],
+               tools: [weather_tool()],
+               reasoning_effort: :none,
+               prompt_cache_key: "tenant:acme:tools-v1",
+               prompt_cache_options: %{mode: :explicit, ttl: "30m"}
+             )
+
+    assert body["reasoning_effort"] == "none"
+    assert body["prompt_cache_options"] == %{"mode" => "explicit", "ttl" => "30m"}
+
+    assert get_in(body, ["messages", Access.at(0), "content", Access.at(0)]) == %{
+             "type" => "text",
+             "text" => "weather?",
+             "prompt_cache_breakpoint" => %{"mode" => "explicit"}
+           }
+
+    assert get_in(body, ["messages", Access.at(0), "content", Access.at(1)]) == %{
+             "type" => "image_url",
+             "image_url" => %{
+               "url" => "https://example.test/weather.png",
+               "detail" => "original"
+             },
+             "prompt_cache_breakpoint" => %{"mode" => "explicit"}
+           }
+  end
+
   test "invokes Chat Completions through replay and decodes message metadata, usage, and tool calls" do
     request_body = %{
       "model" => "gpt-5.4-mini",
@@ -340,7 +403,11 @@ defmodule BeamWeaver.OpenAI.ChatCompletionsModelTest do
       "choices" => [%{"message" => %{"content" => "ok"}, "finish_reason" => "stop"}],
       "usage" => %{
         "prompt_tokens" => 10,
-        "prompt_tokens_details" => %{"cached_tokens" => 4, "flex" => 10},
+        "prompt_tokens_details" => %{
+          "cached_tokens" => 4,
+          "cache_write_tokens" => 6,
+          "flex" => 10
+        },
         "completion_tokens" => 5,
         "completion_tokens_details" => %{
           "reasoning_tokens" => 2,
@@ -359,7 +426,7 @@ defmodule BeamWeaver.OpenAI.ChatCompletionsModelTest do
              input_tokens: 10,
              output_tokens: 5,
              total_tokens: 0,
-             input_token_details: %{cache_read: 4, flex: 10},
+             input_token_details: %{cache_read: 4, cache_write: 6, flex: 10},
              output_token_details: %{
                reasoning: 2,
                accepted_prediction: 3,

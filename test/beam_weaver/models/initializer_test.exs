@@ -292,6 +292,25 @@ defmodule BeamWeaver.Models.InitializerTest do
     assert error.type == :unsupported_model_param
     assert error.details.params == [:reasoning]
 
+    assert {:ok, sol} = ProfileRegistry.fetch(:openai, "gpt-5.6-sol")
+    assert sol.status == :active
+    assert sol.max_input_tokens == 1_050_000
+    assert sol.max_output_tokens == 128_000
+    assert sol.image_inputs
+    refute sol.audio_inputs
+    assert sol.extra.input_price_per_mtok == 5.00
+    assert sol.extra.cached_input_price_per_mtok == 0.50
+    assert sol.extra.cache_write_30m_price_per_mtok == 6.25
+    assert sol.extra.output_price_per_mtok == 30.00
+    assert sol.extra.regional_processing_multiplier == 1.1
+    assert sol.extra.default_reasoning_effort == :medium
+    assert sol.extra.reasoning_efforts == [:none, :low, :medium, :high, :xhigh, :max]
+    assert :multi_agent_beta in sol.extra.provider_capabilities
+
+    assert {:ok, gpt56_alias} = ProfileRegistry.fetch(:openai, "gpt-5.6")
+    assert gpt56_alias.id == "gpt-5.6"
+    assert gpt56_alias.extra.canonical_model == "gpt-5.6-sol"
+
     assert {:ok, unknown} = ProfileRegistry.fetch(:openai, "future-non-family-model")
     assert unknown.extra.unknown == true
     assert :ok = ParamPolicy.validate(unknown, [reasoning: %{effort: "low"}], nil)
@@ -327,6 +346,14 @@ defmodule BeamWeaver.Models.InitializerTest do
     assert Enum.all?(moonshot, &(&1.provider == :moonshot))
     assert Enum.all?(xai, &(&1.provider == :xai))
     assert Enum.all?(zai, &(&1.provider == :zai))
+    assert Enum.any?(openai, &(&1.id == "gpt-5.6-sol" and &1.tool_calling))
+    assert Enum.any?(openai, &(&1.id == "gpt-5.6-terra" and &1.max_input_tokens == 1_050_000))
+
+    assert Enum.any?(
+             openai,
+             &(&1.id == "gpt-5.6-luna" and &1.extra.input_price_per_mtok == 1.00)
+           )
+
     assert Enum.any?(openai, &(&1.id == "gpt-5.5" and &1.tool_calling))
     assert Enum.any?(openai, &(&1.id == "gpt-5.4-mini" and &1.tool_calling))
     assert Enum.any?(openai, &(&1.id == "gpt-4.1" and &1.tool_calling))

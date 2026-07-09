@@ -96,8 +96,66 @@ LangChain OpenAI package.
 - GPT-5-family request controls follow OpenAI constraints: `max_tokens` and
   `max_completion_tokens` map to Responses `max_output_tokens`, and temperature
   is omitted for GPT-5 models unless reasoning effort is `none`.
+- GPT-5.6 requests support `prompt_cache_options`, explicit cache breakpoints on
+  content parts, Responses file `detail`, normalized cache-write usage, and a
+  model-level `safety_identifier`.
+- GPT-5.6 Chat Completions function tools are rejected before transport unless
+  the effective reasoning effort is `none`; reasoning plus tools uses Responses.
 - Replay-backed provider tests cover the OpenAI cassette shapes that map to
   BeamWeaver's Responses-oriented chat model.
+
+## GPT-5.6 Profiles
+
+BeamWeaver includes `gpt-5.6-sol`, `gpt-5.6-terra`, and `gpt-5.6-luna` as
+first-class OpenAI profiles. The official `gpt-5.6` alias resolves to Sol. All
+three profiles expose a 1.05M-token context window, 128K maximum output, text
+and image input, Responses and Chat Completions, function calling, structured
+output, streaming, and the current OpenAI built-in tool catalog.
+
+Standard prices per million tokens are:
+
+| Model | Input | Cached input | Cache write | Output |
+| --- | ---: | ---: | ---: | ---: |
+| `gpt-5.6-sol` | $5.00 | $0.50 | $6.25 | $30.00 |
+| `gpt-5.6-terra` | $2.50 | $0.25 | $3.125 | $15.00 |
+| `gpt-5.6-luna` | $1.00 | $0.10 | $1.25 | $6.00 |
+
+Requests above 272K input tokens use OpenAI's higher-context rates: 2x input
+and 1.5x output for the full request. GPT-5.6 cache writes cost 1.25x uncached
+input, cache reads receive the 90% discount, and the current cache TTL is 30
+minutes. Eligible regional-processing endpoints add OpenAI's 10% uplift.
+
+The existing `reasoning` request option carries GPT-5.6 controls without a
+separate model type:
+
+```elixir
+BeamWeaver.Models.init_chat_model!("openai:gpt-5.6-sol",
+  reasoning: %{effort: :max, mode: :pro, context: :all_turns}
+)
+```
+
+Persisted reasoning context returned by Responses is preserved as
+`message.response_metadata.reasoning_context`. Explicit GPT-5.6 prompt caching is
+available on both OpenAI APIs:
+
+```elixir
+BeamWeaver.Models.init_chat_model!("openai:gpt-5.6",
+  prompt_cache_options: %{mode: :explicit, ttl: "30m"},
+  safety_identifier: "user_<stable_privacy_preserving_hash>"
+)
+```
+
+Mark the desired text, image, or file content block with
+`metadata.prompt_cache_breakpoint`. Cache reads and writes are normalized to
+`usage_metadata.input_token_details.cache_read` and `cache_write`.
+
+On Chat Completions, GPT-5.6 function tools require
+`reasoning_effort: :none`. BeamWeaver returns `:invalid_model_option` before
+transport when this combination is invalid and points callers to Responses.
+
+OpenAI's programmatic tool calling and hosted multi-agent beta are recorded as
+provider capabilities in profile metadata. BeamWeaver does not yet provide
+dedicated request/response helpers for those two hosted orchestration surfaces.
 
 ## Replay Usage
 
@@ -176,6 +234,7 @@ mix run examples/openai_apply_patch_tool.exs
   APIs.
 - Callback/client wrapper behavior outside the Task-backed async public APIs.
 - Audio API surfaces beyond the current chat audio request/response shape.
+- GPT-5.6 programmatic tool calling and OpenAI-hosted multi-agent orchestration.
 - LangChain v3 protocol edge cases outside the current Responses message
   conversion layer.
 - WeaveScope exporter behavior beyond the native BeamWeaver trace payload
