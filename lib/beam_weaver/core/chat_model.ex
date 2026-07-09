@@ -127,7 +127,9 @@ defmodule BeamWeaver.Core.ChatModel do
               {:ok, Enumerable.t()} | {:error, Error.t() | term()}
   @callback stream_events(term(), [Message.t()], keyword()) ::
               {:ok, Enumerable.t()} | {:error, Error.t() | term()}
-  @optional_callbacks stream: 3, stream_events: 3
+  @callback stream_typed_events(term(), [Message.t()], keyword()) ::
+              {:ok, Enumerable.t()} | {:error, Error.t() | term()}
+  @optional_callbacks stream: 3, stream_events: 3, stream_typed_events: 3
 
   @doc """
   Invokes a chat model after validating message input.
@@ -322,6 +324,36 @@ defmodule BeamWeaver.Core.ChatModel do
   @spec async_stream_events(term(), term(), keyword()) :: Async.handle()
   def async_stream_events(model, input, opts \\ []) do
     Async.run_call(opts, &stream_events(model, input, &1))
+  end
+
+  @doc """
+  Streams typed BeamWeaver chat events.
+
+  This surface is for consumers that need a stable `%BeamWeaver.Stream.Envelope{}`
+  stream with typed events such as tokens, message chunks, reasoning chunks,
+  tool-call chunks, and done events. Provider-specific lifecycle streams remain
+  available through provider modules such as `stream_events/3` where documented.
+  """
+  @spec stream_typed_events(term(), term(), keyword()) ::
+          {:ok, Enumerable.t()} | {:error, Error.t() | term()}
+  def stream_typed_events(model, input, opts \\ []) do
+    with {:ok, messages} <- LanguageModel.normalize_chat_input(input),
+         :ok <- validate_messages(messages),
+         :ok <- BeamWeaver.Provider.Capability.validate_invocation(model, opts) do
+      if function_exported_loaded?(model.__struct__, :stream_typed_events, 3) do
+        model.__struct__.stream_typed_events(model, messages, opts)
+      else
+        case stream(model, messages, opts) do
+          {:ok, events} -> {:ok, stream_event_envelopes(model, events, opts)}
+          {:error, _error} = error -> error
+        end
+      end
+    end
+  end
+
+  @spec async_stream_typed_events(term(), term(), keyword()) :: Async.handle()
+  def async_stream_typed_events(model, input, opts \\ []) do
+    Async.run_call(opts, &stream_typed_events(model, input, &1))
   end
 
   @doc """

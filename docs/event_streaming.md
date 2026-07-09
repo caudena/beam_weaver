@@ -21,9 +21,11 @@ subgraph summaries, or lifecycle views.
 
 For agents, use `BeamWeaver.Agent.stream_events/3`.
 For compiled graphs, use `BeamWeaver.Graph.Compiled.stream_events/3`.
-For standalone chat models, use `BeamWeaver.Core.ChatModel.stream_events/3`
-when you need provider semantic events directly. Wrap model calls in an agent or
-compiled graph when you want a unified typed envelope stream.
+For standalone chat models, use `BeamWeaver.Core.ChatModel.stream_typed_events/3`
+when you want normalized BeamWeaver envelopes directly. Provider modules can
+also expose provider-specific `stream_events/3` lifecycle streams; use those
+when you need the raw provider semantic lifecycle rather than the normalized
+BeamWeaver event contract.
 
 Standalone OpenAI, Anthropic, Google, xAI, and Z.ai model streams are lazy live
 enumerables when using the live transport. Provider chunks are parsed
@@ -325,9 +327,11 @@ events in one pass for live UI updates, or reduce collected events into
 
 ## Reasoning Content
 
-Reasoning output is provider-dependent. OpenAI, Anthropic, Google, xAI, and Z.ai can
-surface reasoning as content blocks in `%Events.MessageChunk{}` events, and
-final assistant messages preserve reasoning blocks in their content.
+Reasoning output is provider-dependent. OpenAI, Anthropic, Google, xAI, and
+Z.ai can surface reasoning as content blocks in `%Events.MessageChunk{}`
+events. Treat those chunk events as the live thinking stream; final assistant
+messages and text projections should be considered answer/tool output, not the
+primary place to read incremental reasoning.
 
 ```elixir
 alias BeamWeaver.Stream.Events

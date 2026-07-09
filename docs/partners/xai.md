@@ -19,8 +19,8 @@ BeamWeaver includes an OpenAI-compatible xAI provider under `BeamWeaver.XAI`.
   configured `:base_url`, explicit `:base_url`, or `:endpoint`.
 - Responses include normalized provider metadata, reasoning content, citations,
   usage metadata, and xAI-specific reasoning-token accounting.
-- Streaming supports text deltas, reconstructed final assistant messages, and
-  typed stream envelopes tagged with xAI invocation metadata.
+- Streaming supports text and reasoning deltas, reconstructed final assistant
+  messages, and typed stream envelopes tagged with xAI invocation metadata.
 - xAI chat profiles expose `tool_call_streaming: true` when the checked-in
   profile supports incremental streamed tool-call arguments.
 - Chat Completions streaming preserves empty initial role-only chunks,
@@ -34,9 +34,10 @@ BeamWeaver includes an OpenAI-compatible xAI provider under `BeamWeaver.XAI`.
   `stop` sequences.
 - Deferred Chat Completions requests can be followed up with
   `BeamWeaver.XAI.Client.deferred_completion/3`.
-- Checked-in chat profiles cover `grok-4.3`, `grok-4.20-0309-reasoning`,
-  `grok-4.20-0309-non-reasoning`, `grok-4.20-multi-agent-0309`, and
-  `grok-build-0.1`, with alias handling for documented xAI slugs.
+- Checked-in chat profiles cover `grok-4.5`, `grok-4.3`,
+  `grok-4.20-0309-reasoning`, `grok-4.20-0309-non-reasoning`,
+  `grok-4.20-multi-agent-0309`, and `grok-build-0.1`, with alias handling for
+  documented xAI slugs.
 - Retired May 15, 2026 slugs fail before transport with replacement metadata
   instead of silently changing price or reasoning behavior.
 
@@ -45,7 +46,7 @@ BeamWeaver includes an OpenAI-compatible xAI provider under `BeamWeaver.XAI`.
 ```elixir
 model =
   BeamWeaver.XAI.chat_model(
-    model: "grok-4.3"
+    model: "grok-4.5"
   )
 
 BeamWeaver.Core.ChatModel.invoke(model, [
@@ -58,7 +59,7 @@ Use Chat Completions explicitly when that wire shape is required:
 ```elixir
 model =
   BeamWeaver.XAI.chat_completions_model(
-    model: "grok-4.3"
+    model: "grok-4.5"
   )
 ```
 
@@ -80,7 +81,7 @@ Use `BeamWeaver.XAI.Tools.live_search/1` for Chat Completions search tools.
 Model initialization can use explicit or inferred xAI identifiers:
 
 ```elixir
-{:ok, model} = BeamWeaver.Models.init_chat_model("xai:grok-4.3")
+{:ok, model} = BeamWeaver.Models.init_chat_model("xai:grok-4.5")
 {:ok, model} = BeamWeaver.Models.init_chat_model("xai:grok-4.20-0309-reasoning")
 ```
 
@@ -93,10 +94,16 @@ Embeddings use the explicit xAI prefix:
 
 ## Current Model Policy
 
-xAI recommends `grok-4.3` for most chat and coding use cases. BeamWeaver keeps
-profiles for the other current chat models listed above, plus embedding model
-`v1`. Imagine and voice models are not chat or embedding models and are not
-constructed through `init_chat_model/2`.
+xAI recommends `grok-4.5` for coding, agentic tasks, and knowledge work.
+BeamWeaver records its current profile as 500k context, text and image inputs,
+text output, function tools, structured output, configurable low/medium/high
+reasoning, and base token pricing of $2.00/M input, $0.50/M cached input, and
+$6.00/M output. BeamWeaver keeps profiles for the other current chat models
+listed above, plus embedding model `v1`. Imagine and voice models are not chat
+or embedding models and are not constructed through `init_chat_model/2`.
+The `grok-4.5` profile records xAI's higher-context pricing threshold at 200k
+tokens, but leaves the higher-context rate to xAI billing because the public docs
+do not publish that rate.
 
 Reasoning profiles can still be invoked with shared model options from a generic
 caller. If those options include `stop`, BeamWeaver removes it only for xAI

@@ -115,13 +115,14 @@ defmodule BeamWeaver.OpenAI.Streaming.Lifecycle do
          %{
            "data" =>
              %{
-               "type" => "response.reasoning_summary_text.delta",
+               "type" => type,
                "delta" => delta
              } = data
          },
          state
        )
-       when is_binary(delta) do
+       when type in ["response.reasoning_summary_text.delta", "response.reasoning_text.delta"] and
+              is_binary(delta) do
     state
     |> State.ensure_block(Content.reasoning_block_key(data), Content.reasoning(data, %{}))
     |> State.delta(Content.reasoning_block_key(data), %{
@@ -134,13 +135,14 @@ defmodule BeamWeaver.OpenAI.Streaming.Lifecycle do
          %{
            "data" =>
              %{
-               "type" => "response.reasoning_summary_text.done",
+               "type" => type,
                "text" => text
              } = data
          },
          state
        )
-       when is_binary(text) do
+       when type in ["response.reasoning_summary_text.done", "response.reasoning_text.done"] and
+              is_binary(text) do
     state
     |> State.ensure_block(Content.reasoning_block_key(data), Content.reasoning(data, %{}))
     |> State.finish_block(

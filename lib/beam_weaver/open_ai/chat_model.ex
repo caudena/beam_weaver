@@ -10,6 +10,7 @@ defmodule BeamWeaver.OpenAI.ChatModel do
   alias BeamWeaver.OpenAI.Error
   alias BeamWeaver.OpenAI.Messages
   alias BeamWeaver.OpenAI.ModelPolicy
+  alias BeamWeaver.Models.InvocationMetadata
   alias BeamWeaver.Provider.ChatModel.Options, as: ChatOptions
 
   @default_model "gpt-5.5"
@@ -132,6 +133,16 @@ defmodule BeamWeaver.OpenAI.ChatModel do
   end
 
   @doc """
+  Streams through the Responses API and returns typed BeamWeaver stream envelopes.
+  """
+  @spec stream_typed_events(t(), [BeamWeaver.Core.Message.t()], keyword()) ::
+          {:ok, Enumerable.t()} | {:error, Error.t()}
+  @impl true
+  def stream_typed_events(%__MODULE__{} = model, messages, opts \\ []) do
+    ChatRuntime.stream_events(model, messages, opts, runtime_adapter())
+  end
+
+  @doc """
   Builds the OpenAI Responses API request body for a chat invocation.
   """
   @spec request_body(t(), [BeamWeaver.Core.Message.t()], keyword()) ::
@@ -151,6 +162,12 @@ defmodule BeamWeaver.OpenAI.ChatModel do
     }
   end
 
+  defp model_stream_metadata(%__MODULE__{} = model, body, opts, api) do
+    model
+    |> InvocationMetadata.openai(body, opts, api)
+    |> InvocationMetadata.to_metadata_map()
+  end
+
   defp runtime_adapter do
     %ChatRuntime.Adapter{
       request: &request_body/3,
@@ -159,8 +176,13 @@ defmodule BeamWeaver.OpenAI.ChatModel do
       stream_response: fn model, body, opts ->
         Client.responses_stream_response(client(model), body, opts)
       end,
+      stream_events: fn model, body, opts ->
+        Client.responses_stream_typed_events(client(model), body, opts)
+      end,
       decode: fn response, _opts -> Messages.response_to_message(response) end,
-      parse: &StructuredOutput.maybe_parse/2
+      parse: &StructuredOutput.maybe_parse/2,
+      metadata: fn model, body, opts -> model_stream_metadata(model, body, opts, :responses) end,
+      source: :openai_responses
     }
   end
 end

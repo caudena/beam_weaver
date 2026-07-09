@@ -77,6 +77,19 @@ defmodule BeamWeaver.Provider.ChatModel do
         ChatRuntime.async_stream(opts, &stream_events(model, messages, &1))
       end
 
+      def stream_typed_events(model, messages), do: stream_typed_events(model, messages, [])
+
+      @impl true
+      def stream_typed_events(%__MODULE__{} = model, messages, opts) do
+        ChatRuntime.stream_events(model, messages, opts, runtime_adapter())
+      end
+
+      def async_stream_typed_events(model, messages), do: async_stream_typed_events(model, messages, [])
+
+      def async_stream_typed_events(%__MODULE__{} = model, messages, opts) do
+        ChatRuntime.async_stream(opts, &stream_typed_events(model, messages, &1))
+      end
+
       def model_id(%__MODULE__{} = model), do: ChatRuntime.model_id(model)
       def profile(%__MODULE__{} = model), do: ChatRuntime.profile(model)
 
@@ -101,6 +114,10 @@ defmodule BeamWeaver.Provider.ChatModel do
                      stream_events: 3,
                      async_stream_events: 2,
                      async_stream_events: 3,
+                     stream_typed_events: 2,
+                     stream_typed_events: 3,
+                     async_stream_typed_events: 2,
+                     async_stream_typed_events: 3,
                      model_id: 1,
                      profile: 1
     end

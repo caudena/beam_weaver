@@ -71,7 +71,7 @@ defmodule BeamWeaver.TestSupport.DeepAgents.Evals do
       "openai:gpt-4.1",
       "anthropic:claude-sonnet-4-6",
       "google:gemini-3.5-flash",
-      "xai:grok-4.3"
+      "xai:grok-4.5"
     ],
     "fake" => ["fake"],
     "fast" => [
@@ -103,7 +103,7 @@ defmodule BeamWeaver.TestSupport.DeepAgents.Evals do
       "anthropic:claude-sonnet-4-6"
     ],
     "google" => ["google:gemini-3.5-flash", "google:gemini-3.1-pro-preview"],
-    "xai" => ["xai:grok-4.3", "xai:grok-4.20-0309-non-reasoning"],
+    "xai" => ["xai:grok-4.5", "xai:grok-4.3", "xai:grok-4.20-0309-non-reasoning"],
     "zai" => ["zai:glm-5.2"],
     "unsupported_cataloged" => [
       "baseten:MiniMaxAI/MiniMax-M2.5",

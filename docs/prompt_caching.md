@@ -27,7 +27,7 @@ the right provider-specific cache option at model-call time.
 defmodule MyApp.AIReportAgent do
   use BeamWeaver.Agent
 
-  model("xai:grok-4.3", timeout: 300_000, reasoning_effort: "high")
+  model("xai:grok-4.5", timeout: 300_000, reasoning_effort: "high")
   prompt_caching(scope: "ai_report", version: "v1")
   system_prompt(MyApp.Prompts.ai_report())
 end
@@ -125,11 +125,11 @@ model =
 xAI Responses accepts `:prompt_cache_key`:
 
 ```elixir
-cache_key = BeamWeaver.PromptCache.key("support-agent", "xai:grok-4.3", system_prompt)
+cache_key = BeamWeaver.PromptCache.key("support-agent", "xai:grok-4.5", system_prompt)
 
 model =
   BeamWeaver.XAI.ChatModel.new(
-    model: "grok-4.3",
+    model: "grok-4.5",
     api_key: System.fetch_env!("XAI_API_KEY"),
     prompt_cache_key: cache_key
   )
@@ -141,11 +141,11 @@ xAI Chat Completions uses the `x-grok-conv-id` header. BeamWeaver exposes that
 as `:x_grok_conv_id`:
 
 ```elixir
-cache_key = BeamWeaver.PromptCache.key("support-agent", "xai:grok-4.3", system_prompt)
+cache_key = BeamWeaver.PromptCache.key("support-agent", "xai:grok-4.5", system_prompt)
 
 model =
   BeamWeaver.XAI.ChatCompletionsModel.new(
-    model: "grok-4.3",
+    model: "grok-4.5",
     api_key: System.fetch_env!("XAI_API_KEY"),
     x_grok_conv_id: cache_key
   )

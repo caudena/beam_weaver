@@ -2,6 +2,7 @@ defmodule BeamWeaver.XAI.ChatModelTest do
   use ExUnit.Case
 
   alias BeamWeaver.Core.ChatModel, as: CoreChatModel
+  alias BeamWeaver.Core.ContentBlock
   alias BeamWeaver.Core.EmbeddingModel, as: CoreEmbeddingModel
   alias BeamWeaver.Core.Message
   alias BeamWeaver.Models
@@ -472,6 +473,52 @@ defmodule BeamWeaver.XAI.ChatModelTest do
     assert Enum.all?(events, &(&1.metadata.model_provider == :xai))
   end
 
+  test "stream_typed_events returns xAI Responses reasoning deltas as typed chunks" do
+    body = """
+    event: response.reasoning_text.delta
+    data: {"type":"response.reasoning_text.delta","item_id":"rs_1","delta":"thinking"}
+
+    event: response.output_text.delta
+    data: {"type":"response.output_text.delta","item_id":"msg_1","delta":"answer"}
+
+    event: response.completed
+    data: {"type":"response.completed","response":{"id":"resp_xai","usage":{"total_tokens":3}}}
+
+    data: [DONE]
+    """
+
+    model =
+      ChatModel.new(
+        model: "grok-4.3",
+        api_key: "xai-secret",
+        transport: BeamWeaver.TestSupport.Conformance.Fakes.Transport,
+        transport_opts: [
+          expect: %{method: :post, path: "/v1/responses"},
+          headers: [{"content-type", "text/event-stream"}],
+          body: body
+        ]
+      )
+
+    assert {:ok, stream} = CoreChatModel.stream_typed_events(model, [Message.user("events")])
+    events = Enum.to_list(stream)
+
+    assert Enum.any?(
+             events,
+             &match?(
+               %{
+                 event: %Events.MessageChunk{
+                   chunk: %{content: [%ContentBlock.Reasoning{reasoning: "thinking"}]}
+                 }
+               },
+               &1
+             )
+           )
+
+    assert Enum.any?(events, &match?(%{event: %Events.Token{text: "answer"}}, &1))
+    assert Enum.all?(events, &(&1.metadata.provider == :xai))
+    assert Enum.all?(events, &(&1.metadata.model_provider == :xai))
+  end
+
   test "deferred completion returns pending tuple for HTTP 202" do
     client =
       Client.new(
@@ -555,9 +602,21 @@ defmodule BeamWeaver.XAI.ChatModelTest do
   end
 
   test "model initializer supports current xAI identifiers, aliases, deprecations, and embeddings" do
-    assert {:ok, explicit} = Models.init_chat_model("xai:grok-4.3")
+    assert {:ok, explicit} = Models.init_chat_model("xai:grok-4.5")
     assert explicit.__struct__ == ChatModel
     assert explicit.profile.provider == :xai
+    assert explicit.profile.max_input_tokens == 500_000
+    assert explicit.profile.extra.input_price_per_mtok == 2.00
+    assert explicit.profile.extra.cached_input_price_per_mtok == 0.50
+    assert explicit.profile.extra.output_price_per_mtok == 6.00
+    assert explicit.profile.extra.default_reasoning_effort == :high
+    assert explicit.profile.extra.reasoning_efforts == [:low, :medium, :high]
+
+    assert {:ok, latest_alias} = Models.init_chat_model("xai:grok-4.5-latest")
+    assert latest_alias.profile.extra.canonical_model == "grok-4.5"
+
+    assert {:ok, build_latest_alias} = Models.init_chat_model("xai:grok-build-latest")
+    assert build_latest_alias.profile.extra.canonical_model == "grok-4.5"
 
     assert {:ok, alias_model} = Models.init_chat_model("xai:grok-4")
     assert alias_model.profile.extra.canonical_model == "grok-4.3"

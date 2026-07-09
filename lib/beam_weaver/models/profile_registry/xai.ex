@@ -17,8 +17,10 @@ defmodule BeamWeaver.Models.ProfileRegistry.XAI do
   }
 
   @xai_chat_aliases %{
+    "grok-4.5-latest" => "grok-4.5",
+    "grok-build-latest" => "grok-4.5",
+    "grok-latest" => "grok-4.5",
     "grok-4.3-latest" => "grok-4.3",
-    "grok-latest" => "grok-4.3",
     "grok-4" => "grok-4.3",
     "grok-4-latest" => "grok-4.3",
     "grok-4-fast" => "grok-4.3",
@@ -72,6 +74,46 @@ defmodule BeamWeaver.Models.ProfileRegistry.XAI do
   }
 
   @profiles %{
+    {:xai, "grok-4.5"} =>
+      Profile.new(%{
+        provider: :xai,
+        id: "grok-4.5",
+        name: "Grok 4.5",
+        release_date: "2026-07-08",
+        last_updated: "2026-07-08",
+        responses_api: true,
+        chat_completions_api: true,
+        max_input_tokens: 500_000,
+        max_output_tokens: 30_000,
+        text_inputs: true,
+        image_inputs: true,
+        image_url_inputs: true,
+        text_outputs: true,
+        reasoning_output: true,
+        tool_calling: true,
+        tool_call_streaming: true,
+        tool_choice: true,
+        parallel_tool_calls: true,
+        structured_output: true,
+        streaming: true,
+        usage_metadata: true,
+        attachment: true,
+        supported_params: Params.xai_responses(),
+        supported_params_by_api: %{
+          responses: Params.xai_responses(),
+          chat_completions: Params.xai_chat_completions()
+        },
+        tokenizer: :o200k_base,
+        extra: %{
+          input_price_per_mtok: 2.00,
+          cached_input_price_per_mtok: 0.50,
+          output_price_per_mtok: 6.00,
+          default_reasoning_effort: :high,
+          reasoning_efforts: [:low, :medium, :high],
+          higher_context_pricing_threshold_tokens: 200_000,
+          regions: ["us-east-1", "us-west-2"]
+        }
+      }),
     {:xai, "grok-4.3"} =>
       Profile.new(%{
         provider: :xai,
@@ -101,7 +143,13 @@ defmodule BeamWeaver.Models.ProfileRegistry.XAI do
           responses: Params.xai_responses(),
           chat_completions: Params.xai_chat_completions()
         },
-        tokenizer: :o200k_base
+        tokenizer: :o200k_base,
+        extra: %{
+          input_price_per_mtok: 1.25,
+          cached_input_price_per_mtok: 0.20,
+          output_price_per_mtok: 2.50,
+          batch_discount_rate: 0.20
+        }
       }),
     {:xai, "grok-4.20-0309-reasoning"} =>
       Profile.new(%{
@@ -132,7 +180,13 @@ defmodule BeamWeaver.Models.ProfileRegistry.XAI do
           responses: Params.xai_responses(),
           chat_completions: Params.xai_chat_completions()
         },
-        tokenizer: :o200k_base
+        tokenizer: :o200k_base,
+        extra: %{
+          input_price_per_mtok: 1.25,
+          cached_input_price_per_mtok: 0.20,
+          output_price_per_mtok: 2.50,
+          batch_discount_rate: 0.20
+        }
       }),
     {:xai, "grok-4.20-0309-non-reasoning"} =>
       Profile.new(%{
@@ -163,7 +217,13 @@ defmodule BeamWeaver.Models.ProfileRegistry.XAI do
           responses: Params.xai_responses(),
           chat_completions: Params.xai_chat_completions()
         },
-        tokenizer: :o200k_base
+        tokenizer: :o200k_base,
+        extra: %{
+          input_price_per_mtok: 1.25,
+          cached_input_price_per_mtok: 0.20,
+          output_price_per_mtok: 2.50,
+          batch_discount_rate: 0.20
+        }
       }),
     {:xai, "grok-build-0.1"} =>
       Profile.new(%{
@@ -194,7 +254,12 @@ defmodule BeamWeaver.Models.ProfileRegistry.XAI do
           responses: Params.xai_responses(),
           chat_completions: Params.xai_chat_completions()
         },
-        tokenizer: :o200k_base
+        tokenizer: :o200k_base,
+        extra: %{
+          input_price_per_mtok: 1.00,
+          cached_input_price_per_mtok: 0.20,
+          output_price_per_mtok: 2.00
+        }
       }),
     {:xai, "grok-4.20-multi-agent-0309"} =>
       Profile.new(%{
@@ -225,7 +290,13 @@ defmodule BeamWeaver.Models.ProfileRegistry.XAI do
           responses: Params.xai_responses(),
           chat_completions: Params.xai_chat_completions()
         },
-        tokenizer: :o200k_base
+        tokenizer: :o200k_base,
+        extra: %{
+          input_price_per_mtok: 1.25,
+          cached_input_price_per_mtok: 0.20,
+          output_price_per_mtok: 2.50,
+          batch_discount_rate: 0.20
+        }
       }),
     {:xai, "v1"} =>
       Profile.new(%{

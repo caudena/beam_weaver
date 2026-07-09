@@ -1,7 +1,10 @@
 defmodule BeamWeaver.OpenAI.StreamingTest do
   use ExUnit.Case, async: true
 
+  alias BeamWeaver.Core.ContentBlock
+  alias BeamWeaver.Core.Message
   alias BeamWeaver.Core.Messages
+  alias BeamWeaver.Core.Messages.MessageChunk
   alias BeamWeaver.OpenAI.Streaming
   alias BeamWeaver.Stream.Envelope
   alias BeamWeaver.Stream.Events
@@ -103,11 +106,43 @@ defmodule BeamWeaver.OpenAI.StreamingTest do
                event: %Events.MessageChunk{
                  chunk: %Messages.AIChunk{
                    id: "rs_1",
-                   content: [%{type: :reasoning, text: "thinking"}]
+                   content: [%ContentBlock.Reasoning{reasoning: "thinking"}]
                  }
                }
              }
            ] = events
+  end
+
+  test "typed events preserve xAI reasoning_text deltas as non-text message chunks" do
+    body = """
+    event: response.reasoning_text.delta
+    data: {"type":"response.reasoning_text.delta","item_id":"rs_1","delta":"thinking"}
+
+    event: response.output_text.delta
+    data: {"type":"response.output_text.delta","item_id":"msg_1","delta":"answer"}
+    """
+
+    events = Streaming.typed_events(body)
+
+    assert %Envelope{
+             event: %Events.MessageChunk{
+               chunk: %Messages.AIChunk{
+                 id: "rs_1",
+                 content: [%ContentBlock.Reasoning{reasoning: "thinking"}]
+               }
+             }
+           } = Enum.find(events, &match?(%Envelope{event: %Events.MessageChunk{}}, &1))
+
+    chunks =
+      events
+      |> Enum.flat_map(fn
+        %Envelope{event: %Events.MessageChunk{chunk: chunk}} -> [chunk]
+        _event -> []
+      end)
+
+    assert Message.text(MessageChunk.to_message(MessageChunk.merge_many(chunks))) == "answer"
+    assert Streaming.reasoning_summary_deltas(body) == ["thinking"]
+    assert Streaming.text_deltas(body) == ["answer"]
   end
 
   test "typed events expose chat-completions chunks and terminal finish event" do

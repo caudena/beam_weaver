@@ -147,13 +147,14 @@ defmodule BeamWeaver.OpenAI.Streaming.Response do
          %{
            "data" =>
              %{
-               "type" => "response.reasoning_summary_text.delta",
+               "type" => type,
                "delta" => delta
              } = data
          },
          state
        )
-       when is_binary(delta) do
+       when type in ["response.reasoning_summary_text.delta", "response.reasoning_text.delta"] and
+              is_binary(delta) do
     update_summary_part(state, data, fn part ->
       part
       |> ensure_summary_part()
@@ -165,13 +166,14 @@ defmodule BeamWeaver.OpenAI.Streaming.Response do
          %{
            "data" =>
              %{
-               "type" => "response.reasoning_summary_text.done",
+               "type" => type,
                "text" => text
              } = data
          },
          state
        )
-       when is_binary(text) do
+       when type in ["response.reasoning_summary_text.done", "response.reasoning_text.done"] and
+              is_binary(text) do
     update_summary_part(state, data, fn part ->
       part
       |> ensure_summary_part()
