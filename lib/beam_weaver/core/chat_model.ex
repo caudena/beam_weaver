@@ -765,13 +765,22 @@ defmodule BeamWeaver.Core.ChatModel do
   defp usage_metadata(%Message{usage_metadata: usage, response_metadata: metadata}) do
     usage = normalize_usage_metadata(usage)
 
-    if map_size(usage) > 0 do
-      usage
-    else
+    metadata_usage =
       metadata
       |> metadata_first([:usage_metadata, :usage, :token_usage])
       |> normalize_usage_metadata()
-    end
+
+    usage = if map_size(usage) > 0, do: usage, else: metadata_usage
+
+    usage
+    |> maybe_put(
+      :service_tier,
+      usage[:service_tier] || metadata_usage[:service_tier] || metadata_first(metadata, [:service_tier])
+    )
+    |> maybe_put(
+      :inference_geo,
+      usage[:inference_geo] || metadata_usage[:inference_geo] || metadata_first(metadata, [:inference_geo])
+    )
   end
 
   defp normalize_usage_metadata(usage) when is_map(usage) do
@@ -790,7 +799,9 @@ defmodule BeamWeaver.Core.ChatModel do
           metadata_first(input_details, [
             :cache_creation,
             :cache_creation_tokens,
-            :cache_creation_input_tokens
+            :cache_creation_input_tokens,
+            :cache_write,
+            :cache_write_tokens
           ]),
       reasoning_tokens:
         metadata_first(usage, [:reasoning_tokens]) ||

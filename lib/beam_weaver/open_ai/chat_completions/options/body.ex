@@ -94,6 +94,10 @@ defmodule BeamWeaver.OpenAI.ChatCompletions.Options.Body do
         )
         |> Options.put_optional("prompt_cache_key", option(model, opts, :prompt_cache_key))
         |> Options.put_optional(
+          "prompt_cache_options",
+          Options.normalize_option_map(option(model, opts, :prompt_cache_options))
+        )
+        |> Options.put_optional(
           "prompt_cache_retention",
           Options.normalize_value(option(model, opts, :prompt_cache_retention))
         )

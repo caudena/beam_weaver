@@ -77,9 +77,15 @@ defmodule BeamWeaver.TestSupport.DeepAgents.Evals do
     "fast" => [
       "anthropic:claude-sonnet-4-6",
       "google:gemini-3.5-flash",
+      "openai:gpt-5.6-luna",
       "openai:gpt-5.4-mini"
     ],
-    "frontier" => ["anthropic:claude-fable-5", "openai:gpt-5.5", "openai:gpt-5.5-pro"],
+    "frontier" => [
+      "anthropic:claude-fable-5",
+      "openai:gpt-5.6-sol",
+      "openai:gpt-5.5",
+      "openai:gpt-5.5-pro"
+    ],
     "openai" => [
       "openai:gpt-4.1",
       "openai:gpt-5",
@@ -90,7 +96,10 @@ defmodule BeamWeaver.TestSupport.DeepAgents.Evals do
       "openai:gpt-5.4-nano",
       "openai:gpt-5.4-pro",
       "openai:gpt-5.5",
-      "openai:gpt-5.5-pro"
+      "openai:gpt-5.5-pro",
+      "openai:gpt-5.6-sol",
+      "openai:gpt-5.6-terra",
+      "openai:gpt-5.6-luna"
     ],
     "anthropic" => [
       "anthropic:claude-fable-5",

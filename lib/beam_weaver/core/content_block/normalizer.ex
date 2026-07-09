@@ -57,13 +57,13 @@ defmodule BeamWeaver.Core.ContentBlock.Normalizer do
          |> MapShape.reject_nil_values()}
 
       type in [:plain_text, "plain_text"] ->
-        {:ok, ContentBlock.plain_text(ContentBlock.get(map, :text) || "")}
+        {:ok, ContentBlock.plain_text(ContentBlock.get(map, :text) || "", metadata(map))}
 
       is_nil(type) and is_binary(ContentBlock.get(map, :text)) ->
-        {:ok, ContentBlock.text(ContentBlock.get(map, :text))}
+        {:ok, ContentBlock.text(ContentBlock.get(map, :text), metadata(map))}
 
       is_nil(type) and is_binary(ContentBlock.get(map, :content)) ->
-        {:ok, ContentBlock.text(ContentBlock.get(map, :content))}
+        {:ok, ContentBlock.text(ContentBlock.get(map, :content), metadata(map))}
 
       type in [:image_url, "image_url", :input_image, "input_image"] ->
         {:ok, image_url_block(map)}
@@ -163,6 +163,7 @@ defmodule BeamWeaver.Core.ContentBlock.Normalizer do
       annotations: ContentBlock.get(map, :annotations),
       cache_control: ContentBlock.get(map, :cache_control),
       thought_signature: thought_signature(map),
+      metadata: non_empty_metadata(map),
       raw_provider_block: ContentBlock.get(map, :raw_provider_block)
     }
     |> MapShape.reject_nil_values()
@@ -414,6 +415,7 @@ defmodule BeamWeaver.Core.ContentBlock.Normalizer do
       type: :refusal,
       id: ContentBlock.get(map, :id),
       refusal: ContentBlock.get(map, :refusal),
+      metadata: non_empty_metadata(map),
       raw_provider_block: ContentBlock.get(map, :raw_provider_block)
     }
     |> MapShape.reject_nil_values()
@@ -436,6 +438,13 @@ defmodule BeamWeaver.Core.ContentBlock.Normalizer do
       raw_provider_block: ContentBlock.get(map, :raw_provider_block) || raw_provider_block(map)
     }
     |> MapShape.reject_nil_values()
+  end
+
+  defp non_empty_metadata(map) do
+    case metadata(map) do
+      metadata when is_map(metadata) and map_size(metadata) > 0 -> metadata
+      _metadata -> nil
+    end
   end
 
   defp provider_image_bytes?(map) do

@@ -149,19 +149,20 @@ defmodule BeamWeaver.OpenAI.Messages.Request do
     %{"type" => "input_text", "text" => text}
   end
 
-  defp content_block_to_openai(%{type: :text, text: text}) when is_binary(text) do
+  defp content_block_to_openai(%{type: :text, text: text} = block) when is_binary(text) do
     %{"type" => "input_text", "text" => text}
+    |> put_prompt_cache_breakpoint(block)
   end
 
-  defp content_block_to_openai(%{type: :plain_text, text: text}) when is_binary(text) do
+  defp content_block_to_openai(%{type: :plain_text, text: text} = block) when is_binary(text) do
     %{"type" => "input_text", "text" => text}
+    |> put_prompt_cache_breakpoint(block)
   end
 
   defp content_block_to_openai(%{type: :image, url: url} = block) when is_binary(url) do
-    metadata = Map.get(block, :metadata, %{})
-
     %{"type" => "input_image", "image_url" => url}
-    |> Shared.put_optional("detail", Map.get(metadata || %{}, :detail))
+    |> put_input_detail(block)
+    |> put_prompt_cache_breakpoint(block)
   end
 
   defp content_block_to_openai(%{type: :image_url, image_url: image_url} = block)
@@ -169,9 +170,10 @@ defmodule BeamWeaver.OpenAI.Messages.Request do
     %{
       "type" => "input_image",
       "image_url" => image_url,
-      "detail" => Map.get(block, :detail)
+      "detail" => block_option(block, :detail)
     }
     |> Shared.reject_nil_values()
+    |> put_prompt_cache_breakpoint(block)
   end
 
   defp content_block_to_openai(%{type: :image_url, image_url: image_url} = block) do
@@ -180,9 +182,10 @@ defmodule BeamWeaver.OpenAI.Messages.Request do
     %{
       "type" => "input_image",
       "image_url" => image_url["url"] || image_url,
-      "detail" => image_url["detail"] || Map.get(block, :detail)
+      "detail" => image_url["detail"] || block_option(block, :detail)
     }
     |> Shared.reject_nil_values()
+    |> put_prompt_cache_breakpoint(block)
   end
 
   defp content_block_to_openai(%{type: :image, base64: data} = block) when is_binary(data) do
@@ -194,6 +197,8 @@ defmodule BeamWeaver.OpenAI.Messages.Request do
           data
         )
     }
+    |> put_input_detail(block)
+    |> put_prompt_cache_breakpoint(block)
   end
 
   defp content_block_to_openai(%{type: :image, data: data} = block) when is_binary(data) do
@@ -201,9 +206,11 @@ defmodule BeamWeaver.OpenAI.Messages.Request do
       "type" => "input_image",
       "image_url" => Shared.data_url(Map.get(block, :mime_type) || "image/png", data)
     }
+    |> put_input_detail(block)
+    |> put_prompt_cache_breakpoint(block)
   end
 
-  defp content_block_to_openai(%{type: :image, source: source})
+  defp content_block_to_openai(%{type: :image, source: source} = block)
        when is_map(source) do
     case {Map.get(source, :type), Map.get(source, :media_type), Map.get(source, :data)} do
       {:base64, mime_type, data} when is_binary(mime_type) and is_binary(data) ->
@@ -215,22 +222,31 @@ defmodule BeamWeaver.OpenAI.Messages.Request do
       _other ->
         %{"type" => "input_image", "image_url" => nil} |> Shared.reject_nil_values()
     end
+    |> put_input_detail(block)
+    |> put_prompt_cache_breakpoint(block)
   end
 
-  defp content_block_to_openai(%{type: :media, mime_type: mime_type, data: data})
+  defp content_block_to_openai(%{type: :media, mime_type: mime_type, data: data} = block)
        when is_binary(mime_type) and is_binary(data) do
     %{
       "type" => "input_image",
       "image_url" => Shared.data_url(mime_type, data)
     }
+    |> put_input_detail(block)
+    |> put_prompt_cache_breakpoint(block)
   end
 
-  defp content_block_to_openai(%{type: :file, url: url}) when is_binary(url) do
+  defp content_block_to_openai(%{type: :file, url: url} = block) when is_binary(url) do
     %{"type" => "input_file", "file_url" => url}
+    |> put_input_detail(block)
+    |> put_prompt_cache_breakpoint(block)
   end
 
-  defp content_block_to_openai(%{type: :file, file_id: file_id}) when is_binary(file_id) do
+  defp content_block_to_openai(%{type: :file, file_id: file_id} = block)
+       when is_binary(file_id) do
     %{"type" => "input_file", "file_id" => file_id}
+    |> put_input_detail(block)
+    |> put_prompt_cache_breakpoint(block)
   end
 
   defp content_block_to_openai(%{type: :file, base64: data} = block) when is_binary(data) do
@@ -240,6 +256,8 @@ defmodule BeamWeaver.OpenAI.Messages.Request do
       "filename" => Map.get(block, :filename)
     }
     |> Shared.reject_nil_values()
+    |> put_input_detail(block)
+    |> put_prompt_cache_breakpoint(block)
   end
 
   defp content_block_to_openai(%{type: :file, data: data} = block) when is_binary(data) do
@@ -249,6 +267,8 @@ defmodule BeamWeaver.OpenAI.Messages.Request do
       "filename" => Map.get(block, :filename)
     }
     |> Shared.reject_nil_values()
+    |> put_input_detail(block)
+    |> put_prompt_cache_breakpoint(block)
   end
 
   defp content_block_to_openai(%{type: :audio, base64: data} = block) when is_binary(data) do
@@ -278,6 +298,26 @@ defmodule BeamWeaver.OpenAI.Messages.Request do
   defp content_block_to_openai(block) when is_map(block) do
     BeamWeaver.MapShape.assert_atom_keys!(block)
     Shared.stringify_keys(block)
+  end
+
+  defp put_input_detail(part, block) do
+    Shared.put_optional(part, "detail", block_option(block, :detail) |> Shared.stringify_value())
+  end
+
+  defp put_prompt_cache_breakpoint(part, block) do
+    case block_option(block, :prompt_cache_breakpoint) do
+      breakpoint when is_map(breakpoint) ->
+        Map.put(part, "prompt_cache_breakpoint", Shared.stringify_keys(breakpoint))
+
+      _missing ->
+        part
+    end
+  end
+
+  defp block_option(block, key) do
+    metadata = Map.get(block, :metadata, %{}) || %{}
+
+    Map.get(block, key) || Map.get(metadata, key) || Map.get(metadata, Atom.to_string(key))
   end
 
   defp assistant_content_items(%Message{content: content, id: message_id}, opts)

@@ -96,11 +96,11 @@ defmodule BeamWeaver.Provider.Response do
   defp normalize_usage(nil, response_metadata) do
     case raw_usage(response_metadata) do
       nil -> %{}
-      usage -> normalize_usage(usage, %{})
+      usage -> normalize_usage(usage, response_metadata)
     end
   end
 
-  defp normalize_usage(usage, _response_metadata) when is_map(usage) do
+  defp normalize_usage(usage, response_metadata) when is_map(usage) do
     usage = usage_key_map(usage)
     input_details = usage |> Map.get(:input_token_details, %{}) |> usage_key_map()
     output_details = usage |> Map.get(:output_token_details, %{}) |> usage_key_map()
@@ -114,12 +114,18 @@ defmodule BeamWeaver.Provider.Response do
       output_tokens: output,
       total_tokens: total,
       cache_read_tokens: first_number(input_details, [:cache_read, :cache_read_tokens, :cache_read_input_tokens]),
-      cache_creation_tokens: first_number(input_details, [:cache_creation, :cache_creation_tokens]),
+      cache_creation_tokens:
+        first_number(input_details, [
+          :cache_creation,
+          :cache_creation_tokens,
+          :cache_write,
+          :cache_write_tokens
+        ]),
       reasoning_tokens: first_number(output_details, [:reasoning, :reasoning_tokens, :thinking_tokens]),
       input_token_details: input_details,
       output_token_details: output_details,
-      service_tier: Map.get(usage, :service_tier),
-      inference_geo: Map.get(usage, :inference_geo)
+      service_tier: Map.get(usage, :service_tier) || metadata_value(response_metadata, :service_tier),
+      inference_geo: Map.get(usage, :inference_geo) || metadata_value(response_metadata, :inference_geo)
     }
     |> reject_empty_values()
   end
@@ -181,6 +187,7 @@ defmodule BeamWeaver.Provider.Response do
       thinking_level: Keyword.get(opts, :thinking_level) || Map.get(model, :thinking_level),
       thinking_budget: Keyword.get(opts, :thinking_budget) || Map.get(model, :thinking_budget),
       include_thoughts: Keyword.get(opts, :include_thoughts) || Map.get(model, :include_thoughts),
+      context: metadata[:reasoning_context] || metadata_value(metadata[:reasoning], :context),
       tokens: usage[:reasoning_tokens],
       content: reasoning_content(message),
       thought_signatures: thought_signatures(message),

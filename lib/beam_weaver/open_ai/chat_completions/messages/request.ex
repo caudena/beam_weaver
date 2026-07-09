@@ -139,40 +139,52 @@ defmodule BeamWeaver.OpenAI.ChatCompletions.Messages.Request do
   defp content_part(text) when is_binary(text),
     do: %{"type" => "text", "text" => text}
 
-  defp content_part(%{type: :text, text: text}) when is_binary(text),
-    do: %{"type" => "text", "text" => text}
+  defp content_part(%{type: :text, text: text} = block) when is_binary(text) do
+    %{"type" => "text", "text" => text}
+    |> put_prompt_cache_breakpoint(block)
+  end
 
-  defp content_part(%{type: :plain_text, text: text}) when is_binary(text),
-    do: %{"type" => "text", "text" => text}
+  defp content_part(%{type: :plain_text, text: text} = block) when is_binary(text) do
+    %{"type" => "text", "text" => text}
+    |> put_prompt_cache_breakpoint(block)
+  end
 
   defp content_part(%{type: :image, url: url} = block) when is_binary(url) do
     image_url =
       %{"url" => url}
-      |> put_optional("detail", Map.get(Map.get(block, :metadata, %{}) || %{}, :detail))
+      |> put_optional("detail", image_detail(block))
 
     %{"type" => "image_url", "image_url" => image_url}
+    |> put_prompt_cache_breakpoint(block)
   end
 
-  defp content_part(%{type: :image_url, image_url: image_url}) do
+  defp content_part(%{type: :image_url, image_url: image_url} = block) do
     %{"type" => "image_url", "image_url" => MessageParts.stringify_value(image_url)}
+    |> put_prompt_cache_breakpoint(block)
   end
 
   defp content_part(%{type: :image, base64: data} = block) when is_binary(data) do
+    image_url =
+      %{"url" => MessageParts.data_url(Map.get(block, :mime_type) || "image/png", data)}
+      |> put_optional("detail", image_detail(block))
+
     %{
       "type" => "image_url",
-      "image_url" => %{
-        "url" => MessageParts.data_url(Map.get(block, :mime_type) || "image/png", data)
-      }
+      "image_url" => image_url
     }
+    |> put_prompt_cache_breakpoint(block)
   end
 
   defp content_part(%{type: :image, data: data} = block) when is_binary(data) do
+    image_url =
+      %{"url" => MessageParts.data_url(Map.get(block, :mime_type) || "image/png", data)}
+      |> put_optional("detail", image_detail(block))
+
     %{
       "type" => "image_url",
-      "image_url" => %{
-        "url" => MessageParts.data_url(Map.get(block, :mime_type) || "image/png", data)
-      }
+      "image_url" => image_url
     }
+    |> put_prompt_cache_breakpoint(block)
   end
 
   defp content_part(%{type: :audio, base64: data} = block) when is_binary(data) do
@@ -183,6 +195,7 @@ defmodule BeamWeaver.OpenAI.ChatCompletions.Messages.Request do
         "format" => MessageParts.audio_format(Map.get(block, :mime_type) || Map.get(block, :format))
       }
     }
+    |> put_prompt_cache_breakpoint(block)
   end
 
   defp content_part(%{type: :audio, data: data} = block) when is_binary(data) do
@@ -193,6 +206,7 @@ defmodule BeamWeaver.OpenAI.ChatCompletions.Messages.Request do
         "format" => MessageParts.audio_format(Map.get(block, :mime_type) || Map.get(block, :format))
       }
     }
+    |> put_prompt_cache_breakpoint(block)
   end
 
   defp content_part(%{type: :file, base64: data} = block) when is_binary(data) do
@@ -205,6 +219,7 @@ defmodule BeamWeaver.OpenAI.ChatCompletions.Messages.Request do
         }
         |> MessageParts.reject_nil_values()
     }
+    |> put_prompt_cache_breakpoint(block)
   end
 
   defp content_part(%{type: :file, data: data} = block) when is_binary(data) do
@@ -217,13 +232,23 @@ defmodule BeamWeaver.OpenAI.ChatCompletions.Messages.Request do
         }
         |> MessageParts.reject_nil_values()
     }
+    |> put_prompt_cache_breakpoint(block)
   end
 
-  defp content_part(%{type: :file, url: url}) when is_binary(url),
-    do: %{"type" => "file", "file" => %{"file_url" => url}}
+  defp content_part(%{type: :file, url: url} = block) when is_binary(url) do
+    %{"type" => "file", "file" => %{"file_url" => url}}
+    |> put_prompt_cache_breakpoint(block)
+  end
 
-  defp content_part(%{type: :file, file_id: file_id}) when is_binary(file_id),
-    do: %{"type" => "file", "file" => %{"file_id" => file_id}}
+  defp content_part(%{type: :file, file_id: file_id} = block) when is_binary(file_id) do
+    %{"type" => "file", "file" => %{"file_id" => file_id}}
+    |> put_prompt_cache_breakpoint(block)
+  end
+
+  defp content_part(%{type: :refusal, refusal: refusal} = block) when is_binary(refusal) do
+    %{"type" => "refusal", "refusal" => refusal}
+    |> put_prompt_cache_breakpoint(block)
+  end
 
   defp content_part(%ContentBlock.Unknown{value: value}) when is_map(value) do
     MessageParts.stringify_keys(value)
@@ -233,6 +258,25 @@ defmodule BeamWeaver.OpenAI.ChatCompletions.Messages.Request do
     BeamWeaver.MapShape.assert_atom_keys!(block)
     MessageParts.stringify_keys(block)
   end
+
+  defp put_prompt_cache_breakpoint(part, block) do
+    case block_option(block, :prompt_cache_breakpoint) do
+      breakpoint when is_map(breakpoint) ->
+        Map.put(part, "prompt_cache_breakpoint", MessageParts.stringify_keys(breakpoint))
+
+      _missing ->
+        part
+    end
+  end
+
+  defp block_option(block, key) do
+    metadata = Map.get(block, :metadata, %{}) || %{}
+
+    Map.get(block, key) || Map.get(metadata, key) || Map.get(metadata, Atom.to_string(key))
+  end
+
+  defp image_detail(block),
+    do: block_option(block, :detail) |> MessageParts.stringify_value()
 
   defp assistant_content(%Message{content: content}) when is_binary(content), do: content
 

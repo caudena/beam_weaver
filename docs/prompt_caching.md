@@ -72,26 +72,32 @@ The following sections show lower-level direct model-call controls.
 
 ## OpenAI Responses
 
-OpenAI Responses supports `:prompt_cache_key`. The same static prompt plus the
-same key is what makes the second and later calls eligible for reuse.
+OpenAI Responses supports `:prompt_cache_key`. GPT-5.6 also supports
+`:prompt_cache_options` and explicit content-block breakpoints. Use
+`prompt_cache_options` for GPT-5.6; OpenAI deprecates
+`prompt_cache_retention` for this model family.
 
 ```elixir
 alias BeamWeaver.Core.ChatModel
 alias BeamWeaver.Core.Message
 
 system_prompt = MyApp.Prompts.support_policy()
-cache_key = BeamWeaver.PromptCache.key("support-agent", "openai:gpt-5.4-mini", system_prompt)
+cache_key = BeamWeaver.PromptCache.key("support-agent", "openai:gpt-5.6", system_prompt)
 
 model =
   BeamWeaver.OpenAI.ChatModel.new(
-    model: "gpt-5.4-mini",
+    model: "gpt-5.6",
     api_key: System.fetch_env!("OPENAI_API_KEY"),
     prompt_cache_key: cache_key,
-    prompt_cache_retention: :in_memory
+    prompt_cache_options: %{mode: :explicit, ttl: "30m"}
   )
 
 messages = [
-  Message.system(system_prompt),
+  Message.system([
+    BeamWeaver.Core.ContentBlock.text(system_prompt, %{
+      prompt_cache_breakpoint: %{mode: :explicit}
+    })
+  ]),
   Message.user("Ticket SUP-42: can deleted exports be restored?")
 ]
 
@@ -99,26 +105,37 @@ messages = [
 {:ok, second} = ChatModel.invoke(model, messages)
 ```
 
-When the provider reports a hit, BeamWeaver preserves it in
-`response.usage_metadata.input_token_details.cache_read`.
+The `prompt_cache_breakpoint` metadata is emitted on the corresponding OpenAI
+`input_text`, `input_image`, or `input_file` part. File and image content blocks
+can also carry `detail` in metadata; GPT-5.6 accepts `detail` on Responses file
+inputs as well as images.
+
+When OpenAI reports cache activity, BeamWeaver preserves reads and writes in
+`response.usage_metadata.input_token_details.cache_read` and
+`response.usage_metadata.input_token_details.cache_write`.
 
 ## OpenAI Chat Completions
 
-Chat Completions uses the same BeamWeaver option:
+Chat Completions uses the same BeamWeaver options and supports explicit
+breakpoints on its text, image, audio, file, and refusal content parts:
 
 ```elixir
-cache_key = BeamWeaver.PromptCache.key("support-agent", "openai:gpt-5.4-mini", system_prompt)
+cache_key = BeamWeaver.PromptCache.key("support-agent", "openai:gpt-5.6", system_prompt)
 
 model =
   BeamWeaver.OpenAI.ChatCompletionsModel.new(
-    model: "gpt-5.4-mini",
+    model: "gpt-5.6",
     api_key: System.fetch_env!("OPENAI_API_KEY"),
     prompt_cache_key: cache_key,
-    prompt_cache_retention: :in_memory
+    prompt_cache_options: %{mode: :explicit, ttl: "30m"}
   )
 
 {:ok, response} = BeamWeaver.Core.ChatModel.invoke(model, messages)
 ```
+
+GPT-5.6 function tools on Chat Completions require
+`reasoning_effort: :none`. BeamWeaver rejects incompatible requests before
+transport; use the Responses model when tools must run with reasoning enabled.
 
 ## xAI Grok
 

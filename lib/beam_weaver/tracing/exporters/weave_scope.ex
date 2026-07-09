@@ -315,12 +315,14 @@ defmodule BeamWeaver.Tracing.Exporters.WeaveScope do
     |> maybe_put(
       "service_tier",
       metadata_value(usage, "service_tier") || metadata_value(metadata, "service_tier") ||
+        metadata_value(response_metadata, "service_tier") ||
         metadata_value(response_usage, "service_tier") ||
         metadata_value(context_metadata, "service_tier")
     )
     |> maybe_put(
       "inference_geo",
       metadata_value(usage, "inference_geo") || metadata_value(metadata, "inference_geo") ||
+        metadata_value(response_metadata, "inference_geo") ||
         metadata_value(response_usage, "inference_geo") ||
         metadata_value(context_metadata, "inference_geo")
     )

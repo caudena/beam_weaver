@@ -63,6 +63,7 @@ defmodule BeamWeaver.OpenAI.Messages.Response do
       details when is_map(details) ->
         %{
           cache_read: details["cached_tokens"],
+          cache_write: details["cache_write_tokens"],
           flex: details["flex"]
         }
         |> BeamWeaver.MapShape.reject_nil_or_empty()
@@ -404,6 +405,7 @@ defmodule BeamWeaver.OpenAI.Messages.Response do
       output: normalize_output(response["output"]),
       audio: first_message_part(response, ["output_audio", "audio"]),
       reasoning: first_output_item(response, "reasoning"),
+      reasoning_context: get_in(response, ["reasoning", "context"]),
       headers: header_metadata[:headers],
       transport: transport_metadata(header_metadata),
       provider_metadata: response["metadata"],

@@ -132,6 +132,57 @@ defmodule BeamWeaver.OpenAI.MessagesTest do
            ] = input
   end
 
+  test "converts GPT-5.6 Responses cache breakpoints and file detail" do
+    assert {:ok, input} =
+             Messages.to_responses_input([
+               Message.user([
+                 %{
+                   type: :text,
+                   text: "stable instructions",
+                   metadata: %{prompt_cache_breakpoint: %{mode: :explicit}}
+                 },
+                 ContentBlock.file(%{
+                   file_id: "file-dense-pdf",
+                   metadata: %{
+                     detail: :high,
+                     prompt_cache_breakpoint: %{mode: :explicit}
+                   }
+                 }),
+                 ContentBlock.image(%{
+                   url: "https://example.test/original.png",
+                   metadata: %{
+                     "detail" => :original,
+                     "prompt_cache_breakpoint" => %{mode: :explicit}
+                   }
+                 })
+               ])
+             ])
+
+    assert [
+             %{
+               "content" => [
+                 %{
+                   "type" => "input_text",
+                   "text" => "stable instructions",
+                   "prompt_cache_breakpoint" => %{"mode" => "explicit"}
+                 },
+                 %{
+                   "type" => "input_file",
+                   "file_id" => "file-dense-pdf",
+                   "detail" => "high",
+                   "prompt_cache_breakpoint" => %{"mode" => "explicit"}
+                 },
+                 %{
+                   "type" => "input_image",
+                   "image_url" => "https://example.test/original.png",
+                   "detail" => "original",
+                   "prompt_cache_breakpoint" => %{"mode" => "explicit"}
+                 }
+               ]
+             }
+           ] = input
+  end
+
   test "converts typed BeamWeaver content block structs to Responses API input parts" do
     assert {:ok, input} =
              Messages.to_responses_input([
@@ -582,9 +633,14 @@ defmodule BeamWeaver.OpenAI.MessagesTest do
              Messages.response_to_message(%{
                "id" => "resp_usage",
                "output" => [],
+               "reasoning" => %{"context" => "all_turns"},
                "usage" => %{
                  "input_tokens" => 100,
-                 "input_tokens_details" => %{"cached_tokens" => 50, "flex" => 100},
+                 "input_tokens_details" => %{
+                   "cached_tokens" => 50,
+                   "cache_write_tokens" => 25,
+                   "flex" => 100
+                 },
                  "output_tokens" => 50,
                  "output_tokens_details" => %{
                    "reasoning_tokens" => 10,
@@ -601,7 +657,7 @@ defmodule BeamWeaver.OpenAI.MessagesTest do
              input_tokens: 100,
              output_tokens: 50,
              total_tokens: 0,
-             input_token_details: %{cache_read: 50, flex: 100},
+             input_token_details: %{cache_read: 50, cache_write: 25, flex: 100},
              output_token_details: %{
                reasoning: 10,
                accepted_prediction: 4,
@@ -610,6 +666,8 @@ defmodule BeamWeaver.OpenAI.MessagesTest do
                flex_reasoning: 10
              }
            }
+
+    assert message.response_metadata.reasoning_context == "all_turns"
   end
 
   test "preserves Responses API v3 output blocks and invalid function arguments" do
