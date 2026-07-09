@@ -5,8 +5,11 @@ defmodule BeamWeaver.Agent.RuntimeBuilderTest do
   alias BeamWeaver.Agent.Built
   alias BeamWeaver.Agent.Middleware.DynamicPrompt
   alias BeamWeaver.Agent.ModelRequest
+  alias BeamWeaver.Core.ContentBlock
   alias BeamWeaver.Core.Message
+  alias BeamWeaver.Core.Messages
   alias BeamWeaver.Core.Tool
+  alias BeamWeaver.Stream
   alias BeamWeaver.Stream.Envelope
   alias BeamWeaver.Stream.Events
 
@@ -37,6 +40,54 @@ defmodule BeamWeaver.Agent.RuntimeBuilderTest do
     def invoke(%__MODULE__{parent: parent}, messages, opts) do
       send(parent, {:runtime_builder_model_call, messages, opts})
       {:ok, Message.assistant("ok")}
+    end
+  end
+
+  defmodule TypedStreamingModel do
+    @behaviour BeamWeaver.Core.ChatModel
+
+    defstruct []
+
+    @impl true
+    def invoke(%__MODULE__{}, _messages, _opts) do
+      {:ok, Message.assistant("invoke")}
+    end
+
+    @impl true
+    def stream_typed_events(%__MODULE__{}, _messages, _opts) do
+      {:ok,
+       [
+         Stream.envelope(%Events.MessageChunk{
+           chunk: Messages.ai_chunk([ContentBlock.reasoning("thinking")], id: "rs_1")
+         }),
+         Stream.envelope(%Events.MessageChunk{chunk: Messages.ai_chunk("", id: "msg_empty")}),
+         Stream.envelope(%Events.Token{text: "answer"}),
+         Stream.envelope(%Events.Done{})
+       ]}
+    end
+  end
+
+  defmodule UnsupportedTypedStreamingModel do
+    @behaviour BeamWeaver.Core.ChatModel
+
+    defstruct []
+
+    @impl true
+    def invoke(%__MODULE__{}, _messages, _opts) do
+      {:ok, Message.assistant("invoke")}
+    end
+
+    @impl true
+    def stream_typed_events(%__MODULE__{}, _messages, _opts) do
+      {:error,
+       BeamWeaver.Core.Error.new(
+         :unsupported_feature,
+         "provider does not support typed stream events"
+       )}
+    end
+
+    def stream_response(%__MODULE__{}, _messages, _opts) do
+      {:ok, Message.assistant("stream response")}
     end
   end
 
@@ -153,6 +204,75 @@ defmodule BeamWeaver.Agent.RuntimeBuilderTest do
            )
 
     assert Enum.any?(events, &match?(%Envelope{event: %Events.Done{}}, &1))
+  end
+
+  test "built agents forward model typed reasoning events while preserving final output" do
+    assert {:ok, %Built{} = agent} =
+             Agent.build(
+               name: "runtime_typed_stream_agent",
+               model: %TypedStreamingModel{},
+               tools: []
+             )
+
+    assert {:ok, stream} =
+             Agent.stream_events(
+               agent,
+               %{messages: [Message.user("hello")]},
+               live: true,
+               stream_mode: :events,
+               model_opts: [stream: true]
+             )
+
+    events = Enum.to_list(stream)
+
+    assert Enum.any?(
+             events,
+             &match?(
+               %Envelope{
+                 event: %Events.MessageChunk{
+                   chunk: %{content: [%ContentBlock.Reasoning{reasoning: "thinking"}]}
+                 }
+               },
+               &1
+             )
+           )
+
+    assert Enum.any?(
+             events,
+             &match?(
+               %Envelope{event: %Events.GraphUpdate{update: %{"model" => %{messages: [%Message{content: "answer"}]}}}},
+               &1
+             )
+           )
+  end
+
+  test "built agents fall back to stream_response when typed streaming is unsupported" do
+    assert {:ok, %Built{} = agent} =
+             Agent.build(
+               name: "runtime_typed_stream_fallback_agent",
+               model: %UnsupportedTypedStreamingModel{},
+               tools: []
+             )
+
+    assert {:ok, stream} =
+             Agent.stream_events(
+               agent,
+               %{messages: [Message.user("hello")]},
+               stream_mode: :events,
+               model_opts: [stream: true]
+             )
+
+    assert Enum.any?(
+             stream,
+             &match?(
+               %Envelope{
+                 event: %Events.GraphUpdate{
+                   update: %{"model" => %{messages: [%Message{content: "stream response"}]}}
+                 }
+               },
+               &1
+             )
+           )
   end
 
   test "runtime builder preserves explicit names" do

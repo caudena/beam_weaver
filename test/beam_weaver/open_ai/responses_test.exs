@@ -1,6 +1,7 @@
 defmodule BeamWeaver.OpenAI.ResponsesTest do
   use ExUnit.Case
 
+  alias BeamWeaver.Core.ChatModel, as: CoreChatModel
   alias BeamWeaver.Core.Message
   alias BeamWeaver.Models
   alias BeamWeaver.OpenAI
@@ -8,6 +9,7 @@ defmodule BeamWeaver.OpenAI.ResponsesTest do
   alias BeamWeaver.OpenAI.Client
   alias BeamWeaver.OpenAI.Responses
   alias BeamWeaver.OpenAI.ResponsesModel
+  alias BeamWeaver.Stream.Events
 
   test "builds raw Responses API input items" do
     assert Responses.message(:user, "hello", id: "msg_1") == %{
@@ -133,6 +135,37 @@ defmodule BeamWeaver.OpenAI.ResponsesTest do
     assert body["top_logprobs"] == 2
     assert body["truncation"] == "auto"
     assert body["vendor_flag"] == true
+  end
+
+  test "explicit Responses model delegates typed stream events" do
+    body = """
+    event: response.output_text.delta
+    data: {"type":"response.output_text.delta","item_id":"msg_1","delta":"answer"}
+
+    event: response.completed
+    data: {"type":"response.completed","response":{"id":"resp_openai","usage":{"total_tokens":3}}}
+
+    data: [DONE]
+    """
+
+    model =
+      %ResponsesModel{
+        model: "gpt-5.4-mini",
+        api_key: "sk-test",
+        transport: BeamWeaver.TestSupport.Conformance.Fakes.Transport,
+        transport_opts: [
+          expect: %{method: :post, path: "/v1/responses"},
+          headers: [{"content-type", "text/event-stream"}],
+          body: body
+        ]
+      }
+
+    assert {:ok, stream} = CoreChatModel.stream_typed_events(model, [Message.user("events")])
+    events = Enum.to_list(stream)
+
+    assert Enum.any?(events, &match?(%{event: %Events.Token{text: "answer"}}, &1))
+    assert Enum.all?(events, &(&1.metadata.provider == :openai))
+    assert Enum.all?(events, &(&1.metadata.model_provider == :openai))
   end
 
   test "Responses prompt_cache_key follows first-class, model kwargs, and per-call precedence" do

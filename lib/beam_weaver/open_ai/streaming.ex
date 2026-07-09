@@ -93,8 +93,14 @@ defmodule BeamWeaver.OpenAI.Streaming do
 
   def reasoning_summary_deltas(parsed_events) when is_list(parsed_events) do
     Enum.flat_map(parsed_events, fn
-      %{"data" => %{"type" => "response.reasoning_summary_text.delta", "delta" => delta}}
-      when is_binary(delta) ->
+      %{
+        "data" => %{
+          "type" => type,
+          "delta" => delta
+        }
+      }
+      when type in ["response.reasoning_summary_text.delta", "response.reasoning_text.delta"] and
+             is_binary(delta) ->
         [delta]
 
       _event ->

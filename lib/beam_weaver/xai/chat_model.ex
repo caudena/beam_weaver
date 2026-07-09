@@ -13,7 +13,7 @@ defmodule BeamWeaver.XAI.ChatModel do
   alias BeamWeaver.XAI.Messages
   alias BeamWeaver.XAI.Tools
 
-  @default_model "grok-4.3"
+  @default_model "grok-4.5"
   @default_endpoint "https://api.x.ai/v1/responses"
 
   # credo:disable-for-next-line Credo.Check.Warning.StructFieldAmount

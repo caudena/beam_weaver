@@ -19,6 +19,9 @@ defmodule BeamWeaver.Agent.Nodes.Model do
   alias BeamWeaver.Core.ChatModel
   alias BeamWeaver.Core.Error
   alias BeamWeaver.Core.Message
+  alias BeamWeaver.Core.Messages.MessageChunk
+  alias BeamWeaver.Stream.Envelope
+  alias BeamWeaver.Stream.Events
   alias BeamWeaver.Tracing
 
   defstruct [
@@ -142,7 +145,7 @@ defmodule BeamWeaver.Agent.Nodes.Model do
 
     trace_structured_output(strategy, structured_policy, request, messages, opts, fn ->
       with :ok <- ToolSet.validate(tool_set),
-           {:ok, response} <- call_model(request.model, messages, opts) do
+           {:ok, response} <- call_model(request.model, messages, opts, request.runtime) do
         case StructuredOutput.handle_model_output(response, strategy) do
           {:ok, model_response} ->
             model_response = Response.maybe_limit_steps_response(request, model_response)
@@ -168,20 +171,170 @@ defmodule BeamWeaver.Agent.Nodes.Model do
     end)
   end
 
-  defp call_model(model, messages, opts) do
-    if stream_response?(model, opts) do
-      ChatModel.trace_call(model, messages, opts, fn ->
-        model.__struct__.stream_response(model, messages, opts)
-      end)
-    else
-      ChatModel.invoke(model, messages, opts)
+  defp call_model(model, messages, opts, runtime) do
+    cond do
+      typed_stream?(model, opts) ->
+        ChatModel.trace_call(model, messages, opts, fn ->
+          case stream_typed_model(model, messages, opts, runtime) do
+            {:error, %Error{type: :unsupported_feature}} = error ->
+              if stream_response?(model, opts) do
+                model.__struct__.stream_response(model, messages, opts)
+              else
+                error
+              end
+
+            result ->
+              result
+          end
+        end)
+
+      stream_response?(model, opts) ->
+        ChatModel.trace_call(model, messages, opts, fn ->
+          model.__struct__.stream_response(model, messages, opts)
+        end)
+
+      true ->
+        ChatModel.invoke(model, messages, opts)
     end
+  end
+
+  defp typed_stream?(model, opts) do
+    Keyword.get(opts, :stream, false) == true and
+      function_exported?(model.__struct__, :stream_typed_events, 3)
   end
 
   defp stream_response?(model, opts) do
     Keyword.get(opts, :stream, false) == true and
       function_exported?(model.__struct__, :stream_response, 3)
   end
+
+  defp stream_typed_model(model, messages, opts, runtime) do
+    with {:ok, events} <- ChatModel.stream_typed_events(model, messages, opts) do
+      events
+      |> Enum.reduce_while(stream_acc(), &collect_stream_event(&1, &2, runtime))
+      |> stream_result()
+    end
+  end
+
+  defp stream_acc, do: %{message: nil, chunks: [], tokens: [], error: nil}
+
+  defp collect_stream_event(%Envelope{} = envelope, acc, runtime) do
+    emit_stream_event(runtime, envelope)
+    collect_typed_event(envelope.event, acc)
+  end
+
+  defp collect_stream_event(event, acc, runtime) do
+    emit_stream_event(runtime, event)
+    collect_typed_event(event, acc)
+  end
+
+  defp collect_typed_event(%Events.Message{message: %Message{role: :assistant} = message}, acc) do
+    {:cont, %{acc | message: message}}
+  end
+
+  defp collect_typed_event(%Events.Message{}, acc), do: {:cont, acc}
+
+  defp collect_typed_event(%Events.MessageChunk{chunk: chunk}, acc) do
+    case visible_chunk(chunk) do
+      nil -> {:cont, acc}
+      chunk -> {:cont, %{acc | chunks: [chunk | acc.chunks]}}
+    end
+  end
+
+  defp collect_typed_event(%Events.Token{text: text}, acc) when is_binary(text) and text != "" do
+    {:cont, %{acc | tokens: [text | acc.tokens]}}
+  end
+
+  defp collect_typed_event(%Events.Error{error: error}, acc), do: {:halt, %{acc | error: error}}
+  defp collect_typed_event(%Events.ToolError{message: message}, acc), do: {:halt, %{acc | error: message}}
+  defp collect_typed_event(_event, acc), do: {:cont, acc}
+
+  defp emit_stream_event(%{stream_writer: writer}, %Envelope{event: event, metadata: metadata})
+       when is_function(writer, 1) do
+    writer.(put_event_metadata(event, metadata))
+    :ok
+  end
+
+  defp emit_stream_event(%{stream_writer: writer}, event) when is_function(writer, 1) do
+    writer.(event)
+    :ok
+  end
+
+  defp emit_stream_event(_runtime, _event), do: :ok
+
+  defp put_event_metadata(event, metadata) when is_map(metadata) and map_size(metadata) > 0 do
+    case Map.fetch(event, :metadata) do
+      {:ok, event_metadata} when is_map(event_metadata) ->
+        %{event | metadata: Map.merge(event_metadata, metadata)}
+
+      :error ->
+        event
+    end
+  end
+
+  defp put_event_metadata(event, _metadata), do: event
+
+  defp stream_result(%{error: error}) when not is_nil(error), do: {:error, error}
+  defp stream_result(%{message: %Message{} = message}), do: {:ok, message}
+
+  defp stream_result(%{chunks: [_ | _] = chunks}) do
+    chunks =
+      chunks
+      |> Enum.reverse()
+
+    case MessageChunk.merge_many(chunks) do
+      nil -> stream_text_result([])
+      chunk -> {:ok, MessageChunk.to_message(chunk)}
+    end
+  end
+
+  defp stream_result(%{tokens: tokens}), do: stream_text_result(tokens)
+
+  defp stream_text_result(tokens) do
+    text =
+      tokens
+      |> Enum.reverse()
+      |> Enum.join()
+
+    {:ok, Message.assistant(text)}
+  end
+
+  defp visible_chunk(%{content: content, tool_call_chunks: tool_call_chunks} = chunk)
+       when content in [nil, ""] do
+    if List.wrap(tool_call_chunks) != [] do
+      %{chunk | content: ""}
+    else
+      nil
+    end
+  end
+
+  defp visible_chunk(%{content: content, tool_call_chunks: tool_call_chunks} = chunk)
+       when is_list(content) do
+    visible_content = Enum.reject(content, &reasoning_block?/1)
+
+    cond do
+      visible_content != [] ->
+        %{chunk | content: visible_content}
+
+      List.wrap(tool_call_chunks) != [] ->
+        %{chunk | content: ""}
+
+      true ->
+        nil
+    end
+  end
+
+  defp visible_chunk(%{content: content} = chunk) when is_list(content) do
+    case Enum.reject(content, &reasoning_block?/1) do
+      [] -> nil
+      visible_content -> %{chunk | content: visible_content}
+    end
+  end
+
+  defp visible_chunk(chunk), do: chunk
+
+  defp reasoning_block?(%{type: type}) when type in [:reasoning, "reasoning"], do: true
+  defp reasoning_block?(_block), do: false
 
   defp structured_provider_opts(%StructuredOutput.ProviderStrategy{} = strategy),
     do: StructuredOutput.provider_opts(strategy)

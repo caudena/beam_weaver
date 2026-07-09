@@ -1,6 +1,7 @@
 defmodule BeamWeaver.OpenAI.Streaming.Messages do
   @moduledoc false
 
+  alias BeamWeaver.Core.ContentBlock
   alias BeamWeaver.Core.Messages
   alias BeamWeaver.Stream
   alias BeamWeaver.Stream.Events
@@ -120,31 +121,33 @@ defmodule BeamWeaver.OpenAI.Streaming.Messages do
   defp apply_message_chunk_event(
          %{
            "data" => %{
-             "type" => "response.reasoning_summary_text.delta",
+             "type" => type,
              "item_id" => item_id,
              "delta" => delta
            }
          },
          state
        )
-       when is_binary(delta) do
+       when type in ["response.reasoning_summary_text.delta", "response.reasoning_text.delta"] and
+              is_binary(delta) do
     emit_message_chunk(
       state,
-      Messages.ai_chunk([%{type: :reasoning, text: delta}], id: item_id)
+      Messages.ai_chunk([ContentBlock.reasoning(delta)], id: item_id)
     )
   end
 
   defp apply_message_chunk_event(
          %{
            "data" => %{
-             "type" => "response.reasoning_summary_text.delta",
+             "type" => type,
              "delta" => delta
            }
          },
          state
        )
-       when is_binary(delta) do
-    emit_message_chunk(state, Messages.ai_chunk([%{type: :reasoning, text: delta}]))
+       when type in ["response.reasoning_summary_text.delta", "response.reasoning_text.delta"] and
+              is_binary(delta) do
+    emit_message_chunk(state, Messages.ai_chunk([ContentBlock.reasoning(delta)]))
   end
 
   defp apply_message_chunk_event(%{"data" => %{"choices" => choices}}, state)

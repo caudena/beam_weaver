@@ -57,7 +57,7 @@ Anthropic:
 xAI:
 
 ```elixir
-{:ok, model} = BeamWeaver.Models.init_chat_model("xai:grok-4.3")
+{:ok, model} = BeamWeaver.Models.init_chat_model("xai:grok-4.5")
 ```
 
 Google:
@@ -125,8 +125,8 @@ Checked-in model profiles cover common OpenAI, Anthropic, Google Gemini,
 Moonshot/Kimi, xAI, and Z.ai families. Moonshot chat supports
 `moonshot:kimi-k2.7-code`, `moonshot:kimi-k2.7-code-highspeed`,
 `moonshot:kimi-k2.6`, and `moonshot:kimi-k2.5`. xAI chat defaults to
-`grok-4.3`; current checked-in xAI profiles also
-include `grok-4.20-0309-reasoning`, `grok-4.20-0309-non-reasoning`,
+`grok-4.5`; current checked-in xAI profiles also include `grok-4.3`,
+`grok-4.20-0309-reasoning`, `grok-4.20-0309-non-reasoning`,
 `grok-4.20-multi-agent-0309`, `grok-build-0.1`, and embedding model `v1`.
 Z.ai chat currently supports only `zai:glm-5.2`.
 Anthropic includes `anthropic:claude-sonnet-5`. Sonnet 5 uses adaptive
@@ -156,7 +156,7 @@ Recommended starting points:
 | Anthropic Claude | `anthropic:claude-sonnet-5`, `anthropic:claude-sonnet-4-6`, `anthropic:claude-opus-*`, `anthropic:claude-haiku-*` |
 | Google Gemini | `google:gemini-3.5-flash`, explicit `google:gemini-*` profiles |
 | Moonshot/Kimi | `moonshot:kimi-k2.7-code`, `moonshot:kimi-k2.7-code-highspeed`, `moonshot:kimi-k2.6`, `moonshot:kimi-k2.5` |
-| xAI Grok | `xai:grok-4.3`, `xai:grok-4.20-0309-reasoning` |
+| xAI Grok | `xai:grok-4.5`, `xai:grok-4.3`, `xai:grok-4.20-0309-reasoning` |
 | Z.ai GLM | `zai:glm-5.2` |
 
 Use the matrix as capability guidance, then validate model quality against your
@@ -175,6 +175,7 @@ Use the behaviour modules as the stable call boundary:
 - `BeamWeaver.Core.ChatModel.invoke/3`
 - `BeamWeaver.Core.ChatModel.stream/3`
 - `BeamWeaver.Core.ChatModel.stream_events/3`
+- `BeamWeaver.Core.ChatModel.stream_typed_events/3`
 - `BeamWeaver.Core.ChatModel.batch/3`
 - `BeamWeaver.Core.ChatModel.async_invoke/3`
 - `BeamWeaver.Core.ChatModel.async_batch/3`
@@ -182,7 +183,10 @@ Use the behaviour modules as the stable call boundary:
 - `BeamWeaver.Core.EmbeddingModel.embed_query/3`
 
 Provider modules may expose additional provider-specific helpers, such as
-`stream_response/3`, `count_tokens/3`, and deferred request helpers.
+`stream_response/3`, provider lifecycle `stream_events/3`, `count_tokens/3`,
+and deferred request helpers. Use `stream_typed_events/3` when standalone model
+callers need normalized BeamWeaver envelopes with tokens, message chunks,
+reasoning chunks, tool-call chunks, errors, and done events.
 
 {% hint style="info" %}
 **Chat Models And Legacy LLMs**

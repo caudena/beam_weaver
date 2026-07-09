@@ -31,7 +31,7 @@ defmodule BeamWeaver.XAI.Provider do
   def infer_provider?(_model, _kind), do: false
 
   @impl true
-  def default_model(:chat), do: "grok-4.3"
+  def default_model(:chat), do: "grok-4.5"
   def default_model(:embedding), do: "v1"
   def default_model(_kind), do: nil
 

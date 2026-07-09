@@ -46,6 +46,13 @@ defmodule BeamWeaver.OpenAI.ResponsesModel do
   def async_stream_events(%__MODULE__{} = model, messages, opts \\ []),
     do: ChatModel.async_stream_events(to_chat_model(model), messages, opts)
 
+  @impl true
+  def stream_typed_events(%__MODULE__{} = model, messages, opts \\ []),
+    do: ChatModel.stream_typed_events(to_chat_model(model), messages, opts)
+
+  def async_stream_typed_events(%__MODULE__{} = model, messages, opts \\ []),
+    do: ChatModel.async_stream_typed_events(to_chat_model(model), messages, opts)
+
   def request_body(%__MODULE__{} = model, messages, opts \\ []),
     do: ChatModel.request_body(to_chat_model(model), messages, opts)
 

@@ -1,5 +1,38 @@
 # Changelog
 
+## 0.1.10 - 2026-07-08
+
+### Added
+
+- Added `BeamWeaver.Core.ChatModel.stream_typed_events/3` and
+  `async_stream_typed_events/3` for standalone chat-model callers that need
+  normalized BeamWeaver stream envelopes without relying on provider-specific
+  lifecycle event APIs.
+
+### Changed
+
+- Added xAI `grok-4.5` as the default Grok chat profile with 500k context,
+  multimodal input capability metadata, configurable reasoning metadata, current
+  token pricing, and documented latest aliases.
+- Agent model nodes now use typed request-level streaming when `stream: true`
+  is present and the provider supports typed events, forwarding live model
+  reasoning chunks through graph and agent streams while keeping the final
+  assistant message reconstructed from visible answer/tool chunks.
+
+### Fixed
+
+- OpenAI-compatible Responses streaming now recognizes xAI
+  `response.reasoning_text.delta` and `response.reasoning_text.done` events
+  alongside OpenAI reasoning-summary events, so Grok reasoning can surface as
+  live `%BeamWeaver.Stream.Events.MessageChunk{}` reasoning blocks.
+- Reasoning stream chunks are now emitted as
+  `%BeamWeaver.Core.ContentBlock.Reasoning{}` instead of generic text-bearing
+  maps, preventing reasoning deltas from being folded into assistant answer
+  text by message projection or streamed final-response reconstruction.
+- Agent streaming falls back to the existing `stream_response/3` path when a
+  provider reports typed stream events as unsupported, preserving existing
+  streaming behavior for providers that have not added typed event support.
+
 ## 0.1.9 - 2026-07-04
 
 ### Fixed
