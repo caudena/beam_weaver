@@ -154,6 +154,15 @@ defmodule BeamWeaver.Moonshot.ChatModelTest do
     assert body["thinking"] == %{"type" => "disabled"}
     assert body["temperature"] == 0.6
 
+    assert {:error, required_tool_error} =
+             ChatModel.request_body(ChatModel.new(model: "kimi-k2.6"), [Message.user("hi")],
+               thinking: %{type: :disabled},
+               tool_choice: :required
+             )
+
+    assert required_tool_error.type == :unsupported_model_param
+    assert required_tool_error.details.param == :tool_choice
+
     assert {:error, partial_error} =
              ChatModel.request_body(
                ChatModel.new(model: "kimi-k2.6"),
@@ -227,6 +236,111 @@ defmodule BeamWeaver.Moonshot.ChatModelTest do
     assert temp_error.details.model == "kimi-k2.7-code"
     assert temp_error.details.param == :temperature
     assert temp_error.details.supported == 1.0
+  end
+
+  test "K3 uses reasoning_effort, fixed sampling, and required tool choice" do
+    tool = %Tool{
+      name: "lookup_weather",
+      description: "Lookup weather",
+      input_schema: %{
+        "type" => "object",
+        "properties" => %{"city" => %{"type" => "string"}}
+      },
+      handler: fn _args, _opts -> {:ok, "ok"} end
+    }
+
+    assert {:ok, body} =
+             ChatModel.request_body(ChatModel.new(model: "kimi-k3"), [Message.user("weather")],
+               reasoning_effort: :max,
+               tool_choice: :required,
+               tools: [tool],
+               temperature: 1.0,
+               top_p: 0.95,
+               n: 1,
+               presence_penalty: 0,
+               frequency_penalty: 0
+             )
+
+    assert body["model"] == "kimi-k3"
+    assert body["reasoning_effort"] == "max"
+    assert body["tool_choice"] == "required"
+    refute Map.has_key?(body, "thinking")
+
+    assert {:error, effort_error} =
+             ChatModel.request_body(ChatModel.new(model: "kimi-k3"), [Message.user("hi")], reasoning_effort: :high)
+
+    assert effort_error.type == :unsupported_model_param
+    assert effort_error.details.param == :reasoning_effort
+    assert effort_error.details.supported == ["max"]
+
+    assert {:error, thinking_error} =
+             ChatModel.request_body(ChatModel.new(model: "kimi-k3"), [Message.user("hi")], thinking: %{type: :enabled})
+
+    assert thinking_error.type == :unsupported_model_param
+    assert thinking_error.details.params == [:thinking]
+
+    assert {:error, specified_tool_error} =
+             ChatModel.request_body(ChatModel.new(model: "kimi-k3"), [Message.user("hi")],
+               tool_choice: %{type: :function, function: %{name: "lookup_weather"}}
+             )
+
+    assert specified_tool_error.type == :unsupported_model_param
+    assert specified_tool_error.details.param == :tool_choice
+    assert specified_tool_error.details.supported == ["auto", "none", "required"]
+
+    assert {:error, missing_tool_error} =
+             ChatModel.request_body(ChatModel.new(model: "kimi-k3"), [Message.user("hi")], tool_choice: :required)
+
+    assert missing_tool_error.type == :invalid_request
+    assert missing_tool_error.details.param == :tool_choice
+  end
+
+  test "K3 dynamically loads tools through contentless system messages" do
+    tool = %Tool{
+      name: "calculate",
+      description: "Evaluate an expression",
+      input_schema: %{
+        "type" => "object",
+        "properties" => %{"expression" => %{"type" => "string"}}
+      },
+      handler: fn _args, _opts -> {:ok, "ok"} end
+    }
+
+    dynamic_message =
+      Tools.dynamic_message([tool])
+
+    assert [%{"function" => %{"name" => "calculate"}}] =
+             dynamic_message.metadata.moonshot_dynamic_tools
+
+    assert {:ok, body} =
+             ChatModel.request_body(ChatModel.new(model: "kimi-k3"), [
+               Message.user("calculate 23 * 47"),
+               dynamic_message
+             ])
+
+    assert %{"role" => "system", "tools" => [tool]} = List.last(body["messages"])
+    refute Map.has_key?(List.last(body["messages"]), "content")
+    assert get_in(tool, ["function", "name"]) == "calculate"
+
+    assert {:error, model_error} =
+             ChatModel.request_body(ChatModel.new(model: "kimi-k2.6"), [
+               Message.user("calculate 23 * 47"),
+               dynamic_message
+             ])
+
+    assert model_error.type == :unsupported_feature
+    assert model_error.details.feature == :dynamic_tool_loading
+
+    invalid_message =
+      Message.system("content is forbidden",
+        metadata: %{moonshot_dynamic_tools: [tool]}
+      )
+
+    assert {:error, message_error} =
+             ChatModel.request_body(ChatModel.new(model: "kimi-k3"), [invalid_message])
+
+    assert message_error.type == :invalid_request
+    assert message_error.details.feature == :dynamic_tool_loading
   end
 
   test "function tools and built-in web search are rendered with Kimi rules" do
@@ -479,6 +593,43 @@ defmodule BeamWeaver.Moonshot.ChatModelTest do
     assert response.response_metadata.headers.msh_org_id == "org-moonshot"
   end
 
+  test "K3 stream_response reads final usage nested under the choice" do
+    body = """
+    data: {"id":"chatcmpl_k3","model":"kimi-k3","choices":[{"index":0,"delta":{"reasoning_content":"brief thought"},"finish_reason":null}]}
+
+    data: {"id":"chatcmpl_k3","model":"kimi-k3","choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":null}]}
+
+    data: {"id":"chatcmpl_k3","model":"kimi-k3","choices":[{"index":0,"delta":{},"finish_reason":"stop","usage":{"prompt_tokens":4,"completion_tokens":6,"total_tokens":10,"cached_tokens":2,"completion_tokens_details":{"reasoning_tokens":3}}}]}
+
+    data: [DONE]
+    """
+
+    model =
+      ChatModel.new(
+        model: "kimi-k3",
+        api_key: "moonshot-secret",
+        transport: BeamWeaver.TestSupport.Conformance.Fakes.Transport,
+        transport_opts: [
+          expect: %{method: :post, path: "/v1/chat/completions"},
+          headers: [{"content-type", "text/event-stream"}],
+          body: body
+        ]
+      )
+
+    assert {:ok, response} = ChatModel.stream_response(model, [Message.user("stream")])
+    assert Message.text(response) == "ok"
+
+    assert response.usage_metadata == %{
+             input_tokens: 4,
+             output_tokens: 6,
+             total_tokens: 10,
+             input_token_details: %{cache_read: 2},
+             output_token_details: %{reasoning: 3}
+           }
+
+    assert response.response_metadata.token_usage["total_tokens"] == 10
+  end
+
   test "stream_events returns envelopes tagged with Moonshot invocation metadata" do
     body = """
     data: {"id":"chatcmpl_kimi","model":"kimi-k2.6","choices":[{"index":0,"delta":{"reasoning_content":"think"},"finish_reason":null}]}
@@ -589,6 +740,15 @@ defmodule BeamWeaver.Moonshot.ChatModelTest do
   end
 
   test "model initializer supports Moonshot prefix, rejects aliases, and reports deprecated models" do
+    assert {:ok, k3_model} = Models.init_chat_model("moonshot:kimi-k3")
+    assert k3_model.__struct__ == ChatModel
+    assert k3_model.model == "kimi-k3"
+    assert k3_model.profile.max_input_tokens == 1_048_576
+    assert k3_model.profile.max_output_tokens == 1_048_576
+    assert k3_model.profile.extra.reasoning_efforts == [:max]
+    assert k3_model.profile.extra.dynamic_tool_loading
+    assert k3_model.profile.extra.input_cache_hit_price_per_mtok == 0.30
+
     assert {:ok, code_model} = Models.init_chat_model("moonshot:kimi-k2.7-code")
     assert code_model.__struct__ == ChatModel
     assert code_model.model == "kimi-k2.7-code"
@@ -619,8 +779,8 @@ defmodule BeamWeaver.Moonshot.ChatModelTest do
 
     assert {:error, deprecated} = Models.init_chat_model("moonshot:kimi-latest")
     assert deprecated.type == :deprecated_model
-    assert deprecated.details.replacement == "kimi-k2.6"
-    assert deprecated.details.expected == "moonshot:kimi-k2.6"
+    assert deprecated.details.replacement == "kimi-k3"
+    assert deprecated.details.expected == "moonshot:kimi-k3"
   end
 
   defp with_config(group, values, fun) do

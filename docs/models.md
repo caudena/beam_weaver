@@ -123,8 +123,9 @@ Provider scope is intentionally narrow:
 
 Checked-in model profiles cover common OpenAI, Anthropic, Google Gemini,
 Moonshot/Kimi, xAI, and Z.ai families. Moonshot chat supports
-`moonshot:kimi-k2.7-code`, `moonshot:kimi-k2.7-code-highspeed`,
-`moonshot:kimi-k2.6`, and `moonshot:kimi-k2.5`. xAI chat defaults to
+`moonshot:kimi-k3`, `moonshot:kimi-k2.7-code`,
+`moonshot:kimi-k2.7-code-highspeed`, `moonshot:kimi-k2.6`, and
+`moonshot:kimi-k2.5`. xAI chat defaults to
 `grok-4.5`; current checked-in xAI profiles also include `grok-4.3`,
 `grok-4.20-0309-reasoning`, `grok-4.20-0309-non-reasoning`,
 `grok-4.20-multi-agent-0309`, `grok-build-0.1`, and embedding model `v1`.
@@ -161,7 +162,7 @@ Recommended starting points:
 | OpenAI GPT | `openai:gpt-5.6-sol`, `openai:gpt-5.6-terra`, `openai:gpt-5.6-luna`, `openai:gpt-5.4-mini` |
 | Anthropic Claude | `anthropic:claude-sonnet-5`, `anthropic:claude-sonnet-4-6`, `anthropic:claude-opus-*`, `anthropic:claude-haiku-*` |
 | Google Gemini | `google:gemini-3.5-flash`, explicit `google:gemini-*` profiles |
-| Moonshot/Kimi | `moonshot:kimi-k2.7-code`, `moonshot:kimi-k2.7-code-highspeed`, `moonshot:kimi-k2.6`, `moonshot:kimi-k2.5` |
+| Moonshot/Kimi | `moonshot:kimi-k3`, `moonshot:kimi-k2.7-code`, `moonshot:kimi-k2.7-code-highspeed`, `moonshot:kimi-k2.6`, `moonshot:kimi-k2.5` |
 | xAI Grok | `xai:grok-4.5`, `xai:grok-4.3`, `xai:grok-4.20-0309-reasoning` |
 | Z.ai GLM | `zai:glm-5.2` |
 
