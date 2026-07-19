@@ -7,10 +7,31 @@ defmodule BeamWeaver.Moonshot.Options do
   alias BeamWeaver.OpenAI.MessageParts
 
   @kimi_model_policies %{
-    "kimi-k2.7-code" => %{thinking: :enabled_only},
-    "kimi-k2.7-code-highspeed" => %{thinking: :enabled_only},
-    "kimi-k2.6" => %{thinking: :toggle},
-    "kimi-k2.5" => %{thinking: :toggle}
+    "kimi-k3" => %{
+      thinking: :unsupported,
+      reasoning_efforts: ["max"],
+      tool_choice_when_thinking: ["auto", "none", "required"]
+    },
+    "kimi-k2.7-code" => %{
+      thinking: :enabled_only,
+      reasoning_efforts: [],
+      tool_choice_when_thinking: ["auto", "none"]
+    },
+    "kimi-k2.7-code-highspeed" => %{
+      thinking: :enabled_only,
+      reasoning_efforts: [],
+      tool_choice_when_thinking: ["auto", "none"]
+    },
+    "kimi-k2.6" => %{
+      thinking: :toggle,
+      reasoning_efforts: [],
+      tool_choice_when_thinking: ["auto", "none"]
+    },
+    "kimi-k2.5" => %{
+      thinking: :toggle,
+      reasoning_efforts: [],
+      tool_choice_when_thinking: ["auto", "none"]
+    }
   }
 
   @spec to_body(term(), [BeamWeaver.Core.Message.t()], keyword()) ::
@@ -40,6 +61,10 @@ defmodule BeamWeaver.Moonshot.Options do
       |> put_optional("tool_choice", normalize_value(option(model, opts, :tool_choice)))
       |> put_optional("response_format", response_format)
       |> put_optional("thinking", normalize_value(option(model, opts, :thinking)))
+      |> put_optional(
+        "reasoning_effort",
+        normalize_value(option(model, opts, :reasoning_effort))
+      )
       |> put_optional("temperature", option(model, opts, :temperature))
       |> put_optional("max_completion_tokens", max_completion_tokens(model, opts))
       |> put_optional("top_p", option(model, opts, :top_p))
@@ -114,6 +139,7 @@ defmodule BeamWeaver.Moonshot.Options do
         :n,
         :presence_penalty,
         :prompt_cache_key,
+        :reasoning_effort,
         :response_format,
         :safety_identifier,
         :stream_usage,
@@ -156,6 +182,7 @@ defmodule BeamWeaver.Moonshot.Options do
     case Map.fetch(@kimi_model_policies, model_name) do
       {:ok, policy} ->
         with :ok <- validate_kimi_thinking(body, policy),
+             :ok <- validate_kimi_reasoning_effort(body, policy),
              :ok <- validate_kimi_tool_choice(body, policy) do
           validate_kimi_sampling(body, policy)
         end
@@ -166,6 +193,23 @@ defmodule BeamWeaver.Moonshot.Options do
   end
 
   defp validate_kimi_policy(_body), do: :ok
+
+  defp validate_kimi_thinking(%{"model" => model_name} = body, %{thinking: :unsupported}) do
+    case Map.get(body, "thinking") do
+      nil ->
+        :ok
+
+      value ->
+        {:error,
+         Error.new(:unsupported_model_param, "Moonshot Kimi model does not accept thinking", %{
+           provider: :moonshot,
+           model: model_name,
+           param: :thinking,
+           value: value,
+           supported: []
+         })}
+    end
+  end
 
   defp validate_kimi_thinking(%{"model" => model_name} = body, %{thinking: :enabled_only}) do
     case get_in(body, ["thinking", "type"]) do
@@ -207,27 +251,58 @@ defmodule BeamWeaver.Moonshot.Options do
     end
   end
 
-  defp validate_kimi_tool_choice(%{"model" => model_name} = body, _policy) do
-    thinking_type = get_in(body, ["thinking", "type"]) || "enabled"
-    tool_choice = Map.get(body, "tool_choice")
+  defp validate_kimi_reasoning_effort(%{"model" => model_name} = body, policy) do
+    effort = Map.get(body, "reasoning_effort")
+    supported = Map.fetch!(policy, :reasoning_efforts)
 
-    if thinking_type == "disabled" or tool_choice in [nil, "auto", "none"] do
+    if is_nil(effort) or effort in supported do
       :ok
     else
       {:error,
        Error.new(
          :unsupported_model_param,
-         "Moonshot Kimi thinking mode supports only automatic tool choice",
+         "Moonshot Kimi model received unsupported reasoning_effort",
          %{
            provider: :moonshot,
            model: model_name,
-           param: :tool_choice,
-           value: tool_choice,
-           supported: ["auto", "none"],
-           when_thinking: "enabled"
+           param: :reasoning_effort,
+           value: effort,
+           supported: supported
          }
        )}
     end
+  end
+
+  defp validate_kimi_tool_choice(%{"model" => model_name} = body, policy) do
+    thinking_type = get_in(body, ["thinking", "type"]) || "enabled"
+    tool_choice = Map.get(body, "tool_choice")
+    supported = Map.fetch!(policy, :tool_choice_when_thinking)
+
+    cond do
+      tool_choice == "required" and "required" not in supported ->
+        tool_choice_error(model_name, tool_choice, supported)
+
+      thinking_type == "disabled" or is_nil(tool_choice) or tool_choice in supported ->
+        :ok
+
+      true ->
+        tool_choice_error(model_name, tool_choice, supported)
+    end
+  end
+
+  defp tool_choice_error(model_name, tool_choice, supported) do
+    {:error,
+     Error.new(
+       :unsupported_model_param,
+       "Moonshot Kimi model supports only the documented tool choices",
+       %{
+         provider: :moonshot,
+         model: model_name,
+         param: :tool_choice,
+         value: tool_choice,
+         supported: supported
+       }
+     )}
   end
 
   defp validate_kimi_sampling(%{"model" => model_name} = body, policy) do

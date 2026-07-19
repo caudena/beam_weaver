@@ -33,6 +33,7 @@ defmodule BeamWeaver.Moonshot.ChatModel do
             presence_penalty: nil,
             n: nil,
             prompt_cache_key: nil,
+            reasoning_effort: nil,
             safety_identifier: nil,
             thinking: nil,
             response_format: nil,
@@ -75,6 +76,8 @@ defmodule BeamWeaver.Moonshot.ChatModel do
     with {:ok, body} <- Options.to_body(model, messages, builder_opts),
          {:ok, body} <- maybe_put_stream_usage(body, model, opts),
          {:ok, body} <- maybe_put_tools(body, tools),
+         :ok <- validate_dynamic_tools(body),
+         :ok <- validate_required_tool_choice(body),
          :ok <- validate_web_search_thinking(body) do
       {:ok, body}
     end
@@ -207,6 +210,54 @@ defmodule BeamWeaver.Moonshot.ChatModel do
   end
 
   defp validate_web_search_thinking(_body), do: :ok
+
+  defp validate_dynamic_tools(%{"messages" => messages, "model" => "kimi-k3"})
+       when is_list(messages),
+       do: :ok
+
+  defp validate_dynamic_tools(%{"messages" => messages, "model" => model})
+       when is_list(messages) do
+    if Enum.any?(messages, &Map.has_key?(&1, "tools")) do
+      {:error,
+       Error.new(
+         :unsupported_feature,
+         "Moonshot dynamic tool messages require Kimi K3",
+         %{
+           provider: :moonshot,
+           model: model,
+           feature: :dynamic_tool_loading,
+           supported: ["kimi-k3"]
+         }
+       )}
+    else
+      :ok
+    end
+  end
+
+  defp validate_dynamic_tools(_body), do: :ok
+
+  defp validate_required_tool_choice(%{"tool_choice" => "required"} = body) do
+    top_level_tools? = match?([_ | _], body["tools"])
+
+    dynamic_tools? =
+      Enum.any?(body["messages"] || [], fn message ->
+        match?([_ | _], message["tools"])
+      end)
+
+    if top_level_tools? or dynamic_tools? do
+      :ok
+    else
+      {:error,
+       Error.new(:invalid_request, "Moonshot tool_choice required needs at least one tool", %{
+         provider: :moonshot,
+         model: body["model"],
+         param: :tool_choice,
+         value: "required"
+       })}
+    end
+  end
+
+  defp validate_required_tool_choice(_body), do: :ok
 
   defp model_stream_metadata(%__MODULE__{} = model, body, opts) do
     model

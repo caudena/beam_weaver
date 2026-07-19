@@ -7,6 +7,7 @@ defmodule BeamWeaver.Moonshot.Messages do
   alias BeamWeaver.Core.Message
   alias BeamWeaver.Core.Messages
   alias BeamWeaver.Moonshot.Error
+  alias BeamWeaver.Moonshot.Tools
   alias BeamWeaver.OpenAI.MessageParts
   alias BeamWeaver.Result
 
@@ -136,7 +137,22 @@ defmodule BeamWeaver.Moonshot.Messages do
     end
   end
 
-  defp to_chat_message(%Message{} = message) when message.role in [:system, :user] do
+  defp to_chat_message(%Message{role: :system} = message) do
+    case metadata_value(message.metadata, :moonshot_dynamic_tools) do
+      nil ->
+        standard_input_message(message)
+
+      tools ->
+        dynamic_tool_message(message, tools)
+    end
+  end
+
+  defp to_chat_message(%Message{role: :user} = message), do: standard_input_message(message)
+
+  defp to_chat_message(_message),
+    do: {:error, Error.new(:invalid_message, "expected a BeamWeaver message")}
+
+  defp standard_input_message(%Message{} = message) do
     with {:ok, content} <- content_to_moonshot(message.content) do
       {:ok,
        %{
@@ -147,8 +163,28 @@ defmodule BeamWeaver.Moonshot.Messages do
     end
   end
 
-  defp to_chat_message(_message),
-    do: {:error, Error.new(:invalid_message, "expected a BeamWeaver message")}
+  defp dynamic_tool_message(%Message{content: content}, tools)
+       when content in ["", []] and is_list(tools) and tools != [] do
+    rendered = Tools.to_chat_tools(tools)
+
+    with :ok <- Tools.validate_chat_tools(rendered) do
+      {:ok, %{"role" => "system", "tools" => rendered}}
+    end
+  end
+
+  defp dynamic_tool_message(%Message{content: content}, tools) do
+    {:error,
+     Error.new(
+       :invalid_request,
+       "Moonshot dynamic tool messages require no content and at least one tool",
+       %{
+         provider: :moonshot,
+         feature: :dynamic_tool_loading,
+         content: content,
+         tools: tools
+       }
+     )}
+  end
 
   defp tool_output(content) when is_binary(content), do: content
 

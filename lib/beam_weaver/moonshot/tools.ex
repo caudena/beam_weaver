@@ -3,6 +3,7 @@ defmodule BeamWeaver.Moonshot.Tools do
   Tool declaration helpers for Moonshot/Kimi Chat Completions.
   """
 
+  alias BeamWeaver.Core.Message
   alias BeamWeaver.Moonshot.Error
   alias BeamWeaver.OpenAI.ChatCompletions
   alias BeamWeaver.OpenAI.ToolCalling
@@ -27,6 +28,12 @@ defmodule BeamWeaver.Moonshot.Tools do
   @doc "Builds an OpenAI-compatible function tool declaration."
   @spec function(term(), keyword()) :: map()
   def function(tool, opts \\ []), do: ToolCalling.function(tool, opts)
+
+  @doc "Builds a Kimi K3 contentless system message that loads tools dynamically."
+  @spec dynamic_message([term()]) :: Message.t()
+  def dynamic_message(tools) when is_list(tools) do
+    Message.system("", metadata: %{moonshot_dynamic_tools: to_chat_tools(tools)})
+  end
 
   @doc "Converts tools to Moonshot Chat Completions declarations."
   @spec to_chat_tools([term()]) :: [map()]

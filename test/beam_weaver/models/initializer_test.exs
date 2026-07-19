@@ -89,6 +89,17 @@ defmodule BeamWeaver.Models.InitializerTest do
   end
 
   test "init_chat_model accepts explicit Moonshot identifiers but not Kimi aliases" do
+    assert {:ok, k3} = Models.init_chat_model("moonshot:kimi-k3")
+    assert k3.__struct__ == BeamWeaver.Moonshot.ChatModel
+    assert k3.profile.max_input_tokens == 1_048_576
+    assert k3.profile.max_output_tokens == 1_048_576
+    assert k3.profile.tool_call_streaming
+    assert k3.profile.extra.reasoning_efforts == [:max]
+    assert k3.profile.extra.default_max_completion_tokens == 131_072
+    assert k3.profile.extra.tool_choice_when_thinking == ["auto", "none", "required"]
+    assert Profile.supports_param?(k3.profile, :chat_completions, :reasoning_effort)
+    refute Profile.supports_param?(k3.profile, :chat_completions, :thinking)
+
     assert {:ok, code_model} = Models.init_chat_model("moonshot:kimi-k2.7-code")
     assert code_model.__struct__ == BeamWeaver.Moonshot.ChatModel
     assert code_model.model == "kimi-k2.7-code"
@@ -155,8 +166,8 @@ defmodule BeamWeaver.Models.InitializerTest do
     assert error.type == :deprecated_model
     assert error.details.provider == :moonshot
     assert error.details.model == "kimi-latest"
-    assert error.details.replacement == "kimi-k2.6"
-    assert error.details.expected == "moonshot:kimi-k2.6"
+    assert error.details.replacement == "kimi-k3"
+    assert error.details.expected == "moonshot:kimi-k3"
   end
 
   test "init_chat_model rejects deprecated Google identifiers with replacements" do
@@ -395,6 +406,8 @@ defmodule BeamWeaver.Models.InitializerTest do
 
     assert Enum.any?(google, &(&1.id == "gemini-3.5-flash" and &1.structured_output))
     assert Enum.any?(google, &(&1.id == "gemini-3.1-pro-preview" and &1.structured_output))
+    assert Enum.any?(moonshot, &(&1.id == "kimi-k3" and &1.max_input_tokens == 1_048_576))
+    assert Enum.any?(moonshot, &(&1.id == "kimi-k3" and &1.extra.dynamic_tool_loading))
     assert Enum.any?(moonshot, &(&1.id == "kimi-k2.7-code" and &1.extra.thinking_modes == [:enabled]))
     assert Enum.any?(moonshot, &(&1.id == "kimi-k2.7-code-highspeed" and &1.extra.highspeed))
     assert Enum.any?(moonshot, &(&1.id == "kimi-k2.6" and &1.video_inputs))

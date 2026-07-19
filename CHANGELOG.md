@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.1.12 - 2026-07-18
+
+### Added
+
+- Added Moonshot `kimi-k3` support with 1,048,576-token contex and output 
+  limits, current cache/input/output pricing metadata, top-level
+  `reasoning_effort: "max"`, `tool_choice: "required"`, and K3-only dynamic
+  tool-loading messages through `BeamWeaver.Moonshot.Tools.dynamic_message/1`.
+
+### Fixed
+
+- Moonshot stream reconstruction now reads usage from Kimi's documented final
+  `choices[0].usage` shape as well as the older top-level usage shape.
+
 ## 0.1.11 - 2026-07-08
 
 ### Added

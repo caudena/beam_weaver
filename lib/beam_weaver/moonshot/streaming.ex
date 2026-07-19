@@ -200,9 +200,10 @@ defmodule BeamWeaver.Moonshot.Streaming do
   end
 
   defp done_event(%{"data" => %{"choices" => choices}}) when is_list(choices) do
-    if Enum.any?(choices, &(get_in(&1, ["finish_reason"]) != nil)),
-      do: [%Events.Done{result: nil}],
-      else: []
+    case Enum.find(choices, &(get_in(&1, ["finish_reason"]) != nil)) do
+      nil -> []
+      choice -> [%Events.Done{result: nil, usage: choice["usage"]}]
+    end
   end
 
   defp done_event(_event), do: []
@@ -217,6 +218,15 @@ defmodule BeamWeaver.Moonshot.Streaming do
     |> Enum.reduce(nil, fn
       %{"data" => %{"usage" => usage}}, _acc when is_map(usage) ->
         MoonshotMessages.usage_metadata(%{"usage" => usage})
+
+      %{"data" => %{"choices" => choices}}, acc when is_list(choices) ->
+        case Enum.find_value(choices, & &1["usage"]) do
+          usage when is_map(usage) ->
+            MoonshotMessages.usage_metadata(%{"usage" => usage})
+
+          _other ->
+            acc
+        end
 
       _event, acc ->
         acc
@@ -248,7 +258,7 @@ defmodule BeamWeaver.Moonshot.Streaming do
         |> put_optional(:model_name, data["model"])
         |> put_optional(:system_fingerprint, data["system_fingerprint"])
         |> put_optional(:service_tier, data["service_tier"])
-        |> put_optional(:token_usage, data["usage"])
+        |> put_optional(:token_usage, data["usage"] || (choice && choice["usage"]))
         |> put_optional(:logprobs, choice && choice["logprobs"])
 
       _event, acc ->
