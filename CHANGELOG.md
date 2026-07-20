@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.13 - 2026-07-20
+
+### Fixed
+
+- `BeamWeaver.Schema` now resolves primitive field types, nested schema modules,
+  and compound literal types such as `{:array, MySchema}` into their complete
+  JSON Schema definitions on current Elixir releases.
+
 ## 0.1.12 - 2026-07-18
 
 ### Added

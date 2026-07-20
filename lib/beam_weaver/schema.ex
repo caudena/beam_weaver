@@ -19,6 +19,28 @@ defmodule BeamWeaver.Schema do
   legacy `__beam_weaver_schema__/0` callback.
   """
 
+  @primitive_types [
+    :string,
+    :integer,
+    :number,
+    :float,
+    :decimal,
+    :boolean,
+    :binary,
+    :id,
+    :binary_id,
+    :object,
+    :map,
+    :array,
+    :list,
+    :null,
+    :any,
+    :date,
+    :time,
+    :utc_datetime,
+    :naive_datetime
+  ]
+
   defmacro __using__(_opts) do
     quote do
       import BeamWeaver.Schema,
@@ -39,10 +61,11 @@ defmodule BeamWeaver.Schema do
   defmacro description(value), do: quote(do: @beam_weaver_schema_description(unquote(value)))
   defmacro strict(value), do: quote(do: @beam_weaver_schema_strict(unquote(value)))
 
-  defmacro field(name_ast, type, opts \\ []) do
+  defmacro field(name_ast, type_ast, opts \\ []) do
     name = literal_field_name!(__CALLER__, name_ast)
+    type = literal_field_type!(__CALLER__, type_ast)
 
-    quote bind_quoted: [name: name, type: Macro.escape(type), opts: opts] do
+    quote bind_quoted: [name: name, type: type, opts: opts] do
       @beam_weaver_schema_fields {name, type, opts}
     end
   end
@@ -63,6 +86,12 @@ defmodule BeamWeaver.Schema do
 
   @spec to_json_schema(term()) :: map()
   def to_json_schema(schema) when is_map(schema), do: schema
+
+  def to_json_schema(type) when type in @primitive_types do
+    type
+    |> BeamWeaver.Tool.Schema.type_schema()
+    |> stringify_schema()
+  end
 
   def to_json_schema(module) when is_atom(module) do
     ensure_schema_module_compiled(module)
@@ -177,6 +206,20 @@ defmodule BeamWeaver.Schema do
         file: caller.file,
         line: caller.line,
         description: "schema field names must be literal atoms"
+    end
+  end
+
+  defp literal_field_type!(caller, type_ast) do
+    expanded = Macro.expand_literals(type_ast, caller)
+
+    if Macro.quoted_literal?(expanded) do
+      {type, []} = Code.eval_quoted(expanded, [], caller)
+      type
+    else
+      raise CompileError,
+        file: caller.file,
+        line: caller.line,
+        description: "schema field types must be literal schema terms"
     end
   end
 
