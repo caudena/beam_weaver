@@ -135,6 +135,11 @@ defmodule BeamWeaver.Agent.SemanticDSLTest do
     assert schema.name == "facts_output"
     assert schema.json_schema["additionalProperties"] == false
     assert schema.json_schema["required"] == ["facts"]
+
+    assert schema.json_schema["properties"]["facts"] == %{
+             "type" => "array",
+             "items" => %{"type" => "string"}
+           }
   end
 
   test "response_schema strategy accepts atoms only" do
