@@ -143,29 +143,40 @@ defmodule BeamWeaver.Anthropic.Messages do
   defp do_format_messages(messages, opts) do
     messages = Enum.reverse(messages)
 
-    Enum.reduce_while(Enum.with_index(messages), {:ok, nil, []}, fn {message, index}, {:ok, system, formatted} ->
-      case format_message(message, index, length(messages), system, opts) do
-        {:ok, new_system, nil} ->
-          {:cont, {:ok, new_system, formatted}}
+    with :ok <- validate_system_message_positions(messages, opts) do
+      Enum.reduce_while(
+        Enum.with_index(messages),
+        {:ok, nil, []},
+        fn {message, index}, {:ok, system, formatted} ->
+          case format_message(message, index, length(messages), system, opts) do
+            {:ok, new_system, nil} ->
+              {:cont, {:ok, new_system, formatted}}
 
-        {:ok, new_system, provider_message} ->
-          {:cont, {:ok, new_system, formatted ++ [provider_message]}}
+            {:ok, new_system, provider_message} ->
+              {:cont, {:ok, new_system, formatted ++ [provider_message]}}
 
-        {:error, error} ->
-          {:halt, {:error, error}}
+            {:error, error} ->
+              {:halt, {:error, error}}
+          end
+        end
+      )
+      |> case do
+        {:ok, system, formatted} -> {:ok, {system, formatted}}
+        {:error, error} -> {:error, error}
       end
-    end)
-    |> case do
-      {:ok, system, formatted} -> {:ok, {system, formatted}}
-      {:error, error} -> {:error, error}
     end
   end
 
-  defp format_message(%Message{role: :system} = message, index, _count, system, _opts) do
-    if system != nil or index > 0 do
-      {:error, Error.new(:invalid_messages, "received multiple non-consecutive system messages")}
-    else
-      {:ok, system_content(message.content), nil}
+  defp format_message(%Message{role: :system} = message, index, _count, system, opts) do
+    cond do
+      index == 0 and is_nil(system) ->
+        {:ok, system_content(message.content), nil}
+
+      Keyword.get(opts, :mid_conversation_system_messages, false) ->
+        {:ok, system, %{"role" => "system", "content" => system_content(message.content)}}
+
+      true ->
+        {:error, Error.new(:invalid_messages, "received multiple non-consecutive system messages")}
     end
   end
 
@@ -189,6 +200,58 @@ defmodule BeamWeaver.Anthropic.Messages do
   defp format_message(_message, _index, _count, _system, _opts) do
     {:error, Error.new(:invalid_message, "expected a BeamWeaver message")}
   end
+
+  defp validate_system_message_positions(messages, opts) do
+    mid_conversation_systems =
+      messages
+      |> Enum.with_index()
+      |> Enum.filter(fn
+        {%Message{role: :system}, index} -> index > 0
+        _message -> false
+      end)
+
+    cond do
+      mid_conversation_systems == [] ->
+        :ok
+
+      not Keyword.get(opts, :mid_conversation_system_messages, false) ->
+        {:error, Error.new(:invalid_messages, "received multiple non-consecutive system messages")}
+
+      Enum.all?(mid_conversation_systems, fn {_message, index} ->
+        valid_mid_conversation_system_position?(messages, index)
+      end) ->
+        :ok
+
+      true ->
+        {:error,
+         Error.new(
+           :invalid_messages,
+           "mid-conversation system messages must follow a user turn and end the request or precede an assistant turn"
+         )}
+    end
+  end
+
+  defp valid_mid_conversation_system_position?(messages, index) do
+    previous = Enum.at(messages, index - 1)
+    following = Enum.at(messages, index + 1)
+
+    valid_previous =
+      match?(%Message{role: :user}, previous) or assistant_ends_with_server_tool_result?(previous)
+
+    valid_following = is_nil(following) or match?(%Message{role: :assistant}, following)
+
+    valid_previous and valid_following
+  end
+
+  defp assistant_ends_with_server_tool_result?(%Message{role: :assistant, content: content})
+       when is_list(content) do
+    case List.last(content) do
+      %{type: type} when type in [:server_tool_result, "server_tool_result"] -> true
+      _block -> false
+    end
+  end
+
+  defp assistant_ends_with_server_tool_result?(_message), do: false
 
   defp provider_role(:assistant), do: "assistant"
   defp provider_role(_role), do: "user"
@@ -233,7 +296,15 @@ defmodule BeamWeaver.Anthropic.Messages do
   defp content_block_to_anthropic!(%ContentBlock.File{} = block) do
     %{
       "type" => "document",
-      "source" => document_source(block.file_id, block.data, block.mime_type, block.filename, nil)
+      "source" =>
+        document_source(
+          block.file_id,
+          block.url,
+          block.data,
+          block.mime_type,
+          block.filename,
+          nil
+        )
     }
     |> Options.reject_nil_values()
   end
@@ -253,15 +324,43 @@ defmodule BeamWeaver.Anthropic.Messages do
     |> Options.reject_nil_values()
   end
 
-  defp content_block_to_anthropic!(%ContentBlock.Unknown{value: value}) when is_map(value),
-    do: Options.stringify_keys(value)
+  defp content_block_to_anthropic!(%ContentBlock.Unknown{provider_type: type, value: value})
+       when is_map(value) do
+    raw_provider_block =
+      case Map.get(value, :raw_provider_block) || Map.get(value, "raw_provider_block") do
+        raw when is_map(raw) -> Options.stringify_keys(raw)
+        _raw -> %{}
+      end
+
+    provider_block =
+      raw_provider_block
+      |> Map.merge(value |> Options.stringify_keys() |> Map.drop(["raw_provider_block"]))
+      |> Map.put_new("type", type)
+
+    case provider_type(type) do
+      tool_change when tool_change in ["tool_addition", "tool_removal"] ->
+        normalize_tool_change(provider_block, tool_change)
+
+      _other ->
+        provider_block
+    end
+  end
 
   defp content_block_to_anthropic!(%ContentBlock.Unknown{provider_type: type, value: value}),
     do: %{"type" => type, "value" => value}
 
   defp content_block_to_anthropic!(block) when is_map(block) do
     BeamWeaver.MapShape.assert_atom_keys!(block)
-    provider_block = block |> Options.stringify_keys() |> Map.drop(["raw_provider_block"])
+
+    raw_provider_block =
+      case Map.get(block, :raw_provider_block) do
+        raw when is_map(raw) -> Options.stringify_keys(raw)
+        _raw -> %{}
+      end
+
+    provider_block =
+      raw_provider_block
+      |> Map.merge(block |> Options.stringify_keys() |> Map.drop(["raw_provider_block"]))
 
     case provider_type(Map.get(block, :type)) do
       "input_text" ->
@@ -299,6 +398,7 @@ defmodule BeamWeaver.Anthropic.Messages do
           "source" =>
             document_source(
               Map.get(block, :file_id) || Map.get(block, :id),
+              Map.get(block, :url),
               Map.get(block, :base64) || Map.get(block, :data),
               Map.get(block, :mime_type),
               Map.get(block, :filename),
@@ -328,6 +428,9 @@ defmodule BeamWeaver.Anthropic.Messages do
 
       "server_tool_result" ->
         provider_block
+
+      type when type in ["tool_addition", "tool_removal"] ->
+        normalize_tool_change(provider_block, type)
 
       "tool_result" ->
         provider_block
@@ -410,27 +513,29 @@ defmodule BeamWeaver.Anthropic.Messages do
     end
   end
 
-  defp document_source(file_id, _data, _mime_type, _filename, _block) when is_binary(file_id) do
+  defp document_source(file_id, _url, _data, _mime_type, _filename, _block)
+       when is_binary(file_id) do
     %{"type" => "file", "file_id" => file_id}
   end
 
-  defp document_source(_file_id, data, mime_type, _filename, _block) when is_binary(data) do
+  defp document_source(_file_id, _url, data, mime_type, _filename, _block)
+       when is_binary(data) do
     %{"type" => "base64", "media_type" => mime_type || "application/pdf", "data" => data}
   end
 
-  defp document_source(_file_id, _data, _mime_type, _filename, %{"url" => url})
+  defp document_source(_file_id, url, _data, _mime_type, _filename, _block)
        when is_binary(url) do
     %{"type" => "url", "url" => url}
   end
 
-  defp document_source(_file_id, _data, mime_type, _filename, %{
+  defp document_source(_file_id, _url, _data, mime_type, _filename, %{
          "source_type" => "text",
          "text" => text
        }) do
     %{"type" => "text", "media_type" => mime_type || "text/plain", "data" => text}
   end
 
-  defp document_source(_file_id, _data, _mime_type, _filename, _block) do
+  defp document_source(_file_id, _url, _data, _mime_type, _filename, _block) do
     raise ArgumentError,
           "Anthropic document blocks require url, base64/data, file_id/id, or source_type text"
   end
@@ -457,6 +562,22 @@ defmodule BeamWeaver.Anthropic.Messages do
   end
 
   defp normalize_server_tool_input(block), do: block
+
+  defp normalize_tool_change(%{"tool" => tool} = block, type) when is_map(tool) do
+    block
+    |> Map.put("type", type)
+    |> Map.put("tool", Options.stringify_keys(tool))
+    |> Map.drop(["name", "server_name"])
+  end
+
+  defp normalize_tool_change(%{"name" => name} = block, type) when is_binary(name) do
+    block
+    |> Map.put("type", type)
+    |> Map.put("tool", %{"type" => "tool_reference", "name" => name})
+    |> Map.drop(["name", "server_name"])
+  end
+
+  defp normalize_tool_change(block, type), do: Map.put(block, "type", type)
 
   defp tool_result_content(content) when is_list(content),
     do: Enum.map(content, &content_block_to_anthropic!/1)

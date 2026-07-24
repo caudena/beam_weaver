@@ -227,7 +227,7 @@ defmodule BeamWeaver.Anthropic.ChatModelTest do
     assert body["diagnostics"] == %{"trace" => true}
     assert body["speed"] == "standard"
     assert body["user_profile_id"] == "profile_123"
-    assert body["tools"] == [%{"type" => "web_fetch_20260309"}]
+    assert body["tools"] == [%{"type" => "web_fetch_20260309", "name" => "web_fetch"}]
     assert body["tool_choice"] == %{"type" => "auto", "disable_parallel_tool_use" => true}
     assert body["output_config"]["effort"] == "medium"
     assert body["output_config"]["format"]["type"] == "json_schema"
@@ -367,6 +367,107 @@ defmodule BeamWeaver.Anthropic.ChatModelTest do
     assert body["output_config"] == %{"effort" => "high"}
   end
 
+  test "Claude Opus 5 defaults to adaptive thinking and enforces its effort cap" do
+    model = ChatModel.new(model: "claude-opus-5")
+
+    assert {:ok, body} =
+             ChatModel.request_body(model, [Message.user("hello")], effort: :max)
+
+    refute Map.has_key?(body, "thinking")
+    assert body["output_config"] == %{"effort" => "max"}
+
+    for effort <- [:xhigh, :max] do
+      assert {:error, error} =
+               ChatModel.request_body(model, [Message.user("hello")],
+                 thinking: %{type: :disabled},
+                 effort: effort
+               )
+
+      assert error.type == :unsupported_model_param
+      assert error.details.model == "claude-opus-5"
+      assert error.details.params == [:thinking, :effort]
+      assert error.details.reason =~ "high effort or below"
+    end
+
+    assert {:error, nested_error} =
+             ChatModel.request_body(model, [Message.user("hello")],
+               thinking: %{type: :disabled},
+               output_config: %{effort: :max}
+             )
+
+    assert nested_error.details.params == [:thinking, :effort]
+
+    assert {:ok, disabled_body} =
+             ChatModel.request_body(model, [Message.user("hello")],
+               thinking: %{type: :disabled},
+               effort: :high
+             )
+
+    assert disabled_body["thinking"] == %{"type" => "disabled"}
+    assert disabled_body["output_config"] == %{"effort" => "high"}
+  end
+
+  test "Claude Opus 5 supports fallback and mid-conversation instruction surfaces" do
+    model = ChatModel.new(model: "claude-opus-5")
+
+    messages = [
+      Message.system("Review code carefully."),
+      Message.user("Review module A."),
+      Message.assistant("Module A looks good."),
+      Message.user("Now review module B."),
+      Message.system([
+        %{type: :text, text: "Use the new security checklist."},
+        %{type: :tool_addition, name: "security_scan"}
+      ])
+    ]
+
+    assert {:ok, body} =
+             ChatModel.request_body(model, messages, fallbacks: :default)
+
+    assert body["system"] == "Review code carefully."
+    assert List.last(body["messages"])["role"] == "system"
+
+    assert List.last(body["messages"])["content"] |> List.last() == %{
+             "type" => "tool_addition",
+             "tool" => %{
+               "type" => "tool_reference",
+               "name" => "security_scan"
+             }
+           }
+
+    assert body["fallbacks"] == "default"
+    assert "mid-conversation-tool-changes-2026-07-01" in body["betas"]
+    assert "server-side-fallback-2026-07-01" in body["betas"]
+
+    assert {:ok, explicit_fallback_body} =
+             ChatModel.request_body(model, [Message.user("hello")],
+               fallbacks: [%{model: "claude-opus-4-8", max_tokens: 8_192}]
+             )
+
+    assert explicit_fallback_body["fallbacks"] == [
+             %{"model" => "claude-opus-4-8", "max_tokens" => 8_192}
+           ]
+
+    assert "server-side-fallback-2026-06-01" in explicit_fallback_body["betas"]
+  end
+
+  test "Claude Opus 5 rejects unsupported sampling controls and web fetch" do
+    model = ChatModel.new(model: "claude-opus-5")
+
+    assert {:error, sampling_error} =
+             ChatModel.request_body(model, [Message.user("hello")], temperature: 0.5)
+
+    assert sampling_error.type == :unsupported_model_param
+    assert sampling_error.details.params == [:temperature]
+
+    assert {:error, tool_error} =
+             ChatModel.request_body(model, [Message.user("hello")], tools: [Tools.web_fetch()])
+
+    assert tool_error.type == :unsupported_feature
+    assert tool_error.details.params == [:tools]
+    assert tool_error.details.unsupported_server_tools == [:web_fetch]
+  end
+
   test "Claude Sonnet 5 uses adaptive thinking effort and rejects deprecated controls" do
     model = ChatModel.new(model: "claude-sonnet-5")
 
@@ -502,6 +603,21 @@ defmodule BeamWeaver.Anthropic.ChatModelTest do
     assert opus.profile.max_input_tokens == 1_000_000
     assert opus.profile.max_output_tokens == 128_000
     assert opus.profile.extra.default_effort == :high
+
+    assert {:ok, opus5} = Models.init_chat_model("anthropic:claude-opus-5")
+    assert opus5.profile.name == "Claude Opus 5"
+    assert opus5.profile.max_input_tokens == 1_000_000
+    assert opus5.profile.max_output_tokens == 128_000
+    assert opus5.profile.extra.input_price_per_mtok == 5.00
+    assert opus5.profile.extra.output_price_per_mtok == 25.00
+    assert opus5.profile.extra.batch_input_price_per_mtok == 2.50
+    assert opus5.profile.extra.batch_output_price_per_mtok == 12.50
+    assert opus5.profile.extra.prompt_cache_min_tokens == 512
+    assert opus5.profile.extra.effort_levels == [:low, :medium, :high, :xhigh, :max]
+    assert opus5.profile.extra.thinking_default == :adaptive
+    assert opus5.profile.extra.thinking_disabled_max_effort == :high
+    assert opus5.profile.extra.unsupported_server_tools == [:web_fetch]
+    assert BeamWeaver.Models.Profile.supports_param?(opus5.profile, :fallbacks)
 
     assert {:ok, sonnet} = Models.init_chat_model("anthropic:claude-sonnet-5")
     assert sonnet.profile.name == "Claude Sonnet 5"

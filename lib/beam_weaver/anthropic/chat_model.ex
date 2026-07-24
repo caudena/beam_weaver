@@ -39,6 +39,7 @@ defmodule BeamWeaver.Anthropic.ChatModel do
             context_management: nil,
             diagnostics: nil,
             reuse_last_container: nil,
+            fallbacks: nil,
             inference_geo: nil,
             speed: nil,
             user_profile_id: nil,

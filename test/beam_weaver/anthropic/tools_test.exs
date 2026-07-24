@@ -45,16 +45,22 @@ defmodule BeamWeaver.Anthropic.ToolsTest do
     ]
 
     assert Enum.at(tools, 0)["type"] == "web_fetch_20260309"
+    assert Enum.at(tools, 0)["name"] == "web_fetch"
     assert Enum.at(tools, 1)["type"] == "code_execution_20260120"
+    assert Enum.at(tools, 1)["name"] == "code_execution"
     assert Enum.at(tools, 2)["type"] == "advisor_20260301"
 
     assert Tools.required_betas(tools, ["existing-beta"]) == [
              "existing-beta",
              "web-fetch-2026-03-09",
-             "code-execution-2026-01-20",
              "advisor-2026-03-01",
              "advanced-tool-use-2025-11-20"
            ]
+
+    assert Tools.web_search() == %{
+             "type" => "web_search_20260209",
+             "name" => "web_search"
+           }
   end
 
   test "normalizes tool choice and parallel-tool controls" do

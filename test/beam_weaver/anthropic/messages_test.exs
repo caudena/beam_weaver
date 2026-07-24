@@ -85,7 +85,8 @@ defmodule BeamWeaver.Anthropic.MessagesTest do
              Messages.format_messages([
                Message.user([
                  ContentBlock.image(%{url: "data:image/png;base64,QUJD"}),
-                 ContentBlock.file(%{data: "Rk9P", mime_type: "application/pdf"})
+                 ContentBlock.file(%{data: "Rk9P", mime_type: "application/pdf"}),
+                 ContentBlock.file(%{url: "https://example.test/report.pdf"})
                ])
              ])
 
@@ -100,6 +101,13 @@ defmodule BeamWeaver.Anthropic.MessagesTest do
                  "type" => "base64",
                  "media_type" => "application/pdf",
                  "data" => "Rk9P"
+               }
+             },
+             %{
+               "type" => "document",
+               "source" => %{
+                 "type" => "url",
+                 "url" => "https://example.test/report.pdf"
                }
              }
            ] = content
@@ -185,5 +193,40 @@ defmodule BeamWeaver.Anthropic.MessagesTest do
 
     assert {:ok, %Message{role: :assistant, content: "hi"}} =
              DecodeMessage.decode(payload, provider: :anthropic)
+  end
+
+  test "preserves fallback boundary blocks when an assistant turn is replayed" do
+    response = %{
+      "id" => "msg_fallback",
+      "type" => "message",
+      "role" => "assistant",
+      "model" => "claude-opus-4-8",
+      "stop_reason" => "end_turn",
+      "content" => [
+        %{
+          "type" => "fallback",
+          "from" => %{"model" => "claude-opus-5"},
+          "to" => %{"model" => "claude-opus-4-8"}
+        },
+        %{"type" => "text", "text" => "Completed by the fallback model."}
+      ],
+      "usage" => %{"input_tokens" => 10, "output_tokens" => 5}
+    }
+
+    assert {:ok, %Message{} = message} = Messages.response_to_message(response)
+    assert [fallback, _text] = message.content
+    assert fallback.type == :unknown
+    assert fallback.provider_type == "fallback"
+
+    assert {:ok, {_system, [%{"content" => replayed_content}]}} =
+             Messages.format_messages([message])
+
+    assert [replayed_fallback, _text] = replayed_content
+
+    assert replayed_fallback == %{
+             "type" => "fallback",
+             "from" => %{"model" => "claude-opus-5"},
+             "to" => %{"model" => "claude-opus-4-8"}
+           }
   end
 end

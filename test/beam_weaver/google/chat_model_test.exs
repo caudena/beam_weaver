@@ -286,6 +286,63 @@ defmodule BeamWeaver.Google.ChatModelTest do
            ]
   end
 
+  test "latest Gemini models reject prefilled final model turns" do
+    tool_call = %ToolCall{id: "call-1", name: "lookup", args: %{"q" => "beam"}}
+
+    for model_id <- ["google:gemini-3.6-flash", "google:gemini-3.5-flash-lite"],
+        final_message <- [
+          Message.assistant("Translation:"),
+          Message.assistant("", tool_calls: [tool_call])
+        ] do
+      assert {:ok, model} = Models.init_chat_model(model_id)
+
+      assert {:error, error} =
+               ChatModel.request_body(model, [Message.user("Translate hello"), final_message])
+
+      assert error.type == :invalid_message
+      assert error.message == "Google model requests cannot end with a non-empty model turn"
+      assert error.details.provider == :google
+      assert error.details.model == model.model
+      assert error.details.role == :model
+      assert error.details.requirement == :final_user_or_tool_turn
+    end
+  end
+
+  test "prefilled final model turn validation is profile-scoped and ignores empty turns" do
+    assert {:ok, latest} = Models.init_chat_model("google:gemini-3.6-flash")
+    tool_call = %ToolCall{id: "call-1", name: "lookup", args: %{"q" => "beam"}}
+
+    assert {:ok, latest_body} =
+             ChatModel.request_body(latest, [
+               Message.user("Translate hello"),
+               Message.assistant("")
+             ])
+
+    assert List.last(latest_body["contents"]) == %{"role" => "model", "parts" => []}
+
+    assert {:ok, tool_result_body} =
+             ChatModel.request_body(latest, [
+               Message.user("Find beam"),
+               Message.assistant("", tool_calls: [tool_call]),
+               Message.tool("found", tool_call_id: "call-1", name: "lookup")
+             ])
+
+    assert List.last(tool_result_body["contents"])["role"] == "user"
+
+    legacy = ChatModel.new(model: "gemini-3.5-flash")
+
+    assert {:ok, legacy_body} =
+             ChatModel.request_body(legacy, [
+               Message.user("Translate hello"),
+               Message.assistant("Translation:")
+             ])
+
+    assert List.last(legacy_body["contents"]) == %{
+             "role" => "model",
+             "parts" => [%{"text" => "Translation:"}]
+           }
+  end
+
   test "request body encodes assistant tool-call history as Gemini function calls" do
     call = %ToolCall{
       id: "call-1",

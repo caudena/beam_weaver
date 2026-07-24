@@ -70,6 +70,42 @@ defmodule BeamWeaver.Models.InitializerTest do
   end
 
   test "init_chat_model accepts explicit Google identifiers but not bare Gemini aliases" do
+    assert {:ok, flash} = Models.init_chat_model("google:gemini-3.6-flash")
+    assert flash.__struct__ == BeamWeaver.Google.ChatModel
+    assert flash.model == "gemini-3.6-flash"
+    assert flash.profile.status == :active
+    assert flash.profile.max_input_tokens == 1_048_576
+    assert flash.profile.max_output_tokens == 65_536
+    assert flash.profile.extra.computer_use == :preview
+    assert flash.profile.extra.default_thinking_level == :medium
+    assert Profile.supports_param?(flash.profile, :thinking_level)
+    refute Profile.supports_param?(flash.profile, :thinking_budget)
+    refute Profile.supports_param?(flash.profile, :candidate_count)
+    refute Profile.supports_param?(flash.profile, :temperature)
+    refute Profile.supports_param?(flash.profile, :top_k)
+    refute Profile.supports_param?(flash.profile, :top_p)
+    assert flash.profile.extra.input_price_per_mtok == 1.50
+    assert flash.profile.extra.cached_input_price_per_mtok == 0.15
+    assert flash.profile.extra.output_price_per_mtok == 7.50
+    assert flash.profile.extra.batch_output_price_per_mtok == 3.75
+    assert flash.profile.extra.priority_output_price_per_mtok == 13.50
+
+    assert {:ok, flash_lite} = Models.init_chat_model("google:gemini-3.5-flash-lite")
+    assert flash_lite.__struct__ == BeamWeaver.Google.ChatModel
+    assert flash_lite.model == "gemini-3.5-flash-lite"
+    assert flash_lite.profile.status == :active
+    assert flash_lite.profile.max_input_tokens == 1_048_576
+    assert flash_lite.profile.max_output_tokens == 65_536
+    assert flash_lite.profile.extra.computer_use == :preview
+    assert flash_lite.profile.extra.default_thinking_level == :minimal
+    assert Profile.supports_param?(flash_lite.profile, :thinking_level)
+    refute Profile.supports_param?(flash_lite.profile, :thinking_budget)
+    assert flash_lite.profile.extra.input_price_per_mtok == 0.30
+    assert flash_lite.profile.extra.cached_input_price_per_mtok == 0.03
+    assert flash_lite.profile.extra.output_price_per_mtok == 2.50
+    assert flash_lite.profile.extra.batch_output_price_per_mtok == 1.25
+    assert flash_lite.profile.extra.priority_output_price_per_mtok == 4.50
+
     assert {:ok, google} = Models.init_chat_model("google:gemini-3.5-flash")
     assert google.__struct__ == BeamWeaver.Google.ChatModel
     assert google.model == "gemini-3.5-flash"
@@ -86,6 +122,35 @@ defmodule BeamWeaver.Models.InitializerTest do
     assert {:error, error} = Models.init_chat_model("gemini-3.5-flash")
     assert error.type == :invalid_model
     assert error.details.expected == "google:gemini-3.5-flash"
+  end
+
+  test "latest Gemini models reject deprecated generation controls" do
+    for model <- ["google:gemini-3.6-flash", "google:gemini-3.5-flash-lite"] do
+      assert {:ok, configured} = Models.init_chat_model(model, temperature: 0.2)
+
+      assert {:error, error} =
+               BeamWeaver.Google.ChatModel.request_body(configured, [Message.user("hello")])
+
+      assert error.type == :unsupported_model_param
+      assert error.details.params == [:temperature]
+
+      assert {:ok, configured} = Models.init_chat_model(model, thinking_budget: 512)
+
+      assert {:error, error} =
+               BeamWeaver.Google.ChatModel.request_body(configured, [Message.user("hello")])
+
+      assert error.type == :unsupported_model_param
+      assert error.details.params == [:thinking_budget]
+    end
+  end
+
+  test "init_chat_model rejects limited-access Gemini models before family fallback" do
+    assert {:error, error} = Models.init_chat_model("google:gemini-3.5-flash-cyber")
+    assert error.type == :unsupported_model
+    assert error.details.provider == :google
+    assert error.details.model == "gemini-3.5-flash-cyber"
+    assert error.details.access == :codemender_limited_access
+    assert error.details.reason =~ "governments and trusted partners"
   end
 
   test "init_chat_model accepts explicit Moonshot identifiers but not Kimi aliases" do
@@ -378,6 +443,12 @@ defmodule BeamWeaver.Models.InitializerTest do
 
     assert Enum.any?(
              anthropic,
+             &(&1.id == "claude-opus-5" and &1.max_input_tokens == 1_000_000 and
+                 &1.max_output_tokens == 128_000 and &1.extra.prompt_cache_min_tokens == 512)
+           )
+
+    assert Enum.any?(
+             anthropic,
              &(&1.id == "claude-fable-5" and &1.max_input_tokens == 1_000_000 and
                  &1.max_output_tokens == 128_000 and &1.extra.input_price_per_mtok == 10.00)
            )
@@ -404,7 +475,9 @@ defmodule BeamWeaver.Models.InitializerTest do
                ])
            )
 
+    assert Enum.any?(google, &(&1.id == "gemini-3.6-flash" and &1.structured_output))
     assert Enum.any?(google, &(&1.id == "gemini-3.5-flash" and &1.structured_output))
+    assert Enum.any?(google, &(&1.id == "gemini-3.5-flash-lite" and &1.structured_output))
     assert Enum.any?(google, &(&1.id == "gemini-3.1-pro-preview" and &1.structured_output))
     assert Enum.any?(moonshot, &(&1.id == "kimi-k3" and &1.max_input_tokens == 1_048_576))
     assert Enum.any?(moonshot, &(&1.id == "kimi-k3" and &1.extra.dynamic_tool_loading))

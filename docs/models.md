@@ -47,10 +47,9 @@ Anthropic:
 
 ```elixir
 {:ok, model} =
-  BeamWeaver.Models.init_chat_model("anthropic:claude-sonnet-5",
-    thinking: %{type: :adaptive},
-    effort: :high,
-    max_tokens: 1_000
+  BeamWeaver.Models.init_chat_model("anthropic:claude-opus-5",
+    effort: :xhigh,
+    max_tokens: 64_000
   )
 ```
 
@@ -64,8 +63,8 @@ Google:
 
 ```elixir
 {:ok, model} =
-  BeamWeaver.Models.init_chat_model("google:gemini-3.5-flash",
-    thinking_budget: 512
+  BeamWeaver.Models.init_chat_model("google:gemini-3.6-flash",
+    thinking_level: :medium
   )
 ```
 
@@ -130,10 +129,11 @@ Moonshot/Kimi, xAI, and Z.ai families. Moonshot chat supports
 `grok-4.20-0309-reasoning`, `grok-4.20-0309-non-reasoning`,
 `grok-4.20-multi-agent-0309`, `grok-build-0.1`, and embedding model `v1`.
 Z.ai chat currently supports only `zai:glm-5.2`.
-Anthropic includes `anthropic:claude-sonnet-5`. Sonnet 5 uses adaptive
-thinking; pass `thinking: %{type: :adaptive}` with `effort: :high`, `:xhigh`,
-or `:max` to control thinking effort. Manual enabled thinking budgets are
-rejected before transport for models that only support adaptive thinking.
+Anthropic includes `anthropic:claude-opus-5` and
+`anthropic:claude-sonnet-5`. Opus 5 uses adaptive thinking by default and
+supports effort from `:low` through `:max`; disabling thinking is valid only at
+`:high` or below. Manual enabled thinking budgets are rejected before transport
+for models that only support adaptive thinking.
 OpenAI profiles include `openai:gpt-5.6-sol`, `openai:gpt-5.6-terra`, and
 `openai:gpt-5.6-luna`; `openai:gpt-5.6` is the official alias for Sol. All
 three advertise a 1.05M-token context window, 128K maximum output, text and
@@ -160,8 +160,8 @@ Recommended starting points:
 | Provider family | BeamWeaver model strings |
 | --- | --- |
 | OpenAI GPT | `openai:gpt-5.6-sol`, `openai:gpt-5.6-terra`, `openai:gpt-5.6-luna`, `openai:gpt-5.4-mini` |
-| Anthropic Claude | `anthropic:claude-sonnet-5`, `anthropic:claude-sonnet-4-6`, `anthropic:claude-opus-*`, `anthropic:claude-haiku-*` |
-| Google Gemini | `google:gemini-3.5-flash`, explicit `google:gemini-*` profiles |
+| Anthropic Claude | `anthropic:claude-opus-5`, `anthropic:claude-sonnet-5`, `anthropic:claude-sonnet-4-6`, `anthropic:claude-opus-*`, `anthropic:claude-haiku-*` |
+| Google Gemini | `google:gemini-3.6-flash`, `google:gemini-3.5-flash-lite`, explicit `google:gemini-*` profiles |
 | Moonshot/Kimi | `moonshot:kimi-k3`, `moonshot:kimi-k2.7-code`, `moonshot:kimi-k2.7-code-highspeed`, `moonshot:kimi-k2.6`, `moonshot:kimi-k2.5` |
 | xAI Grok | `xai:grok-4.5`, `xai:grok-4.3`, `xai:grok-4.20-0309-reasoning` |
 | Z.ai GLM | `zai:glm-5.2` |

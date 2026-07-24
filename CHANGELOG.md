@@ -1,5 +1,33 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Added first-class Anthropic `claude-opus-5` support with its 1M-token
+  context window, 128K output limit, current standard/cache/batch/fast pricing,
+  full effort ladder, default adaptive thinking, 512-token prompt-cache
+  minimum, server-side fallbacks, and mid-conversation system/tool changes.
+- Opus 5 requests now reject disabled thinking at `xhigh` or `max` effort and
+  reject the unsupported Anthropic web-fetch server tool before transport.
+  Anthropic fallback boundary blocks are preserved when assistant turns are
+  replayed.
+- Added Google Gemini 3.6 Flash and Gemini 3.5 Flash-Lite profiles with
+  multimodal input, thinking, tool, structured-output, inference-tier, token
+  limit, model-specific parameter and final-turn validation, and current
+  standard/cache/batch/flex/priority pricing metadata.
+- Gemini 3.5 Flash Cyber now returns an explicit limited-access error instead
+  of being accepted by the permissive Gemini family fallback; Google exposes
+  it only to governments and trusted partners through CodeMender, not through
+  the public Gemini Developer API.
+
+### Fixed
+
+- Anthropic server-tool declarations now include their required wire names,
+  the GA `code_execution_20260120` tool no longer sends a retired beta header,
+  mid-conversation tool changes use typed tool references, and typed PDF blocks
+  preserve URL sources.
+
 ## 0.1.13 - 2026-07-20
 
 ### Fixed
