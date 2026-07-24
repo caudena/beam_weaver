@@ -87,6 +87,7 @@ defmodule BeamWeaver.Models.ProfileRegistry.Params do
     :context_management,
     :diagnostics,
     :effort,
+    :fallbacks,
     :inference_geo,
     :max_output_tokens,
     :max_tokens,
@@ -267,4 +268,8 @@ defmodule BeamWeaver.Models.ProfileRegistry.Params do
   def moonshot, do: @moonshot_params
   def zai, do: @zai_params
   def google, do: @google_params
+
+  def google_latest_flash do
+    @google_params -- [:candidate_count, :temperature, :thinking_budget, :top_k, :top_p]
+  end
 end

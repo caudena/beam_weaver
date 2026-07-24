@@ -100,6 +100,57 @@ defmodule BeamWeaver.Models.ProfileRegistry.Anthropic do
   }
 
   @profiles %{
+    {:anthropic, "claude-opus-5"} =>
+      Profile.new(%{
+        provider: :anthropic,
+        id: "claude-opus-5",
+        name: "Claude Opus 5",
+        status: :active,
+        release_date: "2026-07-24",
+        last_updated: "2026-07-24",
+        max_input_tokens: 1_000_000,
+        max_output_tokens: 128_000,
+        text_inputs: true,
+        image_inputs: true,
+        image_url_inputs: true,
+        pdf_inputs: true,
+        text_outputs: true,
+        reasoning_output: true,
+        tool_calling: true,
+        tool_choice: true,
+        parallel_tool_calls: true,
+        structured_output: true,
+        streaming: true,
+        usage_metadata: true,
+        image_tool_message: true,
+        pdf_tool_message: true,
+        attachment: true,
+        supported_params: Params.anthropic(),
+        extra: %{
+          batch_input_price_per_mtok: 2.50,
+          batch_output_price_per_mtok: 12.50,
+          cache_read_price_per_mtok: 0.50,
+          cache_write_5m_price_per_mtok: 6.25,
+          cache_write_1h_price_per_mtok: 10.00,
+          default_effort: :high,
+          effort_levels: [:low, :medium, :high, :xhigh, :max],
+          fast_mode_price_multiplier: 2,
+          inference_geo_us_multiplier: 1.1,
+          input_price_per_mtok: 5.00,
+          mid_conversation_system_messages: true,
+          mid_conversation_tool_changes: :beta,
+          output_price_per_mtok: 25.00,
+          priority_tier: false,
+          prompt_cache_min_tokens: 512,
+          retirement_not_before: "2027-07-24",
+          sampling_controls: :restricted,
+          server_side_fallbacks: :beta,
+          thinking_default: :adaptive,
+          thinking_disabled_max_effort: :high,
+          thinking_mode: :adaptive_only,
+          unsupported_server_tools: [:web_fetch]
+        }
+      }),
     {:anthropic, "claude-sonnet-5"} =>
       Profile.new(%{
         provider: :anthropic,

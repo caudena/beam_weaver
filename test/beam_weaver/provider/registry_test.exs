@@ -71,6 +71,20 @@ defmodule BeamWeaver.Provider.RegistryTest do
 
   test "built-in provider surface exposes expected provider IDs and profiles" do
     assert Registry.providers() == [:anthropic, :fake, :google, :moonshot, :openai, :xai, :zai]
+
+    assert {:ok, flash} = Registry.profile(:google, "gemini-3.6-flash")
+    assert flash.provider == :google
+    assert flash.structured_output
+    assert :computer_use in flash.extra.built_in_tools
+    assert flash.extra.output_price_per_mtok == 7.50
+
+    assert {:ok, flash_lite} = Registry.profile(:google, "gemini-3.5-flash-lite")
+    assert flash_lite.provider == :google
+    assert flash_lite.structured_output
+    assert :computer_use in flash_lite.extra.built_in_tools
+    assert flash_lite.extra.default_thinking_level == :minimal
+    assert flash_lite.extra.output_price_per_mtok == 2.50
+
     assert {:ok, profile} = Registry.profile(:google, "gemini-3.5-flash")
     assert profile.provider == :google
     assert profile.structured_output
@@ -120,10 +134,11 @@ defmodule BeamWeaver.Provider.RegistryTest do
 
   test "compatibility matrix includes normalized capability rows" do
     assert Enum.any?(Compatibility.matrix(), fn row ->
-             row.provider == :google and row.model == "gemini-3.5-flash" and
+             row.provider == :google and row.model == "gemini-3.6-flash" and
                row.features.structured_output and row.features.reasoning
            end)
 
+    assert Compatibility.supports?({:google, "gemini-3.5-flash-lite"}, :video_input)
     refute Compatibility.supports?({:google, "gemini-3.5-flash"}, :image_output)
     assert Compatibility.supports?({:google, "gemini-3.1-pro-preview"}, :tool_calling)
     assert Compatibility.supports?({:moonshot, "kimi-k2.7-code"}, :tool_calling)
@@ -141,5 +156,11 @@ defmodule BeamWeaver.Provider.RegistryTest do
     assert {:error, error} = Registry.profile(:google, "gemini-3-flash-preview")
     assert error.type == :deprecated_model
     assert error.details.expected == "google:gemini-3.5-flash"
+  end
+
+  test "limited-access Google models are not exposed through fallback profiles" do
+    assert {:error, error} = Registry.profile(:google, "gemini-3.5-flash-cyber")
+    assert error.type == :unsupported_model
+    assert error.details.access == :codemender_limited_access
   end
 end

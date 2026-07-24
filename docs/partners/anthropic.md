@@ -27,20 +27,30 @@ BeamWeaver includes a direct Anthropic Messages API provider under
 - Streaming SSE bodies are parsed into text deltas, lifecycle events, typed
   stream envelopes, and reconstructed final assistant messages.
 - The token counting endpoint is exposed through `ChatModel.count_tokens/3`.
-- Checked-in model profiles cover Claude Sonnet 5, Claude Fable 5,
-  Claude Mythos 5, current Claude Opus 4.8/4.7/4.6/4.5/4.1, Claude Sonnet 4.6/4.5,
-  and Claude Haiku 4.5 models, with a permissive fallback for future
-  `claude-*` models.
+- Checked-in model profiles cover Claude Opus 5, Claude Sonnet 5, Claude
+  Fable 5, Claude Mythos 5, current Claude Opus 4.8/4.7/4.6/4.5/4.1, Claude
+  Sonnet 4.6/4.5, and Claude Haiku 4.5 models, with a permissive fallback for
+  future `claude-*` models.
 - Deprecated or retired Claude IDs return tagged `:deprecated_model` errors
   with `:replacement`, `:expected`, and retirement metadata instead of falling
   through to the family fallback.
 - Request builders include Anthropic spec fields such as `:cache_control`,
   `:container`, `:metadata`, `:service_tier`, `:diagnostics`, `:speed`,
   `:user_profile_id`, `:inference_geo`, `:context_management`, `:mcp_servers`,
-  `:thinking`, and `:output_config`.
-- Claude Sonnet 5, Claude Opus 4.7, and later models follow Anthropic's current request restrictions:
-  non-`1.0` `:temperature`, any `:top_k`, `:top_p` below `0.99`, and
-  non-adaptive enabled `:thinking` fail before the transport call.
+  `:fallbacks`, `:thinking`, and `:output_config`.
+- Claude Opus 5, Claude Sonnet 5, Claude Opus 4.7, and later models follow
+  Anthropic's current request restrictions: non-`1.0` `:temperature`, any
+  `:top_k`, `:top_p` below `0.99`, and non-adaptive enabled `:thinking` fail
+  before the transport call.
+- Claude Opus 5 uses adaptive thinking by default and supports `:low`,
+  `:medium`, `:high`, `:xhigh`, and `:max` effort. Explicitly disabled thinking
+  is rejected at `:xhigh` and `:max`.
+- Opus 5 supports mid-conversation system messages and beta tool-change blocks.
+  BeamWeaver infers the tool-change beta header. Server-side fallbacks accept
+  either a model list or `:default`, with the matching beta header inferred.
+- Anthropic does not expose web fetch or Priority Tier on Opus 5. BeamWeaver
+  rejects `BeamWeaver.Anthropic.Tools.web_fetch/1` for that profile before
+  transport.
 - Claude Sonnet 5 supports thinking levels through adaptive thinking:
   use `thinking: %{type: :adaptive}` with `effort: :high`, `:xhigh`, or `:max`.
   BeamWeaver records the requested effort and Anthropic usage details in trace
@@ -51,9 +61,9 @@ BeamWeaver includes a direct Anthropic Messages API provider under
 ```elixir
 model =
   BeamWeaver.Anthropic.chat_model(
-    model: "claude-sonnet-5",
-    thinking: %{type: :adaptive},
-    effort: :high,
+    model: "claude-opus-5",
+    effort: :xhigh,
+    max_tokens: 64_000,
     api_key: "sk-ant-test"
   )
 
@@ -68,12 +78,21 @@ Tools are plain request values:
 tools = [
   BeamWeaver.Anthropic.Tools.web_search(),
   BeamWeaver.Anthropic.Tools.code_execution(),
-  BeamWeaver.Anthropic.Tools.web_fetch(),
   BeamWeaver.Anthropic.Tools.function(my_tool, strict: true)
 ]
 
 BeamWeaver.Core.ChatModel.invoke(model, messages, tools: tools, tool_choice: :auto)
 ```
+
+Opus 5 can ask Anthropic to retry classifier refusals on the provider's current
+recommended fallback:
+
+```elixir
+BeamWeaver.Core.ChatModel.invoke(model, messages, fallbacks: :default)
+```
+
+Use `BeamWeaver.Anthropic.Tools.web_fetch/1` only with a model whose Anthropic
+feature matrix includes web fetch; Opus 5 does not.
 
 When forwarding tool history from another provider into Anthropic, keep the
 native `Message.tool/2` or assistant `tool_calls` history. The Anthropic request

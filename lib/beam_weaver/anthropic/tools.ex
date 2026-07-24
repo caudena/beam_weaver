@@ -12,7 +12,6 @@ defmodule BeamWeaver.Anthropic.Tools do
     "web_fetch_20260309" => "web-fetch-2026-03-09",
     "code_execution_20250522" => "code-execution-2025-05-22",
     "code_execution_20250825" => "code-execution-2025-08-25",
-    "code_execution_20260120" => "code-execution-2026-01-20",
     "mcp_toolset" => "mcp-client-2025-11-20",
     "memory_20250818" => "context-management-2025-06-27",
     "computer_20241022" => "computer-use-2024-10-22",
@@ -98,15 +97,27 @@ defmodule BeamWeaver.Anthropic.Tools do
 
   @doc "Builds a web search server tool."
   def web_search(opts \\ []),
-    do: build(Keyword.get(opts, :type, "web_search_20260209"), Keyword.delete(opts, :type))
+    do:
+      build(
+        Keyword.get(opts, :type, "web_search_20260209"),
+        opts |> Keyword.delete(:type) |> Keyword.put_new(:name, "web_search")
+      )
 
   @doc "Builds a web fetch server tool."
   def web_fetch(opts \\ []),
-    do: build(Keyword.get(opts, :type, "web_fetch_20260309"), Keyword.delete(opts, :type))
+    do:
+      build(
+        Keyword.get(opts, :type, "web_fetch_20260309"),
+        opts |> Keyword.delete(:type) |> Keyword.put_new(:name, "web_fetch")
+      )
 
   @doc "Builds a code execution server tool."
   def code_execution(opts \\ []),
-    do: build(Keyword.get(opts, :type, "code_execution_20260120"), Keyword.delete(opts, :type))
+    do:
+      build(
+        Keyword.get(opts, :type, "code_execution_20260120"),
+        opts |> Keyword.delete(:type) |> Keyword.put_new(:name, "code_execution")
+      )
 
   @doc "Builds an advisor server tool."
   def advisor(opts \\ []),

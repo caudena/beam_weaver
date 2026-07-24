@@ -112,7 +112,79 @@ defmodule BeamWeaver.Models.ProfileRegistry.Google do
     }
   }
 
+  @unavailable_google_models %{
+    "gemini-3.5-flash-cyber" => %{
+      access: :codemender_limited_access,
+      reason: "Gemini 3.5 Flash Cyber is limited to governments and trusted partners through CodeMender"
+    }
+  }
+
   @profiles %{
+    {:google, "gemini-3.6-flash"} =>
+      Profile.new(%{
+        provider: :google,
+        id: "gemini-3.6-flash",
+        name: "Gemini 3.6 Flash",
+        status: :active,
+        release_date: "2026-07-21",
+        last_updated: "2026-07-21",
+        max_input_tokens: 1_048_576,
+        max_output_tokens: 65_536,
+        text_inputs: true,
+        image_inputs: true,
+        image_url_inputs: true,
+        audio_inputs: true,
+        video_inputs: true,
+        pdf_inputs: true,
+        text_outputs: true,
+        reasoning_output: true,
+        tool_calling: true,
+        tool_choice: true,
+        parallel_tool_calls: true,
+        structured_output: true,
+        structured_output_max_schema_bytes: 8_000,
+        structured_output_max_schema_properties: 80,
+        streaming: true,
+        usage_metadata: true,
+        image_tool_message: true,
+        pdf_tool_message: true,
+        attachment: true,
+        supported_params: Params.google_latest_flash(),
+        extra: %{
+          api_family: :gemini_developer,
+          batch_api: true,
+          caching: true,
+          flex_inference: true,
+          priority_inference: true,
+          live_api: false,
+          input_price_per_mtok: 1.50,
+          cached_input_price_per_mtok: 0.15,
+          output_price_per_mtok: 7.50,
+          batch_input_price_per_mtok: 0.75,
+          batch_cached_input_price_per_mtok: 0.075,
+          batch_output_price_per_mtok: 3.75,
+          flex_input_price_per_mtok: 0.75,
+          flex_cached_input_price_per_mtok: 0.075,
+          flex_output_price_per_mtok: 3.75,
+          priority_input_price_per_mtok: 2.70,
+          priority_cached_input_price_per_mtok: 0.27,
+          priority_output_price_per_mtok: 13.50,
+          context_cache_storage_price_per_mtok_hour: 1.00,
+          default_thinking_level: :medium,
+          prefilled_model_turns: false,
+          built_in_tools: [
+            :code_execution,
+            :computer_use,
+            :file_search,
+            :google_maps,
+            :google_search,
+            :url_context
+          ],
+          computer_use: :preview,
+          grounding_metadata: true,
+          safety_settings: true
+        }
+      }),
     {:google, "gemini-3.5-flash"} =>
       Profile.new(%{
         provider: :google,
@@ -158,6 +230,71 @@ defmodule BeamWeaver.Models.ProfileRegistry.Google do
             :url_context
           ],
           unsupported_tools: [:computer_use],
+          grounding_metadata: true,
+          safety_settings: true
+        }
+      }),
+    {:google, "gemini-3.5-flash-lite"} =>
+      Profile.new(%{
+        provider: :google,
+        id: "gemini-3.5-flash-lite",
+        name: "Gemini 3.5 Flash-Lite",
+        status: :active,
+        release_date: "2026-07-21",
+        last_updated: "2026-07-21",
+        max_input_tokens: 1_048_576,
+        max_output_tokens: 65_536,
+        text_inputs: true,
+        image_inputs: true,
+        image_url_inputs: true,
+        audio_inputs: true,
+        video_inputs: true,
+        pdf_inputs: true,
+        text_outputs: true,
+        reasoning_output: true,
+        tool_calling: true,
+        tool_choice: true,
+        parallel_tool_calls: true,
+        structured_output: true,
+        structured_output_max_schema_bytes: 8_000,
+        structured_output_max_schema_properties: 80,
+        streaming: true,
+        usage_metadata: true,
+        image_tool_message: true,
+        pdf_tool_message: true,
+        attachment: true,
+        supported_params: Params.google_latest_flash(),
+        extra: %{
+          api_family: :gemini_developer,
+          batch_api: true,
+          caching: true,
+          flex_inference: true,
+          priority_inference: true,
+          live_api: false,
+          input_price_per_mtok: 0.30,
+          cached_input_price_per_mtok: 0.03,
+          output_price_per_mtok: 2.50,
+          batch_input_price_per_mtok: 0.15,
+          batch_cached_input_price_per_mtok: 0.02,
+          batch_output_price_per_mtok: 1.25,
+          flex_input_price_per_mtok: 0.15,
+          flex_cached_input_price_per_mtok: 0.02,
+          flex_output_price_per_mtok: 1.25,
+          priority_input_price_per_mtok: 0.54,
+          priority_cached_input_price_per_mtok: 0.05,
+          priority_output_price_per_mtok: 4.50,
+          context_cache_storage_price_per_mtok_hour: 1.00,
+          default_thinking_level: :minimal,
+          prefilled_model_turns: false,
+          built_in_tools: [
+            :code_execution,
+            :computer_use,
+            :file_search,
+            :google_maps,
+            :google_search,
+            :url_context
+          ],
+          computer_use: :preview,
           grounding_metadata: true,
           safety_settings: true
         }
@@ -217,10 +354,15 @@ defmodule BeamWeaver.Models.ProfileRegistry.Google do
   def profiles, do: Map.values(@profiles)
 
   def resolve(model) do
-    if Map.has_key?(@deprecated_google_models, model) do
-      deprecated_model_error(model)
-    else
-      fetch_or_fallback(@profiles, :google, model)
+    cond do
+      Map.has_key?(@deprecated_google_models, model) ->
+        deprecated_model_error(model)
+
+      Map.has_key?(@unavailable_google_models, model) ->
+        unavailable_model_error(model)
+
+      true ->
+        fetch_or_fallback(@profiles, :google, model)
     end
   end
 
@@ -235,6 +377,18 @@ defmodule BeamWeaver.Models.ProfileRegistry.Google do
        replacement: replacement,
        expected: "google:#{replacement}",
        shutdown_date: metadata.shutdown_date
+     })}
+  end
+
+  defp unavailable_model_error(model) do
+    metadata = Map.fetch!(@unavailable_google_models, model)
+
+    {:error,
+     Error.new(:unsupported_model, "Google model is not available through the Gemini API", %{
+       provider: :google,
+       model: model,
+       access: metadata.access,
+       reason: metadata.reason
      })}
   end
 

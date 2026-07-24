@@ -108,6 +108,7 @@ defmodule BeamWeaver.Google.ChatModel do
 
     with :ok <- ParamPolicy.validate(model.profile, params, param_policy(model), api: :generate_content),
          {:ok, {system, contents}} <- Messages.encode_messages(messages, opts),
+         :ok <- validate_final_turn(model, contents),
          {:ok, tools} <- Tools.render_tools(requested_tools, opts),
          {:ok, tool_config} <-
            Tools.render_tool_choice(
@@ -154,6 +155,39 @@ defmodule BeamWeaver.Google.ChatModel do
 
   defp empty_map_to_nil(value) when is_map(value) and map_size(value) == 0, do: nil
   defp empty_map_to_nil(value), do: value
+
+  defp validate_final_turn(%__MODULE__{} = model, contents) do
+    if rejects_prefilled_model_turns?(model) and last_non_empty_role(contents) == "model" do
+      {:error,
+       Error.new(
+         :invalid_message,
+         "Google model requests cannot end with a non-empty model turn",
+         %{
+           provider: :google,
+           model: model.model,
+           role: :model,
+           requirement: :final_user_or_tool_turn
+         }
+       )}
+    else
+      :ok
+    end
+  end
+
+  defp rejects_prefilled_model_turns?(%{profile: %{extra: extra}}) when is_map(extra) do
+    Map.get(extra, :prefilled_model_turns, Map.get(extra, "prefilled_model_turns")) == false
+  end
+
+  defp rejects_prefilled_model_turns?(_model), do: false
+
+  defp last_non_empty_role(contents) do
+    contents
+    |> Enum.reverse()
+    |> Enum.find_value(fn
+      %{"role" => role, "parts" => [_part | _rest]} -> role
+      _content -> nil
+    end)
+  end
 
   defp generation_config(%__MODULE__{} = model, opts) do
     %{}
