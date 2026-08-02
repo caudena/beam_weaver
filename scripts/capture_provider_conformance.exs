@@ -226,9 +226,8 @@ defmodule BeamWeaver.ProviderConformanceCapture do
     %{"message" => Fixtures.message_snapshot(message)}
   end
 
-  defp expected_snapshot({:error, error}) do
-    %{"error" => Fixtures.error_snapshot(error)}
-  end
+  defp expected_snapshot({:error, _error}),
+    do: raise("provider conformance scenario returned an unexpected error")
 
   defp api_key(:openai), do: env_key("OPENAI_API_KEY")
   defp api_key(:xai), do: env_key("XAI_API_KEY")

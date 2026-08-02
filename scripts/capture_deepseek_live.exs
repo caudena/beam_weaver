@@ -29,9 +29,20 @@ defmodule BeamWeaver.DeepSeekLiveCapture do
       entries = Enum.reduce([@flash, @pro], entries, &capture_fim_model(context, &2, &1))
       entries = capture_responses(context, entries)
       entries = capture_anthropic(context, entries)
-      manifest_path = write_manifest!(context, Enum.reverse(entries))
+      entries = Enum.reverse(entries)
+      manifest_path = write_manifest!(context, entries)
 
-      Mix.shell().info("DeepSeek live capture complete: #{length(entries)} scenarios -> #{manifest_path}")
+      case Enum.reject(entries, &successful_entry?/1) do
+        [] ->
+          Mix.shell().info("DeepSeek live capture complete: #{length(entries)} scenarios -> #{manifest_path}")
+
+        failures ->
+          Mix.shell().error(
+            "DeepSeek live capture recorded #{length(failures)} unexpected failure(s) -> #{manifest_path}"
+          )
+
+          System.halt(1)
+      end
     else
       {:error, :capture_disabled} ->
         Mix.shell().info("DeepSeek live capture is disabled; set #{@capture_guard}=true to enable it.")
@@ -423,6 +434,10 @@ defmodule BeamWeaver.DeepSeekLiveCapture do
     %{"scenario" => scenario, "status" => status, "path" => path}
   end
 
+  defp successful_entry?(%{"status" => "ok"}), do: true
+  defp successful_entry?(%{"status" => "expected_error_" <> _type}), do: true
+  defp successful_entry?(_entry), do: false
+
   defp print_summary(entry) do
     Mix.shell().info("#{entry["scenario"]}: #{entry["status"]} -> #{entry["path"]}")
   end
@@ -586,7 +601,7 @@ defmodule BeamWeaver.DeepSeekLiveCapture do
       "input" => "Search the web for the current DeepSeek API model names and summarize briefly.",
       "tools" => [%{"type" => "web_search"}],
       "tool_choice" => %{"type" => "web_search"},
-      "max_output_tokens" => 128
+      "max_output_tokens" => 2_048
     }
   end
 
