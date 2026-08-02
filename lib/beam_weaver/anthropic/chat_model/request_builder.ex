@@ -492,7 +492,7 @@ defmodule BeamWeaver.Anthropic.ChatModel.RequestBuilder do
   defp task_budget?(%{"task_budget" => task_budget}) when not is_nil(task_budget), do: true
   defp task_budget?(_output_config), do: false
 
-  defp tool_changes?(messages) when is_list(messages) do
+  defp tool_changes?(messages) do
     Enum.any?(messages, fn
       %{"content" => content} when is_list(content) ->
         Enum.any?(content, fn
@@ -504,8 +504,6 @@ defmodule BeamWeaver.Anthropic.ChatModel.RequestBuilder do
         false
     end)
   end
-
-  defp tool_changes?(_messages), do: false
 
   defp normalize_fallbacks(fallbacks) when fallbacks in [nil, []], do: nil
   defp normalize_fallbacks(fallbacks) when is_list(fallbacks), do: Options.normalize_option_list(fallbacks)

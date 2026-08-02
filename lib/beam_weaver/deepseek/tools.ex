@@ -53,7 +53,7 @@ defmodule BeamWeaver.DeepSeek.Tools do
   def validate_chat_tools(tools) when is_list(tools) do
     with :ok <- validate_count(tools),
          :ok <- validate_each(tools, :chat_completions),
-         :ok <- validate_strict_set(tools, :chat_completions) do
+         :ok <- validate_strict_set(tools) do
       :ok
     end
   end
@@ -172,28 +172,23 @@ defmodule BeamWeaver.DeepSeek.Tools do
     end
   end
 
-  defp validate_strict_set(tools, api) do
-    functions = Enum.flat_map(tools, &function_payload(&1, api))
+  defp validate_strict_set(tools) do
+    functions =
+      for %{"type" => "function", "function" => function} when is_map(function) <- tools,
+          do: function
 
     if Enum.any?(functions, &(&1["strict"] == true)) and
          Enum.any?(functions, &(&1["strict"] != true)) do
       {:error,
        Error.new(:invalid_request, "DeepSeek strict mode requires every function tool to be strict", %{
          provider: :deepseek,
-         api: api,
+         api: :chat_completions,
          feature: :strict_tools
        })}
     else
       :ok
     end
   end
-
-  defp function_payload(%{"type" => "function", "function" => function}, :chat_completions)
-       when is_map(function),
-       do: [function]
-
-  defp function_payload(%{"type" => "function"} = function, :responses), do: [function]
-  defp function_payload(_tool, _api), do: []
 
   defp validate_unique_responses_names(tools) do
     names =

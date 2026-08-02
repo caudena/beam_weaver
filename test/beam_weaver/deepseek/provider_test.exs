@@ -82,11 +82,16 @@ defmodule BeamWeaver.DeepSeek.ProviderTest do
   end
 
   test "high-level structs redact credentials" do
-    chat = ChatModel.new(api_key: "secret")
-    responses = ResponsesModel.new(api_key: "secret")
+    models = [
+      {ChatModel.new(api_key: "chat-secret"), "chat-secret"},
+      {ResponsesModel.new(api_key: "responses-secret"), "responses-secret"}
+    ]
 
-    refute inspect(chat) =~ "secret"
-    refute inspect(responses) =~ "secret"
-    assert inspect(chat) =~ "**REDACTED**"
+    for {model, secret} <- models do
+      inspected = inspect(model, limit: :infinity)
+
+      refute inspected =~ secret
+      assert inspected =~ ~s(api_key: "**REDACTED**")
+    end
   end
 end

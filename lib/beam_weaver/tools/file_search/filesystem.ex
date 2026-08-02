@@ -188,9 +188,6 @@ defmodule BeamWeaver.Tools.FileSearch.Filesystem do
 
   defp snippet(content, {:literal, regex}, max_bytes) do
     case Regex.run(regex, content, return: :index) do
-      {index, length} ->
-        snippet_at(content, index, length, max_bytes)
-
       [{index, length} | _captures] ->
         snippet_at(content, index, length, max_bytes)
 

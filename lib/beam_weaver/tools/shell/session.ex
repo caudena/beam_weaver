@@ -354,7 +354,7 @@ defmodule BeamWeaver.Tools.Shell.Session do
   end
 
   defp redact(output, redactions) do
-    Enum.reduce(redactions, output || "", fn {regex, replacement}, acc ->
+    Enum.reduce(redactions, output, fn {regex, replacement}, acc ->
       Regex.replace(regex, acc, replacement)
     end)
   end
