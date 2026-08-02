@@ -1,0 +1,172 @@
+{
+  "expected": {
+    "message": {
+      "id": "fixture-id-1",
+      "metadata": {
+        "finish_reason": "length",
+        "id": "fixture-id-1",
+        "model": "deepseek-v4-flash",
+        "model_name": "deepseek-v4-flash",
+        "model_provider": "deepseek",
+        "provider": "deepseek",
+        "reasoning_content": "We need answer user asks \"Think briefly about 12 * 11, then answer.\" Need likely compute 12*11 = 132. Need maybe mention",
+        "token_usage": {
+          "completion_tokens": 32,
+          "completion_tokens_details": {
+            "reasoning_tokens": 32
+          },
+          "prompt_cache_hit_tokens": 0,
+          "prompt_cache_miss_tokens": 16,
+          "prompt_tokens": 16,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          },
+          "total_tokens": 48
+        },
+        "usage": {
+          "completion_tokens": 32,
+          "completion_tokens_details": {
+            "reasoning_tokens": 32
+          },
+          "prompt_cache_hit_tokens": 0,
+          "prompt_cache_miss_tokens": 16,
+          "prompt_tokens": 16,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          },
+          "total_tokens": 48
+        }
+      },
+      "role": "assistant",
+      "status": "length",
+      "text": "",
+      "tool_calls": [],
+      "usage_metadata": {
+        "input_cost": 2.24e-6,
+        "input_cost_details": {
+          "cache_read": 0.0,
+          "uncached": 2.24e-6
+        },
+        "input_token_details": {
+          "cache_miss": 16,
+          "cache_read": 0
+        },
+        "input_tokens": 16,
+        "output_cost": 8.96e-6,
+        "output_cost_details": {
+          "text": 8.96e-6
+        },
+        "output_token_details": {
+          "reasoning": 32
+        },
+        "output_tokens": 32,
+        "total_cost": 1.1200000000000001e-5,
+        "total_tokens": 48
+      }
+    }
+  },
+  "provider": "deepseek",
+  "request": {
+    "headers": [
+      [
+        "authorization",
+        "**REDACTED**"
+      ],
+      [
+        "content-type",
+        "application/json"
+      ],
+      [
+        "user-agent",
+        "beam_weaver-deepseek/0.1"
+      ]
+    ],
+    "json": {
+      "max_tokens": 32,
+      "messages": [
+        {
+          "content": "Think briefly about 12 * 11, then answer.",
+          "role": "user"
+        }
+      ],
+      "model": "deepseek-v4-flash",
+      "reasoning_effort": "low",
+      "stream": true,
+      "stream_options": {
+        "include_usage": true
+      },
+      "thinking": {
+        "type": "enabled"
+      }
+    },
+    "method": "POST",
+    "url": "https://api.deepseek.com/chat/completions"
+  },
+  "response": {
+    "body": "data: {\"choices\":[{\"delta\":{\"content\":null,\"reasoning_content\":\"\",\"role\":\"assistant\"},\"finish_reason\":null,\"index\":0,\"logprobs\":null}],\"created\":\"**REDACTED**\",\"id\":\"fixture-id-1\",\"model\":\"deepseek-v4-flash\",\"object\":\"chat.completion.chunk\",\"system_fingerprint\":\"fixture-id-2\",\"usage\":null}\n\ndata: {\"choices\":[{\"delta\":{\"content\":null,\"reasoning_content\":\"We\"},\"finish_reason\":null,\"index\":0,\"logprobs\":null}],\"created\":\"**REDACTED**\",\"id\":\"fixture-id-1\",\"model\":\"deepseek-v4-flash\",\"object\":\"chat.completion.chunk\",\"system_fingerprint\":\"fixture-id-2\",\"usage\":null}\n\ndata: {\"choices\":[{\"delta\":{\"content\":null,\"reasoning_content\":\" need\"},\"finish_reason\":null,\"index\":0,\"logprobs\":null}],\"created\":\"**REDACTED**\",\"id\":\"fixture-id-1\",\"model\":\"deepseek-v4-flash\",\"object\":\"chat.completion.chunk\",\"system_fingerprint\":\"fixture-id-2\",\"usage\":null}\n\ndata: {\"choices\":[{\"delta\":{\"content\":null,\"reasoning_content\":\" answer\"},\"finish_reason\":null,\"index\":0,\"logprobs\":null}],\"created\":\"**REDACTED**\",\"id\":\"fixture-id-1\",\"model\":\"deepseek-v4-flash\",\"object\":\"chat.completion.chunk\",\"system_fingerprint\":\"fixture-id-2\",\"usage\":null}\n\ndata: {\"choices\":[{\"delta\":{\"content\":null,\"reasoning_content\":\" user\"},\"finish_reason\":null,\"index\":0,\"logprobs\":null}],\"created\":\"**REDACTED**\",\"id\":\"fixture-id-1\",\"model\":\"deepseek-v4-flash\",\"object\":\"chat.completion.chunk\",\"system_fingerprint\":\"fixture-id-2\",\"usage\":null}\n\ndata: {\"choices\":[{\"delta\":{\"content\":null,\"reasoning_content\":\" asks\"},\"finish_reason\":null,\"index\":0,\"logprobs\":null}],\"created\":\"**REDACTED**\",\"id\":\"fixture-id-1\",\"model\":\"deepseek-v4-flash\",\"object\":\"chat.completion.chunk\",\"system_fingerprint\":\"fixture-id-2\",\"usage\":null}\n\ndata: {\"choices\":[{\"delta\":{\"content\":null,\"reasoning_content\":\" \\\"\"},\"finish_reason\":null,\"index\":0,\"logprobs\":null}],\"created\":\"**REDACTED**\",\"id\":\"fixture-id-1\",\"model\":\"deepseek-v4-flash\",\"object\":\"chat.completion.chunk\",\"system_fingerprint\":\"fixture-id-2\",\"usage\":null}\n\ndata: {\"choices\":[{\"delta\":{\"content\":null,\"reasoning_content\":\"Think\"},\"finish_reason\":null,\"index\":0,\"logprobs\":null}],\"created\":\"**REDACTED**\",\"id\":\"fixture-id-1\",\"model\":\"deepseek-v4-flash\",\"object\":\"chat.completion.chunk\",\"system_fingerprint\":\"fixture-id-2\",\"usage\":null}\n\ndata: {\"choices\":[{\"delta\":{\"content\":null,\"reasoning_content\":\" briefly\"},\"finish_reason\":null,\"index\":0,\"logprobs\":null}],\"created\":\"**REDACTED**\",\"id\":\"fixture-id-1\",\"model\":\"deepseek-v4-flash\",\"object\":\"chat.completion.chunk\",\"system_fingerprint\":\"fixture-id-2\",\"usage\":null}\n\ndata: {\"choices\":[{\"delta\":{\"content\":null,\"reasoning_content\":\" about\"},\"finish_reason\":null,\"index\":0,\"logprobs\":null}],\"created\":\"**REDACTED**\",\"id\":\"fixture-id-1\",\"model\":\"deepseek-v4-flash\",\"object\":\"chat.completion.chunk\",\"system_fingerprint\":\"fixture-id-2\",\"usage\":null}\n\ndata: {\"choices\":[{\"delta\":{\"content\":null,\"reasoning_content\":\" \"},\"finish_reason\":null,\"index\":0,\"logprobs\":null}],\"created\":\"**REDACTED**\",\"id\":\"fixture-id-1\",\"model\":\"deepseek-v4-flash\",\"object\":\"chat.completion.chunk\",\"system_fingerprint\":\"fixture-id-2\",\"usage\":null}\n\ndata: {\"choices\":[{\"delta\":{\"content\":null,\"reasoning_content\":\"12\"},\"finish_reason\":null,\"index\":0,\"logprobs\":null}],\"created\":\"**REDACTED**\",\"id\":\"fixture-id-1\",\"model\":\"deepseek-v4-flash\",\"object\":\"chat.completion.chunk\",\"system_fingerprint\":\"fixture-id-2\",\"usage\":null}\n\ndata: {\"choices\":[{\"delta\":{\"content\":null,\"reasoning_content\":\" *\"},\"finish_reason\":null,\"index\":0,\"logprobs\":null}],\"created\":\"**REDACTED**\",\"id\":\"fixture-id-1\",\"model\":\"deepseek-v4-flash\",\"object\":\"chat.completion.chunk\",\"system_fingerprint\":\"fixture-id-2\",\"usage\":null}\n\ndata: {\"choices\":[{\"delta\":{\"content\":null,\"reasoning_content\":\" \"},\"finish_reason\":null,\"index\":0,\"logprobs\":null}],\"created\":\"**REDACTED**\",\"id\":\"fixture-id-1\",\"model\":\"deepseek-v4-flash\",\"object\":\"chat.completion.chunk\",\"system_fingerprint\":\"fixture-id-2\",\"usage\":null}\n\ndata: {\"choices\":[{\"delta\":{\"content\":null,\"reasoning_content\":\"11\"},\"finish_reason\":null,\"index\":0,\"logprobs\":null}],\"created\":\"**REDACTED**\",\"id\":\"fixture-id-1\",\"model\":\"deepseek-v4-flash\",\"object\":\"chat.completion.chunk\",\"system_fingerprint\":\"fixture-id-2\",\"usage\":null}\n\ndata: {\"choices\":[{\"delta\":{\"content\":null,\"reasoning_content\":\",\"},\"finish_reason\":null,\"index\":0,\"logprobs\":null}],\"created\":\"**REDACTED**\",\"id\":\"fixture-id-1\",\"model\":\"deepseek-v4-flash\",\"object\":\"chat.completion.chunk\",\"system_fingerprint\":\"fixture-id-2\",\"usage\":null}\n\ndata: {\"choices\":[{\"delta\":{\"content\":null,\"reasoning_content\":\" then\"},\"finish_reason\":null,\"index\":0,\"logprobs\":null}],\"created\":\"**REDACTED**\",\"id\":\"fixture-id-1\",\"model\":\"deepseek-v4-flash\",\"object\":\"chat.completion.chunk\",\"system_fingerprint\":\"fixture-id-2\",\"usage\":null}\n\ndata: {\"choices\":[{\"delta\":{\"content\":null,\"reasoning_content\":\" answer\"},\"finish_reason\":null,\"index\":0,\"logprobs\":null}],\"created\":\"**REDACTED**\",\"id\":\"fixture-id-1\",\"model\":\"deepseek-v4-flash\",\"object\":\"chat.completion.chunk\",\"system_fingerprint\":\"fixture-id-2\",\"usage\":null}\n\ndata: {\"choices\":[{\"delta\":{\"content\":null,\"reasoning_content\":\".\\\"\"},\"finish_reason\":null,\"index\":0,\"logprobs\":null}],\"created\":\"**REDACTED**\",\"id\":\"fixture-id-1\",\"model\":\"deepseek-v4-flash\",\"object\":\"chat.completion.chunk\",\"system_fingerprint\":\"fixture-id-2\",\"usage\":null}\n\ndata: {\"choices\":[{\"delta\":{\"content\":null,\"reasoning_content\":\" Need\"},\"finish_reason\":null,\"index\":0,\"logprobs\":null}],\"created\":\"**REDACTED**\",\"id\":\"fixture-id-1\",\"model\":\"deepseek-v4-flash\",\"object\":\"chat.completion.chunk\",\"system_fingerprint\":\"fixture-id-2\",\"usage\":null}\n\ndata: {\"choices\":[{\"delta\":{\"content\":null,\"reasoning_content\":\" likely\"},\"finish_reason\":null,\"index\":0,\"logprobs\":null}],\"created\":\"**REDACTED**\",\"id\":\"fixture-id-1\",\"model\":\"deepseek-v4-flash\",\"object\":\"chat.completion.chunk\",\"system_fingerprint\":\"fixture-id-2\",\"usage\":null}\n\ndata: {\"choices\":[{\"delta\":{\"content\":null,\"reasoning_content\":\" compute\"},\"finish_reason\":null,\"index\":0,\"logprobs\":null}],\"created\":\"**REDACTED**\",\"id\":\"fixture-id-1\",\"model\":\"deepseek-v4-flash\",\"object\":\"chat.completion.chunk\",\"system_fingerprint\":\"fixture-id-2\",\"usage\":null}\n\ndata: {\"choices\":[{\"delta\":{\"content\":null,\"reasoning_content\":\" \"},\"finish_reason\":null,\"index\":0,\"logprobs\":null}],\"created\":\"**REDACTED**\",\"id\":\"fixture-id-1\",\"model\":\"deepseek-v4-flash\",\"object\":\"chat.completion.chunk\",\"system_fingerprint\":\"fixture-id-2\",\"usage\":null}\n\ndata: {\"choices\":[{\"delta\":{\"content\":null,\"reasoning_content\":\"12\"},\"finish_reason\":null,\"index\":0,\"logprobs\":null}],\"created\":\"**REDACTED**\",\"id\":\"fixture-id-1\",\"model\":\"deepseek-v4-flash\",\"object\":\"chat.completion.chunk\",\"system_fingerprint\":\"fixture-id-2\",\"usage\":null}\n\ndata: {\"choices\":[{\"delta\":{\"content\":null,\"reasoning_content\":\"*\"},\"finish_reason\":null,\"index\":0,\"logprobs\":null}],\"created\":\"**REDACTED**\",\"id\":\"fixture-id-1\",\"model\":\"deepseek-v4-flash\",\"object\":\"chat.completion.chunk\",\"system_fingerprint\":\"fixture-id-2\",\"usage\":null}\n\ndata: {\"choices\":[{\"delta\":{\"content\":null,\"reasoning_content\":\"11\"},\"finish_reason\":null,\"index\":0,\"logprobs\":null}],\"created\":\"**REDACTED**\",\"id\":\"fixture-id-1\",\"model\":\"deepseek-v4-flash\",\"object\":\"chat.completion.chunk\",\"system_fingerprint\":\"fixture-id-2\",\"usage\":null}\n\ndata: {\"choices\":[{\"delta\":{\"content\":null,\"reasoning_content\":\" =\"},\"finish_reason\":null,\"index\":0,\"logprobs\":null}],\"created\":\"**REDACTED**\",\"id\":\"fixture-id-1\",\"model\":\"deepseek-v4-flash\",\"object\":\"chat.completion.chunk\",\"system_fingerprint\":\"fixture-id-2\",\"usage\":null}\n\ndata: {\"choices\":[{\"delta\":{\"content\":null,\"reasoning_content\":\" \"},\"finish_reason\":null,\"index\":0,\"logprobs\":null}],\"created\":\"**REDACTED**\",\"id\":\"fixture-id-1\",\"model\":\"deepseek-v4-flash\",\"object\":\"chat.completion.chunk\",\"system_fingerprint\":\"fixture-id-2\",\"usage\":null}\n\ndata: {\"choices\":[{\"delta\":{\"content\":null,\"reasoning_content\":\"132\"},\"finish_reason\":null,\"index\":0,\"logprobs\":null}],\"created\":\"**REDACTED**\",\"id\":\"fixture-id-1\",\"model\":\"deepseek-v4-flash\",\"object\":\"chat.completion.chunk\",\"system_fingerprint\":\"fixture-id-2\",\"usage\":null}\n\ndata: {\"choices\":[{\"delta\":{\"content\":null,\"reasoning_content\":\".\"},\"finish_reason\":null,\"index\":0,\"logprobs\":null}],\"created\":\"**REDACTED**\",\"id\":\"fixture-id-1\",\"model\":\"deepseek-v4-flash\",\"object\":\"chat.completion.chunk\",\"system_fingerprint\":\"fixture-id-2\",\"usage\":null}\n\ndata: {\"choices\":[{\"delta\":{\"content\":null,\"reasoning_content\":\" Need\"},\"finish_reason\":null,\"index\":0,\"logprobs\":null}],\"created\":\"**REDACTED**\",\"id\":\"fixture-id-1\",\"model\":\"deepseek-v4-flash\",\"object\":\"chat.completion.chunk\",\"system_fingerprint\":\"fixture-id-2\",\"usage\":null}\n\ndata: {\"choices\":[{\"delta\":{\"content\":null,\"reasoning_content\":\" maybe\"},\"finish_reason\":null,\"index\":0,\"logprobs\":null}],\"created\":\"**REDACTED**\",\"id\":\"fixture-id-1\",\"model\":\"deepseek-v4-flash\",\"object\":\"chat.completion.chunk\",\"system_fingerprint\":\"fixture-id-2\",\"usage\":null}\n\ndata: {\"choices\":[{\"delta\":{\"content\":null,\"reasoning_content\":\" mention\"},\"finish_reason\":null,\"index\":0,\"logprobs\":null}],\"created\":\"**REDACTED**\",\"id\":\"fixture-id-1\",\"model\":\"deepseek-v4-flash\",\"object\":\"chat.completion.chunk\",\"system_fingerprint\":\"fixture-id-2\",\"usage\":null}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"\",\"reasoning_content\":null},\"finish_reason\":\"length\",\"index\":0,\"logprobs\":null}],\"created\":\"**REDACTED**\",\"id\":\"fixture-id-1\",\"model\":\"deepseek-v4-flash\",\"object\":\"chat.completion.chunk\",\"system_fingerprint\":\"fixture-id-2\",\"usage\":{\"completion_tokens\":32,\"completion_tokens_details\":{\"reasoning_tokens\":32},\"prompt_cache_hit_tokens\":0,\"prompt_cache_miss_tokens\":16,\"prompt_tokens\":16,\"prompt_tokens_details\":{\"cached_tokens\":0},\"total_tokens\":48}}\n\ndata: [DONE]\n\n",
+    "headers": [
+      [
+        "access-control-allow-credentials",
+        "**REDACTED**"
+      ],
+      [
+        "cache-control",
+        "no-cache"
+      ],
+      [
+        "connection",
+        "keep-alive"
+      ],
+      [
+        "content-type",
+        "text/event-stream; charset=utf-8"
+      ],
+      [
+        "date",
+        "**REDACTED**"
+      ],
+      [
+        "server",
+        "**REDACTED**"
+      ],
+      [
+        "strict-transport-security",
+        "max-age=31536000; includeSubDomains; preload"
+      ],
+      [
+        "transfer-encoding",
+        "chunked"
+      ],
+      [
+        "vary",
+        "origin, access-control-request-method, access-control-request-headers"
+      ],
+      [
+        "via",
+        "**REDACTED**"
+      ],
+      [
+        "x-amz-cf-id",
+        "**REDACTED**"
+      ],
+      [
+        "x-amz-cf-pop",
+        "**REDACTED**"
+      ],
+      [
+        "x-cache",
+        "**REDACTED**"
+      ],
+      [
+        "x-content-type-options",
+        "nosniff"
+      ],
+      [
+        "x-ds-trace-id",
+        "**REDACTED**"
+      ]
+    ],
+    "status": 200
+  },
+  "scenario": "reasoning_stream_truncated"
+}

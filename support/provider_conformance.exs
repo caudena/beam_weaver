@@ -16,11 +16,17 @@ defmodule BeamWeaver.TestSupport.ProviderConformance do
 
   @redacted_header_names MapSet.new([
                            "cf-ray",
+                           "content-length",
                            "date",
                            "openai-organization",
                            "openai-project",
                            "request-id",
                            "server",
+                           "via",
+                           "x-amz-cf-id",
+                           "x-amz-cf-pop",
+                           "x-cache",
+                           "x-ds-trace-id",
                            "x-request-id",
                            "x-ratelimit-limit-requests",
                            "x-ratelimit-limit-tokens",
@@ -35,7 +41,9 @@ defmodule BeamWeaver.TestSupport.ProviderConformance do
     "api_key",
     "apikey",
     "authorization",
+    "balance",
     "credential",
+    "currency",
     "created",
     "created_at",
     "org_id",
@@ -43,8 +51,27 @@ defmodule BeamWeaver.TestSupport.ProviderConformance do
     "password",
     "request_id",
     "secret",
-    "timestamp"
+    "timestamp",
+    "is_available"
   ]
+
+  @dynamic_id_keys MapSet.new([
+                     "call_id",
+                     "id",
+                     "item_id",
+                     "provider_id",
+                     "request_id",
+                     "response_id",
+                     "system_fingerprint",
+                     "tool_call_id"
+                   ])
+
+  @dynamic_timestamp_keys MapSet.new([
+                            "completed_at",
+                            "created",
+                            "created_at",
+                            "timestamp"
+                          ])
 
   @provider_modules %{
     openai: BeamWeaver.OpenAI.ChatModel,
@@ -53,7 +80,9 @@ defmodule BeamWeaver.TestSupport.ProviderConformance do
     xai_chat_completions: BeamWeaver.XAI.ChatCompletionsModel,
     google: BeamWeaver.Google.ChatModel,
     moonshot: BeamWeaver.Moonshot.ChatModel,
-    zai: BeamWeaver.ZAI.ChatModel
+    zai: BeamWeaver.ZAI.ChatModel,
+    deepseek: BeamWeaver.DeepSeek.ChatModel,
+    deepseek_responses: BeamWeaver.DeepSeek.ResponsesModel
   }
 
   @provider_models %{
@@ -63,7 +92,9 @@ defmodule BeamWeaver.TestSupport.ProviderConformance do
     xai_chat_completions: "grok-4.3",
     google: "gemini-3.5-flash",
     moonshot: "kimi-k2.6",
-    zai: "glm-5.2"
+    zai: "glm-5.2",
+    deepseek: "deepseek-v4-flash",
+    deepseek_responses: "deepseek-v4-flash"
   }
 
   @provider_api_keys %{
@@ -73,7 +104,9 @@ defmodule BeamWeaver.TestSupport.ProviderConformance do
     xai_chat_completions: "xai-provider-conformance",
     google: "google-provider-conformance",
     moonshot: "moonshot-provider-conformance",
-    zai: "zai-provider-conformance"
+    zai: "zai-provider-conformance",
+    deepseek: "deepseek-provider-conformance",
+    deepseek_responses: "deepseek-provider-conformance"
   }
 
   def fixture_root, do: @fixture_root
@@ -269,6 +302,7 @@ defmodule BeamWeaver.TestSupport.ProviderConformance do
       path
       |> load_path!()
       |> Map.put("expected", normalize_for_fixture(expected))
+      |> canonicalize_capture_fixture()
 
     write_json!(path, fixture)
   end
@@ -294,7 +328,9 @@ defmodule BeamWeaver.TestSupport.ProviderConformance do
              :xai_chat_completions,
              :google,
              :moonshot,
-             :zai
+             :zai,
+             :deepseek,
+             :deepseek_responses
            ],
       do: provider
 
@@ -305,10 +341,12 @@ defmodule BeamWeaver.TestSupport.ProviderConformance do
   def provider_atom!("google"), do: :google
   def provider_atom!("moonshot"), do: :moonshot
   def provider_atom!("zai"), do: :zai
+  def provider_atom!("deepseek"), do: :deepseek
+  def provider_atom!("deepseek_responses"), do: :deepseek_responses
 
   def provider_atom!(other) do
     raise ArgumentError,
-          "unsupported provider #{inspect(other)}; expected :openai, :openai_chat_completions, :xai, :xai_chat_completions, :google, :moonshot, or :zai"
+          "unsupported provider #{inspect(other)}; expected :openai, :openai_chat_completions, :xai, :xai_chat_completions, :google, :moonshot, :zai, :deepseek, or :deepseek_responses"
   end
 
   def provider_name!(provider), do: provider_atom!(provider) |> Atom.to_string()
@@ -401,6 +439,91 @@ defmodule BeamWeaver.TestSupport.ProviderConformance do
 
   defp normalize_key(key) when is_atom(key), do: Atom.to_string(key)
   defp normalize_key(key), do: to_string(key)
+
+  defp canonicalize_capture_fixture(fixture) do
+    state = %{ids: %{}, next_id: 1}
+    {expected, state} = canonicalize_dynamic_values(fixture["expected"], state)
+    {response, _state} = canonicalize_dynamic_values(fixture["response"], state)
+
+    fixture
+    |> Map.put("expected", expected)
+    |> Map.put("response", response)
+  end
+
+  defp canonicalize_dynamic_values(map, state) when is_map(map) do
+    map
+    |> Enum.sort_by(fn {key, _value} -> normalize_key(key) end)
+    |> Enum.reduce({%{}, state}, fn {key, value}, {acc, state} ->
+      normalized_key = normalize_key(key)
+
+      {value, state} =
+        cond do
+          MapSet.member?(@dynamic_timestamp_keys, normalized_key) and
+              value not in [nil, @redacted] ->
+            {@redacted, state}
+
+          MapSet.member?(@dynamic_id_keys, normalized_key) and
+              is_binary(value) and value not in ["", @redacted] ->
+            canonicalize_id(value, state)
+
+          true ->
+            canonicalize_dynamic_values(value, state)
+        end
+
+      {Map.put(acc, key, value), state}
+    end)
+  end
+
+  defp canonicalize_dynamic_values(values, state) when is_list(values) do
+    Enum.map_reduce(values, state, &canonicalize_dynamic_values/2)
+  end
+
+  defp canonicalize_dynamic_values(value, state) when is_binary(value) do
+    canonicalize_sse(value, state)
+  end
+
+  defp canonicalize_dynamic_values(value, state), do: {value, state}
+
+  defp canonicalize_id(value, %{ids: ids} = state) do
+    case ids do
+      %{^value => canonical} ->
+        {canonical, state}
+
+      _missing ->
+        canonical = "fixture-id-#{state.next_id}"
+
+        {canonical,
+         %{
+           state
+           | ids: Map.put(ids, value, canonical),
+             next_id: state.next_id + 1
+         }}
+    end
+  end
+
+  defp canonicalize_sse(value, state) do
+    if String.starts_with?(value, "data:") or String.contains?(value, "\ndata:") do
+      value
+      |> String.split("\n", trim: false)
+      |> Enum.map_reduce(state, &canonicalize_sse_line/2)
+      |> then(fn {lines, state} -> {Enum.join(lines, "\n"), state} end)
+    else
+      {value, state}
+    end
+  end
+
+  defp canonicalize_sse_line("data: " <> data = line, state) do
+    case BeamWeaver.JSON.decode(data) do
+      {:ok, decoded} ->
+        {decoded, state} = canonicalize_dynamic_values(decoded, state)
+        {"data: " <> BeamWeaver.JSON.encode!(decoded), state}
+
+      {:error, _error} ->
+        {line, state}
+    end
+  end
+
+  defp canonicalize_sse_line(line, state), do: {line, state}
 
   defp redact_fixture_term(%{__struct__: _module} = struct), do: struct |> Map.from_struct() |> redact_fixture_term()
 

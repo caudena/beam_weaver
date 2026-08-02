@@ -8,11 +8,11 @@ defmodule BeamWeaver.Adapters.EctoPostgres do
 
   @spec transaction(module(), (-> term())) :: term() | {:error, Error.t()}
   def transaction(repo, fun) when is_function(fun, 0) do
-    if is_atom(repo) and function_exported?(repo, :transaction, 1) do
-      case repo.transaction(fn ->
+    if is_atom(repo) and function_exported?(repo, :transact, 1) do
+      case repo.transact(fn ->
              case fun.() do
-               {:error, reason} -> repo.rollback(reason)
-               other -> other
+               {:error, reason} -> {:error, reason}
+               other -> {:ok, other}
              end
            end) do
         {:ok, :ok} -> :ok

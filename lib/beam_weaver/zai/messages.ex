@@ -6,13 +6,11 @@ defmodule BeamWeaver.ZAI.Messages do
   alias BeamWeaver.Core.ContentBlock
   alias BeamWeaver.Core.Message
   alias BeamWeaver.Core.Messages
+  alias BeamWeaver.Models.ProfileRegistry.ZAI, as: ZAIProfiles
+  alias BeamWeaver.Models.UsageCost
   alias BeamWeaver.OpenAI.MessageParts
   alias BeamWeaver.Result
   alias BeamWeaver.ZAI.Error
-
-  @input_price_per_mtok 1.40
-  @cached_input_price_per_mtok 0.26
-  @output_price_per_mtok 4.40
 
   @spec to_chat_messages([Message.t()]) :: {:ok, [map()]} | {:error, Error.t()}
   def to_chat_messages(messages) when is_list(messages) do
@@ -92,29 +90,15 @@ defmodule BeamWeaver.ZAI.Messages do
     input_tokens = usage["prompt_tokens"] || usage["input_tokens"] || 0
     output_tokens = usage["completion_tokens"] || usage["output_tokens"] || 0
     total_tokens = usage["total_tokens"] || input_tokens + output_tokens
-    cached_tokens = cached_tokens(usage)
-    uncached_input_tokens = max(input_tokens - cached_tokens, 0)
-    input_cost = mtok_cost(uncached_input_tokens, @input_price_per_mtok)
-    cached_input_cost = mtok_cost(cached_tokens, @cached_input_price_per_mtok)
-    output_cost = mtok_cost(output_tokens, @output_price_per_mtok)
 
     %{
       input_tokens: input_tokens,
       output_tokens: output_tokens,
       total_tokens: total_tokens,
-      input_cost: input_cost + cached_input_cost,
-      output_cost: output_cost,
-      total_cost: input_cost + cached_input_cost + output_cost,
-      input_cost_details: %{
-        uncached: input_cost,
-        cache_read: cached_input_cost
-      },
-      output_cost_details: %{
-        text: output_cost
-      },
       input_token_details: input_token_details(usage),
       output_token_details: output_token_details(usage)
     }
+    |> Map.merge(UsageCost.calculate(pricing_profile(), usage) || %{})
     |> BeamWeaver.MapShape.reject_nil_or_empty()
   end
 
@@ -389,12 +373,6 @@ defmodule BeamWeaver.ZAI.Messages do
     |> BeamWeaver.MapShape.reject_nil_or_empty()
   end
 
-  defp mtok_cost(tokens, price_per_mtok) when is_number(tokens) do
-    tokens * price_per_mtok / 1_000_000
-  end
-
-  defp mtok_cost(_tokens, _price_per_mtok), do: 0
-
   defp positive(value) when is_number(value) and value > 0, do: value
   defp positive(_value), do: nil
 
@@ -447,4 +425,9 @@ defmodule BeamWeaver.ZAI.Messages do
   defp put_optional(map, _key, nil), do: map
   defp put_optional(map, _key, []), do: map
   defp put_optional(map, key, value), do: Map.put(map, key, value)
+
+  defp pricing_profile do
+    {:ok, profile} = ZAIProfiles.resolve("glm-5.2")
+    profile
+  end
 end

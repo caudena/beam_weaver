@@ -255,6 +255,18 @@ model =
 BeamWeaver does not create or expire Gemini cached-content resources for you in
 this release.
 
+## DeepSeek
+
+DeepSeek performs automatic context caching for repeated prompt prefixes; it
+does not expose a BeamWeaver cache-key option. Chat Completions reports
+`prompt_cache_hit_tokens` and `prompt_cache_miss_tokens`. Responses reports
+`input_tokens_details.cached_tokens`.
+
+BeamWeaver normalizes both APIs to `input_token_details.cache_read` and derives
+uncached input without counting the same prompt token twice. The normalized
+usage also includes cached and uncached input cost at the selected V4 model's
+profile rates.
+
 ## Z.ai GLM
 
 Z.ai does not expose a BeamWeaver cache key option in this release. When Z.ai

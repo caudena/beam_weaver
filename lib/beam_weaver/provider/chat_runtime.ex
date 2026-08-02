@@ -27,7 +27,7 @@ defmodule BeamWeaver.Provider.ChatRuntime do
            request_body(model, messages, Keyword.put(call_opts, :stream, false), adapter),
          {:ok, response} <- adapter.invoke.(model, body, call_opts),
          {:ok, message} <- adapter.decode.(response, call_opts) do
-      parse_response(message, call_opts, adapter)
+      parse_response(model, message, call_opts, adapter)
     end
   end
 
@@ -44,7 +44,7 @@ defmodule BeamWeaver.Provider.ChatRuntime do
            request_body(model, messages, Keyword.put(call_opts, :stream, true), adapter),
          {:ok, response} <- adapter.stream_response.(model, body, call_opts),
          {:ok, message} <- adapter.decode.(response, call_opts) do
-      parse_response(message, call_opts, adapter)
+      parse_response(model, message, call_opts, adapter)
     end
   end
 
@@ -101,10 +101,11 @@ defmodule BeamWeaver.Provider.ChatRuntime do
   defp request_body(model, messages, opts, %Adapter{} = adapter),
     do: adapter.request.(model, messages, opts)
 
-  defp parse_response(message, opts, %Adapter{} = adapter) do
+  defp parse_response(model, message, opts, %Adapter{} = adapter) do
     case adapter.parse do
       nil -> {:ok, message}
-      parser -> parser.(message, opts)
+      parser when is_function(parser, 3) -> parser.(model, message, opts)
+      parser when is_function(parser, 2) -> parser.(message, opts)
     end
   end
 

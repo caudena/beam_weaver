@@ -1,0 +1,191 @@
+{
+  "expected": {
+    "message": {
+      "id": "fixture-id-1",
+      "metadata": {
+        "finish_reason": "stop",
+        "id": "fixture-id-1",
+        "model": "deepseek-v4-flash",
+        "model_name": "deepseek-v4-flash",
+        "model_provider": "deepseek",
+        "provider": "deepseek",
+        "reasoning_content": "We need to reply exactly \"pong\". The user said \"Reply with exactly: pong\". So just output pong.",
+        "token_usage": {
+          "completion_tokens": 29,
+          "completion_tokens_details": {
+            "reasoning_tokens": 26
+          },
+          "prompt_cache_hit_tokens": 0,
+          "prompt_cache_miss_tokens": 89,
+          "prompt_tokens": 89,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          },
+          "total_tokens": 118
+        },
+        "usage": {
+          "completion_tokens": 29,
+          "completion_tokens_details": {
+            "reasoning_tokens": 26
+          },
+          "prompt_cache_hit_tokens": 0,
+          "prompt_cache_miss_tokens": 89,
+          "prompt_tokens": 89,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          },
+          "total_tokens": 118
+        }
+      },
+      "role": "assistant",
+      "status": "stop",
+      "text": "pong",
+      "tool_calls": [],
+      "usage_metadata": {
+        "input_cost": 1.2460000000000001e-5,
+        "input_cost_details": {
+          "cache_read": 0.0,
+          "uncached": 1.2460000000000001e-5
+        },
+        "input_token_details": {
+          "cache_miss": 89,
+          "cache_read": 0
+        },
+        "input_tokens": 89,
+        "output_cost": 8.12e-6,
+        "output_cost_details": {
+          "text": 8.12e-6
+        },
+        "output_token_details": {
+          "reasoning": 26
+        },
+        "output_tokens": 29,
+        "total_cost": 2.0580000000000003e-5,
+        "total_tokens": 118
+      }
+    }
+  },
+  "provider": "deepseek",
+  "request": {
+    "headers": [
+      [
+        "authorization",
+        "**REDACTED**"
+      ],
+      [
+        "content-type",
+        "application/json"
+      ],
+      [
+        "user-agent",
+        "beam_weaver-deepseek/0.1"
+      ]
+    ],
+    "json": {
+      "messages": [
+        {
+          "content": "Reply with exactly: pong",
+          "role": "user"
+        }
+      ],
+      "model": "deepseek-v4-flash",
+      "stream": false
+    },
+    "method": "POST",
+    "url": "https://api.deepseek.com/chat/completions"
+  },
+  "response": {
+    "body": {
+      "choices": [
+        {
+          "finish_reason": "stop",
+          "index": 0,
+          "logprobs": "nil",
+          "message": {
+            "content": "pong",
+            "reasoning_content": "We need to reply exactly \"pong\". The user said \"Reply with exactly: pong\". So just output pong.",
+            "role": "assistant"
+          }
+        }
+      ],
+      "created": "**REDACTED**",
+      "id": "fixture-id-1",
+      "model": "deepseek-v4-flash",
+      "object": "chat.completion",
+      "system_fingerprint": "fixture-id-2",
+      "usage": {
+        "completion_tokens": 29,
+        "completion_tokens_details": {
+          "reasoning_tokens": 26
+        },
+        "prompt_cache_hit_tokens": 0,
+        "prompt_cache_miss_tokens": 89,
+        "prompt_tokens": 89,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        },
+        "total_tokens": 118
+      }
+    },
+    "headers": [
+      [
+        "access-control-allow-credentials",
+        "**REDACTED**"
+      ],
+      [
+        "connection",
+        "keep-alive"
+      ],
+      [
+        "content-type",
+        "application/json"
+      ],
+      [
+        "date",
+        "**REDACTED**"
+      ],
+      [
+        "server",
+        "**REDACTED**"
+      ],
+      [
+        "strict-transport-security",
+        "max-age=31536000; includeSubDomains; preload"
+      ],
+      [
+        "transfer-encoding",
+        "chunked"
+      ],
+      [
+        "vary",
+        "origin, access-control-request-method, access-control-request-headers"
+      ],
+      [
+        "via",
+        "**REDACTED**"
+      ],
+      [
+        "x-amz-cf-id",
+        "**REDACTED**"
+      ],
+      [
+        "x-amz-cf-pop",
+        "**REDACTED**"
+      ],
+      [
+        "x-cache",
+        "**REDACTED**"
+      ],
+      [
+        "x-content-type-options",
+        "nosniff"
+      ],
+      [
+        "x-ds-trace-id",
+        "**REDACTED**"
+      ]
+    ],
+    "status": 200
+  },
+  "scenario": "basic_chat"
+}

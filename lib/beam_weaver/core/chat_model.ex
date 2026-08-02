@@ -544,6 +544,8 @@ defmodule BeamWeaver.Core.ChatModel do
       ["BeamWeaver", "XAI", "ChatCompletionsModel"] -> [:xai_chat_completions]
       ["BeamWeaver", "Moonshot", "ChatModel"] -> [:moonshot]
       ["BeamWeaver", "ZAI", "ChatModel"] -> [:zai]
+      ["BeamWeaver", "DeepSeek", "ChatModel"] -> [:deepseek_chat_completions]
+      ["BeamWeaver", "DeepSeek", "ResponsesModel"] -> [:deepseek_responses]
       ["BeamWeaver", "Models", "FakeChatModel"] -> [:all]
       _other -> [:generic]
     end
@@ -559,6 +561,8 @@ defmodule BeamWeaver.Core.ChatModel do
   defp provider_params(:xai_chat_completions), do: ProfileParams.xai_chat_completions()
   defp provider_params(:moonshot), do: ProfileParams.moonshot()
   defp provider_params(:zai), do: ProfileParams.zai()
+  defp provider_params(:deepseek_chat_completions), do: ProfileParams.deepseek_chat_completions()
+  defp provider_params(:deepseek_responses), do: ProfileParams.deepseek_responses()
   defp provider_params(:generic), do: @generic_model_param_keys
 
   defp provider_params(:all) do
@@ -570,7 +574,9 @@ defmodule BeamWeaver.Core.ChatModel do
       ProfileParams.xai_responses(),
       ProfileParams.xai_chat_completions(),
       ProfileParams.moonshot(),
-      ProfileParams.zai()
+      ProfileParams.zai(),
+      ProfileParams.deepseek_chat_completions(),
+      ProfileParams.deepseek_responses()
     ]
     |> List.flatten()
   end
@@ -646,6 +652,7 @@ defmodule BeamWeaver.Core.ChatModel do
       "XAI" in parts -> "xai"
       "Moonshot" in parts -> "moonshot"
       "ZAI" in parts -> "zai"
+      "DeepSeek" in parts -> "deepseek"
       parts == ["BeamWeaver", "Models", "FakeChatModel"] -> "fake"
       true -> nil
     end

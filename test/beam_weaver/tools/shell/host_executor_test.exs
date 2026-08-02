@@ -1,5 +1,7 @@
 defmodule BeamWeaver.Tools.Shell.HostExecutorTest do
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: false
+
+  import ExUnit.CaptureIO
 
   alias BeamWeaver.ShellPolicy
   alias BeamWeaver.Tools.Shell.HostExecutor
@@ -18,21 +20,54 @@ defmodule BeamWeaver.Tools.Shell.HostExecutorTest do
     assert result.output =~ "ok"
   end
 
-  test "does not leak stderr temp files when a separate-stderr command times out" do
-    policy = ShellPolicy.new!(allow: ["sleep"], stderr: :separate, timeout: 50)
+  test "closes command stdin like System.cmd" do
+    policy = ShellPolicy.new!(allow: ["cat"], timeout: 1_000)
 
-    before = stderr_temp_files()
-
-    assert {:error, %{type: :shell_timeout}} = HostExecutor.run("sleep 5", policy)
-
-    Process.sleep(100)
-
-    assert stderr_temp_files() == before
+    assert {:ok, %{status: 0, output: ""}} = HostExecutor.run("cat", policy)
   end
 
-  defp stderr_temp_files do
+  test "separate stderr preserves shell syntax failures and nonzero status" do
+    policy = ShellPolicy.new!(allow: [~r/.*/], stderr: :separate, timeout: 1_000)
+
+    assert {:ok, %{status: status, output: "", stderr: stderr}} =
+             HostExecutor.run("(", policy)
+
+    assert status > 0
+    assert stderr != ""
+  end
+
+  test "zero-timeout separate-stderr commands emit no shell errors or scratch leaks" do
+    policy = ShellPolicy.new!(allow: ["sleep"], stderr: :separate, timeout: 0)
+
+    before = scratch_dirs()
+
+    captured =
+      capture_io(:stderr, fn ->
+        for iteration <- 1..25 do
+          assert {:error, %{type: :shell_timeout}} =
+                   HostExecutor.run("sleep 0.01", policy, command_id: "host-timeout-#{iteration}")
+        end
+      end)
+
+    assert captured == ""
+    assert scratch_dirs() == before
+    assert port_messages(self()) == []
+  end
+
+  defp port_messages(pid) do
+    pid
+    |> Process.info(:messages)
+    |> elem(1)
+    |> Enum.filter(fn
+      {port, _message} when is_port(port) -> true
+      {:EXIT, port, _reason} when is_port(port) -> true
+      _message -> false
+    end)
+  end
+
+  defp scratch_dirs do
     System.tmp_dir!()
-    |> Path.join("beam_weaver_shell_stderr_*")
+    |> Path.join("beam_weaver_shell_scratch_*")
     |> Path.wildcard()
     |> MapSet.new()
   end

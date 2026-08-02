@@ -6,6 +6,7 @@ defmodule BeamWeaver.Models.ProfileRegistry do
   alias BeamWeaver.Core.Error
   alias BeamWeaver.Models.Profile
   alias BeamWeaver.Models.ProfileRegistry.Anthropic
+  alias BeamWeaver.Models.ProfileRegistry.DeepSeek
   alias BeamWeaver.Models.ProfileRegistry.Fake
   alias BeamWeaver.Models.ProfileRegistry.Fallbacks
   alias BeamWeaver.Models.ProfileRegistry.Google
@@ -16,6 +17,7 @@ defmodule BeamWeaver.Models.ProfileRegistry do
 
   @provider_modules %{
     anthropic: Anthropic,
+    deepseek: DeepSeek,
     fake: Fake,
     google: Google,
     moonshot: Moonshot,
@@ -24,7 +26,7 @@ defmodule BeamWeaver.Models.ProfileRegistry do
     zai: ZAI
   }
 
-  @profile_modules [OpenAI, Anthropic, XAI, Moonshot, ZAI, Google, Fake]
+  @profile_modules [OpenAI, Anthropic, XAI, Moonshot, ZAI, DeepSeek, Google, Fake]
 
   @doc """
   Returns all checked-in model profiles sorted by provider and id.

@@ -46,7 +46,7 @@ defmodule BeamWeaver.TestSupport.DeepAgents.Evals do
     "unit_test" => 9
   }
 
-  @supported_providers ~w(fake openai anthropic google xai zai)
+  @supported_providers ~w(fake openai anthropic google xai zai deepseek)
 
   @provider_env %{
     "openai" => "OPENAI_API_KEY",
@@ -54,7 +54,8 @@ defmodule BeamWeaver.TestSupport.DeepAgents.Evals do
     "google" => "GOOGLE_API_KEY",
     "xai" => "XAI_API_KEY",
     "moonshot" => "MOONSHOT_API_KEY",
-    "zai" => "ZAI_API_KEY"
+    "zai" => "ZAI_API_KEY",
+    "deepseek" => "DEEPSEEK_API_KEY"
   }
 
   @provider_config_key %{
@@ -62,7 +63,8 @@ defmodule BeamWeaver.TestSupport.DeepAgents.Evals do
     "anthropic" => :anthropic,
     "google" => :google,
     "xai" => :xai,
-    "zai" => :zai
+    "zai" => :zai,
+    "deepseek" => :deepseek
   }
 
   @model_groups %{
@@ -71,20 +73,23 @@ defmodule BeamWeaver.TestSupport.DeepAgents.Evals do
       "openai:gpt-4.1",
       "anthropic:claude-sonnet-4-6",
       "google:gemini-3.5-flash",
-      "xai:grok-4.5"
+      "xai:grok-4.5",
+      "deepseek:deepseek-v4-flash"
     ],
     "fake" => ["fake"],
     "fast" => [
       "anthropic:claude-sonnet-4-6",
       "google:gemini-3.5-flash",
       "openai:gpt-5.6-luna",
-      "openai:gpt-5.4-mini"
+      "openai:gpt-5.4-mini",
+      "deepseek:deepseek-v4-flash"
     ],
     "frontier" => [
       "anthropic:claude-fable-5",
       "openai:gpt-5.6-sol",
       "openai:gpt-5.5",
-      "openai:gpt-5.5-pro"
+      "openai:gpt-5.5-pro",
+      "deepseek:deepseek-v4-pro"
     ],
     "openai" => [
       "openai:gpt-4.1",
@@ -114,6 +119,7 @@ defmodule BeamWeaver.TestSupport.DeepAgents.Evals do
     "google" => ["google:gemini-3.5-flash", "google:gemini-3.1-pro-preview"],
     "xai" => ["xai:grok-4.5", "xai:grok-4.3", "xai:grok-4.20-0309-non-reasoning"],
     "zai" => ["zai:glm-5.2"],
+    "deepseek" => ["deepseek:deepseek-v4-flash", "deepseek:deepseek-v4-pro"],
     "unsupported_cataloged" => [
       "baseten:MiniMaxAI/MiniMax-M2.5",
       "fireworks:accounts/fireworks/models/deepseek-v3-0324",

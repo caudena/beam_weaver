@@ -1,0 +1,167 @@
+{
+  "expected": {
+    "message": {
+      "id": "fixture-id-1",
+      "metadata": {
+        "finish_reason": "stop",
+        "id": "fixture-id-1",
+        "model": "deepseek-v4-flash",
+        "model_name": "deepseek-v4-flash",
+        "model_provider": "deepseek",
+        "provider": "deepseek",
+        "reasoning_content": "We need to respond with exactly \"streamed pong\". The user's instruction: \"Reply with exactly: streamed pong\" So the output should be exactly that phrase. No extra text.",
+        "token_usage": {
+          "completion_tokens": 45,
+          "completion_tokens_details": {
+            "reasoning_tokens": 40
+          },
+          "prompt_cache_hit_tokens": 0,
+          "prompt_cache_miss_tokens": 91,
+          "prompt_tokens": 91,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          },
+          "total_tokens": 136
+        },
+        "usage": {
+          "completion_tokens": 45,
+          "completion_tokens_details": {
+            "reasoning_tokens": 40
+          },
+          "prompt_cache_hit_tokens": 0,
+          "prompt_cache_miss_tokens": 91,
+          "prompt_tokens": 91,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          },
+          "total_tokens": 136
+        }
+      },
+      "role": "assistant",
+      "status": "stop",
+      "text": "streamed pong",
+      "tool_calls": [],
+      "usage_metadata": {
+        "input_cost": 1.2740000000000002e-5,
+        "input_cost_details": {
+          "cache_read": 0.0,
+          "uncached": 1.2740000000000002e-5
+        },
+        "input_token_details": {
+          "cache_miss": 91,
+          "cache_read": 0
+        },
+        "input_tokens": 91,
+        "output_cost": 1.2600000000000001e-5,
+        "output_cost_details": {
+          "text": 1.2600000000000001e-5
+        },
+        "output_token_details": {
+          "reasoning": 40
+        },
+        "output_tokens": 45,
+        "total_cost": 2.5340000000000005e-5,
+        "total_tokens": 136
+      }
+    }
+  },
+  "provider": "deepseek",
+  "request": {
+    "headers": [
+      [
+        "authorization",
+        "**REDACTED**"
+      ],
+      [
+        "content-type",
+        "application/json"
+      ],
+      [
+        "user-agent",
+        "beam_weaver-deepseek/0.1"
+      ]
+    ],
+    "json": {
+      "messages": [
+        {
+          "content": "Reply with exactly: streamed pong",
+          "role": "user"
+        }
+      ],
+      "model": "deepseek-v4-flash",
+      "stream": true,
+      "stream_options": {
+        "include_usage": true
+      }
+    },
+    "method": "POST",
+    "url": "https://api.deepseek.com/chat/completions"
+  },
+  "response": {
+    "body": "data: {\"choices\":[{\"delta\":{\"content\":null,\"reasoning_content\":\"\",\"role\":\"assistant\"},\"finish_reason\":null,\"index\":0,\"logprobs\":null}],\"created\":\"**REDACTED**\",\"id\":\"fixture-id-1\",\"model\":\"deepseek-v4-flash\",\"object\":\"chat.completion.chunk\",\"system_fingerprint\":\"fixture-id-2\",\"usage\":null}\n\ndata: {\"choices\":[{\"delta\":{\"content\":null,\"reasoning_content\":\"We\"},\"finish_reason\":null,\"index\":0,\"logprobs\":null}],\"created\":\"**REDACTED**\",\"id\":\"fixture-id-1\",\"model\":\"deepseek-v4-flash\",\"object\":\"chat.completion.chunk\",\"system_fingerprint\":\"fixture-id-2\",\"usage\":null}\n\ndata: {\"choices\":[{\"delta\":{\"content\":null,\"reasoning_content\":\" need\"},\"finish_reason\":null,\"index\":0,\"logprobs\":null}],\"created\":\"**REDACTED**\",\"id\":\"fixture-id-1\",\"model\":\"deepseek-v4-flash\",\"object\":\"chat.completion.chunk\",\"system_fingerprint\":\"fixture-id-2\",\"usage\":null}\n\ndata: {\"choices\":[{\"delta\":{\"content\":null,\"reasoning_content\":\" to\"},\"finish_reason\":null,\"index\":0,\"logprobs\":null}],\"created\":\"**REDACTED**\",\"id\":\"fixture-id-1\",\"model\":\"deepseek-v4-flash\",\"object\":\"chat.completion.chunk\",\"system_fingerprint\":\"fixture-id-2\",\"usage\":null}\n\ndata: {\"choices\":[{\"delta\":{\"content\":null,\"reasoning_content\":\" respond\"},\"finish_reason\":null,\"index\":0,\"logprobs\":null}],\"created\":\"**REDACTED**\",\"id\":\"fixture-id-1\",\"model\":\"deepseek-v4-flash\",\"object\":\"chat.completion.chunk\",\"system_fingerprint\":\"fixture-id-2\",\"usage\":null}\n\ndata: {\"choices\":[{\"delta\":{\"content\":null,\"reasoning_content\":\" with\"},\"finish_reason\":null,\"index\":0,\"logprobs\":null}],\"created\":\"**REDACTED**\",\"id\":\"fixture-id-1\",\"model\":\"deepseek-v4-flash\",\"object\":\"chat.completion.chunk\",\"system_fingerprint\":\"fixture-id-2\",\"usage\":null}\n\ndata: {\"choices\":[{\"delta\":{\"content\":null,\"reasoning_content\":\" exactly\"},\"finish_reason\":null,\"index\":0,\"logprobs\":null}],\"created\":\"**REDACTED**\",\"id\":\"fixture-id-1\",\"model\":\"deepseek-v4-flash\",\"object\":\"chat.completion.chunk\",\"system_fingerprint\":\"fixture-id-2\",\"usage\":null}\n\ndata: {\"choices\":[{\"delta\":{\"content\":null,\"reasoning_content\":\" \\\"\"},\"finish_reason\":null,\"index\":0,\"logprobs\":null}],\"created\":\"**REDACTED**\",\"id\":\"fixture-id-1\",\"model\":\"deepseek-v4-flash\",\"object\":\"chat.completion.chunk\",\"system_fingerprint\":\"fixture-id-2\",\"usage\":null}\n\ndata: {\"choices\":[{\"delta\":{\"content\":null,\"reasoning_content\":\"stream\"},\"finish_reason\":null,\"index\":0,\"logprobs\":null}],\"created\":\"**REDACTED**\",\"id\":\"fixture-id-1\",\"model\":\"deepseek-v4-flash\",\"object\":\"chat.completion.chunk\",\"system_fingerprint\":\"fixture-id-2\",\"usage\":null}\n\ndata: {\"choices\":[{\"delta\":{\"content\":null,\"reasoning_content\":\"ed\"},\"finish_reason\":null,\"index\":0,\"logprobs\":null}],\"created\":\"**REDACTED**\",\"id\":\"fixture-id-1\",\"model\":\"deepseek-v4-flash\",\"object\":\"chat.completion.chunk\",\"system_fingerprint\":\"fixture-id-2\",\"usage\":null}\n\ndata: {\"choices\":[{\"delta\":{\"content\":null,\"reasoning_content\":\" p\"},\"finish_reason\":null,\"index\":0,\"logprobs\":null}],\"created\":\"**REDACTED**\",\"id\":\"fixture-id-1\",\"model\":\"deepseek-v4-flash\",\"object\":\"chat.completion.chunk\",\"system_fingerprint\":\"fixture-id-2\",\"usage\":null}\n\ndata: {\"choices\":[{\"delta\":{\"content\":null,\"reasoning_content\":\"ong\"},\"finish_reason\":null,\"index\":0,\"logprobs\":null}],\"created\":\"**REDACTED**\",\"id\":\"fixture-id-1\",\"model\":\"deepseek-v4-flash\",\"object\":\"chat.completion.chunk\",\"system_fingerprint\":\"fixture-id-2\",\"usage\":null}\n\ndata: {\"choices\":[{\"delta\":{\"content\":null,\"reasoning_content\":\"\\\".\"},\"finish_reason\":null,\"index\":0,\"logprobs\":null}],\"created\":\"**REDACTED**\",\"id\":\"fixture-id-1\",\"model\":\"deepseek-v4-flash\",\"object\":\"chat.completion.chunk\",\"system_fingerprint\":\"fixture-id-2\",\"usage\":null}\n\ndata: {\"choices\":[{\"delta\":{\"content\":null,\"reasoning_content\":\" The\"},\"finish_reason\":null,\"index\":0,\"logprobs\":null}],\"created\":\"**REDACTED**\",\"id\":\"fixture-id-1\",\"model\":\"deepseek-v4-flash\",\"object\":\"chat.completion.chunk\",\"system_fingerprint\":\"fixture-id-2\",\"usage\":null}\n\ndata: {\"choices\":[{\"delta\":{\"content\":null,\"reasoning_content\":\" user\"},\"finish_reason\":null,\"index\":0,\"logprobs\":null}],\"created\":\"**REDACTED**\",\"id\":\"fixture-id-1\",\"model\":\"deepseek-v4-flash\",\"object\":\"chat.completion.chunk\",\"system_fingerprint\":\"fixture-id-2\",\"usage\":null}\n\ndata: {\"choices\":[{\"delta\":{\"content\":null,\"reasoning_content\":\"'s\"},\"finish_reason\":null,\"index\":0,\"logprobs\":null}],\"created\":\"**REDACTED**\",\"id\":\"fixture-id-1\",\"model\":\"deepseek-v4-flash\",\"object\":\"chat.completion.chunk\",\"system_fingerprint\":\"fixture-id-2\",\"usage\":null}\n\ndata: {\"choices\":[{\"delta\":{\"content\":null,\"reasoning_content\":\" instruction\"},\"finish_reason\":null,\"index\":0,\"logprobs\":null}],\"created\":\"**REDACTED**\",\"id\":\"fixture-id-1\",\"model\":\"deepseek-v4-flash\",\"object\":\"chat.completion.chunk\",\"system_fingerprint\":\"fixture-id-2\",\"usage\":null}\n\ndata: {\"choices\":[{\"delta\":{\"content\":null,\"reasoning_content\":\":\"},\"finish_reason\":null,\"index\":0,\"logprobs\":null}],\"created\":\"**REDACTED**\",\"id\":\"fixture-id-1\",\"model\":\"deepseek-v4-flash\",\"object\":\"chat.completion.chunk\",\"system_fingerprint\":\"fixture-id-2\",\"usage\":null}\n\ndata: {\"choices\":[{\"delta\":{\"content\":null,\"reasoning_content\":\" \\\"\"},\"finish_reason\":null,\"index\":0,\"logprobs\":null}],\"created\":\"**REDACTED**\",\"id\":\"fixture-id-1\",\"model\":\"deepseek-v4-flash\",\"object\":\"chat.completion.chunk\",\"system_fingerprint\":\"fixture-id-2\",\"usage\":null}\n\ndata: {\"choices\":[{\"delta\":{\"content\":null,\"reasoning_content\":\"Reply\"},\"finish_reason\":null,\"index\":0,\"logprobs\":null}],\"created\":\"**REDACTED**\",\"id\":\"fixture-id-1\",\"model\":\"deepseek-v4-flash\",\"object\":\"chat.completion.chunk\",\"system_fingerprint\":\"fixture-id-2\",\"usage\":null}\n\ndata: {\"choices\":[{\"delta\":{\"content\":null,\"reasoning_content\":\" with\"},\"finish_reason\":null,\"index\":0,\"logprobs\":null}],\"created\":\"**REDACTED**\",\"id\":\"fixture-id-1\",\"model\":\"deepseek-v4-flash\",\"object\":\"chat.completion.chunk\",\"system_fingerprint\":\"fixture-id-2\",\"usage\":null}\n\ndata: {\"choices\":[{\"delta\":{\"content\":null,\"reasoning_content\":\" exactly\"},\"finish_reason\":null,\"index\":0,\"logprobs\":null}],\"created\":\"**REDACTED**\",\"id\":\"fixture-id-1\",\"model\":\"deepseek-v4-flash\",\"object\":\"chat.completion.chunk\",\"system_fingerprint\":\"fixture-id-2\",\"usage\":null}\n\ndata: {\"choices\":[{\"delta\":{\"content\":null,\"reasoning_content\":\":\"},\"finish_reason\":null,\"index\":0,\"logprobs\":null}],\"created\":\"**REDACTED**\",\"id\":\"fixture-id-1\",\"model\":\"deepseek-v4-flash\",\"object\":\"chat.completion.chunk\",\"system_fingerprint\":\"fixture-id-2\",\"usage\":null}\n\ndata: {\"choices\":[{\"delta\":{\"content\":null,\"reasoning_content\":\" stream\"},\"finish_reason\":null,\"index\":0,\"logprobs\":null}],\"created\":\"**REDACTED**\",\"id\":\"fixture-id-1\",\"model\":\"deepseek-v4-flash\",\"object\":\"chat.completion.chunk\",\"system_fingerprint\":\"fixture-id-2\",\"usage\":null}\n\ndata: {\"choices\":[{\"delta\":{\"content\":null,\"reasoning_content\":\"ed\"},\"finish_reason\":null,\"index\":0,\"logprobs\":null}],\"created\":\"**REDACTED**\",\"id\":\"fixture-id-1\",\"model\":\"deepseek-v4-flash\",\"object\":\"chat.completion.chunk\",\"system_fingerprint\":\"fixture-id-2\",\"usage\":null}\n\ndata: {\"choices\":[{\"delta\":{\"content\":null,\"reasoning_content\":\" p\"},\"finish_reason\":null,\"index\":0,\"logprobs\":null}],\"created\":\"**REDACTED**\",\"id\":\"fixture-id-1\",\"model\":\"deepseek-v4-flash\",\"object\":\"chat.completion.chunk\",\"system_fingerprint\":\"fixture-id-2\",\"usage\":null}\n\ndata: {\"choices\":[{\"delta\":{\"content\":null,\"reasoning_content\":\"ong\"},\"finish_reason\":null,\"index\":0,\"logprobs\":null}],\"created\":\"**REDACTED**\",\"id\":\"fixture-id-1\",\"model\":\"deepseek-v4-flash\",\"object\":\"chat.completion.chunk\",\"system_fingerprint\":\"fixture-id-2\",\"usage\":null}\n\ndata: {\"choices\":[{\"delta\":{\"content\":null,\"reasoning_content\":\"\\\"\"},\"finish_reason\":null,\"index\":0,\"logprobs\":null}],\"created\":\"**REDACTED**\",\"id\":\"fixture-id-1\",\"model\":\"deepseek-v4-flash\",\"object\":\"chat.completion.chunk\",\"system_fingerprint\":\"fixture-id-2\",\"usage\":null}\n\ndata: {\"choices\":[{\"delta\":{\"content\":null,\"reasoning_content\":\" So\"},\"finish_reason\":null,\"index\":0,\"logprobs\":null}],\"created\":\"**REDACTED**\",\"id\":\"fixture-id-1\",\"model\":\"deepseek-v4-flash\",\"object\":\"chat.completion.chunk\",\"system_fingerprint\":\"fixture-id-2\",\"usage\":null}\n\ndata: {\"choices\":[{\"delta\":{\"content\":null,\"reasoning_content\":\" the\"},\"finish_reason\":null,\"index\":0,\"logprobs\":null}],\"created\":\"**REDACTED**\",\"id\":\"fixture-id-1\",\"model\":\"deepseek-v4-flash\",\"object\":\"chat.completion.chunk\",\"system_fingerprint\":\"fixture-id-2\",\"usage\":null}\n\ndata: {\"choices\":[{\"delta\":{\"content\":null,\"reasoning_content\":\" output\"},\"finish_reason\":null,\"index\":0,\"logprobs\":null}],\"created\":\"**REDACTED**\",\"id\":\"fixture-id-1\",\"model\":\"deepseek-v4-flash\",\"object\":\"chat.completion.chunk\",\"system_fingerprint\":\"fixture-id-2\",\"usage\":null}\n\ndata: {\"choices\":[{\"delta\":{\"content\":null,\"reasoning_content\":\" should\"},\"finish_reason\":null,\"index\":0,\"logprobs\":null}],\"created\":\"**REDACTED**\",\"id\":\"fixture-id-1\",\"model\":\"deepseek-v4-flash\",\"object\":\"chat.completion.chunk\",\"system_fingerprint\":\"fixture-id-2\",\"usage\":null}\n\ndata: {\"choices\":[{\"delta\":{\"content\":null,\"reasoning_content\":\" be\"},\"finish_reason\":null,\"index\":0,\"logprobs\":null}],\"created\":\"**REDACTED**\",\"id\":\"fixture-id-1\",\"model\":\"deepseek-v4-flash\",\"object\":\"chat.completion.chunk\",\"system_fingerprint\":\"fixture-id-2\",\"usage\":null}\n\ndata: {\"choices\":[{\"delta\":{\"content\":null,\"reasoning_content\":\" exactly\"},\"finish_reason\":null,\"index\":0,\"logprobs\":null}],\"created\":\"**REDACTED**\",\"id\":\"fixture-id-1\",\"model\":\"deepseek-v4-flash\",\"object\":\"chat.completion.chunk\",\"system_fingerprint\":\"fixture-id-2\",\"usage\":null}\n\ndata: {\"choices\":[{\"delta\":{\"content\":null,\"reasoning_content\":\" that\"},\"finish_reason\":null,\"index\":0,\"logprobs\":null}],\"created\":\"**REDACTED**\",\"id\":\"fixture-id-1\",\"model\":\"deepseek-v4-flash\",\"object\":\"chat.completion.chunk\",\"system_fingerprint\":\"fixture-id-2\",\"usage\":null}\n\ndata: {\"choices\":[{\"delta\":{\"content\":null,\"reasoning_content\":\" phrase\"},\"finish_reason\":null,\"index\":0,\"logprobs\":null}],\"created\":\"**REDACTED**\",\"id\":\"fixture-id-1\",\"model\":\"deepseek-v4-flash\",\"object\":\"chat.completion.chunk\",\"system_fingerprint\":\"fixture-id-2\",\"usage\":null}\n\ndata: {\"choices\":[{\"delta\":{\"content\":null,\"reasoning_content\":\".\"},\"finish_reason\":null,\"index\":0,\"logprobs\":null}],\"created\":\"**REDACTED**\",\"id\":\"fixture-id-1\",\"model\":\"deepseek-v4-flash\",\"object\":\"chat.completion.chunk\",\"system_fingerprint\":\"fixture-id-2\",\"usage\":null}\n\ndata: {\"choices\":[{\"delta\":{\"content\":null,\"reasoning_content\":\" No\"},\"finish_reason\":null,\"index\":0,\"logprobs\":null}],\"created\":\"**REDACTED**\",\"id\":\"fixture-id-1\",\"model\":\"deepseek-v4-flash\",\"object\":\"chat.completion.chunk\",\"system_fingerprint\":\"fixture-id-2\",\"usage\":null}\n\ndata: {\"choices\":[{\"delta\":{\"content\":null,\"reasoning_content\":\" extra\"},\"finish_reason\":null,\"index\":0,\"logprobs\":null}],\"created\":\"**REDACTED**\",\"id\":\"fixture-id-1\",\"model\":\"deepseek-v4-flash\",\"object\":\"chat.completion.chunk\",\"system_fingerprint\":\"fixture-id-2\",\"usage\":null}\n\ndata: {\"choices\":[{\"delta\":{\"content\":null,\"reasoning_content\":\" text\"},\"finish_reason\":null,\"index\":0,\"logprobs\":null}],\"created\":\"**REDACTED**\",\"id\":\"fixture-id-1\",\"model\":\"deepseek-v4-flash\",\"object\":\"chat.completion.chunk\",\"system_fingerprint\":\"fixture-id-2\",\"usage\":null}\n\ndata: {\"choices\":[{\"delta\":{\"content\":null,\"reasoning_content\":\".\"},\"finish_reason\":null,\"index\":0,\"logprobs\":null}],\"created\":\"**REDACTED**\",\"id\":\"fixture-id-1\",\"model\":\"deepseek-v4-flash\",\"object\":\"chat.completion.chunk\",\"system_fingerprint\":\"fixture-id-2\",\"usage\":null}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"stream\",\"reasoning_content\":null},\"finish_reason\":null,\"index\":0,\"logprobs\":null}],\"created\":\"**REDACTED**\",\"id\":\"fixture-id-1\",\"model\":\"deepseek-v4-flash\",\"object\":\"chat.completion.chunk\",\"system_fingerprint\":\"fixture-id-2\",\"usage\":null}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"ed\",\"reasoning_content\":null},\"finish_reason\":null,\"index\":0,\"logprobs\":null}],\"created\":\"**REDACTED**\",\"id\":\"fixture-id-1\",\"model\":\"deepseek-v4-flash\",\"object\":\"chat.completion.chunk\",\"system_fingerprint\":\"fixture-id-2\",\"usage\":null}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\" p\",\"reasoning_content\":null},\"finish_reason\":null,\"index\":0,\"logprobs\":null}],\"created\":\"**REDACTED**\",\"id\":\"fixture-id-1\",\"model\":\"deepseek-v4-flash\",\"object\":\"chat.completion.chunk\",\"system_fingerprint\":\"fixture-id-2\",\"usage\":null}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"ong\",\"reasoning_content\":null},\"finish_reason\":null,\"index\":0,\"logprobs\":null}],\"created\":\"**REDACTED**\",\"id\":\"fixture-id-1\",\"model\":\"deepseek-v4-flash\",\"object\":\"chat.completion.chunk\",\"system_fingerprint\":\"fixture-id-2\",\"usage\":null}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"\",\"reasoning_content\":null},\"finish_reason\":\"stop\",\"index\":0,\"logprobs\":null}],\"created\":\"**REDACTED**\",\"id\":\"fixture-id-1\",\"model\":\"deepseek-v4-flash\",\"object\":\"chat.completion.chunk\",\"system_fingerprint\":\"fixture-id-2\",\"usage\":{\"completion_tokens\":45,\"completion_tokens_details\":{\"reasoning_tokens\":40},\"prompt_cache_hit_tokens\":0,\"prompt_cache_miss_tokens\":91,\"prompt_tokens\":91,\"prompt_tokens_details\":{\"cached_tokens\":0},\"total_tokens\":136}}\n\ndata: [DONE]\n\n",
+    "headers": [
+      [
+        "access-control-allow-credentials",
+        "**REDACTED**"
+      ],
+      [
+        "cache-control",
+        "no-cache"
+      ],
+      [
+        "connection",
+        "keep-alive"
+      ],
+      [
+        "content-type",
+        "text/event-stream; charset=utf-8"
+      ],
+      [
+        "date",
+        "**REDACTED**"
+      ],
+      [
+        "server",
+        "**REDACTED**"
+      ],
+      [
+        "strict-transport-security",
+        "max-age=31536000; includeSubDomains; preload"
+      ],
+      [
+        "transfer-encoding",
+        "chunked"
+      ],
+      [
+        "vary",
+        "origin, access-control-request-method, access-control-request-headers"
+      ],
+      [
+        "via",
+        "**REDACTED**"
+      ],
+      [
+        "x-amz-cf-id",
+        "**REDACTED**"
+      ],
+      [
+        "x-amz-cf-pop",
+        "**REDACTED**"
+      ],
+      [
+        "x-cache",
+        "**REDACTED**"
+      ],
+      [
+        "x-content-type-options",
+        "nosniff"
+      ],
+      [
+        "x-ds-trace-id",
+        "**REDACTED**"
+      ]
+    ],
+    "status": 200
+  },
+  "scenario": "streaming_usage"
+}

@@ -7,8 +7,8 @@ defmodule BeamWeaver.Models.ProfileRegistry.OpenAI do
 
   @openai_5_6_specs [
     {"gpt-5.6-sol", "GPT-5.6 Sol", 5.00, 0.50, 30.00},
-    {"gpt-5.6-terra", "GPT-5.6 Terra", 2.50, 0.25, 15.00},
-    {"gpt-5.6-luna", "GPT-5.6 Luna", 1.00, 0.10, 6.00}
+    {"gpt-5.6-terra", "GPT-5.6 Terra", 2.00, 0.20, 12.00},
+    {"gpt-5.6-luna", "GPT-5.6 Luna", 0.20, 0.02, 1.20}
   ]
 
   @openai_frontier_specs [
@@ -39,7 +39,7 @@ defmodule BeamWeaver.Models.ProfileRegistry.OpenAI do
                               name: name,
                               status: :active,
                               release_date: "2026-07-09",
-                              last_updated: "2026-07-09",
+                              last_updated: "2026-07-30",
                               responses_api: true,
                               chat_completions_api: true,
                               tool_calling: true,
@@ -68,6 +68,12 @@ defmodule BeamWeaver.Models.ProfileRegistry.OpenAI do
                                 cache_write_30m_price_per_mtok: input_price * 1.25,
                                 output_price_per_mtok: output_price,
                                 cost_currency: "USD",
+                                pricing_source_url: "https://developers.openai.com/api/docs/pricing",
+                                pricing_modes: [:standard, :batch, :flex, :fast, :priority],
+                                batch_price_multiplier: 0.5,
+                                flex_price_multiplier: 0.5,
+                                fast_mode_price_multiplier: 2.0,
+                                fast_mode_service_tiers: [:fast, :priority],
                                 default_reasoning_effort: :medium,
                                 reasoning_efforts: [:none, :low, :medium, :high, :xhigh, :max],
                                 reasoning_modes: [:standard, :pro],

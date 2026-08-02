@@ -1,0 +1,228 @@
+{
+  "expected": {
+    "message": {
+      "id": "fixture-id-1",
+      "metadata": {
+        "id": "fixture-id-1",
+        "model": "deepseek-v4-flash",
+        "model_name": "deepseek-v4-flash",
+        "model_provider": "deepseek",
+        "provider": "deepseek",
+        "service_tier": "default",
+        "status": "completed",
+        "usage": {
+          "input_tokens": 89,
+          "input_tokens_details": {
+            "cached_tokens": 0
+          },
+          "output_tokens": 29,
+          "output_tokens_details": {
+            "reasoning_tokens": 26
+          },
+          "total_tokens": 118
+        }
+      },
+      "role": "assistant",
+      "status": "completed",
+      "text": "pong",
+      "tool_calls": [],
+      "usage_metadata": {
+        "input_cost": 1.2460000000000001e-5,
+        "input_cost_details": {
+          "cache_read": 0.0,
+          "uncached": 1.2460000000000001e-5
+        },
+        "input_token_details": {
+          "cache_miss": 89,
+          "cache_read": 0
+        },
+        "input_tokens": 89,
+        "output_cost": 8.12e-6,
+        "output_cost_details": {
+          "text": 8.12e-6
+        },
+        "output_token_details": {
+          "reasoning": 26
+        },
+        "output_tokens": 29,
+        "total_cost": 2.0580000000000003e-5,
+        "total_tokens": 118
+      }
+    }
+  },
+  "provider": "deepseek_responses",
+  "request": {
+    "headers": [
+      [
+        "authorization",
+        "**REDACTED**"
+      ],
+      [
+        "content-type",
+        "application/json"
+      ],
+      [
+        "user-agent",
+        "beam_weaver-deepseek/0.1"
+      ]
+    ],
+    "json": {
+      "input": [
+        {
+          "content": "Reply with exactly: pong",
+          "role": "user",
+          "type": "message"
+        }
+      ],
+      "model": "deepseek-v4-flash",
+      "stream": false
+    },
+    "method": "POST",
+    "url": "https://api.deepseek.com/responses"
+  },
+  "response": {
+    "body": {
+      "background": false,
+      "completed_at": "**REDACTED**",
+      "content_filters": "nil",
+      "created_at": "**REDACTED**",
+      "error": "nil",
+      "frequency_penalty": 0.0,
+      "id": "fixture-id-1",
+      "incomplete_details": "nil",
+      "instructions": "nil",
+      "max_output_tokens": "nil",
+      "max_tool_calls": "nil",
+      "metadata": {},
+      "model": "deepseek-v4-flash",
+      "moderation": "nil",
+      "object": "response",
+      "output": [
+        {
+          "content": [
+            {
+              "text": "We need to reply with exactly \"pong\". The user said \"Reply with exactly: pong\". So output just that.",
+              "type": "reasoning_text"
+            }
+          ],
+          "id": "fixture-id-2",
+          "status": "completed",
+          "summary": [],
+          "type": "reasoning"
+        },
+        {
+          "content": [
+            {
+              "annotations": [],
+              "logprobs": [],
+              "text": "pong",
+              "type": "output_text"
+            }
+          ],
+          "id": "fixture-id-3",
+          "phase": "final_answer",
+          "role": "assistant",
+          "status": "completed",
+          "type": "message"
+        }
+      ],
+      "parallel_tool_calls": true,
+      "presence_penalty": 0.0,
+      "previous_response_id": "nil",
+      "prompt_cache_key": "nil",
+      "prompt_cache_retention": "nil",
+      "reasoning": {
+        "effort": "nil",
+        "summary": "nil"
+      },
+      "safety_identifier": "nil",
+      "service_tier": "default",
+      "status": "completed",
+      "store": false,
+      "temperature": 1.0,
+      "text": {
+        "format": {
+          "type": "text"
+        },
+        "verbosity": "nil"
+      },
+      "tool_choice": "auto",
+      "tools": [],
+      "top_logprobs": 0,
+      "top_p": 1.0,
+      "truncation": "disabled",
+      "usage": {
+        "input_tokens": 89,
+        "input_tokens_details": {
+          "cached_tokens": 0
+        },
+        "output_tokens": 29,
+        "output_tokens_details": {
+          "reasoning_tokens": 26
+        },
+        "total_tokens": 118
+      },
+      "user": "nil"
+    },
+    "headers": [
+      [
+        "access-control-allow-credentials",
+        "**REDACTED**"
+      ],
+      [
+        "connection",
+        "keep-alive"
+      ],
+      [
+        "content-type",
+        "application/json"
+      ],
+      [
+        "date",
+        "**REDACTED**"
+      ],
+      [
+        "server",
+        "**REDACTED**"
+      ],
+      [
+        "strict-transport-security",
+        "max-age=31536000; includeSubDomains; preload"
+      ],
+      [
+        "transfer-encoding",
+        "chunked"
+      ],
+      [
+        "vary",
+        "origin, access-control-request-method, access-control-request-headers"
+      ],
+      [
+        "via",
+        "**REDACTED**"
+      ],
+      [
+        "x-amz-cf-id",
+        "**REDACTED**"
+      ],
+      [
+        "x-amz-cf-pop",
+        "**REDACTED**"
+      ],
+      [
+        "x-cache",
+        "**REDACTED**"
+      ],
+      [
+        "x-content-type-options",
+        "nosniff"
+      ],
+      [
+        "x-ds-trace-id",
+        "**REDACTED**"
+      ]
+    ],
+    "status": 200
+  },
+  "scenario": "basic_chat"
+}

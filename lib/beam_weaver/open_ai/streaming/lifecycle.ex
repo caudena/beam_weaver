@@ -22,6 +22,34 @@ defmodule BeamWeaver.OpenAI.Streaming.Lifecycle do
     "compaction"
   ]
 
+  @output_item_type_set Map.new(@output_item_types, &{&1, true})
+
+  @doc false
+  @spec typed_custom_event?(map()) :: boolean()
+  def typed_custom_event?(%{
+        "type" => type,
+        "item" => %{"type" => item_type}
+      })
+      when type in ["response.output_item.added", "response.output_item.done"],
+      do: item_type in @output_item_types
+
+  def typed_custom_event?(%{"type" => "response.custom_tool_call_input." <> _suffix}),
+    do: true
+
+  def typed_custom_event?(%{"type" => "response." <> event_name}) do
+    case :binary.match(event_name, ".") do
+      {separator, 1} ->
+        event_name
+        |> binary_part(0, separator)
+        |> then(&Map.has_key?(@output_item_type_set, &1))
+
+      :nomatch ->
+        false
+    end
+  end
+
+  def typed_custom_event?(_event), do: false
+
   @spec events(binary() | [map()] | term()) :: [map()]
   def events(body) when is_binary(body) do
     body

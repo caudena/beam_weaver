@@ -83,7 +83,7 @@ defmodule BeamWeaver.OpenAI.ChatModel.RequestBuilder do
           "stream_options",
           Options.normalize_option_map(Keyword.get(opts, :stream_options))
         )
-        |> Options.put_optional("top_logprobs", Keyword.get(opts, :top_logprobs))
+        |> Options.put_optional("top_logprobs", option(model, opts, :top_logprobs))
         |> Options.put_optional(
           "context_management",
           Options.normalize_option_list(Keyword.get(opts, :context_management))

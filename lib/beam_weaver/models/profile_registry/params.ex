@@ -214,6 +214,48 @@ defmodule BeamWeaver.Models.ProfileRegistry.Params do
     :user_id
   ]
 
+  @deepseek_chat_completions_params [
+    :logprobs,
+    :max_completion_tokens,
+    :max_output_tokens,
+    :max_tokens,
+    :model_kwargs,
+    :reasoning_effort,
+    :response_format,
+    :stop,
+    :stream,
+    :stream_options,
+    :stream_usage,
+    :structured_output,
+    :temperature,
+    :thinking,
+    :tool_choice,
+    :tools,
+    :top_logprobs,
+    :top_p,
+    :user_id
+  ]
+
+  @deepseek_responses_params [
+    :instructions,
+    :max_completion_tokens,
+    :max_output_tokens,
+    :max_tokens,
+    :model_kwargs,
+    :reasoning,
+    :reasoning_effort,
+    :response_format,
+    :stream,
+    :structured_output,
+    :temperature,
+    :text,
+    :tool_choice,
+    :tools,
+    :top_logprobs,
+    :top_p,
+    :user
+  ]
+
   @google_params [
     :cached_content,
     :candidate_count,
@@ -267,6 +309,8 @@ defmodule BeamWeaver.Models.ProfileRegistry.Params do
   def xai_embedding, do: @xai_embedding_params
   def moonshot, do: @moonshot_params
   def zai, do: @zai_params
+  def deepseek_chat_completions, do: @deepseek_chat_completions_params
+  def deepseek_responses, do: @deepseek_responses_params
   def google, do: @google_params
 
   def google_latest_flash do

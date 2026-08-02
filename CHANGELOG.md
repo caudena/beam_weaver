@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.1.15 - 2026-08-02
+
+### Added
+
+- Added first-class DeepSeek V4 Flash and Pro support across Chat Completions,
+  beta prefix/strict tools, Responses, FIM, model listing, balance, and the
+  Anthropic-compatible Messages endpoint, with lazy streaming, normalized
+  reasoning/cache usage, current pricing, and live conformance coverage.
+
+### Fixed
+
+- Updated named Finch pool options for Req 0.7 so synchronous and streaming
+  requests no longer emit the deprecated `finch: name` warning.
+- Updated the shared Ecto adapter to use `Repo.transact/1`, preserving its
+  existing result contract without invoking Ecto's deprecated transaction API.
+- Synchronized shell timeout cleanup with stderr initialization so timed-out
+  host and session commands no longer emit missing-scratch-file warnings or
+  leave scratch directories and Port messages behind.
+- Made record-manager key pagination deterministic when records share a
+  timestamp, matching the Postgres adapter's timestamp-and-ID ordering.
+- Updated GPT-5.6 Terra and Luna pricing metadata to OpenAI's July 30 rates,
+  added current Batch/Flex/Fast multipliers, and documented Fast mode's
+  backward-compatible `priority` service-tier alias.
+
 ## 0.1.14 - 2026-07-20
 
 ### Added

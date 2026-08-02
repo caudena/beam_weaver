@@ -90,6 +90,18 @@ if config_env() != :test do
            )
          )
 
+  config :beam_weaver,
+         :deepseek,
+         Keyword.merge(
+           Application.get_env(:beam_weaver, :deepseek, []),
+           compact.(
+             api_key: non_blank.("DEEPSEEK_API_KEY"),
+             base_url: first_env.(["DEEPSEEK_BASE_URL", "DEEPSEEK_API_URL"]),
+             beta_base_url: first_env.(["DEEPSEEK_BETA_BASE_URL", "DEEPSEEK_BETA_API_URL"]),
+             anthropic_base_url: first_env.(["DEEPSEEK_ANTHROPIC_BASE_URL", "DEEPSEEK_ANTHROPIC_API_URL"])
+           )
+         )
+
   provider_api_keys =
     compact.(
       openai: non_blank.("OPENAI_API_KEY"),
@@ -97,7 +109,8 @@ if config_env() != :test do
       google: google_api_key,
       xai: non_blank.("XAI_API_KEY"),
       moonshot: non_blank.("MOONSHOT_API_KEY"),
-      zai: non_blank.("ZAI_API_KEY")
+      zai: non_blank.("ZAI_API_KEY"),
+      deepseek: non_blank.("DEEPSEEK_API_KEY")
     )
 
   sandbox_env = non_blank.("BEAM_WEAVER_DEEPAGENTS_SANDBOX")
@@ -143,5 +156,6 @@ config :beam_weaver, :examples,
     "google" => examples_env.("GOOGLE_API_KEY") || examples_env.("GEMINI_API_KEY"),
     "xai" => examples_env.("XAI_API_KEY"),
     "moonshot" => examples_env.("MOONSHOT_API_KEY") || examples_env.("KIMI_API_KEY"),
-    "zai" => examples_env.("ZAI_API_KEY")
+    "zai" => examples_env.("ZAI_API_KEY"),
+    "deepseek" => examples_env.("DEEPSEEK_API_KEY")
   }

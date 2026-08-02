@@ -1,0 +1,201 @@
+{
+  "expected": {
+    "message": {
+      "id": "fixture-id-1",
+      "metadata": {
+        "finish_reason": "stop",
+        "id": "fixture-id-1",
+        "model": "deepseek-v4-flash",
+        "model_name": "deepseek-v4-flash",
+        "model_provider": "deepseek",
+        "parsed": {
+          "answer": "pong"
+        },
+        "provider": "deepseek",
+        "reasoning_content": "We need to output JSON with key \"answer\" and value \"pong\". The instruction says \"Return a structured answer where answer is exactly pong.\" So the JSON should be {\"answer\": \"pong\"}. Also we must output only JSON, no other text.",
+        "token_usage": {
+          "completion_tokens": 63,
+          "completion_tokens_details": {
+            "reasoning_tokens": 55
+          },
+          "prompt_cache_hit_tokens": 128,
+          "prompt_cache_miss_tokens": 124,
+          "prompt_tokens": 252,
+          "prompt_tokens_details": {
+            "cached_tokens": 128
+          },
+          "total_tokens": 315
+        },
+        "usage": {
+          "completion_tokens": 63,
+          "completion_tokens_details": {
+            "reasoning_tokens": 55
+          },
+          "prompt_cache_hit_tokens": 128,
+          "prompt_cache_miss_tokens": 124,
+          "prompt_tokens": 252,
+          "prompt_tokens_details": {
+            "cached_tokens": 128
+          },
+          "total_tokens": 315
+        }
+      },
+      "role": "assistant",
+      "status": "stop",
+      "text": "{\"answer\": \"pong\"}",
+      "tool_calls": [],
+      "usage_metadata": {
+        "input_cost": 1.7718400000000003e-5,
+        "input_cost_details": {
+          "cache_read": 3.584e-7,
+          "uncached": 1.7360000000000003e-5
+        },
+        "input_token_details": {
+          "cache_miss": 124,
+          "cache_read": 128
+        },
+        "input_tokens": 252,
+        "output_cost": 1.764e-5,
+        "output_cost_details": {
+          "text": 1.764e-5
+        },
+        "output_token_details": {
+          "reasoning": 55
+        },
+        "output_tokens": 63,
+        "total_cost": 3.5358400000000004e-5,
+        "total_tokens": 315
+      }
+    }
+  },
+  "provider": "deepseek",
+  "request": {
+    "headers": [
+      [
+        "authorization",
+        "**REDACTED**"
+      ],
+      [
+        "content-type",
+        "application/json"
+      ],
+      [
+        "user-agent",
+        "beam_weaver-deepseek/0.1"
+      ]
+    ],
+    "json": {
+      "messages": [
+        {
+          "content": "BeamWeaver structured output contract:\n- Return exactly one JSON object and no markdown, prose, code fences, or commentary.\n- Strictly validate against this schema.\n- Include every required key. Required keys: answer.\n- If information is unavailable, still include the key with a value compatible with the schema.\n\nSchema name: answer_output\nJSON Schema:\n{\n  \"additionalProperties\": false,\n  \"description\": \"A short answer.\",\n  \"properties\": {\n    \"answer\": {\n      \"type\": \"string\"\n    }\n  },\n  \"required\": [\n    \"answer\"\n  ],\n  \"title\": \"answer_output\",\n  \"type\": \"object\"\n}",
+          "role": "system"
+        },
+        {
+          "content": "Return a structured answer where answer is exactly pong.",
+          "role": "user"
+        }
+      ],
+      "model": "deepseek-v4-flash",
+      "response_format": {
+        "type": "json_object"
+      },
+      "stream": false
+    },
+    "method": "POST",
+    "url": "https://api.deepseek.com/chat/completions"
+  },
+  "response": {
+    "body": {
+      "choices": [
+        {
+          "finish_reason": "stop",
+          "index": 0,
+          "logprobs": "nil",
+          "message": {
+            "content": "{\n  \"answer\": \"pong\"\n}",
+            "reasoning_content": "We need to output JSON with key \"answer\" and value \"pong\". The instruction says \"Return a structured answer where answer is exactly pong.\" So the JSON should be {\"answer\": \"pong\"}. Also we must output only JSON, no other text.",
+            "role": "assistant"
+          }
+        }
+      ],
+      "created": "**REDACTED**",
+      "id": "fixture-id-1",
+      "model": "deepseek-v4-flash",
+      "object": "chat.completion",
+      "system_fingerprint": "fixture-id-2",
+      "usage": {
+        "completion_tokens": 63,
+        "completion_tokens_details": {
+          "reasoning_tokens": 55
+        },
+        "prompt_cache_hit_tokens": 128,
+        "prompt_cache_miss_tokens": 124,
+        "prompt_tokens": 252,
+        "prompt_tokens_details": {
+          "cached_tokens": 128
+        },
+        "total_tokens": 315
+      }
+    },
+    "headers": [
+      [
+        "access-control-allow-credentials",
+        "**REDACTED**"
+      ],
+      [
+        "connection",
+        "keep-alive"
+      ],
+      [
+        "content-type",
+        "application/json"
+      ],
+      [
+        "date",
+        "**REDACTED**"
+      ],
+      [
+        "server",
+        "**REDACTED**"
+      ],
+      [
+        "strict-transport-security",
+        "max-age=31536000; includeSubDomains; preload"
+      ],
+      [
+        "transfer-encoding",
+        "chunked"
+      ],
+      [
+        "vary",
+        "origin, access-control-request-method, access-control-request-headers"
+      ],
+      [
+        "via",
+        "**REDACTED**"
+      ],
+      [
+        "x-amz-cf-id",
+        "**REDACTED**"
+      ],
+      [
+        "x-amz-cf-pop",
+        "**REDACTED**"
+      ],
+      [
+        "x-cache",
+        "**REDACTED**"
+      ],
+      [
+        "x-content-type-options",
+        "nosniff"
+      ],
+      [
+        "x-ds-trace-id",
+        "**REDACTED**"
+      ]
+    ],
+    "status": 200
+  },
+  "scenario": "provider_structured_success"
+}

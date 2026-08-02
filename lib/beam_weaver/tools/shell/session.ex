@@ -13,6 +13,7 @@ defmodule BeamWeaver.Tools.Shell.Session do
   alias BeamWeaver.Core.Error
   alias BeamWeaver.Core.ID
   alias BeamWeaver.ShellPolicy
+  alias BeamWeaver.Tools.Shell.CommandRunner
   alias BeamWeaver.Tracing.Redactor
 
   defstruct [
@@ -213,26 +214,25 @@ defmodule BeamWeaver.Tools.Shell.Session do
     env_path = Path.join(scratch, "env")
     stderr_path = Path.join(scratch, "stderr")
 
-    task =
-      Task.async(fn ->
-        script = session_script(command, metadata_path, env_path)
-        script = redirect_stderr(script, stderr_path, state.policy)
+    result =
+      case CommandRunner.run(session_script(command, metadata_path, env_path),
+             shell: shell(),
+             cd: state.cwd,
+             env: env_list(state.env),
+             stderr: stderr_option(stderr_path, state.policy),
+             timeout: timeout
+           ) do
+        {:ok, output, status} ->
+          metadata = read_metadata(metadata_path)
+          env = read_env(env_path, state.env)
+          stderr = read_stderr(stderr_path, state.policy)
 
-        {output, status} =
-          System.cmd(shell(), ["-c", script],
-            cd: state.cwd,
-            env: env_list(state.env),
-            stderr_to_stdout: state.policy.stderr == :merge
-          )
+          {:ok, {output, status, metadata, env, stderr}}
 
-        metadata = read_metadata(metadata_path)
-        env = read_env(env_path, state.env)
-        stderr = read_stderr(stderr_path, state.policy)
+        other ->
+          other
+      end
 
-        {output, status, metadata, env, stderr}
-      end)
-
-    result = Task.yield(task, yield_timeout(timeout)) || Task.shutdown(task, :brutal_kill)
     File.rm_rf(scratch)
 
     case result do
@@ -249,14 +249,14 @@ defmodule BeamWeaver.Tools.Shell.Session do
          |> base_result(status, output, state.policy, Map.put(command_metadata, :exit_code, status))
          |> maybe_put_stderr(stderr, state.policy), state}
 
-      nil ->
+      :timeout ->
         {:error,
          Error.new(:shell_timeout, "shell command timed out", %{
            command: command,
            metadata: Map.merge(command_metadata, %{kill_attempted: true, error: "timeout"})
          }), state}
 
-      {:exit, reason} ->
+      {:error, reason} ->
         {:error,
          Error.new(:shell_execution_error, "shell command failed", %{
            command: command,
@@ -284,13 +284,9 @@ defmodule BeamWeaver.Tools.Shell.Session do
     |> IO.iodata_to_binary()
   end
 
-  defp redirect_stderr(script, path, %ShellPolicy{stderr: :separate}),
-    do: "(" <> script <> ") 2> " <> shell_quote(path)
-
-  defp redirect_stderr(script, _path, %ShellPolicy{stderr: :discard}),
-    do: "(" <> script <> ") 2> /dev/null"
-
-  defp redirect_stderr(script, _path, _policy), do: script
+  defp stderr_option(path, %ShellPolicy{stderr: :separate}), do: {:file, path}
+  defp stderr_option(_path, %ShellPolicy{stderr: :discard}), do: :discard
+  defp stderr_option(_path, _policy), do: :merge
 
   defp base_result(command, status, output, policy, metadata) do
     %{
@@ -405,10 +401,6 @@ defmodule BeamWeaver.Tools.Shell.Session do
   catch
     :exit, _reason -> :infinity
   end
-
-  defp yield_timeout(nil), do: :infinity
-  defp yield_timeout(:infinity), do: :infinity
-  defp yield_timeout(timeout), do: timeout
 
   defp scratch_dir do
     dir =

@@ -27,13 +27,14 @@ config :beam_weaver,
   anthropic: [api_key: System.fetch_env!("ANTHROPIC_API_KEY")],
   xai: [api_key: System.fetch_env!("XAI_API_KEY")],
   google: [api_key: System.fetch_env!("GOOGLE_API_KEY")],
+  deepseek: [api_key: System.fetch_env!("DEEPSEEK_API_KEY")],
   zai: [api_key: System.fetch_env!("ZAI_API_KEY")]
 ```
 
 `BeamWeaver.Models.init_chat_model/2` accepts provider-prefixed identifiers.
 Unprefixed `gpt-*` and `o*` names infer OpenAI. Unprefixed `claude-*` names infer
-Anthropic. Unprefixed `grok-*` names infer xAI. Gemini and GLM models must use
-the explicit `google:` and `zai:` prefixes.
+Anthropic. Unprefixed `grok-*` names infer xAI. Gemini, DeepSeek, and GLM models
+must use the explicit `google:`, `deepseek:`, and `zai:` prefixes.
 
 ```elixir
 {:ok, model} =
@@ -65,6 +66,15 @@ Google:
 {:ok, model} =
   BeamWeaver.Models.init_chat_model("google:gemini-3.6-flash",
     thinking_level: :medium
+  )
+```
+
+DeepSeek:
+
+```elixir
+{:ok, model} =
+  BeamWeaver.Models.init_chat_model("deepseek:deepseek-v4-flash",
+    reasoning_effort: :low
   )
 ```
 
@@ -113,6 +123,8 @@ Provider scope is intentionally narrow:
 - `BeamWeaver.OpenAI.EmbeddingModel` for OpenAI embeddings
 - `BeamWeaver.Anthropic.ChatModel` for Anthropic Messages API
 - `BeamWeaver.Google.ChatModel` for Gemini Developer API
+- `BeamWeaver.DeepSeek.ChatModel` for DeepSeek Chat Completions
+- `BeamWeaver.DeepSeek.ResponsesModel` for DeepSeek Responses
 - `BeamWeaver.Moonshot.ChatModel` for Moonshot/Kimi Chat Completions
 - `BeamWeaver.XAI.ChatModel` for xAI Responses API
 - `BeamWeaver.XAI.ChatCompletionsModel` for xAI Chat Completions
@@ -121,7 +133,9 @@ Provider scope is intentionally narrow:
 - `BeamWeaver.Models.FakeChatModel` and `FakeEmbeddingModel` for tests
 
 Checked-in model profiles cover common OpenAI, Anthropic, Google Gemini,
-Moonshot/Kimi, xAI, and Z.ai families. Moonshot chat supports
+DeepSeek, Moonshot/Kimi, xAI, and Z.ai families. DeepSeek requires explicit
+`deepseek:deepseek-v4-flash` or `deepseek:deepseek-v4-pro`; Chat Completions is
+the default and Responses is currently Flash-only. Moonshot chat supports
 `moonshot:kimi-k3`, `moonshot:kimi-k2.7-code`,
 `moonshot:kimi-k2.7-code-highspeed`, `moonshot:kimi-k2.6`, and
 `moonshot:kimi-k2.5`. xAI chat defaults to
@@ -162,6 +176,7 @@ Recommended starting points:
 | OpenAI GPT | `openai:gpt-5.6-sol`, `openai:gpt-5.6-terra`, `openai:gpt-5.6-luna`, `openai:gpt-5.4-mini` |
 | Anthropic Claude | `anthropic:claude-opus-5`, `anthropic:claude-sonnet-5`, `anthropic:claude-sonnet-4-6`, `anthropic:claude-opus-*`, `anthropic:claude-haiku-*` |
 | Google Gemini | `google:gemini-3.6-flash`, `google:gemini-3.5-flash-lite`, explicit `google:gemini-*` profiles |
+| DeepSeek V4 | `deepseek:deepseek-v4-flash`, `deepseek:deepseek-v4-pro` |
 | Moonshot/Kimi | `moonshot:kimi-k3`, `moonshot:kimi-k2.7-code`, `moonshot:kimi-k2.7-code-highspeed`, `moonshot:kimi-k2.6`, `moonshot:kimi-k2.5` |
 | xAI Grok | `xai:grok-4.5`, `xai:grok-4.3`, `xai:grok-4.20-0309-reasoning` |
 | Z.ai GLM | `zai:glm-5.2` |
@@ -680,6 +695,12 @@ BeamWeaver.Core.ChatModel.invoke(model, "Plan the migration.",
 )
 ```
 
+DeepSeek Chat uses the same `thinking` and `reasoning_effort` shapes. DeepSeek
+Responses accepts `reasoning: %{effort: ...}` and is selected with
+`api: :responses`. V4 thinking requests must omit Chat `tool_choice`; set
+thinking to disabled before sending an explicit choice. Forced function/custom
+choices in Responses require `reasoning: %{effort: "none"}`.
+
 Reasoning output is surfaced as content blocks or stream events when the
 underlying provider returns it.
 
@@ -707,7 +728,7 @@ Prompt caching is provider-specific:
   controls for supported providers; Anthropic marks the static system prompt
   with `cache_control`.
 - Moonshot/Kimi supports `:prompt_cache_key`.
-- Gemini and Z.ai cached-token usage is normalized when providers report it.
+- Gemini, DeepSeek, and Z.ai cached-token usage is normalized when providers report it.
 - Usage metadata preserves cache-read/cache-write/cache-creation token details when
   providers return them.
 
@@ -717,7 +738,7 @@ See [Prompt Caching](prompt_caching.md) for provider-specific examples.
 **Prompt Cache Scope**
 
 Prompt caching is not portable across providers. OpenAI, xAI, Anthropic,
-Gemini, Moonshot/Kimi, and Z.ai expose different request fields, cache markers,
+Gemini, DeepSeek, Moonshot/Kimi, and Z.ai expose different request fields, cache markers,
 and usage metadata. BeamWeaver keeps those controls at the provider boundary
 instead of inventing a universal cache wrapper that would hide important
 provider behavior.

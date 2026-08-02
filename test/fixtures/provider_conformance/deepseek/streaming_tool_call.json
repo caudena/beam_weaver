@@ -1,0 +1,195 @@
+{
+  "expected": {
+    "message": {
+      "id": "fixture-id-1",
+      "metadata": {
+        "finish_reason": "tool_calls",
+        "id": "fixture-id-1",
+        "model": "deepseek-v4-flash",
+        "model_name": "deepseek-v4-flash",
+        "model_provider": "deepseek",
+        "provider": "deepseek",
+        "token_usage": {
+          "completion_tokens": 44,
+          "prompt_cache_hit_tokens": 256,
+          "prompt_cache_miss_tokens": 36,
+          "prompt_tokens": 292,
+          "prompt_tokens_details": {
+            "cached_tokens": 256
+          },
+          "total_tokens": 336
+        },
+        "usage": {
+          "completion_tokens": 44,
+          "prompt_cache_hit_tokens": 256,
+          "prompt_cache_miss_tokens": 36,
+          "prompt_tokens": 292,
+          "prompt_tokens_details": {
+            "cached_tokens": 256
+          },
+          "total_tokens": 336
+        }
+      },
+      "role": "assistant",
+      "status": "tool_calls",
+      "text": "",
+      "tool_calls": [
+        {
+          "args": {
+            "city": "Tokyo"
+          },
+          "call_id": "fixture-id-2",
+          "id": "fixture-id-2",
+          "name": "get_weather",
+          "provider_id": "fixture-id-2"
+        }
+      ],
+      "usage_metadata": {
+        "input_cost": 5.7568000000000005e-6,
+        "input_cost_details": {
+          "cache_read": 7.168e-7,
+          "uncached": 5.040000000000001e-6
+        },
+        "input_token_details": {
+          "cache_miss": 36,
+          "cache_read": 256
+        },
+        "input_tokens": 292,
+        "output_cost": 1.232e-5,
+        "output_cost_details": {
+          "text": 1.232e-5
+        },
+        "output_token_details": {
+          "reasoning": "nil"
+        },
+        "output_tokens": 44,
+        "total_cost": 1.8076800000000003e-5,
+        "total_tokens": 336
+      }
+    }
+  },
+  "provider": "deepseek",
+  "request": {
+    "headers": [
+      [
+        "authorization",
+        "**REDACTED**"
+      ],
+      [
+        "content-type",
+        "application/json"
+      ],
+      [
+        "user-agent",
+        "beam_weaver-deepseek/0.1"
+      ]
+    ],
+    "json": {
+      "messages": [
+        {
+          "content": "Call get_weather for Tokyo. Do not answer directly.",
+          "role": "user"
+        }
+      ],
+      "model": "deepseek-v4-flash",
+      "stream": true,
+      "stream_options": {
+        "include_usage": true
+      },
+      "thinking": {
+        "type": "disabled"
+      },
+      "tool_choice": "auto",
+      "tools": [
+        {
+          "function": {
+            "description": "Return current weather for a city.",
+            "name": "get_weather",
+            "parameters": {
+              "additionalProperties": false,
+              "properties": {
+                "city": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "city"
+              ],
+              "type": "object"
+            }
+          },
+          "type": "function"
+        }
+      ]
+    },
+    "method": "POST",
+    "url": "https://api.deepseek.com/chat/completions"
+  },
+  "response": {
+    "body": "data: {\"choices\":[{\"delta\":{\"content\":\"\",\"role\":\"assistant\"},\"finish_reason\":null,\"index\":0,\"logprobs\":null}],\"created\":\"**REDACTED**\",\"id\":\"fixture-id-1\",\"model\":\"deepseek-v4-flash\",\"object\":\"chat.completion.chunk\",\"system_fingerprint\":\"fixture-id-3\",\"usage\":null}\n\ndata: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"function\":{\"arguments\":\"\",\"name\":\"get_weather\"},\"id\":\"fixture-id-2\",\"index\":0,\"type\":\"function\"}]},\"finish_reason\":null,\"index\":0,\"logprobs\":null}],\"created\":\"**REDACTED**\",\"id\":\"fixture-id-1\",\"model\":\"deepseek-v4-flash\",\"object\":\"chat.completion.chunk\",\"system_fingerprint\":\"fixture-id-3\",\"usage\":null}\n\ndata: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"function\":{\"arguments\":\"{\"},\"index\":0}]},\"finish_reason\":null,\"index\":0,\"logprobs\":null}],\"created\":\"**REDACTED**\",\"id\":\"fixture-id-1\",\"model\":\"deepseek-v4-flash\",\"object\":\"chat.completion.chunk\",\"system_fingerprint\":\"fixture-id-3\",\"usage\":null}\n\ndata: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"function\":{\"arguments\":\"\\\"\"},\"index\":0}]},\"finish_reason\":null,\"index\":0,\"logprobs\":null}],\"created\":\"**REDACTED**\",\"id\":\"fixture-id-1\",\"model\":\"deepseek-v4-flash\",\"object\":\"chat.completion.chunk\",\"system_fingerprint\":\"fixture-id-3\",\"usage\":null}\n\ndata: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"function\":{\"arguments\":\"city\"},\"index\":0}]},\"finish_reason\":null,\"index\":0,\"logprobs\":null}],\"created\":\"**REDACTED**\",\"id\":\"fixture-id-1\",\"model\":\"deepseek-v4-flash\",\"object\":\"chat.completion.chunk\",\"system_fingerprint\":\"fixture-id-3\",\"usage\":null}\n\ndata: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"function\":{\"arguments\":\"\\\"\"},\"index\":0}]},\"finish_reason\":null,\"index\":0,\"logprobs\":null}],\"created\":\"**REDACTED**\",\"id\":\"fixture-id-1\",\"model\":\"deepseek-v4-flash\",\"object\":\"chat.completion.chunk\",\"system_fingerprint\":\"fixture-id-3\",\"usage\":null}\n\ndata: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"function\":{\"arguments\":\": \"},\"index\":0}]},\"finish_reason\":null,\"index\":0,\"logprobs\":null}],\"created\":\"**REDACTED**\",\"id\":\"fixture-id-1\",\"model\":\"deepseek-v4-flash\",\"object\":\"chat.completion.chunk\",\"system_fingerprint\":\"fixture-id-3\",\"usage\":null}\n\ndata: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"function\":{\"arguments\":\"\\\"\"},\"index\":0}]},\"finish_reason\":null,\"index\":0,\"logprobs\":null}],\"created\":\"**REDACTED**\",\"id\":\"fixture-id-1\",\"model\":\"deepseek-v4-flash\",\"object\":\"chat.completion.chunk\",\"system_fingerprint\":\"fixture-id-3\",\"usage\":null}\n\ndata: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"function\":{\"arguments\":\"Tokyo\"},\"index\":0}]},\"finish_reason\":null,\"index\":0,\"logprobs\":null}],\"created\":\"**REDACTED**\",\"id\":\"fixture-id-1\",\"model\":\"deepseek-v4-flash\",\"object\":\"chat.completion.chunk\",\"system_fingerprint\":\"fixture-id-3\",\"usage\":null}\n\ndata: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"function\":{\"arguments\":\"\\\"\"},\"index\":0}]},\"finish_reason\":null,\"index\":0,\"logprobs\":null}],\"created\":\"**REDACTED**\",\"id\":\"fixture-id-1\",\"model\":\"deepseek-v4-flash\",\"object\":\"chat.completion.chunk\",\"system_fingerprint\":\"fixture-id-3\",\"usage\":null}\n\ndata: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"function\":{\"arguments\":\"}\"},\"index\":0}]},\"finish_reason\":null,\"index\":0,\"logprobs\":null}],\"created\":\"**REDACTED**\",\"id\":\"fixture-id-1\",\"model\":\"deepseek-v4-flash\",\"object\":\"chat.completion.chunk\",\"system_fingerprint\":\"fixture-id-3\",\"usage\":null}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"\"},\"finish_reason\":\"tool_calls\",\"index\":0,\"logprobs\":null}],\"created\":\"**REDACTED**\",\"id\":\"fixture-id-1\",\"model\":\"deepseek-v4-flash\",\"object\":\"chat.completion.chunk\",\"system_fingerprint\":\"fixture-id-3\",\"usage\":{\"completion_tokens\":44,\"prompt_cache_hit_tokens\":256,\"prompt_cache_miss_tokens\":36,\"prompt_tokens\":292,\"prompt_tokens_details\":{\"cached_tokens\":256},\"total_tokens\":336}}\n\ndata: [DONE]\n\n",
+    "headers": [
+      [
+        "access-control-allow-credentials",
+        "**REDACTED**"
+      ],
+      [
+        "cache-control",
+        "no-cache"
+      ],
+      [
+        "connection",
+        "keep-alive"
+      ],
+      [
+        "content-type",
+        "text/event-stream; charset=utf-8"
+      ],
+      [
+        "date",
+        "**REDACTED**"
+      ],
+      [
+        "server",
+        "**REDACTED**"
+      ],
+      [
+        "strict-transport-security",
+        "max-age=31536000; includeSubDomains; preload"
+      ],
+      [
+        "transfer-encoding",
+        "chunked"
+      ],
+      [
+        "vary",
+        "origin, access-control-request-method, access-control-request-headers"
+      ],
+      [
+        "via",
+        "**REDACTED**"
+      ],
+      [
+        "x-amz-cf-id",
+        "**REDACTED**"
+      ],
+      [
+        "x-amz-cf-pop",
+        "**REDACTED**"
+      ],
+      [
+        "x-cache",
+        "**REDACTED**"
+      ],
+      [
+        "x-content-type-options",
+        "nosniff"
+      ],
+      [
+        "x-ds-trace-id",
+        "**REDACTED**"
+      ]
+    ],
+    "status": 200
+  },
+  "scenario": "streaming_tool_call"
+}

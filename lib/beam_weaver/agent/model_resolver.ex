@@ -116,6 +116,9 @@ defmodule BeamWeaver.Agent.ModelResolver do
       module == BeamWeaver.ZAI.ChatModel ->
         "zai"
 
+      module in [BeamWeaver.DeepSeek.ChatModel, BeamWeaver.DeepSeek.ResponsesModel] ->
+        "deepseek"
+
       module == BeamWeaver.Models.FakeChatModel ->
         "fake"
 

@@ -22,7 +22,7 @@ defmodule BeamWeaver.Provider.ResponseDecoderTest do
         ["data: {\"text\":\"hel\"}\n\n", "data: {\"text\":\"lo\"}\n\n"]
         |> Enum.reduce(acc, fn chunk, acc -> reducer.(acc, chunk) end)
 
-      {:ok, Response.new(status: 200), acc}
+      {:ok, Response.new(status: 200, headers: [{"x-stream-request-id", "stream-1"}], metadata: %{source: :test}), acc}
     end
   end
 
@@ -39,6 +39,24 @@ defmodule BeamWeaver.Provider.ResponseDecoderTest do
          headers: [{"x-api-key", "response-secret"}],
          body: ~s({"ok":true,"api_key":"response-secret"})
        )}
+    end
+  end
+
+  defmodule ErrorStreamTransport do
+    @behaviour BeamWeaver.Transport
+
+    @impl true
+    def request(%Request{}, _opts), do: {:ok, Response.new(status: 429, body: %{})}
+
+    @impl true
+    def stream_reduce(%Request{}, _opts, acc, _reducer) do
+      {:ok,
+       Response.new(
+         status: 429,
+         headers: [{"retry-after", "2"}],
+         body: ~s({"error":{"message":"slow down"}}),
+         metadata: %{source: :test}
+       ), acc}
     end
   end
 
@@ -116,6 +134,73 @@ defmodule BeamWeaver.Provider.ResponseDecoderTest do
 
     assert Enum.to_list(stream) == ["hel", "lo"]
     assert_received {:stream_timeout, 123}
+  end
+
+  test "http client shared SSE helper invokes the opt-in response callback once and stays lazy" do
+    parent = self()
+
+    client =
+      HTTPClient.new(
+        endpoint: "https://example.test/stream",
+        transport: StreamTransport,
+        transport_opts: [parent: parent],
+        timeout: 123
+      )
+
+    assert {:ok, stream} =
+             HTTPClient.stream_sse(
+               client,
+               %{"stream" => true},
+               [on_response: fn response -> send(parent, {:lazy_sse_response, response}) end],
+               fn events -> Enum.map(events, &get_in(&1, ["data", "text"])) end,
+               &ResponseDecoder.json(&1, provider_name: "TestProvider")
+             )
+
+    refute_received {:lazy_sse_response, _response}
+    assert Enum.to_list(stream) == ["hel", "lo"]
+
+    assert_received {:lazy_sse_response,
+                     %Response{
+                       status: 200,
+                       headers: [{"x-stream-request-id", "stream-1"}],
+                       metadata: %{source: :test}
+                     }}
+
+    refute_received {:lazy_sse_response, _response}
+  end
+
+  test "http client shared SSE helper invokes the response callback for HTTP failures" do
+    parent = self()
+
+    client =
+      HTTPClient.new(
+        endpoint: "https://example.test/stream",
+        transport: ErrorStreamTransport
+      )
+
+    assert {:ok, stream} =
+             HTTPClient.stream_sse(
+               client,
+               %{"stream" => true},
+               [on_response: fn response -> send(parent, {:failed_sse_response, response}) end],
+               fn _events -> [] end,
+               &ResponseDecoder.json(&1, provider_name: "TestProvider")
+             )
+
+    assert [
+             %BeamWeaver.Stream.Events.Error{
+               error: %Error{type: :http_error, message: "slow down"}
+             }
+           ] = Enum.to_list(stream)
+
+    assert_received {:failed_sse_response,
+                     %Response{
+                       status: 429,
+                       headers: [{"retry-after", "2"}],
+                       body: ~s({"error":{"message":"slow down"}})
+                     }}
+
+    refute_received {:failed_sse_response, _response}
   end
 
   test "http client attaches redacted metadata for Req and Finch telemetry" do

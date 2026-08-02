@@ -13,7 +13,9 @@ defmodule BeamWeaver.Provider.ChatRuntime.Adapter do
   @type request_fun :: (term(), [Message.t()], keyword() -> {:ok, map()} | {:error, Error.t() | term()})
   @type provider_fun :: (term(), map(), keyword() -> {:ok, term()} | {:error, Error.t() | term()})
   @type decode_fun :: (term(), keyword() -> {:ok, Message.t()} | {:error, Error.t() | term()})
-  @type parse_fun :: (Message.t(), keyword() -> {:ok, Message.t()} | {:error, Error.t() | term()})
+  @type parse_fun ::
+          (Message.t(), keyword() -> {:ok, Message.t()} | {:error, Error.t() | term()})
+          | (term(), Message.t(), keyword() -> {:ok, Message.t()} | {:error, Error.t() | term()})
   @type metadata_fun :: (term(), map(), keyword() -> map())
 
   @enforce_keys [:request, :invoke, :stream, :stream_response, :decode]

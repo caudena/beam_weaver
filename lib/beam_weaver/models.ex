@@ -83,7 +83,7 @@ defmodule BeamWeaver.Models do
 
   def init_chat_model(model, opts) when is_binary(model) do
     with {:ok, provider, model_id} <- parse_model_id(model, :chat),
-         {:ok, module} <- ProviderRegistry.chat_provider(provider, opts),
+         {:ok, module} <- ProviderRegistry.chat_provider(provider, Keyword.put(opts, :model, model_id)),
          {:ok, profile} <- fetch_profile(provider, model_id, opts) do
       {:ok, build_model(module, model_id, opts, profile)}
     end
@@ -159,6 +159,13 @@ defmodule BeamWeaver.Models do
          Error.new(:invalid_model, "GLM model identifiers require the zai: prefix", %{
            model: model_id,
            expected: "zai:glm-5.2"
+         })}
+
+      ["deepseek-" <> _rest = model_id] when kind == :chat ->
+        {:error,
+         Error.new(:invalid_model, "DeepSeek model identifiers require the deepseek: prefix", %{
+           model: model_id,
+           expected: "deepseek:deepseek-v4-flash"
          })}
 
       [model_id] when model_id != "" ->
@@ -259,6 +266,8 @@ defmodule BeamWeaver.Models do
   defp provider_option_keys(module)
        when module in [
               BeamWeaver.Google.ChatModel,
+              BeamWeaver.DeepSeek.ChatModel,
+              BeamWeaver.DeepSeek.ResponsesModel,
               BeamWeaver.Moonshot.ChatModel,
               BeamWeaver.ZAI.ChatModel,
               BeamWeaver.XAI.ChatModel,
@@ -276,6 +285,12 @@ defmodule BeamWeaver.Models do
   defp configured_model(opts, BeamWeaver.Anthropic.ChatModel), do: BeamWeaver.Anthropic.chat_model(opts)
 
   defp configured_model(opts, BeamWeaver.Google.ChatModel), do: BeamWeaver.Google.chat_model(opts)
+
+  defp configured_model(opts, BeamWeaver.DeepSeek.ChatModel),
+    do: BeamWeaver.DeepSeek.chat_model(opts)
+
+  defp configured_model(opts, BeamWeaver.DeepSeek.ResponsesModel),
+    do: BeamWeaver.DeepSeek.responses_model(opts)
 
   defp configured_model(opts, BeamWeaver.Moonshot.ChatModel), do: BeamWeaver.Moonshot.chat_model(opts)
 

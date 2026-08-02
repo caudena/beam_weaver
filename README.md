@@ -124,6 +124,7 @@ prefixes when a model name is ambiguous.
 | OpenAI | `openai:gpt-5.6-sol`, `openai:gpt-5.6-terra`, `openai:gpt-5.6-luna`, `openai:gpt-5.6`, `openai:gpt-5.5`, `openai:gpt-5.4`, `openai:gpt-5.4-mini`, `openai:gpt-4.1`, `openai:text-embedding-3-large`, `openai:text-embedding-3-small` |
 | Anthropic | `anthropic:claude-opus-5`, `anthropic:claude-sonnet-5`, `anthropic:claude-opus-4-8`, `anthropic:claude-opus-4-7`, `anthropic:claude-opus-4-6`, `anthropic:claude-opus-4-5`, `anthropic:claude-sonnet-4-6`, `anthropic:claude-sonnet-4-5`, `anthropic:claude-haiku-4-5`, `anthropic:claude-fable-5`, `anthropic:claude-mythos-5` |
 | Google Gemini | `google:gemini-3.6-flash`, `google:gemini-3.5-flash-lite`, `google:gemini-3.5-flash`, `google:gemini-3.1-pro-preview` |
+| DeepSeek | `deepseek:deepseek-v4-flash`, `deepseek:deepseek-v4-pro` |
 | Moonshot/Kimi | `moonshot:kimi-k3`, `moonshot:kimi-k2.7-code`, `moonshot:kimi-k2.7-code-highspeed`, `moonshot:kimi-k2.6`, `moonshot:kimi-k2.5` |
 | xAI | `xai:grok-4.5`, `xai:grok-4.3`, `xai:grok-4.20-0309-reasoning`, `xai:grok-4.20-0309-non-reasoning`, `xai:grok-4.20-multi-agent-0309`, `xai:grok-build-0.1`, `xai:v1` embeddings |
 | Z.ai | `zai:glm-5.2` |
@@ -154,6 +155,7 @@ config :beam_weaver,
   openai: [api_key: System.fetch_env!("OPENAI_API_KEY")],
   anthropic: [api_key: System.fetch_env!("ANTHROPIC_API_KEY")],
   google: [api_key: System.fetch_env!("GOOGLE_API_KEY")],
+  deepseek: [api_key: System.fetch_env!("DEEPSEEK_API_KEY")],
   xai: [api_key: System.fetch_env!("XAI_API_KEY")],
   moonshot: [api_key: System.fetch_env!("MOONSHOT_API_KEY")],
   zai: [api_key: System.fetch_env!("ZAI_API_KEY")]
@@ -287,6 +289,7 @@ Provider guides:
 - [OpenAI](docs/partners/openai.md)
 - [Anthropic](docs/partners/anthropic.md)
 - [Google](docs/partners/google.md)
+- [DeepSeek](docs/partners/deepseek.md)
 - [Moonshot/Kimi](docs/partners/moonshot.md)
 - [xAI](docs/partners/xai.md)
 - [Z.ai](docs/partners/zai.md)

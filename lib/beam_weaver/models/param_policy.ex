@@ -102,6 +102,7 @@ defmodule BeamWeaver.Models.ParamPolicy do
                      :truncation,
                      :use_previous_response_id,
                      :user,
+                     :user_id,
                      :user_profile_id,
                      :verbosity,
                      :web_search_options,

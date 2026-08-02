@@ -112,18 +112,22 @@ three profiles expose a 1.05M-token context window, 128K maximum output, text
 and image input, Responses and Chat Completions, function calling, structured
 output, streaming, and the current OpenAI built-in tool catalog.
 
-Standard prices per million tokens are:
+Standard short-context prices per million tokens, effective July 30, 2026, are:
 
 | Model | Input | Cached input | Cache write | Output |
 | --- | ---: | ---: | ---: | ---: |
 | `gpt-5.6-sol` | $5.00 | $0.50 | $6.25 | $30.00 |
-| `gpt-5.6-terra` | $2.50 | $0.25 | $3.125 | $15.00 |
-| `gpt-5.6-luna` | $1.00 | $0.10 | $1.25 | $6.00 |
+| `gpt-5.6-terra` | $2.00 | $0.20 | $2.50 | $12.00 |
+| `gpt-5.6-luna` | $0.20 | $0.02 | $0.25 | $1.20 |
 
 Requests above 272K input tokens use OpenAI's higher-context rates: 2x input
 and 1.5x output for the full request. GPT-5.6 cache writes cost 1.25x uncached
 input, cache reads receive the 90% discount, and the current cache TTL is 30
 minutes. Eligible regional-processing endpoints add OpenAI's 10% uplift.
+Batch and Flex processing cost half the Standard rate. Fast mode costs twice
+the Standard short-context rate and replaces Priority Processing; OpenAI
+continues to accept both `service_tier: :fast` and `service_tier: :priority`.
+See [OpenAI API pricing](https://developers.openai.com/api/docs/pricing).
 
 The existing `reasoning` request option carries GPT-5.6 controls without a
 separate model type:
