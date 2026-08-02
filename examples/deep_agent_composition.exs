@@ -13,6 +13,7 @@ defmodule BeamWeaver.Examples.DeepAgentComposition.Helper do
   name("helper")
   description("Handle isolated helper work.")
   model(Support.model())
+  model_opts(timeout: 120_000)
   system_prompt("Return the helper result in one sentence.")
 end
 
@@ -22,6 +23,8 @@ defmodule BeamWeaver.Examples.DeepAgentComposition.Agent do
   name("composed_deep_agent")
   description("A deep agent built from normal BeamWeaver capabilities.")
   model(Support.model())
+  model_opts(timeout: 120_000)
+  recursion_limit(32)
   filesystem(State.new())
   compact_conversation(true)
 
@@ -35,14 +38,19 @@ defmodule BeamWeaver.Examples.DeepAgentComposition.Agent do
     use ModelRetry, max_attempts: 2, retry_on: :transient
   end
 
-  system_prompt(
-    "Plan with write_todos, delegate isolated work to the helper, and use composed capabilities when useful."
-  )
+  system_prompt("Plan once, delegate one isolated task to the helper, then answer without repeating tools.")
 end
 
 {:ok, %{messages: messages}} =
-  BeamWeaver.Examples.DeepAgentComposition.Agent.invoke(%{
-    messages: [Message.user("Show how you compose planning and a helper subagent for a simple task.")]
-  })
+  BeamWeaver.Examples.DeepAgentComposition.Agent.invoke(
+    %{
+      messages: [
+        Message.user(
+          "Create a two-item plan, delegate 7 * 6 to the helper exactly once, then give the result. Call each tool at most once."
+        )
+      ]
+    },
+    run_timeout: 240_000
+  )
 
 messages |> List.last() |> Message.text() |> IO.puts()

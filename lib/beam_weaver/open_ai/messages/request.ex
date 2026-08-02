@@ -373,6 +373,19 @@ defmodule BeamWeaver.OpenAI.Messages.Request do
     |> sanitize_store_replay_item(opts)
   end
 
+  defp assistant_content_event(%ContentBlock.Reasoning{} = block, _message_id, opts) do
+    block
+    |> sanitize_output_item(opts)
+    |> sanitize_store_replay_item(opts)
+  end
+
+  defp assistant_content_event(%{"type" => type} = block, _message_id, opts)
+       when type in [:reasoning, "reasoning"] do
+    block
+    |> sanitize_output_item(opts)
+    |> sanitize_store_replay_item(opts)
+  end
+
   defp assistant_content_event(%{type: type} = block, _message_id, opts)
        when type in [:function_call, :tool_call, :tool_use] do
     BeamWeaver.MapShape.assert_atom_keys!(block)
@@ -486,11 +499,14 @@ defmodule BeamWeaver.OpenAI.Messages.Request do
   defp provider_type(type) when is_atom(type), do: Atom.to_string(type)
   defp provider_type(type), do: type
 
-  defp sanitize_output_item(%{type: :reasoning} = block, _opts) do
-    block
-    |> Shared.stringify_keys()
-    |> Map.take(["type", "id", "summary", "status", "encrypted_content"])
-    |> Shared.reject_nil_values()
+  defp sanitize_output_item(%{type: type} = block, _opts)
+       when type in [:reasoning, "reasoning"] do
+    sanitize_reasoning_output_item(block)
+  end
+
+  defp sanitize_output_item(%{"type" => type} = block, _opts)
+       when type in [:reasoning, "reasoning"] do
+    sanitize_reasoning_output_item(block)
   end
 
   defp sanitize_output_item(block, _opts) when is_map(block) do
@@ -499,8 +515,20 @@ defmodule BeamWeaver.OpenAI.Messages.Request do
     |> drop_internal_provider_fields()
   end
 
+  defp sanitize_reasoning_output_item(block) do
+    block
+    |> Shared.stringify_keys()
+    |> Map.take(["type", "id", "summary", "status", "encrypted_content"])
+    |> Shared.reject_nil_values()
+    |> Shared.put_optional("content", reasoning_replay_content(block))
+  end
+
   defp sanitize_store_replay_item(%{"type" => "reasoning", "encrypted_content" => encrypted} = item, opts)
        when is_binary(encrypted) and encrypted != "" do
+    {:item, maybe_drop_store_false_id(item, opts)}
+  end
+
+  defp sanitize_store_replay_item(%{"type" => "reasoning", "content" => [_part | _rest]} = item, opts) do
     {:item, maybe_drop_store_false_id(item, opts)}
   end
 
@@ -522,6 +550,34 @@ defmodule BeamWeaver.OpenAI.Messages.Request do
   end
 
   defp sanitize_store_replay_item(item, _opts), do: {:item, item}
+
+  defp reasoning_replay_content(block) do
+    raw_provider_block = BeamWeaver.MapAccess.get(block, :raw_provider_block, %{})
+    content = BeamWeaver.MapAccess.get(block, :content)
+    raw_content = BeamWeaver.MapAccess.get(raw_provider_block, :content)
+    summary = BeamWeaver.MapAccess.get(block, :summary)
+    encrypted_content = BeamWeaver.MapAccess.get(block, :encrypted_content)
+
+    cond do
+      match?([_part | _rest], content) -> Shared.stringify_value(content)
+      match?([_part | _rest], raw_content) -> Shared.stringify_value(raw_content)
+      replayable_plain_reasoning?(summary, encrypted_content) -> plain_reasoning_content(block)
+      true -> nil
+    end
+  end
+
+  defp replayable_plain_reasoning?(summary, encrypted_content),
+    do: summary in [nil, []] and encrypted_content in [nil, ""]
+
+  defp plain_reasoning_content(block) do
+    case BeamWeaver.MapAccess.first(block, [:reasoning, :text]) do
+      text when is_binary(text) and text != "" ->
+        [%{"type" => "reasoning_text", "text" => text}]
+
+      _missing ->
+        nil
+    end
+  end
 
   defp maybe_drop_store_false_id(item, opts) when is_map(item) do
     if store_false?(opts), do: Map.drop(item, ["id"]), else: item

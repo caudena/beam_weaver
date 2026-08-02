@@ -184,6 +184,7 @@ defmodule BeamWeaver.Provider.Registry do
       BeamWeaver.Google.Provider,
       BeamWeaver.Moonshot.Provider,
       BeamWeaver.ZAI.Provider,
+      BeamWeaver.DeepSeek.Provider,
       BeamWeaver.Provider.Fake
     ]
     |> Enum.filter(&Code.ensure_loaded?/1)

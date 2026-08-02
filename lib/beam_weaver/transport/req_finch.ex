@@ -61,7 +61,10 @@ defmodule BeamWeaver.Transport.ReqFinch do
       method: request.method,
       url: request.url,
       headers: request.headers,
-      finch: Keyword.get(opts, :finch, BeamWeaver.Transport.Finch),
+      finch:
+        opts
+        |> Keyword.get(:finch, BeamWeaver.Transport.Finch)
+        |> normalize_finch_options(),
       receive_timeout: Keyword.get(opts, :timeout, Keyword.get(request.options, :timeout, 15_000)),
       retry: false,
       redirect: false
@@ -69,6 +72,11 @@ defmodule BeamWeaver.Transport.ReqFinch do
     |> maybe_put_finch_private(opts)
     |> maybe_put_body(request)
   end
+
+  defp normalize_finch_options(nil), do: nil
+  defp normalize_finch_options(name) when is_atom(name), do: [name: name]
+  defp normalize_finch_options(options) when is_list(options), do: options
+  defp normalize_finch_options(options), do: options
 
   defp maybe_put_finch_private(options, opts) do
     private =

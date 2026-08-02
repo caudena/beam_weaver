@@ -3,6 +3,7 @@ import Config
 config :beam_weaver,
   openai: [],
   anthropic: [],
+  deepseek: [],
   google: [],
   xai: [],
   zai: [],

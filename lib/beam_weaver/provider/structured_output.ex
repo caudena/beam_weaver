@@ -49,11 +49,37 @@ defmodule BeamWeaver.Provider.StructuredOutput do
     cond do
       is_function(parser, 1) -> parser
       is_function(validator, 1) -> validator
+      true -> schema_parser(schema_from_format(format))
+    end
+  end
+
+  defp parser_from_format({_name, schema}) when is_map(schema), do: schema_parser(schema)
+  defp parser_from_format(_format), do: nil
+
+  defp schema_from_format(format) do
+    direct_schema = BeamWeaver.MapAccess.get(format, :schema)
+    nested_schema = BeamWeaver.MapAccess.get(format, :json_schema)
+
+    cond do
+      is_map(direct_schema) -> direct_schema
+      is_map(nested_schema) -> schema_from_format(nested_schema)
+      json_object_schema?(format) -> format
       true -> nil
     end
   end
 
-  defp parser_from_format(_format), do: nil
+  defp json_object_schema?(schema) do
+    BeamWeaver.MapAccess.get(schema, :type) in [:object, "object"] or
+      BeamWeaver.MapAccess.has_key?(schema, :properties) or
+      BeamWeaver.MapAccess.has_key?(schema, :required)
+  end
+
+  defp schema_parser(schema) when is_map(schema) do
+    schema = BeamWeaver.MapShape.normalize_value(schema)
+    fn parsed -> BeamWeaver.OutputParser.validate_schema(schema, parsed) end
+  end
+
+  defp schema_parser(_schema), do: nil
 
   defp maybe_ensure_not_refusal(message, opts) do
     if Keyword.get(opts, :refusal?, false) do

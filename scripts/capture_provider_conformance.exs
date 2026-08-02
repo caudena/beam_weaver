@@ -12,7 +12,7 @@ alias BeamWeaver.TestSupport.ProviderConformance, as: Fixtures
 defmodule BeamWeaver.ProviderConformanceCapture do
   @moduledoc false
 
-  @providers [:openai, :xai, :google, :moonshot, :zai]
+  @providers [:openai, :xai, :google, :moonshot, :zai, :deepseek, :deepseek_responses]
 
   def run do
     unless System.get_env("BEAM_WEAVER_CAPTURE_PROVIDER_FIXTURES") == "true" do
@@ -27,6 +27,7 @@ defmodule BeamWeaver.ProviderConformanceCapture do
         GOOGLE_API_KEY=... \\
         KIMI_API_KEY=... \\
         ZAI_API_KEY=... \\
+        DEEPSEEK_API_KEY=... \\
         mix run scripts/capture_provider_conformance.exs
       """)
 
@@ -49,7 +50,7 @@ defmodule BeamWeaver.ProviderConformanceCapture do
 
   defp capture_case(provider, api_key, {scenario, fun}) do
     scenario_name = Atom.to_string(scenario)
-    model = Fixtures.capture_model(provider, scenario_name, api_key: api_key)
+    model = Fixtures.capture_model(provider, scenario_name, api_key: api_key, timeout: 120_000)
     result = fun.(model)
     path = Fixtures.fixture_path(provider, scenario_name)
 
@@ -102,6 +103,26 @@ defmodule BeamWeaver.ProviderConformanceCapture do
       streaming_usage: &streaming_usage/1,
       reasoning_stream_truncated: &reasoning_stream_truncated/1,
       streaming_tool_call: &streaming_tool_call/1
+    ]
+  end
+
+  defp provider_cases(:deepseek) do
+    [
+      basic_chat: &basic_chat/1,
+      single_tool_call: &single_tool_call/1,
+      provider_structured_success: &provider_structured_success/1,
+      streaming_usage: &streaming_usage/1,
+      reasoning_stream_truncated: &reasoning_stream_truncated/1,
+      streaming_tool_call: &deepseek_streaming_tool_call/1
+    ]
+  end
+
+  defp provider_cases(:deepseek_responses) do
+    [
+      basic_chat: &basic_chat/1,
+      single_tool_call: &single_tool_call/1,
+      provider_structured_success: &provider_structured_success/1,
+      streaming_usage: &streaming_usage/1
     ]
   end
 
@@ -190,19 +211,30 @@ defmodule BeamWeaver.ProviderConformanceCapture do
     )
   end
 
+  defp deepseek_streaming_tool_call(model) do
+    model.__struct__.stream_response(
+      model,
+      [Message.user("Call get_weather for Tokyo. Do not answer directly.")],
+      tools: [Fixtures.weather_tool()],
+      tool_choice: "auto",
+      tool_stream: true,
+      thinking: %{type: "disabled"}
+    )
+  end
+
   defp expected_snapshot({:ok, %Message{} = message}) do
     %{"message" => Fixtures.message_snapshot(message)}
   end
 
-  defp expected_snapshot({:error, error}) do
-    %{"error" => Fixtures.error_snapshot(error)}
-  end
+  defp expected_snapshot({:error, _error}),
+    do: raise("provider conformance scenario returned an unexpected error")
 
   defp api_key(:openai), do: env_key("OPENAI_API_KEY")
   defp api_key(:xai), do: env_key("XAI_API_KEY")
   defp api_key(:google), do: env_key("GOOGLE_API_KEY")
   defp api_key(:moonshot), do: env_key(["KIMI_API_KEY", "MOONSHOT_API_KEY"])
   defp api_key(:zai), do: env_key("ZAI_API_KEY")
+  defp api_key(provider) when provider in [:deepseek, :deepseek_responses], do: env_key("DEEPSEEK_API_KEY")
 
   defp env_key(names) when is_list(names) do
     Enum.find_value(names, :missing, fn name ->

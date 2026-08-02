@@ -221,7 +221,27 @@ defmodule BeamWeaver.OpenAI.Messages.Response do
 
   defp reasoning_text(%{"reasoning" => reasoning}) when is_binary(reasoning), do: reasoning
 
-  defp reasoning_text(%{"summary" => summaries}) when is_list(summaries) do
+  defp reasoning_text(%{"content" => content} = item) when is_list(content) do
+    text =
+      content
+      |> Enum.flat_map(fn
+        %{"type" => type, "text" => text}
+        when type in ["reasoning_text", "text"] and is_binary(text) ->
+          [text]
+
+        _part ->
+          []
+      end)
+      |> Enum.join("")
+
+    if text == "", do: reasoning_summary_text(item["summary"]), else: text
+  end
+
+  defp reasoning_text(%{"summary" => summaries}), do: reasoning_summary_text(summaries)
+
+  defp reasoning_text(_item), do: nil
+
+  defp reasoning_summary_text(summaries) when is_list(summaries) do
     text =
       summaries
       |> Enum.flat_map(fn
@@ -235,7 +255,7 @@ defmodule BeamWeaver.OpenAI.Messages.Response do
     if text == "", do: nil, else: text
   end
 
-  defp reasoning_text(_item), do: nil
+  defp reasoning_summary_text(_summaries), do: nil
 
   defp put_part_item_id(parts, nil), do: parts
 

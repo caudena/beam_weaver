@@ -70,7 +70,22 @@ defmodule BeamWeaver.Provider.RegistryTest do
   end
 
   test "built-in provider surface exposes expected provider IDs and profiles" do
-    assert Registry.providers() == [:anthropic, :fake, :google, :moonshot, :openai, :xai, :zai]
+    assert Registry.providers() == [
+             :anthropic,
+             :deepseek,
+             :fake,
+             :google,
+             :moonshot,
+             :openai,
+             :xai,
+             :zai
+           ]
+
+    assert {:ok, deepseek} = Registry.profile(:deepseek, "deepseek-v4-flash")
+    assert deepseek.provider == :deepseek
+    assert deepseek.responses_api
+    assert deepseek.max_input_tokens == 1_048_576
+    assert deepseek.max_output_tokens == 393_216
 
     assert {:ok, flash} = Registry.profile(:google, "gemini-3.6-flash")
     assert flash.provider == :google
@@ -149,6 +164,8 @@ defmodule BeamWeaver.Provider.RegistryTest do
     assert Compatibility.supports?({:zai, "glm-5.2"}, :tool_calling)
     assert Compatibility.supports?({:zai, "glm-5.2"}, :structured_output)
     assert Compatibility.supports?({:zai, "glm-5.2"}, :reasoning)
+    assert Compatibility.supports?({:deepseek, "deepseek-v4-flash"}, :reasoning)
+    assert Compatibility.supports?({:deepseek, "deepseek-v4-pro"}, :tool_calling)
     refute Compatibility.supports?({:xai, "grok-2"}, :reasoning)
   end
 

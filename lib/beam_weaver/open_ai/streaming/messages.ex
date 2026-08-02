@@ -2,7 +2,9 @@ defmodule BeamWeaver.OpenAI.Streaming.Messages do
   @moduledoc false
 
   alias BeamWeaver.Core.ContentBlock
+  alias BeamWeaver.Core.Error, as: CoreError
   alias BeamWeaver.Core.Messages
+  alias BeamWeaver.OpenAI.Streaming.Lifecycle
   alias BeamWeaver.Stream
   alias BeamWeaver.Stream.Events
 
@@ -15,12 +17,8 @@ defmodule BeamWeaver.OpenAI.Streaming.Messages do
 
   def message_chunks(parsed_events) when is_list(parsed_events) do
     parsed_events
-    |> Enum.reduce(
-      %{chunks: [], item_call_ids: %{}, item_names: %{}},
-      &apply_message_chunk_event/2
-    )
-    |> Map.fetch!(:chunks)
-    |> Enum.reverse()
+    |> positioned_message_chunks()
+    |> Enum.map(fn {_position, chunk} -> chunk end)
   end
 
   def message_chunks(_body), do: []
@@ -33,20 +31,50 @@ defmodule BeamWeaver.OpenAI.Streaming.Messages do
   end
 
   def typed_events(parsed_events) when is_list(parsed_events) do
-    chunk_events =
+    message_events =
       parsed_events
-      |> message_chunks()
-      |> Enum.flat_map(&chunk_to_events/1)
+      |> positioned_message_chunks()
+      |> Enum.flat_map(fn {position, chunk} ->
+        chunk
+        |> chunk_to_events()
+        |> Enum.map(&{position, &1})
+      end)
 
-    done_events =
+    {event_groups, _remaining_message_events} =
       parsed_events
-      |> Enum.flat_map(&done_event/1)
+      |> Enum.with_index()
+      |> Enum.map_reduce(message_events, fn {event, position}, pending_message_events ->
+        {current_message_events, remaining_message_events} =
+          Enum.split_while(pending_message_events, fn {event_position, _event} ->
+            event_position == position
+          end)
 
-    (chunk_events ++ done_events)
-    |> Enum.map(&Stream.envelope(&1, metadata: %{provider: :openai}))
+        events =
+          Enum.map(current_message_events, fn {_position, event} -> event end) ++
+            custom_events(event) ++ done_event(event)
+
+        {events, remaining_message_events}
+      end)
+
+    event_groups
+    |> List.flatten()
+    |> Enum.map(fn event ->
+      Stream.envelope(event, metadata: %{provider: :openai})
+    end)
   end
 
   def typed_events(_body), do: []
+
+  defp positioned_message_chunks(parsed_events) do
+    parsed_events
+    |> Enum.with_index()
+    |> Enum.reduce(%{chunks: [], event_index: nil, item_call_ids: %{}, item_names: %{}}, fn
+      {event, event_index}, state ->
+        apply_message_chunk_event(event, %{state | event_index: event_index})
+    end)
+    |> Map.fetch!(:chunks)
+    |> Enum.reverse()
+  end
 
   defp apply_message_chunk_event(
          %{
@@ -187,7 +215,9 @@ defmodule BeamWeaver.OpenAI.Streaming.Messages do
 
   defp apply_message_chunk_event(_event, state), do: state
 
-  defp emit_message_chunk(state, chunk), do: Map.update!(state, :chunks, &[chunk | &1])
+  defp emit_message_chunk(state, chunk) do
+    Map.update!(state, :chunks, &[{state.event_index, chunk} | &1])
+  end
 
   defp maybe_emit_unknown_chat_delta(state, delta) when is_map(delta) do
     unknown = Map.drop(delta, ["content", "tool_calls", "role"])
@@ -213,8 +243,62 @@ defmodule BeamWeaver.OpenAI.Streaming.Messages do
 
   defp chunk_to_events(chunk), do: [%Events.MessageChunk{chunk: chunk}]
 
+  defp custom_events(%{"data" => data} = event) when is_map(data) do
+    if Lifecycle.typed_custom_event?(data) do
+      [%Events.Custom{payload: event, metadata: custom_event_metadata(data)}]
+    else
+      []
+    end
+  end
+
+  defp custom_events(_event), do: []
+
+  defp custom_event_metadata(data) do
+    item = if is_map(data["item"]), do: data["item"], else: %{}
+
+    %{
+      event_type: data["type"],
+      item_id: data["item_id"] || item["id"],
+      output_index: data["output_index"],
+      output_item_type: item["type"],
+      sequence_number: data["sequence_number"],
+      status: data["status"] || item["status"]
+    }
+    |> reject_nil_values()
+  end
+
   defp done_event(%{"data" => %{"type" => "response.completed", "response" => response}}) do
     [%Events.Done{result: response, usage: response["usage"]}]
+  end
+
+  defp done_event(%{
+         "data" => %{"type" => "response.incomplete", "response" => response} = data
+       })
+       when is_map(response) do
+    [
+      %Events.Done{
+        result: response,
+        usage: response["usage"],
+        metadata: terminal_metadata(data, response, "incomplete")
+      }
+    ]
+  end
+
+  defp done_event(%{"data" => %{"type" => "response.failed", "response" => response} = data})
+       when is_map(response) do
+    metadata = terminal_metadata(data, response, "failed")
+    provider_error = if is_map(response["error"]), do: response["error"], else: %{}
+    message = provider_error["message"] || "Model response failed"
+
+    error =
+      CoreError.new(:response_failed, message, %{
+        event: data,
+        response: response,
+        status: metadata.status,
+        usage: response["usage"]
+      })
+
+    [%Events.Error{error: error, metadata: metadata}]
   end
 
   defp done_event(%{"data" => %{"usage" => usage} = data}) when is_map(usage) do
@@ -228,4 +312,16 @@ defmodule BeamWeaver.OpenAI.Streaming.Messages do
   end
 
   defp done_event(_event), do: []
+
+  defp terminal_metadata(data, response, default_status) do
+    %{
+      event_type: data["type"],
+      sequence_number: data["sequence_number"],
+      status: response["status"] || default_status,
+      usage: response["usage"]
+    }
+    |> reject_nil_values()
+  end
+
+  defp reject_nil_values(map), do: Map.reject(map, fn {_key, value} -> is_nil(value) end)
 end

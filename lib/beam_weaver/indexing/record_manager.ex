@@ -117,7 +117,7 @@ defmodule BeamWeaver.Indexing.RecordManager do
     with {:ok, records} <- list(manager, list_opts) do
       records
       |> Enum.filter(&(record_before?(&1, before_time) and record_after?(&1, after_time)))
-      |> Enum.sort_by(&timestamp_value(&1.updated_at))
+      |> Enum.sort_by(&{timestamp_value(&1.updated_at), &1.id})
       |> maybe_take(limit)
       |> Enum.map(& &1.id)
     end

@@ -3,6 +3,7 @@ defmodule BeamWeaver.Provider.ChatRuntimeTest do
 
   alias BeamWeaver.Provider.ChatRuntime
   alias BeamWeaver.Provider.ChatRuntime.Adapter
+  alias BeamWeaver.Core.Message
 
   defp base_adapter(overrides) do
     defaults = %{
@@ -36,6 +37,45 @@ defmodule BeamWeaver.Provider.ChatRuntimeTest do
         })
 
       assert {:ok, _stream} = ChatRuntime.stream_events(%{}, [], [], adapter)
+    end
+  end
+
+  describe "invoke/4 response parsing" do
+    test "passes the model to three-arity provider parsers" do
+      parent = self()
+      model = %{include_response_headers: false, id: :configured_model}
+      message = Message.assistant("ok")
+
+      adapter =
+        base_adapter(%{
+          decode: fn _response, _opts -> {:ok, message} end,
+          parse: fn parsed_model, parsed_message, opts ->
+            send(parent, {:parsed, parsed_model, parsed_message, opts})
+            {:ok, parsed_message}
+          end
+        })
+
+      assert {:ok, ^message} = ChatRuntime.invoke(model, [], [response_format: %{type: :json}], adapter)
+
+      assert_received {:parsed, ^model, ^message, [include_response_headers: false, response_format: %{type: :json}]}
+    end
+
+    test "keeps two-arity provider parsers backward compatible" do
+      parent = self()
+      model = %{include_response_headers: false}
+      message = Message.assistant("ok")
+
+      adapter =
+        base_adapter(%{
+          decode: fn _response, _opts -> {:ok, message} end,
+          parse: fn parsed_message, opts ->
+            send(parent, {:parsed, parsed_message, opts})
+            {:ok, parsed_message}
+          end
+        })
+
+      assert {:ok, ^message} = ChatRuntime.invoke(model, [], [], adapter)
+      assert_received {:parsed, ^message, [include_response_headers: false]}
     end
   end
 end

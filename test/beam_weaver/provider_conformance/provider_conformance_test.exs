@@ -388,6 +388,172 @@ defmodule BeamWeaver.ProviderConformanceTest do
     end
   end
 
+  describe "DeepSeek Chat Completions fixtures" do
+    test "basic chat normalizes reasoning, cache usage, cost, and provider metadata" do
+      model = Fixtures.model(:deepseek, "basic_chat")
+
+      assert {:ok, message} = ChatModel.invoke(model, [Message.user("Reply with exactly: pong")])
+
+      Fixtures.assert_request!(:deepseek, "basic_chat")
+      Fixtures.assert_message!(message, Fixtures.load!(:deepseek, "basic_chat")["expected"]["message"])
+    end
+
+    test "JSON object mode is locally validated as structured output" do
+      model = Fixtures.model(:deepseek, "provider_structured_success")
+
+      assert {:ok, message} =
+               ChatModel.invoke(model, [Message.user("Return a structured answer where answer is exactly pong.")],
+                 response_format: %{name: "answer_output", schema: Fixtures.answer_schema()}
+               )
+
+      Fixtures.assert_request!(:deepseek, "provider_structured_success")
+
+      expected =
+        Fixtures.load!(:deepseek, "provider_structured_success")["expected"]["message"]
+        |> Map.delete("text")
+
+      Fixtures.assert_message!(
+        message,
+        expected
+      )
+
+      assert message.metadata.parsed == %{"answer" => "pong"}
+    end
+
+    test "streaming reconstructs reasoning and final cache usage" do
+      model = Fixtures.model(:deepseek, "streaming_usage")
+
+      assert {:ok, message} =
+               model.__struct__.stream_response(model, [Message.user("Reply with exactly: streamed pong")])
+
+      Fixtures.assert_request!(:deepseek, "streaming_usage")
+      Fixtures.assert_message!(message, Fixtures.load!(:deepseek, "streaming_usage")["expected"]["message"])
+    end
+
+    test "fragmented streamed tool arguments merge by choice index" do
+      model = Fixtures.model(:deepseek, "streaming_tool_call")
+
+      assert {:ok, message} =
+               model.__struct__.stream_response(
+                 model,
+                 [Message.user("Call get_weather for Tokyo. Do not answer directly.")],
+                 tools: [Fixtures.weather_tool()],
+                 tool_choice: "auto",
+                 tool_stream: true,
+                 thinking: %{type: "disabled"}
+               )
+
+      Fixtures.assert_request!(:deepseek, "streaming_tool_call")
+
+      Fixtures.assert_message!(
+        message,
+        Fixtures.load!(:deepseek, "streaming_tool_call")["expected"]["message"]
+      )
+    end
+  end
+
+  describe "DeepSeek Responses fixtures" do
+    test "basic stateless response normalizes text, usage, cost, and metadata" do
+      model = Fixtures.model(:deepseek_responses, "basic_chat")
+
+      assert {:ok, message} = ChatModel.invoke(model, [Message.user("Reply with exactly: pong")])
+
+      Fixtures.assert_request!(:deepseek_responses, "basic_chat")
+
+      Fixtures.assert_message!(
+        message,
+        Fixtures.load!(:deepseek_responses, "basic_chat")["expected"]["message"]
+      )
+    end
+
+    test "function calls retain Responses item and call identifiers" do
+      model = Fixtures.model(:deepseek_responses, "single_tool_call")
+
+      assert {:ok, message} =
+               ChatModel.invoke(
+                 model,
+                 [Message.user("Call get_weather for Tokyo. Do not answer directly.")],
+                 tools: [Fixtures.weather_tool()]
+               )
+
+      Fixtures.assert_request!(:deepseek_responses, "single_tool_call")
+
+      Fixtures.assert_message!(
+        message,
+        Fixtures.load!(:deepseek_responses, "single_tool_call")["expected"]["message"]
+      )
+    end
+
+    test "native JSON Schema output parses into structured metadata" do
+      model = Fixtures.model(:deepseek_responses, "provider_structured_success")
+
+      assert {:ok, message} =
+               ChatModel.invoke(model, [Message.user("Return a structured answer where answer is exactly pong.")],
+                 response_format: %{name: "answer_output", schema: Fixtures.answer_schema()}
+               )
+
+      Fixtures.assert_request!(:deepseek_responses, "provider_structured_success")
+
+      expected =
+        Fixtures.load!(:deepseek_responses, "provider_structured_success")["expected"]["message"]
+        |> Map.delete("text")
+
+      Fixtures.assert_message!(
+        message,
+        expected
+      )
+
+      assert message.metadata.parsed == %{"answer" => "pong"}
+    end
+
+    test "named-event streaming reconstructs the completed response" do
+      model = Fixtures.model(:deepseek_responses, "streaming_usage")
+
+      assert {:ok, message} =
+               model.__struct__.stream_response(model, [Message.user("Reply with exactly: streamed pong")])
+
+      Fixtures.assert_request!(:deepseek_responses, "streaming_usage")
+
+      Fixtures.assert_message!(
+        message,
+        Fixtures.load!(:deepseek_responses, "streaming_usage")["expected"]["message"]
+      )
+    end
+  end
+
+  describe "capture sanitization" do
+    test "canonicalizes IDs and removes timestamps inside SSE transcripts" do
+      path =
+        Path.join(
+          System.tmp_dir!(),
+          "beam-weaver-provider-capture-#{System.unique_integer([:positive])}.json"
+        )
+
+      on_exit(fn -> File.rm(path) end)
+
+      fixture = %{
+        "provider" => "deepseek_responses",
+        "scenario" => "sanitization",
+        "request" => %{},
+        "response" => %{
+          "status" => 200,
+          "body" =>
+            "event: response.created\ndata: {\"type\":\"response.created\",\"created_at\":1234567890,\"response\":{\"id\":\"response-live-id\"}}\n\n"
+        }
+      }
+
+      File.write!(path, BeamWeaver.JSON.encode!(fixture))
+      Fixtures.put_expected!(path, %{"id" => "response-live-id"})
+
+      sanitized = Fixtures.load_path!(path)
+      assert sanitized["expected"]["id"] == "fixture-id-1"
+      assert sanitized["response"]["body"] =~ ~s("created_at":"**REDACTED**")
+      assert sanitized["response"]["body"] =~ ~s("id":"fixture-id-1")
+      refute sanitized["response"]["body"] =~ "1234567890"
+      refute sanitized["response"]["body"] =~ "response-live-id"
+    end
+  end
+
   describe "structured-output strategy policy fixtures" do
     test "fallback fixture records provider profile decision when native output is unsafe" do
       fixture = Fixtures.load!(:xai, "structured_fallback_when_tools_active")

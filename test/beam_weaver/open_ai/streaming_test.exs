@@ -75,6 +75,185 @@ defmodule BeamWeaver.OpenAI.StreamingTest do
            )
   end
 
+  test "typed events preserve incomplete and failed Responses terminals" do
+    incomplete_response = %{
+      "id" => "resp_incomplete",
+      "status" => "incomplete",
+      "incomplete_details" => %{"reason" => "max_output_tokens"},
+      "output" => [],
+      "usage" => %{"input_tokens" => 7, "output_tokens" => 3, "total_tokens" => 10}
+    }
+
+    incomplete_body = """
+    event: response.incomplete
+    data: {"type":"response.incomplete","sequence_number":4,"response":#{BeamWeaver.JSON.encode!(incomplete_response)}}
+    """
+
+    assert [
+             %Envelope{
+               event: %Events.Done{
+                 result: ^incomplete_response,
+                 usage: %{"total_tokens" => 10} = usage,
+                 metadata: incomplete_metadata
+               }
+             }
+           ] = Streaming.typed_events(incomplete_body)
+
+    assert usage["input_tokens"] == 7
+
+    assert incomplete_metadata == %{
+             event_type: "response.incomplete",
+             sequence_number: 4,
+             status: "incomplete",
+             usage: incomplete_response["usage"]
+           }
+
+    failed_response = %{
+      "id" => "resp_failed",
+      "status" => "failed",
+      "error" => %{"code" => "server_error", "message" => "generation failed"},
+      "output" => [],
+      "usage" => %{"input_tokens" => 2, "output_tokens" => 0, "total_tokens" => 2}
+    }
+
+    failed_data = %{
+      "type" => "response.failed",
+      "sequence_number" => 9,
+      "response" => failed_response
+    }
+
+    failed_body = "event: response.failed\ndata: #{BeamWeaver.JSON.encode!(failed_data)}\n\n"
+
+    assert [
+             %Envelope{
+               event: %Events.Error{
+                 error: %BeamWeaver.Core.Error{
+                   type: :response_failed,
+                   message: "generation failed",
+                   details: failed_details
+                 },
+                 metadata: failed_metadata
+               }
+             }
+           ] = Streaming.typed_events(failed_body)
+
+    assert failed_details.event == failed_data
+    assert failed_details.response == failed_response
+    assert failed_details.status == "failed"
+    assert failed_details.usage == failed_response["usage"]
+
+    assert failed_metadata == %{
+             event_type: "response.failed",
+             sequence_number: 9,
+             status: "failed",
+             usage: failed_response["usage"]
+           }
+  end
+
+  test "typed events preserve hosted and custom output-item lifecycle without duplicating message chunks" do
+    body = """
+    event: response.output_item.added
+    data: {"type":"response.output_item.added","output_index":0,"item":{"id":"ws_1","type":"web_search_call","status":"in_progress"}}
+
+    event: response.web_search_call.in_progress
+    data: {"type":"response.web_search_call.in_progress","output_index":0,"item_id":"ws_1","sequence_number":1}
+
+    event: response.web_search_call.searching
+    data: {"type":"response.web_search_call.searching","output_index":0,"item_id":"ws_1","sequence_number":2}
+
+    event: response.web_search_call.failed
+    data: {"type":"response.web_search_call.failed","output_index":0,"item_id":"ws_1","sequence_number":3,"status":"failed","error":{"code":"search_failed","message":"upstream unavailable"}}
+
+    event: response.output_item.done
+    data: {"type":"response.output_item.done","output_index":0,"item":{"id":"ws_1","type":"web_search_call","status":"failed"}}
+
+    event: response.output_item.added
+    data: {"type":"response.output_item.added","output_index":1,"item":{"id":"fc_1","type":"function_call","call_id":"call_1","name":"lookup","arguments":""}}
+
+    event: response.function_call_arguments.delta
+    data: {"type":"response.function_call_arguments.delta","output_index":1,"item_id":"fc_1","delta":"{}"}
+
+    event: response.output_item.added
+    data: {"type":"response.output_item.added","output_index":2,"item":{"id":"ct_1","type":"custom_tool_call","call_id":"custom_1","name":"shell","input":""}}
+
+    event: response.custom_tool_call_input.delta
+    data: {"type":"response.custom_tool_call_input.delta","output_index":2,"item_id":"ct_1","delta":"echo hi"}
+
+    event: response.custom_tool_call_input.done
+    data: {"type":"response.custom_tool_call_input.done","output_index":2,"item_id":"ct_1","input":"echo hi"}
+
+    event: response.output_item.done
+    data: {"type":"response.output_item.done","output_index":2,"item":{"id":"ct_1","type":"custom_tool_call","call_id":"custom_1","name":"shell","input":"echo hi","status":"completed"}}
+
+    event: response.output_item.added
+    data: {"type":"response.output_item.added","output_index":3,"item":{"id":"patch_1","type":"apply_patch_call","status":"in_progress"}}
+
+    event: response.output_item.done
+    data: {"type":"response.output_item.done","output_index":3,"item":{"id":"patch_1","type":"apply_patch_call","status":"completed","operation":{"type":"create_file","path":"a.txt"}}}
+
+    event: response.reasoning_summary_text.delta
+    data: {"type":"response.reasoning_summary_text.delta","item_id":"rs_1","delta":"thinking"}
+
+    event: response.output_text.delta
+    data: {"type":"response.output_text.delta","item_id":"msg_1","delta":"answer"}
+
+    event: response.completed
+    data: {"type":"response.completed","response":{"id":"resp_1","status":"completed","output":[],"usage":{"total_tokens":4}}}
+    """
+
+    events = Streaming.typed_events(body)
+
+    custom_payloads =
+      Enum.flat_map(events, fn
+        %Envelope{event: %Events.Custom{payload: payload}} -> [payload]
+        _event -> []
+      end)
+
+    assert Enum.map(custom_payloads, &get_in(&1, ["data", "type"])) == [
+             "response.output_item.added",
+             "response.web_search_call.in_progress",
+             "response.web_search_call.searching",
+             "response.web_search_call.failed",
+             "response.output_item.done",
+             "response.output_item.added",
+             "response.custom_tool_call_input.delta",
+             "response.custom_tool_call_input.done",
+             "response.output_item.done",
+             "response.output_item.added",
+             "response.output_item.done"
+           ]
+
+    assert get_in(Enum.at(custom_payloads, 3), ["data", "error", "code"]) == "search_failed"
+
+    assert Enum.map(
+             Enum.filter(custom_payloads, &(get_in(&1, ["data", "type"]) == "response.output_item.added")),
+             &get_in(&1, ["data", "item", "type"])
+           ) == ["web_search_call", "custom_tool_call", "apply_patch_call"]
+
+    assert ["answer"] ==
+             Enum.flat_map(events, fn
+               %Envelope{event: %Events.Token{text: text}} -> [text]
+               _event -> []
+             end)
+
+    assert 2 == Enum.count(events, &match?(%Envelope{event: %Events.ToolCallChunk{}}, &1))
+
+    assert 1 ==
+             Enum.count(events, fn
+               %Envelope{
+                 event: %Events.MessageChunk{
+                   chunk: %Messages.AIChunk{content: [%ContentBlock.Reasoning{}]}
+                 }
+               } ->
+                 true
+
+               _event ->
+                 false
+             end)
+
+    assert Enum.any?(events, &match?(%Envelope{event: %Events.Done{}}, &1))
+  end
+
   test "typed events tolerate in-memory prompt cache retention literal drift" do
     # Upstream reference:
     body = """

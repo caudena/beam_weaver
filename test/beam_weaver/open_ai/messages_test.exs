@@ -393,6 +393,70 @@ defmodule BeamWeaver.OpenAI.MessagesTest do
     refute input |> BeamWeaver.JSON.encode!() |> String.contains?("private summary text")
   end
 
+  test "serializes typed and map reasoning blocks as replayable plain-text items" do
+    message =
+      Message.assistant([
+        ContentBlock.reasoning("typed reasoning"),
+        %{type: :reasoning, id: "rs_atom", reasoning: "atom-map reasoning", summary: []},
+        %{"type" => "reasoning", "id" => "rs_string", "reasoning" => "string-map reasoning"}
+      ])
+
+    assert {:ok, input} = Messages.to_responses_input([message], store: false)
+
+    assert input == [
+             %{
+               "type" => "reasoning",
+               "content" => [%{"type" => "reasoning_text", "text" => "typed reasoning"}]
+             },
+             %{
+               "type" => "reasoning",
+               "summary" => [],
+               "content" => [%{"type" => "reasoning_text", "text" => "atom-map reasoning"}]
+             },
+             %{
+               "type" => "reasoning",
+               "content" => [%{"type" => "reasoning_text", "text" => "string-map reasoning"}]
+             }
+           ]
+  end
+
+  test "round-trips Responses plain reasoning content without internal provider fields" do
+    response = %{
+      "id" => "resp_reasoning_replay",
+      "status" => "completed",
+      "output" => [
+        %{
+          "type" => "reasoning",
+          "id" => "rs_1",
+          "status" => "completed",
+          "summary" => [],
+          "content" => [
+            %{"type" => "reasoning_text", "text" => "first "},
+            %{"type" => "reasoning_text", "text" => "second"}
+          ]
+        }
+      ]
+    }
+
+    assert {:ok, message} = Messages.response_to_message(response)
+    assert [%{type: :reasoning, reasoning: "first second"}] = message.content
+    assert {:ok, input} = Messages.to_responses_input([message], store: false)
+
+    assert input == [
+             %{
+               "type" => "reasoning",
+               "status" => "completed",
+               "summary" => [],
+               "content" => [
+                 %{"type" => "reasoning_text", "text" => "first "},
+                 %{"type" => "reasoning_text", "text" => "second"}
+               ]
+             }
+           ]
+
+    refute input |> BeamWeaver.JSON.encode!() |> String.contains?("raw_provider_block")
+  end
+
   test "store false sanitizes replay-only Responses item ids and non-replayable blocks" do
     message =
       Message.assistant([
@@ -769,6 +833,7 @@ defmodule BeamWeaver.OpenAI.MessagesTest do
         %{
           "type" => "reasoning",
           "id" => "rs_1",
+          "content" => [],
           "summary" => [
             %{"type" => "summary_text", "text" => "looked up docs"}
           ]

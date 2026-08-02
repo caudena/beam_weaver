@@ -8,6 +8,7 @@ defmodule BeamWeaver.Tools.Shell.HostExecutor do
   alias BeamWeaver.Core.Error
   alias BeamWeaver.Core.ID
   alias BeamWeaver.ShellPolicy
+  alias BeamWeaver.Tools.Shell.CommandRunner
   alias BeamWeaver.Tracing.Redactor
 
   @impl true
@@ -20,23 +21,25 @@ defmodule BeamWeaver.Tools.Shell.HostExecutor do
   end
 
   defp run_allowed(command, policy, opts) do
-    {shell_command, after_run, scratch} = prepare_command(command, policy)
+    {stderr, after_run, scratch} = prepare_stderr(policy)
     metadata = command_metadata(:host, command, policy.timeout, opts)
 
-    task =
-      Task.async(fn ->
-        {output, status} = System.cmd(shell(), ["-c", shell_command], system_opts(policy))
-        {output, status, after_run.()}
-      end)
+    case CommandRunner.run(command,
+           shell: shell(),
+           cd: policy.cwd,
+           env: env(policy),
+           stderr: stderr,
+           timeout: policy.timeout
+         ) do
+      {:ok, output, status} ->
+        stderr = after_run.()
 
-    case Task.yield(task, yield_timeout(policy.timeout)) || Task.shutdown(task, :brutal_kill) do
-      {:ok, {output, status, stderr}} ->
         {:ok,
          command
          |> base_result(status, output, policy, Map.put(metadata, :exit_code, status))
          |> maybe_put_stderr(stderr, policy)}
 
-      nil ->
+      :timeout ->
         cleanup_scratch(scratch)
 
         {:error,
@@ -45,7 +48,7 @@ defmodule BeamWeaver.Tools.Shell.HostExecutor do
            metadata: Map.merge(metadata, %{kill_attempted: true, error: "timeout"})
          })}
 
-      {:exit, reason} ->
+      {:error, reason} ->
         cleanup_scratch(scratch)
 
         {:error,
@@ -60,18 +63,7 @@ defmodule BeamWeaver.Tools.Shell.HostExecutor do
   defp cleanup_scratch(nil), do: :ok
   defp cleanup_scratch(path), do: File.rm_rf(path)
 
-  defp yield_timeout(nil), do: :infinity
-  defp yield_timeout(:infinity), do: :infinity
-  defp yield_timeout(timeout), do: timeout
-
-  defp system_opts(policy) do
-    []
-    |> maybe_put_cd(policy.cwd)
-    |> Keyword.put(:stderr_to_stdout, policy.stderr == :merge)
-    |> Keyword.put(:env, env(policy))
-  end
-
-  defp prepare_command(command, %ShellPolicy{stderr: :separate}) do
+  defp prepare_stderr(%ShellPolicy{stderr: :separate}) do
     scratch =
       Path.join(
         System.tmp_dir!(),
@@ -80,9 +72,8 @@ defmodule BeamWeaver.Tools.Shell.HostExecutor do
 
     File.mkdir_p!(scratch)
     path = Path.join(scratch, "stderr")
-    shell_command = "(" <> command <> ") 2> " <> shell_quote(path)
 
-    {shell_command,
+    {{:file, path},
      fn ->
        stderr =
          case File.read(path) do
@@ -95,11 +86,9 @@ defmodule BeamWeaver.Tools.Shell.HostExecutor do
      end, scratch}
   end
 
-  defp prepare_command(command, %ShellPolicy{stderr: :discard}) do
-    {"(" <> command <> ") 2> /dev/null", fn -> nil end, nil}
-  end
+  defp prepare_stderr(%ShellPolicy{stderr: :discard}), do: {:discard, fn -> nil end, nil}
 
-  defp prepare_command(command, _policy), do: {command, fn -> nil end, nil}
+  defp prepare_stderr(_policy), do: {:merge, fn -> nil end, nil}
 
   defp base_result(command, status, output, policy, metadata) do
     %{
@@ -114,9 +103,6 @@ defmodule BeamWeaver.Tools.Shell.HostExecutor do
 
   defp maybe_put_stderr(result, stderr, policy),
     do: Map.put(result, :stderr, format_output(stderr, policy))
-
-  defp maybe_put_cd(opts, nil), do: opts
-  defp maybe_put_cd(opts, cwd), do: Keyword.put(opts, :cd, cwd)
 
   defp env(policy) do
     policy.env
@@ -134,7 +120,7 @@ defmodule BeamWeaver.Tools.Shell.HostExecutor do
   end
 
   defp redact(output, redactions) do
-    Enum.reduce(redactions, output || "", fn {regex, replacement}, acc ->
+    Enum.reduce(redactions, output, fn {regex, replacement}, acc ->
       Regex.replace(regex, acc, replacement)
     end)
   end
@@ -151,10 +137,6 @@ defmodule BeamWeaver.Tools.Shell.HostExecutor do
 
   defp truncate(output, max_bytes, indicator) when is_binary(indicator) do
     binary_part(output, 0, max_bytes) <> indicator
-  end
-
-  defp shell_quote(value) do
-    "'" <> String.replace(value, "'", "'\"'\"'") <> "'"
   end
 
   defp shell, do: System.find_executable("sh") || "/bin/sh"

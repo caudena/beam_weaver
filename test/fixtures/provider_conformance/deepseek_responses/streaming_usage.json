@@ -1,0 +1,150 @@
+{
+  "expected": {
+    "message": {
+      "id": "fixture-id-1",
+      "metadata": {
+        "id": "fixture-id-1",
+        "model": "deepseek-v4-flash",
+        "model_name": "deepseek-v4-flash",
+        "model_provider": "deepseek",
+        "provider": "deepseek",
+        "service_tier": "default",
+        "status": "completed",
+        "usage": {
+          "input_tokens": 91,
+          "input_tokens_details": {
+            "cached_tokens": 0
+          },
+          "output_tokens": 35,
+          "output_tokens_details": {
+            "reasoning_tokens": 30
+          },
+          "total_tokens": 126
+        }
+      },
+      "role": "assistant",
+      "status": "completed",
+      "text": "streamed pong",
+      "tool_calls": [],
+      "usage_metadata": {
+        "input_cost": 1.2740000000000002e-5,
+        "input_cost_details": {
+          "cache_read": 0.0,
+          "uncached": 1.2740000000000002e-5
+        },
+        "input_token_details": {
+          "cache_miss": 91,
+          "cache_read": 0
+        },
+        "input_tokens": 91,
+        "output_cost": 9.800000000000001e-6,
+        "output_cost_details": {
+          "text": 9.800000000000001e-6
+        },
+        "output_token_details": {
+          "reasoning": 30
+        },
+        "output_tokens": 35,
+        "total_cost": 2.2540000000000004e-5,
+        "total_tokens": 126
+      }
+    }
+  },
+  "provider": "deepseek_responses",
+  "request": {
+    "headers": [
+      [
+        "authorization",
+        "**REDACTED**"
+      ],
+      [
+        "content-type",
+        "application/json"
+      ],
+      [
+        "user-agent",
+        "beam_weaver-deepseek/0.1"
+      ]
+    ],
+    "json": {
+      "input": [
+        {
+          "content": "Reply with exactly: streamed pong",
+          "role": "user",
+          "type": "message"
+        }
+      ],
+      "model": "deepseek-v4-flash",
+      "stream": true
+    },
+    "method": "POST",
+    "url": "https://api.deepseek.com/responses"
+  },
+  "response": {
+    "body": "event: response.created\ndata: {\"response\":{\"safety_identifier\":null,\"store\":false,\"error\":null,\"created_at\":\"**REDACTED**\",\"presence_penalty\":0.0,\"status\":\"in_progress\",\"max_tool_calls\":null,\"instructions\":null,\"prompt_cache_retention\":null,\"completed_at\":null,\"temperature\":1.0,\"text\":{\"format\":{\"type\":\"text\"},\"verbosity\":null},\"parallel_tool_calls\":true,\"tool_choice\":\"auto\",\"frequency_penalty\":0.0,\"top_logprobs\":0,\"reasoning\":{\"effort\":null,\"summary\":null},\"usage\":null,\"incomplete_details\":null,\"model\":\"deepseek-v4-flash\",\"truncation\":\"disabled\",\"metadata\":{},\"service_tier\":\"default\",\"id\":\"fixture-id-1\",\"content_filters\":null,\"top_p\":1.0,\"user\":null,\"prompt_cache_key\":null,\"moderation\":null,\"object\":\"response\",\"background\":false,\"previous_response_id\":null,\"max_output_tokens\":null,\"output\":[],\"tools\":[]},\"sequence_number\":0,\"type\":\"response.created\"}\n\nevent: response.in_progress\ndata: {\"response\":{\"safety_identifier\":null,\"store\":false,\"error\":null,\"created_at\":\"**REDACTED**\",\"presence_penalty\":0.0,\"status\":\"in_progress\",\"max_tool_calls\":null,\"instructions\":null,\"prompt_cache_retention\":null,\"completed_at\":null,\"temperature\":1.0,\"text\":{\"format\":{\"type\":\"text\"},\"verbosity\":null},\"parallel_tool_calls\":true,\"tool_choice\":\"auto\",\"frequency_penalty\":0.0,\"top_logprobs\":0,\"reasoning\":{\"effort\":null,\"summary\":null},\"usage\":null,\"incomplete_details\":null,\"model\":\"deepseek-v4-flash\",\"truncation\":\"disabled\",\"metadata\":{},\"service_tier\":\"default\",\"id\":\"fixture-id-1\",\"content_filters\":null,\"top_p\":1.0,\"user\":null,\"prompt_cache_key\":null,\"moderation\":null,\"object\":\"response\",\"background\":false,\"previous_response_id\":null,\"max_output_tokens\":null,\"output\":[],\"tools\":[]},\"sequence_number\":1,\"type\":\"response.in_progress\"}\n\nevent: response.output_item.added\ndata: {\"item\":{\"content\":[],\"id\":\"fixture-id-2\",\"status\":\"in_progress\",\"summary\":[],\"type\":\"reasoning\"},\"output_index\":0,\"sequence_number\":2,\"type\":\"response.output_item.added\"}\n\nevent: response.content_part.added\ndata: {\"content_index\":0,\"item_id\":\"fixture-id-2\",\"output_index\":0,\"part\":{\"text\":\"\",\"type\":\"reasoning_text\"},\"sequence_number\":3,\"type\":\"response.content_part.added\"}\n\nevent: response.reasoning_text.delta\ndata: {\"content_index\":0,\"delta\":\"We\",\"item_id\":\"fixture-id-2\",\"output_index\":0,\"sequence_number\":4,\"type\":\"response.reasoning_text.delta\"}\n\nevent: response.reasoning_text.delta\ndata: {\"content_index\":0,\"delta\":\" need\",\"item_id\":\"fixture-id-2\",\"output_index\":0,\"sequence_number\":5,\"type\":\"response.reasoning_text.delta\"}\n\nevent: response.reasoning_text.delta\ndata: {\"content_index\":0,\"delta\":\" to\",\"item_id\":\"fixture-id-2\",\"output_index\":0,\"sequence_number\":6,\"type\":\"response.reasoning_text.delta\"}\n\nevent: response.reasoning_text.delta\ndata: {\"content_index\":0,\"delta\":\" reply\",\"item_id\":\"fixture-id-2\",\"output_index\":0,\"sequence_number\":7,\"type\":\"response.reasoning_text.delta\"}\n\nevent: response.reasoning_text.delta\ndata: {\"content_index\":0,\"delta\":\" exactly\",\"item_id\":\"fixture-id-2\",\"output_index\":0,\"sequence_number\":8,\"type\":\"response.reasoning_text.delta\"}\n\nevent: response.reasoning_text.delta\ndata: {\"content_index\":0,\"delta\":\" with\",\"item_id\":\"fixture-id-2\",\"output_index\":0,\"sequence_number\":9,\"type\":\"response.reasoning_text.delta\"}\n\nevent: response.reasoning_text.delta\ndata: {\"content_index\":0,\"delta\":\" \\\"\",\"item_id\":\"fixture-id-2\",\"output_index\":0,\"sequence_number\":10,\"type\":\"response.reasoning_text.delta\"}\n\nevent: response.reasoning_text.delta\ndata: {\"content_index\":0,\"delta\":\"stream\",\"item_id\":\"fixture-id-2\",\"output_index\":0,\"sequence_number\":11,\"type\":\"response.reasoning_text.delta\"}\n\nevent: response.reasoning_text.delta\ndata: {\"content_index\":0,\"delta\":\"ed\",\"item_id\":\"fixture-id-2\",\"output_index\":0,\"sequence_number\":12,\"type\":\"response.reasoning_text.delta\"}\n\nevent: response.reasoning_text.delta\ndata: {\"content_index\":0,\"delta\":\" p\",\"item_id\":\"fixture-id-2\",\"output_index\":0,\"sequence_number\":13,\"type\":\"response.reasoning_text.delta\"}\n\nevent: response.reasoning_text.delta\ndata: {\"content_index\":0,\"delta\":\"ong\",\"item_id\":\"fixture-id-2\",\"output_index\":0,\"sequence_number\":14,\"type\":\"response.reasoning_text.delta\"}\n\nevent: response.reasoning_text.delta\ndata: {\"content_index\":0,\"delta\":\"\\\".\",\"item_id\":\"fixture-id-2\",\"output_index\":0,\"sequence_number\":15,\"type\":\"response.reasoning_text.delta\"}\n\nevent: response.reasoning_text.delta\ndata: {\"content_index\":0,\"delta\":\" The\",\"item_id\":\"fixture-id-2\",\"output_index\":0,\"sequence_number\":16,\"type\":\"response.reasoning_text.delta\"}\n\nevent: response.reasoning_text.delta\ndata: {\"content_index\":0,\"delta\":\" user\",\"item_id\":\"fixture-id-2\",\"output_index\":0,\"sequence_number\":17,\"type\":\"response.reasoning_text.delta\"}\n\nevent: response.reasoning_text.delta\ndata: {\"content_index\":0,\"delta\":\" asked\",\"item_id\":\"fixture-id-2\",\"output_index\":0,\"sequence_number\":18,\"type\":\"response.reasoning_text.delta\"}\n\nevent: response.reasoning_text.delta\ndata: {\"content_index\":0,\"delta\":\" \\\"\",\"item_id\":\"fixture-id-2\",\"output_index\":0,\"sequence_number\":19,\"type\":\"response.reasoning_text.delta\"}\n\nevent: response.reasoning_text.delta\ndata: {\"content_index\":0,\"delta\":\"Reply\",\"item_id\":\"fixture-id-2\",\"output_index\":0,\"sequence_number\":20,\"type\":\"response.reasoning_text.delta\"}\n\nevent: response.reasoning_text.delta\ndata: {\"content_index\":0,\"delta\":\" with\",\"item_id\":\"fixture-id-2\",\"output_index\":0,\"sequence_number\":21,\"type\":\"response.reasoning_text.delta\"}\n\nevent: response.reasoning_text.delta\ndata: {\"content_index\":0,\"delta\":\" exactly\",\"item_id\":\"fixture-id-2\",\"output_index\":0,\"sequence_number\":22,\"type\":\"response.reasoning_text.delta\"}\n\nevent: response.reasoning_text.delta\ndata: {\"content_index\":0,\"delta\":\":\",\"item_id\":\"fixture-id-2\",\"output_index\":0,\"sequence_number\":23,\"type\":\"response.reasoning_text.delta\"}\n\nevent: response.reasoning_text.delta\ndata: {\"content_index\":0,\"delta\":\" stream\",\"item_id\":\"fixture-id-2\",\"output_index\":0,\"sequence_number\":24,\"type\":\"response.reasoning_text.delta\"}\n\nevent: response.reasoning_text.delta\ndata: {\"content_index\":0,\"delta\":\"ed\",\"item_id\":\"fixture-id-2\",\"output_index\":0,\"sequence_number\":25,\"type\":\"response.reasoning_text.delta\"}\n\nevent: response.reasoning_text.delta\ndata: {\"content_index\":0,\"delta\":\" p\",\"item_id\":\"fixture-id-2\",\"output_index\":0,\"sequence_number\":26,\"type\":\"response.reasoning_text.delta\"}\n\nevent: response.reasoning_text.delta\ndata: {\"content_index\":0,\"delta\":\"ong\",\"item_id\":\"fixture-id-2\",\"output_index\":0,\"sequence_number\":27,\"type\":\"response.reasoning_text.delta\"}\n\nevent: response.reasoning_text.delta\ndata: {\"content_index\":0,\"delta\":\"\\\".\",\"item_id\":\"fixture-id-2\",\"output_index\":0,\"sequence_number\":28,\"type\":\"response.reasoning_text.delta\"}\n\nevent: response.reasoning_text.delta\ndata: {\"content_index\":0,\"delta\":\" So\",\"item_id\":\"fixture-id-2\",\"output_index\":0,\"sequence_number\":29,\"type\":\"response.reasoning_text.delta\"}\n\nevent: response.reasoning_text.delta\ndata: {\"content_index\":0,\"delta\":\" output\",\"item_id\":\"fixture-id-2\",\"output_index\":0,\"sequence_number\":30,\"type\":\"response.reasoning_text.delta\"}\n\nevent: response.reasoning_text.delta\ndata: {\"content_index\":0,\"delta\":\" just\",\"item_id\":\"fixture-id-2\",\"output_index\":0,\"sequence_number\":31,\"type\":\"response.reasoning_text.delta\"}\n\nevent: response.reasoning_text.delta\ndata: {\"content_index\":0,\"delta\":\" that\",\"item_id\":\"fixture-id-2\",\"output_index\":0,\"sequence_number\":32,\"type\":\"response.reasoning_text.delta\"}\n\nevent: response.reasoning_text.delta\ndata: {\"content_index\":0,\"delta\":\".\",\"item_id\":\"fixture-id-2\",\"output_index\":0,\"sequence_number\":33,\"type\":\"response.reasoning_text.delta\"}\n\nevent: response.reasoning_text.done\ndata: {\"content_index\":0,\"item_id\":\"fixture-id-2\",\"output_index\":0,\"sequence_number\":34,\"text\":\"We need to reply exactly with \\\"streamed pong\\\". The user asked \\\"Reply with exactly: streamed pong\\\". So output just that.\",\"type\":\"response.reasoning_text.done\"}\n\nevent: response.content_part.done\ndata: {\"content_index\":0,\"item_id\":\"fixture-id-2\",\"output_index\":0,\"part\":{\"text\":\"We need to reply exactly with \\\"streamed pong\\\". The user asked \\\"Reply with exactly: streamed pong\\\". So output just that.\",\"type\":\"reasoning_text\"},\"sequence_number\":35,\"type\":\"response.content_part.done\"}\n\nevent: response.output_item.done\ndata: {\"item\":{\"content\":[{\"text\":\"We need to reply exactly with \\\"streamed pong\\\". The user asked \\\"Reply with exactly: streamed pong\\\". So output just that.\",\"type\":\"reasoning_text\"}],\"id\":\"fixture-id-2\",\"status\":\"completed\",\"summary\":[],\"type\":\"reasoning\"},\"output_index\":0,\"sequence_number\":36,\"type\":\"response.output_item.done\"}\n\nevent: response.output_item.added\ndata: {\"item\":{\"content\":[],\"id\":\"fixture-id-3\",\"phase\":\"final_answer\",\"role\":\"assistant\",\"status\":\"in_progress\",\"type\":\"message\"},\"output_index\":1,\"sequence_number\":37,\"type\":\"response.output_item.added\"}\n\nevent: response.content_part.added\ndata: {\"content_index\":0,\"item_id\":\"fixture-id-3\",\"output_index\":1,\"part\":{\"annotations\":[],\"logprobs\":[],\"text\":\"\",\"type\":\"output_text\"},\"sequence_number\":38,\"type\":\"response.content_part.added\"}\n\nevent: response.output_text.delta\ndata: {\"content_index\":0,\"delta\":\"stream\",\"item_id\":\"fixture-id-3\",\"logprobs\":[],\"output_index\":1,\"sequence_number\":39,\"type\":\"response.output_text.delta\"}\n\nevent: response.output_text.delta\ndata: {\"content_index\":0,\"delta\":\"ed\",\"item_id\":\"fixture-id-3\",\"logprobs\":[],\"output_index\":1,\"sequence_number\":40,\"type\":\"response.output_text.delta\"}\n\nevent: response.output_text.delta\ndata: {\"content_index\":0,\"delta\":\" p\",\"item_id\":\"fixture-id-3\",\"logprobs\":[],\"output_index\":1,\"sequence_number\":41,\"type\":\"response.output_text.delta\"}\n\nevent: response.output_text.delta\ndata: {\"content_index\":0,\"delta\":\"ong\",\"item_id\":\"fixture-id-3\",\"logprobs\":[],\"output_index\":1,\"sequence_number\":42,\"type\":\"response.output_text.delta\"}\n\nevent: response.output_text.done\ndata: {\"content_index\":0,\"item_id\":\"fixture-id-3\",\"logprobs\":[],\"output_index\":1,\"sequence_number\":43,\"text\":\"streamed pong\",\"type\":\"response.output_text.done\"}\n\nevent: response.content_part.done\ndata: {\"content_index\":0,\"item_id\":\"fixture-id-3\",\"output_index\":1,\"part\":{\"annotations\":[],\"logprobs\":[],\"text\":\"streamed pong\",\"type\":\"output_text\"},\"sequence_number\":44,\"type\":\"response.content_part.done\"}\n\nevent: response.output_item.done\ndata: {\"item\":{\"content\":[{\"annotations\":[],\"logprobs\":[],\"text\":\"streamed pong\",\"type\":\"output_text\"}],\"id\":\"fixture-id-3\",\"phase\":\"final_answer\",\"role\":\"assistant\",\"status\":\"completed\",\"type\":\"message\"},\"output_index\":1,\"sequence_number\":45,\"type\":\"response.output_item.done\"}\n\nevent: response.completed\ndata: {\"response\":{\"safety_identifier\":null,\"store\":false,\"error\":null,\"created_at\":\"**REDACTED**\",\"presence_penalty\":0.0,\"status\":\"completed\",\"max_tool_calls\":null,\"instructions\":null,\"prompt_cache_retention\":null,\"completed_at\":\"**REDACTED**\",\"temperature\":1.0,\"text\":{\"format\":{\"type\":\"text\"},\"verbosity\":null},\"parallel_tool_calls\":true,\"tool_choice\":\"auto\",\"frequency_penalty\":0.0,\"top_logprobs\":0,\"reasoning\":{\"effort\":null,\"summary\":null},\"usage\":{\"input_tokens\":91,\"input_tokens_details\":{\"cached_tokens\":0},\"output_tokens\":35,\"output_tokens_details\":{\"reasoning_tokens\":30},\"total_tokens\":126},\"incomplete_details\":null,\"model\":\"deepseek-v4-flash\",\"truncation\":\"disabled\",\"metadata\":{},\"service_tier\":\"default\",\"id\":\"fixture-id-1\",\"content_filters\":null,\"top_p\":1.0,\"user\":null,\"prompt_cache_key\":null,\"moderation\":null,\"object\":\"response\",\"background\":false,\"previous_response_id\":null,\"max_output_tokens\":null,\"output\":[{\"content\":[{\"text\":\"We need to reply exactly with \\\"streamed pong\\\". The user asked \\\"Reply with exactly: streamed pong\\\". So output just that.\",\"type\":\"reasoning_text\"}],\"id\":\"fixture-id-2\",\"status\":\"completed\",\"summary\":[],\"type\":\"reasoning\"},{\"content\":[{\"annotations\":[],\"logprobs\":[],\"text\":\"streamed pong\",\"type\":\"output_text\"}],\"id\":\"fixture-id-3\",\"phase\":\"final_answer\",\"role\":\"assistant\",\"status\":\"completed\",\"type\":\"message\"}],\"tools\":[]},\"sequence_number\":46,\"type\":\"response.completed\"}\n\n",
+    "headers": [
+      [
+        "access-control-allow-credentials",
+        "**REDACTED**"
+      ],
+      [
+        "cache-control",
+        "no-cache"
+      ],
+      [
+        "connection",
+        "keep-alive"
+      ],
+      [
+        "content-type",
+        "text/event-stream; charset=utf-8"
+      ],
+      [
+        "date",
+        "**REDACTED**"
+      ],
+      [
+        "server",
+        "**REDACTED**"
+      ],
+      [
+        "strict-transport-security",
+        "max-age=31536000; includeSubDomains; preload"
+      ],
+      [
+        "transfer-encoding",
+        "chunked"
+      ],
+      [
+        "vary",
+        "origin, access-control-request-method, access-control-request-headers"
+      ],
+      [
+        "via",
+        "**REDACTED**"
+      ],
+      [
+        "x-amz-cf-id",
+        "**REDACTED**"
+      ],
+      [
+        "x-amz-cf-pop",
+        "**REDACTED**"
+      ],
+      [
+        "x-cache",
+        "**REDACTED**"
+      ],
+      [
+        "x-content-type-options",
+        "nosniff"
+      ],
+      [
+        "x-ds-trace-id",
+        "**REDACTED**"
+      ]
+    ],
+    "status": 200
+  },
+  "scenario": "streaming_usage"
+}

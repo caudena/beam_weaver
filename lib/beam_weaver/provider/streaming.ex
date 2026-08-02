@@ -30,12 +30,14 @@ defmodule BeamWeaver.Provider.Streaming do
           end)
 
         case result do
-          {:ok, %Response{status: status}, buffer} when status in 200..299 ->
+          {:ok, %Response{status: status} = response, buffer} when status in 200..299 ->
             {events, _buffer} = SSE.process_chunk(buffer, "\n\n")
             emit_items(parser.(events), sink)
+            notify_response(response, opts)
             :ok
 
           {:ok, %Response{} = response, _buffer} ->
+            notify_response(response, opts)
             decode_stream_error({:ok, response}, error_decoder)
 
           {:error, error, _buffer} ->
@@ -76,6 +78,13 @@ defmodule BeamWeaver.Provider.Streaming do
   defp emit_items(items, sink) when is_list(items), do: Enum.each(items, sink)
   defp emit_items(nil, _sink), do: :ok
   defp emit_items(item, sink), do: sink.(item)
+
+  defp notify_response(%Response{} = response, opts) do
+    case Keyword.get(opts, :on_response) do
+      callback when is_function(callback, 1) -> callback.(response)
+      _callback -> :ok
+    end
+  end
 
   defp decode_stream_error(result, error_decoder) do
     case error_decoder.(result) do

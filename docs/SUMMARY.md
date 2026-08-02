@@ -58,6 +58,7 @@
 * [OpenAI](partners/openai.md)
 * [Anthropic](partners/anthropic.md)
 * [Google](partners/google.md)
+* [DeepSeek](partners/deepseek.md)
 * [Moonshot/Kimi](partners/moonshot.md)
 * [xAI](partners/xai.md)
 * [Z.ai](partners/zai.md)

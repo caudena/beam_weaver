@@ -378,6 +378,12 @@ defmodule BeamWeaver.Models.InitializerTest do
     assert sol.extra.cached_input_price_per_mtok == 0.50
     assert sol.extra.cache_write_30m_price_per_mtok == 6.25
     assert sol.extra.output_price_per_mtok == 30.00
+    assert sol.extra.pricing_source_url == "https://developers.openai.com/api/docs/pricing"
+    assert sol.extra.pricing_modes == [:standard, :batch, :flex, :fast, :priority]
+    assert sol.extra.batch_price_multiplier == 0.5
+    assert sol.extra.flex_price_multiplier == 0.5
+    assert sol.extra.fast_mode_price_multiplier == 2.0
+    assert sol.extra.fast_mode_service_tiers == [:fast, :priority]
     assert sol.extra.regional_processing_multiplier == 1.1
     assert sol.extra.default_reasoning_effort == :medium
     assert sol.extra.reasoning_efforts == [:none, :low, :medium, :high, :xhigh, :max]
@@ -386,6 +392,20 @@ defmodule BeamWeaver.Models.InitializerTest do
     assert {:ok, gpt56_alias} = ProfileRegistry.fetch(:openai, "gpt-5.6")
     assert gpt56_alias.id == "gpt-5.6"
     assert gpt56_alias.extra.canonical_model == "gpt-5.6-sol"
+
+    assert {:ok, terra} = ProfileRegistry.fetch(:openai, "gpt-5.6-terra")
+    assert terra.last_updated == "2026-07-30"
+    assert terra.extra.input_price_per_mtok == 2.00
+    assert terra.extra.cached_input_price_per_mtok == 0.20
+    assert terra.extra.cache_write_30m_price_per_mtok == 2.50
+    assert terra.extra.output_price_per_mtok == 12.00
+
+    assert {:ok, luna} = ProfileRegistry.fetch(:openai, "gpt-5.6-luna")
+    assert luna.last_updated == "2026-07-30"
+    assert luna.extra.input_price_per_mtok == 0.20
+    assert luna.extra.cached_input_price_per_mtok == 0.02
+    assert luna.extra.cache_write_30m_price_per_mtok == 0.25
+    assert luna.extra.output_price_per_mtok == 1.20
 
     assert {:ok, unknown} = ProfileRegistry.fetch(:openai, "future-non-family-model")
     assert unknown.extra.unknown == true
@@ -405,7 +425,16 @@ defmodule BeamWeaver.Models.InitializerTest do
   end
 
   test "profile registry exposes deterministic checked-in profile introspection" do
-    assert ProfileRegistry.providers() == [:anthropic, :fake, :google, :moonshot, :openai, :xai, :zai]
+    assert ProfileRegistry.providers() == [
+             :anthropic,
+             :deepseek,
+             :fake,
+             :google,
+             :moonshot,
+             :openai,
+             :xai,
+             :zai
+           ]
 
     all = ProfileRegistry.all()
     openai = ProfileRegistry.profiles(:openai)
@@ -427,7 +456,7 @@ defmodule BeamWeaver.Models.InitializerTest do
 
     assert Enum.any?(
              openai,
-             &(&1.id == "gpt-5.6-luna" and &1.extra.input_price_per_mtok == 1.00)
+             &(&1.id == "gpt-5.6-luna" and &1.extra.input_price_per_mtok == 0.20)
            )
 
     assert Enum.any?(openai, &(&1.id == "gpt-5.5" and &1.tool_calling))

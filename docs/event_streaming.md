@@ -27,12 +27,15 @@ also expose provider-specific `stream_events/3` lifecycle streams; use those
 when you need the raw provider semantic lifecycle rather than the normalized
 BeamWeaver event contract.
 
-Standalone OpenAI, Anthropic, Google, xAI, and Z.ai model streams are lazy live
+Standalone OpenAI, Anthropic, Google, DeepSeek, xAI, and Z.ai model streams are lazy live
 enumerables when using the live transport. Provider chunks are parsed
 incrementally as server-sent events arrive. In tests, fake or replay transports
 can emit deterministic typed stream events from fixtures. If a lazy provider
 stream fails before any model output is emitted, consumers see an
 `%BeamWeaver.Stream.Events.Error{}` item when they enumerate the stream.
+Raw provider lazy-stream helpers can also accept an `on_response` callback when
+the caller needs transport status and headers without changing the lazy return
+type.
 
 {% hint style="info" %}
 **Versionless Typed Events**
@@ -327,8 +330,8 @@ events in one pass for live UI updates, or reduce collected events into
 
 ## Reasoning Content
 
-Reasoning output is provider-dependent. OpenAI, Anthropic, Google, xAI, and
-Z.ai can surface reasoning as content blocks in `%Events.MessageChunk{}`
+Reasoning output is provider-dependent. OpenAI, Anthropic, Google, DeepSeek,
+xAI, and Z.ai can surface reasoning as content blocks in `%Events.MessageChunk{}`
 events. Treat those chunk events as the live thinking stream; final assistant
 messages and text projections should be considered answer/tool output, not the
 primary place to read incremental reasoning.

@@ -129,9 +129,13 @@ Strategy values are atoms. Public Elixir config rejects string aliases such as
 ## Provider Strategy
 
 Provider strategy uses the model provider's native structured-output API.
-OpenAI, Anthropic, Google, xAI, and Z.ai provider adapters accept structured
+OpenAI, Anthropic, Google, DeepSeek, xAI, and Z.ai provider adapters accept structured
 output request options, and agent auto-selection uses the model profile's
 `:structured_output` capability.
+
+DeepSeek Chat exposes JSON object mode, so BeamWeaver injects the schema as an
+explicit instruction and validates the returned object locally. DeepSeek Flash
+Responses exposes native JSON Schema format. Pro cannot use Responses yet.
 
 ```elixir
 response_schema MyApp.ContactInfo,

@@ -100,7 +100,7 @@ history, and `stream_events/3`. Agents use the same graph runtime underneath.
 
 | Capability | BeamWeaver surface |
 | --- | --- |
-| Standard model interface | `BeamWeaver.Core.ChatModel` plus provider adapters for OpenAI, Anthropic, Google, xAI, Z.ai, fake, and replay-backed tests. |
+| Standard model interface | `BeamWeaver.Core.ChatModel` plus provider adapters for OpenAI, Anthropic, Google, DeepSeek, xAI, Z.ai, fake, and replay-backed tests. |
 | Agent architecture | `use BeamWeaver.Agent` and `BeamWeaver.Agent.build/1` for graph-backed model/tool loops. |
 | Low-level orchestration | `BeamWeaver.Graph` for deterministic, agentic, or hybrid workflows. |
 | Durable execution | [Checkpoint-backed resumable graph execution](durable_execution.md). |
@@ -177,6 +177,7 @@ history, and `stream_events/3`. Agents use the same graph runtime underneath.
 - [OpenAI](partners/openai.md)
 - [Anthropic](partners/anthropic.md)
 - [Google](partners/google.md)
+- [DeepSeek](partners/deepseek.md)
 - [Moonshot/Kimi](partners/moonshot.md)
 - [xAI](partners/xai.md)
 - [Z.ai](partners/zai.md)

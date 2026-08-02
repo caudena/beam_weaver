@@ -1,10 +1,34 @@
 defmodule BeamWeaver.Transport.ReqFinchTest do
   use ExUnit.Case
 
+  import ExUnit.CaptureIO
+
   alias BeamWeaver.Transport.Error
   alias BeamWeaver.Transport.ReqFinch
   alias BeamWeaver.Transport.Request
   alias BeamWeaver.Transport.Response
+
+  test "uses Req 0.7 Finch option shapes" do
+    request = Request.new(method: :get, url: "https://example.test")
+
+    assert ReqFinch.req_options(request)[:finch] == [name: BeamWeaver.Transport.Finch]
+    assert ReqFinch.req_options(request, finch: CustomFinch)[:finch] == [name: CustomFinch]
+
+    assert ReqFinch.req_options(request, finch: [name: CustomFinch, pool_tag: :bulk])[:finch] ==
+             [name: CustomFinch, pool_tag: :bulk]
+
+    assert ReqFinch.req_options(request, finch: nil)[:finch] == nil
+  end
+
+  test "live requests do not emit Req deprecation warnings" do
+    url = start_http_server("HTTP/1.1 200 OK\r\ncontent-length: 2\r\nconnection: close\r\n\r\nok")
+    request = Request.new(method: :get, url: url)
+
+    assert capture_io(:stderr, fn ->
+             assert {:ok, %Response{status: 200, body: "ok"}} =
+                      ReqFinch.request(request, timeout: 1_000)
+           end) == ""
+  end
 
   test "preserves live HTTP responses for successful and non-2xx statuses" do
     cases = [

@@ -6,6 +6,7 @@ defmodule BeamWeaver.IndexingTest do
   alias BeamWeaver.Indexing
   alias BeamWeaver.Indexing.DocumentIndex, as: ReadWriteIndex
   alias BeamWeaver.Indexing.DocumentIndex.Memory, as: MemoryDocumentIndex
+  alias BeamWeaver.Indexing.Record
   alias BeamWeaver.Indexing.RecordManager
   alias BeamWeaver.Indexing.RecordManager.ETS, as: RecordETS
   alias BeamWeaver.Models.FakeEmbeddingModel
@@ -414,14 +415,11 @@ defmodule BeamWeaver.IndexingTest do
     # Upstream reference:
     records = RecordETS.new(namespace: :records)
 
-    start = RecordManager.get_time(records)
     assert :ok = RecordManager.update(records, ["a"], group_ids: ["s1"])
-    Process.sleep(1)
     assert :ok = RecordManager.update(records, ["b"], group_ids: ["s2"])
     assert [true, false, true] = RecordManager.exists(records, ["a", "missing", "b"])
 
     assert ["a"] = RecordManager.list_keys(records, group_ids: ["s1"])
-    assert ["a"] = RecordManager.list_keys(records, after: start, limit: 1)
 
     assert {:error, %{type: :invalid_record_manager_update}} =
              RecordManager.update(records, ["a"], group_ids: ["s1", "extra"])
@@ -435,6 +433,32 @@ defmodule BeamWeaver.IndexingTest do
 
     assert :ok = RecordManager.async_delete_keys(records, ["a", "c"]) |> Async.await()
     assert [false, true, false] = RecordManager.exists(records, ["a", "b", "c"])
+  end
+
+  test "record manager key listing has a deterministic id tie-break" do
+    records = RecordETS.new(namespace: :records)
+    updated_at = DateTime.utc_now()
+
+    assert :ok =
+             RecordManager.put(records, %Record{
+               id: "b",
+               source_id: nil,
+               hash: "b",
+               updated_at: updated_at
+             })
+
+    assert :ok =
+             RecordManager.put(records, %Record{
+               id: "a",
+               source_id: nil,
+               hash: "a",
+               updated_at: updated_at
+             })
+
+    assert ["a", "b"] = RecordManager.list_keys(records)
+
+    after_time = DateTime.to_unix(updated_at, :microsecond) / 1_000_000 - 1
+    assert ["a"] = RecordManager.list_keys(records, after: after_time, limit: 1)
   end
 
   test "memory document index supports standard upsert get delete retrieve and async helpers" do

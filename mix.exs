@@ -4,7 +4,7 @@ defmodule BeamWeaver.MixProject do
   def project do
     [
       app: :beam_weaver,
-      version: "0.1.14",
+      version: "0.1.15",
       description:
         "Elixir-native LangChain, LangGraph, and DeepAgents for traceable LLM apps: OTP workflows, tools, memory, human-in-the-loop, streaming, custom clients/adapters, minimal deps, and WeaveScope tracing.",
       source_url: "https://github.com/caudena/beam_weaver",
@@ -31,7 +31,7 @@ defmodule BeamWeaver.MixProject do
       {:ex_doc, "~> 0.40", only: :dev, runtime: false},
       {:ecto_sql, "~> 3.13"},
       {:postgrex, "~> 0.20"},
-      {:req, "~> 0.6.1"},
+      {:req, "~> 0.7.2"},
       {:finch, "~> 0.23.0"},
       {:fastest_tiktoken, "~> 0.1.1"},
       {:telemetry, "~> 1.2"},
@@ -92,6 +92,7 @@ defmodule BeamWeaver.MixProject do
         "docs/partners/openai.md",
         "docs/partners/anthropic.md",
         "docs/partners/google.md",
+        "docs/partners/deepseek.md",
         "docs/partners/moonshot.md",
         "docs/partners/xai.md",
         "docs/partners/zai.md",
@@ -157,6 +158,7 @@ defmodule BeamWeaver.MixProject do
           "docs/partners/openai.md",
           "docs/partners/anthropic.md",
           "docs/partners/google.md",
+          "docs/partners/deepseek.md",
           "docs/partners/moonshot.md",
           "docs/partners/xai.md",
           "docs/partners/zai.md"

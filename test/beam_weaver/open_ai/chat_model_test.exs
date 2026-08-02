@@ -617,6 +617,15 @@ defmodule BeamWeaver.OpenAI.ChatModelTest do
     assert Message.text(response) == "options accepted"
   end
 
+  test "Responses API serializes OpenAI Fast mode" do
+    model = ChatModel.new(model: "gpt-5.6-sol")
+
+    assert {:ok, body} =
+             ChatModel.request_body(model, [Message.user("fast option check")], service_tier: :fast)
+
+    assert body["service_tier"] == "fast"
+  end
+
   test "Responses request builder applies store false replay sanitization before extra body merge" do
     model = ChatModel.new(model: "gpt-5.5")
 
