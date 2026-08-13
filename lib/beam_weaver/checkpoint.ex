@@ -8,6 +8,7 @@ defmodule BeamWeaver.Checkpoint do
   """
 
   alias BeamWeaver.Checkpoint.Normalization
+  alias BeamWeaver.Checkpoint.Batch
   alias BeamWeaver.Checkpoint.Record
   alias BeamWeaver.Checkpoint.Saver
   alias BeamWeaver.Checkpoint.Telemetry
@@ -266,6 +267,38 @@ defmodule BeamWeaver.Checkpoint do
     )
   end
 
+  @doc """
+  Atomically stores a bounded list of checkpoints and their pending writes.
+
+  Atomicity belongs to the saver. No sequential fallback is attempted.
+  """
+  @spec put_many(saver(), [map()], keyword()) ::
+          {:ok, [config()]} | {:error, term()}
+  def put_many(saver, entries, opts \\ []) do
+    with :ok <- Batch.validate(entries),
+         {:ok, module} <- required_callback(saver, :put_many, 3) do
+      module.put_many(saver, entries, opts)
+    end
+  end
+
+  @doc """
+  Copies the bounded lineage ending at an exact checkpoint into another thread.
+  """
+  @spec fork_at(saver(), config(), String.t(), keyword()) ::
+          {:ok, config()} | {:error, term()}
+  def fork_at(saver, source_config, target_thread_id, opts \\ []) do
+    with true <- is_binary(target_thread_id) and target_thread_id != "",
+         {:ok, module} <- required_callback(saver, :fork_at, 4) do
+      module.fork_at(saver, source_config, target_thread_id, opts)
+    else
+      false ->
+        {:error, Error.new(:invalid_checkpoint_fork, "target thread id is required")}
+
+      {:error, _error} = error ->
+        error
+    end
+  end
+
   defp checkpoint_read(saver, callback, args, fallback) do
     module = saver.__struct__
 
@@ -273,6 +306,21 @@ defmodule BeamWeaver.Checkpoint do
       checkpoint_read(fn -> apply(module, callback, [saver | args]) end)
     else
       checkpoint_read(fallback)
+    end
+  end
+
+  defp required_callback(saver, callback, arity) do
+    module = saver.__struct__
+
+    if function_exported?(module, callback, arity) do
+      {:ok, module}
+    else
+      {:error,
+       Error.new(:checkpoint_operation_unsupported, "checkpoint saver lacks required callback", %{
+         saver: inspect(module),
+         callback: callback,
+         arity: arity
+       })}
     end
   end
 

@@ -254,8 +254,36 @@ defmodule BeamWeaver.Checkpoint.EctoTest do
     queries = drain_queries()
 
     assert length(queries) == 1
-    assert Enum.any?(queries, fn {sql, _params} -> String.contains?(sql, "ORDER BY checkpoint_id DESC") end)
+    assert Enum.any?(queries, fn {sql, _params} -> String.contains?(sql, "ORDER BY commit_order DESC") end)
     assert Enum.any?(queries, fn {sql, _params} -> String.contains?(sql, "pending_write_rows") end)
+  end
+
+  test "atomically batches, orders, and forks explicit checkpoint ids" do
+    saver = new_saver()
+    thread = "ecto-ordered-batch"
+    base = %{"configurable" => %{"thread_id" => thread}}
+
+    entries = [
+      checkpoint_entry(base, "z", nil, 1),
+      checkpoint_entry(base, "a", "z", 2)
+    ]
+
+    assert {:ok, [_root, child]} = Checkpoint.put_many(saver, entries)
+    assert {:ok, %{checkpoint: %{"id" => "a"}}} = Checkpoint.fetch_tuple(saver, base)
+
+    assert {:ok, listed} = Checkpoint.list_result(saver, base)
+    assert Enum.map(listed, & &1.checkpoint["id"]) == ["a", "z"]
+
+    assert {:ok, forked} = Checkpoint.fork_at(saver, child, "ecto-forked")
+    assert forked["configurable"]["checkpoint_id"] == "a"
+
+    invalid = %{checkpoint_entry(base, "broken", "a", 3) | writes: [:invalid]}
+
+    assert {:error, _reason} =
+             Checkpoint.put_many(saver, [checkpoint_entry(base, "next", "a", 3), invalid])
+
+    next = put_in(base, ["configurable", "checkpoint_id"], "next")
+    assert {:ok, nil} = Checkpoint.fetch_tuple(saver, next)
   end
 
   defp new_saver(opts \\ []) do
@@ -274,6 +302,25 @@ defmodule BeamWeaver.Checkpoint.EctoTest do
     |> Keyword.put(:checkpoints_table, checkpoints)
     |> Keyword.put(:writes_table, writes)
     |> Ecto.new()
+  end
+
+  defp checkpoint_entry(base, id, parent_id, value) do
+    config =
+      if parent_id,
+        do: put_in(base, ["configurable", "checkpoint_id"], parent_id),
+        else: base
+
+    %{
+      config: config,
+      checkpoint: %{
+        "id" => id,
+        "channel_values" => %{"value" => value},
+        "channel_versions" => %{"value" => value}
+      },
+      metadata: %{},
+      versions: %{"value" => value},
+      writes: [{"task", "value", value}]
+    }
   end
 
   defp drain_queries(acc \\ []) do

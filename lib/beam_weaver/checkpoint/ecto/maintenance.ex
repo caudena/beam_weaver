@@ -62,8 +62,8 @@ defmodule BeamWeaver.Checkpoint.Ecto.Maintenance do
   defp do_copy_thread(saver, source_thread_id, target_thread_id) do
     checkpoint_sql = """
     INSERT INTO #{saver.checkpoints_table}
-      (thread_id, checkpoint_ns, checkpoint_id, parent_checkpoint_id, checkpoint, metadata)
-    SELECT $2, checkpoint_ns, checkpoint_id, parent_checkpoint_id, checkpoint, metadata
+      (thread_id, checkpoint_ns, checkpoint_id, parent_checkpoint_id, checkpoint, metadata, commit_order)
+    SELECT $2, checkpoint_ns, checkpoint_id, parent_checkpoint_id, checkpoint, metadata, commit_order
     FROM #{saver.checkpoints_table}
     WHERE thread_id = $1
     ON CONFLICT DO NOTHING

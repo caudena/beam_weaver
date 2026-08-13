@@ -42,7 +42,8 @@ defmodule BeamWeaver.Checkpoint.Ecto.Rows do
          checkpoint_id,
          parent_id,
          checkpoint,
-         metadata
+         metadata,
+         commit_order
        ]) do
     checkpoint = saver.__struct__.load_json_value!(saver, checkpoint || %{})
     metadata = saver.__struct__.load_json_value!(saver, metadata || %{})
@@ -83,7 +84,8 @@ defmodule BeamWeaver.Checkpoint.Ecto.Rows do
       config: config,
       checkpoint: checkpoint,
       metadata: metadata || %{},
-      parent_config: parent_config
+      parent_config: parent_config,
+      commit_order: commit_order
     }
   end
 
@@ -96,12 +98,13 @@ defmodule BeamWeaver.Checkpoint.Ecto.Rows do
         parent_id,
         checkpoint,
         metadata,
+        commit_order,
         write_rows
       ],
       {rows, write_acc, true}
       when is_list(write_rows) ->
         {
-          [[thread_id, namespace, checkpoint_id, parent_id, checkpoint, metadata] | rows],
+          [[thread_id, namespace, checkpoint_id, parent_id, checkpoint, metadata, commit_order] | rows],
           Enum.reverse(write_rows) ++ write_acc,
           true
         }

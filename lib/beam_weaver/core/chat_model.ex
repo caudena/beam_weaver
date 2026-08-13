@@ -144,8 +144,8 @@ defmodule BeamWeaver.Core.ChatModel do
          :ok <- BeamWeaver.Provider.Capability.validate_invocation(model, opts) do
       trace_call(model, messages, opts, fn ->
         with {:ok, %Message{} = message} <- model.__struct__.invoke(model, messages, opts),
-             message <- BeamWeaver.Provider.Response.normalize_message(model, message, opts),
-             :ok <- Message.validate(message) do
+             {:ok, message} <-
+               BeamWeaver.Provider.Response.normalize_message_result(model, message, opts) do
           {:ok, message}
         else
           {:error, _error} = error ->

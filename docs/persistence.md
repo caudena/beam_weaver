@@ -376,6 +376,8 @@ LangGraph's checkpointer contract while using Elixir return shapes:
 | `put/5` | Store a checkpoint. |
 | `put_writes/5` | Store per-task pending writes for a checkpoint. |
 | `put_checkpoint_with_writes/7` | Optional transactional checkpoint-plus-writes path. |
+| `put_many/3` | Optional all-or-nothing checkpoint batch. |
+| `fork_at/4` | Optional bounded lineage copy into a new thread. |
 | `get_delta_channel_history/4` | Retrieve write history for delta channels. |
 | `delete_thread/2`, `delete_for_runs/2`, `copy_thread/3`, `prune/3` | Maintenance operations. |
 | `next_version/3` | Compute channel version values. |
@@ -394,6 +396,13 @@ instead of representing it as a missing checkpoint or empty history.
 implement that callback, the facade returns
 `{:error, %BeamWeaver.Core.Error{type: :atomic_checkpoint_write_unsupported}}`
 before writing anything.
+
+`put_many/3` never falls back to sequential writes. ETS publishes the prepared
+batch together, while the Postgres adapter uses one transaction. Both adapters
+persist a per-thread, per-namespace commit order, so explicit legacy checkpoint
+IDs remain identities rather than being misused as timestamps. `fork_at/4`
+copies only the selected checkpoint's bounded ancestor lineage and fails when a
+parent is missing or the configured count or byte limit is exceeded.
 
 ## Storage Optimization
 

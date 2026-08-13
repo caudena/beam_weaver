@@ -61,10 +61,14 @@ defmodule BeamWeaver.Runtime.Agent.Server do
   def handle_call({:cancel, work_id}, _from, state) do
     case Map.fetch(state.active_work, work_id) do
       {:ok, active} ->
-        error = Error.new(:cancelled, "work was cancelled", %{work_id: work_id})
-        Process.exit(active.task.pid, :kill)
-        state = complete_work(state, active, {:cancelled, error})
-        {:reply, :ok, state}
+        if active.cancel_ref do
+          {:reply, :ok, state}
+        else
+          send(active.task.pid, {:beam_weaver_cancel, work_id, :requested})
+          cancel_ref = Process.send_after(self(), {:cancel_deadline, work_id}, state.cancel_grace_ms)
+          active = %{active | cancel_ref: cancel_ref}
+          {:reply, :ok, %{state | active_work: Map.put(state.active_work, work_id, active)}}
+        end
 
       :error ->
         {:reply, {:error, Error.new(:not_found, "active work not found", %{work_id: work_id})}, state}
@@ -73,11 +77,34 @@ defmodule BeamWeaver.Runtime.Agent.Server do
 
   @impl true
   def handle_info({:stream_chunk, work_id, chunk}, state) do
-    if Map.has_key?(state.active_work, work_id) do
-      StreamBroker.broadcast(state.subscribers, state.id, {:stream, work_id, chunk})
-    end
+    subscribers =
+      if Map.has_key?(state.active_work, work_id) do
+        StreamBroker.broadcast(
+          state.subscribers,
+          state.id,
+          {:stream, work_id, chunk},
+          state.subscriber_queue_limit
+        )
+      else
+        state.subscribers
+      end
 
-    {:noreply, state}
+    {:noreply, %{state | subscribers: subscribers}}
+  end
+
+  def handle_info({:cancel_deadline, work_id}, state) do
+    case Map.fetch(state.active_work, work_id) do
+      {:ok, active} ->
+        Process.exit(active.task.pid, :kill)
+
+        error =
+          Error.new(:cancel_timeout, "work did not acknowledge cancellation", %{work_id: work_id})
+
+        {:noreply, complete_work(state, active, {:failed, error})}
+
+      :error ->
+        {:noreply, state}
+    end
   end
 
   def handle_info({:work_timeout, work_id}, state) do
@@ -161,6 +188,8 @@ defmodule BeamWeaver.Runtime.Agent.Server do
             :ok
           end
 
+          dispatch_request = %{work_id: work_id, kind: kind, name: name, input: input}
+          opts = Keyword.put_new(opts, :dispatch_request, dispatch_request)
           ToolRunner.run(kind, fun, input, emit, opts)
         end)
       end)
@@ -171,7 +200,8 @@ defmodule BeamWeaver.Runtime.Agent.Server do
       work: work,
       task: task,
       timeout: timeout,
-      timeout_ref: timeout_ref
+      timeout_ref: timeout_ref,
+      cancel_ref: nil
     }
 
     {:ok, work, %{state | active_work: Map.put(state.active_work, work_id, active)}}
@@ -179,20 +209,40 @@ defmodule BeamWeaver.Runtime.Agent.Server do
 
   defp complete_work(state, active, outcome) do
     cancel_timeout(active.timeout_ref)
+    cancel_timeout(active.cancel_ref)
 
-    case outcome do
-      {:completed, result} ->
-        Tracing.finish_run(active.work.trace_run_id, outputs: result)
-        StreamBroker.broadcast(state.subscribers, state.id, {:completed, active.work.id, result})
+    subscribers =
+      case outcome do
+        {:completed, result} ->
+          Tracing.finish_run(active.work.trace_run_id, outputs: result)
 
-      {:failed, %Error{} = error} ->
-        Tracing.fail_run(active.work.trace_run_id, error)
-        StreamBroker.broadcast(state.subscribers, state.id, {:failed, active.work.id, error})
+          StreamBroker.broadcast(
+            state.subscribers,
+            state.id,
+            {:completed, active.work.id, result},
+            state.subscriber_queue_limit
+          )
 
-      {:cancelled, %Error{} = error} ->
-        Tracing.fail_run(active.work.trace_run_id, error)
-        StreamBroker.broadcast(state.subscribers, state.id, {:cancelled, active.work.id, error})
-    end
+        {:failed, %Error{} = error} ->
+          Tracing.fail_run(active.work.trace_run_id, error)
+
+          StreamBroker.broadcast(
+            state.subscribers,
+            state.id,
+            {:failed, active.work.id, error},
+            state.subscriber_queue_limit
+          )
+
+        {:cancelled, %Error{} = error} ->
+          Tracing.fail_run(active.work.trace_run_id, error)
+
+          StreamBroker.broadcast(
+            state.subscribers,
+            state.id,
+            {:cancelled, active.work.id, error},
+            state.subscriber_queue_limit
+          )
+      end
 
     completed = %{
       work: active.work,
@@ -202,12 +252,14 @@ defmodule BeamWeaver.Runtime.Agent.Server do
     %{
       state
       | active_work: Map.delete(state.active_work, active.work.id),
-        completed_work: Map.put(state.completed_work, active.work.id, completed)
+        completed_work: Map.put(state.completed_work, active.work.id, completed),
+        subscribers: subscribers
     }
   end
 
   defp normalize_task_result({:ok, result}), do: {:completed, result}
   defp normalize_task_result({:error, %Error{} = error}), do: {:failed, error}
+  defp normalize_task_result({:cancelled, %Error{} = error}), do: {:cancelled, error}
 
   defp normalize_task_result(other) do
     {:failed,

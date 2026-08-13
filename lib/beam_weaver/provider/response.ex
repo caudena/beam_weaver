@@ -14,6 +14,7 @@ defmodule BeamWeaver.Provider.Response do
 
   alias BeamWeaver.Core.Message
   alias BeamWeaver.Models.Profile
+  alias BeamWeaver.Provider.Validation
 
   defstruct message: nil,
             usage: %{},
@@ -91,6 +92,31 @@ defmodule BeamWeaver.Provider.Response do
     model
     |> from_message(message, opts)
     |> apply_to_message()
+  end
+
+  @doc """
+  Normalizes and bounds a provider response before it enters runtime state.
+  """
+  @spec normalize_message_result(term(), Message.t(), keyword()) ::
+          {:ok, Message.t()} | {:error, BeamWeaver.Core.Error.t()}
+  def normalize_message_result(model, %Message{} = message, opts \\ []) do
+    with :ok <- Message.validate(message),
+         {:ok, _measurement} <- Validation.measure(message, opts),
+         normalized = normalize_message(model, message, opts),
+         true <- length(normalized.tool_calls) <= Keyword.get(opts, :max_tool_calls, 256),
+         {:ok, _measurement} <- Validation.measure(normalized, opts) do
+      {:ok, normalized}
+    else
+      false ->
+        {:error,
+         BeamWeaver.Core.Error.new(
+           :invalid_provider_response,
+           "provider response has too many tool calls"
+         )}
+
+      {:error, _reason} = error ->
+        error
+    end
   end
 
   defp normalize_usage(nil, response_metadata) do

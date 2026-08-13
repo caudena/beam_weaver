@@ -396,6 +396,17 @@ Tool work can retry recoverable crashes:
 BeamWeaver.Runtime.Agent.start_tool_call(agent, "lookup", input, fun, max_retries: 1)
 ```
 
+Cancellation is cooperative first. Work can poll `BeamWeaver.Runtime.Agent.cancellation/0`
+at safe boundaries and return `{:cancelled, reason}`. If it does not acknowledge
+the signal within `:cancel_grace_ms`, the runtime terminates it and reports a
+failed cancellation timeout instead of inventing a successful cancellation.
+
+Applications may pass a `BeamWeaver.DispatchHook` struct through
+`:dispatch_hook`; its `before_dispatch/3` callback runs immediately before each
+model or tool attempt. The hook is deliberately policy-neutral: the application
+owns the request context and any permit meaning. Subscriber delivery is bounded
+by `:subscriber_queue_limit`; a subscriber that cannot keep up is removed.
+
 Every work item gets a trace run ID through the returned work struct. Use
 `BeamWeaver.Tracing.get_run/1` or `BeamWeaver.Tracing.get_tree/1` to inspect
 trace state.

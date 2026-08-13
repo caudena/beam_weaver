@@ -27,12 +27,12 @@ defmodule BeamWeaver.Migrations.PostgresTest do
 
     assert LivePostgres.table_exists?(checkpoints)
     assert LivePostgres.table_exists?(writes)
-    assert BeamWeaver.Migrations.current_version(opts) == 1
-    assert BeamWeaver.Migrations.migrated_version(Keyword.put(opts, :repo, PostgresRepo)) == 1
+    assert BeamWeaver.Migrations.current_version(opts) == 2
+    assert BeamWeaver.Migrations.migrated_version(Keyword.put(opts, :repo, PostgresRepo)) == 2
     assert :ok = BeamWeaver.Migrations.verify_migrated!(Keyword.put(opts, :repo, PostgresRepo))
   end
 
-  test "migrates checkpoints down from version 1" do
+  test "migrates checkpoints down from the current version" do
     checkpoints = LivePostgres.unique_table("bw_mig_down_checkpoints")
     writes = LivePostgres.unique_table("bw_mig_down_writes")
     opts = [adapters: [{:checkpoint, checkpoints_table: checkpoints, writes_table: writes}]]
@@ -48,6 +48,42 @@ defmodule BeamWeaver.Migrations.PostgresTest do
     assert :ok = LivePostgres.rollback(version, opts)
     refute LivePostgres.table_exists?(checkpoints)
     refute LivePostgres.table_exists?(writes)
+  end
+
+  test "backfills persisted checkpoint order when upgrading from version 1" do
+    checkpoints = LivePostgres.unique_table("bw_mig_order_checkpoints")
+    writes = LivePostgres.unique_table("bw_mig_order_writes")
+    opts = [adapters: [{:checkpoint, checkpoints_table: checkpoints, writes_table: writes}]]
+
+    version1 = LivePostgres.migrate(Keyword.put(opts, :version, 1))
+
+    {:ok, _result} =
+      Ecto.Adapters.SQL.query(
+        PostgresRepo,
+        """
+        INSERT INTO #{checkpoints}
+          (thread_id, checkpoint_ns, checkpoint_id, checkpoint, metadata, inserted_at)
+        VALUES
+          ('thread', '', 'z', '{}', '{}', '2026-01-01T00:00:00Z'),
+          ('thread', '', 'a', '{}', '{}', '2026-01-01T00:00:01Z')
+        """,
+        []
+      )
+
+    version2 = LivePostgres.migrate(opts)
+
+    on_exit(fn ->
+      LivePostgres.drop_tables([writes, checkpoints])
+      LivePostgres.clear_migration(version1)
+      LivePostgres.clear_migration(version2)
+    end)
+
+    assert {:ok, %{rows: [["z", 1], ["a", 2]]}} =
+             Ecto.Adapters.SQL.query(
+               PostgresRepo,
+               "SELECT checkpoint_id, commit_order FROM #{checkpoints} ORDER BY commit_order",
+               []
+             )
   end
 
   test "raises when verifying missing migrations" do
@@ -89,7 +125,7 @@ defmodule BeamWeaver.Migrations.PostgresTest do
 
     assert LivePostgres.table_exists?(checkpoints, schema)
     assert LivePostgres.table_exists?(writes, schema)
-    assert BeamWeaver.Migrations.migrated_version(Keyword.put(opts, :repo, PostgresRepo)) == 1
+    assert BeamWeaver.Migrations.migrated_version(Keyword.put(opts, :repo, PostgresRepo)) == 2
   end
 
   test "supports configured pgvector table dimensions and index options" do

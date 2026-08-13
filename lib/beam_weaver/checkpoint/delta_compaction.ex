@@ -7,16 +7,17 @@ defmodule BeamWeaver.Checkpoint.DeltaCompaction do
   def keep_ids([]), do: []
 
   def keep_ids(records) do
-    latest = records |> Enum.map(&checkpoint_id/1) |> Enum.max()
+    records = Enum.sort_by(records, &Map.get(&1, :commit_order, 0))
+    latest = records |> List.last() |> checkpoint_id()
 
     cond do
       not Enum.any?(records, &delta_checkpoint?/1) ->
         MapSet.new([latest])
 
-      snapshot_id = nearest_snapshot_id(records, latest) ->
+      snapshot_index = nearest_snapshot_index(records) ->
         records
+        |> Enum.drop(snapshot_index)
         |> Enum.map(&checkpoint_id/1)
-        |> Enum.filter(&(&1 >= snapshot_id))
         |> Enum.uniq()
 
       true ->
@@ -26,16 +27,11 @@ defmodule BeamWeaver.Checkpoint.DeltaCompaction do
     end
   end
 
-  defp nearest_snapshot_id(records, latest) do
+  defp nearest_snapshot_index(records) do
     records
-    |> Enum.map(&checkpoint_id/1)
-    |> Enum.filter(&(&1 <= latest))
-    |> Enum.sort(:desc)
-    |> Enum.find(fn id ->
-      records
-      |> Enum.find(&(checkpoint_id(&1) == id))
-      |> snapshot_checkpoint?()
-    end)
+    |> Enum.with_index()
+    |> Enum.reverse()
+    |> Enum.find_value(fn {record, index} -> if snapshot_checkpoint?(record), do: index end)
   end
 
   defp delta_checkpoint?(record) do

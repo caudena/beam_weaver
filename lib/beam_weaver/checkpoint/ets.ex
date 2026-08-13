@@ -10,10 +10,13 @@ defmodule BeamWeaver.Checkpoint.ETS do
   @behaviour BeamWeaver.Checkpoint.Saver
 
   alias BeamWeaver.Checkpoint
+  alias BeamWeaver.Checkpoint.Batch
   alias BeamWeaver.Checkpoint.DeltaCompaction
   alias BeamWeaver.Checkpoint.DeltaHistory
+  alias BeamWeaver.Checkpoint.Lineage
   alias BeamWeaver.Checkpoint.PendingWrite
   alias BeamWeaver.Checkpoint.Saver
+  alias BeamWeaver.Core.Error
 
   defstruct [:checkpoints, :writes, :counter]
 
@@ -59,77 +62,51 @@ defmodule BeamWeaver.Checkpoint.ETS do
     before_config = Keyword.get(opts, :before)
     limit = Keyword.get(opts, :limit)
     configurable = if config, do: Checkpoint.configurable(config), else: %{}
-    before_id = before_checkpoint_id(before_config)
+    before_order = before_commit_order(saver, before_config)
 
-    saver.checkpoints
-    |> :ets.tab2list()
-    |> Enum.map(fn {_key, record} -> record end)
-    |> Enum.filter(
-      &(matches_config?(&1, configurable) and matches_filter?(&1, filter) and before_checkpoint?(&1, before_id))
-    )
-    |> Enum.sort_by(fn record -> record.checkpoint["id"] end, :desc)
-    |> maybe_take(limit)
-    |> Enum.map(&put_pending_writes(saver, &1))
+    records =
+      saver.checkpoints
+      |> :ets.tab2list()
+      |> Enum.map(fn {_key, record} -> record end)
+      |> Enum.filter(
+        &(matches_config?(&1, configurable) and matches_filter?(&1, filter) and
+            before_checkpoint?(&1, before_order))
+      )
+      |> Enum.sort_by(& &1.commit_order, :desc)
+      |> maybe_take(limit)
+
+    put_pending_writes(saver, records)
   end
 
   @impl true
   def put(%__MODULE__{} = saver, config, checkpoint, metadata, new_versions) do
-    configurable = Checkpoint.configurable(config)
-    thread_id = Map.get(configurable, "thread_id")
+    with {:ok, key, record} <- prepare_record(saver, config, checkpoint, metadata, new_versions) do
+      :ets.insert(saver.checkpoints, {key, record})
+      {:ok, record.config}
+    end
+  end
 
-    if is_nil(thread_id) or thread_id == "" do
-      {:error, {:missing_configurable, "thread_id"}}
-    else
-      namespace = Map.get(configurable, "checkpoint_ns", "")
-      checkpoint_id = checkpoint_id(saver, checkpoint)
+  @impl true
+  def put_many(%__MODULE__{} = saver, entries, _opts) do
+    with :ok <- Batch.validate(entries),
+         {:ok, prepared} <- prepare_batch(saver, entries),
+         :ok <- ensure_new_keys(saver, prepared) do
+      write_objects = Enum.flat_map(prepared, & &1.writes)
+      checkpoint_objects = Enum.map(prepared, &{&1.key, &1.record})
 
-      parent_id =
-        Map.get(configurable, "checkpoint_id") ||
-          latest_checkpoint_id(saver, thread_id, namespace)
+      :ets.insert(saver.writes, write_objects)
+      true = :ets.insert_new(saver.checkpoints, checkpoint_objects)
 
-      parent_id = if parent_id == checkpoint_id, do: nil, else: parent_id
-      checkpoint_map = checkpoint_map(configurable, namespace, checkpoint_id)
+      {:ok, Enum.map(prepared, & &1.record.config)}
+    end
+  end
 
-      checkpoint =
-        checkpoint
-        |> stringify_keys()
-        |> Map.put_new("id", checkpoint_id)
-        |> Map.put_new("ts", DateTime.utc_now() |> DateTime.to_iso8601())
-        |> Map.put_new("channel_versions", stringify_keys(new_versions || %{}))
-
-      stored_config =
-        %{
-          "configurable" => %{
-            "thread_id" => thread_id,
-            "checkpoint_ns" => namespace,
-            "checkpoint_id" => checkpoint_id,
-            "checkpoint_map" => checkpoint_map
-          }
-        }
-        |> maybe_put_target_namespace(configurable)
-
-      parent_config =
-        if parent_id do
-          %{
-            "configurable" => %{
-              "thread_id" => thread_id,
-              "checkpoint_ns" => namespace,
-              "checkpoint_id" => parent_id,
-              "checkpoint_map" => Map.put(checkpoint_map, namespace, parent_id)
-            }
-          }
-          |> maybe_put_target_namespace(configurable)
-        end
-
-      record = %{
-        config: stored_config,
-        checkpoint: checkpoint,
-        metadata: stringify_keys(metadata || %{}),
-        parent_config: parent_config
-      }
-
-      :ets.insert(saver.checkpoints, {{thread_id, namespace, checkpoint_id}, record})
-      {:ok, stored_config}
+  @impl true
+  def fork_at(%__MODULE__{} = saver, source_config, target_thread_id, opts) do
+    with {:ok, lineage} <- Lineage.collect(saver, source_config, opts),
+         entries <- Batch.fork_entries(lineage, target_thread_id),
+         {:ok, configs} <- put_many(saver, entries, []) do
+      {:ok, List.last(configs)}
     end
   end
 
@@ -207,6 +184,13 @@ defmodule BeamWeaver.Checkpoint.ETS do
       end
     end)
 
+    source_records
+    |> Enum.group_by(fn {namespace, _checkpoint_id, _record} -> namespace end)
+    |> Enum.each(fn {namespace, records} ->
+      highest = records |> Enum.map(fn {_namespace, _id, record} -> record.commit_order end) |> Enum.max()
+      :ets.insert(saver.counter, {{:commit_order, target_thread_id, namespace}, highest})
+    end)
+
     :ok
   end
 
@@ -250,11 +234,14 @@ defmodule BeamWeaver.Checkpoint.ETS do
     saver.checkpoints
     |> :ets.tab2list()
     |> Enum.flat_map(fn
-      {{^thread_id, ^namespace, checkpoint_id}, _record} -> [checkpoint_id]
+      {{^thread_id, ^namespace, checkpoint_id}, record} -> [{record.commit_order, checkpoint_id}]
       _other -> []
     end)
-    |> Enum.sort(:desc)
-    |> List.first()
+    |> Enum.max_by(&elem(&1, 0), fn -> nil end)
+    |> case do
+      nil -> nil
+      {_order, checkpoint_id} -> checkpoint_id
+    end
   end
 
   defp checkpoint_id(%__MODULE__{} = saver, checkpoint) do
@@ -272,6 +259,15 @@ defmodule BeamWeaver.Checkpoint.ETS do
     next
     |> Integer.to_string()
     |> String.pad_leading(20, "0")
+  end
+
+  defp next_commit_order(%__MODULE__{} = saver, thread_id, namespace) do
+    :ets.update_counter(
+      saver.counter,
+      {:commit_order, thread_id, namespace},
+      {2, 1},
+      {{:commit_order, thread_id, namespace}, 0}
+    )
   end
 
   defp checkpoint_map(configurable, namespace, checkpoint_id) do
@@ -294,45 +290,58 @@ defmodule BeamWeaver.Checkpoint.ETS do
     end
   end
 
-  defp put_pending_writes(saver, record) do
-    configurable = record.config["configurable"]
-    thread_id = configurable["thread_id"]
-    namespace = configurable["checkpoint_ns"]
-    checkpoint_id = configurable["checkpoint_id"]
+  defp put_pending_writes(saver, record) when is_map(record),
+    do: saver |> put_pending_writes([record]) |> List.first()
 
-    pending_records =
+  defp put_pending_writes(saver, records) when is_list(records) do
+    keys = MapSet.new(records, &checkpoint_key/1)
+
+    pending =
       saver.writes
       |> :ets.tab2list()
-      |> Enum.flat_map(fn
-        {{^thread_id, ^namespace, ^checkpoint_id, task_id, index}, {channel, value, path}} ->
-          [{task_id, index, channel, value, path || ""}]
+      |> Enum.reduce(%{}, fn
+        {{thread, namespace, checkpoint, task, index}, {channel, value, path}}, acc ->
+          key = {thread, namespace, checkpoint}
 
-        _other ->
-          []
+          if MapSet.member?(keys, key) do
+            write = %PendingWrite{
+              thread_id: thread,
+              checkpoint_ns: namespace,
+              checkpoint_id: checkpoint,
+              task_id: task,
+              index: index,
+              channel: channel,
+              value: value,
+              path: path || ""
+            }
+
+            Map.update(acc, key, [write], &[write | &1])
+          else
+            acc
+          end
       end)
-      |> Enum.sort_by(fn {task_id, index, _channel, _value, _path} -> {task_id, index} end)
 
-    pending_write_records =
-      Enum.map(pending_records, fn {task_id, index, channel, value, path} ->
-        %PendingWrite{
-          thread_id: thread_id,
-          checkpoint_ns: namespace,
-          checkpoint_id: checkpoint_id,
-          task_id: task_id,
-          index: index,
-          channel: channel,
-          value: value,
-          path: path || ""
-        }
-      end)
+    Enum.map(records, fn record ->
+      writes =
+        pending
+        |> Map.get(checkpoint_key(record), [])
+        |> Enum.sort_by(&{&1.task_id, &1.index})
 
-    pending_writes = Enum.map(pending_write_records, &PendingWrite.tuple/1)
-    pending_write_paths = Enum.map(pending_write_records, &PendingWrite.path_tuple/1)
+      record
+      |> Map.put(:pending_write_records, writes)
+      |> Map.put(:pending_writes, Enum.map(writes, &PendingWrite.tuple/1))
+      |> Map.put(:pending_write_paths, Enum.map(writes, &PendingWrite.path_tuple/1))
+    end)
+  end
 
-    record
-    |> Map.put(:pending_write_records, pending_write_records)
-    |> Map.put(:pending_writes, pending_writes)
-    |> Map.put(:pending_write_paths, pending_write_paths)
+  defp checkpoint_key(record) do
+    configurable = record.config["configurable"]
+
+    {
+      configurable["thread_id"],
+      configurable["checkpoint_ns"],
+      configurable["checkpoint_id"]
+    }
   end
 
   defp matches_config?(_record, configurable) when map_size(configurable) == 0, do: true
@@ -357,14 +366,22 @@ defmodule BeamWeaver.Checkpoint.ETS do
   end
 
   defp before_checkpoint?(_record, nil), do: true
-  defp before_checkpoint?(record, before_id), do: record.checkpoint["id"] < before_id
+  defp before_checkpoint?(record, before_order), do: record.commit_order < before_order
 
-  defp before_checkpoint_id(nil), do: nil
+  defp before_commit_order(_saver, nil), do: nil
 
-  defp before_checkpoint_id(config) do
-    config
-    |> Checkpoint.configurable()
-    |> Map.get("checkpoint_id")
+  defp before_commit_order(saver, config) do
+    configurable = Checkpoint.configurable(config)
+
+    case lookup_checkpoint(
+           saver,
+           configurable["thread_id"],
+           Map.get(configurable, "checkpoint_ns", ""),
+           configurable["checkpoint_id"]
+         ) do
+      [{_key, record}] -> record.commit_order
+      _other -> nil
+    end
   end
 
   defp maybe_take(list, nil), do: list
@@ -419,5 +436,146 @@ defmodule BeamWeaver.Checkpoint.ETS do
 
   defp stringify_keys(map) when is_map(map) do
     Map.new(map, fn {key, value} -> {to_string(key), value} end)
+  end
+
+  defp prepare_record(saver, config, checkpoint, metadata, versions, parent_id \\ :latest) do
+    configurable = Checkpoint.configurable(config)
+    thread_id = configurable["thread_id"]
+    namespace = to_string(Map.get(configurable, "checkpoint_ns", "") || "")
+
+    if is_binary(thread_id) and thread_id != "" and is_map(checkpoint) do
+      checkpoint_id = checkpoint_id(saver, checkpoint)
+
+      parent_id =
+        case parent_id do
+          :latest -> configurable["checkpoint_id"] || latest_checkpoint_id(saver, thread_id, namespace)
+          explicit -> explicit
+        end
+
+      parent_id = if parent_id == checkpoint_id, do: nil, else: parent_id
+      checkpoint_map = checkpoint_map(configurable, namespace, checkpoint_id)
+      key = {thread_id, namespace, checkpoint_id}
+
+      order =
+        case :ets.lookup(saver.checkpoints, key) do
+          [{^key, record}] -> record.commit_order
+          [] -> next_commit_order(saver, thread_id, namespace)
+        end
+
+      stored_config =
+        %{
+          "configurable" => %{
+            "thread_id" => thread_id,
+            "checkpoint_ns" => namespace,
+            "checkpoint_id" => checkpoint_id,
+            "checkpoint_map" => checkpoint_map
+          }
+        }
+        |> maybe_put_target_namespace(configurable)
+
+      record = %{
+        config: stored_config,
+        checkpoint:
+          checkpoint
+          |> stringify_keys()
+          |> Map.put_new("id", checkpoint_id)
+          |> Map.put_new("ts", DateTime.utc_now() |> DateTime.to_iso8601())
+          |> Map.put_new("channel_versions", stringify_keys(versions || %{})),
+        metadata: stringify_keys(metadata || %{}),
+        parent_config: parent_config(stored_config, parent_id),
+        commit_order: order
+      }
+
+      {:ok, key, record}
+    else
+      {:error, Error.new(:invalid_checkpoint, "checkpoint config requires thread_id")}
+    end
+  end
+
+  defp parent_config(_config, nil), do: nil
+
+  defp parent_config(config, parent_id) do
+    put_in(config, ["configurable", "checkpoint_id"], parent_id)
+  end
+
+  defp prepare_batch(saver, entries) do
+    Enum.reduce_while(entries, {:ok, [], %{}}, fn entry, {:ok, prepared, heads} ->
+      with {:ok, config, checkpoint, metadata, versions, writes, write_opts} <- Batch.entry(entry) do
+        configurable = Checkpoint.configurable(config)
+        owner = {configurable["thread_id"], Map.get(configurable, "checkpoint_ns", "")}
+        parent_id = configurable["checkpoint_id"] || Map.get(heads, owner) || :latest
+
+        with {:ok, key, record} <-
+               prepare_record(saver, config, checkpoint, metadata, versions, parent_id),
+             {:ok, write_objects} <- batch_writes(key, writes, write_opts) do
+          next = %{key: key, record: record, writes: write_objects}
+          checkpoint_id = elem(key, 2)
+          {:cont, {:ok, [next | prepared], Map.put(heads, owner, checkpoint_id)}}
+        else
+          {:error, %Error{}} = error -> {:halt, error}
+        end
+      else
+        {:error, %Error{}} = error -> {:halt, error}
+      end
+    end)
+    |> case do
+      {:ok, prepared, _heads} -> {:ok, Enum.reverse(prepared)}
+      {:error, %Error{}} = error -> error
+    end
+  end
+
+  defp batch_writes({thread_id, namespace, checkpoint_id}, writes, opts) do
+    default_task = Keyword.get(opts, :task_id, "checkpoint")
+    default_path = Keyword.get(opts, :task_path, "")
+
+    writes
+    |> Enum.with_index()
+    |> Enum.reduce_while({:ok, []}, fn {write, index}, {:ok, objects} ->
+      case normalize_batch_write(write, default_task, default_path) do
+        {:ok, task_id, write_index, channel, value, path} ->
+          object =
+            {{thread_id, namespace, checkpoint_id, task_id, write_index || index}, {channel, value, path}}
+
+          {:cont, {:ok, [object | objects]}}
+
+        :error ->
+          {:halt, {:error, Error.new(:invalid_checkpoint_batch, "invalid pending write")}}
+      end
+    end)
+    |> case do
+      {:ok, objects} -> {:ok, Enum.reverse(objects)}
+      {:error, %Error{}} = error -> error
+    end
+  end
+
+  defp normalize_batch_write(%PendingWrite{} = write, _task, _path),
+    do: {:ok, write.task_id, write.index, to_string(write.channel), write.value, write.path || ""}
+
+  defp normalize_batch_write({task, channel, value, path}, _default_task, _default_path)
+       when is_binary(task),
+       do: {:ok, task, nil, to_string(channel), value, to_string(path || "")}
+
+  defp normalize_batch_write({task, channel, value}, _default_task, default_path)
+       when is_binary(task),
+       do: {:ok, task, nil, to_string(channel), value, to_string(default_path || "")}
+
+  defp normalize_batch_write({channel, value}, task, path),
+    do: {:ok, task, nil, to_string(channel), value, to_string(path || "")}
+
+  defp normalize_batch_write(_write, _task, _path), do: :error
+
+  defp ensure_new_keys(saver, prepared) do
+    keys = Enum.map(prepared, & &1.key)
+
+    cond do
+      length(keys) != length(Enum.uniq(keys)) ->
+        {:error, Error.new(:checkpoint_conflict, "checkpoint batch contains duplicate identities")}
+
+      Enum.any?(keys, &(:ets.lookup(saver.checkpoints, &1) != [])) ->
+        {:error, Error.new(:checkpoint_conflict, "checkpoint identity already exists")}
+
+      true ->
+        :ok
+    end
   end
 end

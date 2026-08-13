@@ -41,6 +41,10 @@ defmodule BeamWeaver.Checkpoint.Saver do
               list(),
               keyword()
             ) :: {:ok, config()} | {:error, term()}
+  @callback put_many(saver(), [map()], keyword()) ::
+              {:ok, [config()]} | {:error, term()}
+  @callback fork_at(saver(), config(), String.t(), keyword()) ::
+              {:ok, config()} | {:error, term()}
   @callback get_delta_channel_history(saver(), config(), [String.t()], keyword()) :: map()
   @callback delete_thread(saver(), String.t()) :: :ok | {:error, term()}
   @callback delete_for_runs(saver(), [String.t()]) :: :ok | {:error, term()}
@@ -48,7 +52,11 @@ defmodule BeamWeaver.Checkpoint.Saver do
   @callback prune(saver(), [String.t()], keyword()) :: :ok | {:error, term()}
   @callback next_version(saver(), term(), term() | nil) :: term()
 
-  @optional_callbacks fetch_tuple: 2, list_result: 3, put_checkpoint_with_writes: 7
+  @optional_callbacks fetch_tuple: 2,
+                      list_result: 3,
+                      put_checkpoint_with_writes: 7,
+                      put_many: 3,
+                      fork_at: 4
 
   @doc false
   def next_version(saver, current, channel) do
