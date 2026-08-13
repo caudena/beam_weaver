@@ -1,5 +1,31 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- Added error-preserving `BeamWeaver.Checkpoint.fetch_tuple/2` and
+  `list_result/3`, all-or-nothing `put_many/3`, and bounded lineage
+  `fork_at/4` APIs while retaining the existing convenience facades.
+- Added bounded provider response validation and the batch-atomic, sticky
+  `BeamWeaver.Provider.StreamValidator` used by live provider streams.
+- Added cooperative cancellation, bounded subscriber delivery, and explicit
+  work timeouts to the supervised agent runtime, plus the policy-neutral
+  `BeamWeaver.DispatchHook` for application checks immediately before model or
+  tool attempts.
+
+### Changed
+- Checkpoint latest/history/pruning/fork selection now uses a persisted
+  per-thread, per-namespace commit order instead of interpreting checkpoint IDs
+  as timestamps. Existing explicit and legacy IDs remain unchanged.
+- Atomic checkpoint-plus-write and batch operations now fail before writing
+  when an adapter does not implement the required transaction callback; they
+  never fall back to sequential partial writes.
+
+### Fixed
+
+- Checkpoint storage failures are no longer converted into missing checkpoints
+  or empty histories at public runtime boundaries.
+  
 ## 0.1.17 - 2026-08-13
 
 ### Added
