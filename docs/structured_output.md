@@ -134,8 +134,8 @@ output request options, and agent auto-selection uses the model profile's
 `:structured_output` capability.
 
 DeepSeek Chat exposes JSON object mode, so BeamWeaver injects the schema as an
-explicit instruction and validates the returned object locally. DeepSeek Flash
-Responses exposes native JSON Schema format. Pro cannot use Responses yet.
+explicit instruction and validates the returned object locally. DeepSeek
+Responses exposes native JSON Schema format for both V4 Flash and V4 Pro.
 
 ```elixir
 response_schema MyApp.ContactInfo,

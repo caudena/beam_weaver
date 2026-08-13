@@ -12,7 +12,7 @@ defmodule BeamWeaver.Models.ProfileRegistry.DeepSeek do
   @common_profile %{
     status: :active,
     release_date: "2026-04-24",
-    last_updated: "2026-08-02",
+    last_updated: "2026-08-12",
     max_input_tokens: 1_048_576,
     max_output_tokens: 393_216,
     text_inputs: true,
@@ -43,11 +43,11 @@ defmodule BeamWeaver.Models.ProfileRegistry.DeepSeek do
              extra: %{
                api_families: [:chat_completions, :responses],
                openai_compatible: true,
-               model_version: "DeepSeek-V4-Flash-0731",
+               model_version: "DeepSeek-V4-Flash",
                thinking_modes: [:enabled, :disabled],
                default_thinking_mode: :enabled,
                reasoning_efforts: [:low, :high, :max],
-               compatibility_reasoning_efforts: %{medium: :high, xhigh: :high},
+               compatibility_reasoning_efforts: %{minimal: :low, medium: :high, xhigh: :high},
                chat_prefix_completion: :beta,
                fim_completion: %{status: :beta, thinking: :disabled},
                strict_tool_calls: :beta,
@@ -58,7 +58,7 @@ defmodule BeamWeaver.Models.ProfileRegistry.DeepSeek do
                output_price_per_mtok: 0.28,
                cost_currency: "USD",
                pricing_source_url: "https://api-docs.deepseek.com/quick_start/pricing/",
-               pricing_last_checked: "2026-08-02",
+               pricing_last_checked: "2026-08-12",
                pending_peak_pricing: %{
                  multiplier: 2.0,
                  hours: ["09:00-12:00", "14:00-18:00"],
@@ -74,19 +74,20 @@ defmodule BeamWeaver.Models.ProfileRegistry.DeepSeek do
            provider: :deepseek,
            id: "deepseek-v4-pro",
            name: "DeepSeek V4 Pro",
-           responses_api: false,
+           responses_api: true,
            supported_params: Params.deepseek_chat_completions(),
            supported_params_by_api: %{
-             chat_completions: Params.deepseek_chat_completions()
+             chat_completions: Params.deepseek_chat_completions(),
+             responses: Params.deepseek_responses()
            },
            extra: %{
-             api_families: [:chat_completions],
+             api_families: [:chat_completions, :responses],
              openai_compatible: true,
              model_version: "DeepSeek-V4-Pro",
              thinking_modes: [:enabled, :disabled],
              default_thinking_mode: :enabled,
-             reasoning_efforts: [:high, :max],
-             compatibility_reasoning_efforts: %{low: :high, medium: :high, xhigh: :max},
+             reasoning_efforts: [:low, :high, :max],
+             compatibility_reasoning_efforts: %{minimal: :low, medium: :high, xhigh: :high},
              chat_prefix_completion: :beta,
              fim_completion: %{status: :beta, thinking: :disabled},
              strict_tool_calls: :beta,
@@ -97,7 +98,7 @@ defmodule BeamWeaver.Models.ProfileRegistry.DeepSeek do
              output_price_per_mtok: 0.87,
              cost_currency: "USD",
              pricing_source_url: "https://api-docs.deepseek.com/quick_start/pricing/",
-             pricing_last_checked: "2026-08-02",
+             pricing_last_checked: "2026-08-12",
              pending_peak_pricing: %{
                multiplier: 2.0,
                hours: ["09:00-12:00", "14:00-18:00"],

@@ -418,7 +418,7 @@ defmodule BeamWeaver.DeepSeek.ModelTest do
              )
   end
 
-  test "Responses keeps model and stream authoritative across request escape hatches" do
+  test "Responses validates model overrides and keeps stream authoritative" do
     model = ResponsesModel.new()
     messages = [Message.user("hello")]
 
@@ -427,9 +427,18 @@ defmodule BeamWeaver.DeepSeek.ModelTest do
           [model_kwargs: %{model: "deepseek-v4-pro"}],
           [extra_body: %{model: "deepseek-v4-pro"}]
         ] do
+      assert {:ok, body} = ResponsesModel.request_body(model, messages, opts)
+      assert body["model"] == "deepseek-v4-pro"
+    end
+
+    for opts <- [
+          [model: "unknown"],
+          [model_kwargs: %{model: "unknown"}],
+          [extra_body: %{model: "unknown"}]
+        ] do
       assert {:error, error} = ResponsesModel.request_body(model, messages, opts)
       assert error.type == :unsupported_model
-      assert error.details.model == "deepseek-v4-pro"
+      assert error.details.model == "unknown"
     end
 
     assert {:ok, body} =
@@ -498,7 +507,7 @@ defmodule BeamWeaver.DeepSeek.ModelTest do
       assert error.details.param == :instructions
     end
 
-    for effort <- [:none, :low, :medium, :high, :xhigh, :max] do
+    for effort <- [:none, :minimal, :low, :medium, :high, :xhigh, :max] do
       assert {:ok, body} =
                ResponsesModel.request_body(model, messages, reasoning_effort: effort)
 

@@ -212,7 +212,8 @@ defmodule BeamWeaver.DeepSeekLiveCapture do
       {"responses_flash_forced_function_no_thinking", responses_forced_function_body(), []},
       {"responses_flash_web_search", responses_web_search_body(), []},
       {"responses_flash_apply_patch", responses_apply_patch_body(), []},
-      {"responses_pro_expected_rejection", Map.put(responses_basic_body(), "model", @pro), expected_error: true}
+      {"responses_pro_sync", responses_basic_body(@pro), []},
+      {"responses_pro_stream", Map.put(responses_basic_body(@pro), "stream", true), mode: :stream}
     ]
 
     Enum.reduce(scenarios, entries, fn {scenario, body, opts}, acc ->
@@ -555,9 +556,9 @@ defmodule BeamWeaver.DeepSeekLiveCapture do
     }
   end
 
-  defp responses_basic_body do
+  defp responses_basic_body(model \\ @flash) do
     %{
-      "model" => @flash,
+      "model" => model,
       "input" => "Reply with exactly: responses pong",
       "max_output_tokens" => 48
     }

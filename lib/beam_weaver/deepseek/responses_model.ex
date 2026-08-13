@@ -2,9 +2,9 @@ defmodule BeamWeaver.DeepSeek.ResponsesModel do
   @moduledoc """
   DeepSeek OpenAI-compatible Responses API model.
 
-  DeepSeek currently exposes this API for `deepseek-v4-flash` only and keeps it
-  stateless. Unsupported state, media, and silently ignored compatibility
-  parameters are rejected before transport.
+  DeepSeek exposes this API for `deepseek-v4-flash` and `deepseek-v4-pro` and
+  keeps it stateless. Unsupported state, media, and silently ignored
+  compatibility parameters are rejected before transport.
   """
 
   alias BeamWeaver.DeepSeek.Client
@@ -21,7 +21,7 @@ defmodule BeamWeaver.DeepSeek.ResponsesModel do
   @default_base_url "https://api.deepseek.com"
   @default_endpoint @default_base_url <> "/responses"
   @max_output_tokens 393_216
-  @reasoning_efforts ~w(none low medium high xhigh max)
+  @reasoning_efforts ~w(none minimal low medium high xhigh max)
 
   @unsupported_params ~w(
     audio
@@ -126,7 +126,7 @@ defmodule BeamWeaver.DeepSeek.ResponsesModel do
          :ok <- validate_unsupported_options(model, opts),
          :ok <- Messages.validate_text_messages(messages, :responses),
          {:ok, body} <- model |> RequestBuilder.request_body(messages, opts) |> convert_error(),
-         body <- restore_reserved_fields(body, model, opts),
+         body <- restore_reserved_fields(body, opts),
          :ok <- validate_responses_model(body["model"]),
          :ok <- validate_unsupported_body(body),
          :ok <- validate_instructions(body),
@@ -143,15 +143,17 @@ defmodule BeamWeaver.DeepSeek.ResponsesModel do
   def count_tokens(%__MODULE__{} = model, input, opts \\ []),
     do: TokenCounter.count(model, input, opts)
 
-  defp validate_responses_model("deepseek-v4-flash"), do: :ok
+  defp validate_responses_model(model)
+       when model in ["deepseek-v4-flash", "deepseek-v4-pro"],
+       do: :ok
 
   defp validate_responses_model(model) do
     {:error,
-     Error.new(:unsupported_model, "DeepSeek Responses currently supports V4 Flash only", %{
+     Error.new(:unsupported_model, "DeepSeek Responses model is not supported", %{
        provider: :deepseek,
        api: :responses,
        model: model,
-       supported: ["deepseek-v4-flash"],
+       supported: ["deepseek-v4-flash", "deepseek-v4-pro"],
        expected: "deepseek:deepseek-v4-flash"
      })}
   end
@@ -232,11 +234,8 @@ defmodule BeamWeaver.DeepSeek.ResponsesModel do
     end
   end
 
-  defp restore_reserved_fields(body, model, opts) do
-    body
-    |> Map.put("model", model.model)
-    |> Map.put("stream", Keyword.get(opts, :stream, false))
-  end
+  defp restore_reserved_fields(body, opts),
+    do: Map.put(body, "stream", Keyword.get(opts, :stream, false))
 
   defp validate_unsupported_options(model, opts) do
     model_params = model |> Map.from_struct() |> BeamWeaver.MapShape.stringify_keys()

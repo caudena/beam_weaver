@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.1.16 - 2026-08-13
+
+### Added
+
+- Enabled DeepSeek V4 Pro on the Responses API following DeepSeek's August 12
+  compatibility update, including model profiles, request validation, live
+  capture coverage, and the newly documented `minimal` reasoning effort.
+- Added xAI `grok-4.6` as the default Grok model for Responses and Chat
+  Completions, with its 500k context window, unlimited text-output metadata,
+  full reasoning-effort ladder, priority processing, and standard and
+  long-context pricing. Refreshed Grok 4.5 cached-token pricing and reasoning
+  metadata from the same current catalog.
+
 ## 0.1.15 - 2026-08-02
 
 ### Added

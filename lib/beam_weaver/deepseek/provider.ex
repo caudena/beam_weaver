@@ -14,21 +14,9 @@ defmodule BeamWeaver.DeepSeek.Provider do
 
   @impl true
   def chat_model(opts) do
-    model = Keyword.get(opts, :model)
-
     case normalize_api(Keyword.get(opts, :api, :chat_completions)) do
       {:ok, :chat_completions} ->
         {:ok, BeamWeaver.DeepSeek.ChatModel}
-
-      {:ok, :responses} when model == "deepseek-v4-pro" ->
-        {:error,
-         Error.new(:unsupported_model, "DeepSeek Responses currently supports V4 Flash only", %{
-           provider: :deepseek,
-           api: :responses,
-           model: model,
-           supported: ["deepseek-v4-flash"],
-           expected: "deepseek:deepseek-v4-flash"
-         })}
 
       {:ok, :responses} ->
         {:ok, BeamWeaver.DeepSeek.ResponsesModel}

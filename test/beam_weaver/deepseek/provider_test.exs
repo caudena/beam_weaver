@@ -22,34 +22,39 @@ defmodule BeamWeaver.DeepSeek.ProviderTest do
     assert flash.extra.input_price_per_mtok == 0.14
     assert flash.extra.cached_input_price_per_mtok == 0.0028
     assert flash.extra.output_price_per_mtok == 0.28
+    assert flash.extra.reasoning_efforts == [:low, :high, :max]
+
+    assert flash.extra.compatibility_reasoning_efforts == %{
+             minimal: :low,
+             medium: :high,
+             xhigh: :high
+           }
 
     assert {:ok, pro} = ProfileRegistry.fetch(:deepseek, "deepseek-v4-pro")
     assert pro.chat_completions_api
-    refute pro.responses_api
+    assert pro.responses_api
     assert pro.extra.input_price_per_mtok == 0.435
     assert pro.extra.cached_input_price_per_mtok == 0.003625
     assert pro.extra.output_price_per_mtok == 0.87
+    assert pro.extra.reasoning_efforts == flash.extra.reasoning_efforts
+
+    assert pro.extra.compatibility_reasoning_efforts ==
+             flash.extra.compatibility_reasoning_efforts
   end
 
-  test "initializer defaults to Chat, accepts atom/string API selection, and rejects Pro Responses early" do
+  test "initializer defaults to Chat and accepts both V4 models on Responses" do
     assert {:ok, %ChatModel{model: "deepseek-v4-flash"}} =
              Models.init_chat_model("deepseek:deepseek-v4-flash")
 
-    for api <- [:responses, "responses"] do
-      assert {:ok, %ResponsesModel{model: "deepseek-v4-flash"}} =
-               Models.init_chat_model("deepseek:deepseek-v4-flash", api: api)
+    for model <- ["deepseek-v4-flash", "deepseek-v4-pro"], api <- [:responses, "responses"] do
+      assert {:ok, %ResponsesModel{model: ^model}} =
+               Models.init_chat_model("deepseek:" <> model, api: api)
     end
 
     for api <- [:chat, :chat_completions, "chat", "chat_completions"] do
       assert {:ok, %ChatModel{}} =
                Models.init_chat_model("deepseek:deepseek-v4-pro", api: api)
     end
-
-    assert {:error, error} =
-             Models.init_chat_model("deepseek:deepseek-v4-pro", api: :responses)
-
-    assert error.type == :unsupported_model
-    assert error.details.api == :responses
 
     assert {:error, error} =
              Models.init_chat_model("deepseek:deepseek-v4-flash", api: :unknown)
@@ -75,10 +80,13 @@ defmodule BeamWeaver.DeepSeek.ProviderTest do
     assert ModelResolver.get_model_provider(chat) == "deepseek"
     assert ModelResolver.get_model_identifier(chat) == "deepseek-v4-flash"
 
-    assert {:ok, responses} =
-             ModelResolver.resolve_model("deepseek:deepseek-v4-flash", api: :responses)
+    for model <- ["deepseek-v4-flash", "deepseek-v4-pro"] do
+      assert {:ok, responses} =
+               ModelResolver.resolve_model("deepseek:" <> model, api: :responses)
 
-    assert ModelResolver.get_model_provider(responses) == "deepseek"
+      assert ModelResolver.get_model_provider(responses) == "deepseek"
+      assert ModelResolver.get_model_identifier(responses) == model
+    end
   end
 
   test "high-level structs redact credentials" do

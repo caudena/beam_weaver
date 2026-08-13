@@ -126,7 +126,7 @@ prefixes when a model name is ambiguous.
 | Google Gemini | `google:gemini-3.6-flash`, `google:gemini-3.5-flash-lite`, `google:gemini-3.5-flash`, `google:gemini-3.1-pro-preview` |
 | DeepSeek | `deepseek:deepseek-v4-flash`, `deepseek:deepseek-v4-pro` |
 | Moonshot/Kimi | `moonshot:kimi-k3`, `moonshot:kimi-k2.7-code`, `moonshot:kimi-k2.7-code-highspeed`, `moonshot:kimi-k2.6`, `moonshot:kimi-k2.5` |
-| xAI | `xai:grok-4.5`, `xai:grok-4.3`, `xai:grok-4.20-0309-reasoning`, `xai:grok-4.20-0309-non-reasoning`, `xai:grok-4.20-multi-agent-0309`, `xai:grok-build-0.1`, `xai:v1` embeddings |
+| xAI | `xai:grok-4.6`, `xai:grok-4.5`, `xai:grok-4.3`, `xai:grok-4.20-0309-reasoning`, `xai:grok-4.20-0309-non-reasoning`, `xai:grok-4.20-multi-agent-0309`, `xai:grok-build-0.1`, `xai:v1` embeddings |
 | Z.ai | `zai:glm-5.2` |
 | Test models | Fake chat and embedding models, plus replay transports for deterministic provider tests. |
 
