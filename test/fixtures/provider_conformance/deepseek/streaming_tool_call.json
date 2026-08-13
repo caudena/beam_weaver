@@ -45,25 +45,25 @@
         }
       ],
       "usage_metadata": {
-        "input_cost": 5.7568000000000005e-6,
+        "input_cost": 9.712000000000001e-6,
         "input_cost_details": {
-          "cache_read": 7.168e-7,
-          "uncached": 5.040000000000001e-6
+          "cache_read": 1.792e-6,
+          "uncached": 7.92e-6
         },
         "input_token_details": {
           "cache_miss": 36,
           "cache_read": 256
         },
         "input_tokens": 292,
-        "output_cost": 1.232e-5,
+        "output_cost": 2.9040000000000003e-5,
         "output_cost_details": {
-          "text": 1.232e-5
+          "text": 2.9040000000000003e-5
         },
         "output_token_details": {
           "reasoning": "nil"
         },
         "output_tokens": 44,
-        "total_cost": 1.8076800000000003e-5,
+        "total_cost": 3.8752000000000004e-5,
         "total_tokens": 336
       }
     }

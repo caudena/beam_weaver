@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.1.17 - 2026-08-13
+
+### Added
+
+- Added the first-class `google:gemini-3.7-flash` profile with its 1,048,576
+  input-token and 65,536 output-token limits, multimodal inputs, text output,
+  `low`/`medium`/`high` thinking levels, Gemini built-in tools, structured
+  output, and introductory standard/cache/batch/flex/priority pricing.
+
+### Changed
+
+- Updated DeepSeek V4 Flash and Pro model versions and pricing to the August 13
+  catalog. Cost calculation now applies the provider's UTC peak windows using
+  the response timestamp and defaults to off-peak prices when no timestamp is
+  available.
+
 ## 0.1.16 - 2026-08-13
 
 ### Added

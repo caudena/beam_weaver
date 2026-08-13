@@ -45,25 +45,25 @@
       "text": "{\"answer\": \"pong\"}",
       "tool_calls": [],
       "usage_metadata": {
-        "input_cost": 1.7718400000000003e-5,
+        "input_cost": 2.8176e-5,
         "input_cost_details": {
-          "cache_read": 3.584e-7,
-          "uncached": 1.7360000000000003e-5
+          "cache_read": 8.96e-7,
+          "uncached": 2.728e-5
         },
         "input_token_details": {
           "cache_miss": 124,
           "cache_read": 128
         },
         "input_tokens": 252,
-        "output_cost": 1.764e-5,
+        "output_cost": 4.1580000000000005e-5,
         "output_cost_details": {
-          "text": 1.764e-5
+          "text": 4.1580000000000005e-5
         },
         "output_token_details": {
           "reasoning": 55
         },
         "output_tokens": 63,
-        "total_cost": 3.5358400000000004e-5,
+        "total_cost": 6.9756e-5,
         "total_tokens": 315
       }
     }

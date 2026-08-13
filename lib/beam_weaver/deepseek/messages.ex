@@ -369,7 +369,8 @@ defmodule BeamWeaver.DeepSeek.Messages do
        when is_map(usage) do
     with model when is_binary(model) <- response["model"],
          {:ok, profile} <- ProfileRegistry.fetch(:deepseek, model),
-         cost when is_map(cost) <- UsageCost.calculate(profile, response["usage"] || usage) do
+         cost when is_map(cost) <-
+           UsageCost.calculate(profile, response["usage"] || usage, at: response_created_at(response)) do
       usage = Map.merge(usage, cost)
       metadata = Map.merge(message.metadata, %{estimated_cost: cost.total_cost, cost_currency: "USD"})
 
@@ -392,6 +393,14 @@ defmodule BeamWeaver.DeepSeek.Messages do
   end
 
   defp put_usage_cost(other, _response), do: other
+
+  defp response_created_at(response) do
+    case response["created_at"] || response["created"] do
+      unix when is_integer(unix) -> DateTime.from_unix!(unix)
+      unix when is_float(unix) -> unix |> trunc() |> DateTime.from_unix!()
+      _other -> nil
+    end
+  end
 
   defp merge_usage_details(nil, response), do: usage_metadata(response)
 

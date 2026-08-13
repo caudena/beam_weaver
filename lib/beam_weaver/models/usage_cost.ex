@@ -5,7 +5,9 @@ defmodule BeamWeaver.Models.UsageCost do
   Pricing is read from the profile's `extra` map using the canonical
   `input_price_per_mtok`, `cached_input_price_per_mtok`, and
   `output_price_per_mtok` keys. Explicit cache-hit and cache-miss token counts
-  take precedence over deriving uncached input from the total.
+  take precedence over deriving uncached input from the total. Profiles can
+  also provide UTC `time_based_pricing`; when `:at` is supplied, its matching
+  rate set overrides the canonical off-peak rates.
   """
 
   alias BeamWeaver.MapAccess
@@ -13,9 +15,11 @@ defmodule BeamWeaver.Models.UsageCost do
 
   @million 1_000_000
 
-  @spec calculate(Profile.t() | map(), map()) :: map() | nil
-  def calculate(profile, usage) when is_map(usage) do
-    pricing = pricing(profile)
+  @spec calculate(Profile.t() | map(), map(), keyword()) :: map() | nil
+  def calculate(profile, usage, opts \\ [])
+
+  def calculate(profile, usage, opts) when is_map(usage) and is_list(opts) do
+    pricing = profile |> pricing() |> scheduled_pricing(Keyword.get(opts, :at))
     input_price = number(pricing, :input_price_per_mtok)
     output_price = number(pricing, :output_price_per_mtok)
 
@@ -46,7 +50,7 @@ defmodule BeamWeaver.Models.UsageCost do
     end
   end
 
-  def calculate(_profile, _usage), do: nil
+  def calculate(_profile, _usage, _opts), do: nil
 
   defp pricing(%Profile{extra: extra}) when is_map(extra), do: extra
 
@@ -58,6 +62,52 @@ defmodule BeamWeaver.Models.UsageCost do
   end
 
   defp pricing(_profile), do: %{}
+
+  defp scheduled_pricing(pricing, %DateTime{} = at) do
+    case MapAccess.get(pricing, :time_based_pricing) do
+      schedule when is_map(schedule) ->
+        mode = if peak?(schedule, at), do: :peak, else: MapAccess.get(schedule, :default_mode)
+
+        case MapAccess.get(schedule, mode) do
+          rates when is_map(rates) -> merge_rates(pricing, rates)
+          _other -> pricing
+        end
+
+      _other ->
+        pricing
+    end
+  end
+
+  defp scheduled_pricing(pricing, _at), do: pricing
+
+  defp merge_rates(pricing, rates) do
+    Enum.reduce(
+      [:input_price_per_mtok, :cached_input_price_per_mtok, :output_price_per_mtok],
+      pricing,
+      fn key, merged ->
+        case MapAccess.fetch(rates, key) do
+          {:ok, value} -> Map.put(merged, key, value)
+          :error -> merged
+        end
+      end
+    )
+  end
+
+  defp peak?(schedule, at) do
+    utc = at |> DateTime.to_unix(:second) |> DateTime.from_unix!(:second)
+    minute = utc.hour * 60 + utc.minute
+
+    schedule
+    |> MapAccess.get(:peak_windows)
+    |> List.wrap()
+    |> Enum.any?(fn window ->
+      start_minute = MapAccess.get(window, :start_minute)
+      end_minute = MapAccess.get(window, :end_minute)
+
+      is_integer(start_minute) and is_integer(end_minute) and
+        minute >= start_minute and minute < end_minute
+    end)
+  end
 
   defp input_tokens(usage),
     do: token_count(usage, [:input_tokens, :prompt_tokens]) || 0

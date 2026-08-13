@@ -194,18 +194,20 @@ tokens and are never charged twice.
 
 Current prices per one million tokens:
 
-| Model | Cached input | Uncached input | Output |
-| --- | ---: | ---: | ---: |
-| `deepseek-v4-flash` | $0.0028 | $0.14 | $0.28 |
-| `deepseek-v4-pro` | $0.003625 | $0.435 | $0.87 |
+| Model | Mode | Cached input | Uncached input | Output |
+| --- | --- | ---: | ---: | ---: |
+| `deepseek-v4-flash` | Off-peak | $0.007 | $0.22 | $0.66 |
+| `deepseek-v4-flash` | Peak | $0.014 | $0.44 | $1.32 |
+| `deepseek-v4-pro` | Off-peak | $0.022 | $0.66 | $1.98 |
+| `deepseek-v4-pro` | Peak | $0.044 | $1.32 | $3.96 |
+
+Peak pricing applies from 01:00 through 04:00 UTC and from 06:00 through
+10:00 UTC. Each interval includes its start and excludes its end. Costs use
+the provider response timestamp; responses without one use off-peak prices.
 
 The published account concurrency limits are 2,500 for Flash and 500 for Pro.
 They are profile metadata, not an in-process limiter, because DeepSeek enforces
 them at account scope across all API keys.
-
-DeepSeek has announced a future 2x peak-hours multiplier but has not announced
-its effective date. BeamWeaver records the policy in metadata and documentation
-without applying it to calculated costs yet.
 
 ## Errors And Retries
 

@@ -6,7 +6,7 @@ BeamWeaver includes a Gemini Developer API provider under `BeamWeaver.Google`.
 
 - `BeamWeaver.Google.ChatModel` implements `BeamWeaver.Core.ChatModel`.
 - Public model identifiers use the `google:` provider prefix, for example
-  `google:gemini-3.6-flash`.
+  `google:gemini-3.7-flash`.
 - Bare `gemini-*` identifiers are intentionally rejected so Gemini Developer
   API and future Vertex AI adapters do not share an ambiguous namespace.
 - Requests go through `BeamWeaver.Transport`, so fake and replay transports can
@@ -24,14 +24,17 @@ BeamWeaver includes a Gemini Developer API provider under `BeamWeaver.Google`.
   entries are dereferenced, unsupported JSON Schema annotation/object keywords
   such as `$defs`, `title`, `default`, and `additionalProperties` are removed,
   and nested property schemas are cleaned recursively.
-- `google:gemini-3.6-flash` and `google:gemini-3.5-flash-lite` are checked in
-  with Google's published text-only output profiles. Both accept text, image,
-  video, audio, and PDF input and support thinking, structured output, function
-  calling, code execution, File Search, Google Maps grounding, Search
+- `google:gemini-3.7-flash`, `google:gemini-3.6-flash`, and
+  `google:gemini-3.5-flash-lite` are checked in
+  with Google's published text-only output profiles. All three accept text,
+  image, video, audio, and PDF input and support thinking, structured output,
+  function calling, code execution, File Search, Google Maps grounding, Search
   grounding, URL context, computer use, caching, batch, flex, and priority
   inference. Computer use is currently a preview capability.
-- These models use `thinking_level` instead of `thinking_budget`. Gemini 3.6
-  Flash defaults to `medium`; Gemini 3.5 Flash-Lite defaults to `minimal`.
+- These models use `thinking_level` instead of `thinking_budget`. Gemini 3.7
+  Flash supports `low`, `medium`, and `high` and defaults to `medium`; Gemini
+  3.6 Flash also defaults to `medium`, while Gemini 3.5 Flash-Lite defaults to
+  `minimal`.
   Google deprecates and ignores `temperature`, `top_p`, and `top_k` for these
   releases and does not support `candidate_count`, so their checked-in profiles
   reject those options before transport. They also reject requests whose last
@@ -58,13 +61,20 @@ BeamWeaver includes a Gemini Developer API provider under `BeamWeaver.Google`.
 ## Current Flash Profiles
 
 Prices are USD per one million tokens for the Gemini Developer API. Cached
-input is the context-caching token price; cache storage is $1.00 per one million
-tokens per hour for both models.
+input is the context-caching token price. Gemini 3.7 Flash and 3.6 Flash use
+Google's published pricing. The 3.7 Flash entry uses its introductory pricing
+through December 31, 2026; its standard rates double on January 1, 2027. Its
+introductory cache storage price is $0.50 per one million tokens per hour.
 
 | BeamWeaver ID | Input / output limit | Standard input / cached input / output | Batch and flex input / cached input / output | Priority input / cached input / output |
 | --- | --- | --- | --- | --- |
+| `google:gemini-3.7-flash` | 1,048,576 / 65,536 | $0.75 / $0.075 / $3.75 | $0.375 / $0.0375 / $1.875 | $1.35 / $0.135 / $6.75 |
 | `google:gemini-3.6-flash` | 1,048,576 / 65,536 | $1.50 / $0.15 / $7.50 | $0.75 / $0.075 / $3.75 | $2.70 / $0.27 / $13.50 |
 | `google:gemini-3.5-flash-lite` | 1,048,576 / 65,536 | $0.30 / $0.03 / $2.50 | $0.15 / $0.02 / $1.25 | $0.54 / $0.05 / $4.50 |
+
+From January 1, 2027, Gemini 3.7 Flash standard input, cached input, and output
+rates become $1.50, $0.15, and $7.50 respectively. See the live pricing page
+for the corresponding batch, flex, priority, and storage rates.
 
 See Google's [model specifications](https://ai.google.dev/gemini-api/docs/models)
 and [Gemini Developer API pricing](https://ai.google.dev/gemini-api/docs/pricing)
@@ -74,7 +84,7 @@ for the live provider source of truth.
 
 ```elixir
 {:ok, model} =
-  BeamWeaver.Models.init_chat_model("google:gemini-3.6-flash",
+  BeamWeaver.Models.init_chat_model("google:gemini-3.7-flash",
     thinking_level: :medium,
     include_thoughts: true
   )
@@ -114,7 +124,7 @@ BeamWeaver.Core.ChatModel.invoke(model, messages,
 
 When a structured-output request does not set `:max_output_tokens`,
 BeamWeaver uses the model profile's output limit for Gemini. For example,
-`google:gemini-3.6-flash` defaults structured-output calls to `65_536`
+`google:gemini-3.7-flash` defaults structured-output calls to `65_536`
 `maxOutputTokens`, while an explicit `max_output_tokens:` value still wins.
 
 Token counting uses Gemini's count-tokens endpoint:
