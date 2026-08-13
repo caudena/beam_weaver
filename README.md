@@ -277,6 +277,7 @@ Core guides:
 - [Structured Output](docs/structured_output.md)
 - [Event Streaming](docs/event_streaming.md)
 - [Persistence](docs/persistence.md)
+- [Immutable Todos](docs/todos.md)
 - [Memory](docs/memory.md)
 - [Retrieval](docs/retrieval.md)
 - [Filesystem](docs/filesystem.md)

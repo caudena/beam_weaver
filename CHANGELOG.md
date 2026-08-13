@@ -12,6 +12,10 @@
   work timeouts to the supervised agent runtime, plus the policy-neutral
   `BeamWeaver.DispatchHook` for application checks immediately before model or
   tool attempts.
+- Added immutable `BeamWeaver.Todo` revisions with stable IDs, bounded DAG
+  validation, evidence-bearing transitions, and deterministic hashes.
+- Added the optional `BeamWeaver.Agent.Subagent.Host` boundary for applications
+  that own durable child admission and result delivery.
 
 ### Changed
 - Checkpoint latest/history/pruning/fork selection now uses a persisted
@@ -20,12 +24,17 @@
 - Atomic checkpoint-plus-write and batch operations now fail before writing
   when an adapter does not implement the required transaction callback; they
   never fall back to sequential partial writes.
+- Host-managed subagents use only explicit descriptors and typed host results;
+  they do not invoke nested runners, copy parent state, or use the legacy child
+  result cache.
 
 ### Fixed
 
 - Checkpoint storage failures are no longer converted into missing checkpoints
   or empty histories at public runtime boundaries.
-  
+- Adapter structs now load their module before callback discovery, so a valid
+  application adapter is not rejected on its first invocation.
+
 ## 0.1.17 - 2026-08-13
 
 ### Added
