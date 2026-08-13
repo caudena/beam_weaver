@@ -42,25 +42,25 @@
       "text": "pong",
       "tool_calls": [],
       "usage_metadata": {
-        "input_cost": 1.2460000000000001e-5,
+        "input_cost": 1.9580000000000002e-5,
         "input_cost_details": {
           "cache_read": 0.0,
-          "uncached": 1.2460000000000001e-5
+          "uncached": 1.9580000000000002e-5
         },
         "input_token_details": {
           "cache_miss": 89,
           "cache_read": 0
         },
         "input_tokens": 89,
-        "output_cost": 8.12e-6,
+        "output_cost": 1.914e-5,
         "output_cost_details": {
-          "text": 8.12e-6
+          "text": 1.914e-5
         },
         "output_token_details": {
           "reasoning": 26
         },
         "output_tokens": 29,
-        "total_cost": 2.0580000000000003e-5,
+        "total_cost": 3.872e-5,
         "total_tokens": 118
       }
     }

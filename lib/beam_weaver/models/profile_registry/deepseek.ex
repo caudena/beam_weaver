@@ -12,7 +12,7 @@ defmodule BeamWeaver.Models.ProfileRegistry.DeepSeek do
   @common_profile %{
     status: :active,
     release_date: "2026-04-24",
-    last_updated: "2026-08-12",
+    last_updated: "2026-08-13",
     max_input_tokens: 1_048_576,
     max_output_tokens: 393_216,
     text_inputs: true,
@@ -34,6 +34,7 @@ defmodule BeamWeaver.Models.ProfileRegistry.DeepSeek do
              provider: :deepseek,
              id: "deepseek-v4-flash",
              name: "DeepSeek V4 Flash",
+             release_date: "2026-07-31",
              responses_api: true,
              supported_params: Params.deepseek_chat_completions(),
              supported_params_by_api: %{
@@ -43,7 +44,7 @@ defmodule BeamWeaver.Models.ProfileRegistry.DeepSeek do
              extra: %{
                api_families: [:chat_completions, :responses],
                openai_compatible: true,
-               model_version: "DeepSeek-V4-Flash",
+               model_version: "DeepSeek-V4-Flash-0731",
                thinking_modes: [:enabled, :disabled],
                default_thinking_mode: :enabled,
                reasoning_efforts: [:low, :high, :max],
@@ -53,17 +54,29 @@ defmodule BeamWeaver.Models.ProfileRegistry.DeepSeek do
                strict_tool_calls: :beta,
                automatic_context_caching: true,
                concurrency_limit: 2_500,
-               input_price_per_mtok: 0.14,
-               cached_input_price_per_mtok: 0.0028,
-               output_price_per_mtok: 0.28,
+               input_price_per_mtok: 0.22,
+               cached_input_price_per_mtok: 0.007,
+               output_price_per_mtok: 0.66,
                cost_currency: "USD",
                pricing_source_url: "https://api-docs.deepseek.com/quick_start/pricing/",
-               pricing_last_checked: "2026-08-12",
-               pending_peak_pricing: %{
-                 multiplier: 2.0,
-                 hours: ["09:00-12:00", "14:00-18:00"],
-                 timezone: "UTC+08:00",
-                 effective_date: :unannounced
+               pricing_last_checked: "2026-08-13",
+               time_based_pricing: %{
+                 timezone: "UTC",
+                 default_mode: :off_peak,
+                 peak_windows: [
+                   %{start_minute: 60, end_minute: 240},
+                   %{start_minute: 360, end_minute: 600}
+                 ],
+                 off_peak: %{
+                   input_price_per_mtok: 0.22,
+                   cached_input_price_per_mtok: 0.007,
+                   output_price_per_mtok: 0.66
+                 },
+                 peak: %{
+                   input_price_per_mtok: 0.44,
+                   cached_input_price_per_mtok: 0.014,
+                   output_price_per_mtok: 1.32
+                 }
                }
              }
            })
@@ -74,6 +87,7 @@ defmodule BeamWeaver.Models.ProfileRegistry.DeepSeek do
            provider: :deepseek,
            id: "deepseek-v4-pro",
            name: "DeepSeek V4 Pro",
+           release_date: "2026-08-13",
            responses_api: true,
            supported_params: Params.deepseek_chat_completions(),
            supported_params_by_api: %{
@@ -83,7 +97,7 @@ defmodule BeamWeaver.Models.ProfileRegistry.DeepSeek do
            extra: %{
              api_families: [:chat_completions, :responses],
              openai_compatible: true,
-             model_version: "DeepSeek-V4-Pro",
+             model_version: "DeepSeek-V4-Pro-0813",
              thinking_modes: [:enabled, :disabled],
              default_thinking_mode: :enabled,
              reasoning_efforts: [:low, :high, :max],
@@ -93,17 +107,29 @@ defmodule BeamWeaver.Models.ProfileRegistry.DeepSeek do
              strict_tool_calls: :beta,
              automatic_context_caching: true,
              concurrency_limit: 500,
-             input_price_per_mtok: 0.435,
-             cached_input_price_per_mtok: 0.003625,
-             output_price_per_mtok: 0.87,
+             input_price_per_mtok: 0.66,
+             cached_input_price_per_mtok: 0.022,
+             output_price_per_mtok: 1.98,
              cost_currency: "USD",
              pricing_source_url: "https://api-docs.deepseek.com/quick_start/pricing/",
-             pricing_last_checked: "2026-08-12",
-             pending_peak_pricing: %{
-               multiplier: 2.0,
-               hours: ["09:00-12:00", "14:00-18:00"],
-               timezone: "UTC+08:00",
-               effective_date: :unannounced
+             pricing_last_checked: "2026-08-13",
+             time_based_pricing: %{
+               timezone: "UTC",
+               default_mode: :off_peak,
+               peak_windows: [
+                 %{start_minute: 60, end_minute: 240},
+                 %{start_minute: 360, end_minute: 600}
+               ],
+               off_peak: %{
+                 input_price_per_mtok: 0.66,
+                 cached_input_price_per_mtok: 0.022,
+                 output_price_per_mtok: 1.98
+               },
+               peak: %{
+                 input_price_per_mtok: 1.32,
+                 cached_input_price_per_mtok: 0.044,
+                 output_price_per_mtok: 3.96
+               }
              }
            }
          })

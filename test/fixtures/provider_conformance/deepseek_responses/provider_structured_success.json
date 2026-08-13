@@ -30,25 +30,25 @@
       "text": "{\"answer\": \"pong\"}",
       "tool_calls": [],
       "usage_metadata": {
-        "input_cost": 4.1384e-6,
+        "input_cost": 6.836e-6,
         "input_cost_details": {
-          "cache_read": 3.584e-7,
-          "uncached": 3.7800000000000002e-6
+          "cache_read": 8.96e-7,
+          "uncached": 5.940000000000001e-6
         },
         "input_token_details": {
           "cache_miss": 27,
           "cache_read": 128
         },
         "input_tokens": 155,
-        "output_cost": 2.9680000000000004e-5,
+        "output_cost": 6.996000000000001e-5,
         "output_cost_details": {
-          "text": 2.9680000000000004e-5
+          "text": 6.996000000000001e-5
         },
         "output_token_details": {
           "reasoning": 98
         },
         "output_tokens": 106,
-        "total_cost": 3.38184e-5,
+        "total_cost": 7.679600000000001e-5,
         "total_tokens": 261
       }
     }

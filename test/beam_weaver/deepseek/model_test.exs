@@ -353,6 +353,7 @@ defmodule BeamWeaver.DeepSeek.ModelTest do
     response = %{
       "id" => "chat_1",
       "model" => "deepseek-v4-flash",
+      "created" => 1_786_579_200,
       "choices" => [
         %{
           "finish_reason" => "stop",
@@ -375,7 +376,7 @@ defmodule BeamWeaver.DeepSeek.ModelTest do
              message.content
 
     assert message.metadata.reasoning_content == "private chain"
-    assert_in_delta message.usage_metadata.total_cost, 0.0000022512, 1.0e-12
+    assert_in_delta message.usage_metadata.total_cost, 0.000004648, 1.0e-12
   end
 
   test "Responses requires input or instructions and validates request bounds and user" do

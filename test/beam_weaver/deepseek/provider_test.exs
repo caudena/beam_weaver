@@ -19,9 +19,18 @@ defmodule BeamWeaver.DeepSeek.ProviderTest do
     assert flash.max_output_tokens == 393_216
     assert flash.chat_completions_api
     assert flash.responses_api
-    assert flash.extra.input_price_per_mtok == 0.14
-    assert flash.extra.cached_input_price_per_mtok == 0.0028
-    assert flash.extra.output_price_per_mtok == 0.28
+    assert flash.release_date == "2026-07-31"
+    assert flash.extra.model_version == "DeepSeek-V4-Flash-0731"
+    assert flash.extra.input_price_per_mtok == 0.22
+    assert flash.extra.cached_input_price_per_mtok == 0.007
+    assert flash.extra.output_price_per_mtok == 0.66
+    assert flash.extra.time_based_pricing.peak.output_price_per_mtok == 1.32
+
+    assert flash.extra.time_based_pricing.peak_windows == [
+             %{start_minute: 60, end_minute: 240},
+             %{start_minute: 360, end_minute: 600}
+           ]
+
     assert flash.extra.reasoning_efforts == [:low, :high, :max]
 
     assert flash.extra.compatibility_reasoning_efforts == %{
@@ -33,9 +42,12 @@ defmodule BeamWeaver.DeepSeek.ProviderTest do
     assert {:ok, pro} = ProfileRegistry.fetch(:deepseek, "deepseek-v4-pro")
     assert pro.chat_completions_api
     assert pro.responses_api
-    assert pro.extra.input_price_per_mtok == 0.435
-    assert pro.extra.cached_input_price_per_mtok == 0.003625
-    assert pro.extra.output_price_per_mtok == 0.87
+    assert pro.release_date == "2026-08-13"
+    assert pro.extra.model_version == "DeepSeek-V4-Pro-0813"
+    assert pro.extra.input_price_per_mtok == 0.66
+    assert pro.extra.cached_input_price_per_mtok == 0.022
+    assert pro.extra.output_price_per_mtok == 1.98
+    assert pro.extra.time_based_pricing.peak.output_price_per_mtok == 3.96
     assert pro.extra.reasoning_efforts == flash.extra.reasoning_efforts
 
     assert pro.extra.compatibility_reasoning_efforts ==

@@ -37,25 +37,25 @@
         }
       ],
       "usage_metadata": {
-        "input_cost": 1.66768e-5,
+        "input_cost": 2.6872e-5,
         "input_cost_details": {
-          "cache_read": 7.168e-7,
-          "uncached": 1.596e-5
+          "cache_read": 1.792e-6,
+          "uncached": 2.508e-5
         },
         "input_token_details": {
           "cache_miss": 114,
           "cache_read": 256
         },
         "input_tokens": 370,
-        "output_cost": 1.932e-5,
+        "output_cost": 4.554e-5,
         "output_cost_details": {
-          "text": 1.932e-5
+          "text": 4.554e-5
         },
         "output_token_details": {
           "reasoning": 24
         },
         "output_tokens": 69,
-        "total_cost": 3.59968e-5,
+        "total_cost": 7.2412e-5,
         "total_tokens": 439
       }
     }

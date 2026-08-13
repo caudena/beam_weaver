@@ -27,25 +27,25 @@
       "text": "streamed pong",
       "tool_calls": [],
       "usage_metadata": {
-        "input_cost": 1.2740000000000002e-5,
+        "input_cost": 2.0019999999999998e-5,
         "input_cost_details": {
           "cache_read": 0.0,
-          "uncached": 1.2740000000000002e-5
+          "uncached": 2.0019999999999998e-5
         },
         "input_token_details": {
           "cache_miss": 91,
           "cache_read": 0
         },
         "input_tokens": 91,
-        "output_cost": 9.800000000000001e-6,
+        "output_cost": 2.3100000000000002e-5,
         "output_cost_details": {
-          "text": 9.800000000000001e-6
+          "text": 2.3100000000000002e-5
         },
         "output_token_details": {
           "reasoning": 30
         },
         "output_tokens": 35,
-        "total_cost": 2.2540000000000004e-5,
+        "total_cost": 4.312e-5,
         "total_tokens": 126
       }
     }
