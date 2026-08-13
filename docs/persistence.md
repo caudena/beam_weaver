@@ -359,8 +359,9 @@ adapter-specific. SQLite applications add the optional adapter themselves:
 {:ecto_sqlite3, "~> 0.24"}
 ```
 
-BeamWeaver does not make `ecto_sqlite3` a runtime dependency for applications
-that use PostgreSQL.
+BeamWeaver declares `ecto_sqlite3` as optional. Applications using PostgreSQL
+are not forced to install it; SQLite applications include it explicitly in
+their own dependency list.
 
 Checkpoint schema version 2 adds `commit_order`, backfills existing rows by
 their stored insertion order, and makes `(thread_id, checkpoint_ns,

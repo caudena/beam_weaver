@@ -31,7 +31,7 @@ defmodule BeamWeaver.MixProject do
       {:ex_doc, "~> 0.40", only: :dev, runtime: false},
       {:ecto_sql, "~> 3.13"},
       {:postgrex, "~> 0.20"},
-      {:ecto_sqlite3, "~> 0.24.1", only: :test},
+      {:ecto_sqlite3, "~> 0.24.1", optional: true},
       {:req, "~> 0.7.2"},
       {:finch, "~> 0.23.0"},
       {:fastest_tiktoken, "~> 0.1.1"},

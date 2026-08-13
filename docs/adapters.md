@@ -34,7 +34,7 @@ Normal runtime calls never create database tables automatically.
 `BeamWeaver.Checkpoint.Ecto` supports PostgreSQL and SQLite through the same
 Ecto query/write implementation. The application Repo selects the migration
 dialect and transaction behavior. SQLite remains optional: applications that
-choose it add `ecto_sqlite3`; PostgreSQL users do not receive that dependency.
+choose it add `ecto_sqlite3`; PostgreSQL users are not forced to install it.
 Other durable Ecto adapters retain the database support documented by their
 own modules.
 

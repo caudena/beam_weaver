@@ -10,7 +10,7 @@
   output, and introductory standard/cache/batch/flex/priority pricing.
 - Added optional SQLite checkpoint persistence through
   `BeamWeaver.Checkpoint.Ecto`. Applications opt in by adding `ecto_sqlite3`;
-  BeamWeaver does not add it as a runtime dependency.
+  BeamWeaver declares it as an optional dependency.
 
 ### Changed
 

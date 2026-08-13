@@ -20,6 +20,8 @@ defmodule BeamWeaver.Migrations do
 
   use Ecto.Migration
 
+  @sqlite_adapter :"Elixir.Ecto.Adapters.SQLite3"
+
   @doc """
   Migrates selected BeamWeaver adapter tables up to their current version.
   """
@@ -66,7 +68,7 @@ defmodule BeamWeaver.Migrations do
       Ecto.Adapters.Postgres ->
         BeamWeaver.Migrations.Postgres
 
-      Ecto.Adapters.SQLite3 ->
+      @sqlite_adapter ->
         BeamWeaver.Migrations.SQLite
 
       adapter ->

@@ -5,8 +5,8 @@ defmodule BeamWeaver.Checkpoint.Ecto do
   This adapter implements the same `BeamWeaver.Checkpoint.Saver` contract as
   `BeamWeaver.Checkpoint.ETS`. Create its database tables with
   `BeamWeaver.Migrations` from application-owned Ecto migrations. Applications
-  using SQLite must add `ecto_sqlite3` themselves; it is not a BeamWeaver
-  runtime dependency.
+  using SQLite must add `ecto_sqlite3` themselves. BeamWeaver declares the
+  adapter as optional, so PostgreSQL consumers are not forced to install it.
 
   Reads and writes use one Ecto query implementation for both databases. Only
   schema migration SQL and write serialization differ by adapter.

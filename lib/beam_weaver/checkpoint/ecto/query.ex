@@ -4,6 +4,8 @@ defmodule BeamWeaver.Checkpoint.Ecto.Query do
   alias BeamWeaver.Adapter.Error, as: AdapterError
   alias BeamWeaver.Core.Error
 
+  @sqlite_adapter :"Elixir.Ecto.Adapters.SQLite3"
+
   defmodule CheckpointRow do
     @moduledoc false
     use Ecto.Schema
@@ -97,7 +99,7 @@ defmodule BeamWeaver.Checkpoint.Ecto.Query do
     do: {:error, Error.new(:invalid_checkpoint, "checkpoint config requires thread_id")}
 
   def postgres?(saver), do: adapter(saver) == Ecto.Adapters.Postgres
-  def sqlite?(saver), do: adapter(saver) == Ecto.Adapters.SQLite3
+  def sqlite?(saver), do: adapter(saver) == @sqlite_adapter
 
   defp adapter(saver), do: saver.repo.__adapter__()
 
