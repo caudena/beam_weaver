@@ -19,7 +19,7 @@ defmodule BeamWeaver.Models.ProfileRegistry.XAI do
   @xai_chat_aliases %{
     "grok-4.5-latest" => "grok-4.5",
     "grok-build-latest" => "grok-4.5",
-    "grok-latest" => "grok-4.5",
+    "grok-latest" => "grok-4.3",
     "grok-4.3-latest" => "grok-4.3",
     "grok-4" => "grok-4.3",
     "grok-4-latest" => "grok-4.3",
@@ -74,13 +74,64 @@ defmodule BeamWeaver.Models.ProfileRegistry.XAI do
   }
 
   @profiles %{
+    {:xai, "grok-4.6"} =>
+      Profile.new(%{
+        provider: :xai,
+        id: "grok-4.6",
+        name: "Grok 4.6",
+        status: :active,
+        release_date: "2026-08-12",
+        last_updated: "2026-08-12",
+        responses_api: true,
+        chat_completions_api: true,
+        max_input_tokens: 500_000,
+        text_inputs: true,
+        image_inputs: true,
+        image_url_inputs: true,
+        text_outputs: true,
+        reasoning_output: true,
+        tool_calling: true,
+        tool_call_streaming: true,
+        tool_choice: true,
+        parallel_tool_calls: true,
+        structured_output: true,
+        streaming: true,
+        usage_metadata: true,
+        attachment: true,
+        supported_params: Params.xai_responses(),
+        supported_params_by_api: %{
+          responses: Params.xai_responses(),
+          chat_completions: Params.xai_chat_completions()
+        },
+        tokenizer: :o200k_base,
+        extra: %{
+          frontier: true,
+          knowledge_cutoff: "2026-02-01",
+          text_output_limit: :unlimited,
+          input_price_per_mtok: 2.00,
+          cached_input_price_per_mtok: 0.50,
+          output_price_per_mtok: 6.00,
+          higher_context_pricing_threshold_tokens: 200_000,
+          higher_context_input_price_per_mtok: 4.00,
+          higher_context_cached_input_price_per_mtok: 1.00,
+          higher_context_output_price_per_mtok: 12.00,
+          cost_currency: "USD",
+          pricing_source_url: "https://docs.x.ai/developers/pricing",
+          pricing_modes: [:standard, :priority],
+          priority_processing_price_multiplier: 2.0,
+          priority_processing_service_tier: :priority,
+          default_reasoning_effort: :high,
+          reasoning_efforts: [:low, :medium, :high, :xhigh],
+          regions: ["us-east-1", "us-west-2"]
+        }
+      }),
     {:xai, "grok-4.5"} =>
       Profile.new(%{
         provider: :xai,
         id: "grok-4.5",
         name: "Grok 4.5",
         release_date: "2026-07-08",
-        last_updated: "2026-07-08",
+        last_updated: "2026-08-12",
         responses_api: true,
         chat_completions_api: true,
         max_input_tokens: 500_000,
@@ -106,11 +157,19 @@ defmodule BeamWeaver.Models.ProfileRegistry.XAI do
         tokenizer: :o200k_base,
         extra: %{
           input_price_per_mtok: 2.00,
-          cached_input_price_per_mtok: 0.50,
+          cached_input_price_per_mtok: 0.30,
           output_price_per_mtok: 6.00,
-          default_reasoning_effort: :high,
-          reasoning_efforts: [:low, :medium, :high],
           higher_context_pricing_threshold_tokens: 200_000,
+          higher_context_input_price_per_mtok: 4.00,
+          higher_context_cached_input_price_per_mtok: 0.60,
+          higher_context_output_price_per_mtok: 12.00,
+          cost_currency: "USD",
+          pricing_source_url: "https://docs.x.ai/developers/pricing",
+          pricing_modes: [:standard, :priority],
+          priority_processing_price_multiplier: 2.0,
+          priority_processing_service_tier: :priority,
+          default_reasoning_effort: :high,
+          reasoning_efforts: [:low, :medium, :high, :xhigh],
           regions: ["us-east-1", "us-west-2"]
         }
       }),

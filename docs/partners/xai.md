@@ -1,6 +1,8 @@
 # BeamWeaver xAI
 
 BeamWeaver includes an OpenAI-compatible xAI provider under `BeamWeaver.XAI`.
+This guide reflects the xAI model catalog and pricing documentation checked on
+2026-08-12.
 
 ## Implemented
 
@@ -34,7 +36,7 @@ BeamWeaver includes an OpenAI-compatible xAI provider under `BeamWeaver.XAI`.
   `stop` sequences.
 - Deferred Chat Completions requests can be followed up with
   `BeamWeaver.XAI.Client.deferred_completion/3`.
-- Checked-in chat profiles cover `grok-4.5`, `grok-4.3`,
+- Checked-in chat profiles cover `grok-4.6`, `grok-4.5`, `grok-4.3`,
   `grok-4.20-0309-reasoning`, `grok-4.20-0309-non-reasoning`,
   `grok-4.20-multi-agent-0309`, and `grok-build-0.1`, with alias handling for
   documented xAI slugs.
@@ -46,7 +48,7 @@ BeamWeaver includes an OpenAI-compatible xAI provider under `BeamWeaver.XAI`.
 ```elixir
 model =
   BeamWeaver.XAI.chat_model(
-    model: "grok-4.5"
+    model: "grok-4.6"
   )
 
 BeamWeaver.Core.ChatModel.invoke(model, [
@@ -59,7 +61,7 @@ Use Chat Completions explicitly when that wire shape is required:
 ```elixir
 model =
   BeamWeaver.XAI.chat_completions_model(
-    model: "grok-4.5"
+    model: "grok-4.6"
   )
 ```
 
@@ -81,7 +83,7 @@ Use `BeamWeaver.XAI.Tools.live_search/1` for Chat Completions search tools.
 Model initialization can use explicit or inferred xAI identifiers:
 
 ```elixir
-{:ok, model} = BeamWeaver.Models.init_chat_model("xai:grok-4.5")
+{:ok, model} = BeamWeaver.Models.init_chat_model("xai:grok-4.6")
 {:ok, model} = BeamWeaver.Models.init_chat_model("xai:grok-4.20-0309-reasoning")
 ```
 
@@ -92,18 +94,46 @@ Embeddings use the explicit xAI prefix:
 {:ok, vector} = BeamWeaver.Core.EmbeddingModel.embed_query(embeddings, "hello")
 ```
 
-## Current Model Policy
+## Grok 4.6
 
-xAI recommends `grok-4.5` for coding, agentic tasks, and knowledge work.
-BeamWeaver records its current profile as 500k context, text and image inputs,
-text output, function tools, structured output, configurable low/medium/high
-reasoning, and base token pricing of $2.00/M input, $0.50/M cached input, and
-$6.00/M output. BeamWeaver keeps profiles for the other current chat models
-listed above, plus embedding model `v1`. Imagine and voice models are not chat
-or embedding models and are not constructed through `init_chat_model/2`.
-The `grok-4.5` profile records xAI's higher-context pricing threshold at 200k
-tokens, but leaves the higher-context rate to xAI billing because the public docs
-do not publish that rate.
+xAI recommends `grok-4.6` for general use, including coding, and BeamWeaver now
+uses it as the default xAI chat model. The checked-in profile records both the
+Responses and Chat Completions APIs, a 500,000-token context window, text and
+image input, text output, function calling, structured output, streaming, a
+February 1, 2026 knowledge cutoff, and `low`, `medium`, `high`, and `xhigh`
+reasoning effort. `high` is the default. xAI publishes no text-output limit for
+this model, so the profile leaves `max_output_tokens` unset and records
+`text_output_limit: :unlimited` explicitly.
+
+The current xAI catalog does not publish a `grok-4.6-latest` or
+`grok-4.6-fast` model ID. Use the exact `grok-4.6` identifier. Existing aliases
+remain mapped to the canonical models xAI currently lists; in particular,
+`grok-4.5-latest` and `grok-build-latest` remain Grok 4.5 aliases, while
+`grok-latest` remains a Grok 4.3 alias.
+
+Standard prices per million tokens are:
+
+| Model | Context tier | Input | Cached input | Output |
+| --- | --- | ---: | ---: | ---: |
+| `grok-4.6` | Under 200k input tokens | $2.00 | $0.50 | $6.00 |
+| `grok-4.6` | 200k tokens or more | $4.00 | $1.00 | $12.00 |
+| `grok-4.5` | Under 200k input tokens | $2.00 | $0.30 | $6.00 |
+| `grok-4.5` | 200k tokens or more | $4.00 | $0.60 | $12.00 |
+
+Once input reaches the 200k threshold, xAI applies the higher rates to all
+request tokens. Priority processing is selected with
+`service_tier: :priority` on either supported API and costs twice the applicable
+standard rate; it is not a different model. Hosted tool calls are billed
+separately: web search, X search, and code execution cost $5 per 1,000 calls,
+attachment search costs $10 per 1,000 calls, and collections/file search costs
+$2.50 per 1,000 calls. See the official [Grok 4.6 model
+card](https://docs.x.ai/developers/models/grok-4.6), [model
+catalog](https://docs.x.ai/developers/models), and [xAI API
+pricing](https://docs.x.ai/developers/pricing).
+
+BeamWeaver keeps profiles for the other current chat models listed above, plus
+embedding model `v1`. Imagine and voice models are not chat or embedding models
+and are not constructed through `init_chat_model/2`.
 
 Reasoning profiles can still be invoked with shared model options from a generic
 caller. If those options include `stop`, BeamWeaver removes it only for xAI

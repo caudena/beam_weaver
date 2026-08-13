@@ -87,6 +87,9 @@ defmodule BeamWeaver.Provider.RegistryTest do
     assert deepseek.max_input_tokens == 1_048_576
     assert deepseek.max_output_tokens == 393_216
 
+    assert {:ok, deepseek_pro} = Registry.profile(:deepseek, "deepseek-v4-pro")
+    assert deepseek_pro.responses_api
+
     assert {:ok, flash} = Registry.profile(:google, "gemini-3.6-flash")
     assert flash.provider == :google
     assert flash.structured_output

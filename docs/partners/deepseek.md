@@ -4,8 +4,8 @@ BeamWeaver includes a first-class DeepSeek provider for the native Chat
 Completions and Responses APIs, plus raw clients for every API surface that
 DeepSeek currently publishes.
 
-This guide reflects the DeepSeek documentation and live API behavior checked
-on 2026-08-02.
+This guide reflects the DeepSeek documentation checked on 2026-08-12 and the
+checked-in live API conformance captures.
 
 ## Models
 
@@ -15,9 +15,7 @@ Use explicit provider-prefixed identifiers:
 - `deepseek:deepseek-v4-pro`
 
 Both models have a 1,048,576-token context window and a maximum output of
-393,216 tokens. Chat Completions supports both models. The Responses API
-currently supports only `deepseek-v4-flash`; BeamWeaver rejects a Pro
-Responses request before making an HTTP request.
+393,216 tokens. Chat Completions and Responses support both models.
 
 The retired `deepseek-chat` and `deepseek-reasoner` identifiers are not aliases
 for the V4 models. BeamWeaver reports them as unsupported so an application
@@ -136,12 +134,15 @@ Select the stateless Responses API explicitly:
   )
 ```
 
-Responses supports native JSON Schema output, function tools, server-side web
-search, and the custom `apply_patch` tool used by DeepSeek's Codex integration.
-DeepSeek does not store Responses or conversations: send the complete history
-on every turn. BeamWeaver rejects stateful response/conversation parameters and
-unsupported image, audio, video, or file inputs instead of allowing the server
-to replace them with placeholder text.
+Responses supports both V4 models, native JSON Schema output, function tools,
+server-side web search, and the custom `apply_patch` tool used by DeepSeek's
+Codex integration. Its reasoning effort accepts `none`, `minimal`, `low`,
+`medium`, `high`, `xhigh`, and `max`; the compatibility values map to the
+provider's low/high effort levels. DeepSeek does not store Responses or
+conversations: send the complete history on every turn. BeamWeaver rejects
+stateful response/conversation parameters and unsupported image, audio, video,
+or file inputs instead of allowing the server to replace them with placeholder
+text.
 
 Hosted web search can complete without an assistant message. The normalized
 result preserves reasoning, function-call, web-search, failure, and unknown
@@ -223,7 +224,8 @@ policy are explicit.
 - [Chat Completions API](https://api-docs.deepseek.com/api/create-chat-completion/)
 - [Chat Prefix Completion](https://api-docs.deepseek.com/guides/chat_prefix_completion/)
 - [Strict Function Calling](https://api-docs.deepseek.com/guides/tool_calls/)
-- [Responses API](https://api-docs.deepseek.com/api/create-response/)
+- [Responses API guide](https://api-docs.deepseek.com/guides/responses_api/)
+- [Responses API reference](https://api-docs.deepseek.com/api/create-response/)
 - [FIM Completion API](https://api-docs.deepseek.com/api/create-completion/)
 - [Anthropic compatibility](https://api-docs.deepseek.com/guides/anthropic_api/)
 - [Rate limit and isolation](https://api-docs.deepseek.com/quick_start/rate_limit/)

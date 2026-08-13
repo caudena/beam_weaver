@@ -57,7 +57,7 @@ Anthropic:
 xAI:
 
 ```elixir
-{:ok, model} = BeamWeaver.Models.init_chat_model("xai:grok-4.5")
+{:ok, model} = BeamWeaver.Models.init_chat_model("xai:grok-4.6")
 ```
 
 Google:
@@ -135,11 +135,11 @@ Provider scope is intentionally narrow:
 Checked-in model profiles cover common OpenAI, Anthropic, Google Gemini,
 DeepSeek, Moonshot/Kimi, xAI, and Z.ai families. DeepSeek requires explicit
 `deepseek:deepseek-v4-flash` or `deepseek:deepseek-v4-pro`; Chat Completions is
-the default and Responses is currently Flash-only. Moonshot chat supports
+the default and both models also support Responses. Moonshot chat supports
 `moonshot:kimi-k3`, `moonshot:kimi-k2.7-code`,
 `moonshot:kimi-k2.7-code-highspeed`, `moonshot:kimi-k2.6`, and
 `moonshot:kimi-k2.5`. xAI chat defaults to
-`grok-4.5`; current checked-in xAI profiles also include `grok-4.3`,
+`grok-4.6`; current checked-in xAI profiles also include `grok-4.5`, `grok-4.3`,
 `grok-4.20-0309-reasoning`, `grok-4.20-0309-non-reasoning`,
 `grok-4.20-multi-agent-0309`, `grok-build-0.1`, and embedding model `v1`.
 Z.ai chat currently supports only `zai:glm-5.2`.
@@ -178,7 +178,7 @@ Recommended starting points:
 | Google Gemini | `google:gemini-3.6-flash`, `google:gemini-3.5-flash-lite`, explicit `google:gemini-*` profiles |
 | DeepSeek V4 | `deepseek:deepseek-v4-flash`, `deepseek:deepseek-v4-pro` |
 | Moonshot/Kimi | `moonshot:kimi-k3`, `moonshot:kimi-k2.7-code`, `moonshot:kimi-k2.7-code-highspeed`, `moonshot:kimi-k2.6`, `moonshot:kimi-k2.5` |
-| xAI Grok | `xai:grok-4.5`, `xai:grok-4.3`, `xai:grok-4.20-0309-reasoning` |
+| xAI Grok | `xai:grok-4.6`, `xai:grok-4.5`, `xai:grok-4.3` |
 | Z.ai GLM | `zai:glm-5.2` |
 
 Use the matrix as capability guidance, then validate model quality against your
