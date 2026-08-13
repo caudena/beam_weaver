@@ -152,7 +152,7 @@ interrupt payload and the eventual resume value.
 
 Dynamic interrupts need a checkpointer and a stable `thread_id`. Use
 `BeamWeaver.Checkpoint.ETS` for tests or local prototypes. Use
-`BeamWeaver.Checkpoint.Ecto` for durable Postgres-backed deployments. Always
+`BeamWeaver.Checkpoint.Ecto` with PostgreSQL or SQLite for durable deployments. Always
 resume with the same `config`.
 {% endhint %}
 

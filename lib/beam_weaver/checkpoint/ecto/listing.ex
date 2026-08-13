@@ -1,11 +1,34 @@
 defmodule BeamWeaver.Checkpoint.Ecto.Listing do
   @moduledoc false
 
+  import Ecto.Query
+
   alias BeamWeaver.Checkpoint
+  alias BeamWeaver.Checkpoint.Ecto, as: EctoSaver
   alias BeamWeaver.Checkpoint.Ecto.Config
+  alias BeamWeaver.Checkpoint.Ecto.Query
   alias BeamWeaver.Checkpoint.Ecto.Rows
-  alias BeamWeaver.Checkpoint.Ecto.SQL
   alias BeamWeaver.Core.Error
+
+  @checkpoint_fields [
+    :thread_id,
+    :checkpoint_ns,
+    :checkpoint_id,
+    :parent_checkpoint_id,
+    :checkpoint,
+    :metadata,
+    :commit_order
+  ]
+  @write_fields [
+    :thread_id,
+    :checkpoint_ns,
+    :checkpoint_id,
+    :task_id,
+    :write_index,
+    :channel,
+    :value,
+    :task_path
+  ]
 
   def get_tuple(saver, config) do
     case fetch_tuple(saver, config) do
@@ -19,13 +42,22 @@ defmodule BeamWeaver.Checkpoint.Ecto.Listing do
 
     case configurable["thread_id"] do
       thread_id when is_binary(thread_id) ->
-        namespace = Map.get(configurable, "checkpoint_ns", "")
-        checkpoint_id = configurable["checkpoint_id"]
+        query =
+          saver
+          |> checkpoint_query()
+          |> where([checkpoint], checkpoint.thread_id == ^thread_id)
+          |> where(
+            [checkpoint],
+            checkpoint.checkpoint_ns == ^Map.get(configurable, "checkpoint_ns", "")
+          )
+          |> maybe_checkpoint_id(configurable["checkpoint_id"])
+          |> order_by([checkpoint], desc: checkpoint.commit_order)
+          |> limit(1)
+          |> with_pending_writes(saver)
 
-        case SQL.query(saver, get_tuple_sql(saver), [thread_id, namespace, checkpoint_id]) do
-          {:ok, %{rows: [row]}} -> {:ok, Rows.tuple_from_row(saver, row)}
-          {:ok, %{rows: []}} -> {:ok, nil}
-          {:error, _error} = error -> error
+        case Query.all(saver, query) do
+          {:ok, rows} -> {:ok, Rows.tuple_from_rows(saver, rows)}
+          {:error, _reason} = error -> error
         end
 
       _other ->
@@ -42,27 +74,30 @@ defmodule BeamWeaver.Checkpoint.Ecto.Listing do
 
   def list_result(saver, config, opts) do
     configurable = if config, do: Checkpoint.configurable(config), else: %{}
+    filter = Config.stringify_keys(Keyword.get(opts, :filter, %{}) || %{})
 
-    with {:ok, filter} <-
-           dump_filter(saver, Config.stringify_keys(Keyword.get(opts, :filter, %{}) || %{})) do
-      before = Keyword.get(opts, :before)
-      limit = Keyword.get(opts, :limit)
+    with {:ok, stored_filter} <- EctoSaver.dump_json_value(saver, filter),
+         {:ok, before_order} <- before_commit_order(saver, Keyword.get(opts, :before)) do
+      query =
+        saver
+        |> checkpoint_query()
+        |> maybe_equal(:thread_id, configurable["thread_id"])
+        |> maybe_equal(:checkpoint_ns, configurable["checkpoint_ns"])
+        |> maybe_before(before_order)
+        |> maybe_filter(stored_filter)
+        |> order_by(
+          [checkpoint],
+          desc: checkpoint.commit_order,
+          asc: checkpoint.thread_id,
+          asc: checkpoint.checkpoint_ns,
+          asc: checkpoint.checkpoint_id
+        )
+        |> maybe_limit(Keyword.get(opts, :limit))
+        |> with_pending_writes(saver)
 
-      with {:ok, before_order} <- before_commit_order(saver, before) do
-        {clauses, params} =
-          {[], []}
-          |> maybe_where("thread_id", Map.get(configurable, "thread_id"))
-          |> maybe_where("checkpoint_ns", Map.get(configurable, "checkpoint_ns"))
-          |> maybe_before(before_order)
-          |> maybe_filter(filter)
-
-        where = if clauses == [], do: "TRUE", else: Enum.join(clauses, " AND ")
-        limit_sql = if is_integer(limit), do: "LIMIT #{limit}", else: ""
-
-        case SQL.query(saver, list_sql(saver, where, limit_sql), params) do
-          {:ok, %{rows: rows}} -> {:ok, Rows.tuples_from_rows(saver, rows)}
-          {:error, _error} = error -> error
-        end
+      case Query.all(saver, query) do
+        {:ok, rows} -> {:ok, Rows.tuples_from_rows(saver, rows)}
+        {:error, _reason} = error -> error
       end
     end
   end
@@ -86,141 +121,100 @@ defmodule BeamWeaver.Checkpoint.Ecto.Listing do
   end
 
   def latest_checkpoint_id_result(saver, thread_id, namespace) do
-    sql = """
-    SELECT checkpoint_id
-    FROM #{saver.checkpoints_table}
-    WHERE thread_id = $1 AND checkpoint_ns = $2
-    ORDER BY commit_order DESC
-    LIMIT 1
-    """
+    query =
+      from(checkpoint in Query.checkpoints(saver),
+        where: checkpoint.thread_id == ^thread_id and checkpoint.checkpoint_ns == ^namespace,
+        order_by: [desc: checkpoint.commit_order],
+        limit: 1,
+        select: checkpoint.checkpoint_id
+      )
 
-    case SQL.query(saver, sql, [thread_id, namespace]) do
-      {:ok, %{rows: [[checkpoint_id]]}} -> {:ok, checkpoint_id}
-      {:ok, %{rows: []}} -> {:ok, nil}
-      {:error, _error} = error -> error
-    end
+    Query.one(saver, query)
   end
 
-  defp get_tuple_sql(saver) do
-    """
-    WITH selected AS (
-      SELECT thread_id, checkpoint_ns, checkpoint_id, parent_checkpoint_id, checkpoint, metadata,
-             commit_order
-      FROM #{saver.checkpoints_table}
-      WHERE thread_id = $1
-        AND checkpoint_ns = $2
-        AND ($3::text IS NULL OR checkpoint_id = $3)
-      ORDER BY commit_order DESC
-      LIMIT 1
+  defp checkpoint_query(saver), do: from(checkpoint in Query.checkpoints(saver))
+
+  defp with_pending_writes(query, saver) do
+    selected = select(query, [checkpoint], map(checkpoint, ^@checkpoint_fields))
+
+    from(checkpoint in subquery(selected),
+      left_join: write in ^Query.writes(saver),
+      on:
+        write.thread_id == checkpoint.thread_id and
+          write.checkpoint_ns == checkpoint.checkpoint_ns and
+          (write.checkpoint_id == checkpoint.checkpoint_id or
+             (not is_nil(checkpoint.parent_checkpoint_id) and
+                write.checkpoint_id == checkpoint.parent_checkpoint_id)),
+      order_by: [
+        desc: checkpoint.commit_order,
+        asc: write.thread_id,
+        asc: write.checkpoint_ns,
+        asc: write.checkpoint_id,
+        asc: write.task_id,
+        asc: write.write_index
+      ],
+      select: {checkpoint, map(write, ^@write_fields)}
     )
-    #{selected_rows_with_writes_sql(saver)}
-    """
   end
 
-  defp list_sql(saver, where, limit_sql) do
-    """
-    WITH selected AS (
-      SELECT thread_id, checkpoint_ns, checkpoint_id, parent_checkpoint_id, checkpoint, metadata,
-             commit_order
-      FROM #{saver.checkpoints_table}
-      WHERE #{where}
-      ORDER BY commit_order DESC
-      #{limit_sql}
-    )
-    #{selected_rows_with_writes_sql(saver)}
-    """
+  defp maybe_checkpoint_id(query, nil), do: query
+
+  defp maybe_checkpoint_id(query, checkpoint_id) do
+    where(query, [checkpoint], checkpoint.checkpoint_id == ^checkpoint_id)
   end
 
-  defp selected_rows_with_writes_sql(saver) do
-    """
-    SELECT selected.thread_id,
-           selected.checkpoint_ns,
-           selected.checkpoint_id,
-           selected.parent_checkpoint_id,
-           selected.checkpoint,
-           selected.metadata,
-           selected.commit_order,
-           COALESCE(
-             (
-               SELECT jsonb_agg(
-                        jsonb_build_array(
-                          writes.thread_id,
-                          writes.checkpoint_ns,
-                          writes.checkpoint_id,
-                          writes.task_id,
-                          writes.write_index,
-                          writes.channel,
-                          writes.value,
-                          writes.task_path
-                        )
-                        ORDER BY writes.thread_id ASC,
-                                 writes.checkpoint_ns ASC,
-                                 writes.checkpoint_id ASC,
-                                 writes.task_id ASC,
-                                 writes.write_index ASC
-                      )
-               FROM #{saver.writes_table} AS writes
-               WHERE writes.thread_id = selected.thread_id
-                 AND writes.checkpoint_ns = selected.checkpoint_ns
-                 AND (
-                   writes.checkpoint_id = selected.checkpoint_id
-                   OR (
-                     selected.parent_checkpoint_id IS NOT NULL
-                     AND writes.checkpoint_id = selected.parent_checkpoint_id
-                   )
-                 )
-             ),
-             '[]'::jsonb
-           ) AS pending_write_rows
-    FROM selected
-    ORDER BY selected.commit_order DESC
-    """
+  defp maybe_equal(query, _field, nil), do: query
+
+  defp maybe_equal(query, field, value) do
+    where(query, [checkpoint], field(checkpoint, ^field) == ^value)
   end
 
-  defp maybe_where({clauses, params}, _field, nil), do: {clauses, params}
-
-  defp maybe_where({clauses, params}, field, value) do
-    position = length(params) + 1
-    {clauses ++ ["#{field} = $#{position}"], params ++ [value]}
-  end
-
-  defp maybe_before({clauses, params}, nil), do: {clauses, params}
-
-  defp maybe_before({clauses, params}, commit_order) do
-    position = length(params) + 1
-    {clauses ++ ["commit_order < $#{position}"], params ++ [commit_order]}
-  end
+  defp maybe_before(query, nil), do: query
+  defp maybe_before(query, order), do: where(query, [checkpoint], checkpoint.commit_order < ^order)
 
   defp before_commit_order(_saver, nil), do: {:ok, nil}
 
   defp before_commit_order(saver, before) do
     configurable = Checkpoint.configurable(before)
 
-    sql = """
-    SELECT commit_order
-    FROM #{saver.checkpoints_table}
-    WHERE thread_id = $1 AND checkpoint_ns = $2 AND checkpoint_id = $3
-    """
+    query =
+      from(checkpoint in Query.checkpoints(saver),
+        where:
+          checkpoint.thread_id == ^configurable["thread_id"] and
+            checkpoint.checkpoint_ns == ^Map.get(configurable, "checkpoint_ns", "") and
+            checkpoint.checkpoint_id == ^configurable["checkpoint_id"],
+        select: checkpoint.commit_order
+      )
 
-    case SQL.query(saver, sql, [
-           configurable["thread_id"],
-           Map.get(configurable, "checkpoint_ns", ""),
-           configurable["checkpoint_id"]
-         ]) do
-      {:ok, %{rows: [[order]]}} -> {:ok, order}
-      {:ok, %{rows: []}} -> {:ok, nil}
-      {:error, _reason} = error -> error
-    end
+    Query.one(saver, query)
   end
 
-  defp maybe_filter({clauses, params}, filter) when filter in [%{}, nil], do: {clauses, params}
+  defp maybe_filter(query, filter) when filter in [%{}, nil], do: query
 
-  defp maybe_filter({clauses, params}, filter) do
-    position = length(params) + 1
-    {clauses ++ ["metadata @> $#{position}"], params ++ [filter]}
+  defp maybe_filter(query, filter) do
+    filter
+    |> filter_leaves()
+    |> Enum.reduce(query, fn {path, value}, query ->
+      where(query, [checkpoint], json_extract_path(checkpoint.metadata, ^path) == ^value)
+    end)
   end
 
-  defp dump_filter(saver, filter), do: saver.__struct__.dump_json_value(saver, filter)
+  defp filter_leaves(filter) do
+    filter
+    |> filter_leaves([])
+    |> Enum.map(fn {path, value} -> {Enum.reverse(path), value} end)
+  end
+
+  defp filter_leaves(map, path) when map_size(map) == 0 and path != [], do: [{path, %{}}]
+
+  defp filter_leaves(map, path) when is_map(map) do
+    Enum.flat_map(map, fn {key, value} -> filter_leaves(value, [to_string(key) | path]) end)
+  end
+
+  defp filter_leaves(value, path), do: [{path, value}]
+
+  defp maybe_limit(query, limit) when is_integer(limit) and limit >= 0, do: limit(query, ^limit)
+  defp maybe_limit(query, _limit), do: query
 
   defp raise_read_error!(%Error{} = error), do: raise(RuntimeError, error.message)
   defp raise_read_error!(error), do: raise(RuntimeError, inspect(error))

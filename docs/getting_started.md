@@ -170,7 +170,7 @@ second_state.messages
 ```
 
 Use `BeamWeaver.Checkpoint.ETS` for tests and local workflows. Use
-`BeamWeaver.Checkpoint.Ecto` for durable Postgres-backed deployments.
+`BeamWeaver.Checkpoint.Ecto` with PostgreSQL or SQLite for durable deployments.
 
 ## Build A Calculator Graph
 

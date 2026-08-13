@@ -34,7 +34,7 @@ Durable execution needs three things:
    boundaries, and make them idempotent.
 
 Use `BeamWeaver.Checkpoint.ETS` for local development and tests. Use
-`BeamWeaver.Checkpoint.Ecto` for durable Postgres-backed deployments. ETS
+`BeamWeaver.Checkpoint.Ecto` with PostgreSQL or SQLite for durable deployments. ETS
 checkpoints are process-local and do not survive a VM restart.
 
 ```elixir

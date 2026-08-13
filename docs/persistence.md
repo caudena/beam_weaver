@@ -332,9 +332,9 @@ BeamWeaver ships two checkpoint adapters:
 | Adapter | Use For | Notes |
 | --- | --- | --- |
 | `BeamWeaver.Checkpoint.ETS` | Tests, examples, local workflows, lightweight supervised apps. | In-memory and process-local. Not durable across VM restarts. |
-| `BeamWeaver.Checkpoint.Ecto` | Durable Postgres-backed deployments. | Uses versioned `BeamWeaver.Migrations` tables for checkpoints plus pending writes. |
+| `BeamWeaver.Checkpoint.Ecto` | Durable PostgreSQL or SQLite deployments. | Uses one Ecto query/write implementation and versioned `BeamWeaver.Migrations` tables. |
 
-Postgres setup is explicit:
+Database setup is explicit:
 
 ```elixir
 defmodule MyApp.Repo.Migrations.CreateBeamWeaverCheckpoints do
@@ -349,6 +349,18 @@ defmodule MyApp.Repo.Migrations.CreateBeamWeaverCheckpoints do
   end
 end
 ```
+
+`BeamWeaver.Migrations` selects PostgreSQL or SQLite from the application Repo.
+The checkpoint schema and `BeamWeaver.Checkpoint.Ecto` API are the same for
+both databases. Only migration DDL and transaction serialization are
+adapter-specific. SQLite applications add the optional adapter themselves:
+
+```elixir
+{:ecto_sqlite3, "~> 0.24"}
+```
+
+BeamWeaver does not make `ecto_sqlite3` a runtime dependency for applications
+that use PostgreSQL.
 
 Checkpoint schema version 2 adds `commit_order`, backfills existing rows by
 their stored insertion order, and makes `(thread_id, checkpoint_ns,
@@ -371,8 +383,8 @@ end
 
 The upgrade preserves checkpoint IDs and uses the persisted order for latest,
 history, pruning, and fork selection. Run
-`BeamWeaver.Migrations.verify_migrated!/1` before starting an Ecto checkpointer
-to fail clearly when the application migration is missing.
+`BeamWeaver.Migrations.verify_migrated!(repo: MyApp.Repo)` before starting an
+Ecto checkpointer to fail clearly when the application migration is missing.
 
 Then compile with the adapter:
 

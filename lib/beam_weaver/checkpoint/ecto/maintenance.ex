@@ -1,85 +1,119 @@
 defmodule BeamWeaver.Checkpoint.Ecto.Maintenance do
   @moduledoc false
 
+  import Ecto.Query
+
   alias BeamWeaver.Checkpoint.DeltaCompaction
   alias BeamWeaver.Checkpoint.Ecto.Listing
-  alias BeamWeaver.Checkpoint.Ecto.SQL
+  alias BeamWeaver.Checkpoint.Ecto.Query
 
   def delete_thread(saver, thread_id) do
-    with {:ok, _} <-
-           SQL.query(saver, "DELETE FROM #{saver.writes_table} WHERE thread_id = $1", [thread_id]),
-         {:ok, _} <-
-           SQL.query(saver, "DELETE FROM #{saver.checkpoints_table} WHERE thread_id = $1", [
-             thread_id
-           ]) do
-      :ok
-    end
+    Query.transaction(saver, fn -> do_delete_thread(saver, thread_id) end)
   end
 
   def delete_for_runs(_saver, []), do: :ok
 
   def delete_for_runs(saver, run_ids) when is_list(run_ids) do
-    SQL.transaction(saver, fn -> do_delete_for_runs(saver, run_ids) end)
+    Query.transaction(saver, fn -> do_delete_for_runs(saver, run_ids) end)
   end
 
   def copy_thread(saver, source_thread_id, target_thread_id) do
-    SQL.transaction(saver, fn -> do_copy_thread(saver, source_thread_id, target_thread_id) end)
+    Query.transaction(saver, fn -> do_copy_thread(saver, source_thread_id, target_thread_id) end)
   end
 
   def prune(saver, thread_ids, opts) do
-    SQL.transaction(saver, fn -> do_prune(saver, thread_ids, opts) end)
+    Query.transaction(saver, fn -> do_prune(saver, thread_ids, opts) end)
+  end
+
+  defp do_delete_thread(saver, thread_id) do
+    with {:ok, _result} <-
+           Query.delete_all(
+             saver,
+             from(write in Query.writes(saver), where: write.thread_id == ^thread_id)
+           ),
+         {:ok, _result} <-
+           Query.delete_all(
+             saver,
+             from(checkpoint in Query.checkpoints(saver), where: checkpoint.thread_id == ^thread_id)
+           ) do
+      :ok
+    end
   end
 
   defp do_delete_for_runs(saver, run_ids) do
-    checkpoint_sql = """
-    SELECT thread_id, checkpoint_ns, checkpoint_id
-    FROM #{saver.checkpoints_table}
-    WHERE metadata->>'run_id' = ANY($1)
-    """
+    matching_checkpoint =
+      from(checkpoint in Query.checkpoints(saver),
+        where:
+          checkpoint.thread_id == parent_as(:write).thread_id and
+            checkpoint.checkpoint_ns == parent_as(:write).checkpoint_ns and
+            checkpoint.checkpoint_id == parent_as(:write).checkpoint_id and
+            json_extract_path(checkpoint.metadata, ["run_id"]) in ^run_ids,
+        select: 1
+      )
 
-    with {:ok, %{rows: rows}} <- SQL.query(saver, checkpoint_sql, [run_ids]) do
-      Enum.reduce_while(rows, :ok, fn [thread_id, namespace, checkpoint_id], :ok ->
-        with {:ok, _} <-
-               SQL.query(
-                 saver,
-                 "DELETE FROM #{saver.writes_table} WHERE thread_id = $1 AND checkpoint_ns = $2 AND checkpoint_id = $3",
-                 [thread_id, namespace, checkpoint_id]
-               ),
-             {:ok, _} <-
-               SQL.query(
-                 saver,
-                 "DELETE FROM #{saver.checkpoints_table} WHERE thread_id = $1 AND checkpoint_ns = $2 AND checkpoint_id = $3",
-                 [thread_id, namespace, checkpoint_id]
-               ) do
-          {:cont, :ok}
-        else
-          error -> {:halt, error}
-        end
-      end)
+    writes =
+      from(write in Query.writes(saver),
+        as: :write,
+        where: exists(subquery(matching_checkpoint))
+      )
+
+    checkpoints =
+      from(checkpoint in Query.checkpoints(saver),
+        where: json_extract_path(checkpoint.metadata, ["run_id"]) in ^run_ids
+      )
+
+    with {:ok, _result} <- Query.delete_all(saver, writes),
+         {:ok, _result} <- Query.delete_all(saver, checkpoints) do
+      :ok
     end
   end
 
   defp do_copy_thread(saver, source_thread_id, target_thread_id) do
-    checkpoint_sql = """
-    INSERT INTO #{saver.checkpoints_table}
-      (thread_id, checkpoint_ns, checkpoint_id, parent_checkpoint_id, checkpoint, metadata, commit_order)
-    SELECT $2, checkpoint_ns, checkpoint_id, parent_checkpoint_id, checkpoint, metadata, commit_order
-    FROM #{saver.checkpoints_table}
-    WHERE thread_id = $1
-    ON CONFLICT DO NOTHING
-    """
+    checkpoints =
+      from(checkpoint in Query.checkpoints(saver),
+        where: checkpoint.thread_id == ^source_thread_id,
+        select: %{
+          thread_id: type(^target_thread_id, :string),
+          checkpoint_ns: checkpoint.checkpoint_ns,
+          checkpoint_id: checkpoint.checkpoint_id,
+          parent_checkpoint_id: checkpoint.parent_checkpoint_id,
+          checkpoint: checkpoint.checkpoint,
+          metadata: checkpoint.metadata,
+          commit_order: checkpoint.commit_order
+        }
+      )
 
-    writes_sql = """
-    INSERT INTO #{saver.writes_table}
-      (thread_id, checkpoint_ns, checkpoint_id, task_id, write_index, channel, value, task_path)
-    SELECT $2, checkpoint_ns, checkpoint_id, task_id, write_index, channel, value, task_path
-    FROM #{saver.writes_table}
-    WHERE thread_id = $1
-    ON CONFLICT DO NOTHING
-    """
+    writes =
+      from(write in Query.writes(saver),
+        where: write.thread_id == ^source_thread_id,
+        select: %{
+          thread_id: type(^target_thread_id, :string),
+          checkpoint_ns: write.checkpoint_ns,
+          checkpoint_id: write.checkpoint_id,
+          task_id: write.task_id,
+          write_index: write.write_index,
+          channel: write.channel,
+          value: write.value,
+          task_path: write.task_path
+        }
+      )
 
-    with {:ok, _} <- SQL.query(saver, checkpoint_sql, [source_thread_id, target_thread_id]),
-         {:ok, _} <- SQL.query(saver, writes_sql, [source_thread_id, target_thread_id]) do
+    with {:ok, _result} <-
+           Query.insert_all(saver, Query.checkpoints(saver), checkpoints,
+             on_conflict: :nothing,
+             conflict_target: [:thread_id, :checkpoint_ns, :checkpoint_id]
+           ),
+         {:ok, _result} <-
+           Query.insert_all(saver, Query.writes(saver), writes,
+             on_conflict: :nothing,
+             conflict_target: [
+               :thread_id,
+               :checkpoint_ns,
+               :checkpoint_id,
+               :task_id,
+               :write_index
+             ]
+           ) do
       :ok
     end
   end
@@ -89,49 +123,65 @@ defmodule BeamWeaver.Checkpoint.Ecto.Maintenance do
 
     Enum.reduce_while(thread_ids, :ok, fn thread_id, :ok ->
       result =
-        case strategy do
-          :delete -> delete_thread(saver, thread_id)
-          "delete" -> delete_thread(saver, thread_id)
-          _keep_latest -> prune_keep_latest(saver, thread_id)
-        end
+        if strategy in [:delete, "delete"],
+          do: do_delete_thread(saver, thread_id),
+          else: prune_keep_latest(saver, thread_id)
 
       case result do
         :ok -> {:cont, :ok}
-        error -> {:halt, error}
+        {:error, _reason} = error -> {:halt, error}
       end
     end)
   end
 
   defp prune_keep_latest(saver, thread_id) do
-    saver
-    |> Listing.list(%{"configurable" => %{"thread_id" => thread_id}}, [])
-    |> Enum.group_by(fn tuple -> tuple.config["configurable"]["checkpoint_ns"] end)
-    |> Enum.flat_map(fn {_namespace, records} ->
-      keep = DeltaCompaction.keep_ids(records)
-      Enum.reject(records, &(&1.checkpoint["id"] in keep))
-    end)
-    |> Enum.reduce_while(:ok, fn record, :ok ->
-      configurable = record.config["configurable"]
-      thread_id = configurable["thread_id"]
-      namespace = configurable["checkpoint_ns"]
-      checkpoint_id = configurable["checkpoint_id"]
+    config = %{"configurable" => %{"thread_id" => thread_id}}
 
-      with {:ok, _} <-
-             SQL.query(
-               saver,
-               "DELETE FROM #{saver.writes_table} WHERE thread_id = $1 AND checkpoint_ns = $2 AND checkpoint_id = $3",
-               [thread_id, namespace, checkpoint_id]
-             ),
-           {:ok, _} <-
-             SQL.query(
-               saver,
-               "DELETE FROM #{saver.checkpoints_table} WHERE thread_id = $1 AND checkpoint_ns = $2 AND checkpoint_id = $3",
-               [thread_id, namespace, checkpoint_id]
-             ) do
-        {:cont, :ok}
-      else
-        error -> {:halt, error}
-      end
-    end)
+    with {:ok, records} <- Listing.list_result(saver, config, []) do
+      removals =
+        records
+        |> Enum.group_by(& &1.config["configurable"]["checkpoint_ns"])
+        |> Enum.flat_map(fn {_namespace, records} ->
+          keep = records |> DeltaCompaction.keep_ids() |> MapSet.new()
+          Enum.reject(records, &MapSet.member?(keep, &1.checkpoint["id"]))
+        end)
+
+      delete_records(saver, thread_id, removals)
+    end
+  end
+
+  defp delete_records(_saver, _thread_id, []), do: :ok
+
+  defp delete_records(saver, thread_id, records) do
+    condition =
+      records
+      |> Enum.group_by(
+        & &1.config["configurable"]["checkpoint_ns"],
+        & &1.config["configurable"]["checkpoint_id"]
+      )
+      |> Enum.reduce(dynamic(false), fn {namespace, checkpoint_ids}, condition ->
+        dynamic(
+          [row],
+          ^condition or
+            (row.checkpoint_ns == ^namespace and row.checkpoint_id in ^checkpoint_ids)
+        )
+      end)
+
+    writes =
+      from(write in Query.writes(saver),
+        where: write.thread_id == ^thread_id,
+        where: ^condition
+      )
+
+    checkpoints =
+      from(checkpoint in Query.checkpoints(saver),
+        where: checkpoint.thread_id == ^thread_id,
+        where: ^condition
+      )
+
+    with {:ok, _result} <- Query.delete_all(saver, writes),
+         {:ok, _result} <- Query.delete_all(saver, checkpoints) do
+      :ok
+    end
   end
 end

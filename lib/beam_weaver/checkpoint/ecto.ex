@@ -1,13 +1,20 @@
 defmodule BeamWeaver.Checkpoint.Ecto do
   @moduledoc """
-  Ecto/Postgres checkpoint saver.
+  Durable checkpoint saver for PostgreSQL and SQLite Ecto repositories.
 
   This adapter implements the same `BeamWeaver.Checkpoint.Saver` contract as
   `BeamWeaver.Checkpoint.ETS`. Create its database tables with
-  `BeamWeaver.Migrations` from application-owned Ecto migrations.
+  `BeamWeaver.Migrations` from application-owned Ecto migrations. Applications
+  using SQLite must add `ecto_sqlite3` themselves; it is not a BeamWeaver
+  runtime dependency.
+
+  Reads and writes use one Ecto query implementation for both databases. Only
+  schema migration SQL and write serialization differ by adapter.
   """
 
   @behaviour BeamWeaver.Checkpoint.Saver
+
+  import Ecto.Query
 
   alias BeamWeaver.Checkpoint
   alias BeamWeaver.Checkpoint.Batch
@@ -15,7 +22,7 @@ defmodule BeamWeaver.Checkpoint.Ecto do
   alias BeamWeaver.Checkpoint.Ecto.Config
   alias BeamWeaver.Checkpoint.Ecto.Listing
   alias BeamWeaver.Checkpoint.Ecto.Maintenance
-  alias BeamWeaver.Checkpoint.Ecto.SQL
+  alias BeamWeaver.Checkpoint.Ecto.Query
   alias BeamWeaver.Checkpoint.Lineage
   alias BeamWeaver.Checkpoint.PendingWrite
   alias BeamWeaver.Checkpoint.Saver
@@ -141,15 +148,23 @@ defmodule BeamWeaver.Checkpoint.Ecto do
                {:ok, stored_metadata} <- dump_json_value(saver, Config.stringify_keys(metadata || %{})),
                :ok <- maybe_delete_shallow_history(saver, thread_id, namespace),
                {:ok, _result} <-
-                 query(saver, checkpoint_upsert_sql(saver), [
-                   thread_id,
-                   namespace,
-                   checkpoint_id,
-                   parent_id,
-                   stored_checkpoint,
-                   stored_metadata,
-                   commit_order
-                 ]) do
+                 Query.insert_all(
+                   saver,
+                   Query.checkpoints(saver),
+                   [
+                     %{
+                       thread_id: thread_id,
+                       checkpoint_ns: namespace,
+                       checkpoint_id: checkpoint_id,
+                       parent_checkpoint_id: parent_id,
+                       checkpoint: stored_checkpoint,
+                       metadata: stored_metadata,
+                       commit_order: commit_order
+                     }
+                   ],
+                   on_conflict: {:replace, [:checkpoint, :metadata]},
+                   conflict_target: [:thread_id, :checkpoint_ns, :checkpoint_id]
+                 ) do
             {:ok,
              %{
                "configurable" => %{
@@ -183,7 +198,17 @@ defmodule BeamWeaver.Checkpoint.Ecto do
 
         case dump_json_value(saver, value) do
           {:ok, value} ->
-            row = [thread_id, namespace, checkpoint_id, task_id, index, channel, value, task_path]
+            row = %{
+              thread_id: thread_id,
+              checkpoint_ns: namespace,
+              checkpoint_id: checkpoint_id,
+              task_id: task_id,
+              write_index: index,
+              channel: channel,
+              value: Config.store_write_value(value),
+              task_path: task_path
+            }
+
             {:cont, {:ok, [row | rows]}}
 
           {:error, _reason} = error ->
@@ -249,25 +274,11 @@ defmodule BeamWeaver.Checkpoint.Ecto do
   @impl true
   def next_version(_saver, current, _channel), do: Saver.default_next_version(current)
 
-  defp query(%__MODULE__{} = saver, sql, params) do
-    SQL.query(saver, sql, params)
-  end
-
   defp latest_checkpoint_id(%__MODULE__{shallow?: true}, _thread, _namespace),
     do: {:ok, nil}
 
   defp latest_checkpoint_id(saver, thread_id, namespace),
     do: Listing.latest_checkpoint_id_result(saver, thread_id, namespace)
-
-  defp checkpoint_upsert_sql(saver) do
-    """
-    INSERT INTO #{saver.checkpoints_table}
-      (thread_id, checkpoint_ns, checkpoint_id, parent_checkpoint_id, checkpoint, metadata, commit_order)
-    VALUES ($1, $2, $3, $4, $5, $6, $7)
-    ON CONFLICT (thread_id, checkpoint_ns, checkpoint_id)
-    DO UPDATE SET checkpoint = EXCLUDED.checkpoint, metadata = EXCLUDED.metadata
-    """
-  end
 
   defp insert_write_rows(_saver, []), do: :ok
 
@@ -275,35 +286,20 @@ defmodule BeamWeaver.Checkpoint.Ecto do
     rows
     |> Enum.chunk_every(1_000)
     |> Enum.reduce_while(:ok, fn chunk, :ok ->
-      {values, params} = sql_values(chunk)
-
-      sql = """
-      INSERT INTO #{saver.writes_table}
-        (thread_id, checkpoint_ns, checkpoint_id, task_id, write_index, channel, value, task_path)
-      VALUES #{values}
-      ON CONFLICT (thread_id, checkpoint_ns, checkpoint_id, task_id, write_index)
-      DO UPDATE SET channel = EXCLUDED.channel, value = EXCLUDED.value,
-                    task_path = EXCLUDED.task_path
-      """
-
-      case query(saver, sql, params) do
+      case Query.insert_all(saver, Query.writes(saver), chunk,
+             on_conflict: {:replace, [:channel, :value, :task_path]},
+             conflict_target: [
+               :thread_id,
+               :checkpoint_ns,
+               :checkpoint_id,
+               :task_id,
+               :write_index
+             ]
+           ) do
         {:ok, _result} -> {:cont, :ok}
         {:error, _reason} = error -> {:halt, error}
       end
     end)
-  end
-
-  defp sql_values(rows) do
-    values =
-      rows
-      |> Enum.with_index()
-      |> Enum.map_join(", ", fn {_row, index} ->
-        first = index * 8 + 1
-        placeholders = Enum.map_join(first..(first + 7), ", ", &"$#{&1}")
-        "(#{placeholders})"
-      end)
-
-    {values, Enum.flat_map(rows, & &1)}
   end
 
   defp lock_batch_owners(saver, entries) do
@@ -348,27 +344,36 @@ defmodule BeamWeaver.Checkpoint.Ecto do
         }
       end)
 
-    {threads, namespaces, checkpoint_ids} =
-      Enum.reduce(keys, {[], [], []}, fn {thread, namespace, id}, {threads, namespaces, ids} ->
-        {[thread | threads], [namespace | namespaces], [id | ids]}
+    requested =
+      Enum.map(keys, fn {thread_id, checkpoint_ns, checkpoint_id} ->
+        %{thread_id: thread_id, checkpoint_ns: checkpoint_ns, checkpoint_id: checkpoint_id}
       end)
 
-    sql = """
-    WITH requested(thread_id, checkpoint_ns, checkpoint_id) AS (
-      SELECT * FROM unnest($1::text[], $2::text[], $3::text[])
-    )
-    SELECT 1
-    FROM #{saver.checkpoints_table} AS checkpoints
-    JOIN requested USING (thread_id, checkpoint_ns, checkpoint_id)
-    LIMIT 1
-    """
+    query =
+      from(checkpoint in Query.checkpoints(saver),
+        join:
+          requested in values(requested, %{
+            thread_id: :string,
+            checkpoint_ns: :string,
+            checkpoint_id: :string
+          }),
+        on:
+          checkpoint.thread_id == requested.thread_id and
+            checkpoint.checkpoint_ns == requested.checkpoint_ns and
+            checkpoint.checkpoint_id == requested.checkpoint_id,
+        limit: 1,
+        select: checkpoint.checkpoint_id
+      )
 
-    params = [Enum.reverse(threads), Enum.reverse(namespaces), Enum.reverse(checkpoint_ids)]
+    case Query.one(saver, query) do
+      {:ok, nil} ->
+        :ok
 
-    case query(saver, sql, params) do
-      {:ok, %{rows: []}} -> :ok
-      {:ok, %{rows: _rows}} -> {:error, Error.new(:checkpoint_conflict, "checkpoint identity already exists")}
-      {:error, _reason} = error -> error
+      {:ok, _checkpoint_id} ->
+        {:error, Error.new(:checkpoint_conflict, "checkpoint identity already exists")}
+
+      {:error, _reason} = error ->
+        error
     end
   end
 
@@ -380,16 +385,16 @@ defmodule BeamWeaver.Checkpoint.Ecto do
       |> Enum.reduce_while({:ok, []}, fn write, {:ok, rows} ->
         case dump_json_value(saver, write.value) do
           {:ok, value} ->
-            row = [
-              configurable["thread_id"],
-              Map.get(configurable, "checkpoint_ns", ""),
-              configurable["checkpoint_id"],
-              write.task_id,
-              write.index,
-              to_string(write.channel),
-              value,
-              write.path || ""
-            ]
+            row = %{
+              thread_id: configurable["thread_id"],
+              checkpoint_ns: Map.get(configurable, "checkpoint_ns", ""),
+              checkpoint_id: configurable["checkpoint_id"],
+              task_id: write.task_id,
+              write_index: write.index,
+              channel: to_string(write.channel),
+              value: Config.store_write_value(value),
+              task_path: write.path || ""
+            }
 
             {:cont, {:ok, [row | rows]}}
 
@@ -413,28 +418,22 @@ defmodule BeamWeaver.Checkpoint.Ecto do
   end
 
   defp lock_owner(saver, thread_id, namespace) when is_binary(thread_id) do
-    case query(
-           saver,
-           "SELECT pg_advisory_xact_lock(hashtextextended($1, hashtext($2)::bigint))",
-           [thread_id, namespace]
-         ) do
-      {:ok, _result} -> :ok
-      {:error, _reason} = error -> error
-    end
+    Query.lock_owner(saver, thread_id, namespace)
   end
 
   defp lock_owner(_saver, _thread_id, _namespace),
     do: {:error, Error.new(:invalid_checkpoint, "checkpoint config requires thread_id")}
 
   defp next_commit_order(saver, thread_id, namespace) do
-    sql = """
-    SELECT COALESCE(MAX(commit_order), 0) + 1
-    FROM #{saver.checkpoints_table}
-    WHERE thread_id = $1 AND checkpoint_ns = $2
-    """
+    query =
+      from(checkpoint in Query.checkpoints(saver),
+        where: checkpoint.thread_id == ^thread_id and checkpoint.checkpoint_ns == ^namespace,
+        select: max(checkpoint.commit_order)
+      )
 
-    case query(saver, sql, [thread_id, namespace]) do
-      {:ok, %{rows: [[order]]}} -> {:ok, order}
+    case Query.one(saver, query) do
+      {:ok, nil} -> {:ok, 1}
+      {:ok, order} -> {:ok, order + 1}
       {:error, _reason} = error -> error
     end
   end
@@ -455,12 +454,27 @@ defmodule BeamWeaver.Checkpoint.Ecto do
   end
 
   defp transaction(%__MODULE__{} = saver, fun) do
-    SQL.transaction(saver, fun)
+    Query.transaction(saver, fun)
   end
 
   defp maybe_delete_shallow_history(%__MODULE__{shallow?: false}, _thread_id, _namespace), do: :ok
 
   defp maybe_delete_shallow_history(%__MODULE__{} = saver, thread_id, namespace) do
-    SQL.delete_shallow_history(saver, thread_id, namespace)
+    with {:ok, _result} <-
+           Query.delete_all(
+             saver,
+             from(write in Query.writes(saver),
+               where: write.thread_id == ^thread_id and write.checkpoint_ns == ^namespace
+             )
+           ),
+         {:ok, _result} <-
+           Query.delete_all(
+             saver,
+             from(checkpoint in Query.checkpoints(saver),
+               where: checkpoint.thread_id == ^thread_id and checkpoint.checkpoint_ns == ^namespace
+             )
+           ) do
+      :ok
+    end
   end
 end

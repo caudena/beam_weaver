@@ -52,7 +52,7 @@ Use `BeamWeaver.Checkpoint.ETS` for tests, examples, and local workflows.
 
 ## Production Persistence
 
-Use the Ecto/Postgres checkpointer for durable deployments:
+Use the Ecto checkpointer with PostgreSQL or SQLite for durable deployments:
 
 ```elixir
 checkpointer = BeamWeaver.Checkpoint.Ecto.new(repo: MyApp.Repo)
@@ -86,9 +86,11 @@ end
 LangChain's Postgres saver examples call `checkpointer.setup()` from Python.
 BeamWeaver does not create tables from the runtime path. Schema changes belong
 in normal Ecto migrations so production releases, rollbacks, and database
-permissions stay explicit. SQLite, Azure Cosmos DB, Redis, and distributed
-checkpoint execution are not part of the current BeamWeaver persistence surface;
-use ETS for local/test memory and Ecto/Postgres for durable memory.
+permissions stay explicit. PostgreSQL and SQLite use the same Ecto checkpoint
+queries; their migration DDL and write-locking strategy are database-specific.
+Applications using SQLite add `ecto_sqlite3` directly. Azure Cosmos DB, Redis,
+and distributed checkpoint coordination are not part of this persistence
+surface.
 {% endhint %}
 
 ## Custom Agent Memory

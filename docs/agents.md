@@ -693,7 +693,7 @@ For durable deployments, use `BeamWeaver.Checkpoint.Ecto` instead of ETS.
 
 LangChain's hosted docs also discuss LangGraph Platform, SDK, CLI, and server
 deployment behavior. BeamWeaver's local agent runtime is graph-backed and can
-use ETS or Ecto/Postgres adapters, but it does not mirror the hosted platform
+use ETS or Ecto checkpoint adapters, but it does not mirror the hosted platform
 APIs. Use `BeamWeaver.Tracing` for local trace/export boundaries and your
 normal OTP release/deployment tooling for services.
 {% endhint %}

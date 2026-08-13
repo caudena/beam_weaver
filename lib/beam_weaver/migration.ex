@@ -13,7 +13,9 @@ defmodule BeamWeaver.Migrations do
       end
 
   The default adapter is `:checkpoint`. Pass `adapters: :all` to install every
-  durable adapter table.
+  durable adapter table. The repository selects the migration dialect:
+  PostgreSQL supports all durable adapters, while SQLite currently supports
+  `:checkpoint` only.
   """
 
   use Ecto.Migration
@@ -63,6 +65,9 @@ defmodule BeamWeaver.Migrations do
     case repo.__adapter__() do
       Ecto.Adapters.Postgres ->
         BeamWeaver.Migrations.Postgres
+
+      Ecto.Adapters.SQLite3 ->
+        BeamWeaver.Migrations.SQLite
 
       adapter ->
         raise ArgumentError, "unsupported BeamWeaver migration adapter: #{inspect(adapter)}"

@@ -12,18 +12,6 @@ defmodule BeamWeaver.Checkpoint.EctoTest do
   alias BeamWeaver.Test.LivePostgres
   alias BeamWeaver.Test.PostgresRepo
 
-  defmodule CountingSQL do
-    @moduledoc false
-
-    def query(repo, sql, params) do
-      if pid = Process.whereis(:beam_weaver_ecto_query_counter) do
-        send(pid, {:ecto_query, sql, params})
-      end
-
-      Elixir.Ecto.Adapters.SQL.query(repo, sql, params)
-    end
-  end
-
   setup do
     assert LivePostgres.available?()
     :ok
@@ -167,7 +155,7 @@ defmodule BeamWeaver.Checkpoint.EctoTest do
   end
 
   test "batches pending write reads for checkpoint and parent task writes" do
-    saver = new_saver(query_module: CountingSQL)
+    saver = new_saver()
     config = %{"configurable" => %{"thread_id" => "ecto-batched-get-tuple"}}
 
     assert {:ok, parent_config} =
@@ -198,11 +186,7 @@ defmodule BeamWeaver.Checkpoint.EctoTest do
 
     assert :ok = Checkpoint.put_writes(saver, child_config, [{"step", 2}], "task-child")
 
-    Process.register(self(), :beam_weaver_ecto_query_counter)
-
-    on_exit(fn ->
-      safe_unregister(:beam_weaver_ecto_query_counter)
-    end)
+    attach_query_counter()
 
     assert %{
              checkpoint: %{
@@ -217,12 +201,12 @@ defmodule BeamWeaver.Checkpoint.EctoTest do
     queries = drain_queries()
 
     assert length(queries) == 1
-    assert Enum.any?(queries, fn {sql, _params} -> String.contains?(sql, "pending_write_rows") end)
+    assert Enum.any?(queries, fn {sql, _params} -> String.contains?(sql, "LEFT OUTER JOIN") end)
     refute Enum.any?(queries, fn {_sql, params} -> params == ["ecto-batched-get-tuple", "", "cp-parent"] end)
   end
 
   test "batches pending write reads when listing checkpoint history" do
-    saver = new_saver(query_module: CountingSQL)
+    saver = new_saver()
     config = %{"configurable" => %{"thread_id" => "ecto-batched-list"}}
 
     stored =
@@ -240,11 +224,7 @@ defmodule BeamWeaver.Checkpoint.EctoTest do
         next_config
       end)
 
-    Process.register(self(), :beam_weaver_ecto_query_counter)
-
-    on_exit(fn ->
-      safe_unregister(:beam_weaver_ecto_query_counter)
-    end)
+    attach_query_counter()
 
     assert Checkpoint.list(saver, config)
            |> Enum.map(& &1.checkpoint["id"]) == ["cp-3", "cp-2", "cp-1"]
@@ -254,8 +234,7 @@ defmodule BeamWeaver.Checkpoint.EctoTest do
     queries = drain_queries()
 
     assert length(queries) == 1
-    assert Enum.any?(queries, fn {sql, _params} -> String.contains?(sql, "ORDER BY commit_order DESC") end)
-    assert Enum.any?(queries, fn {sql, _params} -> String.contains?(sql, "pending_write_rows") end)
+    assert Enum.any?(queries, fn {sql, _params} -> String.contains?(sql, "LEFT OUTER JOIN") end)
   end
 
   test "atomically batches, orders, and forks explicit checkpoint ids" do
@@ -331,9 +310,22 @@ defmodule BeamWeaver.Checkpoint.EctoTest do
     end
   end
 
-  defp safe_unregister(name) do
-    if Process.whereis(name) == self() do
-      Process.unregister(name)
-    end
+  defp attach_query_counter do
+    handler = {__MODULE__, self(), make_ref()}
+
+    :ok =
+      :telemetry.attach(
+        handler,
+        [:beam_weaver, :test, :postgres_repo, :query],
+        &__MODULE__.handle_query/4,
+        self()
+      )
+
+    on_exit(fn -> :telemetry.detach(handler) end)
+  end
+
+  @doc false
+  def handle_query(_event, _measurements, metadata, pid) do
+    send(pid, {:ecto_query, metadata.query, metadata.params})
   end
 end

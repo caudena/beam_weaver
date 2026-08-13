@@ -31,6 +31,13 @@ end
 
 Normal runtime calls never create database tables automatically.
 
+`BeamWeaver.Checkpoint.Ecto` supports PostgreSQL and SQLite through the same
+Ecto query/write implementation. The application Repo selects the migration
+dialect and transaction behavior. SQLite remains optional: applications that
+choose it add `ecto_sqlite3`; PostgreSQL users do not receive that dependency.
+Other durable Ecto adapters retain the database support documented by their
+own modules.
+
 Durable adapters use `BeamWeaver.Serialization` by default. The default JSON
 codec is type-tagged and allowlisted; encrypted checkpoint/store payloads can
 opt in to `BeamWeaver.Serialization.Encrypted` with an explicit 32-byte

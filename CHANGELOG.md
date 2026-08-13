@@ -8,6 +8,9 @@
   input-token and 65,536 output-token limits, multimodal inputs, text output,
   `low`/`medium`/`high` thinking levels, Gemini built-in tools, structured
   output, and introductory standard/cache/batch/flex/priority pricing.
+- Added optional SQLite checkpoint persistence through
+  `BeamWeaver.Checkpoint.Ecto`. Applications opt in by adding `ecto_sqlite3`;
+  BeamWeaver does not add it as a runtime dependency.
 
 ### Changed
 
@@ -15,6 +18,9 @@
   catalog. Cost calculation now applies the provider's UTC peak windows using
   the response timestamp and defaults to off-peak prices when no timestamp is
   available.
+- Replaced PostgreSQL-specific checkpoint read/write SQL with one shared Ecto
+  query layer for PostgreSQL and SQLite. Only migrations and transaction
+  serialization remain adapter-specific.
 
 ## 0.1.16 - 2026-08-13
 
