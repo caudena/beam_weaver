@@ -50,7 +50,13 @@ defmodule BeamWeaver.Checkpoint.Ecto do
   def get_tuple(%__MODULE__{} = saver, config), do: Listing.get_tuple(saver, config)
 
   @impl true
+  def fetch_tuple(%__MODULE__{} = saver, config), do: Listing.fetch_tuple(saver, config)
+
+  @impl true
   def list(%__MODULE__{} = saver, config, opts), do: Listing.list(saver, config, opts)
+
+  @impl true
+  def list_result(%__MODULE__{} = saver, config, opts), do: Listing.list_result(saver, config, opts)
 
   @impl true
   def put(%__MODULE__{} = saver, config, checkpoint, metadata, new_versions) do
@@ -79,59 +85,45 @@ defmodule BeamWeaver.Checkpoint.Ecto do
         checkpoint_id =
           Map.get(checkpoint, "id") || Map.get(checkpoint, :id) || Config.generated_id()
 
-        parent_id =
-          if saver.shallow? do
-            nil
-          else
-            Map.get(configurable, "checkpoint_id") ||
-              Listing.latest_checkpoint_id(saver, thread_id, namespace)
-          end
+        with {:ok, latest_id} <- latest_checkpoint_id(saver, thread_id, namespace) do
+          parent_id =
+            if saver.shallow?, do: nil, else: Map.get(configurable, "checkpoint_id") || latest_id
 
-        parent_id = if parent_id == checkpoint_id, do: nil, else: parent_id
-        checkpoint_map = Config.checkpoint_map(configurable, namespace, checkpoint_id)
+          parent_id = if parent_id == checkpoint_id, do: nil, else: parent_id
+          checkpoint_map = Config.checkpoint_map(configurable, namespace, checkpoint_id)
 
-        checkpoint =
-          checkpoint
-          |> Config.stringify_keys()
-          |> Map.put_new("id", checkpoint_id)
-          |> Map.put_new("ts", DateTime.utc_now() |> DateTime.to_iso8601())
-          |> Map.put_new("channel_versions", Config.stringify_keys(new_versions || %{}))
-          |> Map.put_new("checkpoint_map", checkpoint_map)
-          |> Config.put_checkpoint_target_namespace(configurable)
+          checkpoint =
+            checkpoint
+            |> Config.stringify_keys()
+            |> Map.put_new("id", checkpoint_id)
+            |> Map.put_new("ts", DateTime.utc_now() |> DateTime.to_iso8601())
+            |> Map.put_new("channel_versions", Config.stringify_keys(new_versions || %{}))
+            |> Map.put_new("checkpoint_map", checkpoint_map)
+            |> Config.put_checkpoint_target_namespace(configurable)
 
-        sql = """
-        INSERT INTO #{saver.checkpoints_table}
-          (thread_id, checkpoint_ns, checkpoint_id, parent_checkpoint_id, checkpoint, metadata)
-        VALUES ($1, $2, $3, $4, $5, $6)
-        ON CONFLICT (thread_id, checkpoint_ns, checkpoint_id)
-        DO UPDATE SET checkpoint = EXCLUDED.checkpoint, metadata = EXCLUDED.metadata
-        """
-
-        with {:ok, stored_checkpoint} <- dump_json_value(saver, checkpoint),
-             {:ok, stored_metadata} <- dump_json_value(saver, Config.stringify_keys(metadata || %{})),
-             :ok <- maybe_delete_shallow_history(saver, thread_id, namespace),
-             {:ok, _result} <-
-               query(saver, sql, [
-                 thread_id,
-                 namespace,
-                 checkpoint_id,
-                 parent_id,
-                 stored_checkpoint,
-                 stored_metadata
-               ]) do
-          {:ok,
-           %{
-             "configurable" => %{
-               "thread_id" => thread_id,
-               "checkpoint_ns" => namespace,
-               "checkpoint_id" => checkpoint_id,
-               "checkpoint_map" => checkpoint_map
+          with {:ok, stored_checkpoint} <- dump_json_value(saver, checkpoint),
+               {:ok, stored_metadata} <- dump_json_value(saver, Config.stringify_keys(metadata || %{})),
+               :ok <- maybe_delete_shallow_history(saver, thread_id, namespace),
+               {:ok, _result} <-
+                 query(saver, checkpoint_upsert_sql(saver), [
+                   thread_id,
+                   namespace,
+                   checkpoint_id,
+                   parent_id,
+                   stored_checkpoint,
+                   stored_metadata
+                 ]) do
+            {:ok,
+             %{
+               "configurable" => %{
+                 "thread_id" => thread_id,
+                 "checkpoint_ns" => namespace,
+                 "checkpoint_id" => checkpoint_id,
+                 "checkpoint_map" => checkpoint_map
+               }
              }
-           }
-           |> Config.put_target_namespace(configurable)}
-        else
-          error ->
-            error
+             |> Config.put_target_namespace(configurable)}
+          end
         end
 
       _other ->
@@ -232,6 +224,22 @@ defmodule BeamWeaver.Checkpoint.Ecto do
 
   defp query(%__MODULE__{} = saver, sql, params) do
     SQL.query(saver, sql, params)
+  end
+
+  defp latest_checkpoint_id(%__MODULE__{shallow?: true}, _thread, _namespace),
+    do: {:ok, nil}
+
+  defp latest_checkpoint_id(saver, thread_id, namespace),
+    do: Listing.latest_checkpoint_id_result(saver, thread_id, namespace)
+
+  defp checkpoint_upsert_sql(saver) do
+    """
+    INSERT INTO #{saver.checkpoints_table}
+      (thread_id, checkpoint_ns, checkpoint_id, parent_checkpoint_id, checkpoint, metadata)
+    VALUES ($1, $2, $3, $4, $5, $6)
+    ON CONFLICT (thread_id, checkpoint_ns, checkpoint_id)
+    DO UPDATE SET checkpoint = EXCLUDED.checkpoint, metadata = EXCLUDED.metadata
+    """
   end
 
   def dump_json_value(%__MODULE__{} = saver, value) do

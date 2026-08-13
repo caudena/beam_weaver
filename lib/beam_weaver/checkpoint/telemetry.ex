@@ -24,7 +24,12 @@ defmodule BeamWeaver.Checkpoint.Telemetry do
     )
   end
 
-  defp result_checkpoint_id({:ok, config}), do: get_in(config, ["configurable", "checkpoint_id"])
+  defp result_checkpoint_id({:ok, %{checkpoint: checkpoint}}), do: Map.get(checkpoint, "id")
+
+  defp result_checkpoint_id({:ok, %{} = config}),
+    do: get_in(config, ["configurable", "checkpoint_id"])
+
+  defp result_checkpoint_id({:ok, _value}), do: nil
   defp result_checkpoint_id(%{checkpoint: checkpoint}), do: Map.get(checkpoint, "id")
   defp result_checkpoint_id(_result), do: nil
 end

@@ -371,6 +371,8 @@ LangGraph's checkpointer contract while using Elixir return shapes:
 | --- | --- |
 | `get_tuple/2` | Fetch the latest or requested checkpoint tuple. |
 | `list/3` | List checkpoint tuples for history. |
+| `fetch_tuple/2` | Optional error-preserving form of `get_tuple/2`. |
+| `list_result/3` | Optional error-preserving form of `list/3`. |
 | `put/5` | Store a checkpoint. |
 | `put_writes/5` | Store per-task pending writes for a checkpoint. |
 | `put_checkpoint_with_writes/7` | Optional transactional checkpoint-plus-writes path. |
@@ -381,6 +383,17 @@ LangGraph's checkpointer contract while using Elixir return shapes:
 Public facade functions such as `BeamWeaver.Checkpoint.get_tuple/2`,
 `list_records/3`, `copy_thread/3`, `delete_thread/2`, and `prune/3` emit
 telemetry and normalize adapter output.
+
+Use `BeamWeaver.Checkpoint.fetch_tuple/2` and `list_result/3` when storage
+errors must be handled explicitly. They also work with existing savers by
+wrapping `get_tuple/2` and `list/3`; exceptions become typed checkpoint errors.
+The compatibility `get_tuple/2` and `list/3` facades raise on storage failure
+instead of representing it as a missing checkpoint or empty history.
+
+`put_checkpoint_with_writes/7` is atomic by contract. If a saver does not
+implement that callback, the facade returns
+`{:error, %BeamWeaver.Core.Error{type: :atomic_checkpoint_write_unsupported}}`
+before writing anything.
 
 ## Storage Optimization
 

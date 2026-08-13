@@ -5,47 +5,63 @@ defmodule BeamWeaver.Checkpoint.Ecto.Listing do
   alias BeamWeaver.Checkpoint.Ecto.Config
   alias BeamWeaver.Checkpoint.Ecto.Rows
   alias BeamWeaver.Checkpoint.Ecto.SQL
+  alias BeamWeaver.Core.Error
 
   def get_tuple(saver, config) do
+    case fetch_tuple(saver, config) do
+      {:ok, tuple} -> tuple
+      {:error, error} -> raise_read_error!(error)
+    end
+  end
+
+  def fetch_tuple(saver, config) do
     configurable = Checkpoint.configurable(config)
 
-    with thread_id when is_binary(thread_id) <- configurable["thread_id"],
-         namespace <- Map.get(configurable, "checkpoint_ns", ""),
-         checkpoint_id <- configurable["checkpoint_id"],
-         {:ok, %{rows: [row]}} <-
-           SQL.query(saver, get_tuple_sql(saver), [thread_id, namespace, checkpoint_id]) do
-      Rows.tuple_from_row(saver, row)
-    else
-      _other -> nil
+    case configurable["thread_id"] do
+      thread_id when is_binary(thread_id) ->
+        namespace = Map.get(configurable, "checkpoint_ns", "")
+        checkpoint_id = configurable["checkpoint_id"]
+
+        case SQL.query(saver, get_tuple_sql(saver), [thread_id, namespace, checkpoint_id]) do
+          {:ok, %{rows: [row]}} -> {:ok, Rows.tuple_from_row(saver, row)}
+          {:ok, %{rows: []}} -> {:ok, nil}
+          {:error, _error} = error -> error
+        end
+
+      _other ->
+        {:ok, nil}
     end
   end
 
   def list(saver, config, opts) do
+    case list_result(saver, config, opts) do
+      {:ok, tuples} -> tuples
+      {:error, error} -> raise_read_error!(error)
+    end
+  end
+
+  def list_result(saver, config, opts) do
     configurable = if config, do: Checkpoint.configurable(config), else: %{}
 
-    filter =
-      (Keyword.get(opts, :filter, %{}) || %{})
-      |> Config.stringify_keys()
-      |> dump_filter(saver)
+    with {:ok, filter} <-
+           dump_filter(saver, Config.stringify_keys(Keyword.get(opts, :filter, %{}) || %{})) do
+      before_id = Config.before_checkpoint_id(Keyword.get(opts, :before))
+      limit = Keyword.get(opts, :limit)
 
-    before_id = Config.before_checkpoint_id(Keyword.get(opts, :before))
-    limit = Keyword.get(opts, :limit)
+      {clauses, params} =
+        {[], []}
+        |> maybe_where("thread_id", Map.get(configurable, "thread_id"))
+        |> maybe_where("checkpoint_ns", Map.get(configurable, "checkpoint_ns"))
+        |> maybe_before(before_id)
+        |> maybe_filter(filter)
 
-    {clauses, params} =
-      {[], []}
-      |> maybe_where("thread_id", Map.get(configurable, "thread_id"))
-      |> maybe_where("checkpoint_ns", Map.get(configurable, "checkpoint_ns"))
-      |> maybe_before(before_id)
-      |> maybe_filter(filter)
+      where = if clauses == [], do: "TRUE", else: Enum.join(clauses, " AND ")
+      limit_sql = if is_integer(limit), do: "LIMIT #{limit}", else: ""
 
-    where = if clauses == [], do: "TRUE", else: Enum.join(clauses, " AND ")
-    limit_sql = if is_integer(limit), do: "LIMIT #{limit}", else: ""
-
-    sql = list_sql(saver, where, limit_sql)
-
-    case SQL.query(saver, sql, params) do
-      {:ok, %{rows: rows}} -> Rows.tuples_from_rows(saver, rows)
-      _error -> []
+      case SQL.query(saver, list_sql(saver, where, limit_sql), params) do
+        {:ok, %{rows: rows}} -> {:ok, Rows.tuples_from_rows(saver, rows)}
+        {:error, _error} = error -> error
+      end
     end
   end
 
@@ -61,6 +77,13 @@ defmodule BeamWeaver.Checkpoint.Ecto.Listing do
   end
 
   def latest_checkpoint_id(saver, thread_id, namespace) do
+    case latest_checkpoint_id_result(saver, thread_id, namespace) do
+      {:ok, checkpoint_id} -> checkpoint_id
+      {:error, error} -> raise_read_error!(error)
+    end
+  end
+
+  def latest_checkpoint_id_result(saver, thread_id, namespace) do
     sql = """
     SELECT checkpoint_id
     FROM #{saver.checkpoints_table}
@@ -70,8 +93,9 @@ defmodule BeamWeaver.Checkpoint.Ecto.Listing do
     """
 
     case SQL.query(saver, sql, [thread_id, namespace]) do
-      {:ok, %{rows: [[checkpoint_id]]}} -> checkpoint_id
-      _other -> nil
+      {:ok, %{rows: [[checkpoint_id]]}} -> {:ok, checkpoint_id}
+      {:ok, %{rows: []}} -> {:ok, nil}
+      {:error, _error} = error -> error
     end
   end
 
@@ -169,10 +193,8 @@ defmodule BeamWeaver.Checkpoint.Ecto.Listing do
     {clauses ++ ["metadata @> $#{position}"], params ++ [filter]}
   end
 
-  defp dump_filter(filter, saver) do
-    case saver.__struct__.dump_json_value(saver, filter) do
-      {:ok, encoded} -> encoded
-      {:error, _error} -> filter
-    end
-  end
+  defp dump_filter(saver, filter), do: saver.__struct__.dump_json_value(saver, filter)
+
+  defp raise_read_error!(%Error{} = error), do: raise(RuntimeError, error.message)
+  defp raise_read_error!(error), do: raise(RuntimeError, inspect(error))
 end
