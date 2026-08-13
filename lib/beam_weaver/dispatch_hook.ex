@@ -8,8 +8,18 @@ defmodule BeamWeaver.DispatchHook do
 
   alias BeamWeaver.Adapter.Dispatch
 
+  @doc """
+  Runs immediately before one model or tool attempt.
+
+  The application defines the request and context meanings. Returning an error
+  prevents that attempt from invoking its external function.
+  """
   @callback before_dispatch(struct(), term(), term()) :: :ok | {:error, term()}
 
+  @doc """
+  Invokes the configured hook, or succeeds when no hook is configured.
+  """
+  @spec before(nil | struct(), term(), term()) :: :ok | {:error, term()}
   def before(nil, _request, _context), do: :ok
 
   def before(hook, request, context) do
@@ -20,6 +30,10 @@ defmodule BeamWeaver.DispatchHook do
     end
   end
 
+  @doc """
+  Runs `fun` only after the configured hook accepts the dispatch.
+  """
+  @spec run(nil | struct(), term(), term(), (-> term())) :: term()
   def run(hook, request, context, fun) when is_function(fun, 0) do
     with :ok <- before(hook, request, context), do: fun.()
   end

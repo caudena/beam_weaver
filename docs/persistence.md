@@ -350,6 +350,30 @@ defmodule MyApp.Repo.Migrations.CreateBeamWeaverCheckpoints do
 end
 ```
 
+Checkpoint schema version 2 adds `commit_order`, backfills existing rows by
+their stored insertion order, and makes `(thread_id, checkpoint_ns,
+commit_order)` unique. Applications already on checkpoint schema version 1
+must add a normal application migration that calls `up/1` again:
+
+```elixir
+defmodule MyApp.Repo.Migrations.OrderBeamWeaverCheckpoints do
+  use Ecto.Migration
+
+  def up do
+    BeamWeaver.Migrations.up(adapters: [:checkpoint])
+  end
+
+  def down do
+    BeamWeaver.Migrations.down(adapters: [:checkpoint], version: 2)
+  end
+end
+```
+
+The upgrade preserves checkpoint IDs and uses the persisted order for latest,
+history, pruning, and fork selection. Run
+`BeamWeaver.Migrations.verify_migrated!/1` before starting an Ecto checkpointer
+to fail clearly when the application migration is missing.
+
 Then compile with the adapter:
 
 ```elixir
@@ -403,6 +427,13 @@ persist a per-thread, per-namespace commit order, so explicit legacy checkpoint
 IDs remain identities rather than being misused as timestamps. `fork_at/4`
 copies only the selected checkpoint's bounded ancestor lineage and fails when a
 parent is missing or the configured count or byte limit is exceeded.
+
+Each `put_many/3` entry is a map with `:config` and an explicit-ID
+`:checkpoint`; optional fields are `:metadata`, `:versions`, `:writes`, and
+`:write_opts`. A batch accepts at most 1,000 checkpoints, 10,000 pending writes,
+and 64 MiB of Erlang terms. `fork_at/4` defaults to 1,000 checkpoints and accepts
+`:max_checkpoints` and `:max_bytes` within hard ceilings of 10,000 checkpoints
+and 64 MiB.
 
 ## Storage Optimization
 

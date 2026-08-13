@@ -365,6 +365,22 @@ Start a runtime agent process:
 {:ok, agent} = BeamWeaver.Runtime.Agent.start_child(id: "agent-1")
 ```
 
+Runtime options added at process startup are:
+
+| Option | Meaning | Default |
+| --- | --- | --- |
+| `:cancel_grace_ms` | Time allowed for cooperative cancellation before forced termination. | `100` |
+| `:subscriber_queue_limit` | Maximum queued messages before a slow subscriber is removed. | `1_000` |
+
+`start_model_call/4` and `start_tool_call/5` also accept per-work options:
+
+| Option | Meaning | Default |
+| --- | --- | --- |
+| `:timeout` | Maximum work duration in milliseconds, or `:infinity`. | `5_000` |
+| `:dispatch_hook` | Optional `BeamWeaver.DispatchHook` struct called before each attempt. | `nil` |
+| `:dispatch_context` | Application-owned context passed to the dispatch hook. | `nil` |
+| `:max_retries` | Additional tool attempts after recoverable runtime errors. | `0` |
+
 Subscribe to runtime events:
 
 ```elixir

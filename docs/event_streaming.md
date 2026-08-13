@@ -328,6 +328,36 @@ events in one pass for live UI updates, or reduce collected events into
 `%BeamWeaver.Stream.MessageStream{}` structs for inspection.
 {% endhint %}
 
+## Provider Stream Bounds
+
+Live provider SSE streams validate decoded events before publishing them. The
+defaults allow 100,000 events, 64 MiB of encoded transport data, and 64 MiB of
+decoded event values. `:max_stream_events`, `:max_stream_bytes`, and
+`:max_stream_value_bytes` lower those limits; `:max_bytes`, `:max_items`, and
+`:max_depth` bound each decoded value.
+
+Validation is batch-atomic and sticky. If decoding or validation fails, no
+event from that candidate batch is emitted, the first error is retained, and
+the stream cannot later finish successfully. Collected non-live responses use
+`:max_response_bytes`, which defaults to 16 MiB.
+
+Provider adapters use `BeamWeaver.Provider.StreamValidator` internally. Custom
+adapters can use the same policy-neutral state directly:
+
+```elixir
+alias BeamWeaver.Provider.StreamValidator
+
+validation = StreamValidator.new(max_stream_events: 10_000)
+
+with {:ok, validation} <-
+       StreamValidator.push(validation, decoded_events,
+         transport_bytes: byte_size(chunk)
+       ),
+     :ok <- StreamValidator.finish(validation) do
+  decoded_events
+end
+```
+
 ## Reasoning Content
 
 Reasoning output is provider-dependent. OpenAI, Anthropic, Google, DeepSeek,

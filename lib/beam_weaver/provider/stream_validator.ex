@@ -19,6 +19,25 @@ defmodule BeamWeaver.Provider.StreamValidator do
             max_value_bytes: 64 * 1024 * 1024,
             validation: []
 
+  @type t :: %__MODULE__{
+          error: Error.t() | nil,
+          event_count: non_neg_integer(),
+          transport_bytes: non_neg_integer(),
+          value_bytes: non_neg_integer(),
+          max_events: pos_integer(),
+          max_transport_bytes: pos_integer(),
+          max_value_bytes: pos_integer(),
+          validation: keyword()
+        }
+
+  @doc """
+  Creates validation state with optional event, transport-byte, value-byte,
+  item, and nesting limits.
+
+  The defaults are 100,000 events, 64 MiB of transport bytes, 64 MiB of
+  decoded values, 100,000 decoded items, and a nesting depth of 64.
+  """
+  @spec new(keyword()) :: t()
   def new(opts \\ []) do
     %__MODULE__{
       max_events: Keyword.get(opts, :max_stream_events, 100_000),
@@ -28,6 +47,14 @@ defmodule BeamWeaver.Provider.StreamValidator do
     }
   end
 
+  @doc """
+  Validates one event or one event batch without exposing partial progress.
+
+  `:transport_bytes` records the encoded bytes consumed for the batch. Once a
+  push fails, the returned state keeps the first error and rejects later work.
+  """
+  @spec push(t(), term() | [term()], keyword()) ::
+          {:ok, t()} | {:error, Error.t(), t()}
   def push(state, events, opts \\ [])
 
   def push(%__MODULE__{error: %Error{} = error} = state, _events, _opts),
@@ -55,9 +82,17 @@ defmodule BeamWeaver.Provider.StreamValidator do
     end
   end
 
+  @doc """
+  Finishes validation, returning the first sticky error when one occurred.
+  """
+  @spec finish(t()) :: :ok | {:error, Error.t()}
   def finish(%__MODULE__{error: %Error{} = error}), do: {:error, error}
   def finish(%__MODULE__{}), do: :ok
 
+  @doc """
+  Marks decoder or parser failure as the stream's first sticky error.
+  """
+  @spec reject(t(), term()) :: {:error, Error.t(), t()}
   def reject(%__MODULE__{error: %Error{} = error} = state, _reason),
     do: {:error, error, state}
 
