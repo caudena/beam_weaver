@@ -3,6 +3,8 @@
 ## Unreleased
 
 ### Added
+- Added `BeamWeaver.Models.UsageCost.calculate_usd_micros/2` for exact,
+  integer-only pricing with explicit dimensions and one final rounding rule.
 - Docker sandboxes accept explicit bind mounts, resource limits, read-only root
   filesystems, dropped capabilities, security options, and tmpfs mounts, and
   expose `BeamWeaver.Sandbox.Docker.stop/1` for application-owned cleanup.

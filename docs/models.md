@@ -184,6 +184,37 @@ Recommended starting points:
 Use the matrix as capability guidance, then validate model quality against your
 own prompts, tools, latency, and cost constraints.
 
+### Exact integer pricing
+
+Applications that persist budgets or reconcile costs can use
+`BeamWeaver.Models.UsageCost.calculate_usd_micros/2`. The function accepts a
+closed integer pricing profile and normalized token counts, performs no
+floating-point arithmetic, and rounds the combined result once with the
+declared `half_up` rule.
+
+```elixir
+pricing = %{
+  schema_version: 1,
+  currency: "USD",
+  rounding: "half_up",
+  dimensions: [
+    %{name: "input_tokens", unit_size: 1_000_000, unit_price_usd_micros: 2_000_000},
+    %{name: "output_tokens", unit_size: 1_000_000, unit_price_usd_micros: 8_000_000}
+  ]
+}
+
+{:ok, %{cost_micros: cost}} =
+  BeamWeaver.Models.UsageCost.calculate_usd_micros(pricing, %{
+    input_tokens: 100,
+    output_tokens: 10
+  })
+```
+
+The API returns an error for missing usage, duplicate or unknown dimensions,
+invalid units, and cached-input counts greater than total input. Pricing-profile
+selection, effective dates, budgets, and whether an estimate may authorize work
+remain application policy.
+
 Model profiles expose `tool_call_streaming` separately from `streaming` and
 `tool_calling`. Use it when a UI or replay test needs incremental tool argument
 chunks instead of waiting for the final assistant message. Current checked-in

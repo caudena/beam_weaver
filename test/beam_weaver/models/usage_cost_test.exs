@@ -132,4 +132,64 @@ defmodule BeamWeaver.Models.UsageCostTest do
     costs = UsageCost.calculate(profile, %{input_tokens: 10, output_tokens: 5})
     assert_in_delta costs.total_cost, 0.00002, 1.0e-12
   end
+
+  test "calculates exact USD micros with one final rounding step" do
+    pricing = %{
+      "schema_version" => 1,
+      "currency" => "USD",
+      "rounding" => "half_up",
+      "dimensions" => [
+        %{
+          "name" => "input_tokens",
+          "unit_size" => 1_000_000,
+          "unit_price_usd_micros" => 2_000_000
+        },
+        %{
+          "name" => "cached_input_tokens",
+          "unit_size" => 1_000_000,
+          "unit_price_usd_micros" => 500_000
+        },
+        %{
+          "name" => "output_tokens",
+          "unit_size" => 1_000_000,
+          "unit_price_usd_micros" => 4_000_000
+        }
+      ]
+    }
+
+    assert {:ok, cost} =
+             UsageCost.calculate_usd_micros(pricing, %{
+               input_tokens: 100,
+               output_tokens: 20,
+               input_token_details: %{cache_read: 40}
+             })
+
+    assert cost.cost_micros == 220
+    assert cost.currency == "USD"
+
+    assert cost.rounding == %{
+             rule: "half_up",
+             numerator: 220,
+             denominator: 1
+           }
+  end
+
+  test "rejects incomplete usage and invalid exact dimensions" do
+    pricing = %{
+      schema_version: 1,
+      currency: "USD",
+      rounding: "half_up",
+      dimensions: [%{name: "input_tokens", unit_size: 0, unit_price_usd_micros: 1}]
+    }
+
+    valid_pricing = %{
+      pricing
+      | dimensions: [%{name: "input_tokens", unit_size: 1, unit_price_usd_micros: 1}]
+    }
+
+    assert {:error, :invalid_usage} = UsageCost.calculate_usd_micros(valid_pricing, %{})
+
+    assert {:error, :invalid_pricing_dimension} =
+             UsageCost.calculate_usd_micros(pricing, %{input_tokens: 1, output_tokens: 1})
+  end
 end
