@@ -30,7 +30,8 @@ defmodule BeamWeaver.Runtime.Agent.Server do
 
   @impl true
   def init(opts) do
-    state = opts |> State.new() |> monitor_owner()
+    state = State.new(opts)
+    state = monitor_owner(state, Keyword.get(opts, :owner))
 
     case BeamWeaver.ProcessRegistry.register({:agent, state.id}, nil) do
       {:ok, _pid} -> {:ok, state}
@@ -298,12 +299,12 @@ defmodule BeamWeaver.Runtime.Agent.Server do
   defp restore_context(nil), do: Context.clear()
   defp restore_context(%Context{} = context), do: Context.put(context)
 
-  defp monitor_owner(%State{owner: nil} = state), do: state
+  defp monitor_owner(%State{} = state, nil), do: state
 
-  defp monitor_owner(%State{owner: owner} = state) when is_pid(owner),
+  defp monitor_owner(%State{} = state, owner) when is_pid(owner),
     do: %{state | owner_ref: Process.monitor(owner)}
 
-  defp monitor_owner(%State{}), do: raise(ArgumentError, ":owner must be a pid")
+  defp monitor_owner(%State{}, _owner), do: raise(ArgumentError, ":owner must be a pid")
 
   defp new_work_id do
     "work_" <> Integer.to_string(System.unique_integer([:positive, :monotonic]), 36)

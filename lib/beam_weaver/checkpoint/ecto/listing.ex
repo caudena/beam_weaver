@@ -217,5 +217,4 @@ defmodule BeamWeaver.Checkpoint.Ecto.Listing do
   defp maybe_limit(query, _limit), do: query
 
   defp raise_read_error!(%Error{} = error), do: raise(RuntimeError, error.message)
-  defp raise_read_error!(error), do: raise(RuntimeError, inspect(error))
 end

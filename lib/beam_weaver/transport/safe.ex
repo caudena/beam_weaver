@@ -195,7 +195,7 @@ defmodule BeamWeaver.Transport.Safe do
 
   defp annotate_target(%Response{} = response, target) do
     metadata =
-      Map.merge(response.metadata || %{}, %{
+      Map.merge(response.metadata, %{
         requested_url: target.url,
         requested_host: target.host,
         connected_address: target.address,

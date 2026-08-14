@@ -197,8 +197,8 @@ defmodule BeamWeaver.Todo do
   defp validate_dag(items) do
     dependencies = Map.new(items, &{&1.id, &1.dependencies})
 
-    Enum.reduce_while(Map.keys(dependencies), {:ok, MapSet.new()}, fn id, {:ok, done} ->
-      case visit(id, dependencies, done, MapSet.new()) do
+    Enum.reduce_while(Map.keys(dependencies), {:ok, %{}}, fn id, {:ok, done} ->
+      case visit(id, dependencies, done, %{}) do
         {:ok, done} -> {:cont, {:ok, done}}
         :cycle -> {:halt, :cycle}
       end
@@ -209,14 +209,26 @@ defmodule BeamWeaver.Todo do
     end
   end
 
+  @spec visit(
+          String.t(),
+          %{String.t() => [String.t()]},
+          %{optional(String.t()) => true},
+          %{optional(String.t()) => true}
+        ) :: {:ok, %{optional(String.t()) => true}} | :cycle
   defp visit(id, dependencies, done, visiting) do
     cond do
-      MapSet.member?(done, id) -> {:ok, done}
-      MapSet.member?(visiting, id) -> :cycle
-      true -> visit_dependencies(id, dependencies, done, MapSet.put(visiting, id))
+      Map.has_key?(done, id) -> {:ok, done}
+      Map.has_key?(visiting, id) -> :cycle
+      true -> visit_dependencies(id, dependencies, done, Map.put(visiting, id, true))
     end
   end
 
+  @spec visit_dependencies(
+          String.t(),
+          %{String.t() => [String.t()]},
+          %{optional(String.t()) => true},
+          %{optional(String.t()) => true}
+        ) :: {:ok, %{optional(String.t()) => true}} | :cycle
   defp visit_dependencies(id, dependencies, done, visiting) do
     Enum.reduce_while(Map.fetch!(dependencies, id), {:ok, done}, fn dependency, {:ok, done} ->
       case visit(dependency, dependencies, done, visiting) do
@@ -225,7 +237,7 @@ defmodule BeamWeaver.Todo do
       end
     end)
     |> case do
-      {:ok, done} -> {:ok, MapSet.put(done, id)}
+      {:ok, done} -> {:ok, Map.put(done, id, true)}
       :cycle -> :cycle
     end
   end

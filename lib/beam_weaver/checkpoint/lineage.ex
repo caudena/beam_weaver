@@ -21,7 +21,7 @@ defmodule BeamWeaver.Checkpoint.Lineage do
              limit: count - 1
            ) do
       tuples = Map.new([tuple | predecessors], &{checkpoint_id(&1), &1})
-      walk(tuple, tuples, [], MapSet.new(), count, bytes, 0, length(predecessors) == count - 1)
+      walk(tuple, tuples, [], %{}, count, bytes, 0, length(predecessors) == count - 1)
     else
       false -> error(:invalid_checkpoint_fork, "source checkpoint id is required")
       {:ok, nil} -> error(:checkpoint_not_found, "source checkpoint was not found")
@@ -29,6 +29,16 @@ defmodule BeamWeaver.Checkpoint.Lineage do
     end
   end
 
+  @spec walk(
+          map(),
+          map(),
+          [map()],
+          %{optional(term()) => true},
+          non_neg_integer(),
+          pos_integer(),
+          non_neg_integer(),
+          boolean()
+        ) :: {:ok, [map()]} | {:error, Error.t()}
   defp walk(_tuple, _tuples, _acc, _seen, 0, _limit, _bytes, _saturated?),
     do: error(:checkpoint_fork_too_large, "checkpoint lineage is too large")
 
@@ -37,7 +47,7 @@ defmodule BeamWeaver.Checkpoint.Lineage do
     bytes = bytes + :erlang.external_size(tuple)
 
     cond do
-      MapSet.member?(seen, id) ->
+      Map.has_key?(seen, id) ->
         error(:checkpoint_lineage_cycle, "checkpoint lineage contains a cycle")
 
       bytes > limit ->
@@ -55,7 +65,7 @@ defmodule BeamWeaver.Checkpoint.Lineage do
               parent,
               tuples,
               [tuple | acc],
-              MapSet.put(seen, id),
+              Map.put(seen, id, true),
               remaining - 1,
               limit,
               bytes,

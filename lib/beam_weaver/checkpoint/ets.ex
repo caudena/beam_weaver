@@ -274,7 +274,7 @@ defmodule BeamWeaver.Checkpoint.ETS do
     configurable
     |> Map.get("checkpoint_map", %{})
     |> normalize_checkpoint_map()
-    |> Map.put(to_string(namespace || ""), checkpoint_id)
+    |> Map.put(namespace, checkpoint_id)
   end
 
   defp normalize_checkpoint_map(map) when is_map(map) do
@@ -500,22 +500,24 @@ defmodule BeamWeaver.Checkpoint.ETS do
 
   defp prepare_batch(saver, entries) do
     Enum.reduce_while(entries, {:ok, [], %{}}, fn entry, {:ok, prepared, heads} ->
-      with {:ok, config, checkpoint, metadata, versions, writes, write_opts} <- Batch.entry(entry) do
-        configurable = Checkpoint.configurable(config)
-        owner = {configurable["thread_id"], Map.get(configurable, "checkpoint_ns", "")}
-        parent_id = configurable["checkpoint_id"] || Map.get(heads, owner) || :latest
+      case Batch.entry(entry) do
+        {:ok, config, checkpoint, metadata, versions, writes, write_opts} ->
+          configurable = Checkpoint.configurable(config)
+          owner = {configurable["thread_id"], Map.get(configurable, "checkpoint_ns", "")}
+          parent_id = configurable["checkpoint_id"] || Map.get(heads, owner) || :latest
 
-        with {:ok, key, record} <-
-               prepare_record(saver, config, checkpoint, metadata, versions, parent_id),
-             {:ok, write_objects} <- batch_writes(key, writes, write_opts) do
-          next = %{key: key, record: record, writes: write_objects}
-          checkpoint_id = elem(key, 2)
-          {:cont, {:ok, [next | prepared], Map.put(heads, owner, checkpoint_id)}}
-        else
-          {:error, %Error{}} = error -> {:halt, error}
-        end
-      else
-        {:error, %Error{}} = error -> {:halt, error}
+          with {:ok, key, record} <-
+                 prepare_record(saver, config, checkpoint, metadata, versions, parent_id),
+               {:ok, write_objects} <- batch_writes(key, writes, write_opts) do
+            next = %{key: key, record: record, writes: write_objects}
+            checkpoint_id = elem(key, 2)
+            {:cont, {:ok, [next | prepared], Map.put(heads, owner, checkpoint_id)}}
+          else
+            {:error, %Error{}} = error -> {:halt, error}
+          end
+
+        {:error, %Error{}} = error ->
+          {:halt, error}
       end
     end)
     |> case do
