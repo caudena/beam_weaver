@@ -12,12 +12,18 @@
   work timeouts to the supervised agent runtime, plus the policy-neutral
   `BeamWeaver.DispatchHook` for application checks immediately before model or
   tool attempts.
+- Runtime agents may monitor an optional application owner and terminate all
+  active supervised work when that owner exits.
+- Live stream producers stop when their consuming work process exits.
 - Added immutable `BeamWeaver.Todo` revisions with stable IDs, bounded DAG
   validation, evidence-bearing transitions, and deterministic hashes.
 - Added the optional `BeamWeaver.Agent.Subagent.Host` boundary for applications
   that own durable child admission and result delivery.
 
 ### Changed
+- Tool input validation can return a normalized string-keyed map and now
+  enforces declared closed properties, string and numeric bounds, collection
+  limits, nested schemas, and normalized-key collision rejection.
 - URL allowlists now narrow destinations without bypassing private, metadata,
   or reserved-address checks. `Transport.Safe` can pin a request to one
   validated DNS result while retaining the original Host and TLS identity, and

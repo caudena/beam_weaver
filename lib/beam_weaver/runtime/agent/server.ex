@@ -30,7 +30,7 @@ defmodule BeamWeaver.Runtime.Agent.Server do
 
   @impl true
   def init(opts) do
-    state = State.new(opts)
+    state = opts |> State.new() |> monitor_owner()
 
     case BeamWeaver.ProcessRegistry.register({:agent, state.id}, nil) do
       {:ok, _pid} -> {:ok, state}
@@ -134,16 +134,26 @@ defmodule BeamWeaver.Runtime.Agent.Server do
   end
 
   def handle_info({:DOWN, ref, :process, _pid, reason}, state) do
-    case active_by_ref(state, ref) do
-      {work_id, active} ->
-        error =
-          Error.new(:task_down, "work task stopped before returning", %{reason: inspect(reason)})
+    if state.owner_ref == ref do
+      Enum.each(state.active_work, fn {_work_id, active} ->
+        cancel_timeout(active.timeout_ref)
+        cancel_timeout(active.cancel_ref)
+        Process.exit(active.task.pid, :kill)
+      end)
 
-        state = complete_work(state, active, {:failed, error})
-        {:noreply, %{state | active_work: Map.delete(state.active_work, work_id)}}
+      {:stop, {:shutdown, {:owner_down, reason}}, state}
+    else
+      case active_by_ref(state, ref) do
+        {work_id, active} ->
+          error =
+            Error.new(:task_down, "work task stopped before returning", %{reason: inspect(reason)})
 
-      nil ->
-        {:noreply, %{state | subscribers: StreamBroker.remove_down(state.subscribers, ref)}}
+          state = complete_work(state, active, {:failed, error})
+          {:noreply, %{state | active_work: Map.delete(state.active_work, work_id)}}
+
+        nil ->
+          {:noreply, %{state | subscribers: StreamBroker.remove_down(state.subscribers, ref)}}
+      end
     end
   end
 
@@ -287,6 +297,13 @@ defmodule BeamWeaver.Runtime.Agent.Server do
 
   defp restore_context(nil), do: Context.clear()
   defp restore_context(%Context{} = context), do: Context.put(context)
+
+  defp monitor_owner(%State{owner: nil} = state), do: state
+
+  defp monitor_owner(%State{owner: owner} = state) when is_pid(owner),
+    do: %{state | owner_ref: Process.monitor(owner)}
+
+  defp monitor_owner(%State{}), do: raise(ArgumentError, ":owner must be a pid")
 
   defp new_work_id do
     "work_" <> Integer.to_string(System.unique_integer([:positive, :monotonic]), 36)

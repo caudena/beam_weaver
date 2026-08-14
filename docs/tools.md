@@ -88,6 +88,13 @@ return `:ok`, `{:ok, parsed_map}`, or `{:error, reason}`. Parser errors,
 exceptions, and invalid return shapes become `:invalid_input` errors and use the
 same `handle_validation_error` policy as schema failures.
 
+For callers that validate before creating their own operation record,
+`BeamWeaver.Core.Tool.normalize_input/2` returns a string-keyed input map. It
+enforces required and closed properties, basic JSON types, enums, string and
+numeric bounds, array sizes, and nested object/array schemas. Atom and string
+keys that normalize to the same JSON key are rejected instead of silently
+overwriting one value.
+
 ### Module Tool
 
 Use `use BeamWeaver.Tool` for application tools that should compile to a normal

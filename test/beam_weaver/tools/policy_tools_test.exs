@@ -475,7 +475,7 @@ defmodule BeamWeaver.Tools.PolicyToolsTest do
     assert {:error, %{type: :invalid_file_search_query}} =
              Tool.invoke(valid, %{"query" => " "})
 
-    assert {:error, %{type: :invalid_file_search_limit}} =
+    assert {:error, %{type: :invalid_input}} =
              Tool.invoke(valid, %{"query" => "needle", "max_results" => 0})
 
     missing = FileSearch.new(roots: [Path.join(root, "missing")])

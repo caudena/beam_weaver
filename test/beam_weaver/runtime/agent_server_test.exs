@@ -189,6 +189,29 @@ defmodule BeamWeaver.Runtime.AgentServerTest do
     assert work_id == work.id
   end
 
+  test "owner exit stops the agent and its active work" do
+    owner = spawn(fn -> Process.sleep(:infinity) end)
+
+    agent =
+      start_supervised!({Agent, id: "owned_agent_#{System.unique_integer([:positive])}", owner: owner})
+
+    test_pid = self()
+    agent_ref = Process.monitor(agent)
+
+    assert {:ok, _work} =
+             Agent.start_model_call(agent, :input, fn ->
+               send(test_pid, {:owned_work_started, self()})
+               Process.sleep(:infinity)
+             end)
+
+    assert_receive {:owned_work_started, task_pid}
+    task_ref = Process.monitor(task_pid)
+    Process.exit(owner, :kill)
+
+    assert_receive {:DOWN, ^task_ref, :process, ^task_pid, :killed}
+    assert_receive {:DOWN, ^agent_ref, :process, ^agent, {:shutdown, {:owner_down, :killed}}}
+  end
+
   test "stream chunks are delivered before work completes" do
     agent = start_agent!()
     :ok = Agent.subscribe(agent)

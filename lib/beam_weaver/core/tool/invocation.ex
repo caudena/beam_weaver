@@ -104,13 +104,21 @@ defmodule BeamWeaver.Core.Tool.Invocation do
 
     with {:ok, parsed_input} <- parse_input(tool, call.input, api),
          defaulted_input <- Schema.apply_defaults(parsed_input, schema),
-         :ok <- Schema.validate(schema, defaulted_input),
+         validation_input <- without_injected(defaulted_input, api.injected.(tool)),
+         :ok <- Schema.validate(schema, validation_input),
          input <- inject_call_id(defaulted_input, tool, call, api),
          {:ok, result} <- api.do_invoke.(tool, input, opts) do
       {:ok, format_invocation_result(result, tool, call, api)}
     else
       {:error, %Error{} = error} -> handle_invocation_error(tool, error, call, api)
     end
+  end
+
+  defp without_injected(input, injected) when map_size(injected) == 0, do: input
+
+  defp without_injected(input, injected) do
+    names = injected |> Map.keys() |> MapSet.new(&to_string/1)
+    Map.reject(input, fn {key, _value} -> MapSet.member?(names, to_string(key)) end)
   end
 
   defp parse_input(tool, input, api) do

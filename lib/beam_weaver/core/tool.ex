@@ -445,10 +445,19 @@ defmodule BeamWeaver.Core.Tool do
   def format_output(content, opts \\ []), do: Output.format(content, opts)
 
   @doc """
-  Validates required keys and basic JSON-schema property types declared by a tool schema.
+  Validates required keys, closed properties, basic JSON types, and declared
+  string, numeric, and collection bounds.
   """
   @spec validate_input(map(), map()) :: :ok | {:error, Error.t()}
   def validate_input(schema, input), do: Schema.validate(schema, input)
+
+  @doc """
+  Validates a tool input and returns its normalized JSON object with string keys.
+
+  Atom and string keys that normalize to the same name are rejected.
+  """
+  @spec normalize_input(map(), map()) :: {:ok, map()} | {:error, Error.t()}
+  def normalize_input(schema, input), do: Schema.normalize(schema, input)
 
   defp do_invoke(%__MODULE__{handler: handler}, input, opts) do
     normalize_result(handler.(input, opts))

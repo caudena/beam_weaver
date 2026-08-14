@@ -369,6 +369,7 @@ Runtime options added at process startup are:
 
 | Option | Meaning | Default |
 | --- | --- | --- |
+| `:owner` | Optional process whose exit stops the runtime agent and all active work. | `nil` |
 | `:cancel_grace_ms` | Time allowed for cooperative cancellation before forced termination. | `100` |
 | `:subscriber_queue_limit` | Maximum queued messages before a slow subscriber is removed. | `1_000` |
 

@@ -54,6 +54,24 @@ defmodule BeamWeaver.Stream.LiveResourceTest do
     assert [%Events.Custom{payload: :supervised}] = Task.await(task, 1_000)
   end
 
+  test "live_resource stops its producer when the consumer exits" do
+    parent = self()
+
+    consumer =
+      spawn(fn ->
+        Stream.live_resource(fn _emit ->
+          send(parent, {:producer_pid, self()})
+          Process.sleep(:infinity)
+        end)
+        |> Enum.to_list()
+      end)
+
+    assert_receive {:producer_pid, producer}, 500
+    producer_ref = Process.monitor(producer)
+    Process.exit(consumer, :kill)
+    assert_receive {:DOWN, ^producer_ref, :process, ^producer, :killed}, 500
+  end
+
   test "live_resource reports supervised producer crashes as stream errors" do
     {:ok, supervisor} = Task.Supervisor.start_link()
 
