@@ -3,6 +3,9 @@
 ## Unreleased
 
 ### Added
+- Docker sandboxes accept explicit bind mounts, resource limits, read-only root
+  filesystems, dropped capabilities, security options, and tmpfs mounts, and
+  expose `BeamWeaver.Sandbox.Docker.stop/1` for application-owned cleanup.
 - Added error-preserving `BeamWeaver.Checkpoint.fetch_tuple/2` and
   `list_result/3`, all-or-nothing `put_many/3`, and bounded lineage
   `fork_at/4` APIs while retaining the existing convenience facades.

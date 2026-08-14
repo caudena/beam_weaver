@@ -68,6 +68,34 @@ defmodule BeamWeaver.Sandbox.DockerTest do
              Sandbox.download_files(sandbox, [path])
   end
 
+  test "mounts application-owned directories with explicit container restrictions", %{
+    docker_image: docker_image
+  } do
+    root = Path.join(System.tmp_dir!(), "beam-weaver-docker-#{System.unique_integer([:positive])}")
+    File.mkdir_p!(root)
+    File.write!(Path.join(root, "input.txt"), "mounted")
+
+    sandbox =
+      Docker.new(
+        image: docker_image,
+        root: "/workspace",
+        mounts: [%{source: root, target: "/workspace", read_only: false}],
+        read_only: true,
+        cap_drop: ["ALL"],
+        security_opts: ["no-new-privileges"],
+        tmpfs: ["/tmp:rw,noexec,nosuid,size=16m"]
+      )
+      |> Docker.start!()
+
+    on_exit(fn ->
+      Docker.stop(sandbox)
+      File.rm_rf(root)
+    end)
+
+    assert %Sandbox.ExecuteResult{exit_code: 0, output: "mounted"} =
+             Sandbox.execute(sandbox, "cat input.txt")
+  end
+
   defp docker_available? do
     match?(
       {_version, 0},
