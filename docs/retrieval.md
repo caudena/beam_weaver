@@ -150,6 +150,7 @@ policy =
   BeamWeaver.Transport.URLPolicy.new(
     schemes: ["https"],
     resolve?: true,
+    pin_resolved?: true,
     resolver: fn host, port -> {:ok, MyResolver.lookup(host, port)} end
   )
 
@@ -157,10 +158,12 @@ policy =
   BeamWeaver.Transport.URLPolicy.validate("https://example.com/handbook", policy)
 ```
 
-`allowed_hosts` is an explicit bypass for trusted internal names. Private
-RFC1918 addresses require `allow_private?: true`; loopback and cloud metadata
-endpoints have separate opt-ins so test-only local access does not accidentally
-allow metadata access in production.
+`allowed_hosts` narrows the permitted destinations; it never bypasses address
+classification. Private RFC1918 addresses require `allow_private?: true`, while
+loopback and cloud metadata endpoints have separate opt-ins. At a live boundary,
+`pin_resolved?: true` resolves once and connects to that exact validated address
+while preserving the original Host header and TLS hostname. Streaming responses
+stop at the policy's `max_bytes` ceiling instead of buffering past it.
 
 ## Text Splitter Streams
 

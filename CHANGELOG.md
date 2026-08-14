@@ -18,6 +18,10 @@
   that own durable child admission and result delivery.
 
 ### Changed
+- URL allowlists now narrow destinations without bypassing private, metadata,
+  or reserved-address checks. `Transport.Safe` can pin a request to one
+  validated DNS result while retaining the original Host and TLS identity, and
+  the Req/Finch streaming path enforces its response-byte ceiling.
 - Checkpoint latest/history/pruning/fork selection now uses a persisted
   per-thread, per-namespace commit order instead of interpreting checkpoint IDs
   as timestamps. Existing explicit and legacy IDs remain unchanged.

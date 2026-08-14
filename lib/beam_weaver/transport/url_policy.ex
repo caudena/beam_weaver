@@ -5,7 +5,10 @@ defmodule BeamWeaver.Transport.URLPolicy do
   This is intentionally conservative and local. It validates URL shape and
   literal IP/localhost targets by default. Callers that are about to perform a
   network request can enable DNS resolution with an injected resolver so the
-  same policy can fail closed before transport I/O.
+  same policy can fail closed before transport I/O. `allowed_hosts` narrows the
+  accepted host set; it never bypasses private, metadata, or reserved-address
+  checks. With `pin_resolved?: true`, `Transport.Safe` connects to one validated
+  address while retaining the original Host and TLS hostname.
   """
 
   import Bitwise
@@ -22,6 +25,7 @@ defmodule BeamWeaver.Transport.URLPolicy do
             allow_docker_internal?: false,
             resolve?: false,
             resolver: nil,
+            pin_resolved?: false,
             follow_redirects?: true,
             max_redirects: 10,
             max_bytes: 5_000_000,
@@ -45,6 +49,7 @@ defmodule BeamWeaver.Transport.URLPolicy do
       allow_docker_internal?: Keyword.get(opts, :allow_docker_internal?, false),
       resolve?: Keyword.get(opts, :resolve?, false),
       resolver: Keyword.get(opts, :resolver),
+      pin_resolved?: Keyword.get(opts, :pin_resolved?, false),
       follow_redirects?: Keyword.get(opts, :follow_redirects?, true),
       max_redirects: positive_int(Keyword.get(opts, :max_redirects, 10), 10),
       max_bytes: positive_int(Keyword.get(opts, :max_bytes, 5_000_000), 5_000_000),
@@ -60,7 +65,6 @@ defmodule BeamWeaver.Transport.URLPolicy do
     uri = URI.parse(url)
     scheme = normalize_scheme(uri.scheme)
     host = normalize_host(uri.host)
-    explicitly_allowed? = explicit_allowed_host?(host, policy)
 
     cond do
       is_nil(scheme) or is_nil(host) ->
@@ -80,9 +84,6 @@ defmodule BeamWeaver.Transport.URLPolicy do
 
       not allowed_host?(host, policy) ->
         unsafe(url, "URL host is not in the allowlist", %{host: host})
-
-      explicitly_allowed? ->
-        {:ok, url}
 
       docker_internal?(host) and not policy.allow_docker_internal? ->
         unsafe(url, "Docker internal hostnames are not allowed", %{host: host})
@@ -117,6 +118,35 @@ defmodule BeamWeaver.Transport.URLPolicy do
     match?({:ok, _url}, validate(url, policy))
   end
 
+  @doc false
+  def resolve_target(url, policy) when is_binary(url) do
+    policy = new(policy)
+
+    with {:ok, _url} <- validate(url, %{policy | resolve?: false}),
+         uri <- URI.parse(url),
+         host <- normalize_host(uri.host),
+         port <- uri.port || default_port(uri.scheme),
+         {:ok, [_address | _rest] = addresses} <- target_addresses(host, port, policy),
+         nil <- Enum.find(addresses, &blocked_ip?(&1, policy)) do
+      {:ok, %{url: url, host: host, port: port, address: hd(addresses)}}
+    else
+      {:error, %Error{} = error} ->
+        {:error, error}
+
+      {:ok, []} ->
+        unsafe(url, "DNS resolution returned no addresses", %{host: URI.parse(url).host})
+
+      {:error, reason} ->
+        unsafe(url, "DNS resolution failed", %{reason: inspect(reason)})
+
+      address when is_tuple(address) ->
+        unsafe(url, "DNS resolution produced a blocked address", %{
+          host: URI.parse(url).host,
+          address: inspect(address)
+        })
+    end
+  end
+
   defp unsafe(url, reason, details \\ %{}) do
     {:error, Error.new(:unsafe_url, reason, Map.put(details, :url, url))}
   end
@@ -140,8 +170,6 @@ defmodule BeamWeaver.Transport.URLPolicy do
   defp blocked_host?(host, policy), do: host in policy.blocked_hosts
   defp allowed_host?(_host, %{allowed_hosts: nil}), do: true
   defp allowed_host?(host, %{allowed_hosts: hosts}), do: host in hosts
-  defp explicit_allowed_host?(_host, %{allowed_hosts: nil}), do: false
-  defp explicit_allowed_host?(host, %{allowed_hosts: hosts}), do: host in hosts
 
   defp localhost?(host) do
     host in ["localhost", "localhost.localdomain"] or String.ends_with?(host, ".localhost") or
@@ -217,6 +245,13 @@ defmodule BeamWeaver.Transport.URLPolicy do
       end)
 
     if addresses == [], do: {:error, :nxdomain}, else: {:ok, addresses}
+  end
+
+  defp target_addresses(host, port, policy) do
+    case :inet.parse_address(String.to_charlist(host)) do
+      {:ok, address} -> {:ok, [address]}
+      {:error, :einval} -> resolve_host(host, port, policy)
+    end
   end
 
   defp normalize_resolver_result({:ok, addresses}) when is_list(addresses),

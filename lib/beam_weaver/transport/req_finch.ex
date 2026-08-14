@@ -1,6 +1,9 @@
 defmodule BeamWeaver.Transport.ReqFinch do
   @moduledoc """
   Live transport implementation using Req and Finch.
+
+  It forwards validated `:connect_options` to Req and enforces
+  `:max_response_bytes` while streaming both successful and error responses.
   """
 
   @behaviour BeamWeaver.Transport
@@ -32,7 +35,10 @@ defmodule BeamWeaver.Transport.ReqFinch do
   def stream_reduce(%Request{} = request, opts, acc, reducer) when is_function(reducer, 2) do
     request
     |> req_options(opts)
-    |> Keyword.put(:into, stream_handler(acc, reducer))
+    |> Keyword.put(
+      :into,
+      stream_handler(acc, reducer, Keyword.get(opts, :max_response_bytes, 5_000_000))
+    )
     |> Req.request()
     |> normalize_stream_reduce_result(acc)
   rescue
@@ -69,6 +75,7 @@ defmodule BeamWeaver.Transport.ReqFinch do
       retry: false,
       redirect: false
     ]
+    |> maybe_put_connect_options(opts)
     |> maybe_put_finch_private(opts)
     |> maybe_put_body(request)
   end
@@ -77,6 +84,16 @@ defmodule BeamWeaver.Transport.ReqFinch do
   defp normalize_finch_options(name) when is_atom(name), do: [name: name]
   defp normalize_finch_options(options) when is_list(options), do: options
   defp normalize_finch_options(options), do: options
+
+  defp maybe_put_connect_options(options, opts) do
+    case Keyword.get(opts, :connect_options) do
+      connect_options when is_list(connect_options) ->
+        Keyword.put(options, :connect_options, connect_options)
+
+      _other ->
+        options
+    end
+  end
 
   defp maybe_put_finch_private(options, opts) do
     private =
@@ -117,15 +134,39 @@ defmodule BeamWeaver.Transport.ReqFinch do
 
   defp maybe_put_body(options, _request), do: options
 
-  defp stream_handler(acc, reducer) do
+  defp stream_handler(acc, reducer, maximum) do
     fn
       {:data, data}, {request, response} when response.status in 200..299 ->
-        acc = reducer.(Map.get(response.private, :beam_weaver_stream_acc, acc), data)
+        bytes = Map.get(response.private, :beam_weaver_response_bytes, 0) + byte_size(data)
 
-        {:cont, {request, put_in(response.private[:beam_weaver_stream_acc], acc)}}
+        if bytes <= maximum do
+          acc = reducer.(Map.get(response.private, :beam_weaver_stream_acc, acc), data)
+
+          response =
+            response
+            |> put_in([Access.key(:private), :beam_weaver_stream_acc], acc)
+            |> put_in([Access.key(:private), :beam_weaver_response_bytes], bytes)
+
+          {:cont, {request, response}}
+        else
+          response = put_in(response.private[:beam_weaver_response_too_large], true)
+          {:halt, {request, response}}
+        end
 
       {:data, data}, {request, response} ->
-        {:cont, {request, append_body(response, data)}}
+        bytes = Map.get(response.private, :beam_weaver_response_bytes, 0) + byte_size(data)
+
+        if bytes <= maximum do
+          response =
+            response
+            |> append_body(data)
+            |> put_in([Access.key(:private), :beam_weaver_response_bytes], bytes)
+
+          {:cont, {request, response}}
+        else
+          response = put_in(response.private[:beam_weaver_response_too_large], true)
+          {:halt, {request, response}}
+        end
     end
   end
 
@@ -154,13 +195,20 @@ defmodule BeamWeaver.Transport.ReqFinch do
      })}
   end
 
+  defp normalize_stream_reduce_result(
+         {:ok, %Req.Response{private: %{beam_weaver_response_too_large: true}}},
+         acc
+       ) do
+    {:error, Error.new(:response_too_large, "transport response exceeded the configured byte limit"), acc}
+  end
+
   defp normalize_stream_reduce_result({:ok, %Req.Response{status: status} = response}, acc)
        when status in 200..299 do
     stream_acc = Map.get(response.private, :beam_weaver_stream_acc, acc)
 
     response =
       response
-      |> Map.update!(:private, &Map.delete(&1, :beam_weaver_stream_acc))
+      |> Map.update!(:private, &Map.drop(&1, [:beam_weaver_stream_acc, :beam_weaver_response_bytes]))
       |> Map.put(:body, "")
 
     {:ok, transport_response(response), stream_acc}
