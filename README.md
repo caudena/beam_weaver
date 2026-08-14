@@ -19,7 +19,7 @@ runtime boundaries.
 
 BeamWeaver is not affiliated with LangChain.
 
-Documentation: [weavescope.gitbook.io/beam_weaver](https://weavescope.gitbook.io/beam_weaver/)
+Documentation: [docs.weavescope.com/beamweaver](https://docs.weavescope.com/beamweaver)
 
 ## Why Switch To BeamWeaver
 
@@ -54,8 +54,8 @@ Documentation: [weavescope.gitbook.io/beam_weaver](https://weavescope.gitbook.io
 
 BeamWeaver traces agents, graphs, model calls, tool calls, subagents, retries,
 token usage, costs, errors, custom fields, and run trees. Use it locally during
-development, or configure WeaveScope export when you want production traces your
-team can inspect.
+development, or configure [WeaveScope](https://weavescope.com) export when you
+want production traces your team can inspect.
 
 ![WeaveScope tracing view](docs/assets/weavescope-tracing.png)
 
@@ -129,6 +129,12 @@ prefixes when a model name is ambiguous.
 | xAI | `xai:grok-4.6`, `xai:grok-4.5`, `xai:grok-4.3`, `xai:grok-4.20-0309-reasoning`, `xai:grok-4.20-0309-non-reasoning`, `xai:grok-4.20-multi-agent-0309`, `xai:grok-build-0.1`, `xai:v1` embeddings |
 | Z.ai | `zai:glm-5.2` |
 | Test models | Fake chat and embedding models, plus replay transports for deterministic provider tests. |
+
+Z.ai announced [`glm-5.3`](https://z.ai/blog/glm-5.3) on August 14, 2026,
+but its [standard API is still coming soon](https://docs.z.ai/guides/llm/glm-5.3)
+and pay-as-you-go USD token prices have not been published. BeamWeaver recognizes
+the explicit `zai:glm-5.3` identifier and rejects it before transport until both
+are available; `zai:glm-5.2` remains the supported Z.ai model.
 
 Inspect the exact profile set in your checkout:
 
@@ -254,43 +260,3 @@ WeaveScope UI. BeamWeaver automatically uses the queued WeaveScope exporter when
 both `endpoint` and `api_key` are configured. Use `trace:` on agent, graph,
 runnable, model, or tool calls to attach application identity such as `user_id`,
 `thread_id`, `execution_mode`, and indexed custom fields.
-
-## Documentation
-
-Start here:
-
-- [Getting Started](docs/getting_started.md)
-- [Thinking In BeamWeaver](docs/thinking_in_beamweaver.md)
-- [Workflows And Agents](docs/workflows_and_agents.md)
-- [Deep Agents Quickstart](docs/deep_agents_quickstart.md)
-- [Models](docs/models.md)
-- [Tracing](docs/tracing.md)
-- [Going To Production](docs/going_to_production.md)
-
-Core guides:
-
-- [Agents](docs/agents.md)
-- [Graph](docs/graph.md)
-- [Tools](docs/tools.md)
-- [Messages](docs/messages.md)
-- [Middleware](docs/middleware.md)
-- [Structured Output](docs/structured_output.md)
-- [Event Streaming](docs/event_streaming.md)
-- [Persistence](docs/persistence.md)
-- [Immutable Todos](docs/todos.md)
-- [Memory](docs/memory.md)
-- [Retrieval](docs/retrieval.md)
-- [Filesystem](docs/filesystem.md)
-- [Sandboxes](docs/sandboxes.md)
-- [Subagents](docs/subagents.md)
-- [Human-In-The-Loop](docs/human_in_the_loop.md)
-
-Provider guides:
-
-- [OpenAI](docs/partners/openai.md)
-- [Anthropic](docs/partners/anthropic.md)
-- [Google](docs/partners/google.md)
-- [DeepSeek](docs/partners/deepseek.md)
-- [Moonshot/Kimi](docs/partners/moonshot.md)
-- [xAI](docs/partners/xai.md)
-- [Z.ai](docs/partners/zai.md)
