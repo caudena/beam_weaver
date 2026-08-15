@@ -695,17 +695,3 @@ custom client details.
 | A subagent cannot access an expected tool. | Check whether `:tools` was set. A list replaces inherited tools; `nil` inherits parent tools. |
 | A subagent cannot use `write_todos` or filesystem tools. | Add the corresponding middleware or filesystem configuration to the child agent. These tools are not implicit. |
 | A child cannot resume after HITL. | Ensure the parent has a checkpointer and the same thread configuration is used for resume. |
-
-## Related Guides
-
-- [Composed Agent Capabilities](agent_harness.md)
-- [Filesystem](filesystem.md)
-- [Skills](skills.md)
-- [Context Engineering](context_engineering.md)
-- [Async Subagents](async_subagents.md)
-- [Immutable Todos](todos.md)
-- [Subgraphs](subgraphs.md)
-- [Prebuilt Middleware](prebuilt_middleware.md)
-- [Structured Output](structured_output.md)
-- [Runtime](runtime.md)
-- [Event Streaming](event_streaming.md)

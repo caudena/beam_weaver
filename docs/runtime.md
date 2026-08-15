@@ -427,17 +427,3 @@ by `:subscriber_queue_limit`; a subscriber that cannot keep up is removed.
 Every work item gets a trace run ID through the returned work struct. Use
 `BeamWeaver.Tracing.get_run/1` or `BeamWeaver.Tracing.get_tree/1` to inspect
 trace state.
-
-## Related Guides
-
-- [Agents](agents.md)
-- [Context Engineering](context_engineering.md)
-- [Tools](tools.md)
-- [Middleware](middleware.md)
-- [Custom Middleware](custom_middleware.md)
-- [Prebuilt Middleware](prebuilt_middleware.md)
-- [Human-In-The-Loop](human_in_the_loop.md)
-- [Event Streaming](event_streaming.md)
-- [Short-Term Memory](short_term_memory.md)
-- [Long-Term Memory](long_term_memory.md)
-- [Graph](graph.md)

@@ -965,26 +965,3 @@ For xAI Chat Completions search tools, use `BeamWeaver.XAI.Tools.live_search/1`.
 Server-side tool calls and results are represented as message content blocks and
 response metadata. There is no local `ToolNode` execution step for work the
 provider already performed.
-
-## Related Guides
-
-- [Agents](agents.md)
-- [Context Engineering](context_engineering.md)
-- [Models](models.md)
-- [Structured Output](structured_output.md)
-- [Messages](messages.md)
-- [Short-Term Memory](short_term_memory.md)
-- [Long-Term Memory](long_term_memory.md)
-- [Middleware](middleware.md)
-- [Custom Middleware](custom_middleware.md)
-- [Prebuilt Middleware](prebuilt_middleware.md)
-- [Guardrails](guardrails.md)
-- [Runtime](runtime.md)
-- [Event Streaming](event_streaming.md)
-- [Graph](graph.md)
-- [Retrieval](retrieval.md)
-- [OpenAI](partners/openai.md)
-- [Anthropic](partners/anthropic.md)
-- [Google](partners/google.md)
-- [xAI](partners/xai.md)
-- [Z.ai](partners/zai.md)

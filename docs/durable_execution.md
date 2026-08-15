@@ -368,15 +368,3 @@ Operational guidance:
 If a product needs cooperative drain semantics, add an application-level
 shutdown flag that nodes check before starting expensive optional work. That is
 not the same as LangGraph's `RunControl`; it is ordinary application logic.
-
-## Related Guides
-
-- [Persistence](persistence.md)
-- [Fault Tolerance](fault_tolerance.md)
-- [Human-In-The-Loop](human_in_the_loop.md)
-- [Workflows And Agents](workflows_and_agents.md)
-- [Thinking In BeamWeaver](thinking_in_beamweaver.md)
-- [Graph](graph.md)
-- [Short-Term Memory](short_term_memory.md)
-- [Runtime](runtime.md)
-- [Event Streaming](event_streaming.md)

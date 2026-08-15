@@ -511,20 +511,3 @@ BeamWeaver exposes versioned migration helpers through `BeamWeaver.Migrations`:
 
 Run these from your application's normal Ecto migrations or deployment flow.
 Do not rely on graph startup or agent invocation to create tables.
-
-## Related Guides
-
-- [Short-Term Memory](short_term_memory.md)
-- [Long-Term Memory](long_term_memory.md)
-- [Filesystem](filesystem.md)
-- [Filesystem Permissions](permissions.md)
-- [Skills](skills.md)
-- [Composed Agent Capabilities](agent_harness.md)
-- [Persistence](persistence.md)
-- [Durable Execution](durable_execution.md)
-- [Human-In-The-Loop](human_in_the_loop.md)
-- [Messages](messages.md)
-- [Tools](tools.md)
-- [Agents](agents.md)
-- [Graph](graph.md)
-- [Retrieval](retrieval.md)

@@ -19,6 +19,7 @@
 * [Skills](skills.md)
 * [Sandboxes](sandboxes.md)
 * [Subagents](subagents.md)
+* [Immutable Todos](todos.md)
 * [Async Subagents](async_subagents.md)
 * [Subgraphs](subgraphs.md)
 * [Time Travel](time_travel.md)

@@ -151,17 +151,3 @@ Use normal Elixir scheduling and jobs for production maintenance:
 These are application jobs, not BeamWeaver-specific hosted cron features. Use
 Oban or your existing scheduler and invoke BeamWeaver agents, graphs, memory
 stores, and checkpoint APIs from those jobs.
-
-## Related Guides
-
-- [Runtime](runtime.md)
-- [Persistence](persistence.md)
-- [Memory](memory.md)
-- [Filesystem](filesystem.md)
-- [Permissions](permissions.md)
-- [Sandboxes](sandboxes.md)
-- [Human-In-The-Loop](human_in_the_loop.md)
-- [Fault Tolerance](fault_tolerance.md)
-- [Guardrails](guardrails.md)
-- [Event Streaming](event_streaming.md)
-- [Tracing](tracing.md)

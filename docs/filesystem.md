@@ -420,17 +420,3 @@ the inner implementation. See
 [Filesystem Permissions](permissions.md#policy-hooks) for a complete wrapper
 example and the interaction between path rules, composite filesystems, and
 executable backends.
-
-## Related Guides
-
-- [Composed Agent Capabilities](agent_harness.md)
-- [Context Engineering](context_engineering.md)
-- [Filesystem Permissions](permissions.md)
-- [Skills](skills.md)
-- [Sandboxes](sandboxes.md)
-- [Subagents](subagents.md)
-- [Prebuilt Middleware](prebuilt_middleware.md)
-- [Tools](tools.md)
-- [Human-In-The-Loop](human_in_the_loop.md)
-- [Memory](memory.md)
-- [Long-Term Memory](long_term_memory.md)

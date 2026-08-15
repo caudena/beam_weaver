@@ -409,17 +409,3 @@ testing path is ordinary ExUnit tests plus BeamWeaver tracing. Use fake or
 replay models for deterministic guardrail behavior; there is no
 BeamWeaver-specific hosted agent test runner.
 {% endhint %}
-
-## Related Guides
-
-- [Middleware](middleware.md)
-- [Custom Middleware](custom_middleware.md)
-- [Prebuilt Middleware](prebuilt_middleware.md)
-- [Human-In-The-Loop](human_in_the_loop.md)
-- [Runtime](runtime.md)
-- [Agents](agents.md)
-- [Context Engineering](context_engineering.md)
-- [Tools](tools.md)
-- [Short-Term Memory](short_term_memory.md)
-- [Event Streaming](event_streaming.md)
-- [Structured Output](structured_output.md)

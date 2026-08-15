@@ -370,18 +370,3 @@ Stores also support TTL and retention where the adapter implements it:
 Use `Memory.async_put/5`, `Memory.async_get/4`, `Memory.async_search/3`, and
 other async helpers when memory work should run through BeamWeaver's task-backed
 async boundary.
-
-## Related Guides
-
-- [Short-Term Memory](short_term_memory.md)
-- [Memory](memory.md)
-- [Filesystem](filesystem.md)
-- [Filesystem Permissions](permissions.md)
-- [Persistence](persistence.md)
-- [Runtime](runtime.md)
-- [Tools](tools.md)
-- [Agents](agents.md)
-- [Context Engineering](context_engineering.md)
-- [Retrieval](retrieval.md)
-- [Graph](graph.md)
-- [Adapters](adapters.md)

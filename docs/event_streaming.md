@@ -966,16 +966,3 @@ BeamWeaver does not register transformer classes on agent calls. The native
 extension point is simpler: emit typed or custom events, then transform the
 `Enumerable` with Elixir stream functions or a small reducer module.
 {% endhint %}
-
-## Related Guides
-
-- [Agents](agents.md)
-- [Models](models.md)
-- [Tools](tools.md)
-- [Subagents](subagents.md)
-- [Human-In-The-Loop](human_in_the_loop.md)
-- [Persistence](persistence.md)
-- [Durable Execution](durable_execution.md)
-- [Fault Tolerance](fault_tolerance.md)
-- [Graph](graph.md)
-- [Tracing](tracing.md)

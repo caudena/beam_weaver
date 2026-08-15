@@ -53,11 +53,3 @@ serialization: [
 Keep application database setup in migrations and release tasks. Runtime calls
 should receive already-configured adapters rather than creating tables or
 inferring database URLs.
-
-## Related Guides
-
-- [Persistence](persistence.md)
-- [Memory](memory.md)
-- [Long-Term Memory](long_term_memory.md)
-- [Retrieval](retrieval.md)
-- [Core](core.md)

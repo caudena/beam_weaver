@@ -118,11 +118,3 @@ BeamWeaver.Anthropic.ChatModel.count_tokens(model, [
   passed where the Messages API accepts them.
 - Exact Python class identity and serialization compatibility. BeamWeaver keeps
   native Elixir modules and tagged errors.
-
-## Related Guides
-
-- [Models](../models.md)
-- [Prompt Caching](../prompt_caching.md#anthropic)
-- [Tools](../tools.md#server-side-provider-tools)
-- [Messages](../messages.md#standard-content-blocks)
-- [Structured Output](../structured_output.md)

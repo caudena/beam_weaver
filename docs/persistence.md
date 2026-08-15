@@ -435,11 +435,12 @@ implement that callback, the facade returns
 before writing anything.
 
 `put_many/3` never falls back to sequential writes. ETS publishes the prepared
-batch together, while the Postgres adapter uses one transaction. Both adapters
-persist a per-thread, per-namespace commit order, so explicit legacy checkpoint
-IDs remain identities rather than being misused as timestamps. `fork_at/4`
-copies only the selected checkpoint's bounded ancestor lineage and fails when a
-parent is missing or the configured count or byte limit is exceeded.
+batch together, while `BeamWeaver.Checkpoint.Ecto` uses one database transaction
+on PostgreSQL or SQLite. Both adapters persist a per-thread, per-namespace
+commit order, so explicit legacy checkpoint IDs remain identities rather than
+being misused as timestamps. `fork_at/4` copies only the selected checkpoint's
+bounded ancestor lineage and fails when a parent is missing or the configured
+count or byte limit is exceeded.
 
 Each `put_many/3` entry is a map with `:config` and an explicit-ID
 `:checkpoint`; optional fields are `:metadata`, `:versions`, `:writes`, and
@@ -499,16 +500,3 @@ Use JSON-compatible state values, registered BeamWeaver structs, and explicit
 adapter serialization options. Do not assume every adapter encrypts all columns
 unless that adapter documents and tests the serialization option you pass.
 {% endhint %}
-
-## Related Guides
-
-- [Durable Execution](durable_execution.md)
-- [Fault Tolerance](fault_tolerance.md)
-- [Short-Term Memory](short_term_memory.md)
-- [Long-Term Memory](long_term_memory.md)
-- [Human-In-The-Loop](human_in_the_loop.md)
-- [Graph](graph.md)
-- [Runtime](runtime.md)
-- [Event Streaming](event_streaming.md)
-- [Adapters](adapters.md)
-- [Tracing](tracing.md)

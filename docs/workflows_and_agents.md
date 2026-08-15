@@ -503,20 +503,3 @@ does not expose those decorators. In Elixir, use normal functions for simple
 local flows and use `BeamWeaver.Graph` when the flow needs durable execution,
 streaming, interrupts, retries, reducers, or observable node boundaries.
 {% endhint %}
-
-## Related Guides
-
-- [Overview](README.md)
-- [Getting Started](getting_started.md)
-- [Thinking In BeamWeaver](thinking_in_beamweaver.md)
-- [Persistence](persistence.md)
-- [Durable Execution](durable_execution.md)
-- [Fault Tolerance](fault_tolerance.md)
-- [Agents](agents.md)
-- [Graph](graph.md)
-- [Tools](tools.md)
-- [Structured Output](structured_output.md)
-- [Runtime](runtime.md)
-- [Human-In-The-Loop](human_in_the_loop.md)
-- [Event Streaming](event_streaming.md)
-- [Tracing](tracing.md)

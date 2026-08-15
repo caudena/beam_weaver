@@ -425,21 +425,3 @@ config = %{"configurable" => %{"thread_id" => "thread-1"}}
 Use these APIs for administrative repair, tests, or explicit memory management.
 Normal conversation turns should update memory through agent invocation,
 middleware, tools, or graph nodes.
-
-## Related Guides
-
-- [Agents](agents.md)
-- [Messages](messages.md)
-- [Tools](tools.md)
-- [Middleware](middleware.md)
-- [Custom Middleware](custom_middleware.md)
-- [Prebuilt Middleware](prebuilt_middleware.md)
-- [Guardrails](guardrails.md)
-- [Context Engineering](context_engineering.md)
-- [Persistence](persistence.md)
-- [Durable Execution](durable_execution.md)
-- [Fault Tolerance](fault_tolerance.md)
-- [Long-Term Memory](long_term_memory.md)
-- [Graph](graph.md)
-- [Adapters](adapters.md)
-- [Event Streaming](event_streaming.md)

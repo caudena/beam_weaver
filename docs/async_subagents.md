@@ -292,12 +292,3 @@ worker configuration.
 | `Unknown async subagent type`. | `subagent_name` / `subagent_type` does not match any configured `AsyncSpec.name`. | Improve descriptions and ensure the model uses the exact configured name. |
 | Remote auth fails. | The built-in HTTP client only sends the configured `headers`. | Add the correct headers or implement a custom client for the provider. |
 | Launches queue or hang. | Worker capacity is exhausted or remote runs are serialized. | Increase worker capacity in the worker service. |
-
-## Related Guides
-
-- [Subagents](subagents.md)
-- [Composed Agent Capabilities](agent_harness.md)
-- [Context Engineering](context_engineering.md)
-- [Prebuilt Middleware](prebuilt_middleware.md)
-- [Runtime](runtime.md)
-- [Event Streaming](event_streaming.md)

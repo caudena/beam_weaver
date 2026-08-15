@@ -371,17 +371,3 @@ middleware. Use fake or replay transports for deterministic provider behavior
 and `BeamWeaver.Tracing` for telemetry/export boundaries; there is no
 BeamWeaver-specific hosted agent test runner.
 {% endhint %}
-
-## Related Guides
-
-- [Agents](agents.md)
-- [Context Engineering](context_engineering.md)
-- [Tools](tools.md)
-- [Custom Middleware](custom_middleware.md)
-- [Prebuilt Middleware](prebuilt_middleware.md)
-- [Guardrails](guardrails.md)
-- [Runtime](runtime.md)
-- [Short-Term Memory](short_term_memory.md)
-- [Structured Output](structured_output.md)
-- [Event Streaming](event_streaming.md)
-- [Graph](graph.md)

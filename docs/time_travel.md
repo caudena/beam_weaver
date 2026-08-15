@@ -337,12 +337,3 @@ The async graph APIs support the same patterns:
 ```
 
 Use `Compiled.async_resume/3` for interrupted checkpoints.
-
-## Related Guides
-
-- [Persistence](persistence.md)
-- [Durable Execution](durable_execution.md)
-- [Human-In-The-Loop](human_in_the_loop.md)
-- [Fault Tolerance](fault_tolerance.md)
-- [Event Streaming](event_streaming.md)
-- [Graph](graph.md)

@@ -356,15 +356,3 @@ BeamWeaver, implement equivalent workflows with `BeamWeaver.Graph`,
 `BeamWeaver.Agent`, tools, and middleware. There is no Python `create_agent`
 runtime or LangGraph Platform dependency in the BeamWeaver API.
 {% endhint %}
-
-## Related Guides
-
-- [Agents](agents.md)
-- [Tools](tools.md)
-- [Models](models.md)
-- [Context Engineering](context_engineering.md)
-- [Long-Term Memory](long_term_memory.md)
-- [Event Streaming](event_streaming.md)
-- [Graph](graph.md)
-- [Adapters](adapters.md)
-- [OpenAI](partners/openai.md)

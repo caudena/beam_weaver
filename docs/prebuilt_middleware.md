@@ -779,19 +779,3 @@ OpenAI. BeamWeaver currently documents provider behavior in the provider guides
 and provider modules. AWS/Bedrock-specific prompt caching middleware is not part
 of BeamWeaver until there is a first-class AWS provider adapter.
 {% endhint %}
-
-## Related Guides
-
-- [Middleware](middleware.md)
-- [Custom Middleware](custom_middleware.md)
-- [Guardrails](guardrails.md)
-- [Human-In-The-Loop](human_in_the_loop.md)
-- [Runtime](runtime.md)
-- [Agents](agents.md)
-- [Context Engineering](context_engineering.md)
-- [Subagents](subagents.md)
-- [Async Subagents](async_subagents.md)
-- [Tools](tools.md)
-- [Short-Term Memory](short_term_memory.md)
-- [Structured Output](structured_output.md)
-- [Event Streaming](event_streaming.md)

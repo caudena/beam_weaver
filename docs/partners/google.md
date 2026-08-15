@@ -143,12 +143,3 @@ BeamWeaver.Google.ChatModel.count_tokens(model, [
   response modality options.
 - Exact Python class identity and serialization compatibility. BeamWeaver keeps
   native Elixir modules, structs, and tagged errors.
-
-## Related Guides
-
-- [Models](../models.md)
-- [Prompt Caching](../prompt_caching.md#google-gemini)
-- [Tools](../tools.md#server-side-provider-tools)
-- [Messages](../messages.md#standard-content-blocks)
-- [Structured Output](../structured_output.md)
-- [Tracing](../tracing.md)
