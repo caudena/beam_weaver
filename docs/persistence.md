@@ -332,9 +332,9 @@ BeamWeaver ships two checkpoint adapters:
 | Adapter | Use For | Notes |
 | --- | --- | --- |
 | `BeamWeaver.Checkpoint.ETS` | Tests, examples, local workflows, lightweight supervised apps. | In-memory and process-local. Not durable across VM restarts. |
-| `BeamWeaver.Checkpoint.Ecto` | Durable Postgres-backed deployments. | Uses versioned `BeamWeaver.Migrations` tables for checkpoints plus pending writes. |
+| `BeamWeaver.Checkpoint.Ecto` | Durable PostgreSQL or SQLite deployments. | Uses one Ecto query/write implementation and versioned `BeamWeaver.Migrations` tables. |
 
-Postgres setup is explicit:
+Database setup is explicit:
 
 ```elixir
 defmodule MyApp.Repo.Migrations.CreateBeamWeaverCheckpoints do
@@ -349,6 +349,43 @@ defmodule MyApp.Repo.Migrations.CreateBeamWeaverCheckpoints do
   end
 end
 ```
+
+`BeamWeaver.Migrations` selects PostgreSQL or SQLite from the application Repo.
+The checkpoint schema and `BeamWeaver.Checkpoint.Ecto` API are the same for
+both databases. Only migration DDL and transaction serialization are
+adapter-specific. SQLite applications add the optional adapter themselves:
+
+```elixir
+{:ecto_sqlite3, "~> 0.24"}
+```
+
+BeamWeaver declares `ecto_sqlite3` as optional. Applications using PostgreSQL
+are not forced to install it; SQLite applications include it explicitly in
+their own dependency list.
+
+Checkpoint schema version 2 adds `commit_order`, backfills existing rows by
+their stored insertion order, and makes `(thread_id, checkpoint_ns,
+commit_order)` unique. Applications already on checkpoint schema version 1
+must add a normal application migration that calls `up/1` again:
+
+```elixir
+defmodule MyApp.Repo.Migrations.OrderBeamWeaverCheckpoints do
+  use Ecto.Migration
+
+  def up do
+    BeamWeaver.Migrations.up(adapters: [:checkpoint])
+  end
+
+  def down do
+    BeamWeaver.Migrations.down(adapters: [:checkpoint], version: 2)
+  end
+end
+```
+
+The upgrade preserves checkpoint IDs and uses the persisted order for latest,
+history, pruning, and fork selection. Run
+`BeamWeaver.Migrations.verify_migrated!(repo: MyApp.Repo)` before starting an
+Ecto checkpointer to fail clearly when the application migration is missing.
 
 Then compile with the adapter:
 
@@ -371,9 +408,13 @@ LangGraph's checkpointer contract while using Elixir return shapes:
 | --- | --- |
 | `get_tuple/2` | Fetch the latest or requested checkpoint tuple. |
 | `list/3` | List checkpoint tuples for history. |
+| `fetch_tuple/2` | Optional error-preserving form of `get_tuple/2`. |
+| `list_result/3` | Optional error-preserving form of `list/3`. |
 | `put/5` | Store a checkpoint. |
 | `put_writes/5` | Store per-task pending writes for a checkpoint. |
 | `put_checkpoint_with_writes/7` | Optional transactional checkpoint-plus-writes path. |
+| `put_many/3` | Optional all-or-nothing checkpoint batch. |
+| `fork_at/4` | Optional bounded lineage copy into a new thread. |
 | `get_delta_channel_history/4` | Retrieve write history for delta channels. |
 | `delete_thread/2`, `delete_for_runs/2`, `copy_thread/3`, `prune/3` | Maintenance operations. |
 | `next_version/3` | Compute channel version values. |
@@ -381,6 +422,32 @@ LangGraph's checkpointer contract while using Elixir return shapes:
 Public facade functions such as `BeamWeaver.Checkpoint.get_tuple/2`,
 `list_records/3`, `copy_thread/3`, `delete_thread/2`, and `prune/3` emit
 telemetry and normalize adapter output.
+
+Use `BeamWeaver.Checkpoint.fetch_tuple/2` and `list_result/3` when storage
+errors must be handled explicitly. They also work with existing savers by
+wrapping `get_tuple/2` and `list/3`; exceptions become typed checkpoint errors.
+The compatibility `get_tuple/2` and `list/3` facades raise on storage failure
+instead of representing it as a missing checkpoint or empty history.
+
+`put_checkpoint_with_writes/7` is atomic by contract. If a saver does not
+implement that callback, the facade returns
+`{:error, %BeamWeaver.Core.Error{type: :atomic_checkpoint_write_unsupported}}`
+before writing anything.
+
+`put_many/3` never falls back to sequential writes. ETS publishes the prepared
+batch together, while `BeamWeaver.Checkpoint.Ecto` uses one database transaction
+on PostgreSQL or SQLite. Both adapters persist a per-thread, per-namespace
+commit order, so explicit legacy checkpoint IDs remain identities rather than
+being misused as timestamps. `fork_at/4` copies only the selected checkpoint's
+bounded ancestor lineage and fails when a parent is missing or the configured
+count or byte limit is exceeded.
+
+Each `put_many/3` entry is a map with `:config` and an explicit-ID
+`:checkpoint`; optional fields are `:metadata`, `:versions`, `:writes`, and
+`:write_opts`. A batch accepts at most 1,000 checkpoints, 10,000 pending writes,
+and 64 MiB of Erlang terms. `fork_at/4` defaults to 1,000 checkpoints and accepts
+`:max_checkpoints` and `:max_bytes` within hard ceilings of 10,000 checkpoints
+and 64 MiB.
 
 ## Storage Optimization
 
@@ -433,16 +500,3 @@ Use JSON-compatible state values, registered BeamWeaver structs, and explicit
 adapter serialization options. Do not assume every adapter encrypts all columns
 unless that adapter documents and tests the serialization option you pass.
 {% endhint %}
-
-## Related Guides
-
-- [Durable Execution](durable_execution.md)
-- [Fault Tolerance](fault_tolerance.md)
-- [Short-Term Memory](short_term_memory.md)
-- [Long-Term Memory](long_term_memory.md)
-- [Human-In-The-Loop](human_in_the_loop.md)
-- [Graph](graph.md)
-- [Runtime](runtime.md)
-- [Event Streaming](event_streaming.md)
-- [Adapters](adapters.md)
-- [Tracing](tracing.md)

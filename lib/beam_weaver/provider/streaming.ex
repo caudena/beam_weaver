@@ -2,6 +2,7 @@ defmodule BeamWeaver.Provider.Streaming do
   @moduledoc false
 
   alias BeamWeaver.Provider.SSE
+  alias BeamWeaver.Provider.StreamValidator
   alias BeamWeaver.Stream
   alias BeamWeaver.Transport
   alias BeamWeaver.Transport.Request
@@ -23,24 +24,53 @@ defmodule BeamWeaver.Provider.Streaming do
     Stream.live_resource(
       fn sink ->
         result =
-          Transport.stream_reduce(transport, request, transport_opts, "", fn buffer, chunk ->
-            {events, buffer} = SSE.process_chunk(buffer, chunk)
-            emit_items(parser.(events), sink)
-            buffer
-          end)
+          Transport.stream_reduce(
+            transport,
+            request,
+            transport_opts,
+            {"", StreamValidator.new(opts)},
+            fn
+              {buffer, %StreamValidator{error: nil} = validation}, chunk ->
+                {events, buffer} = SSE.process_chunk(buffer, chunk)
+
+                with {:ok, items} <- parse_items(parser, events),
+                     {:ok, validation} <-
+                       StreamValidator.push(validation, items, transport_bytes: byte_size(chunk)) do
+                  emit_items(items, sink)
+                  {buffer, validation}
+                else
+                  {:error, error} ->
+                    {:error, _error, validation} = StreamValidator.reject(validation, error)
+                    {buffer, validation}
+
+                  {:error, _error, validation} ->
+                    {buffer, validation}
+                end
+
+              state, _chunk ->
+                state
+            end
+          )
 
         case result do
-          {:ok, %Response{status: status} = response, buffer} when status in 200..299 ->
+          {:ok, %Response{status: status} = response, {buffer, validation}}
+          when status in 200..299 ->
             {events, _buffer} = SSE.process_chunk(buffer, "\n\n")
-            emit_items(parser.(events), sink)
-            notify_response(response, opts)
-            :ok
 
-          {:ok, %Response{} = response, _buffer} ->
+            with :ok <- StreamValidator.finish(validation),
+                 {:ok, items} <- parse_items(parser, events),
+                 {:ok, validation} <- push_final(validation, items),
+                 :ok <- StreamValidator.finish(validation) do
+              emit_items(items, sink)
+              notify_response(response, opts)
+              :ok
+            end
+
+          {:ok, %Response{} = response, _state} ->
             notify_response(response, opts)
             decode_stream_error({:ok, response}, error_decoder)
 
-          {:error, error, _buffer} ->
+          {:error, error, _state} ->
             decode_stream_error({:error, error}, error_decoder)
         end
       end,
@@ -53,13 +83,23 @@ defmodule BeamWeaver.Provider.Streaming do
           {:ok, term()} | {:error, term()}
   def collect(transport, %Request{} = request, transport_opts, decoder)
       when is_function(decoder, 1) do
+    maximum = Keyword.get(transport_opts, :max_response_bytes, 16 * 1024 * 1024)
+
     result =
-      Transport.stream_reduce(transport, request, transport_opts, [], fn chunks, chunk ->
-        [chunk | chunks]
+      Transport.stream_reduce(transport, request, transport_opts, {[], 0}, fn
+        {_chunks, :too_large} = state, _chunk ->
+          state
+
+        {chunks, bytes}, chunk ->
+          bytes = bytes + byte_size(chunk)
+          if bytes <= maximum, do: {[chunk | chunks], bytes}, else: {[], :too_large}
       end)
 
     case result do
-      {:ok, %Response{status: status} = response, chunks} when status in 200..299 ->
+      {:ok, %Response{status: status}, {_chunks, :too_large}} when status in 200..299 ->
+        {:error, BeamWeaver.Core.Error.new(:invalid_provider_response, "provider response is too large")}
+
+      {:ok, %Response{status: status} = response, {chunks, _bytes}} when status in 200..299 ->
         body =
           chunks
           |> Enum.reverse()
@@ -67,17 +107,31 @@ defmodule BeamWeaver.Provider.Streaming do
 
         decoder.({:ok, %{response | body: body}})
 
-      {:ok, %Response{} = response, _chunks} ->
+      {:ok, %Response{} = response, _state} ->
         decoder.({:ok, response})
 
-      {:error, error, _chunks} ->
+      {:error, error, _state} ->
         decoder.({:error, error})
     end
   end
 
   defp emit_items(items, sink) when is_list(items), do: Enum.each(items, sink)
-  defp emit_items(nil, _sink), do: :ok
-  defp emit_items(item, sink), do: sink.(item)
+
+  defp parse_items(parser, events) do
+    items = parser.(events)
+    {:ok, if(is_list(items), do: items, else: List.wrap(items))}
+  rescue
+    exception -> {:error, exception}
+  catch
+    kind, reason -> {:error, {kind, reason}}
+  end
+
+  defp push_final(validation, items) do
+    case StreamValidator.push(validation, items) do
+      {:ok, validation} -> {:ok, validation}
+      {:error, error, _validation} -> {:error, error}
+    end
+  end
 
   defp notify_response(%Response{} = response, opts) do
     case Keyword.get(opts, :on_response) do

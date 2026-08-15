@@ -2,29 +2,22 @@ defmodule BeamWeaver.Checkpoint.Ecto.Rows do
   @moduledoc false
 
   alias BeamWeaver.Checkpoint.Ecto.Config
-  alias BeamWeaver.Checkpoint.Ecto.SQL
   alias BeamWeaver.Checkpoint.PendingWrite
 
-  def tuple_from_row(saver, row) do
+  def tuple_from_rows(saver, rows) do
     saver
-    |> tuples_from_rows([row])
+    |> tuples_from_rows(rows)
     |> List.first()
   end
 
   def tuples_from_rows(_saver, []), do: []
 
   def tuples_from_rows(saver, rows) do
-    {rows, embedded_write_rows} = split_rows(rows)
-    tuples = Enum.map(rows, &base_tuple_from_row(saver, &1))
+    {checkpoint_rows, write_rows} = split_rows(rows)
+    pending_by_key = pending_writes_from_rows(saver, write_rows)
 
-    pending_by_key =
-      if embedded_write_rows do
-        pending_writes_from_rows(saver, embedded_write_rows)
-      else
-        pending_writes_by_key(saver, write_keys(tuples))
-      end
-
-    Enum.map(tuples, fn tuple ->
+    Enum.map(checkpoint_rows, fn row ->
+      tuple = base_tuple_from_row(saver, row)
       pending = Map.get(pending_by_key, tuple_key(tuple), empty_pending())
       parent_pending = Map.get(pending_by_key, parent_key(tuple), empty_pending())
 
@@ -36,44 +29,57 @@ defmodule BeamWeaver.Checkpoint.Ecto.Rows do
     end)
   end
 
-  defp base_tuple_from_row(saver, [
-         thread_id,
-         namespace,
-         checkpoint_id,
-         parent_id,
-         checkpoint,
-         metadata
-       ]) do
-    checkpoint = saver.__struct__.load_json_value!(saver, checkpoint || %{})
-    metadata = saver.__struct__.load_json_value!(saver, metadata || %{})
+  defp split_rows(rows) do
+    {order, checkpoints, writes} =
+      Enum.reduce(rows, {[], %{}, []}, fn {checkpoint, write}, {order, checkpoints, writes} ->
+        key = checkpoint_key(checkpoint)
+
+        {order, checkpoints} =
+          if Map.has_key?(checkpoints, key) do
+            {order, checkpoints}
+          else
+            {[key | order], Map.put(checkpoints, key, checkpoint)}
+          end
+
+        writes = if write[:checkpoint_id], do: [write | writes], else: writes
+        {order, checkpoints, writes}
+      end)
+
+    checkpoint_rows = order |> Enum.reverse() |> Enum.map(&Map.fetch!(checkpoints, &1))
+    {checkpoint_rows, Enum.reverse(writes)}
+  end
+
+  defp base_tuple_from_row(saver, row) do
+    checkpoint = saver.__struct__.load_json_value!(saver, row.checkpoint || %{})
+    metadata = saver.__struct__.load_json_value!(saver, row.metadata || %{})
 
     checkpoint_map =
       checkpoint
       |> Map.get("checkpoint_map", %{})
       |> Config.normalize_checkpoint_map()
-      |> Map.put(namespace, checkpoint_id)
+      |> Map.put(row.checkpoint_ns, row.checkpoint_id)
 
     target = Map.get(checkpoint, "checkpoint_target_ns")
 
     config =
       %{
         "configurable" => %{
-          "thread_id" => thread_id,
-          "checkpoint_ns" => namespace,
-          "checkpoint_id" => checkpoint_id,
+          "thread_id" => row.thread_id,
+          "checkpoint_ns" => row.checkpoint_ns,
+          "checkpoint_id" => row.checkpoint_id,
           "checkpoint_map" => checkpoint_map
         }
       }
       |> Config.put_target_namespace(%{"checkpoint_target_ns" => target})
 
     parent_config =
-      if parent_id do
+      if row.parent_checkpoint_id do
         %{
           "configurable" => %{
-            "thread_id" => thread_id,
-            "checkpoint_ns" => namespace,
-            "checkpoint_id" => parent_id,
-            "checkpoint_map" => Map.put(checkpoint_map, namespace, parent_id)
+            "thread_id" => row.thread_id,
+            "checkpoint_ns" => row.checkpoint_ns,
+            "checkpoint_id" => row.parent_checkpoint_id,
+            "checkpoint_map" => Map.put(checkpoint_map, row.checkpoint_ns, row.parent_checkpoint_id)
           }
         }
         |> Config.put_target_namespace(%{"checkpoint_target_ns" => target})
@@ -82,103 +88,31 @@ defmodule BeamWeaver.Checkpoint.Ecto.Rows do
     %{
       config: config,
       checkpoint: checkpoint,
-      metadata: metadata || %{},
-      parent_config: parent_config
+      metadata: metadata,
+      parent_config: parent_config,
+      commit_order: row.commit_order
     }
-  end
-
-  defp split_rows(rows) do
-    Enum.reduce(rows, {[], [], true}, fn
-      [
-        thread_id,
-        namespace,
-        checkpoint_id,
-        parent_id,
-        checkpoint,
-        metadata,
-        write_rows
-      ],
-      {rows, write_acc, true}
-      when is_list(write_rows) ->
-        {
-          [[thread_id, namespace, checkpoint_id, parent_id, checkpoint, metadata] | rows],
-          Enum.reverse(write_rows) ++ write_acc,
-          true
-        }
-
-      row, {rows, _write_acc, _embedded?} ->
-        {[row | rows], [], false}
-    end)
-    |> case do
-      {rows, write_rows, true} -> {Enum.reverse(rows), Enum.reverse(write_rows)}
-      {rows, _write_rows, false} -> {Enum.reverse(rows), nil}
-    end
-  end
-
-  def pending_writes(saver, thread_id, namespace, checkpoint_id) do
-    saver
-    |> pending_writes_by_key([{thread_id, namespace, checkpoint_id}])
-    |> Map.get({thread_id, namespace, checkpoint_id}, empty_pending())
-  end
-
-  defp pending_writes_by_key(_saver, []), do: %{}
-
-  defp pending_writes_by_key(saver, keys) do
-    keys = Enum.uniq(keys)
-
-    sql = """
-    WITH requested(thread_id, checkpoint_ns, checkpoint_id) AS (
-      SELECT *
-      FROM unnest($1::text[], $2::text[], $3::text[])
-    )
-    SELECT writes.thread_id, writes.checkpoint_ns, writes.checkpoint_id,
-           writes.task_id, writes.write_index, writes.channel, writes.value, writes.task_path
-    FROM #{saver.writes_table} AS writes
-    JOIN requested
-      ON writes.thread_id = requested.thread_id
-     AND writes.checkpoint_ns = requested.checkpoint_ns
-     AND writes.checkpoint_id = requested.checkpoint_id
-    ORDER BY writes.thread_id ASC, writes.checkpoint_ns ASC, writes.checkpoint_id ASC,
-             writes.task_id ASC, writes.write_index ASC
-    """
-
-    {thread_ids, namespaces, checkpoint_ids} =
-      Enum.reduce(keys, {[], [], []}, fn {thread_id, namespace, checkpoint_id}, {threads, namespaces, checkpoints} ->
-        {[thread_id | threads], [namespace | namespaces], [checkpoint_id | checkpoints]}
-      end)
-
-    params = [Enum.reverse(thread_ids), Enum.reverse(namespaces), Enum.reverse(checkpoint_ids)]
-
-    case SQL.query(saver, sql, params) do
-      {:ok, %{rows: rows}} ->
-        pending_writes_from_rows(saver, rows)
-
-      _error ->
-        %{}
-    end
   end
 
   defp pending_writes_from_rows(saver, rows) do
     rows
-    |> unique_write_rows()
-    |> Enum.group_by(fn [thread_id, namespace, checkpoint_id | _rest] ->
-      {thread_id, namespace, checkpoint_id}
-    end)
+    |> Enum.uniq_by(&write_key/1)
+    |> Enum.group_by(&checkpoint_key/1)
     |> Map.new(fn {key, rows} -> {key, pending_from_rows(saver, key, rows)} end)
   end
 
   defp pending_from_rows(saver, {thread_id, namespace, checkpoint_id}, rows) do
     records =
-      Enum.map(rows, fn [_thread_id, _namespace, _checkpoint_id, task_id, index, channel, value, path] ->
+      Enum.map(rows, fn row ->
         %PendingWrite{
           thread_id: thread_id,
           checkpoint_ns: namespace,
           checkpoint_id: checkpoint_id,
-          task_id: task_id,
-          index: index,
-          channel: channel,
-          value: saver.__struct__.load_json_value!(saver, value),
-          path: path || ""
+          task_id: row.task_id,
+          index: row.write_index,
+          channel: row.channel,
+          value: saver.__struct__.load_json_value!(saver, Config.load_write_value(row.value)),
+          path: row.task_path || ""
         }
       end)
 
@@ -189,39 +123,20 @@ defmodule BeamWeaver.Checkpoint.Ecto.Rows do
     }
   end
 
-  defp unique_write_rows(rows) do
-    rows
-    |> Enum.reduce({MapSet.new(), []}, fn row, {seen, acc} ->
-      key = write_row_key(row)
-
-      if MapSet.member?(seen, key) do
-        {seen, acc}
-      else
-        {MapSet.put(seen, key), [row | acc]}
-      end
-    end)
-    |> elem(1)
-    |> Enum.reverse()
+  defp checkpoint_key(%{"thread_id" => thread_id} = row) do
+    {thread_id, Map.get(row, "checkpoint_ns", ""), row["checkpoint_id"]}
   end
 
-  defp write_row_key([thread_id, namespace, checkpoint_id, task_id, index | _rest]),
-    do: {thread_id, namespace, checkpoint_id, task_id, index}
+  defp checkpoint_key(row), do: {row.thread_id, row.checkpoint_ns, row.checkpoint_id}
 
-  defp write_keys(tuples) do
-    tuples
-    |> Enum.flat_map(fn tuple -> [tuple_key(tuple), parent_key(tuple)] end)
-    |> Enum.reject(&is_nil/1)
+  defp write_key(row) do
+    {row.thread_id, row.checkpoint_ns, row.checkpoint_id, row.task_id, row.write_index}
   end
 
-  defp tuple_key(tuple) do
-    configurable = tuple.config["configurable"]
-    {configurable["thread_id"], configurable["checkpoint_ns"], configurable["checkpoint_id"]}
-  end
+  defp tuple_key(tuple), do: checkpoint_key(tuple.config["configurable"])
 
-  defp parent_key(%{parent_config: %{} = parent_config}) do
-    configurable = parent_config["configurable"]
-    {configurable["thread_id"], configurable["checkpoint_ns"], configurable["checkpoint_id"]}
-  end
+  defp parent_key(%{parent_config: %{} = parent_config}),
+    do: checkpoint_key(parent_config["configurable"])
 
   defp parent_key(_tuple), do: nil
 

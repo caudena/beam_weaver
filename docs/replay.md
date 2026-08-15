@@ -100,8 +100,3 @@ For application tests, keep request-shape examples as local JSON or YAML
 fixtures when credentials are not required. Use live provider calls only for the
 small set of checks where provider availability, account configuration, or
 current model behavior is the thing being tested.
-
-## Related Guides
-
-- [OpenAI](partners/openai.md#replay-usage)
-- [Tracing](tracing.md)

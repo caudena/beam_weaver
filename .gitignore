@@ -24,6 +24,8 @@ beam_weaver-*.tar
 
 .env
 
+.credo.exs
+
 # Local/internal provider metadata captures.
 /model_meta.md
 /scripts/capture_model_meta.exs

@@ -171,7 +171,9 @@ defmodule BeamWeaver.Stream do
             )
           end)
 
-        %{task: task, timeout: timeout, done?: false, on_cancel: on_cancel}
+        guardian = guard_producer(parent, task.pid)
+
+        %{task: task, guardian: guardian, timeout: timeout, done?: false, on_cancel: on_cancel}
       end,
       fn
         %{done?: true} = state ->
@@ -195,7 +197,9 @@ defmodule BeamWeaver.Stream do
               {[%Events.Debug{payload: %{type: :heartbeat}}], state}
           end
       end,
-      fn %{task: task, done?: done?, on_cancel: on_cancel} ->
+      fn %{task: task, guardian: guardian, done?: done?, on_cancel: on_cancel} ->
+        send(guardian, :stop)
+
         unless done? do
           Task.shutdown(task, :brutal_kill)
           on_cancel.()
@@ -213,6 +217,19 @@ defmodule BeamWeaver.Stream do
 
   defp start_live_resource_task(supervisor, fun),
     do: Task.Supervisor.async_nolink(supervisor, fun)
+
+  defp guard_producer(consumer, producer) do
+    spawn(fn ->
+      consumer_ref = Process.monitor(consumer)
+      producer_ref = Process.monitor(producer)
+
+      receive do
+        {:DOWN, ^consumer_ref, :process, ^consumer, _reason} -> Process.exit(producer, :kill)
+        {:DOWN, ^producer_ref, :process, ^producer, _reason} -> :ok
+        :stop -> :ok
+      end
+    end)
+  end
 
   defp normalize_live_resource_result(result) when result in [:ok, nil], do: :ok
   defp normalize_live_resource_result({:ok, _value}), do: :ok

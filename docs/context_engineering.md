@@ -804,6 +804,11 @@ Manual compaction does not disable automatic summarization or overflow recovery;
 combine them when long-running agents need both proactive and reactive context
 management.
 
+Applications with their own durable conversation model can instead use the
+pure `BeamWeaver.Compaction` engine. It returns a validated portable checkpoint
+without persisting or activating it; see
+[Application-Owned Compaction](compaction.md) for the ownership boundary.
+
 ### Overflow Recovery
 
 `overflow_recovery: true` catches provider context-overflow errors, clips the
@@ -919,24 +924,3 @@ instead of going through a virtual file path.
 - Test context logic independently with fake or replay models.
 - Observe context decisions with [Event Streaming](event_streaming.md) and
   [Tracing](tracing.md).
-
-## Related Guides
-
-- [Agents](agents.md)
-- [Composed Agent Capabilities](agent_harness.md)
-- [Filesystem](filesystem.md)
-- [Filesystem Permissions](permissions.md)
-- [Subagents](subagents.md)
-- [Async Subagents](async_subagents.md)
-- [Runtime](runtime.md)
-- [Tools](tools.md)
-- [Middleware](middleware.md)
-- [Custom Middleware](custom_middleware.md)
-- [Prebuilt Middleware](prebuilt_middleware.md)
-- [Guardrails](guardrails.md)
-- [Short-Term Memory](short_term_memory.md)
-- [Long-Term Memory](long_term_memory.md)
-- [Memory](memory.md)
-- [Subgraphs](subgraphs.md)
-- [Structured Output](structured_output.md)
-- [Event Streaming](event_streaming.md)

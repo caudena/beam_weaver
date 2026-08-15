@@ -123,11 +123,3 @@ Kimi currently marks its web-search integration as being updated and advises
 against near-term production use. BeamWeaver therefore keeps the legacy
 `$web_search` helper limited to models where thinking can be disabled and does
 not advertise it as a K3 capability.
-
-## Related Guides
-
-- [Models](../models.md)
-- [Prompt Caching](../prompt_caching.md#moonshotkimi)
-- [Tools](../tools.md#server-side-provider-tools)
-- [Structured Output](../structured_output.md)
-- [Messages](../messages.md)

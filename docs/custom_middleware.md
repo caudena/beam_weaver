@@ -566,16 +566,3 @@ tasks, supervision, and the agent async facade for concurrency.
   failures.
 - Be explicit about `can_jump_to/2` when a hook can route execution.
 - Unit test middleware modules directly, then test them through an agent.
-
-## Related Guides
-
-- [Middleware](middleware.md)
-- [Prebuilt Middleware](prebuilt_middleware.md)
-- [Guardrails](guardrails.md)
-- [Runtime](runtime.md)
-- [Agents](agents.md)
-- [Context Engineering](context_engineering.md)
-- [Tools](tools.md)
-- [Short-Term Memory](short_term_memory.md)
-- [Structured Output](structured_output.md)
-- [Event Streaming](event_streaming.md)

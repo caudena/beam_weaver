@@ -151,11 +151,3 @@ The retired May 15, 2026 slugs are rejected with `:deprecated_model`:
   chat behavior; BeamWeaver does not expose image/video provider APIs.
 - Exact Python class identity and serialization compatibility. BeamWeaver keeps
   native Elixir modules, structs, and tagged errors.
-
-## Related Guides
-
-- [Models](../models.md)
-- [Prompt Caching](../prompt_caching.md#xai-grok)
-- [Tools](../tools.md#server-side-provider-tools)
-- [Structured Output](../structured_output.md)
-- [Messages](../messages.md)

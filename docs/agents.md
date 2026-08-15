@@ -693,7 +693,7 @@ For durable deployments, use `BeamWeaver.Checkpoint.Ecto` instead of ETS.
 
 LangChain's hosted docs also discuss LangGraph Platform, SDK, CLI, and server
 deployment behavior. BeamWeaver's local agent runtime is graph-backed and can
-use ETS or Ecto/Postgres adapters, but it does not mirror the hosted platform
+use ETS or Ecto checkpoint adapters, but it does not mirror the hosted platform
 APIs. Use `BeamWeaver.Tracing` for local trace/export boundaries and your
 normal OTP release/deployment tooling for services.
 {% endhint %}
@@ -948,21 +948,3 @@ Prefer module-defined agents for stable application code. Use
 Runtime-built agents support the same model/tools loop, schemas, middleware,
 checkpointer, store, cache, interrupts, recursion limits, and event-streaming
 options represented by `BeamWeaver.Agent.Spec`.
-
-## Related Guides
-
-- [Graph](graph.md)
-- [Workflows And Agents](workflows_and_agents.md)
-- [Context Engineering](context_engineering.md)
-- [OpenAI](partners/openai.md)
-- [Middleware](middleware.md)
-- [Custom Middleware](custom_middleware.md)
-- [Prebuilt Middleware](prebuilt_middleware.md)
-- [Guardrails](guardrails.md)
-- [Runtime](runtime.md)
-- [Structured Output](structured_output.md)
-- [Short-Term Memory](short_term_memory.md)
-- [Long-Term Memory](long_term_memory.md)
-- [Event Streaming](event_streaming.md)
-- [Tracing](tracing.md)
-- [Adapters](adapters.md)

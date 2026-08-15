@@ -19,6 +19,8 @@ defmodule BeamWeaver.Agent.Middleware.Subagents do
   alias BeamWeaver.Agent.StructuredOutput.ProviderStrategy
   alias BeamWeaver.Agent.StructuredOutput.ToolStrategy
   alias BeamWeaver.Agent.Subagent.Compiled
+  alias BeamWeaver.Agent.Subagent.Host
+  alias BeamWeaver.Agent.Subagent.Host.Proposal
   alias BeamWeaver.Agent.Subagent.Spec
   alias BeamWeaver.Checkpoint
   alias BeamWeaver.Core.Error
@@ -213,16 +215,20 @@ defmodule BeamWeaver.Agent.Middleware.Subagents do
             checkpointer: nil,
             summarization: true,
             compact_conversation: true,
+            host: nil,
+            child_mode: :foreground,
             system_prompt: @task_system_prompt,
             task_description: @task_description
 
   def new(opts \\ []) do
+    host = Keyword.get(opts, :host)
+
     subagents =
       opts
       |> Keyword.get(:subagents, [])
       |> List.wrap()
-      |> maybe_add_general_purpose_subagent(opts)
-      |> Enum.map(&normalize_subagent(&1, opts))
+      |> maybe_add_general_purpose_subagent(opts, host)
+      |> Enum.map(&normalize_subagent(&1, opts, host))
       |> validate_subagents!()
 
     %__MODULE__{
@@ -236,6 +242,8 @@ defmodule BeamWeaver.Agent.Middleware.Subagents do
       checkpointer: Keyword.get(opts, :checkpointer),
       summarization: Keyword.get(opts, :summarization, true),
       compact_conversation: Keyword.get(opts, :compact_conversation, true),
+      host: host,
+      child_mode: normalize_child_mode(Keyword.get(opts, :child_mode, :foreground)),
       system_prompt: Keyword.get(opts, :system_prompt) || @task_system_prompt,
       task_description: Keyword.get(opts, :task_description) || @task_description
     }
@@ -245,6 +253,8 @@ defmodule BeamWeaver.Agent.Middleware.Subagents do
   def name(_middleware), do: :deepagents_subagents
 
   @impl true
+  def state_schema(%__MODULE__{host: host}) when not is_nil(host), do: %{}
+
   def state_schema(_middleware) do
     %{
       subagent_outputs: Graph.channel({BinaryOperatorAggregate, &merge_maps/2}, initial: %{}),
@@ -309,13 +319,38 @@ defmodule BeamWeaver.Agent.Middleware.Subagents do
     |> handler.()
   end
 
-  defp maybe_add_general_purpose_subagent(subagents, opts) do
+  defp maybe_add_general_purpose_subagent(subagents, _opts, host) when not is_nil(host), do: subagents
+
+  defp maybe_add_general_purpose_subagent(subagents, opts, nil) do
     if Enum.any?(subagents, &(subagent_name(&1) == "general-purpose")) do
       subagents
     else
       [general_purpose_subagent(opts) | subagents]
     end
   end
+
+  defp normalize_subagent(%Compiled{} = subagent, _opts, _host), do: subagent
+
+  defp normalize_subagent(%Spec{} = subagent, _opts, host) when not is_nil(host) do
+    %Compiled{
+      name: subagent.name,
+      description: subagent.description,
+      agent: :host_managed,
+      inherit_messages: false,
+      capture_output: nil,
+      execution_mode: normalize_execution_mode(subagent.execution_mode)
+    }
+  end
+
+  defp normalize_subagent(map, opts, host) when is_map(map) and not is_nil(host),
+    do: map |> Spec.new() |> normalize_subagent(opts, host)
+
+  defp normalize_subagent(opts, build_opts, host) when is_list(opts) and not is_nil(host),
+    do: opts |> Spec.new() |> normalize_subagent(build_opts, host)
+
+  defp normalize_subagent(%Spec{} = subagent, opts, nil), do: normalize_subagent(subagent, opts)
+  defp normalize_subagent(map, opts, nil) when is_map(map), do: normalize_subagent(map, opts)
+  defp normalize_subagent(opts, build_opts, nil) when is_list(opts), do: normalize_subagent(opts, build_opts)
 
   defp general_purpose_subagent(opts) do
     %Spec{
@@ -591,6 +626,16 @@ defmodule BeamWeaver.Agent.Middleware.Subagents do
     end
   end
 
+  defp run_task(%__MODULE__{host: host} = middleware, input) when not is_nil(host) do
+    name = value(input, :subagent_type) || value(input, :subagent_name) || value(input, :name)
+    description = value(input, :description, "")
+
+    case Enum.find(middleware.subagents, &(&1.name == name)) do
+      %Compiled{} -> run_host_task(middleware, name, description, input)
+      nil -> unknown_subagent(name, middleware.subagents)
+    end
+  end
+
   defp run_task(%__MODULE__{subagents: subagents}, input) do
     name = value(input, :subagent_type) || value(input, :subagent_name) || value(input, :name)
     description = value(input, :description, "")
@@ -623,11 +668,80 @@ defmodule BeamWeaver.Agent.Middleware.Subagents do
         end
 
       nil ->
-        allowed = Enum.map_join(subagents, ", ", &"`#{&1.name}`")
-
-        "We cannot invoke subagent #{name} because it does not exist, the only allowed types are #{allowed}"
+        unknown_subagent(name, subagents)
     end
   end
+
+  defp run_host_task(middleware, name, description, input) do
+    proposal = %Proposal{
+      type: name,
+      task: to_string(description),
+      mode: middleware.child_mode,
+      correlation_id: to_string(value(input, :tool_call_id, ""))
+    }
+
+    context = value(input, :runtime) || value(input, :tool_runtime)
+
+    with :ok <- validate_proposal(proposal),
+         {:ok, handle} <- Host.admit(middleware.host, proposal, context),
+         response <- Host.result(middleware.host, handle, context) do
+      host_response(input, response)
+    else
+      {:error, %Error{} = error} ->
+        format_subagent_error(error)
+
+      {:error, reason} ->
+        format_subagent_error(Error.new(:subagent_host_error, "child host failed", %{reason: inspect(reason)}))
+    end
+  end
+
+  defp host_response(input, {:pending, handle}) do
+    host_message(input, "Child admitted as #{handle.id}", %{
+      outcome: :pending,
+      child_handle_id: handle.id,
+      child_mode: handle.mode
+    })
+  end
+
+  defp host_response(input, {:ok, result}) do
+    host_message(input, result.content || Atom.to_string(result.outcome), %{
+      outcome: result.outcome,
+      child_handle_id: result.handle_id,
+      evidence_refs: result.evidence_refs
+    })
+  end
+
+  defp host_response(_input, {:error, %Error{} = error}), do: format_subagent_error(error)
+
+  defp host_response(_input, {:error, reason}) do
+    format_subagent_error(Error.new(:subagent_host_error, "child host failed", %{reason: inspect(reason)}))
+  end
+
+  defp host_message(input, content, metadata) do
+    message =
+      Message.tool(content,
+        tool_call_id: value(input, :tool_call_id),
+        name: "task",
+        metadata: metadata
+      )
+
+    {:ok, %Command{update: %{messages: [message]}}}
+  end
+
+  defp validate_proposal(%Proposal{} = proposal) do
+    if Proposal.valid?(proposal), do: :ok, else: invalid_proposal()
+  end
+
+  defp invalid_proposal,
+    do: {:error, Error.new(:invalid_subagent_proposal, "child proposal requires type, task, and correlation id")}
+
+  defp unknown_subagent(name, subagents) do
+    allowed = Enum.map_join(subagents, ", ", &"`#{&1.name}`")
+    "We cannot invoke subagent #{name} because it does not exist, the only allowed types are #{allowed}"
+  end
+
+  defp normalize_child_mode(mode) when mode in [:foreground, :background], do: mode
+  defp normalize_child_mode(mode), do: raise(ArgumentError, "invalid child_mode #{inspect(mode)}")
 
   defp invoke_subagent(%Compiled{agent: agent} = subagent, parent_state, description, input)
        when subagent.execution_mode != :research_then_generate or is_nil(subagent.generate_agent) do

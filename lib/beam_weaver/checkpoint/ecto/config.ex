@@ -41,6 +41,13 @@ defmodule BeamWeaver.Checkpoint.Ecto.Config do
   def normalize_write({channel, value}), do: {to_string(channel), value}
   def normalize_write({_task_id, channel, value}), do: {to_string(channel), value}
 
+  def store_write_value(value) do
+    %{"__beam_weaver_checkpoint_write__" => 1, "value" => value}
+  end
+
+  def load_write_value(%{"__beam_weaver_checkpoint_write__" => 1, "value" => value}), do: value
+  def load_write_value(value), do: value
+
   def before_checkpoint_id(nil), do: nil
 
   def before_checkpoint_id(config) do

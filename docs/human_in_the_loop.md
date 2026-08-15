@@ -152,7 +152,7 @@ interrupt payload and the eventual resume value.
 
 Dynamic interrupts need a checkpointer and a stable `thread_id`. Use
 `BeamWeaver.Checkpoint.ETS` for tests or local prototypes. Use
-`BeamWeaver.Checkpoint.Ecto` for durable Postgres-backed deployments. Always
+`BeamWeaver.Checkpoint.Ecto` with PostgreSQL or SQLite for durable deployments. Always
 resume with the same `config`.
 {% endhint %}
 
@@ -916,19 +916,3 @@ LangGraph's per-invocation `interrupt_before` or `interrupt_after` arguments.
 Use `BeamWeaver.Graph.interrupt/1` or `HumanInTheLoop` middleware for user-facing
 human review. Static breakpoints are a developer debugging tool.
 {% endhint %}
-
-## Related Guides
-
-- [Prebuilt Middleware](prebuilt_middleware.md)
-- [Composed Agent Capabilities](agent_harness.md)
-- [Subagents](subagents.md)
-- [Async Subagents](async_subagents.md)
-- [Guardrails](guardrails.md)
-- [Runtime](runtime.md)
-- [Event Streaming](event_streaming.md)
-- [Durable Execution](durable_execution.md)
-- [Fault Tolerance](fault_tolerance.md)
-- [Tools](tools.md)
-- [Agents](agents.md)
-- [Context Engineering](context_engineering.md)
-- [Short-Term Memory](short_term_memory.md)

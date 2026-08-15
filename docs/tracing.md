@@ -3,8 +3,10 @@
 BeamWeaver tracing records local run trees for agents, graphs, runnables, model
 calls, tool calls, middleware, transport, and replay observability.
 
-Tracing is local by default. External uploads are opt-in through exporters. The
-native hosted destination is WeaveScope.
+Tracing is local by default. External uploads are opt-in through exporters.
+[WeaveScope](https://weavescope.com) is the native hosted destination; use the
+[WeaveScope app](https://app.weavescope.com) to create projects and inspect
+exported traces.
 
 ## Native Trace Options
 
@@ -230,11 +232,3 @@ Useful events include:
 The BeamWeaver metadata is redacted and summarized. The raw Finch request and
 response are still present in telemetry metadata/results, so do not log
 `metadata.request` or `metadata.result` wholesale in production handlers.
-
-## Related Guides
-
-- [Event Streaming](event_streaming.md)
-- [Persistence](persistence.md)
-- [Runtime](runtime.md)
-- [Going To Production](going_to_production.md)
-- [Replay](replay.md)

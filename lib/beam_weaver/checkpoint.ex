@@ -8,10 +8,12 @@ defmodule BeamWeaver.Checkpoint do
   """
 
   alias BeamWeaver.Checkpoint.Normalization
+  alias BeamWeaver.Checkpoint.Batch
   alias BeamWeaver.Checkpoint.Record
   alias BeamWeaver.Checkpoint.Saver
   alias BeamWeaver.Checkpoint.Telemetry
   alias BeamWeaver.Core.Async
+  alias BeamWeaver.Core.Error
 
   @type saver :: struct()
   @type config :: map()
@@ -35,12 +37,47 @@ defmodule BeamWeaver.Checkpoint do
 
   @spec get_tuple(saver(), config()) :: map() | nil
   def get_tuple(saver, config) do
-    result =
-      saver.__struct__.get_tuple(saver, config)
-      |> Normalization.normalize_tuple(saver)
+    case fetch_tuple(saver, config) do
+      {:ok, result} -> result
+      {:error, error} -> raise_checkpoint_error!(error)
+    end
+  end
 
-    Telemetry.emit(saver, :get_tuple, %{count: if(result, do: 1, else: 0)}, config, result)
-    result
+  @doc """
+  Reads one checkpoint without collapsing adapter failures into absence.
+
+  Saver implementations may provide a native `fetch_tuple/2` callback. Older
+  savers remain compatible: their `get_tuple/2` callback is wrapped and raised
+  exceptions are returned as checkpoint errors.
+  """
+  @spec fetch_tuple(saver(), config()) :: {:ok, map() | nil} | {:error, term()}
+  def fetch_tuple(saver, config) do
+    result =
+      checkpoint_read(saver, :fetch_tuple, [config], fn ->
+        saver.__struct__.get_tuple(saver, config)
+      end)
+
+    normalized =
+      case result do
+        {:ok, tuple} when is_map(tuple) or is_nil(tuple) ->
+          checkpoint_read(fn -> Normalization.normalize_tuple(tuple, saver) end)
+
+        {:ok, other} ->
+          invalid_read_result(:fetch_tuple, other)
+
+        {:error, _error} = error ->
+          error
+      end
+
+    Telemetry.emit(
+      saver,
+      :fetch_tuple,
+      %{count: if(match?({:ok, %{}}, normalized), do: 1, else: 0)},
+      config,
+      normalized
+    )
+
+    normalized
   end
 
   @spec async_get_tuple(saver(), config(), keyword()) :: Async.handle()
@@ -65,12 +102,38 @@ defmodule BeamWeaver.Checkpoint do
 
   @spec list(saver(), config() | nil, keyword()) :: [map()]
   def list(saver, config \\ nil, opts \\ []) do
-    result =
-      saver.__struct__.list(saver, config, opts)
-      |> Enum.map(&Normalization.normalize_tuple(&1, saver))
+    case list_result(saver, config, opts) do
+      {:ok, result} -> result
+      {:error, error} -> raise_checkpoint_error!(error)
+    end
+  end
 
-    Telemetry.emit(saver, :list, %{count: length(result)}, config || %{}, result)
-    result
+  @doc """
+  Lists checkpoints without turning an adapter failure into an empty history.
+  """
+  @spec list_result(saver(), config() | nil, keyword()) ::
+          {:ok, [map()]} | {:error, term()}
+  def list_result(saver, config \\ nil, opts \\ []) do
+    result =
+      checkpoint_read(saver, :list_result, [config, opts], fn ->
+        saver.__struct__.list(saver, config, opts)
+      end)
+
+    normalized =
+      case result do
+        {:ok, tuples} when is_list(tuples) ->
+          checkpoint_read(fn -> Enum.map(tuples, &Normalization.normalize_tuple(&1, saver)) end)
+
+        {:ok, other} ->
+          invalid_read_result(:list_result, other)
+
+        {:error, _error} = error ->
+          error
+      end
+
+    count = if match?({:ok, _}, normalized), do: length(elem(normalized, 1)), else: 0
+    Telemetry.emit(saver, :list_result, %{count: count}, config || %{}, normalized)
+    normalized
   end
 
   @spec async_list(saver(), config() | nil, keyword()) :: Async.handle()
@@ -156,17 +219,12 @@ defmodule BeamWeaver.Checkpoint do
       result
     else
       result =
-        with {:ok, next_config} <- put(saver, config, checkpoint, metadata, versions),
-             :ok <-
-               put_writes(
-                 saver,
-                 next_config,
-                 writes,
-                 Keyword.get(opts, :task_id, "checkpoint"),
-                 Keyword.get(opts, :task_path, "")
-               ) do
-          {:ok, next_config}
-        end
+        {:error,
+         Error.new(
+           :atomic_checkpoint_write_unsupported,
+           "checkpoint saver does not support atomic checkpoint and write persistence",
+           %{saver: inspect(module)}
+         )}
 
       Telemetry.emit(saver, :put_checkpoint_with_writes, %{count: length(writes)}, config, result)
       result
@@ -208,6 +266,95 @@ defmodule BeamWeaver.Checkpoint do
       async_opts
     )
   end
+
+  @doc """
+  Atomically stores a bounded list of checkpoints and their pending writes.
+
+  Atomicity belongs to the saver. No sequential fallback is attempted.
+  """
+  @spec put_many(saver(), [map()], keyword()) ::
+          {:ok, [config()]} | {:error, term()}
+  def put_many(saver, entries, opts \\ []) do
+    with :ok <- Batch.validate(entries),
+         {:ok, module} <- required_callback(saver, :put_many, 3) do
+      module.put_many(saver, entries, opts)
+    end
+  end
+
+  @doc """
+  Copies the bounded lineage ending at an exact checkpoint into another thread.
+  """
+  @spec fork_at(saver(), config(), String.t(), keyword()) ::
+          {:ok, config()} | {:error, term()}
+  def fork_at(saver, source_config, target_thread_id, opts \\ []) do
+    with true <- is_binary(target_thread_id) and target_thread_id != "",
+         {:ok, module} <- required_callback(saver, :fork_at, 4) do
+      module.fork_at(saver, source_config, target_thread_id, opts)
+    else
+      false ->
+        {:error, Error.new(:invalid_checkpoint_fork, "target thread id is required")}
+
+      {:error, _error} = error ->
+        error
+    end
+  end
+
+  defp checkpoint_read(saver, callback, args, fallback) do
+    module = saver.__struct__
+
+    if function_exported?(module, callback, length(args) + 1) do
+      checkpoint_read(fn -> apply(module, callback, [saver | args]) end)
+    else
+      checkpoint_read(fallback)
+    end
+  end
+
+  defp required_callback(saver, callback, arity) do
+    module = saver.__struct__
+
+    if function_exported?(module, callback, arity) do
+      {:ok, module}
+    else
+      {:error,
+       Error.new(:checkpoint_operation_unsupported, "checkpoint saver lacks required callback", %{
+         saver: inspect(module),
+         callback: callback,
+         arity: arity
+       })}
+    end
+  end
+
+  defp checkpoint_read(fun) do
+    case fun.() do
+      {:ok, _value} = result -> result
+      {:error, _error} = error -> error
+      value -> {:ok, value}
+    end
+  rescue
+    exception ->
+      {:error,
+       Error.new(:checkpoint_read_failed, Exception.message(exception), %{
+         exception: inspect(exception.__struct__)
+       })}
+  catch
+    kind, reason ->
+      {:error,
+       Error.new(:checkpoint_read_failed, "checkpoint adapter terminated while reading", %{
+         kind: kind,
+         reason: inspect(reason)
+       })}
+  end
+
+  defp invalid_read_result(callback, value) do
+    {:error,
+     Error.new(:invalid_checkpoint_adapter, "checkpoint read callback returned invalid data", %{
+       callback: callback,
+       returned: inspect(value)
+     })}
+  end
+
+  defp raise_checkpoint_error!(%Error{} = error), do: raise(RuntimeError, error.message)
+  defp raise_checkpoint_error!(error), do: raise(RuntimeError, inspect(error))
 
   @spec get_delta_channel_history(saver(), config(), [term()], keyword()) :: map()
   def get_delta_channel_history(saver, config, channel_names, opts \\ []) do

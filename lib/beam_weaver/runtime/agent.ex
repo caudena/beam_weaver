@@ -95,6 +95,18 @@ defmodule BeamWeaver.Runtime.Agent do
   end
 
   @doc """
+  Non-blockingly receives a cooperative cancellation signal inside work.
+  """
+  @spec cancellation() :: {:cancelled, Work.id(), term()} | :continue
+  def cancellation do
+    receive do
+      {:beam_weaver_cancel, work_id, reason} -> {:cancelled, work_id, reason}
+    after
+      0 -> :continue
+    end
+  end
+
+  @doc """
   Returns agent runtime status.
   """
   @spec status(server()) :: map()

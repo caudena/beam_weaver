@@ -81,7 +81,15 @@ sandbox =
     image: "docker.io/library/python:3.11-slim",
     root: "/workspace",
     max_output_bytes: 100_000,
-    runtime: "runsc"
+    runtime: "runsc",
+    mounts: [
+      %{source: "/srv/my-app", target: "/workspace", read_only: false},
+      %{source: "/srv/reference", target: "/reference", read_only: true}
+    ],
+    read_only: true,
+    cap_drop: ["ALL"],
+    security_opts: ["no-new-privileges"],
+    tmpfs: ["/tmp:rw,noexec,nosuid,size=64m"]
   )
 
 filesystem =
@@ -95,6 +103,12 @@ The Docker adapter starts a container on first use with:
 - `--memory 1g`
 - `--pids-limit 256`
 - `--workdir` set to the sandbox root
+
+Applications may override those resource limits and add canonical host bind
+mounts, a read-only container root, dropped capabilities, security options, and
+temporary filesystems. These are adapter options, not a claim that Docker alone
+is a complete containment boundary. Call `Sandbox.Docker.stop/1` when an
+application owns the sandbox lifecycle explicitly.
 
 Plain Docker is still not a complete security boundary for hostile workloads.
 For production, use a hardened runtime such as gVisor or Kata when available,

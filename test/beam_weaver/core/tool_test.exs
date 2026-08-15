@@ -21,6 +21,36 @@ defmodule BeamWeaver.Core.ToolTest do
     assert error.details.missing == [:b]
   end
 
+  test "normalizes closed tool input and enforces declared bounds" do
+    schema = %{
+      "type" => "object",
+      "properties" => %{
+        "name" => %{"type" => "string", "minLength" => 2, "maxLength" => 4},
+        "count" => %{"type" => "integer", "minimum" => 1, "maximum" => 3},
+        "tags" => %{
+          "type" => "array",
+          "items" => %{"type" => "string", "maxLength" => 3},
+          "maxItems" => 2
+        }
+      },
+      "required" => ["name"],
+      "additionalProperties" => false
+    }
+
+    assert {:ok, %{"name" => "okay", "count" => 2, "tags" => ["one"]}} =
+             Tool.normalize_input(schema, %{name: "okay", count: 2, tags: ["one"]})
+
+    for input <- [
+          %{"name" => "same", name: "okay"},
+          %{"name" => "x"},
+          %{"name" => "okay", "count" => 4},
+          %{"name" => "okay", "tags" => ["one", "two", "three"]},
+          %{"name" => "okay", "unknown" => true}
+        ] do
+      assert {:error, %Error{type: :invalid_input}} = Tool.normalize_input(schema, input)
+    end
+  end
+
   test "applies schema defaults before validating required input" do
     tool =
       Tool.from_function!(

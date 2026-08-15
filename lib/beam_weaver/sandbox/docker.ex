@@ -16,16 +16,36 @@ defmodule BeamWeaver.Sandbox.Docker do
     :container,
     :image,
     :runtime,
+    mounts: [],
+    cpus: 1,
+    memory: "1g",
+    pids_limit: 256,
+    network: "none",
+    read_only?: false,
+    cap_drop: [],
+    security_opts: [],
+    tmpfs: [],
     root: "/workspace",
     max_output_bytes: 100_000,
     remove?: true
   ]
+
+  @type t :: %__MODULE__{}
 
   def new(opts \\ []) do
     %__MODULE__{
       container: Keyword.get(opts, :container),
       image: Keyword.get(opts, :image, "docker.io/library/python:3.11-slim"),
       runtime: Keyword.get(opts, :runtime),
+      mounts: Keyword.get(opts, :mounts, []),
+      cpus: Keyword.get(opts, :cpus, 1),
+      memory: Keyword.get(opts, :memory, "1g"),
+      pids_limit: Keyword.get(opts, :pids_limit, 256),
+      network: Keyword.get(opts, :network, "none"),
+      read_only?: Keyword.get(opts, :read_only, false),
+      cap_drop: Keyword.get(opts, :cap_drop, []),
+      security_opts: Keyword.get(opts, :security_opts, []),
+      tmpfs: Keyword.get(opts, :tmpfs, []),
       root: Keyword.get(opts, :root, "/workspace"),
       max_output_bytes: Keyword.get(opts, :max_output_bytes, 100_000),
       remove?: Keyword.get(opts, :remove, true)
@@ -36,15 +56,17 @@ defmodule BeamWeaver.Sandbox.Docker do
     name = "beam-weaver-sandbox-" <> Base.encode16(:crypto.strong_rand_bytes(6), case: :lower)
 
     args =
-      ["run", "-d", "--name", name, "--network", "none", "--workdir", sandbox.root]
+      ["run", "-d", "--name", name, "--network", sandbox.network, "--workdir", sandbox.root]
       |> maybe_runtime(sandbox.runtime)
+      |> maybe_option("--cpus", sandbox.cpus)
+      |> maybe_option("--memory", sandbox.memory)
+      |> maybe_option("--pids-limit", sandbox.pids_limit)
+      |> maybe_flag("--read-only", sandbox.read_only?)
+      |> append_options("--cap-drop", sandbox.cap_drop)
+      |> append_options("--security-opt", sandbox.security_opts)
+      |> append_options("--tmpfs", sandbox.tmpfs)
+      |> append_mounts(sandbox.mounts)
       |> Kernel.++([
-        "--cpus",
-        "1",
-        "--memory",
-        "1g",
-        "--pids-limit",
-        "256",
         sandbox.image,
         "sleep",
         "infinity"
@@ -57,6 +79,16 @@ defmodule BeamWeaver.Sandbox.Docker do
   end
 
   def start!(%__MODULE__{} = sandbox), do: sandbox
+
+  @spec stop(t()) :: :ok | {:error, binary()}
+  def stop(%__MODULE__{container: nil}), do: :ok
+
+  def stop(%__MODULE__{container: container}) do
+    case System.cmd("docker", ["rm", "-f", container], stderr_to_stdout: true) do
+      {_output, 0} -> :ok
+      {output, _status} -> {:error, String.trim(output)}
+    end
+  end
 
   @impl true
   def write(%__MODULE__{} = sandbox, path, content, _opts) do
@@ -335,6 +367,40 @@ defmodule BeamWeaver.Sandbox.Docker do
 
   defp maybe_runtime(args, nil), do: args
   defp maybe_runtime(args, runtime), do: args ++ ["--runtime", to_string(runtime)]
+
+  defp maybe_option(args, _name, nil), do: args
+  defp maybe_option(args, name, value), do: args ++ [name, to_string(value)]
+
+  defp maybe_flag(args, _name, false), do: args
+  defp maybe_flag(args, name, true), do: args ++ [name]
+
+  defp append_options(args, name, values) when is_list(values) do
+    args ++ Enum.flat_map(values, &[name, to_string(&1)])
+  end
+
+  defp append_mounts(args, mounts) when is_list(mounts) do
+    options =
+      Enum.flat_map(mounts, fn mount ->
+        source = Map.fetch!(mount, :source)
+        target = Map.fetch!(mount, :target)
+        read_only? = Map.get(mount, :read_only, false)
+
+        unless Path.type(source) == :absolute and Path.expand(source) == source and
+                 is_binary(target) and Path.type(target) == :absolute and
+                 Path.expand(target) == target and not String.contains?(source, [",", <<0>>]) and
+                 not String.contains?(target, [",", <<0>>]) do
+          raise ArgumentError, "Docker bind mounts require canonical host and absolute container paths"
+        end
+
+        value =
+          "type=bind,source=#{source},target=#{target}" <>
+            if(read_only?, do: ",readonly", else: "")
+
+        ["--mount", value]
+      end)
+
+    args ++ options
+  end
 
   defp shell_quote(value), do: "'" <> String.replace(to_string(value), "'", "'\"'\"'") <> "'"
 

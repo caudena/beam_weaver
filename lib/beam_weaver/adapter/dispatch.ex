@@ -10,7 +10,7 @@ defmodule BeamWeaver.Adapter.Dispatch do
   def module(adapter, callback, arity, opts \\ [])
 
   def module(%{__struct__: adapter_module}, callback, arity, opts) do
-    if function_exported?(adapter_module, callback, arity) do
+    if Code.ensure_loaded?(adapter_module) and function_exported?(adapter_module, callback, arity) do
       {:ok, adapter_module}
     else
       {:error,

@@ -16,7 +16,7 @@ defmodule BeamWeaver.Migrations.Postgres do
     :record_manager
   ]
 
-  @current_versions Map.new(@adapter_order, &{&1, 1})
+  @current_versions Map.new(@adapter_order, &{&1, if(&1 == :checkpoint, do: 2, else: 1)})
 
   @doc false
   def initial_version, do: @initial_version
@@ -128,13 +128,19 @@ defmodule BeamWeaver.Migrations.Postgres do
 
   defp change(spec, range, direction) do
     for index <- range do
-      pad_idx = String.pad_leading(to_string(index), 2, "0")
-
       spec.key
-      |> module_base()
-      |> Module.concat("V#{pad_idx}")
+      |> migration_module(index)
       |> apply(direction, [spec])
     end
+  end
+
+  defp migration_module(:checkpoint, 2),
+    do: BeamWeaver.Migrations.Postgres.Checkpoint.Ordering
+
+  defp migration_module(key, index) do
+    key
+    |> module_base()
+    |> Module.concat("V#{String.pad_leading(to_string(index), 2, "0")}")
   end
 
   defp module_base(:checkpoint), do: BeamWeaver.Migrations.Postgres.Checkpoint

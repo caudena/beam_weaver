@@ -49,10 +49,3 @@ session = BeamWeaver.Core.ChatHistory.ETS.for_session(history, "thread-1")
 
 `async_get_messages/2`, `async_add_messages/3`, `async_add_message/3`, and
 `async_clear/2` use the same Task-backed async helpers as model wrappers.
-
-## Related Guides
-
-- [Messages](messages.md)
-- [Tools](tools.md)
-- [Models](models.md)
-- [Adapters](adapters.md)

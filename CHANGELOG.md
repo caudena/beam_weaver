@@ -1,5 +1,66 @@
 # Changelog
 
+## 0.1.18 - 2026-08-15
+
+### Added
+- Added provider-neutral `BeamWeaver.ContextBudget` and
+  `BeamWeaver.Compaction` primitives for applications that own durable
+  conversation checkpoints, activation, and recovery. The portable engine
+  provides bounded safe-tail selection, deterministic tool projection,
+  cumulative semantic summaries, one schema repair, effectiveness checks, and
+  lane-local anti-thrash state without adding a process or persistence layer.
+- Added `BeamWeaver.Models.UsageCost.calculate_usd_micros/2` for exact,
+  integer-only pricing with explicit dimensions and one final rounding rule.
+- Docker sandboxes accept explicit bind mounts, resource limits, read-only root
+  filesystems, dropped capabilities, security options, and tmpfs mounts, and
+  expose `BeamWeaver.Sandbox.Docker.stop/1` for application-owned cleanup.
+- Added error-preserving `BeamWeaver.Checkpoint.fetch_tuple/2` and
+  `list_result/3`, all-or-nothing `put_many/3`, and bounded lineage
+  `fork_at/4` APIs while retaining the existing convenience facades.
+- Added bounded provider response validation and the batch-atomic, sticky
+  `BeamWeaver.Provider.StreamValidator` used by live provider streams.
+- Added cooperative cancellation, bounded subscriber delivery, and explicit
+  work timeouts to the supervised agent runtime, plus the policy-neutral
+  `BeamWeaver.DispatchHook` for application checks immediately before model or
+  tool attempts.
+- Runtime agents may monitor an optional application owner and terminate all
+  active supervised work when that owner exits.
+- Live stream producers stop when their consuming work process exits.
+- Added immutable `BeamWeaver.Todo` revisions with stable IDs, bounded DAG
+  validation, evidence-bearing transitions, and deterministic hashes.
+- Added the optional `BeamWeaver.Agent.Subagent.Host` boundary for applications
+  that own durable child admission and result delivery.
+
+### Changed
+- Tool input validation can return a normalized string-keyed map and now
+  enforces declared closed properties, string and numeric bounds, collection
+  limits, nested schemas, and normalized-key collision rejection.
+- URL allowlists now narrow destinations without bypassing private, metadata,
+  or reserved-address checks. `Transport.Safe` can pin a request to one
+  validated DNS result while retaining the original Host and TLS identity, and
+  the Req/Finch streaming path enforces its response-byte ceiling.
+- Checkpoint latest/history/pruning/fork selection now uses a persisted
+  per-thread, per-namespace commit order instead of interpreting checkpoint IDs
+  as timestamps. Existing explicit and legacy IDs remain unchanged.
+- Atomic checkpoint-plus-write and batch operations now fail before writing
+  when an adapter does not implement the required transaction callback; they
+  never fall back to sequential partial writes.
+- Host-managed subagents use only explicit descriptors and typed host results;
+  they do not invoke nested runners, copy parent state, or use the legacy child
+  result cache.
+
+### Fixed
+
+- Compaction policy, state, event, and semantic constructors now reject atom
+  and string keys that normalize to the same closed field.
+- Supervised model work now preserves a typed `BeamWeaver.Core.Error` when it
+  crosses the runtime boundary, allowing an application to distinguish a
+  provider context overflow from an ordinary execution failure.
+- Checkpoint storage failures are no longer converted into missing checkpoints
+  or empty histories at public runtime boundaries.
+- Adapter structs now load their module before callback discovery, so a valid
+  application adapter is not rejected on its first invocation.
+
 ## 0.1.17 - 2026-08-13
 
 ### Added
@@ -8,6 +69,9 @@
   input-token and 65,536 output-token limits, multimodal inputs, text output,
   `low`/`medium`/`high` thinking levels, Gemini built-in tools, structured
   output, and introductory standard/cache/batch/flex/priority pricing.
+- Added optional SQLite checkpoint persistence through
+  `BeamWeaver.Checkpoint.Ecto`. Applications opt in by adding `ecto_sqlite3`;
+  BeamWeaver declares it as an optional dependency.
 
 ### Changed
 
@@ -15,6 +79,9 @@
   catalog. Cost calculation now applies the provider's UTC peak windows using
   the response timestamp and defaults to off-peak prices when no timestamp is
   available.
+- Replaced PostgreSQL-specific checkpoint read/write SQL with one shared Ecto
+  query layer for PostgreSQL and SQLite. Only migrations and transaction
+  serialization remain adapter-specific.
 
 ## 0.1.16 - 2026-08-13
 

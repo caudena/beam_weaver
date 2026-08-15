@@ -14,6 +14,7 @@ defmodule BeamWeaver.Models.UsageCost do
   alias BeamWeaver.Models.Profile
 
   @million 1_000_000
+  @exact_dimensions ~w(input_tokens cached_input_tokens output_tokens)
 
   @spec calculate(Profile.t() | map(), map(), keyword()) :: map() | nil
   def calculate(profile, usage, opts \\ [])
@@ -51,6 +52,114 @@ defmodule BeamWeaver.Models.UsageCost do
   end
 
   def calculate(_profile, _usage, _opts), do: nil
+
+  @doc """
+  Calculates an integer USD-micro estimate from a closed, integer pricing map.
+
+  Unlike `calculate/3`, this API never uses floating point rates. Each pricing
+  dimension supplies a positive `unit_size` and non-negative
+  `unit_price_usd_micros`; the sum is rounded half-up once at the end.
+  """
+  @spec calculate_usd_micros(map(), map()) :: {:ok, map()} | {:error, atom()}
+  def calculate_usd_micros(pricing, usage) when is_map(pricing) and is_map(usage) do
+    with :ok <- exact_profile(pricing),
+         {:ok, counts} <- exact_usage(usage),
+         {:ok, dimensions} <- exact_dimensions(pricing, counts) do
+      {numerator, denominator} =
+        Enum.reduce(dimensions, {0, 1}, fn dimension, total ->
+          add_fraction(total, {dimension.numerator, dimension.denominator})
+        end)
+
+      {:ok,
+       %{
+         cost_micros: round_half_up(numerator, denominator),
+         currency: "USD",
+         dimensions: dimensions,
+         rounding: %{
+           rule: "half_up",
+           numerator: numerator,
+           denominator: denominator
+         }
+       }}
+    end
+  end
+
+  def calculate_usd_micros(_pricing, _usage), do: {:error, :invalid_pricing_profile}
+
+  defp exact_profile(pricing) do
+    if MapAccess.get(pricing, :schema_version) == 1 and
+         MapAccess.get(pricing, :currency) == "USD" and
+         MapAccess.get(pricing, :rounding) == "half_up" and
+         is_list(MapAccess.get(pricing, :dimensions)) and
+         MapAccess.get(pricing, :dimensions) != [] do
+      :ok
+    else
+      {:error, :invalid_pricing_profile}
+    end
+  end
+
+  defp exact_usage(usage) do
+    input = token_count(usage, [:input_tokens, :prompt_tokens])
+    output = token_count(usage, [:output_tokens, :completion_tokens])
+    cached = cached_tokens(usage)
+
+    if is_integer(input) and is_integer(output) and is_integer(cached) and cached <= input do
+      {:ok, %{input_tokens: input, cached_input_tokens: cached, output_tokens: output}}
+    else
+      {:error, :invalid_usage}
+    end
+  end
+
+  defp exact_dimensions(pricing, counts) do
+    dimensions = MapAccess.get(pricing, :dimensions)
+    cached_dimension? = Enum.any?(dimensions, &(MapAccess.get(&1, :name) == "cached_input_tokens"))
+
+    dimensions
+    |> Enum.reduce_while({MapSet.new(), []}, fn dimension, {names, result} ->
+      name = MapAccess.get(dimension, :name)
+      unit_size = MapAccess.get(dimension, :unit_size)
+      unit_price = MapAccess.get(dimension, :unit_price_usd_micros)
+
+      if name in @exact_dimensions and not MapSet.member?(names, name) and
+           is_integer(unit_size) and unit_size > 0 and is_integer(unit_price) and unit_price >= 0 do
+        count = dimension_count(name, counts, cached_dimension?)
+        numerator = count * unit_price
+
+        value = %{
+          name: name,
+          units: count,
+          unit_size: unit_size,
+          unit_price_usd_micros: unit_price,
+          numerator: numerator,
+          denominator: unit_size
+        }
+
+        {:cont, {MapSet.put(names, name), [value | result]}}
+      else
+        {:halt, {:error, :invalid_pricing_dimension}}
+      end
+    end)
+    |> case do
+      {:error, _reason} = error -> error
+      {_names, result} -> {:ok, Enum.reverse(result)}
+    end
+  end
+
+  defp dimension_count("input_tokens", counts, true),
+    do: counts.input_tokens - counts.cached_input_tokens
+
+  defp dimension_count("input_tokens", counts, false), do: counts.input_tokens
+  defp dimension_count("cached_input_tokens", counts, _cached?), do: counts.cached_input_tokens
+  defp dimension_count("output_tokens", counts, _cached?), do: counts.output_tokens
+
+  defp add_fraction({left_numerator, left_denominator}, {right_numerator, right_denominator}) do
+    numerator = left_numerator * right_denominator + right_numerator * left_denominator
+    denominator = left_denominator * right_denominator
+    divisor = Integer.gcd(numerator, denominator)
+    {div(numerator, divisor), div(denominator, divisor)}
+  end
+
+  defp round_half_up(numerator, denominator), do: div(numerator * 2 + denominator, denominator * 2)
 
   defp pricing(%Profile{extra: extra}) when is_map(extra), do: extra
 

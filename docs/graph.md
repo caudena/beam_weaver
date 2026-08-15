@@ -51,15 +51,21 @@ checkpointer = BeamWeaver.Checkpoint.ETS.new()
 store = BeamWeaver.Memory.ETS.new()
 ```
 
-Postgres support uses Ecto through adapters that implement the same behaviours:
+Checkpoint persistence uses Ecto with PostgreSQL or SQLite:
 
 ```elixir
 checkpointer = BeamWeaver.Checkpoint.Ecto.new(repo: MyApp.Repo)
+```
+
+Long-term memory's Ecto adapter remains PostgreSQL-backed:
+
+```elixir
 store = BeamWeaver.Memory.Ecto.new(repo: MyApp.Repo)
 ```
 
-Use the SQL helper on each Ecto adapter to create the required Postgres tables
-in your application schema setup.
+Create the required tables in application-owned Ecto migrations with
+`BeamWeaver.Migrations.up/1`. SQLite migrations currently support the
+`:checkpoint` adapter only.
 
 See [Persistence](persistence.md) for checkpoint state history, updates,
 pending writes, storage optimization, and adapter scope. See
@@ -147,11 +153,3 @@ Graph and agent tests should check behavior: state transitions, persisted
 history, stream payloads, interrupts, retries, tool/model errors, and adapter
 contract coverage. Do not add tests that only assert copied constants,
 assigned values, or supervisor children whose absence would crash the app.
-
-## Related Guides
-
-- [Thinking In BeamWeaver](thinking_in_beamweaver.md)
-- [Workflows And Agents](workflows_and_agents.md)
-- [Agents](agents.md)
-- [Persistence](persistence.md)
-- [Event Streaming](event_streaming.md)

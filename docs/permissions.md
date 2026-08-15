@@ -353,13 +353,3 @@ end
 
 Use this pattern when the decision depends on content, tenant policy, quotas,
 auditing, or any context beyond a path glob.
-
-## Related Guides
-
-- [Filesystem](filesystem.md)
-- [Composed Agent Capabilities](agent_harness.md)
-- [Subagents](subagents.md)
-- [Async Subagents](async_subagents.md)
-- [Human-In-The-Loop](human_in_the_loop.md)
-- [Prebuilt Middleware](prebuilt_middleware.md)
-- [Tools](tools.md)

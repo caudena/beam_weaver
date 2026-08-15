@@ -5,6 +5,7 @@ defmodule BeamWeaver.Provider.ResponseTest do
   alias BeamWeaver.Core.Messages
   alias BeamWeaver.Google
   alias BeamWeaver.Provider.Response
+  alias BeamWeaver.Provider.StreamValidator
 
   test "separates user tool calls from hosted provider tools" do
     message =
@@ -137,5 +138,21 @@ defmodule BeamWeaver.Provider.ResponseTest do
     message = Response.normalize_message(%{model: "gemini-3.5-flash"}, message, provider: :google)
 
     assert message.response_metadata.reasoning.thought_signatures == ["sig-reasoning", "sig-text"]
+  end
+
+  test "rejects oversized normalized responses" do
+    message = Message.assistant(String.duplicate("x", 128))
+
+    assert {:error, %{type: :invalid_provider_response}} =
+             Response.normalize_message_result(%{model: "bounded"}, message, max_bytes: 64)
+  end
+
+  test "stream validation errors are sticky and do not expose a partial batch" do
+    state = StreamValidator.new(max_stream_events: 2)
+
+    assert {:error, error, failed} = StreamValidator.push(state, [%{index: 1}, %{index: 2}, %{index: 3}])
+    assert failed.event_count == 0
+    assert {:error, ^error, ^failed} = StreamValidator.push(failed, [%{index: 1}])
+    assert {:error, ^error} = StreamValidator.finish(failed)
   end
 end

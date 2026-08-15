@@ -88,6 +88,13 @@ return `:ok`, `{:ok, parsed_map}`, or `{:error, reason}`. Parser errors,
 exceptions, and invalid return shapes become `:invalid_input` errors and use the
 same `handle_validation_error` policy as schema failures.
 
+For callers that validate before creating their own operation record,
+`BeamWeaver.Core.Tool.normalize_input/2` returns a string-keyed input map. It
+enforces required and closed properties, basic JSON types, enums, string and
+numeric bounds, array sizes, and nested object/array schemas. Atom and string
+keys that normalize to the same JSON key are rejected instead of silently
+overwriting one value.
+
 ### Module Tool
 
 Use `use BeamWeaver.Tool` for application tools that should compile to a normal
@@ -958,26 +965,3 @@ For xAI Chat Completions search tools, use `BeamWeaver.XAI.Tools.live_search/1`.
 Server-side tool calls and results are represented as message content blocks and
 response metadata. There is no local `ToolNode` execution step for work the
 provider already performed.
-
-## Related Guides
-
-- [Agents](agents.md)
-- [Context Engineering](context_engineering.md)
-- [Models](models.md)
-- [Structured Output](structured_output.md)
-- [Messages](messages.md)
-- [Short-Term Memory](short_term_memory.md)
-- [Long-Term Memory](long_term_memory.md)
-- [Middleware](middleware.md)
-- [Custom Middleware](custom_middleware.md)
-- [Prebuilt Middleware](prebuilt_middleware.md)
-- [Guardrails](guardrails.md)
-- [Runtime](runtime.md)
-- [Event Streaming](event_streaming.md)
-- [Graph](graph.md)
-- [Retrieval](retrieval.md)
-- [OpenAI](partners/openai.md)
-- [Anthropic](partners/anthropic.md)
-- [Google](partners/google.md)
-- [xAI](partners/xai.md)
-- [Z.ai](partners/zai.md)

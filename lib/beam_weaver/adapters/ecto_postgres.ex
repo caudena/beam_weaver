@@ -12,13 +12,10 @@ defmodule BeamWeaver.Adapters.EctoPostgres do
       case repo.transact(fn ->
              case fun.() do
                {:error, reason} -> {:error, reason}
-               other -> {:ok, other}
+               other -> {:ok, {:beam_weaver_transaction, other}}
              end
            end) do
-        {:ok, :ok} -> :ok
-        {:ok, {:error, %Error{} = error}} -> {:error, error}
-        {:ok, {:error, reason}} -> {:error, normalize_error(reason)}
-        {:ok, other} -> other
+        {:ok, {:beam_weaver_transaction, other}} -> other
         {:error, %Error{} = error} -> {:error, error}
         {:error, reason} -> {:error, normalize_error(reason)}
       end

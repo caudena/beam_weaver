@@ -365,6 +365,23 @@ Start a runtime agent process:
 {:ok, agent} = BeamWeaver.Runtime.Agent.start_child(id: "agent-1")
 ```
 
+Runtime options added at process startup are:
+
+| Option | Meaning | Default |
+| --- | --- | --- |
+| `:owner` | Optional process whose exit stops the runtime agent and all active work. | `nil` |
+| `:cancel_grace_ms` | Time allowed for cooperative cancellation before forced termination. | `100` |
+| `:subscriber_queue_limit` | Maximum queued messages before a slow subscriber is removed. | `1_000` |
+
+`start_model_call/4` and `start_tool_call/5` also accept per-work options:
+
+| Option | Meaning | Default |
+| --- | --- | --- |
+| `:timeout` | Maximum work duration in milliseconds, or `:infinity`. | `5_000` |
+| `:dispatch_hook` | Optional `BeamWeaver.DispatchHook` struct called before each attempt. | `nil` |
+| `:dispatch_context` | Application-owned context passed to the dispatch hook. | `nil` |
+| `:max_retries` | Additional tool attempts after recoverable runtime errors. | `0` |
+
 Subscribe to runtime events:
 
 ```elixir
@@ -396,20 +413,17 @@ Tool work can retry recoverable crashes:
 BeamWeaver.Runtime.Agent.start_tool_call(agent, "lookup", input, fun, max_retries: 1)
 ```
 
+Cancellation is cooperative first. Work can poll `BeamWeaver.Runtime.Agent.cancellation/0`
+at safe boundaries and return `{:cancelled, reason}`. If it does not acknowledge
+the signal within `:cancel_grace_ms`, the runtime terminates it and reports a
+failed cancellation timeout instead of inventing a successful cancellation.
+
+Applications may pass a `BeamWeaver.DispatchHook` struct through
+`:dispatch_hook`; its `before_dispatch/3` callback runs immediately before each
+model or tool attempt. The hook is deliberately policy-neutral: the application
+owns the request context and any permit meaning. Subscriber delivery is bounded
+by `:subscriber_queue_limit`; a subscriber that cannot keep up is removed.
+
 Every work item gets a trace run ID through the returned work struct. Use
 `BeamWeaver.Tracing.get_run/1` or `BeamWeaver.Tracing.get_tree/1` to inspect
 trace state.
-
-## Related Guides
-
-- [Agents](agents.md)
-- [Context Engineering](context_engineering.md)
-- [Tools](tools.md)
-- [Middleware](middleware.md)
-- [Custom Middleware](custom_middleware.md)
-- [Prebuilt Middleware](prebuilt_middleware.md)
-- [Human-In-The-Loop](human_in_the_loop.md)
-- [Event Streaming](event_streaming.md)
-- [Short-Term Memory](short_term_memory.md)
-- [Long-Term Memory](long_term_memory.md)
-- [Graph](graph.md)

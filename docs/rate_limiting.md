@@ -33,10 +33,3 @@ Failures are tagged tuples:
 
 Queued callers are monitored. If waiting work is canceled, it is removed from the
 queue and does not consume future refill capacity.
-
-## Related Guides
-
-- [Models](models.md#rate-limiting)
-- [Fault Tolerance](fault_tolerance.md)
-- [Prebuilt Middleware](prebuilt_middleware.md#model-and-tool-call-limits)
-- [Going To Production](going_to_production.md)

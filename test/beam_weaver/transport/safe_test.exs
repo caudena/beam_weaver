@@ -58,6 +58,16 @@ defmodule BeamWeaver.Transport.SafeTest do
     end
   end
 
+  defmodule PinTransport do
+    @behaviour BeamWeaver.Transport
+
+    @impl true
+    def request(request, opts) do
+      send(Keyword.fetch!(opts, :observer), {:pinned_request, request, opts})
+      {:ok, Response.new(status: 200, body: "ok")}
+    end
+  end
+
   test "blocks unsafe initial URLs before delegate transport I/O" do
     {:ok, agent} = start_agent([{:ok, 200, "ok"}])
 
@@ -69,6 +79,31 @@ defmodule BeamWeaver.Transport.SafeTest do
              )
 
     assert calls(agent) == []
+  end
+
+  test "pins the transport to the validated address while retaining TLS and Host identity" do
+    resolver = fn "public.example", 443 -> {:ok, [{93, 184, 216, 34}]} end
+
+    assert {:ok,
+            %Response{
+              metadata: %{
+                requested_host: "public.example",
+                connected_address: {93, 184, 216, 34}
+              }
+            }} =
+             Safe.request(
+               Request.new(method: :get, url: "https://public.example/path?q=1"),
+               transport: PinTransport,
+               observer: self(),
+               resolve?: true,
+               pin_resolved?: true,
+               resolver: resolver
+             )
+
+    assert_receive {:pinned_request, request, opts}
+    assert request.url == "https://93.184.216.34/path?q=1"
+    assert {"host", "public.example"} in request.headers
+    assert opts[:connect_options][:hostname] == "public.example"
   end
 
   test "follows safe redirects through the same URL policy" do

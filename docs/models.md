@@ -184,6 +184,37 @@ Recommended starting points:
 Use the matrix as capability guidance, then validate model quality against your
 own prompts, tools, latency, and cost constraints.
 
+### Exact integer pricing
+
+Applications that persist budgets or reconcile costs can use
+`BeamWeaver.Models.UsageCost.calculate_usd_micros/2`. The function accepts a
+closed integer pricing profile and normalized token counts, performs no
+floating-point arithmetic, and rounds the combined result once with the
+declared `half_up` rule.
+
+```elixir
+pricing = %{
+  schema_version: 1,
+  currency: "USD",
+  rounding: "half_up",
+  dimensions: [
+    %{name: "input_tokens", unit_size: 1_000_000, unit_price_usd_micros: 2_000_000},
+    %{name: "output_tokens", unit_size: 1_000_000, unit_price_usd_micros: 8_000_000}
+  ]
+}
+
+{:ok, %{cost_micros: cost}} =
+  BeamWeaver.Models.UsageCost.calculate_usd_micros(pricing, %{
+    input_tokens: 100,
+    output_tokens: 10
+  })
+```
+
+The API returns an error for missing usage, duplicate or unknown dimensions,
+invalid units, and cached-input counts greater than total input. Pricing-profile
+selection, effective dates, budgets, and whether an estimate may authorize work
+remain application policy.
+
 Model profiles expose `tool_call_streaming` separately from `streaming` and
 `tool_calling`. Use it when a UI or replay test needs incremental tool argument
 chunks instead of waiting for the final assistant message. Current checked-in
@@ -241,6 +272,10 @@ Common chat model options include:
 | `:model_kwargs`, `:extra_body` | explicit provider escape hatches |
 | `:transport`, `:transport_opts` | transport boundary for live, fake, or replay calls |
 | `:profile`, `:profile_registry`, `:param_policy` | capability metadata and validation |
+| `:max_bytes`, `:max_items`, `:max_depth` | normalized provider-response bounds; defaults are 16 MiB, 100,000 items, and depth 64 |
+| `:max_tool_calls` | provider request limit when supported and normalized-response ceiling; normalization defaults to 256 when absent |
+| `:max_response_bytes` | maximum collected HTTP response body; defaults to 16 MiB |
+| `:max_stream_events`, `:max_stream_bytes`, `:max_stream_value_bytes` | live provider-stream event, transport-byte, and decoded-value bounds |
 
 Provider constructors use native option names. Use `:model`, not `:model_name`.
 Use `:endpoint` or a custom transport for exact routing. The xAI constructors
@@ -258,6 +293,19 @@ replay behavior belongs at the `BeamWeaver.Transport` boundary. xAI keeps
 
 Known profiles default to strict parameter validation. Unknown future profiles
 are permissive so new model names can work before profile data catches up.
+
+## Provider Response Validation
+
+`BeamWeaver.Core.ChatModel.invoke/3` validates a provider message before and
+after metadata normalization. Invalid message structure, oversized decoded
+values, excessive nesting, and excessive tool calls return
+`%BeamWeaver.Core.Error{type: :invalid_provider_response}` instead of entering
+agent or graph state.
+
+The limits are ordinary invocation options, so applications may lower them for
+their workload. BeamWeaver's defaults are hard safety ceilings for normal
+responses, not token-budget or provider-quota controls. Provider token limits
+such as `:max_tokens` remain separate request options.
 
 ## Provider Profiles
 
@@ -825,16 +873,3 @@ to explicit Elixir values and middleware:
 - select dynamic models with agent `wrap_model_call` middleware
 - pass provider options as keyword arguments at the call boundary
 - use structs when a model configuration should be shared
-
-## Related Guides
-
-- [Partner Matrix](partners.md)
-- [OpenAI](partners/openai.md)
-- [Anthropic](partners/anthropic.md)
-- [Google](partners/google.md)
-- [Moonshot/Kimi](partners/moonshot.md)
-- [xAI](partners/xai.md)
-- [Messages](messages.md)
-- [Tools](tools.md)
-- [Structured Output](structured_output.md)
-- [Rate Limiting](rate_limiting.md)

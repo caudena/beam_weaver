@@ -27,7 +27,7 @@ BeamWeaver is installed as an Elixir dependency, not with `pip` or `uv`:
 ```elixir
 def deps do
   [
-    {:beam_weaver, "~> 0.1.13"}
+    {:beam_weaver, "~> 0.1.16"}
   ]
 end
 ```
@@ -340,16 +340,3 @@ BeamWeaver subgraph events are already present in typed graph event streams
 when the subgraph runs as a graph node. Use envelope namespaces or
 `BeamWeaver.Stream.Subgraphs` instead of enabling a separate stream flag.
 {% endhint %}
-
-## Related Guides
-
-- [Graph](graph.md)
-- [Persistence](persistence.md)
-- [Memory](memory.md)
-- [Time Travel](time_travel.md)
-- [Durable Execution](durable_execution.md)
-- [Human-In-The-Loop](human_in_the_loop.md)
-- [Event Streaming](event_streaming.md)
-- [Agents](agents.md)
-- [Subagents](subagents.md)
-- [Middleware](middleware.md)

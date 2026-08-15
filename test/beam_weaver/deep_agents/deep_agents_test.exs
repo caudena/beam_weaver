@@ -1203,7 +1203,7 @@ defmodule BeamWeaver.AgentCapabilitiesTest do
       |> FilesystemTools.tools()
       |> Enum.find(&(Tool.name(&1) == "execute"))
 
-    assert {:ok, "Error: timeout must be an integer between 1 and 3600 seconds"} =
+    assert {:error, %{type: :invalid_input}} =
              Tool.invoke(execute_tool, %{"command" => "echo no", "timeout" => 0})
   end
 

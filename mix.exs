@@ -4,7 +4,7 @@ defmodule BeamWeaver.MixProject do
   def project do
     [
       app: :beam_weaver,
-      version: "0.1.17",
+      version: "0.1.18",
       description:
         "Elixir-native LangChain, LangGraph, and DeepAgents for traceable LLM apps: OTP workflows, tools, memory, human-in-the-loop, streaming, custom clients/adapters, minimal deps, and WeaveScope tracing.",
       source_url: "https://github.com/caudena/beam_weaver",
@@ -31,6 +31,7 @@ defmodule BeamWeaver.MixProject do
       {:ex_doc, "~> 0.40", only: :dev, runtime: false},
       {:ecto_sql, "~> 3.13"},
       {:postgrex, "~> 0.20"},
+      {:ecto_sqlite3, "~> 0.24.1", optional: true},
       {:req, "~> 0.7.2"},
       {:finch, "~> 0.23.0"},
       {:fastest_tiktoken, "~> 0.1.1"},
@@ -61,6 +62,7 @@ defmodule BeamWeaver.MixProject do
         "docs/skills.md",
         "docs/sandboxes.md",
         "docs/subagents.md",
+        "docs/todos.md",
         "docs/async_subagents.md",
         "docs/subgraphs.md",
         "docs/time_travel.md",
@@ -69,6 +71,7 @@ defmodule BeamWeaver.MixProject do
         "docs/semantic_dsl.md",
         "docs/agents.md",
         "docs/context_engineering.md",
+        "docs/compaction.md",
         "docs/models.md",
         "docs/prompt_caching.md",
         "docs/messages.md",
@@ -113,6 +116,7 @@ defmodule BeamWeaver.MixProject do
           "docs/persistence.md",
           "docs/memory.md",
           "docs/agent_harness.md",
+          "docs/compaction.md",
           "docs/deep_agents_quickstart.md",
           "docs/customization.md",
           "docs/profiles.md",
@@ -121,6 +125,7 @@ defmodule BeamWeaver.MixProject do
           "docs/skills.md",
           "docs/sandboxes.md",
           "docs/subagents.md",
+          "docs/todos.md",
           "docs/async_subagents.md",
           "docs/subgraphs.md",
           "docs/time_travel.md",

@@ -584,11 +584,3 @@ For streaming tokens and semantic events, see [Event Streaming](event_streaming.
 and [Models](models.md). For agent-managed message state, checkpoints, tool
 loops, and middleware, see [Agents](agents.md) and
 [Short-Term Memory](short_term_memory.md).
-
-## Related Guides
-
-- [Models](models.md)
-- [Agents](agents.md)
-- [Tools](tools.md)
-- [Structured Output](structured_output.md)
-- [Event Streaming](event_streaming.md)

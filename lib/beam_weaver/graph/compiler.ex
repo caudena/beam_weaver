@@ -76,7 +76,8 @@ defmodule BeamWeaver.Graph.Compiler do
 
   defp normalize_checkpointer(%{__struct__: module} = checkpointer) do
     required? =
-      function_exported?(module, :get_tuple, 2) and
+      Code.ensure_loaded?(module) and
+        function_exported?(module, :get_tuple, 2) and
         function_exported?(module, :list, 3) and
         function_exported?(module, :put, 5) and
         function_exported?(module, :put_writes, 5)

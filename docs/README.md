@@ -15,6 +15,10 @@ streams, telemetry, explicit adapters, and tagged errors.
 
 BeamWeaver is not affiliated with LangChain.
 
+[WeaveScope](https://weavescope.com) is available for hosted tracing and
+monitoring. Use the [WeaveScope app](https://app.weavescope.com) to create
+projects, manage API keys, and inspect exported traces.
+
 {% hint style="info" %}
 **Unified System**
 
@@ -34,7 +38,7 @@ Add BeamWeaver to your Mix project:
 ```elixir
 def deps do
   [
-    {:beam_weaver, "~> 0.1.13"}
+    {:beam_weaver, "~> 0.1.16"}
   ]
 end
 ```
@@ -147,6 +151,7 @@ history, and `stream_events/3`. Agents use the same graph runtime underneath.
 - [Skills](skills.md)
 - [Sandboxes](sandboxes.md)
 - [Subagents](subagents.md)
+- [Immutable Todos](todos.md)
 - [Async Subagents](async_subagents.md)
 - [Subgraphs](subgraphs.md)
 - [Time Travel](time_travel.md)

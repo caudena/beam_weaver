@@ -499,14 +499,3 @@ LangGraph's Python Functional API supports `timeout=` and `retry_policy=` on
 Use ordinary Elixir functions for local control flow. Use `BeamWeaver.Graph`
 when you need durable state, retries, timeouts, error handlers, streaming,
 interrupts, or checkpoint history.
-
-## Related Guides
-
-- [Durable Execution](durable_execution.md)
-- [Persistence](persistence.md)
-- [Thinking In BeamWeaver](thinking_in_beamweaver.md)
-- [Workflows And Agents](workflows_and_agents.md)
-- [Graph](graph.md)
-- [Runtime](runtime.md)
-- [Event Streaming](event_streaming.md)
-- [Human-In-The-Loop](human_in_the_loop.md)

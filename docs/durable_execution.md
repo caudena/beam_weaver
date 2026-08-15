@@ -34,7 +34,7 @@ Durable execution needs three things:
    boundaries, and make them idempotent.
 
 Use `BeamWeaver.Checkpoint.ETS` for local development and tests. Use
-`BeamWeaver.Checkpoint.Ecto` for durable Postgres-backed deployments. ETS
+`BeamWeaver.Checkpoint.Ecto` with PostgreSQL or SQLite for durable deployments. ETS
 checkpoints are process-local and do not survive a VM restart.
 
 ```elixir
@@ -368,15 +368,3 @@ Operational guidance:
 If a product needs cooperative drain semantics, add an application-level
 shutdown flag that nodes check before starting expensive optional work. That is
 not the same as LangGraph's `RunControl`; it is ordinary application logic.
-
-## Related Guides
-
-- [Persistence](persistence.md)
-- [Fault Tolerance](fault_tolerance.md)
-- [Human-In-The-Loop](human_in_the_loop.md)
-- [Workflows And Agents](workflows_and_agents.md)
-- [Thinking In BeamWeaver](thinking_in_beamweaver.md)
-- [Graph](graph.md)
-- [Short-Term Memory](short_term_memory.md)
-- [Runtime](runtime.md)
-- [Event Streaming](event_streaming.md)

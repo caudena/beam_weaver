@@ -9,11 +9,13 @@ defmodule BeamWeaver.Checkpoint.ConformanceTest do
   alias BeamWeaver.Graph.Channel
   alias BeamWeaver.Graph.Channels.DeltaSnapshot
   alias BeamWeaver.Test.LivePostgres
+  alias BeamWeaver.Test.LiveSQLite
   alias BeamWeaver.Test.PostgresRepo
+  alias BeamWeaver.Test.SQLiteRepo
 
-  for adapter <- [:ets, :ecto] do
+  for adapter <- [:ets, :postgres, :sqlite] do
     describe "#{adapter} checkpoint saver conformance" do
-      if adapter == :ecto do
+      if adapter == :postgres do
         @describetag :postgres
       end
 
@@ -984,7 +986,7 @@ defmodule BeamWeaver.Checkpoint.ConformanceTest do
 
   defp new_saver(:ets), do: ETS.new()
 
-  defp new_saver(:ecto) do
+  defp new_saver(:postgres) do
     assert LivePostgres.available?()
 
     checkpoints = LivePostgres.unique_table("bw_conformance_checkpoints")
@@ -998,6 +1000,25 @@ defmodule BeamWeaver.Checkpoint.ConformanceTest do
     end)
 
     Ecto.new(repo: PostgresRepo, checkpoints_table: checkpoints, writes_table: writes)
+  end
+
+  defp new_saver(:sqlite) do
+    checkpoints = LiveSQLite.unique_table("bw_conformance_checkpoints")
+    writes = LiveSQLite.unique_table("bw_conformance_writes")
+
+    migration = [
+      repo: SQLiteRepo,
+      adapters: [{:checkpoint, checkpoints_table: checkpoints, writes_table: writes}]
+    ]
+
+    version = LiveSQLite.migrate(migration)
+
+    on_exit(fn ->
+      LiveSQLite.drop_tables([writes, checkpoints])
+      LiveSQLite.clear_migration(version)
+    end)
+
+    Ecto.new(repo: SQLiteRepo, checkpoints_table: checkpoints, writes_table: writes)
   end
 
   defp put_checkpoint!(saver, config, channel_values, metadata) do

@@ -115,6 +115,35 @@ Parent messages are not inherited by default. Set `inherit_messages: true` only
 when the child really needs the parent transcript; BeamWeaver filters parent
 tool protocol messages before passing inherited messages to the child.
 
+## Application-Owned Child Lifecycles
+
+The default synchronous middleware runs an ephemeral child inside BeamWeaver.
+Applications that own durable child admission and recovery instead configure a
+`BeamWeaver.Agent.Subagent.Host` adapter:
+
+```elixir
+middleware =
+  BeamWeaver.Agent.Middleware.Subagents.new(
+    host: %MyApp.ChildHost{},
+    child_mode: :background,
+    subagents: [
+      %BeamWeaver.Agent.Subagent.Spec{
+        name: "researcher",
+        description: "Collect source-backed facts"
+      }
+    ]
+  )
+```
+
+Host mode passes one closed proposal to `admit_child/3`, then asks
+`child_result/3` for either a typed terminal projection or the identical pending
+background handle. It does not compile or invoke a nested agent, copy parent
+state, install child-output/cache channels, or infer success from a missing
+result. Background hosts cannot return `:needs_parent_input`.
+
+BeamWeaver deliberately does not define the host's database rows, permissions,
+budgets, leases, or recovery policy. Those remain application responsibilities.
+
 ## Parent And Child Ownership
 
 The parent owns delegation policy. The child owns its prompt, model, tools,
@@ -666,16 +695,3 @@ custom client details.
 | A subagent cannot access an expected tool. | Check whether `:tools` was set. A list replaces inherited tools; `nil` inherits parent tools. |
 | A subagent cannot use `write_todos` or filesystem tools. | Add the corresponding middleware or filesystem configuration to the child agent. These tools are not implicit. |
 | A child cannot resume after HITL. | Ensure the parent has a checkpointer and the same thread configuration is used for resume. |
-
-## Related Guides
-
-- [Composed Agent Capabilities](agent_harness.md)
-- [Filesystem](filesystem.md)
-- [Skills](skills.md)
-- [Context Engineering](context_engineering.md)
-- [Async Subagents](async_subagents.md)
-- [Subgraphs](subgraphs.md)
-- [Prebuilt Middleware](prebuilt_middleware.md)
-- [Structured Output](structured_output.md)
-- [Runtime](runtime.md)
-- [Event Streaming](event_streaming.md)

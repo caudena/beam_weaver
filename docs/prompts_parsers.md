@@ -38,11 +38,3 @@ OpenAI functions, and schema parsers. Failures return tagged
 Example:
 
 - `examples/prompt_parser_pipeline.exs`
-
-## Related Guides
-
-- [Messages](messages.md)
-- [Models](models.md)
-- [Structured Output](structured_output.md)
-- [Tools](tools.md)
-- [Core](core.md)

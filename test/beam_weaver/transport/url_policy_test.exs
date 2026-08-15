@@ -26,8 +26,11 @@ defmodule BeamWeaver.Transport.URLPolicyTest do
     end
   end
 
-  test "explicit allowed hosts bypass hostname and DNS category checks" do
-    assert {:ok, "https://metadata.google.internal/path"} =
+  test "explicit allowed hosts narrow the destination without bypassing address safety" do
+    assert {:ok, "https://api.example/path"} =
+             URLPolicy.validate("https://api.example/path", allowed_hosts: ["api.example"])
+
+    assert {:error, %Error{type: :unsafe_url}} =
              URLPolicy.validate("https://metadata.google.internal/path",
                allowed_hosts: ["metadata.google.internal"]
              )
