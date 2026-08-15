@@ -1,6 +1,18 @@
 defmodule BeamWeaver.Compaction.Policy do
-  @moduledoc "Validated policy for portable or provider-native compaction."
+  @moduledoc """
+  Validated limits and thresholds for application-owned compaction.
 
+  The default `:portable` mode uses the BeamWeaver semantic compactor. The
+  `:native` value is reserved for an application-selected provider contract;
+  the current engine rejects it with `:native_compaction_unsupported` rather
+  than guessing provider behavior.
+
+  Timeout and retry fields are policy inputs for the owning application. The
+  pure engine bounds its own summary/repair work but cannot enforce timeouts or
+  retry a provider callback on the application's behalf.
+  """
+
+  alias BeamWeaver.Compaction.Fields
   alias BeamWeaver.Core.Error
 
   @fields [
@@ -28,6 +40,7 @@ defmodule BeamWeaver.Compaction.Policy do
     :maximum_hierarchical_summary_calls,
     :provider_timeout_ms
   ]
+  @field_names Map.new(@fields, &{Atom.to_string(&1), &1})
 
   defstruct version: 1,
             enabled: true,
@@ -55,24 +68,30 @@ defmodule BeamWeaver.Compaction.Policy do
 
   @type t :: %__MODULE__{}
 
+  @doc "Builds a policy from defaults plus closed map or keyword overrides."
   @spec new(map() | keyword() | t()) :: {:ok, t()} | {:error, Error.t()}
   def new(attrs \\ %{})
   def new(%__MODULE__{} = policy), do: validate(policy)
   def new(attrs) when is_list(attrs), do: attrs |> Map.new() |> new()
 
   def new(%{} = attrs) do
-    attrs = normalize_keys(attrs)
-    unknown = Map.keys(attrs) -- @fields
+    with {:ok, attrs} <- Fields.normalize(attrs, @field_names) do
+      unknown = Map.keys(attrs) -- @fields
 
-    if unknown == [] do
-      __MODULE__ |> struct(attrs) |> validate()
+      if unknown == [] do
+        __MODULE__ |> struct(attrs) |> validate()
+      else
+        {:error, Error.new(:invalid_compaction_policy, "unknown policy fields", %{fields: unknown})}
+      end
     else
-      {:error, Error.new(:invalid_compaction_policy, "unknown policy fields", %{fields: unknown})}
+      {:error, :duplicate_field} ->
+        {:error, Error.new(:invalid_compaction_policy, "policy has duplicate fields")}
     end
   end
 
   def new(_attrs), do: {:error, Error.new(:invalid_compaction_policy, "policy must be a map")}
 
+  @doc "Validates ratios, ranges, modes, and positive work limits."
   @spec validate(t()) :: {:ok, t()} | {:error, Error.t()}
   def validate(%__MODULE__{} = policy) do
     with true <- policy.version == 1,
@@ -132,15 +151,4 @@ defmodule BeamWeaver.Compaction.Policy do
 
   defp positive_order?(minimum, maximum),
     do: is_integer(minimum) and minimum > 0 and is_integer(maximum) and maximum >= minimum
-
-  defp normalize_keys(attrs) do
-    Map.new(attrs, fn
-      {key, value} when is_binary(key) ->
-        atom = Enum.find(@fields, &(Atom.to_string(&1) == key))
-        {atom || key, value}
-
-      pair ->
-        pair
-    end)
-  end
 end

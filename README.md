@@ -263,7 +263,10 @@ using its own transaction and recovery rules.
 
 The engine mutates no application state and starts no process. Portable mode is
 complete; provider-native opaque compaction is not implemented by this API and
-fails closed. See [Application-Owned Compaction](docs/compaction.md).
+fails closed. The [Application-Owned Compaction](docs/compaction.md) guide
+covers source-event hashing, request and callback construction, semantic output,
+result states, transactional activation, automatic-compaction state, and crash
+recovery.
 
 ## Observability With WeaveScope
 

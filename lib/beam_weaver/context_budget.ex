@@ -4,6 +4,10 @@ defmodule BeamWeaver.ContextBudget do
 
   The model profile owns the input-limit semantics. Unknown limits fail closed;
   callers may not substitute an arbitrary context window.
+
+  `estimated_tokens` is deliberately conservative UTF-8 byte accounting, not a
+  claim of tokenizer-exact usage. When categories are supplied, the estimate is
+  the greater of the rendered-request byte size and the category total.
   """
 
   alias BeamWeaver.Core.Error
@@ -26,6 +30,12 @@ defmodule BeamWeaver.ContextBudget do
           categories: %{optional(atom() | String.t()) => non_neg_integer()}
         }
 
+  @doc """
+  Builds a conservative budget for rendered provider-request bytes.
+
+  Options are `:trigger_ratio`, `:categories`, and
+  `:requested_max_output_tokens`.
+  """
   @spec new(map() | struct(), binary(), keyword()) :: {:ok, t()} | {:error, Error.t()}
   def new(profile, rendered_request, opts \\ [])
 
@@ -54,6 +64,12 @@ defmodule BeamWeaver.ContextBudget do
   def new(_profile, _rendered_request, _opts),
     do: {:error, Error.new(:invalid_rendered_request, "rendered request must be binary")}
 
+  @doc """
+  Resolves the usable input limit from the profile's declared limit semantics.
+
+  Separate input limits subtract provider-reserved tokens. Shared
+  input/output limits also subtract `:requested_max_output_tokens`.
+  """
   @spec effective_input_limit(map() | struct(), keyword()) ::
           {:ok, pos_integer()} | {:error, Error.t()}
   def effective_input_limit(profile, opts \\ []) do

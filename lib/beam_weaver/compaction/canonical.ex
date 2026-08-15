@@ -1,6 +1,17 @@
 defmodule BeamWeaver.Compaction.Canonical do
-  @moduledoc false
+  @moduledoc """
+  Canonical JSON encoding and SHA-256 hashing for compaction values.
 
+  Public compaction source events use these functions for
+  `provenance_sha256` and `content_hash`. Atom map keys are encoded as their
+  string names, map entries are ordered by that name, and a map containing atom
+  and string keys that normalize to the same name is rejected.
+
+  This module protects compaction value identity. It is not a general signing
+  or authentication API.
+  """
+
+  @doc "Returns the canonical JSON bytes for a supported JSON value."
   @spec encode(term()) :: {:ok, binary()} | {:error, term()}
   def encode(value) do
     if json_value?(value) do
@@ -12,6 +23,7 @@ defmodule BeamWeaver.Compaction.Canonical do
     error -> {:error, error}
   end
 
+  @doc "Returns the lowercase SHA-256 digest of a canonical JSON value."
   @spec hash(term()) :: String.t()
   def hash(value) do
     case encode(value) do
@@ -20,6 +32,7 @@ defmodule BeamWeaver.Compaction.Canonical do
     end
   end
 
+  @doc "Returns the byte size of the canonical JSON representation."
   @spec encoded_size(term()) :: {:ok, non_neg_integer()} | {:error, term()}
   def encoded_size(value) do
     case encode(value) do
@@ -28,6 +41,7 @@ defmodule BeamWeaver.Compaction.Canonical do
     end
   end
 
+  @doc "Returns whether a value can be represented by this canonical encoder."
   @spec json_value?(term()) :: boolean()
   def json_value?(value), do: json_value?(value, 0)
 

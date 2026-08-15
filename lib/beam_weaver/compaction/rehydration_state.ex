@@ -1,5 +1,11 @@
 defmodule BeamWeaver.Compaction.RehydrationState do
-  @moduledoc "Hashed deterministic state retained independently from semantic text."
+  @moduledoc """
+  Hashed deterministic state retained independently from semantic text.
+
+  Applications use this value for exact continuation data that must not be
+  paraphrased by a summary model, such as Todo or workspace revisions. Data
+  must be canonical JSON and is limited to 1 MiB.
+  """
 
   alias BeamWeaver.Compaction.Canonical
   alias BeamWeaver.Core.Error
@@ -11,6 +17,7 @@ defmodule BeamWeaver.Compaction.RehydrationState do
 
   @type t :: %__MODULE__{data: map(), hash: String.t()}
 
+  @doc "Builds rehydration state and computes its canonical hash."
   @spec new(map() | t()) :: {:ok, t()} | {:error, Error.t()}
   def new(%__MODULE__{} = state), do: validate(state)
 
@@ -21,6 +28,7 @@ defmodule BeamWeaver.Compaction.RehydrationState do
 
   def new(_data), do: {:error, Error.new(:invalid_rehydration_state, "rehydration state must be a map")}
 
+  @doc "Validates canonical data, its stored hash, and the byte limit."
   @spec validate(t()) :: {:ok, t()} | {:error, Error.t()}
   def validate(%__MODULE__{} = state) do
     with true <- Canonical.json_value?(state.data),

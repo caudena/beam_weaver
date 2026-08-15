@@ -1,7 +1,14 @@
 defmodule BeamWeaver.Compaction.InputEvent do
-  @moduledoc "Closed lane-local source event consumed by the compactor."
+  @moduledoc """
+  Closed lane-local source event consumed by the compactor.
 
-  alias BeamWeaver.Compaction.Canonical
+  Events retain role, provenance, content/tool projection, artifact references,
+  ordering, and protection state. `provenance_sha256` must hash `provenance`;
+  `content_hash` must hash exactly `content`, `tool`, `artifact_ids`, and
+  `truncated` with `BeamWeaver.Compaction.Canonical.hash/1`.
+  """
+
+  alias BeamWeaver.Compaction.{Canonical, Fields}
   alias BeamWeaver.Core.Error
 
   @fields [
@@ -21,6 +28,7 @@ defmodule BeamWeaver.Compaction.InputEvent do
     :token_count,
     :protected
   ]
+  @field_names Map.new(@fields, &{Atom.to_string(&1), &1})
 
   @enforce_keys [
     :event_id,
@@ -45,18 +53,22 @@ defmodule BeamWeaver.Compaction.InputEvent do
 
   @type t :: %__MODULE__{}
 
+  @doc "Builds and validates a closed compaction source event."
   @spec new(map() | t()) :: {:ok, t()} | {:error, Error.t()}
   def new(%__MODULE__{} = event), do: validate(event)
 
   def new(%{} = attrs) do
-    attrs = normalize_keys(attrs)
-    unknown = Map.keys(attrs) -- @fields
+    with {:ok, attrs} <- Fields.normalize(attrs, @field_names) do
+      unknown = Map.keys(attrs) -- @fields
 
-    if unknown == [] do
-      {:ok, struct!(__MODULE__, attrs)}
-      |> then(fn {:ok, event} -> validate(event) end)
+      if unknown == [] do
+        {:ok, struct!(__MODULE__, attrs)}
+        |> then(fn {:ok, event} -> validate(event) end)
+      else
+        {:error, Error.new(:invalid_compaction_event, "unknown event fields", %{fields: unknown})}
+      end
     else
-      {:error, Error.new(:invalid_compaction_event, "unknown event fields", %{fields: unknown})}
+      {:error, :duplicate_field} -> invalid("event has duplicate fields")
     end
   rescue
     _error -> {:error, Error.new(:invalid_compaction_event, "required event fields are missing")}
@@ -64,6 +76,7 @@ defmodule BeamWeaver.Compaction.InputEvent do
 
   def new(_attrs), do: {:error, Error.new(:invalid_compaction_event, "event must be a map")}
 
+  @doc "Returns the explicit event token count or a conservative canonical byte count."
   @spec estimated_tokens(t()) :: non_neg_integer()
   def estimated_tokens(%__MODULE__{token_count: count}) when is_integer(count) and count >= 0, do: count
 
@@ -74,6 +87,7 @@ defmodule BeamWeaver.Compaction.InputEvent do
     |> byte_size()
   end
 
+  @doc "Converts an event to the canonical summary-callback source shape."
   @spec to_map(t()) :: map()
   def to_map(%__MODULE__{} = event) do
     event
@@ -122,16 +136,5 @@ defmodule BeamWeaver.Compaction.InputEvent do
       artifact_ids: event.artifact_ids,
       truncated: event.truncated
     }
-  end
-
-  defp normalize_keys(attrs) do
-    Map.new(attrs, fn
-      {key, value} when is_binary(key) ->
-        atom = Enum.find(@fields, &(Atom.to_string(&1) == key))
-        {atom || key, value}
-
-      pair ->
-        pair
-    end)
   end
 end

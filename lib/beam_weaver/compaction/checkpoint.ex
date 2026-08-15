@@ -1,5 +1,15 @@
 defmodule BeamWeaver.Compaction.Checkpoint do
-  @moduledoc "Immutable derived context checkpoint; it is not executable graph authority."
+  @moduledoc """
+  Immutable derived context checkpoint.
+
+  This value records semantic/projection output, source and retained ranges,
+  provider binding, rehydration state, token accounting, and validation
+  evidence. It is not an executable graph checkpoint and is not active merely
+  because it was returned or stored.
+
+  Use `to_map/1` to obtain the application-facing persistence payload, then
+  activate it under the application's parent/head compare-and-swap.
+  """
 
   @enforce_keys [
     :checkpoint_id,
@@ -35,6 +45,7 @@ defmodule BeamWeaver.Compaction.Checkpoint do
 
   @type t :: %__MODULE__{}
 
+  @doc "Converts a checkpoint to its application-facing persistence map."
   @spec to_map(t()) :: map()
   def to_map(%__MODULE__{} = checkpoint) do
     checkpoint

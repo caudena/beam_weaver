@@ -1,5 +1,19 @@
 defmodule BeamWeaver.Compaction.Request do
-  @moduledoc "Validated input and runtime adapters for one compaction attempt."
+  @moduledoc """
+  Validated input and application callbacks for one compaction attempt.
+
+  A request binds one ordered conversation lane to an exact provider
+  connection, destination identity, model profile, active checkpoint parent,
+  policy, and rehydration state. `render/2` must return the exact provider
+  request bytes for a semantic checkpoint and retained event list.
+  `summarize/1` is the sole model boundary and returns `{:ok, semantic}` or
+  `{:ok, semantic, usage}`.
+
+  The application remains responsible for idempotency, provider admission,
+  timeout/cancellation enforcement, persistence, active-head fencing, and
+  recovery. In particular, `deadline_at` and `Policy.provider_timeout_ms` are
+  carried as policy data; this pure value cannot enforce a callback's runtime.
+  """
 
   alias BeamWeaver.Compaction.{InputEvent, Policy, RehydrationState, Semantic, State}
   alias BeamWeaver.Core.Error
@@ -37,6 +51,7 @@ defmodule BeamWeaver.Compaction.Request do
   @type summarize_fun :: (map() -> {:ok, map()} | {:ok, map(), map()} | {:error, term()})
   @type t :: %__MODULE__{}
 
+  @doc "Builds and validates one closed compaction request."
   @spec new(map() | t()) :: {:ok, t()} | {:error, Error.t()}
   def new(%__MODULE__{} = request), do: validate(request)
 
@@ -49,6 +64,7 @@ defmodule BeamWeaver.Compaction.Request do
 
   def new(_attrs), do: {:error, Error.new(:invalid_compaction_request, "compaction request must be a map")}
 
+  @doc "Returns the inclusive first and last source chat sequence."
   @spec source_range(t()) :: {pos_integer(), pos_integer()}
   def source_range(%__MODULE__{events: events}) do
     {List.first(events).chat_seq, List.last(events).chat_seq}

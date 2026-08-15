@@ -1,7 +1,15 @@
 defmodule BeamWeaver.Compaction.Semantic do
-  @moduledoc "Structured, source-linked continuation state produced by portable compaction."
+  @moduledoc """
+  Structured, source-linked continuation state produced by portable compaction.
 
-  alias BeamWeaver.Compaction.Validator
+  The value has a closed schema for objectives, user requests, constraints,
+  decisions, progress, critical context, errors, artifact references, and
+  source coverage. Construction validates shape; the compaction engine also
+  validates exact coverage, cited source IDs, direct-user excerpts, uniqueness,
+  and the configured byte limit before returning a checkpoint.
+  """
+
+  alias BeamWeaver.Compaction.{Fields, Validator}
   alias BeamWeaver.Core.Error
 
   @fields [
@@ -16,26 +24,30 @@ defmodule BeamWeaver.Compaction.Semantic do
     :artifact_refs,
     :coverage
   ]
+  @field_names Map.new(@fields, &{Atom.to_string(&1), &1})
 
   @enforce_keys @fields
   defstruct @fields
 
   @type t :: %__MODULE__{}
 
+  @doc "Builds and shape-validates a closed semantic value."
   @spec new(map() | t()) :: {:ok, t()} | {:error, Error.t()}
   def new(%__MODULE__{} = semantic), do: Validator.validate_shape(semantic)
 
   def new(%{} = attrs) do
-    attrs = normalize_keys(attrs)
-    unknown = Map.keys(attrs) -- @fields
+    with {:ok, attrs} <- Fields.normalize(attrs, @field_names) do
+      case Map.keys(attrs) -- @fields do
+        [] ->
+          {:ok, struct!(__MODULE__, attrs)}
+          |> then(fn {:ok, semantic} -> Validator.validate_shape(semantic) end)
 
-    cond do
-      unknown != [] ->
-        {:error, Error.new(:invalid_compaction_semantic, "unknown semantic fields", %{fields: unknown})}
-
-      true ->
-        {:ok, struct!(__MODULE__, attrs)}
-        |> then(fn {:ok, semantic} -> Validator.validate_shape(semantic) end)
+        unknown ->
+          {:error, Error.new(:invalid_compaction_semantic, "unknown semantic fields", %{fields: unknown})}
+      end
+    else
+      {:error, :duplicate_field} ->
+        {:error, Error.new(:invalid_compaction_semantic, "semantic output has duplicate fields")}
     end
   rescue
     _error -> {:error, Error.new(:invalid_compaction_semantic, "required semantic fields are missing")}
@@ -43,17 +55,7 @@ defmodule BeamWeaver.Compaction.Semantic do
 
   def new(_attrs), do: {:error, Error.new(:invalid_compaction_semantic, "semantic output must be a map")}
 
+  @doc "Converts semantic continuation state to its plain map representation."
   @spec to_map(t()) :: map()
   def to_map(%__MODULE__{} = semantic), do: Map.from_struct(semantic)
-
-  defp normalize_keys(attrs) do
-    Map.new(attrs, fn
-      {key, value} when is_binary(key) ->
-        atom = Enum.find(@fields, &(Atom.to_string(&1) == key))
-        {atom || key, value}
-
-      pair ->
-        pair
-    end)
-  end
 end

@@ -51,6 +51,8 @@
 
 ### Fixed
 
+- Compaction policy, state, event, and semantic constructors now reject atom
+  and string keys that normalize to the same closed field.
 - Supervised model work now preserves a typed `BeamWeaver.Core.Error` when it
   crosses the runtime boundary, allowing an application to distinguish a
   provider context overflow from an ordinary execution failure.

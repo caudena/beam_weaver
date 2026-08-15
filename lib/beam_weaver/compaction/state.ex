@@ -1,7 +1,13 @@
 defmodule BeamWeaver.Compaction.State do
-  @moduledoc "Bounded lane-local circuit state for automatic compaction."
+  @moduledoc """
+  Bounded lane-local circuit state for automatic compaction.
 
-  alias BeamWeaver.Compaction.Policy
+  Applications persist one state with each active conversation-lane head. The
+  engine reads it to suppress unsafe or wasteful automatic attempts. Advance it
+  only after the corresponding checkpoint has been durably activated.
+  """
+
+  alias BeamWeaver.Compaction.{Fields, Policy}
   alias BeamWeaver.Core.Error
 
   @fields [
@@ -25,33 +31,31 @@ defmodule BeamWeaver.Compaction.State do
 
   @type t :: %__MODULE__{}
 
+  @doc "Builds and validates persisted lane-local compaction state."
   @spec new(map() | t()) :: {:ok, t()} | {:error, Error.t()}
   def new(%__MODULE__{} = state), do: validate(state)
 
   def new(%{} = attrs) do
-    with {:ok, attrs} <- normalize_keys(attrs) do
+    with {:ok, attrs} <- Fields.normalize(attrs, @field_names) do
       if Enum.all?(Map.keys(attrs), &(&1 in @fields)) do
         __MODULE__ |> struct(attrs) |> validate()
       else
         {:error, Error.new(:invalid_compaction_state, "compaction state has unknown fields")}
       end
+    else
+      {:error, :duplicate_field} ->
+        {:error, Error.new(:invalid_compaction_state, "compaction state has duplicate fields")}
     end
   end
 
   def new(_attrs), do: {:error, Error.new(:invalid_compaction_state, "compaction state must be a map")}
 
-  defp normalize_keys(attrs) do
-    Enum.reduce_while(attrs, {:ok, %{}}, fn {key, value}, {:ok, normalized} ->
-      field = if is_binary(key), do: Map.get(@field_names, key, key), else: key
+  @doc """
+  Returns the current automatic-compaction suppression reason, or `nil`.
 
-      if Map.has_key?(normalized, field) do
-        {:halt, {:error, Error.new(:invalid_compaction_state, "compaction state has duplicate fields")}}
-      else
-        {:cont, {:ok, Map.put(normalized, field, value)}}
-      end
-    end)
-  end
-
+  Reasons are `:cancellation_pending`, `:automatic_limit`,
+  `:insufficient_new_tokens`, and `:rapid_refill`.
+  """
   @spec auto_suppression(t(), Policy.t()) :: nil | atom()
   def auto_suppression(%__MODULE__{} = state, %Policy{} = policy) do
     cond do
@@ -73,6 +77,7 @@ defmodule BeamWeaver.Compaction.State do
     end
   end
 
+  @doc "Sets the observed amount of new context since the active checkpoint."
   @spec observe_new_tokens(t(), non_neg_integer()) :: {:ok, t()} | {:error, Error.t()}
   def observe_new_tokens(%__MODULE__{} = state, tokens)
       when is_integer(tokens) and tokens >= 0 do
@@ -82,6 +87,7 @@ defmodule BeamWeaver.Compaction.State do
   def observe_new_tokens(%__MODULE__{}, _tokens),
     do: {:error, Error.new(:invalid_compaction_state, "new-token count must be non-negative")}
 
+  @doc "Records a successfully activated manual, automatic, overflow, or switch checkpoint."
   @spec record_success(t(), atom(), non_neg_integer(), non_neg_integer()) ::
           {:ok, t()} | {:error, Error.t()}
   def record_success(%__MODULE__{} = state, trigger, lane_ordinal, tokens_after)

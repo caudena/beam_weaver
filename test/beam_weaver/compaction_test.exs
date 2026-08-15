@@ -2,7 +2,7 @@ defmodule BeamWeaver.CompactionTest do
   use ExUnit.Case, async: true
 
   alias BeamWeaver.Compaction
-  alias BeamWeaver.Compaction.{Canonical, Policy, RehydrationState, Request, Semantic, State}
+  alias BeamWeaver.Compaction.{Canonical, InputEvent, Policy, RehydrationState, Request, Semantic, State}
   alias BeamWeaver.Core.ID
   alias BeamWeaver.Models.Profile
 
@@ -149,6 +149,24 @@ defmodule BeamWeaver.CompactionTest do
 
     assert {:ok, %State{successful_auto_compactions: 1, overflow_retry_used: true}} =
              State.new(persisted)
+  end
+
+  test "closed compaction values reject normalized duplicate fields" do
+    assert {:error, %{type: :invalid_compaction_policy}} =
+             Policy.new(%{:version => 1, "version" => 1})
+
+    assert {:error, %{type: :invalid_compaction_state}} =
+             State.new(%{:overflow_retry_used => false, "overflow_retry_used" => false})
+
+    event = events() |> hd() |> Map.from_struct()
+
+    assert {:error, %{type: :invalid_compaction_event}} =
+             InputEvent.new(Map.put(event, "event_id", event.event_id))
+
+    semantic = semantic(ID.uuidv7(), 1, 1)
+
+    assert {:error, %{type: :invalid_compaction_semantic}} =
+             Semantic.new(Map.put(semantic, :version, 1))
   end
 
   test "compaction state advances automatic and overflow circuit evidence" do
