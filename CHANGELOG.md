@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.18 - 2026-08-15
 
 ### Added
 - Added provider-neutral `BeamWeaver.ContextBudget` and
