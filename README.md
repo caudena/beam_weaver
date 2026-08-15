@@ -252,6 +252,19 @@ defmodule MyApp.DynamicSupportAgent do
 end
 ```
 
+## Application-owned durable compaction
+
+Applications that already own durable conversations can use
+`BeamWeaver.ContextBudget` and `BeamWeaver.Compaction` directly. This is
+separate from the model-invoked `compact_conversation` tool: the application
+supplies one ordered lane, its existing semantic checkpoint, exact rendering,
+and a summarizer callback, then persists and activates the returned checkpoint
+using its own transaction and recovery rules.
+
+The engine mutates no application state and starts no process. Portable mode is
+complete; provider-native opaque compaction is not implemented by this API and
+fails closed. See [Application-Owned Compaction](docs/compaction.md).
+
 ## Observability With WeaveScope
 
 Tracing is local by default. Add WeaveScope credentials when you want run trees,

@@ -4,6 +4,7 @@ defmodule BeamWeaver.Runtime.AgentServerTest do
   alias BeamWeaver.Runtime.Agent
   alias BeamWeaver.Runtime.Agent.Work
   alias BeamWeaver.Runtime.Error
+  alias BeamWeaver.Core.Error, as: CoreError
   alias BeamWeaver.Tracing
 
   defmodule Hook do
@@ -57,6 +58,20 @@ defmodule BeamWeaver.Runtime.AgentServerTest do
     assert_receive {:beam_weaver_agent, _agent_id, {:completed, work_id, {:done, "input"}}}
     assert work_id == work.id
     assert %{active_count: 0, completed_count: 1} = Agent.status(agent)
+  end
+
+  test "preserves a typed core failure across the supervised work boundary" do
+    agent = start_agent!()
+    :ok = Agent.subscribe(agent)
+
+    assert {:ok, %Work{} = work} =
+             Agent.start_model_call(agent, :input, fn ->
+               {:error, CoreError.new(:context_overflow, "context limit reached")}
+             end)
+
+    assert_receive {:beam_weaver_agent, _agent_id, {:failed, work_id, %Error{type: :context_overflow}}}
+
+    assert work_id == work.id
   end
 
   test "model timeout cancels work and records a failed trace run" do

@@ -31,6 +31,8 @@ defmodule BeamWeaver.Models.ProfileCompiler do
       release_date: get_value(model_data, "release_date"),
       last_updated: get_value(model_data, "last_updated"),
       open_weights: get_value(model_data, "open_weights"),
+      context_limit_kind: :shared_input_output,
+      max_context_tokens: get_value(limit, "context"),
       max_input_tokens: get_value(limit, "context"),
       max_output_tokens: get_value(limit, "output"),
       text_inputs: "text" in input_modalities,

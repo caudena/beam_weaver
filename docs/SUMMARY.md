@@ -31,6 +31,7 @@
 
 * [Agents](agents.md)
 * [Context Engineering](context_engineering.md)
+* [Application-Owned Compaction](compaction.md)
 * [Models](models.md)
 * [Prompt Caching](prompt_caching.md)
 * [Messages](messages.md)

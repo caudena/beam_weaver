@@ -3,8 +3,9 @@ defmodule BeamWeaver.Runtime.ToolRunner do
   Executes model/tool functions for the runtime task layer.
   """
 
-  alias BeamWeaver.Runtime.Error
+  alias BeamWeaver.Core.Error, as: CoreError
   alias BeamWeaver.DispatchHook
+  alias BeamWeaver.Runtime.Error
 
   @type emit_fun :: (term() -> :ok)
   @type result :: {:ok, term()} | {:error, Error.t()}
@@ -83,6 +84,10 @@ defmodule BeamWeaver.Runtime.ToolRunner do
 
   defp normalize_result({:ok, _value} = result), do: result
   defp normalize_result({:error, %Error{}} = result), do: result
+
+  defp normalize_result({:error, %CoreError{} = error}) do
+    {:error, Error.new(error.type, error.message, error.details)}
+  end
 
   defp normalize_result({:cancelled, %Error{} = error}), do: {:cancelled, error}
 

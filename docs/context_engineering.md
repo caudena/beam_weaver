@@ -804,6 +804,11 @@ Manual compaction does not disable automatic summarization or overflow recovery;
 combine them when long-running agents need both proactive and reactive context
 management.
 
+Applications with their own durable conversation model can instead use the
+pure `BeamWeaver.Compaction` engine. It returns a validated portable checkpoint
+without persisting or activating it; see
+[Application-Owned Compaction](compaction.md) for the ownership boundary.
+
 ### Overflow Recovery
 
 `overflow_recovery: true` catches provider context-overflow errors, clips the

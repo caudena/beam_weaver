@@ -3,6 +3,12 @@
 ## Unreleased
 
 ### Added
+- Added provider-neutral `BeamWeaver.ContextBudget` and
+  `BeamWeaver.Compaction` primitives for applications that own durable
+  conversation checkpoints, activation, and recovery. The portable engine
+  provides bounded safe-tail selection, deterministic tool projection,
+  cumulative semantic summaries, one schema repair, effectiveness checks, and
+  lane-local anti-thrash state without adding a process or persistence layer.
 - Added `BeamWeaver.Models.UsageCost.calculate_usd_micros/2` for exact,
   integer-only pricing with explicit dimensions and one final rounding rule.
 - Docker sandboxes accept explicit bind mounts, resource limits, read-only root
@@ -45,6 +51,9 @@
 
 ### Fixed
 
+- Supervised model work now preserves a typed `BeamWeaver.Core.Error` when it
+  crosses the runtime boundary, allowing an application to distinguish a
+  provider context overflow from an ordinary execution failure.
 - Checkpoint storage failures are no longer converted into missing checkpoints
   or empty histories at public runtime boundaries.
 - Adapter structs now load their module before callback discovery, so a valid
