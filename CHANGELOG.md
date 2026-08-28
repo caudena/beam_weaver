@@ -1,5 +1,55 @@
 # Changelog
 
+## 0.1.19 - 2026-08-28
+
+### Added
+
+- Added first-class DeepSeek `deepseek-v4-flash-vision-exp` support with image
+  inputs on Chat Completions and Responses, including documented image limits,
+  formats, detail levels, and current Flash pricing.
+- Added Google `gemini-3.1-flash-lite` with multimodal inputs, thinking, tools,
+  structured output, and current standard, cache, batch, flex, priority, audio,
+  and cache-storage pricing.
+- Added Z.ai `glm-5.3` and multimodal `glm-5.3-flash` profiles with supported
+  reasoning controls, current standard pricing, and Flash promotional and
+  regular pricing metadata.
+
+### Changed
+
+- Rechecked the supported provider catalog and refreshed OpenAI GPT-5.x and
+  embedding pricing, context windows, API availability, reasoning controls,
+  and multimodal capability metadata.
+- Updated Google Gemini pricing and computer-use availability, Anthropic model
+  pricing and Claude Opus 4.1 retirement handling, xAI reasoning and
+  long-context pricing, and Moonshot pricing provenance.
+- Stable Gemini 2.5 Pro, Flash, and Flash-Lite identifiers remain available;
+  retired preview variants continue to return replacement guidance.
+- GPT-5.6 Sol now uses its promotional standard and cached-input rates through
+  November 21, 2026 while retaining regular and long-context pricing metadata.
+
+### Fixed
+
+- Anthropic exact-request streaming now dispatches persisted request bytes
+  unchanged. Provider-native replay rejects mismatched bindings before
+  materializing content, and Anthropic fallback boundary blocks retain their
+  provider payload when replayed.
+- Strict checkpoint resume delivery remains idempotent after later checkpoints
+  advance the lane head, returning the original verified receipt without
+  disturbing unrelated pending writes.
+- Compaction now applies compatible provider-usage floors only to the original
+  request they measured, rejects malformed focus values and duplicate lane
+  ordinals, and validates shared-window output reservations before calculating
+  the input limit.
+- Safe transport errors after delegate dispatch remain classified as unknown
+  outcomes even when the delegate reports pre-dispatch metadata, and pinned
+  IPv6 requests emit a correctly bracketed Host authority.
+- Docker durable exec now requires an already-started container, while
+  label-qualified cleanup rejects empty or malformed ownership identities
+  before Docker I/O.
+- Codex Responses request normalization now canonicalizes controlled atom and
+  string keys without emitting duplicate wire parameters, and skill
+  frontmatter rejects duplicate keys at nested YAML levels.
+
 ## 0.1.18 - 2026-08-15
 
 ### Added

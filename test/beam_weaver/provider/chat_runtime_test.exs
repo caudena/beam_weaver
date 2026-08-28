@@ -40,6 +40,39 @@ defmodule BeamWeaver.Provider.ChatRuntimeTest do
     end
   end
 
+  describe "stream_exact_events/4" do
+    test "dispatches the supplied bytes without rebuilding the request" do
+      parent = self()
+      exact_body = ~s({"messages":[{"role":"user","content":"exact"}],"stream":true})
+
+      adapter =
+        base_adapter(%{
+          request: fn _model, _messages, _opts ->
+            flunk("exact dispatch must not invoke the request renderer")
+          end,
+          exact_stream_events: fn _model, body, opts ->
+            send(parent, {:dispatched, body, opts})
+            {:ok, []}
+          end
+        })
+
+      opts = [exact_request_metadata: %{request_hash: "hash"}]
+
+      assert {:ok, _stream} = ChatRuntime.stream_exact_events(%{}, exact_body, opts, adapter)
+      assert_received {:dispatched, ^exact_body, ^opts}
+    end
+
+    test "does not send exact bytes through a map-only ordinary stream function" do
+      adapter =
+        base_adapter(%{
+          stream_events: fn _model, body, _opts when is_map(body) -> {:ok, []} end
+        })
+
+      assert {:error, %BeamWeaver.Core.Error{type: :unsupported_feature}} =
+               ChatRuntime.stream_exact_events(%{}, ~s({"stream":true}), [], adapter)
+    end
+  end
+
   describe "invoke/4 response parsing" do
     test "passes the model to three-arity provider parsers" do
       parent = self()

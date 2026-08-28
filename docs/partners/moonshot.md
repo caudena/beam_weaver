@@ -101,6 +101,11 @@ automatic tool choice (`"auto"` or `"none"`) while thinking is enabled. K2.6 and
 K2.5 support both thinking and non-thinking modes; fixed sampling values are
 validated before transport.
 
+K2.6 and K2.5 pricing metadata retains the provider page used for that exact
+profile and the August 27, 2026 verification date. This provenance is part of
+the checked-in catalog so applications can distinguish a measured price from a
+family-level assumption.
+
 K3 accepts text plus base64 or `ms://` image/video input, streaming, parallel
 function calls, JSON object mode, strict JSON Schema output, Partial Mode,
 automatic prefix caching, prompt cache keys, safety identifiers, and token

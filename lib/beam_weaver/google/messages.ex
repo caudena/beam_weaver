@@ -37,6 +37,7 @@ defmodule BeamWeaver.Google.Messages do
       content_messages
       |> Enum.reject(&empty_user_message?/1)
       |> Enum.map(&content/1)
+      |> merge_adjacent_user_content()
 
     {:ok, {system, contents}}
   rescue
@@ -126,6 +127,32 @@ defmodule BeamWeaver.Google.Messages do
   defp provider_role(:assistant), do: "model"
   defp provider_role(_role), do: "user"
 
+  # Gemini represents both ordinary user input and function responses with the
+  # `user` role. Keep a complete tool-result batch and a following steer in one
+  # Content so the provider observes all function responses before the new
+  # instruction, rather than two ambiguous adjacent user turns.
+  defp merge_adjacent_user_content(contents) do
+    contents
+    |> Enum.reduce([], fn
+      %{"role" => "user", "parts" => parts} = current,
+      [%{"role" => "user", "parts" => previous_parts} = previous | rest]
+      when is_list(parts) and is_list(previous_parts) ->
+        if function_response_parts?(previous_parts) or function_response_parts?(parts) do
+          [%{current | "parts" => previous_parts ++ parts} | rest]
+        else
+          [current, previous | rest]
+        end
+
+      current, acc ->
+        [current | acc]
+    end)
+    |> Enum.reverse()
+  end
+
+  defp function_response_parts?(parts) do
+    Enum.any?(parts, &match?(%{"functionResponse" => %{}}, &1))
+  end
+
   defp parts(content) when is_binary(content),
     do: if(content == "", do: [], else: [%{"text" => content}])
 
@@ -137,8 +164,11 @@ defmodule BeamWeaver.Google.Messages do
 
   defp parts(content), do: [%{"text" => to_string(content)}]
 
-  defp part(%ContentBlock.Text{text: text}), do: [%{"text" => text}]
-  defp part(%ContentBlock.PlainText{text: text}), do: [%{"text" => text}]
+  defp part(%ContentBlock.Text{text: text, metadata: metadata}),
+    do: [%{"text" => text} |> put_thought_signature(thought_signature(metadata))]
+
+  defp part(%ContentBlock.PlainText{text: text, metadata: metadata}),
+    do: [%{"text" => text} |> put_thought_signature(thought_signature(metadata))]
 
   defp part(%ContentBlock.Image{} = block),
     do: media_part(block.url, block.data, block.mime_type || "image/png")
@@ -299,12 +329,20 @@ defmodule BeamWeaver.Google.Messages do
   defp tool_call_parts(_message), do: []
 
   defp tool_result_parts(%Message{role: :tool} = message) do
+    {response, media_parts} = tool_response_with_media(message.content)
+
+    function_response =
+      %{
+        "id" => message.tool_call_id || message.id,
+        "name" => message.name || message.tool_call_id || message.id || "tool",
+        "response" => response
+      }
+      |> Options.reject_nil_values()
+      |> put_function_response_parts(media_parts)
+
     [
       %{
-        "functionResponse" => %{
-          "name" => message.name || message.tool_call_id || message.id || "tool",
-          "response" => tool_response(message.content)
-        }
+        "functionResponse" => function_response
       }
     ]
   end
@@ -314,6 +352,46 @@ defmodule BeamWeaver.Google.Messages do
   defp tool_response(content) when is_map(content), do: Options.stringify_keys(content)
   defp tool_response(content) when is_binary(content), do: %{"content" => content}
   defp tool_response(content), do: %{"content" => inspect(content)}
+
+  defp tool_response_with_media(content) when is_list(content) do
+    {media, ordinary} =
+      Enum.split_with(content, fn
+        %ContentBlock.Image{data: data} when is_binary(data) -> true
+        %{type: :image, data: data} when is_binary(data) -> true
+        _block -> false
+      end)
+
+    response =
+      case ordinary do
+        [] -> %{"content" => ""}
+        [single] -> %{"content" => tool_response_block(single)}
+        many -> %{"content" => Enum.map(many, &tool_response_block/1)}
+      end
+
+    media_parts =
+      Enum.map(media, fn block ->
+        %{
+          "inlineData" => %{
+            "mimeType" => Map.get(block, :mime_type) || "image/png",
+            "data" => Map.fetch!(block, :data)
+          }
+        }
+      end)
+
+    {response, media_parts}
+  end
+
+  defp tool_response_with_media(content), do: {tool_response(content), []}
+
+  defp put_function_response_parts(response, []), do: response
+  defp put_function_response_parts(response, parts), do: Map.put(response, "parts", parts)
+
+  defp tool_response_block(%ContentBlock.Text{text: text}), do: text
+  defp tool_response_block(%ContentBlock.PlainText{text: text}), do: text
+  defp tool_response_block(%{type: type, text: text}) when type in [:text, :plain_text], do: text
+  defp tool_response_block(value) when is_binary(value), do: value
+  defp tool_response_block(value) when is_map(value), do: Options.stringify_keys(value)
+  defp tool_response_block(value), do: inspect(value)
 
   defp empty_user_message?(%Message{role: :user, content: ""}), do: true
   defp empty_user_message?(_message), do: false

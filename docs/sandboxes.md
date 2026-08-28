@@ -210,6 +210,61 @@ BeamWeaver.Filesystem.Sandbox.max_output_bytes()
 For a narrower command surface, use `BeamWeaver.Agent.Middleware.ShellTool`
 with an allow-list policy instead of exposing a general-purpose `execute` tool.
 
+## Durable Docker Exec And Owned Cleanup
+
+`BeamWeaver.Sandbox.Docker` also exposes an application-facing durable exec
+contract for commands whose identity and output must survive the initiating
+Elixir process. Unlike the ordinary filesystem `execute` callback,
+`start_exec/3` never starts a container implicitly: call `start!/1` first and
+persist the returned handle before treating the command as admitted.
+
+```elixir
+sandbox =
+  BeamWeaver.Sandbox.Docker.new(
+    image: "docker.io/library/python:3.11-slim",
+    labels: %{"owner" => "run-018f", "generation" => "3"}
+  )
+  |> BeamWeaver.Sandbox.Docker.start!()
+
+{:ok, handle} =
+  BeamWeaver.Sandbox.Docker.start_exec(
+    sandbox,
+    "python -m pytest",
+    workdir: "/workspace"
+  )
+
+{:ok, window} = BeamWeaver.Sandbox.Docker.read_exec(sandbox, handle, 0, 64_000)
+
+if window.status == nil do
+  :ok = BeamWeaver.Sandbox.Docker.stop_exec(sandbox, handle, 2_000)
+end
+```
+
+`read_exec/4` returns a bounded output window, the next byte offset, the total
+observed output size, and a terminal status when one exists. A handle is bound
+to the exact container and scratch directory; using it with another sandbox
+returns an identity-mismatch error. `stop_exec/3` requests TERM, waits for the
+bounded grace period, escalates to KILL when needed, and returns only after a
+terminal status is observable.
+
+For recovery and cleanup, inspect immutable container evidence and remove only
+the container whose complete expected label subset still matches:
+
+```elixir
+{:ok, evidence} = BeamWeaver.Sandbox.Docker.inspect_container(sandbox)
+
+:ok =
+  BeamWeaver.Sandbox.Docker.stop_owned(sandbox, %{
+    "owner" => "run-018f",
+    "generation" => "3"
+  })
+```
+
+`stop_owned/2` rejects an empty or malformed expected-label map before Docker
+I/O. A mismatch fails closed instead of deleting a container that may have been
+reused or replaced. Plain `stop/1` remains available when the application does
+not need label-qualified ownership evidence.
+
 ## Execution Metadata And Telemetry
 
 `BeamWeaver.Sandbox.execute/3` adds native execution metadata without changing

@@ -114,7 +114,12 @@ defmodule BeamWeaver.OpenAI.Streaming.Messages do
          state
        )
        when is_binary(delta) do
-    call_id = Map.get(state.item_call_ids, item_id, item_id)
+    # Incremental HTTP parsing can deliver the item-added event and its
+    # argument deltas in separate parser batches. Leave the id unset when the
+    # current batch has not seen the item so MessageChunk can correlate it by
+    # the stable output index instead of creating a second tool call keyed by
+    # the provider item id.
+    call_id = Map.get(state.item_call_ids, item_id)
     name = Map.get(state.item_names, item_id, data["name"])
 
     emit_message_chunk(

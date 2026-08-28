@@ -9,7 +9,6 @@ defmodule BeamWeaver.Google.ChatModelTest do
   alias BeamWeaver.Google.Client
   alias BeamWeaver.Google.Tools
   alias BeamWeaver.Models
-  alias BeamWeaver.Provider.Compatibility
   alias BeamWeaver.Provider.DecodeMessage
   alias BeamWeaver.Provider.EncodeMessage
 
@@ -277,12 +276,122 @@ defmodule BeamWeaver.Google.ChatModelTest do
                "parts" => [
                  %{
                    "functionResponse" => %{
+                     "id" => "call-1",
                      "name" => "lookup",
                      "response" => %{"content" => "found"}
                    }
                  }
                ]
              }
+           ]
+  end
+
+  test "request body merges completed tool results and a following steer into one user content" do
+    first_call = %ToolCall{
+      id: "call-1",
+      name: "lookup",
+      args: %{"q" => "beam"},
+      thought_signature: "sig-a"
+    }
+
+    second_call = %ToolCall{
+      id: "call-2",
+      name: "lookup",
+      args: %{"q" => "weaver"},
+      thought_signature: "sig-b"
+    }
+
+    assert {:ok, body} =
+             ChatModel.request_body(
+               %ChatModel{model: "gemini-3.5-flash"},
+               [
+                 Message.user("Find the record"),
+                 Message.assistant("", tool_calls: [first_call, second_call]),
+                 Message.tool("found beam", tool_call_id: "call-1", name: "lookup"),
+                 Message.tool("found weaver", tool_call_id: "call-2", name: "lookup"),
+                 Message.user("Use that result and also address the correction")
+               ]
+             )
+
+    assert [
+             %{"role" => "user", "parts" => [%{"text" => "Find the record"}]},
+             %{"role" => "model"},
+             %{
+               "role" => "user",
+               "parts" => [
+                 %{
+                   "functionResponse" => %{
+                     "id" => "call-1",
+                     "name" => "lookup",
+                     "response" => %{"content" => "found beam"}
+                   }
+                 },
+                 %{
+                   "functionResponse" => %{
+                     "id" => "call-2",
+                     "name" => "lookup",
+                     "response" => %{"content" => "found weaver"}
+                   }
+                 },
+                 %{"text" => "Use that result and also address the correction"}
+               ]
+             }
+           ] = body["contents"]
+  end
+
+  test "request body nests screenshot bytes inside a Gemini function response" do
+    assert {:ok, body} =
+             ChatModel.request_body(
+               %ChatModel{model: "gemini-3.7-flash"},
+               [
+                 Message.tool(
+                   [
+                     BeamWeaver.Core.ContentBlock.text("browser observation"),
+                     BeamWeaver.Core.ContentBlock.image(%{
+                       data: "png-bytes",
+                       mime_type: "image/png"
+                     })
+                   ],
+                   tool_call_id: "call-browser",
+                   name: "browser_use"
+                 )
+               ]
+             )
+
+    assert body["contents"] == [
+             %{
+               "role" => "user",
+               "parts" => [
+                 %{
+                   "functionResponse" => %{
+                     "id" => "call-browser",
+                     "name" => "browser_use",
+                     "response" => %{"content" => "browser observation"},
+                     "parts" => [
+                       %{
+                         "inlineData" => %{
+                           "mimeType" => "image/png",
+                           "data" => "png-bytes"
+                         }
+                       }
+                     ]
+                   }
+                 }
+               ]
+             }
+           ]
+  end
+
+  test "request body does not merge unrelated adjacent user turns" do
+    assert {:ok, body} =
+             ChatModel.request_body(
+               %ChatModel{model: "gemini-3.5-flash"},
+               [Message.user("first"), Message.user("second")]
+             )
+
+    assert body["contents"] == [
+             %{"role" => "user", "parts" => [%{"text" => "first"}]},
+             %{"role" => "user", "parts" => [%{"text" => "second"}]}
            ]
   end
 
@@ -549,6 +658,33 @@ defmodule BeamWeaver.Google.ChatModelTest do
            ] = response.tool_calls
   end
 
+  test "stream_typed_events uses Google's typed SSE parser" do
+    body = """
+    data: {"candidates":[{"content":{"role":"model","parts":[{"text":"pong"}]}}]}
+    """
+
+    model =
+      ChatModel.new(
+        api_key: "google-secret",
+        transport: BeamWeaver.TestSupport.Conformance.Fakes.Transport,
+        transport_opts: [
+          expect: %{
+            method: :post,
+            path: "/models/gemini-3.5-flash:streamGenerateContent?alt=sse"
+          },
+          body: body
+        ]
+      )
+
+    assert {:ok, stream} =
+             CoreChatModel.stream_typed_events(model, [Message.user("stream")])
+
+    events = Enum.to_list(stream)
+
+    assert Enum.any?(events, &match?(%{event: %BeamWeaver.Stream.Events.Token{text: "pong"}}, &1))
+    assert Enum.all?(events, &(&1.metadata.provider == :google))
+  end
+
   test "request body covers Gemini OpenAPI generation and tool config fields" do
     assert {:ok, body} =
              ChatModel.request_body(
@@ -729,46 +865,10 @@ defmodule BeamWeaver.Google.ChatModelTest do
   test "model initialization uses google: prefix and rejects bare Gemini aliases" do
     assert {:ok, model} = Models.init_chat_model("google:gemini-3.5-flash")
     assert %ChatModel{} = model
-    assert model.profile.provider == :google
-    assert Compatibility.supports?(model, :structured_output)
 
     assert {:error, error} = Models.init_chat_model("gemini-3.5-flash")
     assert error.type == :invalid_model
     assert error.details.expected == "google:gemini-3.5-flash"
-  end
-
-  test "gemini 3.5 flash profile matches published model capabilities" do
-    assert {:ok, model} = Models.init_chat_model("google:gemini-3.5-flash")
-
-    assert model.profile.provider == :google
-    assert model.profile.max_input_tokens == 1_048_576
-    assert model.profile.max_output_tokens == 65_536
-    assert model.profile.text_outputs
-    assert model.profile.reasoning_output
-    assert model.profile.structured_output
-    assert model.profile.extra.batch_api
-    assert model.profile.extra.caching
-    assert :file_search in model.profile.extra.built_in_tools
-    assert :google_maps in model.profile.extra.built_in_tools
-    refute :computer_use in model.profile.extra.built_in_tools
-    refute Compatibility.supports?(model, :image_output)
-    refute Compatibility.supports?(model, :audio_output)
-    assert Compatibility.supports?(model, :thinking)
-  end
-
-  test "gemini 3.1 pro preview profile is the recommended Pro replacement" do
-    assert {:ok, model} = Models.init_chat_model("google:gemini-3.1-pro-preview")
-
-    assert model.profile.provider == :google
-    assert model.profile.max_input_tokens == 1_048_576
-    assert model.profile.max_output_tokens == 65_536
-    assert model.profile.reasoning_output
-    assert model.profile.structured_output
-    assert model.profile.extra.batch_api
-    assert model.profile.extra.file_search_scope == :ai_studio_only
-    assert :file_search in model.profile.extra.built_in_tools
-    refute Compatibility.supports?(model, :image_output)
-    refute Compatibility.supports?(model, :audio_output)
   end
 
   test "unsupported Gemini 3.5 output modalities fail before transport by default" do

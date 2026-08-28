@@ -66,6 +66,73 @@ defmodule BeamWeaver.Models.UsageCostTest do
     assert_in_delta costs.output_cost, 0.000006, 1.0e-12
   end
 
+  test "prices cache writes by TTL without billing them as uncached input" do
+    profile = %{
+      input_price_per_mtok: 2.0,
+      cached_input_price_per_mtok: 0.5,
+      cache_write_5m_price_per_mtok: 2.5,
+      cache_write_1h_price_per_mtok: 4.0,
+      cache_write_30m_price_per_mtok: 3.0,
+      output_price_per_mtok: 4.0
+    }
+
+    costs =
+      UsageCost.calculate(profile, %{
+        input_tokens: 100,
+        output_tokens: 10,
+        input_token_details: %{
+          cache_read: 20,
+          cache_write_5m_tokens: 10,
+          cache_write_1h_tokens: 5,
+          cache_write_30m_tokens: 5
+        }
+      })
+
+    assert_in_delta costs.input_cost_details.uncached, 0.00012, 1.0e-12
+    assert_in_delta costs.input_cost_details.cache_read, 0.00001, 1.0e-12
+    assert_in_delta costs.input_cost_details.cache_write_5m_tokens, 0.000025, 1.0e-12
+    assert_in_delta costs.input_cost_details.cache_write_1h_tokens, 0.00002, 1.0e-12
+    assert_in_delta costs.input_cost_details.cache_write_30m_tokens, 0.000015, 1.0e-12
+    assert_in_delta costs.input_cost, 0.00019, 1.0e-12
+    assert_in_delta costs.output_cost, 0.00004, 1.0e-12
+    assert_in_delta costs.total_cost, 0.00023, 1.0e-12
+  end
+
+  test "maps a generic cache-write count to the profile's default priced TTL" do
+    openai = %{
+      input_price_per_mtok: 2.0,
+      cache_write_30m_price_per_mtok: 2.5,
+      output_price_per_mtok: 4.0
+    }
+
+    openai_costs =
+      UsageCost.calculate(openai, %{
+        input_tokens: 100,
+        output_tokens: 0,
+        input_token_details: %{cache_write: 20}
+      })
+
+    assert_in_delta openai_costs.input_cost_details.uncached, 0.00016, 1.0e-12
+    assert_in_delta openai_costs.input_cost_details.cache_write_30m_tokens, 0.00005, 1.0e-12
+
+    anthropic = %{
+      input_price_per_mtok: 2.0,
+      cache_write_5m_price_per_mtok: 2.5,
+      cache_write_1h_price_per_mtok: 4.0,
+      output_price_per_mtok: 4.0
+    }
+
+    anthropic_costs =
+      UsageCost.calculate(anthropic, %{
+        input_tokens: 100,
+        output_tokens: 0,
+        input_token_details: %{cache_creation: 20}
+      })
+
+    assert_in_delta anthropic_costs.input_cost_details.uncached, 0.00016, 1.0e-12
+    assert_in_delta anthropic_costs.input_cost_details.cache_write_5m_tokens, 0.00005, 1.0e-12
+  end
+
   test "returns nil when canonical profile pricing is unavailable" do
     assert UsageCost.calculate(Profile.new(%{provider: :test, id: "free"}), %{input_tokens: 10}) == nil
     assert UsageCost.calculate(nil, %{input_tokens: 10}) == nil

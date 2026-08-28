@@ -75,6 +75,50 @@ defmodule BeamWeaver.OpenAI.StreamingTest do
            )
   end
 
+  test "tool arguments merge when SSE parsing splits the item and delta into separate batches" do
+    item_body = """
+    event: response.output_item.added
+    data: {"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","id":"fc_1","call_id":"call_probe","name":"probe","arguments":""}}
+
+    """
+
+    arguments_event =
+      BeamWeaver.JSON.encode!(%{
+        "type" => "response.function_call_arguments.delta",
+        "output_index" => 0,
+        "item_id" => "fc_1",
+        "delta" => ~s({"value":"ping"})
+      })
+
+    arguments_body =
+      "event: response.function_call_arguments.delta\ndata: #{arguments_event}\n\n"
+
+    chunks =
+      [item_body, arguments_body]
+      |> Enum.flat_map(&Streaming.typed_events/1)
+      |> Enum.flat_map(fn
+        %Envelope{event: %Events.MessageChunk{chunk: chunk}} -> [chunk]
+        _event -> []
+      end)
+
+    assert [
+             %Messages.AIChunk{
+               tool_call_chunks: [%Messages.ToolCallChunk{id: "call_probe", args: ""}]
+             },
+             %Messages.AIChunk{
+               tool_call_chunks: [%Messages.ToolCallChunk{id: nil, args: ~s({"value":"ping"})}]
+             }
+           ] = chunks
+
+    message =
+      chunks
+      |> MessageChunk.merge_many()
+      |> MessageChunk.to_message()
+
+    assert [%{id: "call_probe", name: "probe", args: %{"value" => "ping"}}] =
+             message.tool_calls
+  end
+
   test "typed events preserve incomplete and failed Responses terminals" do
     incomplete_response = %{
       "id" => "resp_incomplete",

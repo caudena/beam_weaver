@@ -165,6 +165,21 @@ loopback and cloud metadata endpoints have separate opt-ins. At a live boundary,
 while preserving the original Host header and TLS hostname. Streaming responses
 stop at the policy's `max_bytes` ceiling instead of buffering past it.
 
+Host canonicalization uses IDNA before allowlist and address classification.
+Pinned IPv6 requests keep a correctly bracketed HTTP Host authority while TLS
+continues to use the original canonical hostname. Private, loopback, metadata,
+reserved, NAT64 local-use, discard-only, and documentation ranges are checked
+for both literals and every resolved address.
+
+`BeamWeaver.Transport.Safe` validates each redirect through the same policy and
+can run a zero-argument `before_dispatch` callback immediately before delegating
+the request. A callback failure is pre-dispatch evidence. Once the delegate is
+called, any transport error is classified as an unknown outcome—even if a lower
+layer supplies stale pre-dispatch metadata—because Req/Finch cannot prove the
+socket write count. Only a completed response is positive completion evidence.
+Request and response headers are also bounded and validated before their values
+enter provider handling.
+
 ## Text Splitter Streams
 
 Text splitters support list and stream-friendly APIs. Use `split_text/2` when a

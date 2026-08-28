@@ -13,6 +13,31 @@ defmodule BeamWeaver.Transport.URLPolicyTest do
     assert {:ok, "https://example.com/hook"} = URLPolicy.validate("https://example.com/hook")
   end
 
+  test "canonicalizes internationalized, case-variant, and alternate-dot hosts" do
+    assert {:ok, "https://xn--bcher-kva.example/path"} =
+             URLPolicy.validate("HTTPS://BÜCHER。Example./path")
+
+    assert {:ok, "https://xn--bcher-kva.example/path"} =
+             URLPolicy.validate("https://bücher.example/path",
+               allowed_hosts: ["XN--BCHER-KVA.EXAMPLE."]
+             )
+  end
+
+  test "rejects malformed IDNA hosts, fragments, and invalid resolver addresses" do
+    for url <- [
+          "https://bad_name.example/path",
+          "https://bad..example/path",
+          "https://example.com/path#fragment"
+        ] do
+      assert {:error, %Error{type: :unsafe_url}} = URLPolicy.validate(url)
+    end
+
+    assert {:error, %Error{type: :unsafe_url, message: "DNS resolution failed"}} =
+             URLPolicy.resolve_targets("https://public.example/path",
+               resolver: fn _, _ -> {:ok, [{999, 1, 1, 1}]} end
+             )
+  end
+
   test "blocks localhost, docker, kubernetes, metadata, and userinfo hosts by default" do
     for url <- [
           "https://user:pass@example.com",
@@ -50,13 +75,31 @@ defmodule BeamWeaver.Transport.URLPolicyTest do
           "https://127.0.0.1",
           "https://169.254.170.23",
           "https://100.100.100.200",
+          "https://[::]",
           "https://[::1]",
+          "https://[::7f00:1]",
+          "https://[::808:808]",
           "https://[::ffff:127.0.0.1]",
           "https://[64:ff9b::c0a8:0101]",
+          "https://[64:ff9b:1::808:808]",
+          "https://[100::1]",
+          "https://[2001:db8::1]",
+          "https://[3fff::1]",
           "https://[fe80::a9fe:a9fe]",
           "https://192.0.2.1"
         ] do
       assert {:error, %Error{type: :unsafe_url}} = URLPolicy.validate(url)
+    end
+  end
+
+  test "allows globally scoped mapped, NAT64, and ordinary IPv6 literals" do
+    for url <- [
+          "https://[::ffff:8.8.8.8]",
+          "https://[64:ff9b::808:808]",
+          "https://[2001:4860:4860::8888]",
+          "https://[2606:4700:4700::1111]"
+        ] do
+      assert {:ok, ^url} = URLPolicy.validate(url)
     end
   end
 

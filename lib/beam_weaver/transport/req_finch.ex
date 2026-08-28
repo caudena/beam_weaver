@@ -4,6 +4,12 @@ defmodule BeamWeaver.Transport.ReqFinch do
 
   It forwards validated `:connect_options` to Req and enforces
   `:max_response_bytes` while streaming both successful and error responses.
+  `:mint_connect_options` supplies HTTP connection options which Req does not
+  expose directly; when present, they are installed on a request-scoped Finch
+  pool together with the validated connection options.
+  `:stream_idle_timeout` controls the maximum wait between response chunks,
+  while `:total_timeout` bounds the complete request. The legacy `:timeout`
+  option remains the fallback for both limits.
   """
 
   @behaviour BeamWeaver.Transport
@@ -14,10 +20,16 @@ defmodule BeamWeaver.Transport.ReqFinch do
 
   @impl true
   def request(%Request{} = request, opts) do
-    request
-    |> req_options(opts)
-    |> Req.request()
-    |> normalize_result()
+    case stream_reduce(request, opts, [], fn chunks, chunk -> [chunk | chunks] end) do
+      {:ok, %Response{status: status} = response, chunks} when status in 200..299 ->
+        {:ok, %{response | body: chunks |> Enum.reverse() |> IO.iodata_to_binary()}}
+
+      {:ok, %Response{} = response, _chunks} ->
+        {:ok, response}
+
+      {:error, %Error{} = error, _chunks} ->
+        {:error, error}
+    end
   end
 
   @impl true
@@ -33,14 +45,17 @@ defmodule BeamWeaver.Transport.ReqFinch do
 
   @impl true
   def stream_reduce(%Request{} = request, opts, acc, reducer) when is_function(reducer, 2) do
-    request
-    |> req_options(opts)
-    |> Keyword.put(
-      :into,
-      stream_handler(acc, reducer, Keyword.get(opts, :max_response_bytes, 5_000_000))
-    )
-    |> Req.request()
-    |> normalize_stream_reduce_result(acc)
+    maximum = Keyword.get(opts, :max_response_bytes, 5_000_000)
+
+    if is_integer(maximum) and maximum > 0 do
+      request
+      |> req_options(opts)
+      |> Keyword.put(:into, stream_handler(acc, reducer, maximum))
+      |> Req.request()
+      |> normalize_stream_reduce_result(acc)
+    else
+      {:error, Error.new(:invalid_transport_options, "max_response_bytes must be a positive integer"), acc}
+    end
   rescue
     exception ->
       error =
@@ -63,6 +78,25 @@ defmodule BeamWeaver.Transport.ReqFinch do
 
   @doc false
   def req_options(%Request{} = request, opts \\ []) do
+    legacy_timeout = Keyword.get(opts, :timeout, Keyword.get(request.options, :timeout, 15_000))
+
+    connect_timeout =
+      Keyword.get(opts, :connect_timeout, Keyword.get(request.options, :connect_timeout))
+
+    stream_idle_timeout =
+      Keyword.get(
+        opts,
+        :stream_idle_timeout,
+        Keyword.get(request.options, :stream_idle_timeout, legacy_timeout)
+      )
+
+    total_timeout =
+      Keyword.get(
+        opts,
+        :total_timeout,
+        Keyword.get(request.options, :total_timeout, legacy_timeout)
+      )
+
     [
       method: request.method,
       url: request.url,
@@ -71,11 +105,13 @@ defmodule BeamWeaver.Transport.ReqFinch do
         opts
         |> Keyword.get(:finch, BeamWeaver.Transport.Finch)
         |> normalize_finch_options(),
-      receive_timeout: Keyword.get(opts, :timeout, Keyword.get(request.options, :timeout, 15_000)),
+      receive_timeout: stream_idle_timeout,
+      request_timeout: total_timeout,
       retry: false,
       redirect: false
     ]
-    |> maybe_put_connect_options(opts)
+    |> maybe_put_raw_response(opts)
+    |> maybe_put_connect_options(opts, connect_timeout)
     |> maybe_put_finch_private(opts)
     |> maybe_put_body(request)
   end
@@ -85,13 +121,75 @@ defmodule BeamWeaver.Transport.ReqFinch do
   defp normalize_finch_options(options) when is_list(options), do: options
   defp normalize_finch_options(options), do: options
 
-  defp maybe_put_connect_options(options, opts) do
-    case Keyword.get(opts, :connect_options) do
-      connect_options when is_list(connect_options) ->
-        Keyword.put(options, :connect_options, connect_options)
+  defp maybe_put_connect_options(options, opts, connect_timeout) do
+    connect_options =
+      case Keyword.get(opts, :connect_options) do
+        connect_options when is_list(connect_options) -> connect_options
+        _other -> []
+      end
 
-      _other ->
+    connect_options =
+      if is_integer(connect_timeout) and connect_timeout > 0 do
+        Keyword.put_new(connect_options, :timeout, connect_timeout)
+      else
+        connect_options
+      end
+
+    mint_connect_options =
+      case Keyword.get(opts, :mint_connect_options) do
+        mint_connect_options when is_list(mint_connect_options) -> mint_connect_options
+        _other -> []
+      end
+
+    case {connect_options, mint_connect_options} do
+      {[_option | _rest], []} ->
         options
+        |> Keyword.delete(:finch)
+        |> Keyword.put(:connect_options, connect_options)
+
+      {connect_options, [_option | _rest]} ->
+        options
+        |> Keyword.delete(:connect_options)
+        |> Keyword.put(:finch, finch_pool_options(connect_options, mint_connect_options))
+
+      {[], []} ->
+        options
+    end
+  end
+
+  defp finch_pool_options(connect_options, mint_connect_options) do
+    transport_options =
+      Keyword.merge(
+        Keyword.take(connect_options, [:timeout]),
+        Keyword.get(connect_options, :transport_opts, [])
+      )
+
+    connection_options =
+      connect_options
+      |> Keyword.take([:hostname, :proxy, :proxy_headers, :client_settings])
+      |> maybe_put_transport_options(transport_options)
+      |> Keyword.merge(mint_connect_options)
+
+    []
+    |> maybe_put_protocols(Keyword.get(connect_options, :protocols))
+    |> Keyword.put(:conn_opts, connection_options)
+  end
+
+  defp maybe_put_transport_options(options, []), do: options
+
+  defp maybe_put_transport_options(options, transport_options),
+    do: Keyword.put(options, :transport_opts, transport_options)
+
+  defp maybe_put_protocols(options, nil), do: options
+  defp maybe_put_protocols(options, protocols), do: Keyword.put(options, :protocols, protocols)
+
+  defp maybe_put_raw_response(options, opts) do
+    if Keyword.get(opts, :raw_response?, false) do
+      options
+      |> Keyword.put(:raw, true)
+      |> Keyword.put(:decode_body, false)
+    else
+      options
     end
   end
 
@@ -178,23 +276,6 @@ defmodule BeamWeaver.Transport.ReqFinch do
     %{response | body: IO.iodata_to_binary([response.body || "", data])}
   end
 
-  defp normalize_result({:ok, %Req.Response{} = response}) do
-    {:ok,
-     Response.new(
-       status: response.status,
-       headers: response.headers,
-       body: response.body,
-       metadata: %{source: :live}
-     )}
-  end
-
-  defp normalize_result({:error, error}) do
-    {:error,
-     Error.new(:transport_failure, "transport request failed", %{
-       reason: inspect(error)
-     })}
-  end
-
   defp normalize_stream_reduce_result(
          {:ok, %Req.Response{private: %{beam_weaver_response_too_large: true}}},
          acc
@@ -205,17 +286,20 @@ defmodule BeamWeaver.Transport.ReqFinch do
   defp normalize_stream_reduce_result({:ok, %Req.Response{status: status} = response}, acc)
        when status in 200..299 do
     stream_acc = Map.get(response.private, :beam_weaver_stream_acc, acc)
+    response_bytes = Map.get(response.private, :beam_weaver_response_bytes, 0)
 
     response =
       response
       |> Map.update!(:private, &Map.drop(&1, [:beam_weaver_stream_acc, :beam_weaver_response_bytes]))
       |> Map.put(:body, "")
 
-    {:ok, transport_response(response), stream_acc}
+    {:ok, transport_response(response, response_bytes), stream_acc}
   end
 
-  defp normalize_stream_reduce_result({:ok, %Req.Response{} = response}, acc),
-    do: {:ok, transport_response(response), acc}
+  defp normalize_stream_reduce_result({:ok, %Req.Response{} = response}, acc) do
+    response_bytes = Map.get(response.private, :beam_weaver_response_bytes, byte_size(response.body || ""))
+    {:ok, transport_response(response, response_bytes), acc}
+  end
 
   defp normalize_stream_reduce_result({:error, error}, acc) do
     {:error,
@@ -224,12 +308,12 @@ defmodule BeamWeaver.Transport.ReqFinch do
      }), acc}
   end
 
-  defp transport_response(%Req.Response{} = response) do
+  defp transport_response(%Req.Response{} = response, response_bytes) do
     Response.new(
       status: response.status,
       headers: response.headers,
       body: response.body,
-      metadata: %{source: :live}
+      metadata: %{source: :live, wire_bytes: response_bytes}
     )
   end
 end

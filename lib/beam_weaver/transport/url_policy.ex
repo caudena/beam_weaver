@@ -26,7 +26,7 @@ defmodule BeamWeaver.Transport.URLPolicy do
             resolve?: false,
             resolver: nil,
             pin_resolved?: false,
-            follow_redirects?: true,
+            follow_redirects?: false,
             max_redirects: 10,
             max_bytes: 5_000_000,
             timeout: 15_000
@@ -50,7 +50,7 @@ defmodule BeamWeaver.Transport.URLPolicy do
       resolve?: Keyword.get(opts, :resolve?, false),
       resolver: Keyword.get(opts, :resolver),
       pin_resolved?: Keyword.get(opts, :pin_resolved?, false),
-      follow_redirects?: Keyword.get(opts, :follow_redirects?, true),
+      follow_redirects?: Keyword.get(opts, :follow_redirects?, false),
       max_redirects: positive_int(Keyword.get(opts, :max_redirects, 10), 10),
       max_bytes: positive_int(Keyword.get(opts, :max_bytes, 5_000_000), 5_000_000),
       timeout: positive_int(Keyword.get(opts, :timeout, 15_000), 15_000)
@@ -72,6 +72,12 @@ defmodule BeamWeaver.Transport.URLPolicy do
 
       uri.userinfo not in [nil, ""] ->
         unsafe(url, "URL userinfo is not allowed")
+
+      uri.fragment not in [nil, ""] ->
+        unsafe(url, "URL fragments are not allowed")
+
+      not valid_port?(uri.port) ->
+        unsafe(url, "URL port is invalid")
 
       scheme not in policy.schemes ->
         unsafe(url, "URL scheme is not allowed", %{
@@ -103,10 +109,10 @@ defmodule BeamWeaver.Transport.URLPolicy do
         })
 
       policy.resolve? ->
-        validate_resolved(url, host, uri, policy)
+        validate_resolved(canonical_url(uri, scheme, host), host, uri, policy)
 
       true ->
-        {:ok, url}
+        {:ok, canonical_url(uri, scheme, host)}
     end
   end
 
@@ -120,15 +126,38 @@ defmodule BeamWeaver.Transport.URLPolicy do
 
   @doc false
   def resolve_target(url, policy) when is_binary(url) do
+    with {:ok, %{targets: [target | _targets]}} <- resolve_targets(url, policy) do
+      {:ok, target}
+    end
+  end
+
+  @doc false
+  @spec resolve_targets(String.t(), keyword() | t()) ::
+          {:ok, %{targets: [map()], address_set: [tuple()]}} | {:error, Error.t()}
+  def resolve_targets(url, policy) when is_binary(url) do
     policy = new(policy)
 
-    with {:ok, _url} <- validate(url, %{policy | resolve?: false}),
-         uri <- URI.parse(url),
+    with {:ok, canonical_url} <- validate(url, %{policy | resolve?: false}),
+         uri <- URI.parse(canonical_url),
          host <- normalize_host(uri.host),
          port <- uri.port || default_port(uri.scheme),
          {:ok, [_address | _rest] = addresses} <- target_addresses(host, port, policy),
+         addresses <- addresses |> Enum.uniq() |> Enum.sort(),
          nil <- Enum.find(addresses, &blocked_ip?(&1, policy)) do
-      {:ok, %{url: url, host: host, port: port, address: hd(addresses)}}
+      {:ok,
+       %{
+         address_set: addresses,
+         targets:
+           Enum.map(addresses, fn address ->
+             %{
+               url: canonical_url,
+               host: host,
+               port: port,
+               address: address,
+               address_set: addresses
+             }
+           end)
+       }}
     else
       {:error, %Error{} = error} ->
         {:error, error}
@@ -157,11 +186,47 @@ defmodule BeamWeaver.Transport.URLPolicy do
   defp normalize_host(nil), do: nil
 
   defp normalize_host(host) do
-    host
-    |> to_string()
-    |> String.trim_trailing(".")
-    |> String.downcase()
+    host = host |> to_string() |> String.trim_trailing(".")
+
+    case :inet.parse_address(String.to_charlist(host)) do
+      {:ok, address} ->
+        address |> :inet.ntoa() |> List.to_string() |> String.downcase()
+
+      {:error, :einval} ->
+        canonical_idna_host(host)
+    end
   end
+
+  defp canonical_idna_host(host) do
+    labels = Regex.split(~r/[.。．｡]/u, host, trim: false)
+
+    if host == "" or Enum.any?(labels, &(&1 == "")) do
+      nil
+    else
+      host
+      |> String.to_charlist()
+      |> :idna.encode([:uts46, :std3_rules, :strict])
+      |> List.to_string()
+      |> String.downcase()
+      |> case do
+        ascii when byte_size(ascii) <= 253 -> ascii
+        _too_long -> nil
+      end
+    end
+  catch
+    _kind, _reason -> nil
+  end
+
+  defp canonical_url(uri, scheme, host) do
+    uri
+    |> Map.put(:scheme, scheme)
+    |> Map.put(:host, host)
+    |> Map.put(:authority, nil)
+    |> URI.to_string()
+  end
+
+  defp valid_port?(nil), do: true
+  defp valid_port?(port), do: is_integer(port) and port in 1..65_535
 
   defp normalize_list(value), do: value |> List.wrap() |> Enum.map(&normalize_scheme/1)
   defp maybe_hosts(nil), do: nil
@@ -277,8 +342,12 @@ defmodule BeamWeaver.Transport.URLPolicy do
     end
   end
 
-  defp normalize_address(address) when is_tuple(address) and tuple_size(address) in [4, 8],
-    do: {:ok, address}
+  defp normalize_address(address) when is_tuple(address) and tuple_size(address) in [4, 8] do
+    case :inet.ntoa(address) do
+      encoded when is_list(encoded) -> {:ok, address}
+      {:error, reason} -> {:error, reason}
+    end
+  end
 
   defp normalize_address(address) when is_binary(address) do
     case :inet.parse_address(String.to_charlist(address)) do
@@ -328,23 +397,47 @@ defmodule BeamWeaver.Transport.URLPolicy do
 
   defp ip_scope({0, 0, 0, 0, 0, 0, 0, 1}), do: :loopback
 
+  defp ip_scope({0, 0, 0, 0, 0, 0, 0, 0}), do: :reserved
+
   defp ip_scope({0, 0, 0, 0, 0, 0xFFFF, high, low}) do
     ip_scope({high >>> 8, high &&& 0xFF, low >>> 8, low &&& 0xFF})
   end
+
+  # The deprecated IPv4-compatible range is not globally routable. Do not
+  # treat a public-looking low 32 bits as authority to dial this special range.
+  defp ip_scope({0, 0, 0, 0, 0, 0, _high, _low}), do: :reserved
 
   defp ip_scope({0x64, 0xFF9B, 0, 0, 0, 0, high, low}) do
     ip_scope({high >>> 8, high &&& 0xFF, low >>> 8, low &&& 0xFF})
   end
 
-  defp ip_scope({first, _, _, _, _, _, _, _} = address) do
+  defp ip_scope({first, second, third, fourth, _, _, _, _} = address) do
     cond do
       aws_ipv6_metadata?(address) -> :metadata
+      nat64_local_use?(first, second, third) -> :reserved
+      discard_only?(first, second, third, fourth) -> :reserved
+      documentation_ipv6?(first, second) -> :reserved
       (first &&& 0xFE00) == 0xFC00 -> :private
       (first &&& 0xFFC0) == 0xFE80 -> :reserved
       (first &&& 0xFF00) == 0xFF00 -> :reserved
       true -> :public
     end
   end
+
+  # 64:ff9b:1::/48 is reserved for local-use NAT64 translation and is not a
+  # public destination. The globally scoped 64:ff9b::/96 is handled above by
+  # classifying its embedded IPv4 address.
+  defp nat64_local_use?(0x64, 0xFF9B, 1), do: true
+  defp nat64_local_use?(_first, _second, _third), do: false
+
+  # 100::/64 is the discard-only prefix.
+  defp discard_only?(0x100, 0, 0, 0), do: true
+  defp discard_only?(_first, _second, _third, _fourth), do: false
+
+  # RFC 3849 and RFC 9637 documentation ranges are never public destinations.
+  defp documentation_ipv6?(0x2001, 0x0DB8), do: true
+  defp documentation_ipv6?(0x3FFF, second), do: (second &&& 0xF000) == 0
+  defp documentation_ipv6?(_first, _second), do: false
 
   defp aws_ipv6_metadata?({0xFD00, 0x0EC2, 0, 0, 0, 0, 0, last})
        when last in [0x0023, 0x0254],

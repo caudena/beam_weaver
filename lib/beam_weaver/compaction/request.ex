@@ -44,6 +44,8 @@ defmodule BeamWeaver.Compaction.Request do
                 :deadline_at,
                 active_input_event_ids: [],
                 requested_max_output_tokens: 0,
+                structural_pressure: false,
+                accounting: %{},
                 anti_thrash: %State{}
               ]
 
@@ -77,7 +79,7 @@ defmodule BeamWeaver.Compaction.Request do
          {:ok, policy} <- Policy.new(request.policy),
          true <- policy.mode in [:portable, :native],
          true <- request.trigger != :auto or policy.enabled,
-         true <- request.trigger != :manual or byte_size(request.focus || "") <= 2_000,
+         true <- focus?(request.focus),
          {:ok, rehydration} <- RehydrationState.new(request.rehydration_state),
          {:ok, previous} <- previous_semantic(request.previous_semantic),
          {:ok, anti_thrash} <- State.new(request.anti_thrash),
@@ -86,7 +88,9 @@ defmodule BeamWeaver.Compaction.Request do
          true <- is_binary(request.rendered_request),
          true <- is_function(request.render, 2),
          true <- is_function(request.summarize, 1),
-         true <- non_negative_integer?(request.requested_max_output_tokens) do
+         true <- non_negative_integer?(request.requested_max_output_tokens),
+         true <- is_boolean(request.structural_pressure),
+         true <- accounting?(request.accounting) do
       {:ok,
        %{
          request
@@ -163,7 +167,8 @@ defmodule BeamWeaver.Compaction.Request do
     Enum.all?(events, fn event ->
       event.run_agent_id == request.run_agent_id and
         event.checkpoint_namespace == request.checkpoint_namespace
-    end) and ordinals == Enum.sort(ordinals) and MapSet.size(unique_ids) == length(events)
+    end) and ordinals == Enum.sort(ordinals) and length(Enum.uniq(ordinals)) == length(events) and
+      MapSet.size(unique_ids) == length(events)
   end
 
   defp active_ids(ids, events) when is_list(ids) do
@@ -181,6 +186,9 @@ defmodule BeamWeaver.Compaction.Request do
   defp nullable_id?(nil), do: true
   defp nullable_id?(value), do: id?(value)
   defp hash?(value), do: is_binary(value) and value =~ ~r/\A[0-9a-f]{64}\z/
+  defp focus?(nil), do: true
+  defp focus?(value), do: is_binary(value) and String.valid?(value) and byte_size(value) <= 2_000
   defp non_negative_integer?(value), do: is_integer(value) and value >= 0
+  defp accounting?(value), do: is_map(value)
   defp invalid(message, details \\ %{}), do: {:error, Error.new(:invalid_compaction_request, message, details)}
 end

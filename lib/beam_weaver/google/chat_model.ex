@@ -91,6 +91,16 @@ defmodule BeamWeaver.Google.ChatModel do
     end
   end
 
+  @impl true
+  def stream_typed_events(%__MODULE__{} = model, messages, opts \\ []) do
+    stream_events(model, messages, opts)
+  end
+
+  @impl true
+  def stream_exact_typed_events(%__MODULE__{} = model, body, opts \\ []) when is_binary(body) do
+    Client.stream_events(client(model), model.model, body, opts)
+  end
+
   def count_tokens(%__MODULE__{} = model, input, opts \\ []) do
     with {:ok, messages} <- LanguageModel.normalize_chat_input(input),
          {:ok, body} <- count_tokens_body(model, messages, opts),

@@ -20,6 +20,98 @@ defmodule BeamWeaver.Transport.ReqFinchTest do
     assert ReqFinch.req_options(request, finch: nil)[:finch] == nil
   end
 
+  test "uses Req-managed Finch when connect options are required" do
+    request = Request.new(method: :get, url: "https://example.test")
+
+    options =
+      ReqFinch.req_options(request,
+        finch: CustomFinch,
+        connect_options: [hostname: "public.example"],
+        connect_timeout: 500
+      )
+
+    refute Keyword.has_key?(options, :finch)
+    assert options[:connect_options] == [timeout: 500, hostname: "public.example"]
+  end
+
+  test "installs Mint response-header limits on the request-scoped Finch pool" do
+    url = start_http_server("HTTP/1.1 200 OK\r\ncontent-length: 2\r\nconnection: close\r\n\r\nok")
+    request = Request.new(method: :get, url: url)
+
+    options =
+      ReqFinch.req_options(request,
+        connect_options: [
+          hostname: "127.0.0.1",
+          protocols: [:http1]
+        ],
+        mint_connect_options: [max_header_list_size: 65_536],
+        connect_timeout: 1_000
+      )
+
+    refute Keyword.has_key?(options, :connect_options)
+    assert options[:finch][:protocols] == [:http1]
+    assert options[:finch][:conn_opts][:hostname] == "127.0.0.1"
+    assert options[:finch][:conn_opts][:max_header_list_size] == 65_536
+    assert options[:finch][:conn_opts][:transport_opts][:timeout] == 1_000
+
+    assert {:ok, %Response{status: 200, body: "ok"}} =
+             ReqFinch.request(request,
+               connect_options: [
+                 hostname: "127.0.0.1",
+                 protocols: [:http1]
+               ],
+               mint_connect_options: [max_header_list_size: 65_536],
+               timeout: 1_000
+             )
+  end
+
+  test "rejects an oversized response header in Mint before response materialization" do
+    url =
+      start_http_server("HTTP/1.1 200 OK\r\nx-large: #{String.duplicate("a", 1_000)}\r\ncontent-length: 2\r\n\r\nok")
+
+    request = Request.new(method: :get, url: url)
+
+    assert {:error, %Error{type: :transport_failure}} =
+             ReqFinch.request(request,
+               connect_options: [
+                 hostname: "127.0.0.1",
+                 protocols: [:http1]
+               ],
+               mint_connect_options: [max_header_list_size: 128],
+               timeout: 1_000
+             )
+  end
+
+  test "can retain raw response bytes for bounded caller-owned decoding" do
+    request = Request.new(method: :get, url: "https://example.test")
+    options = ReqFinch.req_options(request, raw_response?: true)
+
+    assert options[:raw] == true
+    assert options[:decode_body] == false
+  end
+
+  test "applies separate idle and total request timeouts" do
+    request = Request.new(method: :get, url: "https://example.test")
+
+    options =
+      ReqFinch.req_options(request,
+        stream_idle_timeout: 1_000,
+        total_timeout: 2_000
+      )
+
+    assert options[:receive_timeout] == 1_000
+    assert options[:request_timeout] == 2_000
+  end
+
+  test "retains timeout as the legacy fallback for both request limits" do
+    request = Request.new(method: :get, url: "https://example.test")
+
+    options = ReqFinch.req_options(request, timeout: 1_000)
+
+    assert options[:receive_timeout] == 1_000
+    assert options[:request_timeout] == 1_000
+  end
+
   test "live requests do not emit Req deprecation warnings" do
     url = start_http_server("HTTP/1.1 200 OK\r\ncontent-length: 2\r\nconnection: close\r\n\r\nok")
     request = Request.new(method: :get, url: url)
@@ -43,6 +135,25 @@ defmodule BeamWeaver.Transport.ReqFinchTest do
       assert {:ok, %Response{status: ^status, body: ^body}} =
                ReqFinch.request(request, timeout: 1_000)
     end
+  end
+
+  test "bounds materialized successful and non-2xx response bodies" do
+    for status_line <- ["200 OK", "500 Internal Server Error"] do
+      url =
+        start_http_server("HTTP/1.1 #{status_line}\r\ncontent-length: 8\r\nconnection: close\r\n\r\n12345678")
+
+      request = Request.new(method: :get, url: url)
+
+      assert {:error, %Error{type: :response_too_large}} =
+               ReqFinch.request(request, timeout: 1_000, max_response_bytes: 4)
+    end
+  end
+
+  test "rejects an invalid response bound before transport I/O" do
+    request = Request.new(method: :get, url: "https://example.test")
+
+    assert {:error, %Error{type: :invalid_transport_options}} =
+             ReqFinch.request(request, max_response_bytes: :unbounded)
   end
 
   test "returns a tagged error when the live transport cannot connect" do
@@ -128,6 +239,31 @@ defmodule BeamWeaver.Transport.ReqFinchTest do
     assert_receive {:chunk, "he"}, 500
     refute Task.yield(task, 0)
     assert {:ok, {:ok, %Response{status: 200, body: ""}}} = Task.yield(task, 1_000)
+  end
+
+  test "each valid stream chunk resets the idle deadline without resetting the total deadline" do
+    url =
+      start_streaming_http_server(fn socket ->
+        :ok =
+          :gen_tcp.send(
+            socket,
+            "HTTP/1.1 200 OK\r\ncontent-length: 3\r\nconnection: close\r\n\r\na"
+          )
+
+        Process.sleep(120)
+        :ok = :gen_tcp.send(socket, "b")
+        Process.sleep(120)
+        :ok = :gen_tcp.send(socket, "c")
+      end)
+
+    request = Request.new(method: :get, url: url)
+
+    assert {:ok, %Response{status: 200, body: ""}} =
+             ReqFinch.stream(
+               request,
+               [stream_idle_timeout: 200, total_timeout: 1_000],
+               fn _chunk -> :ok end
+             )
   end
 
   test "buffers non-2xx stream bodies without emitting chunks" do

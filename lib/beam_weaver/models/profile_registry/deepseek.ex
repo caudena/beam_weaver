@@ -5,7 +5,7 @@ defmodule BeamWeaver.Models.ProfileRegistry.DeepSeek do
   alias BeamWeaver.Models.Profile
   alias BeamWeaver.Models.ProfileRegistry.Params
 
-  @supported_models ["deepseek-v4-flash", "deepseek-v4-pro"]
+  @supported_models ["deepseek-v4-flash", "deepseek-v4-flash-vision-exp", "deepseek-v4-pro"]
 
   @retired_models ["deepseek-chat", "deepseek-reasoner"]
 
@@ -135,8 +135,39 @@ defmodule BeamWeaver.Models.ProfileRegistry.DeepSeek do
          })
        )
 
+  @vision Profile.new(
+            Map.merge(@common_profile, %{
+              provider: :deepseek,
+              id: "deepseek-v4-flash-vision-exp",
+              name: "DeepSeek V4 Flash Vision Experimental",
+              release_date: "2026-08-21",
+              last_updated: "2026-08-27",
+              responses_api: true,
+              image_inputs: true,
+              image_url_inputs: true,
+              image_tool_message: true,
+              attachment: true,
+              supported_params: Params.deepseek_chat_completions(),
+              supported_params_by_api: %{
+                chat_completions: Params.deepseek_chat_completions(),
+                responses: Params.deepseek_responses()
+              },
+              extra:
+                Map.merge(@flash.extra, %{
+                  model_version: "DeepSeek-V4-Flash-Vision-Exp",
+                  supported_image_formats: [:jpeg, :png, :gif, :webp],
+                  max_images_per_request: 600,
+                  image_detail_levels: [:low, :high, :original, :auto],
+                  image_input_roles: [:user],
+                  fim_completion: :unsupported,
+                  pricing_last_checked: "2026-08-27"
+                })
+            })
+          )
+
   @profiles %{
     {:deepseek, "deepseek-v4-flash"} => @flash,
+    {:deepseek, "deepseek-v4-flash-vision-exp"} => @vision,
     {:deepseek, "deepseek-v4-pro"} => @pro
   }
 

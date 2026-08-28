@@ -129,7 +129,9 @@ defmodule BeamWeaver.Core.ChatModel do
               {:ok, Enumerable.t()} | {:error, Error.t() | term()}
   @callback stream_typed_events(term(), [Message.t()], keyword()) ::
               {:ok, Enumerable.t()} | {:error, Error.t() | term()}
-  @optional_callbacks stream: 3, stream_events: 3, stream_typed_events: 3
+  @callback stream_exact_typed_events(term(), binary(), keyword()) ::
+              {:ok, Enumerable.t()} | {:error, Error.t() | term()}
+  @optional_callbacks stream: 3, stream_events: 3, stream_typed_events: 3, stream_exact_typed_events: 3
 
   @doc """
   Invokes a chat model after validating message input.
@@ -354,6 +356,22 @@ defmodule BeamWeaver.Core.ChatModel do
   @spec async_stream_typed_events(term(), term(), keyword()) :: Async.handle()
   def async_stream_typed_events(model, input, opts \\ []) do
     Async.run_call(opts, &stream_typed_events(model, input, &1))
+  end
+
+  @doc """
+  Streams a previously rendered canonical request body without rebuilding it.
+
+  This boundary is intended for durable runtimes that persist and hash the exact
+  request before dispatch. Decoder and transport options remain out-of-band.
+  """
+  @spec stream_exact_typed_events(term(), binary(), keyword()) ::
+          {:ok, Enumerable.t()} | {:error, Error.t() | term()}
+  def stream_exact_typed_events(model, body, opts \\ []) when is_binary(body) do
+    if function_exported_loaded?(model.__struct__, :stream_exact_typed_events, 3) do
+      model.__struct__.stream_exact_typed_events(model, body, opts)
+    else
+      {:error, Error.new(:unsupported_feature, "chat model does not support exact request dispatch")}
+    end
   end
 
   @doc """
@@ -803,6 +821,19 @@ defmodule BeamWeaver.Core.ChatModel do
           metadata_first(input_details, [:cache_read, :cache_read_tokens, :cache_read_input_tokens]),
       cache_creation_tokens:
         metadata_first(usage, [:cache_creation_tokens, :cache_creation_input_tokens]) ||
+          metadata_first(input_details, [
+            :cache_creation,
+            :cache_creation_tokens,
+            :cache_creation_input_tokens,
+            :cache_write,
+            :cache_write_tokens
+          ]),
+      cache_write_tokens:
+        metadata_first(usage, [
+          :cache_write_tokens,
+          :cache_creation_tokens,
+          :cache_creation_input_tokens
+        ]) ||
           metadata_first(input_details, [
             :cache_creation,
             :cache_creation_tokens,

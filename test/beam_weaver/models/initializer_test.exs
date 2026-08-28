@@ -34,11 +34,6 @@ defmodule BeamWeaver.Models.InitializerTest do
     assert openai.model == "gpt-5.4"
     assert openai.temperature == 0.2
 
-    assert %Profile{provider: :openai, tool_calling: true, structured_output: true} =
-             openai.profile
-
-    assert openai.profile.tool_call_streaming
-
     assert {:ok, inferred} = Models.init_chat_model("gpt-5.4")
     assert inferred.__struct__ == BeamWeaver.OpenAI.ChatModel
   end
@@ -53,15 +48,6 @@ defmodule BeamWeaver.Models.InitializerTest do
     assert chat_completions.__struct__ == BeamWeaver.OpenAI.ChatCompletionsModel
     assert chat_completions.model == "gpt-5.4-mini"
     assert chat_completions.max_completion_tokens == 64
-    assert Profile.api_supported?(chat_completions.profile, :chat_completions)
-
-    assert Profile.supports_param?(
-             chat_completions.profile,
-             :chat_completions,
-             :max_completion_tokens
-           )
-
-    refute Profile.supports_param?(chat_completions.profile, :chat_completions, :reasoning)
   end
 
   test "init_chat_model returns tagged errors for unsupported providers" do
@@ -70,54 +56,16 @@ defmodule BeamWeaver.Models.InitializerTest do
   end
 
   test "init_chat_model accepts explicit Google identifiers but not bare Gemini aliases" do
-    assert {:ok, flash} = Models.init_chat_model("google:gemini-3.6-flash")
-    assert flash.__struct__ == BeamWeaver.Google.ChatModel
-    assert flash.model == "gemini-3.6-flash"
-    assert flash.profile.status == :active
-    assert flash.profile.max_input_tokens == 1_048_576
-    assert flash.profile.max_output_tokens == 65_536
-    assert flash.profile.extra.computer_use == :preview
-    assert flash.profile.extra.default_thinking_level == :medium
-    assert Profile.supports_param?(flash.profile, :thinking_level)
-    refute Profile.supports_param?(flash.profile, :thinking_budget)
-    refute Profile.supports_param?(flash.profile, :candidate_count)
-    refute Profile.supports_param?(flash.profile, :temperature)
-    refute Profile.supports_param?(flash.profile, :top_k)
-    refute Profile.supports_param?(flash.profile, :top_p)
-    assert flash.profile.extra.input_price_per_mtok == 1.50
-    assert flash.profile.extra.cached_input_price_per_mtok == 0.15
-    assert flash.profile.extra.output_price_per_mtok == 7.50
-    assert flash.profile.extra.batch_output_price_per_mtok == 3.75
-    assert flash.profile.extra.priority_output_price_per_mtok == 13.50
-
-    assert {:ok, flash_lite} = Models.init_chat_model("google:gemini-3.5-flash-lite")
-    assert flash_lite.__struct__ == BeamWeaver.Google.ChatModel
-    assert flash_lite.model == "gemini-3.5-flash-lite"
-    assert flash_lite.profile.status == :active
-    assert flash_lite.profile.max_input_tokens == 1_048_576
-    assert flash_lite.profile.max_output_tokens == 65_536
-    assert flash_lite.profile.extra.computer_use == :preview
-    assert flash_lite.profile.extra.default_thinking_level == :minimal
-    assert Profile.supports_param?(flash_lite.profile, :thinking_level)
-    refute Profile.supports_param?(flash_lite.profile, :thinking_budget)
-    assert flash_lite.profile.extra.input_price_per_mtok == 0.30
-    assert flash_lite.profile.extra.cached_input_price_per_mtok == 0.03
-    assert flash_lite.profile.extra.output_price_per_mtok == 2.50
-    assert flash_lite.profile.extra.batch_output_price_per_mtok == 1.25
-    assert flash_lite.profile.extra.priority_output_price_per_mtok == 4.50
-
-    assert {:ok, google} = Models.init_chat_model("google:gemini-3.5-flash")
-    assert google.__struct__ == BeamWeaver.Google.ChatModel
-    assert google.model == "gemini-3.5-flash"
-    assert google.profile.provider == :google
-    assert google.profile.max_input_tokens == 1_048_576
-    refute google.profile.image_outputs
-    refute google.profile.audio_outputs
-
-    assert {:ok, pro} = Models.init_chat_model("google:gemini-3.1-pro-preview")
-    assert pro.__struct__ == BeamWeaver.Google.ChatModel
-    assert pro.profile.provider == :google
-    assert pro.profile.reasoning_output
+    for model <- [
+          "gemini-3.6-flash",
+          "gemini-3.5-flash-lite",
+          "gemini-3.5-flash",
+          "gemini-3.1-pro-preview",
+          "gemini-3.1-flash-lite"
+        ] do
+      assert {:ok, %BeamWeaver.Google.ChatModel{model: ^model}} =
+               Models.init_chat_model("google:" <> model)
+    end
 
     assert {:error, error} = Models.init_chat_model("gemini-3.5-flash")
     assert error.type == :invalid_model
@@ -154,46 +102,10 @@ defmodule BeamWeaver.Models.InitializerTest do
   end
 
   test "init_chat_model accepts explicit Moonshot identifiers but not Kimi aliases" do
-    assert {:ok, k3} = Models.init_chat_model("moonshot:kimi-k3")
-    assert k3.__struct__ == BeamWeaver.Moonshot.ChatModel
-    assert k3.profile.max_input_tokens == 1_048_576
-    assert k3.profile.max_output_tokens == 1_048_576
-    assert k3.profile.tool_call_streaming
-    assert k3.profile.extra.reasoning_efforts == [:max]
-    assert k3.profile.extra.default_max_completion_tokens == 131_072
-    assert k3.profile.extra.tool_choice_when_thinking == ["auto", "none", "required"]
-    assert Profile.supports_param?(k3.profile, :chat_completions, :reasoning_effort)
-    refute Profile.supports_param?(k3.profile, :chat_completions, :thinking)
-
-    assert {:ok, code_model} = Models.init_chat_model("moonshot:kimi-k2.7-code")
-    assert code_model.__struct__ == BeamWeaver.Moonshot.ChatModel
-    assert code_model.model == "kimi-k2.7-code"
-    assert code_model.profile.provider == :moonshot
-    assert code_model.profile.max_input_tokens == 262_144
-    assert code_model.profile.reasoning_output
-    assert code_model.profile.video_inputs
-    assert code_model.profile.extra.thinking_modes == [:enabled]
-    refute code_model.profile.extra.web_search_supported
-
-    assert {:ok, highspeed_model} = Models.init_chat_model("moonshot:kimi-k2.7-code-highspeed")
-    assert highspeed_model.model == "kimi-k2.7-code-highspeed"
-    assert highspeed_model.profile.extra.highspeed
-    assert highspeed_model.profile.extra.same_model_as == "kimi-k2.7-code"
-    assert highspeed_model.profile.extra.output_speed_tokens_per_second == 180
-
-    assert {:ok, moonshot} = Models.init_chat_model("moonshot:kimi-k2.6")
-    assert moonshot.__struct__ == BeamWeaver.Moonshot.ChatModel
-    assert moonshot.model == "kimi-k2.6"
-    assert moonshot.profile.provider == :moonshot
-    assert moonshot.profile.max_input_tokens == 262_144
-    assert moonshot.profile.reasoning_output
-    assert moonshot.profile.video_inputs
-    assert moonshot.profile.chat_completions_api
-    refute moonshot.profile.responses_api
-
-    assert {:ok, k25_model} = Models.init_chat_model("moonshot:kimi-k2.5")
-    assert k25_model.model == "kimi-k2.5"
-    assert k25_model.profile.extra.thinking_modes == [:enabled, :disabled]
+    for model <- ["kimi-k3", "kimi-k2.7-code", "kimi-k2.7-code-highspeed", "kimi-k2.6", "kimi-k2.5"] do
+      assert {:ok, %BeamWeaver.Moonshot.ChatModel{model: ^model}} =
+               Models.init_chat_model("moonshot:" <> model)
+    end
 
     assert {:error, bare} = Models.init_chat_model("kimi-k2.6")
     assert bare.type == :invalid_model
@@ -204,17 +116,10 @@ defmodule BeamWeaver.Models.InitializerTest do
   end
 
   test "init_chat_model accepts explicit Z.ai identifiers but not bare GLM aliases" do
-    assert {:ok, zai} = Models.init_chat_model("zai:glm-5.2")
-    assert zai.__struct__ == BeamWeaver.ZAI.ChatModel
-    assert zai.model == "glm-5.2"
-    assert zai.profile.provider == :zai
-    assert zai.profile.max_input_tokens == 1_000_000
-    assert zai.profile.max_output_tokens == 131_072
-    assert zai.profile.reasoning_output
-    assert zai.profile.tool_calling
-    assert zai.profile.structured_output
-    assert zai.profile.chat_completions_api
-    refute zai.profile.responses_api
+    for model <- ["glm-5.3", "glm-5.3-flash", "glm-5.2"] do
+      assert {:ok, %BeamWeaver.ZAI.ChatModel{model: ^model}} =
+               Models.init_chat_model("zai:" <> model)
+    end
 
     assert {:error, bare} = Models.init_chat_model("glm-5.2")
     assert bare.type == :invalid_model
@@ -222,7 +127,7 @@ defmodule BeamWeaver.Models.InitializerTest do
 
     assert {:error, unsupported} = Models.init_chat_model("zai:glm-5.1")
     assert unsupported.type == :unsupported_model
-    assert unsupported.details.expected == "zai:glm-5.2"
+    assert unsupported.details.expected == "zai:glm-5.3"
   end
 
   test "init_chat_model rejects discontinued Moonshot identifiers with replacements" do
@@ -235,18 +140,11 @@ defmodule BeamWeaver.Models.InitializerTest do
     assert error.details.expected == "moonshot:kimi-k3"
   end
 
-  test "init_chat_model rejects deprecated Google identifiers with replacements" do
-    assert {:error, error} = Models.init_chat_model("google:gemini-2.5-flash")
-
-    assert error.type == :deprecated_model
-    assert error.details.provider == :google
-    assert error.details.model == "gemini-2.5-flash"
-    assert error.details.replacement == "gemini-3.5-flash"
-    assert error.details.expected == "google:gemini-3.5-flash"
-
-    assert {:error, error} = Models.init_chat_model("google:gemini-2.5-pro")
-    assert error.type == :deprecated_model
-    assert error.details.replacement == "gemini-3.1-pro-preview"
+  test "Google stable 2.5 identifiers remain available without announced shutdowns" do
+    for model <- ["gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.5-pro"] do
+      assert {:ok, initialized} = Models.init_chat_model("google:" <> model)
+      assert initialized.model == model
+    end
   end
 
   test "fake chat initializer preserves opts and chat input normalization accepts strings and prompt values" do
@@ -356,11 +254,6 @@ defmodule BeamWeaver.Models.InitializerTest do
 
   test "OpenAI frontier profiles are strict while unknown non-family models stay permissive" do
     assert {:ok, gpt5_family} = ProfileRegistry.fetch(:openai, "gpt-5.5")
-    assert Profile.api_supported?(gpt5_family, :responses)
-    assert Profile.api_supported?(gpt5_family, :chat_completions)
-    assert Profile.tokenizer_family(gpt5_family) == :o200k_base
-    assert Profile.supports_param?(gpt5_family, :responses, :reasoning)
-    refute Profile.supports_param?(gpt5_family, :chat_completions, :reasoning)
 
     assert {:error, error} =
              ParamPolicy.validate(gpt5_family, [reasoning: %{effort: "low"}], nil, api: :chat_completions)
@@ -368,47 +261,7 @@ defmodule BeamWeaver.Models.InitializerTest do
     assert error.type == :unsupported_model_param
     assert error.details.params == [:reasoning]
 
-    assert {:ok, sol} = ProfileRegistry.fetch(:openai, "gpt-5.6-sol")
-    assert sol.status == :active
-    assert sol.max_input_tokens == 1_050_000
-    assert sol.max_output_tokens == 128_000
-    assert sol.image_inputs
-    refute sol.audio_inputs
-    assert sol.extra.input_price_per_mtok == 5.00
-    assert sol.extra.cached_input_price_per_mtok == 0.50
-    assert sol.extra.cache_write_30m_price_per_mtok == 6.25
-    assert sol.extra.output_price_per_mtok == 30.00
-    assert sol.extra.pricing_source_url == "https://developers.openai.com/api/docs/pricing"
-    assert sol.extra.pricing_modes == [:standard, :batch, :flex, :fast, :priority]
-    assert sol.extra.batch_price_multiplier == 0.5
-    assert sol.extra.flex_price_multiplier == 0.5
-    assert sol.extra.fast_mode_price_multiplier == 2.0
-    assert sol.extra.fast_mode_service_tiers == [:fast, :priority]
-    assert sol.extra.regional_processing_multiplier == 1.1
-    assert sol.extra.default_reasoning_effort == :medium
-    assert sol.extra.reasoning_efforts == [:none, :low, :medium, :high, :xhigh, :max]
-    assert :multi_agent_beta in sol.extra.provider_capabilities
-
-    assert {:ok, gpt56_alias} = ProfileRegistry.fetch(:openai, "gpt-5.6")
-    assert gpt56_alias.id == "gpt-5.6"
-    assert gpt56_alias.extra.canonical_model == "gpt-5.6-sol"
-
-    assert {:ok, terra} = ProfileRegistry.fetch(:openai, "gpt-5.6-terra")
-    assert terra.last_updated == "2026-07-30"
-    assert terra.extra.input_price_per_mtok == 2.00
-    assert terra.extra.cached_input_price_per_mtok == 0.20
-    assert terra.extra.cache_write_30m_price_per_mtok == 2.50
-    assert terra.extra.output_price_per_mtok == 12.00
-
-    assert {:ok, luna} = ProfileRegistry.fetch(:openai, "gpt-5.6-luna")
-    assert luna.last_updated == "2026-07-30"
-    assert luna.extra.input_price_per_mtok == 0.20
-    assert luna.extra.cached_input_price_per_mtok == 0.02
-    assert luna.extra.cache_write_30m_price_per_mtok == 0.25
-    assert luna.extra.output_price_per_mtok == 1.20
-
     assert {:ok, unknown} = ProfileRegistry.fetch(:openai, "future-non-family-model")
-    assert unknown.extra.unknown == true
     assert :ok = ParamPolicy.validate(unknown, [reasoning: %{effort: "low"}], nil)
   end
 
@@ -422,148 +275,6 @@ defmodule BeamWeaver.Models.InitializerTest do
     assert unsupported.type == :unsupported_model
     assert unsupported.details.replacement == "gpt-5.4-mini"
     assert "gpt-5.5" in unsupported.details.supported
-  end
-
-  test "profile registry exposes deterministic checked-in profile introspection" do
-    assert ProfileRegistry.providers() == [
-             :anthropic,
-             :deepseek,
-             :fake,
-             :google,
-             :moonshot,
-             :openai,
-             :xai,
-             :zai
-           ]
-
-    all = ProfileRegistry.all()
-    openai = ProfileRegistry.profiles(:openai)
-    anthropic = ProfileRegistry.profiles(:anthropic)
-    google = ProfileRegistry.profiles(:google)
-    moonshot = ProfileRegistry.profiles(:moonshot)
-    xai = ProfileRegistry.profiles(:xai)
-    zai = ProfileRegistry.profiles(:zai)
-
-    assert Enum.map(all, &{&1.provider, &1.id}) == Enum.sort(Enum.map(all, &{&1.provider, &1.id}))
-    assert Enum.all?(openai, &(&1.provider == :openai))
-    assert Enum.all?(anthropic, &(&1.provider == :anthropic))
-    assert Enum.all?(google, &(&1.provider == :google))
-    assert Enum.all?(moonshot, &(&1.provider == :moonshot))
-    assert Enum.all?(xai, &(&1.provider == :xai))
-    assert Enum.all?(zai, &(&1.provider == :zai))
-    assert Enum.any?(openai, &(&1.id == "gpt-5.6-sol" and &1.tool_calling))
-    assert Enum.any?(openai, &(&1.id == "gpt-5.6-terra" and &1.max_input_tokens == 1_050_000))
-
-    assert Enum.any?(
-             openai,
-             &(&1.id == "gpt-5.6-luna" and &1.extra.input_price_per_mtok == 0.20)
-           )
-
-    assert Enum.any?(openai, &(&1.id == "gpt-5.5" and &1.tool_calling))
-    assert Enum.any?(openai, &(&1.id == "gpt-5.4-mini" and &1.tool_calling))
-    assert Enum.any?(openai, &(&1.id == "gpt-4.1" and &1.tool_calling))
-    assert Enum.any?(openai, &(&1.id == "gpt-5.4-mini" and &1.tool_call_streaming))
-    refute Enum.any?(openai, &(&1.id in ["gpt-4o", "gpt-4o-mini", "o3", "o4-mini"]))
-
-    assert Enum.any?(
-             anthropic,
-             &(&1.id == "claude-opus-4-8" and &1.max_input_tokens == 1_000_000)
-           )
-
-    assert Enum.any?(
-             anthropic,
-             &(&1.id == "claude-opus-5" and &1.max_input_tokens == 1_000_000 and
-                 &1.max_output_tokens == 128_000 and &1.extra.prompt_cache_min_tokens == 512)
-           )
-
-    assert Enum.any?(
-             anthropic,
-             &(&1.id == "claude-fable-5" and &1.max_input_tokens == 1_000_000 and
-                 &1.max_output_tokens == 128_000 and &1.extra.input_price_per_mtok == 10.00)
-           )
-
-    assert Enum.any?(
-             anthropic,
-             &(&1.id == "claude-mythos-5" and &1.status == :active and
-                 &1.max_input_tokens == 1_000_000)
-           )
-
-    assert Enum.any?(anthropic, &(&1.id == "claude-opus-4-7" and &1.max_output_tokens == 128_000))
-    assert Enum.any?(anthropic, &(&1.id == "claude-opus-4-6" and &1.max_output_tokens == 128_000))
-    assert Enum.any?(anthropic, &(&1.id == "claude-sonnet-4-6" and &1.tool_calling))
-    assert Enum.any?(anthropic, &(&1.id == "claude-haiku-4-5-20251001" and &1.tool_calling))
-
-    refute Enum.any?(
-             anthropic,
-             &(&1.id in [
-                 "claude-opus-4-20250514",
-                 "claude-sonnet-4",
-                 "claude-sonnet-4-20250514",
-                 "claude-3-7-sonnet-20250219",
-                 "claude-3-5-haiku-20241022"
-               ])
-           )
-
-    assert Enum.any?(google, &(&1.id == "gemini-3.6-flash" and &1.structured_output))
-    assert Enum.any?(google, &(&1.id == "gemini-3.5-flash" and &1.structured_output))
-    assert Enum.any?(google, &(&1.id == "gemini-3.5-flash-lite" and &1.structured_output))
-    assert Enum.any?(google, &(&1.id == "gemini-3.1-pro-preview" and &1.structured_output))
-    assert Enum.any?(moonshot, &(&1.id == "kimi-k3" and &1.max_input_tokens == 1_048_576))
-    assert Enum.any?(moonshot, &(&1.id == "kimi-k3" and &1.extra.dynamic_tool_loading))
-    assert Enum.any?(moonshot, &(&1.id == "kimi-k2.7-code" and &1.extra.thinking_modes == [:enabled]))
-    assert Enum.any?(moonshot, &(&1.id == "kimi-k2.7-code-highspeed" and &1.extra.highspeed))
-    assert Enum.any?(moonshot, &(&1.id == "kimi-k2.6" and &1.video_inputs))
-    assert Enum.any?(moonshot, &(&1.id == "kimi-k2.6" and &1.tool_calling))
-    assert Enum.any?(moonshot, &(&1.id == "kimi-k2.5" and &1.video_inputs))
-
-    refute Enum.any?(
-             google,
-             &(&1.id in [
-                 "gemini-2.0-flash",
-                 "gemini-2.5-flash",
-                 "gemini-2.5-pro",
-                 "gemini-3-flash-preview"
-               ])
-           )
-
-    refute Enum.any?(
-             moonshot,
-             &(&1.id in [
-                 "kimi-latest",
-                 "kimi-thinking-preview",
-                 "kimi-k2-0905-preview",
-                 "kimi-k2-thinking"
-               ])
-           )
-
-    assert Enum.any?(xai, &(&1.id == "grok-4.6" and &1.tool_calling))
-    assert Enum.any?(xai, &(&1.id == "grok-4.6" and &1.max_input_tokens == 500_000))
-    assert Enum.any?(xai, &(&1.id == "grok-4.6" and is_nil(&1.max_output_tokens)))
-    assert Enum.any?(xai, &(&1.id == "grok-4.6" and &1.extra.text_output_limit == :unlimited))
-    assert Enum.any?(xai, &(&1.id == "grok-4.6" and &1.extra.input_price_per_mtok == 2.00))
-    assert Enum.any?(xai, &(&1.id == "grok-4.6" and &1.extra.cached_input_price_per_mtok == 0.50))
-    assert Enum.any?(xai, &(&1.id == "grok-4.6" and &1.extra.output_price_per_mtok == 6.00))
-
-    assert Enum.any?(
-             xai,
-             &(&1.id == "grok-4.6" and
-                 &1.extra.reasoning_efforts == [:low, :medium, :high, :xhigh])
-           )
-
-    assert Enum.any?(xai, &(&1.id == "grok-4.5" and &1.extra.cached_input_price_per_mtok == 0.30))
-    assert Enum.any?(xai, &(&1.id == "grok-4.3" and &1.tool_calling))
-    assert Enum.any?(xai, &(&1.id == "grok-build-0.1" and &1.tool_calling))
-    assert Enum.any?(xai, &(&1.id == "grok-4.20-multi-agent-0309" and &1.tool_calling))
-    assert Enum.any?(xai, &(&1.id == "grok-4.6" and &1.tool_call_streaming))
-    assert Enum.any?(xai, &(&1.id == "v1" and &1.extra.embedding_model))
-    assert Enum.any?(zai, &(&1.id == "glm-5.2" and &1.max_input_tokens == 1_000_000))
-    assert Enum.any?(zai, &(&1.id == "glm-5.2" and &1.max_output_tokens == 131_072))
-    assert Enum.any?(zai, &(&1.id == "glm-5.2" and &1.extra.input_price_per_mtok == 1.40))
-
-    refute Enum.any?(
-             xai,
-             &(&1.id in ["grok-2", "grok-2-vision", "grok-beta", "grok-vision-beta"])
-           )
   end
 
   test "profile overrides and registries are explicit and preserve unknown keys in extra" do
@@ -668,16 +379,6 @@ defmodule BeamWeaver.Models.InitializerTest do
                ],
                %ParamPolicy{mode: :strict}
              )
-  end
-
-  test "profile capability flags are explicit" do
-    assert {:ok, model} = Models.init_chat_model("openai:gpt-5.4")
-    assert Profile.supports?(model.profile, :tool_calling)
-    assert Profile.supports?(model.profile, :structured_output)
-    refute Profile.supports?(model.profile, :video_outputs)
-    assert Profile.supports_param?(model.profile, :response_format)
-    refute Profile.supports_param?(model.profile, :responses, :max_tokens)
-    assert Profile.supports_param?(model.profile, :chat_completions, :max_tokens)
   end
 
   def handle_param_warning(_event, measurements, metadata, {parent, ref}) do

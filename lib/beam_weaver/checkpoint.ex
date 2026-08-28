@@ -10,6 +10,8 @@ defmodule BeamWeaver.Checkpoint do
   alias BeamWeaver.Checkpoint.Normalization
   alias BeamWeaver.Checkpoint.Batch
   alias BeamWeaver.Checkpoint.Record
+  alias BeamWeaver.Checkpoint.ResumeDelivery
+  alias BeamWeaver.Checkpoint.ResumeDelivery.{CommitReceipt, StageReceipt}
   alias BeamWeaver.Checkpoint.Saver
   alias BeamWeaver.Checkpoint.Telemetry
   alias BeamWeaver.Core.Async
@@ -21,6 +23,8 @@ defmodule BeamWeaver.Checkpoint do
   @type metadata :: map()
   @type versions :: map()
   @type writes :: [{String.t(), term()} | {String.t(), String.t(), term()}]
+
+  @resume_channel "__beam_weaver_resume_delivery__"
 
   @spec get(saver(), config()) :: checkpoint() | nil
   def get(saver, config) do
@@ -265,6 +269,188 @@ defmodule BeamWeaver.Checkpoint do
       end,
       async_opts
     )
+  end
+
+  @doc """
+  Durably stages one exact parent-lane resume delivery against an exact source
+  checkpoint.
+
+  Staging adds one idempotent pending write and does not consume or replace any
+  other pending writes.
+  """
+  @spec stage_resume(saver(), config(), ResumeDelivery.t()) ::
+          {:ok, StageReceipt.t()} | {:error, term()}
+  def stage_resume(saver, config, %ResumeDelivery{} = delivery) do
+    source_config = exact_checkpoint_config(config, delivery.source_checkpoint_id)
+
+    with {:ok, %{checkpoint: %{"id" => source_id}}} when source_id == delivery.source_checkpoint_id <-
+           fetch_tuple(saver, source_config),
+         :ok <-
+           put_writes(
+             saver,
+             source_config,
+             [{@resume_channel, ResumeDelivery.to_map(delivery)}],
+             ResumeDelivery.task_id(delivery),
+             "resume:#{delivery.source_ordinal}"
+           ),
+         {:ok, tuple} <- fetch_tuple(saver, source_config),
+         true <- staged_delivery?(tuple, delivery) do
+      claim_hash = ResumeDelivery.claim_hash(delivery)
+
+      {:ok,
+       %StageReceipt{
+         delivery: delivery,
+         source_config: source_config,
+         claim_hash: claim_hash,
+         receipt_hash: stage_receipt_hash(delivery, source_config)
+       }}
+    else
+      false ->
+        {:error, Error.new(:resume_delivery_not_staged, "resume delivery was not staged")}
+
+      {:ok, _tuple} ->
+        {:error, Error.new(:checkpoint_conflict, "resume source checkpoint is not current")}
+
+      {:error, _reason} = error ->
+        error
+    end
+  end
+
+  @doc """
+  Atomically consumes a staged resume delivery into the next checkpoint.
+
+  Only savers implementing the strict callback are accepted; there is no
+  sequential fallback.
+  """
+  @spec continue_staged(saver(), StageReceipt.t()) ::
+          {:ok, CommitReceipt.t()} | {:error, term()}
+  def continue_staged(saver, %StageReceipt{} = stage) do
+    module = saver.__struct__
+
+    with :ok <- verify_stage_receipt(stage) do
+      if function_exported?(module, :continue_staged, 2) do
+        module.continue_staged(saver, stage)
+      else
+        {:error,
+         Error.new(
+           :strict_resume_unsupported,
+           "checkpoint saver does not support strict resume delivery"
+         )}
+      end
+    end
+  end
+
+  @doc false
+  @spec verify_stage_receipt(StageReceipt.t()) :: :ok | {:error, Error.t()}
+  def verify_stage_receipt(%StageReceipt{delivery: %ResumeDelivery{}, source_config: source_config} = stage)
+      when is_map(source_config) or is_list(source_config) do
+    configurable = configurable(stage.source_config)
+
+    with {:ok, delivery} <- ResumeDelivery.new(ResumeDelivery.to_map(stage.delivery)),
+         true <- delivery == stage.delivery,
+         true <- is_binary(configurable["thread_id"]) and configurable["thread_id"] != "",
+         true <- configurable["checkpoint_id"] == stage.delivery.source_checkpoint_id,
+         true <- stage.claim_hash == ResumeDelivery.claim_hash(stage.delivery),
+         true <- stage.receipt_hash == stage_receipt_hash(stage.delivery, stage.source_config) do
+      :ok
+    else
+      _invalid -> {:error, Error.new(:invalid_resume_receipt, "resume stage receipt does not verify")}
+    end
+  end
+
+  def verify_stage_receipt(%StageReceipt{}),
+    do: {:error, Error.new(:invalid_resume_receipt, "resume stage receipt does not verify")}
+
+  @doc false
+  def stage_receipt_hash(%ResumeDelivery{} = delivery, source_config) do
+    BeamWeaver.Compaction.Canonical.hash(%{
+      "schema_version" => 1,
+      "phase" => "staged",
+      "delivery_id" => delivery.delivery_id,
+      "source_checkpoint_id" => delivery.source_checkpoint_id,
+      "claim_hash" => ResumeDelivery.claim_hash(delivery),
+      "source_owner" => checkpoint_owner(source_config)
+    })
+  end
+
+  @doc "Verifies a strict resume commit receipt against its stored checkpoint."
+  @spec verify_resume_receipt(saver(), CommitReceipt.t()) :: :ok | {:error, term()}
+  def verify_resume_receipt(saver, %CommitReceipt{} = receipt) do
+    with {:ok, %{checkpoint: checkpoint}} <- fetch_tuple(saver, receipt.resulting_config),
+         true <- checkpoint["id"] == receipt.resulting_checkpoint_id,
+         true <- resume_checkpoint_hash(checkpoint) == receipt.checkpoint_hash,
+         true <- receipt_delivery?(checkpoint, receipt.delivery_id, receipt.claim_hash),
+         true <- commit_receipt_hash(receipt) == receipt.receipt_hash do
+      :ok
+    else
+      false -> {:error, Error.new(:invalid_resume_receipt, "resume receipt does not verify")}
+      {:ok, _missing} -> {:error, Error.new(:invalid_resume_receipt, "resume checkpoint is missing")}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  @doc false
+  def resume_channel, do: @resume_channel
+
+  @doc false
+  def resume_checkpoint_hash(checkpoint) when is_map(checkpoint) do
+    BeamWeaver.Compaction.Canonical.hash(%{
+      "schema_version" => 1,
+      "checkpoint_id" => checkpoint["id"],
+      "channel_version" => get_in(checkpoint, ["channel_versions", @resume_channel]),
+      "deliveries" => get_in(checkpoint, ["channel_values", @resume_channel]) |> List.wrap()
+    })
+  end
+
+  @doc false
+  def commit_receipt_hash(%CommitReceipt{} = receipt) do
+    BeamWeaver.Compaction.Canonical.hash(%{
+      "schema_version" => 1,
+      "phase" => "committed",
+      "delivery_id" => receipt.delivery_id,
+      "source_checkpoint_id" => receipt.source_checkpoint_id,
+      "resulting_checkpoint_id" => receipt.resulting_checkpoint_id,
+      "claim_hash" => receipt.claim_hash,
+      "checkpoint_hash" => receipt.checkpoint_hash,
+      "resulting_owner" => checkpoint_owner(receipt.resulting_config)
+    })
+  end
+
+  defp exact_checkpoint_config(config, checkpoint_id) do
+    configurable = configurable(config)
+
+    config
+    |> config_map()
+    |> Map.delete(:configurable)
+    |> Map.put("configurable", Map.put(configurable, "checkpoint_id", checkpoint_id))
+  end
+
+  defp config_map(config) when is_list(config), do: Map.new(config)
+  defp config_map(config) when is_map(config), do: config
+
+  defp staged_delivery?(tuple, delivery) do
+    Enum.any?(Map.get(tuple, :pending_write_records, []), fn record ->
+      record.task_id == ResumeDelivery.task_id(delivery) and record.channel == @resume_channel and
+        record.value == ResumeDelivery.to_map(delivery)
+    end)
+  end
+
+  defp receipt_delivery?(checkpoint, delivery_id, claim_hash) do
+    checkpoint
+    |> get_in(["channel_values", @resume_channel])
+    |> List.wrap()
+    |> Enum.any?(fn value ->
+      value["delivery_id"] == delivery_id and value["claim_hash"] == claim_hash
+    end)
+  end
+
+  defp checkpoint_owner(config) do
+    config = configurable(config)
+
+    %{
+      "thread_id" => config["thread_id"],
+      "checkpoint_namespace" => Map.get(config, "checkpoint_ns", "")
+    }
   end
 
   @doc """

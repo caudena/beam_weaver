@@ -169,7 +169,7 @@ defmodule BeamWeaver.Models.ProfileRegistry.XAI do
           priority_processing_price_multiplier: 2.0,
           priority_processing_service_tier: :priority,
           default_reasoning_effort: :high,
-          reasoning_efforts: [:low, :medium, :high, :xhigh],
+          reasoning_efforts: [:low, :medium, :high],
           regions: ["us-east-1", "us-west-2"]
         }
       }),
@@ -207,6 +207,10 @@ defmodule BeamWeaver.Models.ProfileRegistry.XAI do
           input_price_per_mtok: 1.25,
           cached_input_price_per_mtok: 0.20,
           output_price_per_mtok: 2.50,
+          higher_context_pricing_threshold_tokens: 200_000,
+          higher_context_input_price_per_mtok: 2.50,
+          higher_context_cached_input_price_per_mtok: 0.40,
+          higher_context_output_price_per_mtok: 5.00,
           batch_discount_rate: 0.20
         }
       }),
@@ -244,6 +248,10 @@ defmodule BeamWeaver.Models.ProfileRegistry.XAI do
           input_price_per_mtok: 1.25,
           cached_input_price_per_mtok: 0.20,
           output_price_per_mtok: 2.50,
+          higher_context_pricing_threshold_tokens: 200_000,
+          higher_context_input_price_per_mtok: 2.50,
+          higher_context_cached_input_price_per_mtok: 0.40,
+          higher_context_output_price_per_mtok: 5.00,
           batch_discount_rate: 0.20
         }
       }),
@@ -281,6 +289,10 @@ defmodule BeamWeaver.Models.ProfileRegistry.XAI do
           input_price_per_mtok: 1.25,
           cached_input_price_per_mtok: 0.20,
           output_price_per_mtok: 2.50,
+          higher_context_pricing_threshold_tokens: 200_000,
+          higher_context_input_price_per_mtok: 2.50,
+          higher_context_cached_input_price_per_mtok: 0.40,
+          higher_context_output_price_per_mtok: 5.00,
           batch_discount_rate: 0.20
         }
       }),
@@ -317,7 +329,11 @@ defmodule BeamWeaver.Models.ProfileRegistry.XAI do
         extra: %{
           input_price_per_mtok: 1.00,
           cached_input_price_per_mtok: 0.20,
-          output_price_per_mtok: 2.00
+          output_price_per_mtok: 2.00,
+          higher_context_pricing_threshold_tokens: 200_000,
+          higher_context_input_price_per_mtok: 2.00,
+          higher_context_cached_input_price_per_mtok: 0.40,
+          higher_context_output_price_per_mtok: 4.00
         }
       }),
     {:xai, "grok-4.20-multi-agent-0309"} =>
@@ -354,6 +370,10 @@ defmodule BeamWeaver.Models.ProfileRegistry.XAI do
           input_price_per_mtok: 1.25,
           cached_input_price_per_mtok: 0.20,
           output_price_per_mtok: 2.50,
+          higher_context_pricing_threshold_tokens: 200_000,
+          higher_context_input_price_per_mtok: 2.50,
+          higher_context_cached_input_price_per_mtok: 0.40,
+          higher_context_output_price_per_mtok: 5.00,
           batch_discount_rate: 0.20
         }
       }),
@@ -368,7 +388,10 @@ defmodule BeamWeaver.Models.ProfileRegistry.XAI do
         tokenizer: :o200k_base,
         extra: %{
           api_family: :embeddings,
-          embedding_model: true
+          embedding_model: true,
+          pricing_status: :not_listed_in_public_pricing,
+          pricing_last_checked: "2026-08-27",
+          pricing_source_url: "https://docs.x.ai/developers/pricing"
         }
       })
   }

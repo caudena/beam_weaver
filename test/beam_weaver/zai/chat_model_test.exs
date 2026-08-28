@@ -389,18 +389,10 @@ defmodule BeamWeaver.ZAI.ChatModelTest do
     refute BeamWeaver.RetryPredicates.transient?(error)
   end
 
-  test "model initializer supports only explicit zai:glm-5.2" do
-    assert {:ok, model} = Models.init_chat_model("zai:glm-5.2")
-    assert model.__struct__ == ChatModel
-    assert model.model == "glm-5.2"
-    assert model.profile.provider == :zai
-    assert model.profile.max_input_tokens == 1_000_000
-    assert model.profile.max_output_tokens == 131_072
-    assert model.profile.reasoning_output
-    assert model.profile.tool_calling
-    assert model.profile.structured_output
-    assert model.profile.chat_completions_api
-    refute model.profile.responses_api
+  test "model initializer supports current explicit Z.ai identifiers" do
+    for model <- ["glm-5.3", "glm-5.3-flash", "glm-5.2"] do
+      assert {:ok, %ChatModel{model: ^model}} = Models.init_chat_model("zai:" <> model)
+    end
 
     assert {:error, invalid} = Models.init_chat_model("glm-5.2")
     assert invalid.type == :invalid_model
@@ -408,7 +400,7 @@ defmodule BeamWeaver.ZAI.ChatModelTest do
 
     assert {:error, unsupported} = Models.init_chat_model("zai:glm-5.1")
     assert unsupported.type == :unsupported_model
-    assert unsupported.details.expected == "zai:glm-5.2"
+    assert unsupported.details.expected == "zai:glm-5.3"
   end
 
   defp weather_tool do

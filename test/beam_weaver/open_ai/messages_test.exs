@@ -33,6 +33,36 @@ defmodule BeamWeaver.OpenAI.MessagesTest do
            ]
   end
 
+  test "converts portable multimodal tool results into Responses function output parts" do
+    assert {:ok, input} =
+             Messages.to_responses_input([
+               Message.tool(
+                 [
+                   ContentBlock.text("browser observation"),
+                   ContentBlock.image(%{
+                     data: "png-bytes",
+                     mime_type: "image/png"
+                   })
+                 ],
+                 tool_call_id: "call_browser"
+               )
+             ])
+
+    assert input == [
+             %{
+               "type" => "function_call_output",
+               "call_id" => "call_browser",
+               "output" => [
+                 %{"type" => "input_text", "text" => "browser observation"},
+                 %{
+                   "type" => "input_image",
+                   "image_url" => "data:image/png;base64,png-bytes"
+                 }
+               ]
+             }
+           ]
+  end
+
   test "rejects tool messages that cannot be linked back to a function call" do
     assert {:error, error} = Messages.to_responses_input([Message.tool("orphaned")])
     assert error.type == :invalid_tool_message

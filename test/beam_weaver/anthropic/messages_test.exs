@@ -80,6 +80,56 @@ defmodule BeamWeaver.Anthropic.MessagesTest do
     assert repeated_result["tool_use_id"] == tool_use["id"]
   end
 
+  test "normalizes portable image blocks nested in generic tool results" do
+    tool_result =
+      Message.tool(
+        [
+          ContentBlock.text("captured"),
+          ContentBlock.image(%{data: "QUJD", mime_type: "image/png"})
+        ],
+        tool_call_id: "toolu_screenshot"
+      )
+
+    assert {:ok, {_system, [%{"role" => "user", "content" => [result]}]}} =
+             Messages.format_messages([tool_result])
+
+    assert result == %{
+             "type" => "tool_result",
+             "tool_use_id" => "toolu_screenshot",
+             "is_error" => false,
+             "content" => [
+               %{"type" => "text", "text" => "captured"},
+               %{
+                 "type" => "image",
+                 "source" => %{
+                   "type" => "base64",
+                   "media_type" => "image/png",
+                   "data" => "QUJD"
+                 }
+               }
+             ]
+           }
+  end
+
+  test "preserves provider-native tool result content when no portable override is present" do
+    message = %Message{
+      role: :user,
+      content: [
+        %{
+          type: :tool_result,
+          raw_provider_block: %{
+            "type" => "tool_result",
+            "tool_use_id" => "toolu_native",
+            "content" => "provider-native result"
+          }
+        }
+      ]
+    }
+
+    assert {:ok, {_system, [%{"content" => [result]}]}} = Messages.format_messages([message])
+    assert result["content"] == "provider-native result"
+  end
+
   test "formats image and document blocks for Anthropic" do
     assert {:ok, {_system, [%{"content" => content}]}} =
              Messages.format_messages([

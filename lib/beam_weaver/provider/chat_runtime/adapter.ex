@@ -11,12 +11,13 @@ defmodule BeamWeaver.Provider.ChatRuntime.Adapter do
   alias BeamWeaver.Core.Message
 
   @type request_fun :: (term(), [Message.t()], keyword() -> {:ok, map()} | {:error, Error.t() | term()})
-  @type provider_fun :: (term(), map(), keyword() -> {:ok, term()} | {:error, Error.t() | term()})
+  @type request_body :: map() | binary()
+  @type provider_fun :: (term(), request_body(), keyword() -> {:ok, term()} | {:error, Error.t() | term()})
   @type decode_fun :: (term(), keyword() -> {:ok, Message.t()} | {:error, Error.t() | term()})
   @type parse_fun ::
           (Message.t(), keyword() -> {:ok, Message.t()} | {:error, Error.t() | term()})
           | (term(), Message.t(), keyword() -> {:ok, Message.t()} | {:error, Error.t() | term()})
-  @type metadata_fun :: (term(), map(), keyword() -> map())
+  @type metadata_fun :: (term(), request_body(), keyword() -> map())
 
   @enforce_keys [:request, :invoke, :stream, :stream_response, :decode]
   defstruct [
@@ -25,6 +26,7 @@ defmodule BeamWeaver.Provider.ChatRuntime.Adapter do
     :stream,
     :stream_response,
     :stream_events,
+    :exact_stream_events,
     :decode,
     :parse,
     :metadata,
@@ -37,6 +39,7 @@ defmodule BeamWeaver.Provider.ChatRuntime.Adapter do
           stream: provider_fun(),
           stream_response: provider_fun(),
           stream_events: provider_fun() | nil,
+          exact_stream_events: provider_fun() | nil,
           decode: decode_fun(),
           parse: parse_fun() | nil,
           metadata: metadata_fun() | nil,

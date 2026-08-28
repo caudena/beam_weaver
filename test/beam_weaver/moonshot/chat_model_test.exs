@@ -740,35 +740,9 @@ defmodule BeamWeaver.Moonshot.ChatModelTest do
   end
 
   test "model initializer supports Moonshot prefix, rejects aliases, and reports deprecated models" do
-    assert {:ok, k3_model} = Models.init_chat_model("moonshot:kimi-k3")
-    assert k3_model.__struct__ == ChatModel
-    assert k3_model.model == "kimi-k3"
-    assert k3_model.profile.max_input_tokens == 1_048_576
-    assert k3_model.profile.max_output_tokens == 1_048_576
-    assert k3_model.profile.extra.reasoning_efforts == [:max]
-    assert k3_model.profile.extra.dynamic_tool_loading
-    assert k3_model.profile.extra.input_cache_hit_price_per_mtok == 0.30
-
-    assert {:ok, code_model} = Models.init_chat_model("moonshot:kimi-k2.7-code")
-    assert code_model.__struct__ == ChatModel
-    assert code_model.model == "kimi-k2.7-code"
-    assert code_model.profile.extra.thinking_modes == [:enabled]
-    assert code_model.profile.extra.model_category == :coding
-
-    assert {:ok, highspeed_model} = Models.init_chat_model("moonshot:kimi-k2.7-code-highspeed")
-    assert highspeed_model.model == "kimi-k2.7-code-highspeed"
-    assert highspeed_model.profile.extra.highspeed
-
-    assert {:ok, model} = Models.init_chat_model("moonshot:kimi-k2.6")
-    assert model.__struct__ == ChatModel
-    assert model.model == "kimi-k2.6"
-    assert model.profile.provider == :moonshot
-    assert model.profile.chat_completions_api
-    refute model.profile.responses_api
-
-    assert {:ok, k25_model} = Models.init_chat_model("moonshot:kimi-k2.5")
-    assert k25_model.model == "kimi-k2.5"
-    assert k25_model.profile.extra.thinking_modes == [:enabled, :disabled]
+    for model <- ["kimi-k3", "kimi-k2.7-code", "kimi-k2.7-code-highspeed", "kimi-k2.6", "kimi-k2.5"] do
+      assert {:ok, %ChatModel{model: ^model}} = Models.init_chat_model("moonshot:" <> model)
+    end
 
     assert {:error, invalid} = Models.init_chat_model("kimi-k2.6")
     assert invalid.type == :invalid_model

@@ -23,14 +23,15 @@ defmodule BeamWeaver.Compaction.Engine do
   def compact(_agent_state, %Request{} = request) do
     with {:ok, request} <- Request.new(request),
          :ok <- portable(request),
-         {:ok, before} <- budget(request, request.rendered_request),
+         {:ok, before} <- initial_budget(request),
+         {:ok, request} <- rebase_accounting(request, before),
          :ok <- eligible(request, before),
          {:ok, prefix, tail, projected, manifest, projected_budget} <- project(request, before),
          {:continue, prefix} <-
            maybe_pruned(request, before, projected_budget, prefix, tail, projected, manifest),
          {:ok, semantic, usage} <- summarize(request, before, prefix),
-         {:ok, final_bytes} <- render(request, semantic, tail),
-         {:ok, after_budget} <- budget(request, final_bytes),
+         {:ok, final_bytes, final_categories} <- render(request, semantic, tail),
+         {:ok, after_budget} <- budget(request, final_bytes, final_categories),
          :ok <- effective(request, before, after_budget),
          checkpoint <- checkpoint(request, :portable, semantic, tail, manifest, before, after_budget, usage) do
       {:ok, result(:compacted, checkpoint, request.events, tail, before, after_budget, usage)}
@@ -57,9 +58,15 @@ defmodule BeamWeaver.Compaction.Engine do
     suppression = State.auto_suppression(request.anti_thrash, request.policy)
 
     cond do
-      request.trigger == :auto and suppression != nil -> {:skip, suppression, before}
-      request.trigger == :auto and before.estimated_tokens < before.trigger_tokens -> {:skip, :below_trigger, before}
-      true -> :ok
+      request.trigger == :auto and not request.structural_pressure and suppression != nil ->
+        {:skip, suppression, before}
+
+      request.trigger == :auto and not request.structural_pressure and
+          before.estimated_tokens < before.trigger_tokens ->
+        {:skip, :below_trigger, before}
+
+      true ->
+        :ok
     end
   end
 
@@ -75,8 +82,8 @@ defmodule BeamWeaver.Compaction.Engine do
 
     with {:ok, projected_prefix, manifest} <- ToolProjection.project(prefix, protected),
          projected <- projected_prefix ++ tail,
-         {:ok, bytes} <- render(request, request.previous_semantic, projected),
-         {:ok, projected_budget} <- budget(request, bytes) do
+         {:ok, bytes, categories} <- render(request, request.previous_semantic, projected),
+         {:ok, projected_budget} <- budget(request, bytes, categories) do
       {:ok, projected_prefix, tail, projected, manifest, projected_budget}
     end
   end
@@ -197,7 +204,12 @@ defmodule BeamWeaver.Compaction.Engine do
            Validator.validate(semantic, events,
              coverage: coverage,
              maximum_bytes: request.policy.semantic_max_bytes,
-             lineage_event_ids: lineage_event_ids
+             lineage_event_ids: lineage_event_ids,
+             lineage_artifact_refs:
+               case request.previous_semantic do
+                 %Semantic{} = previous -> previous.artifact_refs
+                 nil -> []
+               end
            ) do
       {:ok, semantic}
     end
@@ -312,7 +324,11 @@ defmodule BeamWeaver.Compaction.Engine do
       rehydration_state_hash: request.rehydration_state.hash,
       provider_connection_id: request.provider_connection_id,
       destination_identity_hash: request.destination_identity_hash,
-      token_counter: before.method,
+      accounting_method: before.method,
+      accounting_version: before.version,
+      accounting_profile_hash: before.profile_hash,
+      category_bytes: before.category_bytes,
+      category_tokens: before.categories,
       tokens_before: before.estimated_tokens,
       tokens_after: after_budget.estimated_tokens,
       tokens_reclaimed: before.estimated_tokens - after_budget.estimated_tokens,
@@ -369,7 +385,10 @@ defmodule BeamWeaver.Compaction.Engine do
   defp render(request, semantic, events) do
     case request.render.(semantic, events) do
       {:ok, bytes} when is_binary(bytes) ->
-        {:ok, bytes}
+        {:ok, bytes, %{}}
+
+      {:ok, bytes, categories} when is_binary(bytes) and is_map(categories) ->
+        {:ok, bytes, categories}
 
       {:error, %Error{}} = error ->
         error
@@ -386,11 +405,41 @@ defmodule BeamWeaver.Compaction.Engine do
       {:error, Error.new(:compaction_render_error, "context renderer raised", %{exception: Exception.message(error)})}
   end
 
-  defp budget(request, bytes) do
+  defp initial_budget(request) do
+    accounting = request.accounting
+
+    budget(
+      request,
+      request.rendered_request,
+      nil,
+      value(accounting, :reported_input_tokens, 0)
+    )
+  end
+
+  defp budget(request, bytes, categories), do: budget(request, bytes, categories, 0)
+
+  defp budget(request, bytes, categories, reported_input_tokens) do
+    accounting = request.accounting
+
     ContextBudget.new(request.model_profile, bytes,
       trigger_ratio: request.policy.trigger_ratio,
-      requested_max_output_tokens: request.requested_max_output_tokens
+      requested_max_output_tokens: request.requested_max_output_tokens,
+      categories: categories || value(accounting, :category_bytes, %{}),
+      accounting_method: value(accounting, :method, :conservative_utf8),
+      reported_input_tokens: reported_input_tokens,
+      profile_hash: value(accounting, :profile_hash)
     )
+  end
+
+  defp rebase_accounting(request, budget) do
+    with {:ok, state} <-
+           State.rebase_accounting(request.anti_thrash, %{
+             method: budget.method,
+             version: budget.version,
+             profile_hash: budget.profile_hash
+           }) do
+      {:ok, %{request | anti_thrash: state}}
+    end
   end
 
   defp summary_output_tokens(request, before) do
@@ -404,6 +453,10 @@ defmodule BeamWeaver.Compaction.Engine do
 
   defp profile_value(%{} = profile, key), do: Map.get(profile, key, Map.get(profile, Atom.to_string(key)))
   defp profile_value(_profile, _key), do: nil
+
+  defp value(map, key, default \\ nil),
+    do: Map.get(map, key, Map.get(map, Atom.to_string(key), default))
+
   defp clamp(value, minimum, maximum), do: value |> max(minimum) |> min(maximum)
   defp error_map(error), do: %{type: error.type, message: error.message, details: error.details}
 end

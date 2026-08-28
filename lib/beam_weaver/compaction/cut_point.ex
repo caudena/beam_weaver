@@ -103,7 +103,18 @@ defmodule BeamWeaver.Compaction.CutPoint do
   end
 
   defp tool_call_ids(%InputEvent{tool: %{} = tool}) do
-    [Map.get(tool, :call_id), Map.get(tool, "call_id")]
+    direct = [Map.get(tool, :call_id), Map.get(tool, "call_id")]
+
+    nested =
+      tool
+      |> Map.get(:calls, Map.get(tool, "calls", []))
+      |> List.wrap()
+      |> Enum.flat_map(fn
+        call when is_map(call) -> [Map.get(call, :call_id), Map.get(call, "call_id")]
+        _call -> []
+      end)
+
+    (direct ++ nested)
     |> Enum.reject(&is_nil/1)
     |> Enum.uniq()
   end

@@ -22,6 +22,7 @@ defmodule BeamWeaver.OpenAI.ChatModel do
             api_key: nil,
             organization: nil,
             project: nil,
+            default_headers: [],
             model_kwargs: %{},
             reasoning: nil,
             reasoning_effort: nil,
@@ -60,6 +61,7 @@ defmodule BeamWeaver.OpenAI.ChatModel do
           api_key: String.t() | (-> String.t() | nil) | nil,
           organization: String.t() | nil,
           project: String.t() | nil,
+          default_headers: [{String.t(), String.t()}],
           model_kwargs: map(),
           reasoning: map() | nil,
           reasoning_effort: atom() | String.t() | nil,
@@ -160,6 +162,7 @@ defmodule BeamWeaver.OpenAI.ChatModel do
       api_key: model.api_key,
       organization: model.organization,
       project: model.project,
+      default_headers: model.default_headers,
       transport: model.transport,
       transport_opts: model.transport_opts,
       timeout: model.timeout
@@ -181,6 +184,9 @@ defmodule BeamWeaver.OpenAI.ChatModel do
         Client.responses_stream_response(client(model), body, opts)
       end,
       stream_events: fn model, body, opts ->
+        Client.responses_stream_typed_events(client(model), body, opts)
+      end,
+      exact_stream_events: fn model, body, opts ->
         Client.responses_stream_typed_events(client(model), body, opts)
       end,
       decode: fn response, _opts -> Messages.response_to_message(response) end,

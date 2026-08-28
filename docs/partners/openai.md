@@ -112,13 +112,17 @@ three profiles expose a 1.05M-token context window, 128K maximum output, text
 and image input, Responses and Chat Completions, function calling, structured
 output, streaming, and the current OpenAI built-in tool catalog.
 
-Standard short-context prices per million tokens, effective July 30, 2026, are:
+Current short-context prices per million tokens are:
 
 | Model | Input | Cached input | Cache write | Output |
 | --- | ---: | ---: | ---: | ---: |
-| `gpt-5.6-sol` | $5.00 | $0.50 | $6.25 | $30.00 |
+| `gpt-5.6-sol` | $4.00 | $0.40 | $5.00 | $20.00 |
 | `gpt-5.6-terra` | $2.00 | $0.20 | $2.50 | $12.00 |
 | `gpt-5.6-luna` | $0.20 | $0.02 | $0.25 | $1.20 |
+
+The Sol row is promotional through November 21, 2026. Its checked-in regular
+rates remain $5.00 input, $0.50 cached input, and $30.00 output per million
+tokens; the corresponding regular cache-write rate is $6.25.
 
 Requests above 272K input tokens use OpenAI's higher-context rates: 2x input
 and 1.5x output for the full request. GPT-5.6 cache writes cost 1.25x uncached
@@ -160,6 +164,34 @@ transport when this combination is invalid and points callers to Responses.
 OpenAI's programmatic tool calling and hosted multi-agent beta are recorded as
 provider capabilities in profile metadata. BeamWeaver does not yet provide
 dedicated request/response helpers for those two hosted orchestration surfaces.
+
+## Codex-Flavoured Responses Contracts
+
+`BeamWeaver.OpenAI.CodexResponses` contains pure helpers for an embedding
+application that has already admitted a Codex-flavoured Responses endpoint and
+authentication principal. It does not obtain, refresh, persist, or authorize an
+access token and does not choose an endpoint.
+
+```elixir
+headers = BeamWeaver.OpenAI.CodexResponses.headers(access_token)
+
+request_opts =
+  BeamWeaver.OpenAI.CodexResponses.request_options(
+    reasoning: %{effort: "high", summary: "auto"}
+  )
+
+{:ok, body} =
+  BeamWeaver.OpenAI.CodexResponses.normalize_body(rendered_body,
+    maximum_body_bytes: 8_388_608
+  )
+```
+
+The helpers enforce `store: false`, request encrypted reasoning content by
+default, remove unsupported output/tool-count limits, avoid an empty `tools`
+array, and canonicalize controlled atom/string keys without emitting duplicate
+wire parameters. `headers/2` emits only the compatibility headers and, when the
+JWT claim is present, the ChatGPT account ID; bearer authorization remains the
+caller's responsibility. Invalid or oversized bodies fail before transport.
 
 ## Replay Usage
 

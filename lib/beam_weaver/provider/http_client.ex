@@ -48,15 +48,18 @@ defmodule BeamWeaver.Provider.HTTPClient do
     |> do_request(client, opts)
   end
 
+  @type json_body :: map() | binary()
+
   @spec stream_sse(
           t(),
-          map(),
+          json_body(),
           keyword(),
           ([map()] -> [term()]),
           Streaming.error_decoder()
         ) :: {:ok, Enumerable.t()}
   def stream_sse(%__MODULE__{} = client, body, opts, parser, error_decoder)
-      when is_map(body) and is_function(parser, 1) and is_function(error_decoder, 1) do
+      when (is_map(body) or is_binary(body)) and is_function(parser, 1) and
+             is_function(error_decoder, 1) do
     request = request(client, body, opts)
 
     stream =
@@ -72,10 +75,10 @@ defmodule BeamWeaver.Provider.HTTPClient do
     {:ok, stream}
   end
 
-  @spec collect_sse(t(), map(), keyword(), Streaming.error_decoder()) ::
+  @spec collect_sse(t(), json_body(), keyword(), Streaming.error_decoder()) ::
           {:ok, term()} | {:error, term()}
   def collect_sse(%__MODULE__{} = client, body, opts, decoder)
-      when is_map(body) and is_function(decoder, 1) do
+      when (is_map(body) or is_binary(body)) and is_function(decoder, 1) do
     request = request(client, body, opts)
 
     Streaming.collect(
@@ -86,16 +89,23 @@ defmodule BeamWeaver.Provider.HTTPClient do
     )
   end
 
-  @spec request(t(), map(), keyword()) :: Request.t()
-  def request(%__MODULE__{} = client, body, opts \\ []) when is_map(body) do
+  @spec request(t(), json_body(), keyword()) :: Request.t()
+  def request(%__MODULE__{} = client, body, opts \\ []) when is_map(body) or is_binary(body) do
     timeout = Keyword.get(opts, :timeout, client.timeout)
 
+    request_options =
+      [
+        method: :post,
+        url: Keyword.get(opts, :endpoint, client.endpoint),
+        headers: headers(client, opts),
+        options: [timeout: timeout]
+      ]
+
     Request.new(
-      method: :post,
-      url: Keyword.get(opts, :endpoint, client.endpoint),
-      headers: headers(client, opts),
-      json: body,
-      options: [timeout: timeout]
+      if(is_binary(body),
+        do: Keyword.put(request_options, :body, body),
+        else: Keyword.put(request_options, :json, body)
+      )
     )
   end
 

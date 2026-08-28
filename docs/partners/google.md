@@ -24,13 +24,16 @@ BeamWeaver includes a Gemini Developer API provider under `BeamWeaver.Google`.
   entries are dereferenced, unsupported JSON Schema annotation/object keywords
   such as `$defs`, `title`, `default`, and `additionalProperties` are removed,
   and nested property schemas are cleaned recursively.
-- `google:gemini-3.7-flash`, `google:gemini-3.6-flash`, and
-  `google:gemini-3.5-flash-lite` are checked in
-  with Google's published text-only output profiles. All three accept text,
-  image, video, audio, and PDF input and support thinking, structured output,
-  function calling, code execution, File Search, Google Maps grounding, Search
-  grounding, URL context, computer use, caching, batch, flex, and priority
-  inference. Computer use is currently a preview capability.
+- Checked-in profiles include `google:gemini-3.7-flash`,
+  `google:gemini-3.6-flash`, `google:gemini-3.5-flash`,
+  `google:gemini-3.5-flash-lite`, `google:gemini-3.1-flash-lite`, and
+  `google:gemini-3.1-pro-preview`. They accept text, image, video, audio, and PDF
+  input and support thinking, structured output, function calling, caching,
+  batch, flex, and priority inference.
+- Built-in tools are profile-qualified. The 3.7, 3.6, 3.5, and 3.5 Flash-Lite
+  profiles include preview computer use. Gemini 3.1 Flash-Lite and 3.1 Pro
+  Preview explicitly do not; callers get profile validation rather than a
+  provider-side surprise.
 - These models use `thinking_level` instead of `thinking_budget`. Gemini 3.7
   Flash supports `low`, `medium`, and `high` and defaults to `medium`; Gemini
   3.6 Flash also defaults to `medium`, while Gemini 3.5 Flash-Lite defaults to
@@ -46,11 +49,10 @@ BeamWeaver includes a Gemini Developer API provider under `BeamWeaver.Google`.
 - Streaming supports text deltas, typed stream envelopes, and reconstructed
   final assistant messages.
 - Checked-in model profiles cover current recommended Gemini chat models.
-  Deprecated or near-shutdown models such as Gemini 2.0 Flash, Gemini 2.5
-  Flash, Gemini 2.5 Pro, and Gemini 3 Flash Preview are rejected with a
-  `:deprecated_model` error and replacement metadata; explicit
-  `google:gemini-*` identifiers still use the family fallback for uncataloged
-  current model IDs.
+  Stable Gemini 2.5 Pro, Flash, and Flash-Lite identifiers remain accepted
+  through the explicit `google:gemini-*` family fallback. Retired preview
+  variants, Gemini 2.0 Flash, and Gemini 3 Flash Preview return a
+  `:deprecated_model` error with replacement and shutdown metadata.
 - Gemini 3.5 Flash Cyber is not registered as a callable chat model. Google
   limits it to governments and trusted partners through CodeMender rather than
   exposing it through the Gemini Developer API, so its slug returns an
@@ -62,15 +64,24 @@ BeamWeaver includes a Gemini Developer API provider under `BeamWeaver.Google`.
 
 Prices are USD per one million tokens for the Gemini Developer API. Cached
 input is the context-caching token price. Gemini 3.7 Flash and 3.6 Flash use
-Google's published pricing. The 3.7 Flash entry uses its introductory pricing
+Google's current introductory pricing. The 3.7 Flash entry uses that pricing
 through December 31, 2026; its standard rates double on January 1, 2027. Its
 introductory cache storage price is $0.50 per one million tokens per hour.
 
 | BeamWeaver ID | Input / output limit | Standard input / cached input / output | Batch and flex input / cached input / output | Priority input / cached input / output |
 | --- | --- | --- | --- | --- |
 | `google:gemini-3.7-flash` | 1,048,576 / 65,536 | $0.75 / $0.075 / $3.75 | $0.375 / $0.0375 / $1.875 | $1.35 / $0.135 / $6.75 |
-| `google:gemini-3.6-flash` | 1,048,576 / 65,536 | $1.50 / $0.15 / $7.50 | $0.75 / $0.075 / $3.75 | $2.70 / $0.27 / $13.50 |
+| `google:gemini-3.6-flash` | 1,048,576 / 65,536 | $0.75 / $0.075 / $3.75 | $0.375 / $0.0375 / $1.875 | $1.35 / $0.135 / $6.75 |
+| `google:gemini-3.5-flash` | 1,048,576 / 65,536 | $1.50 / $0.15 / $9.00 | $0.75 / $0.075 / $4.50 | $2.70 / $0.27 / $16.20 |
 | `google:gemini-3.5-flash-lite` | 1,048,576 / 65,536 | $0.30 / $0.03 / $2.50 | $0.15 / $0.02 / $1.25 | $0.54 / $0.05 / $4.50 |
+| `google:gemini-3.1-flash-lite` | 1,048,576 / 65,536 | $0.25 / $0.025 / $1.50 | $0.125 / $0.0125 / $0.75 | $0.45 / $0.045 / $2.70 |
+
+For Gemini 3.1 Flash-Lite, audio input is priced separately at $0.50 standard,
+$0.25 batch/flex, and $0.90 priority per million audio tokens. Cached audio
+input is $0.05, $0.025, and $0.09 respectively. Standard cache storage is $1.00
+per million tokens per hour and priority storage is $1.80. The profile records
+a scheduled shutdown on May 7, 2027 with Gemini 3.5 Flash-Lite as its
+recommended replacement.
 
 From January 1, 2027, Gemini 3.7 Flash standard input, cached input, and output
 rates become $1.50, $0.15, and $7.50 respectively. See the live pricing page

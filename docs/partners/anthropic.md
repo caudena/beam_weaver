@@ -34,6 +34,9 @@ BeamWeaver includes a direct Anthropic Messages API provider under
 - Deprecated or retired Claude IDs return tagged `:deprecated_model` errors
   with `:replacement`, `:expected`, and retirement metadata instead of falling
   through to the family fallback.
+- `claude-opus-4-1-20250805` is retired as of August 5, 2026 and resolves to a
+  tagged replacement error naming `claude-opus-4-8`; it is no longer an active
+  checked-in profile.
 - Request builders include Anthropic spec fields such as `:cache_control`,
   `:container`, `:metadata`, `:service_tier`, `:diagnostics`, `:speed`,
   `:user_profile_id`, `:inference_geo`, `:context_management`, `:mcp_servers`,
@@ -55,6 +58,10 @@ BeamWeaver includes a direct Anthropic Messages API provider under
   use `thinking: %{type: :adaptive}` with `effort: :high`, `:xhigh`, or `:max`.
   BeamWeaver records the requested effort and Anthropic usage details in trace
   metadata for WeaveScope ingestion.
+- Current Opus 4.5, Sonnet 4.5, and Haiku 4.5 profiles carry standard,
+  cache-read, five-minute and one-hour cache-write, batch, and retirement-floor
+  pricing metadata so exact usage accounting does not have to infer those
+  dimensions from a family default.
 
 ## Usage
 

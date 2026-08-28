@@ -25,6 +25,8 @@ defmodule BeamWeaver.Checkpoint.Ecto do
   alias BeamWeaver.Checkpoint.Ecto.Query
   alias BeamWeaver.Checkpoint.Lineage
   alias BeamWeaver.Checkpoint.PendingWrite
+  alias BeamWeaver.Checkpoint.ResumeDelivery
+  alias BeamWeaver.Checkpoint.ResumeDelivery.{CommitReceipt, StageReceipt}
   alias BeamWeaver.Checkpoint.Saver
   alias BeamWeaver.Core.Error
 
@@ -251,6 +253,53 @@ defmodule BeamWeaver.Checkpoint.Ecto do
   end
 
   @impl true
+  def continue_staged(
+        %__MODULE__{} = saver,
+        %StageReceipt{delivery: %ResumeDelivery{}, source_config: source_config} = stage
+      )
+      when is_map(source_config) or is_list(source_config) do
+    configurable = Checkpoint.configurable(stage.source_config)
+    thread_id = configurable["thread_id"]
+    namespace = Map.get(configurable, "checkpoint_ns", "")
+    source_id = stage.delivery.source_checkpoint_id
+    result_id = ResumeDelivery.result_checkpoint_id(stage.delivery)
+    result_config = exact_config(stage.source_config, result_id)
+
+    transaction(saver, fn ->
+      with :ok <- Checkpoint.verify_stage_receipt(stage),
+           true <- is_binary(thread_id),
+           :ok <- lock_owner(saver, thread_id, namespace) do
+        case Listing.fetch_tuple(saver, result_config) do
+          {:ok, %{checkpoint: checkpoint}} ->
+            if committed_delivery_present?(checkpoint, stage) do
+              committed_receipt(saver, stage, result_config)
+            else
+              {:error, Error.new(:invalid_resume_receipt, "resume checkpoint is missing delivery")}
+            end
+
+          {:ok, nil} ->
+            with {:ok, latest_id} <- latest_checkpoint_id(saver, thread_id, namespace) do
+              if latest_id == source_id do
+                commit_staged_resume(saver, stage, result_id)
+              else
+                {:error, Error.new(:checkpoint_conflict, "resume source checkpoint is not current")}
+              end
+            end
+
+          {:error, _reason} = error ->
+            error
+        end
+      else
+        false -> {:error, Error.new(:invalid_checkpoint, "checkpoint config requires thread_id")}
+        {:error, _reason} = error -> error
+      end
+    end)
+  end
+
+  def continue_staged(%__MODULE__{}, %StageReceipt{}),
+    do: {:error, Error.new(:invalid_resume_receipt, "resume stage receipt does not verify")}
+
+  @impl true
   def get_delta_channel_history(%__MODULE__{} = saver, config, channel_names, opts) do
     DeltaHistory.get(saver, config, channel_names, opts)
   end
@@ -279,6 +328,145 @@ defmodule BeamWeaver.Checkpoint.Ecto do
 
   defp latest_checkpoint_id(saver, thread_id, namespace),
     do: Listing.latest_checkpoint_id_result(saver, thread_id, namespace)
+
+  defp commit_staged_resume(saver, %StageReceipt{} = stage, result_id) do
+    with {:ok, %{checkpoint: source_checkpoint} = source_tuple} <-
+           Listing.fetch_tuple(saver, stage.source_config),
+         true <- staged_resume_present?(source_tuple, stage),
+         checkpoint <- resumed_checkpoint(saver, source_checkpoint, stage, result_id),
+         versions <- Map.get(checkpoint, "channel_versions", %{}),
+         {:ok, result_config} <-
+           put_in_current_transaction(
+             saver,
+             stage.source_config,
+             checkpoint,
+             %{
+               "source" => "resume_delivery",
+               "delivery_id" => stage.delivery.delivery_id,
+               "claim_hash" => stage.claim_hash
+             },
+             versions
+           ),
+         :ok <- copy_unrelated_pending_writes(saver, source_tuple, result_config, stage),
+         {:ok, receipt} <- committed_receipt(saver, stage, result_config) do
+      {:ok, receipt}
+    else
+      false ->
+        {:error, Error.new(:resume_delivery_not_staged, "resume delivery was not staged")}
+
+      {:ok, _missing} ->
+        {:error, Error.new(:resume_delivery_not_staged, "resume source checkpoint is missing")}
+
+      {:error, _reason} = error ->
+        error
+    end
+  end
+
+  defp committed_receipt(saver, %StageReceipt{} = stage, result_config) do
+    with {:ok, %{checkpoint: checkpoint}} <- Listing.fetch_tuple(saver, result_config),
+         true <- committed_delivery_present?(checkpoint, stage) do
+      checkpoint_hash = Checkpoint.resume_checkpoint_hash(checkpoint)
+
+      receipt = %CommitReceipt{
+        delivery_id: stage.delivery.delivery_id,
+        source_checkpoint_id: stage.delivery.source_checkpoint_id,
+        resulting_config: result_config,
+        resulting_checkpoint_id: checkpoint["id"],
+        claim_hash: stage.claim_hash,
+        checkpoint_hash: checkpoint_hash,
+        receipt_hash: ""
+      }
+
+      receipt = %{receipt | receipt_hash: Checkpoint.commit_receipt_hash(receipt)}
+      {:ok, receipt}
+    else
+      false -> {:error, Error.new(:invalid_resume_receipt, "resume checkpoint is missing delivery")}
+      {:ok, _missing} -> {:error, Error.new(:invalid_resume_receipt, "resume checkpoint is missing")}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp resumed_checkpoint(saver, source_checkpoint, %StageReceipt{} = stage, result_id) do
+    channel = Checkpoint.resume_channel()
+    channel_values = Map.get(source_checkpoint, "channel_values", %{})
+
+    delivered = %{
+      "delivery_id" => stage.delivery.delivery_id,
+      "source_ordinal" => stage.delivery.source_ordinal,
+      "claim_hash" => stage.claim_hash,
+      "delivery" => ResumeDelivery.to_map(stage.delivery)
+    }
+
+    deliveries = List.wrap(Map.get(channel_values, channel)) ++ [delivered]
+
+    source_checkpoint
+    |> Map.drop(["ts", "checkpoint_map"])
+    |> Map.put("id", result_id)
+    |> Map.put("channel_values", Map.put(channel_values, channel, deliveries))
+    |> update_in(["channel_versions"], fn versions ->
+      versions = versions || %{}
+      Map.put(versions, channel, Saver.next_version(saver, Map.get(versions, channel), channel))
+    end)
+  end
+
+  defp staged_resume_present?(tuple, %StageReceipt{} = stage) do
+    Enum.any?(Map.get(tuple, :pending_write_records, []), fn write ->
+      write.task_id == ResumeDelivery.task_id(stage.delivery) and
+        write.channel == Checkpoint.resume_channel() and
+        write.value == ResumeDelivery.to_map(stage.delivery)
+    end)
+  end
+
+  defp committed_delivery_present?(checkpoint, %StageReceipt{} = stage) do
+    checkpoint
+    |> get_in(["channel_values", Checkpoint.resume_channel()])
+    |> List.wrap()
+    |> Enum.any?(fn delivered ->
+      delivered["delivery_id"] == stage.delivery.delivery_id and
+        delivered["claim_hash"] == stage.claim_hash and
+        delivered["delivery"] == ResumeDelivery.to_map(stage.delivery)
+    end)
+  end
+
+  defp copy_unrelated_pending_writes(saver, source_tuple, result_config, stage) do
+    source_tuple
+    |> Map.get(:pending_write_records, [])
+    |> Enum.reject(fn write ->
+      write.task_id == ResumeDelivery.task_id(stage.delivery) and
+        write.channel == Checkpoint.resume_channel()
+    end)
+    |> Enum.group_by(fn write -> {write.task_id, write.path} end)
+    |> Enum.sort_by(fn {{task_id, path}, _writes} -> {task_id, path} end)
+    |> Enum.reduce_while(:ok, fn {{task_id, path}, writes}, :ok ->
+      ordered_writes =
+        writes
+        |> Enum.sort_by(& &1.index)
+        |> Enum.map(&{&1.channel, &1.value})
+
+      case put_writes(saver, result_config, ordered_writes, task_id, path) do
+        :ok -> {:cont, :ok}
+        {:error, _reason} = error -> {:halt, error}
+      end
+    end)
+  end
+
+  defp exact_config(config, checkpoint_id) do
+    configurable = Checkpoint.configurable(config)
+    namespace = Map.get(configurable, "checkpoint_ns", "")
+
+    config
+    |> config_map()
+    |> Map.delete(:configurable)
+    |> Map.put(
+      "configurable",
+      configurable
+      |> Map.put("checkpoint_id", checkpoint_id)
+      |> Map.put("checkpoint_map", Config.checkpoint_map(configurable, namespace, checkpoint_id))
+    )
+  end
+
+  defp config_map(config) when is_list(config), do: Map.new(config)
+  defp config_map(config) when is_map(config), do: config
 
   defp insert_write_rows(_saver, []), do: :ok
 
