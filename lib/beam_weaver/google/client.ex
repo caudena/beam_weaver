@@ -96,7 +96,7 @@ defmodule BeamWeaver.Google.Client do
     )
   end
 
-  @spec stream_events(t(), String.t(), map(), keyword()) ::
+  @spec stream_events(t(), String.t(), map() | binary(), keyword()) ::
           {:ok, Enumerable.t()} | {:error, Error.t()}
   def stream_events(%__MODULE__{} = client, model, body, opts \\ []) do
     request = request(client, model, :stream_generate_content, body, opts)
@@ -114,14 +114,19 @@ defmodule BeamWeaver.Google.Client do
     {:ok, stream}
   end
 
-  @spec request(t(), String.t(), atom(), map(), keyword()) :: Request.t()
+  @spec request(t(), String.t(), atom(), map() | binary(), keyword()) :: Request.t()
   def request(%__MODULE__{} = client, model, action, body, opts \\ []) do
-    Request.new(
+    request_options = [
       method: :post,
       url: endpoint(client, model, action),
       headers: headers(client, opts),
-      json: body,
       options: [timeout: Keyword.get(opts, :timeout, client.timeout)]
+    ]
+
+    Request.new(
+      if is_binary(body),
+        do: Keyword.put(request_options, :body, body),
+        else: Keyword.put(request_options, :json, body)
     )
   end
 

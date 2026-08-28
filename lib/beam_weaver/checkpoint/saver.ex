@@ -43,6 +43,7 @@ defmodule BeamWeaver.Checkpoint.Saver do
             ) :: {:ok, config()} | {:error, term()}
   @callback put_many(saver(), [map()], keyword()) ::
               {:ok, [config()]} | {:error, term()}
+  @callback continue_staged(saver(), struct()) :: {:ok, struct()} | {:error, term()}
   @callback fork_at(saver(), config(), String.t(), keyword()) ::
               {:ok, config()} | {:error, term()}
   @callback get_delta_channel_history(saver(), config(), [String.t()], keyword()) :: map()
@@ -55,6 +56,7 @@ defmodule BeamWeaver.Checkpoint.Saver do
   @optional_callbacks fetch_tuple: 2,
                       list_result: 3,
                       put_checkpoint_with_writes: 7,
+                      continue_staged: 2,
                       put_many: 3,
                       fork_at: 4
 

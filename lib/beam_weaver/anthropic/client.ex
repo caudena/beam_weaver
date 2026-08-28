@@ -77,7 +77,8 @@ defmodule BeamWeaver.Anthropic.Client do
 
   @spec messages_stream_typed_events(t() | keyword(), map(), keyword()) ::
           {:ok, Enumerable.t()} | {:error, Error.t()}
-  def messages_stream_typed_events(client_or_opts, body, opts \\ []) when is_map(body) do
+  def messages_stream_typed_events(client_or_opts, body, opts \\ [])
+      when is_map(body) or is_binary(body) do
     client_or_opts
     |> normalize_client(opts)
     |> do_stream(body, opts, &Streaming.typed_events/1)

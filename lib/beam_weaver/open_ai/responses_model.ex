@@ -50,6 +50,11 @@ defmodule BeamWeaver.OpenAI.ResponsesModel do
   def stream_typed_events(%__MODULE__{} = model, messages, opts \\ []),
     do: ChatModel.stream_typed_events(to_chat_model(model), messages, opts)
 
+  @impl true
+  def stream_exact_typed_events(%__MODULE__{} = model, body, opts \\ [])
+      when is_binary(body),
+      do: ChatModel.stream_exact_typed_events(to_chat_model(model), body, opts)
+
   def async_stream_typed_events(%__MODULE__{} = model, messages, opts \\ []),
     do: ChatModel.async_stream_typed_events(to_chat_model(model), messages, opts)
 

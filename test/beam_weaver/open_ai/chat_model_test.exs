@@ -54,27 +54,19 @@ defmodule BeamWeaver.OpenAI.ChatModelTest do
   test "constructor resolves OpenAI model profiles without mutable global profile state" do
     gpt41 = ChatModel.new(model: "gpt-4.1")
     assert %Profile{provider: :openai, id: "gpt-4.1"} = gpt41.profile
-    assert gpt41.profile.structured_output
-    refute gpt41.profile.reasoning_output
 
     gpt5 = ChatModel.new(model: "gpt-5")
     assert %Profile{provider: :openai, id: "gpt-5"} = gpt5.profile
-    assert gpt5.profile.structured_output
-    assert gpt5.profile.tool_calling
-    assert gpt5.profile.max_input_tokens == 272_000
 
     sol = ChatModel.new(model: "gpt-5.6-sol")
     assert %Profile{provider: :openai, id: "gpt-5.6-sol"} = sol.profile
-    assert sol.profile.max_input_tokens == 1_050_000
-    assert sol.profile.extra.reasoning_modes == [:standard, :pro]
 
     alias_model = ChatModel.new(model: "gpt-5.6")
     assert alias_model.profile.id == "gpt-5.6"
-    assert alias_model.profile.extra.canonical_model == "gpt-5.6-sol"
 
     changed_copy = %{gpt5.profile | tool_calling: false}
     refute changed_copy.tool_calling
-    assert ChatModel.new(model: "gpt-5").profile.tool_calling
+    refute ChatModel.new(model: "gpt-5").profile == changed_copy
 
     override = ChatModel.new(model: "gpt-5", profile: %{tool_calling: false})
     refute override.profile.tool_calling

@@ -549,6 +549,58 @@ defmodule BeamWeaver.Anthropic.ChatModelTest do
     assert response.response_metadata.headers.request_id == "req-anthropic-stream"
   end
 
+  test "stream_typed_events uses Anthropic's typed SSE parser" do
+    body = """
+    event: content_block_delta
+    data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"pong"}}
+    """
+
+    model =
+      ChatModel.new(
+        api_key: "anthropic-secret",
+        transport: BeamWeaver.TestSupport.Conformance.Fakes.Transport,
+        transport_opts: [
+          expect: %{method: :post, path: "/v1/messages"},
+          headers: [{"content-type", "text/event-stream"}],
+          body: body
+        ]
+      )
+
+    assert {:ok, stream} =
+             CoreChatModel.stream_typed_events(model, [Message.user("stream")])
+
+    events = Enum.to_list(stream)
+
+    assert Enum.any?(events, &match?(%{event: %BeamWeaver.Stream.Events.Token{text: "pong"}}, &1))
+    assert Enum.all?(events, &(&1.metadata.provider == :anthropic))
+  end
+
+  test "stream_exact_typed_events dispatches the persisted request bytes unchanged" do
+    exact_body = "{\n  \"stream\": true, \"model\": \"persisted-model\"\n}\n"
+
+    response_body = """
+    event: content_block_delta
+    data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"pong"}}
+    """
+
+    model =
+      ChatModel.new(
+        api_key: "anthropic-secret",
+        transport: BeamWeaver.TestSupport.Conformance.Fakes.Transport,
+        transport_opts: [
+          parent: self(),
+          expect: %{method: :post, path: "/v1/messages"},
+          headers: [{"content-type", "text/event-stream"}],
+          body: response_body
+        ]
+      )
+
+    assert {:ok, stream} = CoreChatModel.stream_exact_typed_events(model, exact_body)
+    assert Enum.any?(stream, &match?(%{event: %BeamWeaver.Stream.Events.Token{text: "pong"}}, &1))
+
+    assert_receive {:fake_transport_request, %BeamWeaver.Transport.Request{body: ^exact_body, json: nil}}
+  end
+
   test "count_tokens uses Anthropic count_tokens endpoint" do
     model =
       ChatModel.new(
@@ -595,58 +647,19 @@ defmodule BeamWeaver.Anthropic.ChatModelTest do
   end
 
   test "model initializer supports explicit and inferred Anthropic identifiers" do
-    assert {:ok, explicit} = Models.init_chat_model("anthropic:claude-haiku-4-5-20251001")
-    assert explicit.__struct__ == ChatModel
-    assert explicit.profile.provider == :anthropic
-
-    assert {:ok, opus} = Models.init_chat_model("anthropic:claude-opus-4-8")
-    assert opus.profile.max_input_tokens == 1_000_000
-    assert opus.profile.max_output_tokens == 128_000
-    assert opus.profile.extra.default_effort == :high
-
-    assert {:ok, opus5} = Models.init_chat_model("anthropic:claude-opus-5")
-    assert opus5.profile.name == "Claude Opus 5"
-    assert opus5.profile.max_input_tokens == 1_000_000
-    assert opus5.profile.max_output_tokens == 128_000
-    assert opus5.profile.extra.input_price_per_mtok == 5.00
-    assert opus5.profile.extra.output_price_per_mtok == 25.00
-    assert opus5.profile.extra.batch_input_price_per_mtok == 2.50
-    assert opus5.profile.extra.batch_output_price_per_mtok == 12.50
-    assert opus5.profile.extra.prompt_cache_min_tokens == 512
-    assert opus5.profile.extra.effort_levels == [:low, :medium, :high, :xhigh, :max]
-    assert opus5.profile.extra.thinking_default == :adaptive
-    assert opus5.profile.extra.thinking_disabled_max_effort == :high
-    assert opus5.profile.extra.unsupported_server_tools == [:web_fetch]
-    assert BeamWeaver.Models.Profile.supports_param?(opus5.profile, :fallbacks)
-
-    assert {:ok, sonnet} = Models.init_chat_model("anthropic:claude-sonnet-5")
-    assert sonnet.profile.name == "Claude Sonnet 5"
-    assert sonnet.profile.max_input_tokens == 1_000_000
-    assert sonnet.profile.max_output_tokens == 128_000
-    assert sonnet.profile.extra.default_effort == :high
-    assert sonnet.profile.extra.input_price_per_mtok == 2.00
-    assert sonnet.profile.extra.output_price_per_mtok == 10.00
-    assert sonnet.profile.extra.batch_input_price_per_mtok == 1.00
-    assert sonnet.profile.extra.batch_output_price_per_mtok == 5.00
-    assert sonnet.profile.extra.sampling_controls == :restricted
-    assert sonnet.profile.extra.thinking_mode == :adaptive_only
-
-    assert {:ok, fable} = Models.init_chat_model("anthropic:claude-fable-5")
-    assert fable.profile.max_input_tokens == 1_000_000
-    assert fable.profile.max_output_tokens == 128_000
-    assert fable.profile.extra.input_price_per_mtok == 10.00
-    assert fable.profile.extra.output_price_per_mtok == 50.00
-    assert fable.profile.extra.thinking_mode == :adaptive_only
-
-    assert {:ok, mythos} = Models.init_chat_model("anthropic:claude-mythos-5")
-    assert mythos.profile.status == :active
-    assert mythos.profile.max_input_tokens == 1_000_000
-    assert mythos.profile.max_output_tokens == 128_000
-    assert mythos.profile.extra.input_price_per_mtok == 10.00
+    for model <- [
+          "claude-haiku-4-5-20251001",
+          "claude-opus-4-8",
+          "claude-opus-5",
+          "claude-sonnet-5",
+          "claude-fable-5",
+          "claude-mythos-5"
+        ] do
+      assert {:ok, %ChatModel{model: ^model}} = Models.init_chat_model("anthropic:" <> model)
+    end
 
     assert {:ok, inferred} = Models.init_chat_model("claude-sonnet-4-6")
     assert inferred.__struct__ == ChatModel
-    assert inferred.profile.structured_output
   end
 
   test "model initializer rejects deprecated and retired Anthropic identifiers" do

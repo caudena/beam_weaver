@@ -7,6 +7,14 @@ defmodule BeamWeaver.Provider.ResponseTest do
   alias BeamWeaver.Provider.Response
   alias BeamWeaver.Provider.StreamValidator
 
+  defmodule InnerModel do
+    defstruct model: "wrapped-model", provider: "anthropic"
+  end
+
+  defmodule ModelWrapper do
+    defstruct [:model]
+  end
+
   test "separates user tool calls from hosted provider tools" do
     message =
       Message.assistant(
@@ -108,6 +116,68 @@ defmodule BeamWeaver.Provider.ResponseTest do
     assert message.response_metadata.usage.cache_creation_tokens == 4_684
     assert message.response_metadata.usage.service_tier == "default"
     assert message.response_metadata.reasoning.context == "all_turns"
+  end
+
+  test "normalizes string-keyed cache writes from provider payloads" do
+    message =
+      Message.assistant("done",
+        usage_metadata: %{
+          "input_tokens" => 100,
+          "output_tokens" => 5,
+          "input_token_details" => %{"cache_read" => 10, "cache_write" => 20}
+        }
+      )
+
+    message = Response.normalize_message(%{model: "gpt-5.6-luna"}, message, provider: :openai)
+
+    assert message.response_metadata.usage.cache_read_tokens == 10
+    assert message.response_metadata.usage.cache_write_tokens == 20
+    assert message.response_metadata.usage.cache_creation_tokens == 20
+  end
+
+  test "execution results expose canonical cache usage without changing public message compatibility" do
+    message =
+      Message.assistant("done",
+        usage_metadata: %{
+          input_tokens: 12,
+          output_tokens: 3,
+          total_tokens: 15,
+          input_token_details: %{cache_read: 4, cache_creation: 5}
+        }
+      )
+
+    assert {:ok, execution} =
+             Response.normalize_execution_result(%{model: "claude-sonnet"}, message, provider: :anthropic)
+
+    assert execution.message.usage_metadata == %{
+             input_tokens: 12,
+             output_tokens: 3,
+             total_tokens: 15,
+             cache_read_tokens: 4,
+             cache_write_tokens: 5,
+             cache_creation_tokens: 5,
+             input_token_details: %{cache_read: 4, cache_creation: 5}
+           }
+  end
+
+  test "execution normalization fails closed when native replay cannot be projected" do
+    message = Message.assistant("done", tool_calls: [%{id: "call-1", args: %{}}])
+
+    assert {:error, %{type: :invalid_provider_replay}} =
+             Response.normalize_execution_result(%{model: "claude-sonnet"}, message, provider: :anthropic)
+  end
+
+  test "wrapper models contribute scalar identities to provider replay bindings" do
+    model = %ModelWrapper{model: %InnerModel{}}
+
+    assert {:ok, execution} =
+             Response.normalize_execution_result(model, Message.assistant("done"))
+
+    assert execution.replay["binding"] == %{
+             "model" => "wrapped-model",
+             "profile" => nil,
+             "provider" => "anthropic"
+           }
   end
 
   test "preserves Google thought signatures on text and reasoning parts" do

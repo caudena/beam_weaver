@@ -80,7 +80,7 @@ defmodule BeamWeaver.Runtime.Agent.Server do
   def handle_info({:stream_chunk, work_id, chunk}, state) do
     subscribers =
       if Map.has_key?(state.active_work, work_id) do
-        StreamBroker.broadcast(
+        StreamBroker.broadcast_progress(
           state.subscribers,
           state.id,
           {:stream, work_id, chunk},
@@ -227,31 +227,28 @@ defmodule BeamWeaver.Runtime.Agent.Server do
         {:completed, result} ->
           Tracing.finish_run(active.work.trace_run_id, outputs: result)
 
-          StreamBroker.broadcast(
+          StreamBroker.broadcast_terminal(
             state.subscribers,
             state.id,
-            {:completed, active.work.id, result},
-            state.subscriber_queue_limit
+            {:completed, active.work.id, result}
           )
 
         {:failed, %Error{} = error} ->
           Tracing.fail_run(active.work.trace_run_id, error)
 
-          StreamBroker.broadcast(
+          StreamBroker.broadcast_terminal(
             state.subscribers,
             state.id,
-            {:failed, active.work.id, error},
-            state.subscriber_queue_limit
+            {:failed, active.work.id, error}
           )
 
         {:cancelled, %Error{} = error} ->
           Tracing.fail_run(active.work.trace_run_id, error)
 
-          StreamBroker.broadcast(
+          StreamBroker.broadcast_terminal(
             state.subscribers,
             state.id,
-            {:cancelled, active.work.id, error},
-            state.subscriber_queue_limit
+            {:cancelled, active.work.id, error}
           )
       end
 

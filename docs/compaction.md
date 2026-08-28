@@ -193,6 +193,44 @@ policy data. Because callbacks may use any provider client, the application
 callback must enforce the actual deadline, timeout, cancellation, and
 no-tools request.
 
+### Accounting identity and strict lane input
+
+`Request.accounting` can bind a provider usage floor to the exact request it
+measured:
+
+```elixir
+accounting: %{
+  method: :local_tokenizer_v1,
+  profile_hash: model_profile_hash,
+  reported_input_tokens: 91_204,
+  category_bytes: %{system: 4_100, history: 81_000, current_input: 6_104}
+}
+```
+
+`reported_input_tokens` is a lower bound, never a replacement for local
+accounting. BeamWeaver takes the greater of the compatible provider report and
+the local estimate. Persist the accounting method, version, and profile hash
+with the lane state; when that identity changes,
+`BeamWeaver.Compaction.State.rebase_accounting/2` clears only unit-dependent
+anti-thrash evidence rather than comparing counts from different token units.
+Do not carry a usage report from an earlier request, model profile, or rendered
+body into a new compaction request.
+
+For `:shared_input_output` profiles, `requested_max_output_tokens` is validated
+and subtracted together with provider-reserved tokens before the input budget is
+calculated. A missing, negative, or impossible reservation fails closed instead
+of creating a negative or inflated input limit.
+
+The source events must form one strictly ordered lane. Event IDs and
+`lane_event_ordinal` values must both be unique; duplicate ordinals are rejected
+even if chat sequence values differ. Optional `focus` text must be valid UTF-8
+and at most 2,000 bytes.
+
+When deterministic tool projection is persisted, recovery can verify it with
+`BeamWeaver.Compaction.ToolProjection.replay/2`. Replay checks every manifest
+entry against the source event and artifact evidence and returns the projected
+event list only when the complete manifest verifies.
+
 ## Summary output contract
 
 Portable compaction expects a closed semantic object with these top-level

@@ -5,6 +5,8 @@ defmodule BeamWeaver.Checkpoint.EctoTest do
 
   alias BeamWeaver.Checkpoint
   alias BeamWeaver.Checkpoint.Ecto
+  alias BeamWeaver.Checkpoint.ResumeDelivery
+  alias BeamWeaver.Compaction.Canonical
   alias BeamWeaver.Core.Async
   alias BeamWeaver.Core.ContentBlock
   alias BeamWeaver.Core.Message
@@ -265,6 +267,85 @@ defmodule BeamWeaver.Checkpoint.EctoTest do
     assert {:ok, nil} = Checkpoint.fetch_tuple(saver, next)
   end
 
+  test "strict resume delivery preserves unrelated writes and commits ordered receipts" do
+    saver = new_saver()
+    config = %{"configurable" => %{"thread_id" => "ecto-resume-delivery"}}
+
+    assert {:ok, source_config} =
+             Checkpoint.put(
+               saver,
+               config,
+               %{
+                 "id" => "resume-source",
+                 "channel_values" => %{"messages" => ["parent"]},
+                 "channel_versions" => %{"messages" => 1}
+               },
+               %{"source" => "loop"},
+               %{"messages" => 1}
+             )
+
+    assert :ok =
+             Checkpoint.put_writes(
+               saver,
+               source_config,
+               [{"messages", "unrelated pending value"}],
+               "unrelated-task",
+               "parent:work"
+             )
+
+    first = resume_delivery("delivery-1", "resume-source", 3, %{"result" => "first"})
+
+    assert {:ok, first_stage} = Checkpoint.stage_resume(saver, source_config, first)
+    assert {:ok, first_receipt} = Checkpoint.continue_staged(saver, first_stage)
+    assert :ok = Checkpoint.verify_resume_receipt(saver, first_receipt)
+
+    assert {:ok, replayed_receipt} = Checkpoint.continue_staged(saver, first_stage)
+    assert replayed_receipt == first_receipt
+
+    assert %{
+             checkpoint: %{
+               "channel_values" => %{
+                 "messages" => ["parent"],
+                 "__beam_weaver_resume_delivery__" => [first_committed]
+               }
+             },
+             pending_writes: [{"unrelated-task", "messages", "unrelated pending value"}]
+           } = Checkpoint.get_tuple(saver, first_receipt.resulting_config)
+
+    assert first_committed["delivery_id"] == "delivery-1"
+    assert first_committed["source_ordinal"] == 3
+
+    second =
+      resume_delivery(
+        "delivery-2",
+        first_receipt.resulting_checkpoint_id,
+        7,
+        %{"result" => "second"}
+      )
+
+    assert {:ok, second_stage} =
+             Checkpoint.stage_resume(saver, first_receipt.resulting_config, second)
+
+    assert {:ok, second_receipt} = Checkpoint.continue_staged(saver, second_stage)
+    assert :ok = Checkpoint.verify_resume_receipt(saver, second_receipt)
+
+    assert {:ok, replayed_first_receipt} = Checkpoint.continue_staged(saver, first_stage)
+    assert replayed_first_receipt == first_receipt
+
+    assert %{
+             checkpoint: %{
+               "channel_values" => %{
+                 "__beam_weaver_resume_delivery__" => [first_committed, second_committed]
+               }
+             },
+             pending_writes: [{"unrelated-task", "messages", "unrelated pending value"}]
+           } = Checkpoint.get_tuple(saver, second_receipt.resulting_config)
+
+    assert first_committed["source_ordinal"] == 3
+    assert second_committed["delivery_id"] == "delivery-2"
+    assert second_committed["source_ordinal"] == 7
+  end
+
   defp new_saver(opts \\ []) do
     checkpoints = LivePostgres.unique_table("bw_ecto_checkpoints")
     writes = LivePostgres.unique_table("bw_ecto_writes")
@@ -327,5 +408,22 @@ defmodule BeamWeaver.Checkpoint.EctoTest do
   @doc false
   def handle_query(_event, _measurements, metadata, pid) do
     send(pid, {:ecto_query, metadata.query, metadata.params})
+  end
+
+  defp resume_delivery(delivery_id, source_checkpoint_id, source_ordinal, payload) do
+    {:ok, delivery} =
+      ResumeDelivery.new(%{
+        delivery_id: delivery_id,
+        source_checkpoint_id: source_checkpoint_id,
+        source_ordinal: source_ordinal,
+        payload: payload,
+        payload_hash: Canonical.hash(payload),
+        terminal_evidence: %{
+          "state" => "completed",
+          "result_hash" => Canonical.hash(payload)
+        }
+      })
+
+    delivery
   end
 end

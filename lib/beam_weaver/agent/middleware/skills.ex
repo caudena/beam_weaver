@@ -7,12 +7,11 @@ defmodule BeamWeaver.Agent.Middleware.Skills do
   alias BeamWeaver.Filesystem
   alias BeamWeaver.Filesystem.State
   alias BeamWeaver.Graph
+  alias BeamWeaver.Skill
 
   import BeamWeaver.Agent.Middleware.Helpers,
     only: [append_prompt: 2, runtime_store: 1, state_value: 2]
 
-  @max_description_length 1024
-  @max_compatibility_length 500
   @max_load_warnings 20
   @max_load_warning_length 1000
 
@@ -89,7 +88,9 @@ defmodule BeamWeaver.Agent.Middleware.Skills do
 
       {skills, errors ++ source_errors}
     end)
-    |> then(fn {skills, errors} -> {Map.values(skills), errors} end)
+    |> then(fn {skills, errors} ->
+      {skills |> Map.values() |> Enum.sort_by(& &1.name), errors}
+    end)
   end
 
   defp cached_skills(%ModelRequest{state: state}, %__MODULE__{state_key: state_key}) do
@@ -113,8 +114,8 @@ defmodule BeamWeaver.Agent.Middleware.Skills do
     case Filesystem.read(backend, direct_path, Keyword.merge(opts, limit: 10_000)) do
       %Filesystem.ReadResult{error: nil, file_data: %Filesystem.FileData{content: content}} ->
         case parse_skill(direct_path, content) do
-          nil -> {[], ["Cannot load skill metadata from '#{direct_path}'"]}
-          skill -> {[skill], []}
+          {:ok, skill} -> {[skill], []}
+          {:error, error} -> {[], [skill_error(direct_path, error)]}
         end
 
       _missing ->
@@ -146,8 +147,8 @@ defmodule BeamWeaver.Agent.Middleware.Skills do
         content = normalize_download_content(content)
 
         case parse_skill(path, content) do
-          nil -> {skills, errors ++ ["Cannot load skill metadata from '#{path}'"]}
-          skill -> {skills ++ [skill], errors}
+          {:ok, skill} -> {skills ++ [skill], errors}
+          {:error, error} -> {skills, errors ++ [skill_error(path, error)]}
         end
 
       %Filesystem.DownloadResult{path: path, error: error}, {skills, errors} ->
@@ -164,56 +165,31 @@ defmodule BeamWeaver.Agent.Middleware.Skills do
   end
 
   defp parse_skill(path, content) do
-    {frontmatter, _body} = split_frontmatter(content)
     directory_name = Path.basename(Path.dirname(path))
-    name = frontmatter |> Map.get("name", directory_name) |> to_string() |> String.trim()
-    description = frontmatter |> Map.get("description", "") |> to_string() |> String.trim()
 
-    cond do
-      frontmatter == %{} ->
-        nil
-
-      name == "" or description == "" ->
-        nil
-
-      true ->
-        %{
-          path: path,
-          name: name,
-          description: String.slice(description, 0, @max_description_length),
-          license: optional_string(Map.get(frontmatter, "license")),
-          compatibility:
-            frontmatter
-            |> Map.get("compatibility")
-            |> optional_string()
-            |> truncate_optional(@max_compatibility_length),
-          metadata: metadata_map(Map.get(frontmatter, "metadata", %{})),
-          allowed_tools: allowed_tools(Map.get(frontmatter, "allowed-tools")),
-          valid_name?: valid_skill_name?(name, directory_name)
-        }
+    with {:ok, %Skill{} = skill} <- Skill.parse(content, expected_name: directory_name) do
+      {:ok,
+       %{
+         path: path,
+         name: skill.name,
+         description: skill.description,
+         license: skill.license,
+         compatibility: skill.compatibility,
+         metadata: skill.metadata,
+         allowed_tools: skill.allowed_tools,
+         argument_hint: skill.argument_hint,
+         disable_model_invocation: skill.disable_model_invocation,
+         user_invocable: skill.user_invocable,
+         context: skill.context,
+         valid_name?: true
+       }}
     end
   end
 
-  defp split_frontmatter(content) when is_binary(content) do
-    case Regex.run(~r/^---\s*\n(.*?)\n---\s*\n(.*)$/s, content) do
-      [_all, yaml, body] -> {parse_frontmatter(yaml), body}
-      _missing -> {%{}, content}
-    end
-  end
+  defp skill_error(path, %BeamWeaver.Core.Error{message: message}),
+    do: "Cannot load skill metadata from '#{path}': #{message}"
 
-  defp split_frontmatter(_content), do: {%{}, ""}
-
-  defp parse_frontmatter(yaml) do
-    yaml
-    |> String.to_charlist()
-    |> :yamerl_constr.string()
-    |> case do
-      [document | _] when is_list(document) -> normalize_yaml(document)
-      _other -> %{}
-    end
-  rescue
-    _exception -> %{}
-  end
+  defp skill_error(path, _error), do: "Cannot load skill metadata from '#{path}'"
 
   defp skills_prompt(%__MODULE__{system_prompt: nil} = middleware, skills, errors) do
     locations = skills_locations(middleware)
@@ -366,63 +342,4 @@ defmodule BeamWeaver.Agent.Middleware.Skills do
 
   defp normalize_download_content(content) when is_binary(content), do: content
   defp normalize_download_content(content), do: IO.iodata_to_binary(content)
-
-  defp optional_string(nil), do: nil
-
-  defp optional_string(value) do
-    value = value |> to_string() |> String.trim()
-    if value == "", do: nil, else: value
-  end
-
-  defp truncate_optional(nil, _max), do: nil
-  defp truncate_optional(value, max), do: String.slice(value, 0, max)
-
-  defp metadata_map(metadata) when is_map(metadata) do
-    Map.new(metadata, fn {key, value} -> {to_string(key), to_string(value)} end)
-  end
-
-  defp metadata_map(_metadata), do: %{}
-
-  defp allowed_tools(value) when is_binary(value) do
-    value
-    |> String.split()
-    |> Enum.map(&String.trim(&1, ","))
-    |> Enum.reject(&(&1 == ""))
-  end
-
-  defp allowed_tools(_value), do: []
-
-  defp valid_skill_name?(name, directory_name) do
-    String.length(name) <= 64 and name == directory_name and
-      not String.starts_with?(name, "-") and not String.ends_with?(name, "-") and
-      not String.contains?(name, "--") and
-      Regex.match?(~r/^[[:lower:][:digit:]-]+$/u, name)
-  end
-
-  defp normalize_yaml(value) when is_list(value) do
-    cond do
-      yaml_mapping?(value) ->
-        Map.new(value, fn {key, map_value} -> {to_string(key), normalize_yaml(map_value)} end)
-
-      charlist?(value) ->
-        List.to_string(value)
-
-      true ->
-        Enum.map(value, &normalize_yaml/1)
-    end
-  end
-
-  defp normalize_yaml(value) when is_binary(value), do: value
-  defp normalize_yaml(value) when is_integer(value), do: value
-  defp normalize_yaml(value) when is_float(value), do: value
-  defp normalize_yaml(true), do: true
-  defp normalize_yaml(false), do: false
-  defp normalize_yaml(:null), do: nil
-  defp normalize_yaml(value) when is_atom(value), do: to_string(value)
-  defp normalize_yaml(value), do: value
-
-  defp yaml_mapping?(value),
-    do: Enum.all?(value, &match?({_key, _value}, &1))
-
-  defp charlist?(value), do: Enum.all?(value, &is_integer/1)
 end

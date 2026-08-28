@@ -436,6 +436,7 @@ defmodule BeamWeaver.Anthropic.Messages do
         provider_block
         |> Map.put_new("tool_use_id", provider_block["tool_call_id"] || provider_block["id"])
         |> Map.update("tool_use_id", nil, &anthropic_tool_use_id/1)
+        |> maybe_put_tool_result_content(block)
         |> Map.drop(["tool_call_id"])
 
       type
@@ -583,6 +584,13 @@ defmodule BeamWeaver.Anthropic.Messages do
     do: Enum.map(content, &content_block_to_anthropic!/1)
 
   defp tool_result_content(content), do: content
+
+  defp maybe_put_tool_result_content(provider_block, block) do
+    case Map.fetch(block, :content) do
+      {:ok, content} -> Map.put(provider_block, "content", tool_result_content(content))
+      :error -> provider_block
+    end
+  end
 
   defp provider_type(type) when is_atom(type), do: Atom.to_string(type)
   defp provider_type(type), do: type

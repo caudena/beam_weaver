@@ -449,6 +449,48 @@ and 64 MiB of Erlang terms. `fork_at/4` defaults to 1,000 checkpoints and accept
 `:max_checkpoints` and `:max_bytes` within hard ceilings of 10,000 checkpoints
 and 64 MiB.
 
+## Strict Receipt-Backed Resume Delivery
+
+Applications that durably deliver a child result or another externally owned
+continuation into a parent lane can use the two-phase
+`BeamWeaver.Checkpoint.ResumeDelivery` contract. It stages one exact pending
+write against an exact source checkpoint, then consumes that write into a new
+checkpoint. An application database flag is not treated as checkpoint evidence.
+
+```elixir
+alias BeamWeaver.Checkpoint
+alias BeamWeaver.Checkpoint.ResumeDelivery
+alias BeamWeaver.Compaction.Canonical
+
+payload = %{"kind" => "child_result", "result" => %{"summary" => "done"}}
+
+{:ok, delivery} =
+  ResumeDelivery.new(%{
+    delivery_id: "delivery-018f",
+    source_checkpoint_id: source_checkpoint_id,
+    source_ordinal: 7,
+    payload: payload,
+    payload_hash: Canonical.hash(payload),
+    terminal_evidence: %{"child_run_agent_id" => "agent-018f", "status" => "completed"}
+  })
+
+{:ok, stage_receipt} = Checkpoint.stage_resume(checkpointer, source_config, delivery)
+{:ok, commit_receipt} = Checkpoint.continue_staged(checkpointer, stage_receipt)
+:ok = Checkpoint.verify_resume_receipt(checkpointer, commit_receipt)
+```
+
+`stage_resume/3` is idempotent for the same delivery and preserves unrelated
+pending writes. `continue_staged/2` requires an adapter implementation of the
+strict atomic callback; there is no sequential fallback. A later lane head does
+not invalidate an already committed receipt: retry returns the original
+verified result instead of moving or rewriting newer checkpoints.
+
+Persist the returned claim and receipt hashes when the surrounding application
+needs crash recovery. Never reconstruct a receipt from application state or
+silently rebind a delivery to a newer source checkpoint. The delivery payload
+and terminal evidence must be bounded JSON values, and `payload_hash` must match
+the canonical payload exactly.
+
 ## Storage Optimization
 
 BeamWeaver includes `BeamWeaver.Graph.Channels.DeltaChannel`, used by message

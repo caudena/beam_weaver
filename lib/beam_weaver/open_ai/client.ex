@@ -18,6 +18,7 @@ defmodule BeamWeaver.OpenAI.Client do
             api_key: nil,
             organization: nil,
             project: nil,
+            default_headers: [],
             transport: nil,
             transport_opts: [],
             timeout: @default_timeout
@@ -27,6 +28,7 @@ defmodule BeamWeaver.OpenAI.Client do
           api_key: String.t() | (-> String.t() | nil) | nil,
           organization: String.t() | nil,
           project: String.t() | nil,
+          default_headers: [{String.t(), String.t()}],
           transport: module(),
           transport_opts: keyword(),
           timeout: non_neg_integer()
@@ -42,6 +44,7 @@ defmodule BeamWeaver.OpenAI.Client do
       api_key: Config.option(opts, :api_key, [:openai, :api_key]),
       organization: Config.option(opts, :organization, [:openai, :organization]),
       project: Config.option(opts, :project, [:openai, :project]),
+      default_headers: Keyword.get(opts, :default_headers, []),
       transport: ProviderOptions.default_transport(Keyword.get(opts, :transport)),
       transport_opts: Keyword.get(opts, :transport_opts, []),
       timeout: Keyword.get(opts, :timeout, @default_timeout)
@@ -137,7 +140,8 @@ defmodule BeamWeaver.OpenAI.Client do
   """
   @spec responses_stream_typed_events(t() | keyword(), map(), keyword()) ::
           {:ok, Enumerable.t()} | {:error, Error.t()}
-  def responses_stream_typed_events(client_or_opts, body, opts \\ []) when is_map(body) do
+  def responses_stream_typed_events(client_or_opts, body, opts \\ [])
+      when is_map(body) or is_binary(body) do
     client_or_opts
     |> normalize_client(opts)
     |> do_stream(
@@ -282,6 +286,7 @@ defmodule BeamWeaver.OpenAI.Client do
         :api_key,
         :organization,
         :project,
+        :default_headers,
         :transport,
         :transport_opts,
         :timeout
@@ -291,7 +296,7 @@ defmodule BeamWeaver.OpenAI.Client do
     OpenAICompatibleClient.http_client(:openai, client, opts,
       auth_header: "authorization",
       auth_prefix: "Bearer",
-      default_headers: headers(client)
+      default_headers: headers(client) ++ client.default_headers
     )
   end
 

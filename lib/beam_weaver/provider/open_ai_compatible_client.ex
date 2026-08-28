@@ -41,7 +41,7 @@ defmodule BeamWeaver.Provider.OpenAICompatibleClient do
 
   @doc false
   def request(client, body, opts, http_client)
-      when is_map(body) and is_function(http_client, 2) do
+      when (is_map(body) or is_binary(body)) and is_function(http_client, 2) do
     client
     |> http_client.(opts)
     |> HTTPClient.request(body, opts)
@@ -49,7 +49,7 @@ defmodule BeamWeaver.Provider.OpenAICompatibleClient do
 
   @doc false
   def post_json(client, body, opts, http_client)
-      when is_map(body) and is_function(http_client, 2) do
+      when (is_map(body) or is_binary(body)) and is_function(http_client, 2) do
     client
     |> http_client.(opts)
     |> HTTPClient.post_json(body, opts)
@@ -64,7 +64,7 @@ defmodule BeamWeaver.Provider.OpenAICompatibleClient do
 
   @doc false
   def stream_sse(client, body, opts, http_client, parser, error_decoder)
-      when is_map(body) and is_function(http_client, 2) do
+      when (is_map(body) or is_binary(body)) and is_function(http_client, 2) do
     client
     |> http_client.(opts)
     |> HTTPClient.stream_sse(body, opts, parser, error_decoder)
@@ -72,7 +72,7 @@ defmodule BeamWeaver.Provider.OpenAICompatibleClient do
 
   @doc false
   def collect_sse(client, body, opts, http_client, decoder)
-      when is_map(body) and is_function(http_client, 2) do
+      when (is_map(body) or is_binary(body)) and is_function(http_client, 2) do
     client
     |> http_client.(opts)
     |> HTTPClient.collect_sse(body, opts, decoder)

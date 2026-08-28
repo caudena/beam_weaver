@@ -17,7 +17,10 @@ defmodule BeamWeaver.Compaction.State do
     :new_tokens_since_compaction,
     :overflow_retry_used,
     :consecutive_ineffective_compactions,
-    :cancellation_pending
+    :cancellation_pending,
+    :accounting_method,
+    :accounting_version,
+    :accounting_profile_hash
   ]
   @field_names Map.new(@fields, &{Atom.to_string(&1), &1})
 
@@ -27,7 +30,10 @@ defmodule BeamWeaver.Compaction.State do
             new_tokens_since_compaction: 0,
             overflow_retry_used: false,
             consecutive_ineffective_compactions: 0,
-            cancellation_pending: false
+            cancellation_pending: false,
+            accounting_method: nil,
+            accounting_version: nil,
+            accounting_profile_hash: nil
 
   @type t :: %__MODULE__{}
 
@@ -36,7 +42,8 @@ defmodule BeamWeaver.Compaction.State do
   def new(%__MODULE__{} = state), do: validate(state)
 
   def new(%{} = attrs) do
-    with {:ok, attrs} <- Fields.normalize(attrs, @field_names) do
+    with {:ok, attrs} <- Fields.normalize(attrs, @field_names),
+         {:ok, attrs} <- normalize_accounting_method(attrs) do
       if Enum.all?(Map.keys(attrs), &(&1 in @fields)) do
         __MODULE__ |> struct(attrs) |> validate()
       else
@@ -45,6 +52,9 @@ defmodule BeamWeaver.Compaction.State do
     else
       {:error, :duplicate_field} ->
         {:error, Error.new(:invalid_compaction_state, "compaction state has duplicate fields")}
+
+      {:error, %Error{}} = error ->
+        error
     end
   end
 
@@ -87,6 +97,43 @@ defmodule BeamWeaver.Compaction.State do
   def observe_new_tokens(%__MODULE__{}, _tokens),
     do: {:error, Error.new(:invalid_compaction_state, "new-token count must be non-negative")}
 
+  @doc "Rebases only unit-dependent anti-thrash fields when accounting identity changes."
+  @spec rebase_accounting(t(), map()) :: {:ok, t()} | {:error, Error.t()}
+  def rebase_accounting(%__MODULE__{} = state, identity) when is_map(identity) do
+    method = identity |> value(:method) |> normalize_accounting_identity_method()
+    version = value(identity, :version)
+    profile_hash = value(identity, :profile_hash)
+
+    if valid_accounting?(method, version, profile_hash) do
+      same? =
+        state.accounting_method == method and state.accounting_version == version and
+          state.accounting_profile_hash == profile_hash
+
+      next =
+        if same? do
+          state
+        else
+          %{
+            state
+            | last_compaction_lane_event_ordinal: nil,
+              last_compaction_tokens_after: nil,
+              new_tokens_since_compaction: 0,
+              consecutive_ineffective_compactions: 0,
+              accounting_method: method,
+              accounting_version: version,
+              accounting_profile_hash: profile_hash
+          }
+        end
+
+      validate(next)
+    else
+      {:error, Error.new(:invalid_compaction_state, "accounting identity is invalid")}
+    end
+  end
+
+  def rebase_accounting(%__MODULE__{}, _identity),
+    do: {:error, Error.new(:invalid_compaction_state, "accounting identity is invalid")}
+
   @doc "Records a successfully activated manual, automatic, overflow, or switch checkpoint."
   @spec record_success(t(), atom(), non_neg_integer(), non_neg_integer()) ::
           {:ok, t()} | {:error, Error.t()}
@@ -122,10 +169,38 @@ defmodule BeamWeaver.Compaction.State do
 
     if Enum.all?(integers, &(is_integer(&1) and &1 >= 0)) and
          Enum.all?(nullable_integers, &(is_nil(&1) or (is_integer(&1) and &1 >= 0))) and
-         is_boolean(state.overflow_retry_used) and is_boolean(state.cancellation_pending) do
+         is_boolean(state.overflow_retry_used) and is_boolean(state.cancellation_pending) and
+         valid_optional_accounting?(state.accounting_method, state.accounting_version, state.accounting_profile_hash) do
       {:ok, state}
     else
       {:error, Error.new(:invalid_compaction_state, "compaction state is invalid")}
     end
   end
+
+  defp valid_optional_accounting?(nil, nil, nil), do: true
+  defp valid_optional_accounting?(method, version, profile_hash), do: valid_accounting?(method, version, profile_hash)
+
+  defp valid_accounting?(method, version, profile_hash),
+    do:
+      method in [:conservative_utf8, :local_tokenizer_v1] and is_integer(version) and
+        version > 0 and (is_nil(profile_hash) or hash?(profile_hash))
+
+  defp normalize_accounting_method(%{accounting_method: method} = attrs)
+       when method in ["conservative_utf8", "local_tokenizer_v1"] do
+    {:ok, %{attrs | accounting_method: String.to_existing_atom(method)}}
+  end
+
+  defp normalize_accounting_method(%{accounting_method: method}) when is_binary(method),
+    do: {:error, Error.new(:invalid_compaction_state, "compaction accounting method is invalid")}
+
+  defp normalize_accounting_method(attrs), do: {:ok, attrs}
+
+  defp normalize_accounting_identity_method(method)
+       when method in ["conservative_utf8", "local_tokenizer_v1"],
+       do: String.to_existing_atom(method)
+
+  defp normalize_accounting_identity_method(method), do: method
+
+  defp hash?(value), do: is_binary(value) and value =~ ~r/\A[0-9a-f]{64}\z/
+  defp value(map, key), do: Map.get(map, key, Map.get(map, Atom.to_string(key)))
 end

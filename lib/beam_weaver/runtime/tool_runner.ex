@@ -89,6 +89,12 @@ defmodule BeamWeaver.Runtime.ToolRunner do
     {:error, Error.new(error.type, error.message, error.details)}
   end
 
+  defp normalize_result({:error, %{__struct__: _module, type: type, message: message} = error})
+       when is_atom(type) and is_binary(message) do
+    details = Map.get(error, :details, %{})
+    {:error, Error.new(type, message, if(is_map(details), do: details, else: %{}))}
+  end
+
   defp normalize_result({:cancelled, %Error{} = error}), do: {:cancelled, error}
 
   defp normalize_result({:cancelled, reason}) do

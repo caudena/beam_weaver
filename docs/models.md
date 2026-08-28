@@ -129,20 +129,22 @@ Provider scope is intentionally narrow:
 - `BeamWeaver.XAI.ChatModel` for xAI Responses API
 - `BeamWeaver.XAI.ChatCompletionsModel` for xAI Chat Completions
 - `BeamWeaver.XAI.EmbeddingModel` for xAI embeddings
-- `BeamWeaver.ZAI.ChatModel` for Z.ai GLM-5.2 Chat Completions
+- `BeamWeaver.ZAI.ChatModel` for Z.ai GLM-5.3, GLM-5.3-Flash, and GLM-5.2 Chat Completions
 - `BeamWeaver.Models.FakeChatModel` and `FakeEmbeddingModel` for tests
 
 Checked-in model profiles cover common OpenAI, Anthropic, Google Gemini,
 DeepSeek, Moonshot/Kimi, xAI, and Z.ai families. DeepSeek requires explicit
-`deepseek:deepseek-v4-flash` or `deepseek:deepseek-v4-pro`; Chat Completions is
-the default and both models also support Responses. Moonshot chat supports
+`deepseek:deepseek-v4-flash`, `deepseek:deepseek-v4-flash-vision-exp`, or
+`deepseek:deepseek-v4-pro`; Chat Completions is the default and all three also
+support Responses. Moonshot chat supports
 `moonshot:kimi-k3`, `moonshot:kimi-k2.7-code`,
 `moonshot:kimi-k2.7-code-highspeed`, `moonshot:kimi-k2.6`, and
 `moonshot:kimi-k2.5`. xAI chat defaults to
 `grok-4.6`; current checked-in xAI profiles also include `grok-4.5`, `grok-4.3`,
 `grok-4.20-0309-reasoning`, `grok-4.20-0309-non-reasoning`,
 `grok-4.20-multi-agent-0309`, `grok-build-0.1`, and embedding model `v1`.
-Z.ai chat currently supports only `zai:glm-5.2`.
+Z.ai chat supports `zai:glm-5.3`, multimodal `zai:glm-5.3-flash`, and
+`zai:glm-5.2`.
 Anthropic includes `anthropic:claude-opus-5` and
 `anthropic:claude-sonnet-5`. Opus 5 uses adaptive thinking by default and
 supports effort from `:low` through `:max`; disabling thinking is valid only at
@@ -175,11 +177,11 @@ Recommended starting points:
 | --- | --- |
 | OpenAI GPT | `openai:gpt-5.6-sol`, `openai:gpt-5.6-terra`, `openai:gpt-5.6-luna`, `openai:gpt-5.4-mini` |
 | Anthropic Claude | `anthropic:claude-opus-5`, `anthropic:claude-sonnet-5`, `anthropic:claude-sonnet-4-6`, `anthropic:claude-opus-*`, `anthropic:claude-haiku-*` |
-| Google Gemini | `google:gemini-3.7-flash`, `google:gemini-3.6-flash`, `google:gemini-3.5-flash-lite`, explicit `google:gemini-*` profiles |
-| DeepSeek V4 | `deepseek:deepseek-v4-flash`, `deepseek:deepseek-v4-pro` |
+| Google Gemini | `google:gemini-3.7-flash`, `google:gemini-3.6-flash`, `google:gemini-3.5-flash`, `google:gemini-3.5-flash-lite`, `google:gemini-3.1-flash-lite`, explicit `google:gemini-*` profiles |
+| DeepSeek V4 | `deepseek:deepseek-v4-flash`, `deepseek:deepseek-v4-flash-vision-exp`, `deepseek:deepseek-v4-pro` |
 | Moonshot/Kimi | `moonshot:kimi-k3`, `moonshot:kimi-k2.7-code`, `moonshot:kimi-k2.7-code-highspeed`, `moonshot:kimi-k2.6`, `moonshot:kimi-k2.5` |
 | xAI Grok | `xai:grok-4.6`, `xai:grok-4.5`, `xai:grok-4.3` |
-| Z.ai GLM | `zai:glm-5.2` |
+| Z.ai GLM | `zai:glm-5.3`, `zai:glm-5.3-flash`, `zai:glm-5.2` |
 
 Use the matrix as capability guidance, then validate model quality against your
 own prompts, tools, latency, and cost constraints.
@@ -499,6 +501,30 @@ agents, and compiled graphs where you want semantic event envelopes.
 
 For agent and graph event projections, see [Event Streaming](event_streaming.md).
 
+### Exact persisted request streaming
+
+Durable runtimes that persist and hash a canonical provider request before
+dispatch can use `BeamWeaver.Core.ChatModel.stream_exact_typed_events/3`:
+
+```elixir
+{:ok, events} =
+  BeamWeaver.Core.ChatModel.stream_exact_typed_events(
+    model,
+    persisted_request_json,
+    exact_request_metadata: %{
+      request_id: request_id,
+      request_hash: request_hash
+    }
+  )
+```
+
+The binary body is sent unchanged; BeamWeaver does not decode and rebuild it.
+Transport and decoder options stay out-of-band. OpenAI Responses, Anthropic,
+and Google implement this boundary. Other models return
+`:unsupported_feature`. Persist the exact body and its provider binding before
+calling it so recovery cannot reinterpret a request through newer model or
+serializer defaults.
+
 ## Batch
 
 `batch/3` returns ordered tagged results:
@@ -694,7 +720,8 @@ BeamWeaver.Core.ChatModel.invoke(model, [message])
 
 OpenAI, Anthropic, Google, and xAI translators support the scoped image, audio,
 file/document, reasoning, citation, server-tool, and unknown provider blocks
-covered by tests. Z.ai GLM-5.2 currently exposes text-only input in BeamWeaver.
+covered by tests. Z.ai GLM-5.3-Flash accepts image, video, and PDF input;
+GLM-5.3 and GLM-5.2 remain text-input profiles.
 Video and arbitrary provider-native formats require provider-specific
 translation before they should be used in portable BeamWeaver code.
 
@@ -734,12 +761,14 @@ BeamWeaver.Core.ChatModel.invoke(model, "Plan the migration.",
 )
 ```
 
-Z.ai GLM-5.2 accepts `thinking` plus `reasoning_effort`:
+Z.ai accepts `thinking` plus `reasoning_effort`. GLM-5.3 and GLM-5.3-Flash are
+thinking-only and accept `:low`, `:high`, or `:max`; GLM-5.2 also supports
+disabled thinking and the compatibility effort ladder:
 
 ```elixir
 BeamWeaver.Core.ChatModel.invoke(model, "Plan the migration.",
   thinking: %{type: :enabled},
-  reasoning_effort: :low
+  reasoning_effort: :high
 )
 ```
 
@@ -751,6 +780,16 @@ choices in Responses require `reasoning: %{effort: "none"}`.
 
 Reasoning output is surfaced as content blocks or stream events when the
 underlying provider returns it.
+
+Applications that freeze provider controls before durable dispatch can call
+`BeamWeaver.Provider.ReasoningControl.resolve/4` with the exact model profile,
+provider, requested effort, and reserved output-token budget. The result is a
+pure request-control map. In particular, Anthropic manual thinking budgets are
+bounded by the output reservation, while adaptive-only profiles produce
+adaptive thinking plus the validated effort. An incompatible effort or an
+output reservation too small to contain the thinking budget fails before
+transport. Persist the returned map with the rendered request rather than
+resolving it again during retry or recovery.
 
 {% hint style="info" %}
 **`thinking_level` Is Provider-Specific**

@@ -96,6 +96,60 @@ defmodule BeamWeaver.Sandbox.DockerTest do
              Sandbox.execute(sandbox, "cat input.txt")
   end
 
+  test "binds container cleanup to immutable labels", %{docker_image: docker_image} do
+    name = "beam-weaver-owned-#{System.unique_integer([:positive])}"
+    labels = %{"io.beam_weaver.test" => name}
+
+    sandbox =
+      Docker.new(image: docker_image, name: name, labels: labels)
+      |> Docker.start!()
+
+    on_exit(fn ->
+      System.cmd("docker", ["rm", "-f", name], stderr_to_stdout: true)
+    end)
+
+    assert {:ok,
+            %{
+              "id" => identity,
+              "name" => ^name,
+              "labels" => ^labels,
+              "running" => true
+            }} = Docker.inspect_container(sandbox)
+
+    assert byte_size(identity) == 64
+
+    assert {:error, "docker_container_identity_mismatch"} =
+             Docker.stop_owned(sandbox, %{"io.beam_weaver.test" => "different"})
+
+    assert {:ok, %{"running" => true}} = Docker.inspect_container(sandbox)
+    assert :ok = Docker.stop_owned(sandbox, labels)
+    assert {:error, _reason} = Docker.inspect_container(sandbox)
+  end
+
+  test "streams an inspectable exec and proves stop before reporting terminal", %{
+    sandbox: sandbox
+  } do
+    assert {:ok, handle} =
+             Docker.start_exec(sandbox, "printf first; sleep 30; printf never")
+
+    assert eventually(fn ->
+             match?(
+               {:ok, %{output: "first", observed_bytes: 5, running: true}},
+               Docker.read_exec(sandbox, handle, 0, 64)
+             )
+           end)
+
+    assert :ok = Docker.stop_exec(sandbox, handle, 250)
+
+    assert {:ok, terminal} = Docker.read_exec(sandbox, handle, 0, 64)
+    assert terminal.output == "first"
+    assert terminal.running == false
+    assert terminal.status in [137, 143]
+
+    assert {:error, "docker_exec_identity_mismatch"} =
+             Docker.read_exec(sandbox, %{handle | container: "other"}, 0, 64)
+  end
+
   defp docker_available? do
     match?(
       {_version, 0},
@@ -109,4 +163,17 @@ defmodule BeamWeaver.Sandbox.DockerTest do
       System.cmd("docker", ["image", "inspect", image], stderr_to_stdout: true)
     )
   end
+
+  defp eventually(fun, remaining \\ 100)
+
+  defp eventually(fun, remaining) when remaining > 0 do
+    if fun.() do
+      true
+    else
+      Process.sleep(25)
+      eventually(fun, remaining - 1)
+    end
+  end
+
+  defp eventually(_fun, 0), do: false
 end

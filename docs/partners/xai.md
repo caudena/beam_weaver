@@ -105,6 +105,10 @@ reasoning effort. `high` is the default. xAI publishes no text-output limit for
 this model, so the profile leaves `max_output_tokens` unset and records
 `text_output_limit: :unlimited` explicitly.
 
+The checked-in Grok 4.6 profile accepts `low`, `medium`, and `high` reasoning
+effort. `xhigh` is not advertised for that model and is rejected by profile
+validation.
+
 The current xAI catalog does not publish a `grok-4.6-latest` or
 `grok-4.6-fast` model ID. Use the exact `grok-4.6` identifier. Existing aliases
 remain mapped to the canonical models xAI currently lists; in particular,
@@ -119,6 +123,11 @@ Standard prices per million tokens are:
 | `grok-4.6` | 200k tokens or more | $4.00 | $1.00 | $12.00 |
 | `grok-4.5` | Under 200k input tokens | $2.00 | $0.30 | $6.00 |
 | `grok-4.5` | 200k tokens or more | $4.00 | $0.60 | $12.00 |
+
+The checked-in Grok 4.20 reasoning, non-reasoning, multi-agent, and Grok Build
+profiles also record their published higher-context rates at the 200k-token
+threshold. The `xai:v1` embedding profile intentionally records that no public
+price was listed when the catalog was checked; BeamWeaver does not invent one.
 
 Once input reaches the 200k threshold, xAI applies the higher rates to all
 request tokens. Priority processing is selected with

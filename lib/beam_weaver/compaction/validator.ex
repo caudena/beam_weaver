@@ -6,16 +6,17 @@ defmodule BeamWeaver.Compaction.Validator do
 
   @hash ~r/\A[0-9a-f]{64}\z/
   @uuid ~r/\A[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\z/
+  @bounds Semantic.bounds()
 
   @spec validate_shape(Semantic.t()) :: {:ok, Semantic.t()} | {:error, Error.t()}
   def validate_shape(%Semantic{} = semantic) do
     with :ok <- exact(semantic.version, 1, "version"),
-         :ok <- sourced_list(semantic.objective, 8),
+         :ok <- sourced_list(semantic.objective, @bounds.objective),
          :ok <- user_requests(semantic.user_requests),
-         :ok <- sourced_list(semantic.constraints, 64),
+         :ok <- sourced_list(semantic.constraints, @bounds.constraints),
          :ok <- decisions(semantic.decisions),
          :ok <- progress(semantic.progress),
-         :ok <- sourced_list(semantic.critical_context, 128),
+         :ok <- sourced_list(semantic.critical_context, @bounds.critical_context),
          :ok <- errors(semantic.errors),
          :ok <- artifacts(semantic.artifact_refs),
          :ok <- coverage(semantic.coverage) do
@@ -45,6 +46,7 @@ defmodule BeamWeaver.Compaction.Validator do
     with {:ok, semantic} <- validate_shape(semantic),
          :ok <- exact_coverage(semantic.coverage, expected_range),
          :ok <- known_sources(semantic, allowed_ids),
+         :ok <- source_backed_artifacts(semantic.artifact_refs, events, opts),
          :ok <- exact_excerpts(semantic.user_requests, direct_user),
          :ok <- unique_entries(semantic),
          {:ok, size} <- Canonical.encoded_size(Semantic.to_map(semantic)),
@@ -65,7 +67,7 @@ defmodule BeamWeaver.Compaction.Validator do
   defp sourced_list(values, maximum) do
     list(values, maximum, fn value ->
       closed(value, ["text", "source_event_ids"], fn value ->
-        with :ok <- text(fetch(value, "text"), 4_000),
+        with :ok <- text(fetch(value, "text"), @bounds.text_bytes),
              :ok <- event_ids(fetch(value, "source_event_ids"), 1) do
           :ok
         end
@@ -74,7 +76,7 @@ defmodule BeamWeaver.Compaction.Validator do
   end
 
   defp user_requests(values) do
-    list(values, 64, fn value ->
+    list(values, @bounds.user_requests, fn value ->
       closed(value, ["source_event_id", "exact_excerpt", "secret_omission", "status"], fn value ->
         excerpt = fetch(value, "exact_excerpt")
         omission = fetch(value, "secret_omission")
@@ -89,10 +91,10 @@ defmodule BeamWeaver.Compaction.Validator do
   end
 
   defp decisions(values) do
-    list(values, 64, fn value ->
+    list(values, @bounds.decisions, fn value ->
       closed(value, ["text", "rationale", "source_event_ids"], fn value ->
-        with :ok <- text(fetch(value, "text"), 4_000),
-             :ok <- nullable_text(fetch(value, "rationale"), 4_000),
+        with :ok <- text(fetch(value, "text"), @bounds.text_bytes),
+             :ok <- nullable_text(fetch(value, "rationale"), @bounds.text_bytes),
              :ok <- event_ids(fetch(value, "source_event_ids"), 1) do
           :ok
         end
@@ -102,10 +104,10 @@ defmodule BeamWeaver.Compaction.Validator do
 
   defp progress(value) do
     closed(value, ["completed", "active", "blocked", "pending"], fn value ->
-      with :ok <- progress_list(fetch(value, "completed"), 128),
-           :ok <- progress_list(fetch(value, "active"), 64),
-           :ok <- progress_list(fetch(value, "blocked"), 64),
-           :ok <- progress_list(fetch(value, "pending"), 64) do
+      with :ok <- progress_list(fetch(value, "completed"), @bounds.progress_completed),
+           :ok <- progress_list(fetch(value, "active"), @bounds.progress_active),
+           :ok <- progress_list(fetch(value, "blocked"), @bounds.progress_blocked),
+           :ok <- progress_list(fetch(value, "pending"), @bounds.progress_pending) do
         :ok
       end
     end)
@@ -114,7 +116,7 @@ defmodule BeamWeaver.Compaction.Validator do
   defp progress_list(values, maximum) do
     list(values, maximum, fn value ->
       closed(value, ["text", "source_event_ids", "verification_event_ids"], fn value ->
-        with :ok <- text(fetch(value, "text"), 4_000),
+        with :ok <- text(fetch(value, "text"), @bounds.text_bytes),
              :ok <- event_ids(fetch(value, "source_event_ids"), 1),
              :ok <- event_ids(fetch(value, "verification_event_ids"), 0) do
           :ok
@@ -124,9 +126,9 @@ defmodule BeamWeaver.Compaction.Validator do
   end
 
   defp errors(values) do
-    list(values, 64, fn value ->
+    list(values, @bounds.errors, fn value ->
       closed(value, ["message", "status", "source_event_ids"], fn value ->
-        with :ok <- text(fetch(value, "message"), 4_000),
+        with :ok <- text(fetch(value, "message"), @bounds.text_bytes),
              :ok <- enum(fetch(value, "status"), ["open", "resolved"]),
              :ok <- event_ids(fetch(value, "source_event_ids"), 1) do
           :ok
@@ -136,10 +138,10 @@ defmodule BeamWeaver.Compaction.Validator do
   end
 
   defp artifacts(values) do
-    list(values, 128, fn value ->
+    list(values, @bounds.artifact_refs, fn value ->
       closed(value, ["artifact_id", "purpose", "source_event_ids"], fn value ->
         with :ok <- uuid(fetch(value, "artifact_id")),
-             :ok <- text(fetch(value, "purpose"), 4_000),
+             :ok <- text(fetch(value, "purpose"), @bounds.text_bytes),
              :ok <- event_ids(fetch(value, "source_event_ids"), 1) do
           :ok
         end
@@ -158,7 +160,7 @@ defmodule BeamWeaver.Compaction.Validator do
     end)
   end
 
-  defp excerpt_or_omission(excerpt, nil), do: text(excerpt, 4_000)
+  defp excerpt_or_omission(excerpt, nil), do: text(excerpt, @bounds.text_bytes)
 
   defp excerpt_or_omission(nil, omission) do
     closed(omission, ["class", "source_span_hash"], fn omission ->
@@ -185,6 +187,47 @@ defmodule BeamWeaver.Compaction.Validator do
 
     if unknown == [], do: :ok, else: invalid("semantic cites unknown source events", %{event_ids: unknown})
   end
+
+  defp source_backed_artifacts(refs, events, opts) do
+    sources =
+      events
+      |> Enum.reduce(%{}, fn event, acc ->
+        Enum.reduce(event.artifact_ids, acc, fn artifact_id, values ->
+          Map.update(values, artifact_id, MapSet.new([event.event_id]), &MapSet.put(&1, event.event_id))
+        end)
+      end)
+      |> add_lineage_artifact_sources(Keyword.get(opts, :lineage_artifact_refs, []))
+
+    invalid =
+      Enum.flat_map(refs, fn ref ->
+        artifact_id = fetch(ref, "artifact_id")
+        cited = ref |> fetch("source_event_ids") |> MapSet.new()
+
+        case Map.fetch(sources, artifact_id) do
+          {:ok, allowed} -> if MapSet.subset?(cited, allowed), do: [], else: [artifact_id]
+          :error -> [artifact_id]
+        end
+      end)
+
+    if invalid == [],
+      do: :ok,
+      else: invalid("semantic cites artifacts without host source provenance", %{artifact_ids: invalid})
+  end
+
+  defp add_lineage_artifact_sources(sources, refs) when is_list(refs) do
+    Enum.reduce(refs, sources, fn ref, acc ->
+      artifact_id = fetch(ref, "artifact_id")
+      event_ids = fetch(ref, "source_event_ids")
+
+      if is_binary(artifact_id) and is_list(event_ids) do
+        Map.update(acc, artifact_id, MapSet.new(event_ids), &MapSet.union(&1, MapSet.new(event_ids)))
+      else
+        acc
+      end
+    end)
+  end
+
+  defp add_lineage_artifact_sources(sources, _refs), do: sources
 
   defp exact_excerpts(requests, direct_user) do
     Enum.reduce_while(requests, :ok, fn request, :ok ->
@@ -268,7 +311,8 @@ defmodule BeamWeaver.Compaction.Validator do
   defp closed(_value, _keys, _validator), do: invalid("semantic object is invalid")
 
   defp event_ids(values, minimum) when is_list(values) do
-    if length(values) >= minimum and length(values) <= 32 and Enum.uniq(values) == values and
+    if length(values) >= minimum and length(values) <= @bounds.source_event_ids and
+         Enum.uniq(values) == values and
          Enum.all?(values, &uuid?/1),
        do: :ok,
        else: invalid("semantic source event IDs are invalid")

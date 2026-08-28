@@ -13,7 +13,10 @@ defmodule BeamWeaver.Provider.Response do
   """
 
   alias BeamWeaver.Core.Message
+  alias BeamWeaver.Agent.ModelResolver
   alias BeamWeaver.Models.Profile
+  alias BeamWeaver.Provider.Outcome
+  alias BeamWeaver.Provider.Replay
   alias BeamWeaver.Provider.Validation
 
   defstruct message: nil,
@@ -27,6 +30,8 @@ defmodule BeamWeaver.Provider.Response do
             transport: %{},
             headers: %{},
             provider_metadata: %{},
+            outcome: nil,
+            replay: nil,
             raw: nil
 
   @type t :: %__MODULE__{}
@@ -51,6 +56,8 @@ defmodule BeamWeaver.Provider.Response do
       transport: normalize_transport(message.response_metadata),
       headers: headers,
       provider_metadata: provider_metadata(provider, message.response_metadata),
+      outcome: Outcome.classify(message),
+      replay: replay_projection(message, provider, model, opts),
       raw: message.response_metadata
     }
   end
@@ -72,7 +79,8 @@ defmodule BeamWeaver.Provider.Response do
         grounding: response.grounding,
         transport: response.transport,
         headers: response.headers,
-        provider_metadata: response.provider_metadata
+        provider_metadata: response.provider_metadata,
+        outcome: outcome_map(response.outcome)
       })
       |> put_if_absent(:request_id, response.transport[:request_id])
       |> reject_empty_values()
@@ -119,6 +127,59 @@ defmodule BeamWeaver.Provider.Response do
     end
   end
 
+  @doc """
+  Returns the normalized message together with its durable execution outcome
+  and provider-native replay projection.
+  """
+  @spec normalize_execution_result(term(), Message.t(), keyword()) ::
+          {:ok, %{message: Message.t(), outcome: Outcome.t(), replay: map() | nil}}
+          | {:error, BeamWeaver.Core.Error.t()}
+  def normalize_execution_result(model, %Message{} = message, opts \\ []) do
+    with {:ok, normalized} <- normalize_message_result(model, message, opts),
+         {:ok, replay} <- execution_replay(normalized, model, opts) do
+      response = from_message(model, normalized, Keyword.put(opts, :normalized_replay, replay))
+
+      execution_message = %{normalized | usage_metadata: response.usage}
+
+      {:ok, %{message: execution_message, outcome: response.outcome, replay: replay}}
+    end
+  end
+
+  defp execution_replay(%Message{role: :assistant} = message, model, opts) do
+    Replay.project(message, replay_binding(message, model, opts))
+  end
+
+  defp execution_replay(%Message{}, _model, _opts), do: {:ok, nil}
+
+  defp replay_projection(%Message{role: :assistant} = message, provider, model, opts) do
+    case Keyword.fetch(opts, :normalized_replay) do
+      {:ok, replay} ->
+        replay
+
+      :error ->
+        case Replay.project(message, replay_binding(provider, model, opts)) do
+          {:ok, projection} -> projection
+          {:error, _error} -> nil
+        end
+    end
+  end
+
+  defp replay_projection(_message, _provider, _model, _opts), do: nil
+
+  defp replay_binding(%Message{} = message, model, opts),
+    do: replay_binding(provider(model, message, opts), model, opts)
+
+  defp replay_binding(provider, model, opts) do
+    Keyword.get(opts, :replay_binding, %{
+      provider: provider,
+      model: ModelResolver.get_model_identifier(model),
+      profile: model_profile_value(model, :id)
+    })
+  end
+
+  defp outcome_map(%Outcome{} = outcome), do: Map.from_struct(outcome)
+  defp outcome_map(_outcome), do: %{}
+
   defp normalize_usage(nil, response_metadata) do
     case raw_usage(response_metadata) do
       nil -> %{}
@@ -135,18 +196,31 @@ defmodule BeamWeaver.Provider.Response do
     output = first_number(usage, [:output_tokens, :completion_tokens])
     total = first_number(usage, [:total_tokens, :total]) || sum_present(input, output)
 
+    cache_read =
+      first_number(usage, [:cache_read_tokens, :cache_read_input_tokens]) ||
+        first_number(input_details, [:cache_read, :cache_read_tokens, :cache_read_input_tokens])
+
+    cache_write =
+      first_number(usage, [
+        :cache_write_tokens,
+        :cache_creation_tokens,
+        :cache_creation_input_tokens
+      ]) ||
+        first_number(input_details, [
+          :cache_creation,
+          :cache_creation_tokens,
+          :cache_creation_input_tokens,
+          :cache_write,
+          :cache_write_tokens
+        ])
+
     %{
       input_tokens: input,
       output_tokens: output,
       total_tokens: total,
-      cache_read_tokens: first_number(input_details, [:cache_read, :cache_read_tokens, :cache_read_input_tokens]),
-      cache_creation_tokens:
-        first_number(input_details, [
-          :cache_creation,
-          :cache_creation_tokens,
-          :cache_write,
-          :cache_write_tokens
-        ]),
+      cache_read_tokens: cache_read,
+      cache_write_tokens: cache_write,
+      cache_creation_tokens: cache_write,
       reasoning_tokens: first_number(output_details, [:reasoning, :reasoning_tokens, :thinking_tokens]),
       input_token_details: input_details,
       output_token_details: output_details,
@@ -169,11 +243,9 @@ defmodule BeamWeaver.Provider.Response do
   defp raw_usage(_metadata), do: nil
 
   defp normalize_limits(model, response_metadata) do
-    profile = Map.get(model, :profile)
-
     %{
-      max_input_tokens: profile_value(profile, :max_input_tokens),
-      max_output_tokens: profile_value(profile, :max_output_tokens),
+      max_input_tokens: model_profile_value(model, :max_input_tokens),
+      max_output_tokens: model_profile_value(model, :max_output_tokens),
       requested_max_output_tokens: first_number(model, [:max_output_tokens, :max_completion_tokens, :max_tokens])
     }
     |> Map.merge(existing_limits(response_metadata))
@@ -182,17 +254,17 @@ defmodule BeamWeaver.Provider.Response do
 
   defp normalize_model(model, %Message{} = message, provider) do
     metadata = message.response_metadata || %{}
-    profile = Map.get(model, :profile)
+    model_identifier = ModelResolver.get_model_identifier(model)
 
     %{
       provider: provider,
       model_provider: provider,
-      requested_model: Map.get(model, :model),
-      model: metadata[:model] || profile_value(profile, :id),
-      model_name: metadata[:model_name] || metadata[:model] || Map.get(model, :model),
+      requested_model: model_identifier,
+      model: metadata[:model] || model_profile_value(model, :id),
+      model_name: metadata[:model_name] || metadata[:model] || model_identifier,
       model_version: metadata[:model_version],
-      profile_id: profile_value(profile, :id),
-      tokenizer: profile_value(profile, :tokenizer),
+      profile_id: model_profile_value(model, :id),
+      tokenizer: model_profile_value(model, :tokenizer),
       api: metadata[:api]
     }
     |> reject_empty_values()
@@ -292,10 +364,10 @@ defmodule BeamWeaver.Provider.Response do
 
   defp provider(model, message, opts) do
     Keyword.get(opts, :provider) ||
-      profile_value(Map.get(model, :profile), :provider) ||
+      model_profile_value(model, :provider) ||
       Map.get(message.response_metadata || %{}, :model_provider) ||
       Map.get(message.response_metadata || %{}, :provider) ||
-      Map.get(model, :provider)
+      ModelResolver.get_model_provider(model)
   end
 
   defp reasoning_content(%Message{} = message) do
@@ -514,6 +586,20 @@ defmodule BeamWeaver.Provider.Response do
   defp profile_value(%Profile{} = profile, key), do: Map.get(profile, key)
   defp profile_value(_profile, _key), do: nil
 
+  defp model_profile_value(model, key), do: model_profile_value(model, key, 0)
+
+  defp model_profile_value(_model, _key, depth) when depth >= 8, do: nil
+
+  defp model_profile_value(model, key, depth) when is_map(model) do
+    profile_value(Map.get(model, :profile), key) ||
+      case Map.get(model, :model) do
+        nested when is_map(nested) -> model_profile_value(nested, key, depth + 1)
+        _nested -> nil
+      end
+  end
+
+  defp model_profile_value(_model, _key, _depth), do: nil
+
   defp first_number(map, keys) when is_map(map) do
     Enum.find_value(keys, fn key ->
       case Map.get(map, key) do
@@ -575,6 +661,8 @@ defmodule BeamWeaver.Provider.Response do
   defp usage_key("cache_creation"), do: :cache_creation
   defp usage_key("cache_creation_tokens"), do: :cache_creation_tokens
   defp usage_key("cache_creation_input_tokens"), do: :cache_creation_input_tokens
+  defp usage_key("cache_write"), do: :cache_write
+  defp usage_key("cache_write_tokens"), do: :cache_write_tokens
   defp usage_key("ephemeral_5m_input_tokens"), do: :ephemeral_5m_input_tokens
   defp usage_key("ephemeral_1h_input_tokens"), do: :ephemeral_1h_input_tokens
   defp usage_key("reasoning"), do: :reasoning

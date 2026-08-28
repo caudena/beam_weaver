@@ -73,6 +73,7 @@ defmodule BeamWeaver.Models.ProfileRegistry.Moonshot do
     api_family: :chat_completions,
     openai_compatible: true,
     automatic_context_caching: true,
+    pricing_last_checked: "2026-08-27",
     partial_mode: true,
     unsupported_api_families: [:responses, :embeddings, :batch, :files],
     sampling_controls: :fixed
@@ -164,6 +165,7 @@ defmodule BeamWeaver.Models.ProfileRegistry.Moonshot do
                  extra:
                    Map.merge(@base_extra, @thinking_toggle_extra)
                    |> Map.merge(%{
+                     pricing_source_url: "https://platform.kimi.ai/docs/pricing/chat-k26",
                      input_cache_hit_price_per_mtok: 0.16,
                      input_cache_miss_price_per_mtok: 0.95,
                      output_price_per_mtok: 4.00,
@@ -180,6 +182,7 @@ defmodule BeamWeaver.Models.ProfileRegistry.Moonshot do
                  extra:
                    Map.merge(@base_extra, @thinking_toggle_extra)
                    |> Map.merge(%{
+                     pricing_source_url: "https://platform.kimi.ai/docs/pricing/chat-k25",
                      unavailable_to_new_users: true,
                      sunset_at: "2026-08-31",
                      input_cache_hit_price_per_mtok: 0.10,

@@ -4,7 +4,7 @@ defmodule BeamWeaver.MixProject do
   def project do
     [
       app: :beam_weaver,
-      version: "0.1.18",
+      version: "0.1.19",
       description:
         "Elixir-native LangChain, LangGraph, and DeepAgents for traceable LLM apps: OTP workflows, tools, memory, human-in-the-loop, streaming, custom clients/adapters, minimal deps, and WeaveScope tracing.",
       source_url: "https://github.com/caudena/beam_weaver",
@@ -34,6 +34,7 @@ defmodule BeamWeaver.MixProject do
       {:ecto_sqlite3, "~> 0.24.1", optional: true},
       {:req, "~> 0.7.2"},
       {:finch, "~> 0.23.0"},
+      {:idna, "~> 7.1"},
       {:fastest_tiktoken, "~> 0.1.1"},
       {:telemetry, "~> 1.2"},
       {:yamerl, "~> 0.10.0"}
@@ -195,6 +196,7 @@ defmodule BeamWeaver.MixProject do
           BeamWeaver.Agent.Middleware.TodoList,
           BeamWeaver.Agent.Middleware.Filesystem,
           BeamWeaver.Agent.Middleware.Skills,
+          BeamWeaver.Skill,
           BeamWeaver.Agent.Middleware.Memory,
           BeamWeaver.Agent.Middleware.HumanInTheLoop,
           BeamWeaver.Agent.Middleware.Summarization,
@@ -241,8 +243,12 @@ defmodule BeamWeaver.MixProject do
         ],
         "Memory, Storage, And Retrieval": [
           BeamWeaver.Checkpoint,
+          BeamWeaver.Checkpoint.ResumeDelivery,
+          BeamWeaver.Checkpoint.ResumeDelivery.StageReceipt,
+          BeamWeaver.Checkpoint.ResumeDelivery.CommitReceipt,
           BeamWeaver.Checkpoint.ETS,
           BeamWeaver.Checkpoint.Ecto,
+          BeamWeaver.Compaction.ToolProjection,
           BeamWeaver.Memory,
           BeamWeaver.Memory.ETS,
           BeamWeaver.Memory.Ecto,
@@ -262,6 +268,10 @@ defmodule BeamWeaver.MixProject do
           BeamWeaver.OpenAI.ResponsesModel,
           BeamWeaver.OpenAI.ChatCompletionsModel,
           BeamWeaver.OpenAI.EmbeddingModel,
+          BeamWeaver.OpenAI.CodexResponses,
+          BeamWeaver.Provider.Outcome,
+          BeamWeaver.Provider.ReasoningControl,
+          BeamWeaver.Provider.Replay,
           BeamWeaver.Anthropic,
           BeamWeaver.Anthropic.ChatModel,
           BeamWeaver.Google,

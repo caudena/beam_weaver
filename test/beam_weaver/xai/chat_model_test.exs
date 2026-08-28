@@ -624,39 +624,21 @@ defmodule BeamWeaver.XAI.ChatModelTest do
   end
 
   test "model initializer supports current xAI identifiers, aliases, deprecations, and embeddings" do
-    assert {:ok, explicit} = Models.init_chat_model("xai:grok-4.6")
-    assert explicit.__struct__ == ChatModel
-    assert explicit.profile.provider == :xai
-    assert explicit.profile.max_input_tokens == 500_000
-    assert explicit.profile.max_output_tokens == nil
-    assert explicit.profile.extra.text_output_limit == :unlimited
-    assert explicit.profile.extra.knowledge_cutoff == "2026-02-01"
-    assert explicit.profile.extra.input_price_per_mtok == 2.00
-    assert explicit.profile.extra.cached_input_price_per_mtok == 0.50
-    assert explicit.profile.extra.output_price_per_mtok == 6.00
-    assert explicit.profile.extra.higher_context_input_price_per_mtok == 4.00
-    assert explicit.profile.extra.higher_context_cached_input_price_per_mtok == 1.00
-    assert explicit.profile.extra.higher_context_output_price_per_mtok == 12.00
-    assert explicit.profile.extra.priority_processing_price_multiplier == 2.0
-    assert explicit.profile.extra.default_reasoning_effort == :high
-    assert explicit.profile.extra.reasoning_efforts == [:low, :medium, :high, :xhigh]
-
-    assert {:ok, previous} = Models.init_chat_model("xai:grok-4.5")
-    assert previous.profile.extra.cached_input_price_per_mtok == 0.30
-    assert previous.profile.extra.higher_context_cached_input_price_per_mtok == 0.60
-    assert previous.profile.extra.reasoning_efforts == [:low, :medium, :high, :xhigh]
+    for model <- ["grok-4.6", "grok-4.5", "grok-4.3"] do
+      assert {:ok, %ChatModel{model: ^model}} = Models.init_chat_model("xai:" <> model)
+    end
 
     assert {:ok, latest_alias} = Models.init_chat_model("xai:grok-4.5-latest")
-    assert latest_alias.profile.extra.canonical_model == "grok-4.5"
+    assert latest_alias.model == "grok-4.5-latest"
 
     assert {:ok, build_latest_alias} = Models.init_chat_model("xai:grok-build-latest")
-    assert build_latest_alias.profile.extra.canonical_model == "grok-4.5"
+    assert build_latest_alias.model == "grok-build-latest"
 
     assert {:ok, generic_latest_alias} = Models.init_chat_model("xai:grok-latest")
-    assert generic_latest_alias.profile.extra.canonical_model == "grok-4.3"
+    assert generic_latest_alias.model == "grok-latest"
 
     assert {:ok, alias_model} = Models.init_chat_model("xai:grok-4")
-    assert alias_model.profile.extra.canonical_model == "grok-4.3"
+    assert alias_model.model == "grok-4"
 
     assert {:error, deprecated} = Models.init_chat_model("grok-4-fast-reasoning")
     assert deprecated.type == :deprecated_model

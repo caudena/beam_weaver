@@ -51,8 +51,12 @@ Use this skill when a user asks about LangGraph APIs or implementation details.
 4. Include reference links.
 ````
 
-At minimum, frontmatter needs `name` and `description`. BeamWeaver also reads
-`license`, `compatibility`, `metadata`, and `allowed-tools`.
+At minimum, frontmatter needs `name` and `description`. BeamWeaver accepts only
+the following optional fields: `license`, `compatibility`, a string-valued
+`metadata` map, `allowed-tools`, `argument-hint`,
+`disable-model-invocation`, `user-invocable`, and `context` (`inline` or
+`fork`). Execution-authority fields such as `agent`, `model`, `effort`,
+`background`, `hooks`, and `shell` are rejected.
 
 Supporting files are not discovered semantically by the runtime. Reference them
 from `SKILL.md` and explain when to read or execute them so the agent can decide
@@ -62,10 +66,25 @@ what to load.
 **Name Skills Like Agent Skills**
 
 Use lowercase kebab-case names that match the containing directory, for example
-`langgraph-docs/SKILL.md` with `name: langgraph-docs`. BeamWeaver records
-whether the name matches the Agent Skills convention; it does not currently
-reject mismatches.
+`langgraph-docs/SKILL.md` with `name: langgraph-docs`. The skills middleware
+rejects a mismatch rather than loading the skill under a surprising name.
 {% endhint %}
+
+## Pure Parsing And Invocation Rendering
+
+`BeamWeaver.Skill.parse/2` parses a complete bounded `SKILL.md` document
+without accessing the filesystem or granting tools. Pass `expected_name:` when
+the containing directory is known:
+
+```elixir
+{:ok, skill} =
+  BeamWeaver.Skill.parse(document, expected_name: "langgraph-docs")
+```
+
+`BeamWeaver.Skill.render/2` substitutes only the literal `$ARGUMENTS` marker.
+It does not interpret shell syntax, environment variables, positional
+arguments, or dynamic substitutions. When the marker is absent, nonempty
+arguments are appended under a deterministic `ARGUMENTS:` heading.
 
 ## How Skills Work
 

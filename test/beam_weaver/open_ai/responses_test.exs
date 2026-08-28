@@ -183,6 +183,37 @@ defmodule BeamWeaver.OpenAI.ResponsesTest do
     assert Enum.all?(events, &(&1.metadata.model_provider == :openai))
   end
 
+  test "explicit Responses model dispatches the exact prepared request bytes" do
+    response = """
+    event: response.completed
+    data: {"type":"response.completed","response":{"id":"resp_openai","usage":{"total_tokens":3}}}
+
+    data: [DONE]
+    """
+
+    exact_body = ~s({"model":"gpt-5.4-mini","input":[{"role":"user","content":"exact"}],"stream":true})
+
+    model =
+      %ResponsesModel{
+        model: "gpt-5.4-mini",
+        api_key: "sk-test",
+        transport: BeamWeaver.TestSupport.Conformance.Fakes.Transport,
+        transport_opts: [
+          parent: self(),
+          expect: %{method: :post, path: "/v1/responses"},
+          headers: [{"content-type", "text/event-stream"}],
+          body: response
+        ]
+      }
+
+    assert {:ok, stream} = CoreChatModel.stream_exact_typed_events(model, exact_body)
+    Enum.to_list(stream)
+
+    assert_received {:fake_transport_request, request}
+    assert request.body == exact_body
+    assert request.json == nil
+  end
+
   test "Responses prompt_cache_key follows first-class, model kwargs, and per-call precedence" do
     # Upstream reference:
     model = %BeamWeaver.OpenAI.ChatModel{

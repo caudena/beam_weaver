@@ -84,6 +84,11 @@ defmodule BeamWeaver.Provider.ChatModel do
         ChatRuntime.stream_events(model, messages, opts, runtime_adapter())
       end
 
+      @impl true
+      def stream_exact_typed_events(%__MODULE__{} = model, body, opts \\ []) when is_binary(body) do
+        ChatRuntime.stream_exact_events(model, body, opts, runtime_adapter())
+      end
+
       def async_stream_typed_events(model, messages), do: async_stream_typed_events(model, messages, [])
 
       def async_stream_typed_events(%__MODULE__{} = model, messages, opts) do
@@ -116,6 +121,8 @@ defmodule BeamWeaver.Provider.ChatModel do
                      async_stream_events: 3,
                      stream_typed_events: 2,
                      stream_typed_events: 3,
+                     stream_exact_typed_events: 2,
+                     stream_exact_typed_events: 3,
                      async_stream_typed_events: 2,
                      async_stream_typed_events: 3,
                      model_id: 1,

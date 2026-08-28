@@ -25,16 +25,35 @@ defmodule BeamWeaver.Runtime.Agent.StreamBroker do
     |> Map.new()
   end
 
-  @spec broadcast(%{pid() => reference()}, String.t(), term(), non_neg_integer()) ::
+  @spec broadcast_progress(%{pid() => reference()}, String.t(), term(), non_neg_integer()) ::
           %{pid() => reference()}
-  def broadcast(subscribers, agent_id, event, queue_limit) do
+  def broadcast_progress(subscribers, agent_id, event, queue_limit) do
     Enum.reduce(subscribers, subscribers, fn {pid, monitor}, acc ->
       case Process.info(pid, :message_queue_len) do
         {:message_queue_len, length} when length < queue_limit ->
           send(pid, {:beam_weaver_agent, agent_id, event})
           acc
 
-        _full_or_down ->
+        {:message_queue_len, _full} ->
+          acc
+
+        nil ->
+          Process.demonitor(monitor, [:flush])
+          Map.delete(acc, pid)
+      end
+    end)
+  end
+
+  @spec broadcast_terminal(%{pid() => reference()}, String.t(), term()) ::
+          %{pid() => reference()}
+  def broadcast_terminal(subscribers, agent_id, event) do
+    Enum.reduce(subscribers, subscribers, fn {pid, monitor}, acc ->
+      case Process.info(pid, :message_queue_len) do
+        {:message_queue_len, _length} ->
+          send(pid, {:beam_weaver_agent, agent_id, event})
+          acc
+
+        nil ->
           Process.demonitor(monitor, [:flush])
           Map.delete(acc, pid)
       end

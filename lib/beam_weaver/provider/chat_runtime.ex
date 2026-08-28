@@ -61,6 +61,19 @@ defmodule BeamWeaver.Provider.ChatRuntime do
     {:error, Error.new(:unsupported_feature, "provider does not support typed stream events")}
   end
 
+  @doc false
+  def stream_exact_events(model, body, opts, %Adapter{exact_stream_events: stream_events} = adapter)
+      when is_binary(body) and is_function(stream_events, 3) do
+    with {:ok, events} <- stream_events.(model, body, opts) do
+      metadata = Keyword.get(opts, :exact_request_metadata, %{})
+      mux_typed_events(events, adapter.source, metadata, opts)
+    end
+  end
+
+  def stream_exact_events(_model, _body, _opts, %Adapter{}) do
+    {:error, Error.new(:unsupported_feature, "provider does not support exact typed stream events")}
+  end
+
   def default_response_header_opt(%{include_response_headers: include_response_headers}, opts) do
     Keyword.put_new(opts, :include_response_headers, include_response_headers)
   end

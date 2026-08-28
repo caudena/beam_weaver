@@ -4,7 +4,7 @@ BeamWeaver includes a first-class DeepSeek provider for the native Chat
 Completions and Responses APIs, plus raw clients for every API surface that
 DeepSeek currently publishes.
 
-This guide reflects the DeepSeek documentation checked on 2026-08-12 and the
+This guide reflects the DeepSeek documentation checked through 2026-08-27 and the
 checked-in live API conformance captures.
 
 ## Models
@@ -12,10 +12,17 @@ checked-in live API conformance captures.
 Use explicit provider-prefixed identifiers:
 
 - `deepseek:deepseek-v4-flash`
+- `deepseek:deepseek-v4-flash-vision-exp`
 - `deepseek:deepseek-v4-pro`
 
-Both models have a 1,048,576-token context window and a maximum output of
-393,216 tokens. Chat Completions and Responses support both models.
+All three profiles have a 1,048,576-token context window and a maximum output
+of 393,216 tokens. Chat Completions and Responses support all three.
+
+The experimental Vision profile extends V4 Flash with user-role JPEG, PNG, GIF,
+and WebP input. It accepts at most 600 images per request, supports `low`,
+`high`, `original`, and `auto` image detail, and permits image-bearing tool
+messages. It does not support FIM completion. Its text-token pricing and
+time-based peak schedule are the same as V4 Flash.
 
 The retired `deepseek-chat` and `deepseek-reasoner` identifiers are not aliases
 for the V4 models. BeamWeaver reports them as unsupported so an application
@@ -134,15 +141,16 @@ Select the stateless Responses API explicitly:
   )
 ```
 
-Responses supports both V4 models, native JSON Schema output, function tools,
+Responses supports all three V4 profiles, native JSON Schema output, function tools,
 server-side web search, and the custom `apply_patch` tool used by DeepSeek's
 Codex integration. Its reasoning effort accepts `none`, `minimal`, `low`,
 `medium`, `high`, `xhigh`, and `max`; the compatibility values map to the
 provider's low/high effort levels. DeepSeek does not store Responses or
 conversations: send the complete history on every turn. BeamWeaver rejects
-stateful response/conversation parameters and unsupported image, audio, video,
-or file inputs instead of allowing the server to replace them with placeholder
-text.
+stateful response/conversation parameters. The base Flash and Pro profiles
+reject image, audio, video, and file inputs instead of allowing the server to
+replace them with placeholder text; the Vision profile accepts only its
+documented user-role image formats and limits.
 
 Hosted web search can complete without an assistant message. The normalized
 result preserves reasoning, function-call, web-search, failure, and unknown
@@ -198,6 +206,8 @@ Current prices per one million tokens:
 | --- | --- | ---: | ---: | ---: |
 | `deepseek-v4-flash` | Off-peak | $0.007 | $0.22 | $0.66 |
 | `deepseek-v4-flash` | Peak | $0.014 | $0.44 | $1.32 |
+| `deepseek-v4-flash-vision-exp` | Off-peak | $0.007 | $0.22 | $0.66 |
+| `deepseek-v4-flash-vision-exp` | Peak | $0.014 | $0.44 | $1.32 |
 | `deepseek-v4-pro` | Off-peak | $0.022 | $0.66 | $1.98 |
 | `deepseek-v4-pro` | Peak | $0.044 | $1.32 | $3.96 |
 

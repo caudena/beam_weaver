@@ -118,14 +118,36 @@ defmodule BeamWeaver.OpenAI.Messages.Request do
 
   defp tool_output(content) when is_binary(content), do: content
 
-  defp tool_output(content) when is_map(content) or is_list(content) do
+  defp tool_output(content) when is_list(content) do
+    if portable_tool_output?(content) do
+      Enum.map(content, &content_block_to_openai/1)
+    else
+      encode_tool_output(content)
+    end
+  end
+
+  defp tool_output(content) when is_map(content), do: encode_tool_output(content)
+  defp tool_output(content), do: to_string(content)
+
+  defp encode_tool_output(content) do
     case BeamWeaver.JSON.encode(content) do
       {:ok, json} -> json
       {:error, _error} -> inspect(content)
     end
   end
 
-  defp tool_output(content), do: to_string(content)
+  # Responses accepts an array of input text/image/file parts as a function
+  # output. Keep ordinary JSON lists encoded as JSON; only the portable closed
+  # content-block subset is lowered as multimodal output.
+  defp portable_tool_output?([]), do: false
+
+  defp portable_tool_output?(blocks) do
+    Enum.all?(blocks, fn
+      text when is_binary(text) -> true
+      %{type: type} when type in [:text, :plain_text, :image, :image_url, :file] -> true
+      _other -> false
+    end)
+  end
 
   defp provider_role(%Message{} = message) do
     message.metadata

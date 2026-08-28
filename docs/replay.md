@@ -41,6 +41,54 @@ encrypted reasoning is preserved, non-replayable reasoning is skipped, and empty
 image-generation placeholders are dropped. This keeps replay tests aligned with
 the actual provider wire contract instead of cached local message internals.
 
+## Durable Provider-Native Replay
+
+Transport cassettes reproduce HTTP exchanges in tests. Durable application
+runtimes need a different artifact: the bounded assistant content that must be
+sent back to the same provider on a later turn. Use
+`BeamWeaver.Provider.Response.normalize_execution_result/3` to obtain the
+normalized message, its closed outcome classification, and that replay
+projection together:
+
+```elixir
+{:ok, execution} =
+  BeamWeaver.Provider.Response.normalize_execution_result(model, assistant_message,
+    replay_binding: %{
+      provider: :anthropic,
+      model: "claude-opus-5",
+      profile: "claude-opus-5"
+    }
+  )
+
+persist(execution.message, execution.outcome, execution.replay)
+```
+
+`BeamWeaver.Provider.Replay` retains only request-critical assistant blocks and
+tool-call correlation fields. It deliberately excludes raw HTTP bodies, usage,
+traces, tool-result bodies, and arbitrary response metadata. Anthropic fallback
+boundary blocks retain their raw provider payload inside the bounded projection
+so a later exact replay does not silently change provider semantics.
+
+Before materializing persisted content, restore it against the exact expected
+binding:
+
+```elixir
+{:ok, assistant_message} =
+  BeamWeaver.Provider.Replay.restore(persisted_projection, expected_binding)
+```
+
+A provider, model, or profile mismatch returns
+`:provider_replay_binding_mismatch` before any content is reconstructed.
+`binding_matches?/2` is available when a recovery scan needs to discard foreign
+rows before applying aggregate content limits.
+
+`BeamWeaver.Provider.Outcome` classifies each normalized provider turn along
+three independent axes: remote status, turn disposition, and result
+completeness. Provider status is evidence, not control flow. Applications
+should branch on the closed outcome—for example `:awaiting_client_tools`,
+`:awaiting_user_input`, `:provider_pause`, `:context_limit`, or
+`:no_usable_output`—rather than inferring completion from the presence of text.
+
 ## Cassette Shape
 
 BeamWeaver reads Python VCR-style cassettes with parallel `requests` and

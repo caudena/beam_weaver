@@ -1631,7 +1631,7 @@ defmodule BeamWeaver.AgentCapabilitiesTest do
     assert %{skills_metadata: skills, skills_load_errors: []} =
              Middleware.Skills.before_model(middleware, %{files: files}, %{})
 
-    assert Enum.map(skills, & &1.name) |> Enum.sort() == ["pdf", "research"]
+    assert Enum.map(skills, & &1.name) == ["pdf", "research"]
 
     assert %{
              description: "Project research",

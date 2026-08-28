@@ -33,7 +33,11 @@ defmodule BeamWeaver.Compaction.Checkpoint do
     :rehydration_state_hash,
     :provider_connection_id,
     :destination_identity_hash,
-    :token_counter,
+    :accounting_method,
+    :accounting_version,
+    :accounting_profile_hash,
+    :category_bytes,
+    :category_tokens,
     :tokens_before,
     :tokens_after,
     :tokens_reclaimed,
@@ -60,7 +64,7 @@ defmodule BeamWeaver.Compaction.Checkpoint do
     |> Map.update!(:rehydration_state, & &1.data)
     |> Map.update!(:trigger, &Atom.to_string/1)
     |> Map.update!(:representation, &Atom.to_string/1)
-    |> Map.update!(:token_counter, &Atom.to_string/1)
+    |> Map.update!(:accounting_method, &Atom.to_string/1)
     |> Map.update!(:validation_status, &Atom.to_string/1)
   end
 

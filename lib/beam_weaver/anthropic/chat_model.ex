@@ -98,6 +98,14 @@ defmodule BeamWeaver.Anthropic.ChatModel do
     end
   end
 
+  @impl true
+  def stream_typed_events(%__MODULE__{} = model, messages, opts \\ []) do
+    with {:ok, body} <- request_body(model, messages, Keyword.put(opts, :stream, true)) do
+      {body, opts} = thread_betas(body, opts)
+      Client.messages_stream_typed_events(client(model), body, opts)
+    end
+  end
+
   @spec request_body(t(), [BeamWeaver.Core.Message.t()], keyword()) ::
           {:ok, map()} | {:error, Error.t()}
   def request_body(%__MODULE__{} = model, messages, opts \\ []),
@@ -148,6 +156,9 @@ defmodule BeamWeaver.Anthropic.ChatModel do
       stream_response: fn model, body, opts ->
         {body, opts} = thread_betas(body, opts)
         Client.messages_stream_response(client(model), body, opts)
+      end,
+      exact_stream_events: fn model, body, opts ->
+        Client.messages_stream_typed_events(client(model), body, opts)
       end,
       decode: fn response, _opts -> Messages.response_to_message(response) end,
       parse: fn message, opts ->

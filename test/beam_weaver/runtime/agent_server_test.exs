@@ -285,16 +285,50 @@ defmodule BeamWeaver.Runtime.AgentServerTest do
     refute_receive :should_not_run
   end
 
-  test "drops subscribers that exceed the configured queue bound" do
+  test "drops progress under queue pressure without detaching or losing terminal outcomes" do
     agent =
       start_supervised!({Agent, id: "bounded_agent_#{System.unique_integer([:positive])}", subscriber_queue_limit: 0})
 
     :ok = Agent.subscribe(agent)
-    assert {:ok, _work} = Agent.start_model_call(agent, :input, fn -> :done end)
 
-    eventually(fn -> Agent.status(agent).active_count == 0 end)
-    assert Agent.status(agent).subscriber_count == 0
-    refute_receive {:beam_weaver_agent, _agent_id, _event}
+    assert {:ok, completed_work} =
+             Agent.start_model_call(agent, :input, fn _input, emit ->
+               emit.(:progress)
+               {:ok, :done}
+             end)
+
+    refute_receive {:beam_weaver_agent, _agent_id, {:stream, _, :progress}}
+
+    assert_receive {:beam_weaver_agent, _agent_id, {:completed, completed_work_id, :done}}
+
+    assert completed_work_id == completed_work.id
+    assert Agent.status(agent).subscriber_count == 1
+
+    assert {:ok, failed_work} =
+             Agent.start_model_call(agent, :input, fn ->
+               {:error, CoreError.new(:synthetic_failure, "synthetic failure")}
+             end)
+
+    assert_receive {:beam_weaver_agent, _agent_id, {:failed, failed_work_id, %Error{type: :synthetic_failure}}}
+
+    assert failed_work_id == failed_work.id
+    assert Agent.status(agent).subscriber_count == 1
+
+    test_pid = self()
+
+    assert {:ok, cancelled_work} =
+             Agent.start_model_call(agent, :input, fn ->
+               send(test_pid, :bounded_cancellable_started)
+               await_cancellation()
+             end)
+
+    assert_receive :bounded_cancellable_started
+    assert :ok = Agent.cancel(agent, cancelled_work)
+
+    assert_receive {:beam_weaver_agent, _agent_id, {:cancelled, cancelled_work_id, %Error{type: :cancelled}}}
+
+    assert cancelled_work_id == cancelled_work.id
+    assert Agent.status(agent).subscriber_count == 1
   end
 
   test "agent work preserves caller trace context as the parent run" do
@@ -329,18 +363,6 @@ defmodule BeamWeaver.Runtime.AgentServerTest do
       :continue ->
         Process.sleep(1)
         await_cancellation()
-    end
-  end
-
-  defp eventually(predicate, attempts \\ 50)
-  defp eventually(_predicate, 0), do: flunk("condition was not met")
-
-  defp eventually(predicate, attempts) do
-    if predicate.() do
-      :ok
-    else
-      Process.sleep(2)
-      eventually(predicate, attempts - 1)
     end
   end
 end

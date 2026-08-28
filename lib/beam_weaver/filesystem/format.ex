@@ -1,6 +1,8 @@
 defmodule BeamWeaver.Filesystem.Format do
   @moduledoc false
 
+  alias BeamWeaver.Filesystem.Edit
+
   @max_line_length 5_000
   @line_number_width 6
   @tool_result_token_limit 20_000
@@ -11,25 +13,27 @@ defmodule BeamWeaver.Filesystem.Format do
   def tool_result_token_limit, do: @tool_result_token_limit
   def truncation_guidance, do: @truncation_guidance
 
-  def count_occurrences(_content, ""), do: 0
-  def count_occurrences(content, needle), do: length(:binary.matches(content, needle))
+  defdelegate count_occurrences(content, needle), to: Edit
 
   def perform_string_replacement(content, old, new, opts \\ []) do
-    replace_all? = Keyword.get(opts, :replace_all, false)
-    occurrences = count_occurrences(content, old)
+    case Edit.replacement(content, old, new, opts) do
+      {:ok, occurrences, updated} ->
+        {:ok, updated, occurrences}
 
-    cond do
-      occurrences == 0 ->
+      {:error, :empty_old_text} ->
         {:error, "string not found", 0}
 
-      occurrences > 1 and not replace_all? ->
+      {:error, :not_found} ->
+        {:error, "string not found", 0}
+
+      {:error, {:multiple_occurrences, occurrences}} ->
         {:error, "multiple occurrences", occurrences}
 
-      replace_all? ->
-        {:ok, String.replace(content, old, new), occurrences}
+      {:error, {:occurrence_limit_exceeded, maximum}} ->
+        {:error, "occurrence limit exceeded", maximum}
 
-      true ->
-        {:ok, String.replace(content, old, new, global: false), 1}
+      {:error, :invalid_options} ->
+        {:error, "invalid replacement options", 0}
     end
   end
 

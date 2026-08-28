@@ -5,6 +5,8 @@ defmodule BeamWeaver.Checkpoint.ConformanceTest do
   alias BeamWeaver.Checkpoint.Ecto
   alias BeamWeaver.Checkpoint.ETS
   alias BeamWeaver.Checkpoint.PendingWrite
+  alias BeamWeaver.Checkpoint.ResumeDelivery
+  alias BeamWeaver.Compaction.Canonical
   alias BeamWeaver.Core.Async
   alias BeamWeaver.Graph.Channel
   alias BeamWeaver.Graph.Channels.DeltaSnapshot
@@ -980,6 +982,50 @@ defmodule BeamWeaver.Checkpoint.ConformanceTest do
 
         assert :ok = Checkpoint.prune(saver, [other_thread], strategy: :delete)
         assert [] = Checkpoint.list(saver, config(other_thread))
+      end
+
+      if adapter != :ets do
+        test "strict resume delivery commits and replays an exact receipt", %{saver: saver} do
+          source =
+            put_checkpoint!(
+              saver,
+              config(),
+              %{"messages" => ["parent"]},
+              metadata(step: 0)
+            )
+
+          assert :ok =
+                   Checkpoint.put_writes(
+                     saver,
+                     source,
+                     [{"messages", "unrelated pending value"}],
+                     "unrelated-task",
+                     "parent:work"
+                   )
+
+          payload = %{"result" => "child done"}
+
+          assert {:ok, delivery} =
+                   ResumeDelivery.new(%{
+                     delivery_id: unique("delivery"),
+                     source_checkpoint_id: root_id(source),
+                     source_ordinal: 1,
+                     payload: payload,
+                     payload_hash: Canonical.hash(payload),
+                     terminal_evidence: %{
+                       "state" => "completed",
+                       "result_hash" => Canonical.hash(payload)
+                     }
+                   })
+
+          assert {:ok, stage} = Checkpoint.stage_resume(saver, source, delivery)
+          assert {:ok, receipt} = Checkpoint.continue_staged(saver, stage)
+          assert :ok = Checkpoint.verify_resume_receipt(saver, receipt)
+          assert {:ok, ^receipt} = Checkpoint.continue_staged(saver, stage)
+
+          assert %{pending_writes: [{"unrelated-task", "messages", "unrelated pending value"}]} =
+                   Checkpoint.get_tuple(saver, receipt.resulting_config)
+        end
       end
     end
   end

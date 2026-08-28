@@ -14,7 +14,13 @@ defmodule BeamWeaver.Models.UsageCost do
   alias BeamWeaver.Models.Profile
 
   @million 1_000_000
-  @exact_dimensions ~w(input_tokens cached_input_tokens output_tokens)
+  @cache_write_dimensions ~w(
+    cache_write_5m_tokens
+    cache_write_1h_tokens
+    cache_write_30m_tokens
+  )
+  @exact_dimensions ~w(input_tokens cached_input_tokens output_tokens) ++
+                      @cache_write_dimensions
 
   @spec calculate(Profile.t() | map(), map(), keyword()) :: map() | nil
   def calculate(profile, usage, opts \\ [])
@@ -29,21 +35,27 @@ defmodule BeamWeaver.Models.UsageCost do
       input_tokens = input_tokens(usage)
       output_tokens = output_tokens(usage)
       cached_tokens = cached_tokens(usage)
-      uncached_tokens = uncached_tokens(usage, input_tokens, cached_tokens)
+      cache_writes = cache_write_tokens(usage, pricing)
+      total_cache_write = Enum.sum(Map.values(cache_writes))
+      uncached_tokens = uncached_tokens(usage, input_tokens, cached_tokens, total_cache_write)
 
       uncached_cost = mtok_cost(uncached_tokens, input_price)
       cached_cost = mtok_cost(cached_tokens, cached_price)
+      cache_write_costs = cache_write_costs(cache_writes, pricing, input_price)
+      cache_write_cost = Enum.sum(Map.values(cache_write_costs))
       output_cost = mtok_cost(output_tokens, output_price)
-      input_cost = uncached_cost + cached_cost
+      input_cost = uncached_cost + cached_cost + cache_write_cost
 
       %{
         input_cost: input_cost,
         output_cost: output_cost,
         total_cost: input_cost + output_cost,
-        input_cost_details: %{
-          uncached: uncached_cost,
-          cache_read: cached_cost
-        },
+        input_cost_details:
+          %{
+            uncached: uncached_cost,
+            cache_read: cached_cost
+          }
+          |> Map.merge(cache_write_costs),
         output_cost_details: %{
           text: output_cost
         }
@@ -63,7 +75,7 @@ defmodule BeamWeaver.Models.UsageCost do
   @spec calculate_usd_micros(map(), map()) :: {:ok, map()} | {:error, atom()}
   def calculate_usd_micros(pricing, usage) when is_map(pricing) and is_map(usage) do
     with :ok <- exact_profile(pricing),
-         {:ok, counts} <- exact_usage(usage),
+         {:ok, counts} <- exact_usage(usage, pricing),
          {:ok, dimensions} <- exact_dimensions(pricing, counts) do
       {numerator, denominator} =
         Enum.reduce(dimensions, {0, 1}, fn dimension, total ->
@@ -98,13 +110,23 @@ defmodule BeamWeaver.Models.UsageCost do
     end
   end
 
-  defp exact_usage(usage) do
+  defp exact_usage(usage, pricing) do
     input = token_count(usage, [:input_tokens, :prompt_tokens])
     output = token_count(usage, [:output_tokens, :completion_tokens])
     cached = cached_tokens(usage)
+    cache_writes = cache_write_tokens(usage, pricing)
+    accounted_input = cached + Enum.sum(Map.values(cache_writes))
 
-    if is_integer(input) and is_integer(output) and is_integer(cached) and cached <= input do
-      {:ok, %{input_tokens: input, cached_input_tokens: cached, output_tokens: output}}
+    if is_integer(input) and is_integer(output) and is_integer(cached) and
+         Enum.all?(cache_writes, fn {_name, count} -> is_integer(count) end) and
+         accounted_input <= input do
+      {:ok,
+       cache_writes
+       |> Map.merge(%{
+         input_tokens: input,
+         cached_input_tokens: cached,
+         output_tokens: output
+       })}
     else
       {:error, :invalid_usage}
     end
@@ -112,7 +134,11 @@ defmodule BeamWeaver.Models.UsageCost do
 
   defp exact_dimensions(pricing, counts) do
     dimensions = MapAccess.get(pricing, :dimensions)
-    cached_dimension? = Enum.any?(dimensions, &(MapAccess.get(&1, :name) == "cached_input_tokens"))
+
+    separated_dimensions =
+      dimensions
+      |> Enum.map(&MapAccess.get(&1, :name))
+      |> MapSet.new()
 
     dimensions
     |> Enum.reduce_while({MapSet.new(), []}, fn dimension, {names, result} ->
@@ -122,7 +148,7 @@ defmodule BeamWeaver.Models.UsageCost do
 
       if name in @exact_dimensions and not MapSet.member?(names, name) and
            is_integer(unit_size) and unit_size > 0 and is_integer(unit_price) and unit_price >= 0 do
-        count = dimension_count(name, counts, cached_dimension?)
+        count = dimension_count(name, counts, separated_dimensions)
         numerator = count * unit_price
 
         value = %{
@@ -145,12 +171,22 @@ defmodule BeamWeaver.Models.UsageCost do
     end
   end
 
-  defp dimension_count("input_tokens", counts, true),
-    do: counts.input_tokens - counts.cached_input_tokens
+  defp dimension_count("input_tokens", counts, separated_dimensions) do
+    separated =
+      ["cached_input_tokens" | @cache_write_dimensions]
+      |> Enum.filter(&MapSet.member?(separated_dimensions, &1))
+      |> Enum.reduce(0, fn name, total -> total + Map.fetch!(counts, String.to_atom(name)) end)
 
-  defp dimension_count("input_tokens", counts, false), do: counts.input_tokens
-  defp dimension_count("cached_input_tokens", counts, _cached?), do: counts.cached_input_tokens
-  defp dimension_count("output_tokens", counts, _cached?), do: counts.output_tokens
+    counts.input_tokens - separated
+  end
+
+  defp dimension_count("cached_input_tokens", counts, _dimensions),
+    do: counts.cached_input_tokens
+
+  defp dimension_count("output_tokens", counts, _dimensions), do: counts.output_tokens
+
+  defp dimension_count(name, counts, _dimensions) when name in @cache_write_dimensions,
+    do: Map.fetch!(counts, String.to_atom(name))
 
   defp add_fraction({left_numerator, left_denominator}, {right_numerator, right_denominator}) do
     numerator = left_numerator * right_denominator + right_numerator * left_denominator
@@ -236,15 +272,113 @@ defmodule BeamWeaver.Models.UsageCost do
       0
   end
 
-  defp uncached_tokens(usage, input_tokens, cached_tokens) do
+  defp uncached_tokens(usage, input_tokens, cached_tokens, cache_write_tokens) do
     token_count(usage, [
       :prompt_cache_miss_tokens,
       :cache_miss_tokens,
       :uncached_input_tokens
     ]) ||
       nested_token_count(usage, :input_token_details, [:cache_miss, :uncached]) ||
-      max(input_tokens - cached_tokens, 0)
+      max(input_tokens - cached_tokens - cache_write_tokens, 0)
   end
+
+  defp cache_write_tokens(usage, pricing) do
+    writes = %{
+      cache_write_5m_tokens:
+        token_count(usage, [:cache_write_5m_tokens, :ephemeral_5m_input_tokens]) ||
+          nested_token_count(usage, :input_token_details, [
+            :cache_write_5m,
+            :cache_write_5m_tokens,
+            :ephemeral_5m_input_tokens
+          ]) || 0,
+      cache_write_1h_tokens:
+        token_count(usage, [:cache_write_1h_tokens, :ephemeral_1h_input_tokens]) ||
+          nested_token_count(usage, :input_token_details, [
+            :cache_write_1h,
+            :cache_write_1h_tokens,
+            :ephemeral_1h_input_tokens
+          ]) || 0,
+      cache_write_30m_tokens:
+        token_count(usage, [:cache_write_30m_tokens]) ||
+          nested_token_count(usage, :input_token_details, [
+            :cache_write_30m,
+            :cache_write_30m_tokens
+          ]) || 0
+    }
+
+    generic =
+      token_count(usage, [
+        :cache_write_tokens,
+        :cache_creation_tokens,
+        :cache_creation_input_tokens
+      ]) ||
+        nested_token_count(usage, :input_token_details, [
+          :cache_write,
+          :cache_write_tokens,
+          :cache_creation,
+          :cache_creation_tokens,
+          :cache_creation_input_tokens
+        ]) || 0
+
+    if generic > 0 and Enum.sum(Map.values(writes)) == 0 do
+      case default_cache_write_dimension(pricing) do
+        nil -> writes
+        dimension -> Map.put(writes, dimension, generic)
+      end
+    else
+      writes
+    end
+  end
+
+  defp default_cache_write_dimension(pricing) do
+    dimensions =
+      case MapAccess.get(pricing, :dimensions) do
+        dimensions when is_list(dimensions) ->
+          dimensions
+          |> Enum.map(&MapAccess.get(&1, :name))
+          |> Enum.filter(&(&1 in @cache_write_dimensions))
+          |> MapSet.new()
+
+        _other ->
+          @cache_write_dimensions
+          |> Enum.filter(fn dimension ->
+            dimension
+            |> String.to_existing_atom()
+            |> cache_write_price_key()
+            |> then(&(not is_nil(number(pricing, &1))))
+          end)
+          |> MapSet.new()
+      end
+
+    cond do
+      MapSet.member?(dimensions, "cache_write_30m_tokens") and MapSet.size(dimensions) == 1 ->
+        :cache_write_30m_tokens
+
+      MapSet.member?(dimensions, "cache_write_5m_tokens") ->
+        :cache_write_5m_tokens
+
+      MapSet.member?(dimensions, "cache_write_1h_tokens") ->
+        :cache_write_1h_tokens
+
+      MapSet.member?(dimensions, "cache_write_30m_tokens") ->
+        :cache_write_30m_tokens
+
+      true ->
+        nil
+    end
+  end
+
+  defp cache_write_costs(cache_writes, pricing, input_price) do
+    cache_writes
+    |> Enum.filter(fn {_dimension, count} -> count > 0 end)
+    |> Map.new(fn {dimension, count} ->
+      {dimension, mtok_cost(count, number(pricing, cache_write_price_key(dimension)) || input_price)}
+    end)
+  end
+
+  defp cache_write_price_key(:cache_write_5m_tokens), do: :cache_write_5m_price_per_mtok
+  defp cache_write_price_key(:cache_write_1h_tokens), do: :cache_write_1h_price_per_mtok
+  defp cache_write_price_key(:cache_write_30m_tokens), do: :cache_write_30m_price_per_mtok
 
   defp nested_token_count(usage, details_key, keys) do
     case MapAccess.get(usage, details_key) do

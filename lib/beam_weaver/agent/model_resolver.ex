@@ -25,6 +25,28 @@ defmodule BeamWeaver.Agent.ModelResolver do
   @doc "Returns the provider-native model identifier when it can be inspected."
   @spec get_model_identifier(term()) :: String.t() | nil
   def get_model_identifier(model) do
+    inspect_model(model, &direct_model_identifier/1)
+  end
+
+  @doc "Returns a best-effort provider identifier for a BeamWeaver model."
+  @spec get_model_provider(term()) :: String.t() | nil
+  def get_model_provider(model) do
+    inspect_model(model, &direct_model_provider/1)
+  end
+
+  defp inspect_model(model, inspector), do: inspect_model(model, inspector, 0)
+
+  defp inspect_model(_model, _inspector, depth) when depth >= 8, do: nil
+
+  defp inspect_model(model, inspector, depth) do
+    inspector.(model) ||
+      case nested_model(model) do
+        nested when is_map(nested) -> inspect_model(nested, inspector, depth + 1)
+        _nested -> nil
+      end
+  end
+
+  defp direct_model_identifier(model) do
     string_attr(model, :model_name) ||
       function_value(model, :model_name) ||
       string_attr(model, :model) ||
@@ -32,13 +54,14 @@ defmodule BeamWeaver.Agent.ModelResolver do
       string_attr(model, :id)
   end
 
-  @doc "Returns a best-effort provider identifier for a BeamWeaver model."
-  @spec get_model_provider(term()) :: String.t() | nil
-  def get_model_provider(model) do
+  defp direct_model_provider(model) do
     string_attr(model, :provider) ||
       function_value(model, :provider) ||
       provider_from_module(model)
   end
+
+  defp nested_model(model) when is_map(model), do: Map.get(model, :model, Map.get(model, "model"))
+  defp nested_model(_model), do: nil
 
   @doc "Checks whether a resolved model matches a provider-prefixed or bare spec."
   @spec model_matches_spec(term(), String.t()) :: boolean()
