@@ -101,6 +101,35 @@ defmodule BeamWeaver.Core.MessageUtilsTest do
              Utils.message_to_dict(List.last(normalized))
   end
 
+  test "strip_reasoning_blocks preserves assistant text and tool calls" do
+    tool_calls = [%{id: "call-1", name: "lookup", args: %{}}]
+
+    assistant =
+      %{
+        Message.assistant([], tool_calls: tool_calls)
+        | content: [
+            ContentBlock.text("kept"),
+            ContentBlock.reasoning("signed reasoning", %{signature: "sig"}),
+            ContentBlock.unknown("thinking", %{"signature" => "sig"}),
+            ContentBlock.unknown(:redacted_thinking, %{"data" => "opaque"}),
+            %{type: :reasoning, reasoning: "raw"},
+            %{"type" => "thinking", "thinking" => "raw"},
+            %{"type" => "redacted_thinking", "data" => "raw"},
+            %{type: :tool_call, id: "call-1", name: "lookup", args: %{}}
+          ]
+      }
+
+    user = Message.user([ContentBlock.reasoning("user-supplied")])
+
+    assert [stripped, ^user] = Utils.strip_reasoning_blocks([assistant, user])
+    assert stripped.tool_calls == tool_calls
+
+    assert stripped.content == [
+             ContentBlock.text("kept"),
+             %{type: :tool_call, id: "call-1", name: "lookup", args: %{}}
+           ]
+  end
+
   test "convert_to_messages accepts serialized envelopes, developer role, tool calls, and refusal metadata" do
     messages = [
       %{

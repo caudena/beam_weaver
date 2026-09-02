@@ -10,25 +10,36 @@ defmodule BeamWeaver.Models.StructuredOutput do
   defstruct [:model, :schema, opts: []]
 
   @impl true
+  def resolve_invocation_model(%__MODULE__{} = wrapper, opts) do
+    with {:ok, model} <-
+           ChatModel.resolve_invocation_model(wrapper.model, Keyword.merge(wrapper.opts, opts)) do
+      {:ok, %{wrapper | model: model}}
+    end
+  end
+
+  @impl true
   def invoke(%__MODULE__{} = wrapper, messages, opts) when is_list(messages) do
-    strategy =
-      wrapper.schema
-      |> Strategy.normalize()
-      |> Strategy.effective_strategy(wrapper.model, Keyword.get(opts, :tools, []))
+    call_opts = Keyword.merge(wrapper.opts, opts)
 
-    call_opts =
-      wrapper.opts
-      |> Keyword.merge(opts)
-      |> Keyword.merge(provider_opts(strategy))
-      |> Keyword.update(
-        :tools,
-        Strategy.setup_tools(strategy),
-        &(List.wrap(&1) ++ Strategy.setup_tools(strategy))
-      )
+    with {:ok, model} <- ChatModel.resolve_invocation_model(wrapper.model, call_opts) do
+      strategy =
+        wrapper.schema
+        |> Strategy.normalize()
+        |> Strategy.effective_strategy(model, Keyword.get(call_opts, :tools, []))
 
-    with {:ok, message} <- ChatModel.invoke(wrapper.model, messages, call_opts),
-         {:ok, response} <- Strategy.handle_model_output(message, strategy) do
-      {:ok, attach_structured_response(message, response)}
+      call_opts =
+        call_opts
+        |> Keyword.merge(provider_opts(strategy))
+        |> Keyword.update(
+          :tools,
+          Strategy.setup_tools(strategy),
+          &(List.wrap(&1) ++ Strategy.setup_tools(strategy))
+        )
+
+      with {:ok, message} <- ChatModel.invoke(model, messages, call_opts),
+           {:ok, response} <- Strategy.handle_model_output(message, strategy) do
+        {:ok, attach_structured_response(message, response)}
+      end
     end
   end
 

@@ -2,8 +2,10 @@ defmodule BeamWeaver.Anthropic.ChatModel.RequestBuilder do
   @moduledoc false
 
   alias BeamWeaver.Anthropic.Error
+  alias BeamWeaver.Anthropic.ChatModel.ModelResolution
   alias BeamWeaver.Anthropic.Messages
   alias BeamWeaver.Anthropic.Tools
+  alias BeamWeaver.MapAccess
   alias BeamWeaver.Models.ParamPolicy
   alias BeamWeaver.Provider.Options
 
@@ -38,15 +40,45 @@ defmodule BeamWeaver.Anthropic.ChatModel.RequestBuilder do
     :user_profile_id
   ]
 
+  @reserved_body_fields [
+    :betas,
+    :cache_control,
+    :container,
+    :context_management,
+    :diagnostics,
+    :fallbacks,
+    :inference_geo,
+    :max_tokens,
+    :messages,
+    :mcp_servers,
+    :metadata,
+    :model,
+    :output_config,
+    :service_tier,
+    :speed,
+    :stop_sequences,
+    :stream,
+    :system,
+    :temperature,
+    :thinking,
+    :tool_choice,
+    :tools,
+    :top_k,
+    :top_p,
+    :user_profile_id
+  ]
+
   @spec request_body(term(), [BeamWeaver.Core.Message.t()], keyword()) ::
           {:ok, map()} | {:error, Error.t()}
   def request_body(model, messages, opts \\ []) do
-    with :ok <- validate_request_params(model, opts),
+    with {:ok, model} <- ModelResolution.resolve(model, opts),
+         :ok <- validate_request_params(model, opts),
          :ok <- validate_sampling_params(model, opts),
          :ok <- validate_thinking_params(model, opts),
          :ok <- validate_tool_compatibility(model, opts),
          {:ok, {system, formatted_messages}} <-
            Messages.format_messages(messages, message_format_opts(model)),
+         :ok <- validate_final_turn(model, formatted_messages),
          {:ok, output_config} <- output_config(model, opts) do
       model_kwargs = option(model, opts, :model_kwargs) || %{}
       tools = tools(opts)
@@ -55,11 +87,11 @@ defmodule BeamWeaver.Anthropic.ChatModel.RequestBuilder do
 
       body =
         %{
-          "model" => Keyword.get(opts, :model, model.model),
+          "model" => model.model,
           "max_tokens" => max_tokens(model, opts),
           "messages" => formatted_messages
         }
-        |> Options.merge_extra_body(model_kwargs)
+        |> Options.merge_extra_body(model_kwargs, reserved: @reserved_body_fields)
         |> Options.put_optional(
           "cache_control",
           Options.normalize_option_map(option(model, opts, :cache_control))
@@ -110,7 +142,9 @@ defmodule BeamWeaver.Anthropic.ChatModel.RequestBuilder do
         |> Options.put_optional("user_profile_id", option(model, opts, :user_profile_id))
         |> Options.put_optional("betas", betas)
         |> maybe_put_container(model, messages, opts)
-        |> Options.merge_extra_body(Keyword.get(opts, :extra_body, %{}))
+        |> Options.merge_extra_body(Keyword.get(opts, :extra_body, %{}),
+          reserved: @reserved_body_fields
+        )
 
       {:ok, body}
     end
@@ -119,15 +153,17 @@ defmodule BeamWeaver.Anthropic.ChatModel.RequestBuilder do
   @spec count_tokens_body(term(), [BeamWeaver.Core.Message.t()], keyword()) ::
           {:ok, map()} | {:error, Error.t()}
   def count_tokens_body(model, messages, opts \\ []) do
-    with :ok <- validate_thinking_params(model, opts),
+    with {:ok, model} <- ModelResolution.resolve(model, opts),
+         :ok <- validate_thinking_params(model, opts),
          :ok <- validate_tool_compatibility(model, opts),
          {:ok, {system, formatted_messages}} <-
            Messages.format_messages(messages, message_format_opts(model)),
+         :ok <- validate_final_turn(model, formatted_messages),
          {:ok, output_config} <- output_config(model, opts) do
       tools = tools(opts)
 
       %{
-        "model" => Keyword.get(opts, :model, model.model),
+        "model" => model.model,
         "messages" => formatted_messages
       }
       |> Options.put_optional(
@@ -208,8 +244,27 @@ defmodule BeamWeaver.Anthropic.ChatModel.RequestBuilder do
   end
 
   defp validate_thinking_params(model, opts) do
-    with :ok <- validate_thinking_mode(model, opts) do
-      validate_disabled_thinking_effort(model, opts)
+    with :ok <- validate_thinking_shape(model, opts),
+         :ok <- validate_thinking_mode(model, opts),
+         :ok <- validate_disabled_thinking_effort(model, opts) do
+      validate_thinking_block_binding(model, opts)
+    end
+  end
+
+  defp validate_thinking_shape(model, opts) do
+    case option(model, opts, :thinking) do
+      thinking when is_nil(thinking) or is_map(thinking) ->
+        :ok
+
+      thinking ->
+        {:error,
+         Error.new(:unsupported_model_param, "model parameter has an invalid shape", %{
+           provider: :anthropic,
+           model: model.model,
+           params: [:thinking],
+           expected: :map,
+           value: inspect(thinking)
+         })}
     end
   end
 
@@ -217,6 +272,15 @@ defmodule BeamWeaver.Anthropic.ChatModel.RequestBuilder do
     thinking_type = thinking_type(option(model, opts, :thinking))
 
     cond do
+      always_on_thinking_model?(model) and thinking_type in [:disabled, "disabled"] ->
+        {:error,
+         Error.new(:unsupported_model_param, "model parameter is not supported by profile", %{
+           provider: :anthropic,
+           model: model.model,
+           params: [:thinking],
+           reason: "Thinking is always on for this Claude model"
+         })}
+
       not adaptive_only_thinking_model?(model) ->
         :ok
 
@@ -252,7 +316,83 @@ defmodule BeamWeaver.Anthropic.ChatModel.RequestBuilder do
     end
   end
 
+  defp validate_thinking_block_binding(model, opts) do
+    case thinking_block_binding(option(model, opts, :thinking)) do
+      nil ->
+        :ok
+
+      binding when is_map(binding) ->
+        if thinking_binding_behavior(binding) in [:error, "error", :drop_block, "drop_block"] do
+          :ok
+        else
+          thinking_block_binding_error(model)
+        end
+
+      _binding ->
+        thinking_block_binding_error(model)
+    end
+  end
+
+  defp thinking_block_binding_error(model) do
+    {:error,
+     Error.new(:unsupported_model_param, "model parameter is not supported by profile", %{
+       provider: :anthropic,
+       model: model.model,
+       params: [:thinking],
+       field: "thinking.block_binding.prefix_mismatch_behavior",
+       supported: [:error, :drop_block]
+     })}
+  end
+
   defp validate_tool_compatibility(model, opts) do
+    with :ok <- validate_tool_choice_compatibility(model, opts) do
+      validate_server_tool_compatibility(model, opts)
+    end
+  end
+
+  defp validate_final_turn(model, messages) do
+    if rejects_prefilled_model_turns?(model) and final_assistant_turn?(messages) do
+      {:error,
+       Error.new(:invalid_message, "Anthropic model requests cannot end with an assistant turn", %{
+         provider: :anthropic,
+         model: model.model,
+         role: :assistant,
+         requirement: :final_user_tool_or_system_turn
+       })}
+    else
+      :ok
+    end
+  end
+
+  defp rejects_prefilled_model_turns?(model),
+    do: profile_extra(model, :prefilled_model_turns) == false
+
+  defp final_assistant_turn?(messages) do
+    case List.last(messages) do
+      %{"role" => "assistant"} -> true
+      _message -> false
+    end
+  end
+
+  defp validate_tool_choice_compatibility(model, opts) do
+    supported = profile_extra(model, :tool_choice_modes)
+    choice = Keyword.get(opts, :tool_choice)
+
+    if is_list(supported) and forced_tool_choice?(choice) do
+      {:error,
+       Error.new(:unsupported_model_param, "model parameter is not supported by profile", %{
+         provider: :anthropic,
+         model: model.model,
+         params: [:tool_choice],
+         reason: "This Claude model supports only auto or none tool choice",
+         supported: supported
+       })}
+    else
+      :ok
+    end
+  end
+
+  defp validate_server_tool_compatibility(model, opts) do
     unsupported = profile_extra(model, :unsupported_server_tools) || []
 
     requested_unsupported =
@@ -278,23 +418,21 @@ defmodule BeamWeaver.Anthropic.ChatModel.RequestBuilder do
     end
   end
 
-  defp restricted_sampling_model?(%{profile: %{extra: extra}, model: model}) when is_map(extra),
-    do: Map.get(extra, :sampling_controls) == :restricted or opus_4_minor_at_least?(model, 7)
+  defp restricted_sampling_model?(model),
+    do: profile_extra(model, :sampling_controls) in [:restricted, "restricted"]
 
-  defp restricted_sampling_model?(%{model: model}), do: opus_4_minor_at_least?(model, 7)
+  defp adaptive_only_thinking_model?(model),
+    do: profile_extra(model, :thinking_mode) in [:adaptive_only, "adaptive_only"]
 
-  defp restricted_sampling_model?(_model), do: false
-
-  defp adaptive_only_thinking_model?(%{profile: %{extra: extra}, model: model}) when is_map(extra),
-    do: Map.get(extra, :thinking_mode) == :adaptive_only or opus_4_minor_at_least?(model, 7)
-
-  defp adaptive_only_thinking_model?(%{model: model}), do: opus_4_minor_at_least?(model, 7)
-
-  defp adaptive_only_thinking_model?(_model), do: false
+  defp always_on_thinking_model?(model), do: profile_extra(model, :thinking_always_on) == true
 
   defp thinking_type(%{"type" => type}), do: type
   defp thinking_type(%{type: type}), do: type
   defp thinking_type(_thinking), do: nil
+
+  defp thinking_block_binding(thinking), do: MapAccess.get(thinking, :block_binding)
+
+  defp thinking_binding_behavior(binding), do: MapAccess.get(binding, :prefix_mismatch_behavior)
 
   defp request_effort(model, opts) do
     option(model, opts, :effort) ||
@@ -326,15 +464,6 @@ defmodule BeamWeaver.Anthropic.ChatModel.RequestBuilder do
 
   defp effort_rank(effort) when is_atom(effort), do: effort |> Atom.to_string() |> effort_rank()
   defp effort_rank(_effort), do: -1
-
-  defp opus_4_minor_at_least?(model, minimum) when is_binary(model) do
-    case Regex.run(~r/opus-4-(\d+)/, model) do
-      [_, minor] -> String.to_integer(minor) >= minimum
-      _other -> false
-    end
-  end
-
-  defp opus_4_minor_at_least?(_model, _minimum), do: false
 
   defp restricted_temperature_param(model, opts) do
     case option(model, opts, :temperature) do
@@ -389,6 +518,7 @@ defmodule BeamWeaver.Anthropic.ChatModel.RequestBuilder do
     end
   end
 
+  defp forced_tool_choice?(nil), do: false
   defp forced_tool_choice?(choice) when choice in [:any, "any", :required, "required"], do: true
   defp forced_tool_choice?(choice) when is_binary(choice), do: choice not in ["auto", "any", "none"]
   defp forced_tool_choice?(choice) when is_atom(choice), do: choice not in [:auto, :any, :none]
@@ -461,6 +591,10 @@ defmodule BeamWeaver.Anthropic.ChatModel.RequestBuilder do
     Tools.required_betas(tools, base)
     |> maybe_add_beta(option(model, opts, :mcp_servers), "mcp-client-2025-11-20")
     |> maybe_add_beta(task_budget?(output_config), "task-budgets-2026-03-13")
+    |> maybe_add_beta(
+      thinking_block_binding(option(model, opts, :thinking)),
+      "thinking-binding-controls-2026-08-01"
+    )
     |> maybe_add_beta(tool_changes?(messages), "mid-conversation-tool-changes-2026-07-01")
     |> maybe_add_fallback_beta(fallbacks)
     |> case do
@@ -515,7 +649,9 @@ defmodule BeamWeaver.Anthropic.ChatModel.RequestBuilder do
     ]
   end
 
-  defp profile_extra(%{profile: %{extra: extra}}, key) when is_map(extra), do: Map.get(extra, key)
+  defp profile_extra(%{profile: %{extra: extra}}, key) when is_map(extra),
+    do: MapAccess.get(extra, key)
+
   defp profile_extra(_model, _key), do: nil
 
   defp maybe_put_container(body, model, messages, opts) do

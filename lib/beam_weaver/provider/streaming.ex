@@ -9,18 +9,22 @@ defmodule BeamWeaver.Provider.Streaming do
   alias BeamWeaver.Transport.Response
 
   @type error_decoder :: (Transport.result() -> {:ok, term()} | {:error, term()})
+  @type parser ::
+          ([map()] -> [term()])
+          | ([map()], term() -> {[term()], term()})
 
   @spec live_sse(
           module(),
           Request.t(),
           keyword(),
           keyword(),
-          ([map()] -> [term()]),
+          parser(),
           error_decoder()
         ) ::
           Enumerable.t()
   def live_sse(transport, %Request{} = request, transport_opts, opts, parser, error_decoder)
-      when is_function(parser, 1) and is_function(error_decoder, 1) do
+      when (is_function(parser, 1) or is_function(parser, 2)) and
+             is_function(error_decoder, 1) do
     Stream.live_resource(
       fn sink ->
         result =
@@ -28,23 +32,23 @@ defmodule BeamWeaver.Provider.Streaming do
             transport,
             request,
             transport_opts,
-            {"", StreamValidator.new(opts)},
+            {"", StreamValidator.new(opts), nil},
             fn
-              {buffer, %StreamValidator{error: nil} = validation}, chunk ->
+              {buffer, %StreamValidator{error: nil} = validation, parser_state}, chunk ->
                 {events, buffer} = SSE.process_chunk(buffer, chunk)
 
-                with {:ok, items} <- parse_items(parser, events),
+                with {:ok, items, parser_state} <- parse_items(parser, events, parser_state),
                      {:ok, validation} <-
                        StreamValidator.push(validation, items, transport_bytes: byte_size(chunk)) do
                   emit_items(items, sink)
-                  {buffer, validation}
+                  {buffer, validation, parser_state}
                 else
                   {:error, error} ->
                     {:error, _error, validation} = StreamValidator.reject(validation, error)
-                    {buffer, validation}
+                    {buffer, validation, parser_state}
 
                   {:error, _error, validation} ->
-                    {buffer, validation}
+                    {buffer, validation, parser_state}
                 end
 
               state, _chunk ->
@@ -53,12 +57,12 @@ defmodule BeamWeaver.Provider.Streaming do
           )
 
         case result do
-          {:ok, %Response{status: status} = response, {buffer, validation}}
+          {:ok, %Response{status: status} = response, {buffer, validation, parser_state}}
           when status in 200..299 ->
             {events, _buffer} = SSE.process_chunk(buffer, "\n\n")
 
             with :ok <- StreamValidator.finish(validation),
-                 {:ok, items} <- parse_items(parser, events),
+                 {:ok, items, _parser_state} <- parse_items(parser, events, parser_state),
                  {:ok, validation} <- push_final(validation, items),
                  :ok <- StreamValidator.finish(validation) do
               emit_items(items, sink)
@@ -117,14 +121,26 @@ defmodule BeamWeaver.Provider.Streaming do
 
   defp emit_items(items, sink) when is_list(items), do: Enum.each(items, sink)
 
-  defp parse_items(parser, events) do
-    items = parser.(events)
-    {:ok, if(is_list(items), do: items, else: List.wrap(items))}
+  defp parse_items(parser, events, state) when is_function(parser, 2) do
+    case parser.(events, state) do
+      {items, next_state} -> {:ok, normalize_items(items), next_state}
+      other -> {:error, {:invalid_stateful_parser_result, other}}
+    end
   rescue
     exception -> {:error, exception}
   catch
     kind, reason -> {:error, {kind, reason}}
   end
+
+  defp parse_items(parser, events, state) when is_function(parser, 1) do
+    {:ok, normalize_items(parser.(events)), state}
+  rescue
+    exception -> {:error, exception}
+  catch
+    kind, reason -> {:error, {kind, reason}}
+  end
+
+  defp normalize_items(items), do: if(is_list(items), do: items, else: List.wrap(items))
 
   defp push_final(validation, items) do
     case StreamValidator.push(validation, items) do

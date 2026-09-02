@@ -62,17 +62,35 @@ defmodule BeamWeaver.Anthropic.Streaming do
   def typed_events(body) when is_binary(body), do: body |> SSE.events() |> typed_events()
 
   def typed_events(events) when is_list(events) do
-    {envelopes, _state} =
-      Enum.map_reduce(events, %{block_start: %{}}, fn event, state ->
-        typed_event(event["data"] || %{}, state)
-      end)
-
+    {envelopes, _state} = typed_events(events, nil)
     envelopes
-    |> List.flatten()
-    |> Enum.map(&Stream.envelope(&1, metadata: %{provider: :anthropic}))
   end
 
   def typed_events(_body), do: []
+
+  @doc false
+  @spec typed_events(binary() | [map()] | term(), map() | nil) ::
+          {[Stream.Envelope.t()], map()}
+  def typed_events(body, state) when is_binary(body),
+    do: body |> SSE.events() |> typed_events(state)
+
+  def typed_events(events, state) when is_list(events) do
+    state = state || %{block_start: %{}}
+
+    {envelopes, next_state} =
+      Enum.map_reduce(events, state, fn event, state ->
+        typed_event(event["data"] || %{}, state)
+      end)
+
+    envelopes =
+      envelopes
+      |> List.flatten()
+      |> Enum.map(&Stream.envelope(&1, metadata: %{provider: :anthropic}))
+
+    {envelopes, next_state}
+  end
+
+  def typed_events(_body, state), do: {[], state || %{block_start: %{}}}
 
   defp initial_state do
     %{
@@ -204,6 +222,17 @@ defmodule BeamWeaver.Anthropic.Streaming do
   defp typed_event(
          %{
            "type" => "content_block_start",
+           "content_block" => %{"type" => "redacted_thinking"} = block
+         },
+         state
+       ) do
+    chunk = CoreMessages.ai_chunk([response_delta_block(block)])
+    {[%Events.MessageChunk{chunk: chunk}], state}
+  end
+
+  defp typed_event(
+         %{
+           "type" => "content_block_start",
            "index" => index,
            "content_block" => %{"type" => "tool_use"} = block
          },
@@ -301,6 +330,11 @@ defmodule BeamWeaver.Anthropic.Streaming do
     {[%Events.MessageChunk{chunk: CoreMessages.ai_chunk([content])}], state}
   end
 
+  defp typed_event(%{"type" => "content_block_stop", "index" => index}, state)
+       when is_integer(index) do
+    {[], update_in(state, [:block_start], &Map.delete(&1, index))}
+  end
+
   defp typed_event(
          %{"type" => "message_delta", "delta" => delta, "usage" => usage} = event,
          state
@@ -348,6 +382,10 @@ defmodule BeamWeaver.Anthropic.Streaming do
     |> Options.reject_nil_values()
   end
 
+  defp response_delta_block(%{"type" => "redacted_thinking"} = block) do
+    %{type: :redacted_thinking, raw_provider_block: block}
+  end
+
   defp response_delta_block(%{"type" => "input_json_delta"} = block) do
     %{type: :input_json_delta, partial_json: block["partial_json"], index: block["index"], raw_provider_block: block}
     |> Options.reject_nil_values()
@@ -359,6 +397,7 @@ defmodule BeamWeaver.Anthropic.Streaming do
   end
 
   defp encode_args(nil), do: ""
+  defp encode_args(args) when is_map(args) and map_size(args) == 0, do: ""
   defp encode_args(args) when is_binary(args), do: args
   defp encode_args(args), do: BeamWeaver.JSON.encode!(args)
 

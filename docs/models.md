@@ -145,11 +145,13 @@ support Responses. Moonshot chat supports
 `grok-4.20-multi-agent-0309`, `grok-build-0.1`, and embedding model `v1`.
 Z.ai chat supports `zai:glm-5.3`, multimodal `zai:glm-5.3-flash`, and
 `zai:glm-5.2`.
-Anthropic includes `anthropic:claude-opus-5` and
-`anthropic:claude-sonnet-5`. Opus 5 uses adaptive thinking by default and
-supports effort from `:low` through `:max`; disabling thinking is valid only at
-`:high` or below. Manual enabled thinking budgets are rejected before transport
-for models that only support adaptive thinking.
+Anthropic includes `anthropic:claude-fable-5-1`,
+`anthropic:claude-mythos-5-1`, `anthropic:claude-opus-5`, and
+`anthropic:claude-sonnet-5`. Fable 5.1 and Mythos 5.1 use always-on adaptive
+thinking and accept only `:auto` or `:none` tool choice. Opus 5 uses adaptive
+thinking by default and supports effort from `:low` through `:max`; disabling
+thinking is valid only at `:high` or below. Manual enabled thinking budgets are
+rejected before transport for models that only support adaptive thinking.
 OpenAI profiles include `openai:gpt-5.6-sol`, `openai:gpt-5.6-terra`, and
 `openai:gpt-5.6-luna`; `openai:gpt-5.6` is the official alias for Sol. All
 three advertise a 1.05M-token context window, 128K maximum output, text and
@@ -176,7 +178,7 @@ Recommended starting points:
 | Provider family | BeamWeaver model strings |
 | --- | --- |
 | OpenAI GPT | `openai:gpt-5.6-sol`, `openai:gpt-5.6-terra`, `openai:gpt-5.6-luna`, `openai:gpt-5.4-mini` |
-| Anthropic Claude | `anthropic:claude-opus-5`, `anthropic:claude-sonnet-5`, `anthropic:claude-sonnet-4-6`, `anthropic:claude-opus-*`, `anthropic:claude-haiku-*` |
+| Anthropic Claude | `anthropic:claude-fable-5-1`, `anthropic:claude-mythos-5-1`, `anthropic:claude-opus-5`, `anthropic:claude-sonnet-5`, `anthropic:claude-sonnet-4-6`, `anthropic:claude-opus-*`, `anthropic:claude-haiku-*` |
 | Google Gemini | `google:gemini-3.7-flash`, `google:gemini-3.6-flash`, `google:gemini-3.5-flash`, `google:gemini-3.5-flash-lite`, `google:gemini-3.1-flash-lite`, explicit `google:gemini-*` profiles |
 | DeepSeek V4 | `deepseek:deepseek-v4-flash`, `deepseek:deepseek-v4-flash-vision-exp`, `deepseek:deepseek-v4-pro` |
 | Moonshot/Kimi | `moonshot:kimi-k3`, `moonshot:kimi-k2.7-code`, `moonshot:kimi-k2.7-code-highspeed`, `moonshot:kimi-k2.6`, `moonshot:kimi-k2.5` |

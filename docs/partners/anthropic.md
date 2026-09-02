@@ -25,12 +25,14 @@ BeamWeaver includes a direct Anthropic Messages API provider under
 - Responses become assistant messages with normalized usage metadata, cache
   token details, response metadata, and extracted tool calls.
 - Streaming SSE bodies are parsed into text deltas, lifecycle events, typed
-  stream envelopes, and reconstructed final assistant messages.
+  stream envelopes, and reconstructed final assistant messages. Signed thinking
+  deltas and fragmented tool inputs retain their block state across transport
+  batches; signed thinking is assembled into one provider-faithful replay block.
 - The token counting endpoint is exposed through `ChatModel.count_tokens/3`.
-- Checked-in model profiles cover Claude Opus 5, Claude Sonnet 5, Claude
-  Fable 5, Claude Mythos 5, current Claude Opus 4.8/4.7/4.6/4.5/4.1, Claude
-  Sonnet 4.6/4.5, and Claude Haiku 4.5 models, with a permissive fallback for
-  future `claude-*` models.
+- Checked-in model profiles cover Claude Fable 5.1, Claude Mythos 5.1, Claude
+  Opus 5, Claude Sonnet 5, Claude Fable 5, Claude Mythos 5, current Claude
+  Opus 4.8/4.7/4.6/4.5/4.1, Claude Sonnet 4.6/4.5, and Claude Haiku 4.5
+  models, with a permissive fallback for future `claude-*` models.
 - Deprecated or retired Claude IDs return tagged `:deprecated_model` errors
   with `:replacement`, `:expected`, and retirement metadata instead of falling
   through to the family fallback.
@@ -48,6 +50,26 @@ BeamWeaver includes a direct Anthropic Messages API provider under
 - Claude Opus 5 uses adaptive thinking by default and supports `:low`,
   `:medium`, `:high`, `:xhigh`, and `:max` effort. Explicitly disabled thinking
   is rejected at `:xhigh` and `:max`.
+- Claude Fable 5.1 and invite-only Claude Mythos 5.1 have 1M-token context
+  windows, 128K output limits, the full effort ladder, and always-on adaptive
+  thinking. BeamWeaver rejects disabled thinking and forced `:any` or named
+  tool choices before both Messages and count-tokens requests; `:auto` and
+  `:none` remain supported.
+- Fable 5.1 and Mythos 5.1 do not support final assistant-message prefills.
+  Their thinking blocks are bound to the exact conversation prefix and must be
+  replayed append-only; earlier Claude models cannot consume them. Applications
+  that intentionally edit history can use the
+  `thinking-binding-controls-2026-08-01` beta and set
+  `prefix_mismatch_behavior` to `"drop_block"`; BeamWeaver infers the beta
+  header from this request option. Built-in summarization,
+  compact-conversation, and local context-editing middleware automatically
+  strip carried reasoning blocks when they rewrite prior history. Applications
+  that vary system prompts or tool definitions between calls should use the
+  same `drop_block` control because those values also participate in the bound
+  prefix.
+- Fable 5.1 and Mythos 5.1 use a 512-token prompt-cache minimum and $0.25 per
+  million cache-read tokens, alongside current standard, cache-write, and batch
+  pricing metadata.
 - Opus 5 supports mid-conversation system messages and beta tool-change blocks.
   BeamWeaver infers the tool-change beta header. Server-side fallbacks accept
   either a model list or `:default`, with the matching beta header inferred.

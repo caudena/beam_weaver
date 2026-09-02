@@ -85,7 +85,7 @@ defmodule BeamWeaver.TestSupport.DeepAgents.Evals do
       "deepseek:deepseek-v4-flash"
     ],
     "frontier" => [
-      "anthropic:claude-fable-5",
+      "anthropic:claude-fable-5-1",
       "openai:gpt-5.6-sol",
       "openai:gpt-5.5",
       "openai:gpt-5.5-pro",
@@ -107,8 +107,10 @@ defmodule BeamWeaver.TestSupport.DeepAgents.Evals do
       "openai:gpt-5.6-luna"
     ],
     "anthropic" => [
+      "anthropic:claude-fable-5-1",
       "anthropic:claude-fable-5",
       "anthropic:claude-haiku-4-5",
+      "anthropic:claude-mythos-5-1",
       "anthropic:claude-mythos-5",
       "anthropic:claude-opus-4-5-20251101",
       "anthropic:claude-opus-4-6",

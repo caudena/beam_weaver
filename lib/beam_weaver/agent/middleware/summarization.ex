@@ -70,6 +70,7 @@ defmodule BeamWeaver.Agent.Middleware.Summarization do
 
   defp summarize_partition(cutoff, middleware, messages) do
     {old, recent} = Enum.split(messages, cutoff)
+    recent = Utils.strip_reasoning_blocks(recent)
 
     with {:ok, summary_prompt} <- summary_prompt(middleware, old) do
       case ChatModel.invoke(middleware.model, [summary_prompt], metadata: %{source: :summarization}) do

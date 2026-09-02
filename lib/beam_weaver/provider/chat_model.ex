@@ -19,11 +19,16 @@ defmodule BeamWeaver.Provider.ChatModel do
         ChatOptions.should_stream?(model, opts)
       end
 
+      @impl true
+      def resolve_invocation_model(%__MODULE__{} = model, _opts), do: {:ok, model}
+
       def invoke(model, messages), do: invoke(model, messages, [])
 
       @impl true
       def invoke(%__MODULE__{} = model, messages, opts) do
-        ChatRuntime.invoke(model, messages, opts, runtime_adapter())
+        with {:ok, model} <- resolve_invocation_model(model, opts) do
+          ChatRuntime.invoke(model, messages, opts, runtime_adapter())
+        end
       end
 
       def async_invoke(model, messages), do: async_invoke(model, messages, [])
@@ -43,7 +48,9 @@ defmodule BeamWeaver.Provider.ChatModel do
 
       @impl true
       def stream(%__MODULE__{} = model, messages, opts) do
-        ChatRuntime.stream(model, messages, opts, runtime_adapter())
+        with {:ok, model} <- resolve_invocation_model(model, opts) do
+          ChatRuntime.stream(model, messages, opts, runtime_adapter())
+        end
       end
 
       def async_stream(model, messages), do: async_stream(model, messages, [])
@@ -55,7 +62,9 @@ defmodule BeamWeaver.Provider.ChatModel do
       def stream_response(model, messages), do: stream_response(model, messages, [])
 
       def stream_response(%__MODULE__{} = model, messages, opts) do
-        ChatRuntime.stream_response(model, messages, opts, runtime_adapter())
+        with {:ok, model} <- resolve_invocation_model(model, opts) do
+          ChatRuntime.stream_response(model, messages, opts, runtime_adapter())
+        end
       end
 
       def async_stream_response(model, messages), do: async_stream_response(model, messages, [])
@@ -68,7 +77,9 @@ defmodule BeamWeaver.Provider.ChatModel do
 
       @impl true
       def stream_events(%__MODULE__{} = model, messages, opts) do
-        ChatRuntime.stream_events(model, messages, opts, runtime_adapter())
+        with {:ok, model} <- resolve_invocation_model(model, opts) do
+          ChatRuntime.stream_events(model, messages, opts, runtime_adapter())
+        end
       end
 
       def async_stream_events(model, messages), do: async_stream_events(model, messages, [])
@@ -81,7 +92,9 @@ defmodule BeamWeaver.Provider.ChatModel do
 
       @impl true
       def stream_typed_events(%__MODULE__{} = model, messages, opts) do
-        ChatRuntime.stream_events(model, messages, opts, runtime_adapter())
+        with {:ok, model} <- resolve_invocation_model(model, opts) do
+          ChatRuntime.stream_events(model, messages, opts, runtime_adapter())
+        end
       end
 
       @impl true
@@ -101,6 +114,7 @@ defmodule BeamWeaver.Provider.ChatModel do
       defoverridable model_name: 1,
                      should_stream?: 1,
                      should_stream?: 2,
+                     resolve_invocation_model: 2,
                      invoke: 2,
                      invoke: 3,
                      async_invoke: 2,

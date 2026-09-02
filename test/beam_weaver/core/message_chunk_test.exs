@@ -310,6 +310,58 @@ defmodule BeamWeaver.Core.MessageChunkTest do
            ] = message.content
   end
 
+  test "indexed reasoning fragments merge into one provider-replayable block" do
+    message =
+      [
+        Messages.ai_chunk([
+          %{
+            index: 0,
+            type: :reasoning,
+            reasoning: "",
+            raw_provider_block: %{"type" => "thinking", "thinking" => "", "signature" => ""}
+          }
+        ]),
+        Messages.ai_chunk([
+          %{
+            index: 0,
+            type: :reasoning,
+            reasoning: "Need ",
+            raw_provider_block: %{"type" => "thinking_delta", "thinking" => "Need "}
+          }
+        ]),
+        Messages.ai_chunk([
+          %{
+            index: 0,
+            type: :reasoning,
+            reasoning: "tools",
+            raw_provider_block: %{"type" => "thinking_delta", "thinking" => "tools"}
+          }
+        ]),
+        Messages.ai_chunk([
+          %{
+            index: 0,
+            type: :reasoning,
+            raw_provider_block: %{
+              "type" => "signature_delta",
+              "signature" => "signed-thinking"
+            }
+          }
+        ])
+      ]
+      |> MessageChunk.merge_many()
+      |> MessageChunk.to_message()
+
+    assert [block] = message.content
+    assert block.type == :reasoning
+    assert block.reasoning == "Need tools"
+
+    assert block.raw_provider_block == %{
+             "type" => "thinking",
+             "thinking" => "Need tools",
+             "signature" => "signed-thinking"
+           }
+  end
+
   test "tool call opener may stream nil args before later JSON chunks" do
     # Upstream reference:
     # - provider streams that open a tool block without args must still assemble.

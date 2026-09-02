@@ -9,6 +9,7 @@ defmodule BeamWeaver.Agent.Middleware.ContextEditing do
   alias BeamWeaver.Agent.State
   alias BeamWeaver.Core.LanguageModel
   alias BeamWeaver.Core.Message
+  alias BeamWeaver.Core.Messages.Utils
   alias BeamWeaver.Graph.Overwrite
   alias BeamWeaver.Options
 
@@ -58,10 +59,13 @@ defmodule BeamWeaver.Agent.Middleware.ContextEditing do
     do: handler.(request)
 
   def wrap_model_call(%__MODULE__{} = middleware, %ModelRequest{} = request, handler) do
+    original = request.messages || []
+
     edited =
-      Enum.reduce(middleware.edits, request.messages || [], fn edit, messages ->
+      Enum.reduce(middleware.edits, original, fn edit, messages ->
         apply_edit(edit, messages, request, middleware)
       end)
+      |> strip_reasoning_after_edit(original)
 
     request
     |> ModelRequest.override(messages: edited)
@@ -73,7 +77,12 @@ defmodule BeamWeaver.Agent.Middleware.ContextEditing do
   def before_model(%__MODULE__{editor: editor}, state, runtime) do
     messages = State.messages(state)
     edited = edit(editor, messages, state, runtime)
-    if edited == messages, do: %{}, else: %{messages: Overwrite.new(edited)}
+
+    if edited == messages do
+      %{}
+    else
+      %{messages: Overwrite.new(strip_reasoning_after_edit(edited, messages))}
+    end
   end
 
   defp edit(fun, messages, state, runtime) when is_function(fun, 3),
@@ -83,6 +92,13 @@ defmodule BeamWeaver.Agent.Middleware.ContextEditing do
 
   defp edit({module, function, args}, messages, state, runtime),
     do: apply(module, function, [messages, state, runtime | args])
+
+  defp strip_reasoning_after_edit(edited, original) when edited == original, do: edited
+
+  defp strip_reasoning_after_edit(edited, _original) when is_list(edited),
+    do: Utils.strip_reasoning_blocks(edited)
+
+  defp strip_reasoning_after_edit(edited, _original), do: edited
 
   def clear_tool_uses(messages, opts \\ []) do
     apply_clear_tool_uses(ClearToolUses.new(opts), messages, fn value ->

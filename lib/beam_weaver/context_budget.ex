@@ -22,6 +22,8 @@ defmodule BeamWeaver.ContextBudget do
     :method,
     :version,
     :profile_hash,
+    :baseline_input_tokens,
+    :delta_tokens,
     category_bytes: %{},
     categories: %{}
   ]
@@ -31,9 +33,11 @@ defmodule BeamWeaver.ContextBudget do
           estimated_tokens: non_neg_integer(),
           trigger_tokens: pos_integer(),
           free_tokens: non_neg_integer(),
-          method: :conservative_utf8 | :local_tokenizer_v1,
+          method: :conservative_utf8 | :local_tokenizer_v1 | :reported_usage_delta_v2,
           version: pos_integer(),
           profile_hash: String.t() | nil,
+          baseline_input_tokens: non_neg_integer() | nil,
+          delta_tokens: non_neg_integer() | nil,
           category_bytes: %{optional(atom() | String.t()) => non_neg_integer()},
           categories: %{optional(atom() | String.t()) => non_neg_integer()}
         }
@@ -42,7 +46,8 @@ defmodule BeamWeaver.ContextBudget do
   Builds a conservative budget for rendered provider-request bytes.
 
   Options are `:trigger_ratio`, `:categories`, `:requested_max_output_tokens`,
-  `:accounting_method`, `:reported_input_tokens`, and `:profile_hash`.
+  `:accounting_method`, `:reported_input_tokens`, `:reported_usage_baseline`,
+  `:component_descriptors`, and `:profile_hash`.
   """
   @spec new(map() | struct(), binary(), keyword()) :: {:ok, t()} | {:error, Error.t()}
   def new(profile, rendered_request, opts \\ [])
@@ -56,7 +61,10 @@ defmodule BeamWeaver.ContextBudget do
          {:ok, categories} <- normalize_categories(categories),
          {:ok, reported} <- normalize_reported(Keyword.get(opts, :reported_input_tokens, 0)) do
       {method, local_estimate} = estimate(profile, rendered_request, categories, opts)
-      estimated = max(local_estimate, reported)
+
+      {method, version, estimated, baseline, delta} =
+        estimate_with_reported_delta(method, local_estimate, reported, opts)
+
       trigger = max(floor(limit * trigger_ratio), 1)
       category_tokens = allocate_categories(categories, estimated)
 
@@ -67,8 +75,10 @@ defmodule BeamWeaver.ContextBudget do
          trigger_tokens: trigger,
          free_tokens: max(limit - estimated, 0),
          method: method,
-         version: 1,
+         version: version,
          profile_hash: Keyword.get(opts, :profile_hash),
+         baseline_input_tokens: baseline,
+         delta_tokens: delta,
          category_bytes: categories,
          categories: category_tokens
        }}
@@ -157,6 +167,146 @@ defmodule BeamWeaver.ContextBudget do
 
   defp normalize_reported(_value),
     do: {:error, Error.new(:invalid_context_budget, "reported usage must be a non-negative integer")}
+
+  defp estimate_with_reported_delta(method, local_estimate, reported, opts) do
+    baseline = Keyword.get(opts, :reported_usage_baseline)
+    current = Keyword.get(opts, :component_descriptors)
+
+    case reported_delta(baseline, current) do
+      {:ok, baseline_tokens, delta} ->
+        {:reported_usage_delta_v2, 2, baseline_tokens + delta, baseline_tokens, delta}
+
+      :error ->
+        {method, 1, max(local_estimate, reported), nil, nil}
+    end
+  end
+
+  defp reported_delta(%{} = baseline, %{} = current) do
+    with 2 <- value(baseline, :version, nil),
+         tokens when is_integer(tokens) and tokens >= 0 <- value(baseline, :input_tokens, nil),
+         %{} = previous <- value(baseline, :components, nil),
+         true <- map_size(previous) > 0 and map_size(current) > 0,
+         {:ok, delta} <- component_delta(previous, current) do
+      {:ok, tokens, delta}
+    else
+      _invalid -> :error
+    end
+  end
+
+  defp reported_delta(_baseline, _current), do: :error
+
+  defp component_delta(previous, current) do
+    with {:ok, previous} <- normalize_component_map(previous),
+         {:ok, current} <- normalize_component_map(current),
+         true <- MapSet.new(Map.keys(previous)) == MapSet.new(Map.keys(current)) do
+      Enum.reduce_while(current, {:ok, 0}, fn {key, descriptor}, {:ok, total} ->
+        case descriptor_delta(Map.fetch!(previous, key), descriptor) do
+          {:ok, delta} -> {:cont, {:ok, total + delta}}
+          :error -> {:halt, :error}
+        end
+      end)
+    else
+      _invalid -> :error
+    end
+  end
+
+  defp normalize_component_map(components) when is_map(components) do
+    Enum.reduce_while(components, {:ok, %{}}, fn {key, descriptor}, {:ok, normalized} ->
+      with {:ok, key} <- normalize_component_key(key),
+           false <- Map.has_key?(normalized, key) do
+        {:cont, {:ok, Map.put(normalized, key, descriptor)}}
+      else
+        _invalid -> {:halt, :error}
+      end
+    end)
+  end
+
+  defp normalize_component_key(key) when is_atom(key),
+    do: normalize_component_key(Atom.to_string(key))
+
+  defp normalize_component_key(key) when is_binary(key) and key != "", do: {:ok, key}
+  defp normalize_component_key(_key), do: :error
+
+  defp descriptor_delta(previous, current) do
+    case normalize_descriptor(current) do
+      {:ok, %{kind: :exact, bytes: bytes, hash: hash}} ->
+        case normalize_descriptor(previous) do
+          {:ok, %{kind: :exact, bytes: ^bytes, hash: ^hash}} -> {:ok, 0}
+          _other -> {:ok, bytes}
+        end
+
+      {:ok, %{kind: :append, items: items, bytes: bytes}} ->
+        case normalize_descriptor(previous) do
+          {:ok, %{kind: :append, items: previous_items}} ->
+            case appended_bytes(previous_items, items) do
+              {:ok, delta} -> {:ok, delta}
+              :not_prefix -> {:ok, bytes}
+            end
+
+          _other ->
+            {:ok, bytes}
+        end
+
+      :error ->
+        :error
+    end
+  end
+
+  defp normalize_descriptor(descriptor) when is_map(descriptor) do
+    case value(descriptor, :kind, nil) do
+      kind when kind in [:exact, "exact"] ->
+        bytes = value(descriptor, :bytes, nil)
+        hash = value(descriptor, :hash, nil)
+
+        if is_integer(bytes) and bytes >= 0 and valid_hash?(hash),
+          do: {:ok, %{kind: :exact, bytes: bytes, hash: hash}},
+          else: :error
+
+      kind when kind in [:append, "append"] ->
+        with items when is_list(items) <- value(descriptor, :items, nil),
+             {:ok, items} <- normalize_items(items) do
+          {:ok, %{kind: :append, items: items, bytes: Enum.sum_by(items, & &1.bytes)}}
+        else
+          _invalid -> :error
+        end
+
+      _other ->
+        :error
+    end
+  end
+
+  defp normalize_descriptor(_descriptor), do: :error
+
+  defp normalize_items(items) do
+    Enum.reduce_while(items, {:ok, [], MapSet.new()}, fn item, {:ok, values, identities} ->
+      id = value(item, :id, nil)
+      hash = value(item, :hash, nil)
+      bytes = value(item, :bytes, nil)
+
+      if is_binary(id) and id != "" and not MapSet.member?(identities, id) and
+           valid_hash?(hash) and is_integer(bytes) and bytes >= 0 do
+        {:cont, {:ok, [%{id: id, hash: hash, bytes: bytes} | values], MapSet.put(identities, id)}}
+      else
+        {:halt, :error}
+      end
+    end)
+    |> case do
+      {:ok, values, _identities} -> {:ok, Enum.reverse(values)}
+      :error -> :error
+    end
+  end
+
+  defp appended_bytes([], current), do: {:ok, Enum.sum_by(current, & &1.bytes)}
+
+  defp appended_bytes(
+         [%{id: id, hash: hash, bytes: bytes} | previous],
+         [%{id: id, hash: hash, bytes: bytes} | current]
+       ),
+       do: appended_bytes(previous, current)
+
+  defp appended_bytes(_previous, _current), do: :not_prefix
+
+  defp valid_hash?(hash), do: is_binary(hash) and hash =~ ~r/\A[0-9a-f]{64}\z/
 
   defp allocate_categories(category_bytes, estimated) do
     bytes = Enum.sum(Map.values(category_bytes))

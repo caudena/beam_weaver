@@ -43,6 +43,8 @@ defmodule BeamWeaver.Agent.CapabilityProfile do
 
   def builtin(:anthropic_haiku_4_5), do: builtin("anthropic:claude-haiku-4-5")
   def builtin(:anthropic_sonnet_4_6), do: builtin("anthropic:claude-sonnet-4-6")
+  def builtin(:anthropic_fable_5_1), do: builtin("anthropic:claude-fable-5-1")
+  def builtin(:anthropic_mythos_5_1), do: builtin("anthropic:claude-mythos-5-1")
   def builtin(:anthropic_fable_5), do: builtin("anthropic:claude-fable-5")
   def builtin(:anthropic_mythos_5), do: builtin("anthropic:claude-mythos-5")
   def builtin(:anthropic_opus_4_8), do: builtin("anthropic:claude-opus-4-8")
@@ -211,6 +213,14 @@ defmodule BeamWeaver.Agent.CapabilityProfile do
       "anthropic:claude-sonnet-4-6" => %{
         anthropic_universal
         | name: "anthropic:claude-sonnet-4-6"
+      },
+      "anthropic:claude-fable-5-1" => %{
+        anthropic_opus
+        | name: "anthropic:claude-fable-5-1"
+      },
+      "anthropic:claude-mythos-5-1" => %{
+        anthropic_opus
+        | name: "anthropic:claude-mythos-5-1"
       },
       "anthropic:claude-fable-5" => %{anthropic_opus | name: "anthropic:claude-fable-5"},
       "anthropic:claude-mythos-5" => %{anthropic_opus | name: "anthropic:claude-mythos-5"},

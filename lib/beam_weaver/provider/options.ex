@@ -38,6 +38,17 @@ defmodule BeamWeaver.Provider.Options do
     do: Map.merge(body, stringify_keys(extra_body))
 
   @doc false
+  def merge_extra_body(body, nil, _opts) when is_map(body), do: body
+
+  def merge_extra_body(body, extra_body, opts)
+      when is_map(body) and is_map(extra_body) and is_list(opts) do
+    reserved = opts |> Keyword.get(:reserved, []) |> Enum.map(&to_string/1)
+    extra_body = extra_body |> stringify_keys() |> Map.drop(reserved)
+
+    Map.merge(body, extra_body)
+  end
+
+  @doc false
   def reject_nil_values(map) when is_map(map) do
     BeamWeaver.MapShape.reject_nil_values(map)
   end

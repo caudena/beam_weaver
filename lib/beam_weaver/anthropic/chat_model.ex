@@ -4,6 +4,7 @@ defmodule BeamWeaver.Anthropic.ChatModel do
   """
 
   alias BeamWeaver.Anthropic.ChatModel.RequestBuilder
+  alias BeamWeaver.Anthropic.ChatModel.ModelResolution
   alias BeamWeaver.Anthropic.Client
   alias BeamWeaver.Anthropic.Error
   alias BeamWeaver.Anthropic.Messages
@@ -74,9 +75,14 @@ defmodule BeamWeaver.Anthropic.ChatModel do
     )
   end
 
+  @impl true
+  def resolve_invocation_model(%__MODULE__{} = model, opts),
+    do: ModelResolution.resolve(model, opts)
+
   @spec count_tokens(t(), term(), keyword()) :: {:ok, non_neg_integer()} | {:error, Error.t()}
   def count_tokens(%__MODULE__{} = model, input, opts \\ []) do
-    with {:ok, messages} <- LanguageModel.normalize_chat_input(input),
+    with {:ok, model} <- resolve_invocation_model(model, opts),
+         {:ok, messages} <- LanguageModel.normalize_chat_input(input),
          {:ok, body} <- RequestBuilder.count_tokens_body(model, messages, opts),
          {body, opts} = thread_betas(body, opts),
          {:ok, response} <- Client.count_tokens(client(model), body, opts) do
@@ -92,7 +98,8 @@ defmodule BeamWeaver.Anthropic.ChatModel do
 
   @impl true
   def stream_events(%__MODULE__{} = model, messages, opts \\ []) do
-    with {:ok, body} <- request_body(model, messages, Keyword.put(opts, :stream, true)) do
+    with {:ok, model} <- resolve_invocation_model(model, opts),
+         {:ok, body} <- request_body(model, messages, Keyword.put(opts, :stream, true)) do
       {body, opts} = thread_betas(body, opts)
       Client.messages_stream_events(client(model), body, opts)
     end
@@ -100,7 +107,8 @@ defmodule BeamWeaver.Anthropic.ChatModel do
 
   @impl true
   def stream_typed_events(%__MODULE__{} = model, messages, opts \\ []) do
-    with {:ok, body} <- request_body(model, messages, Keyword.put(opts, :stream, true)) do
+    with {:ok, model} <- resolve_invocation_model(model, opts),
+         {:ok, body} <- request_body(model, messages, Keyword.put(opts, :stream, true)) do
       {body, opts} = thread_betas(body, opts)
       Client.messages_stream_typed_events(client(model), body, opts)
     end

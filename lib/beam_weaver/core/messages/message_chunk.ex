@@ -177,7 +177,7 @@ defmodule BeamWeaver.Core.Messages.MessageChunk do
     right_index = Map.get(right, :index)
 
     not is_nil(left_index) and left_index == right_index and
-      (is_binary(Map.get(left, :text)) or is_binary(Map.get(right, :text)))
+      (text_content_blocks?(left, right) or reasoning_content_blocks?(left, right))
   end
 
   defp mergeable_content_blocks?(_left, _right), do: false
@@ -186,11 +186,77 @@ defmodule BeamWeaver.Core.Messages.MessageChunk do
     left_type = Map.get(left, :type)
     text = to_string(Map.get(left, :text) || "") <> to_string(Map.get(right, :text) || "")
 
+    reasoning =
+      to_string(Map.get(left, :reasoning) || "") <>
+        to_string(Map.get(right, :reasoning) || "")
+
+    raw_provider_block =
+      merge_provider_blocks(Map.get(left, :raw_provider_block), Map.get(right, :raw_provider_block))
+
     left
     |> Map.merge(right)
     |> map_put_existing_key(left, :text, text)
+    |> map_put_if_present(left, right, :reasoning, reasoning)
+    |> put_merged_provider_block(raw_provider_block)
     |> maybe_preserve_content_type(left_type)
   end
+
+  defp text_content_blocks?(left, right),
+    do: is_binary(Map.get(left, :text)) or is_binary(Map.get(right, :text))
+
+  defp reasoning_content_blocks?(left, right) do
+    reasoning_block?(left) and reasoning_block?(right)
+  end
+
+  defp reasoning_block?(block) when is_map(block),
+    do: Map.get(block, :type) in [:reasoning, "reasoning"]
+
+  defp map_put_if_present(map, left, right, key, value) do
+    if Map.has_key?(left, key) or Map.has_key?(right, key), do: Map.put(map, key, value), else: map
+  end
+
+  defp merge_provider_blocks(left, right) when is_map(left) and is_map(right) do
+    type = Map.get(left, "type") || Map.get(left, :type)
+
+    thinking =
+      to_string(Map.get(left, "thinking") || Map.get(left, :thinking) || "") <>
+        to_string(Map.get(right, "thinking") || Map.get(right, :thinking) || "")
+
+    left
+    |> Map.merge(right)
+    |> put_provider_type(type)
+    |> put_provider_thinking(left, right, thinking)
+  end
+
+  defp merge_provider_blocks(left, nil) when is_map(left), do: left
+  defp merge_provider_blocks(nil, right) when is_map(right), do: right
+  defp merge_provider_blocks(_left, _right), do: nil
+
+  defp put_provider_type(map, nil), do: map
+
+  defp put_provider_type(map, type) do
+    cond do
+      Map.has_key?(map, "type") -> Map.put(map, "type", type)
+      Map.has_key?(map, :type) -> Map.put(map, :type, type)
+      true -> map
+    end
+  end
+
+  defp put_provider_thinking(map, left, right, thinking) do
+    cond do
+      Map.has_key?(left, "thinking") or Map.has_key?(right, "thinking") ->
+        Map.put(map, "thinking", thinking)
+
+      Map.has_key?(left, :thinking) or Map.has_key?(right, :thinking) ->
+        Map.put(map, :thinking, thinking)
+
+      true ->
+        map
+    end
+  end
+
+  defp put_merged_provider_block(map, nil), do: map
+  defp put_merged_provider_block(map, block), do: Map.put(map, :raw_provider_block, block)
 
   defp map_put_existing_key(map, template, key, value) do
     if Map.has_key?(template, key), do: Map.put(map, key, value), else: map

@@ -303,7 +303,7 @@ defmodule BeamWeaver.DeepSeek.Client do
     client = normalize_client(client_or_opts, opts)
     opts = with_endpoint(opts, client.anthropic_messages_endpoint)
 
-    do_stream(client, body, opts, &deepseek_anthropic_typed_events/1, :anthropic)
+    do_stream(client, body, opts, &deepseek_anthropic_typed_events/2, :anthropic)
   end
 
   @doc false
@@ -475,10 +475,9 @@ defmodule BeamWeaver.DeepSeek.Client do
 
   defp empty_stream_metadata(_events, _message, _opts), do: %{}
 
-  defp deepseek_anthropic_typed_events(events) do
-    events
-    |> BeamWeaver.Anthropic.Streaming.typed_events()
-    |> Enum.map(&put_deepseek_provider/1)
+  defp deepseek_anthropic_typed_events(events, state) do
+    {events, state} = BeamWeaver.Anthropic.Streaming.typed_events(events, state)
+    {Enum.map(events, &put_deepseek_provider/1), state}
   end
 
   defp put_deepseek_provider(%BeamWeaver.Stream.Envelope{} = envelope) do

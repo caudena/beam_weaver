@@ -358,6 +358,17 @@ defmodule BeamWeaver.CompactionTest do
              State.new(%{attrs | "accounting_method" => "untrusted_counter"})
   end
 
+  test "compaction state accepts reported-usage delta accounting identity" do
+    attrs = %{
+      "accounting_method" => "reported_usage_delta_v2",
+      "accounting_version" => 2,
+      "accounting_profile_hash" => String.duplicate("a", 64)
+    }
+
+    assert {:ok, %State{accounting_method: :reported_usage_delta_v2, accounting_version: 2}} =
+             State.new(attrs)
+  end
+
   test "tool projections replay from immutable source evidence and reject tampering" do
     raw_events = events()
 

@@ -5,6 +5,7 @@ defmodule BeamWeaver.Agent.RuntimeBuilderTest do
   alias BeamWeaver.Agent.Built
   alias BeamWeaver.Agent.Middleware.DynamicPrompt
   alias BeamWeaver.Agent.ModelRequest
+  alias BeamWeaver.Anthropic.Messages, as: AnthropicMessages
   alias BeamWeaver.Core.ContentBlock
   alias BeamWeaver.Core.Message
   alias BeamWeaver.Core.Messages
@@ -88,6 +89,49 @@ defmodule BeamWeaver.Agent.RuntimeBuilderTest do
 
     def stream_response(%__MODULE__{}, _messages, _opts) do
       {:ok, Message.assistant("stream response")}
+    end
+  end
+
+  defmodule SignedTypedStreamingModel do
+    @behaviour BeamWeaver.Core.ChatModel
+
+    defstruct [:parent]
+
+    @impl true
+    def invoke(%__MODULE__{}, _messages, _opts), do: {:ok, Message.assistant("invoke")}
+
+    @impl true
+    def stream_typed_events(%__MODULE__{parent: parent}, messages, _opts) do
+      send(parent, {:signed_typed_stream_input, messages})
+
+      fragments = [
+        %{
+          index: 0,
+          type: :reasoning,
+          reasoning: "",
+          raw_provider_block: %{"type" => "thinking", "thinking" => "", "signature" => ""}
+        },
+        %{
+          index: 0,
+          type: :reasoning,
+          reasoning: "Need tools",
+          raw_provider_block: %{"type" => "thinking_delta", "thinking" => "Need tools"}
+        },
+        %{
+          index: 0,
+          type: :reasoning,
+          raw_provider_block: %{"type" => "signature_delta", "signature" => "signed-thinking"}
+        }
+      ]
+
+      {:ok,
+       Enum.map(fragments, fn fragment ->
+         Stream.envelope(%Events.MessageChunk{chunk: Messages.ai_chunk([fragment])})
+       end) ++
+         [
+           Stream.envelope(%Events.Token{text: "answer"}),
+           Stream.envelope(%Events.Done{})
+         ]}
     end
   end
 
@@ -244,6 +288,75 @@ defmodule BeamWeaver.Agent.RuntimeBuilderTest do
                &1
              )
            )
+  end
+
+  test "built agents retain provider-signed thinking for the next model turn" do
+    assert {:ok, %Built{} = agent} =
+             Agent.build(
+               name: "runtime_signed_stream_agent",
+               model: %SignedTypedStreamingModel{parent: self()},
+               tools: []
+             )
+
+    assert {:ok, stream} =
+             Agent.stream_events(
+               agent,
+               %{messages: [Message.user("hello")]},
+               live: true,
+               stream_mode: :events,
+               model_opts: [stream: true]
+             )
+
+    final_message =
+      stream
+      |> Enum.find_value(fn
+        %Envelope{
+          event: %Events.GraphUpdate{
+            update: %{"model" => %{messages: [%Message{} = message]}}
+          }
+        } ->
+          message
+
+        _event ->
+          nil
+      end)
+
+    assert Message.text(final_message) == "answer"
+
+    assert [reasoning, %ContentBlock.Text{text: "answer"}] = final_message.content
+    assert reasoning.reasoning == "Need tools"
+    assert reasoning.raw_provider_block["signature"] == "signed-thinking"
+
+    assert_received {:signed_typed_stream_input, [%Message{role: :user, content: "hello"}]}
+
+    second_state = %{
+      messages: [Message.user("hello"), final_message, Message.user("follow up")]
+    }
+
+    assert {:ok, second_stream} =
+             Agent.stream_events(agent, second_state,
+               live: true,
+               stream_mode: :events,
+               model_opts: [stream: true]
+             )
+
+    _events = Enum.to_list(second_stream)
+
+    assert_received {:signed_typed_stream_input,
+                     [
+                       %Message{role: :user, content: "hello"},
+                       %Message{role: :assistant} = replayed,
+                       %Message{role: :user, content: "follow up"}
+                     ]}
+
+    assert {:ok, {nil, [%{"role" => "assistant", "content" => replayed_content}]}} =
+             AnthropicMessages.format_messages([replayed])
+
+    assert Enum.find(replayed_content, &(&1["type"] == "thinking")) == %{
+             "type" => "thinking",
+             "thinking" => "Need tools",
+             "signature" => "signed-thinking"
+           }
   end
 
   test "built agents fall back to stream_response when typed streaming is unsupported" do
