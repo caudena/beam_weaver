@@ -412,13 +412,14 @@ defmodule BeamWeaver.Compaction.Engine do
       request,
       request.rendered_request,
       nil,
-      value(accounting, :reported_input_tokens, 0)
+      value(accounting, :reported_input_tokens, 0),
+      true
     )
   end
 
-  defp budget(request, bytes, categories), do: budget(request, bytes, categories, 0)
+  defp budget(request, bytes, categories), do: budget(request, bytes, categories, 0, false)
 
-  defp budget(request, bytes, categories, reported_input_tokens) do
+  defp budget(request, bytes, categories, reported_input_tokens, use_baseline?) do
     accounting = request.accounting
 
     ContextBudget.new(request.model_profile, bytes,
@@ -427,6 +428,8 @@ defmodule BeamWeaver.Compaction.Engine do
       categories: categories || value(accounting, :category_bytes, %{}),
       accounting_method: value(accounting, :method, :conservative_utf8),
       reported_input_tokens: reported_input_tokens,
+      reported_usage_baseline: if(use_baseline?, do: value(accounting, :reported_usage_baseline), else: nil),
+      component_descriptors: if(use_baseline?, do: value(accounting, :component_descriptors), else: nil),
       profile_hash: value(accounting, :profile_hash)
     )
   end

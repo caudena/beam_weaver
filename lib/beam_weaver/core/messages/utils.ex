@@ -3,6 +3,7 @@ defmodule BeamWeaver.Core.Messages.Utils do
   Message filtering, merging, trimming, and counting helpers.
   """
 
+  alias BeamWeaver.Core.ContentBlock
   alias BeamWeaver.Core.Error
   alias BeamWeaver.Core.Message
   alias BeamWeaver.Core.MessageLike
@@ -29,6 +30,25 @@ defmodule BeamWeaver.Core.Messages.Utils do
 
   def convert_to_openai_messages(messages, opts \\ []),
     do: OpenAI.convert(messages, opts, &normalize/1)
+
+  @doc """
+  Removes provider reasoning blocks from assistant turns after prior history is
+  rewritten.
+
+  Signed thinking and reasoning blocks can be bound to the exact conversation
+  prefix that produced them. Callers that mutate earlier messages should drop
+  those blocks before replay while preserving normal content and tool calls.
+  """
+  @spec strip_reasoning_blocks([Message.t()]) :: [Message.t()]
+  def strip_reasoning_blocks(messages) when is_list(messages) do
+    Enum.map(messages, fn
+      %Message{role: :assistant, content: content} = message when is_list(content) ->
+        %{message | content: Enum.reject(content, &ContentBlock.reasoning?/1)}
+
+      message ->
+        message
+    end)
+  end
 
   def message_chunk_to_message(chunk), do: MessageChunk.to_message(chunk)
 

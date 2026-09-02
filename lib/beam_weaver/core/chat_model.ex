@@ -131,7 +131,32 @@ defmodule BeamWeaver.Core.ChatModel do
               {:ok, Enumerable.t()} | {:error, Error.t() | term()}
   @callback stream_exact_typed_events(term(), binary(), keyword()) ::
               {:ok, Enumerable.t()} | {:error, Error.t() | term()}
-  @optional_callbacks stream: 3, stream_events: 3, stream_typed_events: 3, stream_exact_typed_events: 3
+  @callback resolve_invocation_model(term(), keyword()) ::
+              {:ok, term()} | {:error, Error.t() | term()}
+  @optional_callbacks stream: 3,
+                      stream_events: 3,
+                      stream_typed_events: 3,
+                      stream_exact_typed_events: 3,
+                      resolve_invocation_model: 2
+
+  @doc """
+  Resolves provider-specific per-invocation model overrides.
+
+  Providers that attach model profiles can implement the optional callback so
+  capability validation, dispatch, tracing, and response normalization all use
+  the same effective model.
+  """
+  @spec resolve_invocation_model(term(), keyword()) ::
+          {:ok, term()} | {:error, Error.t() | term()}
+  def resolve_invocation_model(model, opts \\ []) do
+    module = if is_map(model), do: Map.get(model, :__struct__), else: nil
+
+    if is_atom(module) and function_exported_loaded?(module, :resolve_invocation_model, 2) do
+      module.resolve_invocation_model(model, opts)
+    else
+      {:ok, model}
+    end
+  end
 
   @doc """
   Invokes a chat model after validating message input.
@@ -143,6 +168,7 @@ defmodule BeamWeaver.Core.ChatModel do
   def invoke(model, input, opts) do
     with {:ok, messages} <- LanguageModel.normalize_chat_input(input),
          :ok <- validate_messages(messages),
+         {:ok, model} <- resolve_invocation_model(model, opts),
          :ok <- BeamWeaver.Provider.Capability.validate_invocation(model, opts) do
       trace_call(model, messages, opts, fn ->
         with {:ok, %Message{} = message} <- model.__struct__.invoke(model, messages, opts),
@@ -226,6 +252,7 @@ defmodule BeamWeaver.Core.ChatModel do
   def stream(model, input, opts \\ []) do
     with {:ok, messages} <- LanguageModel.normalize_chat_input(input),
          :ok <- validate_messages(messages),
+         {:ok, model} <- resolve_invocation_model(model, opts),
          :ok <- BeamWeaver.Provider.Capability.validate_invocation(model, opts) do
       if function_exported_loaded?(model.__struct__, :stream, 3) do
         model.__struct__.stream(model, messages, opts)
@@ -311,6 +338,7 @@ defmodule BeamWeaver.Core.ChatModel do
   def stream_events(model, input, opts \\ []) do
     with {:ok, messages} <- LanguageModel.normalize_chat_input(input),
          :ok <- validate_messages(messages),
+         {:ok, model} <- resolve_invocation_model(model, opts),
          :ok <- BeamWeaver.Provider.Capability.validate_invocation(model, opts) do
       if function_exported_loaded?(model.__struct__, :stream_events, 3) do
         model.__struct__.stream_events(model, messages, opts)
@@ -341,6 +369,7 @@ defmodule BeamWeaver.Core.ChatModel do
   def stream_typed_events(model, input, opts \\ []) do
     with {:ok, messages} <- LanguageModel.normalize_chat_input(input),
          :ok <- validate_messages(messages),
+         {:ok, model} <- resolve_invocation_model(model, opts),
          :ok <- BeamWeaver.Provider.Capability.validate_invocation(model, opts) do
       if function_exported_loaded?(model.__struct__, :stream_typed_events, 3) do
         model.__struct__.stream_typed_events(model, messages, opts)

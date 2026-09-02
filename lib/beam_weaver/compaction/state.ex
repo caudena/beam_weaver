@@ -182,11 +182,12 @@ defmodule BeamWeaver.Compaction.State do
 
   defp valid_accounting?(method, version, profile_hash),
     do:
-      method in [:conservative_utf8, :local_tokenizer_v1] and is_integer(version) and
+      method in [:conservative_utf8, :local_tokenizer_v1, :reported_usage_delta_v2] and
+        is_integer(version) and
         version > 0 and (is_nil(profile_hash) or hash?(profile_hash))
 
   defp normalize_accounting_method(%{accounting_method: method} = attrs)
-       when method in ["conservative_utf8", "local_tokenizer_v1"] do
+       when method in ["conservative_utf8", "local_tokenizer_v1", "reported_usage_delta_v2"] do
     {:ok, %{attrs | accounting_method: String.to_existing_atom(method)}}
   end
 
@@ -196,7 +197,7 @@ defmodule BeamWeaver.Compaction.State do
   defp normalize_accounting_method(attrs), do: {:ok, attrs}
 
   defp normalize_accounting_identity_method(method)
-       when method in ["conservative_utf8", "local_tokenizer_v1"],
+       when method in ["conservative_utf8", "local_tokenizer_v1", "reported_usage_delta_v2"],
        do: String.to_existing_atom(method)
 
   defp normalize_accounting_identity_method(method), do: method

@@ -136,6 +136,33 @@ defmodule BeamWeaver.Provider.ResponseDecoderTest do
     assert_received {:stream_timeout, 123}
   end
 
+  test "http client shared SSE helper carries state between parser batches" do
+    client =
+      HTTPClient.new(
+        endpoint: "https://example.test/stream",
+        transport: StreamTransport,
+        transport_opts: [parent: self()],
+        timeout: 123
+      )
+
+    parser = fn events, prefix ->
+      text = Enum.map_join(events, &get_in(&1, ["data", "text"]))
+      value = to_string(prefix || "") <> text
+      {if(text == "", do: [], else: [value]), value}
+    end
+
+    assert {:ok, stream} =
+             HTTPClient.stream_sse(
+               client,
+               %{"stream" => true},
+               [],
+               parser,
+               &ResponseDecoder.json(&1, provider_name: "TestProvider")
+             )
+
+    assert Enum.to_list(stream) == ["hel", "hello"]
+  end
+
   test "http client shared SSE helper invokes the opt-in response callback once and stays lazy" do
     parent = self()
 

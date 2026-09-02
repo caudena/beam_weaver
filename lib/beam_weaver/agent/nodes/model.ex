@@ -17,8 +17,10 @@ defmodule BeamWeaver.Agent.Nodes.Model do
   alias BeamWeaver.Agent.StructuredOutput.ToolStrategy
   alias BeamWeaver.Agent.ToolSet
   alias BeamWeaver.Core.ChatModel
+  alias BeamWeaver.Core.ContentBlock
   alias BeamWeaver.Core.Error
   alias BeamWeaver.Core.Message
+  alias BeamWeaver.Core.Messages
   alias BeamWeaver.Core.Messages.MessageChunk
   alias BeamWeaver.Stream.Envelope
   alias BeamWeaver.Stream.Events
@@ -277,14 +279,28 @@ defmodule BeamWeaver.Agent.Nodes.Model do
   defp stream_result(%{error: error}) when not is_nil(error), do: {:error, error}
   defp stream_result(%{message: %Message{} = message}), do: {:ok, message}
 
-  defp stream_result(%{chunks: [_ | _] = chunks}) do
+  defp stream_result(%{chunks: [_ | _] = chunks, tokens: tokens}) do
     chunks =
       chunks
       |> Enum.reverse()
 
     case MessageChunk.merge_many(chunks) do
-      nil -> stream_text_result([])
-      chunk -> {:ok, MessageChunk.to_message(chunk)}
+      nil ->
+        stream_text_result([])
+
+      chunk ->
+        message = MessageChunk.to_message(chunk)
+
+        if Message.text(message) == "" and tokens != [] do
+          text = tokens |> Enum.reverse() |> Enum.join()
+
+          chunk
+          |> MessageChunk.merge(Messages.ai_chunk(text))
+          |> MessageChunk.to_message()
+          |> then(&{:ok, &1})
+        else
+          {:ok, message}
+        end
     end
   end
 
@@ -310,7 +326,7 @@ defmodule BeamWeaver.Agent.Nodes.Model do
 
   defp visible_chunk(%{content: content, tool_call_chunks: tool_call_chunks} = chunk)
        when is_list(content) do
-    visible_content = Enum.reject(content, &reasoning_block?/1)
+    visible_content = Enum.reject(content, &hidden_reasoning_block?/1)
 
     cond do
       visible_content != [] ->
@@ -325,7 +341,7 @@ defmodule BeamWeaver.Agent.Nodes.Model do
   end
 
   defp visible_chunk(%{content: content} = chunk) when is_list(content) do
-    case Enum.reject(content, &reasoning_block?/1) do
+    case Enum.reject(content, &hidden_reasoning_block?/1) do
       [] -> nil
       visible_content -> %{chunk | content: visible_content}
     end
@@ -333,8 +349,9 @@ defmodule BeamWeaver.Agent.Nodes.Model do
 
   defp visible_chunk(chunk), do: chunk
 
-  defp reasoning_block?(%{type: type}) when type in [:reasoning, "reasoning"], do: true
-  defp reasoning_block?(_block), do: false
+  defp hidden_reasoning_block?(block) do
+    ContentBlock.reasoning?(block) and not ContentBlock.replayable_reasoning?(block)
+  end
 
   defp structured_provider_opts(%StructuredOutput.ProviderStrategy{} = strategy),
     do: StructuredOutput.provider_opts(strategy)

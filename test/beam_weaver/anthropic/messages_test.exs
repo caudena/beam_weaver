@@ -163,6 +163,30 @@ defmodule BeamWeaver.Anthropic.MessagesTest do
            ] = content
   end
 
+  test "preserves cache control from typed content-block metadata" do
+    cache_control = %{type: :ephemeral}
+
+    assert {:ok, {_system, [%{"content" => content}]}} =
+             Messages.format_messages([
+               Message.user([
+                 ContentBlock.text("stable text", %{cache_control: cache_control}),
+                 ContentBlock.plain_text("stable document", %{cache_control: cache_control}),
+                 ContentBlock.image(%{
+                   data: "QUJD",
+                   mime_type: "image/png",
+                   metadata: %{cache_control: cache_control}
+                 }),
+                 ContentBlock.file(%{
+                   data: "Rk9P",
+                   mime_type: "application/pdf",
+                   metadata: %{cache_control: cache_control}
+                 })
+               ])
+             ])
+
+    assert Enum.all?(content, &(&1["cache_control"] == %{"type" => "ephemeral"}))
+  end
+
   test "decodes Anthropic responses with usage, citations, thinking, and tool calls" do
     response = %{
       "id" => "msg_123",

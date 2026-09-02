@@ -214,6 +214,33 @@ input = %{messages: [BeamWeaver.Core.Message.user("Ticket SUP-42 needs review.")
 {:ok, second_state} = MyApp.SupportAgent.invoke(input)
 ```
 
+Applications that own a later cache boundary can attach Anthropic's ephemeral
+marker directly to typed content. BeamWeaver preserves only the whitelisted
+`cache_control` key when serializing typed text, plain-text, image, and file
+blocks; unrelated metadata remains application-local.
+
+```elixir
+alias BeamWeaver.Core.{ContentBlock, Message}
+
+messages = [
+  Message.system("Follow the project policy."),
+  Message.user([
+    ContentBlock.text("Use this completed conversation prefix.", %{
+      cache_control: %{type: "ephemeral"}
+    })
+  ]),
+  Message.user("Continue with the current request.")
+]
+
+{:ok, response} = BeamWeaver.Core.ChatModel.invoke(model, messages)
+```
+
+The same metadata shape is accepted by `ContentBlock.plain_text/2` and through
+the `:metadata` field of `ContentBlock.image/1` and `ContentBlock.file/1`.
+Applications remain responsible for choosing a stable prefix, respecting the
+provider's breakpoint limit, and ensuring mutable or security-partitioned
+content is not accidentally shared.
+
 ## Moonshot/Kimi
 
 Moonshot/Kimi supports `:prompt_cache_key` on chat completions:

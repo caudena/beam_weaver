@@ -103,7 +103,75 @@ defmodule BeamWeaver.Models.ProfileRegistry.Anthropic do
     }
   }
 
+  @claude_5_1_profile %{
+    provider: :anthropic,
+    status: :active,
+    release_date: "2026-09-01",
+    last_updated: "2026-09-01",
+    max_input_tokens: 1_000_000,
+    max_output_tokens: 128_000,
+    text_inputs: true,
+    image_inputs: true,
+    image_url_inputs: true,
+    pdf_inputs: true,
+    text_outputs: true,
+    reasoning_output: true,
+    tool_calling: true,
+    tool_choice: true,
+    parallel_tool_calls: true,
+    structured_output: true,
+    structured_output_with_tools: true,
+    streaming: true,
+    usage_metadata: true,
+    image_tool_message: true,
+    pdf_tool_message: true,
+    attachment: true,
+    supported_params: Params.anthropic(),
+    extra: %{
+      batch_input_price_per_mtok: 5.00,
+      batch_cached_input_price_per_mtok: 0.125,
+      batch_output_price_per_mtok: 25.00,
+      cache_read_price_per_mtok: 0.25,
+      cached_input_price_per_mtok: 0.25,
+      cache_write_5m_price_per_mtok: 12.50,
+      cache_write_1h_price_per_mtok: 20.00,
+      content_provenance: true,
+      default_effort: :high,
+      effort_levels: [:low, :medium, :high, :xhigh, :max],
+      inference_geo_us_multiplier: 1.1,
+      input_price_per_mtok: 10.00,
+      knowledge_cutoff: "2026-06",
+      mid_conversation_system_messages: true,
+      mid_conversation_tool_changes: true,
+      output_price_per_mtok: 50.00,
+      prefilled_model_turns: false,
+      prompt_cache_min_tokens: 512,
+      retirement_not_before: "2027-09-01",
+      sampling_controls: :restricted,
+      thinking_always_on: true,
+      thinking_mode: :adaptive_only,
+      training_data_cutoff: "2026-06",
+      tool_choice_modes: [:auto, :none]
+    }
+  }
+
   @profiles %{
+    {:anthropic, "claude-fable-5-1"} =>
+      Profile.new(
+        Map.merge(@claude_5_1_profile, %{
+          id: "claude-fable-5-1",
+          name: "Claude Fable 5.1",
+          extra: Map.put(@claude_5_1_profile.extra, :availability, :general_availability)
+        })
+      ),
+    {:anthropic, "claude-mythos-5-1"} =>
+      Profile.new(
+        Map.merge(@claude_5_1_profile, %{
+          id: "claude-mythos-5-1",
+          name: "Claude Mythos 5.1",
+          extra: Map.put(@claude_5_1_profile.extra, :availability, :invite_only)
+        })
+      ),
     {:anthropic, "claude-opus-5"} =>
       Profile.new(%{
         provider: :anthropic,

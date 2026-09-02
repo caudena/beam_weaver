@@ -181,7 +181,12 @@ defmodule BeamWeaver.Agent.Middleware.CompactConversation do
         %{}
 
       true ->
-        %{messages: Overwrite.new([summary_message | Enum.drop(messages, safe_cutoff(messages, cutoff))])}
+        recent =
+          messages
+          |> Enum.drop(safe_cutoff(messages, cutoff))
+          |> Utils.strip_reasoning_blocks()
+
+        %{messages: Overwrite.new([summary_message | recent])}
     end
   end
 

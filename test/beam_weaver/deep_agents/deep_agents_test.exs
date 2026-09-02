@@ -166,6 +166,7 @@ defmodule BeamWeaver.AgentCapabilitiesTest do
   alias BeamWeaver.Agent.Subagent.Spec
   alias BeamWeaver.Agent.ToolCallRequest
   alias BeamWeaver.Checkpoint
+  alias BeamWeaver.Core.ContentBlock
   alias BeamWeaver.Core.Message
   alias BeamWeaver.Core.Messages.ToolCall
   alias BeamWeaver.Core.Tool
@@ -816,7 +817,11 @@ defmodule BeamWeaver.AgentCapabilitiesTest do
       ),
       Message.tool("result", tool_call_id: "call-1"),
       Message.user("four"),
-      Message.assistant("five")
+      Message.assistant([
+        ContentBlock.text("five"),
+        ContentBlock.reasoning("signed reasoning", %{signature: "signature"}),
+        ContentBlock.unknown("redacted_thinking", %{"data" => "opaque"})
+      ])
     ]
 
     assert {:ok, %Command{update: update}} =
@@ -840,7 +845,7 @@ defmodule BeamWeaver.AgentCapabilitiesTest do
              %Message{role: :assistant, tool_calls: [%ToolCall{id: "call-1"}]},
              %Message{role: :tool, tool_call_id: "call-1"},
              %Message{role: :user, content: "four"},
-             %Message{role: :assistant, content: "five"},
+             %Message{role: :assistant, content: [%ContentBlock.Text{text: "five"}]},
              %Message{role: :tool, name: "compact_conversation"}
            ] = recent
   end

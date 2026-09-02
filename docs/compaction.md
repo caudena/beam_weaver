@@ -195,8 +195,8 @@ no-tools request.
 
 ### Accounting identity and strict lane input
 
-`Request.accounting` can bind a provider usage floor to the exact request it
-measured:
+`Request.accounting` can bind provider usage to the exact request epoch it
+measured. Legacy accounting remains a lower-bound floor:
 
 ```elixir
 accounting: %{
@@ -207,14 +207,62 @@ accounting: %{
 }
 ```
 
-`reported_input_tokens` is a lower bound, never a replacement for local
-accounting. BeamWeaver takes the greater of the compatible provider report and
-the local estimate. Persist the accounting method, version, and profile hash
+When no compatible component baseline is supplied, `reported_input_tokens` is
+a lower bound, never a replacement for local accounting. BeamWeaver takes the
+greater of that report and the whole-request local estimate.
+
+For a continuation in the same lane/context epoch, applications can instead
+provide the newest completed request's reported input usage plus bounded
+component descriptors:
+
+```elixir
+accounting: %{
+  method: :local_tokenizer_v1,
+  profile_hash: model_profile_hash,
+  reported_usage_baseline: %{
+    version: 2,
+    input_tokens: 91_204,
+    components: %{
+      system: %{kind: :exact, hash: system_hash, bytes: 4_100},
+      history: %{
+        kind: :append,
+        items: [%{id: "event-41", hash: event_hash, bytes: 1_024}]
+      },
+      provider_overhead: %{kind: :exact, hash: overhead_hash, bytes: 180}
+    }
+  },
+  component_descriptors: %{
+    system: %{kind: :exact, hash: system_hash, bytes: 4_100},
+    history: %{
+      kind: :append,
+      items: [
+        %{id: "event-41", hash: event_hash, bytes: 1_024},
+        %{id: "event-42", hash: next_event_hash, bytes: 640}
+      ]
+    },
+    provider_overhead: %{kind: :exact, hash: overhead_hash, bytes: 180}
+  },
+  category_bytes: %{system: 4_100, history: 1_664, provider_overhead: 180}
+}
+```
+
+With a valid v2 baseline, the estimate is the baseline's `input_tokens` plus a
+conservative delta. An unchanged exact component costs zero. An append
+component costs only the bytes after a proven ordered `{id, hash, bytes}`
+prefix. Changed exact components and shortened or reordered append components
+cost their full current bytes. Component-name mismatches, duplicate identities,
+invalid hashes, and legacy or malformed baselines discard the delta method and
+fall back to whole-request accounting; BeamWeaver never diffs provider request
+JSON.
+
+Only reuse a baseline after the application has verified the same lane,
+context epoch, destination, connection/configuration, model profile, principal,
+and accounting version. Provider encoding overhead should be its own exact
+component. Persist the resulting accounting method, version, and profile hash
 with the lane state; when that identity changes,
 `BeamWeaver.Compaction.State.rebase_accounting/2` clears only unit-dependent
 anti-thrash evidence rather than comparing counts from different token units.
-Do not carry a usage report from an earlier request, model profile, or rendered
-body into a new compaction request.
+Do not carry a usage report across any of those identity boundaries.
 
 For `:shared_input_output` profiles, `requested_max_output_tokens` is validated
 and subtracted together with provider-reserved tokens before the input budget is
@@ -385,7 +433,10 @@ The public values are bounded and fail closed:
 - hierarchy, repair, and retry counts are bounded by `Policy`;
 - provider-native mode currently returns `:native_compaction_unsupported`.
 
-`BeamWeaver.ContextBudget` uses conservative UTF-8 byte accounting for the
-final rendered provider request. It does not claim tokenizer-exact accounting.
-Applications may expose category estimates for explanation, but the rendered
-request remains the final budget authority.
+`BeamWeaver.ContextBudget` uses a local tokenizer when configured and otherwise
+uses conservative UTF-8 byte accounting for the final rendered provider
+request. Compatible same-epoch v2 evidence may replace that whole-request
+estimate with reported input usage plus a conservative component delta. It does
+not claim tokenizer-exact delta accounting. Applications may expose category
+estimates for explanation, but the rendered request and verified accounting
+evidence remain the final budget authority.

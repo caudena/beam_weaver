@@ -16,6 +16,7 @@ defmodule BeamWeaver.Agent.MiddlewareBuiltinTest do
   alias BeamWeaver.Agent.ModelRequest
   alias BeamWeaver.Agent.ToolCallRequest
   alias BeamWeaver.Core.ChatModel
+  alias BeamWeaver.Core.ContentBlock
   alias BeamWeaver.Core.Error
   alias BeamWeaver.Core.Message
   alias BeamWeaver.Core.Messages.ToolCall
@@ -1861,6 +1862,34 @@ defmodule BeamWeaver.Agent.MiddlewareBuiltinTest do
     assert prompt =~ "Message 2"
   end
 
+  test "summarization strips prefix-bound reasoning from retained history" do
+    middleware =
+      BeamWeaver.Agent.Middleware.Summarization.new(
+        model: %SummaryModel{},
+        trigger: {:messages, 3},
+        keep: {:messages, 1}
+      )
+
+    retained =
+      Message.assistant([
+        ContentBlock.text("retained answer"),
+        ContentBlock.reasoning("signed reasoning", %{signature: "signature"}),
+        ContentBlock.unknown("redacted_thinking", %{"data" => "opaque"})
+      ])
+
+    assert %{messages: %BeamWeaver.Graph.Overwrite{value: rewritten}} =
+             BeamWeaver.Agent.Middleware.Summarization.before_model(
+               middleware,
+               %{messages: [Message.user("old one"), Message.user("old two"), retained]},
+               nil
+             )
+
+    assert [
+             %Message{role: :user, content: "Conversation summary:\nold summary"},
+             %Message{role: :assistant, content: [%ContentBlock.Text{text: "retained answer"}]}
+           ] = rewritten
+  end
+
   test "summarization passes source metadata and formats history as message buffer text" do
     middleware =
       BeamWeaver.Agent.Middleware.Summarization.new(
@@ -2203,6 +2232,49 @@ defmodule BeamWeaver.Agent.MiddlewareBuiltinTest do
 
     assert Enum.find(final_messages, &match?(%Message{tool_call_id: "call-old"}, &1)).content ==
              "old result"
+  end
+
+  test "context editing strips prefix-bound reasoning only when it rewrites history" do
+    assistant =
+      Message.assistant(
+        [
+          ContentBlock.text("using a tool"),
+          ContentBlock.reasoning("signed reasoning", %{signature: "signature"})
+        ],
+        tool_calls: [%ToolCall{id: "call-old", name: "search", args: %{"query" => "old"}}]
+      )
+
+    messages = [
+      Message.user("start"),
+      assistant,
+      Message.tool("old result", tool_call_id: "call-old", name: "search")
+    ]
+
+    request = ModelRequest.new(messages: messages)
+    middleware = ContextEditing.new(trigger: 0, keep: 0)
+
+    assert :handled =
+             ContextEditing.wrap_model_call(middleware, request, fn edited_request ->
+               assert [
+                        %Message{role: :user},
+                        %Message{
+                          role: :assistant,
+                          content: [%ContentBlock.Text{text: "using a tool"}],
+                          tool_calls: [%ToolCall{id: "call-old"}]
+                        },
+                        %Message{role: :tool, content: "[cleared]"}
+                      ] = edited_request.messages
+
+               :handled
+             end)
+
+    unchanged_middleware = ContextEditing.new(trigger: 1_000_000)
+
+    assert :unchanged =
+             ContextEditing.wrap_model_call(unchanged_middleware, request, fn unchanged_request ->
+               assert unchanged_request.messages == messages
+               :unchanged
+             end)
   end
 
   test "typed middleware decisions normalize to normal agent state updates" do

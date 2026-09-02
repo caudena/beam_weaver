@@ -1,6 +1,7 @@
 defmodule BeamWeaver.Anthropic.ChatModelTest do
   use ExUnit.Case, async: true
 
+  alias BeamWeaver.Agent.StructuredOutput
   alias BeamWeaver.Anthropic.ChatModel
   alias BeamWeaver.Anthropic.Client
   alias BeamWeaver.Anthropic.Error
@@ -8,8 +9,10 @@ defmodule BeamWeaver.Anthropic.ChatModelTest do
   alias BeamWeaver.Anthropic.Tools
   alias BeamWeaver.Core.ChatModel, as: CoreChatModel
   alias BeamWeaver.Core.Message
+  alias BeamWeaver.Core.Tool
   alias BeamWeaver.Core.Messages.ToolCall
   alias BeamWeaver.Models
+  alias BeamWeaver.Models.UsageCost
 
   test "constructor accepts native options, profile defaults, and streaming intent" do
     model =
@@ -499,6 +502,362 @@ defmodule BeamWeaver.Anthropic.ChatModelTest do
     assert body["output_config"] == %{"effort" => "max"}
   end
 
+  test "Claude Fable 5.1 and Mythos 5.1 expose their exact limits and pricing" do
+    for {model_id, availability} <- [
+          {"claude-fable-5-1", :general_availability},
+          {"claude-mythos-5-1", :invite_only}
+        ] do
+      model = ChatModel.new(model: model_id)
+
+      assert model.max_tokens == 128_000
+      assert model.profile.max_input_tokens == 1_000_000
+      assert model.profile.max_output_tokens == 128_000
+      assert model.profile.extra.availability == availability
+      assert model.profile.extra.input_price_per_mtok == 10.0
+      assert model.profile.extra.output_price_per_mtok == 50.0
+      assert model.profile.extra.cache_read_price_per_mtok == 0.25
+      assert model.profile.extra.cached_input_price_per_mtok == 0.25
+      assert model.profile.extra.batch_cached_input_price_per_mtok == 0.125
+      assert model.profile.extra.prompt_cache_min_tokens == 512
+      assert model.profile.extra.knowledge_cutoff == "2026-06"
+      assert model.profile.extra.training_data_cutoff == "2026-06"
+      assert model.profile.extra.effort_levels == [:low, :medium, :high, :xhigh, :max]
+      assert model.profile.extra.tool_choice_modes == [:auto, :none]
+      assert model.profile.structured_output_with_tools
+
+      costs =
+        UsageCost.calculate(model.profile, %{
+          input_tokens: 1_000,
+          output_tokens: 2_000,
+          input_token_details: %{cache_read: 400}
+        })
+
+      assert_in_delta costs.total_cost, 0.1061, 1.0e-12
+    end
+  end
+
+  test "Claude Fable 5.1 and Mythos 5.1 require adaptive thinking and reject forced tools" do
+    messages = [Message.user("hello")]
+
+    for model_id <- ["claude-fable-5-1", "claude-mythos-5-1"] do
+      model = ChatModel.new(model: model_id)
+
+      assert {:error, thinking_error} =
+               ChatModel.request_body(model, messages, thinking: %{type: :disabled})
+
+      assert thinking_error.type == :unsupported_model_param
+      assert thinking_error.details.model == model_id
+      assert thinking_error.details.params == [:thinking]
+      assert thinking_error.details.reason =~ "always on"
+
+      assert {:error, count_thinking_error} =
+               BeamWeaver.Anthropic.ChatModel.RequestBuilder.count_tokens_body(
+                 model,
+                 messages,
+                 thinking: %{type: :disabled}
+               )
+
+      assert count_thinking_error.details.params == [:thinking]
+
+      for choice <- [:any, :lookup, %{type: :tool, name: "lookup"}] do
+        assert {:error, tool_choice_error} =
+                 ChatModel.request_body(model, messages, tool_choice: choice)
+
+        assert tool_choice_error.type == :unsupported_model_param
+        assert tool_choice_error.details.model == model_id
+        assert tool_choice_error.details.params == [:tool_choice]
+        assert tool_choice_error.details.supported == [:auto, :none]
+
+        assert {:error, count_tool_choice_error} =
+                 BeamWeaver.Anthropic.ChatModel.RequestBuilder.count_tokens_body(
+                   model,
+                   messages,
+                   tool_choice: choice
+                 )
+
+        assert count_tool_choice_error.details.params == [:tool_choice]
+      end
+
+      for choice <- [:auto, :none] do
+        assert {:ok, body} =
+                 ChatModel.request_body(model, messages,
+                   thinking: %{type: :adaptive},
+                   effort: :max,
+                   tool_choice: choice
+                 )
+
+        assert body["thinking"] == %{"type" => "adaptive"}
+        assert body["output_config"] == %{"effort" => "max"}
+        assert body["tool_choice"] == %{"type" => Atom.to_string(choice)}
+      end
+    end
+  end
+
+  test "Claude 5.1 thinking binding controls infer their beta and validate mismatch behavior" do
+    model = ChatModel.new(model: "claude-fable-5-1")
+    messages = [Message.user("hello")]
+
+    for builder <- [
+          &ChatModel.request_body/3,
+          &BeamWeaver.Anthropic.ChatModel.RequestBuilder.count_tokens_body/3
+        ] do
+      assert {:ok, body} =
+               builder.(model, messages,
+                 betas: ["existing-beta"],
+                 thinking: %{
+                   type: :adaptive,
+                   block_binding: %{prefix_mismatch_behavior: :drop_block}
+                 }
+               )
+
+      assert body["thinking"] == %{
+               "type" => "adaptive",
+               "block_binding" => %{"prefix_mismatch_behavior" => "drop_block"}
+             }
+
+      assert Enum.sort(body["betas"]) ==
+               Enum.sort(["existing-beta", "thinking-binding-controls-2026-08-01"])
+
+      assert {:error, error} =
+               builder.(model, messages,
+                 thinking: %{
+                   type: :adaptive,
+                   block_binding: %{prefix_mismatch_behavior: :keep_block}
+                 }
+               )
+
+      assert error.type == :unsupported_model_param
+      assert error.details.field == "thinking.block_binding.prefix_mismatch_behavior"
+      assert error.details.supported == [:error, :drop_block]
+
+      for invalid <- [
+            %{type: :adaptive, block_binding: %{}},
+            %{type: :adaptive, block_binding: "invalid"},
+            %{"type" => "adaptive", "block_binding" => %{"prefix_mismatch_behavior" => "keep"}}
+          ] do
+        assert {:error, invalid_error} = builder.(model, messages, thinking: invalid)
+        assert invalid_error.type == :unsupported_model_param
+        assert invalid_error.details.field == "thinking.block_binding.prefix_mismatch_behavior"
+      end
+
+      assert {:error, shape_error} = builder.(model, messages, thinking: "adaptive")
+      assert shape_error.type == :unsupported_model_param
+      assert shape_error.details.expected == :map
+    end
+  end
+
+  test "Claude Fable 5.1 and Mythos 5.1 combine native structured output with tools" do
+    schema = %{
+      "title" => "LookupResponse",
+      "type" => "object",
+      "required" => ["answer"],
+      "properties" => %{"answer" => %{"type" => "string"}}
+    }
+
+    lookup_tool =
+      Tool.from_function!(
+        name: "lookup",
+        description: "Look up a value.",
+        input_schema: %{"type" => "object", "properties" => %{}},
+        handler: fn args, _opts -> args end
+      )
+
+    for model_id <- ["claude-fable-5-1", "claude-mythos-5-1"] do
+      model = ChatModel.new(model: model_id)
+
+      assert %StructuredOutput.ProviderStrategy{} =
+               strategy =
+               StructuredOutput.effective_strategy(
+                 StructuredOutput.auto(schema),
+                 model,
+                 [lookup_tool]
+               )
+
+      opts = Keyword.merge([tools: [lookup_tool]], StructuredOutput.provider_opts(strategy))
+
+      assert {:ok, body} = ChatModel.request_body(model, [Message.user("look it up")], opts)
+      assert body["output_config"]["format"] == %{"type" => "json_schema", "schema" => schema}
+      assert [%{"name" => "lookup"}] = body["tools"]
+      refute Map.has_key?(body, "tool_choice")
+    end
+  end
+
+  test "Claude 5.1 validation follows per-call model overrides" do
+    messages = [Message.user("hello")]
+    fable_5 = ChatModel.new(model: "claude-fable-5")
+    fable_5_1 = ChatModel.new(model: "claude-fable-5-1")
+
+    for builder <- [
+          &ChatModel.request_body/3,
+          &BeamWeaver.Anthropic.ChatModel.RequestBuilder.count_tokens_body/3
+        ] do
+      assert {:error, error} =
+               builder.(fable_5, messages,
+                 model: "claude-fable-5-1",
+                 tool_choice: :any
+               )
+
+      assert error.type == :unsupported_model_param
+      assert error.details.model == "claude-fable-5-1"
+
+      assert {:ok, body} =
+               builder.(fable_5_1, messages,
+                 model: "claude-fable-5",
+                 tool_choice: :any
+               )
+
+      assert body["model"] == "claude-fable-5"
+      assert body["tool_choice"] == %{"type" => "any"}
+    end
+
+    assert {:ok, haiku_body} =
+             ChatModel.request_body(fable_5_1, messages, model: "claude-haiku-4-5-20251001")
+
+    assert haiku_body["model"] == "claude-haiku-4-5-20251001"
+    assert haiku_body["max_tokens"] == 64_000
+  end
+
+  test "per-call model overrides drive full invocation capabilities and response metadata" do
+    schema = %{
+      "title" => "answer",
+      "type" => "object",
+      "required" => ["value"],
+      "properties" => %{"value" => %{"type" => "string"}}
+    }
+
+    inner =
+      ChatModel.new(
+        model: "claude-haiku-4-5-20251001",
+        api_key: "anthropic-secret",
+        transport: BeamWeaver.TestSupport.Conformance.Fakes.Transport,
+        transport_opts: [
+          parent: self(),
+          expect: %{
+            method: :post,
+            path: "/v1/messages",
+            json: %{
+              "model" => "claude-fable-5-1",
+              "max_tokens" => 64_000,
+              "messages" => [%{"role" => "user", "content" => "answer"}],
+              "stream" => false,
+              "output_config" => %{
+                "format" => %{"type" => "json_schema", "schema" => schema}
+              }
+            }
+          },
+          body: %{
+            "id" => "msg_override",
+            "type" => "message",
+            "role" => "assistant",
+            "model" => "claude-fable-5-1",
+            "content" => [%{"type" => "text", "text" => ~s({"value":"native"})}],
+            "usage" => %{"input_tokens" => 1, "output_tokens" => 1}
+          }
+        ]
+      )
+
+    model = Models.with_structured_output(inner, schema)
+
+    assert {:ok, %Message{} = response} =
+             CoreChatModel.invoke(model, [Message.user("answer")], model: "claude-fable-5-1")
+
+    assert response.metadata.structured_response == %{"value" => "native"}
+    assert response.response_metadata.model.requested_model == "claude-fable-5-1"
+    assert response.response_metadata.model.profile_id == "claude-fable-5-1"
+    assert response.response_metadata.limits.max_input_tokens == 1_000_000
+    assert response.response_metadata.limits.max_output_tokens == 128_000
+    assert_received {:fake_transport_request, _request}
+  end
+
+  test "raw extension maps cannot replace Anthropic-owned request fields" do
+    messages = [Message.user("hello")]
+    model = ChatModel.new(model: "claude-fable-5")
+
+    for extension <- [:model_kwargs, :extra_body] do
+      opts =
+        [tool_choice: :any]
+        |> Keyword.put(extension, %{
+          model: "claude-fable-5-1",
+          thinking: %{type: :disabled},
+          tool_choice: %{type: :none},
+          betas: ["unvalidated-beta"],
+          extension_flag: true
+        })
+
+      assert {:ok, body} = ChatModel.request_body(model, messages, opts)
+      assert body["model"] == "claude-fable-5"
+      assert body["tool_choice"] == %{"type" => "any"}
+      refute Map.has_key?(body, "thinking")
+      refute "unvalidated-beta" in List.wrap(body["betas"])
+      assert body["extension_flag"] == true
+    end
+  end
+
+  test "string-keyed custom profile extras enforce Claude compatibility rules" do
+    profile = %{
+      provider: :anthropic,
+      id: "claude-custom-5-1",
+      max_input_tokens: 1_000_000,
+      max_output_tokens: 128_000,
+      supported_params: :unknown,
+      extra: %{
+        "thinking_always_on" => true,
+        "thinking_mode" => "adaptive_only",
+        "sampling_controls" => "restricted",
+        "prefilled_model_turns" => false,
+        "tool_choice_modes" => ["auto", "none"]
+      }
+    }
+
+    model = ChatModel.new(model: "claude-custom-5-1", profile: profile)
+
+    assert {:error, error} =
+             ChatModel.request_body(model, [Message.user("hello")], thinking: %{type: :disabled})
+
+    assert error.details.reason == "Thinking is always on for this Claude model"
+
+    assert {:error, prefill_error} =
+             ChatModel.request_body(model, [Message.user("hello"), Message.assistant("prefill")])
+
+    assert prefill_error.type == :invalid_message
+
+    assert {:error, tool_error} =
+             ChatModel.request_body(model, [Message.user("hello")], tool_choice: :any)
+
+    assert tool_error.details.supported == ["auto", "none"]
+  end
+
+  test "Claude Fable 5.1 and Mythos 5.1 reject final assistant prefills" do
+    tool_call = %ToolCall{id: "call-1", name: "lookup", args: %{"q" => "beam"}}
+
+    for model_id <- ["claude-fable-5-1", "claude-mythos-5-1"],
+        final_message <- [
+          Message.assistant("Answer:"),
+          Message.assistant(""),
+          Message.assistant("", tool_calls: [tool_call])
+        ] do
+      model = ChatModel.new(model: model_id)
+      messages = [Message.user("Complete this"), final_message]
+
+      for builder <- [
+            &ChatModel.request_body/3,
+            &BeamWeaver.Anthropic.ChatModel.RequestBuilder.count_tokens_body/3
+          ] do
+        assert {:error, error} = builder.(model, messages, [])
+        assert error.type == :invalid_message
+        assert error.details.model == model_id
+        assert error.details.role == :assistant
+        assert error.details.requirement == :final_user_tool_or_system_turn
+      end
+    end
+
+    assert {:ok, _body} =
+             ChatModel.request_body(
+               ChatModel.new(model: "claude-sonnet-4-5"),
+               [Message.user("Complete this"), Message.assistant("Answer:")]
+             )
+  end
+
   test "stream and stream_response consume Anthropic SSE fixtures" do
     body = """
     event: message_start
@@ -649,6 +1008,8 @@ defmodule BeamWeaver.Anthropic.ChatModelTest do
   test "model initializer supports explicit and inferred Anthropic identifiers" do
     for model <- [
           "claude-haiku-4-5-20251001",
+          "claude-fable-5-1",
+          "claude-mythos-5-1",
           "claude-opus-4-8",
           "claude-opus-5",
           "claude-sonnet-5",

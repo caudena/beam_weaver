@@ -54,11 +54,12 @@ defmodule BeamWeaver.Provider.HTTPClient do
           t(),
           json_body(),
           keyword(),
-          ([map()] -> [term()]),
+          Streaming.parser(),
           Streaming.error_decoder()
         ) :: {:ok, Enumerable.t()}
   def stream_sse(%__MODULE__{} = client, body, opts, parser, error_decoder)
-      when (is_map(body) or is_binary(body)) and is_function(parser, 1) and
+      when (is_map(body) or is_binary(body)) and
+             (is_function(parser, 1) or is_function(parser, 2)) and
              is_function(error_decoder, 1) do
     request = request(client, body, opts)
 

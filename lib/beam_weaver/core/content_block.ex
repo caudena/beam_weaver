@@ -76,6 +76,30 @@ defmodule BeamWeaver.Core.ContentBlock do
     :unknown
   ]
 
+  @reasoning_types [
+    :reasoning,
+    "reasoning",
+    :thinking,
+    "thinking",
+    :thinking_delta,
+    "thinking_delta",
+    :signature_delta,
+    "signature_delta",
+    :redacted_thinking,
+    "redacted_thinking"
+  ]
+
+  @replayable_reasoning_types [
+    :thinking,
+    "thinking",
+    :thinking_delta,
+    "thinking_delta",
+    :signature_delta,
+    "signature_delta",
+    :redacted_thinking,
+    "redacted_thinking"
+  ]
+
   @doc """
   Returns the stable set of content block types BeamWeaver understands natively.
   """
@@ -125,6 +149,51 @@ defmodule BeamWeaver.Core.ContentBlock do
 
   def data?("data:" <> _rest), do: true
   def data?(_block), do: false
+
+  @doc """
+  Returns true when a content block represents provider reasoning.
+
+  The predicate accepts typed blocks as well as normalized and provider-native
+  map shapes so message rewriting and stream collection share one definition.
+  """
+  @spec reasoning?(term()) :: boolean()
+  def reasoning?(%Reasoning{}), do: true
+
+  def reasoning?(%Unknown{provider_type: provider_type, value: value}) do
+    reasoning_type?(provider_type) or provider_reasoning_type?(value)
+  end
+
+  def reasoning?(block) when is_map(block) do
+    reasoning_type?(get(block, :type)) or
+      reasoning_type?(get(block, :provider_type)) or
+      provider_reasoning_type?(get(block, :raw_provider_block))
+  end
+
+  def reasoning?(_block), do: false
+
+  @doc """
+  Returns true when a reasoning block carries provider replay material.
+
+  Signed and redacted thinking must survive normal stream collection so it can
+  be sent back on the next provider turn. Plain display-only reasoning remains
+  non-replayable.
+  """
+  @spec replayable_reasoning?(term()) :: boolean()
+  def replayable_reasoning?(%Reasoning{metadata: metadata}), do: signed?(metadata)
+
+  def replayable_reasoning?(%Unknown{provider_type: provider_type, value: value}) do
+    replayable_reasoning_type?(provider_type) or provider_replayable_reasoning?(value)
+  end
+
+  def replayable_reasoning?(block) when is_map(block) do
+    replayable_reasoning_type?(get(block, :type)) or
+      replayable_reasoning_type?(get(block, :provider_type)) or
+      signed?(get(block, :metadata)) or
+      signed?(block) or
+      provider_replayable_reasoning?(get(block, :raw_provider_block))
+  end
+
+  def replayable_reasoning?(_block), do: false
 
   @doc """
   Converts a content-block-like value into a typed content block.
@@ -245,6 +314,24 @@ defmodule BeamWeaver.Core.ContentBlock do
 
   @doc false
   def get(map, key) when is_map(map), do: MapAccess.get(map, key)
+
+  defp reasoning_type?(type), do: type in @reasoning_types
+  defp replayable_reasoning_type?(type), do: type in @replayable_reasoning_types
+
+  defp provider_reasoning_type?(value) when is_map(value),
+    do: reasoning_type?(get(value, :type))
+
+  defp provider_reasoning_type?(_value), do: false
+
+  defp provider_replayable_reasoning?(value) when is_map(value),
+    do: replayable_reasoning_type?(get(value, :type)) or signed?(value)
+
+  defp provider_replayable_reasoning?(_value), do: false
+
+  defp signed?(value) when is_map(value),
+    do: not is_nil(get(value, :signature)) or not is_nil(get(value, :encrypted_content))
+
+  defp signed?(_value), do: false
 
   defp data_uri?("data:" <> _rest), do: true
   defp data_uri?(_value), do: false

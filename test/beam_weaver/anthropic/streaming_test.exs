@@ -1,7 +1,10 @@
 defmodule BeamWeaver.Anthropic.StreamingTest do
   use ExUnit.Case, async: true
 
+  alias BeamWeaver.Anthropic.Messages
   alias BeamWeaver.Anthropic.Streaming
+  alias BeamWeaver.Core.Messages.MessageChunk
+  alias BeamWeaver.Stream.Envelope
   alias BeamWeaver.Stream.Events
 
   test "parses text deltas and reconstructs final message responses" do
@@ -58,6 +61,127 @@ defmodule BeamWeaver.Anthropic.StreamingTest do
              events,
              &match?(%BeamWeaver.Stream.Envelope{event: %Events.MessageChunk{}}, &1)
            )
+  end
+
+  test "typed tool fragments retain their block kind across transport batches" do
+    start = %{
+      "data" => %{
+        "type" => "content_block_start",
+        "index" => 1,
+        "content_block" => %{
+          "type" => "tool_use",
+          "id" => "toolu_1",
+          "name" => "lookup",
+          "input" => %{}
+        }
+      }
+    }
+
+    delta = %{
+      "data" => %{
+        "type" => "content_block_delta",
+        "index" => 1,
+        "delta" => %{"type" => "input_json_delta", "partial_json" => ~s({"q":"beam"})}
+      }
+    }
+
+    {start_events, state} = Streaming.typed_events([start], nil)
+    {delta_events, _state} = Streaming.typed_events([delta], state)
+
+    message =
+      (start_events ++ delta_events)
+      |> Enum.flat_map(fn
+        %Envelope{event: %Events.MessageChunk{chunk: chunk}} -> [chunk]
+        _event -> []
+      end)
+      |> MessageChunk.merge_many()
+      |> MessageChunk.to_message()
+
+    assert [%{id: "toolu_1", name: "lookup", args: %{"q" => "beam"}}] = message.tool_calls
+    refute Enum.any?(message.content, &match?(%{type: :server_tool_call_chunk}, &1))
+  end
+
+  test "typed thinking events reconstruct one signed block for replay" do
+    transport_batches = [
+      %{
+        "data" => %{
+          "type" => "content_block_start",
+          "index" => 0,
+          "content_block" => %{"type" => "thinking", "thinking" => "", "signature" => ""}
+        }
+      },
+      %{
+        "data" => %{
+          "type" => "content_block_delta",
+          "index" => 0,
+          "delta" => %{"type" => "thinking_delta", "thinking" => "Need "}
+        }
+      },
+      %{
+        "data" => %{
+          "type" => "content_block_delta",
+          "index" => 0,
+          "delta" => %{"type" => "thinking_delta", "thinking" => "tools"}
+        }
+      },
+      %{
+        "data" => %{
+          "type" => "content_block_delta",
+          "index" => 0,
+          "delta" => %{"type" => "signature_delta", "signature" => "signed-thinking"}
+        }
+      },
+      %{"data" => %{"type" => "content_block_stop", "index" => 0}}
+    ]
+
+    message =
+      transport_batches
+      |> Enum.flat_map(&Streaming.typed_events([&1]))
+      |> Enum.flat_map(fn
+        %Envelope{event: %Events.MessageChunk{chunk: chunk}} -> [chunk]
+        _event -> []
+      end)
+      |> MessageChunk.merge_many()
+      |> MessageChunk.to_message()
+
+    assert {:ok, {nil, [%{"role" => "assistant", "content" => content}]}} =
+             Messages.format_messages([message])
+
+    assert Enum.filter(content, &(&1["type"] == "thinking")) == [
+             %{
+               "type" => "thinking",
+               "thinking" => "Need tools",
+               "signature" => "signed-thinking"
+             }
+           ]
+  end
+
+  test "typed redacted thinking replays the exact provider block" do
+    transport_batches = [
+      %{
+        "data" => %{
+          "type" => "content_block_start",
+          "index" => 0,
+          "content_block" => %{"type" => "redacted_thinking", "data" => "opaque"}
+        }
+      },
+      %{"data" => %{"type" => "content_block_stop", "index" => 0}}
+    ]
+
+    message =
+      transport_batches
+      |> Enum.flat_map(&Streaming.typed_events([&1]))
+      |> Enum.flat_map(fn
+        %Envelope{event: %Events.MessageChunk{chunk: chunk}} -> [chunk]
+        _event -> []
+      end)
+      |> MessageChunk.merge_many()
+      |> MessageChunk.to_message()
+
+    assert {:ok, {nil, [%{"role" => "assistant", "content" => content}]}} =
+             Messages.format_messages([message])
+
+    assert content == [%{"type" => "redacted_thinking", "data" => "opaque"}]
   end
 
   test "message_delta carries usage metadata as a map and preserves response metadata" do

@@ -284,16 +284,23 @@ defmodule BeamWeaver.Anthropic.Messages do
     exception -> {:error, Error.new(:invalid_content_block, Exception.message(exception))}
   end
 
-  defp content_block_to_anthropic!(%ContentBlock.Text{text: text}),
-    do: %{"type" => "text", "text" => text}
-
-  defp content_block_to_anthropic!(%ContentBlock.PlainText{text: text}), do: text_document(text)
-
-  defp content_block_to_anthropic!(%ContentBlock.Image{} = block) do
-    %{"type" => "image", "source" => image_source(block.url, block.data, block.mime_type, nil)}
+  defp content_block_to_anthropic!(%ContentBlock.Text{text: text, metadata: metadata}) do
+    %{"type" => "text", "text" => text}
+    |> merge_typed_metadata(metadata, ["cache_control"])
   end
 
-  defp content_block_to_anthropic!(%ContentBlock.File{} = block) do
+  defp content_block_to_anthropic!(%ContentBlock.PlainText{text: text, metadata: metadata}) do
+    text
+    |> text_document()
+    |> merge_typed_metadata(metadata, ["cache_control"])
+  end
+
+  defp content_block_to_anthropic!(%ContentBlock.Image{metadata: metadata} = block) do
+    %{"type" => "image", "source" => image_source(block.url, block.data, block.mime_type, nil)}
+    |> merge_typed_metadata(metadata, ["cache_control"])
+  end
+
+  defp content_block_to_anthropic!(%ContentBlock.File{metadata: metadata} = block) do
     %{
       "type" => "document",
       "source" =>
@@ -307,6 +314,7 @@ defmodule BeamWeaver.Anthropic.Messages do
         )
     }
     |> Options.reject_nil_values()
+    |> merge_typed_metadata(metadata, ["cache_control"])
   end
 
   defp content_block_to_anthropic!(%ContentBlock.Reasoning{reasoning: text, metadata: metadata}) do
@@ -549,6 +557,10 @@ defmodule BeamWeaver.Anthropic.Messages do
       value = block[key] || extras[key]
       if is_nil(value), do: acc, else: Map.put(acc, key, value)
     end)
+  end
+
+  defp merge_typed_metadata(formatted, metadata, keys) do
+    merge_passthrough(formatted, Options.stringify_keys(metadata || %{}), keys)
   end
 
   defp normalize_server_tool_input(%{"input" => input, "partial_json" => partial_json} = block)

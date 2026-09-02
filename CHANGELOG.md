@@ -1,5 +1,44 @@
 # Changelog
 
+## 0.1.20 - 2026-09-02
+
+### Added
+
+- Added first-class Anthropic `claude-fable-5-1` and invite-only
+  `claude-mythos-5-1` profiles with 1M-token context windows, 128K output
+  limits, full effort ladders, current standard/cache/batch pricing, and
+  512-token prompt-cache minimums.
+- Fable 5.1 and Mythos 5.1 requests now enforce always-on adaptive thinking
+  and reject forced `:any` or named tool choices and final assistant prefills
+  before both Messages and count-tokens transport; `:auto` and `:none` remain
+  supported. Thinking binding controls infer their required beta header, and
+  per-call Anthropic model overrides now resolve the effective profile before
+  capability validation, dispatch, tracing, and response normalization.
+- Added same-epoch reported-usage delta accounting to `BeamWeaver.ContextBudget`
+  and application-owned compaction. A compatible v2 baseline charges only
+  changed exact components and append-only component suffixes. Changed,
+  shortened, or reordered components are charged in full, while malformed or
+  legacy evidence falls back to whole-request accounting.
+- Anthropic serialization now preserves whitelisted `cache_control` metadata on
+  typed text, plain-text, image, and file blocks, allowing applications to place
+  an explicit cache boundary without converting typed content back to maps.
+
+### Fixed
+
+- Built-in summarization, compact-conversation, and local context-editing
+  middleware now remove carried reasoning and redacted-thinking blocks whenever
+  they rewrite prior history, preventing prefix-bound blocks from being replayed
+  against a different conversation prefix.
+- Anthropic typed streaming now assembles indexed thinking fragments and their
+  signature across arbitrary transport batches into one provider-faithful block
+  before agent persistence, so signed Claude 5.1 thinking can be replayed
+  unchanged on the next turn. Stateful SSE parsing also keeps fragmented tool
+  input associated with its opening tool block.
+- Anthropic request extension maps can no longer overwrite provider-owned
+  fields after validation, string-keyed custom profile metadata applies the
+  same model restrictions, and malformed thinking binding shapes now fail with
+  tagged errors instead of reaching transport.
+
 ## 0.1.19 - 2026-08-28
 
 ### Added

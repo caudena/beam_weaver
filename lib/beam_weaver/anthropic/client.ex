@@ -81,7 +81,7 @@ defmodule BeamWeaver.Anthropic.Client do
       when is_map(body) or is_binary(body) do
     client_or_opts
     |> normalize_client(opts)
-    |> do_stream(body, opts, &Streaming.typed_events/1)
+    |> do_stream(body, opts, &Streaming.typed_events/2)
   end
 
   @spec count_tokens(t() | keyword(), map(), keyword()) :: {:ok, map()} | {:error, Error.t()}
@@ -184,7 +184,13 @@ defmodule BeamWeaver.Anthropic.Client do
 
   defp decode_stream({:ok, %Response{status: status, body: body} = response}, parser, opts)
        when status in 200..299 do
-    {:ok, body |> parser.() |> maybe_attach_stream_headers(response, opts)}
+    decoded =
+      cond do
+        is_function(parser, 1) -> parser.(body)
+        is_function(parser, 2) -> parser.(body, nil) |> elem(0)
+      end
+
+    {:ok, maybe_attach_stream_headers(decoded, response, opts)}
   end
 
   defp decode_stream({:ok, %Response{} = response}, _parser, _opts),
