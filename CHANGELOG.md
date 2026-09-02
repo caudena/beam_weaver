@@ -1,9 +1,17 @@
 # Changelog
 
-## 0.1.20 - 2026-09-02
+## 0.1.21 - 2026-09-02
 
 ### Added
 
+- Added first-class Google `gemini-3.8-flash` support with its 1,048,576-token
+  input limit, 65,536-token output limit, multimodal inputs, current thinking
+  and built-in-tool capabilities, and introductory standard, cache, batch,
+  flex, and priority pricing through December 31, 2026.
+
+## 0.1.20 - 2026-09-02
+
+### Added
 - Added first-class Anthropic `claude-fable-5-1` and invite-only
   `claude-mythos-5-1` profiles with 1M-token context windows, 128K output
   limits, full effort ladders, current standard/cache/batch pricing, and

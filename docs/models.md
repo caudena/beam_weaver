@@ -64,7 +64,7 @@ Google:
 
 ```elixir
 {:ok, model} =
-  BeamWeaver.Models.init_chat_model("google:gemini-3.7-flash",
+  BeamWeaver.Models.init_chat_model("google:gemini-3.8-flash",
     thinking_level: :medium
   )
 ```
@@ -179,7 +179,7 @@ Recommended starting points:
 | --- | --- |
 | OpenAI GPT | `openai:gpt-5.6-sol`, `openai:gpt-5.6-terra`, `openai:gpt-5.6-luna`, `openai:gpt-5.4-mini` |
 | Anthropic Claude | `anthropic:claude-fable-5-1`, `anthropic:claude-mythos-5-1`, `anthropic:claude-opus-5`, `anthropic:claude-sonnet-5`, `anthropic:claude-sonnet-4-6`, `anthropic:claude-opus-*`, `anthropic:claude-haiku-*` |
-| Google Gemini | `google:gemini-3.7-flash`, `google:gemini-3.6-flash`, `google:gemini-3.5-flash`, `google:gemini-3.5-flash-lite`, `google:gemini-3.1-flash-lite`, explicit `google:gemini-*` profiles |
+| Google Gemini | `google:gemini-3.8-flash`, `google:gemini-3.7-flash`, `google:gemini-3.6-flash`, `google:gemini-3.5-flash`, `google:gemini-3.5-flash-lite`, `google:gemini-3.1-flash-lite`, explicit `google:gemini-*` profiles |
 | DeepSeek V4 | `deepseek:deepseek-v4-flash`, `deepseek:deepseek-v4-flash-vision-exp`, `deepseek:deepseek-v4-pro` |
 | Moonshot/Kimi | `moonshot:kimi-k3`, `moonshot:kimi-k2.7-code`, `moonshot:kimi-k2.7-code-highspeed`, `moonshot:kimi-k2.6`, `moonshot:kimi-k2.5` |
 | xAI Grok | `xai:grok-4.6`, `xai:grok-4.5`, `xai:grok-4.3` |

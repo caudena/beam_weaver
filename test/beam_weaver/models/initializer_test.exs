@@ -57,6 +57,8 @@ defmodule BeamWeaver.Models.InitializerTest do
 
   test "init_chat_model accepts explicit Google identifiers but not bare Gemini aliases" do
     for model <- [
+          "gemini-3.8-flash",
+          "gemini-3.7-flash",
           "gemini-3.6-flash",
           "gemini-3.5-flash-lite",
           "gemini-3.5-flash",
@@ -73,7 +75,12 @@ defmodule BeamWeaver.Models.InitializerTest do
   end
 
   test "latest Gemini models reject deprecated generation controls" do
-    for model <- ["google:gemini-3.6-flash", "google:gemini-3.5-flash-lite"] do
+    for model <- [
+          "google:gemini-3.8-flash",
+          "google:gemini-3.7-flash",
+          "google:gemini-3.6-flash",
+          "google:gemini-3.5-flash-lite"
+        ] do
       assert {:ok, configured} = Models.init_chat_model(model, temperature: 0.2)
 
       assert {:error, error} =
@@ -90,6 +97,21 @@ defmodule BeamWeaver.Models.InitializerTest do
       assert error.type == :unsupported_model_param
       assert error.details.params == [:thinking_budget]
     end
+  end
+
+  test "Gemini 3.8 Flash resolves to its exact production profile" do
+    assert {:ok, profile} = ProfileRegistry.fetch(:google, "gemini-3.8-flash")
+
+    assert profile.name == "Gemini 3.8 Flash"
+    assert profile.status == :active
+    assert profile.release_date == "2026-09-02"
+    assert profile.max_input_tokens == 1_048_576
+    assert profile.max_output_tokens == 65_536
+    assert profile.extra.default_thinking_level == :medium
+    assert profile.extra.thinking_levels == [:low, :medium, :high]
+    assert profile.extra.input_price_per_mtok == 0.75
+    assert profile.extra.output_price_per_mtok == 3.75
+    assert profile.extra.computer_use == :preview
   end
 
   test "init_chat_model rejects limited-access Gemini models before family fallback" do
