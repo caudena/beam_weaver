@@ -398,7 +398,12 @@ defmodule BeamWeaver.Google.ChatModelTest do
   test "latest Gemini models reject prefilled final model turns" do
     tool_call = %ToolCall{id: "call-1", name: "lookup", args: %{"q" => "beam"}}
 
-    for model_id <- ["google:gemini-3.6-flash", "google:gemini-3.5-flash-lite"],
+    for model_id <- [
+          "google:gemini-3.8-flash",
+          "google:gemini-3.7-flash",
+          "google:gemini-3.6-flash",
+          "google:gemini-3.5-flash-lite"
+        ],
         final_message <- [
           Message.assistant("Translation:"),
           Message.assistant("", tool_calls: [tool_call])
