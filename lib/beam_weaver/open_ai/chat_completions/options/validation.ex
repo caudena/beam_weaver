@@ -3,6 +3,7 @@ defmodule BeamWeaver.OpenAI.ChatCompletions.Options.Validation do
 
   alias BeamWeaver.Models.ParamPolicy
   alias BeamWeaver.OpenAI.Error
+  alias BeamWeaver.OpenAI.ModelPolicy
 
   def validate(model, opts) do
     params =
@@ -19,6 +20,7 @@ defmodule BeamWeaver.OpenAI.ChatCompletions.Options.Validation do
         :max_tokens,
         :metadata,
         :modalities,
+        :moderation,
         :model_kwargs,
         :parallel_tool_calls,
         :presence_penalty,
@@ -39,37 +41,69 @@ defmodule BeamWeaver.OpenAI.ChatCompletions.Options.Validation do
       ])
       |> Map.merge(Map.new(opts))
 
-    with :ok <-
+    with :ok <- validate_function_tools(model, opts),
+         :ok <-
            ParamPolicy.validate(
              Map.get(model, :profile),
              params,
              Keyword.get(opts, :param_policy, Map.get(model, :param_policy)),
              api: :chat_completions,
              metadata: Keyword.get(opts, :metadata, %{})
-           ) do
-      validate_gpt56_function_tools(model, opts)
+           ),
+         :ok <- validate_astra_reasoning_effort(model, opts) do
+      :ok
     end
   end
 
-  defp validate_gpt56_function_tools(model, opts) do
+  defp validate_function_tools(model, opts) do
     model_name = Keyword.get(opts, :model, Map.get(model, :model))
     reasoning_effort = Keyword.get(opts, :reasoning_effort, Map.get(model, :reasoning_effort))
 
-    if gpt56?(model_name) and function_tools?(model, opts) and
-         reasoning_effort not in [:none, "none"] do
+    cond do
+      ModelPolicy.astra?(model_name) and function_tools?(model, opts) ->
+        {:error,
+         Error.new(
+           :invalid_model_option,
+           "GPT-6 Astra function tools require the Responses API",
+           %{model: model_name, alternative_api: :responses}
+         )}
+
+      gpt56?(model_name) and function_tools?(model, opts) and
+          reasoning_effort not in [:none, "none"] ->
+        {:error,
+         Error.new(
+           :invalid_model_option,
+           "GPT-5.6 Chat Completions function tools require reasoning_effort: :none",
+           %{
+             model: model_name,
+             reasoning_effort: reasoning_effort,
+             expected: :none,
+             alternative_api: :responses
+           }
+         )}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp validate_astra_reasoning_effort(model, opts) do
+    model_name = Keyword.get(opts, :model, Map.get(model, :model))
+    reasoning_effort = Keyword.get(opts, :reasoning_effort, Map.get(model, :reasoning_effort))
+
+    if ModelPolicy.reasoning_effort_supported?(model_name, reasoning_effort) do
+      :ok
+    else
       {:error,
        Error.new(
          :invalid_model_option,
-         "GPT-5.6 Chat Completions function tools require reasoning_effort: :none",
+         "GPT-6 Astra reasoning effort must be low, medium, high, xhigh, or max",
          %{
            model: model_name,
            reasoning_effort: reasoning_effort,
-           expected: :none,
-           alternative_api: :responses
+           supported: [:low, :medium, :high, :xhigh, :max]
          }
        )}
-    else
-      :ok
     end
   end
 

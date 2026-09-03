@@ -314,6 +314,39 @@ defmodule BeamWeaver.OpenAI.StreamingTest do
            )
   end
 
+  test "typed events preserve shell call command and output lifecycle frames" do
+    body = """
+    event: response.output_item.added
+    data: {"type":"response.output_item.added","output_index":0,"sequence_number":1,"item":{"id":"shell_1","type":"shell_call","call_id":"call_1","status":"in_progress","action":{"commands":[]}}}
+
+    event: response.shell_call_command.delta
+    data: {"type":"response.shell_call_command.delta","output_index":0,"command_index":0,"sequence_number":2,"delta":"echo hi"}
+
+    event: response.shell_call_output_content.delta
+    data: {"type":"response.shell_call_output_content.delta","item_id":"shell_1","output_index":0,"command_index":0,"sequence_number":3,"delta":{"stdout":"hi\\n","stderr":""}}
+
+    event: response.output_item.done
+    data: {"type":"response.output_item.done","output_index":0,"sequence_number":4,"item":{"id":"shell_1","type":"shell_call","call_id":"call_1","status":"completed","action":{"commands":["echo hi"]}}}
+    """
+
+    custom_events =
+      body
+      |> Streaming.typed_events()
+      |> Enum.flat_map(fn
+        %Envelope{event: %Events.Custom{} = event} -> [event]
+        _event -> []
+      end)
+
+    assert Enum.map(custom_events, & &1.metadata.event_type) == [
+             "response.output_item.added",
+             "response.shell_call_command.delta",
+             "response.shell_call_output_content.delta",
+             "response.output_item.done"
+           ]
+
+    assert get_in(Enum.at(custom_events, 2).payload, ["data", "delta", "stdout"]) == "hi\n"
+  end
+
   test "typed events preserve Responses reasoning deltas as message chunks" do
     # Upstream reference:
     # - reasoning deltas are streamed as typed content, not dropped.
@@ -850,10 +883,10 @@ defmodule BeamWeaver.OpenAI.StreamingTest do
     data: {"type":"response.output_item.added","output_index":0,"item":{"type":"image_generation_call","id":"ig_1","status":"in_progress"}}
 
     event: response.image_generation_call.partial_image
-    data: {"type":"response.image_generation_call.partial_image","output_index":0,"item_id":"ig_1","partial_image_index":0,"partial_image_b64":"first-frame"}
+    data: {"type":"response.image_generation_call.partial_image","output_index":0,"item_id":"ig_1","sequence_number":1,"partial_image_index":0,"partial_image_b64":"first-frame","size":"1024x1024","quality":"high","background":"transparent","output_format":"png"}
 
     event: response.image_generation_call.partial_image
-    data: {"type":"response.image_generation_call.partial_image","output_index":0,"item_id":"ig_1","partial_image_index":1,"partial_image_b64":"second-frame"}
+    data: {"type":"response.image_generation_call.partial_image","output_index":0,"item_id":"ig_1","sequence_number":2,"partial_image_index":1,"partial_image_b64":"second-frame","size":"1024x1024","quality":"high","background":"transparent","output_format":"png"}
 
     event: response.output_item.done
     data: {"type":"response.output_item.done","output_index":0,"item":{"type":"image_generation_call","id":"ig_1","status":"completed","result":"final-image","output_format":"jpeg"}}
@@ -863,14 +896,24 @@ defmodule BeamWeaver.OpenAI.StreamingTest do
              %{
                "item_id" => "ig_1",
                "output_index" => 0,
+               "sequence_number" => 1,
                "partial_image_index" => 0,
-               "partial_image_b64" => "first-frame"
+               "partial_image_b64" => "first-frame",
+               "size" => "1024x1024",
+               "quality" => "high",
+               "background" => "transparent",
+               "output_format" => "png"
              },
              %{
                "item_id" => "ig_1",
                "output_index" => 0,
+               "sequence_number" => 2,
                "partial_image_index" => 1,
-               "partial_image_b64" => "second-frame"
+               "partial_image_b64" => "second-frame",
+               "size" => "1024x1024",
+               "quality" => "high",
+               "background" => "transparent",
+               "output_format" => "png"
              }
            ]
 
@@ -881,8 +924,22 @@ defmodule BeamWeaver.OpenAI.StreamingTest do
                "status" => "completed",
                "result" => "final-image",
                "partial_images" => [
-                 %{"partial_image_index" => 0, "partial_image_b64" => "first-frame"},
-                 %{"partial_image_index" => 1, "partial_image_b64" => "second-frame"}
+                 %{
+                   "partial_image_index" => 0,
+                   "partial_image_b64" => "first-frame",
+                   "size" => "1024x1024",
+                   "quality" => "high",
+                   "background" => "transparent",
+                   "output_format" => "png"
+                 },
+                 %{
+                   "partial_image_index" => 1,
+                   "partial_image_b64" => "second-frame",
+                   "size" => "1024x1024",
+                   "quality" => "high",
+                   "background" => "transparent",
+                   "output_format" => "png"
+                 }
                ]
              }
            ] = Streaming.output_items(body)

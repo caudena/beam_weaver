@@ -52,8 +52,13 @@ defmodule BeamWeaver.OpenAI.Streaming.Response do
           %{
             "item_id" => data["item_id"],
             "output_index" => data["output_index"],
+            "sequence_number" => data["sequence_number"],
             "partial_image_index" => data["partial_image_index"],
-            "partial_image_b64" => partial_image_b64
+            "partial_image_b64" => partial_image_b64,
+            "size" => data["size"],
+            "quality" => data["quality"],
+            "background" => data["background"],
+            "output_format" => data["output_format"]
           }
           |> Shared.reject_nil_values()
         ]
@@ -276,7 +281,11 @@ defmodule BeamWeaver.OpenAI.Streaming.Response do
   defp partial_image(data) do
     %{
       "partial_image_index" => data["partial_image_index"],
-      "partial_image_b64" => data["partial_image_b64"]
+      "partial_image_b64" => data["partial_image_b64"],
+      "size" => data["size"],
+      "quality" => data["quality"],
+      "background" => data["background"],
+      "output_format" => data["output_format"]
     }
     |> Shared.reject_nil_values()
   end

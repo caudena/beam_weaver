@@ -173,7 +173,7 @@ defmodule BeamWeaver.Anthropic.Messages do
         {:ok, system_content(message.content), nil}
 
       Keyword.get(opts, :mid_conversation_system_messages, false) ->
-        {:ok, system, %{"role" => "system", "content" => system_content(message.content)}}
+        {:ok, system, system_message(message)}
 
       true ->
         {:error, Error.new(:invalid_messages, "received multiple non-consecutive system messages")}
@@ -262,6 +262,17 @@ defmodule BeamWeaver.Anthropic.Messages do
     do: Enum.map(content, &content_block_to_anthropic!/1)
 
   defp system_content(content), do: to_string(content)
+
+  defp system_message(%Message{} = message) do
+    metadata = Options.stringify_keys(message.metadata || %{})
+
+    %{"role" => "system", "content" => system_content(message.content)}
+    |> Options.put_optional("clear_at", Options.normalize_value(metadata["clear_at"]))
+    |> Options.put_optional(
+      "output_config",
+      Options.normalize_option_map(metadata["output_config"])
+    )
+  end
 
   defp message_content(%Message{role: role, content: content} = message, _opts)
        when is_binary(content) do
@@ -893,7 +904,11 @@ defmodule BeamWeaver.Anthropic.Messages do
       input_token_details: input_details,
       output_token_details: output_token_details(usage["output_tokens_details"]),
       service_tier: usage["service_tier"],
-      inference_geo: usage["inference_geo"]
+      inference_geo: usage["inference_geo"],
+      speed: usage["speed"],
+      server_tool_use: usage["server_tool_use"],
+      fallback_credit: usage["fallback_credit"],
+      iterations: usage["iterations"]
     }
     |> BeamWeaver.MapShape.reject_nil_or_empty()
   end
@@ -920,7 +935,8 @@ defmodule BeamWeaver.Anthropic.Messages do
 
   defp output_token_details(_details), do: %{}
 
-  defp response_metadata(response) do
+  @doc false
+  def response_metadata(response) do
     header_metadata = response["_beamweaver_response_header_metadata"] || %{}
 
     %{
@@ -938,6 +954,8 @@ defmodule BeamWeaver.Anthropic.Messages do
       usage: response["usage"],
       container: response["container"],
       context_management: response["context_management"],
+      diagnostics: response["diagnostics"],
+      input_transformations: response["input_transformations"],
       headers: header_metadata[:headers],
       transport: transport_metadata(header_metadata),
       raw_provider_response: response

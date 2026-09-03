@@ -40,6 +40,7 @@ defmodule BeamWeaver.Anthropic.ChatModel do
             context_management: nil,
             diagnostics: nil,
             reuse_last_container: nil,
+            fallback_credit_token: nil,
             fallbacks: nil,
             inference_geo: nil,
             speed: nil,
@@ -126,6 +127,7 @@ defmodule BeamWeaver.Anthropic.ChatModel do
       api_key: model.api_key,
       anthropic_version: model.anthropic_version,
       betas: model.betas || [],
+      user_profile_id: model.user_profile_id,
       default_headers: model.default_headers || [],
       transport: model.transport,
       transport_opts: model.transport_opts,
@@ -133,7 +135,7 @@ defmodule BeamWeaver.Anthropic.ChatModel do
     }
   end
 
-  defp thread_betas(body, opts) do
+  defp thread_betas(body, opts) when is_map(body) do
     case Map.pop(body, "betas") do
       {nil, body} ->
         {body, opts}
@@ -149,6 +151,8 @@ defmodule BeamWeaver.Anthropic.ChatModel do
         {body, opts}
     end
   end
+
+  defp thread_betas(body, opts), do: {body, opts}
 
   defp runtime_adapter do
     %ChatRuntime.Adapter{
@@ -166,6 +170,7 @@ defmodule BeamWeaver.Anthropic.ChatModel do
         Client.messages_stream_response(client(model), body, opts)
       end,
       exact_stream_events: fn model, body, opts ->
+        {body, opts} = thread_betas(body, opts)
         Client.messages_stream_typed_events(client(model), body, opts)
       end,
       decode: fn response, _opts -> Messages.response_to_message(response) end,

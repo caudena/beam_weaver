@@ -203,4 +203,71 @@ defmodule BeamWeaver.Anthropic.StreamingTest do
     # ...and usage_metadata is a plain usage map, not a Message struct.
     assert %{input_tokens: 5, output_tokens: 2, total_tokens: 7} = chunk.metadata.usage_metadata
   end
+
+  test "preserves Anthropic diagnostics and final input-transformation overrides" do
+    events = [
+      %{
+        "data" => %{
+          "type" => "message_start",
+          "message" => %{
+            "id" => "msg_transform",
+            "type" => "message",
+            "role" => "assistant",
+            "model" => "claude-fable-5-1",
+            "content" => [],
+            "usage" => %{"input_tokens" => 3},
+            "diagnostics" => %{"cache_miss_reason" => %{"type" => "messages_changed"}},
+            "input_transformations" => []
+          }
+        }
+      },
+      %{
+        "data" => %{
+          "type" => "message_delta",
+          "delta" => %{
+            "stop_reason" => "refusal",
+            "stop_details" => %{
+              "type" => "refusal",
+              "fallback_credit_token" => "credit-token"
+            }
+          },
+          "input_transformations" => [
+            %{
+              "type" => "thinking_dropped",
+              "path" => "messages.1.content.0",
+              "reason" => "model_binding_mismatch"
+            }
+          ],
+          "usage" => %{
+            "output_tokens" => 2,
+            "fallback_credit" => %{"status" => %{"type" => "redeemed"}},
+            "iterations" => [%{"type" => "fallback_message", "output_tokens" => 2}]
+          }
+        }
+      }
+    ]
+
+    response = Streaming.response(events)
+    assert response["diagnostics"]["cache_miss_reason"]["type"] == "messages_changed"
+    assert [%{"type" => "thinking_dropped"}] = response["input_transformations"]
+    assert response["stop_details"]["fallback_credit_token"] == "credit-token"
+
+    chunks =
+      events
+      |> Streaming.typed_events()
+      |> Enum.flat_map(fn
+        %Envelope{event: %Events.MessageChunk{chunk: chunk}} -> [chunk]
+        _event -> []
+      end)
+
+    [start_chunk, delta_chunk] = chunks
+    assert start_chunk.metadata.diagnostics["cache_miss_reason"]["type"] == "messages_changed"
+    assert delta_chunk.metadata.stop_details["fallback_credit_token"] == "credit-token"
+    assert [%{"type" => "thinking_dropped"}] = delta_chunk.metadata.input_transformations
+    assert delta_chunk.metadata.usage_metadata.fallback_credit["status"]["type"] == "redeemed"
+
+    message = chunks |> MessageChunk.merge_many() |> MessageChunk.to_message()
+    assert [%{"type" => "thinking_dropped"}] = message.metadata.input_transformations
+    assert message.metadata.stop_details["fallback_credit_token"] == "credit-token"
+  end
 end

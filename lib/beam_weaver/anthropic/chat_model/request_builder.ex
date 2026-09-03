@@ -16,6 +16,7 @@ defmodule BeamWeaver.Anthropic.ChatModel.RequestBuilder do
     :context_management,
     :diagnostics,
     :effort,
+    :fallback_credit_token,
     :fallbacks,
     :inference_geo,
     :max_tokens,
@@ -46,6 +47,7 @@ defmodule BeamWeaver.Anthropic.ChatModel.RequestBuilder do
     :container,
     :context_management,
     :diagnostics,
+    :fallback_credit_token,
     :fallbacks,
     :inference_geo,
     :max_tokens,
@@ -76,14 +78,26 @@ defmodule BeamWeaver.Anthropic.ChatModel.RequestBuilder do
          :ok <- validate_sampling_params(model, opts),
          :ok <- validate_thinking_params(model, opts),
          :ok <- validate_tool_compatibility(model, opts),
+         :ok <- validate_fallback_credit_params(model, opts),
          {:ok, {system, formatted_messages}} <-
            Messages.format_messages(messages, message_format_opts(model)),
-         :ok <- validate_final_turn(model, formatted_messages),
+         :ok <- validate_final_turn(model, formatted_messages, opts),
          {:ok, output_config} <- output_config(model, opts) do
       model_kwargs = option(model, opts, :model_kwargs) || %{}
       tools = tools(opts)
       fallbacks = option(model, opts, :fallbacks)
-      betas = betas(model, opts, tools, output_config, formatted_messages, fallbacks)
+      fallback_credit_token = option(model, opts, :fallback_credit_token)
+
+      betas =
+        betas(
+          model,
+          opts,
+          tools,
+          output_config,
+          formatted_messages,
+          fallbacks,
+          fallback_credit_token
+        )
 
       body =
         %{
@@ -135,11 +149,14 @@ defmodule BeamWeaver.Anthropic.ChatModel.RequestBuilder do
         )
         |> Options.put_optional("fallbacks", normalize_fallbacks(fallbacks))
         |> Options.put_optional(
+          "fallback_credit_token",
+          normalize_fallback_credit_token(fallback_credit_token)
+        )
+        |> Options.put_optional(
           "inference_geo",
           Options.normalize_value(option(model, opts, :inference_geo))
         )
         |> Options.put_optional("speed", Options.normalize_value(option(model, opts, :speed)))
-        |> Options.put_optional("user_profile_id", option(model, opts, :user_profile_id))
         |> Options.put_optional("betas", betas)
         |> maybe_put_container(model, messages, opts)
         |> Options.merge_extra_body(Keyword.get(opts, :extra_body, %{}),
@@ -189,7 +206,7 @@ defmodule BeamWeaver.Anthropic.ChatModel.RequestBuilder do
       |> Options.put_optional("speed", Options.normalize_value(option(model, opts, :speed)))
       |> Options.put_optional(
         "betas",
-        betas(model, opts, tools, output_config, formatted_messages, nil)
+        betas(model, opts, tools, output_config, formatted_messages, nil, nil)
       )
       |> then(&{:ok, &1})
     end
@@ -350,8 +367,11 @@ defmodule BeamWeaver.Anthropic.ChatModel.RequestBuilder do
     end
   end
 
-  defp validate_final_turn(model, messages) do
-    if rejects_prefilled_model_turns?(model) and final_assistant_turn?(messages) do
+  defp validate_final_turn(model, messages), do: validate_final_turn(model, messages, [])
+
+  defp validate_final_turn(model, messages, opts) do
+    if rejects_prefilled_model_turns?(model) and final_assistant_turn?(messages) and
+         not fallback_credit_prefill?(model, opts) do
       {:error,
        Error.new(:invalid_message, "Anthropic model requests cannot end with an assistant turn", %{
          provider: :anthropic,
@@ -373,6 +393,61 @@ defmodule BeamWeaver.Anthropic.ChatModel.RequestBuilder do
       _message -> false
     end
   end
+
+  defp fallback_credit_prefill?(model, opts) do
+    not is_nil(option(model, opts, :fallback_credit_token)) and
+      not forced_tool_choice?(Keyword.get(opts, :tool_choice)) and
+      is_nil(Keyword.get(opts, :response_format)) and
+      is_nil(Keyword.get(opts, :structured_output)) and
+      is_nil(output_config_format(option(model, opts, :output_config)))
+  end
+
+  defp output_config_format(output_config) when is_map(output_config),
+    do: MapAccess.get(output_config, :format)
+
+  defp output_config_format(_output_config), do: nil
+
+  defp validate_fallback_credit_params(model, opts) do
+    token = option(model, opts, :fallback_credit_token)
+    fallbacks = option(model, opts, :fallbacks)
+
+    cond do
+      not is_nil(token) and fallbacks not in [nil, []] ->
+        {:error,
+         Error.new(:unsupported_model_param, "Anthropic fallback credit cannot be combined with fallbacks", %{
+           provider: :anthropic,
+           model: model.model,
+           params: [:fallback_credit_token, :fallbacks]
+         })}
+
+      valid_fallback_credit_token?(token) ->
+        :ok
+
+      true ->
+        {:error,
+         Error.new(:unsupported_model_param, "Anthropic fallback credit token is invalid", %{
+           provider: :anthropic,
+           model: model.model,
+           params: [:fallback_credit_token],
+           expected: :non_empty_string_or_token_map
+         })}
+    end
+  end
+
+  defp valid_fallback_credit_token?(nil), do: true
+
+  defp valid_fallback_credit_token?(token) when is_binary(token),
+    do: byte_size(token) in 1..2048
+
+  defp valid_fallback_credit_token?(token) when is_map(token) do
+    value = MapAccess.get(token, :token)
+    mode = MapAccess.get(token, :mode)
+
+    is_binary(value) and valid_fallback_credit_token?(value) and
+      mode in [nil, :strict, "strict", :best_effort, "best_effort"]
+  end
+
+  defp valid_fallback_credit_token?(_token), do: false
 
   defp validate_tool_choice_compatibility(model, opts) do
     supported = profile_extra(model, :tool_choice_modes)
@@ -584,19 +659,26 @@ defmodule BeamWeaver.Anthropic.ChatModel.RequestBuilder do
   defp put_effort(map, nil), do: map
   defp put_effort(map, effort), do: Map.put(map, "effort", Options.normalize_value(effort))
 
-  defp betas(model, opts, tools, output_config, messages, fallbacks) do
+  defp betas(model, opts, tools, output_config, messages, fallbacks, fallback_credit_token) do
     base = option(model, opts, :betas) || []
     tools = tools || []
 
     Tools.required_betas(tools, base)
     |> maybe_add_beta(option(model, opts, :mcp_servers), "mcp-client-2025-11-20")
+    |> maybe_add_beta(option(model, opts, :user_profile_id), "user-profiles-2026-08-18")
     |> maybe_add_beta(task_budget?(output_config), "task-budgets-2026-03-13")
     |> maybe_add_beta(
       thinking_block_binding(option(model, opts, :thinking)),
       "thinking-binding-controls-2026-08-01"
     )
     |> maybe_add_beta(tool_changes?(messages), "mid-conversation-tool-changes-2026-07-01")
+    |> maybe_add_beta(system_clear_at?(messages), "mid-conversation-system-clear-at-2026-08-21")
+    |> maybe_add_beta(
+      system_output_config?(messages),
+      "mid-conversation-output-config-2026-07-01"
+    )
     |> maybe_add_fallback_beta(fallbacks)
+    |> maybe_add_beta(fallback_credit_token, "fallback-credit-2026-07-01")
     |> case do
       [] -> nil
       betas -> betas
@@ -639,9 +721,24 @@ defmodule BeamWeaver.Anthropic.ChatModel.RequestBuilder do
     end)
   end
 
+  defp system_clear_at?(messages), do: system_message_field?(messages, "clear_at")
+  defp system_output_config?(messages), do: system_message_field?(messages, "output_config")
+
+  defp system_message_field?(messages, field) do
+    Enum.any?(messages, fn
+      %{"role" => "system"} = message -> not is_nil(message[field])
+      _message -> false
+    end)
+  end
+
   defp normalize_fallbacks(fallbacks) when fallbacks in [nil, []], do: nil
   defp normalize_fallbacks(fallbacks) when is_list(fallbacks), do: Options.normalize_option_list(fallbacks)
   defp normalize_fallbacks(fallbacks), do: Options.normalize_value(fallbacks)
+
+  defp normalize_fallback_credit_token(token) when is_map(token),
+    do: Options.normalize_option_map(token)
+
+  defp normalize_fallback_credit_token(token), do: token
 
   defp message_format_opts(model) do
     [

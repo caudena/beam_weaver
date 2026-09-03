@@ -23,7 +23,7 @@ defmodule BeamWeaver.OpenAI.ModelPolicy do
   Returns the temperature that may be sent for a request.
 
   GPT-5 family models reject temperature except when reasoning effort is
-  explicitly `none`.
+  explicitly `none`. GPT-6 Astra rejects temperature for every effort.
   """
   @spec request_temperature(String.t() | nil, term(), map() | nil) :: term()
   def request_temperature(model, temperature, reasoning) do
@@ -41,7 +41,9 @@ defmodule BeamWeaver.OpenAI.ModelPolicy do
   @spec completion_tokens_field_model?(String.t() | nil) :: boolean()
   def completion_tokens_field_model?(model) when is_binary(model) do
     normalized = String.downcase(model)
-    String.starts_with?(normalized, "gpt-5") or String.starts_with?(normalized, "o")
+
+    String.starts_with?(normalized, "gpt-5") or astra?(normalized) or
+      String.starts_with?(normalized, "o")
   end
 
   def completion_tokens_field_model?(_model), do: false
@@ -54,11 +56,22 @@ defmodule BeamWeaver.OpenAI.ModelPolicy do
   def prefers_responses_api?(model) when is_binary(model) do
     normalized = String.downcase(model)
 
-    String.starts_with?(normalized, "gpt-5.6") or
+    astra?(normalized) or String.starts_with?(normalized, "gpt-5.6") or
       normalized in ["gpt-5.5-pro", "gpt-5.4-pro"]
   end
 
   def prefers_responses_api?(_model), do: false
+
+  @doc false
+  @spec astra?(String.t() | nil) :: boolean()
+  def astra?(model) when is_binary(model), do: String.downcase(model) == "gpt-6-astra"
+  def astra?(_model), do: false
+
+  @doc false
+  @spec reasoning_effort_supported?(String.t() | nil, term()) :: boolean()
+  def reasoning_effort_supported?(model, reasoning) do
+    not astra?(model) or reasoning_effort(reasoning) in [nil, "low", "medium", "high", "xhigh", "max"]
+  end
 
   defp o1_model?(model) when is_binary(model) do
     model
@@ -71,7 +84,7 @@ defmodule BeamWeaver.OpenAI.ModelPolicy do
   defp restricted_temperature_model?(model) when is_binary(model) do
     normalized = String.downcase(model)
 
-    String.starts_with?(normalized, "gpt-5")
+    String.starts_with?(normalized, "gpt-5") or astra?(normalized)
   end
 
   defp restricted_temperature_model?(_model), do: false
@@ -80,5 +93,7 @@ defmodule BeamWeaver.OpenAI.ModelPolicy do
   defp reasoning_effort(%{"effort" => effort}) when is_binary(effort), do: effort
   defp reasoning_effort(%{effort: effort}) when is_atom(effort), do: Atom.to_string(effort)
   defp reasoning_effort(%{effort: effort}) when is_binary(effort), do: effort
+  defp reasoning_effort(effort) when is_atom(effort), do: Atom.to_string(effort)
+  defp reasoning_effort(effort) when is_binary(effort), do: effort
   defp reasoning_effort(_reasoning), do: nil
 end

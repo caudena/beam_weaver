@@ -7,24 +7,18 @@ defmodule BeamWeaver.Anthropic.Tools do
   alias BeamWeaver.Tool.Renderer
 
   @tool_type_to_beta %{
-    "web_fetch_20250910" => "web-fetch-2025-09-10",
-    "web_fetch_20260209" => "web-fetch-2026-02-09",
-    "web_fetch_20260309" => "web-fetch-2026-03-09",
-    "code_execution_20250522" => "code-execution-2025-05-22",
-    "code_execution_20250825" => "code-execution-2025-08-25",
     "mcp_toolset" => "mcp-client-2025-11-20",
-    "memory_20250818" => "context-management-2025-06-27",
     "computer_20241022" => "computer-use-2024-10-22",
     "computer_20250124" => "computer-use-2025-01-24",
     "computer_20251124" => "computer-use-2025-11-24",
-    "advisor_20260301" => "advisor-2026-03-01",
-    "tool_search_tool_regex_20251119" => "advanced-tool-use-2025-11-20",
-    "tool_search_tool_bm25_20251119" => "advanced-tool-use-2025-11-20"
+    "advisor_20260301" => "advisor-tool-2026-03-01"
   }
 
   @builtin_prefixes [
     "text_editor_",
     "computer_",
+    "computer_toolset_",
+    "browser_toolset_",
     "bash_",
     "web_search_",
     "web_fetch_",
@@ -99,7 +93,7 @@ defmodule BeamWeaver.Anthropic.Tools do
   def web_search(opts \\ []),
     do:
       build(
-        Keyword.get(opts, :type, "web_search_20260209"),
+        Keyword.get(opts, :type, "web_search_20260318"),
         opts |> Keyword.delete(:type) |> Keyword.put_new(:name, "web_search")
       )
 
@@ -107,7 +101,7 @@ defmodule BeamWeaver.Anthropic.Tools do
   def web_fetch(opts \\ []),
     do:
       build(
-        Keyword.get(opts, :type, "web_fetch_20260309"),
+        Keyword.get(opts, :type, "web_fetch_20260318"),
         opts |> Keyword.delete(:type) |> Keyword.put_new(:name, "web_fetch")
       )
 
@@ -115,13 +109,21 @@ defmodule BeamWeaver.Anthropic.Tools do
   def code_execution(opts \\ []),
     do:
       build(
-        Keyword.get(opts, :type, "code_execution_20260120"),
+        Keyword.get(opts, :type, "code_execution_20260521"),
         opts |> Keyword.delete(:type) |> Keyword.put_new(:name, "code_execution")
       )
 
   @doc "Builds an advisor server tool."
   def advisor(opts \\ []),
     do: build(Keyword.get(opts, :type, "advisor_20260301"), Keyword.delete(opts, :type))
+
+  @doc "Builds an Anthropic browser toolset."
+  def browser_toolset(opts \\ []),
+    do: build(Keyword.get(opts, :type, "browser_toolset_20260801"), Keyword.delete(opts, :type))
+
+  @doc "Builds an Anthropic computer toolset."
+  def computer_toolset(opts \\ []),
+    do: build(Keyword.get(opts, :type, "computer_toolset_20260801"), Keyword.delete(opts, :type))
 
   @doc "Builds an MCP toolset declaration."
   def mcp_toolset(opts \\ []), do: build("mcp_toolset", opts)
@@ -143,15 +145,8 @@ defmodule BeamWeaver.Anthropic.Tools do
     inferred =
       tools
       |> Enum.flat_map(fn
-        %{"type" => type, "input_examples" => examples}
-        when is_binary(type) and is_list(examples) and examples != [] ->
-          [Map.get(@tool_type_to_beta, type), "advanced-tool-use-2025-11-20"]
-
         %{"type" => type} when is_binary(type) ->
           [Map.get(@tool_type_to_beta, type)]
-
-        %{"input_examples" => examples} when is_list(examples) and examples != [] ->
-          ["advanced-tool-use-2025-11-20"]
 
         _tool ->
           []

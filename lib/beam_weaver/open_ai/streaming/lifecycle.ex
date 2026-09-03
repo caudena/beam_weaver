@@ -7,6 +7,9 @@ defmodule BeamWeaver.OpenAI.Streaming.Lifecycle do
   alias BeamWeaver.OpenAI.Streaming.SSE
 
   @output_item_types [
+    "additional_tools",
+    "computer_call",
+    "computer_call_output",
     "image_generation_call",
     "web_search_call",
     "file_search_call",
@@ -14,12 +17,20 @@ defmodule BeamWeaver.OpenAI.Streaming.Lifecycle do
     "mcp_call",
     "mcp_list_tools",
     "mcp_approval_request",
+    "mcp_approval_response",
     "tool_search_call",
     "tool_search_output",
     "custom_tool_call",
     "apply_patch_call",
     "apply_patch_call_output",
-    "compaction"
+    "compaction",
+    "function_call_output",
+    "local_shell_call",
+    "local_shell_call_output",
+    "program",
+    "program_output",
+    "shell_call",
+    "shell_call_output"
   ]
 
   @output_item_type_set Map.new(@output_item_types, &{&1, true})
@@ -34,6 +45,12 @@ defmodule BeamWeaver.OpenAI.Streaming.Lifecycle do
       do: item_type in @output_item_types
 
   def typed_custom_event?(%{"type" => "response.custom_tool_call_input." <> _suffix}),
+    do: true
+
+  def typed_custom_event?(%{"type" => "response.shell_call_command." <> _suffix}),
+    do: true
+
+  def typed_custom_event?(%{"type" => "response.shell_call_output_content." <> _suffix}),
     do: true
 
   def typed_custom_event?(%{"type" => "response." <> event_name}) do

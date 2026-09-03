@@ -106,6 +106,7 @@ defmodule BeamWeaver.OpenAI.ResponsesTest do
                instructions: "Be brief",
                context_management: [%{type: "summarize", keep: "recent"}],
                max_tool_calls: 2,
+               moderation: %{model: "omni-moderation-latest"},
                previous_response_id: "resp_prev",
                prompt: %{id: "prompt_123", variables: %{name: "Nate"}},
                prompt_cache_key: "cache-key",
@@ -125,6 +126,7 @@ defmodule BeamWeaver.OpenAI.ResponsesTest do
     assert body["instructions"] == "Be brief"
     assert body["context_management"] == [%{"type" => "summarize", "keep" => "recent"}]
     assert body["max_tool_calls"] == 2
+    assert body["moderation"] == %{"model" => "omni-moderation-latest"}
     assert body["previous_response_id"] == "resp_prev"
     assert body["prompt"] == %{"id" => "prompt_123", "variables" => %{"name" => "Nate"}}
     assert body["prompt_cache_key"] == "cache-key"
@@ -140,7 +142,11 @@ defmodule BeamWeaver.OpenAI.ResponsesTest do
   test "GPT-5.6 Responses requests support explicit prompt cache options" do
     assert {:ok, model} =
              Models.init_chat_model("openai:gpt-5.6-sol",
-               prompt_cache_options: %{mode: :explicit, ttl: "30m"},
+               prompt_cache_options: %{
+                 mode: :explicit,
+                 ttl: "30m",
+                 comparison_response_id: "resp_baseline"
+               },
                safety_identifier: "hashed-user-123"
              )
 
@@ -148,7 +154,13 @@ defmodule BeamWeaver.OpenAI.ResponsesTest do
              ChatModel.request_body(model, [Message.user("cached prompt")], prompt_cache_key: "tenant:acme:prompt-v1")
 
     assert body["prompt_cache_key"] == "tenant:acme:prompt-v1"
-    assert body["prompt_cache_options"] == %{"mode" => "explicit", "ttl" => "30m"}
+
+    assert body["prompt_cache_options"] == %{
+             "mode" => "explicit",
+             "ttl" => "30m",
+             "comparison_response_id" => "resp_baseline"
+           }
+
     assert body["safety_identifier"] == "hashed-user-123"
   end
 

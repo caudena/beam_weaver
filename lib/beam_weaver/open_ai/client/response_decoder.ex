@@ -82,6 +82,7 @@ defmodule BeamWeaver.OpenAI.Client.ResponseDecoder do
          "model" => metadata[:model],
          "system_fingerprint" => metadata[:system_fingerprint],
          "service_tier" => metadata[:service_tier],
+         "moderation" => metadata[:moderation],
          "choices" => [
            %{
              "message" => %{

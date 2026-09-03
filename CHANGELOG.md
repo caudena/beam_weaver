@@ -1,5 +1,42 @@
 # Changelog
 
+## 0.1.22 - 2026-09-04
+
+### Added
+
+- Added first-class OpenAI `gpt-6-astra` support with its 1.05M-token context
+  window, 128K output limit, `low`-through-`max` reasoning efforts, Responses
+  tool calling, prompt caching, current Standard/Batch/Flex/Fast pricing, and
+  documented Trusted Access rollout status.
+- Refreshed OpenAI OpenAPI 3.1 response handling with prompt-cache diagnostics,
+  Chat Completions response metadata, audio/image/text token breakdowns,
+  function-output names and namespaces, moderated-response metadata, detailed
+  partial-image frames, and typed shell-output stream events. Both current text
+  APIs now accept OpenAI's first-class `moderation` request configuration.
+- Refreshed the Anthropic Messages contract against the September 1 OpenAPI
+  snapshot: added fallback-credit retries, current web/code tool revisions,
+  browser and computer toolsets, and per-message system clearing/effort.
+
+### Changed
+
+- OpenAI request policy now prefers Responses for Astra, maps Chat Completions
+  output limits correctly, and rejects Astra's unsupported reasoning,
+  sampling, logprob, and Chat Completions tool parameters before transport.
+- OpenAI model profiles no longer advertise `audio`, `modalities`,
+  `frequency_penalty`, or `seed` as top-level Responses API parameters; those
+  fields are absent from the current official `/responses` request schema.
+- Anthropic user-profile attribution now uses the required request header, and
+  automatic beta selection follows the current advisor, profile, fallback,
+  system-message, MCP, and computer-use identifiers without obsolete tool
+  betas.
+
+### Fixed
+
+- Anthropic streaming now retains refusal `stop_details`, cache diagnostics,
+  and final input-transformation overrides. Response normalization exposes
+  context-management, fallback-credit, per-iteration, speed, and server-tool
+  usage metadata for observability.
+
 ## 0.1.21 - 2026-09-02
 
 ### Added

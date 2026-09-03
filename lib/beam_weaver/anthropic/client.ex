@@ -21,6 +21,7 @@ defmodule BeamWeaver.Anthropic.Client do
             api_key: nil,
             anthropic_version: @default_anthropic_version,
             betas: [],
+            user_profile_id: nil,
             default_headers: [],
             transport: nil,
             transport_opts: [],
@@ -36,6 +37,7 @@ defmodule BeamWeaver.Anthropic.Client do
       api_key: Config.option(opts, :api_key, [:anthropic, :api_key]),
       anthropic_version: Keyword.get(opts, :anthropic_version, @default_anthropic_version),
       betas: List.wrap(Keyword.get(opts, :betas, [])),
+      user_profile_id: Keyword.get(opts, :user_profile_id),
       default_headers: Keyword.get(opts, :default_headers, []),
       transport: ProviderOptions.default_transport(Keyword.get(opts, :transport)),
       transport_opts: Keyword.get(opts, :transport_opts, []),
@@ -153,6 +155,7 @@ defmodule BeamWeaver.Anthropic.Client do
     [
       {"anthropic-version", Keyword.get(opts, :anthropic_version, client.anthropic_version)}
     ]
+    |> maybe_put_user_profile_header(Keyword.get(opts, :user_profile_id, client.user_profile_id))
     |> maybe_put_beta_header(betas)
     |> Kernel.++(BeamWeaver.Transport.Request.normalize_headers(client.default_headers))
   end
@@ -161,6 +164,11 @@ defmodule BeamWeaver.Anthropic.Client do
 
   defp maybe_put_beta_header(headers, betas),
     do: [{"anthropic-beta", Enum.join(betas, ",")} | headers]
+
+  defp maybe_put_user_profile_header(headers, nil), do: headers
+
+  defp maybe_put_user_profile_header(headers, user_profile_id),
+    do: [{"anthropic-user-profile-id", to_string(user_profile_id)} | headers]
 
   defp normalize_client(%__MODULE__{} = client, opts), do: override_client(client, opts)
 
@@ -175,6 +183,7 @@ defmodule BeamWeaver.Anthropic.Client do
         api_key: Keyword.get(opts, :api_key, client.api_key),
         anthropic_version: Keyword.get(opts, :anthropic_version, client.anthropic_version),
         betas: List.wrap(Keyword.get(opts, :betas, client.betas)),
+        user_profile_id: Keyword.get(opts, :user_profile_id, client.user_profile_id),
         default_headers: Keyword.get(opts, :default_headers, client.default_headers),
         transport: Keyword.get(opts, :transport, client.transport),
         transport_opts: Keyword.get(opts, :transport_opts, client.transport_opts),

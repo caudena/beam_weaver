@@ -121,7 +121,7 @@ prefixes when a model name is ambiguous.
 
 | Provider | Supported examples |
 | --- | --- |
-| OpenAI | `openai:gpt-5.6-sol`, `openai:gpt-5.6-terra`, `openai:gpt-5.6-luna`, `openai:gpt-5.6`, `openai:gpt-5.5`, `openai:gpt-5.4`, `openai:gpt-5.4-mini`, `openai:gpt-4.1`, `openai:text-embedding-3-large`, `openai:text-embedding-3-small` |
+| OpenAI | `openai:gpt-6-astra`, `openai:gpt-5.6-sol`, `openai:gpt-5.6-terra`, `openai:gpt-5.6-luna`, `openai:gpt-5.6`, `openai:gpt-5.5`, `openai:gpt-5.4`, `openai:gpt-5.4-mini`, `openai:gpt-4.1`, `openai:text-embedding-3-large`, `openai:text-embedding-3-small` |
 | Anthropic | `anthropic:claude-fable-5-1`, `anthropic:claude-mythos-5-1`, `anthropic:claude-opus-5`, `anthropic:claude-sonnet-5`, `anthropic:claude-opus-4-8`, `anthropic:claude-opus-4-7`, `anthropic:claude-opus-4-6`, `anthropic:claude-opus-4-5`, `anthropic:claude-sonnet-4-6`, `anthropic:claude-sonnet-4-5`, `anthropic:claude-haiku-4-5`, `anthropic:claude-fable-5`, `anthropic:claude-mythos-5` |
 | Google Gemini | `google:gemini-3.8-flash`, `google:gemini-3.7-flash`, `google:gemini-3.6-flash`, `google:gemini-3.5-flash`, `google:gemini-3.5-flash-lite`, `google:gemini-3.1-flash-lite`, `google:gemini-3.1-pro-preview`, plus compatible stable Gemini 2.5 IDs |
 | DeepSeek | `deepseek:deepseek-v4-flash`, `deepseek:deepseek-v4-flash-vision-exp`, `deepseek:deepseek-v4-pro` |

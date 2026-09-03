@@ -223,8 +223,20 @@ defmodule BeamWeaver.Anthropic.MessagesTest do
           "ephemeral_5m_input_tokens" => 3,
           "ephemeral_1h_input_tokens" => 4
         },
-        "output_tokens" => 5
-      }
+        "output_tokens" => 5,
+        "speed" => "fast",
+        "server_tool_use" => %{"web_search_requests" => 1},
+        "fallback_credit" => %{"status" => %{"type" => "redeemed"}},
+        "iterations" => [%{"type" => "message", "input_tokens" => 10}]
+      },
+      "diagnostics" => %{"cache_miss_reason" => %{"type" => "model_changed"}},
+      "input_transformations" => [
+        %{
+          "type" => "thinking_dropped",
+          "path" => "messages.1.content.0",
+          "reason" => "model_binding_mismatch"
+        }
+      ]
     }
 
     assert {:ok, %Message{} = message} = Messages.response_to_message(response)
@@ -232,6 +244,10 @@ defmodule BeamWeaver.Anthropic.MessagesTest do
     assert message.status == "tool_use"
     assert message.response_metadata.model_provider == "anthropic"
     assert message.response_metadata.stop_details["category"] == "safety"
+    assert message.response_metadata.diagnostics["cache_miss_reason"]["type"] == "model_changed"
+
+    assert [%{"type" => "thinking_dropped"}] =
+             message.response_metadata.input_transformations
 
     assert message.tool_calls == [
              %ToolCall{
@@ -252,7 +268,11 @@ defmodule BeamWeaver.Anthropic.MessagesTest do
                cache_creation: 7,
                ephemeral_5m_input_tokens: 3,
                ephemeral_1h_input_tokens: 4
-             }
+             },
+             speed: "fast",
+             server_tool_use: %{"web_search_requests" => 1},
+             fallback_credit: %{"status" => %{"type" => "redeemed"}},
+             iterations: [%{"type" => "message", "input_tokens" => 10}]
            }
 
     assert Enum.any?(message.content, &(&1.type == :reasoning))

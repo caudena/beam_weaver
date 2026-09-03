@@ -143,6 +143,7 @@ defmodule BeamWeaver.Anthropic.Streaming do
       |> Map.take(["stop_reason", "stop_details", "stop_sequence", "container"])
       |> Options.reject_nil_values()
       |> maybe_put("context_management", event["context_management"])
+      |> maybe_put("input_transformations", event["input_transformations"])
 
     %{
       state
@@ -210,10 +211,16 @@ defmodule BeamWeaver.Anthropic.Streaming do
   defp put_usage(response, usage) when usage == %{}, do: response
   defp put_usage(response, usage), do: Map.put(response, "usage", usage)
 
-  defp typed_event(%{"type" => "message_start", "message" => %{"model" => model}}, state) do
+  defp typed_event(%{"type" => "message_start", "message" => message}, state)
+       when is_map(message) do
+    metadata =
+      message
+      |> Messages.response_metadata()
+      |> Map.put(:usage_metadata, Messages.usage_metadata(message["usage"]))
+
     {
       [
-        %Events.MessageChunk{chunk: CoreMessages.ai_chunk("", metadata: %{model_name: model})}
+        %Events.MessageChunk{chunk: CoreMessages.ai_chunk("", metadata: metadata)}
       ],
       state
     }
@@ -342,9 +349,11 @@ defmodule BeamWeaver.Anthropic.Streaming do
     response_metadata =
       %{
         stop_reason: get_in(delta || %{}, ["stop_reason"]),
+        stop_details: get_in(delta || %{}, ["stop_details"]),
         stop_sequence: get_in(delta || %{}, ["stop_sequence"]),
         container: get_in(delta || %{}, ["container"]),
-        context_management: event["context_management"]
+        context_management: event["context_management"],
+        input_transformations: event["input_transformations"]
       }
       |> Options.reject_nil_values()
 
@@ -353,7 +362,13 @@ defmodule BeamWeaver.Anthropic.Streaming do
     {
       [
         %Events.MessageChunk{chunk: CoreMessages.ai_chunk("", metadata: metadata)},
-        %Events.Done{result: delta, usage: usage}
+        %Events.Done{
+          result:
+            (delta || %{})
+            |> maybe_put("context_management", event["context_management"])
+            |> maybe_put("input_transformations", event["input_transformations"]),
+          usage: usage
+        }
       ],
       state
     }

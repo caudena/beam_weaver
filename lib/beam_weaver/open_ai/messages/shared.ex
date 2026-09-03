@@ -2,13 +2,23 @@ defmodule BeamWeaver.OpenAI.Messages.Shared do
   @moduledoc false
 
   @output_block_types MapSet.new([
+                        "additional_tools",
                         "reasoning",
+                        "computer_call",
+                        "computer_call_output",
                         "web_search_call",
                         "file_search_call",
                         "code_interpreter_call",
+                        "local_shell_call",
+                        "local_shell_call_output",
+                        "shell_call",
+                        "shell_call_output",
+                        "program",
+                        "program_output",
                         "mcp_call",
                         "mcp_list_tools",
                         "mcp_approval_request",
+                        "mcp_approval_response",
                         "image_generation_call",
                         "tool_search_call",
                         "tool_search_output",
@@ -17,7 +27,8 @@ defmodule BeamWeaver.OpenAI.Messages.Shared do
                         "apply_patch_call",
                         "apply_patch_call_output",
                         "compaction",
-                        "function_call"
+                        "function_call",
+                        "function_call_output"
                       ])
 
   def output_block_type?(type), do: MapSet.member?(@output_block_types, type)

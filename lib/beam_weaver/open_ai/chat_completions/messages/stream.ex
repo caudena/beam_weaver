@@ -51,6 +51,7 @@ defmodule BeamWeaver.OpenAI.ChatCompletions.Messages.Stream do
         |> put_optional(:provider, :openai)
         |> put_optional(:system_fingerprint, data["system_fingerprint"])
         |> put_optional(:service_tier, data["service_tier"])
+        |> put_optional(:moderation, data["moderation"])
         |> put_optional(:token_usage, data["usage"])
         |> put_optional(:logprobs, choice && choice["logprobs"])
 
