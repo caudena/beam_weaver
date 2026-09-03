@@ -72,10 +72,10 @@ The following sections show lower-level direct model-call controls.
 
 ## OpenAI Responses
 
-OpenAI Responses supports `:prompt_cache_key`. GPT-5.6 also supports
-`:prompt_cache_options` and explicit content-block breakpoints. Use
-`prompt_cache_options` for GPT-5.6; OpenAI deprecates
-`prompt_cache_retention` for this model family.
+OpenAI Responses supports `:prompt_cache_key`. GPT-5.6 and later models also
+support `:prompt_cache_options` and explicit content-block breakpoints. Use
+`prompt_cache_options` for these models; OpenAI deprecates
+`prompt_cache_retention` for them.
 
 ```elixir
 alias BeamWeaver.Core.ChatModel
@@ -107,8 +107,8 @@ messages = [
 
 The `prompt_cache_breakpoint` metadata is emitted on the corresponding OpenAI
 `input_text`, `input_image`, or `input_file` part. File and image content blocks
-can also carry `detail` in metadata; GPT-5.6 accepts `detail` on Responses file
-inputs as well as images.
+can also carry `detail` in metadata; GPT-5.6 and later models accept `detail`
+on Responses file inputs as well as images.
 
 When OpenAI reports cache activity, BeamWeaver preserves reads and writes in
 `response.usage_metadata.input_token_details.cache_read` and

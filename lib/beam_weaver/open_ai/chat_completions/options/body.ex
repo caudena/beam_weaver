@@ -56,6 +56,10 @@ defmodule BeamWeaver.OpenAI.ChatCompletions.Options.Body do
           "metadata",
           Options.normalize_option_map(option(model, opts, :metadata))
         )
+        |> Options.put_optional(
+          "moderation",
+          Options.normalize_option_map(option(model, opts, :moderation))
+        )
         |> Options.put_optional("user", option(model, opts, :user))
         |> Options.put_optional(
           "service_tier",

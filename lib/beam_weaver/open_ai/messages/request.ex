@@ -87,7 +87,9 @@ defmodule BeamWeaver.OpenAI.Messages.Request do
          "type" => "function_call_output",
          "call_id" => call_id,
          "output" => tool_output(message.content)
-       }}
+       }
+       |> Shared.put_optional("name", message.name)
+       |> Shared.put_optional("namespace", message_metadata(message, :namespace))}
     else
       {:error, Error.new(:invalid_tool_message, "tool messages require a tool_call_id or id")}
     end
@@ -115,6 +117,12 @@ defmodule BeamWeaver.OpenAI.Messages.Request do
   defp to_response_input(_message, _opts) do
     {:error, Error.new(:invalid_message, "expected a BeamWeaver message")}
   end
+
+  defp message_metadata(%Message{metadata: metadata}, key) when is_map(metadata) do
+    Map.get(metadata, key) || Map.get(metadata, Atom.to_string(key))
+  end
+
+  defp message_metadata(_message, _key), do: nil
 
   defp tool_output(content) when is_binary(content), do: content
 

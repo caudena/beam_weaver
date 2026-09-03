@@ -6,6 +6,105 @@ defmodule BeamWeaver.Models.ProfileRegistry.OpenAI do
   alias BeamWeaver.Models.ProfileRegistry.Params
 
   @pricing_source_url "https://developers.openai.com/api/docs/pricing"
+  @astra_source_url "https://developers.openai.com/api/docs/models/gpt-6-astra"
+
+  @astra_responses_params Params.responses() --
+                            [
+                              :prompt_cache_retention,
+                              :temperature,
+                              :top_logprobs,
+                              :top_p
+                            ]
+
+  @astra_chat_completions_params Params.chat_completions() --
+                                   [
+                                     :audio,
+                                     :function_call,
+                                     :functions,
+                                     :logprobs,
+                                     :modalities,
+                                     :parallel_tool_calls,
+                                     :prompt_cache_retention,
+                                     :temperature,
+                                     :tool_choice,
+                                     :tools,
+                                     :top_logprobs,
+                                     :top_p,
+                                     :web_search_options
+                                   ]
+
+  @openai_astra_profile Profile.new(%{
+                          provider: :openai,
+                          id: "gpt-6-astra",
+                          name: "GPT-6 Astra",
+                          status: :active,
+                          release_date: "2026-09-04",
+                          last_updated: "2026-09-04",
+                          responses_api: true,
+                          chat_completions_api: true,
+                          tool_calling: true,
+                          tool_call_streaming: true,
+                          tool_choice: true,
+                          parallel_tool_calls: true,
+                          structured_output: true,
+                          streaming: true,
+                          usage_metadata: true,
+                          supported_params: @astra_responses_params,
+                          supported_params_by_api: %{
+                            responses: @astra_responses_params,
+                            chat_completions: @astra_chat_completions_params
+                          },
+                          max_input_tokens: 1_050_000,
+                          max_output_tokens: 128_000,
+                          image_inputs: true,
+                          image_url_inputs: true,
+                          image_tool_message: true,
+                          audio_inputs: false,
+                          video_inputs: false,
+                          reasoning_output: true,
+                          temperature: false,
+                          tokenizer: :o200k_base,
+                          extra: %{
+                            frontier: true,
+                            availability: :trusted_access_rollout,
+                            knowledge_cutoff: "2026-04-30",
+                            input_price_per_mtok: 10.00,
+                            cached_input_price_per_mtok: 1.00,
+                            cache_write_30m_price_per_mtok: 12.50,
+                            output_price_per_mtok: 50.00,
+                            cost_currency: "USD",
+                            pricing_source_url: @astra_source_url,
+                            higher_context_pricing_threshold_tokens: 272_000,
+                            higher_context_input_multiplier: 2.0,
+                            higher_context_output_multiplier: 1.5,
+                            pricing_modes: [:standard, :batch, :flex, :fast, :priority],
+                            batch_price_multiplier: 0.5,
+                            flex_price_multiplier: 0.5,
+                            fast_mode_price_multiplier: 2.0,
+                            fast_mode_service_tiers: [:fast, :priority],
+                            fast_mode_eu_data_residency: false,
+                            reasoning_efforts: [:low, :medium, :high, :xhigh, :max],
+                            unsupported_reasoning_efforts: [:none, :minimal],
+                            reasoning_modes: [:standard, :pro],
+                            persisted_reasoning_contexts: [:auto, :current_turn, :all_turns],
+                            prompt_cache_modes: [:implicit, :explicit],
+                            prompt_cache_ttl: "30m",
+                            prompt_cache_write_multiplier: 1.25,
+                            prompt_cache_read_discount_rate: 0.90,
+                            chat_completions_tool_calling: false,
+                            provider_capabilities: [
+                              :async_tool_calling,
+                              :computer_use,
+                              :configuration_updates,
+                              :explicit_prompt_caching,
+                              :mid_turn_steering,
+                              :multi_agent_beta,
+                              :persisted_reasoning,
+                              :pro_reasoning_mode,
+                              :programmatic_tool_calling
+                            ]
+                          }
+                        })
 
   @openai_5_6_specs [
     %{
@@ -130,7 +229,8 @@ defmodule BeamWeaver.Models.ProfileRegistry.OpenAI do
   ]
 
   @openai_frontier_ids MapSet.new(
-                         Enum.map(@openai_5_6_specs, & &1.id) ++
+                         [@openai_astra_profile.id] ++
+                           Enum.map(@openai_5_6_specs, & &1.id) ++
                            Enum.map(@openai_frontier_specs, & &1.id)
                        )
 
@@ -327,7 +427,8 @@ defmodule BeamWeaver.Models.ProfileRegistry.OpenAI do
     "o3" => "gpt-5"
   }
 
-  @profiles @openai_5_6_profiles
+  @profiles %{{:openai, @openai_astra_profile.id} => @openai_astra_profile}
+            |> Map.merge(@openai_5_6_profiles)
             |> Map.merge(@openai_frontier_profiles)
             |> Map.merge(%{
               {:openai, "text-embedding-3-small"} =>

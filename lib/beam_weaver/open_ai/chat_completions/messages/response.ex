@@ -48,6 +48,8 @@ defmodule BeamWeaver.OpenAI.ChatCompletions.Messages.Response do
       finish_reason: choice["finish_reason"],
       system_fingerprint: response["system_fingerprint"],
       service_tier: response["service_tier"],
+      provider_metadata: response["metadata"],
+      moderation: response["moderation"],
       logprobs: choice["logprobs"],
       audio: message["audio"],
       headers: header_metadata[:headers],
@@ -140,6 +142,9 @@ defmodule BeamWeaver.OpenAI.ChatCompletions.Messages.Response do
         %{
           cache_read: details["cached_tokens"],
           cache_write: details["cache_write_tokens"],
+          audio: details["audio_tokens"],
+          image: details["image_tokens"],
+          text: details["text_tokens"],
           flex: details["flex"]
         }
         |> BeamWeaver.MapShape.reject_nil_or_empty()
@@ -156,6 +161,9 @@ defmodule BeamWeaver.OpenAI.ChatCompletions.Messages.Response do
           reasoning: details["reasoning_tokens"],
           accepted_prediction: details["accepted_prediction_tokens"],
           rejected_prediction: details["rejected_prediction_tokens"],
+          audio: details["audio_tokens"],
+          image: details["image_tokens"],
+          text: details["text_tokens"],
           flex: details["flex"],
           flex_reasoning: details["flex_reasoning"]
         }

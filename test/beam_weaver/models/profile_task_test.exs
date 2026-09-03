@@ -16,6 +16,7 @@ defmodule BeamWeaver.Models.ProfileTaskTest do
     Mix.Task.rerun("beam_weaver.models.profiles", ["--provider", "openai"])
 
     assert_receive {:mix_shell, :info, [output]}
+    assert output =~ "openai:gpt-6-astra"
     assert output =~ "openai:gpt-5.5"
     refute output =~ "fake:chat"
   end

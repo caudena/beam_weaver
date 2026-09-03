@@ -229,16 +229,16 @@ defmodule BeamWeaver.Anthropic.ChatModelTest do
     assert body["service_tier"] == "auto"
     assert body["diagnostics"] == %{"trace" => true}
     assert body["speed"] == "standard"
-    assert body["user_profile_id"] == "profile_123"
-    assert body["tools"] == [%{"type" => "web_fetch_20260309", "name" => "web_fetch"}]
+    refute Map.has_key?(body, "user_profile_id")
+    assert body["tools"] == [%{"type" => "web_fetch_20260318", "name" => "web_fetch"}]
     assert body["tool_choice"] == %{"type" => "auto", "disable_parallel_tool_use" => true}
     assert body["output_config"]["effort"] == "medium"
     assert body["output_config"]["format"]["type"] == "json_schema"
-    assert "web-fetch-2026-03-09" in body["betas"]
     assert "mcp-client-2025-11-20" in body["betas"]
+    assert "user-profiles-2026-08-18" in body["betas"]
   end
 
-  test "inferred betas are sent as the anthropic-beta header, not in the request body" do
+  test "user profile attribution and inferred betas are sent as headers, not body fields" do
     model =
       ChatModel.new(
         model: "claude-sonnet-4-5",
@@ -258,18 +258,22 @@ defmodule BeamWeaver.Anthropic.ChatModelTest do
       )
 
     assert {:ok, %Message{}} =
-             CoreChatModel.invoke(model, [Message.user("go")], tools: [Tools.web_fetch()])
+             CoreChatModel.invoke(model, [Message.user("go")], user_profile_id: "profile_123")
 
     assert_received {:fake_transport_request, request}
 
-    # The inferred beta is enabled via the anthropic-beta header...
+    assert {"anthropic-user-profile-id", "profile_123"} in request.headers
+
     assert Enum.any?(request.headers, fn
-             {"anthropic-beta", value} -> String.contains?(value, "web-fetch-2026-03-09")
-             _ -> false
+             {"anthropic-beta", value} ->
+               String.contains?(value, "user-profiles-2026-08-18")
+
+             _ ->
+               false
            end)
 
-    # ...and is no longer left in the JSON body, where Anthropic would ignore it.
     refute Map.has_key?(request.json, "betas")
+    refute Map.has_key?(request.json, "user_profile_id")
   end
 
   test "explicit container and count-token-only options match Anthropic schema" do
@@ -418,10 +422,13 @@ defmodule BeamWeaver.Anthropic.ChatModelTest do
       Message.user("Review module A."),
       Message.assistant("Module A looks good."),
       Message.user("Now review module B."),
-      Message.system([
-        %{type: :text, text: "Use the new security checklist."},
-        %{type: :tool_addition, name: "security_scan"}
-      ])
+      Message.system(
+        [
+          %{type: :text, text: "Use the new security checklist."},
+          %{type: :tool_addition, name: "security_scan"}
+        ],
+        metadata: %{clear_at: :next_user_message, output_config: %{effort: :max}}
+      )
     ]
 
     assert {:ok, body} =
@@ -429,6 +436,8 @@ defmodule BeamWeaver.Anthropic.ChatModelTest do
 
     assert body["system"] == "Review code carefully."
     assert List.last(body["messages"])["role"] == "system"
+    assert List.last(body["messages"])["clear_at"] == "next_user_message"
+    assert List.last(body["messages"])["output_config"] == %{"effort" => "max"}
 
     assert List.last(body["messages"])["content"] |> List.last() == %{
              "type" => "tool_addition",
@@ -440,6 +449,8 @@ defmodule BeamWeaver.Anthropic.ChatModelTest do
 
     assert body["fallbacks"] == "default"
     assert "mid-conversation-tool-changes-2026-07-01" in body["betas"]
+    assert "mid-conversation-system-clear-at-2026-08-21" in body["betas"]
+    assert "mid-conversation-output-config-2026-07-01" in body["betas"]
     assert "server-side-fallback-2026-07-01" in body["betas"]
 
     assert {:ok, explicit_fallback_body} =
@@ -452,6 +463,48 @@ defmodule BeamWeaver.Anthropic.ChatModelTest do
            ]
 
     assert "server-side-fallback-2026-06-01" in explicit_fallback_body["betas"]
+  end
+
+  test "fallback credit supports strict and best-effort retries without conflicting fallbacks" do
+    model = ChatModel.new(model: "claude-fable-5-1")
+    messages = [Message.user("Complete this"), Message.assistant("Partial answer")]
+
+    assert {:ok, string_body} =
+             ChatModel.request_body(model, messages, fallback_credit_token: "credit-token")
+
+    assert string_body["fallback_credit_token"] == "credit-token"
+    assert "fallback-credit-2026-07-01" in string_body["betas"]
+
+    assert {:ok, object_body} =
+             ChatModel.request_body(model, messages,
+               fallback_credit_token: %{token: "credit-token", mode: :best_effort}
+             )
+
+    assert object_body["fallback_credit_token"] == %{
+             "token" => "credit-token",
+             "mode" => "best_effort"
+           }
+
+    assert {:error, conflict} =
+             ChatModel.request_body(model, [Message.user("Retry")],
+               fallback_credit_token: "credit-token",
+               fallbacks: :default
+             )
+
+    assert conflict.details.params == [:fallback_credit_token, :fallbacks]
+
+    assert {:error, invalid_object} =
+             ChatModel.request_body(model, [Message.user("Retry")], fallback_credit_token: %{mode: :best_effort})
+
+    assert invalid_object.details.params == [:fallback_credit_token]
+
+    assert {:error, incompatible_prefill} =
+             ChatModel.request_body(model, messages,
+               fallback_credit_token: "credit-token",
+               response_format: %{schema: %{type: :object}}
+             )
+
+    assert incompatible_prefill.type == :invalid_message
   end
 
   test "Claude Opus 5 rejects unsupported sampling controls and web fetch" do

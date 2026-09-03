@@ -13,7 +13,11 @@ defmodule BeamWeaver.OpenAI.MessagesTest do
     messages = [
       Message.system("stay brief"),
       Message.user([%{type: :text, text: "hello"}]),
-      Message.tool("42", tool_call_id: "call_weather")
+      Message.tool("42",
+        tool_call_id: "call_weather",
+        name: "weather",
+        metadata: %{namespace: "forecast"}
+      )
     ]
 
     assert {:ok, input} = Messages.to_responses_input(messages)
@@ -28,6 +32,8 @@ defmodule BeamWeaver.OpenAI.MessagesTest do
              %{
                "type" => "function_call_output",
                "call_id" => "call_weather",
+               "name" => "weather",
+               "namespace" => "forecast",
                "output" => "42"
              }
            ]
@@ -733,6 +739,9 @@ defmodule BeamWeaver.OpenAI.MessagesTest do
                  "input_tokens_details" => %{
                    "cached_tokens" => 50,
                    "cache_write_tokens" => 25,
+                   "audio_tokens" => 3,
+                   "image_tokens" => 7,
+                   "text_tokens" => 65,
                    "flex" => 100
                  },
                  "output_tokens" => 50,
@@ -740,6 +749,9 @@ defmodule BeamWeaver.OpenAI.MessagesTest do
                    "reasoning_tokens" => 10,
                    "accepted_prediction_tokens" => 4,
                    "rejected_prediction_tokens" => 2,
+                   "audio_tokens" => 5,
+                   "image_tokens" => 6,
+                   "text_tokens" => 29,
                    "flex" => 40,
                    "flex_reasoning" => 10
                  },
@@ -751,11 +763,21 @@ defmodule BeamWeaver.OpenAI.MessagesTest do
              input_tokens: 100,
              output_tokens: 50,
              total_tokens: 0,
-             input_token_details: %{cache_read: 50, cache_write: 25, flex: 100},
+             input_token_details: %{
+               cache_read: 50,
+               cache_write: 25,
+               audio: 3,
+               image: 7,
+               text: 65,
+               flex: 100
+             },
              output_token_details: %{
                reasoning: 10,
                accepted_prediction: 4,
                rejected_prediction: 2,
+               audio: 5,
+               image: 6,
+               text: 29,
                flex: 40,
                flex_reasoning: 10
              }
@@ -769,6 +791,15 @@ defmodule BeamWeaver.OpenAI.MessagesTest do
       "id" => "resp_123",
       "model" => "gpt-5.4",
       "metadata" => %{"trace" => "abc"},
+      "prompt_cache_diagnostics" => %{
+        "type" => "cache_miss",
+        "reason" => "input_changed",
+        "cache_missed_tokens" => 4_096
+      },
+      "moderation" => %{
+        "input" => %{"type" => "results", "results" => []},
+        "output" => %{"type" => "results", "results" => []}
+      },
       "incomplete_details" => %{"reason" => "max_output_tokens"},
       "status" => "completed",
       "output" => [
@@ -837,6 +868,15 @@ defmodule BeamWeaver.OpenAI.MessagesTest do
            ] = message.content
 
     assert message.metadata.provider_metadata == %{"trace" => "abc"}
+
+    assert message.metadata.prompt_cache_diagnostics == %{
+             "type" => "cache_miss",
+             "reason" => "input_changed",
+             "cache_missed_tokens" => 4_096
+           }
+
+    assert message.metadata.moderation == response["moderation"]
+
     assert message.metadata.incomplete_details == %{"reason" => "max_output_tokens"}
     assert message.metadata.status == "completed"
 
@@ -961,6 +1001,20 @@ defmodule BeamWeaver.OpenAI.MessagesTest do
           "results" => [%{"file_id" => "file-123"}],
           "status" => "completed"
         },
+        %{
+          "type" => "shell_call",
+          "id" => "shell_123",
+          "call_id" => "call_shell",
+          "action" => %{"commands" => ["pwd"]},
+          "status" => "completed"
+        },
+        %{
+          "type" => "program",
+          "id" => "program_123",
+          "call_id" => "call_program",
+          "code" => "return tools.lookup({});",
+          "fingerprint" => "fp_program"
+        },
         %{"type" => "something_else", "foo" => "bar"}
       ]
     }
@@ -1006,6 +1060,26 @@ defmodule BeamWeaver.OpenAI.MessagesTest do
                queries: ["query for file search"],
                results: [%{"file_id" => "file-123"}],
                status: "completed"
+             },
+             %ContentBlock.Unknown{
+               provider_type: "shell_call",
+               value: %{
+                 type: "shell_call",
+                 id: "shell_123",
+                 call_id: "call_shell",
+                 action: %{"commands" => ["pwd"]},
+                 status: "completed"
+               }
+             },
+             %ContentBlock.Unknown{
+               provider_type: "program",
+               value: %{
+                 type: "program",
+                 id: "program_123",
+                 call_id: "call_program",
+                 code: "return tools.lookup({});",
+                 fingerprint: "fp_program"
+               }
              }
            ] = message.content
 

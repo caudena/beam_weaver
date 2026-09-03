@@ -35,6 +35,7 @@ defmodule BeamWeaver.OpenAI.ChatCompletionsModel do
             seed: nil,
             parallel_tool_calls: nil,
             metadata: nil,
+            moderation: nil,
             user: nil,
             service_tier: nil,
             prompt_cache_key: nil,

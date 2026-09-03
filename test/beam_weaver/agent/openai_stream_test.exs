@@ -129,6 +129,7 @@ defmodule BeamWeaver.Agent.OpenAIStreamTest do
         %{
           "type" => "function_call_output",
           "call_id" => "call_weather",
+          "name" => "get_weather",
           "output" => "It's sunny."
         }
       ],

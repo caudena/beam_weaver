@@ -61,6 +61,16 @@ defmodule BeamWeaver.OpenAI.ChatModelTest do
     sol = ChatModel.new(model: "gpt-5.6-sol")
     assert %Profile{provider: :openai, id: "gpt-5.6-sol"} = sol.profile
 
+    astra = ChatModel.new(model: "gpt-6-astra")
+    assert %Profile{provider: :openai, id: "gpt-6-astra"} = astra.profile
+    assert astra.profile.max_input_tokens == 1_050_000
+    assert astra.profile.max_output_tokens == 128_000
+    assert astra.profile.extra.reasoning_efforts == [:low, :medium, :high, :xhigh, :max]
+    assert astra.profile.extra.chat_completions_tool_calling == false
+
+    assert {:ok, %ChatModel{model: "gpt-6-astra"}} =
+             Models.init_chat_model("openai:gpt-6-astra")
+
     alias_model = ChatModel.new(model: "gpt-5.6")
     assert alias_model.profile.id == "gpt-5.6"
 
@@ -125,6 +135,7 @@ defmodule BeamWeaver.OpenAI.ChatModelTest do
 
   test "model policy records OpenAI Responses-preferred families" do
     for model <- [
+          "gpt-6-astra",
           "gpt-5.6",
           "gpt-5.6-sol",
           "gpt-5.6-terra",
@@ -618,6 +629,23 @@ defmodule BeamWeaver.OpenAI.ChatModelTest do
     assert body["service_tier"] == "fast"
   end
 
+  test "known OpenAI profiles reject fields outside the current Responses schema" do
+    model = ChatModel.new(model: "gpt-5.4")
+
+    for {param, value} <- [
+          audio: %{voice: "alloy"},
+          frequency_penalty: 0.2,
+          modalities: ["text"],
+          seed: 42
+        ] do
+      assert {:error, error} =
+               ChatModel.request_body(model, [Message.user("invalid")], [{param, value}])
+
+      assert error.type == :unsupported_model_param
+      assert error.details.params == [param]
+    end
+  end
+
   test "Responses request builder applies store false replay sanitization before extra body merge" do
     model = ChatModel.new(model: "gpt-5.5")
 
@@ -764,6 +792,48 @@ defmodule BeamWeaver.OpenAI.ChatModelTest do
              "mode" => "pro",
              "context" => "all_turns"
            }
+  end
+
+  test "GPT-6 Astra Responses requests enforce documented reasoning and parameter constraints" do
+    model = ChatModel.new(model: "gpt-6-astra")
+
+    assert {:ok, body} =
+             ChatModel.request_body(model, [Message.user("solve this")],
+               reasoning: %{effort: :max, mode: :pro},
+               max_tokens: 4_096,
+               prompt_cache_options: %{mode: :explicit, ttl: "30m"}
+             )
+
+    assert body["model"] == "gpt-6-astra"
+    assert body["reasoning"] == %{"effort" => "max", "mode" => "pro"}
+    assert body["max_output_tokens"] == 4_096
+    assert body["prompt_cache_options"] == %{"mode" => "explicit", "ttl" => "30m"}
+
+    for {param, value} <- [
+          temperature: 0.2,
+          top_p: 0.8,
+          top_logprobs: 2,
+          modalities: ["audio"]
+        ] do
+      assert {:error, error} =
+               ChatModel.request_body(model, [Message.user("invalid")], [{param, value}])
+
+      assert error.type == :unsupported_model_param
+      assert error.details.params == [param]
+    end
+
+    for effort <- [:none, :minimal] do
+      assert {:error, error} =
+               ChatModel.request_body(model, [Message.user("invalid")], reasoning_effort: effort)
+
+      assert error.type == :invalid_model_option
+      assert error.details.reasoning_effort == to_string(effort)
+    end
+
+    assert {:error, include_error} =
+             ChatModel.request_body(model, [Message.user("invalid")], include: ["message.output_text.logprobs"])
+
+    assert include_error.type == :invalid_model_option
   end
 
   test "structured output verbosity is merged into the Responses API text options" do

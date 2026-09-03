@@ -64,6 +64,9 @@ defmodule BeamWeaver.OpenAI.Messages.Response do
         %{
           cache_read: details["cached_tokens"],
           cache_write: details["cache_write_tokens"],
+          audio: details["audio_tokens"],
+          image: details["image_tokens"],
+          text: details["text_tokens"],
           flex: details["flex"]
         }
         |> BeamWeaver.MapShape.reject_nil_or_empty()
@@ -80,6 +83,9 @@ defmodule BeamWeaver.OpenAI.Messages.Response do
           reasoning: details["reasoning_tokens"],
           accepted_prediction: details["accepted_prediction_tokens"],
           rejected_prediction: details["rejected_prediction_tokens"],
+          audio: details["audio_tokens"],
+          image: details["image_tokens"],
+          text: details["text_tokens"],
           flex: details["flex"],
           flex_reasoning: details["flex_reasoning"]
         }
@@ -287,6 +293,14 @@ defmodule BeamWeaver.OpenAI.Messages.Response do
       result: item["result"],
       action: item["action"],
       input: item["input"],
+      call_id: item["call_id"],
+      caller: item["caller"],
+      code: item["code"],
+      created_by: item["created_by"],
+      fingerprint: item["fingerprint"],
+      max_output_length: item["max_output_length"],
+      name: item["name"],
+      namespace: item["namespace"],
       patch: item["patch"],
       output: item["output"],
       error: item["error"],
@@ -429,6 +443,8 @@ defmodule BeamWeaver.OpenAI.Messages.Response do
       headers: header_metadata[:headers],
       transport: transport_metadata(header_metadata),
       provider_metadata: response["metadata"],
+      moderation: response["moderation"],
+      prompt_cache_diagnostics: response["prompt_cache_diagnostics"],
       incomplete_details: response["incomplete_details"],
       status: response["status"],
       user: response["user"],

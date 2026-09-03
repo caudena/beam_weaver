@@ -3,6 +3,9 @@
 The first OpenAI slices target non-Azure OpenAI paths used by the pinned
 LangChain OpenAI package.
 
+The wire contract was last compared on September 4, 2026 against
+[`openai-openapi` commit `cf79040`](https://github.com/openai/openai-openapi/commit/cf79040afd73deda323d2cc869199d4f463bd7ad).
+
 ## Implemented
 
 - `BeamWeaver.OpenAI.ChatModel` implements `BeamWeaver.Core.ChatModel`.
@@ -24,13 +27,15 @@ LangChain OpenAI package.
   keywords are removed before request rendering.
 - Responses API request options include reasoning, include, previous response
   IDs, raw input items, tool choice, truncation, text verbosity, context
-  management, audio/modalities, metadata, service tier, store, model kwargs, and
-  common sampling controls.
+  management, metadata, service tier, store, model kwargs, and supported
+  sampling controls.
 - Opt-in `include_response_headers` preserves normalized transport response
   headers on assistant message metadata for sync and Task-backed async chat
   calls.
 - Responses API JSON results become assistant messages with text, function tool
   calls, and preserved built-in output blocks.
+- Responses and Chat Completions accept the provider's `moderation` request
+  configuration and expose returned moderation results in response metadata.
 - Structured output responses are JSON-decoded into message metadata, and caller
   parser/validator failures return an OpenAI error with the assistant response
   attached for debugging.
@@ -51,6 +56,10 @@ LangChain OpenAI package.
 - Responses API output parsing preserves `apply_patch_call` and
   `apply_patch_call_output` items as provider-scoped content blocks so cached or
   streamed turns can be replayed without losing patch metadata.
+- Current OpenAPI output items such as local/hosted shell calls, programmatic
+  tool calls, computer calls, function outputs, and additional tools are
+  retained as provider-scoped content blocks. Shell lifecycle frames are also
+  exposed as typed custom stream events.
 - Embeddings support document/query calls, dimensions, caller chunk size,
   Task-backed async calls, and opt-in `skip_empty` handling.
 - Responses API and chat-completions SSE bodies are parsed into text deltas.
@@ -90,19 +99,53 @@ LangChain OpenAI package.
   turns can send it back unchanged.
 - Phase-tagged output text preserves `phase` metadata for commentary and final
   answer blocks, including streamed lifecycle events.
-- Audio input blocks are converted to OpenAI `input_audio` request parts, audio
-  output parts are preserved as message content blocks and metadata, and audio
-  output modality options can be sent through the Responses request body.
-- GPT-5-family request controls follow OpenAI constraints: `max_tokens` and
-  `max_completion_tokens` map to Responses `max_output_tokens`, and temperature
-  is omitted for GPT-5 models unless reasoning effort is `none`.
+- Chat Completions audio input blocks are converted to OpenAI `input_audio`
+  content parts, and audio output parts are preserved as message content blocks
+  and metadata. The current Responses request schema exposes neither
+  `input_audio` content nor top-level `audio` or `modalities` controls, so
+  current OpenAI Responses profiles do not advertise them.
+- Current OpenAI reasoning-model request controls follow provider constraints:
+  `max_tokens` and `max_completion_tokens` map to Responses
+  `max_output_tokens`, and temperature is omitted for GPT-5 models unless
+  reasoning effort is `none`. Astra rejects temperature and the other
+  unsupported sampling and logprob controls before transport.
 - GPT-5.6 requests support `prompt_cache_options`, explicit cache breakpoints on
   content parts, Responses file `detail`, normalized cache-write usage, and a
   model-level `safety_identifier`.
 - GPT-5.6 Chat Completions function tools are rejected before transport unless
   the effective reasoning effort is `none`; reasoning plus tools uses Responses.
+- GPT-6 Astra supports tool-free Chat Completions, but tool calling is rejected
+  there before transport and directed to Responses. Its reasoning effort must
+  be `low`, `medium`, `high`, `xhigh`, or `max`.
 - Replay-backed provider tests cover the OpenAI cassette shapes that map to
   BeamWeaver's Responses-oriented chat model.
+
+## GPT-6 Astra Profile
+
+BeamWeaver includes `gpt-6-astra` as a first-class OpenAI profile. It exposes a
+1.05M-token context window, 128K maximum output, text and image input, Responses
+and tool-free Chat Completions, function calling through Responses, structured
+output, streaming, prompt caching, persisted reasoning, and pro reasoning mode.
+The profile records OpenAI's current Trusted Access rollout rather than implying
+general availability.
+
+Current prices per million tokens are $10.00 input, $1.00 cached input, $12.50
+cache write, and $50.00 output. Requests above 272K input tokens use 2x input
+and cache rates and 1.5x output for the full request. Batch and Flex cost half
+the Standard rate, while Fast costs twice the applicable rate. Fast is not
+available for Astra with EU data residency. See the
+[GPT-6 Astra model page](https://developers.openai.com/api/docs/models/gpt-6-astra).
+
+```elixir
+BeamWeaver.Models.init_chat_model!("openai:gpt-6-astra",
+  reasoning: %{effort: :high},
+  prompt_cache_options: %{mode: :explicit, ttl: "30m"}
+)
+```
+
+Astra does not accept `none` or `minimal` reasoning, `temperature`, `top_p`, or
+`top_logprobs`; Chat Completions also rejects `logprobs`. Responses `include`
+cannot request `message.output_text.logprobs`.
 
 ## GPT-5.6 Profiles
 
@@ -156,6 +199,9 @@ BeamWeaver.Models.init_chat_model!("openai:gpt-5.6",
 Mark the desired text, image, or file content block with
 `metadata.prompt_cache_breakpoint`. Cache reads and writes are normalized to
 `usage_metadata.input_token_details.cache_read` and `cache_write`.
+Supplying `comparison_response_id` inside `prompt_cache_options` is passed
+through, and returned diagnostics are available at
+`message.response_metadata.prompt_cache_diagnostics`.
 
 On Chat Completions, GPT-5.6 function tools require
 `reasoning_effort: :none`. BeamWeaver returns `:invalid_model_option` before
@@ -270,7 +316,8 @@ mix run examples/openai_apply_patch_tool.exs
   APIs.
 - Callback/client wrapper behavior outside the Task-backed async public APIs.
 - Audio API surfaces beyond the current chat audio request/response shape.
-- GPT-5.6 programmatic tool calling and OpenAI-hosted multi-agent orchestration.
+- GPT-5.6/Astra programmatic tool calling, Astra async tool calling and mid-turn
+  steering, and OpenAI-hosted multi-agent orchestration.
 - LangChain v3 protocol edge cases outside the current Responses message
   conversion layer.
 - WeaveScope exporter behavior beyond the native BeamWeaver trace payload

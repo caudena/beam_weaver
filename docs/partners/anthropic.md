@@ -42,7 +42,9 @@ BeamWeaver includes a direct Anthropic Messages API provider under
 - Request builders include Anthropic spec fields such as `:cache_control`,
   `:container`, `:metadata`, `:service_tier`, `:diagnostics`, `:speed`,
   `:user_profile_id`, `:inference_geo`, `:context_management`, `:mcp_servers`,
-  `:fallbacks`, `:thinking`, and `:output_config`.
+  `:fallbacks`, `:fallback_credit_token`, `:thinking`, and `:output_config`.
+  User-profile attribution is sent as the `anthropic-user-profile-id` header,
+  never as a JSON request field.
 - Claude Opus 5, Claude Sonnet 5, Claude Opus 4.7, and later models follow
   Anthropic's current request restrictions: non-`1.0` `:temperature`, any
   `:top_k`, `:top_p` below `0.99`, and non-adaptive enabled `:thinking` fail
@@ -55,7 +57,10 @@ BeamWeaver includes a direct Anthropic Messages API provider under
   thinking. BeamWeaver rejects disabled thinking and forced `:any` or named
   tool choices before both Messages and count-tokens requests; `:auto` and
   `:none` remain supported.
-- Fable 5.1 and Mythos 5.1 do not support final assistant-message prefills.
+- Fable 5.1 and Mythos 5.1 do not normally support final assistant-message
+  prefills. A refusal's `fallback_credit_token` can authorize the documented
+  partial-response continuation form when structured output and forced tool
+  choice are not active.
   Their thinking blocks are bound to the exact conversation prefix and must be
   replayed append-only; earlier Claude models cannot consume them. Applications
   that intentionally edit history can use the
@@ -71,8 +76,13 @@ BeamWeaver includes a direct Anthropic Messages API provider under
   million cache-read tokens, alongside current standard, cache-write, and batch
   pricing metadata.
 - Opus 5 supports mid-conversation system messages and beta tool-change blocks.
-  BeamWeaver infers the tool-change beta header. Server-side fallbacks accept
-  either a model list or `:default`, with the matching beta header inferred.
+  Such system messages can carry `clear_at` and per-turn `output_config.effort`
+  in message metadata. BeamWeaver infers the corresponding beta headers.
+  Server-side fallbacks accept either a model list or `:default`, with the
+  matching beta header inferred.
+- Server-tool helpers default to Anthropic's current schema revisions for web
+  search/fetch and code execution. Browser and computer toolsets are available
+  through `Tools.browser_toolset/1` and `Tools.computer_toolset/1`.
 - Anthropic does not expose web fetch or Priority Tier on Opus 5. BeamWeaver
   rejects `BeamWeaver.Anthropic.Tools.web_fetch/1` for that profile before
   transport.
@@ -119,6 +129,18 @@ recommended fallback:
 ```elixir
 BeamWeaver.Core.ChatModel.invoke(model, messages, fallbacks: :default)
 ```
+
+To retry an eligible refusal while preserving Anthropic's cache credit, pass
+the short-lived token returned in `message.response_metadata.stop_details`:
+
+```elixir
+BeamWeaver.Core.ChatModel.invoke(fallback_model, retry_messages,
+  fallback_credit_token: stop_details["fallback_credit_token"]
+)
+```
+
+Use `%{token: token, mode: :best_effort}` for the current object form. A
+fallback-credit token cannot be combined with `:fallbacks`.
 
 Use `BeamWeaver.Anthropic.Tools.web_fetch/1` only with a model whose Anthropic
 feature matrix includes web fetch; Opus 5 does not.

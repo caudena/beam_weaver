@@ -30,6 +30,7 @@
         },
         {
           "call_id": "call_weather_paris",
+          "name": "get_weather",
           "output": "{\"condition\":\"clear\",\"temperature\":\"18C\"}",
           "type": "function_call_output"
         }

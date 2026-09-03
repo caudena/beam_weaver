@@ -3,6 +3,7 @@ defmodule BeamWeaver.OpenAI.ChatModel.RequestBuilder do
 
   alias BeamWeaver.Models.ParamPolicy
   alias BeamWeaver.OpenAI.ChatModel.StructuredOutput
+  alias BeamWeaver.OpenAI.Error
   alias BeamWeaver.OpenAI.Messages
   alias BeamWeaver.OpenAI.ModelPolicy
   alias BeamWeaver.OpenAI.ToolCalling
@@ -14,6 +15,7 @@ defmodule BeamWeaver.OpenAI.ChatModel.RequestBuilder do
     store = effective_store(model, opts)
 
     with :ok <- validate_request_params(model, opts),
+         :ok <- validate_astra_options(model, opts),
          {:ok, message_input} <- Messages.to_responses_input(messages, store: store),
          {:ok, input_items} <- Messages.normalize_input_items(Keyword.get(opts, :input_items)),
          {:ok, structured_output} <- StructuredOutput.format(opts) do
@@ -46,6 +48,10 @@ defmodule BeamWeaver.OpenAI.ChatModel.RequestBuilder do
         |> Options.put_optional(
           "metadata",
           Options.normalize_option_map(option(model, opts, :metadata))
+        )
+        |> Options.put_optional(
+          "moderation",
+          Options.normalize_option_map(option(model, opts, :moderation))
         )
         |> Options.put_optional("user", option(model, opts, :user))
         |> Options.put_optional(
@@ -133,6 +139,7 @@ defmodule BeamWeaver.OpenAI.ChatModel.RequestBuilder do
         :max_tokens,
         :max_turns,
         :metadata,
+        :moderation,
         :modalities,
         :model_kwargs,
         :parallel_tool_calls,
@@ -173,6 +180,7 @@ defmodule BeamWeaver.OpenAI.ChatModel.RequestBuilder do
         :max_tokens,
         :max_turns,
         :metadata,
+        :moderation,
         :modalities,
         :model_kwargs,
         :parallel_tool_calls,
@@ -215,6 +223,41 @@ defmodule BeamWeaver.OpenAI.ChatModel.RequestBuilder do
       metadata: Keyword.get(opts, :metadata, %{})
     )
   end
+
+  defp validate_astra_options(model, opts) do
+    model_name = Keyword.get(opts, :model, model.model)
+    reasoning = reasoning_option(model, opts)
+
+    cond do
+      not ModelPolicy.reasoning_effort_supported?(model_name, reasoning) ->
+        {:error,
+         Error.new(
+           :invalid_model_option,
+           "GPT-6 Astra reasoning effort must be low, medium, high, xhigh, or max",
+           %{
+             model: model_name,
+             reasoning_effort: reasoning_effort(reasoning),
+             supported: [:low, :medium, :high, :xhigh, :max]
+           }
+         )}
+
+      ModelPolicy.astra?(model_name) and
+          "message.output_text.logprobs" in List.wrap(Keyword.get(opts, :include)) ->
+        {:error,
+         Error.new(
+           :invalid_model_option,
+           "GPT-6 Astra does not support message.output_text.logprobs in include",
+           %{model: model_name, include: "message.output_text.logprobs"}
+         )}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp reasoning_effort(%{"effort" => effort}), do: effort
+  defp reasoning_effort(%{effort: effort}), do: effort
+  defp reasoning_effort(_reasoning), do: nil
 
   defp tools(opts) do
     case Keyword.get(opts, :tools, []) do

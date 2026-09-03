@@ -28,6 +28,11 @@ defmodule BeamWeaver.OpenAI.ToolCallingTest do
   test "builds OpenAI built-in tool declarations from idiomatic helpers" do
     assert ToolCalling.web_search() == %{"type" => "web_search_preview"}
 
+    assert ToolCalling.web_search(type: "web_search", external_web_access: false) == %{
+             "type" => "web_search",
+             "external_web_access" => false
+           }
+
     assert ToolCalling.file_search(["vs_123"], max_num_results: 3) == %{
              "type" => "file_search",
              "vector_store_ids" => ["vs_123"],

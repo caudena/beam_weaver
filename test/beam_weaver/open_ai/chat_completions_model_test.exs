@@ -274,6 +274,63 @@ defmodule BeamWeaver.OpenAI.ChatCompletionsModelTest do
            }
   end
 
+  test "GPT-6 Astra Chat Completions rejects tools and unsupported controls" do
+    assert {:ok, model} =
+             Models.init_chat_model("openai:gpt-6-astra",
+               api: :chat_completions,
+               reasoning_effort: :low,
+               max_tokens: 256,
+               moderation: %{model: "omni-moderation-latest"}
+             )
+
+    assert {:ok, body} =
+             ChatCompletionsModel.request_body(model, [Message.user("hello")])
+
+    assert body["reasoning_effort"] == "low"
+    assert body["max_completion_tokens"] == 256
+    assert body["moderation"] == %{"model" => "omni-moderation-latest"}
+    refute Map.has_key?(body, "max_tokens")
+
+    assert {:error, tool_error} =
+             ChatCompletionsModel.request_body(
+               model,
+               [Message.user("weather?")],
+               tools: [weather_tool()]
+             )
+
+    assert tool_error.type == :invalid_model_option
+    assert tool_error.details.alternative_api == :responses
+
+    assert {:error, reasoning_error} =
+             ChatCompletionsModel.request_body(
+               model,
+               [Message.user("hello")],
+               reasoning_effort: :none
+             )
+
+    assert reasoning_error.type == :invalid_model_option
+
+    assert {:error, param_error} =
+             ChatCompletionsModel.request_body(
+               model,
+               [Message.user("hello")],
+               temperature: 0.2
+             )
+
+    assert param_error.type == :unsupported_model_param
+    assert param_error.details.params == [:temperature]
+
+    assert {:error, search_error} =
+             ChatCompletionsModel.request_body(
+               model,
+               [Message.user("search")],
+               web_search_options: %{}
+             )
+
+    assert search_error.type == :unsupported_model_param
+    assert search_error.details.params == [:web_search_options]
+  end
+
   test "invokes Chat Completions through replay and decodes message metadata, usage, and tool calls" do
     request_body = %{
       "model" => "gpt-5.4-mini",
@@ -338,6 +395,11 @@ defmodule BeamWeaver.OpenAI.ChatCompletionsModelTest do
       "model" => "gpt-5.4",
       "system_fingerprint" => "fp_123",
       "service_tier" => "default",
+      "metadata" => %{"trace_id" => "trace_123"},
+      "moderation" => %{
+        "input" => %{"type" => "results", "results" => []},
+        "output" => %{"type" => "results", "results" => []}
+      },
       "choices" => [
         %{
           "message" => %{
@@ -366,6 +428,8 @@ defmodule BeamWeaver.OpenAI.ChatCompletionsModelTest do
 
     assert message.response_metadata.system_fingerprint == "fp_123"
     assert message.response_metadata.service_tier == "default"
+    assert message.response_metadata.provider_metadata == %{"trace_id" => "trace_123"}
+    assert message.response_metadata.moderation == response_body["moderation"]
     assert message.response_metadata.finish_reason == "stop"
 
     assert message.response_metadata.audio == %{
@@ -406,6 +470,9 @@ defmodule BeamWeaver.OpenAI.ChatCompletionsModelTest do
         "prompt_tokens_details" => %{
           "cached_tokens" => 4,
           "cache_write_tokens" => 6,
+          "audio_tokens" => 1,
+          "image_tokens" => 2,
+          "text_tokens" => 7,
           "flex" => 10
         },
         "completion_tokens" => 5,
@@ -413,6 +480,9 @@ defmodule BeamWeaver.OpenAI.ChatCompletionsModelTest do
           "reasoning_tokens" => 2,
           "accepted_prediction_tokens" => 3,
           "rejected_prediction_tokens" => 1,
+          "audio_tokens" => 4,
+          "image_tokens" => 5,
+          "text_tokens" => 6,
           "flex" => 3,
           "flex_reasoning" => 2
         },
@@ -426,11 +496,21 @@ defmodule BeamWeaver.OpenAI.ChatCompletionsModelTest do
              input_tokens: 10,
              output_tokens: 5,
              total_tokens: 0,
-             input_token_details: %{cache_read: 4, cache_write: 6, flex: 10},
+             input_token_details: %{
+               cache_read: 4,
+               cache_write: 6,
+               audio: 1,
+               image: 2,
+               text: 7,
+               flex: 10
+             },
              output_token_details: %{
                reasoning: 2,
                accepted_prediction: 3,
                rejected_prediction: 1,
+               audio: 4,
+               image: 5,
+               text: 6,
                flex: 3,
                flex_reasoning: 2
              }
@@ -479,7 +559,7 @@ defmodule BeamWeaver.OpenAI.ChatCompletionsModelTest do
 
   test "streamed Chat Completions metadata preserves logprobs and raw token usage" do
     body = """
-    data: {"id":"chatcmpl_meta_stream","model":"gpt-4.1-mini","service_tier":"default","system_fingerprint":"fp_stream","choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":null,"logprobs":{"content":[{"token":"hi"}]}}]}
+    data: {"id":"chatcmpl_meta_stream","model":"gpt-4.1-mini","service_tier":"default","system_fingerprint":"fp_stream","moderation":{"input":{"type":"results","results":[]},"output":{"type":"results","results":[]}},"choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":null,"logprobs":{"content":[{"token":"hi"}]}}]}
 
     data: {"id":"chatcmpl_meta_stream","model":"gpt-4.1-mini","service_tier":"default","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5,"completion_tokens_details":{"accepted_prediction_tokens":1}}}
 
@@ -495,12 +575,18 @@ defmodule BeamWeaver.OpenAI.ChatCompletionsModelTest do
     assert message.response_metadata.system_fingerprint == "fp_stream"
     assert message.response_metadata.service_tier == "default"
     assert message.response_metadata.finish_reason == "stop"
+
+    assert message.response_metadata.moderation == %{
+             "input" => %{"type" => "results", "results" => []},
+             "output" => %{"type" => "results", "results" => []}
+           }
+
     assert message.usage_metadata.output_token_details == %{accepted_prediction: 1}
   end
 
   test "stream response decoder reads atom-key message metadata" do
     body = """
-    data: {"id":"chatcmpl_decoder_stream","model":"gpt-4.1-mini","service_tier":"default","system_fingerprint":"fp_decoder","choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":null}]}
+    data: {"id":"chatcmpl_decoder_stream","model":"gpt-4.1-mini","service_tier":"default","system_fingerprint":"fp_decoder","moderation":{"input":{"type":"results","results":[]}},"choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":null}]}
 
     data: {"id":"chatcmpl_decoder_stream","model":"gpt-4.1-mini","service_tier":"default","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":2,"total_tokens":3}}
 
@@ -519,6 +605,7 @@ defmodule BeamWeaver.OpenAI.ChatCompletionsModelTest do
     assert decoded["model"] == "gpt-4.1-mini"
     assert decoded["system_fingerprint"] == "fp_decoder"
     assert decoded["service_tier"] == "default"
+    assert decoded["moderation"] == %{"input" => %{"type" => "results", "results" => []}}
     assert decoded["usage"]["completion_tokens"] == 2
   end
 
