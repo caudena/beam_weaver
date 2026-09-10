@@ -1,25 +1,5 @@
 # Changelog
 
-## Unreleased
-
-### Added
-
-- DeepSeek V4.1 Flash is available as `deepseek:deepseek-flash` and is the
-  default DeepSeek model. Legacy Flash and Vision IDs remain compatible with
-  the new model. Flash supports native image inputs on Chat and Responses,
-  uploaded image references, and image-bearing tool results.
-
-### Fixed
-
-- DeepSeek typed streams retain complete reasoning, tool calls, usage, and
-  provider metadata across agent tool-result turns. Responses replay preserves
-  the opaque reasoning handles returned by the live API.
-- DeepSeek cost estimates use weekday-only peak windows and dated rates,
-  including the September 10 Flash reduction and September 14 Pro billing
-  transition. Historical replay fixtures retain a fixed pricing reference time.
-- Transport dispatch loads modules before detecting optional streaming callbacks,
-  so the first request does not accidentally fall back to buffered delivery.
-
 ## 0.1.23 - 2026-09-04
 
 ### Added
@@ -29,6 +9,10 @@
   when present while retaining compatibility with existing v1 items.
 - `Todo.handoff/4` transfers nonterminal assignments at an application-verified
   ownership boundary while preserving intent, progress, and prior evidence.
+- DeepSeek V4.1 Flash is available as `deepseek:deepseek-flash` and is the
+  default DeepSeek model. Legacy Flash and Vision IDs remain compatible with
+  the new model. Flash supports native image inputs on Chat and Responses,
+  uploaded image references, and image-bearing tool results.
 
 ### Fixed
 
@@ -40,6 +24,14 @@
   HTTP status and provider error details instead of failing in `byte_size/1`.
 - Added HTTP-backed streaming agent/tool round-trip and JSON error regressions,
   plus offline examples and an optional live OpenAI round-trip check.
+- DeepSeek typed streams retain complete reasoning, tool calls, usage, and
+  provider metadata across agent tool-result turns. Responses replay preserves
+  the opaque reasoning handles returned by the live API.
+- DeepSeek cost estimates use weekday-only peak windows and dated rates,
+  including the September 10 Flash reduction and September 14 Pro billing
+  transition. Historical replay fixtures retain a fixed pricing reference time.
+- Transport dispatch loads modules before detecting optional streaming callbacks,
+  so the first request does not accidentally fall back to buffered delivery.
 
 ## 0.1.22 - 2026-09-04
 
