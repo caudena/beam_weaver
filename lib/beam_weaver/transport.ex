@@ -35,6 +35,8 @@ defmodule BeamWeaver.Transport do
   @spec stream(module(), Request.t(), keyword(), (binary() -> term())) :: result()
   def stream(transport, %Request{} = request, opts \\ [], on_chunk)
       when is_function(on_chunk, 1) do
+    Code.ensure_loaded(transport)
+
     cond do
       function_exported?(transport, :stream_reduce, 4) ->
         case stream_reduce(transport, request, opts, :ok, fn acc, chunk ->
@@ -65,6 +67,8 @@ defmodule BeamWeaver.Transport do
         ) :: stream_reduce_result()
   def stream_reduce(transport, %Request{} = request, opts \\ [], acc, reducer)
       when is_function(reducer, 2) do
+    Code.ensure_loaded(transport)
+
     if function_exported?(transport, :stream_reduce, 4) do
       transport.stream_reduce(request, opts, acc, reducer)
     else

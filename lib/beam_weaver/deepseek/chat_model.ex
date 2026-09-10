@@ -12,7 +12,7 @@ defmodule BeamWeaver.DeepSeek.ChatModel do
   alias BeamWeaver.Provider.ChatModel.Options, as: ChatOptions
   alias BeamWeaver.Provider.StructuredOutput
 
-  @default_model "deepseek-v4-flash"
+  @default_model "deepseek-flash"
   @default_base_url "https://api.deepseek.com"
   @default_endpoint @default_base_url <> "/chat/completions"
   @default_beta_endpoint @default_base_url <> "/beta/chat/completions"

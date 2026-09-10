@@ -2,8 +2,8 @@ defmodule BeamWeaver.DeepSeek.ResponsesModel do
   @moduledoc """
   DeepSeek OpenAI-compatible Responses API model.
 
-  DeepSeek exposes this API for `deepseek-v4-flash` and `deepseek-v4-pro` and
-  keeps it stateless. Unsupported state, media, and silently ignored
+  DeepSeek exposes this API for `deepseek-flash`, its compatibility aliases,
+  and `deepseek-v4-pro`, and keeps it stateless. Unsupported state, media, and silently ignored
   compatibility parameters are rejected before transport.
   """
 
@@ -17,11 +17,12 @@ defmodule BeamWeaver.DeepSeek.ResponsesModel do
   alias BeamWeaver.Provider.ChatModel.Options, as: ChatOptions
   alias BeamWeaver.Provider.StructuredOutput
 
-  @default_model "deepseek-v4-flash"
+  @default_model "deepseek-flash"
   @default_base_url "https://api.deepseek.com"
   @default_endpoint @default_base_url <> "/responses"
   @max_output_tokens 393_216
-  @reasoning_efforts ~w(none minimal low medium high xhigh max)
+  @reasoning_efforts ~w(none minimal low medium high xhigh max ultra)
+  @supported_models BeamWeaver.Models.ProfileRegistry.DeepSeek.supported_models()
 
   @unsupported_params ~w(
     audio
@@ -124,15 +125,17 @@ defmodule BeamWeaver.DeepSeek.ResponsesModel do
          :ok <- validate_container_options(model, opts),
          :ok <- validate_model_overrides(model, opts),
          :ok <- validate_unsupported_options(model, opts),
-         :ok <- Messages.validate_text_messages(messages, :responses),
+         {:ok, opts} <- render_tools(opts),
          {:ok, body} <- model |> RequestBuilder.request_body(messages, opts) |> convert_error(),
          body <- restore_reserved_fields(body, opts),
          :ok <- validate_responses_model(body["model"]),
+         :ok <- Messages.validate_messages(messages, :responses, body["model"]),
          :ok <- validate_unsupported_body(body),
          :ok <- validate_instructions(body),
          :ok <- validate_required_input(body),
          :ok <- validate_tools(body["tools"]),
          :ok <- validate_input_items(body["input"], body["tools"]),
+         :ok <- BeamWeaver.DeepSeek.Vision.validate_request(body, :responses),
          :ok <- validate_call_pairs(body["input"]),
          :ok <- validate_request_values(body),
          :ok <- validate_tool_choice(body["tool_choice"], body["tools"], body["reasoning"]) do
@@ -143,8 +146,15 @@ defmodule BeamWeaver.DeepSeek.ResponsesModel do
   def count_tokens(%__MODULE__{} = model, input, opts \\ []),
     do: TokenCounter.count(model, input, opts)
 
+  defp render_tools(opts) do
+    {:ok, Keyword.update(opts, :tools, [], &Tools.to_responses_tools/1)}
+  rescue
+    error in ArgumentError ->
+      {:error, Error.new(:invalid_request, error.message, %{provider: :deepseek, api: :responses})}
+  end
+
   defp validate_responses_model(model)
-       when model in ["deepseek-v4-flash", "deepseek-v4-pro"],
+       when model in @supported_models,
        do: :ok
 
   defp validate_responses_model(model) do
@@ -153,8 +163,8 @@ defmodule BeamWeaver.DeepSeek.ResponsesModel do
        provider: :deepseek,
        api: :responses,
        model: model,
-       supported: ["deepseek-v4-flash", "deepseek-v4-pro"],
-       expected: "deepseek:deepseek-v4-flash"
+       supported: @supported_models,
+       expected: "deepseek:deepseek-flash"
      })}
   end
 
@@ -341,6 +351,9 @@ defmodule BeamWeaver.DeepSeek.ResponsesModel do
         type when type in ["input_text", "output_text", "text"] ->
           if is_binary(part["text"]), do: {:cont, :ok}, else: {:halt, unsupported_input(type)}
 
+        "input_image" ->
+          {:cont, :ok}
+
         type ->
           {:halt, unsupported_input(type)}
       end
@@ -355,15 +368,25 @@ defmodule BeamWeaver.DeepSeek.ResponsesModel do
     do: unsupported_input(:message_content)
 
   defp validate_input_item(%{"type" => "reasoning"} = item, _tools) do
-    if meaningful_key?(item, "summary") or meaningful_key?(item, "encrypted_content") do
-      {:error,
-       Error.new(:unsupported_feature, "DeepSeek Responses reasoning replay supports plain text only", %{
-         provider: :deepseek,
-         api: :responses,
-         feature: :reasoning_replay
-       })}
-    else
-      :ok
+    # Current Responses output includes an opaque encrypted_content handle,
+    # sometimes alongside plain reasoning. Replay both exactly as returned.
+    cond do
+      meaningful_key?(item, "summary") ->
+        unsupported_input(:reasoning_summary)
+
+      not is_nil(item["encrypted_content"]) and not is_binary(item["encrypted_content"]) ->
+        required_string_field_error("encrypted_content", item["encrypted_content"], "reasoning", "a string")
+
+      is_list(item["content"]) ->
+        if Enum.all?(item["content"], &match?(%{"type" => "reasoning_text", "text" => text} when is_binary(text), &1)),
+          do: :ok,
+          else: unsupported_input(:reasoning_content)
+
+      is_nil(item["content"]) ->
+        :ok
+
+      true ->
+        unsupported_input(:reasoning_content)
     end
   end
 
@@ -377,7 +400,7 @@ defmodule BeamWeaver.DeepSeek.ResponsesModel do
 
   defp validate_input_item(%{"type" => "function_call_output"} = item, _tools) do
     with :ok <- validate_call_id(item, "function_call_output"),
-         :ok <- validate_string_field(item, "output", "function_call_output") do
+         :ok <- validate_tool_output(item, "function_call_output") do
       :ok
     end
   end
@@ -413,7 +436,7 @@ defmodule BeamWeaver.DeepSeek.ResponsesModel do
 
   defp validate_input_item(%{"type" => "custom_tool_call_output"} = item, tools) do
     with :ok <- validate_call_id(item, "custom_tool_call_output"),
-         :ok <- validate_string_field(item, "output", "custom_tool_call_output"),
+         :ok <- validate_tool_output(item, "custom_tool_call_output"),
          true <- apply_patch_declared?(tools) do
       :ok
     else
@@ -434,7 +457,7 @@ defmodule BeamWeaver.DeepSeek.ResponsesModel do
        when type in ["web_search_call"],
        do: :ok
 
-  defp validate_input_item(%{"type" => type}, _tools), do: unsupported_input(type)
+  defp validate_input_item(%{"type" => type}, _tools) when is_binary(type) and byte_size(type) > 0, do: :ok
   defp validate_input_item(_item, _tools), do: unsupported_input(nil)
 
   defp validate_call_id(item, type) do
@@ -467,6 +490,11 @@ defmodule BeamWeaver.DeepSeek.ResponsesModel do
       :error -> required_string_field_error(field, nil, type, "a string")
     end
   end
+
+  defp validate_tool_output(%{"output" => parts}, _type) when is_list(parts),
+    do: validate_input_item(%{"type" => "message", "content" => parts}, [])
+
+  defp validate_tool_output(item, type), do: validate_string_field(item, "output", type)
 
   defp required_string_field_error(field, value, type, expected) do
     {:error,

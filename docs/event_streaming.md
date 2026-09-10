@@ -437,6 +437,37 @@ evidence rather than text, and should rely on the final `%Events.Message{}` or
 See `examples/streaming_tool_call_chunks.exs` for an offline reconstruction
 example.
 
+For OpenAI Responses, chunks identify an executable tool call with `call_id`
+(`call_…`). The complete terminal `%Events.Message{}` also retains its distinct
+provider item ID (`fc_…`), replayable reasoning, usage, and response metadata.
+Use that complete message for subsequent requests; finalizing argument chunks
+alone cannot recover those fields. Responses completion and incomplete events
+with full `output` emit `Message` before `Done`. Usage-only terminals still emit
+only `Done` so they do not replace already collected content with an empty message.
+
+Agents collect the provider's terminal message and publish the final assistant
+message once through the graph update. Display `Token` events as incremental
+text; treat `Message` events as snapshots instead of appending their text again.
+
+The following examples exercise the complete boundary:
+
+```sh
+# Offline fixture through the actual OpenAI adapter, streaming agent, and local tool.
+mix run examples/openai_responses_tool_roundtrip.exs
+
+# The same agent against a configured OpenAI account; uses OPENAI_API_KEY.
+mix run examples/openai_responses_tool_roundtrip.exs --live gpt-5.4-mini
+
+# Real Req/Finch HTTP exchange with a local server returning a JSON 400.
+mix run examples/openai_json_http_error.exs
+```
+
+The tool example checks execution, tool-result correlation, distinct provider
+and call IDs, the final answer, and duplicate assistant messages. Its offline
+fixture also checks reasoning replay and separates the terminal response from
+argument deltas. A passing offline example does not establish live model support;
+run live mode for each Responses model being validated.
+
 To reconstruct finalized tool calls from streamed message chunks, collect the
 chunks and finalize them:
 

@@ -14,7 +14,7 @@ defmodule BeamWeaver.DeepSeekLiveCapture do
   @api_key_env "DEEPSEEK_API_KEY"
   @capture_dir_env "DEEPSEEK_CAPTURE_DIR"
   @timeout 120_000
-  @flash "deepseek-v4-flash"
+  @flash "deepseek-flash"
   @pro "deepseek-v4-pro"
 
   def run do

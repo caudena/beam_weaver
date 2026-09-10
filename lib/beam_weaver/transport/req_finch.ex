@@ -108,6 +108,7 @@ defmodule BeamWeaver.Transport.ReqFinch do
       receive_timeout: stream_idle_timeout,
       request_timeout: total_timeout,
       retry: false,
+      decode_body: false,
       redirect: false
     ]
     |> maybe_put_raw_response(opts)

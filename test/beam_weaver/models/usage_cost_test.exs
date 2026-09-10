@@ -138,6 +138,22 @@ defmodule BeamWeaver.Models.UsageCostTest do
     assert UsageCost.calculate(nil, %{input_tokens: 10}) == nil
   end
 
+  test "dated string-keyed rates override atom-keyed profile defaults" do
+    profile = %{
+      input_price_per_mtok: 1.0,
+      output_price_per_mtok: 2.0,
+      pricing_history: [
+        %{"effective_at" => nil, "input_price_per_mtok" => 3.0, "output_price_per_mtok" => 4.0},
+        %{"effective_at" => "2026-09-10T04:00:00Z", "input_price_per_mtok" => 1.0, "output_price_per_mtok" => 2.0}
+      ]
+    }
+
+    usage = %{input_tokens: 1_000_000, output_tokens: 1_000_000}
+    assert UsageCost.calculate(profile, usage, at: ~U[2026-09-10 03:59:59Z]).total_cost == 7.0
+    assert UsageCost.calculate(profile, usage, at: ~U[2026-09-10 04:00:00Z]).total_cost == 3.0
+    assert UsageCost.calculate(profile, usage).total_cost == 3.0
+  end
+
   test "selects UTC peak rates with inclusive starts and exclusive ends" do
     profile = %{
       "input_price_per_mtok" => 1.0,

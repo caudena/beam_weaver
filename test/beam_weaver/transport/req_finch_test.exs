@@ -149,6 +149,30 @@ defmodule BeamWeaver.Transport.ReqFinchTest do
     end
   end
 
+  test "retains JSON error bodies as bytes for both request and stream consumers" do
+    parent = self()
+    body = BeamWeaver.JSON.encode!(%{"error" => %{"message" => "Expected an ID that begins with 'fc'"}})
+
+    for status <- [400, 429, 500], mode <- [:request, :stream] do
+      url =
+        start_http_server(
+          "HTTP/1.1 #{status} Error\r\ncontent-type: application/json\r\nx-request-id: req_json\r\ncontent-length: #{byte_size(body)}\r\nconnection: close\r\n\r\n#{body}"
+        )
+
+      request = Request.new(method: :get, url: url)
+
+      result =
+        case mode do
+          :request -> ReqFinch.request(request, timeout: 1_000)
+          :stream -> ReqFinch.stream(request, [timeout: 1_000], &send(parent, {:unexpected_error_chunk, &1}))
+        end
+
+      assert {:ok, %Response{status: ^status, body: ^body, metadata: metadata}} = result
+      assert metadata.wire_bytes == byte_size(body)
+      refute_received {:unexpected_error_chunk, _chunk}
+    end
+  end
+
   test "rejects an invalid response bound before transport I/O" do
     request = Request.new(method: :get, url: "https://example.test")
 

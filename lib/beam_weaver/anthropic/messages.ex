@@ -274,6 +274,12 @@ defmodule BeamWeaver.Anthropic.Messages do
     )
   end
 
+  defp message_content(
+         %Message{role: :assistant, response_metadata: %{provider_replay: %{provider: "anthropic", content: content}}},
+         _opts
+       )
+       when is_list(content), do: {:ok, content}
+
   defp message_content(%Message{role: role, content: content} = message, _opts)
        when is_binary(content) do
     if role == :assistant and message.tool_calls != [] do

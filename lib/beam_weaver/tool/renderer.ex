@@ -8,6 +8,7 @@ defmodule BeamWeaver.Tool.Renderer do
   alias BeamWeaver.Tool.Schema
 
   @provider_name ~r/^[A-Za-z0-9_-]{1,64}$/
+  @deepseek_name ~r/^[A-Za-z0-9_-]{1,128}$/
 
   @doc """
   Renders a readable tool description.
@@ -41,7 +42,7 @@ defmodule BeamWeaver.Tool.Renderer do
   """
   @spec openai_function(term(), keyword()) :: {:ok, map()} | {:error, Error.t()}
   def openai_function(tool, opts \\ []) do
-    with :ok <- validate_provider_name(Tool.name(tool), :openai) do
+    with :ok <- validate_provider_name(Tool.name(tool), Keyword.get(opts, :provider, :openai)) do
       with {:ok, parameters} <-
              tool
              |> Tool.input_schema()
@@ -128,7 +129,9 @@ defmodule BeamWeaver.Tool.Renderer do
   """
   @spec validate_provider_name(String.t(), atom()) :: :ok | {:error, Error.t()}
   def validate_provider_name(name, provider) when is_binary(name) do
-    if Regex.match?(@provider_name, name) do
+    pattern = if provider == :deepseek, do: @deepseek_name, else: @provider_name
+
+    if Regex.match?(pattern, name) do
       :ok
     else
       {:error,

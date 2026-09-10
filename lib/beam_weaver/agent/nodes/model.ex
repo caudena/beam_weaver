@@ -251,11 +251,14 @@ defmodule BeamWeaver.Agent.Nodes.Model do
   defp collect_typed_event(%Events.ToolError{message: message}, acc), do: {:halt, %{acc | error: message}}
   defp collect_typed_event(_event, acc), do: {:cont, acc}
 
-  defp emit_stream_event(%{stream_writer: writer}, %Envelope{event: event, metadata: metadata})
-       when is_function(writer, 1) do
-    writer.(put_event_metadata(event, metadata))
-    :ok
+  defp emit_stream_event(runtime, %Envelope{event: event, metadata: metadata}) do
+    emit_stream_event(runtime, put_event_metadata(event, metadata))
   end
+
+  # The collector uses the provider's complete message as its result. The graph
+  # publishes that result after model middleware, so forwarding it here as well
+  # would emit the same assistant message twice.
+  defp emit_stream_event(_runtime, %Events.Message{message: %Message{role: :assistant}}), do: :ok
 
   defp emit_stream_event(%{stream_writer: writer}, event) when is_function(writer, 1) do
     writer.(event)

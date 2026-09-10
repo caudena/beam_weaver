@@ -95,6 +95,20 @@ defmodule BeamWeaver.OpenAI.Messages.Request do
     end
   end
 
+  defp to_response_input(
+         %Message{role: :assistant, response_metadata: %{provider_replay: %{provider: provider, content: content}}},
+         opts
+       )
+       when provider in ["openai", "xai", "deepseek"] and is_list(content) do
+    {:ok,
+     Enum.flat_map(content, fn item ->
+       case sanitize_store_replay_item(item, opts) do
+         {:item, item} -> [item]
+         :skip -> []
+       end
+     end)}
+  end
+
   defp to_response_input(%Message{role: :assistant} = message, opts) do
     items = assistant_content_items(message, opts) ++ assistant_tool_call_items(message, opts)
 
@@ -191,6 +205,12 @@ defmodule BeamWeaver.OpenAI.Messages.Request do
 
   defp content_block_to_openai(%{type: :image, url: url} = block) when is_binary(url) do
     %{"type" => "input_image", "image_url" => url}
+    |> put_input_detail(block)
+    |> put_prompt_cache_breakpoint(block)
+  end
+
+  defp content_block_to_openai(%{type: :image, file_id: file_id} = block) when is_binary(file_id) do
+    %{"type" => "input_image", "file_id" => file_id}
     |> put_input_detail(block)
     |> put_prompt_cache_breakpoint(block)
   end
@@ -397,8 +417,9 @@ defmodule BeamWeaver.OpenAI.Messages.Request do
 
   defp assistant_content_event(%ContentBlock.Unknown{value: value}, _message_id, opts)
        when is_map(value) do
-    value
+    (Map.get(value, :raw_provider_block) || Map.get(value, "raw_provider_block") || %{})
     |> Shared.stringify_keys()
+    |> Map.merge(Shared.stringify_keys(value))
     |> drop_internal_provider_fields()
     |> sanitize_store_replay_item(opts)
   end

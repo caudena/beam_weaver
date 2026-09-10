@@ -115,6 +115,9 @@ defmodule BeamWeaver.Google.Messages do
     }
   end
 
+  defp content(%Message{role: :assistant, response_metadata: %{provider_replay: %{provider: "google", content: parts}}})
+       when is_list(parts), do: %{"role" => "model", "parts" => parts}
+
   defp content(%Message{role: role, content: message_content} = message) do
     %{
       "role" => provider_role(role),
@@ -622,6 +625,7 @@ defmodule BeamWeaver.Google.Messages do
       citations: candidate["citationMetadata"],
       citation_metadata: candidate["citationMetadata"],
       grounding_metadata: candidate["groundingMetadata"],
+      provider_content: get_in(candidate, ["content", "parts"]),
       grounding_attributions: candidate["groundingAttributions"],
       url_context_metadata: candidate["urlContextMetadata"],
       avg_logprobs: candidate["avgLogprobs"],

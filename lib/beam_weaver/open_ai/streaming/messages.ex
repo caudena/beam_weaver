@@ -273,20 +273,18 @@ defmodule BeamWeaver.OpenAI.Streaming.Messages do
   end
 
   defp done_event(%{"data" => %{"type" => "response.completed", "response" => response}}) do
-    [%Events.Done{result: response, usage: response["usage"]}]
+    terminal_events(response, %Events.Done{result: response, usage: response["usage"]})
   end
 
   defp done_event(%{
          "data" => %{"type" => "response.incomplete", "response" => response} = data
        })
        when is_map(response) do
-    [
-      %Events.Done{
-        result: response,
-        usage: response["usage"],
-        metadata: terminal_metadata(data, response, "incomplete")
-      }
-    ]
+    terminal_events(response, %Events.Done{
+      result: response,
+      usage: response["usage"],
+      metadata: terminal_metadata(data, response, "incomplete")
+    })
   end
 
   defp done_event(%{"data" => %{"type" => "response.failed", "response" => response} = data})
@@ -317,6 +315,19 @@ defmodule BeamWeaver.OpenAI.Streaming.Messages do
   end
 
   defp done_event(_event), do: []
+
+  defp terminal_events(%{"output" => output} = response, done) when is_list(output) do
+    # Chunks carry the executable call_id, but only the complete response keeps
+    # the distinct function-call item ID, replayable reasoning, and metadata.
+    case BeamWeaver.OpenAI.Messages.response_to_message(response) do
+      {:ok, message} -> [%Events.Message{message: message}, done]
+      {:error, error} -> [%Events.Error{error: error}]
+    end
+  end
+
+  # Some compatible endpoints send usage-only terminals. They must not replace
+  # already collected chunks with an empty assistant message.
+  defp terminal_events(_response, done), do: [done]
 
   defp terminal_metadata(data, response, default_status) do
     %{

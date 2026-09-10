@@ -117,6 +117,31 @@ defmodule BeamWeaver.OpenAI.StreamingTest do
 
     assert [%{id: "call_probe", name: "probe", args: %{"value" => "ping"}}] =
              message.tool_calls
+
+    response = %{
+      "id" => "resp_probe",
+      "status" => "completed",
+      "output" => [
+        %{
+          "type" => "function_call",
+          "id" => "fc_1",
+          "call_id" => "call_probe",
+          "name" => "probe",
+          "arguments" => ~s({"value":"ping"})
+        }
+      ]
+    }
+
+    # Finalize from the terminal snapshot, not from the executable-ID chunks.
+    assert [
+             %Envelope{event: %Events.Message{message: complete}},
+             %Envelope{event: %Events.Done{}}
+           ] = Streaming.typed_events([%{"data" => %{"type" => "response.completed", "response" => response}}])
+
+    assert [%{id: "call_probe", provider_id: "fc_1", call_id: "call_probe"}] = complete.tool_calls
+
+    assert {:ok, [%{"id" => "fc_1", "call_id" => "call_probe"}]} =
+             BeamWeaver.OpenAI.Messages.to_responses_input([complete])
   end
 
   test "typed events preserve incomplete and failed Responses terminals" do
@@ -134,6 +159,7 @@ defmodule BeamWeaver.OpenAI.StreamingTest do
     """
 
     assert [
+             %Envelope{event: %Events.Message{message: incomplete_message}},
              %Envelope{
                event: %Events.Done{
                  result: ^incomplete_response,
@@ -143,6 +169,9 @@ defmodule BeamWeaver.OpenAI.StreamingTest do
              }
            ] = Streaming.typed_events(incomplete_body)
 
+    assert incomplete_message.status == "incomplete"
+    assert incomplete_message.response_metadata.incomplete_details == %{"reason" => "max_output_tokens"}
+    assert incomplete_message.usage_metadata.total_tokens == 10
     assert usage["input_tokens"] == 7
 
     assert incomplete_metadata == %{

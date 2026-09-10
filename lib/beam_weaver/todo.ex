@@ -15,7 +15,7 @@ defmodule BeamWeaver.Todo do
   @max_edges 512
   @terminal [:completed, :cancelled]
   @statuses Item.statuses()
-  @item_keys MapSet.new([:id, :content, :dependencies, :status, :owner, :assignment_id, :blocker, :evidence])
+  @item_keys MapSet.new([:id, :content, :dependencies, :status, :owner, :assignment_id, :blocker, :evidence, :intent])
   @evidence_kinds [:assignment, :blocker, :blocker_resolved, :completion, :cancellation]
 
   @enforce_keys [:id, :revision, :items, :active_item_ids, :hash]
@@ -64,6 +64,49 @@ defmodule BeamWeaver.Todo do
   end
 
   def revise(_current, _items, _opts), do: invalid(:invalid_todo, "invalid Todo revision")
+
+  @doc "Transfers nonterminal assignments at a host-proven ownership boundary, preserving definitions and progress."
+  def handoff(%__MODULE__{} = current, assignments, evidence_ref, opts)
+      when is_map(assignments) and is_list(opts) do
+    with :ok <- validate(current),
+         :ok <- expected(current, opts),
+         :ok <- nonempty(evidence_ref, :evidence_ref),
+         true <-
+           Enum.all?(assignments, fn
+             {id, %{owner: owner, assignment_id: assignment_id} = assignment}
+             when map_size(assignment) == 2 and is_binary(owner) and byte_size(owner) > 0 and
+                    is_binary(assignment_id) and byte_size(assignment_id) > 0 ->
+               Enum.any?(current.items, &(&1.id == id and &1.status not in @terminal and not is_nil(&1.owner)))
+
+             _invalid ->
+               false
+           end),
+         {:ok, items} <-
+           normalize_items(
+             Enum.map(current.items, fn item ->
+               case Map.get(assignments, item.id) do
+                 %{owner: owner, assignment_id: id} ->
+                   %{
+                     item
+                     | owner: owner,
+                       assignment_id: id,
+                       evidence: item.evidence ++ [%{kind: :assignment, ref: evidence_ref}]
+                   }
+
+                 nil ->
+                   item
+               end
+             end)
+           ),
+         :ok <- validate_items(items) do
+      {:ok, build(current.id, current.revision + 1, current.hash, items)}
+    else
+      false -> invalid(:invalid_todo_handoff, "Only nonterminal assigned items can transfer")
+      {:error, _} = error -> error
+    end
+  end
+
+  def handoff(_current, _assignments, _evidence_ref, _opts), do: invalid(:invalid_todo_handoff, "Invalid Todo handoff")
 
   @doc "Revalidates a Todo revision, including its deterministic hash."
   @spec validate(t()) :: :ok | {:error, Error.t()}
@@ -115,6 +158,7 @@ defmodule BeamWeaver.Todo do
          true <- MapSet.subset?(MapSet.new(Map.keys(attrs)), @item_keys),
          :ok <- nonempty(attrs[:id], :item_id),
          :ok <- nonempty(attrs[:content], :content),
+         :ok <- validate_intent(attrs[:intent]),
          {:ok, dependencies} <- string_list(attrs[:dependencies] || [], :dependencies),
          {:ok, status} <- status(attrs[:status] || :pending),
          :ok <- optional_string(attrs[:owner], :owner),
@@ -125,6 +169,7 @@ defmodule BeamWeaver.Todo do
        %Item{
          id: attrs.id,
          content: attrs.content,
+         intent: attrs[:intent],
          dependencies: dependencies,
          status: status,
          owner: attrs[:owner],
@@ -318,7 +363,20 @@ defmodule BeamWeaver.Todo do
   defp required_evidence(status, :cancelled) when status not in @terminal, do: :cancellation
   defp required_evidence(_from, _to), do: nil
 
-  defp immutable_item(item), do: {item.id, item.content, item.dependencies}
+  defp immutable_item(item), do: {item.id, item.content, item.dependencies, item.intent}
+
+  # Application-owned reviewed intent is opaque data, never authorization.
+  # Preserve it and make it part of the immutable definition and revision hash.
+  defp validate_intent(nil), do: :ok
+
+  defp validate_intent(intent) when is_map(intent) do
+    case Jason.encode(intent) do
+      {:ok, bytes} when byte_size(bytes) <= 524_288 -> :ok
+      _other -> invalid(:invalid_todo_intent, "Todo intent must be bounded JSON data")
+    end
+  end
+
+  defp validate_intent(_intent), do: invalid(:invalid_todo_intent, "Todo intent must be a map")
 
   defp added_evidence(old, next), do: Enum.drop(next.evidence, length(old.evidence))
 
@@ -345,7 +403,12 @@ defmodule BeamWeaver.Todo do
       id: todo.id,
       revision: todo.revision,
       previous_hash: todo.previous_hash,
-      items: Enum.map(todo.items, &Map.from_struct/1),
+      items:
+        Enum.map(todo.items, fn item ->
+          fields = Map.from_struct(item)
+          # An absent optional extension must not change stored v1 hashes.
+          if is_nil(item.intent), do: Map.delete(fields, :intent), else: fields
+        end),
       active_item_ids: todo.active_item_ids
     }
   end

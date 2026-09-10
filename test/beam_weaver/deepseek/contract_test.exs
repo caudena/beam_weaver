@@ -15,9 +15,8 @@ defmodule BeamWeaver.DeepSeek.ContractTest do
     }
   }
 
-  test "Chat rejects image, audio, video, and file content before transport" do
+  test "Chat rejects audio, video, and non-image file content before transport" do
     blocks = [
-      {ContentBlock.image(%{url: "https://example.test/image.png"}), :image},
       {ContentBlock.audio(%{data: "audio", mime_type: "audio/mpeg"}), :audio},
       {ContentBlock.video(%{data: "video", mime_type: "video/mp4"}), :video},
       {ContentBlock.file(%{data: "file", mime_type: "application/pdf"}), :file}
@@ -47,7 +46,7 @@ defmodule BeamWeaver.DeepSeek.ContractTest do
 
     assert tools_error.details.max == 128
 
-    invalid_name = put_in(@chat_tool, ["function", "name"], String.duplicate("a", 65))
+    invalid_name = put_in(@chat_tool, ["function", "name"], String.duplicate("a", 129))
     assert {:error, name_error} = ChatModel.request_body(model, messages, tools: [invalid_name])
     assert name_error.details.api == :chat_completions
 

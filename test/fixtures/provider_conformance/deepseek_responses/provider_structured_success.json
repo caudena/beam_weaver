@@ -30,25 +30,25 @@
       "text": "{\"answer\": \"pong\"}",
       "tool_calls": [],
       "usage_metadata": {
-        "input_cost": 6.836e-6,
+        "input_cost": 6.836e-06,
         "input_cost_details": {
-          "cache_read": 8.96e-7,
-          "uncached": 5.940000000000001e-6
+          "cache_read": 8.96e-07,
+          "uncached": 5.940000000000001e-06
         },
         "input_token_details": {
           "cache_miss": 27,
           "cache_read": 128
         },
         "input_tokens": 155,
-        "output_cost": 6.996000000000001e-5,
+        "output_cost": 6.996000000000001e-05,
         "output_cost_details": {
-          "text": 6.996000000000001e-5
+          "text": 6.996000000000001e-05
         },
         "output_token_details": {
           "reasoning": 98
         },
         "output_tokens": 106,
-        "total_cost": 7.679600000000001e-5,
+        "total_cost": 7.679600000000001e-05,
         "total_tokens": 261
       }
     }
@@ -109,7 +109,7 @@
       "background": false,
       "completed_at": "**REDACTED**",
       "content_filters": "nil",
-      "created_at": "**REDACTED**",
+      "created_at": 1787054400,
       "error": "nil",
       "frequency_penalty": 0.0,
       "id": "fixture-id-1",
@@ -265,5 +265,6 @@
     ],
     "status": 200
   },
-  "scenario": "provider_structured_success"
+  "scenario": "provider_structured_success",
+  "fixture_timestamp_note": "Redacted creation times use 2026-08-18T12:00:00Z to test historical V4 pricing; this is not the original capture time."
 }

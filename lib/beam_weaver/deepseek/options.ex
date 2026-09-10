@@ -9,10 +9,10 @@ defmodule BeamWeaver.DeepSeek.Options do
   alias BeamWeaver.Provider.JsonObjectFormat
   alias BeamWeaver.Provider.Options, as: ProviderOptions
 
-  @models ["deepseek-v4-flash", "deepseek-v4-pro"]
+  @models BeamWeaver.Models.ProfileRegistry.DeepSeek.supported_models()
   @max_output_tokens 393_216
   @thinking_modes ["enabled", "disabled"]
-  @reasoning_efforts ["low", "medium", "high", "xhigh", "max"]
+  @reasoning_efforts ~w(none minimal low medium high xhigh max ultra)
   @deprecated_params [
     "frequency_penalty",
     "presence_penalty"
@@ -43,12 +43,13 @@ defmodule BeamWeaver.DeepSeek.Options do
   def to_body(model, messages, opts \\ []) do
     with :ok <- validate_profile_params(model, opts),
          :ok <- validate_model_kwargs(option(model, opts, :model_kwargs)),
-         {:ok, deepseek_messages} <- Messages.to_chat_messages(messages),
+         {:ok, deepseek_messages} <- Messages.to_chat_messages(messages, option(model, opts, :model)),
          {:ok, response_format, instruction} <- response_format(model, opts),
          deepseek_messages <- JsonObjectFormat.inject_instruction(deepseek_messages, instruction),
          {:ok, tools} <- render_tools(Keyword.get(opts, :tools, [])),
          {:ok, body} <- build_body(model, deepseek_messages, tools, response_format, opts),
-         :ok <- validate_body(body) do
+         :ok <- validate_body(body),
+         :ok <- BeamWeaver.DeepSeek.Vision.validate_request(body, :chat_completions) do
       {:ok, body}
     end
   end
@@ -186,7 +187,7 @@ defmodule BeamWeaver.DeepSeek.Options do
          :ok <- validate_stream_options(body),
          :ok <- validate_logprobs(body),
          :ok <- validate_user_id(body["user_id"]),
-         :ok <- validate_tool_choice(body["tool_choice"], body["tools"], body["thinking"]) do
+         :ok <- validate_tool_choice(body["tool_choice"], body["tools"], effective_thinking(body)) do
       :ok
     end
   end
@@ -245,7 +246,7 @@ defmodule BeamWeaver.DeepSeek.Options do
        provider: :deepseek,
        model: model,
        supported: @models,
-       expected: "deepseek:deepseek-v4-flash"
+       expected: "deepseek:deepseek-flash"
      })}
   end
 
@@ -389,6 +390,7 @@ defmodule BeamWeaver.DeepSeek.Options do
   end
 
   defp validate_tool_choice(nil, _tools, _thinking), do: :ok
+  defp validate_tool_choice(choice, _tools, _thinking) when choice in ["none", "auto"], do: :ok
 
   defp validate_tool_choice(choice, _tools, thinking)
        when not is_nil(choice) and (is_nil(thinking) or thinking == %{"type" => "enabled"}) do
@@ -404,8 +406,6 @@ defmodule BeamWeaver.DeepSeek.Options do
        }
      )}
   end
-
-  defp validate_tool_choice(choice, _tools, _thinking) when choice in ["none", "auto"], do: :ok
 
   defp validate_tool_choice("required", [_tool | _rest], _thinking), do: :ok
 
@@ -463,6 +463,11 @@ defmodule BeamWeaver.DeepSeek.Options do
 
   defp thinking_disabled?(%{"type" => "disabled"}), do: true
   defp thinking_disabled?(_thinking), do: false
+
+  defp effective_thinking(%{"reasoning_effort" => "none"} = body),
+    do: body["thinking"] || %{"type" => "disabled"}
+
+  defp effective_thinking(body), do: body["thinking"]
 
   defp validate_integer_range(nil, _param, _min, _max), do: :ok
 

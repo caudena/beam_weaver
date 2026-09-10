@@ -48,7 +48,7 @@ defmodule BeamWeaver.DeepSeek.ModelTest do
     "function" => Map.delete(@function_tool, "type")
   }
 
-  test "Chat defaults to V4 Flash and preserves reasoning replay and prefix completion" do
+  test "Chat defaults to V4.1 Flash and preserves reasoning replay and prefix completion" do
     model = ChatModel.new()
 
     assistant =
@@ -59,7 +59,7 @@ defmodule BeamWeaver.DeepSeek.ModelTest do
     assert {:ok, body} =
              ChatModel.request_body(model, [Message.user("question"), assistant], thinking: %{type: "disabled"})
 
-    assert body["model"] == "deepseek-v4-flash"
+    assert body["model"] == "deepseek-flash"
 
     assert List.last(body["messages"]) == %{
              "role" => "assistant",
@@ -141,7 +141,7 @@ defmodule BeamWeaver.DeepSeek.ModelTest do
     assert body["stream_options"] == %{"include_usage" => true}
   end
 
-  test "Chat explicit tool choice requires thinking explicitly disabled" do
+  test "Chat forced tool choice requires thinking explicitly disabled" do
     model = ChatModel.new()
     messages = [Message.user("hello")]
 
@@ -166,7 +166,7 @@ defmodule BeamWeaver.DeepSeek.ModelTest do
              "function" => %{"name" => "lookup"}
            }
 
-    for choice <- [:none, :auto, :required] do
+    for choice <- [:required] do
       assert {:error, error} =
                ChatModel.request_body(model, messages,
                  tools: [@chat_function_tool],
@@ -448,7 +448,7 @@ defmodule BeamWeaver.DeepSeek.ModelTest do
                extra_body: %{stream: true}
              )
 
-    assert body["model"] == "deepseek-v4-flash"
+    assert body["model"] == "deepseek-flash"
     assert body["stream"] == false
 
     assert {:ok, streaming_body} =
@@ -534,16 +534,19 @@ defmodule BeamWeaver.DeepSeek.ModelTest do
     assert overridden["top_logprobs"] == 4
   end
 
-  test "Responses rejects unknown and media input items" do
+  test "Responses retains future native items and rejects malformed media input" do
     model = ResponsesModel.new()
 
-    for item <- [
-          %{"type" => "unknown_future_item"},
-          %{"type" => "message", "role" => "user", "content" => [%{"type" => "input_image"}]},
-          %{}
+    future = %{"type" => "unknown_future_item", "result" => %{"ready" => true}}
+    assert {:ok, body} = ResponsesModel.request_body(model, [], input_items: [future])
+    assert body["input"] == [future]
+
+    for {item, type} <- [
+          {%{"type" => "message", "role" => "user", "content" => [%{"type" => "input_image"}]}, :invalid_request},
+          {%{}, :unsupported_feature}
         ] do
       assert {:error, error} = ResponsesModel.request_body(model, [], input_items: [item])
-      assert error.type == :unsupported_feature
+      assert error.type == type
     end
   end
 

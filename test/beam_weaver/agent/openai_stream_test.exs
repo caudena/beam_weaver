@@ -80,7 +80,7 @@ defmodule BeamWeaver.Agent.OpenAIStreamTest do
     end
   end
 
-  test "generated agent loop executes tool calls reconstructed from streamed OpenAI chunks" do
+  test "generated agent uses stream_response fallback when its model does not expose typed streaming" do
     prompt = "What is the weather in San Francisco, CA?"
 
     first_request = %{

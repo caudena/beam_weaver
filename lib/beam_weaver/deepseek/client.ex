@@ -155,7 +155,7 @@ defmodule BeamWeaver.DeepSeek.Client do
     client = normalize_client(client_or_opts, opts)
     opts = with_endpoint(opts, chat_completions_endpoint(client, body, opts))
 
-    do_stream(client, body, opts, &deepseek_chat_typed_events/1)
+    do_stream(client, body, opts, &deepseek_chat_typed_events/2)
   end
 
   @spec responses(t() | keyword(), map(), keyword()) :: {:ok, map()} | {:error, Error.t()}
@@ -453,23 +453,54 @@ defmodule BeamWeaver.DeepSeek.Client do
     end
   end
 
-  defp deepseek_chat_typed_events(events) do
-    OpenAICompatibleStreaming.typed_events(events, %{
-      provider: :deepseek,
-      provider_name: "DeepSeek",
-      error_module: Error,
-      usage_metadata: &BeamWeaver.OpenAI.ChatCompletions.Messages.Response.usage_metadata/1,
-      stream_metadata: &empty_stream_metadata/3,
-      choice_usage: false,
-      include_chunk_id: true,
-      reasoning_index: 0,
-      unknown_delta_key: :deepseek_delta
-    })
+  defp deepseek_chat_typed_events(events, state) do
+    state = ResponseDecoder.reduce_chat_events(events, state)
+
+    typed =
+      OpenAICompatibleStreaming.typed_events(events, %{
+        provider: :deepseek,
+        provider_name: "DeepSeek",
+        error_module: Error,
+        usage_metadata: &BeamWeaver.OpenAI.ChatCompletions.Messages.Response.usage_metadata/1,
+        stream_metadata: &empty_stream_metadata/3,
+        choice_usage: false,
+        include_chunk_id: true,
+        reasoning_index: 0,
+        unknown_delta_key: :deepseek_delta
+      })
+
+    typed =
+      Enum.flat_map(typed, fn
+        %BeamWeaver.Stream.Envelope{event: %BeamWeaver.Stream.Events.Done{}} = envelope ->
+          with {:ok, response} <- ResponseDecoder.chat_stream_response(state),
+               {:ok, message} <- BeamWeaver.DeepSeek.Messages.chat_response_to_message(response) do
+            [%{envelope | event: %BeamWeaver.Stream.Events.Message{message: message}}, envelope]
+          else
+            {:error, error} -> [%{envelope | event: %BeamWeaver.Stream.Events.Error{error: error}}]
+          end
+
+        envelope ->
+          [envelope]
+      end)
+
+    {typed, state}
   end
 
   defp deepseek_responses_typed_events(events) do
     events
     |> BeamWeaver.OpenAI.Streaming.typed_events()
+    |> Enum.map(fn
+      %BeamWeaver.Stream.Envelope{event: %BeamWeaver.Stream.Events.Message{message: message}} = envelope ->
+        response = message.response_metadata.raw_provider_response
+
+        case BeamWeaver.DeepSeek.Messages.responses_to_message(response) do
+          {:ok, message} -> %{envelope | event: %BeamWeaver.Stream.Events.Message{message: message}}
+          {:error, error} -> %{envelope | event: %BeamWeaver.Stream.Events.Error{error: error}}
+        end
+
+      envelope ->
+        envelope
+    end)
     |> Enum.map(&put_deepseek_provider/1)
   end
 

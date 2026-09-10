@@ -7,7 +7,11 @@ defmodule BeamWeaver.Models.UsageCost do
   `output_price_per_mtok` keys. Explicit cache-hit and cache-miss token counts
   take precedence over deriving uncached input from the total. Profiles can
   also provide UTC `time_based_pricing`; when `:at` is supplied, its matching
-  rate set overrides the canonical off-peak rates.
+  rate set overrides the canonical off-peak rates. `peak_iso_weekdays` limits
+  the schedule to those weekdays when present. An optional `pricing_history`
+  lists rate maps in chronological order, each with an ISO 8601 `effective_at`
+  (or `nil` for the historical baseline). `:at` selects the applicable version;
+  calls without a timestamp use the profile's current canonical rates.
   """
 
   alias BeamWeaver.MapAccess
@@ -26,7 +30,8 @@ defmodule BeamWeaver.Models.UsageCost do
   def calculate(profile, usage, opts \\ [])
 
   def calculate(profile, usage, opts) when is_map(usage) and is_list(opts) do
-    pricing = profile |> pricing() |> scheduled_pricing(Keyword.get(opts, :at))
+    at = Keyword.get(opts, :at)
+    pricing = profile |> pricing() |> historical_pricing(at) |> scheduled_pricing(at)
     input_price = number(pricing, :input_price_per_mtok)
     output_price = number(pricing, :output_price_per_mtok)
 
@@ -208,6 +213,41 @@ defmodule BeamWeaver.Models.UsageCost do
 
   defp pricing(_profile), do: %{}
 
+  defp historical_pricing(pricing, %DateTime{} = at) do
+    pricing
+    |> MapAccess.get(:pricing_history)
+    |> List.wrap()
+    |> Enum.reduce(pricing, fn entry, current ->
+      case MapAccess.get(entry, :effective_at) do
+        nil ->
+          merge_pricing_version(current, entry)
+
+        value when is_binary(value) ->
+          case DateTime.from_iso8601(value) do
+            {:ok, effective_at, _offset} ->
+              if DateTime.compare(effective_at, at) != :gt, do: merge_pricing_version(current, entry), else: current
+
+            _ ->
+              current
+          end
+
+        _ ->
+          current
+      end
+    end)
+  end
+
+  defp historical_pricing(pricing, _at), do: pricing
+
+  defp merge_pricing_version(pricing, version) do
+    pricing = merge_rates(pricing, version)
+
+    case MapAccess.fetch(version, :time_based_pricing) do
+      {:ok, schedule} -> Map.put(pricing, :time_based_pricing, schedule)
+      :error -> pricing
+    end
+  end
+
   defp scheduled_pricing(pricing, %DateTime{} = at) do
     case MapAccess.get(pricing, :time_based_pricing) do
       schedule when is_map(schedule) ->
@@ -241,17 +281,20 @@ defmodule BeamWeaver.Models.UsageCost do
   defp peak?(schedule, at) do
     utc = at |> DateTime.to_unix(:second) |> DateTime.from_unix!(:second)
     minute = utc.hour * 60 + utc.minute
+    weekdays = MapAccess.get(schedule, :peak_iso_weekdays)
+    peak_day? = is_nil(weekdays) or Date.day_of_week(DateTime.to_date(utc)) in weekdays
 
-    schedule
-    |> MapAccess.get(:peak_windows)
-    |> List.wrap()
-    |> Enum.any?(fn window ->
-      start_minute = MapAccess.get(window, :start_minute)
-      end_minute = MapAccess.get(window, :end_minute)
+    peak_day? and
+      schedule
+      |> MapAccess.get(:peak_windows)
+      |> List.wrap()
+      |> Enum.any?(fn window ->
+        start_minute = MapAccess.get(window, :start_minute)
+        end_minute = MapAccess.get(window, :end_minute)
 
-      is_integer(start_minute) and is_integer(end_minute) and
-        minute >= start_minute and minute < end_minute
-    end)
+        is_integer(start_minute) and is_integer(end_minute) and
+          minute >= start_minute and minute < end_minute
+      end)
   end
 
   defp input_tokens(usage),

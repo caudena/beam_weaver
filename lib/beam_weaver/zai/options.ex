@@ -110,16 +110,19 @@ defmodule BeamWeaver.ZAI.Options do
     )
   end
 
-  defp validate_model(%{"model" => @model}), do: :ok
-
   defp validate_model(%{"model" => model}) do
-    {:error,
-     Error.new(:unsupported_model, "Z.ai provider currently supports only GLM-5.2", %{
-       provider: :zai,
-       model: model,
-       supported: [@model],
-       expected: "zai:#{@model}"
-     })}
+    case BeamWeaver.Models.ProfileRegistry.ZAI.resolve(model) do
+      {:ok, _profile} ->
+        :ok
+
+      _ ->
+        {:error,
+         Error.new(:unsupported_model, "Z.ai model is not supported", %{
+           provider: :zai,
+           model: model,
+           expected: "zai:#{@model}"
+         })}
+    end
   end
 
   defp validate_thinking(%{"thinking" => %{"type" => type}} = body)

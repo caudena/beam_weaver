@@ -14,21 +14,6 @@ defmodule BeamWeaver.Anthropic.Tools do
     "advisor_20260301" => "advisor-tool-2026-03-01"
   }
 
-  @builtin_prefixes [
-    "text_editor_",
-    "computer_",
-    "computer_toolset_",
-    "browser_toolset_",
-    "bash_",
-    "web_search_",
-    "web_fetch_",
-    "code_execution_",
-    "advisor_",
-    "mcp_toolset",
-    "memory_",
-    "tool_search_"
-  ]
-
   @doc """
   Converts BeamWeaver tools, Anthropic tool maps, OpenAI-style function maps, and
   Anthropic built-ins to Anthropic request tool declarations.
@@ -223,7 +208,7 @@ defmodule BeamWeaver.Anthropic.Tools do
   defp maybe_openai_tool(tool), do: tool
 
   defp builtin_tool?(%{"type" => type}) when is_binary(type) do
-    Enum.any?(@builtin_prefixes, &String.starts_with?(type, &1))
+    type not in ["function", "custom"]
   end
 
   defp builtin_tool?(_tool), do: false

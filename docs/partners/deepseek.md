@@ -4,25 +4,34 @@ BeamWeaver includes a first-class DeepSeek provider for the native Chat
 Completions and Responses APIs, plus raw clients for every API surface that
 DeepSeek currently publishes.
 
-This guide reflects the DeepSeek documentation checked through 2026-08-27 and the
+This guide reflects the DeepSeek documentation checked through 2026-09-10 and the
 checked-in live API conformance captures.
 
 ## Models
 
 Use explicit provider-prefixed identifiers:
 
-- `deepseek:deepseek-v4-flash`
-- `deepseek:deepseek-v4-flash-vision-exp`
-- `deepseek:deepseek-v4-pro`
+- `deepseek:deepseek-flash` — DeepSeek V4.1 Flash, the default.
+- `deepseek:deepseek-v4-flash` and `deepseek:deepseek-v4-flash-vision-exp` — accepted
+  compatibility names that now route to V4.1 Flash.
+- `deepseek:deepseek-v4-pro` — V4 Pro until its announced September 14,
+  2026, 04:00 UTC transition to V4.1 Flash.
 
-All three profiles have a 1,048,576-token context window and a maximum output
-of 393,216 tokens. Chat Completions and Responses support all three.
+All profiles have a 1,048,576-token context window and a maximum output of
+393,216 tokens. Both Chat Completions and Responses accept these API IDs.
+`deepseek-v4.1-flash` is the release name, not a published API identifier;
+use `deepseek-flash`.
 
-The experimental Vision profile extends V4 Flash with user-role JPEG, PNG, GIF,
-and WebP input. It accepts at most 600 images per request, supports `low`,
-`high`, `original`, and `auto` image detail, and permits image-bearing tool
-messages. It does not support FIM completion. Its text-token pricing and
-time-based peak schedule are the same as V4 Flash.
+Flash accepts JPEG, PNG, GIF, and WebP images: HTTP(S) URLs, base64 data URLs,
+and uploaded image `file_id` references. It supports up to 600 images per
+request and `low`, `high`, `original`, and `auto` detail. The request body must
+fit in 48 MiB, and each inline image must fit in 32 MiB. The provider enforces
+remote download, dimensions, and uploaded-file limits. Chat image content can
+appear in user/tool messages; Responses also accepts developer messages and
+image-bearing tool outputs. System and assistant images are rejected.
+
+FIM remains available in non-thinking mode. V4 Pro is text-only before its
+announced redirect; use the canonical Flash ID for new multimodal integrations.
 
 The retired `deepseek-chat` and `deepseek-reasoner` identifiers are not aliases
 for the V4 models. BeamWeaver reports them as unsupported so an application
@@ -48,7 +57,7 @@ Chat Completions is the default high-level API:
 
 ```elixir
 {:ok, model} =
-  BeamWeaver.Models.init_chat_model("deepseek:deepseek-v4-flash",
+  BeamWeaver.Models.init_chat_model("deepseek:deepseek-flash",
     thinking: %{type: :enabled},
     reasoning_effort: :low,
     max_tokens: 1_024,
@@ -66,13 +75,11 @@ tool call is sent back with a tool result, BeamWeaver also replays the
 provider's `reasoning_content`, as required by DeepSeek's multi-turn tool
 contract.
 
-Current V4 behavior rejects any explicit Chat `tool_choice` while thinking is
-active, including `none`, `auto`, and `required`. Omit `tool_choice` to let a
-thinking model select from declared tools, or set
-`thinking: %{type: "disabled"}` before sending an explicit choice. For
-Responses, forced function/custom choices require
-`reasoning: %{effort: "none"}`; automatic choice and hosted web search remain
-available with reasoning.
+Chat accepts `none` and `auto` tool choices while thinking. Forced `required`
+and named choices require non-thinking mode: use `reasoning_effort: :none` or
+`thinking: %{type: "disabled"}`. Canonical effort levels are `low`, `high`, and
+`max`; compatibility values `minimal`, `medium`/`xhigh`, and `ultra` map to
+`low`, `high`, and `max`. Responses uses `reasoning: %{effort: ...}`.
 
 ### Beta endpoint
 
@@ -135,22 +142,27 @@ Select the stateless Responses API explicitly:
 
 ```elixir
 {:ok, model} =
-  BeamWeaver.Models.init_chat_model("deepseek:deepseek-v4-flash",
+  BeamWeaver.Models.init_chat_model("deepseek:deepseek-flash",
     api: :responses,
     timeout: 120_000
   )
 ```
 
-Responses supports all three V4 profiles, native JSON Schema output, function tools,
+Responses supports the current Flash and Pro profiles, native JSON Schema output, function tools,
 server-side web search, and the custom `apply_patch` tool used by DeepSeek's
 Codex integration. Its reasoning effort accepts `none`, `minimal`, `low`,
 `medium`, `high`, `xhigh`, and `max`; the compatibility values map to the
 provider's low/high effort levels. DeepSeek does not store Responses or
 conversations: send the complete history on every turn. BeamWeaver rejects
-stateful response/conversation parameters. The base Flash and Pro profiles
-reject image, audio, video, and file inputs instead of allowing the server to
-replace them with placeholder text; the Vision profile accepts only its
-documented user-role image formats and limits.
+stateful response/conversation parameters. Flash accepts the documented image
+parts; audio, video, and general file inputs remain unsupported. Represent
+uploaded image references as `ContentBlock.image(file_id: "file-api-...")`.
+
+Current live Responses output can include an opaque `encrypted_content` handle,
+with or without plain `reasoning_text` content. BeamWeaver preserves that handle
+and any plain reasoning when replaying the terminal assistant message. It does
+not interpret the handle or replace it with an ID generated locally.
+
 
 Hosted web search can complete without an assistant message. The normalized
 result preserves reasoning, function-call, web-search, failure, and unknown
@@ -182,9 +194,9 @@ client preserves that server behavior.
 ## Streaming And Headers
 
 Chat and FIM return data-only SSE terminated by `[DONE]`. Responses and
-Anthropic use named events and their own terminal events. All BeamWeaver lazy
-stream methods remain lazy and do not buffer the potentially large response.
-Collected stream methods necessarily reconstruct the full response in memory.
+Anthropic use named events and their own terminal events. Typed streams emit deltas as they arrive and accumulate the final assistant
+message so IDs, complete reasoning, usage, and provider metadata survive the
+next tool-result request. Collected stream methods buffer the response.
 
 DeepSeek's `x-ds-trace-id` header is normalized into request metadata.
 Synchronous and collected calls accept `include_response_headers: true` to
@@ -204,16 +216,17 @@ Current prices per one million tokens:
 
 | Model | Mode | Cached input | Uncached input | Output |
 | --- | --- | ---: | ---: | ---: |
-| `deepseek-v4-flash` | Off-peak | $0.007 | $0.22 | $0.66 |
-| `deepseek-v4-flash` | Peak | $0.014 | $0.44 | $1.32 |
-| `deepseek-v4-flash-vision-exp` | Off-peak | $0.007 | $0.22 | $0.66 |
-| `deepseek-v4-flash-vision-exp` | Peak | $0.014 | $0.44 | $1.32 |
-| `deepseek-v4-pro` | Off-peak | $0.022 | $0.66 | $1.98 |
-| `deepseek-v4-pro` | Peak | $0.044 | $1.32 | $3.96 |
+| `deepseek-flash` and Flash compatibility names | Off-peak | $0.003 | $0.15 | $0.60 |
+| `deepseek-flash` and Flash compatibility names | Peak | $0.006 | $0.30 | $1.20 |
+| `deepseek-v4-pro` before its redirect | Off-peak | $0.022 | $0.66 | $1.98 |
+| `deepseek-v4-pro` before its redirect | Peak | $0.044 | $1.32 | $3.96 |
 
-Peak pricing applies from 01:00 through 04:00 UTC and from 06:00 through
-10:00 UTC. Each interval includes its start and excludes its end. Costs use
-the provider response timestamp; responses without one use off-peak prices.
+Flash prices took effect at 04:00 UTC on September 10, 2026. Pro switches to
+Flash rates at 04:00 UTC on September 14, 2026. Peak pricing applies Monday
+through Friday during 01:00–04:00 and 06:00–10:00 UTC; starts are inclusive,
+ends exclusive, and weekends are off-peak. Costs use the response timestamp
+and dated profile pricing history. Without a timestamp, the estimator uses
+current canonical off-peak rates.
 
 The published account concurrency limits are 2,500 for Flash and 500 for Pro.
 They are profile metadata, not an in-process limiter, because DeepSeek enforces
@@ -230,7 +243,29 @@ The client does not retry automatically. Apply BeamWeaver retry or fallback
 middleware at the application boundary where idempotency and provider fallback
 policy are explicit.
 
+## Live validation on September 10, 2026
+
+The live `/models` response listed `deepseek-flash` and `deepseek-v4-pro`.
+The following bounded checks completed against the official API:
+
+| Model | API | Verified behavior |
+| --- | --- | --- |
+| V4.1 Flash | Chat Completions and Responses | Image input, image tool results, structured output, 128-character function names, and a streaming model → local tool → model cycle |
+| V4 Pro | Chat Completions and Responses | Streaming tool cycle with complete reasoning replay and one final assistant message per turn |
+| Legacy Flash / Vision names | Chat / Responses respectively | Accepted and reported `deepseek-flash` as the served model |
+| V4.1 Flash | FIM / Anthropic compatibility | Code completion / basic message response |
+
+Streaming checks required a real local multiplication tool to return `391`,
+inspected the next serialized request, and checked reasoning, call correlation,
+provider metadata, usage, and duplicate assistant messages. These are API
+integration checks, not model-quality benchmarks or coverage of every parameter
+combination. Deterministic tests cover the same Chat/Responses round trips,
+image validation, and pricing boundaries without credentials.
+
 ## References
+
+- [V4.1 Flash release and alias transitions](https://api-docs.deepseek.com/news/news260910/)
+- [Vision input formats and limits](https://api-docs.deepseek.com/guides/vision/)
 
 - [DeepSeek models and pricing](https://api-docs.deepseek.com/quick_start/pricing/)
 - [Chat Completions API](https://api-docs.deepseek.com/api/create-chat-completion/)

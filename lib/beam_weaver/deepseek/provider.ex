@@ -39,7 +39,7 @@ defmodule BeamWeaver.DeepSeek.Provider do
   def infer_provider?(_model, _kind), do: false
 
   @impl true
-  def default_model(:chat), do: "deepseek-v4-flash"
+  def default_model(:chat), do: "deepseek-flash"
   def default_model(_kind), do: nil
 
   @impl true
