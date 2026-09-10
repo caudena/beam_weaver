@@ -1,3 +1,7 @@
+# This demonstrates incremental argument assembly. OpenAI Responses replay must
+# use the terminal Events.Message to retain the separate fc_ item ID and reasoning.
+# See openai_responses_tool_roundtrip.exs for a complete streaming agent/tool loop.
+
 alias BeamWeaver.Core.Messages
 alias BeamWeaver.Stream
 alias BeamWeaver.Stream.Envelope

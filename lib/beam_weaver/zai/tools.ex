@@ -23,9 +23,11 @@ defmodule BeamWeaver.ZAI.Tools do
   def to_chat_tool(%{__struct__: _module} = tool), do: ChatCompletions.Messages.tool_to_openai(tool)
 
   def to_chat_tool(tool) when is_map(tool) do
-    tool
-    |> BeamWeaver.MapShape.stringify_keys()
-    |> ChatCompletions.Messages.tool_to_openai()
+    tool = BeamWeaver.MapShape.stringify_keys(tool)
+
+    if is_binary(tool["type"]) and tool["type"] != "function",
+      do: tool,
+      else: ChatCompletions.Messages.tool_to_openai(tool)
   end
 
   def to_chat_tool(tool), do: ChatCompletions.Messages.tool_to_openai(tool)
@@ -54,16 +56,7 @@ defmodule BeamWeaver.ZAI.Tools do
 
   defp validate_tool(%{"type" => "function"} = tool), do: validate_function_tool(tool)
 
-  defp validate_tool(%{"type" => type}) do
-    {:error,
-     Error.new(:unsupported_feature, "Z.ai tool type is not supported", %{
-       provider: :zai,
-       api: :chat_completions,
-       feature: :tools,
-       unsupported: [type],
-       supported: ["function"]
-     })}
-  end
+  defp validate_tool(%{"type" => type}) when is_binary(type) and byte_size(type) > 0, do: :ok
 
   defp validate_tool(tool) do
     {:error,

@@ -111,4 +111,72 @@ defmodule BeamWeaver.TodoTest do
 
     assert {:error, %Error{type: :invalid_todo_revision}} = Todo.revise(first, changed, opts)
   end
+
+  test "approved intent survives handoff and cannot be rewritten in a revision" do
+    intent = %{
+      "origin" => "approved_plan",
+      "payload" => %{"acceptance_criteria" => ["passes"], "verification_steps" => ["verify"]}
+    }
+
+    {:ok, original} =
+      Todo.new("reviewed", [
+        %{
+          id: "a",
+          content: "Work",
+          intent: intent,
+          status: :in_progress,
+          owner: "old",
+          assignment_id: "assignment-old",
+          evidence: [%{kind: :assignment, ref: "assignment-old"}]
+        }
+      ])
+
+    opts = [expected_revision: original.revision, expected_hash: original.hash]
+
+    assert {:ok, moved} =
+             Todo.handoff(
+               original,
+               %{"a" => %{owner: "new", assignment_id: "assignment-new"}},
+               "continue-receipt",
+               opts
+             )
+
+    assert [item] = moved.items
+    assert item.intent == intent
+    assert item.status == :in_progress
+    assert item.owner == "new"
+    assert moved.previous_hash == original.hash
+    assert :ok = Todo.validate(moved)
+
+    assert {:error, %Error{type: :invalid_todo_revision}} =
+             Todo.revise(
+               moved,
+               [%{item | intent: Map.put(intent, "payload", %{})}],
+               expected_revision: moved.revision,
+               expected_hash: moved.hash
+             )
+
+    for invalid <- [nil, %{}, %{owner: "new"}, %{owner: "new", assignment_id: nil}] do
+      assert {:error, _} = Todo.handoff(original, %{"a" => invalid}, "receipt", opts)
+    end
+
+    assert {:error, _} = Todo.handoff(original, %{"missing" => %{owner: "new", assignment_id: "a"}}, "receipt", opts)
+  end
+
+  test "shared maximum-size DAGs validate and cycles remain rejected" do
+    items =
+      for n <- 1..128 do
+        %{
+          id: "node-#{n}",
+          content: "node #{n}",
+          dependencies: for(previous <- [n - 1, n - 2], previous > 0, do: "node-#{previous}")
+        }
+      end
+
+    task = Task.async(fn -> Todo.new("shared", items) end)
+    assert {:ok, valid} = Task.await(task, 2_000)
+    assert length(valid.items) == 128
+    cyclic = List.update_at(items, 0, &%{&1 | dependencies: ["node-128"]})
+    assert {:error, %Error{type: :todo_cycle}} = Todo.new("cycle", cyclic)
+  end
 end

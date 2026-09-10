@@ -112,11 +112,19 @@ defmodule BeamWeaver.DeepSeek.Client.ResponseDecoder do
   end
 
   defp chat_completion_response(body) do
-    state =
-      body
-      |> BeamWeaver.Provider.SSE.events()
-      |> Enum.reduce(%{response: %{}, choices: %{}}, &apply_chat_event/2)
+    body
+    |> BeamWeaver.Provider.SSE.events()
+    |> reduce_chat_events(nil)
+    |> chat_stream_response()
+  end
 
+  @doc false
+  def reduce_chat_events(events, state) do
+    Enum.reduce(events, state || %{response: %{}, choices: %{}}, &apply_chat_event/2)
+  end
+
+  @doc false
+  def chat_stream_response(state) do
     if map_size(state.choices) == 0 do
       {:error, Error.new(:invalid_response, "DeepSeek chat-completions stream had no choices")}
     else

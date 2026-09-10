@@ -242,9 +242,11 @@ defmodule BeamWeaver.Google.ChatModel do
   end
 
   defp effective_tool_choice(model, opts, tools, nil) do
-    if explicit_tool_choice?(model, opts) or List.wrap(tools) == [],
-      do: nil,
-      else: :auto
+    cond do
+      explicit_tool_choice?(model, opts) or List.wrap(tools) == [] -> nil
+      Tools.mixed_execution?(tools) -> :validated
+      true -> :auto
+    end
   end
 
   defp effective_tool_choice(_model, _opts, _tools, choice), do: choice

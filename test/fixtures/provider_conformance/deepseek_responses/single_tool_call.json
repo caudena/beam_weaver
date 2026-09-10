@@ -37,25 +37,25 @@
         }
       ],
       "usage_metadata": {
-        "input_cost": 2.6872e-5,
+        "input_cost": 2.6872e-05,
         "input_cost_details": {
-          "cache_read": 1.792e-6,
-          "uncached": 2.508e-5
+          "cache_read": 1.792e-06,
+          "uncached": 2.508e-05
         },
         "input_token_details": {
           "cache_miss": 114,
           "cache_read": 256
         },
         "input_tokens": 370,
-        "output_cost": 4.554e-5,
+        "output_cost": 4.554e-05,
         "output_cost_details": {
-          "text": 4.554e-5
+          "text": 4.554e-05
         },
         "output_token_details": {
           "reasoning": 24
         },
         "output_tokens": 69,
-        "total_cost": 7.2412e-5,
+        "total_cost": 7.2412e-05,
         "total_tokens": 439
       }
     }
@@ -114,7 +114,7 @@
       "background": false,
       "completed_at": "**REDACTED**",
       "content_filters": "nil",
-      "created_at": "**REDACTED**",
+      "created_at": 1787054400,
       "error": "nil",
       "frequency_penalty": 0.0,
       "id": "fixture-id-1",
@@ -265,5 +265,6 @@
     ],
     "status": 200
   },
-  "scenario": "single_tool_call"
+  "scenario": "single_tool_call",
+  "fixture_timestamp_note": "Redacted creation times use 2026-08-18T12:00:00Z to test historical V4 pricing; this is not the original capture time."
 }

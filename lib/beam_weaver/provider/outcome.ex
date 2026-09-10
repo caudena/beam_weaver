@@ -67,12 +67,27 @@ defmodule BeamWeaver.Provider.Outcome do
       status in ["queued", "in_progress"] ->
         outcome(remote_status(status), :no_usable_output, completeness(message))
 
-      Message.text(message) != "" ->
+      Message.text(message) != "" or hosted_result?(message) ->
         outcome(:completed, :final_output, :complete)
 
       true ->
         outcome(remote_status(status), :no_usable_output, :absent)
     end
+  end
+
+  defp hosted_result?(message) do
+    message.server_tool_results != [] or
+      Enum.any?(List.wrap(metadata_value(message.metadata, :output)), fn item ->
+        is_map(item) and
+          Map.get(item, "type") not in [
+            "function_call",
+            "custom_tool_call",
+            "computer_call",
+            "apply_patch_call",
+            "local_shell_call"
+          ] and
+          (Map.get(item, "result") not in [nil, "", []] or Map.get(item, "output") not in [nil, "", []])
+      end)
   end
 
   @spec valid?(t()) :: boolean()

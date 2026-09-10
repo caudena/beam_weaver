@@ -6,15 +6,22 @@ defmodule BeamWeaver.DeepSeek.Tools do
   alias BeamWeaver.DeepSeek.Error
   alias BeamWeaver.OpenAI.ChatCompletions
   alias BeamWeaver.OpenAI.ToolCalling
+  alias BeamWeaver.Tool.Renderer
 
-  @chat_function_name ~r/^[A-Za-z0-9_-]{1,64}$/
+  @chat_function_name ~r/^[A-Za-z0-9_-]{1,128}$/
   @responses_function_name ~r/^[A-Za-z0-9_-]{1,128}$/
   @max_tools 128
   @responses_tool_types ["function", "web_search", "web_search_2025_08_26"]
 
   @doc "Builds an OpenAI-compatible function tool declaration."
   @spec function(term(), keyword()) :: map()
-  def function(tool, opts \\ []), do: ToolCalling.function(tool, opts)
+  def function(tool, opts \\ []) do
+    {render_opts, extra_opts} = Keyword.split(opts, [:strict])
+
+    tool
+    |> to_responses_tool(render_opts)
+    |> Map.merge(BeamWeaver.MapShape.stringify_entries(extra_opts))
+  end
 
   @doc "Builds a DeepSeek Responses web-search declaration."
   @spec web_search(keyword()) :: map()
@@ -37,8 +44,8 @@ defmodule BeamWeaver.DeepSeek.Tools do
 
   @doc "Converts one tool to a DeepSeek Chat Completions declaration."
   @spec to_chat_tool(term()) :: map()
-  def to_chat_tool(%{__struct__: _module} = tool),
-    do: ChatCompletions.Messages.tool_to_openai(tool)
+  def to_chat_tool(%{__struct__: _module} = tool), do: native_chat_tool(tool)
+  def to_chat_tool(tool) when is_atom(tool), do: native_chat_tool(tool)
 
   def to_chat_tool(tool) when is_map(tool) do
     tool
@@ -47,6 +54,20 @@ defmodule BeamWeaver.DeepSeek.Tools do
   end
 
   def to_chat_tool(tool), do: ChatCompletions.Messages.tool_to_openai(tool)
+
+  def to_responses_tools(tools), do: Enum.map(tools, &to_responses_tool(&1, []))
+
+  defp to_responses_tool(tool, opts) when is_struct(tool) or is_atom(tool),
+    do: Renderer.openai_tool!(tool, Keyword.put(opts, :provider, :deepseek))
+
+  defp to_responses_tool(tool, opts) do
+    tool
+    |> ToolCalling.to_openai_tool()
+    |> Map.merge(BeamWeaver.MapShape.stringify_entries(opts))
+  end
+
+  defp native_chat_tool(tool),
+    do: %{"type" => "function", "function" => to_responses_tool(tool, []) |> Map.delete("type")}
 
   @doc false
   @spec validate_chat_tools([map()]) :: :ok | {:error, Error.t()}
@@ -113,6 +134,9 @@ defmodule BeamWeaver.DeepSeek.Tools do
     do: :ok
 
   defp validate_tool(%{"type" => "custom", "name" => "apply_patch"}, :responses), do: :ok
+
+  defp validate_tool(%{"type" => type}, :responses) when is_binary(type) and type != "custom" and byte_size(type) > 0,
+    do: :ok
 
   defp validate_tool(%{"type" => type} = tool, :responses) do
     {:error,

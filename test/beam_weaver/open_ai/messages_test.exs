@@ -1080,6 +1080,10 @@ defmodule BeamWeaver.OpenAI.MessagesTest do
                  code: "return tools.lookup({});",
                  fingerprint: "fp_program"
                }
+             },
+             %ContentBlock.Unknown{
+               provider_type: "something_else",
+               value: %{raw_provider_block: %{"type" => "something_else", "foo" => "bar"}}
              }
            ] = message.content
 

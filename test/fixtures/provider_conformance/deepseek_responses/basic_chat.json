@@ -27,25 +27,25 @@
       "text": "pong",
       "tool_calls": [],
       "usage_metadata": {
-        "input_cost": 1.9580000000000002e-5,
+        "input_cost": 1.9580000000000002e-05,
         "input_cost_details": {
           "cache_read": 0.0,
-          "uncached": 1.9580000000000002e-5
+          "uncached": 1.9580000000000002e-05
         },
         "input_token_details": {
           "cache_miss": 89,
           "cache_read": 0
         },
         "input_tokens": 89,
-        "output_cost": 1.914e-5,
+        "output_cost": 1.914e-05,
         "output_cost_details": {
-          "text": 1.914e-5
+          "text": 1.914e-05
         },
         "output_token_details": {
           "reasoning": 26
         },
         "output_tokens": 29,
-        "total_cost": 3.872e-5,
+        "total_cost": 3.872e-05,
         "total_tokens": 118
       }
     }
@@ -85,7 +85,7 @@
       "background": false,
       "completed_at": "**REDACTED**",
       "content_filters": "nil",
-      "created_at": "**REDACTED**",
+      "created_at": 1787054400,
       "error": "nil",
       "frequency_penalty": 0.0,
       "id": "fixture-id-1",
@@ -224,5 +224,6 @@
     ],
     "status": 200
   },
-  "scenario": "basic_chat"
+  "scenario": "basic_chat",
+  "fixture_timestamp_note": "Redacted creation times use 2026-08-18T12:00:00Z to test historical V4 pricing; this is not the original capture time."
 }

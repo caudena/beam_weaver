@@ -158,11 +158,9 @@ defmodule BeamWeaver.OpenAI.Messages.Response do
   end
 
   defp output_item_blocks(%{"type" => type} = item) do
-    if Shared.output_block_type?(type) do
-      [provider_output_block(item)]
-    else
-      []
-    end
+    # Preserve future provider output items as opaque content. Only explicit
+    # function calls become client-executable calls below.
+    if is_binary(type), do: [provider_output_block(item)], else: []
   end
 
   defp output_item_blocks(_item), do: []

@@ -10,25 +10,6 @@ defmodule BeamWeaver.Google.Tools do
   alias BeamWeaver.Provider.Options
   alias BeamWeaver.Tool.Schema
 
-  @builtin_tool_keys [
-    "google_search",
-    "googleSearch",
-    "google_search_retrieval",
-    "googleSearchRetrieval",
-    "google_maps",
-    "googleMaps",
-    "code_execution",
-    "codeExecution",
-    "file_search",
-    "fileSearch",
-    "url_context",
-    "urlContext",
-    "computer_use",
-    "computerUse",
-    "mcp_servers",
-    "mcpServers"
-  ]
-
   @unsupported_function_parameter_schema_keys MapSet.new([
                                                 "$defs",
                                                 "$id",
@@ -93,6 +74,8 @@ defmodule BeamWeaver.Google.Tools do
   @impl true
   def render_tool_choice(nil, _tools, _opts), do: {:ok, nil}
   def render_tool_choice(false, _tools, _opts), do: {:ok, nil}
+  def render_tool_choice(:validated, _tools, _opts), do: {:ok, function_calling_config("VALIDATED")}
+  def render_tool_choice("validated", _tools, _opts), do: {:ok, function_calling_config("VALIDATED")}
   def render_tool_choice(:auto, _tools, _opts), do: {:ok, function_calling_config("AUTO")}
   def render_tool_choice("auto", _tools, _opts), do: {:ok, function_calling_config("AUTO")}
   def render_tool_choice(:none, _tools, _opts), do: {:ok, function_calling_config("NONE")}
@@ -209,9 +192,13 @@ defmodule BeamWeaver.Google.Tools do
   defp sanitize_schema_value(value) when is_list(value), do: Enum.map(value, &sanitize_schema_value/1)
   defp sanitize_schema_value(value), do: value
 
+  @doc false
+  def mixed_execution?(tools) do
+    Enum.any?(tools, &builtin_tool?/1) and Enum.any?(tools, &(not builtin_tool?(&1)))
+  end
+
   defp builtin_tool?(tool) when is_map(tool) do
-    keys = Enum.map(Map.keys(tool), &to_string/1)
-    Enum.any?(@builtin_tool_keys, &(&1 in keys))
+    not is_struct(tool) and not Map.has_key?(tool, "name") and not Map.has_key?(tool, :name)
   end
 
   defp builtin_tool?(_tool), do: false

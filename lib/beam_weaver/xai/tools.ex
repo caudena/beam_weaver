@@ -27,21 +27,6 @@ defmodule BeamWeaver.XAI.Tools do
     "view_x_video"
   ]
 
-  @responses_tool_types [
-    "attachment_search",
-    "code_execution",
-    "code_interpreter",
-    "collections_search",
-    "file_search",
-    "function",
-    "mcp",
-    "shell",
-    "view_image",
-    "view_x_video",
-    "web_search",
-    "x_search"
-  ]
-
   @chat_completions_tool_types ["function", "live_search"]
 
   @doc """
@@ -84,8 +69,23 @@ defmodule BeamWeaver.XAI.Tools do
 
   @doc false
   @spec validate_responses_tools([map()]) :: :ok | {:error, Error.t()}
-  def validate_responses_tools(tools),
-    do: validate_tool_types(tools, @responses_tool_types, :responses)
+  def validate_responses_tools(tools) do
+    cond do
+      Enum.any?(tools, &(&1["type"] == "live_search")) ->
+        {:error,
+         Error.new(:unsupported_feature, "live_search requires Chat Completions", %{
+           provider: :xai,
+           api: :responses,
+           unsupported: ["live_search"]
+         })}
+
+      Enum.all?(tools, &(is_binary(&1["type"]) and &1["type"] != "")) ->
+        :ok
+
+      true ->
+        {:error, Error.new(:invalid_tool, "xAI tools require a type")}
+    end
+  end
 
   @doc false
   @spec validate_chat_completions_tools([map()]) :: :ok | {:error, Error.t()}

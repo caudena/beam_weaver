@@ -28,8 +28,10 @@ defmodule BeamWeaver.DeepSeek.Messages do
     :unknown
   ]
 
-  @spec to_chat_messages([Message.t()]) :: {:ok, [map()]} | {:error, Error.t()}
-  def to_chat_messages([]) do
+  @spec to_chat_messages([Message.t()], String.t()) :: {:ok, [map()]} | {:error, Error.t()}
+  def to_chat_messages(messages, model \\ "deepseek-flash")
+
+  def to_chat_messages([], _model) do
     {:error,
      Error.new(:invalid_messages, "DeepSeek Chat Completions requires at least one message", %{
        provider: :deepseek,
@@ -37,28 +39,30 @@ defmodule BeamWeaver.DeepSeek.Messages do
      })}
   end
 
-  def to_chat_messages(messages) when is_list(messages) do
-    with :ok <- validate_text_messages(messages, :chat_completions),
+  def to_chat_messages(messages, model) when is_list(messages) do
+    with :ok <- validate_messages(messages, :chat_completions, model),
          {:ok, wire_messages} <-
            messages
            |> Enum.map(&text_only_message/1)
            |> ChatCompletions.Messages.to_openai_messages()
            |> convert_error(),
-         wire_messages <- decorate_chat_messages(wire_messages, messages),
+         {:ok, wire_messages} <- decorate_chat_messages(wire_messages, messages),
          :ok <- validate_prefix_messages(wire_messages) do
       {:ok, wire_messages}
     end
   end
 
-  def to_chat_messages(_messages) do
+  def to_chat_messages(_messages, _model) do
     {:error, Error.new(:invalid_messages, "DeepSeek messages must be a list")}
   end
 
   @spec validate_text_messages([Message.t()], :chat_completions | :responses) ::
           :ok | {:error, Error.t()}
-  def validate_text_messages(messages, api) when is_list(messages) do
+  def validate_text_messages(messages, api), do: validate_messages(messages, api, nil)
+
+  def validate_messages(messages, api, model) when is_list(messages) do
     Enum.reduce_while(messages, :ok, fn message, :ok ->
-      case validate_text_message(message, api) do
+      case validate_message(message, api, model) do
         :ok -> {:cont, :ok}
         {:error, error} -> {:halt, {:error, error}}
       end
@@ -120,30 +124,34 @@ defmodule BeamWeaver.DeepSeek.Messages do
 
   def usage_metadata(_response), do: nil
 
-  defp validate_text_message(%Message{content: content, role: role}, api) when is_list(content) do
+  defp validate_message(%Message{content: content, role: role}, api, model) when is_list(content) do
     Enum.reduce_while(content, :ok, fn block, :ok ->
-      case validate_content_block(block, role, api) do
+      case validate_content_block(block, role, api, model) do
         :ok -> {:cont, :ok}
         {:error, error} -> {:halt, {:error, error}}
       end
     end)
   end
 
-  defp validate_text_message(%Message{content: content}, _api) when is_binary(content), do: :ok
+  defp validate_message(%Message{content: content}, _api, _model) when is_binary(content), do: :ok
 
-  defp validate_text_message(%Message{}, _api) do
-    {:error, Error.new(:invalid_message, "DeepSeek message content must be text")}
+  defp validate_message(%Message{}, _api, _model) do
+    {:error, Error.new(:invalid_message, "DeepSeek message content must be text or content blocks")}
   end
 
-  defp validate_text_message(_message, _api) do
+  defp validate_message(_message, _api, _model) do
     {:error, Error.new(:invalid_message, "expected a BeamWeaver message")}
   end
 
-  defp validate_content_block(block, role, api) do
+  defp validate_content_block(block, role, api, model) do
     type = content_type(block)
     allowed = if api == :responses, do: @responses_allowed_content_types, else: @chat_allowed_content_types
 
     cond do
+      type in [:image, :file] and BeamWeaver.Models.ProfileRegistry.DeepSeek.vision_model?(model) and
+        (type == :image or api == :chat_completions) and role in [:user, :tool] ->
+        :ok
+
       ContentBlock.data?(block) ->
         unsupported_media(content_feature(type), api)
 
@@ -160,7 +168,7 @@ defmodule BeamWeaver.DeepSeek.Messages do
 
       true ->
         {:error,
-         Error.new(:unsupported_feature, "DeepSeek supports text message content only", %{
+         Error.new(:unsupported_feature, "DeepSeek does not support this message content", %{
            provider: :deepseek,
            api: api,
            feature: content_feature(type)
@@ -170,7 +178,7 @@ defmodule BeamWeaver.DeepSeek.Messages do
 
   defp unsupported_media(feature, api) do
     {:error,
-     Error.new(:unsupported_feature, "DeepSeek does not support media message input", %{
+     Error.new(:unsupported_feature, "DeepSeek does not support this media input", %{
        provider: :deepseek,
        api: api,
        feature: feature
@@ -195,7 +203,7 @@ defmodule BeamWeaver.DeepSeek.Messages do
 
   defp content_type(_block), do: :unknown
 
-  defp normalize_content_type(type) when is_atom(type), do: type
+  defp normalize_content_type(type) when is_atom(type), do: normalize_content_type(Atom.to_string(type))
 
   defp normalize_content_type(type) when is_binary(type) do
     case type do
@@ -228,16 +236,37 @@ defmodule BeamWeaver.DeepSeek.Messages do
 
   defp decorate_chat_messages(wire_messages, messages) do
     Enum.zip(wire_messages, messages)
-    |> Enum.map(fn {wire, message} -> decorate_chat_message(wire, message) end)
+    |> BeamWeaver.Result.traverse(fn {wire, message} -> decorate_chat_message(wire, message) end)
   end
 
   defp decorate_chat_message(wire, %Message{role: :assistant} = message) do
-    wire
-    |> put_optional("reasoning_content", assistant_reasoning(message))
-    |> put_optional("prefix", prefix?(message))
+    {:ok,
+     wire
+     |> put_optional("reasoning_content", assistant_reasoning(message))
+     |> put_optional("prefix", prefix?(message))}
   end
 
-  defp decorate_chat_message(wire, _message), do: wire
+  defp decorate_chat_message(wire, %Message{content: content}) when is_list(content) do
+    if Enum.any?(content, &(content_type(&1) in [:image, :file])) do
+      with {:ok, [%{"content" => parts}]} <- OpenAIMessages.to_responses_input([Message.user(content)]) do
+        {:ok, Map.put(wire, "content", Enum.map(parts, &chat_image_part/1))}
+      end
+    else
+      {:ok, wire}
+    end
+  end
+
+  defp decorate_chat_message(wire, _message), do: {:ok, wire}
+
+  defp chat_image_part(%{"type" => "input_text", "text" => text}), do: %{"type" => "text", "text" => text}
+  defp chat_image_part(%{"type" => "input_image", "file_id" => id}), do: %{"type" => "file", "file_id" => id}
+
+  defp chat_image_part(%{"type" => "input_image"} = part) do
+    %{"type" => "image_url", "image_url" => %{"url" => part["image_url"]} |> put_optional("detail", part["detail"])}
+  end
+
+  defp chat_image_part(%{"type" => "input_file"} = part), do: Map.put(part, "type", "file")
+  defp chat_image_part(part), do: part
 
   defp assistant_reasoning(%Message{} = message) do
     metadata_value(message.metadata, :reasoning_content) ||

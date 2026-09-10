@@ -9,7 +9,7 @@ defmodule BeamWeaver.Todo.Item do
   @statuses [:pending, :in_progress, :blocked, :completed, :cancelled]
 
   @enforce_keys [:id, :content]
-  defstruct [:id, :content, :owner, :assignment_id, :blocker, dependencies: [], status: :pending, evidence: []]
+  defstruct [:id, :content, :owner, :assignment_id, :blocker, :intent, dependencies: [], status: :pending, evidence: []]
 
   @type status :: :pending | :in_progress | :blocked | :completed | :cancelled
   @type evidence :: %{kind: atom(), ref: String.t()}
@@ -17,6 +17,7 @@ defmodule BeamWeaver.Todo.Item do
   @type t :: %__MODULE__{
           id: String.t(),
           content: String.t(),
+          intent: map() | nil,
           dependencies: [String.t()],
           status: status(),
           owner: String.t() | nil,

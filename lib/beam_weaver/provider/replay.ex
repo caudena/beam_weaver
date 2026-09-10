@@ -21,6 +21,8 @@ defmodule BeamWeaver.Provider.Replay do
         "version" => @version,
         "binding" => stringify(binding),
         "status" => scalar(message.status),
+        "container" => container_id(message),
+        "native_content" => native_content(message, binding),
         "content" => replay_blocks(message, binding),
         "tool_calls" => tool_calls
       }
@@ -31,6 +33,56 @@ defmodule BeamWeaver.Provider.Replay do
 
   def project(%Message{}, _binding),
     do: {:error, Error.new(:invalid_provider_replay, "only assistant messages can be replayed")}
+
+  defp container_id(message) do
+    case Map.get(message.response_metadata, :container) || Map.get(message.response_metadata, "container") do
+      %{"id" => id} when is_binary(id) -> id
+      %{id: id} when is_binary(id) -> id
+      _ -> nil
+    end
+  end
+
+  defp native_content(message, binding) do
+    provider = Map.get(binding, :provider) || Map.get(binding, "provider")
+    metadata = message.response_metadata
+
+    content =
+      cond do
+        provider in [:anthropic, "anthropic"] ->
+          raw = Map.get(metadata, :raw_provider_response) || Map.get(metadata, "raw_provider_response") || %{}
+          raw["content"]
+
+        provider in [:google, "google"] ->
+          Map.get(metadata, :provider_content) || Map.get(metadata, "provider_content")
+
+        provider in [:openai, "openai", :xai, "xai", :deepseek, "deepseek"] ->
+          Map.get(message.metadata, :output) || Map.get(message.metadata, "output")
+
+        true ->
+          nil
+      end
+
+    if is_list(content) and Enum.all?(content, &is_map/1), do: stringify(content), else: nil
+  end
+
+  defp restored_metadata(projection) do
+    metadata =
+      case projection do
+        %{"binding" => %{"provider" => "anthropic"}, "container" => id} when is_binary(id) ->
+          %{container: %{"id" => id}}
+
+        _ ->
+          %{}
+      end
+
+    case projection["native_content"] do
+      content when is_list(content) ->
+        Map.put(metadata, :provider_replay, %{provider: projection["binding"]["provider"], content: content})
+
+      _ ->
+        metadata
+    end
+  end
 
   defp encode_projection(projection) do
     with {:ok, encoded} <- BeamWeaver.JSON.encode(projection),
@@ -52,6 +104,7 @@ defmodule BeamWeaver.Provider.Replay do
          {:ok, message} <-
            Message.new(:assistant, content,
              status: projection["status"],
+             response_metadata: restored_metadata(projection),
              tool_calls: tool_calls
            ),
          :ok <- Message.validate(message) do
@@ -111,6 +164,22 @@ defmodule BeamWeaver.Provider.Replay do
         _invalid ->
           []
       end
+    end
+  end
+
+  defp replay_boundary_block(%ContentBlock.Unknown{provider_type: type, value: value}, _binding)
+       when is_map(value) do
+    raw = Map.get(value, :raw_provider_block) || Map.get(value, "raw_provider_block") || value
+    [%{"type" => "provider_native", "provider_type" => to_string(type), "value" => stringify(raw)}]
+  end
+
+  defp replay_boundary_block(%{} = block, _binding) do
+    raw = Map.get(block, :raw_provider_block) || Map.get(block, "raw_provider_block")
+    type = Map.get(block, :type) || Map.get(block, "type")
+
+    if is_map(raw) and
+         type not in [:tool_call, "tool_call", :function_call, "function_call", :reasoning, "reasoning", :text, "text"] do
+      [%{"type" => "provider_native", "provider_type" => to_string(type), "value" => stringify(raw)}]
     end
   end
 
@@ -245,6 +314,10 @@ defmodule BeamWeaver.Provider.Replay do
      })}
   end
 
+  defp restore_block(%{"type" => "provider_native", "provider_type" => type, "value" => value}, _provider)
+       when is_binary(type) and is_map(value),
+       do: {:ok, ContentBlock.unknown(type, value)}
+
   defp restore_block(%{"type" => "reasoning", "reasoning" => reasoning} = block, "openai")
        when is_binary(reasoning) do
     with {:ok, provider_fields} <- restore_provider_fields(block) do
@@ -313,7 +386,7 @@ defmodule BeamWeaver.Provider.Replay do
   defp restore_tool_call(_call), do: invalid_replay("provider replay tool call is invalid")
 
   defp atomize_tool_call(call) when is_map(call) do
-    %{
+    %BeamWeaver.Core.Messages.ToolCall{
       id: call["id"],
       provider_id: call["provider_id"],
       call_id: call["call_id"],
@@ -321,7 +394,6 @@ defmodule BeamWeaver.Provider.Replay do
       args: call["arguments"] || %{},
       thought_signature: call["thought_signature"]
     }
-    |> reject_nil()
   end
 
   defp stringify(nil), do: nil
@@ -333,6 +405,7 @@ defmodule BeamWeaver.Provider.Replay do
   end
 
   defp stringify(value) when is_list(value), do: Enum.map(value, &stringify/1)
+  defp stringify(value) when is_boolean(value), do: value
   defp stringify(value) when is_atom(value), do: Atom.to_string(value)
   defp stringify(value) when is_binary(value) or is_number(value) or is_boolean(value), do: value
   defp stringify(_value), do: nil
