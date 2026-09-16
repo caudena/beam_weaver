@@ -62,6 +62,26 @@ defmodule BeamWeaver.Google.Streaming do
     end)
   end
 
+  @doc false
+  def typed_events(events, state) do
+    responses = for %{"data" => %{} = response} <- events, do: response
+    {typed_events(events), Enum.reverse(responses, state || [])}
+  end
+
+  @doc false
+  def finish_typed_events(state) do
+    response = merge_responses(Enum.reverse(state || []))
+    candidate = get_in(response, ["candidates", Access.at(0)]) || %{}
+    blocked? = get_in(response, ["promptFeedback", "blockReason"]) not in [nil, "", "BLOCK_REASON_UNSPECIFIED"]
+
+    if is_binary(candidate["finishReason"]) or blocked? do
+      {:ok, [Stream.envelope(%Events.Done{result: response}, metadata: %{provider: :google})]}
+    else
+      {:error,
+       BeamWeaver.Core.Error.new(:invalid_provider_stream, "Gemini stream ended without a terminal finish reason")}
+    end
+  end
+
   @spec response_from_sse_body(binary() | map()) :: map()
   def response_from_sse_body(body) when is_binary(body) do
     body
@@ -82,8 +102,15 @@ defmodule BeamWeaver.Google.Streaming do
       end)
       |> merge_response_parts()
 
-    final = List.last(responses) || %{}
-    candidate = get_in(final, ["candidates", Access.at(0)]) || %{}
+    # Usage-only trailers must not erase the last candidate, finish reason or
+    # grounding metadata; those may arrive before the last transport chunk.
+    final = Enum.reduce(responses, %{}, &Map.merge(&2, Map.delete(&1, "candidates")))
+
+    candidate =
+      Enum.reduce(responses, %{}, fn response, acc ->
+        Map.merge(acc, get_in(response, ["candidates", Access.at(0)]) || %{})
+      end)
+
     content = %{"role" => "model", "parts" => parts}
 
     final

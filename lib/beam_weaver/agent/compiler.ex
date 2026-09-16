@@ -30,7 +30,7 @@ defmodule BeamWeaver.Agent.Compiler do
     middleware_tools = Enum.flat_map(middleware, &Middleware.tools/1)
     base_tools = normalize_declared_tools(middleware_tools ++ spec.tools)
     response_strategy = StructuredOutput.effective_strategy(response_format, spec.model, base_tools)
-    separate_structured_response? = separate_structured_response?(response_strategy, base_tools)
+    separate_structured_response? = separate_structured_response?(response_strategy, base_tools, spec.model)
 
     structured_tools =
       if separate_structured_response?,
@@ -513,16 +513,30 @@ defmodule BeamWeaver.Agent.Compiler do
     |> Enum.uniq_by(&Tool.name/1)
   end
 
-  defp separate_structured_response?(nil, _base_tools), do: false
-  defp separate_structured_response?(_strategy, []), do: false
-  defp separate_structured_response?(_strategy, _base_tools), do: true
+  # A provider that accepts a response schema alongside function tools (the
+  # model profile's `structured_output_with_tools`) answers the tool loop and
+  # the structured output in one call: tool-call turns pass through the
+  # provider strategy untouched and the final message is parsed against the
+  # schema. Every other combination of tools and a structured response keeps
+  # the separate structured-response call after the tool loop.
+  defp separate_structured_response?(nil, _base_tools, _model), do: false
+  defp separate_structured_response?(_strategy, [], _model), do: false
 
+  defp separate_structured_response?(%BeamWeaver.Agent.StructuredOutput.ProviderStrategy{}, _base_tools, model),
+    do: not BeamWeaver.Agent.StructuredOutput.Policy.structured_output_with_tools?(model)
+
+  defp separate_structured_response?(_strategy, _base_tools, _model), do: true
+
+  # The structured-response call repeats the whole conversation, so it keeps
+  # the prompt-cache middleware: without it the call carries no cache key and
+  # pays the uncached price for the context the tool loop just cached.
   defp final_response_middleware(middleware) do
     Enum.filter(middleware, fn middleware ->
       Middleware.name(middleware) in [
         "structured_output_retry",
         "model_retry",
-        "deepagents_overflow_clip"
+        "deepagents_overflow_clip",
+        "deepagents_prompt_caching"
       ]
     end)
   end

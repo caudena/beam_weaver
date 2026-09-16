@@ -20,10 +20,16 @@ defmodule BeamWeaver.Tools.Shell.HostExecutorTest do
     assert result.output =~ "ok"
   end
 
-  test "closes command stdin like System.cmd" do
+  test "commands read EOF on stdin instead of inheriting the VM's stdin" do
     policy = ShellPolicy.new!(allow: ["cat"], timeout: 1_000)
 
     assert {:ok, %{status: 0, output: ""}} = HostExecutor.run("cat", policy)
+  end
+
+  test "separate-stderr commands also read EOF on stdin" do
+    policy = ShellPolicy.new!(allow: ["cat"], stderr: :separate, timeout: 1_000)
+
+    assert {:ok, %{status: 0, output: "", stderr: ""}} = HostExecutor.run("cat", policy)
   end
 
   test "separate stderr preserves shell syntax failures and nonzero status" do

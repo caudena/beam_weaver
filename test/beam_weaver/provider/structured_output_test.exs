@@ -9,6 +9,20 @@ defmodule BeamWeaver.Provider.StructuredOutputTest do
   alias BeamWeaver.Provider.StructuredOutput
   alias BeamWeaver.XAI
 
+  test "a tool-call turn under a response schema passes through unparsed" do
+    message = Message.assistant("", tool_calls: [%{id: "call-1", name: "lookup", args: %{"q" => "x"}}])
+
+    opts = [
+      response_format: %{
+        name: "answer",
+        schema: %{"type" => "object", "properties" => %{"answer" => %{"type" => "string"}}, "required" => ["answer"]}
+      }
+    ]
+
+    assert {:ok, ^message} = StructuredOutput.maybe_parse(message, opts)
+    refute Map.has_key?(message.metadata, :parsed)
+  end
+
   test "strict providers return structured output parse errors for invalid JSON" do
     message = Message.assistant("not json")
     opts = [response_format: %{type: :json_object}]

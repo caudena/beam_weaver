@@ -3,9 +3,12 @@ defmodule BeamWeaver.Agent.StructuredOutput.AutoStrategy do
   Strategy marker that lets BeamWeaver choose provider-native or tool-based structured output.
   """
 
-  defstruct [:schema]
+  # `opts` keeps the declaration's `name`, `description`, `strict`,
+  # `tool_message_content` and `handle_errors`, so the strategy the policy
+  # resolves to (provider or tool) is configured as declared.
+  defstruct schema: nil, opts: []
 
-  @type t :: %__MODULE__{schema: term()}
+  @type t :: %__MODULE__{schema: term(), opts: keyword()}
 end
 
 defmodule BeamWeaver.Agent.StructuredOutput.ToolStrategy do

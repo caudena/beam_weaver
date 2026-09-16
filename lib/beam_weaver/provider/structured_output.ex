@@ -9,12 +9,23 @@ defmodule BeamWeaver.Provider.StructuredOutput do
   def maybe_parse(%Message{} = message, opts, parse_opts \\ []) when is_list(opts) do
     keys = Keyword.get(parse_opts, :keys, @default_keys)
 
-    if requested?(opts, keys) do
-      parse(message, parser(opts), parse_opts)
-    else
-      {:ok, message}
+    cond do
+      not requested?(opts, keys) ->
+        {:ok, message}
+
+      # A turn that calls tools is an intermediate step of the loop, not the
+      # structured answer: when the schema stays on the tool-loop calls, the
+      # answer arrives on a later turn without tool calls.
+      tool_call_turn?(message) ->
+        {:ok, message}
+
+      true ->
+        parse(message, parser(opts), parse_opts)
     end
   end
+
+  defp tool_call_turn?(%Message{tool_calls: calls}) when is_list(calls) and calls != [], do: true
+  defp tool_call_turn?(_message), do: false
 
   @doc false
   def requested?(opts, keys \\ @default_keys) when is_list(opts) and is_list(keys) do

@@ -67,7 +67,9 @@ defmodule BeamWeaver.Provider.ResponseDecoder do
       error_message(provider_error) ||
         "#{provider_name(opts)} request failed with HTTP #{response.status}"
 
-    new_error(opts, error_type(response.status, provider_error, message, opts), message, %{
+    type = error_type(response.status, provider_error, message, opts)
+
+    new_error(opts, type, message, %{
       status: response.status,
       body: BeamWeaver.Transport.Redactor.redact(response.body),
       error: provider_error,
@@ -75,7 +77,7 @@ defmodule BeamWeaver.Provider.ResponseDecoder do
       code: error_field(provider_error, "code"),
       param: error_field(provider_error, "param"),
       request_id: response_header(response, Keyword.get(opts, :request_id_header, "x-request-id")),
-      retryable: response.status in [408, 409, 425, 429, 500, 502, 503, 504]
+      retryable: type != :billing_exhausted and response.status in [408, 409, 425, 429, 500, 502, 503, 504]
     })
   end
 
@@ -88,12 +90,25 @@ defmodule BeamWeaver.Provider.ResponseDecoder do
   defp error_type(status, provider_error, message, opts) do
     context_overflow? = Keyword.get(opts, :context_overflow?, &default_context_overflow?/3)
 
-    if context_overflow?.(status, provider_error, message) do
-      :context_overflow
-    else
-      :http_error
+    cond do
+      context_overflow?.(status, provider_error, message) -> :context_overflow
+      billing_exhausted?(status, provider_error, message) -> :billing_exhausted
+      true -> :http_error
     end
   end
+
+  defp billing_exhausted?(status, error, message) when status in [402, 403, 429] do
+    code = error_field(error, "code")
+
+    code in ["insufficient_quota", "billing_hard_limit_reached", "credit_balance_too_low"] or
+      String.contains?(String.downcase(message), [
+        "prepayment credits are depleted",
+        "credit balance is too low",
+        "insufficient credits"
+      ])
+  end
+
+  defp billing_exhausted?(_status, _error, _message), do: false
 
   defp default_context_overflow?(400, provider_error, message) do
     error_field(provider_error, "code") in ["context_length_exceeded", "prompt_too_long"] or

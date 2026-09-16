@@ -240,6 +240,8 @@ defmodule BeamWeaver.Agent.DSLBehaviorTest do
   defmodule ProviderStructuredToolCallModel do
     @behaviour ChatModel
 
+    # Declares schema-with-tools support: the agent keeps the response schema
+    # on every call and there is no separate structured-response call.
     defstruct [:parent, supports_structured_output: true, supports_structured_output_with_tools: true]
 
     @impl true
@@ -251,6 +253,37 @@ defmodule BeamWeaver.Agent.DSLBehaviorTest do
           send(
             parent,
             {:provider_tool_call_model, Enum.map(messages, & &1.role), response_format}
+          )
+
+      if Enum.any?(messages, &match?(%Message{role: :tool, name: "regular_tool"}, &1)) do
+        {:ok, Message.assistant("", metadata: %{parsed: %{"value" => "after tool"}})}
+      else
+        {:ok,
+         Message.assistant("",
+           tool_calls: [
+             %{id: "call-regular", name: "regular_tool", args: %{"query" => "test query"}}
+           ]
+         )}
+      end
+    end
+  end
+
+  defmodule ProviderStructuredSeparateModel do
+    @behaviour ChatModel
+
+    # No schema-with-tools support: the tool loop runs without a response
+    # format and a separate structured-response call produces the JSON.
+    defstruct [:parent, supports_structured_output: true]
+
+    @impl true
+    def invoke(%__MODULE__{parent: parent}, messages, opts) do
+      response_format = Keyword.get(opts, :response_format)
+
+      if parent,
+        do:
+          send(
+            parent,
+            {:provider_separate_model, Enum.map(messages, & &1.role), response_format}
           )
 
       cond do
@@ -673,6 +706,7 @@ defmodule BeamWeaver.Agent.DSLBehaviorTest do
     tools(__MODULE__.tools())
     response_format(BeamWeaver.Agent.StructuredOutput.provider(@schema))
 
+    def schema, do: @schema
     def model, do: %ProviderStructuredToolCallModel{parent: self()}
 
     def tools do
@@ -688,6 +722,16 @@ defmodule BeamWeaver.Agent.DSLBehaviorTest do
         )
       ]
     end
+  end
+
+  defmodule ProviderStructuredSeparateAgent do
+    use BeamWeaver.Agent
+
+    model(__MODULE__.model())
+    tools(ProviderStructuredToolCallAgent.tools())
+    response_format(BeamWeaver.Agent.StructuredOutput.provider(ProviderStructuredToolCallAgent.schema()))
+
+    def model, do: %ProviderStructuredSeparateModel{parent: self()}
   end
 
   defmodule JumpAgent do
@@ -974,9 +1018,29 @@ defmodule BeamWeaver.Agent.DSLBehaviorTest do
     assert is_function(validator, 1)
   end
 
-  test "provider structured output allows tool-call turns before final JSON" do
+  test "a provider that accepts a schema with tools answers the tool loop and the JSON in one call chain" do
     assert {:ok, %{structured_response: %{"value" => "after tool"}, messages: messages}} =
              ProviderStructuredToolCallAgent.invoke(%{messages: [Message.user("answer and search")]})
+
+    assert [
+             %Message{role: :user},
+             %Message{role: :assistant, content: "", tool_calls: [%{name: "regular_tool"}]},
+             %Message{role: :tool, name: "regular_tool", content: "regular result for test query"},
+             %Message{role: :assistant}
+           ] = messages
+
+    # Every call carries the schema; no separate structured-response call follows the tool loop.
+    assert_receive {:provider_tool_call_model, [:user], %{name: "provider_answer"}}
+    assert_receive {:provider_tool_call_model, [:user, :assistant, :tool], %{name: "provider_answer"}}
+    refute_receive {:provider_tool_call_model, [:user, :assistant, :tool, :assistant], _format}
+
+    {:ok, compiled} = BeamWeaver.Agent.compiled_graph(ProviderStructuredToolCallAgent)
+    refute Map.has_key?(BeamWeaver.Graph.Compiled.get_graph(compiled).nodes, "structured_response")
+  end
+
+  test "a provider without schema-with-tools support keeps the separate structured-response call" do
+    assert {:ok, %{structured_response: %{"value" => "after tool"}, messages: messages}} =
+             ProviderStructuredSeparateAgent.invoke(%{messages: [Message.user("answer and search")]})
 
     assert [
              %Message{role: :user},
@@ -986,9 +1050,12 @@ defmodule BeamWeaver.Agent.DSLBehaviorTest do
              %Message{role: :assistant}
            ] = messages
 
-    assert_receive {:provider_tool_call_model, [:user], nil}
-    assert_receive {:provider_tool_call_model, [:user, :assistant, :tool], nil}
-    assert_receive {:provider_tool_call_model, [:user, :assistant, :tool, :assistant], %{name: "provider_answer"}}
+    assert_receive {:provider_separate_model, [:user], nil}
+    assert_receive {:provider_separate_model, [:user, :assistant, :tool], nil}
+    assert_receive {:provider_separate_model, [:user, :assistant, :tool, :assistant], %{name: "provider_answer"}}
+
+    {:ok, compiled} = BeamWeaver.Agent.compiled_graph(ProviderStructuredSeparateAgent)
+    assert Map.has_key?(BeamWeaver.Graph.Compiled.get_graph(compiled).nodes, "structured_response")
   end
 
   test "middleware jump routes to end and private jump channel is not exposed" do

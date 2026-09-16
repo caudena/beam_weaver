@@ -15,8 +15,11 @@ defmodule BeamWeaver.Agent.StructuredOutput do
   alias BeamWeaver.Core.Message
   alias BeamWeaver.Core.Tool
 
-  @spec auto(term()) :: AutoStrategy.t()
-  def auto(schema), do: %AutoStrategy{schema: schema}
+  @auto_opts [:name, :description, :strict, :tool_message_content, :handle_errors]
+
+  @spec auto(term(), keyword()) :: AutoStrategy.t()
+  def auto(schema, opts \\ []),
+    do: %AutoStrategy{schema: schema, opts: opts |> List.wrap() |> Keyword.take(@auto_opts)}
 
   @spec tool(term(), keyword()) :: ToolStrategy.t()
   def tool(schema, opts \\ []) do
@@ -72,13 +75,16 @@ defmodule BeamWeaver.Agent.StructuredOutput do
 
   def setup_tools(_strategy), do: []
 
+  # Strict schema adherence is the provider default; a strategy that does not
+  # say otherwise asks for it explicitly, so an unset value never reaches the
+  # wire as null (which providers read as "not strict").
   @spec provider_opts(ProviderStrategy.t()) :: keyword()
   def provider_opts(%ProviderStrategy{schema_spec: spec, strict: strict}) do
     [
       response_format: %{
         name: spec.name,
         schema: spec.json_schema,
-        strict: strict,
+        strict: strict != false,
         validator: fn data -> Validation.validate_data(spec, data) end
       }
     ]

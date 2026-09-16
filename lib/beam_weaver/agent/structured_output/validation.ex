@@ -6,6 +6,11 @@ defmodule BeamWeaver.Agent.StructuredOutput.Validation do
 
   @spec parse(SchemaSpec.t(), map()) :: {:ok, term()} | {:error, Error.t()}
   def parse(%SchemaSpec{} = spec, data) when is_map(data) do
+    # Strict provider schemas render optional properties as nullable, so a
+    # model answers "no value" with null; the parsed response carries the
+    # property as absent, as it would have been without strict rendering.
+    data = drop_null_optionals(spec, data)
+
     with :ok <- validate_data(spec, data) do
       {:ok, data}
     end
@@ -41,27 +46,21 @@ defmodule BeamWeaver.Agent.StructuredOutput.Validation do
 
   defp validate_properties(spec, data) do
     properties = BeamWeaver.MapAccess.get(spec.json_schema, :properties, %{})
+    required = spec.json_schema |> BeamWeaver.MapAccess.get(:required, []) |> Enum.map(&to_string/1)
 
     Enum.reduce_while(properties, :ok, fn {key, property}, :ok ->
       case fetch_key(data, key) do
+        # A null for an optional property is the nullable rendering of "absent".
+        {:ok, nil} ->
+          if to_string(key) in required, do: invalid_type(spec, key, property, nil), else: {:cont, :ok}
+
         {:ok, value} ->
           type = BeamWeaver.MapAccess.get(property, :type)
 
           if valid_json_type?(value, type) do
             {:cont, :ok}
           else
-            {:halt,
-             {:error,
-              Error.new(
-                :structured_output_validation_error,
-                "structured response field has invalid type",
-                %{
-                  schema: spec.name,
-                  key: key,
-                  expected: type,
-                  actual: inspect(value)
-                }
-              )}}
+            invalid_type(spec, key, property, value)
           end
 
         :error ->
@@ -69,6 +68,59 @@ defmodule BeamWeaver.Agent.StructuredOutput.Validation do
       end
     end)
   end
+
+  defp invalid_type(spec, key, property, value) do
+    {:halt,
+     {:error,
+      Error.new(
+        :structured_output_validation_error,
+        "structured response field has invalid type",
+        %{
+          schema: spec.name,
+          key: key,
+          expected: BeamWeaver.MapAccess.get(property, :type),
+          actual: inspect(value)
+        }
+      )}}
+  end
+
+  defp drop_null_optionals(%SchemaSpec{} = spec, data), do: drop_null_optionals_in(spec.json_schema, data)
+
+  # Walks the schema alongside the data: nullable optionals appear at any depth
+  # (objects nested in objects or in array items), and each is dropped where its
+  # own object schema does not require it.
+  defp drop_null_optionals_in(schema, data) when is_map(schema) and is_map(data) do
+    required = schema |> BeamWeaver.MapAccess.get(:required, []) |> Enum.map(&to_string/1)
+    properties = BeamWeaver.MapAccess.get(schema, :properties, %{})
+
+    data
+    |> Enum.reject(fn {key, value} -> is_nil(value) and to_string(key) not in required end)
+    |> Enum.map(fn {key, value} ->
+      case property_schema(properties, key) do
+        nil -> {key, value}
+        property -> {key, drop_null_optionals_in(property, value)}
+      end
+    end)
+    |> Map.new()
+  end
+
+  defp drop_null_optionals_in(schema, data) when is_map(schema) and is_list(data) do
+    case BeamWeaver.MapAccess.get(schema, :items) do
+      items when is_map(items) -> Enum.map(data, &drop_null_optionals_in(items, &1))
+      _other -> data
+    end
+  end
+
+  defp drop_null_optionals_in(_schema, data), do: data
+
+  defp property_schema(properties, key) when is_map(properties) do
+    case fetch_key(properties, key) do
+      {:ok, property} when is_map(property) -> property
+      _other -> nil
+    end
+  end
+
+  defp property_schema(_properties, _key), do: nil
 
   defp has_key?(map, key) when is_atom(key),
     do: Map.has_key?(map, key) or Map.has_key?(map, Atom.to_string(key))

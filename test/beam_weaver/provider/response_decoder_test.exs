@@ -60,6 +60,26 @@ defmodule BeamWeaver.Provider.ResponseDecoderTest do
     end
   end
 
+  test "depleted credits are not treated as a retryable rate limit" do
+    depleted =
+      Response.new(
+        status: 429,
+        body: ~s({"error":{"code":429,"status":"RESOURCE_EXHAUSTED","message":"Your prepayment credits are depleted."}})
+      )
+
+    assert {:error, %{type: :billing_exhausted, details: %{retryable: false}}} =
+             ResponseDecoder.json({:ok, depleted}, provider: :google)
+
+    rate_limit =
+      Response.new(
+        status: 429,
+        body: ~s({"error":{"code":429,"status":"RESOURCE_EXHAUSTED","message":"Too many requests. Try again later."}})
+      )
+
+    assert {:error, %{type: :http_error, details: %{retryable: true}}} =
+             ResponseDecoder.json({:ok, rate_limit}, provider: :google)
+  end
+
   test "json decodes successful responses and can attach response headers" do
     response =
       Response.new(
