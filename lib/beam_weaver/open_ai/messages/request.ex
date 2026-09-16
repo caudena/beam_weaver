@@ -28,7 +28,8 @@ defmodule BeamWeaver.OpenAI.Messages.Request do
   @spec structured_output_format(String.t(), map(), keyword()) :: map()
   def structured_output_format(name, schema, opts \\ [])
       when is_binary(name) and is_map(schema) do
-    strict = Keyword.get(opts, :strict, true)
+    # nil means unspecified, and the default is strict; only an explicit false opts out.
+    strict = Keyword.get(opts, :strict) != false
 
     %{
       "type" => "json_schema",
@@ -96,17 +97,32 @@ defmodule BeamWeaver.OpenAI.Messages.Request do
   end
 
   defp to_response_input(
-         %Message{role: :assistant, response_metadata: %{provider_replay: %{provider: provider, content: content}}},
+         %Message{
+           role: :assistant,
+           response_metadata: %{provider_replay: %{provider: provider, content: [_ | _] = content}}
+         } = message,
          opts
        )
-       when provider in ["openai", "xai", "deepseek"] and is_list(content) do
-    {:ok,
-     Enum.flat_map(content, fn item ->
-       case sanitize_store_replay_item(item, opts) do
-         {:item, item} -> [item]
-         :skip -> []
-       end
-     end)}
+       when provider in ["openai", "xai", "deepseek"] do
+    native_items =
+      Enum.flat_map(content, fn item ->
+        case sanitize_store_replay_item(item, opts) do
+          {:item, item} -> [item]
+          :skip -> []
+        end
+      end)
+
+    present_calls =
+      native_items
+      |> Enum.filter(&(&1["type"] == "function_call"))
+      |> MapSet.new(& &1["call_id"])
+
+    missing_calls =
+      message.tool_calls
+      |> Enum.reject(&MapSet.member?(present_calls, Map.get(&1, :call_id) || Map.get(&1, :id)))
+      |> Enum.map(&tool_call_to_function_call_item(&1, opts))
+
+    {:ok, native_items ++ missing_calls}
   end
 
   defp to_response_input(%Message{role: :assistant} = message, opts) do

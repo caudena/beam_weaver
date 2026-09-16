@@ -258,6 +258,76 @@ defmodule BeamWeaver.Agent.StructuredOutputStrategyTest do
     assert Enum.map(strategy.schema_specs, & &1.schema) == [@person_schema, @custom_schema]
   end
 
+  test "auto strategy carries the declared name and strictness into the strategy it resolves to" do
+    model = %FakeChatModel{profile: %{structured_output: true}}
+
+    strategy = StructuredOutput.effective_strategy(StructuredOutput.auto(@person_schema, name: "PersonResponse", strict: true), model, [])
+    assert %StructuredOutput.ProviderStrategy{strict: true, schema_spec: %{name: "PersonResponse"}} = strategy
+    assert [response_format: %{name: "PersonResponse", strict: true}] = StructuredOutput.provider_opts(strategy)
+
+    # The DSL declaration keeps the same options under strategy: :auto.
+    assert %StructuredOutput.AutoStrategy{opts: opts} =
+             BeamWeaver.Agent.__response_schema__(@person_schema, name: "PersonResponse", strategy: :auto, strict: true)
+
+    assert Keyword.take(opts, [:name, :strict]) == [name: "PersonResponse", strict: true]
+  end
+
+  test "strictness defaults to true on the wire and only an explicit false opts out" do
+    model = %FakeChatModel{profile: %{structured_output: true}}
+
+    unspecified = StructuredOutput.effective_strategy(StructuredOutput.auto(@person_schema), model, [])
+    assert unspecified.strict == nil
+    assert [response_format: %{strict: true}] = StructuredOutput.provider_opts(unspecified)
+
+    relaxed = StructuredOutput.effective_strategy(StructuredOutput.auto(@person_schema, strict: false), model, [])
+    assert [response_format: %{strict: false}] = StructuredOutput.provider_opts(relaxed)
+  end
+
+  test "a null for an optional property counts as absent, and a null for a required one does not" do
+    alias BeamWeaver.Agent.StructuredOutput.Validation
+
+    schema = %{
+      "type" => "object",
+      "properties" => %{"answer" => %{"type" => "string"}, "notes" => %{"type" => "array"}},
+      "required" => ["answer"]
+    }
+
+    spec = StructuredOutput.schema_spec(schema, name: "answer_with_notes", strict: true)
+
+    # Strict rendering makes "notes" nullable on the wire; the model's null is not a type error.
+    assert :ok = StructuredOutput.validate_data(spec, %{"answer" => "ok", "notes" => nil})
+    assert {:ok, %{"answer" => "ok"}} = Validation.parse(spec, %{"answer" => "ok", "notes" => nil})
+
+    assert {:error, %BeamWeaver.Core.Error{details: %{key: "answer"}}} =
+             StructuredOutput.validate_data(spec, %{"answer" => nil, "notes" => []})
+
+    # Nested optionals are stripped too: inside objects and inside array items.
+    nested = %{
+      "type" => "object",
+      "properties" => %{
+        "person" => %{
+          "type" => "object",
+          "properties" => %{"name" => %{"type" => "string"}, "title" => %{"type" => "string"}},
+          "required" => ["name"]
+        },
+        "facts" => %{
+          "type" => "array",
+          "items" => %{
+            "type" => "object",
+            "properties" => %{"value" => %{"type" => "string"}, "since" => %{"type" => "string"}},
+            "required" => ["value"]
+          }
+        }
+      },
+      "required" => ["person", "facts"]
+    }
+
+    nested_spec = StructuredOutput.schema_spec(nested, name: "nested", strict: true)
+
+    assert {:ok, %{"person" => %{"name" => "Ada"}, "facts" => [%{"value" => "x"}]}} =
+             Validation.parse(nested_spec, %{"person" => %{"name" => "Ada", "title" => nil}, "facts" => [%{"value" => "x", "since" => nil}]})
+  end
+
   test "provider strategy keeps strict option and renders provider response_format opts" do
     strategy = StructuredOutput.provider(@person_schema, strict: true)
 

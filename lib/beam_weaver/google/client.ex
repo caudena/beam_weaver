@@ -106,8 +106,8 @@ defmodule BeamWeaver.Google.Client do
         transport(client),
         request,
         transport_opts(client, request, opts),
-        opts,
-        &Streaming.typed_events/1,
+        Keyword.put(opts, :parser_finalizer, &Streaming.finish_typed_events/1),
+        &Streaming.typed_events/2,
         &decode_result(&1, opts)
       )
 

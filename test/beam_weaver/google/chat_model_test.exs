@@ -665,7 +665,7 @@ defmodule BeamWeaver.Google.ChatModelTest do
 
   test "stream_typed_events uses Google's typed SSE parser" do
     body = """
-    data: {"candidates":[{"content":{"role":"model","parts":[{"text":"pong"}]}}]}
+    data: {"candidates":[{"content":{"role":"model","parts":[{"text":"pong"}]},"finishReason":"STOP"}]}
     """
 
     model =
@@ -688,6 +688,56 @@ defmodule BeamWeaver.Google.ChatModelTest do
 
     assert Enum.any?(events, &match?(%{event: %BeamWeaver.Stream.Events.Token{text: "pong"}}, &1))
     assert Enum.all?(events, &(&1.metadata.provider == :google))
+
+    assert [%{event: %BeamWeaver.Stream.Events.Done{result: response}}] =
+             Enum.filter(events, &match?(%{event: %BeamWeaver.Stream.Events.Done{}}, &1))
+
+    assert get_in(response, ["candidates", Access.at(0), "finishReason"]) == "STOP"
+  end
+
+  test "exact typed streaming commits function calls, grounding and usage-only trailers once" do
+    body = """
+    data: {"responseId":"google-exact","candidates":[{"content":{"role":"model","parts":[{"functionCall":{"id":"call-native","name":"lookup","args":{"q":"Caudena"}},"thoughtSignature":"sig-native"}]},"finishReason":"STOP","groundingMetadata":{"webSearchQueries":["Caudena"]}}]}
+
+    data: {"usageMetadata":{"promptTokenCount":12,"candidatesTokenCount":5,"totalTokenCount":17}}
+
+    """
+
+    model =
+      ChatModel.new(
+        api_key: "test",
+        transport: BeamWeaver.TestSupport.Conformance.Fakes.Transport,
+        transport_opts: [body: body]
+      )
+
+    assert {:ok, stream} = CoreChatModel.stream_exact_typed_events(model, ~s({"contents":[]}))
+    events = Enum.to_list(stream)
+
+    assert [%{event: %BeamWeaver.Stream.Events.Done{result: response}}] =
+             Enum.filter(events, &match?(%{event: %BeamWeaver.Stream.Events.Done{}}, &1))
+
+    assert {:ok, message} = BeamWeaver.Google.Messages.response_to_message(response)
+    assert [%ToolCall{id: "call-native", name: "lookup", thought_signature: "sig-native"}] = message.tool_calls
+    assert message.usage_metadata.total_tokens == 17
+    assert message.response_metadata.grounding_metadata["webSearchQueries"] == ["Caudena"]
+    assert message.status == "STOP"
+  end
+
+  test "an incomplete typed stream cannot be promoted to a complete answer" do
+    body =
+      "data: " <> Jason.encode!(%{"candidates" => [%{"content" => %{"parts" => [%{"text" => "partial"}]}}]}) <> "\n\n"
+
+    model =
+      ChatModel.new(
+        api_key: "test",
+        transport: BeamWeaver.TestSupport.Conformance.Fakes.Transport,
+        transport_opts: [body: body]
+      )
+
+    assert {:ok, stream} = CoreChatModel.stream_exact_typed_events(model, ~s({"contents":[]}))
+    events = Enum.to_list(stream)
+    assert %BeamWeaver.Stream.Events.Error{error: %{type: :invalid_provider_stream}} = List.last(events)
+    refute Enum.any?(events, &match?(%{event: %BeamWeaver.Stream.Events.Done{}}, &1))
   end
 
   test "request body covers Gemini OpenAPI generation and tool config fields" do

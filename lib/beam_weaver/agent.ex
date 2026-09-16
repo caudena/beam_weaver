@@ -254,7 +254,7 @@ defmodule BeamWeaver.Agent do
       |> Keyword.take([:name, :description, :strict, :tool_message_content, :handle_errors])
 
     case strategy do
-      :auto -> BeamWeaver.Agent.StructuredOutput.auto(schema)
+      :auto -> BeamWeaver.Agent.StructuredOutput.auto(schema, strategy_opts)
       :tool -> BeamWeaver.Agent.StructuredOutput.tool(schema, strategy_opts)
       :provider -> BeamWeaver.Agent.StructuredOutput.provider(schema, strategy_opts)
       other -> raise ArgumentError, "unknown response_schema strategy #{inspect(other)}"

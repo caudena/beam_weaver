@@ -1,6 +1,36 @@
 # Changelog
 
-## 0.1.23 - 2026-09-04
+## 0.1.24 - 2026-09-16
+
+### Changed
+
+- Agents with tools and a provider response schema make one call chain instead of
+  two when the model profile declares `structured_output_with_tools`: the schema
+  stays on the tool-loop calls, tool-call turns pass through it, and the final
+  message is parsed against it. Every OpenAI profile now declares the capability
+  (OpenAI Structured Outputs work alongside function calling); Anthropic already
+  did. Providers without it keep the separate structured-response call after the
+  tool loop, and that call now carries the prompt-caching middleware so it no
+  longer pays the uncached price for a context the tool loop just cached. The
+  provider-level parser passes a tool-call turn through unparsed, since with the
+  schema on the loop the structured answer arrives on a later turn.
+
+### Fixed
+
+- `response_schema/2` with `strategy: :auto` (the default) dropped the declared
+  `name`, `description` and `strict` options, so provider structured outputs ran
+  without strict schema adherence: OpenAI received `"strict": null` and could
+  return objects missing required keys. The auto strategy now carries the
+  declaration into the provider or tool strategy it resolves to, and an
+  unspecified strictness renders as `strict: true` on the wire; only an explicit
+  `strict: false` opts out.
+- Structured-output validation accepts a null for an optional property. Strict
+  provider schemas render optional properties as nullable, so a model answers
+  "no value" with `null`; the validator rejected that as a type error, failed
+  every such response, and the retry feedback coaxed a minimal answer out of the
+  model. The parsed response now carries the property as absent.
+
+## 0.1.23 - 2026-09-10
 
 ### Added
 

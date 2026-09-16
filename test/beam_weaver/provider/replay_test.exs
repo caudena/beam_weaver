@@ -9,6 +9,43 @@ defmodule BeamWeaver.Provider.ReplayTest do
   alias BeamWeaver.OpenAI.Messages, as: OpenAIMessages
   alias BeamWeaver.Provider.Replay
 
+  test "empty native output metadata cannot hide a streamed assistant call during replay" do
+    message =
+      Message.assistant("",
+        metadata: %{output: []},
+        tool_calls: [
+          %ToolCall{id: "call-1", call_id: "call-1", provider_id: "fc-1", name: "lookup", args: %{"q" => "test"}}
+        ]
+      )
+
+    binding = replay_binding("openai")
+    assert {:ok, projection} = Replay.project(message, binding)
+    assert {:ok, restored} = Replay.restore(projection, binding)
+
+    assert {:ok, [%{"type" => "function_call", "call_id" => "call-1", "arguments" => arguments}]} =
+             OpenAIMessages.to_responses_input([restored], store: false)
+
+    assert Jason.decode!(arguments) == %{"q" => "test"}
+  end
+
+  test "partial native replay adds missing function calls without duplicating retained calls" do
+    native = %{
+      "type" => "function_call",
+      "id" => "fc-1",
+      "call_id" => "call-1",
+      "name" => "lookup",
+      "arguments" => "{}"
+    }
+
+    calls = for id <- ["call-1", "call-2"], do: %ToolCall{id: id, call_id: id, name: "lookup", args: %{}}
+    message = Message.assistant("", metadata: %{output: [native]}, tool_calls: calls)
+    binding = replay_binding("openai")
+    assert {:ok, projection} = Replay.project(message, binding)
+    assert {:ok, restored} = Replay.restore(projection, binding)
+    assert {:ok, input} = OpenAIMessages.to_responses_input([restored], store: false)
+    assert Enum.map(input, & &1["call_id"]) == ["call-1", "call-2"]
+  end
+
   test "round trips Anthropic signed thinking" do
     binding = replay_binding("anthropic")
 

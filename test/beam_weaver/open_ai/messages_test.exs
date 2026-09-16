@@ -320,6 +320,13 @@ defmodule BeamWeaver.OpenAI.MessagesTest do
     assert properties_schema["additionalProperties"] == false
   end
 
+  test "an unspecified strictness renders as strict on the wire" do
+    schema = %{"type" => "object", "properties" => %{"answer" => %{"type" => "string"}}, "required" => ["answer"]}
+
+    assert Messages.structured_output_format("answer", schema, strict: nil)["strict"] == true
+    assert Messages.structured_output_format("answer", schema, strict: false)["strict"] == false
+  end
+
   test "strict structured output format drops stale required keys and unsupported composition keywords" do
     schema = %{
       "type" => "object",

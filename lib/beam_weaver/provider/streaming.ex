@@ -62,7 +62,9 @@ defmodule BeamWeaver.Provider.Streaming do
             {events, _buffer} = SSE.process_chunk(buffer, "\n\n")
 
             with :ok <- StreamValidator.finish(validation),
-                 {:ok, items, _parser_state} <- parse_items(parser, events, parser_state),
+                 {:ok, items, parser_state} <- parse_items(parser, events, parser_state),
+                 {:ok, final_items} <- finalize_parser(parser_state, opts),
+                 items = items ++ final_items,
                  {:ok, validation} <- push_final(validation, items),
                  :ok <- StreamValidator.finish(validation) do
               emit_items(items, sink)
@@ -116,6 +118,15 @@ defmodule BeamWeaver.Provider.Streaming do
 
       {:error, error, _state} ->
         decoder.({:error, error})
+    end
+  end
+
+  # Stateful wire formats without a separate terminal SSE event finalize only
+  # after a clean transport close. Partial chunks must never invoke this hook.
+  defp finalize_parser(state, opts) do
+    case Keyword.get(opts, :parser_finalizer) do
+      fun when is_function(fun, 1) -> fun.(state)
+      nil -> {:ok, []}
     end
   end
 
