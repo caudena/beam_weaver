@@ -101,15 +101,25 @@ defmodule BeamWeaver.Tools.Shell.CommandRunner do
     end
   end
 
+  # The port is opened with `:in` only, so no stdin pipe is created and the
+  # command inherits the VM's own stdin: a terminal under `iex`/`mix test`, a
+  # socket or a pipe under a supervisor. Nothing ever sends EOF on that fd, so a
+  # command that reads stdin (`cat`, `read`, interactive prompts) would block
+  # until the timeout. Give every command EOF on stdin instead.
   defp instrument(script, marker, stderr) do
-    marked = ["printf '%s' ", shell_quote(marker), "\neval ", shell_quote(script)]
-
-    case stderr do
-      {:file, path} -> IO.iodata_to_binary(["exec 2> ", shell_quote(path), "\n", marked])
-      :discard -> IO.iodata_to_binary(["exec 2> /dev/null\n", marked])
-      :merge -> IO.iodata_to_binary(marked)
-    end
+    IO.iodata_to_binary([
+      "exec </dev/null\n",
+      stderr_redirect(stderr),
+      "printf '%s' ",
+      shell_quote(marker),
+      "\neval ",
+      shell_quote(script)
+    ])
   end
+
+  defp stderr_redirect({:file, path}), do: ["exec 2> ", shell_quote(path), "\n"]
+  defp stderr_redirect(:discard), do: "exec 2> /dev/null\n"
+  defp stderr_redirect(:merge), do: []
 
   defp port_options(command, opts) do
     [

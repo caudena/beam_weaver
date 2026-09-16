@@ -261,7 +261,13 @@ defmodule BeamWeaver.Agent.StructuredOutputStrategyTest do
   test "auto strategy carries the declared name and strictness into the strategy it resolves to" do
     model = %FakeChatModel{profile: %{structured_output: true}}
 
-    strategy = StructuredOutput.effective_strategy(StructuredOutput.auto(@person_schema, name: "PersonResponse", strict: true), model, [])
+    strategy =
+      StructuredOutput.effective_strategy(
+        StructuredOutput.auto(@person_schema, name: "PersonResponse", strict: true),
+        model,
+        []
+      )
+
     assert %StructuredOutput.ProviderStrategy{strict: true, schema_spec: %{name: "PersonResponse"}} = strategy
     assert [response_format: %{name: "PersonResponse", strict: true}] = StructuredOutput.provider_opts(strategy)
 
@@ -325,7 +331,10 @@ defmodule BeamWeaver.Agent.StructuredOutputStrategyTest do
     nested_spec = StructuredOutput.schema_spec(nested, name: "nested", strict: true)
 
     assert {:ok, %{"person" => %{"name" => "Ada"}, "facts" => [%{"value" => "x"}]}} =
-             Validation.parse(nested_spec, %{"person" => %{"name" => "Ada", "title" => nil}, "facts" => [%{"value" => "x", "since" => nil}]})
+             Validation.parse(nested_spec, %{
+               "person" => %{"name" => "Ada", "title" => nil},
+               "facts" => [%{"value" => "x", "since" => nil}]
+             })
   end
 
   test "provider strategy keeps strict option and renders provider response_format opts" do

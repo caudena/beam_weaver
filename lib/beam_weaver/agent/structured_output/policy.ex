@@ -45,14 +45,18 @@ defmodule BeamWeaver.Agent.StructuredOutput.Policy do
 
   def choose(%AutoStrategy{schema: schema} = strategy, model, tools) do
     opts = Map.get(strategy, :opts) || []
-    provider_strategy = BeamWeaver.Agent.StructuredOutput.provider(schema, Keyword.take(opts, [:name, :description, :strict]))
+
+    provider_strategy =
+      BeamWeaver.Agent.StructuredOutput.provider(schema, Keyword.take(opts, [:name, :description, :strict]))
 
     case provider_decision(provider_strategy.schema_spec, model, tools) do
       :ok ->
         {provider_strategy, policy(:auto, :provider, nil, [provider_strategy.schema_spec])}
 
       {:fallback, reason} ->
-        tool_strategy = BeamWeaver.Agent.StructuredOutput.tool(schema, Keyword.take(opts, [:tool_message_content, :handle_errors]))
+        tool_strategy =
+          BeamWeaver.Agent.StructuredOutput.tool(schema, Keyword.take(opts, [:tool_message_content, :handle_errors]))
+
         {tool_strategy, policy(:auto, :tool, reason, [provider_strategy.schema_spec])}
     end
   end
