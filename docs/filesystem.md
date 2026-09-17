@@ -58,7 +58,7 @@ Built-in filesystems:
 | `BeamWeaver.Filesystem.Store` | Durable files in a `BeamWeaver.Memory.Store` namespace. |
 | `BeamWeaver.Filesystem.Composite` | Route different virtual path prefixes to different filesystems. |
 | `BeamWeaver.Filesystem.Sandbox` | Adapt a `BeamWeaver.Sandbox` implementation into filesystem tools plus `execute`. |
-| Custom module | Any struct implementing the `BeamWeaver.Filesystem` behaviour. |
+| Custom module | Any struct whose module calls `use BeamWeaver.Filesystem`. See [Custom Filesystems](#custom-filesystems). |
 
 ## Tool Surface
 
@@ -182,8 +182,16 @@ systems.
 ## Store
 
 `BeamWeaver.Filesystem.Store` stores files in a `BeamWeaver.Memory.Store`
-namespace. Use it for cross-thread durable files such as memories,
-instructions, or shared reference material.
+namespace. Use it for cross-thread files such as instructions or shared
+reference material.
+
+{% hint style="info" %}
+**Agent Memory**
+
+Keep agent memory either in plain files with `BeamWeaver.Filesystem.Local` or
+as records in a `BeamWeaver.Memory` store. [Memory](memory.md#choose-a-long-term-memory)
+compares the two.
+{% endhint %}
 
 ```elixir
 alias BeamWeaver.Filesystem
@@ -227,16 +235,13 @@ filesystems. Longer prefixes win.
 
 ```elixir
 alias BeamWeaver.Filesystem
-alias BeamWeaver.Memory
-
-store = Memory.ETS.new()
 
 filesystem =
   Filesystem.Composite.new(
     default: Filesystem.State.new(),
     routes: %{
       "/workspace/" => Filesystem.Local.new(root: "/srv/project"),
-      "/memories/" => Filesystem.Store.new(store: store, namespace: ["memories"])
+      "/memories/" => Filesystem.Local.new(root: "/var/lib/my_app/memories")
     }
   )
 ```
@@ -247,7 +252,7 @@ Behavior:
 | --- | --- |
 | `/notes/plan.md` | `State` default |
 | `/workspace/lib/app.ex` | `Local` under `/srv/project/lib/app.ex` |
-| `/memories/preferences.md` | `Store` key `preferences.md` in namespace `["memories"]` |
+| `/memories/preferences.md` | `Local` under `/var/lib/my_app/memories/preferences.md` |
 
 `ls`, `glob`, and `grep` preserve the original route prefixes in model-visible
 results. If the default filesystem implements `BeamWeaver.Filesystem.Executable`,
@@ -320,8 +325,13 @@ memory, subagent overrides, composite routing, and sandbox caveats.
 
 ## Custom Filesystems
 
-Implement `BeamWeaver.Filesystem` when you want to project S3, Postgres, a
-remote API, or another storage system into the agent filesystem.
+Write a module that calls `use BeamWeaver.Filesystem` when you want to project
+S3, Postgres, a remote API, or another storage system into the agent
+filesystem. `use BeamWeaver.Filesystem` declares the behaviour and implements
+the `BeamWeaver.Filesystem.Backend` protocol for the module's struct. The
+`BeamWeaver.Filesystem` functions and the file tools dispatch through that
+protocol, so `@behaviour BeamWeaver.Filesystem` alone is not enough: calls
+raise `protocol BeamWeaver.Filesystem.Backend not implemented`.
 
 Required callbacks:
 
@@ -341,7 +351,7 @@ Normal "not found" and validation failures should return result structs with
 
 ```elixir
 defmodule MyApp.S3Filesystem do
-  @behaviour BeamWeaver.Filesystem
+  use BeamWeaver.Filesystem
 
   alias BeamWeaver.Filesystem
 
@@ -389,13 +399,17 @@ defmodule MyApp.S3Filesystem do
 end
 ```
 
-To expose `execute`, also implement `BeamWeaver.Filesystem.Executable` on the
-same filesystem module:
+To expose `execute`, also call `use BeamWeaver.Filesystem.Executable` in the
+same filesystem module. It implements the
+`BeamWeaver.Filesystem.ExecutableBackend` protocol, which is how an agent
+detects that the filesystem can run commands:
 
 ```elixir
 defmodule MyApp.RemoteExecutorFilesystem do
-  @behaviour BeamWeaver.Filesystem
-  @behaviour BeamWeaver.Filesystem.Executable
+  use BeamWeaver.Filesystem
+  use BeamWeaver.Filesystem.Executable
+
+  defstruct [:endpoint]
 
   # Filesystem callbacks omitted for brevity.
 

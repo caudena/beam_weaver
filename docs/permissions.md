@@ -145,23 +145,19 @@ stay thread-scoped. Then deny writes to the durable memory prefixes:
 ```elixir
 alias BeamWeaver.Filesystem
 alias BeamWeaver.Filesystem.Permission
-alias BeamWeaver.Memory
-
-store = Memory.ETS.new()
 
 filesystem =
   Filesystem.Composite.new(
     default: Filesystem.State.new(),
     routes: %{
-      "/memories/" => Filesystem.Store.new(store: store, namespace: ["users", "user-123"]),
-      "/policies/" => Filesystem.Store.new(store: store, namespace: ["orgs", "acme"])
+      "/memories/" => Filesystem.Local.new(root: "/var/lib/my_app/memory/users/user-123"),
+      "/policies/" => Filesystem.Local.new(root: "/var/lib/my_app/memory/orgs/acme/policies")
     }
   )
 
 {:ok, agent} =
   BeamWeaver.Agent.build(
     model: "openai:gpt-5.4",
-    store: store,
     filesystem: filesystem,
     filesystem_permissions: [
       Permission.new(
@@ -271,7 +267,7 @@ filesystem =
     default: BeamWeaver.Filesystem.State.new(),
     routes: %{
       "/workspace/" => BeamWeaver.Filesystem.Local.new(root: "/srv/project"),
-      "/memories/" => BeamWeaver.Filesystem.Store.new(namespace: ["memories"])
+      "/memories/" => BeamWeaver.Filesystem.Local.new(root: "/var/lib/my_app/memories")
     }
   )
 
@@ -315,19 +311,17 @@ filesystem tools, but it cannot secure shell execution.
 ## Policy Hooks
 
 For custom validation, wrap the filesystem and enforce your policy before
-delegating to the inner implementation:
+delegating to the inner implementation. `use BeamWeaver.Filesystem` declares
+the behaviour and implements the `BeamWeaver.Filesystem.Backend` protocol for
+the wrapper's struct, which the file tools dispatch through:
 
 ```elixir
 defmodule MyApp.GuardedFilesystem do
-  @behaviour BeamWeaver.Filesystem
+  use BeamWeaver.Filesystem
 
   alias BeamWeaver.Filesystem
 
   defstruct [:inner, deny_prefixes: []]
-
-  defp denied?(%__MODULE__{deny_prefixes: prefixes}, path) do
-    Enum.any?(prefixes, &String.starts_with?(path, &1))
-  end
 
   @impl true
   def write(%__MODULE__{} = backend, path, content, opts) do
@@ -347,9 +341,52 @@ defmodule MyApp.GuardedFilesystem do
     end
   end
 
-  # Delegate ls/read/glob/grep/upload_files/download_files in the same style.
+  @impl true
+  def upload_files(%__MODULE__{} = backend, files, opts) do
+    Enum.flat_map(files, fn {path, _content} = file ->
+      if denied?(backend, path) do
+        [%Filesystem.UploadResult{path: path, error: "writes denied under #{path}"}]
+      else
+        Filesystem.upload_files(backend.inner, [file], opts)
+      end
+    end)
+  end
+
+  @impl true
+  def ls(%__MODULE__{inner: inner}, path, opts), do: Filesystem.ls(inner, path, opts)
+
+  @impl true
+  def read(%__MODULE__{inner: inner}, path, opts), do: Filesystem.read(inner, path, opts)
+
+  @impl true
+  def glob(%__MODULE__{inner: inner}, pattern, opts), do: Filesystem.glob(inner, pattern, opts)
+
+  @impl true
+  def grep(%__MODULE__{inner: inner}, pattern, opts), do: Filesystem.grep(inner, pattern, opts)
+
+  @impl true
+  def download_files(%__MODULE__{inner: inner}, paths, opts),
+    do: Filesystem.download_files(inner, paths, opts)
+
+  defp denied?(%__MODULE__{deny_prefixes: prefixes}, path) do
+    Enum.any?(prefixes, &String.starts_with?(path, &1))
+  end
 end
 ```
+
+Pass the wrapper wherever a filesystem is expected:
+
+```elixir
+filesystem = %MyApp.GuardedFilesystem{
+  inner: BeamWeaver.Filesystem.Local.new(root: "/srv/project"),
+  deny_prefixes: ["/config/"]
+}
+
+{:ok, agent} = BeamWeaver.Agent.build(model: "openai:gpt-5.4", filesystem: filesystem)
+```
+
+A denied write comes back to the model as a tool error, for example
+`Error: writes denied under /config/app.exs`, and the file is not touched.
 
 Use this pattern when the decision depends on content, tenant policy, quotas,
 auditing, or any context beyond a path glob.

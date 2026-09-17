@@ -118,12 +118,24 @@ defmodule MyApp.Tools.SearchDatabase do
 
   @impl true
   def invoke(_tool, input, _opts) do
-    query = input.query
-    limit = Map.get(input, :limit, 10)
-
-    {:ok, "Found #{limit} results for #{inspect(query)}"}
+    {:ok, "Found #{input["limit"]} results for #{inspect(input["query"])}"}
   end
 end
+```
+
+`invoke/3` receives the fields of the `schema` block under string keys. A model
+sends its arguments as a JSON object, and the generated schema uses string
+property names, so a default arrives under a string key too: `input["limit"]`
+is 10 when the model leaves it out. Injected arguments arrive under their atom
+names, such as `input.context`. `Tool.invoke/3` passes the map it is given
+through unchanged, so call a tool directly the way a model does, with string
+keys:
+
+```elixir
+alias BeamWeaver.Core.Tool
+
+{:ok, "Found 10 results for \"Ada\""} = Tool.invoke(MyApp.Tools.SearchDatabase, %{"query" => "Ada"})
+{:ok, "Found 3 results for \"Ada\""} = Tool.invoke(MyApp.Tools.SearchDatabase, %{"query" => "Ada", "limit" => 3})
 ```
 
 Module tools can be passed as modules or structs:
@@ -264,12 +276,17 @@ defmodule MyApp.Tools.SearchPrivate do
   def invoke(_tool, input, _opts) do
     user_id = input.context[:user_id] || input.context["user_id"]
 
-    {:ok, "Searching for #{input.query} as #{user_id}"}
+    {:ok, "Searching for #{input["query"]} as #{user_id}"}
   end
 end
+```
 
-BeamWeaver.Core.Tool.raw_input_schema(%MyApp.Tools.SearchPrivate{})
-BeamWeaver.Core.Tool.input_schema(%MyApp.Tools.SearchPrivate{})
+Injected arguments arrive under their atom names (`input.context`), and the
+fields of the `schema` block under string keys (`input["query"]`).
+
+```elixir
+BeamWeaver.Core.Tool.raw_input_schema(MyApp.Tools.SearchPrivate)
+BeamWeaver.Core.Tool.input_schema(MyApp.Tools.SearchPrivate)
 ```
 
 `Tool.raw_input_schema/1` includes injected fields. `Tool.input_schema/1`
@@ -398,33 +415,38 @@ MyApp.Agent.invoke(
 ### Store
 
 Stores are long-term memory. Inject the store and use the `BeamWeaver.Memory`
-API:
+API. Inject the context as well and take the owner of the data from it, so the
+model cannot write into another user's namespace:
 
 ```elixir
 save_user_info =
   Tool.from_function!(
     name: "save_user_info",
-    description: "Save user information.",
+    description: "Save information about the current user.",
     input_schema: %{
       "type" => "object",
       "properties" => %{
-        "user_id" => %{"type" => "string"},
         "info" => %{"type" => "object"},
+        "context" => %{"type" => "object"},
         "store" => %{"type" => "object"}
       },
-      "required" => ["user_id", "info", "store"]
+      "required" => ["info", "context", "store"]
     },
-    injected: [store: :store],
+    injected: [context: :context, store: :store],
     handler: fn input, _opts ->
       store = input[:store] || input["store"]
-      user_id = input["user_id"] || input[:user_id]
+      context = input[:context] || input["context"] || %{}
+      user_id = context[:user_id] || context["user_id"]
       info = input["info"] || input[:info]
 
-      :ok = BeamWeaver.Memory.put(store, ["users"], user_id, info)
+      {:ok, _item} = BeamWeaver.Memory.put(store, ["users", user_id, "profile"], "info", info)
       "Saved user information."
     end
   )
 ```
+
+[Long-Term Memory](long_term_memory.md#namespaces-and-keys) explains how
+namespaces and keys keep the data of different users and projects apart.
 
 Use `BeamWeaver.Memory.ETS` for local/test storage and
 `BeamWeaver.Memory.Ecto` for durable Postgres-backed storage.

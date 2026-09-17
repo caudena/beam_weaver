@@ -394,7 +394,7 @@ defmodule MyApp.Tools.SearchOrders do
 
   @impl true
   def invoke(_tool, input, _opts) do
-    {:ok, "Found #{Map.get(input, :limit, 10)} #{input.status} orders for #{input.user_id}."}
+    {:ok, "Found #{input["limit"]} #{input["status"]} orders for #{input["user_id"]}."}
   end
 end
 ```
@@ -871,39 +871,53 @@ graph persistence, streaming, and state inspection.
 
 ## Long-Term Memory
 
-Long-term memory lives in `runtime.store` and `BeamWeaver.Memory` adapters. For
-Deep Agents-style filesystem memory, route a virtual path prefix to a store
-backed filesystem:
+Long-term memory is kept either in memory files, which are plain files on disk,
+or as records in a `BeamWeaver.Memory` store that nodes, middleware, and tools
+reach through `runtime.store`.
+
+A memory file is part of the system prompt of every run, and the agent edits it
+with the file tools:
 
 ```elixir
-store = BeamWeaver.Memory.ETS.new()
-
-filesystem =
-  BeamWeaver.Filesystem.Composite.new(
-    default: BeamWeaver.Filesystem.State.new(),
-    routes: %{
-      "/memories/" =>
-        BeamWeaver.Filesystem.Store.new(store: store, namespace: ["memories"])
-    }
-  )
-
 BeamWeaver.Agent.build(
   model: "openai:gpt-5.4",
-  store: store,
-  filesystem: filesystem,
-  system_prompt: """
-  When users share durable preferences, save them under /memories/preferences.txt.
-  Read /memories/ when you need remembered user preferences.
-  """
+  filesystem: BeamWeaver.Filesystem.Local.new(root: "/var/lib/my_app/assistant"),
+  memory: ["/AGENTS.md"],
+  system_prompt: "When the user shares a durable preference, add one short line to /AGENTS.md."
 )
 ```
 
-You do not need to pre-populate memory files. Give the agent clear instructions
-for what belongs under `/memories/`, and let filesystem tools create or edit
-files as useful information appears.
+You do not need to create the file first. Tell the agent what belongs in it,
+and the file tools create and edit it as useful information appears.
 
-For direct key/value or semantic memory, use [Long-Term Memory](long_term_memory.md)
-instead of going through a virtual file path.
+Records are loaded by a prompt function and written by tools that receive the
+store as an injected argument. The ids that say whose memory it is come from
+the run context:
+
+```elixir
+prompt = fn _state, runtime ->
+  memories =
+    runtime.store
+    |> BeamWeaver.Memory.search(["users", runtime.context.user_id, "memories"], limit: 50)
+    |> Enum.sort_by(& &1.key)
+    |> Enum.map_join("\n", &"- #{&1.key}: #{&1.value["content"]}")
+
+  "You are a personal assistant.\n\nWhat you remember about this user:\n" <> memories
+end
+
+BeamWeaver.Agent.build(
+  model: "openai:gpt-5.4",
+  store: BeamWeaver.Memory.Ecto.new(repo: MyApp.Repo),
+  context_schema: %{user_id: %{type: :string, required: true}},
+  tools: [MyApp.Memory.Save, MyApp.Memory.Delete],
+  middleware: [{BeamWeaver.Agent.Middleware.DynamicPrompt, prompt: prompt}]
+)
+```
+
+[Memory](memory.md) compares the two forms and shows how memory files are kept
+apart per user and project. [Long-Term Memory](long_term_memory.md) defines the
+`MyApp.Memory` tools and explains how namespaces and keys separate users,
+projects, and organizations.
 
 ## Best Practices
 
@@ -919,8 +933,8 @@ instead of going through a virtual file path.
   agent's message history.
 - Store large artifacts in the filesystem and refer to paths instead of copying
   raw data back into the prompt.
-- Document the structure of `/memories/` or other persistent namespaces in the
-  system prompt or memory files.
+- Tell the agent in the system prompt what belongs in each memory file or
+  memory scope.
 - Test context logic independently with fake or replay models.
 - Observe context decisions with [Event Streaming](event_streaming.md) and
   [Tracing](tracing.md).

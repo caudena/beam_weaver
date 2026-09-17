@@ -150,6 +150,7 @@ end
 config :beam_weaver, :examples,
   model: examples_env.("BEAM_WEAVER_EXAMPLES_MODEL"),
   cached_content: examples_env.("GOOGLE_CACHED_CONTENT") || examples_env.("GEMINI_CACHED_CONTENT"),
+  postgres_url: examples_env.("BEAM_WEAVER_POSTGRES_URL"),
   api_keys: %{
     "openai" => examples_env.("OPENAI_API_KEY"),
     "anthropic" => examples_env.("ANTHROPIC_API_KEY"),

@@ -430,8 +430,10 @@ model to treat memory as reference material, not hidden higher-priority system
 instructions. Agents can update memory by editing the configured files when the
 user explicitly asks to remember reusable information.
 
-For store-backed long-term memory files, including user-scoped, agent-scoped,
-and organization-scoped namespaces, see [Memory](memory.md#filesystem-backed-agent-memory).
+Memory files are plain files: give the agent a directory with
+`BeamWeaver.Filesystem.Local`, and one directory per user, project, or
+organization when several owners share an application. [Memory](memory.md#memory-files)
+covers loading, editing, per-owner directories, and read-only shared files.
 
 ## Capability Profiles
 
