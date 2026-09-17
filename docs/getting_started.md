@@ -106,8 +106,7 @@ defmodule MyApp.Tools.GetWeather do
 
   @impl true
   def invoke(_tool, input, _opts) do
-    city = Map.get(input, :city) || Map.get(input, "city")
-    {:ok, "It's always sunny in #{city}."}
+    {:ok, "It's always sunny in #{input["city"]}."}
   end
 end
 
@@ -272,7 +271,7 @@ defmodule MyApp.Tools.FetchTextFromURL do
 
   @impl true
   def invoke(_tool, input, _opts) do
-    url = Map.get(input, :url) || Map.get(input, "url")
+    url = input["url"]
 
     case URI.parse(url) do
       %URI{scheme: "https", host: "www.gutenberg.org"} ->

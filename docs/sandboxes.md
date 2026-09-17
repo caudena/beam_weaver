@@ -382,11 +382,15 @@ BeamWeaver filesystem adapter.
 
 ## Custom Sandbox Adapters
 
-Implement `BeamWeaver.Sandbox` to support another provider:
+Write a module that calls `use BeamWeaver.Sandbox` to support another
+provider. `use BeamWeaver.Sandbox` declares the behaviour and implements the
+`BeamWeaver.Sandbox.Backend` protocol for the module's struct. The
+`BeamWeaver.Sandbox` functions dispatch through that protocol, so
+`@behaviour BeamWeaver.Sandbox` alone is not enough:
 
 ```elixir
 defmodule MyApp.RemoteSandbox do
-  @behaviour BeamWeaver.Sandbox
+  use BeamWeaver.Sandbox
 
   alias BeamWeaver.Sandbox
 

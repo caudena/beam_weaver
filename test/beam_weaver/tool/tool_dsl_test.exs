@@ -37,6 +37,25 @@ defmodule BeamWeaver.Tool.DSLTest do
     end
   end
 
+  defmodule ListOrders do
+    use BeamWeaver.Tool
+
+    name("list_orders")
+    description("List orders by status")
+    injected(:tool_call_id, :tool_call_id, type: :string)
+
+    schema do
+      field(:status, :string)
+      field(:limit, :integer, required: false, default: 10)
+      field(:include_archived, :boolean, required: false, default: true)
+
+      field(:range, {:object, [{:from, :date}, {:to, :date, required: false}]}, required: false)
+    end
+
+    @impl true
+    def invoke(_tool, input, _opts), do: {:ok, input}
+  end
+
   defmodule DirectTool do
     @behaviour BeamWeaver.Core.Tool
 
@@ -73,11 +92,55 @@ defmodule BeamWeaver.Tool.DSLTest do
              properties: %{results: %{type: "array"}}
            }
 
-    assert Tool.raw_input_schema(%SearchDocs{}).properties.runtime.type == "object"
-    refute Map.has_key?(Tool.input_schema(%SearchDocs{}).properties, :runtime)
+    assert Tool.raw_input_schema(%SearchDocs{}).properties["runtime"].type == "object"
+    refute Map.has_key?(Tool.input_schema(%SearchDocs{}).properties, "runtime")
 
     assert {:ok, %{query: "refunds", limit: 5}} =
              Tool.invoke(%SearchDocs{}, %{query: "refunds", runtime: %{}})
+  end
+
+  test "the generated schema uses string property names, like a hand-written JSON schema" do
+    assert Tool.input_schema(ListOrders) == %{
+             type: "object",
+             properties: %{
+               "status" => %{type: "string"},
+               "limit" => %{type: "integer", default: 10},
+               "include_archived" => %{type: "boolean", default: true},
+               "range" => %{
+                 type: "object",
+                 properties: %{
+                   "from" => %{type: "string", format: "date"},
+                   "to" => %{type: "string", format: "date"}
+                 },
+                 required: ["from"]
+               }
+             },
+             required: ["status"]
+           }
+
+    assert Map.keys(Tool.raw_input_schema(ListOrders).properties) |> Enum.sort() ==
+             ["include_archived", "limit", "range", "status", "tool_call_id"]
+  end
+
+  test "a model call delivers declared fields under string keys, defaults included" do
+    # Arguments decoded from a model's JSON have string keys.
+    assert {:ok, input} = Tool.invoke(ListOrders, %{"status" => "shipped"})
+    assert input == %{"status" => "shipped", "limit" => 10, "include_archived" => true}
+
+    # A value the model sends wins over the default, false included.
+    assert {:ok, input} =
+             Tool.invoke(ListOrders, %{"status" => "shipped", "limit" => 3, "include_archived" => false})
+
+    assert input == %{"status" => "shipped", "limit" => 3, "include_archived" => false}
+
+    # Injected arguments keep their atom names.
+    assert {:ok, input} = Tool.invoke(ListOrders, %{"status" => "new", tool_call_id: "call_1"})
+    assert input == %{"status" => "new", "limit" => 10, "include_archived" => true, tool_call_id: "call_1"}
+  end
+
+  test "a direct call keeps the caller's keys for the arguments it supplies" do
+    assert {:ok, %{"limit" => 10, "include_archived" => true, status: "shipped"}} =
+             Tool.invoke(ListOrders, %{status: "shipped"})
   end
 
   test "schema blocks validate nested objects, enums, and types before handler execution" do

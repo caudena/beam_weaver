@@ -98,10 +98,10 @@ defmodule MyApp.Tools.InternetSearch do
         "https://api.tavily.com/search",
         headers: [{"authorization", "Bearer #{api_key}"}],
         json: %{
-          query: input.query,
-          max_results: Map.get(input, :max_results, 5),
-          topic: Map.get(input, :topic, "general"),
-          include_raw_content: Map.get(input, :include_raw_content, false)
+          query: input["query"],
+          max_results: input["max_results"],
+          topic: input["topic"],
+          include_raw_content: input["include_raw_content"]
         },
         receive_timeout: 120_000
       )

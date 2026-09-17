@@ -30,6 +30,28 @@ defmodule BeamWeaver.Tool.Schema.Fields do
     }
   end
 
+  # A model sends tool arguments as a JSON object, so their keys are strings.
+  # With string property names a schema default arrives under the same kind of
+  # key as the arguments around it.
+  def string_property_names(%{} = schema) do
+    schema
+    |> update_existing(:properties, &is_map/1, fn properties ->
+      Map.new(properties, fn {name, spec} -> {to_string(name), string_property_names(spec)} end)
+    end)
+    |> update_existing(:required, &is_list/1, fn required -> Enum.map(required, &to_string/1) end)
+    |> update_existing(:items, &is_map/1, &string_property_names/1)
+    |> update_existing(:anyOf, &is_list/1, fn variants -> Enum.map(variants, &string_property_names/1) end)
+  end
+
+  def string_property_names(schema), do: schema
+
+  defp update_existing(schema, key, valid?, fun) do
+    case schema do
+      %{^key => value} -> if valid?.(value), do: Map.put(schema, key, fun.(value)), else: schema
+      _other -> schema
+    end
+  end
+
   defp normalize_field({name, type}), do: {name, type, []}
   defp normalize_field({name, type, opts}), do: {name, type, opts}
 

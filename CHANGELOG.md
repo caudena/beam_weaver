@@ -1,5 +1,58 @@
 # Changelog
 
+## 0.1.27 - 2026-09-18
+
+### Changed
+
+- `use BeamWeaver.Tool` generates an input schema with string property names
+  and `required` entries, like a hand-written JSON schema. A model sends its
+  arguments as a JSON object, and a schema default arrives under the schema's
+  property name, so `invoke/3` now receives every field of the `schema` block
+  under a string key, defaults included (`input["limit"]`). Before, a default
+  arrived under an atom key next to the model's string keys, and a tool had to
+  read each field under both. Injected arguments keep their atom names
+  (`input.context`), and a direct `Tool.invoke/3` call still passes the
+  caller's keys through. Breaking for a module tool that reads a default
+  through an atom key (`Map.get(input, :limit, 10)`) or looks up the properties
+  of `input_schema/1` by atom.
+- Long-term memory is documented as two separate forms, each with complete
+  code. Memory files are plain Markdown files on disk: `memory` loads them into
+  the system prompt, `BeamWeaver.Filesystem.Local` serves them to the file
+  tools, and the application reads and writes them with `File`. Memory records
+  are items in a `BeamWeaver.Memory` store (`BeamWeaver.Memory.ETS`,
+  `BeamWeaver.Memory.Ecto`): tools with the store and the run context injected
+  create, replace, and delete them, a prompt function loads them into the
+  system prompt, and the application works on the same records with
+  `BeamWeaver.Memory`. The guides no longer keep memory files inside a store
+  through `BeamWeaver.Filesystem.Store`. Both forms are covered by agent-level
+  tests, records on ETS and on PostgreSQL.
+- The memory guides explain how the memory of different owners is kept apart
+  inside one application. For records: one namespace per user, project,
+  organization, or agent, built from the run context and never from model
+  input; how `search/3`, `list_namespaces/2`, and `yield_keys/3` match
+  namespace prefixes, and the leak caused by a namespace that is a prefix of
+  another owner's namespace; stable and generated keys; filters; deleting
+  everything an owner has. For files: one directory per owner, shared files
+  made read-only with filesystem permissions, and one module-defined agent that
+  serves every user from that user's own directory.
+
+### Fixed
+
+- Long-term memory guide: the guide named the wrong reserved namespace root; it
+  is `"beam_weaver"`. `store BeamWeaver.Memory.ETS.new()` in an agent module is
+  evaluated for every run and starts each run with an empty store; the guide
+  now creates the ETS store once and passes it with `store:`. The search
+  example used a `query:` that matches nothing without an index.
+- Tools guide: the store example matched `BeamWeaver.Memory.put/5` against
+  `:ok` and took the user id from model input.
+- Custom filesystem and sandbox examples in the guides call
+  `use BeamWeaver.Filesystem`, `use BeamWeaver.Filesystem.Executable`, and
+  `use BeamWeaver.Sandbox`. With `@behaviour` alone the struct has no protocol
+  implementation and every call raises `protocol ... not implemented`.
+- Module tool examples in the guides read their fields under string keys
+  (`input["query"]`). `input.query` raised inside an agent, and
+  `Map.get(input, :limit, 10)` ignored a limit the model had sent.
+
 ## 0.1.26 - 2026-09-17
 
 ### Fixed
@@ -8,8 +61,7 @@
   type allows it (`"type": ["object", "null"]`, the rendering of an explicitly
   nullable field). 0.1.24 rejected every null under a required key while
   fixing optional nullables, so a model answering "unknown" for such a field
-  failed the whole response; `hubai`'s domain discovery hit this on the
-  `company_size_range` and `deal_size_range` objects with every model.
+  failed the whole response, whichever model was used.
 
 ## 0.1.25 - 2026-09-17
 
@@ -18,8 +70,8 @@
 - `BeamWeaver.PromptCache.key/4` never exceeds 64 bytes. OpenAI rejects a
   longer `prompt_cache_key` with a 400, and the prompt-caching middleware's
   default scope is the agent's graph name, so an agent with a name of 14
-  characters or more (`deal_crm_sync_agent` gave 69 bytes) failed every call
-  on that provider. A key over the limit now collapses its scope, model and
+  characters or more (a 19-character name gave 69 bytes) failed every call on
+  that provider. A key over the limit now collapses its scope, model and
   prompt digest into one hash behind the `bwpc:<version>:h:` prefix.
 
 ## 0.1.24 - 2026-09-16
@@ -667,8 +719,8 @@
 - xAI reasoning profiles omit unsupported `stop` request parameters while
   non-reasoning xAI chat-completions models continue to send supported stop
   sequences.
-- Deep Agents offload and model-request metadata now use BeamWeaver-native keys
-  such as `:offloaded_to` and `:source` instead of Python ecosystem labels.
+- Agent harness offload and model-request metadata now use native keys such as
+  `:offloaded_to` and `:source`.
 - WeaveScope trace payload tests now assert native BeamWeaver/WeaveScope fields
   for run envelopes, model generation details, tool payloads, usage, lifecycle
   status, event versions, tags, and metadata.

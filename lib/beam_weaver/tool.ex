@@ -3,6 +3,12 @@ defmodule BeamWeaver.Tool do
   Macro-backed convenience for defining BeamWeaver tools.
 
   The macro compiles to a normal module implementing `BeamWeaver.Core.Tool`.
+
+  The input schema generated from the `schema` block uses string property
+  names, like a hand-written JSON schema. A model sends its arguments as a JSON
+  object, so `invoke/3` receives the declared fields under string keys, schema
+  defaults included (`input["limit"]`). Injected arguments arrive under their
+  atom names (`input.context`).
   """
 
   defmacro __using__(_opts) do
@@ -76,7 +82,9 @@ defmodule BeamWeaver.Tool do
 
       @impl true
       def input_schema(_tool) do
-        BeamWeaver.Tool.Schema.from_fields(__beam_weaver_tool_definition__().fields)
+        __beam_weaver_tool_definition__().fields
+        |> BeamWeaver.Tool.Schema.from_fields()
+        |> BeamWeaver.Tool.Schema.string_property_names()
       end
 
       @impl true

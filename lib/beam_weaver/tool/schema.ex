@@ -50,6 +50,9 @@ defmodule BeamWeaver.Tool.Schema do
   defdelegate normalize_key(key), to: Fields
 
   @doc false
+  defdelegate string_property_names(schema), to: Fields
+
+  @doc false
   defdelegate stringify_schema(map), to: Fields
 
   @doc false
