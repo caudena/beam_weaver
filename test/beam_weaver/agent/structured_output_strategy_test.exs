@@ -583,4 +583,36 @@ defmodule BeamWeaver.Agent.StructuredOutputStrategyTest do
     Code.delete_path(String.to_charlist(tmp_dir))
     File.rm_rf(tmp_dir)
   end
+
+  test "a null under a required key passes when the property's type allows null" do
+    schema = %{
+      "type" => "object",
+      "properties" => %{
+        "name" => %{"type" => "string"},
+        "size_range" => %{
+          "type" => ["object", "null"],
+          "properties" => %{"min" => %{"type" => ["integer", "null"]}, "max" => %{"type" => ["integer", "null"]}},
+          "required" => ["min", "max"]
+        },
+        "count" => %{"type" => "integer"}
+      },
+      "required" => ["name", "size_range", "count"]
+    }
+
+    spec = StructuredOutput.schema_spec(schema, name: "nullable_required", strict: true)
+
+    assert {:ok, %{"name" => "x", "size_range" => nil, "count" => 1}} =
+             BeamWeaver.Agent.StructuredOutput.Validation.parse(spec, %{
+               "name" => "x",
+               "size_range" => nil,
+               "count" => 1
+             })
+
+    assert {:error, %BeamWeaver.Core.Error{details: %{key: "count"}}} =
+             BeamWeaver.Agent.StructuredOutput.Validation.parse(spec, %{
+               "name" => "x",
+               "size_range" => nil,
+               "count" => nil
+             })
+  end
 end
