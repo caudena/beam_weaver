@@ -8,11 +8,19 @@ defmodule BeamWeaver.Agent.PromptCachingTest do
   alias BeamWeaver.Models.FakeChatModel
   alias BeamWeaver.PromptCache
 
-  test "prompt cache keys keep full scope and hash stable prompt content" do
+  test "prompt cache keys keep the scope readable and hash stable prompt content" do
+    key = PromptCache.key("support-agent", "xai:grok-4.3", "static policy", version: "v2")
+
+    assert key =~ "bwpc:v2:support-agent:xai-grok-4.3:"
+    assert key == PromptCache.key("support-agent", "xai:grok-4.3", "static policy", version: "v2")
+    refute key == PromptCache.key("support-agent-2", "xai:grok-4.3", "static policy", version: "v2")
+  end
+
+  test "prompt cache keys never exceed the 64 bytes OpenAI accepts" do
     key = PromptCache.key("support-agent-fresh-long-scope", "xai:grok-4.3", "static policy", version: "v2")
 
-    assert key =~ "bwpc:v2:support-agent-fresh-long-scope:xai-grok-4.3:"
-    assert key == PromptCache.key("support-agent-fresh-long-scope", "xai:grok-4.3", "static policy", version: "v2")
+    assert byte_size(key) <= PromptCache.max_key_bytes()
+    assert key =~ "bwpc:v2:h:"
     refute key == PromptCache.key("support-agent-fresh-long-scope-2", "xai:grok-4.3", "static policy", version: "v2")
   end
 

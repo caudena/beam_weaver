@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.25 - 2026-09-17
+
+### Fixed
+
+- `BeamWeaver.PromptCache.key/4` never exceeds 64 bytes. OpenAI rejects a
+  longer `prompt_cache_key` with a 400, and the prompt-caching middleware's
+  default scope is the agent's graph name, so an agent with a name of 14
+  characters or more (`deal_crm_sync_agent` gave 69 bytes) failed every call
+  on that provider. A key over the limit now collapses its scope, model and
+  prompt digest into one hash behind the `bwpc:<version>:h:` prefix.
+
 ## 0.1.24 - 2026-09-16
 
 ### Changed
