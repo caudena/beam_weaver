@@ -50,9 +50,18 @@ defmodule BeamWeaver.Agent.StructuredOutput.Validation do
 
     Enum.reduce_while(properties, :ok, fn {key, property}, :ok ->
       case fetch_key(data, key) do
-        # A null for an optional property is the nullable rendering of "absent".
+        # A null is fine when the property's type allows it (an explicitly
+        # nullable field such as `"type": ["object", "null"]`) or when the
+        # property is optional, the nullable rendering of "absent". Only a
+        # required property whose type excludes null fails.
         {:ok, nil} ->
-          if to_string(key) in required, do: invalid_type(spec, key, property, nil), else: {:cont, :ok}
+          type = BeamWeaver.MapAccess.get(property, :type)
+
+          cond do
+            valid_json_type?(nil, type) -> {:cont, :ok}
+            to_string(key) in required -> invalid_type(spec, key, property, nil)
+            true -> {:cont, :ok}
+          end
 
         {:ok, value} ->
           type = BeamWeaver.MapAccess.get(property, :type)

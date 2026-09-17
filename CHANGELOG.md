@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.26 - 2026-09-17
+
+### Fixed
+
+- Structured-output validation accepts `null` for a required property whose
+  type allows it (`"type": ["object", "null"]`, the rendering of an explicitly
+  nullable field). 0.1.24 rejected every null under a required key while
+  fixing optional nullables, so a model answering "unknown" for such a field
+  failed the whole response; `hubai`'s domain discovery hit this on the
+  `company_size_range` and `deal_size_range` objects with every model.
+
 ## 0.1.25 - 2026-09-17
 
 ### Fixed
