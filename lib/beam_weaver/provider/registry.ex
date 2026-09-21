@@ -14,6 +14,7 @@ defmodule BeamWeaver.Provider.Registry do
           adapter: module() | nil,
           chat_model: module() | nil,
           embedding_model: module() | nil,
+          decision_model: module() | nil,
           profiles: [Profile.t()],
           capabilities: map()
         }
@@ -144,6 +145,23 @@ defmodule BeamWeaver.Provider.Registry do
     end
   end
 
+  @doc "Returns the decision model module for a provider."
+  def decision_provider(provider, opts \\ []) do
+    with {:ok, entry} <- fetch(provider) do
+      cond do
+        entry.adapter && function_exported?(entry.adapter, :decision_model, 1) ->
+          entry.adapter.decision_model(opts)
+
+        entry.decision_model ->
+          {:ok, entry.decision_model}
+
+        true ->
+          {:error,
+           Error.new(:unsupported_feature, "provider does not offer decision models", %{provider: entry.provider})}
+      end
+    end
+  end
+
   @doc """
   Infers the provider for a bare model ID.
 
@@ -182,6 +200,7 @@ defmodule BeamWeaver.Provider.Registry do
       BeamWeaver.Anthropic.Provider,
       BeamWeaver.XAI.Provider,
       BeamWeaver.Google.Provider,
+      BeamWeaver.TypeSafe.Provider,
       BeamWeaver.Moonshot.Provider,
       BeamWeaver.ZAI.Provider,
       BeamWeaver.DeepSeek.Provider,
@@ -200,6 +219,7 @@ defmodule BeamWeaver.Provider.Registry do
       adapter: adapter,
       chat_model: callback_value(adapter, :chat_model, [[]]),
       embedding_model: callback_value(adapter, :embedding_model, [[]]),
+      decision_model: callback_value(adapter, :decision_model, [[]]),
       profiles: callback_value(adapter, :profiles, []) || [],
       capabilities: callback_value(adapter, :capabilities, []) || %{}
     }
@@ -219,6 +239,7 @@ defmodule BeamWeaver.Provider.Registry do
           adapter: nil,
           chat_model: nil,
           embedding_model: nil,
+          decision_model: nil,
           profiles: [],
           capabilities: %{}
         }
@@ -228,6 +249,7 @@ defmodule BeamWeaver.Provider.Registry do
       base
       | chat_model: Map.get(spec, :chat_model, Map.get(spec, "chat_model", base.chat_model)),
         embedding_model: Map.get(spec, :embedding_model, Map.get(spec, "embedding_model", base.embedding_model)),
+        decision_model: Map.get(spec, :decision_model, Map.get(spec, "decision_model", base.decision_model)),
         profiles: normalize_profiles(Map.get(spec, :profiles, Map.get(spec, "profiles", base.profiles))),
         capabilities: Map.get(spec, :capabilities, Map.get(spec, "capabilities", base.capabilities))
     }

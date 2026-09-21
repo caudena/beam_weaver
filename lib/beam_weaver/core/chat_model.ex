@@ -151,10 +151,16 @@ defmodule BeamWeaver.Core.ChatModel do
   def resolve_invocation_model(model, opts \\ []) do
     module = if is_map(model), do: Map.get(model, :__struct__), else: nil
 
-    if is_atom(module) and function_exported_loaded?(module, :resolve_invocation_model, 2) do
-      module.resolve_invocation_model(model, opts)
-    else
-      {:ok, model}
+    cond do
+      BeamWeaver.Core.DecisionModel.model?(model) ->
+        {:error,
+         Error.new(:unsupported_feature, "decision models cannot generate chat; use Core.DecisionModel.invoke/3")}
+
+      is_atom(module) and function_exported_loaded?(module, :resolve_invocation_model, 2) ->
+        module.resolve_invocation_model(model, opts)
+
+      true ->
+        {:ok, model}
     end
   end
 

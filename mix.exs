@@ -4,7 +4,7 @@ defmodule BeamWeaver.MixProject do
   def project do
     [
       app: :beam_weaver,
-      version: "0.1.27",
+      version: "0.1.28",
       description:
         "Elixir-native LangChain, LangGraph, and DeepAgents for traceable LLM apps: OTP workflows, tools, memory, human-in-the-loop, streaming, custom clients/adapters, minimal deps, and WeaveScope tracing.",
       source_url: "https://github.com/caudena/beam_weaver",
@@ -96,6 +96,7 @@ defmodule BeamWeaver.MixProject do
         "docs/partners/openai.md",
         "docs/partners/anthropic.md",
         "docs/partners/google.md",
+        "docs/partners/typesafe.md",
         "docs/partners/deepseek.md",
         "docs/partners/moonshot.md",
         "docs/partners/xai.md",
@@ -164,6 +165,7 @@ defmodule BeamWeaver.MixProject do
           "docs/partners/openai.md",
           "docs/partners/anthropic.md",
           "docs/partners/google.md",
+          "docs/partners/typesafe.md",
           "docs/partners/deepseek.md",
           "docs/partners/moonshot.md",
           "docs/partners/xai.md",
@@ -187,6 +189,7 @@ defmodule BeamWeaver.MixProject do
           BeamWeaver.Core.Tool,
           BeamWeaver.Core.ToolResult,
           BeamWeaver.Core.Error,
+          BeamWeaver.Core.DecisionModel,
           BeamWeaver.Runnable
         ],
         "Agents And Middleware": [
@@ -200,6 +203,7 @@ defmodule BeamWeaver.MixProject do
           BeamWeaver.Agent.Middleware.Memory,
           BeamWeaver.Agent.Middleware.HumanInTheLoop,
           BeamWeaver.Agent.Middleware.Summarization,
+          BeamWeaver.Agent.Middleware.TypeSafeModelRouter,
           BeamWeaver.Agent.Middleware.ModelRetry,
           BeamWeaver.Agent.Middleware.ModelFallback,
           BeamWeaver.Agent.Middleware.ToolRetry,
@@ -274,6 +278,14 @@ defmodule BeamWeaver.MixProject do
           BeamWeaver.Provider.Replay,
           BeamWeaver.Anthropic,
           BeamWeaver.Anthropic.ChatModel,
+          BeamWeaver.TypeSafe,
+          BeamWeaver.TypeSafe.DecisionModel,
+          BeamWeaver.TypeSafe.Client,
+          BeamWeaver.TypeSafe.Question,
+          BeamWeaver.TypeSafe.Response,
+          BeamWeaver.TypeSafe.ChoiceAnswer,
+          BeamWeaver.TypeSafe.ScoreAnswer,
+          BeamWeaver.TypeSafe.NoulAnswer,
           BeamWeaver.Google,
           BeamWeaver.Google.ChatModel,
           BeamWeaver.Google.Client,

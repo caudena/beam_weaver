@@ -3,7 +3,7 @@ defmodule BeamWeaver.RetryPredicates do
   Common retry predicates for policy-driven middleware.
   """
 
-  @transient_statuses [408, 409, 425, 429, 500, 502, 503, 504]
+  @transient_statuses [408, 409, 425, 429, 500, 502, 503, 504, 529]
   @transient_types [
     :timeout,
     :closed,
@@ -18,6 +18,9 @@ defmodule BeamWeaver.RetryPredicates do
     :rate_limit_error,
     :transient
   ]
+
+  @doc "Whether an HTTP status describes a retryable transient failure."
+  def transient_status?(status), do: status in @transient_statuses
 
   @spec transient?(term()) :: boolean()
   def transient?(%{details: details, type: type} = error) when is_map(details) do

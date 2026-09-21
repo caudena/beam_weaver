@@ -101,12 +101,16 @@ defmodule BeamWeaver.Google.Client do
   def stream_events(%__MODULE__{} = client, model, body, opts \\ []) do
     request = request(client, model, :stream_generate_content, body, opts)
 
+    finalize = fn state, response ->
+      Streaming.finish_typed_events(state, &decode_result({:ok, %{response | body: &1}}, opts))
+    end
+
     stream =
       ProviderStreaming.live_sse(
         transport(client),
         request,
         transport_opts(client, request, opts),
-        Keyword.put(opts, :parser_finalizer, &Streaming.finish_typed_events/1),
+        opts |> Keyword.put(:parser_finalizer, finalize) |> Keyword.put(:strict_sse, true),
         &Streaming.typed_events/2,
         &decode_result(&1, opts)
       )

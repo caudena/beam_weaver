@@ -227,6 +227,25 @@ chunks instead of waiting for the final assistant message. Current checked-in
 profiles enable it for OpenAI GPT and xAI Grok chat profiles with provider
 stream evidence; unsupported or unknown provider fallbacks leave it `false`.
 
+## Decision Models
+
+Jev evaluates state against typed questions through `BeamWeaver.Core.DecisionModel`:
+
+```elixir
+{:ok, jev} = BeamWeaver.Models.init_decision_model("typesafe:jev-1.13.0")
+{:ok, response} = BeamWeaver.Core.DecisionModel.invoke(jev, %{
+  state: "Customers cannot check out.",
+  questions: %{urgent: BeamWeaver.TypeSafe.Question.noul(instructions: "Does this describe an urgent outage?")}
+})
+response.answers["urgent"].noul
+```
+
+Decision models also compose through `Runnable`, bounded batch and async calls,
+`Models.cached/3`, and `Models.with_rate_limiter/2`. Jev is registered alongside
+other providers with `decision_output: true` and `text_output: false`.
+See [TypeSafe / Jev](partners/typesafe.md) for all primitives, input/output
+schemas, configuration, pricing metadata, and routing middleware.
+
 ## Key Methods
 
 Use the behaviour modules as the stable call boundary:

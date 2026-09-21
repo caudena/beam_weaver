@@ -19,6 +19,7 @@ defmodule BeamWeaver.Provider.Capability do
     audio_input: :audio_inputs,
     video_input: :video_inputs,
     text_output: :text_outputs,
+    decision_output: :decision_outputs,
     image_output: :image_outputs,
     audio_output: :audio_outputs,
     video_output: :video_outputs,

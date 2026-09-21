@@ -24,6 +24,14 @@ defmodule BeamWeaver.Agent.Usage do
   @spec new() :: t()
   def new, do: %__MODULE__{}
 
+  @doc "Builds one model-call usage delta without adding a synthetic message to history."
+  def from_model_usage(metadata, details \\ %{}) when is_map(metadata) do
+    new()
+    |> add_usage(metadata)
+    |> increment(:model_calls)
+    |> Map.put(:details, [Map.put(details, :usage_metadata, metadata)])
+  end
+
   @spec from_messages([Message.t()]) :: t()
   def from_messages(messages) do
     messages

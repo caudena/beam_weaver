@@ -149,6 +149,63 @@ BeamWeaver.Google.ChatModel.count_tokens(model, [
 ])
 ```
 
+## Typed Streaming And Tools
+
+Google typed streaming emits live text, reasoning, and custom tool-call events.
+After a successful stream, it emits exactly one `%Events.Message{}` followed by
+`%Events.Done{}`. The final message contains complete `tool_calls`, normalized
+`usage_metadata`, finish and provider metadata, and thought signatures needed
+for subsequent tool-result turns. It is decoded from the same streaming
+request, including any usage-only trailer.
+
+```elixir
+alias BeamWeaver.Core.{ChatModel, Message, Tool}
+alias BeamWeaver.Stream.{Envelope, Events}
+
+ping =
+  Tool.from_function!(
+    name: "benchmark_ping",
+    description: "Return pong.",
+    input_schema: %{type: :object, properties: %{}},
+    handler: fn _args, _opts -> "pong" end
+  )
+
+{:ok, events} =
+  ChatModel.stream_typed_events(model, [Message.user("Call benchmark_ping.")],
+    tools: [ping],
+    tool_choice: :required
+  )
+
+Enum.each(events, fn
+  %Envelope{event: %Events.Token{text: text}} ->
+    IO.write(text)
+
+  %Envelope{event: %Events.Message{message: message}} ->
+    IO.inspect(message.tool_calls, label: "complete tool calls")
+    IO.inspect(message.usage_metadata, label: "usage")
+
+  %Events.Error{error: error} ->
+    IO.inspect(error, label: "stream failed")
+
+  _event ->
+    :ok
+end)
+```
+
+Standalone model calls return tool requests; agents execute them. Build an
+agent with `model_opts: [stream: true]` to consume the typed model stream and
+execute its completed calls. Preserve the final assistant message in history
+when sending tool results back to Google.
+
+Google's custom `:tool_call_delta` events are live notifications, not
+`MessageChunk.tool_call_chunks`. Read executable calls from the final message.
+Treat that message as a complete snapshot; appending its text after displaying
+token deltas would duplicate the text.
+
+Errors can arrive during enumeration, even after live deltas have been emitted.
+Provider, transport, malformed-SSE, and incomplete-stream errors emit
+`%Events.Error{}` and prevent a successful final `Message` or `Done`.
+
 ## Unsupported Google Surfaces
 
 - Vertex AI. That should be a separate explicit adapter/prefix rather than an

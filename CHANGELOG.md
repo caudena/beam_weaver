@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.1.28 - 2026-09-21
+
+### Added
+
+- TypeSafe Jev as a first-class decision model: Choice, Score, and Noul questions,
+  provider discovery and profiles, Runnable composition, batch/async calls,
+  caching, rate limiting, typed serialization, tracing, and usage/cost metadata.
+- `TypeSafeModelRouter` middleware selects a chat model once per run, with
+  confidence-gated fallback, resumable route state, and classifier accounting.
+
+### Fixed
+
+- Google typed streaming now emits one normalized assistant message before
+  completion, preserving tool calls, usage, finish metadata, response-header
+  metadata, and thought signatures from the same streaming request. Agents
+  execute streamed tool calls and retain their results for subsequent turns,
+  including repeated calls without provider IDs. Provider, transport, malformed
+  SSE, and incomplete-stream errors prevent a successful final message.
+
 ## 0.1.27 - 2026-09-18
 
 ### Changed

@@ -42,6 +42,10 @@ defmodule BeamWeaver.Serialization.Registry do
               "beam_weaver.graph.execution_info" => BeamWeaver.Graph.ExecutionInfo,
               "beam_weaver.graph.channels.delta_snapshot" => BeamWeaver.Graph.Channels.DeltaSnapshot,
               "beam_weaver.core.error" => BeamWeaver.Core.Error,
+              "beam_weaver.typesafe.response" => BeamWeaver.TypeSafe.Response,
+              "beam_weaver.typesafe.choice_answer" => BeamWeaver.TypeSafe.ChoiceAnswer,
+              "beam_weaver.typesafe.score_answer" => BeamWeaver.TypeSafe.ScoreAnswer,
+              "beam_weaver.typesafe.noul_answer" => BeamWeaver.TypeSafe.NoulAnswer,
               "beam_weaver.timeout_policy" => BeamWeaver.TimeoutPolicy,
               "beam_weaver.tracing.run" => BeamWeaver.Tracing.Run
             }

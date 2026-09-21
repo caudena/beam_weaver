@@ -47,6 +47,15 @@ Elixir data. If the module implements `new/1`, BeamWeaver calls it for
 directly.
 {% endhint %}
 
+## Jev Model Routing
+
+`BeamWeaver.Agent.Middleware.TypeSafeModelRouter` uses a TypeSafe decision model
+once per run to select a chat model. It retains the base model below the
+configured confidence threshold or on classifier failure, exposes the decision
+in `model_route`, and reuses it across tool turns and checkpoint resume.
+See [configuration and the live example](partners/typesafe.md#dynamic-model-routing).
+Place it before `ModelFallback` when combining them.
+
 ## Available Middleware
 
 | Need | BeamWeaver path |

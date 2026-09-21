@@ -107,7 +107,7 @@ end
 | Agents | Module-defined agents and runtime-built agents with tools, middleware, structured output, memory, and HITL interrupts. |
 | Graph workflows | LangGraph-style state graphs with reducers, commands, subgraphs, checkpoints, pending writes, and durable execution. |
 | Deep agents | Planning tools, TODO state, virtual filesystems, skills, subagents, async subagents, context engineering, and summarization. |
-| Models | Provider adapters, model profiles, parameter validation, prompt caching, streaming, structured output, token usage, and cost metadata. |
+| Models | Chat, embedding, and typed decision models; provider adapters, profiles, parameter validation, caching, streaming, structured output, token usage, and cost metadata. |
 | Tools | Typed tools, injected runtime arguments, tool nodes, tool middleware, shell/filesystem tools, and tool-call tracing. |
 | Retrieval | Document loaders, text splitters, embeddings, vector stores, retrievers, record managers, and indexing flows. |
 | Persistence | ETS and Ecto-backed memory, checkpoints, caches, record managers, and vector stores. |
@@ -128,6 +128,7 @@ prefixes when a model name is ambiguous.
 | Moonshot/Kimi | `moonshot:kimi-k3`, `moonshot:kimi-k2.7-code`, `moonshot:kimi-k2.7-code-highspeed`, `moonshot:kimi-k2.6`, `moonshot:kimi-k2.5` |
 | xAI | `xai:grok-4.6`, `xai:grok-4.5`, `xai:grok-4.3`, `xai:grok-4.20-0309-reasoning`, `xai:grok-4.20-0309-non-reasoning`, `xai:grok-4.20-multi-agent-0309`, `xai:grok-build-0.1`, `xai:v1` embeddings |
 | Z.ai | `zai:glm-5.3`, `zai:glm-5.3-flash`, `zai:glm-5.2` |
+| [TypeSafe / Jev](docs/partners/typesafe.md) | `typesafe:jev-1.13.0`, `typesafe:jev-latest`, `typesafe:jev-preview` — decision models supporting Choice, Score, and Noul |
 | Test models | Fake chat and embedding models, plus replay transports for deterministic provider tests. |
 
 Inspect the exact profile set in your checkout:
@@ -135,6 +136,21 @@ Inspect the exact profile set in your checkout:
 ```bash
 mix beam_weaver.models.profiles
 ```
+
+### TypeSafe / Jev Decision Models
+
+Jev supports standalone Choice, Score, and Noul evaluations through
+`BeamWeaver.Models.init_decision_model/2` and
+`BeamWeaver.Core.DecisionModel.invoke/3`. It returns typed decisions and
+probabilities and can also select chat models through routing middleware.
+
+```elixir
+{:ok, jev} = BeamWeaver.Models.init_decision_model("typesafe:jev-1.13.0")
+```
+
+See the [TypeSafe guide](docs/partners/typesafe.md) and run
+`mix run examples/typesafe_dynamic_routing.exs` for the live Luna/Sol routing
+example (`--offline` selects fixtures explicitly).
 
 ## Install
 
@@ -158,7 +174,8 @@ config :beam_weaver,
   deepseek: [api_key: System.fetch_env!("DEEPSEEK_API_KEY")],
   xai: [api_key: System.fetch_env!("XAI_API_KEY")],
   moonshot: [api_key: System.fetch_env!("MOONSHOT_API_KEY")],
-  zai: [api_key: System.fetch_env!("ZAI_API_KEY")]
+  zai: [api_key: System.fetch_env!("ZAI_API_KEY")],
+  typesafe: [api_key: System.get_env("TYPESAFE_API_KEY") || System.fetch_env!("TYPESAFE_API")]
 ```
 
 ## Quickstart
