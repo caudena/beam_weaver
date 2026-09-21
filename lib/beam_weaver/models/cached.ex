@@ -3,6 +3,7 @@ defmodule BeamWeaver.Models.Cached do
 
   @behaviour BeamWeaver.Core.ChatModel
   @behaviour BeamWeaver.Core.LLM
+  @behaviour BeamWeaver.Core.DecisionModel
 
   alias BeamWeaver.Cache
   alias BeamWeaver.Core.ChatModel
@@ -15,6 +16,63 @@ defmodule BeamWeaver.Models.Cached do
   defstruct [:model, :cache, opts: []]
 
   @impl true
+  def decision_model?(wrapper), do: BeamWeaver.Core.DecisionModel.model?(wrapper.model)
+
+  @impl true
+  def evaluate(%__MODULE__{} = wrapper, input, opts) do
+    with :ok <- require_decision_model(wrapper),
+         {:ok, cache} <- resolve_cache(wrapper, opts) do
+      namespace = {:decision_model, model_name(wrapper.model)}
+
+      key =
+        cache_key(
+          wrapper,
+          input,
+          Keyword.drop(opts, [
+            :run_id,
+            :run_name,
+            :tags,
+            :metadata,
+            :trace,
+            :trace?,
+            :exporter,
+            :exporter_opts,
+            :config,
+            :configurable,
+            :context,
+            :max_concurrency,
+            :recursion_limit,
+            :opts
+          ])
+        )
+
+      case Cache.lookup(cache, namespace, key) do
+        {:hit, %BeamWeaver.TypeSafe.Response{} = response, _metadata} ->
+          {:ok, BeamWeaver.TypeSafe.Response.cached(response)}
+
+        {:hit, _value, _metadata} ->
+          {:error, Error.new(:invalid_cache_entry, "cached value is not a decision response")}
+
+        :miss ->
+          with {:ok, response} <- BeamWeaver.Core.DecisionModel.invoke(wrapper.model, input, opts),
+               :ok <- Cache.put(cache, namespace, key, response, wrapper.opts),
+               do: {:ok, response}
+
+        {:error, _} = error ->
+          error
+      end
+    end
+  end
+
+  defp require_decision_model(wrapper) do
+    if decision_model?(wrapper),
+      do: :ok,
+      else: {:error, Error.new(:unsupported_feature, "wrapped model does not support decisions")}
+  end
+
+  @impl true
+  def invoke(%__MODULE__{} = wrapper, input, opts) when is_map(input), do: evaluate(wrapper, input, opts)
+
   def invoke(%__MODULE__{} = wrapper, messages, opts) when is_list(messages) do
     with {:ok, cache} <- resolve_cache(wrapper, opts) do
       namespace = {:chat_model, model_name(wrapper.model)}
@@ -37,6 +95,10 @@ defmodule BeamWeaver.Models.Cached do
   end
 
   @impl true
+  def stream(%__MODULE__{} = wrapper, input, opts) when is_map(input) do
+    with {:ok, response} <- evaluate(wrapper, input, opts), do: {:ok, [response]}
+  end
+
   def stream(%__MODULE__{} = wrapper, messages, opts) when is_list(messages) do
     with {:ok, cache} <- resolve_cache(wrapper, opts) do
       namespace = {:chat_model, model_name(wrapper.model)}

@@ -9,8 +9,10 @@ defmodule BeamWeaver.Provider.SSE do
 
   def events(_body), do: []
 
-  @spec process_chunk(binary(), binary() | term()) :: {[map()], binary()}
-  def process_chunk(buffer, chunk) when is_binary(buffer) and is_binary(chunk) do
+  @spec process_chunk(binary(), binary() | term(), keyword()) :: {[map()], binary()}
+  def process_chunk(buffer, chunk, opts \\ [])
+
+  def process_chunk(buffer, chunk, opts) when is_binary(buffer) and is_binary(chunk) do
     data = normalize_newlines(buffer <> chunk)
     parts = String.split(data, "\n\n", trim: false)
 
@@ -18,12 +20,12 @@ defmodule BeamWeaver.Provider.SSE do
       parts
       |> Enum.split(-1)
 
-    {Enum.flat_map(events, &parse_event/1), remaining}
+    {Enum.flat_map(events, &parse_event(&1, opts)), remaining}
   end
 
-  def process_chunk(buffer, _chunk) when is_binary(buffer), do: {[], buffer}
+  def process_chunk(buffer, _chunk, _opts) when is_binary(buffer), do: {[], buffer}
 
-  defp parse_event(event) do
+  defp parse_event(event, opts) do
     lines = String.split(event, "\n", trim: true)
 
     event_name =
@@ -43,8 +45,15 @@ defmodule BeamWeaver.Provider.SSE do
       []
     else
       case BeamWeaver.JSON.decode(data) do
-        {:ok, decoded} -> [%{"event" => event_name, "data" => decoded}]
-        {:error, _error} -> []
+        {:ok, decoded} ->
+          [%{"event" => event_name, "data" => decoded}]
+
+        {:error, _error} ->
+          if Keyword.get(opts, :strict, false) do
+            raise ArgumentError, "provider SSE event contains invalid JSON"
+          else
+            []
+          end
       end
     end
   end

@@ -23,6 +23,7 @@ defmodule BeamWeaver.Models.Profile do
     audio_inputs: false,
     video_inputs: false,
     text_outputs: true,
+    decision_outputs: false,
     image_outputs: false,
     audio_outputs: false,
     video_outputs: false,

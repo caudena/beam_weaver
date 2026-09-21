@@ -15,6 +15,7 @@ defmodule BeamWeaver.Provider.Compatibility do
     :audio_input,
     :video_input,
     :text_output,
+    :decision_output,
     :image_output,
     :audio_output,
     :video_output,

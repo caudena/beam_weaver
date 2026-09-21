@@ -81,6 +81,7 @@ defmodule BeamWeaver.Provider.RegistryTest do
              :google,
              :moonshot,
              :openai,
+             :typesafe,
              :xai,
              :zai
            ]

@@ -69,13 +69,24 @@ defmodule BeamWeaver.Google.Streaming do
   end
 
   @doc false
-  def finish_typed_events(state) do
-    response = merge_responses(Enum.reverse(state || []))
+  def finish_typed_events(state, decode_response \\ &{:ok, &1}) do
+    with {:ok, response} <- decode_response.(merge_responses(Enum.reverse(state || []))),
+         {:ok, message} <- Messages.response_to_message(response),
+         :ok <- validate_complete_response(response) do
+      {:ok,
+       [
+         Stream.envelope(%Events.Message{message: message}, metadata: %{provider: :google}),
+         Stream.envelope(%Events.Done{result: response}, metadata: %{provider: :google})
+       ]}
+    end
+  end
+
+  defp validate_complete_response(response) do
     candidate = get_in(response, ["candidates", Access.at(0)]) || %{}
     blocked? = get_in(response, ["promptFeedback", "blockReason"]) not in [nil, "", "BLOCK_REASON_UNSPECIFIED"]
 
     if is_binary(candidate["finishReason"]) or blocked? do
-      {:ok, [Stream.envelope(%Events.Done{result: response}, metadata: %{provider: :google})]}
+      :ok
     else
       {:error,
        BeamWeaver.Core.Error.new(:invalid_provider_stream, "Gemini stream ended without a terminal finish reason")}
@@ -104,7 +115,16 @@ defmodule BeamWeaver.Google.Streaming do
 
     # Usage-only trailers must not erase the last candidate, finish reason or
     # grounding metadata; those may arrive before the last transport chunk.
-    final = Enum.reduce(responses, %{}, &Map.merge(&2, Map.delete(&1, "candidates")))
+    final =
+      Enum.reduce(responses, %{}, fn response, acc ->
+        Map.merge(acc, Map.delete(response, "candidates"), fn
+          "usageMetadata", previous, current when is_map(previous) and is_map(current) ->
+            Map.merge(previous, current)
+
+          _key, _previous, current ->
+            current
+        end)
+      end)
 
     candidate =
       Enum.reduce(responses, %{}, fn response, acc ->
@@ -120,7 +140,7 @@ defmodule BeamWeaver.Google.Streaming do
   defp merge_response_parts(parts) do
     parts
     |> Enum.reduce({[], nil}, fn
-      %{"text" => ""}, acc ->
+      %{"text" => ""} = part, acc when map_size(part) == 1 ->
         acc
 
       %{"text" => text} = part, acc when is_binary(text) ->

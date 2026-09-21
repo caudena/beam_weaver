@@ -2,6 +2,7 @@ defmodule BeamWeaver.Models.RateLimited do
   @moduledoc false
 
   @behaviour BeamWeaver.Core.ChatModel
+  @behaviour BeamWeaver.Core.DecisionModel
 
   alias BeamWeaver.Core.ChatModel
   alias BeamWeaver.Core.Error
@@ -11,6 +12,17 @@ defmodule BeamWeaver.Models.RateLimited do
   defstruct [:model, :policy]
 
   @impl true
+  def decision_model?(wrapper), do: BeamWeaver.Core.DecisionModel.model?(wrapper.model)
+
+  @impl true
+  def evaluate(wrapper, input, opts) do
+    with :ok <- acquire(wrapper, opts),
+         do: BeamWeaver.Core.DecisionModel.invoke(wrapper.model, input, opts)
+  end
+
+  @impl true
+  def invoke(wrapper, input, opts) when is_map(input), do: evaluate(wrapper, input, opts)
+
   def invoke(%__MODULE__{} = wrapper, messages, opts) do
     with :ok <- acquire(wrapper, opts) do
       ChatModel.invoke(wrapper.model, messages, opts)
@@ -18,6 +30,10 @@ defmodule BeamWeaver.Models.RateLimited do
   end
 
   @impl true
+  def stream(wrapper, input, opts) when is_map(input) do
+    with {:ok, response} <- evaluate(wrapper, input, opts), do: {:ok, [response]}
+  end
+
   def stream(%__MODULE__{} = wrapper, messages, opts) do
     with :ok <- acquire(wrapper, opts) do
       ChatModel.stream(wrapper.model, messages, opts)

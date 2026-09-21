@@ -717,6 +717,10 @@ defmodule BeamWeaver.Google.ChatModelTest do
              Enum.filter(events, &match?(%{event: %BeamWeaver.Stream.Events.Done{}}, &1))
 
     assert {:ok, message} = BeamWeaver.Google.Messages.response_to_message(response)
+
+    assert [%{event: %BeamWeaver.Stream.Events.Message{message: ^message}}, %{event: %BeamWeaver.Stream.Events.Done{}}] =
+             Enum.take(events, -2)
+
     assert [%ToolCall{id: "call-native", name: "lookup", thought_signature: "sig-native"}] = message.tool_calls
     assert message.usage_metadata.total_tokens == 17
     assert message.response_metadata.grounding_metadata["webSearchQueries"] == ["Caudena"]

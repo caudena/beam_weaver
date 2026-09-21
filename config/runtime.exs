@@ -48,6 +48,16 @@ if config_env() != :test do
            compact.(api_key: non_blank.("ANTHROPIC_API_KEY"))
          )
 
+  config :beam_weaver,
+         :typesafe,
+         Keyword.merge(
+           Application.get_env(:beam_weaver, :typesafe, []),
+           compact.(
+             api_key: first_env.(["TYPESAFE_API_KEY", "TYPESAFE_API"]),
+             base_url: non_blank.("TYPESAFE_BASE_URL")
+           )
+         )
+
   google_api_key = first_env.(["GOOGLE_API_KEY", "GEMINI_API_KEY"])
 
   config :beam_weaver,

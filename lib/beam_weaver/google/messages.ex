@@ -450,7 +450,7 @@ defmodule BeamWeaver.Google.Messages do
     [
       %{
         type: :tool_call,
-        id: raw_call["id"] || "call_#{name}",
+        id: raw_call["id"],
         name: name,
         args: raw_call["args"] || %{},
         thought_signature: thought_signature(part) || thought_signature(raw_call)
@@ -492,18 +492,34 @@ defmodule BeamWeaver.Google.Messages do
   defp media_type(_mime_type), do: :file
 
   defp tool_calls(blocks) do
-    blocks
-    |> Enum.filter(&(Map.get(&1, :type) == :tool_call))
-    |> Enum.map(fn block ->
-      Messages.tool_call(
-        id: block[:id],
-        provider_id: block[:id],
-        call_id: block[:id],
-        name: block[:name],
-        thought_signature: block[:thought_signature],
-        args: block[:args] || %{}
-      )
-    end)
+    calls = Enum.filter(blocks, &(Map.get(&1, :type) == :tool_call))
+    reserved_ids = MapSet.new(calls, & &1[:id])
+
+    {calls, _ids} =
+      Enum.map_reduce(calls, reserved_ids, fn block, ids ->
+        id = block[:id] || available_tool_call_id("call_#{block[:name]}", ids)
+
+        call =
+          Messages.tool_call(
+            id: id,
+            provider_id: id,
+            call_id: id,
+            name: block[:name],
+            thought_signature: block[:thought_signature],
+            args: block[:args] || %{}
+          )
+
+        {call, MapSet.put(ids, id)}
+      end)
+
+    calls
+  end
+
+  # Gemini may omit IDs even for repeated calls to the same function. Keep each
+  # result independently addressable, without colliding with a provider ID.
+  defp available_tool_call_id(base, ids, index \\ 0) do
+    id = if index == 0, do: base, else: "#{base}_#{index}"
+    if MapSet.member?(ids, id), do: available_tool_call_id(base, ids, index + 1), else: id
   end
 
   defp thought_signature(map) when is_map(map) do

@@ -172,5 +172,8 @@ defmodule BeamWeaver.Serialization.JSON.Decoder do
     BeamWeaver.Core.MessageLike.to_message(fields)
   end
 
+  defp decode_struct(BeamWeaver.TypeSafe.Response, fields),
+    do: {:ok, BeamWeaver.TypeSafe.Response.from_serialized(fields)}
+
   defp decode_struct(module, fields), do: {:ok, struct(module, fields)}
 end

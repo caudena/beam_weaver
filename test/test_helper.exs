@@ -1,4 +1,5 @@
-ExUnit.start(exclude: [docker: true, postgres: true])
+ExUnit.start(exclude: [docker: true, postgres: true, typesafe_live: true])
+Code.require_file("../support/typesafe.exs", __DIR__)
 
 Code.require_file("../support/config_helper.exs", __DIR__)
 Code.require_file("../support/conformance/subject.exs", __DIR__)

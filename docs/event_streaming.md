@@ -31,7 +31,7 @@ Standalone OpenAI, Anthropic, Google, DeepSeek, xAI, and Z.ai model streams are 
 enumerables when using the live transport. Provider chunks are parsed
 incrementally as server-sent events arrive. In tests, fake or replay transports
 can emit deterministic typed stream events from fixtures. If a lazy provider
-stream fails before any model output is emitted, consumers see an
+stream fails, including after partial output, consumers see an
 `%BeamWeaver.Stream.Events.Error{}` item when they enumerate the stream.
 Raw provider lazy-stream helpers can also accept an `on_response` callback when
 the caller needs transport status and headers without changing the lazy return
@@ -173,7 +173,7 @@ projection that matches the view you need.
 | `%BeamWeaver.Stream.Envelope{}` | Raw typed event with full run, graph, node, namespace, and metadata. |
 | `%Events.Token{}` | Text deltas from model providers that expose token streaming. |
 | `%Events.MessageChunk{}` | Provider message chunks, including text, reasoning content blocks, usage metadata, and streamed tool-call chunks. |
-| `%Events.Message{}` | Whole assistant messages written by graph or agent nodes. |
+| `%Events.Message{}` | Complete messages from graph or agent nodes, or final assistant snapshots from providers that emit them. |
 | `%Events.ToolCallChunk{}` | Tool-call argument chunks while the model is producing a tool call. |
 | `%Events.ToolStart{}` | Tool execution started, including tool call ID, tool name, and input. |
 | `%Events.ToolDelta{}` | Tool output delta emitted from a tool during execution. |
@@ -444,6 +444,13 @@ Use that complete message for subsequent requests; finalizing argument chunks
 alone cannot recover those fields. Responses completion and incomplete events
 with full `output` emit `Message` before `Done`. Usage-only terminals still emit
 only `Done` so they do not replace already collected content with an empty message.
+
+Google emits custom `:tool_call_delta` notifications while streaming, then one
+complete `%Events.Message{}` before `%Events.Done{}` on successful completion.
+Use that message for executable tool calls, usage, finish metadata, and thought
+signatures for replay. Google does not populate `MessageChunk.tool_call_chunks`;
+chunk merging alone cannot reconstruct its tool calls. Stream errors prevent a
+successful final message. See [Google typed streaming](partners/google.md#typed-streaming-and-tools).
 
 Agents collect the provider's terminal message and publish the final assistant
 message once through the graph update. Display `Token` events as incremental

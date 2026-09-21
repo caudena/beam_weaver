@@ -69,7 +69,8 @@ end
 
 defmodule BeamWeaver.Stream.Events.Message do
   @moduledoc """
-  Complete assistant or tool message emitted by a graph or agent node.
+  Complete assistant or tool message emitted by a graph or agent node, or a
+  final assistant snapshot emitted by a provider stream.
   """
 
   defstruct [:message, metadata: %{}]

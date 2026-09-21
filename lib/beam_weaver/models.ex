@@ -135,10 +135,47 @@ defmodule BeamWeaver.Models do
     end
   end
 
+  @doc "Initializes a typed decision model using an explicit provider:model identifier."
+  def init_decision_model(model_or_opts \\ [], opts \\ [])
+  def init_decision_model(input, opts) when is_map(input), do: init_decision_model(Map.to_list(input), opts)
+
+  def init_decision_model(input, opts) when is_list(input) do
+    opts = Keyword.merge(input, opts)
+    init_decision_model(Keyword.get(opts, :model, "typesafe:jev-latest"), opts)
+  end
+
+  def init_decision_model(model, opts) when is_atom(model), do: init_decision_model(Atom.to_string(model), opts)
+
+  def init_decision_model(model, opts) when is_binary(model) do
+    with [provider, id] when provider != "" and id != "" <- String.split(model, ":", parts: 2),
+         provider = ProviderRegistry.provider_atom(provider),
+         {:ok, module} <- ProviderRegistry.decision_provider(provider, opts),
+         {:ok, profile} <- fetch_profile(provider, id, opts) do
+      {:ok, build_model(module, id, opts, profile)}
+    else
+      {:error, _} = error -> error
+      _ -> {:error, Error.new(:invalid_model, "decision models require a provider: prefix", %{model: model})}
+    end
+  end
+
+  @doc "Initializes a decision model and raises on invalid configuration."
+  def init_decision_model!(model_or_opts \\ [], opts \\ []) do
+    case init_decision_model(model_or_opts, opts) do
+      {:ok, model} -> model
+      {:error, error} -> raise ArgumentError, error.message
+    end
+  end
+
   defp parse_model_id(model, kind) do
     case String.split(model, ":", parts: 2) do
       [provider, model_id] when provider != "" and model_id != "" ->
         {:ok, ProviderRegistry.provider_atom(provider), model_id}
+
+      ["jev-" <> _rest = model_id] ->
+        {:error,
+         Error.new(:unsupported_feature, "Jev requires Models.init_decision_model/2 with a typesafe: prefix", %{
+           model: model_id
+         })}
 
       ["gemini-" <> _rest = model_id] when kind == :chat ->
         {:error,
@@ -274,6 +311,9 @@ defmodule BeamWeaver.Models do
               BeamWeaver.XAI.ChatCompletionsModel
             ],
        do: [:base_url]
+
+  defp provider_option_keys(BeamWeaver.TypeSafe.DecisionModel),
+    do: [:api_key, :base_url, :timeout, :transport, :transport_opts, :default_headers]
 
   defp provider_option_keys(_module), do: []
 

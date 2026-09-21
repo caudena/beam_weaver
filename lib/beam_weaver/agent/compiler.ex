@@ -534,6 +534,7 @@ defmodule BeamWeaver.Agent.Compiler do
     Enum.filter(middleware, fn middleware ->
       Middleware.name(middleware) in [
         "structured_output_retry",
+        "typesafe_model_router",
         "model_retry",
         "deepagents_overflow_clip",
         "deepagents_prompt_caching"

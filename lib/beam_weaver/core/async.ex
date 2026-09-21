@@ -11,6 +11,9 @@ defmodule BeamWeaver.Core.Async do
   """
   @spec run((-> term()), keyword()) :: handle()
   def run(fun, opts \\ []) when is_function(fun, 0) do
+    context = BeamWeaver.Tracing.capture_context()
+    fun = fn -> BeamWeaver.Tracing.attach_context(context, fun) end
+
     case Keyword.get(opts, :task_supervisor) do
       nil ->
         Task.async(fun)

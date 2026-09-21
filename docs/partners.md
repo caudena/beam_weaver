@@ -1,7 +1,8 @@
 # Partners
 
 BeamWeaver partner adapters are native Elixir implementations of provider wire
-formats. They share the core `BeamWeaver.Core.ChatModel` interface, but each
+formats. Chat providers implement `BeamWeaver.Core.ChatModel`; TypeSafe Jev
+implements `BeamWeaver.Core.DecisionModel`. Each
 adapter owns its own message translation, tool rendering, streaming lifecycle,
 model profiles, request validation, and replay/fake transport coverage.
 
@@ -22,6 +23,14 @@ streaming.
 | [Moonshot/Kimi](partners/moonshot.md) | `BeamWeaver.Moonshot.*` | Yes | Yes | No | No | OpenAI-compatible functions, K3 required/dynamic tools, and legacy Kimi `$web_search` | JSON object/schema request options | Text/reasoning/tool-call deltas, choice- or response-level usage, typed events, reconstructed messages | Moonshot estimate-token endpoint |
 | [xAI](partners/xai.md) | `BeamWeaver.XAI.*` | Yes | Yes | Yes | Yes | OpenAI-compatible function tools and xAI built-ins | JSON schema request options | Text deltas, typed events, reconstructed messages | Tokenizer/profile or approximate fallback |
 | [Z.ai](partners/zai.md) | `BeamWeaver.ZAI.*` | Yes | Yes | No | No | OpenAI-compatible function tools | JSON object mode plus schema instructions and local validation | Text/reasoning/tool-call deltas, usage chunks, reconstructed messages | Approximate fallback |
+
+## Decision Models
+
+[TypeSafe / Jev](partners/typesafe.md) is available through
+`Models.init_decision_model("typesafe:jev-1.13.0")`. It supports Choice, Score,
+and Noul questions, typed results, batching, async calls, caching, rate limiting,
+usage/cost metadata, and tracing. Use it independently or with
+`Agent.Middleware.TypeSafeModelRouter` to select the chat model driving an agent.
 
 ## Composed Agent Model Matrix
 

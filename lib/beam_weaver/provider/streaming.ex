@@ -35,9 +35,8 @@ defmodule BeamWeaver.Provider.Streaming do
             {"", StreamValidator.new(opts), nil},
             fn
               {buffer, %StreamValidator{error: nil} = validation, parser_state}, chunk ->
-                {events, buffer} = SSE.process_chunk(buffer, chunk)
-
-                with {:ok, items, parser_state} <- parse_items(parser, events, parser_state),
+                with {:ok, events, buffer} <- parse_chunk(buffer, chunk, opts),
+                     {:ok, items, parser_state} <- parse_items(parser, events, parser_state),
                      {:ok, validation} <-
                        StreamValidator.push(validation, items, transport_bytes: byte_size(chunk)) do
                   emit_items(items, sink)
@@ -59,11 +58,10 @@ defmodule BeamWeaver.Provider.Streaming do
         case result do
           {:ok, %Response{status: status} = response, {buffer, validation, parser_state}}
           when status in 200..299 ->
-            {events, _buffer} = SSE.process_chunk(buffer, "\n\n")
-
             with :ok <- StreamValidator.finish(validation),
+                 {:ok, events, _buffer} <- parse_chunk(buffer, "\n\n", opts),
                  {:ok, items, parser_state} <- parse_items(parser, events, parser_state),
-                 {:ok, final_items} <- finalize_parser(parser_state, opts),
+                 {:ok, final_items} <- finalize_parser(parser_state, response, opts),
                  items = items ++ final_items,
                  {:ok, validation} <- push_final(validation, items),
                  :ok <- StreamValidator.finish(validation) do
@@ -123,14 +121,22 @@ defmodule BeamWeaver.Provider.Streaming do
 
   # Stateful wire formats without a separate terminal SSE event finalize only
   # after a clean transport close. Partial chunks must never invoke this hook.
-  defp finalize_parser(state, opts) do
+  defp finalize_parser(state, response, opts) do
     case Keyword.get(opts, :parser_finalizer) do
+      fun when is_function(fun, 2) -> fun.(state, response)
       fun when is_function(fun, 1) -> fun.(state)
       nil -> {:ok, []}
     end
   end
 
   defp emit_items(items, sink) when is_list(items), do: Enum.each(items, sink)
+
+  defp parse_chunk(buffer, chunk, opts) do
+    {events, buffer} = SSE.process_chunk(buffer, chunk, strict: Keyword.get(opts, :strict_sse, false))
+    {:ok, events, buffer}
+  rescue
+    exception -> {:error, BeamWeaver.Core.Error.new(:invalid_provider_stream, Exception.message(exception))}
+  end
 
   defp parse_items(parser, events, state) when is_function(parser, 2) do
     case parser.(events, state) do

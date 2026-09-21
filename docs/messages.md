@@ -438,8 +438,8 @@ rendered.
 ### Tool Calling Blocks
 
 Assistant messages can carry complete tool calls in `message.tool_calls` or in
-content blocks. Streamed tool calls use chunks and are finalized by the chunk
-merge helpers:
+content blocks. Providers that emit `tool_call_chunks` support incremental
+argument assembly with the chunk merge helpers:
 
 ```elixir
 alias BeamWeaver.Core.Messages
@@ -470,6 +470,11 @@ message =
 
 message.tool_calls
 ```
+
+When a provider emits a final `%BeamWeaver.Stream.Events.Message{}`, retain its
+complete message for subsequent turns, including usage and provider replay data.
+Google delivers executable streamed tool calls through that final message;
+its live custom `:tool_call_delta` events are not tool-call chunks.
 
 Malformed streamed tool arguments are preserved in
 `message.metadata[:invalid_tool_calls]` so callers can surface a useful error or

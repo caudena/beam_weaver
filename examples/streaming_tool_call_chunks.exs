@@ -1,6 +1,8 @@
 # This demonstrates incremental argument assembly. OpenAI Responses replay must
 # use the terminal Events.Message to retain the separate fc_ item ID and reasoning.
 # See openai_responses_tool_roundtrip.exs for a complete streaming agent/tool loop.
+# Google uses custom tool-call notifications and a final Events.Message instead
+# of these chunks. See docs/partners/google.md for its typed streaming contract.
 
 alias BeamWeaver.Core.Messages
 alias BeamWeaver.Stream

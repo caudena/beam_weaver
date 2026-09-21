@@ -77,7 +77,7 @@ defmodule BeamWeaver.Provider.ResponseDecoder do
       code: error_field(provider_error, "code"),
       param: error_field(provider_error, "param"),
       request_id: response_header(response, Keyword.get(opts, :request_id_header, "x-request-id")),
-      retryable: type != :billing_exhausted and response.status in [408, 409, 425, 429, 500, 502, 503, 504]
+      retryable: type != :billing_exhausted and BeamWeaver.RetryPredicates.transient_status?(response.status)
     })
   end
 

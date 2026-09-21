@@ -74,13 +74,14 @@ defmodule BeamWeaver.Runnable.Runtime do
     call_opts = Config.to_opts(config)
     max_concurrency = config.max_concurrency
     timeout = Keyword.get(call_opts, :timeout, 300_000)
+    context = BeamWeaver.Tracing.capture_context()
 
     stream =
       inputs
       |> Enum.with_index()
       |> Task.async_stream(
         fn {input, index} ->
-          {index, invoke(runnable, input, call_opts)}
+          BeamWeaver.Tracing.attach_context(context, fn -> {index, invoke(runnable, input, call_opts)} end)
         end,
         ordered: false,
         max_concurrency: max_concurrency,
@@ -298,8 +299,11 @@ defmodule BeamWeaver.Runnable.Runtime do
   end
 
   defp default_batch(runnable, inputs, opts, max_concurrency) do
+    context = BeamWeaver.Tracing.capture_context()
+
     inputs
-    |> Task.async_stream(&invoke(runnable, &1, opts),
+    |> Task.async_stream(
+      fn input -> BeamWeaver.Tracing.attach_context(context, fn -> invoke(runnable, input, opts) end) end,
       ordered: true,
       max_concurrency: max_concurrency,
       timeout: Keyword.get(opts, :timeout, 300_000),

@@ -13,6 +13,7 @@ defmodule BeamWeaver.Models.ProfileRegistry do
   alias BeamWeaver.Models.ProfileRegistry.Moonshot
   alias BeamWeaver.Models.ProfileRegistry.OpenAI
   alias BeamWeaver.Models.ProfileRegistry.XAI
+  alias BeamWeaver.Models.ProfileRegistry.TypeSafe
   alias BeamWeaver.Models.ProfileRegistry.ZAI
 
   @provider_modules %{
@@ -23,10 +24,11 @@ defmodule BeamWeaver.Models.ProfileRegistry do
     moonshot: Moonshot,
     openai: OpenAI,
     xai: XAI,
+    typesafe: TypeSafe,
     zai: ZAI
   }
 
-  @profile_modules [OpenAI, Anthropic, XAI, Moonshot, ZAI, DeepSeek, Google, Fake]
+  @profile_modules [OpenAI, Anthropic, XAI, Moonshot, ZAI, DeepSeek, Google, TypeSafe, Fake]
 
   @doc """
   Returns all checked-in model profiles sorted by provider and id.
