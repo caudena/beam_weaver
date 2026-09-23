@@ -22,8 +22,8 @@ defmodule BeamWeaver.OpenAI.ModelPolicy do
   @doc """
   Returns the temperature that may be sent for a request.
 
-  GPT-5 family models reject temperature except when reasoning effort is
-  explicitly `none`. GPT-6 Astra rejects temperature for every effort.
+  GPT-5 and GPT-6 family models reject temperature except when reasoning
+  effort is explicitly `none`. GPT-6 Astra rejects `none` reasoning.
   """
   @spec request_temperature(String.t() | nil, term(), map() | nil) :: term()
   def request_temperature(model, temperature, reasoning) do
@@ -42,7 +42,7 @@ defmodule BeamWeaver.OpenAI.ModelPolicy do
   def completion_tokens_field_model?(model) when is_binary(model) do
     normalized = String.downcase(model)
 
-    String.starts_with?(normalized, "gpt-5") or astra?(normalized) or
+    String.starts_with?(normalized, "gpt-5") or gpt6?(normalized) or
       String.starts_with?(normalized, "o")
   end
 
@@ -56,7 +56,7 @@ defmodule BeamWeaver.OpenAI.ModelPolicy do
   def prefers_responses_api?(model) when is_binary(model) do
     normalized = String.downcase(model)
 
-    astra?(normalized) or String.starts_with?(normalized, "gpt-5.6") or
+    gpt6?(normalized) or String.starts_with?(normalized, "gpt-5.6") or
       normalized in ["gpt-5.5-pro", "gpt-5.4-pro"]
   end
 
@@ -68,9 +68,33 @@ defmodule BeamWeaver.OpenAI.ModelPolicy do
   def astra?(_model), do: false
 
   @doc false
+  def gpt6?(model) when is_binary(model),
+    do: String.downcase(model) in ["gpt-6-astra", "gpt-6-sol", "gpt-6-luna"]
+
+  def gpt6?(_model), do: false
+
+  @doc false
+  def gpt6_sol_or_luna?(model) when is_binary(model),
+    do: String.downcase(model) in ["gpt-6-sol", "gpt-6-luna"]
+
+  def gpt6_sol_or_luna?(_model), do: false
+
+  @doc false
+  def none_reasoning?(reasoning), do: reasoning_effort(reasoning) == "none"
+
+  @doc false
   @spec reasoning_effort_supported?(String.t() | nil, term()) :: boolean()
   def reasoning_effort_supported?(model, reasoning) do
-    not astra?(model) or reasoning_effort(reasoning) in [nil, "low", "medium", "high", "xhigh", "max"]
+    cond do
+      astra?(model) ->
+        reasoning_effort(reasoning) in [nil, "low", "medium", "high", "xhigh", "max"]
+
+      gpt6_sol_or_luna?(model) ->
+        reasoning_effort(reasoning) in [nil, "none", "low", "medium", "high", "xhigh", "max"]
+
+      true ->
+        true
+    end
   end
 
   defp o1_model?(model) when is_binary(model) do
@@ -84,7 +108,7 @@ defmodule BeamWeaver.OpenAI.ModelPolicy do
   defp restricted_temperature_model?(model) when is_binary(model) do
     normalized = String.downcase(model)
 
-    String.starts_with?(normalized, "gpt-5") or astra?(normalized)
+    String.starts_with?(normalized, "gpt-5") or gpt6?(normalized)
   end
 
   defp restricted_temperature_model?(_model), do: false
@@ -93,6 +117,7 @@ defmodule BeamWeaver.OpenAI.ModelPolicy do
   defp reasoning_effort(%{"effort" => effort}) when is_binary(effort), do: effort
   defp reasoning_effort(%{effort: effort}) when is_atom(effort), do: Atom.to_string(effort)
   defp reasoning_effort(%{effort: effort}) when is_binary(effort), do: effort
+  defp reasoning_effort(nil), do: nil
   defp reasoning_effort(effort) when is_atom(effort), do: Atom.to_string(effort)
   defp reasoning_effort(effort) when is_binary(effort), do: effort
   defp reasoning_effort(_reasoning), do: nil

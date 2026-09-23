@@ -9,6 +9,19 @@ defmodule BeamWeaver.OpenAI.MessagesTest do
   alias BeamWeaver.Core.Tool
   alias BeamWeaver.OpenAI.Messages
 
+  test "Responses preserves the effective access program in metadata" do
+    assert {:ok, message} =
+             Messages.response_to_message(%{
+               "id" => "resp_program",
+               "model" => "gpt-6-sol",
+               "status" => "completed",
+               "access_programs" => %{"cyber" => "standard"},
+               "output" => []
+             })
+
+    assert message.response_metadata.access_programs == %{"cyber" => "standard"}
+  end
+
   test "converts BeamWeaver messages into Responses API input items" do
     messages = [
       Message.system("stay brief"),

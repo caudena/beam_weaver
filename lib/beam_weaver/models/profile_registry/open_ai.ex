@@ -107,6 +107,89 @@ defmodule BeamWeaver.Models.ProfileRegistry.OpenAI do
                           }
                         })
 
+  @gpt_6_specs [
+    %{id: "gpt-6-sol", name: "GPT-6 Sol", input: 2.00, cached: 0.20, output: 10.00, cutoff: "2026-04-20"},
+    %{id: "gpt-6-luna", name: "GPT-6 Luna", input: 0.10, cached: 0.01, output: 0.50, cutoff: "2026-05-18"}
+  ]
+
+  @gpt_6_profiles Map.new(@gpt_6_specs, fn spec ->
+                    {{:openai, spec.id},
+                     Profile.new(%{
+                       provider: :openai,
+                       id: spec.id,
+                       name: spec.name,
+                       status: :active,
+                       release_date: "2026-09-22",
+                       last_updated: "2026-09-23",
+                       responses_api: true,
+                       chat_completions_api: true,
+                       tool_calling: true,
+                       tool_call_streaming: true,
+                       tool_choice: true,
+                       parallel_tool_calls: true,
+                       structured_output: true,
+                       structured_output_with_tools: true,
+                       streaming: true,
+                       usage_metadata: true,
+                       supported_params: Params.responses() -- [:prompt_cache_retention],
+                       supported_params_by_api: %{
+                         responses: Params.responses() -- [:prompt_cache_retention],
+                         chat_completions: Params.chat_completions() -- [:audio, :modalities, :prompt_cache_retention]
+                       },
+                       max_input_tokens: 1_050_000,
+                       max_output_tokens: 128_000,
+                       image_inputs: true,
+                       image_url_inputs: true,
+                       image_tool_message: true,
+                       audio_inputs: false,
+                       video_inputs: false,
+                       reasoning_output: true,
+                       tokenizer: :o200k_base,
+                       extra: %{
+                         frontier: true,
+                         knowledge_cutoff: spec.cutoff,
+                         input_price_per_mtok: spec.input,
+                         cached_input_price_per_mtok: spec.cached,
+                         cache_write_30m_price_per_mtok: spec.input * 1.25,
+                         output_price_per_mtok: spec.output,
+                         cost_currency: "USD",
+                         pricing_source_url: @pricing_source_url,
+                         pricing_last_checked: "2026-09-23",
+                         higher_context_pricing_threshold_tokens: 272_000,
+                         higher_context_input_multiplier: 2.0,
+                         higher_context_output_multiplier: 1.5,
+                         regional_processing_multiplier: 1.1,
+                         pricing_modes: [:standard, :batch, :flex, :fast, :priority],
+                         batch_price_multiplier: 0.5,
+                         flex_price_multiplier: 0.5,
+                         fast_mode_price_multiplier: 2.0,
+                         fast_mode_service_tiers: [:fast, :priority],
+                         fast_mode_eu_data_residency: false,
+                         default_reasoning_effort: :medium,
+                         reasoning_efforts: [:none, :low, :medium, :high, :xhigh, :max],
+                         unsupported_reasoning_efforts: [:minimal],
+                         reasoning_modes: [:standard, :pro],
+                         persisted_reasoning_contexts: [:auto, :current_turn, :all_turns],
+                         prompt_cache_modes: [:implicit, :explicit],
+                         prompt_cache_ttl: "30m",
+                         prompt_cache_write_multiplier: 1.25,
+                         prompt_cache_read_discount_rate: 0.90,
+                         chat_completions_tool_calling: :none_reasoning_only,
+                         provider_capabilities: [
+                           :async_tool_calling,
+                           :computer_use,
+                           :configuration_updates,
+                           :explicit_prompt_caching,
+                           :mid_turn_steering,
+                           :multi_agent_beta,
+                           :persisted_reasoning,
+                           :pro_reasoning_mode,
+                           :programmatic_tool_calling
+                         ]
+                       }
+                     })}
+                  end)
+
   @openai_5_6_specs [
     %{
       id: "gpt-5.6-sol",
@@ -231,6 +314,7 @@ defmodule BeamWeaver.Models.ProfileRegistry.OpenAI do
 
   @openai_frontier_ids MapSet.new(
                          [@openai_astra_profile.id] ++
+                           Enum.map(@gpt_6_specs, & &1.id) ++
                            Enum.map(@openai_5_6_specs, & &1.id) ++
                            Enum.map(@openai_frontier_specs, & &1.id)
                        )
@@ -431,6 +515,7 @@ defmodule BeamWeaver.Models.ProfileRegistry.OpenAI do
   }
 
   @profiles %{{:openai, @openai_astra_profile.id} => @openai_astra_profile}
+            |> Map.merge(@gpt_6_profiles)
             |> Map.merge(@openai_5_6_profiles)
             |> Map.merge(@openai_frontier_profiles)
             |> Map.merge(%{

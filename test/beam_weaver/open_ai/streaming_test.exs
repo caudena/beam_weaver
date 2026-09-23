@@ -750,7 +750,7 @@ defmodule BeamWeaver.OpenAI.StreamingTest do
     data: {"type":"response.function_call_arguments.delta","output_index":0,"item_id":"fc_1","delta":"\\\"San Francisco\\\"}"}
 
     event: response.function_call_arguments.done
-    data: {"type":"response.function_call_arguments.done","output_index":0,"item_id":"fc_1","name":"search","arguments":"{\\\"city\\\":\\\"San Francisco\\\"}"}
+    data: {"type":"response.function_call_arguments.done","output_index":0,"item_id":"fc_1","arguments":"{\\\"city\\\":\\\"San Francisco\\\"}"}
     """
 
     assert [

@@ -5,6 +5,7 @@ defmodule BeamWeaver.Anthropic.ChatModelTest do
   alias BeamWeaver.Anthropic.ChatModel
   alias BeamWeaver.Anthropic.Client
   alias BeamWeaver.Anthropic.Error
+  alias BeamWeaver.Anthropic.Messages
   alias BeamWeaver.Anthropic.OutputParsers
   alias BeamWeaver.Anthropic.Tools
   alias BeamWeaver.Core.ChatModel, as: CoreChatModel
@@ -274,6 +275,41 @@ defmodule BeamWeaver.Anthropic.ChatModelTest do
 
     refute Map.has_key?(request.json, "betas")
     refute Map.has_key?(request.json, "user_profile_id")
+  end
+
+  test "workspace selection is sent as an Anthropic header for both Messages endpoints" do
+    model = ChatModel.new(model: "claude-opus-5-5", workspace_id: "wrkspc_default")
+
+    assert {:ok, body} = ChatModel.request_body(model, [Message.user("hello")])
+    refute Map.has_key?(body, "workspace_id")
+
+    client = Client.new(workspace_id: "wrkspc_default")
+    message_request = Client.request(client, body)
+
+    count_request =
+      Client.request(client, %{"model" => model.model, "messages" => []},
+        endpoint: client.count_tokens_endpoint,
+        workspace_id: "wrkspc_override"
+      )
+
+    assert {"anthropic-workspace-id", "wrkspc_default"} in message_request.headers
+    assert {"anthropic-workspace-id", "wrkspc_override"} in count_request.headers
+    refute Map.has_key?(message_request.json, "workspace_id")
+    refute Map.has_key?(count_request.json, "workspace_id")
+
+    response_client =
+      Client.new(
+        transport: BeamWeaver.TestSupport.Conformance.Fakes.Transport,
+        transport_opts: [
+          headers: [{"anthropic-workspace-id", "wrkspc_response"}],
+          body: %{"id" => "msg_workspace", "content" => []}
+        ]
+      )
+
+    assert {:ok, response} = Client.messages(response_client, body)
+
+    assert get_in(response, ["_beamweaver_response_header_metadata", :headers, :anthropic_workspace_id]) ==
+             "wrkspc_response"
   end
 
   test "explicit container and count-token-only options match Anthropic schema" do
@@ -587,6 +623,231 @@ defmodule BeamWeaver.Anthropic.ChatModelTest do
 
       assert_in_delta costs.total_cost, 0.1061, 1.0e-12
     end
+  end
+
+  test "Claude Opus 5.5 profile prices usage and rejects incompatible requests" do
+    model = ChatModel.new(model: "claude-opus-5-5")
+    profile = model.profile
+
+    assert model.max_tokens == 128_000
+    assert profile.max_input_tokens == 1_000_000
+    assert profile.extra.default_effort == :medium
+    assert profile.extra.compaction_on_demand
+    assert profile.extra.input_price_per_mtok == 4.0
+    assert profile.extra.output_price_per_mtok == 20.0
+    assert profile.extra.cache_read_price_per_mtok == 0.2
+    assert profile.extra.cache_write_5m_price_per_mtok == 5.0
+    assert profile.extra.cache_write_1h_price_per_mtok == 8.0
+
+    costs = UsageCost.calculate(profile, %{input_tokens: 1_000_000, output_tokens: 1_000_000})
+    assert_in_delta costs.total_cost, 24.0, 1.0e-12
+
+    messages = [Message.user("hello")]
+
+    for builder <- [
+          &ChatModel.request_body/3,
+          &BeamWeaver.Anthropic.ChatModel.RequestBuilder.count_tokens_body/3
+        ] do
+      assert {:error, thinking_error} = builder.(model, messages, thinking: %{type: :disabled})
+      assert thinking_error.details.params == [:thinking]
+
+      assert {:error, tool_error} = builder.(model, messages, tool_choice: :any)
+      assert tool_error.details.supported == [:auto, :none]
+
+      for tool <- [Tools.computer(), Tools.computer(type: "computer_20251124")] do
+        assert {:error, computer_error} = builder.(model, messages, tools: [tool])
+        assert computer_error.type == :unsupported_feature
+        assert computer_error.details.unsupported_server_tools == [:legacy_computer]
+      end
+
+      assert {:ok, body} =
+               builder.(model, messages,
+                 thinking: %{type: :adaptive},
+                 effort: :max,
+                 tools: [Tools.computer_toolset()]
+               )
+
+      assert body["model"] == "claude-opus-5-5"
+      assert body["output_config"]["effort"] == "max"
+    end
+  end
+
+  test "Anthropic on-demand compaction sends the beta and replays its signed block" do
+    model = ChatModel.new(model: "claude-opus-5-5")
+    history = [Message.user("Plan the work"), Message.assistant("First draft")]
+
+    assert {:ok, request} =
+             ChatModel.request_body(model, history, compaction: %{type: :summarize, instructions: "Keep decisions."})
+
+    assert request["compaction"] == %{
+             "type" => "summarize",
+             "instructions" => "Keep decisions."
+           }
+
+    assert "compact-2026-09-04" in request["betas"]
+
+    assert {:ok, count_request} =
+             BeamWeaver.Anthropic.ChatModel.RequestBuilder.count_tokens_body(
+               model,
+               history,
+               compaction: %{type: :summarize}
+             )
+
+    assert count_request["compaction"] == %{"type" => "summarize"}
+    assert "compact-2026-09-04" in count_request["betas"]
+
+    assert {:error, conflict} =
+             ChatModel.request_body(model, history,
+               compaction: %{type: :summarize},
+               context_management: %{edits: []}
+             )
+
+    assert conflict.details.params == [:compaction, :context_management]
+
+    assert {:error, pending_tool_error} =
+             ChatModel.request_body(
+               model,
+               [
+                 Message.user("Find it"),
+                 Message.assistant("", tool_calls: [%ToolCall{id: "toolu_1", name: "lookup", args: %{}}])
+               ],
+               compaction: %{type: :summarize}
+             )
+
+    assert pending_tool_error.details.requirement == :completed_tool_results
+
+    block = %{
+      "type" => "compaction",
+      "content" => "Summary of decisions",
+      "signature" => "signed-summary",
+      "tool_changes" => []
+    }
+
+    response = %{
+      "id" => "msg_summary",
+      "model" => "claude-opus-5-5",
+      "role" => "assistant",
+      "content" => [block],
+      "stop_reason" => "compaction",
+      "usage" => %{
+        "input_tokens" => 0,
+        "output_tokens" => 0,
+        "iterations" => [
+          %{
+            "type" => "compaction",
+            "input_tokens" => 100,
+            "cache_read_input_tokens" => 20,
+            "cache_creation_input_tokens" => 5,
+            "cache_creation" => %{"ephemeral_5m_input_tokens" => 5},
+            "output_tokens" => 50
+          }
+        ]
+      }
+    }
+
+    assert {:ok, summary} = Messages.response_to_message(response)
+
+    assert summary.usage_metadata.input_tokens == 125
+    assert summary.usage_metadata.output_tokens == 50
+    assert summary.usage_metadata.input_token_details.cache_read == 20
+
+    assert {:ok, next_request} =
+             ChatModel.request_body(model, [summary, Message.user("Continue")])
+
+    assert get_in(next_request, ["messages", Access.at(0), "content", Access.at(0)]) == block
+    assert "compact-2026-09-04" in next_request["betas"]
+
+    transport_model =
+      ChatModel.new(
+        model: "claude-opus-5-5",
+        transport: BeamWeaver.TestSupport.Conformance.Fakes.Transport,
+        transport_opts: [parent: self(), body: response]
+      )
+
+    assert {:ok, %Message{}} =
+             CoreChatModel.invoke(transport_model, history, compaction: %{type: :summarize})
+
+    assert_received {:fake_transport_request, transport_request}
+    assert transport_request.json["compaction"] == %{"type" => "summarize"}
+
+    assert Enum.any?(transport_request.headers, fn
+             {"anthropic-beta", value} -> String.contains?(value, "compact-2026-09-04")
+             _header -> false
+           end)
+  end
+
+  test "inline tool definitions and MCP listings infer the current beta headers" do
+    model = ChatModel.new(model: "claude-opus-5-5")
+
+    inline_tool = %{
+      type: :tool_addition,
+      tool: %{
+        type: :tool_definition,
+        definition: %{name: "lookup", input_schema: %{"type" => "object"}}
+      }
+    }
+
+    assert {:ok, request} =
+             ChatModel.request_body(model, [Message.user("Find it"), Message.system([inline_tool])])
+
+    assert get_in(request, ["messages", Access.at(1), "content", Access.at(0), "tool", "type"]) ==
+             "tool_definition"
+
+    assert "inline-tools-2026-09-15" in request["betas"]
+    refute "mid-conversation-tool-changes-2026-07-01" in request["betas"]
+
+    listing = %{
+      "type" => "mcp_tool_listing",
+      "mcp_server_name" => "docs",
+      "tools" => [%{"name" => "search", "input_schema" => %{"type" => "object"}}]
+    }
+
+    assert {:ok, listing_message} =
+             Messages.response_to_message(%{
+               "id" => "msg_listing",
+               "model" => "claude-opus-5-5",
+               "content" => [listing]
+             })
+
+    assert {:ok, replay} =
+             ChatModel.request_body(model, [listing_message, Message.user("Use the same tools")])
+
+    assert get_in(replay, ["messages", Access.at(0), "content", Access.at(0)]) == listing
+    assert "mcp-client-2026-09-15" in replay["betas"]
+
+    pinned_toolset =
+      Tools.mcp_toolset(
+        mcp_server_name: "docs",
+        tools: [%{name: "search", input_schema: %{"type" => "object"}}]
+      )
+
+    assert {:ok, pinned_request} =
+             ChatModel.request_body(model, [Message.user("Search docs")], tools: [pinned_toolset])
+
+    assert get_in(pinned_request, ["tools", Access.at(0), "tools", Access.at(0), "name"]) == "search"
+    assert "mcp-client-2026-09-15" in pinned_request["betas"]
+    refute "mcp-client-2025-11-20" in pinned_request["betas"]
+  end
+
+  test "web fetch URL source filters are preserved in Anthropic tool declarations" do
+    model = ChatModel.new(model: "claude-opus-5-5")
+
+    assert {:ok, body} =
+             ChatModel.request_body(model, [Message.user("Fetch the cited page")],
+               tools: [
+                 Tools.web_fetch(
+                   url_sources: %{
+                     user_input: %{type: :none},
+                     server_tool_results: %{type: :all}
+                   }
+                 )
+               ]
+             )
+
+    assert get_in(body, ["tools", Access.at(0), "url_sources"]) == %{
+             "user_input" => %{"type" => "none"},
+             "server_tool_results" => %{"type" => "all"}
+           }
   end
 
   test "Claude Fable 5.1 and Mythos 5.1 require adaptive thinking and reject forced tools" do

@@ -1,5 +1,43 @@
 # Changelog
 
+## 0.1.29 - 2026-09-23
+
+### Added
+
+- Refreshed OpenAI Responses against the September 23 OpenAPI snapshot:
+  `access_programs` is a first-class request field and effective response
+  metadata, and prompt-cache prewarming passes through the current nested
+  options shape.
+- Refreshed Anthropic Messages and token counting against the September 23 API
+  reference and generated types: on-demand signed compaction and replay, inline
+  tool definitions, MCP tool-listing replay, and workspace selection headers.
+- Added live examples for GPT-6 Luna access-program selection and cache
+  prewarming, and Claude Opus 5.5 signed compaction, replay, and inline tools.
+- Added first-class OpenAI `gpt-6-sol` and `gpt-6-luna` profiles with 1.05M-token
+  context windows, 128K output limits, text and image input, `none` through
+  `max` reasoning efforts, and current Standard, Batch, Flex, Fast, cache, and
+  long-context pricing. Their standard short-context input/output prices per
+  million tokens are $2/$10 and $0.10/$0.50, respectively.
+- Added Anthropic `claude-opus-5-5` with a 1M-token context window, 128K output
+  limit, `medium` default effort, always-on adaptive thinking, and current
+  Standard, Batch, Fast, and cache pricing. Standard input/output prices are
+  $4/$20 per million tokens.
+
+### Changed
+
+- GPT-6 Sol and Luna default to Responses. Chat Completions function tools
+  require `reasoning_effort: :none`; unsupported reasoning and sampling options
+  fail before transport. Opus 5.5 rejects disabled or manual-budget thinking,
+  forced tool choice, and legacy computer-use declarations on the Claude API.
+
+### Fixed
+
+- Anthropic compaction responses now expose the billed iteration tokens even
+  though their top-level usage counters are zero; signed summaries retain their
+  required beta header when replayed.
+- OpenAI request policy now treats an unspecified reasoning effort as absent
+  when validating GPT-6 models, allowing their default-effort requests.
+
 ## 0.1.28 - 2026-09-21
 
 ### Added

@@ -15,7 +15,7 @@ defmodule BeamWeaver.OpenAI.ChatModel.RequestBuilder do
     store = effective_store(model, opts)
 
     with :ok <- validate_request_params(model, opts),
-         :ok <- validate_astra_options(model, opts),
+         :ok <- validate_gpt6_options(model, opts),
          {:ok, message_input} <- Messages.to_responses_input(messages, store: store),
          {:ok, input_items} <- Messages.normalize_input_items(Keyword.get(opts, :input_items)),
          {:ok, structured_output} <- StructuredOutput.format(opts) do
@@ -32,6 +32,10 @@ defmodule BeamWeaver.OpenAI.ChatModel.RequestBuilder do
           "stream" => Keyword.get(opts, :stream, false)
         }
         |> merge_model_kwargs(model_kwargs)
+        |> Options.put_optional(
+          "access_programs",
+          Options.normalize_option_map(option(model, opts, :access_programs))
+        )
         |> Options.put_optional("tools", tools(opts))
         |> Options.put_optional("text", text)
         |> Options.put_optional("reasoning", reasoning)
@@ -130,6 +134,7 @@ defmodule BeamWeaver.OpenAI.ChatModel.RequestBuilder do
       model
       |> Map.from_struct()
       |> Map.take([
+        :access_programs,
         :audio,
         :deferred,
         :frequency_penalty,
@@ -165,6 +170,7 @@ defmodule BeamWeaver.OpenAI.ChatModel.RequestBuilder do
       opts
       |> Map.new()
       |> Map.take([
+        :access_programs,
         :audio,
         :background,
         :conversation,
@@ -224,29 +230,51 @@ defmodule BeamWeaver.OpenAI.ChatModel.RequestBuilder do
     )
   end
 
-  defp validate_astra_options(model, opts) do
+  defp validate_gpt6_options(model, opts) do
     model_name = Keyword.get(opts, :model, model.model)
     reasoning = reasoning_option(model, opts)
+
+    unsupported_sampling =
+      if ModelPolicy.gpt6_sol_or_luna?(model_name) and
+           not ModelPolicy.none_reasoning?(reasoning) do
+        Enum.filter([:temperature, :top_p, :top_logprobs], fn param ->
+          not is_nil(option(model, opts, param))
+        end)
+      else
+        []
+      end
 
     cond do
       not ModelPolicy.reasoning_effort_supported?(model_name, reasoning) ->
         {:error,
          Error.new(
            :invalid_model_option,
-           "GPT-6 Astra reasoning effort must be low, medium, high, xhigh, or max",
+           "GPT-6 reasoning effort is not supported by this model",
            %{
              model: model_name,
              reasoning_effort: reasoning_effort(reasoning),
-             supported: [:low, :medium, :high, :xhigh, :max]
+             supported:
+               if(ModelPolicy.astra?(model_name),
+                 do: [:low, :medium, :high, :xhigh, :max],
+                 else: [:none, :low, :medium, :high, :xhigh, :max]
+               )
            }
          )}
 
-      ModelPolicy.astra?(model_name) and
+      unsupported_sampling != [] ->
+        {:error,
+         Error.new(:invalid_model_option, "GPT-6 sampling controls require reasoning effort none", %{
+           model: model_name,
+           params: unsupported_sampling,
+           expected_reasoning_effort: :none
+         })}
+
+      ModelPolicy.gpt6?(model_name) and not ModelPolicy.none_reasoning?(reasoning) and
           "message.output_text.logprobs" in List.wrap(Keyword.get(opts, :include)) ->
         {:error,
          Error.new(
            :invalid_model_option,
-           "GPT-6 Astra does not support message.output_text.logprobs in include",
+           "GPT-6 reasoning does not support message.output_text.logprobs in include",
            %{model: model_name, include: "message.output_text.logprobs"}
          )}
 

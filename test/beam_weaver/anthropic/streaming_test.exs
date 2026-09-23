@@ -38,6 +38,48 @@ defmodule BeamWeaver.Anthropic.StreamingTest do
            }
   end
 
+  test "streamed on-demand compaction retains the complete signed block" do
+    block = %{
+      "type" => "compaction",
+      "content" => "Summary of decisions",
+      "signature" => "signed-summary"
+    }
+
+    events = [
+      %{
+        "data" => %{
+          "type" => "message_start",
+          "message" => %{
+            "id" => "msg_compact",
+            "model" => "claude-opus-5-5",
+            "role" => "assistant",
+            "content" => [],
+            "usage" => %{"input_tokens" => 0, "output_tokens" => 0}
+          }
+        }
+      },
+      %{"data" => %{"type" => "content_block_start", "index" => 0, "content_block" => block}},
+      %{"data" => %{"type" => "content_block_stop", "index" => 0}},
+      %{
+        "data" => %{
+          "type" => "message_delta",
+          "delta" => %{"stop_reason" => "compaction"},
+          "usage" => %{
+            "iterations" => [%{"type" => "compaction", "input_tokens" => 100, "output_tokens" => 50}]
+          }
+        }
+      }
+    ]
+
+    response = Streaming.response(events)
+    assert response["content"] == [block]
+    assert response["stop_reason"] == "compaction"
+
+    assert {:ok, message} = Messages.response_to_message(response)
+    assert message.usage_metadata.input_tokens == 100
+    assert message.usage_metadata.output_tokens == 50
+  end
+
   test "emits typed events for text and tool input JSON deltas" do
     body = """
     event: content_block_start
@@ -236,6 +278,11 @@ defmodule BeamWeaver.Anthropic.StreamingTest do
               "type" => "thinking_dropped",
               "path" => "messages.1.content.0",
               "reason" => "model_binding_mismatch"
+            },
+            %{
+              "type" => "thinking_mismatch_allowed",
+              "path" => "messages.2.content.0",
+              "reason" => "prefix_binding_mismatch"
             }
           ],
           "usage" => %{
@@ -249,7 +296,10 @@ defmodule BeamWeaver.Anthropic.StreamingTest do
 
     response = Streaming.response(events)
     assert response["diagnostics"]["cache_miss_reason"]["type"] == "messages_changed"
-    assert [%{"type" => "thinking_dropped"}] = response["input_transformations"]
+
+    assert [%{"type" => "thinking_dropped"}, %{"type" => "thinking_mismatch_allowed"}] =
+             response["input_transformations"]
+
     assert response["stop_details"]["fallback_credit_token"] == "credit-token"
 
     chunks =
@@ -263,11 +313,17 @@ defmodule BeamWeaver.Anthropic.StreamingTest do
     [start_chunk, delta_chunk] = chunks
     assert start_chunk.metadata.diagnostics["cache_miss_reason"]["type"] == "messages_changed"
     assert delta_chunk.metadata.stop_details["fallback_credit_token"] == "credit-token"
-    assert [%{"type" => "thinking_dropped"}] = delta_chunk.metadata.input_transformations
+
+    assert [%{"type" => "thinking_dropped"}, %{"type" => "thinking_mismatch_allowed"}] =
+             delta_chunk.metadata.input_transformations
+
     assert delta_chunk.metadata.usage_metadata.fallback_credit["status"]["type"] == "redeemed"
 
     message = chunks |> MessageChunk.merge_many() |> MessageChunk.to_message()
-    assert [%{"type" => "thinking_dropped"}] = message.metadata.input_transformations
+
+    assert [%{"type" => "thinking_dropped"}, %{"type" => "thinking_mismatch_allowed"}] =
+             message.metadata.input_transformations
+
     assert message.metadata.stop_details["fallback_credit_token"] == "credit-token"
   end
 end

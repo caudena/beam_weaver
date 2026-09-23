@@ -876,7 +876,7 @@ defmodule BeamWeaver.Anthropic.Messages do
   def usage_metadata(nil), do: nil
 
   def usage_metadata(usage) when is_map(usage) do
-    usage = Options.stringify_keys(usage)
+    usage = usage |> Options.stringify_keys() |> effective_compaction_usage()
     cache_creation = usage["cache_creation"] || %{}
 
     cache_creation =
@@ -917,6 +917,32 @@ defmodule BeamWeaver.Anthropic.Messages do
       iterations: usage["iterations"]
     }
     |> BeamWeaver.MapShape.reject_nil_or_empty()
+  end
+
+  defp effective_compaction_usage(usage) do
+    if usage["input_tokens"] in [nil, 0] and usage["output_tokens"] in [nil, 0] do
+      case Enum.find(List.wrap(usage["iterations"]), fn
+             %{"type" => "compaction"} -> true
+             _iteration -> false
+           end) do
+        %{} = iteration ->
+          Map.merge(
+            usage,
+            Map.take(iteration, [
+              "input_tokens",
+              "output_tokens",
+              "cache_read_input_tokens",
+              "cache_creation_input_tokens",
+              "cache_creation"
+            ])
+          )
+
+        nil ->
+          usage
+      end
+    else
+      usage
+    end
   end
 
   defp cache_creation_tokens(_cache_creation_total, specific_cache_creation)
