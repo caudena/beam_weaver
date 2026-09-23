@@ -9,6 +9,7 @@ defmodule BeamWeaver.OpenAI.ChatModelTest do
   alias BeamWeaver.Models
   alias BeamWeaver.Models.ParamPolicy
   alias BeamWeaver.Models.Profile
+  alias BeamWeaver.Models.UsageCost
   alias BeamWeaver.OpenAI.ChatModel
   alias BeamWeaver.OpenAI.Messages
   alias BeamWeaver.OpenAI.ModelPolicy
@@ -834,6 +835,69 @@ defmodule BeamWeaver.OpenAI.ChatModelTest do
              ChatModel.request_body(model, [Message.user("invalid")], include: ["message.output_text.logprobs"])
 
     assert include_error.type == :invalid_model_option
+  end
+
+  test "GPT-6 Sol and Luna profiles price usage and validate Responses requests" do
+    for {model_id, input_price, output_price} <- [
+          {"gpt-6-sol", 2.0, 10.0},
+          {"gpt-6-luna", 0.1, 0.5}
+        ] do
+      assert {:ok, %ChatModel{} = model} = Models.init_chat_model("openai:#{model_id}")
+      assert model.profile.max_input_tokens == 1_050_000
+      assert model.profile.max_output_tokens == 128_000
+      assert model.profile.extra.input_price_per_mtok == input_price
+      assert model.profile.extra.output_price_per_mtok == output_price
+      assert model.profile.extra.reasoning_efforts == [:none, :low, :medium, :high, :xhigh, :max]
+
+      costs = UsageCost.calculate(model.profile, %{input_tokens: 1_000_000, output_tokens: 1_000_000})
+      assert_in_delta costs.total_cost, input_price + output_price, 1.0e-12
+
+      assert {:ok, body} =
+               ChatModel.request_body(model, [Message.user("solve")],
+                 reasoning: %{effort: :high},
+                 max_tokens: 1_024
+               )
+
+      assert body["model"] == model_id
+      assert body["reasoning"] == %{"effort" => "high"}
+      assert body["max_output_tokens"] == 1_024
+
+      assert {:ok, no_reasoning_body} =
+               ChatModel.request_body(model, [Message.user("answer")],
+                 reasoning_effort: :none,
+                 temperature: 0.4
+               )
+
+      assert no_reasoning_body["temperature"] == 0.4
+
+      assert {:error, effort_error} =
+               ChatModel.request_body(model, [Message.user("invalid")], reasoning_effort: :minimal)
+
+      assert effort_error.type == :invalid_model_option
+
+      assert {:error, sampling_error} =
+               ChatModel.request_body(model, [Message.user("invalid")], top_p: 0.8)
+
+      assert sampling_error.details.params == [:top_p]
+    end
+  end
+
+  test "Responses carries access programs and prompt-cache prewarming from the current schema" do
+    model = ChatModel.new(model: "gpt-6-sol")
+
+    assert {:ok, body} =
+             ChatModel.request_body(model, [Message.user("warm this prompt")],
+               access_programs: %{cyber: :standard},
+               prompt_cache_options: %{mode: :explicit, ttl: "30m", prewarm: true}
+             )
+
+    assert body["access_programs"] == %{"cyber" => "standard"}
+
+    assert body["prompt_cache_options"] == %{
+             "mode" => "explicit",
+             "ttl" => "30m",
+             "prewarm" => true
+           }
   end
 
   test "structured output verbosity is merged into the Responses API text options" do

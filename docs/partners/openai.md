@@ -3,8 +3,9 @@
 The first OpenAI slices target non-Azure OpenAI paths used by the pinned
 LangChain OpenAI package.
 
-The wire contract was last compared on September 4, 2026 against
-[`openai-openapi` commit `cf79040`](https://github.com/openai/openai-openapi/commit/cf79040afd73deda323d2cc869199d4f463bd7ad).
+The Responses, Chat Completions, and embeddings wire contract was compared on
+September 23, 2026 against
+[`openai-openapi` commit `946e365`](https://github.com/openai/openai-openapi/commit/946e365dd69d52ccfe49fd0a9e565504aef517bd).
 
 ## Implemented
 
@@ -117,6 +118,17 @@ The wire contract was last compared on September 4, 2026 against
 - GPT-6 Astra supports tool-free Chat Completions, but tool calling is rejected
   there before transport and directed to Responses. Its reasoning effort must
   be `low`, `medium`, `high`, `xhigh`, or `max`.
+- GPT-6 Sol and Luna support `none`, `low`, `medium`, `high`, `xhigh`, and `max`
+  reasoning. Chat Completions function tools require explicit `none` effort;
+  reasoning with tools uses Responses. Sampling controls that require `none`
+  effort are rejected when reasoning is active.
+- Responses accepts `access_programs` for an explicit Cyber access program and
+  preserves the effective selection in response metadata. Nested
+  `prompt_cache_options.prewarm` passes through for cache-only requests.
+  Current `response.compaction.compacting` events, optional function-call names,
+  and image-generation output fields are preserved by the existing stream and
+  provider-output paths. Run `mix run examples/openai_gpt6_controls.exs` with an
+  OpenAI API key to check access-program selection and cache prewarming live.
 - Replay-backed provider tests cover the OpenAI cassette shapes that map to
   BeamWeaver's Responses-oriented chat model.
 
@@ -146,6 +158,35 @@ BeamWeaver.Models.init_chat_model!("openai:gpt-6-astra",
 Astra does not accept `none` or `minimal` reasoning, `temperature`, `top_p`, or
 `top_logprobs`; Chat Completions also rejects `logprobs`. Responses `include`
 cannot request `message.output_text.logprobs`.
+
+## GPT-6 Sol and Luna Profiles
+
+BeamWeaver includes `gpt-6-sol` and `gpt-6-luna` as first-class OpenAI profiles.
+Both support text and image input, text output, streaming, structured output,
+1.05M-token context windows, and 128K maximum output. Responses supports
+reasoning with function tools; Chat Completions function tools require
+`reasoning_effort: :none`. The default reasoning effort is `medium`.
+
+Standard short-context prices per million tokens are:
+
+| Model | Input | Cached input | Cache write | Output |
+| --- | ---: | ---: | ---: | ---: |
+| `gpt-6-sol` | $2.00 | $0.20 | $2.50 | $10.00 |
+| `gpt-6-luna` | $0.10 | $0.01 | $0.125 | $0.50 |
+
+Above 272K input tokens, input and cache rates double and output rates rise by
+50% for the full request. Batch and Flex cost half the Standard rate; Fast costs
+twice the applicable rate. EU data residency is available only with Standard
+processing. See the [Sol](https://developers.openai.com/api/docs/models/gpt-6-sol),
+[Luna](https://developers.openai.com/api/docs/models/gpt-6-luna), and
+[pricing](https://developers.openai.com/api/docs/pricing) pages.
+
+```elixir
+BeamWeaver.Models.init_chat_model!("openai:gpt-6-sol",
+  reasoning: %{effort: :high},
+  prompt_cache_options: %{mode: :explicit, ttl: "30m"}
+)
+```
 
 ## GPT-5.6 Profiles
 

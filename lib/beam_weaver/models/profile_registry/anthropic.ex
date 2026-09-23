@@ -156,6 +156,35 @@ defmodule BeamWeaver.Models.ProfileRegistry.Anthropic do
   }
 
   @profiles %{
+    {:anthropic, "claude-opus-5-5"} =>
+      Profile.new(
+        Map.merge(@claude_5_1_profile, %{
+          id: "claude-opus-5-5",
+          name: "Claude Opus 5.5",
+          release_date: "2026-09-22",
+          last_updated: "2026-09-23",
+          extra:
+            Map.merge(@claude_5_1_profile.extra, %{
+              availability: :general_availability,
+              batch_input_price_per_mtok: 2.00,
+              batch_cached_input_price_per_mtok: 0.10,
+              batch_output_price_per_mtok: 10.00,
+              cache_read_price_per_mtok: 0.20,
+              cached_input_price_per_mtok: 0.20,
+              cache_write_5m_price_per_mtok: 5.00,
+              cache_write_1h_price_per_mtok: 8.00,
+              compaction_on_demand: true,
+              default_effort: :medium,
+              fast_mode_price_multiplier: 2.0,
+              input_price_per_mtok: 4.00,
+              output_price_per_mtok: 20.00,
+              pricing_source_url: "https://platform.claude.com/docs/en/models/opus-5-5/overview",
+              pricing_last_checked: "2026-09-23",
+              retirement_not_before: "2027-09-22",
+              unsupported_server_tools: [:legacy_computer]
+            })
+        })
+      ),
     {:anthropic, "claude-fable-5-1"} =>
       Profile.new(
         Map.merge(@claude_5_1_profile, %{

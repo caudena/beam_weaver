@@ -12,6 +12,7 @@ defmodule BeamWeaver.Anthropic.ChatModel.RequestBuilder do
   @supported_model_params [
     :betas,
     :cache_control,
+    :compaction,
     :container,
     :context_management,
     :diagnostics,
@@ -38,12 +39,14 @@ defmodule BeamWeaver.Anthropic.ChatModel.RequestBuilder do
     :tools,
     :top_k,
     :top_p,
-    :user_profile_id
+    :user_profile_id,
+    :workspace_id
   ]
 
   @reserved_body_fields [
     :betas,
     :cache_control,
+    :compaction,
     :container,
     :context_management,
     :diagnostics,
@@ -67,7 +70,8 @@ defmodule BeamWeaver.Anthropic.ChatModel.RequestBuilder do
     :tools,
     :top_k,
     :top_p,
-    :user_profile_id
+    :user_profile_id,
+    :workspace_id
   ]
 
   @spec request_body(term(), [BeamWeaver.Core.Message.t()], keyword()) ::
@@ -82,7 +86,8 @@ defmodule BeamWeaver.Anthropic.ChatModel.RequestBuilder do
          {:ok, {system, formatted_messages}} <-
            Messages.format_messages(messages, message_format_opts(model)),
          :ok <- validate_final_turn(model, formatted_messages, opts),
-         {:ok, output_config} <- output_config(model, opts) do
+         {:ok, output_config} <- output_config(model, opts),
+         :ok <- validate_compaction_params(model, opts, output_config) do
       model_kwargs = option(model, opts, :model_kwargs) || %{}
       tools = tools(opts)
       fallbacks = option(model, opts, :fallbacks)
@@ -109,6 +114,10 @@ defmodule BeamWeaver.Anthropic.ChatModel.RequestBuilder do
         |> Options.put_optional(
           "cache_control",
           Options.normalize_option_map(option(model, opts, :cache_control))
+        )
+        |> Options.put_optional(
+          "compaction",
+          Options.normalize_option_map(option(model, opts, :compaction))
         )
         |> Options.put_optional("container", option(model, opts, :container))
         |> Options.put_optional("stream", Keyword.get(opts, :stream))
@@ -175,8 +184,9 @@ defmodule BeamWeaver.Anthropic.ChatModel.RequestBuilder do
          :ok <- validate_tool_compatibility(model, opts),
          {:ok, {system, formatted_messages}} <-
            Messages.format_messages(messages, message_format_opts(model)),
-         :ok <- validate_final_turn(model, formatted_messages),
-         {:ok, output_config} <- output_config(model, opts) do
+         :ok <- validate_final_turn(model, formatted_messages, opts),
+         {:ok, output_config} <- output_config(model, opts),
+         :ok <- validate_compaction_params(model, opts, output_config) do
       tools = tools(opts)
 
       %{
@@ -186,6 +196,10 @@ defmodule BeamWeaver.Anthropic.ChatModel.RequestBuilder do
       |> Options.put_optional(
         "cache_control",
         Options.normalize_option_map(option(model, opts, :cache_control))
+      )
+      |> Options.put_optional(
+        "compaction",
+        Options.normalize_option_map(option(model, opts, :compaction))
       )
       |> Options.put_optional("system", system)
       |> Options.put_optional("tools", tools)
@@ -367,20 +381,29 @@ defmodule BeamWeaver.Anthropic.ChatModel.RequestBuilder do
     end
   end
 
-  defp validate_final_turn(model, messages), do: validate_final_turn(model, messages, [])
-
   defp validate_final_turn(model, messages, opts) do
-    if rejects_prefilled_model_turns?(model) and final_assistant_turn?(messages) and
-         not fallback_credit_prefill?(model, opts) do
-      {:error,
-       Error.new(:invalid_message, "Anthropic model requests cannot end with an assistant turn", %{
-         provider: :anthropic,
-         model: model.model,
-         role: :assistant,
-         requirement: :final_user_tool_or_system_turn
-       })}
-    else
-      :ok
+    cond do
+      not is_nil(option(model, opts, :compaction)) and final_assistant_tool_call?(messages) ->
+        {:error,
+         Error.new(:invalid_message, "Anthropic compaction requires completed tool results", %{
+           provider: :anthropic,
+           model: model.model,
+           role: :assistant,
+           requirement: :completed_tool_results
+         })}
+
+      is_nil(option(model, opts, :compaction)) and rejects_prefilled_model_turns?(model) and
+        final_assistant_turn?(messages) and not fallback_credit_prefill?(model, opts) ->
+        {:error,
+         Error.new(:invalid_message, "Anthropic model requests cannot end with an assistant turn", %{
+           provider: :anthropic,
+           model: model.model,
+           role: :assistant,
+           requirement: :final_user_tool_or_system_turn
+         })}
+
+      true ->
+        :ok
     end
   end
 
@@ -391,6 +414,19 @@ defmodule BeamWeaver.Anthropic.ChatModel.RequestBuilder do
     case List.last(messages) do
       %{"role" => "assistant"} -> true
       _message -> false
+    end
+  end
+
+  defp final_assistant_tool_call?(messages) do
+    case List.last(messages) do
+      %{"role" => "assistant", "content" => content} when is_list(content) ->
+        Enum.any?(content, fn
+          %{"type" => "tool_use"} -> true
+          _block -> false
+        end)
+
+      _message ->
+        false
     end
   end
 
@@ -448,6 +484,54 @@ defmodule BeamWeaver.Anthropic.ChatModel.RequestBuilder do
   end
 
   defp valid_fallback_credit_token?(_token), do: false
+
+  defp validate_compaction_params(model, opts, output_config) do
+    case option(model, opts, :compaction) do
+      nil ->
+        :ok
+
+      compaction when is_map(compaction) ->
+        type = MapAccess.get(compaction, :type)
+        instructions = MapAccess.get(compaction, :instructions)
+
+        conflicts =
+          [
+            if(not is_nil(option(model, opts, :context_management)), do: :context_management),
+            if(not is_nil(option(model, opts, :stop_sequences)) or Keyword.has_key?(opts, :stop),
+              do: :stop_sequences
+            ),
+            if(not is_nil(output_config_format(output_config)), do: :output_config),
+            if(forced_tool_choice?(Keyword.get(opts, :tool_choice)), do: :tool_choice)
+          ]
+          |> Enum.reject(&is_nil/1)
+
+        cond do
+          type not in [:summarize, "summarize"] or
+              (not is_nil(instructions) and
+                 (not is_binary(instructions) or String.length(instructions) > 16_384)) ->
+            compaction_error(model, [:compaction], :invalid_configuration)
+
+          conflicts != [] ->
+            compaction_error(model, [:compaction | conflicts], :incompatible_parameters)
+
+          true ->
+            :ok
+        end
+
+      _other ->
+        compaction_error(model, [:compaction], :invalid_configuration)
+    end
+  end
+
+  defp compaction_error(model, params, reason) do
+    {:error,
+     Error.new(:unsupported_model_param, "Anthropic on-demand compaction request is invalid", %{
+       provider: :anthropic,
+       model: model.model,
+       params: params,
+       reason: reason
+     })}
+  end
 
   defp validate_tool_choice_compatibility(model, opts) do
     supported = profile_extra(model, :tool_choice_modes)
@@ -566,6 +650,8 @@ defmodule BeamWeaver.Anthropic.ChatModel.RequestBuilder do
 
   defp server_tool_family(%{"type" => "web_fetch_" <> _version}), do: :web_fetch
   defp server_tool_family(%{type: "web_fetch_" <> _version}), do: :web_fetch
+  defp server_tool_family(%{"type" => "computer_20" <> _version}), do: :legacy_computer
+  defp server_tool_family(%{type: "computer_20" <> _version}), do: :legacy_computer
   defp server_tool_family(_tool), do: nil
 
   defp tools(opts) do
@@ -672,6 +758,20 @@ defmodule BeamWeaver.Anthropic.ChatModel.RequestBuilder do
       "thinking-binding-controls-2026-08-01"
     )
     |> maybe_add_beta(tool_changes?(messages), "mid-conversation-tool-changes-2026-07-01")
+    |> maybe_upgrade_beta(
+      inline_tool_definition?(messages),
+      "mid-conversation-tool-changes-2026-07-01",
+      "inline-tools-2026-09-15"
+    )
+    |> maybe_upgrade_beta(
+      mcp_tool_listing?(messages) or inline_mcp_toolset?(messages) or pinned_mcp_toolset?(tools),
+      "mcp-client-2025-11-20",
+      "mcp-client-2026-09-15"
+    )
+    |> maybe_add_beta(
+      option(model, opts, :compaction) || compaction_block?(messages),
+      "compact-2026-09-04"
+    )
     |> maybe_add_beta(system_clear_at?(messages), "mid-conversation-system-clear-at-2026-08-21")
     |> maybe_add_beta(
       system_output_config?(messages),
@@ -687,6 +787,15 @@ defmodule BeamWeaver.Anthropic.ChatModel.RequestBuilder do
 
   defp maybe_add_beta(betas, value, _beta) when value in [nil, false, []], do: betas
   defp maybe_add_beta(betas, _value, beta), do: Enum.uniq(betas ++ [beta])
+
+  defp maybe_upgrade_beta(betas, false, _old_beta, _new_beta), do: betas
+
+  defp maybe_upgrade_beta(betas, true, old_beta, new_beta) do
+    betas
+    |> Enum.reject(&(&1 == old_beta))
+    |> Kernel.++([new_beta])
+    |> Enum.uniq()
+  end
 
   defp maybe_add_fallback_beta(betas, fallback) when fallback in [:default, "default"] do
     betas
@@ -718,6 +827,44 @@ defmodule BeamWeaver.Anthropic.ChatModel.RequestBuilder do
 
       _message ->
         false
+    end)
+  end
+
+  defp inline_tool_definition?(messages) do
+    Enum.any?(message_content_blocks(messages), fn block ->
+      get_in(block, ["tool", "type"]) == "tool_definition" or
+        Enum.any?(List.wrap(block["tool_changes"]), fn change ->
+          get_in(change, ["tool", "type"]) == "tool_definition"
+        end)
+    end)
+  end
+
+  defp inline_mcp_toolset?(messages) do
+    Enum.any?(message_content_blocks(messages), fn block ->
+      get_in(block, ["tool", "definition", "type"]) == "mcp_toolset" or
+        Enum.any?(List.wrap(block["tool_changes"]), fn change ->
+          get_in(change, ["tool", "definition", "type"]) == "mcp_toolset"
+        end)
+    end)
+  end
+
+  defp mcp_tool_listing?(messages),
+    do: Enum.any?(message_content_blocks(messages), &(&1["type"] == "mcp_tool_listing"))
+
+  defp pinned_mcp_toolset?(tools) do
+    Enum.any?(tools, fn
+      %{"type" => "mcp_toolset", "tools" => listing} when is_list(listing) -> true
+      _tool -> false
+    end)
+  end
+
+  defp compaction_block?(messages),
+    do: Enum.any?(message_content_blocks(messages), &(&1["type"] == "compaction"))
+
+  defp message_content_blocks(messages) do
+    Enum.flat_map(messages, fn
+      %{"content" => content} when is_list(content) -> Enum.filter(content, &is_map/1)
+      _message -> []
     end)
   end
 

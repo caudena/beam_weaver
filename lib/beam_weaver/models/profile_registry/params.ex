@@ -2,6 +2,7 @@ defmodule BeamWeaver.Models.ProfileRegistry.Params do
   @moduledoc false
 
   @responses_params [
+    :access_programs,
     :background,
     :conversation,
     :context_management,
@@ -81,6 +82,7 @@ defmodule BeamWeaver.Models.ProfileRegistry.Params do
   @anthropic_params [
     :betas,
     :cache_control,
+    :compaction,
     :container,
     :context_management,
     :diagnostics,
@@ -108,7 +110,8 @@ defmodule BeamWeaver.Models.ProfileRegistry.Params do
     :tools,
     :top_k,
     :top_p,
-    :user_profile_id
+    :user_profile_id,
+    :workspace_id
   ]
 
   @xai_responses_params [

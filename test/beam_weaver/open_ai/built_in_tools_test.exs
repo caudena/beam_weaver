@@ -900,6 +900,9 @@ defmodule BeamWeaver.OpenAI.BuiltInToolsTest do
     event: response.output_item.added
     data: {"type":"response.output_item.added","output_index":0,"item":{"type":"compaction","id":"cmp_1","status":"in_progress"}}
 
+    event: response.compaction.compacting
+    data: {"type":"response.compaction.compacting","output_index":0,"item_id":"cmp_1","sequence_number":1}
+
     event: response.output_item.done
     data: {"type":"response.output_item.done","output_index":0,"item":{"type":"compaction","id":"cmp_1","status":"completed","input_tokens":12000,"output_tokens":800}}
 
@@ -984,6 +987,16 @@ defmodule BeamWeaver.OpenAI.BuiltInToolsTest do
 
     data: [DONE]
     """
+
+    assert Enum.any?(BeamWeaver.OpenAI.Streaming.typed_events(second_response), fn
+             %BeamWeaver.Stream.Envelope{
+               event: %BeamWeaver.Stream.Events.Custom{metadata: %{event_type: "response.compaction.compacting"}}
+             } ->
+               true
+
+             _event ->
+               false
+           end)
 
     model =
       replay_model(

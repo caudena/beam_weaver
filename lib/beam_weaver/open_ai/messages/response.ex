@@ -438,6 +438,7 @@ defmodule BeamWeaver.OpenAI.Messages.Response do
       audio: first_message_part(response, ["output_audio", "audio"]),
       reasoning: first_output_item(response, "reasoning"),
       reasoning_context: get_in(response, ["reasoning", "context"]),
+      access_programs: response["access_programs"],
       headers: header_metadata[:headers],
       transport: transport_metadata(header_metadata),
       provider_metadata: response["metadata"],

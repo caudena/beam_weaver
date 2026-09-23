@@ -331,6 +331,39 @@ defmodule BeamWeaver.OpenAI.ChatCompletionsModelTest do
     assert search_error.details.params == [:web_search_options]
   end
 
+  test "GPT-6 Sol and Luna Chat Completions require none reasoning for function tools" do
+    for model_id <- ["gpt-6-sol", "gpt-6-luna"] do
+      assert {:ok, model} =
+               Models.init_chat_model("openai:#{model_id}", api: :chat_completions)
+
+      assert {:error, tool_error} =
+               ChatCompletionsModel.request_body(model, [Message.user("weather?")], tools: [weather_tool()])
+
+      assert tool_error.type == :invalid_model_option
+      assert tool_error.details.alternative_api == :responses
+
+      assert {:ok, body} =
+               ChatCompletionsModel.request_body(model, [Message.user("weather?")],
+                 reasoning_effort: :none,
+                 tools: [weather_tool()],
+                 temperature: 0.4
+               )
+
+      assert body["model"] == model_id
+      assert body["reasoning_effort"] == "none"
+      assert body["temperature"] == 0.4
+      assert [_tool] = body["tools"]
+
+      assert {:error, sampling_error} =
+               ChatCompletionsModel.request_body(model, [Message.user("invalid")],
+                 reasoning_effort: :high,
+                 top_p: 0.8
+               )
+
+      assert sampling_error.details.params == [:top_p]
+    end
+  end
+
   test "invokes Chat Completions through replay and decodes message metadata, usage, and tool calls" do
     request_body = %{
       "model" => "gpt-5.4-mini",

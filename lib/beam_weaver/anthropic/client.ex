@@ -22,6 +22,7 @@ defmodule BeamWeaver.Anthropic.Client do
             anthropic_version: @default_anthropic_version,
             betas: [],
             user_profile_id: nil,
+            workspace_id: nil,
             default_headers: [],
             transport: nil,
             transport_opts: [],
@@ -38,6 +39,7 @@ defmodule BeamWeaver.Anthropic.Client do
       anthropic_version: Keyword.get(opts, :anthropic_version, @default_anthropic_version),
       betas: List.wrap(Keyword.get(opts, :betas, [])),
       user_profile_id: Keyword.get(opts, :user_profile_id),
+      workspace_id: Keyword.get(opts, :workspace_id),
       default_headers: Keyword.get(opts, :default_headers, []),
       transport: ProviderOptions.default_transport(Keyword.get(opts, :transport)),
       transport_opts: Keyword.get(opts, :transport_opts, []),
@@ -156,6 +158,7 @@ defmodule BeamWeaver.Anthropic.Client do
       {"anthropic-version", Keyword.get(opts, :anthropic_version, client.anthropic_version)}
     ]
     |> maybe_put_user_profile_header(Keyword.get(opts, :user_profile_id, client.user_profile_id))
+    |> maybe_put_workspace_header(Keyword.get(opts, :workspace_id, client.workspace_id))
     |> maybe_put_beta_header(betas)
     |> Kernel.++(BeamWeaver.Transport.Request.normalize_headers(client.default_headers))
   end
@@ -169,6 +172,11 @@ defmodule BeamWeaver.Anthropic.Client do
 
   defp maybe_put_user_profile_header(headers, user_profile_id),
     do: [{"anthropic-user-profile-id", to_string(user_profile_id)} | headers]
+
+  defp maybe_put_workspace_header(headers, nil), do: headers
+
+  defp maybe_put_workspace_header(headers, workspace_id),
+    do: [{"anthropic-workspace-id", to_string(workspace_id)} | headers]
 
   defp normalize_client(%__MODULE__{} = client, opts), do: override_client(client, opts)
 
@@ -184,6 +192,7 @@ defmodule BeamWeaver.Anthropic.Client do
         anthropic_version: Keyword.get(opts, :anthropic_version, client.anthropic_version),
         betas: List.wrap(Keyword.get(opts, :betas, client.betas)),
         user_profile_id: Keyword.get(opts, :user_profile_id, client.user_profile_id),
+        workspace_id: Keyword.get(opts, :workspace_id, client.workspace_id),
         default_headers: Keyword.get(opts, :default_headers, client.default_headers),
         transport: Keyword.get(opts, :transport, client.transport),
         transport_opts: Keyword.get(opts, :transport_opts, client.transport_opts),
@@ -233,6 +242,7 @@ defmodule BeamWeaver.Anthropic.Client do
       %{
         request_id: headers["request-id"],
         anthropic_organization_id: headers["anthropic-organization-id"],
+        anthropic_workspace_id: headers["anthropic-workspace-id"],
         anthropic_ratelimit_input_tokens_limit: headers["anthropic-ratelimit-input-tokens-limit"],
         anthropic_ratelimit_input_tokens_remaining: headers["anthropic-ratelimit-input-tokens-remaining"],
         anthropic_ratelimit_input_tokens_reset: headers["anthropic-ratelimit-input-tokens-reset"],

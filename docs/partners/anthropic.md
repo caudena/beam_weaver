@@ -3,6 +3,10 @@
 BeamWeaver includes a direct Anthropic Messages API provider under
 `BeamWeaver.Anthropic`.
 
+The Messages and token-counting contract was compared on September 23, 2026
+against Anthropic's [API reference](https://platform.claude.com/docs/en/api/http/messages)
+and [generated SDK types at `1926adb`](https://github.com/anthropics/anthropic-sdk-typescript/tree/1926adb4d292090975e6b5d19ebafe2274d2469e/src/resources).
+
 ## Implemented
 
 - `BeamWeaver.Anthropic.ChatModel` implements `BeamWeaver.Core.ChatModel`.
@@ -30,7 +34,7 @@ BeamWeaver includes a direct Anthropic Messages API provider under
   batches; signed thinking is assembled into one provider-faithful replay block.
 - The token counting endpoint is exposed through `ChatModel.count_tokens/3`.
 - Checked-in model profiles cover Claude Fable 5.1, Claude Mythos 5.1, Claude
-  Opus 5, Claude Sonnet 5, Claude Fable 5, Claude Mythos 5, current Claude
+  Opus 5.5, Claude Opus 5, Claude Sonnet 5, Claude Fable 5, Claude Mythos 5, current Claude
   Opus 4.8/4.7/4.6/4.5/4.1, Claude Sonnet 4.6/4.5, and Claude Haiku 4.5
   models, with a permissive fallback for future `claude-*` models.
 - Deprecated or retired Claude IDs return tagged `:deprecated_model` errors
@@ -40,11 +44,13 @@ BeamWeaver includes a direct Anthropic Messages API provider under
   tagged replacement error naming `claude-opus-4-8`; it is no longer an active
   checked-in profile.
 - Request builders include Anthropic spec fields such as `:cache_control`,
-  `:container`, `:metadata`, `:service_tier`, `:diagnostics`, `:speed`,
+  `:compaction`, `:container`, `:metadata`, `:service_tier`, `:diagnostics`, `:speed`,
   `:user_profile_id`, `:inference_geo`, `:context_management`, `:mcp_servers`,
   `:fallbacks`, `:fallback_credit_token`, `:thinking`, and `:output_config`.
   User-profile attribution is sent as the `anthropic-user-profile-id` header,
-  never as a JSON request field.
+  never as a JSON request field. `:workspace_id` likewise becomes the
+  `anthropic-workspace-id` header for Messages and token counting; the response
+  workspace header is preserved in normalized metadata.
 - Claude Opus 5, Claude Sonnet 5, Claude Opus 4.7, and later models follow
   Anthropic's current request restrictions: non-`1.0` `:temperature`, any
   `:top_k`, `:top_p` below `0.99`, and non-adaptive enabled `:thinking` fail
@@ -75,6 +81,27 @@ BeamWeaver includes a direct Anthropic Messages API provider under
 - Fable 5.1 and Mythos 5.1 use a 512-token prompt-cache minimum and $0.25 per
   million cache-read tokens, alongside current standard, cache-write, and batch
   pricing metadata.
+- Claude Opus 5.5 uses always-on adaptive thinking, defaults to `:medium`
+  effort, and rejects disabled/manual-budget thinking and forced tool choice.
+  On the direct Claude API it also rejects legacy `computer_20*`
+  declarations; use `Tools.computer_toolset/1`. Its 1M context, 128K output,
+  512-token cache minimum, and $4 input / $20 output prices are recorded in the
+  profile. See the [Opus 5.5 model page](https://platform.claude.com/docs/en/models/opus-5-5/overview)
+  and [migration guide](https://platform.claude.com/docs/en/models/opus-5-5/migration-guide).
+- On-demand compaction sends `compaction: %{type: :summarize}` with the required
+  `compact-2026-09-04` beta header. The signed response block can be replayed
+  unchanged at the start of later history; replay also infers the beta header.
+  BeamWeaver exposes the compaction iteration's token usage, since Anthropic
+  reports zero top-level tokens for that response. See
+  [Anthropic's compaction guide](https://platform.claude.com/docs/en/build-with-claude/compaction-on-demand).
+  Run `mix run examples/anthropic_opus55_compaction.exs` with an Anthropic API
+  key to check signed replay, workspace selection, and inline tool use live.
+- Mid-conversation `tool_addition` blocks with inline definitions infer the
+  `inline-tools-2026-09-15` beta header. Replayed `mcp_tool_listing` blocks
+  retain the listed schemas and infer `mcp-client-2026-09-15`; an `mcp_toolset`
+  declaration with a pinned `tools` list uses that header too.
+- `Tools.web_fetch/1` passes through the current `url_sources` configuration,
+  including user-input and tool-result filters.
 - Opus 5 supports mid-conversation system messages and beta tool-change blocks.
   Such system messages can carry `clear_at` and per-turn `output_config.effort`
   in message metadata. BeamWeaver infers the corresponding beta headers.

@@ -50,7 +50,8 @@ defmodule BeamWeaver.OpenAI.ChatCompletions.Options.Validation do
              api: :chat_completions,
              metadata: Keyword.get(opts, :metadata, %{})
            ),
-         :ok <- validate_astra_reasoning_effort(model, opts) do
+         :ok <- validate_gpt6_reasoning_effort(model, opts),
+         :ok <- validate_gpt6_sampling(model, opts) do
       :ok
     end
   end
@@ -68,12 +69,13 @@ defmodule BeamWeaver.OpenAI.ChatCompletions.Options.Validation do
            %{model: model_name, alternative_api: :responses}
          )}
 
-      gpt56?(model_name) and function_tools?(model, opts) and
+      (gpt56?(model_name) or ModelPolicy.gpt6_sol_or_luna?(model_name)) and
+        function_tools?(model, opts) and
           reasoning_effort not in [:none, "none"] ->
         {:error,
          Error.new(
            :invalid_model_option,
-           "GPT-5.6 Chat Completions function tools require reasoning_effort: :none",
+           "This model's Chat Completions function tools require reasoning_effort: :none",
            %{
              model: model_name,
              reasoning_effort: reasoning_effort,
@@ -87,7 +89,7 @@ defmodule BeamWeaver.OpenAI.ChatCompletions.Options.Validation do
     end
   end
 
-  defp validate_astra_reasoning_effort(model, opts) do
+  defp validate_gpt6_reasoning_effort(model, opts) do
     model_name = Keyword.get(opts, :model, Map.get(model, :model))
     reasoning_effort = Keyword.get(opts, :reasoning_effort, Map.get(model, :reasoning_effort))
 
@@ -97,13 +99,44 @@ defmodule BeamWeaver.OpenAI.ChatCompletions.Options.Validation do
       {:error,
        Error.new(
          :invalid_model_option,
-         "GPT-6 Astra reasoning effort must be low, medium, high, xhigh, or max",
+         "GPT-6 reasoning effort is not supported by this model",
          %{
            model: model_name,
            reasoning_effort: reasoning_effort,
-           supported: [:low, :medium, :high, :xhigh, :max]
+           supported:
+             if(ModelPolicy.astra?(model_name),
+               do: [:low, :medium, :high, :xhigh, :max],
+               else: [:none, :low, :medium, :high, :xhigh, :max]
+             )
          }
        )}
+    end
+  end
+
+  defp validate_gpt6_sampling(model, opts) do
+    model_name = Keyword.get(opts, :model, Map.get(model, :model))
+    effort = Keyword.get(opts, :reasoning_effort, Map.get(model, :reasoning_effort))
+
+    unsupported =
+      if ModelPolicy.gpt6_sol_or_luna?(model_name) and not ModelPolicy.none_reasoning?(effort) do
+        Enum.filter([:temperature, :top_p, :top_logprobs, :logprobs], fn param ->
+          not is_nil(Keyword.get(opts, param, Map.get(model, param)))
+        end)
+      else
+        []
+      end
+
+    case unsupported do
+      [] ->
+        :ok
+
+      params ->
+        {:error,
+         Error.new(:invalid_model_option, "GPT-6 sampling controls require reasoning effort none", %{
+           model: model_name,
+           params: params,
+           expected_reasoning_effort: :none
+         })}
     end
   end
 
