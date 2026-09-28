@@ -130,8 +130,10 @@ BeamWeaver.Tracing.flush_exporter(60_000)
 
 The exporter sends BeamWeaver-native observation events. It includes inputs,
 outputs, usage, errors, tags, standard trace metadata, and custom fields.
-Exporter errors are swallowed by tracing calls so observability failures do not
-break user flows.
+Exporter exceptions are isolated from tracing calls. Queue saturation can delay
+the caller: the default 10,000-item capacity now applies backpressure instead
+of dropping older observations. This keeps completed model usage visible during
+bursts but makes upload capacity part of call latency.
 
 Exported observations use native BeamWeaver and WeaveScope fields, including
 `observation_id`, `trace_id`, `parent_observation_id`, `kind`, `run_type`,
@@ -142,7 +144,11 @@ as public tracing fields.
 
 The queued exporter is a supervised GenServer. It batches observations, retries
 transient transport failures, treats WeaveScope rejections as terminal dead
-letters, and emits native telemetry:
+letters, and emits native telemetry. `BeamWeaver.Tracing.Exporters.WeaveScope.Queue.stats/0`
+reports queued items, blocked producers, and dead-letter count without copying
+their payloads. Dead letters remain in process memory, so inspect or preserve
+them before restarting a failed exporter. Terminal rejections and exhausted
+retries are also logged as errors.
 
 | Event | Use |
 | --- | --- |

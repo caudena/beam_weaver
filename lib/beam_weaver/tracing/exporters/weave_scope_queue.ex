@@ -11,7 +11,7 @@ defmodule BeamWeaver.Tracing.Exporters.WeaveScope.Config do
             batch_size: 50,
             flush_interval: @default_flush_interval,
             max_items: 10_000,
-            overflow: :drop_oldest,
+            overflow: :block,
             retry_delay: 100,
             backoff: 2.0,
             jitter: 0.0,
@@ -28,7 +28,7 @@ defmodule BeamWeaver.Tracing.Exporters.WeaveScope.Config do
       batch_size: Keyword.get(opts, :batch_size, 50),
       flush_interval: Keyword.get(opts, :flush_interval, @default_flush_interval),
       max_items: Keyword.get(opts, :max_items, 10_000),
-      overflow: Keyword.get(opts, :overflow, :drop_oldest),
+      overflow: Keyword.get(opts, :overflow, :block),
       retry_delay: Keyword.get(opts, :retry_delay, 100),
       backoff: Keyword.get(opts, :backoff, 2.0),
       jitter: Keyword.get(opts, :jitter, 0.0),
@@ -54,13 +54,17 @@ defmodule BeamWeaver.Tracing.Exporters.WeaveScope.Queue do
   Supervised async native WeaveScope exporter queue.
 
   The queue owns batching, retries, overflow behavior, dead letters, redaction,
-  and telemetry. Rejections returned by WeaveScope are terminal because they
-  represent invalid payload events, not transient transport failures.
+  and telemetry. By default producers wait when the queue is full, so a burst
+  cannot silently discard completed model usage. Rejections returned by
+  WeaveScope are terminal because they represent invalid payload events, not
+  transient transport failures.
   """
 
   use GenServer
 
   @behaviour BeamWeaver.Tracing.Exporter
+
+  require Logger
 
   alias BeamWeaver.Telemetry.WeaveScopeEvent
   alias BeamWeaver.Tracing.Exporters.WeaveScope
@@ -68,9 +72,11 @@ defmodule BeamWeaver.Tracing.Exporters.WeaveScope.Queue do
   alias BeamWeaver.Tracing.Run
 
   defstruct queue: :queue.new(),
+            waiting: :queue.new(),
             dead_letters: [],
             config: %Config{},
-            flushing?: false
+            flushing?: false,
+            backpressure_active?: false
 
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts \\ []) do
@@ -96,11 +102,14 @@ defmodule BeamWeaver.Tracing.Exporters.WeaveScope.Queue do
 
   @spec enqueue(GenServer.server(), atom(), Run.t(), keyword()) :: :ok
   def enqueue(server \\ __MODULE__, event, %Run{} = run, opts \\ []) do
-    GenServer.cast(server, {:enqueue, event, run, opts})
+    GenServer.call(server, {:enqueue, event, run, opts}, :infinity)
   end
 
   @spec dead_letters(GenServer.server()) :: [map()]
   def dead_letters(server \\ __MODULE__), do: GenServer.call(server, :dead_letters)
+
+  @spec stats(GenServer.server()) :: map()
+  def stats(server \\ __MODULE__), do: GenServer.call(server, :stats)
 
   @spec flush(GenServer.server(), timeout()) :: :ok | {:error, term()}
   def flush(server \\ __MODULE__, timeout \\ 5_000), do: GenServer.call(server, :flush, timeout)
@@ -129,15 +138,25 @@ defmodule BeamWeaver.Tracing.Exporters.WeaveScope.Queue do
   end
 
   @impl true
-  def handle_cast({:enqueue, event, run, opts}, state) do
+  def handle_call({:enqueue, event, run, opts}, from, state) do
     item = new_item(event, redact_run(state, run), opts)
-    state = enqueue_item(state, item)
-    emit(:enqueue, state, item, %{result: :ok})
 
-    if is_integer(state.config.flush_interval) and state.config.flush_interval > 0 do
-      {:noreply, state}
+    if block_enqueue?(state) do
+      unless state.backpressure_active? do
+        Logger.warning("BeamWeaver WeaveScope exporter queue is full; model tracing is waiting for upload capacity")
+      end
+
+      send(self(), :retry)
+      {:noreply, %{state | waiting: :queue.in({from, item}, state.waiting), backpressure_active?: true}}
     else
-      {:noreply, drain_due(state)}
+      state = enqueue_item(state, item)
+      emit(:enqueue, state, item, %{result: :ok})
+
+      if is_integer(state.config.flush_interval) and state.config.flush_interval > 0 do
+        {:reply, :ok, state}
+      else
+        {:reply, :ok, drain_due(state)}
+      end
     end
   end
 
@@ -157,6 +176,17 @@ defmodule BeamWeaver.Tracing.Exporters.WeaveScope.Queue do
 
   def handle_call(:dead_letters, _from, state),
     do: {:reply, Enum.reverse(state.dead_letters), state}
+
+  def handle_call(:stats, _from, state) do
+    stats = %{
+      queued: :queue.len(state.queue),
+      blocked_producers: :queue.len(state.waiting),
+      dead_letters: length(state.dead_letters),
+      backpressure_active?: state.backpressure_active?
+    }
+
+    {:reply, stats, state}
+  end
 
   @impl true
   def handle_info(:retry, state), do: {:noreply, drain_due(state)}
@@ -184,6 +214,36 @@ defmodule BeamWeaver.Tracing.Exporters.WeaveScope.Queue do
       apply_overflow(%{state | queue: queue})
     end
   end
+
+  defp block_enqueue?(%__MODULE__{config: %{overflow: :block, max_items: max_items}} = state) do
+    :queue.len(state.queue) >= max_items or not :queue.is_empty(state.waiting)
+  end
+
+  defp block_enqueue?(_state), do: false
+
+  defp admit_waiting(%__MODULE__{config: %{overflow: :block, max_items: max_items}} = state)
+       when is_integer(max_items) and max_items > 0 do
+    if :queue.len(state.queue) < max_items do
+      case :queue.out(state.waiting) do
+        {{:value, {from, item}}, waiting} ->
+          state = %{state | queue: :queue.in(item, state.queue), waiting: waiting}
+          emit(:enqueue, state, item, %{result: :ok})
+          GenServer.reply(from, :ok)
+          admit_waiting(state)
+
+        {:empty, _waiting} ->
+          if state.backpressure_active? do
+            Logger.info("BeamWeaver WeaveScope exporter queue recovered from backpressure")
+          end
+
+          %{state | backpressure_active?: false}
+      end
+    else
+      state
+    end
+  end
+
+  defp admit_waiting(state), do: state
 
   defp apply_overflow(%{config: %{overflow: :drop_newest}} = state) do
     {{:value, newest}, queue} = :queue.out_r(state.queue)
@@ -231,6 +291,8 @@ defmodule BeamWeaver.Tracing.Exporters.WeaveScope.Queue do
         {:error, _reason} -> retry_items(%{state | flushing?: false}, items)
       end
 
+    state = admit_waiting(state)
+
     if not :queue.is_empty(state.queue),
       do: Process.send_after(self(), :retry, state.config.retry_delay)
 
@@ -238,7 +300,9 @@ defmodule BeamWeaver.Tracing.Exporters.WeaveScope.Queue do
   end
 
   defp drain_all(state) do
-    if :queue.is_empty(state.queue) do
+    state = admit_waiting(state)
+
+    if :queue.is_empty(state.queue) and :queue.is_empty(state.waiting) do
       %{state | flushing?: false}
     else
       state |> drain_any() |> drain_all()
@@ -345,11 +409,24 @@ defmodule BeamWeaver.Tracing.Exporters.WeaveScope.Queue do
         Map.merge(item, %{reason: :rejected, rejection: rejection})
       end)
 
+    if dead_letters != [] do
+      Logger.error("BeamWeaver WeaveScope rejected #{length(dead_letters)} observations; inspect exporter dead letters")
+    end
+
     %{state | dead_letters: dead_letters ++ state.dead_letters}
   end
 
   defp retry_items(state, items) do
     now = System.monotonic_time(:millisecond)
+
+    terminal_count =
+      Enum.count(items, &(&1.attempts + 1 >= state.config.max_attempts))
+
+    if terminal_count > 0 do
+      Logger.error(
+        "BeamWeaver WeaveScope exhausted retries for #{terminal_count} observations; inspect exporter dead letters"
+      )
+    end
 
     Enum.reduce(items, state, fn item, acc ->
       attempts = item.attempts + 1

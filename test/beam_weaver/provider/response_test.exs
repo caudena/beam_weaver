@@ -20,7 +20,12 @@ defmodule BeamWeaver.Provider.ResponseTest do
       Message.assistant(
         [
           %{type: :image_generation_call, id: "ig_1", status: "completed", result: "base64-image"},
-          %{type: :web_search_call, id: "web_1", status: "completed", action: %{"query" => "beam"}}
+          %{
+            type: :web_search_call,
+            id: "web_1",
+            status: "completed",
+            action: %{"type" => "search", "query" => "beam"}
+          }
         ],
         tool_calls: [
           Messages.tool_call(id: "call_user", name: "lookup", args: %{"q" => "beam"})
@@ -55,7 +60,8 @@ defmodule BeamWeaver.Provider.ResponseTest do
 
     assert %{type: :server_tool_call, id: "srv_1", name: "code_execution"} in tooling.hosted.calls
     assert %{type: :image_generation_call, id: "ig_1", status: "completed"} in tooling.hosted.calls
-    assert %{type: :web_search_call, id: "web_1", status: "completed"} in tooling.hosted.calls
+    assert %{type: :web_search_call, id: "web_1", status: "completed", action_type: "search"} in tooling.hosted.calls
+    assert tooling.hosted.usage.web_search.num_requests == 1
     assert %{type: :server_tool_result, tool_call_id: "srv_1", status: "completed"} in tooling.hosted.results
 
     refute Enum.any?(tooling.hosted.calls, &Map.has_key?(&1, :result))

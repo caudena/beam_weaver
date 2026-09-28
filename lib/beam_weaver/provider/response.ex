@@ -298,7 +298,7 @@ defmodule BeamWeaver.Provider.Response do
     user_calls = message.tool_calls
     hosted_calls = hosted_tool_calls(message)
     hosted_results = hosted_tool_results(message)
-    hosted_usage = hosted_tool_usage(metadata)
+    hosted_usage = hosted_tool_usage(metadata) |> infer_hosted_search_usage(hosted_calls)
 
     %{
       user: %{call_count: length(user_calls), calls: user_calls},
@@ -477,9 +477,42 @@ defmodule BeamWeaver.Provider.Response do
         value -> Map.put(acc, key, value)
       end
     end)
+    |> maybe_put_action_type(block)
   end
 
   defp hosted_tool_summary(_block), do: %{}
+
+  defp maybe_put_action_type(summary, block) do
+    action = Map.get(block, :action) || Map.get(block, "action")
+
+    case metadata_value(action, :type) do
+      type when is_binary(type) and type != "" ->
+        Map.put(summary, :action_type, type)
+
+      type when is_atom(type) and not is_nil(type) ->
+        Map.put(summary, :action_type, Atom.to_string(type))
+
+      _other ->
+        summary
+    end
+  end
+
+  defp infer_hosted_search_usage(usage, calls) do
+    if is_integer(get_in(usage, [:web_search, :num_requests])) do
+      usage
+    else
+      requests =
+        Enum.count(calls, fn call ->
+          call[:type] in [:web_search_call, "web_search_call"] and call[:action_type] == "search"
+        end)
+
+      if requests > 0 do
+        Map.update(usage, :web_search, %{num_requests: requests}, &Map.put(&1, :num_requests, requests))
+      else
+        usage
+      end
+    end
+  end
 
   defp hosted_tool_usage(metadata) when is_map(metadata) do
     metadata

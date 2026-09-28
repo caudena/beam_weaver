@@ -463,6 +463,44 @@ defmodule BeamWeaver.Tracing.WeaveScopeExporterTest do
     Agent.stop(capture)
   end
 
+  test "a full queue backpressures producers and preserves both observations" do
+    {:ok, capture} =
+      Agent.start_link(fn -> [] end, name: BeamWeaver.Tracing.WeaveScopeCaptureTransportAgent)
+
+    name = :"weavescope_queue_#{System.unique_integer([:positive])}"
+
+    {:ok, pid} =
+      Queue.start_link(
+        name: name,
+        api_key: "ws_test",
+        endpoint: "http://weavescope.local",
+        transport: BeamWeaver.Tracing.WeaveScopeCaptureTransport,
+        flush_interval: 10_000,
+        max_items: 1
+      )
+
+    first = Run.new("first", id: "first", trace_id: "first", kind: :model)
+    second = Run.new("second", id: "second", trace_id: "second", kind: :model)
+
+    assert Queue.enqueue(pid, :ok, first) == :ok
+    second_enqueue = Task.async(fn -> Queue.enqueue(pid, :ok, second) end)
+
+    assert Task.await(second_enqueue) == :ok
+    assert Queue.flush(pid) == :ok
+    assert Queue.dead_letters(pid) == []
+    assert %{queued: 0, blocked_producers: 0, dead_letters: 0} = Queue.stats(pid)
+
+    events =
+      capture
+      |> Agent.get(&Enum.reverse/1)
+      |> Enum.flat_map(& &1["events"])
+
+    assert Enum.map(events, & &1["observation_id"]) == ["first", "second"]
+
+    GenServer.stop(pid)
+    Agent.stop(capture)
+  end
+
   def handle_queue_telemetry(event, measurements, metadata, test_pid) do
     send(test_pid, {:queue_event, event, measurements, metadata})
   end

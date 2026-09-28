@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.30 - 2026-09-29
+
+### Changed
+
+- The WeaveScope exporter now backpressures trace producers at its queue limit
+  instead of silently dropping older events. Queue statistics expose waiting
+  producers and dead-letter counts; terminal upload failures are logged.
+- OpenAI hosted web search summaries retain the billable search action type
+  and infer request counts from completed search actions when provider usage
+  omits the count.
+
 ## 0.1.29 - 2026-09-23
 
 ### Added
