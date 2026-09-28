@@ -140,6 +140,8 @@ Exported observations use native BeamWeaver and WeaveScope fields, including
 `observation_id`, `trace_id`, `parent_observation_id`, `kind`, `run_type`,
 `status`, timestamps, `event_version`, tags, metadata, provider, model,
 `request_id`, `finish_reason`, usage, tool-call IDs, and structured outputs.
+Normalized usage also retains Claude web-search requests and xAI server-side
+tool counts so WeaveScope can price their billable hosted operations.
 BeamWeaver does not expose Python ecosystem labels or LangSmith wire contracts
 as public tracing fields.
 

@@ -12,6 +12,8 @@
 - OpenAI hosted web search summaries retain the billable search action type
   and infer request counts from completed search actions when provider usage
   omits the count.
+- Normalized provider responses retain Claude web-search counts and xAI
+  server-side tool counters for downstream billing and tracing.
 
 ## 0.1.29 - 2026-09-23
 

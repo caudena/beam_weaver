@@ -188,6 +188,7 @@ defmodule BeamWeaver.Provider.Response do
   end
 
   defp normalize_usage(usage, response_metadata) when is_map(usage) do
+    raw_message_usage = usage
     usage = usage_key_map(usage)
     input_details = usage |> Map.get(:input_token_details, %{}) |> usage_key_map()
     output_details = usage |> Map.get(:output_token_details, %{}) |> usage_key_map()
@@ -225,7 +226,20 @@ defmodule BeamWeaver.Provider.Response do
       input_token_details: input_details,
       output_token_details: output_details,
       service_tier: Map.get(usage, :service_tier) || metadata_value(response_metadata, :service_tier),
-      inference_geo: Map.get(usage, :inference_geo) || metadata_value(response_metadata, :inference_geo)
+      inference_geo: Map.get(usage, :inference_geo) || metadata_value(response_metadata, :inference_geo),
+      server_tool_use:
+        hosted_usage_counts(raw_message_usage, response_metadata, :server_tool_use, [
+          :web_search_requests
+        ]),
+      server_side_tool_usage_details:
+        hosted_usage_counts(raw_message_usage, response_metadata, :server_side_tool_usage_details, [
+          :web_search_calls,
+          :x_search_calls,
+          :x_posts_fetched,
+          :x_users_fetched,
+          :code_interpreter_calls,
+          :file_search_calls
+        ])
     }
     |> reject_empty_values()
   end
@@ -241,6 +255,26 @@ defmodule BeamWeaver.Provider.Response do
   end
 
   defp raw_usage(_metadata), do: nil
+
+  defp hosted_usage_counts(usage, response_metadata, field, keys) do
+    source =
+      metadata_value(usage, field) ||
+        response_metadata |> raw_usage() |> metadata_value(field)
+
+    if is_map(source) do
+      keys
+      |> Enum.reduce(%{}, fn key, acc ->
+        case metadata_value(source, key) do
+          count when is_integer(count) and count >= 0 -> Map.put(acc, key, count)
+          _other -> acc
+        end
+      end)
+      |> case do
+        counts when map_size(counts) > 0 -> counts
+        _empty -> nil
+      end
+    end
+  end
 
   defp normalize_limits(model, response_metadata) do
     %{

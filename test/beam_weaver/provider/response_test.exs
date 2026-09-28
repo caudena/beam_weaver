@@ -104,6 +104,56 @@ defmodule BeamWeaver.Provider.ResponseTest do
            }
   end
 
+  test "keeps provider server-tool billing counters in normalized usage" do
+    claude =
+      Message.assistant("done",
+        usage_metadata: %{input_tokens: 10, output_tokens: 2},
+        response_metadata: %{
+          usage: %{"server_tool_use" => %{"web_search_requests" => 3}}
+        }
+      )
+
+    xai =
+      Message.assistant("done",
+        usage_metadata: %{input_tokens: 10, output_tokens: 2},
+        response_metadata: %{
+          usage: %{
+            "server_side_tool_usage_details" => %{
+              "web_search_calls" => 2,
+              "x_search_calls" => 1,
+              "x_posts_fetched" => 4,
+              "x_users_fetched" => 1,
+              "code_interpreter_calls" => 1,
+              "file_search_calls" => 2,
+              "untrusted_extra" => "drop"
+            }
+          }
+        }
+      )
+
+    claude = Response.normalize_message(%{model: "claude-sonnet-5"}, claude, provider: :anthropic)
+    xai = Response.normalize_message(%{model: "grok-4.5"}, xai, provider: :xai)
+
+    assert claude.response_metadata.usage.server_tool_use == %{web_search_requests: 3}
+
+    usage_only =
+      Message.assistant("done",
+        usage_metadata: %{"server_tool_use" => %{"web_search_requests" => 2}}
+      )
+      |> then(&Response.normalize_message(%{model: "claude-sonnet-5"}, &1, provider: :anthropic))
+
+    assert usage_only.response_metadata.usage.server_tool_use == %{web_search_requests: 2}
+
+    assert xai.response_metadata.usage.server_side_tool_usage_details == %{
+             web_search_calls: 2,
+             x_search_calls: 1,
+             x_posts_fetched: 4,
+             x_users_fetched: 1,
+             code_interpreter_calls: 1,
+             file_search_calls: 2
+           }
+  end
+
   test "normalizes OpenAI cache writes and response-level service tier into canonical usage" do
     message =
       Message.assistant("done",
