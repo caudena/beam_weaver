@@ -12,6 +12,9 @@ September 23, 2026 against
 - `BeamWeaver.OpenAI.ChatModel` implements `BeamWeaver.Core.ChatModel`.
 - `BeamWeaver.OpenAI.EmbeddingModel` implements
   `BeamWeaver.Core.EmbeddingModel`.
+- `BeamWeaver.OpenAI.generate_image/2` calls the direct Images API and emits
+  model-specific image/text token usage without storing returned image bytes in
+  the trace. See [provider billing observations](provider_billing.md).
 - Requests go through `BeamWeaver.Transport`, so provider tests can run against
   replay cassettes and live calls can use Req/Finch.
 - BeamWeaver messages become Responses API `input` items.

@@ -7,6 +7,7 @@ defmodule BeamWeaver.OpenAI do
   alias BeamWeaver.OpenAI.ChatCompletionsModel
   alias BeamWeaver.OpenAI.ChatModel
   alias BeamWeaver.OpenAI.EmbeddingModel
+  alias BeamWeaver.OpenAI.Images
   alias BeamWeaver.OpenAI.ModerationMiddleware
   alias BeamWeaver.OpenAI.Responses
   alias BeamWeaver.OpenAI.ResponsesModel
@@ -51,6 +52,10 @@ defmodule BeamWeaver.OpenAI do
   def embedding_model(opts \\ []) do
     struct(EmbeddingModel, provider_opts(opts, "embeddings"))
   end
+
+  @doc "Generates images through the Images API and emits a priced generation observation."
+  @spec generate_image(String.t(), keyword()) :: {:ok, map()} | {:error, term()}
+  def generate_image(prompt, opts \\ []), do: Images.generate(prompt, provider_opts(opts, "images/generations"))
 
   @doc """
   Builds an OpenAI moderation agent middleware.

@@ -44,7 +44,11 @@ defmodule BeamWeaver.Transport.Redactor do
                       "cached_tokens",
                       "reasoning_tokens",
                       "input_token_details",
+                      "input_tokens_details",
                       "output_token_details",
+                      "output_tokens_details",
+                      "prompt_tokens_details",
+                      "completion_tokens_details",
                       "token_usage"
                     ])
 

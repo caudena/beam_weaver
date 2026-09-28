@@ -190,6 +190,7 @@ history, and `stream_events/3`. Agents use the same graph runtime underneath.
 - [Going To Production](going_to_production.md)
 - [Rate Limiting](rate_limiting.md)
 - [Tracing](tracing.md)
+- [Provider Billing Observations](provider_billing.md)
 
 ## API Reference
 

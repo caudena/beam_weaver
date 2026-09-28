@@ -4,6 +4,7 @@ defmodule BeamWeaver.Provider.ResponseTest do
   alias BeamWeaver.Core.Message
   alias BeamWeaver.Core.Messages
   alias BeamWeaver.Google
+  alias BeamWeaver.OpenAI.Messages, as: OpenAIMessages
   alias BeamWeaver.Provider.Response
   alias BeamWeaver.Provider.StreamValidator
 
@@ -104,12 +105,87 @@ defmodule BeamWeaver.Provider.ResponseTest do
            }
   end
 
+  test "preserves a live-shaped OpenAI interpreter container and omits unused image usage" do
+    assert {:ok, message} =
+             OpenAIMessages.response_to_message(%{
+               "id" => "resp_code_probe",
+               "model" => "gpt-5.4-mini",
+               "status" => "completed",
+               "output" => [
+                 %{
+                   "type" => "code_interpreter_call",
+                   "id" => "ci_probe",
+                   "status" => "completed",
+                   "container_id" => "cntr_probe"
+                 },
+                 %{
+                   "type" => "message",
+                   "id" => "msg_probe",
+                   "content" => [%{"type" => "output_text", "text" => "4"}]
+                 }
+               ],
+               "tool_usage" => %{
+                 "image_gen" => %{
+                   "input_tokens" => 0,
+                   "output_tokens" => 0,
+                   "total_tokens" => 0,
+                   "input_tokens_details" => %{"image_tokens" => 0, "text_tokens" => 0},
+                   "output_tokens_details" => %{"image_tokens" => 0, "text_tokens" => 0}
+                 },
+                 "web_search" => %{"num_requests" => 0}
+               }
+             })
+
+    message = Response.normalize_message(%{model: "gpt-5.4-mini"}, message, provider: :openai)
+
+    assert [%{type: :code_interpreter_call, id: "ci_probe", container_id: "cntr_probe"}] =
+             message.response_metadata.tooling.hosted.calls
+
+    assert message.response_metadata.tooling.hosted.usage == %{}
+  end
+
+  test "separates live-shaped Gemini Search and Maps grounding counts" do
+    search =
+      Message.assistant("price",
+        response_metadata: %{
+          grounding_metadata: %{
+            "webSearchQueries" => ["bitcoin price usd"],
+            "groundingChunks" => [%{"web" => %{"uri" => "https://example.test"}}]
+          }
+        }
+      )
+      |> then(&Response.normalize_message(%{model: "gemini-3.8-flash"}, &1, provider: :google))
+
+    assert search.response_metadata.grounding.web_search_query_count == 1
+    refute Map.has_key?(search.response_metadata.grounding, :maps_query_count)
+
+    maps =
+      Message.assistant("museum",
+        response_metadata: %{
+          grounding_metadata: %{
+            "webSearchQueries" => ["museum Nicosia Cyprus"],
+            "groundingChunks" => [%{"maps" => %{"placeId" => "place-probe"}}]
+          }
+        }
+      )
+      |> then(&Response.normalize_message(%{model: "gemini-3.8-flash"}, &1, provider: :google))
+
+    assert maps.response_metadata.grounding.maps_query_count == 1
+    assert maps.response_metadata.grounding.maps_grounded_prompt_count == 1
+    refute Map.has_key?(maps.response_metadata.grounding, :web_search_query_count)
+  end
+
   test "keeps provider server-tool billing counters in normalized usage" do
     claude =
       Message.assistant("done",
         usage_metadata: %{input_tokens: 10, output_tokens: 2},
         response_metadata: %{
-          usage: %{"server_tool_use" => %{"web_search_requests" => 3}}
+          usage: %{
+            "server_tool_use" => %{
+              "web_search_requests" => 3,
+              "code_execution_requests" => 1
+            }
+          }
         }
       )
 
@@ -134,7 +210,10 @@ defmodule BeamWeaver.Provider.ResponseTest do
     claude = Response.normalize_message(%{model: "claude-sonnet-5"}, claude, provider: :anthropic)
     xai = Response.normalize_message(%{model: "grok-4.5"}, xai, provider: :xai)
 
-    assert claude.response_metadata.usage.server_tool_use == %{web_search_requests: 3}
+    assert claude.response_metadata.usage.server_tool_use == %{
+             web_search_requests: 3,
+             code_execution_requests: 1
+           }
 
     usage_only =
       Message.assistant("done",

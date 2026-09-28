@@ -434,6 +434,7 @@ defmodule BeamWeaver.Tracing.LifecycleTest do
                  [Message.user("hello")],
                  [
                    tools: [OpenAI.ToolCalling.web_search()],
+                   trace: [metadata: %{provider_account_ref: "provider-project-id"}],
                    exporter: BeamWeaver.Tracing.TestExporter,
                    exporter_opts: [test_pid: self()]
                  ],
@@ -443,6 +444,7 @@ defmodule BeamWeaver.Tracing.LifecycleTest do
       assert_receive {:trace_export, :started, %Run{kind: :model}}
       assert_receive {:trace_export, :ok, %Run{kind: :model} = run}
       assert run.metadata.model_reasoning_output == reasoning?
+      assert run.metadata.provider_account_ref == "provider-project-id"
       assert [%{"type" => "web_search_preview"}] = run.metadata.tool_definitions
     end
   end

@@ -290,6 +290,7 @@ defmodule BeamWeaver.OpenAI.Messages.Response do
       results: item["results"],
       result: item["result"],
       action: item["action"],
+      container_id: item["container_id"],
       input: item["input"],
       call_id: item["call_id"],
       caller: item["caller"],

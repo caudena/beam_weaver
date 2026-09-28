@@ -71,3 +71,4 @@
 * [Rate Limiting](rate_limiting.md)
 * [Replay](replay.md)
 * [Tracing](tracing.md)
+* [Provider Billing Observations](provider_billing.md)

@@ -68,6 +68,46 @@ defmodule BeamWeaver.OpenAI.BuiltInToolsTest do
            ] = response.content
   end
 
+  test "CoreChatModel preserves the container ID from an executed code interpreter call" do
+    model =
+      ChatModel.new(
+        model: "gpt-5.4-mini",
+        api_key: "test-key",
+        transport: BeamWeaver.TestSupport.Conformance.Fakes.Transport,
+        transport_opts: [
+          expect: %{method: :post, path: "/v1/responses"},
+          body: %{
+            "id" => "resp_code_probe",
+            "model" => "gpt-5.4-mini",
+            "status" => "completed",
+            "output" => [
+              %{
+                "type" => "code_interpreter_call",
+                "id" => "ci_probe",
+                "status" => "completed",
+                "container_id" => "cntr_probe"
+              },
+              %{
+                "type" => "message",
+                "id" => "msg_probe",
+                "content" => [%{"type" => "output_text", "text" => "4"}]
+              }
+            ],
+            "usage" => %{"input_tokens" => 10, "output_tokens" => 2}
+          }
+        ]
+      )
+
+    assert {:ok, response} =
+             CoreChatModel.invoke(model, [Message.user("Use Python")],
+               tools: [ToolCalling.code_interpreter()],
+               tool_choice: %{"type" => "code_interpreter"}
+             )
+
+    assert [%{type: :code_interpreter_call, container_id: "cntr_probe"}] =
+             response.response_metadata.tooling.hosted.calls
+  end
+
   test "apply_patch request shape and output items round-trip through replay" do
     request_body = %{
       "model" => "gpt-5.5",
