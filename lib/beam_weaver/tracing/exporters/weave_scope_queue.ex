@@ -8,9 +8,11 @@ defmodule BeamWeaver.Tracing.Exporters.WeaveScope.Config do
             version: nil,
             otp_app: :beam_weaver,
             transport: Req,
-            batch_size: 50,
+            batch_size: 200,
             flush_interval: @default_flush_interval,
-            max_items: 10_000,
+            max_items: 100_000,
+            max_batch_bytes: 6_000_000,
+            max_inflight: 2,
             overflow: :block,
             retry_delay: 100,
             backoff: 2.0,
@@ -25,9 +27,11 @@ defmodule BeamWeaver.Tracing.Exporters.WeaveScope.Config do
       version: Keyword.get(opts, :version),
       otp_app: Keyword.get(opts, :otp_app, :beam_weaver),
       transport: Keyword.get(opts, :transport, Req),
-      batch_size: Keyword.get(opts, :batch_size, 50),
+      batch_size: Keyword.get(opts, :batch_size, 200),
       flush_interval: Keyword.get(opts, :flush_interval, @default_flush_interval),
-      max_items: Keyword.get(opts, :max_items, 10_000),
+      max_items: Keyword.get(opts, :max_items, 100_000),
+      max_batch_bytes: Keyword.get(opts, :max_batch_bytes, 6_000_000),
+      max_inflight: Keyword.get(opts, :max_inflight, 2),
       overflow: Keyword.get(opts, :overflow, :block),
       retry_delay: Keyword.get(opts, :retry_delay, 100),
       backoff: Keyword.get(opts, :backoff, 2.0),
@@ -54,8 +58,9 @@ defmodule BeamWeaver.Tracing.Exporters.WeaveScope.Queue do
   Supervised async native WeaveScope exporter queue.
 
   The queue owns batching, retries, overflow behavior, dead letters, redaction,
-  and telemetry. By default producers wait when the queue is full, so a burst
-  cannot silently discard completed model usage. Rejections returned by
+  and telemetry. Uploads run outside the queue process in bounded concurrent
+  batches, so producers only wait if the larger in-memory buffer actually fills.
+  Rejections returned by
   WeaveScope are terminal because they represent invalid payload events, not
   transient transport failures.
   """
@@ -73,10 +78,12 @@ defmodule BeamWeaver.Tracing.Exporters.WeaveScope.Queue do
 
   defstruct queue: :queue.new(),
             waiting: :queue.new(),
+            inflight: %{},
+            flush_waiters: [],
             dead_letters: [],
             config: %Config{},
-            flushing?: false,
-            backpressure_active?: false
+            backpressure_active?: false,
+            retry_timer: nil
 
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts \\ []) do
@@ -144,34 +151,28 @@ defmodule BeamWeaver.Tracing.Exporters.WeaveScope.Queue do
     if block_enqueue?(state) do
       unless state.backpressure_active? do
         Logger.warning("BeamWeaver WeaveScope exporter queue is full; model tracing is waiting for upload capacity")
+        send(self(), :retry)
       end
 
-      send(self(), :retry)
       {:noreply, %{state | waiting: :queue.in({from, item}, state.waiting), backpressure_active?: true}}
     else
       state = enqueue_item(state, item)
       emit(:enqueue, state, item, %{result: :ok})
 
-      if is_integer(state.config.flush_interval) and state.config.flush_interval > 0 do
-        {:reply, :ok, state}
-      else
-        {:reply, :ok, drain_due(state)}
-      end
+      state =
+        if :queue.len(state.queue) >= state.config.batch_size or state.config.flush_interval <= 0,
+          do: dispatch_due(state),
+          else: state
+
+      {:reply, :ok, state}
     end
   end
 
   @impl true
-  def handle_call(:flush, _from, state) do
-    emit(:flush_start, state, nil, %{count: :queue.len(state.queue)})
-    state = drain_all(state)
-
-    if :queue.is_empty(state.queue) do
-      emit(:flush_stop, state, nil, %{result: :ok})
-      {:reply, :ok, state}
-    else
-      emit(:flush_error, state, nil, %{error: :weavescope_flush_incomplete})
-      {:reply, {:error, :weavescope_flush_incomplete}, state}
-    end
+  def handle_call(:flush, from, state) do
+    emit(:flush_start, state, nil, %{count: pending_count(state)})
+    state = %{state | flush_waiters: [from | state.flush_waiters]}
+    {:noreply, state |> dispatch_due() |> finish_flush_if_drained()}
   end
 
   def handle_call(:dead_letters, _from, state),
@@ -180,6 +181,8 @@ defmodule BeamWeaver.Tracing.Exporters.WeaveScope.Queue do
   def handle_call(:stats, _from, state) do
     stats = %{
       queued: :queue.len(state.queue),
+      pending_items: pending_count(state),
+      inflight_batches: map_size(state.inflight),
       blocked_producers: :queue.len(state.waiting),
       dead_letters: length(state.dead_letters),
       backpressure_active?: state.backpressure_active?
@@ -189,19 +192,53 @@ defmodule BeamWeaver.Tracing.Exporters.WeaveScope.Queue do
   end
 
   @impl true
-  def handle_info(:retry, state), do: {:noreply, drain_due(state)}
+  def handle_info(:retry, state),
+    do: {:noreply, state |> clear_retry_timer() |> dispatch_due() |> finish_flush_if_drained()}
 
   def handle_info(:flush_interval, state) do
     if is_integer(state.config.flush_interval) and state.config.flush_interval > 0 do
       Process.send_after(self(), :flush_interval, state.config.flush_interval)
     end
 
-    {:noreply, drain_due(state)}
+    {:noreply, state |> dispatch_due() |> finish_flush_if_drained()}
+  end
+
+  def handle_info({:upload_result, token, result}, state) do
+    case Map.pop(state.inflight, token) do
+      {nil, _inflight} ->
+        {:noreply, state}
+
+      {%{monitor: monitor, items: items}, inflight} ->
+        Process.demonitor(monitor, [:flush])
+
+        state =
+          %{state | inflight: inflight}
+          |> handle_upload_result(items, result)
+          |> admit_waiting()
+
+        {:noreply, state |> dispatch_due() |> finish_flush_if_drained()}
+    end
+  end
+
+  def handle_info({:DOWN, monitor, :process, _pid, reason}, state) do
+    case Enum.find(state.inflight, fn {_token, batch} -> batch.monitor == monitor end) do
+      nil ->
+        {:noreply, state}
+
+      {token, %{items: items}} ->
+        state = %{state | inflight: Map.delete(state.inflight, token)}
+        Enum.each(items, &emit(:upload_failure, state, &1, %{error: inspect(reason)}))
+        state = state |> retry_items(items) |> admit_waiting()
+        {:noreply, state |> dispatch_due() |> finish_flush_if_drained()}
+    end
   end
 
   @impl true
   def terminate(_reason, state) do
-    drain_all(state)
+    if not :queue.is_empty(state.queue) or map_size(state.inflight) > 0 do
+      Logger.error("BeamWeaver WeaveScope exporter stopped with pending observations")
+    end
+
     :ok
   end
 
@@ -216,14 +253,14 @@ defmodule BeamWeaver.Tracing.Exporters.WeaveScope.Queue do
   end
 
   defp block_enqueue?(%__MODULE__{config: %{overflow: :block, max_items: max_items}} = state) do
-    :queue.len(state.queue) >= max_items or not :queue.is_empty(state.waiting)
+    pending_count(state) >= max_items or not :queue.is_empty(state.waiting)
   end
 
   defp block_enqueue?(_state), do: false
 
   defp admit_waiting(%__MODULE__{config: %{overflow: :block, max_items: max_items}} = state)
        when is_integer(max_items) and max_items > 0 do
-    if :queue.len(state.queue) < max_items do
+    if pending_count(state) < max_items do
       case :queue.out(state.waiting) do
         {{:value, {from, item}}, waiting} ->
           state = %{state | queue: :queue.in(item, state.queue), waiting: waiting}
@@ -244,6 +281,11 @@ defmodule BeamWeaver.Tracing.Exporters.WeaveScope.Queue do
   end
 
   defp admit_waiting(state), do: state
+
+  defp pending_count(state) do
+    :queue.len(state.queue) +
+      Enum.reduce(state.inflight, 0, fn {_token, batch}, total -> total + length(batch.items) end)
+  end
 
   defp apply_overflow(%{config: %{overflow: :drop_newest}} = state) do
     {{:value, newest}, queue} = :queue.out_r(state.queue)
@@ -278,81 +320,99 @@ defmodule BeamWeaver.Tracing.Exporters.WeaveScope.Queue do
     }
   end
 
-  defp drain_due(%{flushing?: true} = state), do: state
+  defp dispatch_due(%__MODULE__{} = state) do
+    if map_size(state.inflight) >= state.config.max_inflight do
+      state
+    else
+      {items, queue} =
+        if state.flush_waiters == [] do
+          take_due(
+            state.queue,
+            state.config.batch_size,
+            System.monotonic_time(:millisecond),
+            state.config.max_batch_bytes
+          )
+        else
+          take_any(state.queue, state.config.batch_size, state.config.max_batch_bytes)
+        end
 
-  defp drain_due(%__MODULE__{} = state) do
-    now = System.monotonic_time(:millisecond)
-    {items, queue} = take_due(state.queue, state.config.batch_size, now)
-    state = %{state | queue: queue, flushing?: true}
+      case items do
+        [] ->
+          schedule_retry(state)
 
-    state =
-      case export_items(state, items) do
-        {:ok, state} -> %{state | flushing?: false}
-        {:error, _reason} -> retry_items(%{state | flushing?: false}, items)
+        [_ | _] ->
+          items = coalesce_items(items)
+          state = %{state | queue: queue} |> start_upload(items) |> admit_waiting()
+          dispatch_due(state)
       end
+    end
+  end
 
-    state = admit_waiting(state)
+  defp start_upload(state, items) do
+    parent = self()
+    token = make_ref()
+    config = state.config
 
-    if not :queue.is_empty(state.queue),
-      do: Process.send_after(self(), :retry, state.config.retry_delay)
+    {:ok, pid} =
+      Task.start(fn ->
+        receive do
+          :upload -> :ok
+        end
 
+        result = upload_batch(items, config)
+        send(parent, {:upload_result, token, result})
+      end)
+
+    monitor = Process.monitor(pid)
+    state = %{state | inflight: Map.put(state.inflight, token, %{monitor: monitor, items: items})}
+    send(pid, :upload)
     state
   end
 
-  defp drain_all(state) do
-    state = admit_waiting(state)
+  defp upload_batch(_items, %{api_key: api_key}) when api_key in [nil, ""],
+    do: {:error, :missing_weavescope_api_key}
 
-    if :queue.is_empty(state.queue) and :queue.is_empty(state.waiting) do
-      %{state | flushing?: false}
-    else
-      state |> drain_any() |> drain_all()
-    end
-  end
+  defp upload_batch(_items, %{endpoint: endpoint}) when endpoint in [nil, ""],
+    do: {:error, :missing_weavescope_endpoint}
 
-  defp drain_any(%__MODULE__{} = state) do
-    {items, queue} = take_any(state.queue, state.config.batch_size)
-    state = %{state | queue: queue, flushing?: true}
-
-    case export_items(state, items) do
-      {:ok, state} -> %{state | flushing?: false}
-      {:error, _reason} -> retry_items(%{state | flushing?: false}, items)
-    end
-  end
-
-  defp export_items(state, []), do: {:ok, state}
-
-  defp export_items(state, items) do
-    export_items_coalesced(state, coalesce_items(items))
-  end
-
-  defp export_items_coalesced(state, []), do: {:ok, state}
-
-  defp export_items_coalesced(%{config: %{api_key: api_key}} = state, items)
-       when api_key in [nil, ""] do
-    Enum.each(items, &emit(:no_api_key, state, &1, %{result: :noop}))
-    {:ok, state}
-  end
-
-  defp export_items_coalesced(%{config: %{endpoint: endpoint}} = state, items)
-       when endpoint in [nil, ""] do
-    Enum.each(items, &emit(:no_endpoint, state, &1, %{result: :noop}))
-    {:ok, state}
-  end
-
-  defp export_items_coalesced(state, items) do
+  defp upload_batch(items, config) do
     exportable = Enum.map(items, fn item -> {item.event, item.run, item.opts} end)
+    WeaveScope.export_batch(exportable, Config.exporter_opts(config))
+  end
 
-    case WeaveScope.export_batch(exportable, Config.exporter_opts(state.config)) do
-      :ok ->
-        Enum.each(items, &emit(:upload_success, state, &1, %{result: :ok}))
-        {:ok, state}
+  defp handle_upload_result(state, items, :ok) do
+    Enum.each(items, &emit(:upload_success, state, &1, %{result: :ok}))
+    state
+  end
 
-      {:rejected, rejected} ->
-        {:ok, dead_letter_rejections(state, items, rejected)}
+  defp handle_upload_result(state, items, {:rejected, rejected}) do
+    dead_letter_rejections(state, items, rejected)
+  end
 
-      {:error, reason} = error ->
-        Enum.each(items, &emit(:upload_failure, state, &1, %{error: inspect(reason)}))
-        error
+  defp handle_upload_result(state, items, {:error, reason}) do
+    Enum.each(items, &emit(:upload_failure, state, &1, %{error: inspect(reason)}))
+    retry_items(state, items)
+  end
+
+  defp schedule_retry(state) do
+    if not :queue.is_empty(state.queue) and is_nil(state.retry_timer) do
+      %{state | retry_timer: Process.send_after(self(), :retry, state.config.retry_delay)}
+    else
+      state
+    end
+  end
+
+  defp clear_retry_timer(state), do: %{state | retry_timer: nil}
+
+  defp finish_flush_if_drained(%{flush_waiters: []} = state), do: state
+
+  defp finish_flush_if_drained(state) do
+    if :queue.is_empty(state.queue) and :queue.is_empty(state.waiting) and map_size(state.inflight) == 0 do
+      Enum.each(state.flush_waiters, &GenServer.reply(&1, :ok))
+      emit(:flush_stop, state, nil, %{result: :ok})
+      %{state | flush_waiters: []}
+    else
+      state
     end
   end
 
@@ -454,13 +514,21 @@ defmodule BeamWeaver.Tracing.Exporters.WeaveScope.Queue do
     base + jitter
   end
 
-  defp take_due(queue, limit, now), do: take_due(queue, limit, now, [])
-  defp take_due(queue, 0, _now, items), do: {Enum.reverse(items), queue}
+  defp take_due(queue, limit, now, max_bytes),
+    do: take_due(queue, limit, now, max_bytes, 0, [])
 
-  defp take_due(queue, count, now, items) do
+  defp take_due(queue, 0, _now, _max_bytes, _bytes, items), do: {Enum.reverse(items), queue}
+
+  defp take_due(queue, count, now, max_bytes, bytes, items) do
     case :queue.out(queue) do
       {{:value, %{retry_at: retry_at} = item}, queue} when retry_at <= now ->
-        take_due(queue, count - 1, now, [item | items])
+        size = :erlang.external_size(item)
+
+        if items != [] and bytes + size > max_bytes do
+          {Enum.reverse(items), :queue.in_r(item, queue)}
+        else
+          take_due(queue, count - 1, now, max_bytes, bytes + size, [item | items])
+        end
 
       {{:value, item}, queue} ->
         {Enum.reverse(items), :queue.in_r(item, queue)}
@@ -470,13 +538,22 @@ defmodule BeamWeaver.Tracing.Exporters.WeaveScope.Queue do
     end
   end
 
-  defp take_any(queue, limit), do: take_any(queue, limit, [])
-  defp take_any(queue, 0, items), do: {Enum.reverse(items), queue}
+  defp take_any(queue, limit, max_bytes), do: take_any(queue, limit, max_bytes, 0, [])
+  defp take_any(queue, 0, _max_bytes, _bytes, items), do: {Enum.reverse(items), queue}
 
-  defp take_any(queue, count, items) do
+  defp take_any(queue, count, max_bytes, bytes, items) do
     case :queue.out(queue) do
-      {{:value, item}, queue} -> take_any(queue, count - 1, [item | items])
-      {:empty, queue} -> {Enum.reverse(items), queue}
+      {{:value, item}, queue} ->
+        size = :erlang.external_size(item)
+
+        if items != [] and bytes + size > max_bytes do
+          {Enum.reverse(items), :queue.in_r(item, queue)}
+        else
+          take_any(queue, count - 1, max_bytes, bytes + size, [item | items])
+        end
+
+      {:empty, queue} ->
+        {Enum.reverse(items), queue}
     end
   end
 

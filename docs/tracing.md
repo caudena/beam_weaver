@@ -130,10 +130,11 @@ BeamWeaver.Tracing.flush_exporter(60_000)
 
 The exporter sends BeamWeaver-native observation events. It includes inputs,
 outputs, usage, errors, tags, standard trace metadata, and custom fields.
-Exporter exceptions are isolated from tracing calls. Queue saturation can delay
-the caller: the default 10,000-item capacity now applies backpressure instead
-of dropping older observations. This keeps completed model usage visible during
-bursts but makes upload capacity part of call latency.
+Exporter exceptions are isolated from tracing calls. The exporter buffers up to
+100,000 observations, uploads byte-bounded batches of up to 200 on two concurrent
+workers, and keeps HTTP work outside the queue process. Enqueue normally returns
+without waiting for WeaveScope. If a sustained outage fills the finite buffer,
+producers wait for capacity instead of silently discarding completed model usage.
 
 Exported observations use native BeamWeaver and WeaveScope fields, including
 `observation_id`, `trace_id`, `parent_observation_id`, `kind`, `run_type`,

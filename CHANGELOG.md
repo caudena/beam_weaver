@@ -4,9 +4,11 @@
 
 ### Changed
 
-- The WeaveScope exporter now backpressures trace producers at its queue limit
-  instead of silently dropping older events. Queue statistics expose waiting
-  producers and dead-letter counts; terminal upload failures are logged.
+- The WeaveScope exporter now buffers 100,000 events and uploads byte-bounded
+  batches concurrently without doing HTTP work in the queue process. Producers
+  backpressure only if the buffer fills, instead of silently dropping older
+  events. Queue statistics expose in-flight batches, waiting producers, and
+  dead-letter counts; terminal upload failures are logged.
 - OpenAI hosted web search summaries retain the billable search action type
   and infer request counts from completed search actions when provider usage
   omits the count.
