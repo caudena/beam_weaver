@@ -14,6 +14,12 @@
   omits the count.
 - Normalized provider responses retain Claude web-search counts and xAI
   server-side tool counters for downstream billing and tracing.
+- Z.ai cost estimates use the response model and its effective pricing date,
+  including an executed web search, instead of always using GLM-5.2 rates.
+- Kimi Chat Completions and streaming responses retain cache-write tokens and
+  the provider's 5-minute/1-hour write split from response headers.
+- DeepSeek V4 Pro retains its own peak/off-peak pricing after September 14;
+  the announced fallback to Flash did not take effect.
 
 ## 0.1.29 - 2026-09-23
 

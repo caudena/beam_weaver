@@ -16,7 +16,29 @@ defmodule BeamWeaver.ZAI.Streaming do
   def stream_body_to_message(body, opts \\ [])
 
   def stream_body_to_message(body, opts) do
-    OpenAICompatibleStreaming.stream_body_to_message(body, config(), opts)
+    case OpenAICompatibleStreaming.stream_body_to_message(body, config(), opts) do
+      {:ok, message} -> {:ok, price_stream_usage(message)}
+      other -> other
+    end
+  end
+
+  defp price_stream_usage(message) do
+    metadata = message.response_metadata
+    model = metadata[:model]
+    raw_usage = metadata[:token_usage]
+
+    if is_binary(model) and is_map(raw_usage) do
+      usage =
+        ZAIMessages.usage_metadata(%{
+          "model" => model,
+          "created" => metadata[:created],
+          "usage" => raw_usage
+        })
+
+      %{message | usage_metadata: usage, response_metadata: Map.put(metadata, :usage, usage)}
+    else
+      message
+    end
   end
 
   defp stream_metadata(events, message, opts) do

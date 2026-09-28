@@ -213,7 +213,7 @@ defmodule BeamWeaver.DeepSeek.V41Test do
     end
   end
 
-  test "cost estimation handles weekdays, historical Flash rates, and the scheduled Pro redirect" do
+  test "cost estimation handles weekdays and historical Flash rates while Pro keeps its own rate" do
     usage = %{input_tokens: 1_000, cached_tokens: 400, output_tokens: 2_000}
 
     for id <- @flash_ids do
@@ -227,7 +227,7 @@ defmodule BeamWeaver.DeepSeek.V41Test do
     assert_in_delta UsageCost.calculate(flash, usage, at: ~U[2026-09-10 04:00:00Z]).total_cost, 0.0012912, 1.0e-12
     {:ok, pro} = ProfileRegistry.fetch(:deepseek, "deepseek-v4-pro")
     assert_in_delta UsageCost.calculate(pro, usage, at: ~U[2026-09-14 03:59:59Z]).total_cost, 0.0087296, 1.0e-12
-    assert_in_delta UsageCost.calculate(pro, usage, at: ~U[2026-09-14 04:00:00Z]).total_cost, 0.0012912, 1.0e-12
+    assert_in_delta UsageCost.calculate(pro, usage, at: ~U[2026-09-14 04:00:00Z]).total_cost, 0.0043648, 1.0e-12
   end
 
   for api <- [:chat_completions, :responses] do

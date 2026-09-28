@@ -63,12 +63,12 @@ defmodule BeamWeaver.Models.ProfileRegistry.DeepSeek do
     automatic_context_caching: true,
     cost_currency: "USD",
     pricing_source_url: @pricing_source,
-    pricing_last_checked: "2026-09-10"
+    pricing_last_checked: "2026-09-29"
   }
   @common_profile %{
     provider: :deepseek,
     status: :active,
-    last_updated: "2026-09-10",
+    last_updated: "2026-09-29",
     max_input_tokens: 1_048_576,
     max_output_tokens: 393_216,
     text_inputs: true,
@@ -125,12 +125,7 @@ defmodule BeamWeaver.Models.ProfileRegistry.DeepSeek do
              |> Map.merge(@pro_pricing)
              |> Map.merge(%{
                model_version: "DeepSeek-V4-Pro-0813",
-               concurrency_limit: 500,
-               scheduled_redirect: %{model: "deepseek-flash", at: "2026-09-14T04:00:00Z"},
-               pricing_history: [
-                 Map.put(@pro_pricing, :effective_at, nil),
-                 Map.put(@flash_pricing, :effective_at, "2026-09-14T04:00:00Z")
-               ]
+               concurrency_limit: 500
              })
          })
        )
