@@ -506,12 +506,14 @@ defmodule BeamWeaver.Core.ChatModel do
   defp model_start_metadata(model, opts) do
     provider = model_provider(model)
     identifier = model_identifier(model)
+    profile = field_value(model, :profile)
 
     %{}
     |> maybe_put(:model_provider, provider)
     |> maybe_put(:provider, provider)
     |> maybe_put(:model_name, identifier)
     |> maybe_put(:model, identifier)
+    |> maybe_put(:model_reasoning_output, field_value(profile, :reasoning_output))
     |> maybe_put(:invocation_params, invocation_params(model, opts))
     |> maybe_put(:tools, tool_names(Keyword.get(opts, :tools)))
     |> maybe_put(:tool_definitions, tool_definitions(Keyword.get(opts, :tools)))
