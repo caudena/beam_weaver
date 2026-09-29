@@ -1081,15 +1081,12 @@ defmodule BeamWeaver.OpenAI.MessagesTest do
                results: [%{"file_id" => "file-123"}],
                status: "completed"
              },
-             %ContentBlock.Unknown{
-               provider_type: "shell_call",
-               value: %{
-                 type: "shell_call",
-                 id: "shell_123",
-                 call_id: "call_shell",
-                 action: %{"commands" => ["pwd"]},
-                 status: "completed"
-               }
+             %{
+               type: :shell_call,
+               id: "shell_123",
+               call_id: "call_shell",
+               action: %{"commands" => ["pwd"]},
+               status: "completed"
              },
              %ContentBlock.Unknown{
                provider_type: "program",

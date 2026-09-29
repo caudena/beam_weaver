@@ -4,6 +4,7 @@ defmodule BeamWeaver.Provider.ResponseTest do
   alias BeamWeaver.Core.Message
   alias BeamWeaver.Core.Messages
   alias BeamWeaver.Google
+  alias BeamWeaver.OpenAI.Messages, as: OpenAIMessages
   alias BeamWeaver.Provider.Response
   alias BeamWeaver.Provider.StreamValidator
 
@@ -20,7 +21,12 @@ defmodule BeamWeaver.Provider.ResponseTest do
       Message.assistant(
         [
           %{type: :image_generation_call, id: "ig_1", status: "completed", result: "base64-image"},
-          %{type: :web_search_call, id: "web_1", status: "completed", action: %{"query" => "beam"}}
+          %{
+            type: :web_search_call,
+            id: "web_1",
+            status: "completed",
+            action: %{"type" => "search", "query" => "beam"}
+          }
         ],
         tool_calls: [
           Messages.tool_call(id: "call_user", name: "lookup", args: %{"q" => "beam"})
@@ -55,7 +61,8 @@ defmodule BeamWeaver.Provider.ResponseTest do
 
     assert %{type: :server_tool_call, id: "srv_1", name: "code_execution"} in tooling.hosted.calls
     assert %{type: :image_generation_call, id: "ig_1", status: "completed"} in tooling.hosted.calls
-    assert %{type: :web_search_call, id: "web_1", status: "completed"} in tooling.hosted.calls
+    assert %{type: :web_search_call, id: "web_1", status: "completed", action_type: "search"} in tooling.hosted.calls
+    assert tooling.hosted.usage.web_search.num_requests == 1
     assert %{type: :server_tool_result, tool_call_id: "srv_1", status: "completed"} in tooling.hosted.results
 
     refute Enum.any?(tooling.hosted.calls, &Map.has_key?(&1, :result))
@@ -95,6 +102,134 @@ defmodule BeamWeaver.Provider.ResponseTest do
                output_token_details: %{image_tokens: 20}
              },
              web_search: %{num_requests: 2}
+           }
+  end
+
+  test "preserves a live-shaped OpenAI interpreter container and omits unused image usage" do
+    assert {:ok, message} =
+             OpenAIMessages.response_to_message(%{
+               "id" => "resp_code_probe",
+               "model" => "gpt-5.4-mini",
+               "status" => "completed",
+               "output" => [
+                 %{
+                   "type" => "code_interpreter_call",
+                   "id" => "ci_probe",
+                   "status" => "completed",
+                   "container_id" => "cntr_probe"
+                 },
+                 %{
+                   "type" => "message",
+                   "id" => "msg_probe",
+                   "content" => [%{"type" => "output_text", "text" => "4"}]
+                 }
+               ],
+               "tool_usage" => %{
+                 "image_gen" => %{
+                   "input_tokens" => 0,
+                   "output_tokens" => 0,
+                   "total_tokens" => 0,
+                   "input_tokens_details" => %{"image_tokens" => 0, "text_tokens" => 0},
+                   "output_tokens_details" => %{"image_tokens" => 0, "text_tokens" => 0}
+                 },
+                 "web_search" => %{"num_requests" => 0}
+               }
+             })
+
+    message = Response.normalize_message(%{model: "gpt-5.4-mini"}, message, provider: :openai)
+
+    assert [%{type: :code_interpreter_call, id: "ci_probe", container_id: "cntr_probe"}] =
+             message.response_metadata.tooling.hosted.calls
+
+    assert message.response_metadata.tooling.hosted.usage == %{}
+  end
+
+  test "separates live-shaped Gemini Search and Maps grounding counts" do
+    search =
+      Message.assistant("price",
+        response_metadata: %{
+          grounding_metadata: %{
+            "webSearchQueries" => ["bitcoin price usd"],
+            "groundingChunks" => [%{"web" => %{"uri" => "https://example.test"}}]
+          }
+        }
+      )
+      |> then(&Response.normalize_message(%{model: "gemini-3.8-flash"}, &1, provider: :google))
+
+    assert search.response_metadata.grounding.web_search_query_count == 1
+    refute Map.has_key?(search.response_metadata.grounding, :maps_query_count)
+
+    maps =
+      Message.assistant("museum",
+        response_metadata: %{
+          grounding_metadata: %{
+            "webSearchQueries" => ["museum Nicosia Cyprus"],
+            "groundingChunks" => [%{"maps" => %{"placeId" => "place-probe"}}]
+          }
+        }
+      )
+      |> then(&Response.normalize_message(%{model: "gemini-3.8-flash"}, &1, provider: :google))
+
+    assert maps.response_metadata.grounding.maps_query_count == 1
+    assert maps.response_metadata.grounding.maps_grounded_prompt_count == 1
+    refute Map.has_key?(maps.response_metadata.grounding, :web_search_query_count)
+  end
+
+  test "keeps provider server-tool billing counters in normalized usage" do
+    claude =
+      Message.assistant("done",
+        usage_metadata: %{input_tokens: 10, output_tokens: 2},
+        response_metadata: %{
+          usage: %{
+            "server_tool_use" => %{
+              "web_search_requests" => 3,
+              "code_execution_requests" => 1
+            }
+          }
+        }
+      )
+
+    xai =
+      Message.assistant("done",
+        usage_metadata: %{input_tokens: 10, output_tokens: 2},
+        response_metadata: %{
+          usage: %{
+            "server_side_tool_usage_details" => %{
+              "web_search_calls" => 2,
+              "x_search_calls" => 1,
+              "x_posts_fetched" => 4,
+              "x_users_fetched" => 1,
+              "code_interpreter_calls" => 1,
+              "file_search_calls" => 2,
+              "untrusted_extra" => "drop"
+            }
+          }
+        }
+      )
+
+    claude = Response.normalize_message(%{model: "claude-sonnet-5"}, claude, provider: :anthropic)
+    xai = Response.normalize_message(%{model: "grok-4.5"}, xai, provider: :xai)
+
+    assert claude.response_metadata.usage.server_tool_use == %{
+             web_search_requests: 3,
+             code_execution_requests: 1
+           }
+
+    usage_only =
+      Message.assistant("done",
+        usage_metadata: %{"server_tool_use" => %{"web_search_requests" => 2}}
+      )
+      |> then(&Response.normalize_message(%{model: "claude-sonnet-5"}, &1, provider: :anthropic))
+
+    assert usage_only.response_metadata.usage.server_tool_use == %{web_search_requests: 2}
+
+    assert xai.response_metadata.usage.server_side_tool_usage_details == %{
+             web_search_calls: 2,
+             x_search_calls: 1,
+             x_posts_fetched: 4,
+             x_users_fetched: 1,
+             code_interpreter_calls: 1,
+             file_search_calls: 2
            }
   end
 

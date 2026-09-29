@@ -440,19 +440,23 @@ defmodule BeamWeaver.Graph.CompiledTest do
       |> Graph.add_node(
         :slow,
         fn _state ->
-          Process.sleep(100)
+          Process.sleep(1_000)
           %{slow: true}
         end,
-        timeout: 10
+        timeout: 200
       )
       |> Graph.add_node(
         :sibling,
         fn _state ->
-          Process.sleep(80)
-          send(parent, :sibling_finished)
+          send(parent, {:sibling_started, self()})
+
+          receive do
+            :release -> :ok
+          end
+
           %{sibling: true}
         end,
-        timeout: 1_000
+        timeout: :infinity
       )
       |> Graph.add_edge(Graph.start(), :fanout)
       |> Graph.add_edge(:slow, Graph.end_node())
@@ -463,10 +467,12 @@ defmodule BeamWeaver.Graph.CompiledTest do
             %Error{
               type: :node_timeout,
               message: "node timed out",
-              details: %{node: "slow", step: 1, timeout: 10}
+              details: %{node: "slow", step: 1, timeout: 200}
             }} = Compiled.invoke(graph, %{})
 
-    refute_receive :sibling_finished, 150
+    assert_receive {:sibling_started, sibling}, 1_000
+    monitor = Process.monitor(sibling)
+    assert_receive {:DOWN, ^monitor, :process, ^sibling, _reason}, 1_000
   end
 
   test "send timeout overrides the target node timeout" do

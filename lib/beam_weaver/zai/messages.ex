@@ -86,7 +86,7 @@ defmodule BeamWeaver.ZAI.Messages do
   end
 
   @spec usage_metadata(map()) :: map() | nil
-  def usage_metadata(%{"usage" => usage}) when is_map(usage) do
+  def usage_metadata(%{"usage" => usage} = response) when is_map(usage) do
     input_tokens = usage["prompt_tokens"] || usage["input_tokens"] || 0
     output_tokens = usage["completion_tokens"] || usage["output_tokens"] || 0
     total_tokens = usage["total_tokens"] || input_tokens + output_tokens
@@ -98,7 +98,7 @@ defmodule BeamWeaver.ZAI.Messages do
       input_token_details: input_token_details(usage),
       output_token_details: output_token_details(usage)
     }
-    |> Map.merge(UsageCost.calculate(pricing_profile(), usage) || %{})
+    |> Map.merge(priced_usage(response, usage) || %{})
     |> BeamWeaver.MapShape.reject_nil_or_empty()
   end
 
@@ -426,8 +426,32 @@ defmodule BeamWeaver.ZAI.Messages do
   defp put_optional(map, _key, []), do: map
   defp put_optional(map, key, value), do: Map.put(map, key, value)
 
-  defp pricing_profile do
-    {:ok, profile} = ZAIProfiles.resolve("glm-5.2")
-    profile
+  defp priced_usage(%{"model" => model} = response, usage) when is_binary(model) do
+    case ZAIProfiles.resolve(model) do
+      {:ok, profile} ->
+        profile
+        |> UsageCost.calculate(usage, at: response_created_at(response))
+        |> include_web_search_cost(response)
+
+      {:error, _reason} ->
+        nil
+    end
   end
+
+  defp priced_usage(_response, _usage), do: nil
+
+  defp include_web_search_cost(%{total_cost: total_cost} = cost, %{"web_search" => [_ | _]}) do
+    Map.put(cost, :total_cost, total_cost + 0.01)
+  end
+
+  defp include_web_search_cost(cost, _response), do: cost
+
+  defp response_created_at(%{"created" => unix_seconds}) when is_integer(unix_seconds) do
+    case DateTime.from_unix(unix_seconds) do
+      {:ok, at} -> at
+      {:error, _reason} -> DateTime.utc_now()
+    end
+  end
+
+  defp response_created_at(_response), do: DateTime.utc_now()
 end

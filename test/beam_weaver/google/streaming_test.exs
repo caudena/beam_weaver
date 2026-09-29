@@ -279,8 +279,7 @@ defmodule BeamWeaver.Google.StreamingTest do
       events = Enum.map(stream, &unwrap/1)
       assert [%Events.Error{error: error}] = Enum.filter(events, &is_struct(&1, Events.Error))
       assert error.type == error_type
-      if @failure in [:provider, :provider_after_stop, :http], do: assert(error.message == "try again")
-      if @failure == :http, do: assert(error.details.request_id == "req-error")
+      assert_failure_details(error, @failure)
       refute Enum.any?(events, &(is_struct(&1, Events.Message) or is_struct(&1, Events.Done)))
       assert_receive {:stream_request, _, _}
       refute_received {:stream_request, _, _}
@@ -365,6 +364,11 @@ defmodule BeamWeaver.Google.StreamingTest do
   defp sse(response), do: "data: #{BeamWeaver.JSON.encode!(response)}\n\n"
   defp unwrap(%Envelope{event: event}), do: event
   defp unwrap(event), do: event
+
+  defp assert_failure_details(error, failure) do
+    if failure in [:provider, :provider_after_stop, :http], do: assert(error.message == "try again")
+    if failure == :http, do: assert(error.details.request_id == "req-error")
+  end
 
   defp assert_stream_request(request) do
     assert request.method == :post

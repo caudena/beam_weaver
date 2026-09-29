@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.1.30 - 2026-09-29
+
+### Changed
+
+- The WeaveScope exporter now buffers 100,000 events and uploads byte-bounded
+  batches concurrently without doing HTTP work in the queue process. Producers
+  backpressure only if the buffer fills, instead of silently dropping older
+  events. Queue statistics expose in-flight batches, waiting producers, and
+  dead-letter counts; terminal upload failures are logged.
+- OpenAI hosted web search summaries retain the billable search action type
+  and infer request counts from completed search actions when provider usage
+  omits the count.
+- Normalized provider responses retain Claude web-search counts and xAI
+  server-side tool counters for downstream billing and tracing.
+- Z.ai cost estimates use the response model and its effective pricing date,
+  including an executed web search, instead of always using GLM-5.2 rates.
+- Kimi Chat Completions and streaming responses retain cache-write tokens and
+  the provider's 5-minute/1-hour write split from response headers.
+- DeepSeek V4 Pro retains its own peak/off-peak pricing after September 14;
+  the announced fallback to Flash did not take effect.
+
 ## 0.1.29 - 2026-09-23
 
 ### Added

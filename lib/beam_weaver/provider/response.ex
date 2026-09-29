@@ -188,6 +188,7 @@ defmodule BeamWeaver.Provider.Response do
   end
 
   defp normalize_usage(usage, response_metadata) when is_map(usage) do
+    raw_message_usage = usage
     usage = usage_key_map(usage)
     input_details = usage |> Map.get(:input_token_details, %{}) |> usage_key_map()
     output_details = usage |> Map.get(:output_token_details, %{}) |> usage_key_map()
@@ -225,7 +226,22 @@ defmodule BeamWeaver.Provider.Response do
       input_token_details: input_details,
       output_token_details: output_details,
       service_tier: Map.get(usage, :service_tier) || metadata_value(response_metadata, :service_tier),
-      inference_geo: Map.get(usage, :inference_geo) || metadata_value(response_metadata, :inference_geo)
+      inference_geo: Map.get(usage, :inference_geo) || metadata_value(response_metadata, :inference_geo),
+      server_tool_use:
+        hosted_usage_counts(raw_message_usage, response_metadata, :server_tool_use, [
+          :web_search_requests,
+          :web_fetch_requests,
+          :code_execution_requests
+        ]),
+      server_side_tool_usage_details:
+        hosted_usage_counts(raw_message_usage, response_metadata, :server_side_tool_usage_details, [
+          :web_search_calls,
+          :x_search_calls,
+          :x_posts_fetched,
+          :x_users_fetched,
+          :code_interpreter_calls,
+          :file_search_calls
+        ])
     }
     |> reject_empty_values()
   end
@@ -241,6 +257,26 @@ defmodule BeamWeaver.Provider.Response do
   end
 
   defp raw_usage(_metadata), do: nil
+
+  defp hosted_usage_counts(usage, response_metadata, field, keys) do
+    source =
+      metadata_value(usage, field) ||
+        response_metadata |> raw_usage() |> metadata_value(field)
+
+    if is_map(source) do
+      keys
+      |> Enum.reduce(%{}, fn key, acc ->
+        case metadata_value(source, key) do
+          count when is_integer(count) and count >= 0 -> Map.put(acc, key, count)
+          _other -> acc
+        end
+      end)
+      |> case do
+        counts when map_size(counts) > 0 -> counts
+        _empty -> nil
+      end
+    end
+  end
 
   defp normalize_limits(model, response_metadata) do
     %{
@@ -298,7 +334,7 @@ defmodule BeamWeaver.Provider.Response do
     user_calls = message.tool_calls
     hosted_calls = hosted_tool_calls(message)
     hosted_results = hosted_tool_results(message)
-    hosted_usage = hosted_tool_usage(metadata)
+    hosted_usage = hosted_tool_usage(metadata) |> infer_hosted_search_usage(hosted_calls)
 
     %{
       user: %{call_count: length(user_calls), calls: user_calls},
@@ -329,12 +365,17 @@ defmodule BeamWeaver.Provider.Response do
 
   defp normalize_grounding(metadata) when is_map(metadata) do
     grounding_metadata = metadata[:grounding_metadata]
+    query_counts = google_grounding_query_counts(grounding_metadata)
 
     %{
       citations: metadata[:citations],
       grounding_metadata: grounding_metadata,
       url_context_metadata: metadata[:url_context_metadata],
-      web_search_queries: web_search_queries(grounding_metadata)
+      web_search_queries: web_search_queries(grounding_metadata),
+      web_search_query_count: if(query_counts.search > 0, do: query_counts.search),
+      maps_query_count: if(query_counts.maps > 0, do: query_counts.maps),
+      maps_grounded_prompt_count: if(query_counts.maps_prompts > 0, do: query_counts.maps_prompts),
+      mixed_grounding?: if(query_counts.mixed?, do: true)
     }
     |> reject_empty_values()
   end
@@ -344,6 +385,23 @@ defmodule BeamWeaver.Provider.Response do
   end
 
   defp web_search_queries(_metadata), do: nil
+
+  defp google_grounding_query_counts(%{} = grounding_metadata) do
+    queries = List.wrap(web_search_queries(grounding_metadata))
+    chunks = grounding_metadata["groundingChunks"] || grounding_metadata["grounding_chunks"] || []
+    maps? = Enum.any?(chunks, fn chunk -> is_map(chunk) and Map.has_key?(chunk, "maps") end)
+    web? = Enum.any?(chunks, fn chunk -> is_map(chunk) and Map.has_key?(chunk, "web") end)
+
+    cond do
+      queries == [] -> %{search: 0, maps: 0, maps_prompts: 0, mixed?: false}
+      maps? and web? -> %{search: 0, maps: 0, maps_prompts: 0, mixed?: true}
+      maps? -> %{search: 0, maps: length(queries), maps_prompts: 1, mixed?: false}
+      true -> %{search: length(queries), maps: 0, maps_prompts: 0, mixed?: false}
+    end
+  end
+
+  defp google_grounding_query_counts(_metadata),
+    do: %{search: 0, maps: 0, maps_prompts: 0, mixed?: false}
 
   defp normalize_transport(metadata) when is_map(metadata) do
     transport = if is_map(metadata[:transport]), do: metadata[:transport], else: %{}
@@ -421,11 +479,13 @@ defmodule BeamWeaver.Provider.Response do
   end
 
   @hosted_content_block_types %{
+    code_interpreter_call: true,
     file_search_call: true,
     image_generation_call: true,
     mcp_approval_request: true,
     mcp_call: true,
     mcp_list_tools: true,
+    shell_call: true,
     server_tool_call: true,
     tool_search_call: true,
     web_search_call: true
@@ -434,10 +494,11 @@ defmodule BeamWeaver.Provider.Response do
   @hosted_result_block_types %{
     custom_tool_call_output: true,
     server_tool_result: true,
+    shell_call_output: true,
     tool_search_output: true
   }
 
-  @hosted_summary_keys [:type, :id, :call_id, :tool_call_id, :name, :status, :provider_type]
+  @hosted_summary_keys [:type, :id, :call_id, :tool_call_id, :container_id, :name, :status, :provider_type]
 
   defp hosted_tool_calls(%Message{} = message) do
     (message.server_tool_calls ++ hosted_content_blocks(message, @hosted_content_block_types))
@@ -477,9 +538,42 @@ defmodule BeamWeaver.Provider.Response do
         value -> Map.put(acc, key, value)
       end
     end)
+    |> maybe_put_action_type(block)
   end
 
   defp hosted_tool_summary(_block), do: %{}
+
+  defp maybe_put_action_type(summary, block) do
+    action = Map.get(block, :action) || Map.get(block, "action")
+
+    case metadata_value(action, :type) do
+      type when is_binary(type) and type != "" ->
+        Map.put(summary, :action_type, type)
+
+      type when is_atom(type) and not is_nil(type) ->
+        Map.put(summary, :action_type, Atom.to_string(type))
+
+      _other ->
+        summary
+    end
+  end
+
+  defp infer_hosted_search_usage(usage, calls) do
+    if is_integer(get_in(usage, [:web_search, :num_requests])) do
+      usage
+    else
+      requests =
+        Enum.count(calls, fn call ->
+          call[:type] in [:web_search_call, "web_search_call"] and call[:action_type] == "search"
+        end)
+
+      if requests > 0 do
+        Map.update(usage, :web_search, %{num_requests: requests}, &Map.put(&1, :num_requests, requests))
+      else
+        usage
+      end
+    end
+  end
 
   defp hosted_tool_usage(metadata) when is_map(metadata) do
     metadata
@@ -514,23 +608,32 @@ defmodule BeamWeaver.Provider.Response do
   defp normalize_tool_usage(_usage), do: %{}
 
   defp normalize_image_gen_usage(%{} = usage) do
-    %{
-      input_tokens: first_number(usage, ["input_tokens"]),
-      output_tokens: first_number(usage, ["output_tokens"]),
-      total_tokens: first_number(usage, ["total_tokens"]),
-      input_token_details: static_tool_usage_details(Map.get(usage, "input_tokens_details")),
-      output_token_details: static_tool_usage_details(Map.get(usage, "output_tokens_details"))
-    }
-    |> reject_empty_values()
+    normalized =
+      %{
+        input_tokens: first_number(usage, ["input_tokens"]),
+        output_tokens: first_number(usage, ["output_tokens"]),
+        total_tokens: first_number(usage, ["total_tokens"]),
+        input_token_details: static_tool_usage_details(Map.get(usage, "input_tokens_details")),
+        output_token_details: static_tool_usage_details(Map.get(usage, "output_tokens_details"))
+      }
+      |> reject_empty_values()
+
+    if positive_image_generation_usage?(normalized), do: normalized, else: %{}
   end
 
   defp normalize_image_gen_usage(_usage), do: %{}
 
+  defp positive_image_generation_usage?(usage) do
+    Enum.any?([:input_tokens, :output_tokens, :total_tokens], fn key ->
+      is_number(usage[key]) and usage[key] > 0
+    end)
+  end
+
   defp normalize_web_search_usage(%{} = usage) do
-    %{
-      num_requests: first_number(usage, ["num_requests"])
-    }
-    |> reject_empty_values()
+    case first_number(usage, ["num_requests"]) do
+      count when is_number(count) and count > 0 -> %{num_requests: count}
+      _other -> %{}
+    end
   end
 
   defp normalize_web_search_usage(_usage), do: %{}

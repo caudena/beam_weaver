@@ -52,7 +52,7 @@ defmodule BeamWeaver.Moonshot.Messages do
       tool_calls: tool_calls(message)
     )
     |> case do
-      {:ok, message} -> {:ok, message}
+      {:ok, message} -> {:ok, enrich_cache_write_ttl(message)}
       {:error, error} -> {:error, Error.new(error.type, error.message, error.details)}
     end
   end
@@ -106,6 +106,47 @@ defmodule BeamWeaver.Moonshot.Messages do
   end
 
   def usage_metadata(_response), do: nil
+
+  @doc false
+  def enrich_cache_write_ttl(%Message{usage_metadata: usage, response_metadata: metadata} = message)
+      when is_map(usage) and is_map(metadata) do
+    headers = metadata[:headers] || %{}
+    write_5m = header_count(headers[:msh_usage_cache_write_tokens_5m])
+    write_1h = header_count(headers[:msh_usage_cache_write_tokens_1h])
+
+    if is_nil(write_5m) and is_nil(write_1h) do
+      message
+    else
+      details = Map.get(usage, :input_token_details, %{})
+      details = if is_map(details), do: details, else: %{}
+      total = Map.get(details, :cache_write)
+      write_5m = write_5m || 0
+      write_1h = write_1h || 0
+      reported = write_5m + write_1h
+      total = if is_integer(total), do: max(total, reported), else: reported
+
+      details =
+        details
+        |> Map.put(:cache_write, total)
+        |> Map.put(:ephemeral_5m_input_tokens, write_5m)
+        |> Map.put(:ephemeral_1h_input_tokens, write_1h)
+
+      %{message | usage_metadata: Map.put(usage, :input_token_details, details)}
+    end
+  end
+
+  def enrich_cache_write_ttl(message), do: message
+
+  defp header_count(value) when is_integer(value) and value >= 0, do: value
+
+  defp header_count(value) when is_binary(value) do
+    case Integer.parse(value) do
+      {count, ""} when count >= 0 -> count
+      _other -> nil
+    end
+  end
+
+  defp header_count(_value), do: nil
 
   defp to_chat_message(%Message{role: :tool} = message) do
     call_id = message.tool_call_id || message.id
@@ -486,7 +527,10 @@ defmodule BeamWeaver.Moonshot.Messages do
       cache_read:
         get_in(usage, ["input_tokens_details", "cached_tokens"]) ||
           get_in(usage, ["prompt_tokens_details", "cached_tokens"]) ||
-          usage["cached_tokens"]
+          usage["cached_tokens"],
+      cache_write:
+        get_in(usage, ["input_tokens_details", "cache_write_tokens"]) ||
+          get_in(usage, ["prompt_tokens_details", "cache_write_tokens"])
     }
     |> BeamWeaver.MapShape.reject_nil_or_empty()
   end

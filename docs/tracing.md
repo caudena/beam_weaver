@@ -130,19 +130,31 @@ BeamWeaver.Tracing.flush_exporter(60_000)
 
 The exporter sends BeamWeaver-native observation events. It includes inputs,
 outputs, usage, errors, tags, standard trace metadata, and custom fields.
-Exporter errors are swallowed by tracing calls so observability failures do not
-break user flows.
+Exporter exceptions are isolated from tracing calls. The exporter buffers up to
+100,000 observations, uploads byte-bounded batches of up to 200 on two concurrent
+workers, and keeps HTTP work outside the queue process. Enqueue normally returns
+without waiting for WeaveScope. If a sustained outage fills the finite buffer,
+producers wait for capacity instead of silently discarding completed model usage.
 
 Exported observations use native BeamWeaver and WeaveScope fields, including
 `observation_id`, `trace_id`, `parent_observation_id`, `kind`, `run_type`,
 `status`, timestamps, `event_version`, tags, metadata, provider, model,
 `request_id`, `finish_reason`, usage, tool-call IDs, and structured outputs.
+Normalized usage retains Claude web-search requests, xAI server-side tool
+counts, and Kimi K3 cache-write counts with their 5-minute/1-hour split.
+These fields come from provider usage and response headers and are available
+to callers through the exported trace. Z.ai traces retain the response model
+and whether Chat executed Web Search.
 BeamWeaver does not expose Python ecosystem labels or LangSmith wire contracts
 as public tracing fields.
 
 The queued exporter is a supervised GenServer. It batches observations, retries
 transient transport failures, treats WeaveScope rejections as terminal dead
-letters, and emits native telemetry:
+letters, and emits native telemetry. `BeamWeaver.Tracing.Exporters.WeaveScope.Queue.stats/0`
+reports queued items, blocked producers, and dead-letter count without copying
+their payloads. Dead letters remain in process memory, so inspect or preserve
+them before restarting a failed exporter. Terminal rejections and exhausted
+retries are also logged as errors.
 
 | Event | Use |
 | --- | --- |

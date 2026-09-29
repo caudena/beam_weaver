@@ -7,6 +7,7 @@ defmodule BeamWeaver.Moonshot.ChatModelTest do
   alias BeamWeaver.Core.Tool
   alias BeamWeaver.Core.Messages.ToolCall
   alias BeamWeaver.Models
+  alias BeamWeaver.Models.UsageCost
   alias BeamWeaver.Moonshot.ChatModel
   alias BeamWeaver.Moonshot.Client
   alias BeamWeaver.Moonshot.Error
@@ -599,7 +600,7 @@ defmodule BeamWeaver.Moonshot.ChatModelTest do
 
     data: {"id":"chatcmpl_k3","model":"kimi-k3","choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":null}]}
 
-    data: {"id":"chatcmpl_k3","model":"kimi-k3","choices":[{"index":0,"delta":{},"finish_reason":"stop","usage":{"prompt_tokens":4,"completion_tokens":6,"total_tokens":10,"cached_tokens":2,"completion_tokens_details":{"reasoning_tokens":3}}}]}
+    data: {"id":"chatcmpl_k3","model":"kimi-k3","choices":[{"index":0,"delta":{},"finish_reason":"stop","usage":{"prompt_tokens":4,"completion_tokens":6,"total_tokens":10,"prompt_tokens_details":{"cached_tokens":2,"cache_write_tokens":1},"completion_tokens_details":{"reasoning_tokens":3}}}]}
 
     data: [DONE]
     """
@@ -611,7 +612,10 @@ defmodule BeamWeaver.Moonshot.ChatModelTest do
         transport: BeamWeaver.TestSupport.Conformance.Fakes.Transport,
         transport_opts: [
           expect: %{method: :post, path: "/v1/chat/completions"},
-          headers: [{"content-type", "text/event-stream"}],
+          headers: [
+            {"content-type", "text/event-stream"},
+            {"msh-usage-cache-write-tokens-1h", "1"}
+          ],
           body: body
         ]
       )
@@ -623,11 +627,63 @@ defmodule BeamWeaver.Moonshot.ChatModelTest do
              input_tokens: 4,
              output_tokens: 6,
              total_tokens: 10,
-             input_token_details: %{cache_read: 2},
+             input_token_details: %{
+               cache_read: 2,
+               cache_write: 1,
+               ephemeral_5m_input_tokens: 0,
+               ephemeral_1h_input_tokens: 1
+             },
              output_token_details: %{reasoning: 3}
            }
 
     assert response.response_metadata.token_usage["total_tokens"] == 10
+    assert response.response_metadata.headers.msh_usage_cache_write_tokens_1h == "1"
+  end
+
+  test "K3 non-stream response retains cache-write usage and TTL headers" do
+    response = %{
+      "id" => "chatcmpl_k3_cache",
+      "model" => "kimi-k3",
+      "choices" => [%{"message" => %{"content" => "ok"}, "finish_reason" => "stop"}],
+      "usage" => %{
+        "prompt_tokens" => 6,
+        "completion_tokens" => 2,
+        "prompt_tokens_details" => %{"cached_tokens" => 1, "cache_write_tokens" => 3}
+      },
+      "_beamweaver_response_header_metadata" => %{
+        headers: %{
+          msh_usage_cache_write_tokens_5m: "1",
+          msh_usage_cache_write_tokens_1h: "2"
+        }
+      }
+    }
+
+    assert {:ok, message} = Messages.chat_response_to_message(response)
+
+    assert message.usage_metadata.input_token_details == %{
+             cache_read: 1,
+             cache_write: 3,
+             ephemeral_5m_input_tokens: 1,
+             ephemeral_1h_input_tokens: 2
+           }
+  end
+
+  test "K3 profile prices both cache-write TTLs" do
+    {:ok, profile} = BeamWeaver.Models.ProfileRegistry.Moonshot.resolve("kimi-k3")
+
+    cost =
+      UsageCost.calculate(profile, %{
+        input_tokens: 1_000,
+        input_token_details: %{
+          cache_read: 200,
+          cache_write: 400,
+          ephemeral_5m_input_tokens: 100,
+          ephemeral_1h_input_tokens: 300
+        },
+        output_tokens: 100
+      })
+
+    assert_in_delta cost.total_cost, 0.00486, 0.000000001
   end
 
   test "stream_events returns envelopes tagged with Moonshot invocation metadata" do

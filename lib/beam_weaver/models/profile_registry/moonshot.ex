@@ -122,6 +122,10 @@ defmodule BeamWeaver.Models.ProfileRegistry.Moonshot do
                      pricing_source_url: "https://platform.kimi.ai/docs/pricing/chat-k3",
                      input_cache_hit_price_per_mtok: 0.30,
                      input_cache_miss_price_per_mtok: 3.00,
+                     input_price_per_mtok: 3.00,
+                     cached_input_price_per_mtok: 0.30,
+                     cache_write_5m_price_per_mtok: 3.00,
+                     cache_write_1h_price_per_mtok: 6.00,
                      output_price_per_mtok: 15.00
                    })
                }},

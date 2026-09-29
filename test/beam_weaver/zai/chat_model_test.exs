@@ -237,6 +237,36 @@ defmodule BeamWeaver.ZAI.ChatModelTest do
     assert_in_delta message.metadata.estimated_cost, 0.00003144, 0.000000001
   end
 
+  test "prices the response model at its effective Z.ai rate" do
+    usage = %{
+      "prompt_tokens" => 1_000,
+      "completion_tokens" => 100,
+      "prompt_tokens_details" => %{"cached_tokens" => 200}
+    }
+
+    current = Messages.usage_metadata(%{"model" => "glm-5.3-flash", "usage" => usage})
+
+    promo =
+      Messages.usage_metadata(%{
+        "model" => "glm-5.3-flash",
+        "created" => DateTime.to_unix(~U[2026-09-08 12:00:00Z]),
+        "usage" => usage
+      })
+
+    assert_in_delta current.total_cost, 0.000176, 0.000000001
+    assert_in_delta promo.total_cost, 0.000088, 0.000000001
+
+    searched =
+      Messages.usage_metadata(%{
+        "model" => "glm-5.3-flash",
+        "usage" => usage,
+        "web_search" => [%{"title" => "result"}]
+      })
+
+    assert_in_delta searched.total_cost, 0.010176, 0.000000001
+    refute Map.has_key?(Messages.usage_metadata(%{"model" => "glm-future", "usage" => usage}), :total_cost)
+  end
+
   test "stream body reconstructs text, reasoning, final usage, length, and tool-call fragments" do
     body = """
     data: {"id":"chatcmpl_zai_stream","model":"glm-5.2","choices":[{"index":0,"delta":{"reasoning_content":"plan "},"finish_reason":null}]}
@@ -266,6 +296,7 @@ defmodule BeamWeaver.ZAI.ChatModelTest do
     assert message.metadata.reasoning_content == "plan "
     assert message.usage_metadata.input_token_details.cache_read == 1
     assert message.usage_metadata.output_token_details.reasoning == 1
+    assert_in_delta message.usage_metadata.total_cost, 0.00001486, 0.000000001
     assert [%ToolCall{name: "get_weather", args: %{"city" => "Paris"}}] = message.tool_calls
   end
 

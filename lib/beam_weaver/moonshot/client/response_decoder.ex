@@ -115,6 +115,8 @@ defmodule BeamWeaver.Moonshot.Client.ResponseDecoder do
     decoded =
       %{
         msh_context_cache_token_saved: headers["msh-context-cache-token-saved"],
+        msh_usage_cache_write_tokens_5m: headers["msh-usage-cache-write-tokens-5m"],
+        msh_usage_cache_write_tokens_1h: headers["msh-usage-cache-write-tokens-1h"],
         msh_gid: headers["msh-gid"],
         msh_org_id: headers["msh-org-id"],
         msh_project_id: headers["msh-project-id"],

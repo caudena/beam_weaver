@@ -45,6 +45,8 @@ defmodule BeamWeaver.Transport.RedactorTest do
         max_completion_tokens: 128,
         max_tokens: 256,
         output_tokens: 42,
+        input_tokens_details: %{image_tokens: 7, text_tokens: 3},
+        output_tokens_details: %{image_tokens: 12},
         thinking: %{budget_tokens: 1_024},
         access_token: "access-secret",
         credential_token: "credential-secret"
@@ -54,6 +56,8 @@ defmodule BeamWeaver.Transport.RedactorTest do
     assert redacted.max_completion_tokens == 128
     assert redacted.max_tokens == 256
     assert redacted.output_tokens == 42
+    assert redacted.input_tokens_details == %{image_tokens: 7, text_tokens: 3}
+    assert redacted.output_tokens_details == %{image_tokens: 12}
     assert redacted.thinking.budget_tokens == 1_024
     assert redacted.access_token == Redactor.redacted()
     assert redacted.credential_token == Redactor.redacted()

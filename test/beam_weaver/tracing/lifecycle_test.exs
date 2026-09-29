@@ -424,6 +424,31 @@ defmodule BeamWeaver.Tracing.LifecycleTest do
     assert event["service_tier"] == "default"
   end
 
+  test "OpenAI model traces expose preview search type and reasoning price class" do
+    for {model_id, reasoning?} <- [{"gpt-4.1", false}, {"gpt-6-luna", true}] do
+      {:ok, model} = BeamWeaver.Models.init_chat_model("openai:" <> model_id, api_key: "test")
+
+      assert {:ok, %Message{}} =
+               BeamWeaver.Core.ChatModel.trace_call(
+                 model,
+                 [Message.user("hello")],
+                 [
+                   tools: [OpenAI.ToolCalling.web_search()],
+                   trace: [metadata: %{provider_account_ref: "provider-project-id"}],
+                   exporter: BeamWeaver.Tracing.TestExporter,
+                   exporter_opts: [test_pid: self()]
+                 ],
+                 fn -> {:ok, Message.assistant("ok")} end
+               )
+
+      assert_receive {:trace_export, :started, %Run{kind: :model}}
+      assert_receive {:trace_export, :ok, %Run{kind: :model} = run}
+      assert run.metadata.model_reasoning_output == reasoning?
+      assert run.metadata.provider_account_ref == "provider-project-id"
+      assert [%{"type" => "web_search_preview"}] = run.metadata.tool_definitions
+    end
+  end
+
   def handle_telemetry(event, measurements, metadata, test_pid) do
     send(test_pid, {:tracing_event, event, measurements, metadata})
   end

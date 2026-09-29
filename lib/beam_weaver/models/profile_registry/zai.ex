@@ -62,7 +62,7 @@ defmodule BeamWeaver.Models.ProfileRegistry.ZAI do
                      id: "glm-5.3-flash",
                      name: "GLM-5.3-Flash",
                      release_date: "2026-08-26",
-                     last_updated: "2026-08-27",
+                     last_updated: "2026-09-29",
                      image_inputs: true,
                      image_url_inputs: true,
                      video_inputs: true,
@@ -74,9 +74,23 @@ defmodule BeamWeaver.Models.ProfileRegistry.ZAI do
                          default_reasoning_effort: :max,
                          thinking_modes: [:enabled],
                          native_multimodal: true,
-                         input_price_per_mtok: 0.075,
-                         cached_input_price_per_mtok: 0.015,
-                         output_price_per_mtok: 0.25,
+                         input_price_per_mtok: 0.15,
+                         cached_input_price_per_mtok: 0.03,
+                         output_price_per_mtok: 0.50,
+                         pricing_history: [
+                           %{
+                             effective_at: "2026-08-26T00:00:00Z",
+                             input_price_per_mtok: 0.075,
+                             cached_input_price_per_mtok: 0.015,
+                             output_price_per_mtok: 0.25
+                           },
+                           %{
+                             effective_at: "2026-09-09T16:00:00Z",
+                             input_price_per_mtok: 0.15,
+                             cached_input_price_per_mtok: 0.03,
+                             output_price_per_mtok: 0.50
+                           }
+                         ],
                          promotional_pricing_through: "2026-09-09T24:00:00+08:00",
                          regular_input_price_per_mtok: 0.15,
                          regular_cached_input_price_per_mtok: 0.03,

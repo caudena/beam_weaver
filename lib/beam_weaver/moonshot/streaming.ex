@@ -16,7 +16,10 @@ defmodule BeamWeaver.Moonshot.Streaming do
   def stream_body_to_message(body, opts \\ [])
 
   def stream_body_to_message(body, opts) do
-    OpenAICompatibleStreaming.stream_body_to_message(body, config(), opts)
+    case OpenAICompatibleStreaming.stream_body_to_message(body, config(), opts) do
+      {:ok, message} -> {:ok, MoonshotMessages.enrich_cache_write_ttl(message)}
+      other -> other
+    end
   end
 
   defp stream_metadata(events, message, opts) do

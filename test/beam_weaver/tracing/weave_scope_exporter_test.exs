@@ -463,6 +463,132 @@ defmodule BeamWeaver.Tracing.WeaveScopeExporterTest do
     Agent.stop(capture)
   end
 
+  test "a full queue backpressures producers and preserves both observations" do
+    {:ok, capture} =
+      Agent.start_link(fn -> [] end, name: BeamWeaver.Tracing.WeaveScopeCaptureTransportAgent)
+
+    name = :"weavescope_queue_#{System.unique_integer([:positive])}"
+
+    {:ok, pid} =
+      Queue.start_link(
+        name: name,
+        api_key: "ws_test",
+        endpoint: "http://weavescope.local",
+        transport: BeamWeaver.Tracing.WeaveScopeCaptureTransport,
+        flush_interval: 10_000,
+        max_items: 1
+      )
+
+    first = Run.new("first", id: "first", trace_id: "first", kind: :model)
+    second = Run.new("second", id: "second", trace_id: "second", kind: :model)
+
+    assert Queue.enqueue(pid, :ok, first) == :ok
+    second_enqueue = Task.async(fn -> Queue.enqueue(pid, :ok, second) end)
+
+    assert Task.await(second_enqueue) == :ok
+    assert Queue.flush(pid) == :ok
+    assert Queue.dead_letters(pid) == []
+    assert %{queued: 0, blocked_producers: 0, dead_letters: 0} = Queue.stats(pid)
+
+    events =
+      capture
+      |> Agent.get(&Enum.reverse/1)
+      |> Enum.flat_map(& &1["events"])
+
+    assert Enum.map(events, & &1["observation_id"]) == ["first", "second"]
+
+    GenServer.stop(pid)
+    Agent.stop(capture)
+  end
+
+  test "queued uploads use concurrent batches without waiting for HTTP in the caller" do
+    test_pid = self()
+
+    {:ok, listener} =
+      Agent.start_link(fn -> test_pid end,
+        name: BeamWeaver.Tracing.WeaveScopeBlockingTransportAgent
+      )
+
+    name = :"weavescope_queue_#{System.unique_integer([:positive])}"
+
+    {:ok, pid} =
+      Queue.start_link(
+        name: name,
+        api_key: "ws_test",
+        endpoint: "http://weavescope.local",
+        transport: BeamWeaver.Tracing.WeaveScopeBlockingTransport,
+        flush_interval: 10_000,
+        max_items: 10,
+        batch_size: 2,
+        max_inflight: 2
+      )
+
+    for id <- ~w(first second) do
+      assert Queue.enqueue(pid, :ok, Run.new(id, id: id, trace_id: id, kind: :model)) == :ok
+    end
+
+    assert_receive {:upload_started, worker_a, ["first", "second"]}
+
+    for id <- ~w(third fourth) do
+      assert Queue.enqueue(pid, :ok, Run.new(id, id: id, trace_id: id, kind: :model)) == :ok
+    end
+
+    assert_receive {:upload_started, worker_b, ["third", "fourth"]}
+    assert worker_a != worker_b
+
+    fifth =
+      Task.async(fn -> Queue.enqueue(pid, :ok, Run.new("fifth", id: "fifth", trace_id: "fifth", kind: :model)) end)
+
+    assert Task.await(fifth, 500) == :ok
+    assert %{queued: 1, inflight_batches: 2, blocked_producers: 0} = Queue.stats(pid)
+
+    flush = Task.async(fn -> Queue.flush(pid, 5_000) end)
+    send(worker_a, :release)
+    send(worker_b, :release)
+    assert_receive {:upload_started, worker_c, ["fifth"]}
+    send(worker_c, :release)
+
+    assert Task.await(flush) == :ok
+    assert Queue.dead_letters(pid) == []
+
+    GenServer.stop(pid)
+    Agent.stop(listener)
+  end
+
+  test "upload batches respect the configured byte budget" do
+    {:ok, capture} =
+      Agent.start_link(fn -> [] end, name: BeamWeaver.Tracing.WeaveScopeCaptureTransportAgent)
+
+    name = :"weavescope_queue_#{System.unique_integer([:positive])}"
+
+    {:ok, pid} =
+      Queue.start_link(
+        name: name,
+        api_key: "ws_test",
+        endpoint: "http://weavescope.local",
+        transport: BeamWeaver.Tracing.WeaveScopeCaptureTransport,
+        flush_interval: 10_000,
+        batch_size: 10,
+        max_batch_bytes: 1_000
+      )
+
+    for id <- ~w(first second) do
+      run = Run.new(id, id: id, trace_id: id, kind: :model, inputs: %{body: String.duplicate("x", 700)})
+      assert Queue.enqueue(pid, :ok, run) == :ok
+    end
+
+    assert Queue.flush(pid) == :ok
+
+    batches = Agent.get(capture, & &1)
+    assert length(batches) == 2
+
+    assert batches |> Enum.flat_map(& &1["events"]) |> Enum.map(& &1["observation_id"]) |> Enum.sort() ==
+             ["first", "second"]
+
+    GenServer.stop(pid)
+    Agent.stop(capture)
+  end
+
   def handle_queue_telemetry(event, measurements, metadata, test_pid) do
     send(test_pid, {:queue_event, event, measurements, metadata})
   end
@@ -525,5 +651,17 @@ defmodule BeamWeaver.Tracing.WeaveScopeAlwaysFailTransport do
   def post(_url, _opts) do
     Agent.update(BeamWeaver.Tracing.WeaveScopeAlwaysFailTransportAgent, &(&1 + 1))
     {:error, :closed}
+  end
+end
+
+defmodule BeamWeaver.Tracing.WeaveScopeBlockingTransport do
+  def post(_url, opts) do
+    listener = Agent.get(BeamWeaver.Tracing.WeaveScopeBlockingTransportAgent, & &1)
+    ids = Enum.map(opts[:json]["events"], & &1["observation_id"])
+    send(listener, {:upload_started, self(), ids})
+
+    receive do
+      :release -> {:ok, %{status: 202, body: %{"results" => []}}}
+    end
   end
 end
