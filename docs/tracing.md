@@ -140,11 +140,11 @@ Exported observations use native BeamWeaver and WeaveScope fields, including
 `observation_id`, `trace_id`, `parent_observation_id`, `kind`, `run_type`,
 `status`, timestamps, `event_version`, tags, metadata, provider, model,
 `request_id`, `finish_reason`, usage, tool-call IDs, and structured outputs.
-Normalized usage also retains Claude web-search requests and xAI server-side
-tool counts so WeaveScope can price their billable hosted operations.
-Kimi K3 cache-write counts and the 5-minute/1-hour split are retained from
-usage and provider response headers. Z.ai cost estimates use the response model
-and include an executed Web Search in Chat use.
+Normalized usage retains Claude web-search requests, xAI server-side tool
+counts, and Kimi K3 cache-write counts with their 5-minute/1-hour split.
+These fields come from provider usage and response headers and are available
+to callers through the exported trace. Z.ai traces retain the response model
+and whether Chat executed Web Search.
 BeamWeaver does not expose Python ecosystem labels or LangSmith wire contracts
 as public tracing fields.
 
