@@ -12,9 +12,20 @@ September 23, 2026 against
 - `BeamWeaver.OpenAI.ChatModel` implements `BeamWeaver.Core.ChatModel`.
 - `BeamWeaver.OpenAI.EmbeddingModel` implements
   `BeamWeaver.Core.EmbeddingModel`.
-- `BeamWeaver.OpenAI.generate_image/2` calls the direct Images API and emits
-  model-specific image/text token usage without storing returned image bytes in
-  the trace. See [provider billing observations](provider_billing.md).
+- `BeamWeaver.OpenAI.generate_image/2` calls the direct Images API and returns
+  the provider response. It traces the request and usage without storing image
+  bytes in the trace:
+
+  ```elixir
+  {:ok, response} =
+    BeamWeaver.OpenAI.generate_image("A blue square on white",
+      model: "gpt-image-2.5-flare",
+      quality: "low",
+      size: "1024x1024"
+    )
+
+  image = hd(response["data"])["b64_json"]
+  ```
 - Requests go through `BeamWeaver.Transport`, so provider tests can run against
   replay cassettes and live calls can use Req/Finch.
 - BeamWeaver messages become Responses API `input` items.
