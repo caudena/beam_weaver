@@ -795,46 +795,80 @@ defmodule BeamWeaver.OpenAI.ChatModelTest do
            }
   end
 
-  test "GPT-6 Astra Responses requests enforce documented reasoning and parameter constraints" do
-    model = ChatModel.new(model: "gpt-6-astra")
+  test "GPT-6 Astra and GPT-6.1 Sol Responses enforce reasoning and parameter constraints" do
+    for model_id <- ["gpt-6-astra", "gpt-6.1-sol"] do
+      model = ChatModel.new(model: model_id)
 
-    assert {:ok, body} =
-             ChatModel.request_body(model, [Message.user("solve this")],
-               reasoning: %{effort: :max, mode: :pro},
-               max_tokens: 4_096,
-               prompt_cache_options: %{mode: :explicit, ttl: "30m"}
-             )
+      assert {:ok, body} =
+               ChatModel.request_body(model, [Message.user("solve this")],
+                 reasoning: %{effort: :max, mode: :pro},
+                 max_tokens: 4_096,
+                 prompt_cache_options: %{mode: :explicit, ttl: "30m"}
+               )
 
-    assert body["model"] == "gpt-6-astra"
-    assert body["reasoning"] == %{"effort" => "max", "mode" => "pro"}
-    assert body["max_output_tokens"] == 4_096
-    assert body["prompt_cache_options"] == %{"mode" => "explicit", "ttl" => "30m"}
+      assert body["model"] == model_id
+      assert body["reasoning"] == %{"effort" => "max", "mode" => "pro"}
+      assert body["max_output_tokens"] == 4_096
+      assert body["prompt_cache_options"] == %{"mode" => "explicit", "ttl" => "30m"}
 
-    for {param, value} <- [
-          temperature: 0.2,
-          top_p: 0.8,
-          top_logprobs: 2,
-          modalities: ["audio"]
-        ] do
-      assert {:error, error} =
-               ChatModel.request_body(model, [Message.user("invalid")], [{param, value}])
+      for {param, value} <- [
+            temperature: 0.2,
+            top_p: 0.8,
+            top_logprobs: 2,
+            modalities: ["audio"]
+          ] do
+        assert {:error, error} =
+                 ChatModel.request_body(model, [Message.user("invalid")], [{param, value}])
 
-      assert error.type == :unsupported_model_param
-      assert error.details.params == [param]
+        assert error.type == :unsupported_model_param
+        assert error.details.params == [param]
+      end
+
+      for effort <- [:none, :minimal] do
+        assert {:error, error} =
+                 ChatModel.request_body(model, [Message.user("invalid")], reasoning_effort: effort)
+
+        assert error.type == :invalid_model_option
+        assert error.details.reasoning_effort == to_string(effort)
+      end
+
+      assert {:error, include_error} =
+               ChatModel.request_body(model, [Message.user("invalid")], include: ["message.output_text.logprobs"])
+
+      assert include_error.type == :invalid_model_option
     end
+  end
 
-    for effort <- [:none, :minimal] do
-      assert {:error, error} =
-               ChatModel.request_body(model, [Message.user("invalid")], reasoning_effort: effort)
+  test "GPT-6.1 Sol resolves to Responses with documented input limits and cache prices" do
+    assert {:ok, %ChatModel{} = model} = Models.init_chat_model("openai:gpt-6.1-sol")
+    profile = model.profile
+    assert profile.max_context_tokens == 1_050_000
+    assert profile.max_input_tokens == 922_000
+    assert profile.max_output_tokens == 128_000
+    assert {:ok, 922_000} = BeamWeaver.ContextBudget.effective_input_limit(profile)
 
-      assert error.type == :invalid_model_option
-      assert error.details.reasoning_effort == to_string(effort)
+    usage = %{input_tokens: 1_000, cached_tokens: 400, cache_write_tokens: 200, output_tokens: 2_000}
+    assert_in_delta UsageCost.calculate(profile, usage).total_cost, 0.02134, 1.0e-12
+
+    assert {:ok, body} = ChatModel.request_body(model, [Message.user("use the tools")])
+    assert body["model"] == "gpt-6.1-sol"
+    refute Map.has_key?(body, "reasoning")
+
+    for effort <- [:low, :medium, :high, :xhigh, :max] do
+      assert {:ok, body} =
+               ChatModel.request_body(model, [Message.user("solve")],
+                 reasoning_effort: effort,
+                 tools: [%{"type" => "web_search"}],
+                 response_format: %{
+                   name: "Answer",
+                   schema: %{type: "object", properties: %{answer: %{type: "string"}}, required: ["answer"]}
+                 }
+               )
+
+      assert body["reasoning"] == %{"effort" => to_string(effort)}
+      assert body["tools"] == [%{"type" => "web_search"}]
+      assert body["text"]["format"]["type"] == "json_schema"
     end
-
-    assert {:error, include_error} =
-             ChatModel.request_body(model, [Message.user("invalid")], include: ["message.output_text.logprobs"])
-
-    assert include_error.type == :invalid_model_option
   end
 
   test "GPT-6 Sol and Luna profiles price usage and validate Responses requests" do

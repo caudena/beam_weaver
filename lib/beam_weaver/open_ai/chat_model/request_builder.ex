@@ -254,7 +254,7 @@ defmodule BeamWeaver.OpenAI.ChatModel.RequestBuilder do
              model: model_name,
              reasoning_effort: reasoning_effort(reasoning),
              supported:
-               if(ModelPolicy.astra?(model_name),
+               if(ModelPolicy.responses_tools_only?(model_name),
                  do: [:low, :medium, :high, :xhigh, :max],
                  else: [:none, :low, :medium, :high, :xhigh, :max]
                )

@@ -23,7 +23,7 @@ defmodule BeamWeaver.OpenAI.ModelPolicy do
   Returns the temperature that may be sent for a request.
 
   GPT-5 and GPT-6 family models reject temperature except when reasoning
-  effort is explicitly `none`. GPT-6 Astra rejects `none` reasoning.
+  effort is explicitly `none`. GPT-6 Astra and GPT-6.1 Sol reject `none` reasoning.
   """
   @spec request_temperature(String.t() | nil, term(), map() | nil) :: term()
   def request_temperature(model, temperature, reasoning) do
@@ -68,8 +68,14 @@ defmodule BeamWeaver.OpenAI.ModelPolicy do
   def astra?(_model), do: false
 
   @doc false
+  def responses_tools_only?(model) when is_binary(model),
+    do: String.downcase(model) in ["gpt-6-astra", "gpt-6.1-sol"]
+
+  def responses_tools_only?(_model), do: false
+
+  @doc false
   def gpt6?(model) when is_binary(model),
-    do: String.downcase(model) in ["gpt-6-astra", "gpt-6-sol", "gpt-6-luna"]
+    do: String.downcase(model) in ["gpt-6-astra", "gpt-6.1-sol", "gpt-6-sol", "gpt-6-luna"]
 
   def gpt6?(_model), do: false
 
@@ -86,7 +92,7 @@ defmodule BeamWeaver.OpenAI.ModelPolicy do
   @spec reasoning_effort_supported?(String.t() | nil, term()) :: boolean()
   def reasoning_effort_supported?(model, reasoning) do
     cond do
-      astra?(model) ->
+      responses_tools_only?(model) ->
         reasoning_effort(reasoning) in [nil, "low", "medium", "high", "xhigh", "max"]
 
       gpt6_sol_or_luna?(model) ->

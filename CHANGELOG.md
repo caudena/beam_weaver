@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.1.31 - 2026-09-30
+
+### Added
+
+- Added `openai:gpt-6.1-sol` with a 1.05M-token context window,
+  922K input and 128K output limits, text and image input, Responses tools,
+  streaming, structured output, and current cache and processing-tier pricing.
+  Standard short-context prices per million tokens are $2 input, $0.10 cached
+  input, $2.50 cache write, and $10 output.
+
+### Changed
+
+- GPT-6.1 Sol defaults to Responses and rejects `none`/`minimal` reasoning,
+  sampling and logprob controls, and Chat Completions tools before transport.
+
 ## 0.1.30 - 2026-09-29
 
 ### Changed

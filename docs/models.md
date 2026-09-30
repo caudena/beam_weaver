@@ -153,13 +153,15 @@ request restrictions, with `:medium` default effort. Opus 5 uses adaptive
 thinking by default and supports effort from `:low` through `:max`; disabling
 thinking is valid only at `:high` or below. Manual enabled thinking budgets are
 rejected before transport for models that only support adaptive thinking.
-OpenAI profiles include `openai:gpt-6-astra`, `openai:gpt-6-sol`,
+OpenAI profiles include `openai:gpt-6-astra`, `openai:gpt-6.1-sol`, `openai:gpt-6-sol`,
 `openai:gpt-6-luna`, `openai:gpt-5.6-sol`,
 `openai:gpt-5.6-terra`, and `openai:gpt-5.6-luna`; `openai:gpt-5.6` is the
 official alias for Sol. Astra advertises a 1.05M-token context window, 128K
 maximum output, text and image input, structured output, streaming, and
-reasoning efforts from `low` through `max`. Its tool calls use Responses;
-Chat Completions remains available for tool-free requests. GPT-6 Sol and Luna
+reasoning efforts from `low` through `max`. Astra and GPT-6.1 Sol use Responses for tool calls;
+Chat Completions remains available for tool-free requests. GPT-6.1 Sol has a
+922K input limit within its 1.05M context window and rejects `none` and `minimal`
+reasoning. GPT-6 Sol and Luna
 share the 1.05M context and 128K output limits, permit `none` reasoning, and
 allow Chat Completions function tools only with `reasoning_effort: :none`.
 BeamWeaver keeps its
@@ -184,7 +186,7 @@ Recommended starting points:
 
 | Provider family | BeamWeaver model strings |
 | --- | --- |
-| OpenAI GPT | `openai:gpt-6-astra`, `openai:gpt-6-sol`, `openai:gpt-6-luna`, `openai:gpt-5.6-sol`, `openai:gpt-5.6-terra`, `openai:gpt-5.6-luna`, `openai:gpt-5.4-mini` |
+| OpenAI GPT | `openai:gpt-6-astra`, `openai:gpt-6.1-sol`, `openai:gpt-6-sol`, `openai:gpt-6-luna`, `openai:gpt-5.6-sol`, `openai:gpt-5.6-terra`, `openai:gpt-5.6-luna`, `openai:gpt-5.4-mini` |
 | Anthropic Claude | `anthropic:claude-fable-5-1`, `anthropic:claude-mythos-5-1`, `anthropic:claude-opus-5-5`, `anthropic:claude-opus-5`, `anthropic:claude-sonnet-5`, `anthropic:claude-sonnet-4-6`, `anthropic:claude-opus-*`, `anthropic:claude-haiku-*` |
 | Google Gemini | `google:gemini-3.8-flash`, `google:gemini-3.7-flash`, `google:gemini-3.6-flash`, `google:gemini-3.5-flash`, `google:gemini-3.5-flash-lite`, `google:gemini-3.1-flash-lite`, explicit `google:gemini-*` profiles |
 | DeepSeek V4 | `deepseek:deepseek-v4-flash`, `deepseek:deepseek-v4-flash-vision-exp`, `deepseek:deepseek-v4-pro` |

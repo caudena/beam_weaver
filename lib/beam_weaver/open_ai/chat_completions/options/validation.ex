@@ -61,11 +61,11 @@ defmodule BeamWeaver.OpenAI.ChatCompletions.Options.Validation do
     reasoning_effort = Keyword.get(opts, :reasoning_effort, Map.get(model, :reasoning_effort))
 
     cond do
-      ModelPolicy.astra?(model_name) and function_tools?(model, opts) ->
+      ModelPolicy.responses_tools_only?(model_name) and function_tools?(model, opts) ->
         {:error,
          Error.new(
            :invalid_model_option,
-           "GPT-6 Astra function tools require the Responses API",
+           "This model's function tools require the Responses API",
            %{model: model_name, alternative_api: :responses}
          )}
 
@@ -104,7 +104,7 @@ defmodule BeamWeaver.OpenAI.ChatCompletions.Options.Validation do
            model: model_name,
            reasoning_effort: reasoning_effort,
            supported:
-             if(ModelPolicy.astra?(model_name),
+             if(ModelPolicy.responses_tools_only?(model_name),
                do: [:low, :medium, :high, :xhigh, :max],
                else: [:none, :low, :medium, :high, :xhigh, :max]
              )
