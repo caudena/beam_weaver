@@ -129,8 +129,8 @@ September 23, 2026 against
   model-level `safety_identifier`.
 - GPT-5.6 Chat Completions function tools are rejected before transport unless
   the effective reasoning effort is `none`; reasoning plus tools uses Responses.
-- GPT-6 Astra supports tool-free Chat Completions, but tool calling is rejected
-  there before transport and directed to Responses. Its reasoning effort must
+- GPT-6 Astra and GPT-6.1 Sol support tool-free Chat Completions, but tool calling is rejected
+  there before transport and directed to Responses. Their reasoning effort must
   be `low`, `medium`, `high`, `xhigh`, or `max`.
 - GPT-6 Sol and Luna support `none`, `low`, `medium`, `high`, `xhigh`, and `max`
   reasoning. Chat Completions function tools require explicit `none` effort;
@@ -172,6 +172,44 @@ BeamWeaver.Models.init_chat_model!("openai:gpt-6-astra",
 Astra does not accept `none` or `minimal` reasoning, `temperature`, `top_p`, or
 `top_logprobs`; Chat Completions also rejects `logprobs`. Responses `include`
 cannot request `message.output_text.logprobs`.
+
+## GPT-6.1 Sol Profile
+
+BeamWeaver includes `openai:gpt-6.1-sol` for complex coding, computer use, and
+professional work. The model accepts text and image input and produces text,
+with a 1,050,000-token context window, 922,000-token maximum input, and
+128,000-token maximum output. It supports streaming, structured output,
+prompt caching, and function and provider-hosted tools through Responses.
+Chat Completions is available for requests without tools.
+
+Reasoning efforts are `low`, `medium` (default), `high`, `xhigh`, and `max`.
+`none`, `minimal`, `temperature`, `top_p`, and logprob controls are rejected
+before transport. The default API is Responses.
+
+Standard pricing per million tokens is:
+
+| Input context | Input | Cached input | Cache write | Output |
+| --- | ---: | ---: | ---: | ---: |
+| Up to 272K input tokens | $2.00 | $0.10 | $2.50 | $10.00 |
+| Above 272K input tokens | $4.00 | $0.20 | $5.00 | $15.00 |
+
+Batch and Flex cost half the applicable Standard rates; Fast costs twice those
+rates. Eligible regional processing adds 10%. US and EU data residency are
+supported; Fast is unavailable with EU data residency. See the
+[model specification](https://developers.openai.com/api/docs/models/gpt-6.1-sol)
+and [pricing](https://developers.openai.com/api/docs/pricing).
+
+```elixir
+BeamWeaver.Models.init_chat_model!("openai:gpt-6.1-sol",
+  reasoning: %{effort: :high},
+  prompt_cache_options: %{mode: :explicit, ttl: "30m"}
+)
+```
+
+OpenAI also offers [hosted Multi-agent in beta](https://developers.openai.com/api/docs/guides/responses-multi-agent).
+The profile records that provider capability. BeamWeaver's local subagents use
+its existing agent harness; hosted Multi-agent orchestration and agent-specific
+output handling do not have a dedicated wrapper.
 
 ## GPT-6 Sol and Luna Profiles
 

@@ -274,61 +274,64 @@ defmodule BeamWeaver.OpenAI.ChatCompletionsModelTest do
            }
   end
 
-  test "GPT-6 Astra Chat Completions rejects tools and unsupported controls" do
-    assert {:ok, model} =
-             Models.init_chat_model("openai:gpt-6-astra",
-               api: :chat_completions,
-               reasoning_effort: :low,
-               max_tokens: 256,
-               moderation: %{model: "omni-moderation-latest"}
-             )
+  test "GPT-6 Astra and GPT-6.1 Sol Chat Completions reject tools and unsupported controls" do
+    for model_id <- ["gpt-6-astra", "gpt-6.1-sol"] do
+      assert {:ok, model} =
+               Models.init_chat_model("openai:#{model_id}",
+                 api: :chat_completions,
+                 reasoning_effort: :low,
+                 max_tokens: 256,
+                 moderation: %{model: "omni-moderation-latest"}
+               )
 
-    assert {:ok, body} =
-             ChatCompletionsModel.request_body(model, [Message.user("hello")])
+      assert {:ok, body} =
+               ChatCompletionsModel.request_body(model, [Message.user("hello")])
 
-    assert body["reasoning_effort"] == "low"
-    assert body["max_completion_tokens"] == 256
-    assert body["moderation"] == %{"model" => "omni-moderation-latest"}
-    refute Map.has_key?(body, "max_tokens")
+      assert body["reasoning_effort"] == "low"
+      assert body["model"] == model_id
+      assert body["max_completion_tokens"] == 256
+      assert body["moderation"] == %{"model" => "omni-moderation-latest"}
+      refute Map.has_key?(body, "max_tokens")
 
-    assert {:error, tool_error} =
-             ChatCompletionsModel.request_body(
-               model,
-               [Message.user("weather?")],
-               tools: [weather_tool()]
-             )
+      assert {:error, tool_error} =
+               ChatCompletionsModel.request_body(
+                 model,
+                 [Message.user("weather?")],
+                 tools: [weather_tool()]
+               )
 
-    assert tool_error.type == :invalid_model_option
-    assert tool_error.details.alternative_api == :responses
+      assert tool_error.type == :invalid_model_option
+      assert tool_error.details.alternative_api == :responses
 
-    assert {:error, reasoning_error} =
-             ChatCompletionsModel.request_body(
-               model,
-               [Message.user("hello")],
-               reasoning_effort: :none
-             )
+      assert {:error, reasoning_error} =
+               ChatCompletionsModel.request_body(
+                 model,
+                 [Message.user("hello")],
+                 reasoning_effort: :none
+               )
 
-    assert reasoning_error.type == :invalid_model_option
+      assert reasoning_error.type == :invalid_model_option
 
-    assert {:error, param_error} =
-             ChatCompletionsModel.request_body(
-               model,
-               [Message.user("hello")],
-               temperature: 0.2
-             )
+      assert {:error, param_error} =
+               ChatCompletionsModel.request_body(
+                 model,
+                 [Message.user("hello")],
+                 temperature: 0.2
+               )
 
-    assert param_error.type == :unsupported_model_param
-    assert param_error.details.params == [:temperature]
+      assert param_error.type == :unsupported_model_param
+      assert param_error.details.params == [:temperature]
 
-    assert {:error, search_error} =
-             ChatCompletionsModel.request_body(
-               model,
-               [Message.user("search")],
-               web_search_options: %{}
-             )
+      assert {:error, search_error} =
+               ChatCompletionsModel.request_body(
+                 model,
+                 [Message.user("search")],
+                 web_search_options: %{}
+               )
 
-    assert search_error.type == :unsupported_model_param
-    assert search_error.details.params == [:web_search_options]
+      assert search_error.type == :unsupported_model_param
+      assert search_error.details.params == [:web_search_options]
+    end
   end
 
   test "GPT-6 Sol and Luna Chat Completions require none reasoning for function tools" do

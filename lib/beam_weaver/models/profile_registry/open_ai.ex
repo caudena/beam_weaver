@@ -108,19 +108,35 @@ defmodule BeamWeaver.Models.ProfileRegistry.OpenAI do
                         })
 
   @gpt_6_specs [
+    %{
+      id: "gpt-6.1-sol",
+      name: "GPT-6.1 Sol",
+      input: 2.00,
+      cached: 0.10,
+      output: 10.00,
+      cutoff: "2026-04-30",
+      release_date: "2026-09-29",
+      last_updated: "2026-09-30",
+      max_input_tokens: 922_000,
+      max_context_tokens: 1_050_000,
+      reasoning_required: true,
+      cache_read_discount_rate: 0.95
+    },
     %{id: "gpt-6-sol", name: "GPT-6 Sol", input: 2.00, cached: 0.20, output: 10.00, cutoff: "2026-04-20"},
     %{id: "gpt-6-luna", name: "GPT-6 Luna", input: 0.10, cached: 0.01, output: 0.50, cutoff: "2026-05-18"}
   ]
 
   @gpt_6_profiles Map.new(@gpt_6_specs, fn spec ->
+                    reasoning_required? = Map.get(spec, :reasoning_required, false)
+
                     {{:openai, spec.id},
                      Profile.new(%{
                        provider: :openai,
                        id: spec.id,
                        name: spec.name,
                        status: :active,
-                       release_date: "2026-09-22",
-                       last_updated: "2026-09-23",
+                       release_date: Map.get(spec, :release_date, "2026-09-22"),
+                       last_updated: Map.get(spec, :last_updated, "2026-09-23"),
                        responses_api: true,
                        chat_completions_api: true,
                        tool_calling: true,
@@ -131,12 +147,25 @@ defmodule BeamWeaver.Models.ProfileRegistry.OpenAI do
                        structured_output_with_tools: true,
                        streaming: true,
                        usage_metadata: true,
-                       supported_params: Params.responses() -- [:prompt_cache_retention],
+                       supported_params:
+                         if(reasoning_required?,
+                           do: @astra_responses_params,
+                           else: Params.responses() -- [:prompt_cache_retention]
+                         ),
                        supported_params_by_api: %{
-                         responses: Params.responses() -- [:prompt_cache_retention],
-                         chat_completions: Params.chat_completions() -- [:audio, :modalities, :prompt_cache_retention]
+                         responses:
+                           if(reasoning_required?,
+                             do: @astra_responses_params,
+                             else: Params.responses() -- [:prompt_cache_retention]
+                           ),
+                         chat_completions:
+                           if(reasoning_required?,
+                             do: @astra_chat_completions_params,
+                             else: Params.chat_completions() -- [:audio, :modalities, :prompt_cache_retention]
+                           )
                        },
-                       max_input_tokens: 1_050_000,
+                       max_context_tokens: Map.get(spec, :max_context_tokens),
+                       max_input_tokens: Map.get(spec, :max_input_tokens, 1_050_000),
                        max_output_tokens: 128_000,
                        image_inputs: true,
                        image_url_inputs: true,
@@ -144,6 +173,7 @@ defmodule BeamWeaver.Models.ProfileRegistry.OpenAI do
                        audio_inputs: false,
                        video_inputs: false,
                        reasoning_output: true,
+                       temperature: not reasoning_required?,
                        tokenizer: :o200k_base,
                        extra: %{
                          frontier: true,
@@ -154,7 +184,7 @@ defmodule BeamWeaver.Models.ProfileRegistry.OpenAI do
                          output_price_per_mtok: spec.output,
                          cost_currency: "USD",
                          pricing_source_url: @pricing_source_url,
-                         pricing_last_checked: "2026-09-23",
+                         pricing_last_checked: Map.get(spec, :last_updated, "2026-09-23"),
                          higher_context_pricing_threshold_tokens: 272_000,
                          higher_context_input_multiplier: 2.0,
                          higher_context_output_multiplier: 1.5,
@@ -166,15 +196,20 @@ defmodule BeamWeaver.Models.ProfileRegistry.OpenAI do
                          fast_mode_service_tiers: [:fast, :priority],
                          fast_mode_eu_data_residency: false,
                          default_reasoning_effort: :medium,
-                         reasoning_efforts: [:none, :low, :medium, :high, :xhigh, :max],
-                         unsupported_reasoning_efforts: [:minimal],
+                         reasoning_efforts:
+                           if(reasoning_required?,
+                             do: [:low, :medium, :high, :xhigh, :max],
+                             else: [:none, :low, :medium, :high, :xhigh, :max]
+                           ),
+                         unsupported_reasoning_efforts:
+                           if(reasoning_required?, do: [:none, :minimal], else: [:minimal]),
                          reasoning_modes: [:standard, :pro],
                          persisted_reasoning_contexts: [:auto, :current_turn, :all_turns],
                          prompt_cache_modes: [:implicit, :explicit],
                          prompt_cache_ttl: "30m",
                          prompt_cache_write_multiplier: 1.25,
-                         prompt_cache_read_discount_rate: 0.90,
-                         chat_completions_tool_calling: :none_reasoning_only,
+                         prompt_cache_read_discount_rate: Map.get(spec, :cache_read_discount_rate, 0.90),
+                         chat_completions_tool_calling: if(reasoning_required?, do: false, else: :none_reasoning_only),
                          provider_capabilities: [
                            :async_tool_calling,
                            :computer_use,
