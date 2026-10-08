@@ -12,6 +12,8 @@ defmodule BeamWeaver.Models.UsageCost do
   lists rate maps in chronological order, each with an ISO 8601 `effective_at`
   (or `nil` for the historical baseline). `:at` selects the applicable version;
   calls without a timestamp use the profile's current canonical rates.
+  `long_context_pricing` overrides rates for the entire request when normalized
+  total input, including cache reads and writes, exceeds its `threshold_tokens`.
   """
 
   alias BeamWeaver.MapAccess
@@ -31,7 +33,14 @@ defmodule BeamWeaver.Models.UsageCost do
 
   def calculate(profile, usage, opts) when is_map(usage) and is_list(opts) do
     at = Keyword.get(opts, :at)
-    pricing = profile |> pricing() |> historical_pricing(at) |> scheduled_pricing(at)
+
+    pricing =
+      profile
+      |> pricing()
+      |> historical_pricing(at)
+      |> scheduled_pricing(at)
+      |> long_context_pricing(usage)
+
     input_price = number(pricing, :input_price_per_mtok)
     output_price = number(pricing, :output_price_per_mtok)
 
@@ -265,9 +274,30 @@ defmodule BeamWeaver.Models.UsageCost do
 
   defp scheduled_pricing(pricing, _at), do: pricing
 
+  defp long_context_pricing(pricing, usage) do
+    case MapAccess.get(pricing, :long_context_pricing) do
+      rates when is_map(rates) ->
+        threshold = MapAccess.get(rates, :threshold_tokens)
+
+        if is_number(threshold) and input_tokens(usage) > threshold,
+          do: merge_rates(pricing, rates),
+          else: pricing
+
+      _other ->
+        pricing
+    end
+  end
+
   defp merge_rates(pricing, rates) do
     Enum.reduce(
-      [:input_price_per_mtok, :cached_input_price_per_mtok, :output_price_per_mtok],
+      [
+        :input_price_per_mtok,
+        :cached_input_price_per_mtok,
+        :output_price_per_mtok,
+        :cache_write_5m_price_per_mtok,
+        :cache_write_1h_price_per_mtok,
+        :cache_write_30m_price_per_mtok
+      ],
       pricing,
       fn key, merged ->
         case MapAccess.fetch(rates, key) do

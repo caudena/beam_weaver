@@ -3,9 +3,70 @@
 BeamWeaver includes a direct Anthropic Messages API provider under
 `BeamWeaver.Anthropic`.
 
-The Messages and token-counting contract was compared on September 23, 2026
-against Anthropic's [API reference](https://platform.claude.com/docs/en/api/http/messages)
-and [generated SDK types at `1926adb`](https://github.com/anthropics/anthropic-sdk-typescript/tree/1926adb4d292090975e6b5d19ebafe2274d2469e/src/resources).
+## Haiku 5.5 and Sonnet 5.5
+
+Use `anthropic:claude-haiku-5-5` or `anthropic:claude-sonnet-5-5`. Both profiles
+support a 1M-token context window, 128K output, text/image/PDF inputs, structured
+output with tools, parallel tool calls, streaming, and effort levels from
+`:low` through `:max`. Batch-only 300K output and its required beta are
+recorded as metadata; the Messages adapter retains the 128K limit.
+
+[Token prices](https://platform.claude.com/docs/en/about-claude/pricing) in USD
+per million tokens:
+
+| Token category | Haiku prompt <= 100K | Haiku prompt > 100K | Sonnet |
+| --- | ---: | ---: | ---: |
+| Standard input | $0.10 | $0.50 | $2.00 |
+| Standard output | $0.50 | $2.50 | $10.00 |
+| Cache read | $0.01 | $0.05 | $0.10 |
+| 5-minute cache write | $0.125 | $0.625 | $2.50 |
+| 1-hour cache write | $0.20 | $1.00 | $4.00 |
+| Batch input | $0.05 | $0.25 | $1.00 |
+| Batch output | $0.25 | $1.25 | $5.00 |
+
+Haiku's higher rates apply to the entire request above 100K prompt tokens,
+including output and cache categories. `UsageCost.calculate/3` selects standard
+rates from normalized total input tokens, including cache reads and writes.
+Batch rates are profile metadata; the cost calculator does not choose a
+processing tier. Sonnet has no long-prompt surcharge. Both have a 512-token
+cache minimum. US-only inference adds 10%. Sonnet cache reads fell from $0.20
+to $0.10 on October 7; dated estimates retain the earlier rate.
+
+Adaptive thinking is the default, at `:medium` effort for Haiku and `:high`
+for Sonnet. Haiku permits `thinking: %{type: :disabled}` through `:high` effort
+and accepts forced tool choice, which suppresses thinking for that response.
+Sonnet rejects disabled thinking and forced tools; use
+`thinking: %{type: :between_tools}` through `:high` to turn off up-front
+thinking while retaining progress updates between tools. At `:xhigh` and
+`:max`, use adaptive thinking on either model. Manual `budget_tokens` thinking
+is rejected before both generation and token counting.
+Per-message effort cannot change while Haiku thinking is disabled or Sonnet
+uses `between_tools`; adaptive thinking permits those changes. Prefix-binding
+controls likewise require adaptive thinking.
+
+Omit sampling controls. The new profiles accept only `temperature: 1` or
+`top_p: 0.99`, separately, and reject every `top_k` value. In particular,
+`top_p: 1` is invalid. Assistant prefills and legacy `computer_20*` declarations
+are rejected; use `Tools.computer_toolset/1`. Toolset member calls retain
+`toolset_name` for replay; provide that name on their tool-result blocks too.
+Haiku does not support server-side fallback or Priority Tier.
+Sonnet 5.5 rejects advisor tools configured with Opus 4.8, Opus 4.7, or Sonnet 5;
+use Opus 5.5 or Opus 5 as the advisor instead. For migration details, see
+[Haiku migration](https://platform.claude.com/docs/en/models/haiku-5-5/migration-guide)
+and [Sonnet migration](https://platform.claude.com/docs/en/models/sonnet-5-5/migration-guide).
+
+Thinking text defaults to omitted, so a signed thinking block may have an
+empty `thinking` string. Preserve the complete block when replaying it.
+Set `thinking: %{type: :adaptive, display: :summarized}` for summaries or
+`display: :updates` for progress updates; BeamWeaver infers the updates beta.
+Thinking signatures are bound to the conversation prefix and the producing
+account. Keep history append-only and replay through the producing or linked
+account. With adaptive thinking, use
+`block_binding: %{prefix_mismatch_behavior: :drop_block}` when intentionally
+editing history; BeamWeaver infers its beta header. See
+[thinking](https://platform.claude.com/docs/en/build-with-claude/thinking).
+The newer tokenizer produces roughly 30% more tokens for the same text than
+Haiku 4.5; recount through `ChatModel.count_tokens/3` with the new model ID.
 
 ## Implemented
 
@@ -34,7 +95,8 @@ and [generated SDK types at `1926adb`](https://github.com/anthropics/anthropic-s
   batches; signed thinking is assembled into one provider-faithful replay block.
 - The token counting endpoint is exposed through `ChatModel.count_tokens/3`.
 - Checked-in model profiles cover Claude Fable 5.1, Claude Mythos 5.1, Claude
-  Opus 5.5, Claude Opus 5, Claude Sonnet 5, Claude Fable 5, Claude Mythos 5, current Claude
+  Opus 5.5, Claude Sonnet 5.5, Claude Haiku 5.5, Claude Opus 5, Claude Sonnet 5,
+  Claude Fable 5, Claude Mythos 5, current Claude
   Opus 4.8/4.7/4.6/4.5/4.1, Claude Sonnet 4.6/4.5, and Claude Haiku 4.5
   models, with a permissive fallback for future `claude-*` models.
 - Deprecated or retired Claude IDs return tagged `:deprecated_model` errors

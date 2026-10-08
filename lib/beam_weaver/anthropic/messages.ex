@@ -444,7 +444,7 @@ defmodule BeamWeaver.Anthropic.Messages do
           "input" => Map.get(block, :args) || Map.get(block, :arguments) || Map.get(block, :input) || %{}
         }
         |> Options.reject_nil_values()
-        |> merge_passthrough(provider_block, ["caller", "cache_control"])
+        |> merge_passthrough(provider_block, ["caller", "toolset_name", "cache_control"])
 
       "server_tool_call" ->
         provider_block
@@ -736,7 +736,8 @@ defmodule BeamWeaver.Anthropic.Messages do
           id: block["id"],
           name: block["name"],
           args: block["input"] || %{},
-          extras: Map.take(block, ["caller"])
+          raw_provider_block: block,
+          extras: Map.take(block, ["caller", "toolset_name"])
         }
         |> Options.reject_nil_values()
 
