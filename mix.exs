@@ -33,7 +33,7 @@ defmodule BeamWeaver.MixProject do
       {:postgrex, "~> 0.20"},
       {:ecto_sqlite3, "~> 0.25.0", optional: true},
       {:req, "~> 0.7.2"},
-      {:finch, "~> 0.23.0"},
+      {:finch, "~> 0.24.0"},
       {:idna, "~> 7.1"},
       {:fastest_tiktoken, "~> 0.1.1"},
       {:telemetry, "~> 1.2"},

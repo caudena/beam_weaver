@@ -82,10 +82,12 @@ defmodule BeamWeaver.Anthropic.ChatModel.RequestBuilder do
          :ok <- validate_sampling_params(model, opts),
          :ok <- validate_thinking_params(model, opts),
          :ok <- validate_tool_compatibility(model, opts),
+         :ok <- validate_model_features(model, opts),
          :ok <- validate_fallback_credit_params(model, opts),
          {:ok, {system, formatted_messages}} <-
            Messages.format_messages(messages, message_format_opts(model)),
          :ok <- validate_final_turn(model, formatted_messages, opts),
+         :ok <- validate_per_turn_effort(model, formatted_messages, opts),
          {:ok, output_config} <- output_config(model, opts),
          :ok <- validate_compaction_params(model, opts, output_config) do
       model_kwargs = option(model, opts, :model_kwargs) || %{}
@@ -185,6 +187,7 @@ defmodule BeamWeaver.Anthropic.ChatModel.RequestBuilder do
          {:ok, {system, formatted_messages}} <-
            Messages.format_messages(messages, message_format_opts(model)),
          :ok <- validate_final_turn(model, formatted_messages, opts),
+         :ok <- validate_per_turn_effort(model, formatted_messages, opts),
          {:ok, output_config} <- output_config(model, opts),
          :ok <- validate_compaction_params(model, opts, output_config) do
       tools = tools(opts)
@@ -255,6 +258,7 @@ defmodule BeamWeaver.Anthropic.ChatModel.RequestBuilder do
           restricted_top_p_param(model, opts)
         ]
         |> Enum.reject(&is_nil/1)
+        |> reject_combined_sampling(model, opts)
 
       case unsupported do
         [] ->
@@ -277,7 +281,7 @@ defmodule BeamWeaver.Anthropic.ChatModel.RequestBuilder do
   defp validate_thinking_params(model, opts) do
     with :ok <- validate_thinking_shape(model, opts),
          :ok <- validate_thinking_mode(model, opts),
-         :ok <- validate_disabled_thinking_effort(model, opts) do
+         :ok <- validate_reduced_thinking_effort(model, opts) do
       validate_thinking_block_binding(model, opts)
     end
   end
@@ -301,8 +305,23 @@ defmodule BeamWeaver.Anthropic.ChatModel.RequestBuilder do
 
   defp validate_thinking_mode(model, opts) do
     thinking_type = thinking_type(option(model, opts, :thinking))
+    supported = profile_extra(model, :thinking_types)
 
     cond do
+      is_list(supported) and not is_nil(thinking_type) ->
+        if Enum.any?(supported, &(thinking_type == &1 or thinking_type == to_string(&1))) do
+          :ok
+        else
+          {:error,
+           Error.new(:unsupported_model_param, "model parameter is not supported by profile", %{
+             provider: :anthropic,
+             model: model.model,
+             params: [:thinking],
+             reason: "This Claude model supports thinking types: #{Enum.join(supported, ", ")}",
+             supported: supported
+           })}
+        end
+
       always_on_thinking_model?(model) and thinking_type in [:disabled, "disabled"] ->
         {:error,
          Error.new(:unsupported_model_param, "model parameter is not supported by profile", %{
@@ -329,18 +348,25 @@ defmodule BeamWeaver.Anthropic.ChatModel.RequestBuilder do
     end
   end
 
-  defp validate_disabled_thinking_effort(model, opts) do
+  defp validate_reduced_thinking_effort(model, opts) do
     thinking_type = thinking_type(option(model, opts, :thinking))
-    max_effort = profile_extra(model, :thinking_disabled_max_effort)
+
+    max_effort =
+      case thinking_type do
+        type when type in [:disabled, "disabled"] -> profile_extra(model, :thinking_disabled_max_effort)
+        type when type in [:between_tools, "between_tools"] -> profile_extra(model, :thinking_between_tools_max_effort)
+        _type -> nil
+      end
+
     effort = request_effort(model, opts)
 
-    if thinking_type in [:disabled, "disabled"] and effort_above?(effort, max_effort) do
+    if effort_above?(effort, max_effort) do
       {:error,
        Error.new(:unsupported_model_param, "model parameter is not supported by profile", %{
          provider: :anthropic,
          model: model.model,
          params: [:thinking, :effort],
-         reason: "Thinking can only be disabled at #{max_effort} effort or below"
+         reason: "Thinking type #{thinking_type} is only supported at #{max_effort} effort or below"
        })}
     else
       :ok
@@ -353,7 +379,9 @@ defmodule BeamWeaver.Anthropic.ChatModel.RequestBuilder do
         :ok
 
       binding when is_map(binding) ->
-        if thinking_binding_behavior(binding) in [:error, "error", :drop_block, "drop_block"] do
+        adaptive? = thinking_type(option(model, opts, :thinking)) in [:adaptive, "adaptive"]
+
+        if adaptive? and thinking_binding_behavior(binding) in [:error, "error", :drop_block, "drop_block"] do
           :ok
         else
           thinking_block_binding_error(model)
@@ -361,6 +389,30 @@ defmodule BeamWeaver.Anthropic.ChatModel.RequestBuilder do
 
       _binding ->
         thinking_block_binding_error(model)
+    end
+  end
+
+  defp validate_per_turn_effort(model, messages, opts) do
+    reduced? = thinking_type(option(model, opts, :thinking)) in [:disabled, "disabled", :between_tools, "between_tools"]
+    effort = request_effort(model, opts)
+
+    changed? =
+      Enum.any?(messages, fn message ->
+        case output_config_effort(message["output_config"]) do
+          nil -> false
+          per_turn -> to_string(per_turn) != to_string(effort)
+        end
+      end)
+
+    if reduced? and is_list(profile_extra(model, :thinking_types)) and changed? do
+      {:error,
+       Error.new(:unsupported_model_param, "Effort cannot change per turn with reduced thinking", %{
+         provider: :anthropic,
+         model: model.model,
+         params: [:thinking, :effort]
+       })}
+    else
+      :ok
     end
   end
 
@@ -376,8 +428,36 @@ defmodule BeamWeaver.Anthropic.ChatModel.RequestBuilder do
   end
 
   defp validate_tool_compatibility(model, opts) do
-    with :ok <- validate_tool_choice_compatibility(model, opts) do
+    with :ok <- validate_tool_choice_compatibility(model, opts),
+         :ok <- validate_advisor_compatibility(model, opts) do
       validate_server_tool_compatibility(model, opts)
+    end
+  end
+
+  defp validate_advisor_compatibility(model, opts) do
+    unsupported = profile_extra(model, :unsupported_advisor_models) || []
+
+    rejected =
+      opts
+      |> tools()
+      |> List.wrap()
+      |> Enum.filter(fn tool ->
+        is_binary(tool["type"]) and String.starts_with?(tool["type"], "advisor_") and
+          tool["model"] in unsupported
+      end)
+      |> Enum.map(& &1["model"])
+      |> Enum.uniq()
+
+    if rejected == [] do
+      :ok
+    else
+      {:error,
+       Error.new(:unsupported_feature, "advisor model is not supported by the executor", %{
+         provider: :anthropic,
+         model: model.model,
+         params: [:tools],
+         unsupported_advisor_models: rejected
+       })}
     end
   end
 
@@ -470,6 +550,34 @@ defmodule BeamWeaver.Anthropic.ChatModel.RequestBuilder do
     end
   end
 
+  defp validate_model_features(model, opts) do
+    unsupported =
+      [
+        if(
+          profile_extra(model, :server_side_fallbacks) == false and
+            option(model, opts, :fallbacks) not in [nil, []],
+          do: :fallbacks
+        ),
+        if(
+          profile_extra(model, :priority_tier) == false and
+            option(model, opts, :service_tier) in [:priority, "priority"],
+          do: :service_tier
+        )
+      ]
+      |> Enum.reject(&is_nil/1)
+
+    if unsupported == [] do
+      :ok
+    else
+      {:error,
+       Error.new(:unsupported_model_param, "model parameter is not supported by profile", %{
+         provider: :anthropic,
+         model: model.model,
+         params: unsupported
+       })}
+    end
+  end
+
   defp valid_fallback_credit_token?(nil), do: true
 
   defp valid_fallback_credit_token?(token) when is_binary(token),
@@ -537,7 +645,7 @@ defmodule BeamWeaver.Anthropic.ChatModel.RequestBuilder do
     supported = profile_extra(model, :tool_choice_modes)
     choice = Keyword.get(opts, :tool_choice)
 
-    if is_list(supported) and forced_tool_choice?(choice) do
+    if is_list(supported) and :any not in supported and forced_tool_choice?(choice) do
       {:error,
        Error.new(:unsupported_model_param, "model parameter is not supported by profile", %{
          provider: :anthropic,
@@ -578,7 +686,17 @@ defmodule BeamWeaver.Anthropic.ChatModel.RequestBuilder do
   end
 
   defp restricted_sampling_model?(model),
-    do: profile_extra(model, :sampling_controls) in [:restricted, "restricted"]
+    do: profile_extra(model, :sampling_controls) in [:restricted, "restricted", :default_only, "default_only"]
+
+  defp default_only_sampling_model?(model),
+    do: profile_extra(model, :sampling_controls) in [:default_only, "default_only"]
+
+  defp reject_combined_sampling(params, model, opts) do
+    if default_only_sampling_model?(model) and not is_nil(option(model, opts, :temperature)) and
+         not is_nil(option(model, opts, :top_p)),
+       do: Enum.uniq(params ++ [:temperature, :top_p]),
+       else: params
+  end
 
   defp adaptive_only_thinking_model?(model),
     do: profile_extra(model, :thinking_mode) in [:adaptive_only, "adaptive_only"]
@@ -642,9 +760,17 @@ defmodule BeamWeaver.Anthropic.ChatModel.RequestBuilder do
 
   defp restricted_top_p_param(model, opts) do
     case option(model, opts, :top_p) do
-      nil -> nil
-      value when is_number(value) and value >= 0.99 -> nil
-      _value -> :top_p
+      nil ->
+        nil
+
+      0.99 ->
+        nil
+
+      value when is_number(value) and value > 0.99 ->
+        if default_only_sampling_model?(model), do: :top_p, else: nil
+
+      _value ->
+        :top_p
     end
   end
 
@@ -672,7 +798,8 @@ defmodule BeamWeaver.Anthropic.ChatModel.RequestBuilder do
     parallel = Keyword.get(opts, :parallel_tool_calls, Map.get(model, :parallel_tool_calls))
     thinking = option(model, opts, :thinking)
 
-    if forced_tool_choice?(choice) and thinking_enabled?(thinking) do
+    if forced_tool_choice?(choice) and thinking_enabled?(thinking) and
+         profile_extra(model, :forced_tool_choice_with_thinking) != true do
       nil
     else
       Tools.tool_choice(choice, parallel_tool_calls: parallel)
@@ -753,6 +880,7 @@ defmodule BeamWeaver.Anthropic.ChatModel.RequestBuilder do
     |> maybe_add_beta(option(model, opts, :mcp_servers), "mcp-client-2025-11-20")
     |> maybe_add_beta(option(model, opts, :user_profile_id), "user-profiles-2026-08-18")
     |> maybe_add_beta(task_budget?(output_config), "task-budgets-2026-03-13")
+    |> maybe_add_beta(thinking_updates?(option(model, opts, :thinking)), "thinking-display-updates-2026-08-18")
     |> maybe_add_beta(
       thinking_block_binding(option(model, opts, :thinking)),
       "thinking-binding-controls-2026-08-01"
@@ -816,6 +944,8 @@ defmodule BeamWeaver.Anthropic.ChatModel.RequestBuilder do
 
   defp task_budget?(%{"task_budget" => task_budget}) when not is_nil(task_budget), do: true
   defp task_budget?(_output_config), do: false
+
+  defp thinking_updates?(thinking), do: MapAccess.get(thinking, :display) in [:updates, "updates"]
 
   defp tool_changes?(messages) do
     Enum.any?(messages, fn

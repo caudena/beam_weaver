@@ -1,5 +1,34 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Added `anthropic:claude-haiku-5-5` and `anthropic:claude-sonnet-5-5` profiles
+  with 1M-token context windows, 128K output limits, text/image/PDF input,
+  adaptive thinking, structured output, tools, streaming, and current cache
+  and batch pricing. Haiku defaults to `medium` effort and costs $0.10 input /
+  $0.50 output per million tokens for prompts up to 100K tokens; longer prompts
+  cost $0.50 / $2.50. Sonnet defaults to `high` and costs $2 / $10, with the
+  October 7 cache-read reduction to $0.10 per million tokens.
+
+### Changed
+
+- Sonnet 5.5 accepts `between_tools`
+  thinking through `high` effort and rejects disabled thinking and forced
+  tools. Haiku 5.5 accepts disabled thinking through `high` effort and preserves
+  forced tool choice with adaptive thinking. Both reject manual thinking
+  budgets, non-default sampling, assistant prefills, and legacy computer tools.
+  Reduced thinking rejects per-turn effort changes; Sonnet rejects advisor
+  pairings removed in 5.5.
+- Thinking `display: :updates` now infers its required beta header.
+
+### Fixed
+
+- Usage cost estimates select Haiku 5.5's higher prompt-length tier above 100K
+  total input tokens, including cache reads and writes, for every token category.
+- Anthropic toolset member calls retain `toolset_name` when decoded and replayed.
+
 ## 0.1.31 - 2026-09-30
 
 ### Added

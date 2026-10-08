@@ -155,7 +155,110 @@ defmodule BeamWeaver.Models.ProfileRegistry.Anthropic do
     }
   }
 
+  @claude_5_5_profile Map.merge(@claude_5_1_profile, %{
+                        context_limit_kind: :shared_context,
+                        max_context_tokens: 1_000_000,
+                        last_updated: "2026-10-08",
+                        temperature: false,
+                        extra: %{
+                          availability: :general_availability,
+                          batch_max_output_tokens: 300_000,
+                          batch_output_beta: "output-300k-2026-03-24",
+                          cost_currency: "USD",
+                          effort_levels: [:low, :medium, :high, :xhigh, :max],
+                          inference_geo_us_multiplier: 1.1,
+                          knowledge_cutoff: "2026-06",
+                          mid_conversation_system_messages: true,
+                          mid_conversation_tool_changes: true,
+                          prefilled_model_turns: false,
+                          pricing_last_checked: "2026-10-08",
+                          prompt_cache_min_tokens: 512,
+                          sampling_controls: :default_only,
+                          thinking_default: :adaptive,
+                          thinking_display_default: :omitted,
+                          thinking_mode: :adaptive_only,
+                          thinking_account_binding: true,
+                          thinking_prefix_binding: true,
+                          training_data_cutoff: "2026-06",
+                          unsupported_server_tools: [:legacy_computer]
+                        }
+                      })
+
   @profiles %{
+    {:anthropic, "claude-haiku-5-5"} =>
+      Profile.new(
+        Map.merge(@claude_5_5_profile, %{
+          id: "claude-haiku-5-5",
+          name: "Claude Haiku 5.5",
+          release_date: "2026-10-07",
+          extra:
+            Map.merge(@claude_5_5_profile.extra, %{
+              batch_input_price_per_mtok: 0.05,
+              batch_cached_input_price_per_mtok: 0.005,
+              batch_output_price_per_mtok: 0.25,
+              cache_read_price_per_mtok: 0.01,
+              cached_input_price_per_mtok: 0.01,
+              cache_write_5m_price_per_mtok: 0.125,
+              cache_write_1h_price_per_mtok: 0.20,
+              default_effort: :medium,
+              forced_tool_choice_with_thinking: true,
+              input_price_per_mtok: 0.10,
+              long_context_pricing: %{
+                threshold_tokens: 100_000,
+                input_price_per_mtok: 0.50,
+                output_price_per_mtok: 2.50,
+                cache_read_price_per_mtok: 0.05,
+                cached_input_price_per_mtok: 0.05,
+                cache_write_5m_price_per_mtok: 0.625,
+                cache_write_1h_price_per_mtok: 1.00,
+                batch_input_price_per_mtok: 0.25,
+                batch_cached_input_price_per_mtok: 0.025,
+                batch_output_price_per_mtok: 1.25
+              },
+              output_price_per_mtok: 0.50,
+              pricing_source_url: "https://platform.claude.com/docs/en/models/haiku-5-5/overview",
+              priority_tier: false,
+              retirement_not_before: "2027-10-07",
+              server_side_fallbacks: false,
+              thinking_disabled_max_effort: :high,
+              thinking_types: [:adaptive, :disabled],
+              tool_choice_modes: [:auto, :none, :any, :tool]
+            })
+        })
+      ),
+    {:anthropic, "claude-sonnet-5-5"} =>
+      Profile.new(
+        Map.merge(@claude_5_5_profile, %{
+          id: "claude-sonnet-5-5",
+          name: "Claude Sonnet 5.5",
+          release_date: "2026-09-28",
+          extra:
+            Map.merge(@claude_5_5_profile.extra, %{
+              batch_input_price_per_mtok: 1.00,
+              batch_cached_input_price_per_mtok: 0.05,
+              batch_output_price_per_mtok: 5.00,
+              cache_read_price_per_mtok: 0.10,
+              cached_input_price_per_mtok: 0.10,
+              cache_write_5m_price_per_mtok: 2.50,
+              cache_write_1h_price_per_mtok: 4.00,
+              compaction_on_demand: true,
+              default_effort: :high,
+              input_price_per_mtok: 2.00,
+              output_price_per_mtok: 10.00,
+              pricing_source_url: "https://platform.claude.com/docs/en/models/sonnet-5-5/overview",
+              pricing_history: [
+                %{effective_at: nil, cached_input_price_per_mtok: 0.20},
+                %{effective_at: "2026-10-07T00:00:00Z", cached_input_price_per_mtok: 0.10}
+              ],
+              retirement_not_before: "2027-09-28",
+              server_side_fallbacks: :beta,
+              unsupported_advisor_models: ["claude-opus-4-8", "claude-opus-4-7", "claude-sonnet-5"],
+              thinking_between_tools_max_effort: :high,
+              thinking_types: [:adaptive, :between_tools],
+              tool_choice_modes: [:auto, :none]
+            })
+        })
+      ),
     {:anthropic, "claude-opus-5-5"} =>
       Profile.new(
         Map.merge(@claude_5_1_profile, %{

@@ -146,8 +146,21 @@ support Responses. Moonshot chat supports
 Z.ai chat supports `zai:glm-5.3`, multimodal `zai:glm-5.3-flash`, and
 `zai:glm-5.2`.
 Anthropic includes `anthropic:claude-fable-5-1`,
-`anthropic:claude-mythos-5-1`, `anthropic:claude-opus-5-5`, `anthropic:claude-opus-5`, and
-`anthropic:claude-sonnet-5`. Fable 5.1 and Mythos 5.1 use always-on adaptive
+`anthropic:claude-mythos-5-1`, `anthropic:claude-opus-5-5`,
+`anthropic:claude-sonnet-5-5`, `anthropic:claude-haiku-5-5`,
+`anthropic:claude-opus-5`, and `anthropic:claude-sonnet-5`.
+Haiku 5.5 and Sonnet 5.5 have 1M-token context windows and 128K output limits,
+with text/image/PDF input, structured output, tools, and streaming. Haiku
+defaults to `:medium` effort; Sonnet defaults to `:high`. Sonnet uses
+`thinking: %{type: :between_tools}` to turn off up-front thinking through
+`:high` effort and rejects forced tool choice. Haiku supports disabled thinking
+through `:high` and forced tool choice even with adaptive thinking.
+Haiku's standard input/output prices are $0.10/$0.50 per million tokens through
+100K prompt tokens and $0.50/$2.50 above that boundary; `UsageCost.calculate/3`
+selects the tier from normalized total input, including cache reads and writes.
+Sonnet costs $2/$10 with $0.10 cache reads. See the
+[Anthropic guide](partners/anthropic.md) for pricing and request rules.
+Fable 5.1 and Mythos 5.1 use always-on adaptive
 thinking and accept only `:auto` or `:none` tool choice. Opus 5.5 uses the same
 request restrictions, with `:medium` default effort. Opus 5 uses adaptive
 thinking by default and supports effort from `:low` through `:max`; disabling
@@ -187,7 +200,7 @@ Recommended starting points:
 | Provider family | BeamWeaver model strings |
 | --- | --- |
 | OpenAI GPT | `openai:gpt-6-astra`, `openai:gpt-6.1-sol`, `openai:gpt-6-sol`, `openai:gpt-6-luna`, `openai:gpt-5.6-sol`, `openai:gpt-5.6-terra`, `openai:gpt-5.6-luna`, `openai:gpt-5.4-mini` |
-| Anthropic Claude | `anthropic:claude-fable-5-1`, `anthropic:claude-mythos-5-1`, `anthropic:claude-opus-5-5`, `anthropic:claude-opus-5`, `anthropic:claude-sonnet-5`, `anthropic:claude-sonnet-4-6`, `anthropic:claude-opus-*`, `anthropic:claude-haiku-*` |
+| Anthropic Claude | `anthropic:claude-fable-5-1`, `anthropic:claude-mythos-5-1`, `anthropic:claude-opus-5-5`, `anthropic:claude-sonnet-5-5`, `anthropic:claude-haiku-5-5`, `anthropic:claude-opus-5`, `anthropic:claude-sonnet-5`, `anthropic:claude-sonnet-4-6`, `anthropic:claude-opus-*`, `anthropic:claude-haiku-*` |
 | Google Gemini | `google:gemini-3.8-flash`, `google:gemini-3.7-flash`, `google:gemini-3.6-flash`, `google:gemini-3.5-flash`, `google:gemini-3.5-flash-lite`, `google:gemini-3.1-flash-lite`, explicit `google:gemini-*` profiles |
 | DeepSeek V4 | `deepseek:deepseek-v4-flash`, `deepseek:deepseek-v4-flash-vision-exp`, `deepseek:deepseek-v4-pro` |
 | Moonshot/Kimi | `moonshot:kimi-k3`, `moonshot:kimi-k2.7-code`, `moonshot:kimi-k2.7-code-highspeed`, `moonshot:kimi-k2.6`, `moonshot:kimi-k2.5` |
