@@ -1,7 +1,5 @@
 defmodule BeamWeaver.Models.ProfileRefresh do
-  @moduledoc """
-  Refreshes models.dev-style profile data into a BeamWeaver-native artifact.
-  """
+  @moduledoc false
 
   alias BeamWeaver.Core.Error
   alias BeamWeaver.JSON
@@ -193,7 +191,8 @@ defmodule BeamWeaver.Models.ProfileRefresh do
     |> Kernel.<>("\n")
   end
 
-  defp profile_json(profile) do
+  @doc false
+  def profile_json(profile) do
     profile
     |> Map.from_struct()
     |> normalize_json()

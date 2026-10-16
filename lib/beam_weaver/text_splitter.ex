@@ -3,8 +3,8 @@ defmodule BeamWeaver.TextSplitter do
   Text splitter facade using explicit Elixir structs.
 
   The facade keeps construction ergonomic while each splitter is a normal
-  behaviour-backed struct. This mirrors LangChain's splitter semantics without
-  copying Python annotations or global tokenizer settings.
+  behaviour-backed struct. Each splitter carries its own options, including its
+  tokenizer (see `from_tokenizer/2`); there are no global tokenizer settings.
   """
 
   alias BeamWeaver.TextSplitter.Documents
@@ -96,7 +96,14 @@ defmodule BeamWeaver.TextSplitter do
   """
   defdelegate stream_text(splitter, texts), to: Documents
 
-  @doc "Splits a collection of documents into chunked documents."
+  @doc """
+  Splits a collection of documents into chunked documents.
+
+  Chunks keep their document's metadata. The chunks of a document with an id
+  get ids made from it (`"refunds:0"`, `"refunds:1"`, ...) and the document's
+  id as `"parent_id"` in their metadata, which `BeamWeaver.Indexing.index/3`
+  uses as their source when they have no `"source"`.
+  """
   defdelegate split_documents(splitter, documents), to: Documents
 
   @doc "Transforms a document collection into split documents."
@@ -111,11 +118,28 @@ defmodule BeamWeaver.TextSplitter do
   defdelegate split_file(splitter, path, opts \\ []), to: Documents
 
   @doc """
-  Fetches one URL and lazily splits the response body as a single document.
+  Fetches one URL and lazily splits the response body as a single document,
+  with the URL as its `:source` metadata.
 
-  Tests and applications may pass `:fetcher` as a one-argument function
-  returning `{:ok, body}` or `{:error, reason}`. The default fetcher uses
-  Erlang's `:httpc` so no HTTP client dependency is required.
+  The URL must pass a `BeamWeaver.Transport.URLPolicy` first, so a URL from a
+  user or a model can't reach your internal network. By default only `https`
+  URLs to public addresses pass: private, loopback, link-local and cloud
+  metadata addresses are refused, also when a host name resolves to one. The
+  request connects to the address that passed the check, and each redirect
+  must pass the same policy. A refused URL returns
+  `{:error, %BeamWeaver.Core.Error{type: :unsafe_url}}`.
+
+  Options:
+
+    * `:url_policy` - policy options as a keyword list, such as
+      `allowed_hosts:` or `follow_redirects?: false` (redirects are followed
+      by default), or a policy struct, used as it is. Either way, host names
+      are resolved and checked.
+    * `:metadata` - metadata for the document; `:source` defaults to the URL.
+    * `:fetcher` - a one-argument function returning `{:ok, body}` or
+      `{:error, reason}`, used instead of the HTTP request, for example in
+      tests. It gets the URL only after the policy's checks that need no DNS
+      lookup, and it is responsible for its own connection.
   """
   defdelegate split_url(splitter, url, opts \\ []), to: Documents
 

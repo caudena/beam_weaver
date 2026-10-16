@@ -6,7 +6,7 @@ defmodule BeamWeaver.OpenAI.Streaming do
   alias BeamWeaver.OpenAI.Streaming.Lifecycle
   alias BeamWeaver.OpenAI.Streaming.Messages, as: StreamingMessages
   alias BeamWeaver.OpenAI.Streaming.Response
-  alias BeamWeaver.OpenAI.Streaming.SSE
+  alias BeamWeaver.Provider.SSE
 
   @doc """
   Reconstructs a Responses API JSON response from an SSE payload.

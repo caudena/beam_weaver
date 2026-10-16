@@ -16,7 +16,9 @@ defmodule BeamWeaver.Indexing.Cleanup do
     if cleanup in [nil, :none] do
       {:ok, result}
     else
-      with {:ok, stale_ids} <- stale_ids(manager, planned, namespace, cleanup, opts),
+      with {:ok, stale} <- stale_records(manager, planned, namespace, cleanup, opts),
+           failed = failed_sources(planned, result),
+           stale_ids = for(record <- stale, not MapSet.member?(failed, record.source_id), do: record.id),
            :ok <- maybe_delete_vectors(store, stale_ids, opts),
            :ok <- RecordManager.delete(manager, stale_ids, namespace: namespace) do
         {:ok, %{result | deleted: length(stale_ids), deleted_ids: stale_ids}}
@@ -24,16 +26,25 @@ defmodule BeamWeaver.Indexing.Cleanup do
     end
   end
 
-  defp stale_ids(manager, planned, namespace, :incremental, _opts) do
+  # A source whose new chunks failed to write keeps its old ones.
+  defp failed_sources(planned, result) do
+    failed_ids = MapSet.new(result.failed_ids)
+
+    planned.documents
+    |> Enum.filter(&MapSet.member?(failed_ids, &1.document.id))
+    |> MapSet.new(& &1.source_id)
+  end
+
+  defp stale_records(manager, planned, namespace, :incremental, _opts) do
     source_ids = planned.documents |> Enum.map(& &1.source_id) |> Enum.uniq()
-    stale_ids_for_sources(manager, namespace, source_ids, planned.current_ids)
+    stale_records_for_sources(manager, namespace, source_ids, planned.current_ids)
   end
 
-  defp stale_ids(manager, planned, namespace, {:scoped, source_ids}, _opts) do
-    stale_ids_for_sources(manager, namespace, List.wrap(source_ids), planned.current_ids)
+  defp stale_records(manager, planned, namespace, {:scoped, source_ids}, _opts) do
+    stale_records_for_sources(manager, namespace, List.wrap(source_ids), planned.current_ids)
   end
 
-  defp stale_ids(manager, planned, namespace, {:full, scope}, opts) do
+  defp stale_records(manager, planned, namespace, {:full, scope}, opts) do
     cond do
       is_nil(scope) and not Keyword.get(opts, :force?, false) ->
         {:error,
@@ -44,18 +55,15 @@ defmodule BeamWeaver.Indexing.Cleanup do
 
       is_nil(scope) ->
         with {:ok, records} <- RecordManager.list(manager, namespace: namespace) do
-          {:ok,
-           records
-           |> Enum.reject(&MapSet.member?(planned.current_ids, &1.id))
-           |> Enum.map(& &1.id)}
+          {:ok, Enum.reject(records, &MapSet.member?(planned.current_ids, &1.id))}
         end
 
       true ->
-        stale_ids_for_sources(manager, namespace, List.wrap(scope), planned.current_ids)
+        stale_records_for_sources(manager, namespace, List.wrap(scope), planned.current_ids)
     end
   end
 
-  defp stale_ids(_manager, _planned, _namespace, cleanup, _opts),
+  defp stale_records(_manager, _planned, _namespace, cleanup, _opts),
     do: {:error, Error.new(:invalid_index_cleanup, "unsupported cleanup mode", %{cleanup: cleanup})}
 
   defp normalize_cleanup(cleanup) when cleanup in [nil, :none, "none"], do: :none
@@ -63,15 +71,10 @@ defmodule BeamWeaver.Indexing.Cleanup do
   defp normalize_cleanup(cleanup) when cleanup in [:full, "full"], do: {:full, nil}
   defp normalize_cleanup(cleanup), do: cleanup
 
-  defp stale_ids_for_sources(manager, namespace, source_ids, current_ids) do
+  defp stale_records_for_sources(manager, namespace, source_ids, current_ids) do
     with {:ok, records} <-
            RecordManager.list(manager, namespace: namespace, source_ids: source_ids) do
-      stale =
-        records
-        |> Enum.reject(&MapSet.member?(current_ids, &1.id))
-        |> Enum.map(& &1.id)
-
-      {:ok, stale}
+      {:ok, Enum.reject(records, &MapSet.member?(current_ids, &1.id))}
     end
   end
 

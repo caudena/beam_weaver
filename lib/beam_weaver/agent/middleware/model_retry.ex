@@ -3,7 +3,7 @@ defmodule BeamWeaver.Agent.Middleware.ModelRetry do
   Retries model calls according to a shared `%BeamWeaver.RetryPolicy{}`.
   """
 
-  @behaviour BeamWeaver.Agent.Middleware
+  use BeamWeaver.Agent.Middleware
 
   alias BeamWeaver.Agent.Middleware.RetryRunner
   alias BeamWeaver.Core.Error
@@ -24,12 +24,13 @@ defmodule BeamWeaver.Agent.Middleware.ModelRetry do
   @impl true
   def name(_middleware), do: :model_retry
 
+  @impl true
   def wrap_model_call(%__MODULE__{} = middleware, request, handler) do
-    case RetryRunner.run(middleware.policy, fn -> handler.(request) end,
+    case RetryRunner.run_counting(middleware.policy, fn -> handler.(request) end,
            telemetry_prefix: [:beam_weaver, :agent, :model_retry]
          ) do
-      {:error, %Error{} = error} -> handle_failure(middleware, error)
-      other -> other
+      {{:error, %Error{} = error}, attempts} -> handle_failure(middleware, error, attempts)
+      {other, _attempts} -> other
     end
   end
 
@@ -38,15 +39,15 @@ defmodule BeamWeaver.Agent.Middleware.ModelRetry do
     RetryRunner.run(policy, fun, attempt: attempt, telemetry_prefix: telemetry_prefix)
   end
 
-  defp handle_failure(%__MODULE__{on_failure: :error}, %Error{} = error), do: {:error, error}
+  defp handle_failure(%__MODULE__{on_failure: :error}, %Error{} = error, _attempts), do: {:error, error}
 
-  defp handle_failure(%__MODULE__{on_failure: :continue, policy: policy}, %Error{} = error) do
-    Message.assistant(failure_message(error, policy.max_attempts),
+  defp handle_failure(%__MODULE__{on_failure: :continue}, %Error{} = error, attempts) do
+    Message.assistant(failure_message(error, attempts),
       metadata: %{status: "error", error_type: error.type}
     )
   end
 
-  defp handle_failure(%__MODULE__{on_failure: fun}, %Error{} = error) when is_function(fun, 1) do
+  defp handle_failure(%__MODULE__{on_failure: fun}, %Error{} = error, _attempts) when is_function(fun, 1) do
     Message.assistant(fun.(error), metadata: %{status: "error", error_type: error.type})
   end
 

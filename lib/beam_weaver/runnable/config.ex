@@ -1,10 +1,5 @@
 defmodule BeamWeaver.Runnable.Config do
-  @moduledoc """
-  Normalized runtime configuration for runnable execution.
-
-  This is BeamWeaver's Elixir-native equivalent of LangChain RunnableConfig.
-  It is plain data and is propagated through runnable composition.
-  """
+  @moduledoc false
 
   alias BeamWeaver.Core.ID
   alias BeamWeaver.Tracing.Options, as: TraceOptions
@@ -101,15 +96,6 @@ defmodule BeamWeaver.Runnable.Config do
       configurable: config.configurable,
       context: config.context
     )
-  end
-
-  @spec merge(keyword() | t(), keyword()) :: keyword()
-  def merge(opts, extra) do
-    opts
-    |> normalize()
-    |> Map.from_struct()
-    |> Map.merge(Map.new(extra))
-    |> Enum.into([])
   end
 
   @doc """

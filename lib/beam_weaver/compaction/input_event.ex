@@ -62,8 +62,7 @@ defmodule BeamWeaver.Compaction.InputEvent do
       unknown = Map.keys(attrs) -- @fields
 
       if unknown == [] do
-        {:ok, struct!(__MODULE__, attrs)}
-        |> then(fn {:ok, event} -> validate(event) end)
+        __MODULE__ |> struct!(attrs) |> validate()
       else
         {:error, Error.new(:invalid_compaction_event, "unknown event fields", %{fields: unknown})}
       end
@@ -71,7 +70,7 @@ defmodule BeamWeaver.Compaction.InputEvent do
       {:error, :duplicate_field} -> invalid("event has duplicate fields")
     end
   rescue
-    _error -> {:error, Error.new(:invalid_compaction_event, "required event fields are missing")}
+    ArgumentError -> {:error, Error.new(:invalid_compaction_event, "required event fields are missing")}
   end
 
   def new(_attrs), do: {:error, Error.new(:invalid_compaction_event, "event must be a map")}

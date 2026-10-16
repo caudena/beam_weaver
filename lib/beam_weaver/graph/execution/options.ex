@@ -1,21 +1,9 @@
 defmodule BeamWeaver.Graph.Execution.Options do
   @moduledoc false
 
-  alias BeamWeaver.Options
-
   @spec normalize_config(keyword() | map()) :: map()
   def normalize_config(config) when is_list(config), do: Map.new(config)
   def normalize_config(config) when is_map(config), do: config
-
-  @spec normalize_failure_policy(term()) :: :panic | :proceed
-  def normalize_failure_policy(policy) when policy in [:panic, :proceed], do: policy
-
-  def normalize_failure_policy(policy) when is_binary(policy) do
-    {:error, message} = Options.atom_enum_error("failure_policy", policy, [:panic, :proceed])
-    raise ArgumentError, message
-  end
-
-  def normalize_failure_policy(_policy), do: :panic
 
   @spec normalize_timeout(term()) :: non_neg_integer() | :infinity
   def normalize_timeout(:infinity), do: :infinity

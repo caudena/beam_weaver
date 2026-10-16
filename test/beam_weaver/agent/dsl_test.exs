@@ -2,7 +2,6 @@ defmodule BeamWeaver.Agent.DSLTest do
   use ExUnit.Case, async: true
 
   alias BeamWeaver.Agent
-  alias BeamWeaver.Agent.Server
   alias BeamWeaver.Core.ChatModel
   alias BeamWeaver.Core.Message
   alias BeamWeaver.Core.Tool
@@ -86,7 +85,8 @@ defmodule BeamWeaver.Agent.DSLTest do
   defmodule ExplicitToolTimeoutAgent do
     use BeamWeaver.Agent
 
-    model(__MODULE__.model(), timeout: 30_000, tool_timeout: 120_000)
+    model(__MODULE__.model(), timeout: 30_000)
+    tool_timeout(120_000)
     tools(CalculatorAgent.tools())
 
     def model, do: %ToolCallingModel{timeout: 1_000}
@@ -148,13 +148,6 @@ defmodule BeamWeaver.Agent.DSLTest do
              GreetingAgent.invoke(%{name: "Ada"}, context: %{greeting: "hi"})
   end
 
-  test "agent modules can be supervised and called through the server" do
-    pid = start_supervised!({GreetingAgent, []})
-
-    assert {:ok, %{messages: ["hello, Grace"], done: true}} =
-             Server.invoke(pid, %{name: "Grace"})
-  end
-
   test "duplicate DSL node names fail at compile time" do
     source = """
     defmodule DuplicateAgent do
@@ -212,7 +205,7 @@ defmodule BeamWeaver.Agent.DSLTest do
   test "model/tools DSL supports an explicit tool timeout" do
     tools_node = ExplicitToolTimeoutAgent.graph().nodes["tools"]
 
-    assert tools_node.timeout == 120_000
+    assert tools_node.timeout == :infinity
     assert tools_node.fun.timeout == 120_000
   end
 
@@ -293,7 +286,7 @@ defmodule BeamWeaver.Agent.DSLTest do
   end
 
   test "prompt_caching DSL passes provider-aware settings into middleware" do
-    spec =
+    {:ok, spec} =
       PromptCachingSettingsAgent.__beam_weaver_agent_spec__()
       |> BeamWeaver.Agent.Capabilities.apply()
 

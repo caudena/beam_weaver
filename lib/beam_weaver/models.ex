@@ -1,23 +1,55 @@
 defmodule BeamWeaver.Models do
   @moduledoc """
-  Model wrapper helpers.
+  Creates chat, embedding and decision models from `"provider:model"` strings,
+  and wraps models with tools, structured output, a cache or a rate limiter.
+
+  ```elixir
+  {:ok, model} = BeamWeaver.Models.init_chat_model("fake:chat", responses: ["Hello, Ada."])
+  {:ok, reply} = BeamWeaver.Core.ChatModel.invoke(model, [BeamWeaver.Core.Message.user("Hi, I'm Ada.")])
+  reply.content
+  #=> "Hello, Ada."
+  ```
+
+  The prefix picks the provider (`openai`, `anthropic`, `google`, `xai`,
+  `deepseek`, `moonshot`, `zai`, `typesafe`, or `fake` for tests) and the rest
+  is the provider's model id. Options such as `temperature:`, `max_tokens:` and
+  `timeout:` follow the id; API keys come from your application config. See
+  [Models](models.md) and [Providers](providers.md).
   """
 
   alias BeamWeaver.Core.Error
   alias BeamWeaver.Provider.Registry, as: ProviderRegistry
 
+  @doc "Wraps a chat model so that every call offers it `tools`."
   def bind_tools(model, tools, opts \\ []) do
     %BeamWeaver.Models.BoundTools{model: model, tools: tools, opts: opts}
   end
 
+  @doc """
+  Wraps a chat model so that every reply carries data matching `schema` in
+  `metadata.structured_response`. See
+  [Structured Output](structured_output.md#without-an-agent).
+  """
   def with_structured_output(model, schema, opts \\ []) do
     %BeamWeaver.Models.StructuredOutput{model: model, schema: schema, opts: opts}
   end
 
+  @doc """
+  Wraps a chat model so that a repeated request is answered from `cache`
+  (`BeamWeaver.Cache.ETS` or `BeamWeaver.Cache.Ecto`). Options such as `ttl:`
+  apply to every entry. See [Caching](caching.md).
+  """
   def cached(model, cache, opts \\ []) do
     %BeamWeaver.Models.Cached{model: model, cache: cache, opts: opts}
   end
 
+  @doc """
+  Wraps a model so that every call first takes tokens from a rate limiter.
+
+  Options: `:limiter` (a bucket from `BeamWeaver.RateLimiter.start_bucket/1`,
+  or its registered name), `:amount` (tokens per call, default 1), `:key` and
+  `:timeout`. See [Rate Limiting](rate_limiting.md).
+  """
   def with_rate_limiter(model, opts \\ []) do
     %BeamWeaver.Models.RateLimited{
       model: model,
@@ -85,7 +117,7 @@ defmodule BeamWeaver.Models do
     with {:ok, provider, model_id} <- parse_model_id(model, :chat),
          {:ok, module} <- ProviderRegistry.chat_provider(provider, Keyword.put(opts, :model, model_id)),
          {:ok, profile} <- fetch_profile(provider, model_id, opts) do
-      {:ok, build_model(module, model_id, opts, profile)}
+      build_model(provider, module, model_id, opts, profile)
     end
   end
 
@@ -121,7 +153,7 @@ defmodule BeamWeaver.Models do
     with {:ok, provider, model_id} <- parse_model_id(model, :embedding),
          {:ok, module} <- ProviderRegistry.embedding_provider(provider, opts),
          {:ok, profile} <- fetch_profile(provider, model_id, opts) do
-      {:ok, build_model(module, model_id, opts, profile)}
+      build_model(provider, module, model_id, opts, profile)
     end
   end
 
@@ -150,8 +182,9 @@ defmodule BeamWeaver.Models do
     with [provider, id] when provider != "" and id != "" <- String.split(model, ":", parts: 2),
          provider = ProviderRegistry.provider_atom(provider),
          {:ok, module} <- ProviderRegistry.decision_provider(provider, opts),
-         {:ok, profile} <- fetch_profile(provider, id, opts) do
-      {:ok, build_model(module, id, opts, profile)}
+         {:ok, profile} <- fetch_profile(provider, id, opts),
+         {:ok, model} <- build_model(provider, module, id, opts, profile) do
+      {:ok, model}
     else
       {:error, _} = error -> error
       _ -> {:error, Error.new(:invalid_model, "decision models require a provider: prefix", %{model: model})}
@@ -195,14 +228,14 @@ defmodule BeamWeaver.Models do
         {:error,
          Error.new(:invalid_model, "GLM model identifiers require the zai: prefix", %{
            model: model_id,
-           expected: "zai:glm-5.2"
+           expected: "zai:#{model_id}"
          })}
 
       ["deepseek-" <> _rest = model_id] when kind == :chat ->
         {:error,
          Error.new(:invalid_model, "DeepSeek model identifiers require the deepseek: prefix", %{
            model: model_id,
-           expected: "deepseek:deepseek-v4-flash"
+           expected: "deepseek:#{model_id}"
          })}
 
       [model_id] when model_id != "" ->
@@ -213,7 +246,11 @@ defmodule BeamWeaver.Models do
     end
   end
 
-  defp fetch_profile(provider, model_id, opts) do
+  # The profile a model gets from its options: `:profile`, a
+  # `:profile_registry`'s, or the provider's.
+  @doc false
+  @spec fetch_profile(atom(), String.t(), keyword()) :: {:ok, BeamWeaver.Models.Profile.t()} | {:error, Error.t()}
+  def fetch_profile(provider, model_id, opts) do
     cond do
       profile = Keyword.get(opts, :profile) ->
         {:ok, BeamWeaver.Models.Profile.new(profile)}
@@ -252,75 +289,174 @@ defmodule BeamWeaver.Models do
     {:error, Error.new(:invalid_profile_registry, "profile registry is invalid")}
   end
 
-  defp build_model(BeamWeaver.Models.FakeChatModel, _model_id, opts, profile) do
-    opts
-    |> Map.new()
-    |> Map.take([
-      :response,
-      :responses,
-      :parent,
-      :stream_chunks,
-      :stream_events,
-      :usage_metadata,
-      :tokenizer,
-      :param_policy,
-      :tool_calls,
-      :structured_response,
-      :error
-    ])
-    |> Map.put(:profile, profile)
-    |> then(&struct(BeamWeaver.Models.FakeChatModel, &1))
+  # A model takes its struct fields as options, plus the keys below. Anything
+  # else is an error, so a misspelled or foreign option is never dropped. Call
+  # options such as `tools:` belong to each call; `init_options/2` separates
+  # them from an agent's model options.
+  @api_models [
+    BeamWeaver.OpenAI.ChatModel,
+    BeamWeaver.OpenAI.ChatCompletionsModel,
+    BeamWeaver.XAI.ChatModel,
+    BeamWeaver.XAI.ChatCompletionsModel,
+    BeamWeaver.DeepSeek.ChatModel,
+    BeamWeaver.DeepSeek.ResponsesModel
+  ]
+
+  @base_url_models [
+    BeamWeaver.OpenAI.ChatModel,
+    BeamWeaver.OpenAI.ChatCompletionsModel,
+    BeamWeaver.OpenAI.EmbeddingModel,
+    BeamWeaver.Anthropic.ChatModel,
+    BeamWeaver.XAI.ChatModel,
+    BeamWeaver.XAI.ChatCompletionsModel,
+    BeamWeaver.XAI.EmbeddingModel,
+    BeamWeaver.Moonshot.ChatModel,
+    BeamWeaver.ZAI.ChatModel
+  ]
+
+  @other_builtin_models [
+    BeamWeaver.Anthropic.ChatModel,
+    BeamWeaver.Google.ChatModel,
+    BeamWeaver.Moonshot.ChatModel,
+    BeamWeaver.ZAI.ChatModel,
+    BeamWeaver.OpenAI.EmbeddingModel,
+    BeamWeaver.XAI.EmbeddingModel,
+    BeamWeaver.TypeSafe.DecisionModel,
+    BeamWeaver.Models.FakeChatModel,
+    BeamWeaver.Models.FakeEmbeddingModel
+  ]
+
+  @builtin_models @api_models ++ @other_builtin_models
+
+  # The fake chat model stands in for any provider in tests, so it takes (and
+  # has no use for) the connection options every provider takes.
+  @provider_connection_options [:api_key, :base_url, :endpoint, :timeout, :transport, :transport_opts, :extra_body]
+
+  # The output cap and stop sequences have one name per provider; the other
+  # common names are accepted as aliases.
+  @aliases %{
+    BeamWeaver.Anthropic.ChatModel => [
+      max_output_tokens: :max_tokens,
+      max_completion_tokens: :max_tokens,
+      stop: :stop_sequences
+    ],
+    BeamWeaver.Google.ChatModel => [
+      max_tokens: :max_output_tokens,
+      max_completion_tokens: :max_output_tokens,
+      stop: :stop_sequences
+    ]
+  }
+
+  # An agent's `model` options configure the model and are also sent with
+  # every call. Returns the ones `init_chat_model/2` takes: the call options
+  # among them, such as `tools:` or `tool_choice:`, are left to the calls, and
+  # `tool_timeout:` to the agent's tool step. Unknown options stay, so
+  # `init_chat_model/2` reports them.
+  @doc false
+  @spec init_options(String.t() | atom() | term(), keyword()) :: keyword()
+  def init_options(model, opts) when is_atom(model) and not is_nil(model),
+    do: init_options(Atom.to_string(model), opts)
+
+  def init_options(model, opts) when is_binary(model) and is_list(opts) do
+    opts = Keyword.delete(opts, :tool_timeout)
+
+    with {:ok, provider, model_id} <- parse_model_id(model, :chat),
+         {:ok, module} when module in @builtin_models <-
+           ProviderRegistry.chat_provider(provider, Keyword.put(opts, :model, model_id)) do
+      accepted = accepted_options(module)
+      Enum.reject(opts, fn {key, _value} -> call_option?(key) and key not in accepted end)
+    else
+      _other -> opts
+    end
   end
 
-  defp build_model(BeamWeaver.Models.FakeEmbeddingModel, _model_id, opts, profile) do
-    opts
-    |> Map.new()
-    |> Map.take([:dimensions, :tokenizer, :param_policy, :error, :parent])
-    |> Map.put(:profile, profile)
-    |> then(&struct(BeamWeaver.Models.FakeEmbeddingModel, &1))
+  def init_options(_model, opts), do: opts
+
+  defp build_model(provider, module, model_id, opts, profile) do
+    with {:ok, opts} <- validate_options(provider, module, model_id, opts, profile) do
+      attrs =
+        opts
+        |> Keyword.drop([:model, :api, :profile_registry])
+        |> rename_aliases(module)
+        |> Keyword.put(:model, model_id)
+        |> Keyword.put(:profile, profile)
+        |> put_openai_defaults(module, model_id)
+
+      {:ok, configured_model(attrs, module)}
+    end
   end
 
-  defp build_model(module, model_id, opts, profile) do
-    attrs =
-      opts
-      |> Map.new()
-      |> Map.take(struct_keys(module))
-      |> Map.put(:model, model_id)
-      |> Map.put(:profile, profile)
-      |> put_openai_defaults(module, model_id)
+  defp validate_options(provider, module, model_id, opts, profile) when module in @builtin_models do
+    accepted = accepted_options(module)
+
+    case opts |> Keyword.keys() |> Enum.uniq() |> Enum.reject(&(&1 in accepted)) do
+      [] -> {:ok, opts}
+      unknown -> {:error, unsupported_options_error(provider, module, model_id, unknown, profile)}
+    end
+  end
+
+  # A model module of your own receives every option.
+  defp validate_options(_provider, _module, _model_id, opts, _profile), do: {:ok, opts}
+
+  defp accepted_options(module) do
+    struct_keys(module) ++
+      [:model, :profile_registry] ++
+      Keyword.keys(Map.get(@aliases, module, [])) ++
+      if(:streaming in struct_keys(module), do: [:stream], else: []) ++
+      if(module in @api_models, do: [:api], else: []) ++
+      if(module in @base_url_models, do: [:base_url], else: []) ++
+      if(module == BeamWeaver.TypeSafe.DecisionModel,
+        do: [:api_key, :base_url, :timeout, :transport, :transport_opts, :default_headers],
+        else: []
+      ) ++
+      if(module == BeamWeaver.Models.FakeChatModel, do: @provider_connection_options, else: [])
+  end
+
+  # Options the model takes on each call, such as `tools:`, get a hint.
+  defp unsupported_options_error(provider, module, model_id, keys, profile) do
+    call_options = Enum.filter(keys, &(call_option?(&1) and call_option_supported?(profile, &1)))
+
+    hint =
+      if call_options == [],
+        do: "",
+        else:
+          "; pass #{Enum.map_join(call_options, ", ", &inspect/1)} when you call the model" <>
+            if(:tools in call_options, do: ", or bind tools with BeamWeaver.Models.bind_tools/3", else: "")
+
+    Error.new(
+      :unsupported_model_param,
+      "#{inspect(module)} does not take #{Enum.map_join(keys, ", ", &inspect/1)} when it is created" <> hint,
+      %{provider: provider, model: model_id, params: keys}
+    )
+  end
+
+  defp call_option_supported?(profile, key),
+    do: BeamWeaver.Models.ParamPolicy.validate(profile, %{key => true}, :strict) == :ok
+
+  defp call_option?(key), do: BeamWeaver.Models.ParamPolicy.standard_param?(key)
+
+  defp rename_aliases(opts, module) do
+    opts = if :streaming in struct_keys(module), do: rename(opts, :stream, :streaming), else: opts
 
     module
-    |> provider_constructor_opts(opts, attrs)
-    |> configured_model(module)
+    |> then(&Map.get(@aliases, &1, []))
+    |> Enum.reduce(opts, fn {from, to}, acc -> rename(acc, from, to) end)
   end
 
-  defp provider_constructor_opts(module, opts, attrs) do
-    opts
-    |> Keyword.take(provider_option_keys(module))
-    |> Keyword.merge(Map.to_list(attrs))
+  # An alias never overrides the provider's own name for the option.
+  defp rename(opts, from, to) do
+    case Keyword.pop(opts, from) do
+      {nil, opts} -> opts
+      {value, opts} -> Keyword.put_new(opts, to, value)
+    end
   end
-
-  defp provider_option_keys(module)
-       when module in [
-              BeamWeaver.Google.ChatModel,
-              BeamWeaver.DeepSeek.ChatModel,
-              BeamWeaver.DeepSeek.ResponsesModel,
-              BeamWeaver.Moonshot.ChatModel,
-              BeamWeaver.ZAI.ChatModel,
-              BeamWeaver.XAI.ChatModel,
-              BeamWeaver.XAI.ChatCompletionsModel
-            ],
-       do: [:base_url]
-
-  defp provider_option_keys(BeamWeaver.TypeSafe.DecisionModel),
-    do: [:api_key, :base_url, :timeout, :transport, :transport_opts, :default_headers]
-
-  defp provider_option_keys(_module), do: []
 
   defp configured_model(opts, BeamWeaver.OpenAI.ChatModel), do: BeamWeaver.OpenAI.chat_model(opts)
 
   defp configured_model(opts, BeamWeaver.OpenAI.ChatCompletionsModel),
     do: BeamWeaver.OpenAI.chat_completions_model(opts)
+
+  defp configured_model(opts, BeamWeaver.OpenAI.EmbeddingModel), do: BeamWeaver.OpenAI.embedding_model(opts)
 
   defp configured_model(opts, BeamWeaver.Anthropic.ChatModel), do: BeamWeaver.Anthropic.chat_model(opts)
 
@@ -341,6 +477,8 @@ defmodule BeamWeaver.Models do
   defp configured_model(opts, BeamWeaver.XAI.ChatCompletionsModel),
     do: BeamWeaver.XAI.chat_completions_model(opts)
 
+  defp configured_model(opts, BeamWeaver.XAI.EmbeddingModel), do: BeamWeaver.XAI.embedding_model(opts)
+
   defp configured_model(opts, module) do
     if function_exported?(module, :new, 1) do
       module.new(opts)
@@ -351,10 +489,10 @@ defmodule BeamWeaver.Models do
 
   defp put_openai_defaults(attrs, module, model_id)
        when module in [BeamWeaver.OpenAI.ChatModel, BeamWeaver.OpenAI.ChatCompletionsModel] do
-    Map.put(
+    Keyword.put(
       attrs,
       :temperature,
-      BeamWeaver.OpenAI.ModelPolicy.default_temperature(model_id, Map.get(attrs, :temperature))
+      BeamWeaver.OpenAI.ModelPolicy.default_temperature(model_id, Keyword.get(attrs, :temperature))
     )
   end
 

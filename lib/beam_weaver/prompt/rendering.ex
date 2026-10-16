@@ -1,7 +1,7 @@
 defmodule BeamWeaver.Prompt.Rendering do
   @moduledoc false
 
-  alias BeamWeaver.Core.{Error, Message, MessageLike, Messages}
+  alias BeamWeaver.Core.{Error, Message}
   alias BeamWeaver.Result
 
   alias BeamWeaver.Prompt.{
@@ -18,7 +18,7 @@ defmodule BeamWeaver.Prompt.Rendering do
   def render_message_part(%Message{} = message, _vars, _opts), do: {:ok, message}
 
   def render_message_part(%ImageTemplate{} = template, vars, opts) do
-    vars = Map.merge(template.partials, vars)
+    vars = Partials.merge(template.partials, vars)
 
     with {:ok, url} <-
            Template.render(
@@ -38,7 +38,7 @@ defmodule BeamWeaver.Prompt.Rendering do
   end
 
   def render_message_part(%DictTemplate{} = template, vars, opts) do
-    vars = Map.merge(template.partials, vars)
+    vars = Partials.merge(template.partials, vars)
 
     Template.render_dict(
       template.template,
@@ -47,8 +47,10 @@ defmodule BeamWeaver.Prompt.Rendering do
     )
   end
 
+  # The role reads as in `Message.from/1`: "developer" becomes a system message,
+  # and a role it doesn't know is an `:invalid_role` error.
   def render_message_part(%MessageTemplate{} = template, vars, opts) do
-    vars = Map.merge(template.partials, vars)
+    vars = Partials.merge(template.partials, vars)
 
     with {:ok, content} <-
            Template.render(
@@ -56,7 +58,7 @@ defmodule BeamWeaver.Prompt.Rendering do
              vars,
              Keyword.put(opts, :template_format, template.template_format)
            ) do
-      {:ok, message_for_role(template.role, content)}
+      Message.from({template.role, content})
     end
   end
 
@@ -90,7 +92,7 @@ defmodule BeamWeaver.Prompt.Rendering do
   end
 
   def render_message_part(part, _vars, _opts) do
-    case MessageLike.to_message(part) do
+    case Message.from(part) do
       {:ok, %Message{} = message} -> {:ok, message}
       {:error, %Error{} = error} -> {:error, error}
     end
@@ -108,7 +110,7 @@ defmodule BeamWeaver.Prompt.Rendering do
 
   defp coerce_messages(messages) do
     Result.traverse(messages, fn item ->
-      case MessageLike.to_message(item) do
+      case Message.from(item) do
         {:ok, message} ->
           {:ok, message}
 
@@ -132,24 +134,4 @@ defmodule BeamWeaver.Prompt.Rendering do
     do: Enum.take(messages, -max_length)
 
   defp maybe_take_tail(messages, _max_length), do: messages
-
-  defp role("system"), do: :system
-  defp role("user"), do: :user
-  defp role("human"), do: :user
-  defp role("assistant"), do: :assistant
-  defp role("ai"), do: :assistant
-  defp role("tool"), do: :tool
-  defp role(role), do: role
-
-  defp message_for_role(role, content) do
-    case role(role) do
-      known when known in [:system, :user, :assistant, :tool] ->
-        Message.new!(known, content)
-
-      generic ->
-        generic
-        |> Messages.chat(content)
-        |> Messages.to_message()
-    end
-  end
 end

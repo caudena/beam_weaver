@@ -3,9 +3,8 @@ defmodule BeamWeaver.ExampleSelector do
   Example selectors for prompts and evaluation examples.
   """
 
-  alias BeamWeaver.Core.Async
   alias BeamWeaver.Core.Document
-  alias BeamWeaver.ExampleLike
+  alias BeamWeaver.Core.Error
   alias BeamWeaver.Retriever
   alias BeamWeaver.VectorStore
 
@@ -31,10 +30,6 @@ defmodule BeamWeaver.ExampleSelector do
 
   def select(selector, input, opts \\ []), do: selector.__struct__.select(selector, input, opts)
 
-  def async_select(selector, input, opts \\ []) do
-    Async.run_call(opts, &select(selector, input, &1))
-  end
-
   def add_example(selector, example, opts \\ []) do
     if function_exported?(selector.__struct__, :add_example, 3) do
       selector.__struct__.add_example(selector, example, opts)
@@ -45,10 +40,6 @@ defmodule BeamWeaver.ExampleSelector do
          "example selector cannot add examples"
        )}
     end
-  end
-
-  def async_add_example(selector, example, opts \\ []) do
-    Async.run_call(opts, &add_example(selector, example, &1))
   end
 
   def semantic_similarity(examples, embedding, opts \\ []) do
@@ -84,10 +75,6 @@ defmodule BeamWeaver.ExampleSelector do
     end
   end
 
-  def async_from_examples(examples, embedding, opts \\ []) do
-    Async.run_call(opts, &from_examples(examples, embedding, &1))
-  end
-
   def sorted_values(values) when is_map(values) do
     values
     |> Map.keys()
@@ -117,7 +104,7 @@ defmodule BeamWeaver.ExampleSelector do
     examples
     |> List.wrap()
     |> Enum.reduce_while({:ok, []}, fn example, {:ok, acc} ->
-      case ExampleLike.to_example(example) do
+      case to_example(example) do
         {:ok, normalized} -> {:cont, {:ok, [normalized | acc]}}
         {:error, error} -> {:halt, {:error, error}}
       end
@@ -127,6 +114,10 @@ defmodule BeamWeaver.ExampleSelector do
       other -> other
     end
   end
+
+  defp to_example(%Document{} = document), do: {:ok, Map.put(document.metadata, :content, document.content)}
+  defp to_example(example) when is_map(example) and not is_struct(example), do: {:ok, example}
+  defp to_example(_value), do: {:error, Error.new(:invalid_example_like, "expected an example map")}
 
   defmodule Length do
     @moduledoc false

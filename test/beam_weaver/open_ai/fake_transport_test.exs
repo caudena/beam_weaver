@@ -102,11 +102,11 @@ defmodule BeamWeaver.OpenAI.FakeTransportTest do
     }
 
     assert {:error, error} = ChatModel.invoke(model, [Message.user("hello")])
-    assert error.type == :transport_error
-    assert error.details.reason =~ "fake_transport_mismatch"
-    refute error.details.reason =~ "sk-secret-test"
-    refute error.details.reason =~ "sk-leaked"
-    assert error.details.reason =~ BeamWeaver.Transport.Redactor.redacted()
+    assert error.type == :fake_transport_mismatch
+    details = inspect(error.details)
+    refute details =~ "sk-secret-test"
+    refute details =~ "sk-leaked"
+    assert details =~ BeamWeaver.Transport.Redactor.redacted()
   end
 
   test "fake transport supports ordered expectations for repeated calls" do
@@ -181,10 +181,10 @@ defmodule BeamWeaver.OpenAI.FakeTransportTest do
     }
 
     assert {:error, error} = ChatModel.invoke(model, [Message.user("hello")])
-    assert error.type == :transport_error
-    assert error.details.reason =~ "required_but_missing"
-    assert error.details.reason =~ "input"
-    refute error.details.reason =~ "sk-secret-test"
+    assert error.type == :fake_transport_mismatch
+    assert error.details.json_diff.missing_keys == ["required_but_missing"]
+    assert "input" in error.details.json_diff.extra_keys
+    refute inspect(error.details) =~ "sk-secret-test"
   end
 
   test "strict profile validation fails before fake transport is called" do

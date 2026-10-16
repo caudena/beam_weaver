@@ -1,7 +1,5 @@
 defmodule BeamWeaver.Graph.Channels.NamedBarrierValue do
-  @moduledoc """
-  Channel that becomes available after all configured names are seen.
-  """
+  @moduledoc false
 
   use BeamWeaver.Graph.Channel
 
@@ -60,9 +58,7 @@ defmodule BeamWeaver.Graph.Channels.NamedBarrierValue do
 end
 
 defmodule BeamWeaver.Graph.Channels.NamedBarrierValueAfterFinish do
-  @moduledoc """
-  Barrier channel that becomes available only after all names are seen and `finish/1` runs.
-  """
+  @moduledoc false
 
   use BeamWeaver.Graph.Channel
 

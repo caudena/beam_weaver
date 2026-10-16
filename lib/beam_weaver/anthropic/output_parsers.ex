@@ -1,7 +1,5 @@
 defmodule BeamWeaver.Anthropic.OutputParsers do
-  @moduledoc """
-  Anthropic output parsing helpers.
-  """
+  @moduledoc false
 
   @doc """
   Extracts tool calls from Anthropic `tool_use` content blocks.

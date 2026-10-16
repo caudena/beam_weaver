@@ -1,9 +1,28 @@
 defmodule BeamWeaver.Agent.Middleware.ToolCallLimit do
   @moduledoc """
-  Tracks tool-call counts and satisfies over-limit calls with tagged messages.
+  Caps the tool calls of a thread, of a run, or both.
+
+  A call over the limit doesn't run: it gets a tool message that tells the
+  model to stop calling the tool.
+
+  Options:
+
+    * `:tool_name` - count only the calls of this tool; every tool when left
+      out. Add one `ToolCallLimit` per tool you want to cap.
+    * `:thread_limit` - calls allowed on a thread, across `invoke/2` calls.
+      The count is saved with the thread, so it carries over only when the
+      agent runs with a checkpointer; without one, each call is a new thread.
+    * `:run_limit` - calls allowed in one `invoke/2` call. It can't exceed
+      `:thread_limit`.
+    * `:exit_behavior` - `:continue` (the default) refuses the extra calls and
+      lets the model go on; `:end` ends the run; `:error` fails it with a
+      `:tool_call_limit_exceeded` error.
+    * `:message` - replaces the text of the refused call's tool message.
+
+  Neither limit has a default; set at least one.
   """
 
-  @behaviour BeamWeaver.Agent.Middleware
+  use BeamWeaver.Agent.Middleware
 
   alias BeamWeaver.Agent.State
   alias BeamWeaver.Core.Error
@@ -12,7 +31,7 @@ defmodule BeamWeaver.Agent.Middleware.ToolCallLimit do
   alias BeamWeaver.Options
 
   defstruct tool_name: nil,
-            thread_limit: 10,
+            thread_limit: nil,
             run_limit: nil,
             exit_behavior: :continue,
             message: "Tool call limit exceeded"
@@ -20,7 +39,7 @@ defmodule BeamWeaver.Agent.Middleware.ToolCallLimit do
   def new(opts \\ []) do
     %__MODULE__{
       tool_name: Keyword.get(opts, :tool_name),
-      thread_limit: Keyword.get(opts, :thread_limit, Keyword.get(opts, :max_calls, 10)),
+      thread_limit: Keyword.get(opts, :thread_limit, Keyword.get(opts, :max_calls)),
       run_limit: Keyword.get(opts, :run_limit),
       exit_behavior: opts |> Keyword.get(:exit_behavior, :continue) |> normalize_exit_behavior(),
       message: Keyword.get(opts, :message, "Tool call limit exceeded")
@@ -35,15 +54,12 @@ defmodule BeamWeaver.Agent.Middleware.ToolCallLimit do
   @impl true
   def state_schema(_middleware) do
     %{
-      thread_tool_call_count: Graph.private_channel(BeamWeaver.Graph.Channels.LastValue),
+      thread_tool_call_count: Graph.private_channel(BeamWeaver.Graph.Channels.LastValue, checkpoint: true),
       run_tool_call_count: Graph.private_channel(BeamWeaver.Graph.Channels.UntrackedValue)
     }
   end
 
   @impl true
-  def can_jump_to(_middleware, :after_model), do: [:end]
-  def can_jump_to(_middleware, _hook), do: []
-
   def after_model(%__MODULE__{} = middleware, state, _runtime) do
     messages = State.messages(state)
 

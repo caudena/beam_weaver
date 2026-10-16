@@ -36,7 +36,7 @@ defmodule BeamWeaver.ConfigTest do
 
     assert_no_forbidden_refs(root, ~r/System\.(get_env|put_env|delete_env)/, [
       "lib/beam_weaver/diagnostics.ex",
-      "lib/beam_weaver/filesystem/local_shell.ex"
+      "lib/beam_weaver/tools/shell/command_runner.ex"
     ])
 
     assert_no_forbidden_refs(root, ~r/Application\.get_env/, [

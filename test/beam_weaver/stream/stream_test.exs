@@ -93,14 +93,14 @@ defmodule BeamWeaver.StreamTest do
            end}
         ],
         max_buffer: 8,
-        cancel_timeout: 100
+        cancel_timeout: 5_000
       )
 
     assert %Envelope{event: %Events.Token{text: "first"}} =
              Enum.find(stream, &match?(%Envelope{event: %Events.Token{}}, &1))
 
     assert_received :producer_started
-    assert_receive :producer_cancelled, 500
+    assert_receive :producer_cancelled
     refute_received :producer_not_cancelled
   end
 
@@ -135,14 +135,10 @@ defmodule BeamWeaver.StreamTest do
     stream =
       BeamWeaver.Stream.Mux.stream(
         [
-          {:sink, :quiet,
-           fn _sink ->
-             Process.sleep(80)
-             :ok
-           end}
+          {:sink, :quiet, fn _sink -> Process.sleep(:infinity) end}
         ],
         heartbeat: [interval_ms: 10, payload: %{source: :test}],
-        timeout: 50
+        timeout: 5_000
       )
 
     assert %Envelope{event: %Events.Debug{payload: %{type: :heartbeat, source: :test}}} =

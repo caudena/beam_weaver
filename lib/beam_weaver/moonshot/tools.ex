@@ -4,7 +4,7 @@ defmodule BeamWeaver.Moonshot.Tools do
   """
 
   alias BeamWeaver.Core.Message
-  alias BeamWeaver.Moonshot.Error
+  alias BeamWeaver.Core.Error
   alias BeamWeaver.OpenAI.ChatCompletions
   alias BeamWeaver.OpenAI.ToolCalling
 
@@ -39,21 +39,37 @@ defmodule BeamWeaver.Moonshot.Tools do
   @spec to_chat_tools([term()]) :: [map()]
   def to_chat_tools(tools) when is_list(tools), do: Enum.map(tools, &to_chat_tool/1)
 
-  @doc "Converts one tool to a Moonshot Chat Completions declaration."
+  @doc """
+  Converts one tool to a Moonshot Chat Completions declaration.
+
+  Raises `ArgumentError` for a tool Kimi can't take, such as a Responses API
+  built-in tool.
+  """
   @spec to_chat_tool(term()) :: map()
-  def to_chat_tool(%{__struct__: _module} = tool), do: ChatCompletions.Messages.tool_to_openai(tool)
-
-  def to_chat_tool(tool) when is_map(tool) do
-    tool = BeamWeaver.MapShape.stringify_keys(tool)
-
-    if builtin_tool?(tool) do
-      tool
-    else
-      ChatCompletions.Messages.tool_to_openai(tool)
+  def to_chat_tool(tool) do
+    case render_chat_tool(tool) do
+      {:ok, rendered} -> rendered
+      {:error, error} -> raise ArgumentError, error.message
     end
   end
 
-  def to_chat_tool(tool), do: ChatCompletions.Messages.tool_to_openai(tool)
+  # Like `to_chat_tools/1`, with an `:unsupported_feature` error instead of a
+  # raise for a tool that isn't a function or Kimi built-in.
+  @doc false
+  @spec render_chat_tools([term()]) :: {:ok, [map()]} | {:error, Error.t()}
+  def render_chat_tools(tools) when is_list(tools), do: BeamWeaver.Result.traverse(tools, &render_chat_tool/1)
+
+  defp render_chat_tool(tool) when is_map(tool) and not is_struct(tool) do
+    tool = BeamWeaver.MapShape.stringify_keys(tool)
+    if builtin_tool?(tool), do: {:ok, tool}, else: render_function_tool(tool)
+  end
+
+  defp render_chat_tool(tool), do: render_function_tool(tool)
+
+  defp render_function_tool(tool) do
+    with {:error, error} <- ChatCompletions.Messages.Request.render_tool(tool),
+         do: {:error, %{error | details: Map.put(error.details, :provider, :moonshot)}}
+  end
 
   @doc false
   @spec validate_chat_tools([map()]) :: :ok | {:error, Error.t()}

@@ -1,7 +1,7 @@
 defmodule BeamWeaver.Agent.Middleware.Skills do
   @moduledoc "Progressive-disclosure skill prompt middleware for `SKILL.md` files."
 
-  @behaviour BeamWeaver.Agent.Middleware
+  use BeamWeaver.Agent.Middleware
 
   alias BeamWeaver.Agent.ModelRequest
   alias BeamWeaver.Filesystem
@@ -9,8 +9,7 @@ defmodule BeamWeaver.Agent.Middleware.Skills do
   alias BeamWeaver.Graph
   alias BeamWeaver.Skill
 
-  import BeamWeaver.Agent.Middleware.Helpers,
-    only: [append_prompt: 2, runtime_store: 1, state_value: 2]
+  import BeamWeaver.Agent.Middleware.Helpers, only: [append_prompt: 2, runtime_store: 1]
 
   @max_load_warnings 20
   @max_load_warning_length 1000
@@ -46,6 +45,7 @@ defmodule BeamWeaver.Agent.Middleware.Skills do
     }
   end
 
+  @impl true
   def before_model(%__MODULE__{} = middleware, state, runtime) do
     if Map.has_key?(state || %{}, middleware.state_key) or
          Map.has_key?(state || %{}, to_string(middleware.state_key)) do
@@ -56,6 +56,7 @@ defmodule BeamWeaver.Agent.Middleware.Skills do
     end
   end
 
+  @impl true
   def wrap_model_call(%__MODULE__{} = middleware, %ModelRequest{} = request, handler) do
     {skills, errors} =
       request |> cached_skills(middleware) |> load_skills_if_missing(middleware, request)
@@ -94,9 +95,9 @@ defmodule BeamWeaver.Agent.Middleware.Skills do
   end
 
   defp cached_skills(%ModelRequest{state: state}, %__MODULE__{state_key: state_key}) do
-    case state_value(state, state_key) do
+    case Map.get(state, state_key) do
       skills when is_list(skills) ->
-        {:ok, skills, state_value(state, :skills_load_errors) || []}
+        {:ok, skills, Map.get(state, :skills_load_errors) || []}
 
       _other ->
         :missing
@@ -232,8 +233,14 @@ defmodule BeamWeaver.Agent.Middleware.Skills do
     |> Enum.with_index()
     |> Enum.map_join("\n", fn {{path, label}, index} ->
       suffix = if index == last, do: " (higher priority)", else: ""
-      "**#{label} Skills**: `#{path}`#{suffix}"
+      "**#{location_title(label)}**: `#{path}`#{suffix}"
     end)
+  end
+
+  # "Project" reads "Project Skills"; a label that already ends in "skills",
+  # such as the one for a top-level `/skills` folder, stays as it is.
+  defp location_title(label) do
+    if label |> String.downcase() |> String.ends_with?("skills"), do: label, else: "#{label} Skills"
   end
 
   defp skills_list(%__MODULE__{paths: paths}, []) do

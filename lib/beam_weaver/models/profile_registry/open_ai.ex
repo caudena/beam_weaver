@@ -3,6 +3,7 @@ defmodule BeamWeaver.Models.ProfileRegistry.OpenAI do
 
   alias BeamWeaver.Core.Error
   alias BeamWeaver.Models.Profile
+  alias BeamWeaver.Models.ProfileRegistry
   alias BeamWeaver.Models.ProfileRegistry.Params
 
   @pricing_source_url "https://developers.openai.com/api/docs/pricing"
@@ -585,7 +586,6 @@ defmodule BeamWeaver.Models.ProfileRegistry.OpenAI do
                   }
                 })
             })
-  def profiles_map, do: @profiles
   def profiles, do: Map.values(@profiles)
   def frontier_ids, do: @openai_frontier_ids
 
@@ -601,7 +601,7 @@ defmodule BeamWeaver.Models.ProfileRegistry.OpenAI do
         non_frontier_model_error(model)
 
       true ->
-        fetch_or_fallback(@profiles, :openai, model)
+        ProfileRegistry.fetch_or_fallback(@profiles, :openai, model)
     end
   end
 
@@ -652,11 +652,4 @@ defmodule BeamWeaver.Models.ProfileRegistry.OpenAI do
   end
 
   defp restricted_chat_model?(_model), do: false
-
-  defp fetch_or_fallback(profiles, provider, model) do
-    case Map.fetch(profiles, {provider, model}) do
-      {:ok, profile} -> {:ok, profile}
-      :error -> {:fallback, provider, model}
-    end
-  end
 end

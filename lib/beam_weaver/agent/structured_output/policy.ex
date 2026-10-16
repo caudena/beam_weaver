@@ -1,7 +1,5 @@
 defmodule BeamWeaver.Agent.StructuredOutput.Policy do
-  @moduledoc """
-  Decision metadata for the effective structured-output strategy.
-  """
+  @moduledoc false
 
   alias BeamWeaver.Agent.StructuredOutput.AutoStrategy
   alias BeamWeaver.Agent.StructuredOutput.ProviderStrategy
@@ -55,7 +53,10 @@ defmodule BeamWeaver.Agent.StructuredOutput.Policy do
 
       {:fallback, reason} ->
         tool_strategy =
-          BeamWeaver.Agent.StructuredOutput.tool(schema, Keyword.take(opts, [:tool_message_content, :handle_errors]))
+          BeamWeaver.Agent.StructuredOutput.tool(
+            schema,
+            Keyword.take(opts, [:tool_message_content, :handle_errors, :max_retries])
+          )
 
         {tool_strategy, policy(:auto, :tool, reason, [provider_strategy.schema_spec])}
     end

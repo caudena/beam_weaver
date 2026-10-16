@@ -7,14 +7,17 @@ defmodule BeamWeaver.DeepSeek.ResponsesModel do
   compatibility parameters are rejected before transport.
   """
 
+  use BeamWeaver.Provider.RedactedInspect
+
   alias BeamWeaver.DeepSeek.Client
-  alias BeamWeaver.DeepSeek.Error
+  alias BeamWeaver.Core.Error
   alias BeamWeaver.DeepSeek.Messages
   alias BeamWeaver.DeepSeek.Tools
   alias BeamWeaver.Models.InvocationMetadata
   alias BeamWeaver.OpenAI.ChatModel.RequestBuilder
   alias BeamWeaver.OpenAI.ChatModel.TokenCounter
   alias BeamWeaver.Provider.ChatModel.Options, as: ChatOptions
+  alias BeamWeaver.Provider.Options, as: ProviderOptions
   alias BeamWeaver.Provider.StructuredOutput
 
   @default_model "deepseek-flash"
@@ -66,7 +69,7 @@ defmodule BeamWeaver.DeepSeek.ResponsesModel do
             endpoint: @default_endpoint,
             api_key: nil,
             default_headers: [],
-            model_kwargs: %{},
+            extra_body: %{},
             reasoning: nil,
             reasoning_effort: nil,
             verbosity: nil,
@@ -101,7 +104,7 @@ defmodule BeamWeaver.DeepSeek.ResponsesModel do
 
   @type t :: %__MODULE__{}
 
-  use BeamWeaver.Provider.ChatModel
+  use BeamWeaver.Provider.ChatModel, stream_source: :deepseek_responses
 
   @spec new(keyword() | map()) :: t()
   def new(opts \\ []) do
@@ -120,13 +123,14 @@ defmodule BeamWeaver.DeepSeek.ResponsesModel do
 
   @spec request_body(t(), [BeamWeaver.Core.Message.t()], keyword()) ::
           {:ok, map()} | {:error, Error.t()}
+  @impl true
   def request_body(%__MODULE__{} = model, messages, opts \\ []) do
     with :ok <- validate_responses_model(model.model),
          :ok <- validate_container_options(model, opts),
          :ok <- validate_model_overrides(model, opts),
          :ok <- validate_unsupported_options(model, opts),
          {:ok, opts} <- render_tools(opts),
-         {:ok, body} <- model |> RequestBuilder.request_body(messages, opts) |> convert_error(),
+         {:ok, body} <- model |> RequestBuilder.request_body(messages, opts),
          body <- restore_reserved_fields(body, opts),
          :ok <- validate_responses_model(body["model"]),
          :ok <- Messages.validate_messages(messages, :responses, body["model"]),
@@ -169,14 +173,12 @@ defmodule BeamWeaver.DeepSeek.ResponsesModel do
   end
 
   defp validate_container_options(model, opts) do
-    model_kwargs = Keyword.get(opts, :model_kwargs, model.model_kwargs)
-
-    with :ok <- validate_optional_map(model_kwargs, :model_kwargs),
+    with :ok <- validate_optional_map(model.extra_body, :extra_body),
          :ok <- validate_optional_map(Keyword.get(opts, :extra_body), :extra_body),
          :ok <- validate_optional_map(Keyword.get(opts, :reasoning, model.reasoning), :reasoning),
          :ok <- validate_optional_map(Keyword.get(opts, :text), :text),
          :ok <- validate_list(Keyword.get(opts, :tools, []), :tools),
-         :ok <- validate_nested_optional_map(model_kwargs, "text", :text) do
+         :ok <- validate_nested_optional_map(ProviderOptions.extra_body(model, opts), "text", :text) do
       :ok
     end
   end
@@ -214,14 +216,10 @@ defmodule BeamWeaver.DeepSeek.ResponsesModel do
   end
 
   defp validate_model_overrides(model, opts) do
-    model_kwargs = Keyword.get(opts, :model_kwargs, model.model_kwargs)
-    extra_body = Keyword.get(opts, :extra_body)
-
     overrides =
       []
       |> maybe_add_keyword_value(opts, :model)
-      |> maybe_add_map_value(model_kwargs, "model")
-      |> maybe_add_map_value(extra_body, "model")
+      |> maybe_add_map_value(ProviderOptions.extra_body(model, opts), "model")
 
     Enum.reduce_while(overrides, :ok, fn override, :ok ->
       case validate_responses_model(override) do
@@ -250,16 +248,20 @@ defmodule BeamWeaver.DeepSeek.ResponsesModel do
   defp validate_unsupported_options(model, opts) do
     model_params = model |> Map.from_struct() |> BeamWeaver.MapShape.stringify_keys()
     call_params = opts |> Map.new() |> BeamWeaver.MapShape.stringify_keys()
-    model_kwargs = Keyword.get(opts, :model_kwargs, model.model_kwargs)
-    extra_body = Keyword.get(opts, :extra_body)
 
     with :ok <- reject_configured_unsupported_values(model_params),
          :ok <- reject_unsupported_keys(call_params),
-         :ok <- reject_unsupported_keys(stringify_optional_map(model_kwargs)),
-         :ok <- reject_unsupported_keys(stringify_optional_map(extra_body)) do
+         :ok <- reject_unsupported_keys(ProviderOptions.extra_body(model, opts)) do
       :ok
     end
   end
+
+  # A model created with an option every call refuses, such as `metadata:`,
+  # fails when it is created, with the error its calls return.
+  @doc false
+  @spec validate_options(keyword()) :: :ok | {:error, Error.t()}
+  def validate_options(opts),
+    do: opts |> Map.new() |> BeamWeaver.MapShape.stringify_keys() |> reject_configured_unsupported_values()
 
   defp validate_unsupported_body(body), do: reject_unsupported_keys(body)
 
@@ -296,9 +298,6 @@ defmodule BeamWeaver.DeepSeek.ResponsesModel do
   end
 
   defp meaningful_key?(map, key), do: Map.get(map, key) not in [nil, false, [], %{}]
-
-  defp stringify_optional_map(nil), do: %{}
-  defp stringify_optional_map(map) when is_map(map), do: BeamWeaver.MapShape.stringify_keys(map)
 
   defp validate_instructions(%{"instructions" => instructions})
        when is_binary(instructions) and instructions != "",
@@ -818,42 +817,25 @@ defmodule BeamWeaver.DeepSeek.ResponsesModel do
     )
   end
 
-  defp model_stream_metadata(%__MODULE__{} = model, body, opts) do
+  @impl true
+  def stream_metadata(%__MODULE__{} = model, body, opts) do
     model
     |> InvocationMetadata.provider(:deepseek, body, opts, :responses)
     |> InvocationMetadata.to_metadata_map()
   end
 
-  defp convert_error({:error, %BeamWeaver.OpenAI.Error{} = error}) do
-    {:error, Error.new(error.type, error.message, error.details)}
-  end
+  @impl true
+  def send_request(:invoke, model, body, opts), do: Client.responses(client(model), body, opts)
+  def send_request(:stream, model, body, opts), do: Client.responses_stream(client(model), body, opts)
+  def send_request(:stream_response, model, body, opts), do: Client.responses_stream_response(client(model), body, opts)
 
-  defp convert_error({:error, %BeamWeaver.Core.Error{} = error}) do
-    {:error, Error.new(error.type, error.message, error.details)}
-  end
+  def send_request(:stream_events, model, body, opts),
+    do: Client.responses_stream_typed_events(client(model), body, opts)
 
-  defp convert_error(other), do: other
+  @impl true
+  def decode_response(response, _opts), do: Messages.responses_to_message(response)
 
-  defp runtime_adapter do
-    %ChatRuntime.Adapter{
-      request: &request_body/3,
-      invoke: fn model, body, opts -> Client.responses(client(model), body, opts) end,
-      stream: fn model, body, opts -> Client.responses_stream(client(model), body, opts) end,
-      stream_response: fn model, body, opts ->
-        Client.responses_stream_response(client(model), body, opts)
-      end,
-      stream_events: fn model, body, opts ->
-        Client.responses_stream_typed_events(client(model), body, opts)
-      end,
-      decode: fn response, _opts -> Messages.responses_to_message(response) end,
-      parse: fn message, opts ->
-        StructuredOutput.maybe_parse(message, opts,
-          error_module: Error,
-          provider_name: "DeepSeek"
-        )
-      end,
-      metadata: &model_stream_metadata/3,
-      source: :deepseek_responses
-    }
-  end
+  @impl true
+  def parse_response(_model, message, opts),
+    do: StructuredOutput.maybe_parse(message, opts, provider_name: "DeepSeek")
 end

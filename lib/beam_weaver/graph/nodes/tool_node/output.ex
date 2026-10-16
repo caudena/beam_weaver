@@ -38,18 +38,14 @@ defmodule BeamWeaver.Graph.Nodes.ToolNode.Output do
   end
 
   @spec build([term()], :list | {:state, atom() | String.t()}) ::
-          map() | [Message.t()] | Command.t()
+          map() | [Message.t()] | Command.t() | [Command.t() | map()]
   def build(results, output_shape) do
     usage = Usage.from_messages(Enum.filter(results, &match?(%Message{}, &1)))
 
     if Enum.any?(results, &match?(%Command{}, &1)) do
-      command = combine_command_outputs(results)
-
-      if usage == Usage.new() do
-        command
-      else
-        %{command | update: Map.put(command.update || %{}, :usage, usage)}
-      end
+      results
+      |> command_outputs()
+      |> put_usage(usage)
     else
       if match?({:state, _key}, output_shape) do
         {:state, key} = output_shape
@@ -283,6 +279,54 @@ defmodule BeamWeaver.Graph.Nodes.ToolNode.Output do
 
   defp maybe_put_jump_to_end(update, nil), do: Map.put_new(update, :jump_to, :end)
   defp maybe_put_jump_to_end(update, _goto), do: update
+
+  # The tool messages, routing and resume of all results go in one command.
+  # When several tools return commands, the rest of each command's update is
+  # kept as its own update, so that a key two tools write goes through the
+  # key's reducer once per tool instead of the last write winning. A command
+  # for the parent graph takes everything with it, since the parent applies it.
+  defp command_outputs(results) do
+    commands = Enum.filter(results, &match?(%Command{}, &1))
+
+    if length(commands) > 1 and not Enum.any?(commands, &parent_command?/1) do
+      {combined, updates} =
+        Enum.reduce(results, {%Command{}, []}, fn
+          %Command{} = command, {acc, updates} ->
+            {routed, rest} = split_command_update(command)
+            {merge_command(acc, routed), if(rest == %{}, do: updates, else: [rest | updates])}
+
+          %Message{} = message, {acc, updates} ->
+            {merge_command(acc, %Command{update: %{messages: [message]}}), updates}
+        end)
+
+      [combined | Enum.reverse(updates)]
+    else
+      combine_command_outputs(results)
+    end
+  end
+
+  # Splits a tool command into what joins the combined command (its tool
+  # messages, `jump_to` and routing) and the rest of its update.
+  defp split_command_update(%Command{update: update} = command) when is_map(update) do
+    {routed, rest} = Map.split_with(update, fn {key, _value} -> key in [:messages, "messages", :jump_to] end)
+    {%{command | update: routed}, rest}
+  end
+
+  defp split_command_update(%Command{} = command), do: {command, %{}}
+
+  defp put_usage(output, usage) do
+    if usage == Usage.new() do
+      output
+    else
+      case output do
+        [%Command{} = command | updates] -> [put_command_usage(command, usage) | updates]
+        %Command{} = command -> put_command_usage(command, usage)
+      end
+    end
+  end
+
+  defp put_command_usage(%Command{} = command, usage),
+    do: %{command | update: Map.put(command.update || %{}, :usage, usage)}
 
   defp combine_command_outputs(results) do
     Enum.reduce(results, %Command{}, fn

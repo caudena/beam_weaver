@@ -1,5 +1,8 @@
 defmodule BeamWeaver.TypeSafe.Client do
   @moduledoc "TypeSafe System One HTTP client using BeamWeaver's shared transport."
+
+  use BeamWeaver.Provider.RedactedInspect
+
   alias BeamWeaver.Config
   alias BeamWeaver.Core.Error
   alias BeamWeaver.Provider.{HTTPClient, ResponseDecoder}
@@ -30,8 +33,7 @@ defmodule BeamWeaver.TypeSafe.Client do
 
   @doc false
   def evaluate(%__MODULE__{} = client, body, opts) do
-    with :ok <- credentials(client),
-         {:ok, raw, request_id} <- decode(HTTPClient.post_json(client.http, body, opts)) do
+    with {:ok, raw, request_id} <- decode(HTTPClient.post_json(client.http, body, opts)) do
       Decoder.decode(raw, body["questions"], body["model"], request_id, opts)
     end
   end
@@ -40,8 +42,7 @@ defmodule BeamWeaver.TypeSafe.Client do
   def list_models(%__MODULE__{} = client, opts \\ []) do
     endpoint = String.trim_trailing(client.base_url, "/") <> "/v1/models"
 
-    with :ok <- credentials(client),
-         {:ok, %{"models" => models}, request_id} <-
+    with {:ok, %{"models" => models}, request_id} <-
            decode(HTTPClient.get(client.http, Keyword.put(opts, :endpoint, endpoint))),
          true <- is_list(models) and Enum.all?(models, &valid_model?/1) do
       {:ok, %{models: models, request_id: request_id}}
@@ -56,11 +57,6 @@ defmodule BeamWeaver.TypeSafe.Client do
 
   defp valid_model?(_), do: false
 
-  defp credentials(%{http: %{api_key: key}}) when key in [nil, ""],
-    do: {:error, Error.new(:model_authentication, "configure TYPESAFE_API_KEY or TYPESAFE_API", %{retryable: false})}
-
-  defp credentials(_), do: :ok
-
   defp decode(result) do
     case ResponseDecoder.json(result, provider: :typesafe, request_id_header: "x-typesafe-request-id") do
       {:ok, body} ->
@@ -71,8 +67,4 @@ defmodule BeamWeaver.TypeSafe.Client do
         {:error, error}
     end
   end
-end
-
-defimpl Inspect, for: BeamWeaver.TypeSafe.Client do
-  def inspect(value, opts), do: BeamWeaver.Provider.RedactedInspect.redacted_struct(value, opts)
 end

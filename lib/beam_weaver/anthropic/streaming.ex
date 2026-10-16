@@ -1,6 +1,8 @@
 defmodule BeamWeaver.Anthropic.Streaming do
   @moduledoc false
 
+  import BeamWeaver.MapShape, only: [put_present: 3]
+
   alias BeamWeaver.Anthropic.Messages
   alias BeamWeaver.Core.Messages, as: CoreMessages
   alias BeamWeaver.Provider.Options
@@ -33,19 +35,8 @@ defmodule BeamWeaver.Anthropic.Streaming do
   @spec response(binary() | [map()] | term()) :: map()
   def response(body) when is_binary(body), do: body |> SSE.events() |> response()
 
-  def response(events) when is_list(events) do
-    state =
-      Enum.reduce(events, initial_state(), fn event, state ->
-        apply_event(event["data"] || %{}, state)
-      end)
-
-    response =
-      state.response
-      |> Map.put("content", content_blocks(state))
-      |> put_usage(state.usage)
-
-    Map.merge(response, state.message_delta)
-  end
+  def response(events) when is_list(events),
+    do: events |> Enum.reduce(initial_state(), &apply_event(&1["data"] || %{}, &2)) |> build_response()
 
   def response(_body), do: %{"content" => []}
 
@@ -91,6 +82,38 @@ defmodule BeamWeaver.Anthropic.Streaming do
   end
 
   def typed_events(_body, state), do: {[], state || %{block_start: %{}}}
+
+  # A live stream ends with the complete reply, the message `response/1`
+  # decodes to, followed by the `Done` event. Until the stream closes, the
+  # parser state also builds the reply and holds `Done` back;
+  # `finish_typed_events/2` emits both.
+  @doc false
+  @spec reply_typed_events([map()], map() | nil) :: {[Stream.Envelope.t()], map()}
+  def reply_typed_events(events, state) when is_list(events) do
+    %{parser: parser, reply: reply, done: done} = state || %{parser: nil, reply: initial_state(), done: []}
+    {typed, parser} = typed_events(events, parser)
+    {held, typed} = Enum.split_with(typed, &match?(%Stream.Envelope{event: %Events.Done{}}, &1))
+    reply = Enum.reduce(events, reply, &apply_event(&1["data"] || %{}, &2))
+
+    {typed, %{parser: parser, reply: reply, done: done ++ held}}
+  end
+
+  # `decode` turns the reply's response into its message. A stream without
+  # message events has no reply.
+  @doc false
+  @spec finish_typed_events(map() | nil, (map() -> {:ok, BeamWeaver.Core.Message.t()} | {:error, term()})) ::
+          {:ok, [Stream.Envelope.t()]} | {:error, term()}
+  def finish_typed_events(nil, _decode), do: {:ok, []}
+
+  def finish_typed_events(%{reply: reply, done: done}, decode) do
+    if reply == initial_state() do
+      {:ok, done}
+    else
+      with {:ok, message} <- reply |> build_response() |> decode.() do
+        {:ok, [Stream.envelope(%Events.Message{message: message}, metadata: %{provider: :anthropic}) | done]}
+      end
+    end
+  end
 
   defp initial_state do
     %{
@@ -142,8 +165,8 @@ defmodule BeamWeaver.Anthropic.Streaming do
       |> Options.stringify_keys()
       |> Map.take(["stop_reason", "stop_details", "stop_sequence", "container"])
       |> Options.reject_nil_values()
-      |> maybe_put("context_management", event["context_management"])
-      |> maybe_put("input_transformations", event["input_transformations"])
+      |> put_present("context_management", event["context_management"])
+      |> put_present("input_transformations", event["input_transformations"])
 
     %{
       state
@@ -153,6 +176,13 @@ defmodule BeamWeaver.Anthropic.Streaming do
   end
 
   defp apply_event(_event, state), do: state
+
+  defp build_response(state) do
+    state.response
+    |> Map.put("content", content_blocks(state))
+    |> put_usage(state.usage)
+    |> Map.merge(state.message_delta)
+  end
 
   defp apply_delta(block, %{"type" => "text_delta", "text" => text}) do
     block
@@ -192,10 +222,14 @@ defmodule BeamWeaver.Anthropic.Streaming do
 
   defp apply_delta(block, delta), do: Map.merge(block, delta)
 
-  defp finalize_block(%{"type" => "tool_use", "partial_json" => partial_json} = block)
-       when is_binary(partial_json) do
+  # A finished tool block carries its input, decoded from the streamed JSON,
+  # in the shape a later request sends back. A tool without input streams
+  # empty JSON and keeps the input of its start block.
+  defp finalize_block(%{"type" => type, "partial_json" => partial_json} = block)
+       when type in ["tool_use", "server_tool_use", "mcp_tool_use"] and is_binary(partial_json) do
     case BeamWeaver.JSON.decode(partial_json) do
-      {:ok, decoded} when is_map(decoded) -> Map.put(block, "input", decoded)
+      {:ok, decoded} when is_map(decoded) -> block |> Map.put("input", decoded) |> Map.delete("partial_json")
+      _other when partial_json == "" -> Map.delete(block, "partial_json")
       _other -> block
     end
   end
@@ -365,8 +399,8 @@ defmodule BeamWeaver.Anthropic.Streaming do
         %Events.Done{
           result:
             (delta || %{})
-            |> maybe_put("context_management", event["context_management"])
-            |> maybe_put("input_transformations", event["input_transformations"]),
+            |> put_present("context_management", event["context_management"])
+            |> put_present("input_transformations", event["input_transformations"]),
           usage: usage
         }
       ],
@@ -415,7 +449,4 @@ defmodule BeamWeaver.Anthropic.Streaming do
   defp encode_args(args) when is_map(args) and map_size(args) == 0, do: ""
   defp encode_args(args) when is_binary(args), do: args
   defp encode_args(args), do: BeamWeaver.JSON.encode!(args)
-
-  defp maybe_put(map, _key, nil), do: map
-  defp maybe_put(map, key, value), do: Map.put(map, key, value)
 end

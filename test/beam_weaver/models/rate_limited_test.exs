@@ -2,7 +2,6 @@ defmodule BeamWeaver.Models.RateLimitedTest do
   use ExUnit.Case, async: true
 
   alias BeamWeaver.Cache.ETS, as: CacheETS
-  alias BeamWeaver.Core.Async
   alias BeamWeaver.Core.ChatModel
   alias BeamWeaver.Core.Error
   alias BeamWeaver.Core.Message
@@ -141,7 +140,7 @@ defmodule BeamWeaver.Models.RateLimitedTest do
     assert opts[:timeout] == 25
   end
 
-  test "rate-limited model works through sync and async batches" do
+  test "rate-limited model acquires once per item on every batch" do
     parent = self()
 
     model =
@@ -165,16 +164,13 @@ defmodule BeamWeaver.Models.RateLimitedTest do
     assert [
              {:ok, %Message{content: "ok"}},
              {:ok, %Message{content: "ok"}}
-           ] =
-             model
-             |> ChatModel.async_batch([[Message.user("three")], [Message.user("four")]])
-             |> Async.await_batch()
+           ] = ChatModel.batch(model, [[Message.user("three")], [Message.user("four")]])
 
     assert_received {:acquire, 1, _opts}
     assert_received {:acquire, 1, _opts}
   end
 
-  test "rate-limited model acquires before streaming and supports async stream handles" do
+  test "rate-limited model acquires before every streaming call" do
     parent = self()
 
     model =
@@ -191,10 +187,7 @@ defmodule BeamWeaver.Models.RateLimitedTest do
     assert opts[:key] == {:openai, "gpt"}
     assert_received :model_streamed
 
-    assert {:ok, [%Message{content: "chunk"}]} =
-             model
-             |> ChatModel.async_stream([Message.user("hi")])
-             |> Async.await()
+    assert {:ok, [%Message{content: "chunk"}]} = ChatModel.stream(model, [Message.user("hi")])
 
     assert_received {:acquire, 1, _opts}
     assert_received :model_streamed
@@ -237,14 +230,6 @@ defmodule BeamWeaver.Models.RateLimitedTest do
     assert_received :model_invoked
 
     assert {:ok, %Message{content: "ok"}} = ChatModel.invoke(model, [Message.user("hi")])
-    refute_received {:acquire, 1, _opts}
-    refute_received :model_invoked
-
-    assert {:ok, %Message{content: "ok"}} =
-             model
-             |> ChatModel.async_invoke([Message.user("hi")])
-             |> Async.await()
-
     refute_received {:acquire, 1, _opts}
     refute_received :model_invoked
   end

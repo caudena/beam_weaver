@@ -12,6 +12,9 @@ defmodule BeamWeaver.OpenAI do
   alias BeamWeaver.OpenAI.Responses
   alias BeamWeaver.OpenAI.ResponsesModel
   alias BeamWeaver.OpenAI.ToolCalling
+  alias BeamWeaver.Provider.OpenAICompatibleClient, as: Compat
+
+  @default_base_url "https://api.openai.com/v1"
 
   @doc """
   Builds an OpenAI Responses API chat model.
@@ -50,7 +53,9 @@ defmodule BeamWeaver.OpenAI do
   """
   @spec embedding_model(keyword()) :: EmbeddingModel.t()
   def embedding_model(opts \\ []) do
-    struct(EmbeddingModel, provider_opts(opts, "embeddings"))
+    opts
+    |> provider_opts("embeddings")
+    |> EmbeddingModel.new()
   end
 
   @doc "Generates images through the Images API and emits a priced generation observation."
@@ -79,10 +84,13 @@ defmodule BeamWeaver.OpenAI do
   @spec responses() :: module()
   def responses, do: Responses
 
-  defp provider_opts(opts, _endpoint_path) do
+  # Key, organization and project come from `config :beam_weaver, :openai`
+  # unless given; so does `base_url`, the API root the endpoint is built on.
+  defp provider_opts(opts, endpoint_path) do
     opts
     |> Keyword.put_new(:api_key, Config.get([:openai, :api_key]))
     |> Keyword.put_new(:organization, Config.get([:openai, :organization]))
     |> Keyword.put_new(:project, Config.get([:openai, :project]))
+    |> Compat.put_endpoint(:endpoint, :openai, @default_base_url, endpoint_path)
   end
 end

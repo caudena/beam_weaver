@@ -3,6 +3,8 @@ defmodule BeamWeaver.OpenAI.Responses do
   Helpers for multi-turn OpenAI Responses API input items.
   """
 
+  import BeamWeaver.MapShape, only: [put_present: 3]
+
   alias BeamWeaver.Core.Message
 
   @doc """
@@ -15,7 +17,7 @@ defmodule BeamWeaver.OpenAI.Responses do
       "role" => role_to_string(role),
       "content" => content_to_openai(content)
     }
-    |> put_optional("id", Keyword.get(opts, :id))
+    |> put_present("id", Keyword.get(opts, :id))
   end
 
   @doc """
@@ -71,7 +73,7 @@ defmodule BeamWeaver.OpenAI.Responses do
       "call_id" => call_id(call_or_id),
       "output" => computer_output(output)
     }
-    |> put_optional(
+    |> put_present(
       "acknowledged_safety_checks",
       BeamWeaver.MapShape.normalize_value(Keyword.get(opts, :acknowledged_safety_checks))
     )
@@ -126,7 +128,4 @@ defmodule BeamWeaver.OpenAI.Responses do
   defp computer_output(image_url) when is_binary(image_url) do
     %{"type" => "input_image", "image_url" => image_url}
   end
-
-  defp put_optional(map, _key, nil), do: map
-  defp put_optional(map, key, value), do: Map.put(map, key, value)
 end

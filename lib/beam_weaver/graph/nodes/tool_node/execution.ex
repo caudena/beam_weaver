@@ -1,6 +1,8 @@
 defmodule BeamWeaver.Graph.Nodes.ToolNode.Execution do
   @moduledoc false
 
+  import BeamWeaver.MapShape, only: [put_present: 3]
+
   alias BeamWeaver.Agent.Middleware
   alias BeamWeaver.Agent.ToolCallRequest
   alias BeamWeaver.Agent.ToolSet
@@ -14,6 +16,8 @@ defmodule BeamWeaver.Graph.Nodes.ToolNode.Execution do
   alias BeamWeaver.Stream.Events
   alias BeamWeaver.Tracing
 
+  @signals [:beam_weaver_graph_interrupt, :beam_weaver_graph_error]
+
   def invoke(node, input, runtime) do
     with {:ok, tool_calls, output_shape} <- Input.extract(input, node.messages_key) do
       node = apply_tool_set(node, input)
@@ -26,16 +30,35 @@ defmodule BeamWeaver.Graph.Nodes.ToolNode.Execution do
         |> execution_groups(node)
         |> Enum.flat_map(&execute_group(&1, node, request_state, runtime))
         |> Enum.sort_by(fn {index, _call, _result} -> index end)
-        |> Enum.map(fn {_index, call, result} -> normalize_task_result(node, call, result) end)
-        |> flatten_outputs()
 
-      case Enum.find(results, &match?({:error, %Error{}}, &1)) do
-        {:error, %Error{} = error} ->
-          {:error, error}
+      with :ok <- halt_on_signal(results) do
+        results =
+          results
+          |> Enum.map(fn {_index, call, result} -> normalize_task_result(node, call, result) end)
+          |> flatten_outputs()
 
-        nil ->
-          Output.build(results, output_shape)
+        case Enum.find(results, &match?({:error, %Error{}}, &1)) do
+          {:error, %Error{} = error} ->
+            {:error, error}
+
+          nil ->
+            Output.build(results, output_shape)
+        end
       end
+    end
+  end
+
+  # A tool pauses the run by throwing a graph interrupt, as the `task` tool
+  # does when its subagent pauses, or fails the whole step by throwing
+  # `{:beam_weaver_graph_error, error}`. The step's other calls finish first;
+  # then an error wins, else the first interrupt in call order pauses the node.
+  defp halt_on_signal(results) do
+    signals = for {_index, _call, {:ok, {tag, _payload} = signal}} when tag in @signals <- results, do: signal
+
+    case Enum.find(signals, &match?({:beam_weaver_graph_error, _error}, &1)) || List.first(signals) do
+      nil -> :ok
+      {:beam_weaver_graph_error, %Error{} = error} -> {:error, error}
+      interrupt -> throw(interrupt)
     end
   end
 
@@ -156,6 +179,9 @@ defmodule BeamWeaver.Graph.Nodes.ToolNode.Execution do
       emit_tool_terminal(runtime, call, result)
       result
   catch
+    :throw, {tag, _payload} = signal when tag in @signals ->
+      signal
+
     kind, reason ->
       error =
         Error.new(:tool_middleware_exit, "tool middleware exited", %{
@@ -181,7 +207,7 @@ defmodule BeamWeaver.Graph.Nodes.ToolNode.Execution do
         Error.new(:unknown_tool, "tool is not registered", %{tool: call.name})
       )
     else
-      tool_runtime = tool_runtime(node, tool, call, request.state, request.runtime)
+      tool_runtime = tool_runtime(node, tool, call, tool_state(node, request.state), request.runtime)
 
       case inject_tool_args(tool, call.args, call, request.state, request.runtime, tool_runtime) do
         {:ok, args} ->
@@ -218,14 +244,11 @@ defmodule BeamWeaver.Graph.Nodes.ToolNode.Execution do
 
   defp tool_call_trace_metadata(call) do
     %{}
-    |> maybe_put(:call_id, Map.get(call, :call_id))
-    |> maybe_put(:id, Map.get(call, :id))
-    |> maybe_put(:provider_id, Map.get(call, :provider_id))
-    |> maybe_put(:tool_call_index, Map.get(call, :index))
+    |> put_present(:call_id, Map.get(call, :call_id))
+    |> put_present(:id, Map.get(call, :id))
+    |> put_present(:provider_id, Map.get(call, :provider_id))
+    |> put_present(:tool_call_index, Map.get(call, :index))
   end
-
-  defp maybe_put(map, _key, nil), do: map
-  defp maybe_put(map, key, value), do: Map.put(map, key, value)
 
   defp emit_tool_started(%{stream_writer: writer}, call) when is_function(writer, 1) do
     writer.(%Events.ToolStart{
@@ -330,11 +353,13 @@ defmodule BeamWeaver.Graph.Nodes.ToolNode.Execution do
     end
   end
 
+  # The content is written for the model; `error_message` keeps the tool's own
+  # message for middleware such as `ToolRetry` that report the error again.
   defp tool_error_message(node, call, %Error{} = error) do
     Message.tool(format_error(node, error, call),
       tool_call_id: call.id,
       name: call.name,
-      metadata: %{status: "error", error_type: error.type}
+      metadata: %{status: "error", error_type: error.type, error_message: error.message}
     )
   end
 
@@ -422,10 +447,32 @@ defmodule BeamWeaver.Graph.Nodes.ToolNode.Execution do
     )
   end
 
+  # The state a tool gets, without the node's private keys: an agent's tools
+  # see what the run returns, not its bookkeeping, and can't hand the
+  # bookkeeping on, as the `task` tool hands the state to a subagent.
+  # `{:state, key}` still reads a private key by name.
+  defp tool_state(%{private_keys: private_keys}, state) when is_map(state) and not is_struct(state) do
+    if MapSet.size(private_keys) == 0,
+      do: state,
+      else: Map.reject(state, fn {key, _value} -> private_key?(private_keys, key) end)
+  end
+
+  defp tool_state(_node, state), do: state
+
+  defp private_key?(private_keys, key) when is_atom(key), do: MapSet.member?(private_keys, Atom.to_string(key))
+  defp private_key?(private_keys, key) when is_binary(key), do: MapSet.member?(private_keys, key)
+  defp private_key?(_private_keys, _key), do: false
+
+  # An agent's tools node runs only the tools its model was offered on its
+  # latest call: the run's tool set, or in a run that continued from a
+  # checkpoint (after a review, a breakpoint or a crash), the registered tools
+  # under the names the checkpoint keeps. Before the first model call, any
+  # registered tool.
   defp apply_tool_set(node, input) do
-    case ToolSet.from_state(input) do
-      %ToolSet{} = tool_set -> %{node | tools: tool_set.tools}
-      nil -> node
+    case {ToolSet.from_state(input), ToolSet.saved_names(input)} do
+      {%ToolSet{} = tool_set, _names} -> %{node | tools: tool_set.tools}
+      {nil, names} when is_list(names) -> %{node | tools: Map.take(node.tools, names)}
+      {nil, nil} -> node
     end
   end
 
@@ -436,7 +483,7 @@ defmodule BeamWeaver.Graph.Nodes.ToolNode.Execution do
     end)
   end
 
-  defp injected_value(:state, _call, state, _runtime, _tool_runtime), do: {:ok, state}
+  defp injected_value(:state, _call, _state, _runtime, tool_runtime), do: {:ok, tool_runtime.state}
 
   defp injected_value({:state, field_or_path}, _call, state, _runtime, _tool_runtime),
     do: {:ok, get_state_field(state, field_or_path)}
@@ -518,11 +565,20 @@ defmodule BeamWeaver.Graph.Nodes.ToolNode.Execution do
     ["Tool error: #{error.message}"]
     |> maybe_append("Args", args)
     |> maybe_append("Details", details)
-    |> Enum.join(". ")
+    |> join_sentences()
   end
 
   defp maybe_append(parts, _label, value) when value in [%{}, [], nil], do: parts
   defp maybe_append(parts, label, value), do: parts ++ ["#{label}: #{inspect(value)}"]
+
+  # Joins the parts with ". ", without doubling the period of a part that
+  # already ends a sentence, such as an error message that ends with one.
+  defp join_sentences([last]), do: last
+
+  defp join_sentences([part | rest]) do
+    separator = if String.ends_with?(part, [".", "!", "?"]), do: " ", else: ". "
+    part <> separator <> join_sentences(rest)
+  end
 
   defp hidden_arg_names(node, call) do
     base =

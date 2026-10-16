@@ -1,7 +1,5 @@
 defmodule BeamWeaver.Google.Messages do
-  @moduledoc """
-  Google Gemini content translation.
-  """
+  @moduledoc false
 
   @behaviour BeamWeaver.Provider.MessageTranslator
 
@@ -41,7 +39,7 @@ defmodule BeamWeaver.Google.Messages do
 
     {:ok, {system, contents}}
   rescue
-    exception -> {:error, Error.new(:invalid_message, Exception.message(exception))}
+    error in ArgumentError -> {:error, Error.new(:invalid_message, Exception.message(error))}
   end
 
   def encode_messages(_messages, _opts),
@@ -161,7 +159,7 @@ defmodule BeamWeaver.Google.Messages do
 
   defp parts(content) when is_list(content) do
     content
-    |> assert_atom_content_blocks!()
+    |> BeamWeaver.MapShape.assert_atom_keys_in!()
     |> Enum.flat_map(&part/1)
   end
 
@@ -212,8 +210,13 @@ defmodule BeamWeaver.Google.Messages do
     provider_block = Options.stringify_keys(block)
 
     case provider_type(Map.get(block, :type)) do
+      # Gemini can sign the last text part of a reply; the signature goes
+      # back on the same part.
       "text" ->
-        [%{"text" => Map.get(block, :text) || Map.get(block, :content) || ""}]
+        [
+          %{"text" => Map.get(block, :text) || Map.get(block, :content) || ""}
+          |> put_thought_signature(thought_signature(block))
+        ]
 
       "image" ->
         media_part(
@@ -401,16 +404,6 @@ defmodule BeamWeaver.Google.Messages do
 
   defp provider_type(type) when is_atom(type), do: Atom.to_string(type)
   defp provider_type(type), do: type
-
-  defp assert_atom_content_blocks!(content) do
-    Enum.each(content, fn
-      block when is_struct(block) -> BeamWeaver.MapShape.assert_atom_keys!(Map.from_struct(block))
-      block when is_map(block) -> BeamWeaver.MapShape.assert_atom_keys!(block)
-      _block -> :ok
-    end)
-
-    content
-  end
 
   defp first_candidate(%{"candidates" => [candidate | _rest]}) when is_map(candidate),
     do: candidate

@@ -15,11 +15,11 @@ defmodule BeamWeaver.Graph.ToolNodeTest do
   alias BeamWeaver.Graph.Send
 
   defmodule ArgumentDoublerMiddleware do
-    @behaviour BeamWeaver.Agent.Middleware
+    use BeamWeaver.Agent.Middleware
 
     def name(_middleware), do: :argument_doubler
 
-    def wrap_tool_call(request, handler) do
+    def wrap_tool_call(_middleware, request, handler) do
       args =
         request.tool_call.args
         |> Map.update("a", nil, &(&1 * 2))
@@ -32,11 +32,11 @@ defmodule BeamWeaver.Graph.ToolNodeTest do
   end
 
   defmodule StateRecorderMiddleware do
-    @behaviour BeamWeaver.Agent.Middleware
+    use BeamWeaver.Agent.Middleware
 
     def name(_middleware), do: :state_recorder
 
-    def wrap_tool_call(request, handler) do
+    def wrap_tool_call(_middleware, request, handler) do
       case request.runtime do
         %{context: %{parent: parent}} when is_pid(parent) ->
           send(parent, {:tool_request_state, request.state})
@@ -50,29 +50,29 @@ defmodule BeamWeaver.Graph.ToolNodeTest do
   end
 
   defmodule ThrowingToolMiddleware do
-    @behaviour BeamWeaver.Agent.Middleware
+    use BeamWeaver.Agent.Middleware
 
     def name(_middleware), do: :throwing_tool_middleware
 
-    def wrap_tool_call(_request, _handler) do
+    def wrap_tool_call(_middleware, _request, _handler) do
       raise ArgumentError, "middleware rejected tool call"
     end
   end
 
   defmodule NilToolMiddleware do
-    @behaviour BeamWeaver.Agent.Middleware
+    use BeamWeaver.Agent.Middleware
 
     def name(_middleware), do: :nil_tool_middleware
 
-    def wrap_tool_call(_request, _handler), do: nil
+    def wrap_tool_call(_middleware, _request, _handler), do: nil
   end
 
   defmodule UnregisteredToolInterceptor do
-    @behaviour BeamWeaver.Agent.Middleware
+    use BeamWeaver.Agent.Middleware
 
     def name(_middleware), do: :unregistered_tool_interceptor
 
-    def wrap_tool_call(request, handler) do
+    def wrap_tool_call(_middleware, request, handler) do
       case request.tool_call.name do
         "magic_tool" ->
           Message.tool("magic:#{request.tool_call.args["value"]}",
@@ -197,8 +197,7 @@ defmodule BeamWeaver.Graph.ToolNodeTest do
     updated =
       ToolCallRequest.override(request,
         tool_call: %{id: "call-b", name: "echo", args: %{"x" => 1}},
-        state: %{step: 2},
-        unknown: :ignored
+        state: %{step: 2}
       )
 
     assert updated.tool_call == %{id: "call-b", name: "echo", args: %{"x" => 1}}
@@ -207,11 +206,9 @@ defmodule BeamWeaver.Graph.ToolNodeTest do
     assert updated.tool_set == :tool_set
     assert updated.runtime == %{context: :old}
     assert request.tool_call == %{id: "call-a", name: "echo", args: %{}}
-    refute Map.has_key?(updated, :unknown)
+    assert_raise KeyError, fn -> ToolCallRequest.override(request, unknown: :rejected) end
 
-    assert ToolCallRequest.override(request, %{"runtime" => %{context: :new}}).runtime == %{
-             context: :new
-           }
+    assert ToolCallRequest.override(request, runtime: %{context: :new}).runtime == %{context: :new}
   end
 
   test "injects runtime-only tool arguments without requiring them from model args" do
@@ -304,6 +301,40 @@ defmodule BeamWeaver.Graph.ToolNodeTest do
     assert input.context == runtime.context
     assert input.config == runtime.config
     assert input.checkpointer == runtime.checkpointer
+  end
+
+  test "tools get the state without the node's private keys, and read one by naming it" do
+    parent = self()
+
+    audit =
+      Tool.from_function!(
+        name: "audit",
+        description: "Reads the state",
+        input_schema: %{"type" => "object", "properties" => %{}},
+        injected: %{state: :state, ledger: {:state, :ledger}, tool_runtime: :tool_runtime},
+        handler: fn input, _opts ->
+          send(parent, {:audit_input, input})
+          "ok"
+        end
+      )
+
+    state = %{
+      "usage" => %{total_tokens: 12},
+      messages: [Message.assistant("", tool_calls: [%{id: "call-audit", name: "audit", args: %{}}])],
+      customer: "Ada",
+      ledger: "kept by middleware"
+    }
+
+    assert %{messages: [%Message{content: "ok"}]} =
+             ToolNode.invoke(ToolNode.new([audit], private_keys: ["ledger", :usage]), state)
+
+    assert_receive {:audit_input, input}
+    assert input.state == Map.take(state, [:messages, :customer])
+    assert input.tool_runtime.state == input.state
+    assert input.ledger == "kept by middleware"
+
+    assert %{messages: [%Message{content: "ok"}]} = ToolNode.invoke(ToolNode.new([audit]), state)
+    assert_receive {:audit_input, %{state: ^state}}
   end
 
   test "injects selected state fields and uses nil for absent optional fields" do
@@ -791,16 +822,69 @@ defmodule BeamWeaver.Graph.ToolNodeTest do
 
     node = ToolNode.new([first, second])
 
-    assert %Command{update: update, goto: [:first_next, :second_next]} =
+    # One command carries the tool messages and routing; each tool's other
+    # updates follow as separate updates.
+    assert [
+             %Command{update: update, goto: [:first_next, :second_next]},
+             %{first: true},
+             %{second: true}
+           ] =
              ToolNode.invoke(node, [
                %{id: "call-first", name: "first", args: %{}},
                %{id: "call-second", name: "second", args: %{}}
              ])
 
-    assert update.first
-    assert update.second
+    assert Map.keys(update) == [:messages]
     assert Enum.map(update.messages, & &1.content) == ["first done", "second done"]
     assert Enum.map(update.messages, & &1.tool_call_id) == ["call-first", "call-second"]
+  end
+
+  test "parallel tool commands that write the same key each go through its reducer" do
+    tick =
+      Tool.from_function!(
+        name: "tick",
+        description: "Counts a call and records a note",
+        input_schema: %{
+          type: "object",
+          properties: %{note: %{type: "string"}, tool_call_id: %{type: "string"}},
+          required: [:note, :tool_call_id]
+        },
+        injected: [tool_call_id: :tool_call_id],
+        handler: fn input, _opts ->
+          %Command{
+            update: %{
+              calls: 1,
+              notes: [input["note"]],
+              messages: [Message.tool("noted", tool_call_id: input.tool_call_id)]
+            }
+          }
+        end
+      )
+
+    graph =
+      Graph.new(state_schema: Messages.state_schema())
+      |> Graph.add_reducer(:calls, &+/2)
+      |> Graph.add_reducer(:notes, &(&1 ++ &2))
+      |> Graph.add_node(:tools, ToolNode.new([tick]))
+      |> Graph.add_edge(Graph.start(), :tools)
+      |> Graph.add_edge(:tools, Graph.end_node())
+      |> Graph.compile!()
+
+    calls = [
+      %{id: "call-a", name: "tick", args: %{"note" => "a"}},
+      %{id: "call-b", name: "tick", args: %{"note" => "b"}}
+    ]
+
+    assert {:ok, state} =
+             BeamWeaver.Graph.Compiled.invoke(graph, %{
+               calls: 0,
+               notes: [],
+               messages: [Message.assistant("", tool_calls: calls)]
+             })
+
+    assert state.calls == 2
+    assert state.notes == ["a", "b"]
+    assert state.messages |> Enum.filter(&(&1.role == :tool)) |> Enum.map(& &1.tool_call_id) == ["call-a", "call-b"]
   end
 
   test "merges sibling map updates from concurrent command-returning tool calls" do
@@ -838,18 +922,16 @@ defmodule BeamWeaver.Graph.ToolNodeTest do
         end
       )
 
-    assert %Command{update: update} =
+    assert [%Command{update: update}, first_update, second_update] =
              ToolNode.invoke(ToolNode.new([first, second]), [
                %{id: "call-first", name: "first", args: %{}},
                %{id: "call-second", name: "second", args: %{}}
              ])
 
-    assert update.subagent_outputs == %{
-             "first_output" => %{"answer" => "first"},
-             "second_output" => %{"answer" => "second"}
-           }
-
-    assert update.subagent_cache |> Map.keys() |> Enum.sort() == ["first:hash", "second:hash"]
+    assert first_update.subagent_outputs == %{"first_output" => %{"answer" => "first"}}
+    assert second_update.subagent_outputs == %{"second_output" => %{"answer" => "second"}}
+    assert Map.keys(first_update.subagent_cache) == ["first:hash"]
+    assert Map.keys(second_update.subagent_cache) == ["second:hash"]
     assert Enum.map(update.messages, & &1.content) == ["first captured", "second captured"]
   end
 
@@ -1007,6 +1089,35 @@ defmodule BeamWeaver.Graph.ToolNodeTest do
     assert message.tool_call_id == "call-bad"
   end
 
+  test "a tool error message that ends a sentence is not followed by a second period" do
+    lookup =
+      Tool.from_function!(
+        name: "lookup_order",
+        description: "Look up an order",
+        input_schema: %{},
+        handler: fn _input, _opts -> {:error, "No order B-7. Order ids look like A-1001."} end
+      )
+
+    assert [message] =
+             ToolNode.invoke(ToolNode.new([lookup]), [
+               %{id: "call-1", name: "lookup_order", args: %{"order_id" => "B-7"}}
+             ])
+
+    assert message.content ==
+             ~s(Tool error: No order B-7. Order ids look like A-1001. Args: %{"order_id" => "B-7"})
+
+    sentence =
+      Tool.from_function!(
+        name: "plain",
+        description: "Fails",
+        input_schema: %{},
+        handler: fn _i, _o -> {:error, "boom"} end
+      )
+
+    assert [%Message{content: ~s(Tool error: boom. Args: %{"x" => 1})}] =
+             ToolNode.invoke(ToolNode.new([sentence]), [%{id: "call-2", name: "plain", args: %{"x" => 1}}])
+  end
+
   test "can return an error instead of tool messages when error handling is disabled" do
     node = ToolNode.new([], handle_errors: false)
 
@@ -1037,7 +1148,7 @@ defmodule BeamWeaver.Graph.ToolNodeTest do
     parent = self()
     first = blocking_tool("first", parent)
     second = blocking_tool("second", parent)
-    node = ToolNode.new([first, second], timeout: 1_000)
+    node = ToolNode.new([first, second], timeout: 5_000)
 
     task =
       Task.async(fn ->
@@ -1047,8 +1158,8 @@ defmodule BeamWeaver.Graph.ToolNodeTest do
         ])
       end)
 
-    assert_receive {:started, "first", first_pid}, 500
-    assert_receive {:started, "second", second_pid}, 500
+    assert_receive {:started, "first", first_pid}
+    assert_receive {:started, "second", second_pid}
 
     send(first_pid, :release)
     send(second_pid, :release)
@@ -1057,7 +1168,7 @@ defmodule BeamWeaver.Graph.ToolNodeTest do
              %Message{name: "first", content: "first"},
              %Message{name: "second", content: "second"}
            ] =
-             Task.await(task, 1_000)
+             Task.await(task, 5_000)
   end
 
   test "concurrent tools use the runtime task supervisor when present" do
@@ -1065,7 +1176,7 @@ defmodule BeamWeaver.Graph.ToolNodeTest do
     {:ok, supervisor} = Task.Supervisor.start_link()
 
     supervised = blocking_tool("supervised", parent)
-    node = ToolNode.new([supervised], timeout: 1_000)
+    node = ToolNode.new([supervised], timeout: 5_000)
     runtime = %Runtime{execution: %{task_supervisor: supervisor}}
 
     task =
@@ -1077,12 +1188,12 @@ defmodule BeamWeaver.Graph.ToolNodeTest do
         )
       end)
 
-    assert_receive {:started, "supervised", tool_pid}, 500
+    assert_receive {:started, "supervised", tool_pid}
     assert tool_pid in Task.Supervisor.children(supervisor)
 
     send(tool_pid, :release)
 
-    assert [%Message{name: "supervised", content: "supervised"}] = Task.await(task, 1_000)
+    assert [%Message{name: "supervised", content: "supervised"}] = Task.await(task, 5_000)
   end
 
   test "non-concurrent tools create ordering barriers" do
@@ -1090,7 +1201,7 @@ defmodule BeamWeaver.Graph.ToolNodeTest do
     first = blocking_tool("first", parent)
     barrier = blocking_tool("barrier", parent, concurrent: false)
     second = blocking_tool("second", parent)
-    node = ToolNode.new([first, barrier, second], timeout: 1_000)
+    node = ToolNode.new([first, barrier, second], timeout: 5_000)
 
     task =
       Task.async(fn ->
@@ -1101,25 +1212,25 @@ defmodule BeamWeaver.Graph.ToolNodeTest do
         ])
       end)
 
-    assert_receive {:started, "first", first_pid}, 500
+    assert_receive {:started, "first", first_pid}
     refute_received {:started, "barrier", _pid}
     refute_received {:started, "second", _pid}
 
     send(first_pid, :release)
 
-    assert_receive {:started, "barrier", barrier_pid}, 500
+    assert_receive {:started, "barrier", barrier_pid}
     refute_received {:started, "second", _pid}
 
     send(barrier_pid, :release)
 
-    assert_receive {:started, "second", second_pid}, 500
+    assert_receive {:started, "second", second_pid}
     send(second_pid, :release)
 
     assert [
              %Message{name: "first", content: "first"},
              %Message{name: "barrier", content: "barrier"},
              %Message{name: "second", content: "second"}
-           ] = Task.await(task, 1_000)
+           ] = Task.await(task, 5_000)
   end
 
   test "max_result_chars truncates only model-visible tool message text" do
@@ -1147,10 +1258,7 @@ defmodule BeamWeaver.Graph.ToolNodeTest do
         name: "slow",
         description: "Slow tool",
         input_schema: %{},
-        handler: fn _input, _opts ->
-          Process.sleep(100)
-          "late"
-        end
+        handler: fn _input, _opts -> Process.sleep(:infinity) end
       )
 
     node = ToolNode.new([slow], timeout: 10)
@@ -1170,10 +1278,7 @@ defmodule BeamWeaver.Graph.ToolNodeTest do
         name: "slow",
         description: "Slow tool",
         input_schema: %{},
-        handler: fn _input, _opts ->
-          Process.sleep(100)
-          "late"
-        end
+        handler: fn _input, _opts -> Process.sleep(:infinity) end
       )
 
     node = ToolNode.new([slow], timeout: 10, handle_errors: false)

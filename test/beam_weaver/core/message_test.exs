@@ -2,6 +2,7 @@ defmodule BeamWeaver.Core.MessageTest do
   use ExUnit.Case, async: true
 
   alias BeamWeaver.Core.ContentBlock
+  alias BeamWeaver.Core.Error
   alias BeamWeaver.Core.Message
   alias BeamWeaver.Core.Messages
   alias BeamWeaver.Core.Messages.ToolCall
@@ -189,5 +190,28 @@ defmodule BeamWeaver.Core.MessageTest do
 
     assert {:error, %{type: :invalid_message}} =
              Message.validate(%{message | response_metadata: []})
+  end
+
+  test "from/1 returns an error for a message map whose fields have the wrong shape" do
+    for {map, field} <- [
+          {%{"role" => "user", "content" => "hi", "metadata" => "oops", "refusal" => "no"}, :metadata},
+          {%{"role" => "user", "content" => "hi", "metadata" => ["oops"]}, :metadata},
+          {%{"role" => "developer", "content" => "hi", "metadata" => "oops"}, :metadata},
+          {%{"role" => "user", "content" => "hi", "response_metadata" => "str"}, :response_metadata},
+          {%{"role" => "assistant", "content" => "hi", "usage_metadata" => 12}, :usage_metadata},
+          {%{"role" => "assistant", "content" => "hi", "server_tool_calls" => %{"id" => "s1"}}, :server_tool_calls},
+          {%{"role" => "assistant", "content" => "hi", "server_tool_results" => "done"}, :server_tool_results}
+        ] do
+      assert {:error, %Error{type: :invalid_message, details: %{field: ^field}}} = Message.from(map)
+    end
+
+    assert {:error, %Error{type: :invalid_tool_call}} =
+             Message.from(%{"role" => "assistant", "content" => "", "tool_calls" => %{"name" => "lookup"}})
+
+    assert {:ok, %Message{role: :system, metadata: %{source: "policy", openai_role: :developer}}} =
+             Message.from(%{role: "developer", content: "Be brief.", metadata: %{source: "policy"}})
+
+    assert {:ok, %Message{role: :system, metadata: %{openai_role: :developer}}} =
+             Message.from({:developer, "Be brief."})
   end
 end

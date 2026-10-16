@@ -3,15 +3,17 @@ defmodule BeamWeaver.XAI.EmbeddingModel do
   xAI embeddings implementation.
   """
 
+  use BeamWeaver.Provider.RedactedInspect
+
   @behaviour BeamWeaver.Core.EmbeddingModel
 
+  alias BeamWeaver.Provider.OpenAICompatibleClient, as: Compat
   alias BeamWeaver.Models.ParamPolicy
   alias BeamWeaver.Models.Profile
   alias BeamWeaver.Models.ProfileRegistry
   alias BeamWeaver.Provider.EmbeddingRuntime
   alias BeamWeaver.Provider.Options
   alias BeamWeaver.XAI.Client
-  alias BeamWeaver.XAI.Error
 
   @default_model "v1"
   @default_endpoint "https://api.x.ai/v1/embeddings"
@@ -60,7 +62,7 @@ defmodule BeamWeaver.XAI.EmbeddingModel do
   @spec new(keyword() | map()) :: t()
   def new(opts \\ []) do
     opts = if is_map(opts), do: Map.to_list(opts), else: opts
-    opts = normalize_endpoint_opts(opts, "embeddings")
+    opts = Compat.expand_base_url(opts, endpoint: "embeddings")
     model = Keyword.get(opts, :model, @default_model)
     profile = profile_option(opts, model)
 
@@ -78,25 +80,10 @@ defmodule BeamWeaver.XAI.EmbeddingModel do
     EmbeddingRuntime.embed_documents(model, documents, opts, embed_fun, runtime_error_opts())
   end
 
-  @spec async_embed_documents(t(), [String.t()], keyword()) :: BeamWeaver.Core.Async.handle()
-  def async_embed_documents(%__MODULE__{} = model, documents, opts \\ []) do
-    EmbeddingRuntime.async_embed_documents(model, documents, opts, &embed_documents/3)
-  end
-
   @impl true
   def embed_query(%__MODULE__{} = model, query, opts \\ []) when is_binary(query) do
     embed_fun = fn input, call_opts -> embed_input(model, input, call_opts) end
     EmbeddingRuntime.embed_query(model, query, opts, embed_fun, runtime_error_opts())
-  end
-
-  @spec async_embed_query(t(), String.t(), keyword()) :: BeamWeaver.Core.Async.handle()
-  def async_embed_query(%__MODULE__{} = model, query, opts \\ []) do
-    EmbeddingRuntime.async_embed_query(model, query, opts, &embed_query/3)
-  end
-
-  @spec async_batch_queries(t(), [String.t()], keyword()) :: [BeamWeaver.Core.Async.handle()]
-  def async_batch_queries(%__MODULE__{} = model, queries, opts \\ []) when is_list(queries) do
-    EmbeddingRuntime.async_batch_queries(model, queries, opts, &embed_query/3)
   end
 
   @doc """
@@ -143,12 +130,7 @@ defmodule BeamWeaver.XAI.EmbeddingModel do
         ])
       )
 
-    ParamPolicy.validate(
-      model.profile,
-      params,
-      Keyword.get(opts, :param_policy, model.param_policy),
-      metadata: %{}
-    )
+    ParamPolicy.validate(model.profile, params, Keyword.get(opts, :param_policy, model.param_policy))
   end
 
   defp embeddings_from_response(response),
@@ -185,20 +167,5 @@ defmodule BeamWeaver.XAI.EmbeddingModel do
     end
   end
 
-  defp normalize_endpoint_opts(opts, endpoint_path) do
-    case {Keyword.fetch(opts, :base_url), Keyword.has_key?(opts, :endpoint)} do
-      {{:ok, base_url}, false} ->
-        opts
-        |> Keyword.delete(:base_url)
-        |> Keyword.put(:endpoint, Client.endpoint(base_url, endpoint_path))
-
-      {{:ok, _base_url}, true} ->
-        Keyword.delete(opts, :base_url)
-
-      _other ->
-        opts
-    end
-  end
-
-  defp runtime_error_opts, do: [error_module: Error, provider_name: "xAI"]
+  defp runtime_error_opts, do: [provider_name: "xAI"]
 end

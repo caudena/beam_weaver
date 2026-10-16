@@ -169,6 +169,12 @@ end
 defmodule BeamWeaver.Stream.Events.Debug do
   @moduledoc """
   Runtime debug event for heartbeats, backpressure, interrupts, or diagnostics.
+
+  An agent's model call that fails sends one whose payload is
+  `%{type: :model_call_failed, error: error}`: the text the call streamed is
+  not part of the answer. Middleware such as
+  `BeamWeaver.Agent.Middleware.ModelRetry` may call the model again; only a
+  run that fails ends with an `Error` event.
   """
 
   defstruct [:payload, metadata: %{}]

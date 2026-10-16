@@ -3,55 +3,30 @@ defmodule BeamWeaver.Core.MessageUtilsTest do
 
   alias BeamWeaver.Core.ContentBlock
   alias BeamWeaver.Core.Message
-  alias BeamWeaver.Core.MessageLike
   alias BeamWeaver.Core.Messages
   alias BeamWeaver.Core.Messages.Serialization
   alias BeamWeaver.Core.Messages.ToolCall
   alias BeamWeaver.Core.Messages.Utils
-  alias BeamWeaver.Provider.DecodeMessage
-  alias BeamWeaver.Provider.EncodeMessage
+  alias BeamWeaver.Provider.MessageCodec
   alias BeamWeaver.Tokenizer.StaticVocabulary
 
-  test "message-like protocol converts binaries, tuples, maps, typed structs, and messages" do
-    assert {:ok, %Message{role: :user, content: "hello"}} = MessageLike.to_message("hello")
-    assert {:ok, %Message{role: :assistant, content: "hi"}} = MessageLike.to_message({"ai", "hi"})
-
-    assert {:ok,
-            %Message{
-              role: :assistant,
-              content: "fn",
-              metadata: %{}
-            }} = MessageLike.to_message({"function", "fn"})
+  test "Message.from converts strings, tuples, maps, and messages" do
+    assert {:ok, %Message{role: :user, content: "hello"}} = Message.from("hello")
+    assert {:ok, %Message{role: :assistant, content: "hi"}} = Message.from({"assistant", "hi"})
+    assert {:ok, %Message{role: :assistant, content: "hi"}} = Message.from({:assistant, "hi"})
 
     assert {:ok, %Message{role: :tool, tool_call_id: "call-1"}} =
-             MessageLike.to_message(%{
-               "role" => "tool",
-               "content" => "ok",
-               "tool_call_id" => "call-1"
-             })
+             Message.from(%{"role" => "tool", "content" => "ok", "tool_call_id" => "call-1"})
 
-    typed =
-      BeamWeaver.Core.Messages.assistant("typed",
-        tool_calls: [%{id: "call-2", name: "t", args: %{}}]
-      )
+    assert {:ok, %Message{role: :user, content: "atom keys"}} =
+             Message.from(%{role: :user, content: "atom keys"})
 
-    assert {:ok,
-            %Message{
-              role: :assistant,
-              content: "typed",
-              tool_calls: [%{id: "call-2", name: "t", args: %{}}]
-            }} =
-             MessageLike.to_message(typed)
+    message = Message.assistant("already a message")
+    assert {:ok, ^message} = Message.from(message)
 
-    assert {:ok,
-            %Message{
-              role: :assistant,
-              content: "result",
-              name: "lookup",
-              metadata: %{}
-            }} =
-             Messages.function("result", name: "lookup")
-             |> MessageLike.to_message()
+    assert {:error, %{type: :invalid_message}} = Message.from(%{"role" => "user"})
+    assert {:error, %{type: :invalid_role}} = Message.from({"human", "python role names are not accepted"})
+    assert {:error, %{type: :invalid_message}} = Message.from(42)
   end
 
   test "safe serialization round trips metadata, usage, artifacts, and unknown content blocks" do
@@ -84,21 +59,21 @@ defmodule BeamWeaver.Core.MessageUtilsTest do
 
   test "message conversion helpers round-trip message dictionaries" do
     messages = [
-      {"human", "hello"},
+      {"user", "hello"},
       Message.assistant("hi", id: "a1", usage_metadata: %{total_tokens: 2})
     ]
 
-    assert {:ok, normalized} = Utils.convert_to_messages(messages)
+    assert {:ok, normalized} = Utils.normalize(messages)
     assert Enum.map(normalized, & &1.role) == [:user, :assistant]
 
-    assert {:ok, dicts} = Utils.messages_to_dict(normalized)
+    assert {:ok, dicts} = Utils.encode(normalized)
     assert [%{"role" => "user"}, %{"role" => "assistant", "id" => "a1"}] = dicts
 
-    assert {:ok, restored} = Utils.messages_from_dict(dicts)
+    assert {:ok, restored} = Utils.decode(dicts)
     assert Enum.map(restored, &{&1.role, Message.text(&1)}) == [user: "hello", assistant: "hi"]
 
-    assert {:ok, %{"role" => "assistant", "content" => "hi"}} =
-             Utils.message_to_dict(List.last(normalized))
+    assert {:ok, [%{"role" => "assistant", "content" => "hi"}]} =
+             Utils.encode([List.last(normalized)])
   end
 
   test "strip_reasoning_blocks preserves assistant text and tool calls" do
@@ -130,38 +105,9 @@ defmodule BeamWeaver.Core.MessageUtilsTest do
            ]
   end
 
-  test "convert_to_messages accepts serialized envelopes, developer role, tool calls, and refusal metadata" do
+  test "normalize accepts developer role, tool calls, and refusal metadata" do
     messages = [
-      %{
-        "lc" => 1,
-        "type" => "constructor",
-        "id" => ["beam_weaver_core", "messages", "HumanMessage"],
-        "kwargs" => %{"content" => "hello", "id" => "h1"}
-      },
-      %{
-        "lc" => 1,
-        "type" => "constructor",
-        "id" => ["beam_weaver_core", "messages", "HumanMessageChunk"],
-        "kwargs" => %{"content" => "streaming chunk"}
-      },
-      %{
-        "lc" => 1,
-        "type" => "constructor",
-        "id" => ["beam_weaver_core", "messages", "SystemMessage"],
-        "kwargs" => %{"content" => "system prompt"}
-      },
-      %{
-        "lc" => 1,
-        "type" => "constructor",
-        "id" => ["beam_weaver_core", "messages", "AIMessage"],
-        "kwargs" => %{
-          "content" => "thinking",
-          "tool_calls" => [
-            %{"id" => "tc1", "name" => "search", "args" => %{"q" => "weather"}}
-          ]
-        }
-      },
-      %{"role" => "human", "content" => "via role"},
+      %{"role" => "user", "content" => "via role"},
       %{"role" => "developer", "content" => "developer rules"},
       %{
         "role" => "assistant",
@@ -174,32 +120,11 @@ defmodule BeamWeaver.Core.MessageUtilsTest do
             "function" => %{"name" => "lookup", "arguments" => ~s({"q":"elixir"})}
           }
         ]
-      },
-      %{
-        "lc" => 1,
-        "type" => "constructor",
-        "id" => ["beam_weaver_core", "messages", "ToolMessage"],
-        "kwargs" => %{
-          "content" => "result",
-          "tool_call_id" => "tc1",
-          "additional_kwargs" => %{"artifact" => %{"extra" => "payload"}}
-        }
-      },
-      %{
-        "lc" => 1,
-        "type" => "constructor",
-        "id" => ["beam_weaver_core", "messages", "FunctionMessage"],
-        "kwargs" => %{"content" => "42", "name" => "get_answer"}
       }
     ]
 
-    assert {:ok, [human, chunk, system, ai, canonical, developer, refused, tool, function]} =
-             Utils.convert_to_messages(messages)
+    assert {:ok, [canonical, developer, refused]} = Utils.normalize(messages)
 
-    assert %Message{role: :user, content: "hello", id: "h1"} = human
-    assert %Message{role: :user, content: "streaming chunk"} = chunk
-    assert %Message{role: :system, content: "system prompt"} = system
-    assert [%ToolCall{id: "tc1", name: "search", args: %{"q" => "weather"}}] = ai.tool_calls
     assert %Message{role: :user, content: "via role"} = canonical
     assert developer.role == :system
     assert developer.metadata.openai_role == :developer
@@ -208,53 +133,34 @@ defmodule BeamWeaver.Core.MessageUtilsTest do
     assert [%ToolCall{id: "call-1", name: "lookup", args: %{"q" => "elixir"}}] =
              refused.tool_calls
 
-    assert tool.role == :tool
-    assert tool.tool_call_id == "tc1"
-    assert tool.artifacts == [%{"extra" => "payload"}]
-    assert function.role == :assistant
-    assert function.name == "get_answer"
-    assert function.metadata == %{}
-
-    assert {:error, error} =
-             Utils.convert_to_messages([
-               %{"lc" => 1, "type" => "constructor", "id" => ["x", "Mystery"], "kwargs" => %{}}
-             ])
-
-    assert error.type in [:invalid_message, :invalid_role]
-
     assert {:error, missing_content} =
-             Utils.convert_to_messages([%{"role" => "assistant", "refusal" => "cannot comply"}])
+             Utils.normalize([%{"role" => "assistant", "refusal" => "cannot comply"}])
 
     assert missing_content.type == :invalid_message
-
-    assert {:error, partial_envelope} =
-             Utils.convert_to_messages([%{"lc" => 1, "content" => "missing other fields"}])
-
-    assert partial_envelope.type in [:invalid_message, :invalid_role]
   end
 
   test "OpenAI conversion helper returns chat messages by default and Responses input on request" do
-    assert {:ok, []} = Utils.convert_to_openai_messages([])
+    assert {:ok, []} = Utils.to_openai_messages([])
 
     assert {:ok, %{"role" => "user", "content" => "hello"}} =
-             Utils.convert_to_openai_messages(Message.user("hello"))
+             Utils.to_openai_messages(Message.user("hello"))
 
     assert {:ok, %{"role" => "user", "content" => ""}} =
-             Utils.convert_to_openai_messages(Message.user(""))
+             Utils.to_openai_messages(Message.user(""))
 
     assert {:ok, [%{"role" => "developer", "content" => "rules"}]} =
-             Utils.convert_to_openai_messages([{"developer", "rules"}])
+             Utils.to_openai_messages([{"developer", "rules"}])
 
     assert {:ok, [%{"role" => "user", "content" => [%{"type" => "text", "text" => "hello"}]}]} =
-             Utils.convert_to_openai_messages([Message.user("hello")], text_format: :block)
+             Utils.to_openai_messages([Message.user("hello")], text_format: :block)
 
     assert {:ok, [%{"type" => "message", "role" => "user"} = response_input]} =
-             Utils.convert_to_openai_messages([Message.user("hello")], api: :responses)
+             Utils.to_openai_messages([Message.user("hello")], api: :responses)
 
     assert response_input["content"] == "hello"
 
     assert {:error, error} =
-             Utils.convert_to_openai_messages([Message.user("hello")], text_format: :invalid)
+             Utils.to_openai_messages([Message.user("hello")], text_format: :invalid)
 
     assert error.type == :invalid_openai_text_format
   end
@@ -280,7 +186,7 @@ defmodule BeamWeaver.Core.MessageUtilsTest do
     ]
 
     assert {:ok, [assistant, user]} =
-             Utils.convert_to_openai_messages(messages, text_format: :block)
+             Utils.to_openai_messages(messages, text_format: :block)
 
     assert assistant["content"] == [%{"type" => "text", "text" => "checking"}]
 
@@ -322,7 +228,7 @@ defmodule BeamWeaver.Core.MessageUtilsTest do
         ]
       )
 
-    assert {:ok, [assistant]} = Utils.convert_to_openai_messages([message], text_format: :block)
+    assert {:ok, [assistant]} = Utils.to_openai_messages([message], text_format: :block)
 
     assert assistant["content"] == [%{"type" => "text", "text" => "checking"}]
     assert Enum.map(assistant["tool_calls"], & &1["id"]) == ["call-1", "call-3", "call-2"]
@@ -362,7 +268,7 @@ defmodule BeamWeaver.Core.MessageUtilsTest do
     ]
 
     assert {:ok, [user, assistant, tool, multimodal]} =
-             Utils.convert_to_openai_messages(messages, text_format: :block)
+             Utils.to_openai_messages(messages, text_format: :block)
 
     assert user["content"] == [
              %{"type" => "text", "text" => "Here's an image:"},
@@ -583,9 +489,9 @@ defmodule BeamWeaver.Core.MessageUtilsTest do
     assistant = Enum.find(filtered, &(&1.id == "a1"))
     assert assistant.tool_calls == [%ToolCall{id: "call-2", name: "math"}]
 
-    assert {:ok, human_messages} = Utils.filter(messages, include_types: ["human"])
+    assert {:ok, human_messages} = Utils.filter(messages, include_types: ["user"])
     assert Enum.map(human_messages, & &1.id) == ["u1", "u2"]
-    assert {:ok, [%Message{id: "a1"}]} = Utils.filter(messages, include_types: [:ai])
+    assert {:ok, [%Message{id: "a1"}]} = Utils.filter(messages, include_types: [:assistant])
   end
 
   test "filter removes matching tool-use content blocks with excluded tool calls" do
@@ -657,6 +563,30 @@ defmodule BeamWeaver.Core.MessageUtilsTest do
     assert merged.usage_metadata == %{output_tokens: 3}
   end
 
+  test "trim's default counter estimates tokens like count_tokens_approximately" do
+    messages = [
+      Message.user("Where is order A-1001?"),
+      Message.assistant("Order A-1001 shipped on Monday."),
+      Message.user("Thanks!")
+    ]
+
+    {:ok, total} = Utils.count_tokens_approximately(messages)
+    assert {:ok, ^total} = BeamWeaver.Core.LanguageModel.count_tokens(:approximate, messages)
+
+    assert {:ok, ^messages} = Utils.trim(messages, max_tokens: total)
+    assert {:ok, [_assistant, _thanks]} = Utils.trim(messages, max_tokens: total - 1)
+
+    # A partial message is measured the same way, overhead included.
+    long = [Message.user("one two three four five six seven eight nine ten")]
+    {:ok, [partial]} = Utils.trim(long, max_tokens: 10, strategy: :first, allow_partial: true)
+    {:ok, partial_count} = Utils.count_tokens_approximately([partial])
+
+    # "one two three four five" plus the role is 27 characters: 7 tokens, and 3 for the message.
+    assert partial.content == "one two three four five"
+    assert partial_count == 10
+    assert {:ok, []} = Utils.trim(long, max_tokens: 4, strategy: :first, allow_partial: true)
+  end
+
   test "trim supports last strategy with include-system/start-on and first strategy with partial text" do
     messages = [
       Message.system("system prompt"),
@@ -665,9 +595,10 @@ defmodule BeamWeaver.Core.MessageUtilsTest do
       Message.user("seven eight")
     ]
 
+    # "seven eight" is 7 approximate tokens, "four five six" 9 more.
     assert {:ok, trimmed} =
              Utils.trim(messages,
-               max_tokens: 4,
+               max_tokens: 10,
                strategy: :last,
                include_system: true,
                start_on: :user,
@@ -677,9 +608,10 @@ defmodule BeamWeaver.Core.MessageUtilsTest do
     assert Enum.map(trimmed, & &1.role) == [:system, :user]
     assert List.last(trimmed).content == "seven eight"
 
+    # "system prompt" is 8 approximate tokens, "system" alone 6.
     assert {:ok, [first]} =
              Utils.trim(messages,
-               max_tokens: 1,
+               max_tokens: 6,
                strategy: :first,
                allow_partial: true,
                token_counter: :approximate
@@ -765,14 +697,14 @@ defmodule BeamWeaver.Core.MessageUtilsTest do
              Utils.trim(messages,
                max_tokens: 2,
                strategy: :last,
-               start_on: :human,
+               start_on: :user,
                token_counter: token_counter
              )
 
     assert last.content == "second human"
   end
 
-  test "get_buffer_string formats role-prefixed chat history" do
+  test "buffer_string formats role-prefixed chat history" do
     messages = [
       Message.system("rules"),
       Message.user("question"),
@@ -780,7 +712,7 @@ defmodule BeamWeaver.Core.MessageUtilsTest do
       Message.tool("result", tool_call_id: "call-1")
     ]
 
-    assert {:ok, buffer} = Utils.get_buffer_string(messages, human_prefix: "User")
+    assert {:ok, buffer} = Utils.buffer_string(messages, human_prefix: "User")
 
     assert buffer == """
            System: rules
@@ -790,7 +722,7 @@ defmodule BeamWeaver.Core.MessageUtilsTest do
            """
   end
 
-  test "get_buffer_string supports separators, tool calls, and XML formatting" do
+  test "buffer_string supports separators, tool calls, and XML formatting" do
     messages = [
       Message.user("What's the weather?"),
       Message.assistant("Let me check",
@@ -800,14 +732,14 @@ defmodule BeamWeaver.Core.MessageUtilsTest do
       )
     ]
 
-    assert {:ok, prefix} = Utils.get_buffer_string(messages, message_separator: " | ")
+    assert {:ok, prefix} = Utils.buffer_string(messages, message_separator: " | ")
     assert prefix =~ "Human: What's the weather?"
     assert prefix =~ "AI: Let me check"
     assert prefix =~ "get_weather"
     assert prefix =~ "NYC"
     assert prefix =~ " | "
 
-    assert {:ok, xml} = Utils.get_buffer_string(messages, format: :xml)
+    assert {:ok, xml} = Utils.buffer_string(messages, format: :xml)
 
     assert xml == """
            <message type="human">What's the weather?</message>
@@ -817,11 +749,11 @@ defmodule BeamWeaver.Core.MessageUtilsTest do
            </message>\
            """
 
-    assert {:error, error} = Utils.get_buffer_string(messages, format: :markdown)
+    assert {:error, error} = Utils.buffer_string(messages, format: :markdown)
     assert error.type == :invalid_buffer_format
   end
 
-  test "get_buffer_string XML escapes content and formats supported content blocks" do
+  test "buffer_string XML escapes content and formats supported content blocks" do
     messages = [
       Message.system("Is 5 < 10 & 10 > 5?"),
       Message.user([
@@ -833,7 +765,7 @@ defmodule BeamWeaver.Core.MessageUtilsTest do
       ])
     ]
 
-    assert {:ok, xml} = Utils.get_buffer_string(messages, format: "xml")
+    assert {:ok, xml} = Utils.buffer_string(messages, format: "xml")
 
     assert xml == """
            <message type="system">Is 5 &lt; 10 &amp; 10 &gt; 5?</message>
@@ -841,7 +773,7 @@ defmodule BeamWeaver.Core.MessageUtilsTest do
            """
   end
 
-  test "get_buffer_string XML formats server tool calls, results, media, and long text blocks" do
+  test "buffer_string XML formats server tool calls, results, media, and long text blocks" do
     long_text = String.duplicate("x", 505)
 
     messages = [
@@ -868,7 +800,7 @@ defmodule BeamWeaver.Core.MessageUtilsTest do
       )
     ]
 
-    assert {:ok, xml} = Utils.get_buffer_string(messages, format: :xml)
+    assert {:ok, xml} = Utils.buffer_string(messages, format: :xml)
 
     assert xml =~ String.duplicate("x", 500) <> "..."
     assert xml =~ ~s(<audio file_id="audio-1" />)
@@ -891,7 +823,7 @@ defmodule BeamWeaver.Core.MessageUtilsTest do
     message = Message.user([%{type: :text, text: "hello"}])
 
     assert {:ok, %{"type" => "message", "role" => "user"}} =
-             EncodeMessage.encode(message, provider: :openai)
+             MessageCodec.encode(message, provider: :openai)
 
     response = %{
       "id" => "resp-1",
@@ -902,7 +834,7 @@ defmodule BeamWeaver.Core.MessageUtilsTest do
       "usage" => %{"input_tokens" => 3, "output_tokens" => 4, "total_tokens" => 7}
     }
 
-    assert {:ok, decoded} = DecodeMessage.decode(response, provider: :openai)
+    assert {:ok, decoded} = MessageCodec.decode(response, provider: :openai)
     assert Message.text(decoded) == "done"
     assert decoded.usage_metadata == %{input_tokens: 3, output_tokens: 4, total_tokens: 7}
     assert decoded.response_metadata.model == "gpt"

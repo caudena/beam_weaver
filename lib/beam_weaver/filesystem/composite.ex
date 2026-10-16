@@ -1,5 +1,15 @@
 defmodule BeamWeaver.Filesystem.Composite do
-  @moduledoc "Routes virtual path prefixes to different DeepAgents backends."
+  @moduledoc """
+  Routes virtual path prefixes to different filesystem backends, with a default
+  backend for other paths.
+
+  A routed backend sees paths without the route's prefix (`/policies/refunds.md`
+  reaches the `/policies/` backend as `/refunds.md`) and gets the prefix as the
+  `:route_prefix` option, so a backend that stores files in the shared graph
+  state, such as `BeamWeaver.Filesystem.State`, keeps them under their full
+  path. Paths under a route belong to it: listing or searching `/` takes them
+  from the route, not from the default backend.
+  """
 
   use BeamWeaver.Filesystem
   use BeamWeaver.Filesystem.Executable
@@ -31,7 +41,7 @@ defmodule BeamWeaver.Filesystem.Composite do
       backend.default
       |> Filesystem.ls("/", opts)
       |> case do
-        %Filesystem.LsResult{error: nil, entries: entries} -> entries || []
+        %Filesystem.LsResult{error: nil, entries: entries} -> reject_routed(backend, entries || [])
         _error -> []
       end
 
@@ -51,14 +61,14 @@ defmodule BeamWeaver.Filesystem.Composite do
     {prefix, inner, stripped} = route(backend, path)
 
     inner
-    |> Filesystem.ls(stripped, opts)
+    |> Filesystem.ls(stripped, route_opts(opts, prefix))
     |> prefix_ls_result(prefix)
   end
 
   @impl true
   def read(%__MODULE__{} = backend, path, opts) do
-    {_prefix, inner, stripped} = route(backend, path)
-    Filesystem.read(inner, stripped, opts)
+    {prefix, inner, stripped} = route(backend, path)
+    Filesystem.read(inner, stripped, route_opts(opts, prefix))
   end
 
   @impl true
@@ -70,12 +80,13 @@ defmodule BeamWeaver.Filesystem.Composite do
         backend.default
         |> Filesystem.glob(pattern, Keyword.put(opts, :path, "/"))
         |> glob_matches()
+        |> then(&reject_routed(backend, &1))
 
       route_matches =
         backend.routes
         |> Enum.flat_map(fn {prefix, inner} ->
           inner
-          |> Filesystem.glob(pattern, Keyword.put(opts, :path, "/"))
+          |> Filesystem.glob(pattern, opts |> route_opts(prefix) |> Keyword.put(:path, "/"))
           |> glob_matches()
           |> Enum.map(&prefix_file_info(prefix, &1))
         end)
@@ -85,7 +96,7 @@ defmodule BeamWeaver.Filesystem.Composite do
       {prefix, inner, stripped} = route(backend, path)
 
       inner
-      |> Filesystem.glob(pattern, Keyword.put(opts, :path, stripped))
+      |> Filesystem.glob(pattern, opts |> route_opts(prefix) |> Keyword.put(:path, stripped))
       |> prefix_glob_result(prefix)
     end
   end
@@ -99,12 +110,13 @@ defmodule BeamWeaver.Filesystem.Composite do
         backend.default
         |> Filesystem.grep(pattern, Keyword.put(opts, :path, "/"))
         |> grep_matches()
+        |> then(&reject_routed(backend, &1))
 
       route_matches =
         backend.routes
         |> Enum.flat_map(fn {prefix, inner} ->
           inner
-          |> Filesystem.grep(pattern, Keyword.put(opts, :path, "/"))
+          |> Filesystem.grep(pattern, opts |> route_opts(prefix) |> Keyword.put(:path, "/"))
           |> grep_matches()
           |> Enum.map(&prefix_grep_match(prefix, &1))
         end)
@@ -116,7 +128,7 @@ defmodule BeamWeaver.Filesystem.Composite do
       {prefix, inner, stripped} = route(backend, path)
 
       inner
-      |> Filesystem.grep(pattern, Keyword.put(opts, :path, stripped))
+      |> Filesystem.grep(pattern, opts |> route_opts(prefix) |> Keyword.put(:path, stripped))
       |> prefix_grep_result(prefix)
     end
   end
@@ -126,7 +138,7 @@ defmodule BeamWeaver.Filesystem.Composite do
     {prefix, inner, stripped} = route(backend, path)
 
     inner
-    |> Filesystem.write(stripped, content, opts)
+    |> Filesystem.write(stripped, content, route_opts(opts, prefix))
     |> prefix_write_result(prefix)
   end
 
@@ -135,7 +147,7 @@ defmodule BeamWeaver.Filesystem.Composite do
     {prefix, inner, stripped} = route(backend, path)
 
     inner
-    |> Filesystem.edit(stripped, old, new, opts)
+    |> Filesystem.edit(stripped, old, new, route_opts(opts, prefix))
     |> prefix_edit_result(prefix)
   end
 
@@ -145,7 +157,7 @@ defmodule BeamWeaver.Filesystem.Composite do
       {prefix, inner, stripped} = route(backend, path)
 
       inner
-      |> Filesystem.upload_files([{stripped, content}], opts)
+      |> Filesystem.upload_files([{stripped, content}], route_opts(opts, prefix))
       |> Enum.map(&prefix_upload_result(prefix, &1))
     end)
   end
@@ -156,9 +168,29 @@ defmodule BeamWeaver.Filesystem.Composite do
       {prefix, inner, stripped} = route(backend, path)
 
       inner
-      |> Filesystem.download_files([stripped], opts)
+      |> Filesystem.download_files([stripped], route_opts(opts, prefix))
       |> Enum.map(&prefix_download_result(prefix, &1))
     end)
+  end
+
+  # Each path resolves in the backend it routes to, with one call per backend,
+  # and keeps its route's prefix.
+  @impl true
+  def canonical_paths(%__MODULE__{} = backend, paths, opts) do
+    routes = Enum.map(paths, fn path -> if is_binary(path), do: route(backend, path) end)
+
+    canonical =
+      routes
+      |> Enum.reject(&is_nil/1)
+      |> Enum.uniq()
+      |> Enum.group_by(fn {prefix, inner, _stripped} -> {prefix, inner} end)
+      |> Enum.flat_map(fn {{prefix, inner}, routed} ->
+        results = Filesystem.canonical_paths(inner, Enum.map(routed, &elem(&1, 2)), route_opts(opts, prefix))
+        Enum.zip(routed, Enum.map(results, &prefix_canonical(prefix, &1)))
+      end)
+      |> Map.new()
+
+    Enum.map(routes, &Map.get(canonical, &1, {:error, Filesystem.invalid_path()}))
   end
 
   @impl BeamWeaver.Filesystem.Executable
@@ -205,6 +237,23 @@ defmodule BeamWeaver.Filesystem.Composite do
       nil ->
         {nil, backend.default, path}
     end
+  end
+
+  # A routed backend gets its full mount point, including the prefix of an
+  # enclosing composite that routed here.
+  defp route_opts(opts, nil), do: opts
+
+  defp route_opts(opts, prefix) do
+    outer = opts |> Keyword.get(:route_prefix) |> to_string() |> String.trim_trailing("/")
+    Keyword.put(opts, :route_prefix, outer <> String.trim_trailing(prefix, "/"))
+  end
+
+  # Drops default-backend results under a route prefix: those paths belong to
+  # the route, and the route's own results already cover them.
+  defp reject_routed(%__MODULE__{routes: routes}, entries) do
+    Enum.reject(entries, fn %{path: path} ->
+      Enum.any?(Map.keys(routes), &(path == String.trim_trailing(&1, "/") or String.starts_with?(path, &1)))
+    end)
   end
 
   defp normalize_prefix(prefix) do
@@ -268,6 +317,10 @@ defmodule BeamWeaver.Filesystem.Composite do
 
   defp prefix_grep_match(prefix, %Filesystem.GrepMatch{} = match),
     do: %{match | path: prefix_path(prefix, match.path)}
+
+  defp prefix_canonical(prefix, {:ok, path}) when is_binary(path), do: {:ok, prefix_path(prefix, path)}
+  defp prefix_canonical(_prefix, {:error, _reason} = error), do: error
+  defp prefix_canonical(_prefix, _other), do: {:error, Filesystem.invalid_path()}
 
   defp prefix_path(nil, path), do: path
 

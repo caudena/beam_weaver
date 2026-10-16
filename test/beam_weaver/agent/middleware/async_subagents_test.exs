@@ -1,8 +1,10 @@
 defmodule BeamWeaver.Agent.Middleware.AsyncSubagentsTest do
   use ExUnit.Case, async: true
 
+  alias BeamWeaver.Agent
   alias BeamWeaver.Agent.Middleware.AsyncSubagents
   alias BeamWeaver.Graph.Command
+  alias BeamWeaver.Models.FakeChatModel
 
   defmodule LiveSuccessClient do
     @behaviour BeamWeaver.Agent.Protocol.Client
@@ -154,10 +156,38 @@ defmodule BeamWeaver.Agent.Middleware.AsyncSubagentsTest do
 
     assert_received {:checked_async_task, "run-1"}
     refute_received {:checked_async_task, "done-1"}
-    assert tasks["done-1"].status == "success"
+    # Only the refreshed task is written back.
+    assert Map.keys(tasks) == ["run-1"]
     assert tasks["run-1"].status == "success"
 
     assert Enum.any?(message.metadata.async_subagents, &(&1.task_id == "done-1"))
     assert Enum.any?(message.metadata.async_subagents, &(&1.task_id == "run-1" and &1.status == "success"))
+  end
+
+  test "parallel task tools keep each other's changes" do
+    # Each call wrote the whole `async_tasks` map, so the update of B wrote A
+    # back as it was before the cancel, and the cancel was lost.
+    calls =
+      FakeChatModel.tool_calls([
+        {"cancel_async_task", %{"task_id" => "A"}},
+        {"update_async_task", %{"task_id" => "B", "message" => "More detail."}}
+      ])
+
+    {:ok, agent} =
+      Agent.build(
+        model: %FakeChatModel{responses: [calls, "Done."]},
+        middleware: [AsyncSubagents.new(subagents: [%{name: "researcher", description: "Researches.", graph_id: "g"}])]
+      )
+
+    running = fn id -> %{id: id, task_id: id, subagent_name: "researcher", status: "running"} end
+
+    assert {:ok, result} =
+             Agent.invoke(agent, %{
+               messages: ["Cancel A and add detail to B."],
+               async_tasks: %{"A" => running.("A"), "B" => running.("B")}
+             })
+
+    assert result.async_tasks["A"].status == "cancelled"
+    assert [%{message: "More detail."}] = result.async_tasks["B"].updates
   end
 end

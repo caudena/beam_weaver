@@ -3,11 +3,12 @@ defmodule BeamWeaver.Google.ChatModel do
   Google Gemini Developer API chat model implementation.
   """
 
+  use BeamWeaver.Provider.RedactedInspect
+
   alias BeamWeaver.Config
   alias BeamWeaver.Core.Error
   alias BeamWeaver.Core.LanguageModel
   alias BeamWeaver.Google.Client
-  alias BeamWeaver.Google.Error, as: GoogleError
   alias BeamWeaver.Google.Messages
   alias BeamWeaver.Google.Tools
   alias BeamWeaver.Models.ParamPolicy
@@ -23,7 +24,7 @@ defmodule BeamWeaver.Google.ChatModel do
             endpoint: nil,
             api_key: nil,
             default_headers: [],
-            model_kwargs: %{},
+            extra_body: %{},
             candidate_count: nil,
             temperature: nil,
             top_k: nil,
@@ -111,12 +112,15 @@ defmodule BeamWeaver.Google.ChatModel do
 
   @spec request_body(t(), [BeamWeaver.Core.Message.t()], keyword()) ::
           {:ok, map()} | {:error, Error.t()}
+  @impl true
   def request_body(%__MODULE__{} = model, messages, opts \\ []) do
     params = request_params(model, opts)
     requested_tools = option(model, opts, :tools) || []
     requested_tool_choice = option(model, opts, :tool_choice)
 
     with :ok <- ParamPolicy.validate(model.profile, params, param_policy(model), api: :generate_content),
+         :ok <- validate_thinking_level(model, opts),
+         :ok <- validate_builtin_tools(model, requested_tools),
          {:ok, {system, contents}} <- Messages.encode_messages(messages, opts),
          :ok <- validate_final_turn(model, contents),
          {:ok, tools} <- Tools.render_tools(requested_tools, opts),
@@ -138,8 +142,7 @@ defmodule BeamWeaver.Google.ChatModel do
         |> Options.put_optional("cachedContent", option(model, opts, :cached_content))
         |> Options.put_optional("serviceTier", option(model, opts, :service_tier))
         |> Options.put_optional("store", option(model, opts, :store))
-        |> Options.merge_extra_body(option(model, opts, :extra_body))
-        |> Options.merge_extra_body(option(model, opts, :model_kwargs))
+        |> Options.merge_extra_body(Options.extra_body(model, opts))
 
       {:ok, body}
     end
@@ -165,6 +168,47 @@ defmodule BeamWeaver.Google.ChatModel do
 
   defp empty_map_to_nil(value) when is_map(value) and map_size(value) == 0, do: nil
   defp empty_map_to_nil(value), do: value
+
+  # Profiles list the thinking levels a model takes and the built-in tools it
+  # lacks; both are checked before the request.
+  defp validate_thinking_level(%__MODULE__{} = model, opts) do
+    levels = profile_extra(model, :thinking_levels)
+    level = option(model, opts, :thinking_level)
+
+    if is_nil(level) or not is_list(levels) or to_string(level) in Enum.map(levels, &to_string/1) do
+      :ok
+    else
+      {:error,
+       Error.new(:unsupported_model_param, "#{model.model} does not take thinking level #{level}", %{
+         provider: :google,
+         model: model.model,
+         params: [:thinking_level],
+         value: level,
+         supported: levels
+       })}
+    end
+  end
+
+  defp validate_builtin_tools(%__MODULE__{} = model, tools) do
+    unsupported = profile_extra(model, :unsupported_tools) || []
+
+    case tools |> List.wrap() |> Tools.builtin_tool_kinds() |> Enum.filter(&(&1 in unsupported)) do
+      [] ->
+        :ok
+
+      kinds ->
+        {:error,
+         Error.new(:unsupported_feature, "#{model.model} does not take the #{Enum.join(kinds, ", ")} tool", %{
+           provider: :google,
+           model: model.model,
+           feature: :tools,
+           unsupported_tools: kinds
+         })}
+    end
+  end
+
+  defp profile_extra(%{profile: %{extra: extra}}, key) when is_map(extra), do: Map.get(extra, key)
+  defp profile_extra(_model, _key), do: nil
 
   defp validate_final_turn(%__MODULE__{} = model, contents) do
     if rejects_prefilled_model_turns?(model) and last_non_empty_role(contents) == "model" do
@@ -289,8 +333,10 @@ defmodule BeamWeaver.Google.ChatModel do
   defp response_format(opts),
     do: Keyword.get(opts, :response_format) || Keyword.get(opts, :structured_output)
 
+  # A call's `max_tokens` or `max_completion_tokens` is the same cap.
   defp max_output_tokens(model, opts) do
-    option(model, opts, :max_output_tokens) ||
+    Keyword.get(opts, :max_output_tokens) || Keyword.get(opts, :max_tokens) ||
+      Keyword.get(opts, :max_completion_tokens) || model.max_output_tokens ||
       if(structured_output_request?(model, opts), do: profile_max_output_tokens(model))
   end
 
@@ -337,7 +383,6 @@ defmodule BeamWeaver.Google.ChatModel do
   defp maybe_parse_structured_output(message, opts) do
     if response_format(opts) != nil do
       StructuredOutput.parse(message, StructuredOutput.parser(opts),
-        error_module: GoogleError,
         provider_name: "Google",
         on_decode_error: :ok
       )
@@ -410,20 +455,16 @@ defmodule BeamWeaver.Google.ChatModel do
   defp param_policy(%__MODULE__{} = model),
     do: model.param_policy || ParamPolicy.default_for(model.profile)
 
-  defp runtime_adapter do
-    %ChatRuntime.Adapter{
-      request: &request_body/3,
-      invoke: fn model, body, opts ->
-        Client.generate_content(client(model), model.model, body, opts)
-      end,
-      stream: fn model, body, opts ->
-        Client.stream_text(client(model), model.model, body, opts)
-      end,
-      stream_response: fn model, body, opts ->
-        Client.stream_response(client(model), model.model, body, opts)
-      end,
-      decode: fn response, opts -> Messages.response_to_message(response, opts) end,
-      parse: &maybe_parse_structured_output/2
-    }
-  end
+  @impl true
+  def send_request(:invoke, model, body, opts), do: Client.generate_content(client(model), model.model, body, opts)
+  def send_request(:stream, model, body, opts), do: Client.stream_text(client(model), model.model, body, opts)
+
+  def send_request(:stream_response, model, body, opts),
+    do: Client.stream_response(client(model), model.model, body, opts)
+
+  @impl true
+  def decode_response(response, opts), do: Messages.response_to_message(response, opts)
+
+  @impl true
+  def parse_response(_model, message, opts), do: maybe_parse_structured_output(message, opts)
 end

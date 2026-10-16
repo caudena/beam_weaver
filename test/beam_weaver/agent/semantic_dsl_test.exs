@@ -148,6 +148,15 @@ defmodule BeamWeaver.Agent.SemanticDSLTest do
     end
   end
 
+  test "response_schema takes a module only when it declares a schema" do
+    # Both used to become an empty object schema.
+    for module <- [String, BeamWeaver.Agent.SemanticDSLTest.NoSuchSchema] do
+      assert_raise ArgumentError, ~r/response_schema #{inspect(module)} is not a schema module/, fn ->
+        Agent.__response_schema__(module, [])
+      end
+    end
+  end
+
   test "graph state channel merge accepts atoms only" do
     assert_raise ArgumentError, ~s/unknown graph state channel merge "map"/, fn ->
       apply(Agent, :__add_graph_channel__, [Graph.new(), :summary, "map", []])

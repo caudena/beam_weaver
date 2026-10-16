@@ -1,5 +1,21 @@
 defmodule BeamWeaver.Agent.GeneralPurposeSubagentProfile do
-  @moduledoc "Configuration for the auto-added general-purpose subagent."
+  @moduledoc """
+  Settings for the built-in `general-purpose` subagent.
+
+  List one with an agent's subagents to apply it: `description` and
+  `system_prompt` replace the subagent's texts, and `enabled: false` leaves
+  it out.
+
+      subagents do
+        subagent MyApp.PolicyExpert
+        include [BeamWeaver.Agent.GeneralPurposeSubagentProfile.new(enabled: false)]
+      end
+
+  A `BeamWeaver.Agent.CapabilityProfile` holds one in its
+  `general_purpose_subagent` field. See [Subagents](subagents.md).
+  """
+
+  import BeamWeaver.MapShape, only: [put_present: 3]
 
   @type t :: %__MODULE__{}
 
@@ -12,9 +28,9 @@ defmodule BeamWeaver.Agent.GeneralPurposeSubagentProfile do
 
   def to_map(%__MODULE__{} = profile) do
     %{}
-    |> maybe_put(:enabled, profile.enabled)
-    |> maybe_put(:description, profile.description)
-    |> maybe_put(:system_prompt, profile.system_prompt)
+    |> put_present(:enabled, profile.enabled)
+    |> put_present(:description, profile.description)
+    |> put_present(:system_prompt, profile.system_prompt)
   end
 
   def from_map(map) when is_map(map) do
@@ -37,7 +53,4 @@ defmodule BeamWeaver.Agent.GeneralPurposeSubagentProfile do
       pair -> pair
     end)
   end
-
-  defp maybe_put(map, _key, nil), do: map
-  defp maybe_put(map, key, value), do: Map.put(map, key, value)
 end

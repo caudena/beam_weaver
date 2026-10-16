@@ -1,11 +1,13 @@
 defmodule BeamWeaver.DeepSeek.Options do
   @moduledoc false
 
-  alias BeamWeaver.DeepSeek.Error
+  import BeamWeaver.Provider.Options, only: [normalize_option_map: 1, normalize_value: 1, option: 3]
+
+  alias BeamWeaver.Core.Error
   alias BeamWeaver.DeepSeek.Messages
   alias BeamWeaver.DeepSeek.Tools
   alias BeamWeaver.Models.ParamPolicy
-  alias BeamWeaver.OpenAI.MessageParts
+  alias BeamWeaver.Provider.ChatCompletionsWire
   alias BeamWeaver.Provider.JsonObjectFormat
   alias BeamWeaver.Provider.Options, as: ProviderOptions
 
@@ -38,11 +40,14 @@ defmodule BeamWeaver.DeepSeek.Options do
     "web_search_options"
   ]
 
+  # `extra_body` can't replace these: the client sets them for the call.
+  @reserved_body_fields ["model", "messages", "stream"]
+
   @spec to_body(term(), [BeamWeaver.Core.Message.t()], keyword()) ::
           {:ok, map()} | {:error, Error.t()}
   def to_body(model, messages, opts \\ []) do
     with :ok <- validate_profile_params(model, opts),
-         :ok <- validate_model_kwargs(option(model, opts, :model_kwargs)),
+         :ok <- validate_extra_body(model, opts),
          {:ok, deepseek_messages} <- Messages.to_chat_messages(messages, option(model, opts, :model)),
          {:ok, response_format, instruction} <- response_format(model, opts),
          deepseek_messages <- JsonObjectFormat.inject_instruction(deepseek_messages, instruction),
@@ -52,6 +57,16 @@ defmodule BeamWeaver.DeepSeek.Options do
          :ok <- BeamWeaver.DeepSeek.Vision.validate_request(body, :chat_completions) do
       {:ok, body}
     end
+  end
+
+  @doc false
+  # Thinking mode takes no explicit tool choice; a forced one needs thinking
+  # disabled.
+  def forced_tool_choice?(model, opts) do
+    thinking = normalize_option_map(option(model, opts, :thinking))
+    effort = normalize_value(option(model, opts, :reasoning_effort))
+
+    thinking_disabled?(thinking) or (is_nil(thinking) and effort == "none")
   end
 
   @doc false
@@ -69,17 +84,13 @@ defmodule BeamWeaver.DeepSeek.Options do
 
   defp build_body(model, messages, tools, response_format, opts) do
     model_name = option(model, opts, :model)
-    model_kwargs = option(model, opts, :model_kwargs) || %{}
 
     body =
       %{
         "model" => model_name,
         "messages" => messages
       }
-      |> merge_model_kwargs(model_kwargs)
-      |> Map.put("model", model_name)
-      |> Map.put("messages", messages)
-      |> ProviderOptions.put_optional("thinking", normalize_map(option(model, opts, :thinking)))
+      |> ProviderOptions.put_optional("thinking", normalize_option_map(option(model, opts, :thinking)))
       |> ProviderOptions.put_optional(
         "reasoning_effort",
         normalize_value(option(model, opts, :reasoning_effort))
@@ -92,17 +103,18 @@ defmodule BeamWeaver.DeepSeek.Options do
       |> ProviderOptions.put_optional("tools", tools)
       |> ProviderOptions.put_optional(
         "tool_choice",
-        normalize_value(Keyword.get(opts, :tool_choice, Map.get(model, :tool_choice)))
+        ChatCompletionsWire.tool_choice(Keyword.get(opts, :tool_choice, Map.get(model, :tool_choice)))
       )
       |> ProviderOptions.put_optional("stream", Keyword.get(opts, :stream, false))
       |> ProviderOptions.put_optional(
         "stream_options",
-        normalize_map(Keyword.get(opts, :stream_options))
+        normalize_option_map(Keyword.get(opts, :stream_options))
       )
       |> maybe_put_stream_usage(model, opts)
       |> ProviderOptions.put_optional("logprobs", option(model, opts, :logprobs))
       |> ProviderOptions.put_optional("top_logprobs", option(model, opts, :top_logprobs))
       |> ProviderOptions.put_optional("user_id", option(model, opts, :user_id))
+      |> ProviderOptions.merge_extra_body(ProviderOptions.extra_body(model, opts), reserved: @reserved_body_fields)
 
     {:ok, body}
   end
@@ -112,11 +124,11 @@ defmodule BeamWeaver.DeepSeek.Options do
       model
       |> Map.from_struct()
       |> Map.take([
+        :extra_body,
         :logprobs,
         :max_completion_tokens,
         :max_output_tokens,
         :max_tokens,
-        :model_kwargs,
         :reasoning_effort,
         :response_format,
         :stop,
@@ -129,16 +141,14 @@ defmodule BeamWeaver.DeepSeek.Options do
         :top_p,
         :user_id
       ])
-      |> Map.merge(Map.new(Keyword.drop(opts, [:metadata])))
+      |> Map.merge(Map.new(opts))
 
     ParamPolicy.validate(
       Map.get(model, :profile),
       params,
       Keyword.get(opts, :param_policy, Map.get(model, :param_policy)),
-      api: :chat_completions,
-      metadata: Keyword.get(opts, :metadata, %{})
+      api: :chat_completions
     )
-    |> convert_core_error()
   end
 
   defp response_format(model, opts) do
@@ -153,7 +163,6 @@ defmodule BeamWeaver.DeepSeek.Options do
 
       other ->
         JsonObjectFormat.normalize(other,
-          error_module: Error,
           error_message: "DeepSeek Chat Completions supports JSON object response_format only",
           error_details: %{provider: :deepseek, api: :chat_completions}
         )
@@ -163,7 +172,10 @@ defmodule BeamWeaver.DeepSeek.Options do
   defp render_tools([]), do: {:ok, []}
 
   defp render_tools(tools) when is_list(tools) do
-    {:ok, Tools.to_chat_tools(tools)}
+    case BeamWeaver.Result.traverse(tools, &Tools.render_chat_tool/1) do
+      {:ok, rendered} -> {:ok, rendered}
+      {:error, %Error{} = error} -> {:error, %{error | details: Map.put(error.details || %{}, :provider, :deepseek)}}
+    end
   rescue
     exception in ArgumentError ->
       {:error, Error.new(:invalid_request, exception.message, %{provider: :deepseek})}
@@ -192,17 +204,20 @@ defmodule BeamWeaver.DeepSeek.Options do
     end
   end
 
-  defp validate_model_kwargs(nil), do: :ok
-  defp validate_model_kwargs(model_kwargs) when is_map(model_kwargs), do: :ok
+  defp validate_extra_body(model, opts) do
+    case Enum.reject([Map.get(model, :extra_body), Keyword.get(opts, :extra_body)], &(is_nil(&1) or is_map(&1))) do
+      [] ->
+        :ok
 
-  defp validate_model_kwargs(model_kwargs) do
-    {:error,
-     Error.new(:invalid_request, "DeepSeek model_kwargs must be a map", %{
-       provider: :deepseek,
-       api: :chat_completions,
-       param: :model_kwargs,
-       value: inspect(model_kwargs)
-     })}
+      [value | _rest] ->
+        {:error,
+         Error.new(:invalid_request, "DeepSeek extra_body must be a map", %{
+           provider: :deepseek,
+           api: :chat_completions,
+           param: :extra_body,
+           value: inspect(value)
+         })}
+    end
   end
 
   defp validate_tools(nil), do: :ok
@@ -525,8 +540,6 @@ defmodule BeamWeaver.DeepSeek.Options do
       option(model, opts, :max_completion_tokens)
   end
 
-  defp option(model, opts, key), do: Keyword.get(opts, key, Map.get(model, key))
-
   defp effective_response_format(model, opts) do
     option(model, opts, :response_format) || option(model, opts, :structured_output)
   end
@@ -535,24 +548,4 @@ defmodule BeamWeaver.DeepSeek.Options do
   defp structured_output_format?(%{"type" => type}) when type in [:text, "text"], do: false
   defp structured_output_format?(%{type: type}) when type in [:text, "text"], do: false
   defp structured_output_format?(_format), do: true
-
-  defp normalize_map(nil), do: nil
-  defp normalize_map(value) when is_map(value), do: MessageParts.stringify_keys(value)
-  defp normalize_map(value), do: value
-
-  defp normalize_value(nil), do: nil
-  defp normalize_value(value) when is_map(value), do: MessageParts.stringify_keys(value)
-  defp normalize_value(value) when is_list(value), do: Enum.map(value, &normalize_value/1)
-  defp normalize_value(value) when is_atom(value), do: Atom.to_string(value)
-  defp normalize_value(value), do: value
-
-  defp merge_model_kwargs(body, model_kwargs) when is_map(model_kwargs) do
-    Map.merge(body, MessageParts.stringify_keys(model_kwargs))
-  end
-
-  defp convert_core_error({:error, %BeamWeaver.Core.Error{} = error}) do
-    {:error, Error.new(error.type, error.message, error.details)}
-  end
-
-  defp convert_core_error(other), do: other
 end

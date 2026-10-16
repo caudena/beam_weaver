@@ -1,950 +1,412 @@
 # Agents
 
-Agents combine chat models with tools to build systems that can reason about a
-task, choose actions, observe tool results, and continue until a final response
-or stop condition is reached.
-
-BeamWeaver agents are graph-backed. The public API is Elixir-native:
-`use BeamWeaver.Agent` for application modules and `BeamWeaver.Agent.build/1`
-for runtime-configured agents. Both compile to the same `BeamWeaver.Graph`
-runtime with a model node, optional tool node, middleware nodes, checkpoints,
-interrupts, typed streams, and tagged errors.
-
-```mermaid
-graph TD
-  QUERY([input])
-  LLM{model}
-  TOOL(tools)
-  ANSWER([output])
-
-  QUERY --> LLM
-  LLM -- action --> TOOL
-  TOOL -- observation --> LLM
-  LLM -- finish --> ANSWER
-```
-
-## Semantic Module Shape
-
-Stable application agents should use category blocks. This keeps model-callable
-tools, lifecycle middleware, subagents, prompts, and structured output visible
-at a glance:
+An agent is a module that gives a model instructions and tools, then runs the
+model in a loop until it answers. Use an agent when the model should decide
+which steps to take; use a [graph](graphs.md) when you know the steps in advance.
 
 ```elixir
-defmodule MyApp.SupportAgent do
-  use BeamWeaver.Agent
-
-  name "support_agent"
-  description "Answer support questions from approved sources."
-
-  model "openai:gpt-5.4", temperature: 0.2, timeout: 120_000
-
-  tools do
-    tool MyApp.Tools.SearchDocs
-  end
-
-  middleware do
-    use BeamWeaver.Agent.Middleware.ToolCallNormalization
-    use BeamWeaver.Agent.Middleware.ModelRetry, max_attempts: 6, retry_on: :transient
-  end
-
-  system_prompt "Answer only from retrieved documentation."
-  response_schema MyApp.Schemas.SupportAnswer, name: "support_answer"
-end
-```
-
-Use `BeamWeaver.Agent.build/1` when the same fields need to be assembled at
-runtime. See [Semantic DSL](semantic_dsl.md) for the full module surface.
-
-## Core Components
-
-### Model
-
-The model is the reasoning engine for the agent. BeamWeaver accepts any value
-that implements `BeamWeaver.Core.ChatModel`.
-
-#### Static Model
-
-Static models are configured once and used for every model call.
-
-Use a provider-prefixed model identifier when you want BeamWeaver to construct
-the model:
-
-```elixir
-model =
-  BeamWeaver.Models.init_chat_model!("openai:gpt-5.4",
-    temperature: 0.1,
-    max_output_tokens: 1_000,
-    timeout: 30_000
-  )
-
-{:ok, agent} =
-  BeamWeaver.Agent.build(
-    name: "support_agent",
-    model: model,
-    tools: []
-  )
-```
-
-The model's `:timeout` is used twice in agent builds:
-
-- Provider transport timeout: the HTTP receive budget passed to the model
-  adapter.
-- Agent model-node timeout: the graph node budget for the model call.
-
-Agent model nodes are graph nodes, so they still have a hard execution budget.
-BeamWeaver chooses the generated model node timeout in this order:
-
-1. `model_opts[:timeout]` from `BeamWeaver.Agent.build/1` or the `model/2` DSL.
-2. `model.timeout` when the configured model struct exposes a timeout field.
-3. The graph node default of `5_000` milliseconds.
-
-For long summarization, extraction, or tool-heavy calls, set the timeout on the
-model or through `model_opts`:
-
-```elixir
-{:ok, agent} =
-  BeamWeaver.Agent.build(
-    model: "openai:gpt-5.4",
-    model_opts: [
-      timeout: 120_000,
-      max_output_tokens: 2_000
-    ],
-    tools: []
-  )
-```
-
-```elixir
-defmodule MyApp.SummaryAgent do
-  use BeamWeaver.Agent
-
-  model "anthropic:claude-sonnet-4-6", timeout: 120_000
-end
-```
-
-`BeamWeaver.Agent.invoke(..., timeout: value)` is not the model-node timeout; it
-is an invocation/server call option. When invoking through a supervised agent
-server process, keep that call timeout at least as large as the model-node
-timeout.
-
-OpenAI identifiers can also be inferred:
-
-```elixir
-model = BeamWeaver.Models.init_chat_model!("gpt-5.4")
-```
-
-Google Gemini identifiers must be explicit:
-
-```elixir
-model = BeamWeaver.Models.init_chat_model!("google:gemini-3.5-flash")
-```
-
-For tests, examples, or local workflows, use the fake provider:
-
-```elixir
-model =
-  BeamWeaver.Models.init_chat_model!("fake:chat",
-    response: BeamWeaver.Core.Message.assistant("hello")
-  )
-```
-
-You can also configure an agent as a normal module:
-
-```elixir
-defmodule MyApp.SupportAgent do
-  use BeamWeaver.Agent
-
-  model BeamWeaver.Models.init_chat_model!("openai:gpt-5.4")
-end
-```
-
-#### Dynamic Model
-
-Dynamic models are selected at the model-call boundary with middleware. Keep a
-static default model on the agent, then override `%BeamWeaver.Agent.ModelRequest{}`
-when runtime state or context calls for a different model:
-
-```elixir
-defmodule MyApp.DynamicModelSelection do
-  @behaviour BeamWeaver.Agent.Middleware
-
-  alias BeamWeaver.Agent.ModelRequest
-
-  def wrap_model_call(%ModelRequest{} = request, handler) do
-    model =
-      if length(request.messages || []) > 10 do
-        BeamWeaver.Models.init_chat_model!("openai:gpt-5.4")
-      else
-        BeamWeaver.Models.init_chat_model!("openai:gpt-5.4-mini")
-      end
-
-    request
-    |> ModelRequest.override(model: model)
-    |> handler.()
-  end
-end
-
-defmodule MyApp.AgentWithDynamicModel do
-  use BeamWeaver.Agent
-
-  model BeamWeaver.Models.init_chat_model!("openai:gpt-5.4-mini")
-
-  middleware do
-    use MyApp.DynamicModelSelection
-  end
-end
-```
-
-When structured output is enabled, prefer unbound model instances. Let the agent
-attach tools and response-format options at the model boundary.
-
-{% hint style="info" %}
-**Dynamic Behavior Lives In Middleware**
-
-LangChain often demonstrates dynamic model selection with decorators such as
-`@wrap_model_call`. BeamWeaver uses middleware modules and structs for the
-same lifecycle point. Keeping dynamic model selection in middleware makes the
-execution stage explicit, keeps state/context access in one request struct, and
-avoids a second function-valued model API beside normal model structs.
-{% endhint %}
-
-### Tools
-
-Tools let an agent take actions. BeamWeaver agents support multiple tool calls
-across the loop, parallel tool execution in the tool node, dynamic tool
-selection, retry/error middleware, runtime state, and checkpoint persistence.
-
-#### Static Tools
-
-Static tools are declared up front.
-
-```elixir
-alias BeamWeaver.Core.Tool
-
-search =
-  Tool.from_function!(
-    name: "search",
-    description: "Search for information.",
-    input_schema: %{
-      "type" => "object",
-      "required" => ["query"],
-      "properties" => %{"query" => %{"type" => "string"}}
-    },
-    handler: fn %{"query" => query}, _opts ->
-      "Results for: #{query}"
-    end
-  )
-
-weather =
-  Tool.from_function!(
-    name: "get_weather",
-    description: "Get weather information for a location.",
-    input_schema: %{
-      "type" => "object",
-      "required" => ["location"],
-      "properties" => %{"location" => %{"type" => "string"}}
-    },
-    handler: fn %{"location" => location}, _opts ->
-      "Weather in #{location}: sunny, 72 F"
-    end
-  )
-
-{:ok, agent} =
-  BeamWeaver.Agent.build(
-    model: BeamWeaver.Models.init_chat_model!("openai:gpt-5.4"),
-    tools: [search, weather]
-  )
-```
-
-If the tool list is empty, the compiled agent contains only the model path and
-middleware path; it will not execute tool calls.
-
-Tool modules are also supported:
-
-```elixir
-defmodule MyApp.Tools.GetWeather do
+defmodule MyApp.Tools.LookupOrder do
   use BeamWeaver.Tool
 
-  name "get_weather"
-  description "Get weather information for a location."
+  name "lookup_order"
+  description "Look up the shipping status of an order by its id, such as A-1001."
 
   schema do
-    field :location, :string, required: true
+    field :order_id, :string, description: "The order id"
   end
 
   @impl true
-  def invoke(_tool, %{"location" => location}, _opts) do
-    {:ok, "Weather in #{location}: sunny, 72 F"}
-  end
-end
-```
-
-{% hint style="info" %}
-**Tool Definition**
-
-LangChain's Python `@tool` decorator attaches schema metadata to a Python
-function object. Elixir functions do not carry mutable decorator metadata, and
-macros should leave a clear compile-time shape. BeamWeaver therefore uses
-`%BeamWeaver.Core.Tool{}` values for runtime-created tools and
-`use BeamWeaver.Tool` modules for stable application tools.
-{% endhint %}
-
-#### Dynamic Tools
-
-Dynamic tools are exposed to the model at runtime. This is useful for
-permissions, feature flags, conversation phase, or tools discovered from an
-external registry.
-
-##### Filtering Pre-Registered Tools
-
-When every possible tool is known at startup, use
-`BeamWeaver.Agent.Middleware.ToolSelection` or custom `wrap_model_call/2`
-middleware.
-
-Filter by state:
-
-```elixir
-defmodule MyApp.StateBasedTools do
-  @behaviour BeamWeaver.Agent.Middleware
-
-  alias BeamWeaver.Agent.ModelRequest
-  alias BeamWeaver.Core.Tool
-
-  def wrap_model_call(%ModelRequest{} = request, handler) do
-    authenticated? = Map.get(request.state || %{}, :authenticated, false)
-    message_count = request.state |> Map.get(:messages, []) |> length()
-
-    tools =
-      cond do
-        not authenticated? ->
-          Enum.filter(request.tools, fn tool ->
-            Tool.name(tool) |> String.starts_with?("public_")
-          end)
-
-        message_count < 5 ->
-          Enum.reject(request.tools, &(Tool.name(&1) == "advanced_search"))
-
-        true ->
-          request.tools
-      end
-
-    request
-    |> ModelRequest.override(tools: tools)
-    |> handler.()
-  end
-end
-```
-
-Filter by store:
-
-```elixir
-defmodule MyApp.StoreBasedTools do
-  @behaviour BeamWeaver.Agent.Middleware
-
-  alias BeamWeaver.Agent.ModelRequest
-  alias BeamWeaver.Core.Tool
-  alias BeamWeaver.Memory
-
-  def wrap_model_call(%ModelRequest{} = request, handler) do
-    user_id = get_in(request.runtime.context || %{}, [:user_id])
-    store = request.runtime.store
-
-    tools =
-      case Memory.get(store, ["features"], user_id) do
-        {:ok, %{value: %{"enabled_tools" => enabled}}} ->
-          Enum.filter(request.tools, &(Tool.name(&1) in enabled))
-
-        _other ->
-          request.tools
-      end
-
-    request
-    |> ModelRequest.override(tools: tools)
-    |> handler.()
-  end
+  def invoke(_tool, %{"order_id" => order_id}, _opts), do: {:ok, "Order #{order_id} shipped on Monday."}
 end
 
-defmodule MyApp.StoreFilteredAgent do
+defmodule MyApp.SupportAgent do
   use BeamWeaver.Agent
 
-  model BeamWeaver.Models.init_chat_model!("openai:gpt-5.4")
-
-  tools do
-    tool MyApp.Tools.Search
-    tool MyApp.Tools.Analyze
-    tool MyApp.Tools.Export
-  end
-
-  middleware do
-    use MyApp.StoreBasedTools
-  end
-
-  context_schema do
-    field :user_id, :string, required: true
-  end
-
-  store BeamWeaver.Memory.ETS.new()
-end
-```
-
-Filter by runtime context:
-
-```elixir
-defmodule MyApp.ContextBasedTools do
-  @behaviour BeamWeaver.Agent.Middleware
-
-  alias BeamWeaver.Agent.ModelRequest
-  alias BeamWeaver.Core.Tool
-
-  def wrap_model_call(%ModelRequest{} = request, handler) do
-    role = Map.get(request.runtime.context || %{}, :user_role, "viewer")
-
-    tools =
-      case role do
-        "admin" ->
-          request.tools
-
-        "editor" ->
-          Enum.reject(request.tools, &(Tool.name(&1) == "delete_data"))
-
-        _viewer ->
-          Enum.filter(request.tools, fn tool ->
-            Tool.name(tool) |> String.starts_with?("read_")
-          end)
-      end
-
-    request
-    |> ModelRequest.override(tools: tools)
-    |> handler.()
-  end
-end
-```
-
-The built-in `ToolSelection` middleware covers common allow/deny/tag/metadata
-filters and can also add tools dynamically:
-
-```elixir
-middleware do
-  use BeamWeaver.Agent.Middleware.ToolSelection,
-    allow: ["public_search"],
-    deny: ["delete_data"],
-    tools: &__MODULE__.tools_for_request/1
-end
-```
-
-##### Runtime Tool Registration
-
-When a tool is discovered at runtime, add it before the model call and route it
-before execution. The same middleware can own both hooks.
-
-```elixir
-defmodule MyApp.DynamicTipTool do
-  @behaviour BeamWeaver.Agent.Middleware
-
-  alias BeamWeaver.Agent.ModelRequest
-  alias BeamWeaver.Agent.ToolCallRequest
-  alias BeamWeaver.Core.Tool
-
-  def wrap_model_call(%ModelRequest{} = request, handler) do
-    request
-    |> ModelRequest.override(tools: request.tools ++ [calculate_tip()])
-    |> handler.()
-  end
-
-  def wrap_tool_call(%ToolCallRequest{tool_call: %{name: "calculate_tip"}} = request, handler) do
-    request
-    |> ToolCallRequest.override(tool: calculate_tip())
-    |> handler.()
-  end
-
-  def wrap_tool_call(%ToolCallRequest{} = request, handler), do: handler.(request)
-
-  defp calculate_tip do
-    Tool.from_function!(
-      name: "calculate_tip",
-      description: "Calculate the tip and total for a bill.",
-      input_schema: %{
-        "type" => "object",
-        "required" => ["bill_amount"],
-        "properties" => %{
-          "bill_amount" => %{"type" => "number"},
-          "tip_percentage" => %{"type" => "number", "default" => 20}
-        }
-      },
-      handler: fn args, _opts ->
-        bill = args["bill_amount"]
-        percent = Map.get(args, "tip_percentage", 20)
-        tip = bill * percent / 100
-        "Tip: #{Float.round(tip, 2)}, total: #{Float.round(bill + tip, 2)}"
-      end
-    )
-  end
-end
-```
-
-Registering the tool for the model is not enough. The tool node also needs a
-tool value when execution starts, so runtime registration should pair
-`wrap_model_call/2` with `wrap_tool_call/2`.
-
-#### Tool Error Handling
-
-Use `wrap_tool_call/2` to customize tool failures.
-
-```elixir
-defmodule MyApp.ToolErrors do
-  @behaviour BeamWeaver.Agent.Middleware
-
-  alias BeamWeaver.Agent.ToolCallRequest
-  alias BeamWeaver.Core.Error
-  alias BeamWeaver.Core.Message
-
-  def wrap_tool_call(%ToolCallRequest{} = request, handler) do
-    case handler.(request) do
-      {:error, %Error{} = error} ->
-        Message.tool(
-          "Tool error: please check your input and try again. (#{error.message})",
-          tool_call_id: tool_call_id(request)
-        )
-
-      other ->
-        other
-    end
-  rescue
-    exception ->
-      Message.tool(
-        "Tool error: please check your input and try again. (#{Exception.message(exception)})",
-        tool_call_id: tool_call_id(request)
-      )
-  end
-
-  defp tool_call_id(%ToolCallRequest{tool_call: call}) do
-    Map.get(call, :id) || Map.get(call, "id")
-  end
-end
-```
-
-The returned `%BeamWeaver.Core.Message{role: :tool}` is appended to the agent
-state and sent back to the model as the observation.
-
-#### Tool Use In The ReAct Loop
-
-The loop alternates between a model decision and tool observations:
-
-1. The user message is added to agent state.
-2. The model node reads `:messages` and returns an assistant message.
-3. If the assistant message contains tool calls, the tool node executes them.
-4. Tool results are appended as tool messages.
-5. The model node runs again with the observations.
-6. The loop stops when the assistant returns no pending tool calls or the
-   recursion limit is reached.
-
-```elixir
-{:ok, %{messages: messages}} =
-  MyApp.SupportAgent.invoke(%{
-    messages: [BeamWeaver.Core.Message.user("Find headphones and check stock")]
-  })
-
-messages
-|> List.last()
-|> BeamWeaver.Core.Message.text()
-```
-
-### System Prompt
-
-Use `system_prompt/1` to shape agent behavior:
-
-```elixir
-defmodule MyApp.ConciseAgent do
-  use BeamWeaver.Agent
-
-  model BeamWeaver.Models.init_chat_model!("openai:gpt-5.4")
-  system_prompt "You are a helpful assistant. Be concise and accurate."
-end
-```
-
-You can also pass a system message:
-
-```elixir
-system_prompt BeamWeaver.Core.Message.system([
-  %{type: :text, text: "You analyze literary works."},
-  %{type: :text, text: "<full text of the work>", metadata: %{cache_hint: :ephemeral}}
-])
-```
-
-Provider-specific metadata is passed through provider request builders only when
-the configured provider supports it.
-
-#### Dynamic System Prompt
-
-Dynamic system prompts belong in middleware. This keeps prompt routing with the
-stage of execution that owns it and avoids a second function-valued prompt API:
-
-```elixir
-middleware do
-  use BeamWeaver.Agent.Middleware.DynamicPrompt,
-    prompt: fn request ->
-      case Map.get(request.runtime.context || %{}, :user_role, "user") do
-        "expert" -> "You are helpful. Provide detailed technical responses."
-        "beginner" -> "You are helpful. Explain concepts simply."
-        _other -> "You are helpful."
-      end
-    end
-end
-```
-
-Use `DynamicPrompt` or custom middleware when prompt text depends on state or
-runtime context.
-
-{% hint style="info" %}
-**Prompt Routing**
-
-LangChain can express dynamic prompts with decorators or callable prompt
-values. BeamWeaver keeps prompt routing in middleware because middleware
-already owns model-call context, request overrides, tracing metadata, and
-state updates. Static prompt text remains an agent declaration; dynamic prompt
-generation is model-call behavior.
-{% endhint %}
-
-### Name
-
-Set a name for tracing metadata, graph names, and subgraph identifiers:
-
-```elixir
-defmodule MyApp.ResearchAssistant do
-  use BeamWeaver.Agent
-
-  name "research_assistant"
-  model BeamWeaver.Models.init_chat_model!("openai:gpt-5.4")
-end
-```
-
-Prefer lowercase names with letters, numbers, underscores, or hyphens. Provider
-tool-call APIs often reject spaces and special characters in agent or tool
-names.
-
-## Invocation
-
-Invoke an agent by passing a state update. Agent state always includes
-`:messages`.
-
-```elixir
-alias BeamWeaver.Core.Message
-
-{:ok, result} =
-  MyApp.SupportAgent.invoke(%{
-    messages: [Message.user("What is the weather in San Francisco?")]
-  })
-
-result.messages |> List.last() |> Message.text()
-```
-
-To persist conversation history, provide a checkpointer and reuse the same
-`thread_id`:
-
-```elixir
-alias BeamWeaver.Checkpoint.ETS, as: CheckpointETS
-alias BeamWeaver.Core.Message
-
-checkpointer = CheckpointETS.new()
-thread_id = "thread-" <> Integer.to_string(System.unique_integer([:positive]))
-config = %{"configurable" => %{"thread_id" => thread_id}}
-
-{:ok, _first_turn} =
-  MyApp.SupportAgent.invoke(
-    %{messages: [Message.user("What is the weather in San Francisco?")]},
-    checkpointer: checkpointer,
-    config: config
-  )
-
-{:ok, follow_up} =
-  MyApp.SupportAgent.invoke(
-    %{messages: [Message.user("What about tomorrow?")]},
-    checkpointer: checkpointer,
-    config: config
-  )
-```
-
-`thread_id` scopes the conversation and checkpoints. `context` carries per-run
-data that tools and middleware can read:
-
-```elixir
-defmodule MyApp.UserScopedAgent do
-  use BeamWeaver.Agent
-
-  model BeamWeaver.Models.init_chat_model!("openai:gpt-5.4")
-
-  context_schema do
-    field :user_id, :string, required: true
-  end
-end
-
-{:ok, result} =
-  MyApp.UserScopedAgent.invoke(
-    %{messages: [BeamWeaver.Core.Message.user("Show my account summary")]},
-    checkpointer: checkpointer,
-    config: config,
-    context: %{user_id: "user-123"}
-  )
-```
-
-For durable deployments, use `BeamWeaver.Checkpoint.Ecto` instead of ETS.
-
-{% hint style="warning" %}
-**Deployment Boundary**
-
-LangChain's hosted docs also discuss LangGraph Platform, SDK, CLI, and server
-deployment behavior. BeamWeaver's local agent runtime is graph-backed and can
-use ETS or Ecto checkpoint adapters, but it does not mirror the hosted platform
-APIs. Use `BeamWeaver.Tracing` for local trace/export boundaries and your
-normal OTP release/deployment tooling for services.
-{% endhint %}
-
-## Advanced Concepts
-
-### Structured Output
-
-Use `response_schema/2` when the final agent state should include a
-`:structured_response`. For the complete strategy and error-handling guide, see
-[Structured Output](structured_output.md).
-
-{% hint style="warning" %}
-**Schema Inputs**
-
-LangChain examples often use Pydantic models or `TypedDict` classes for agent
-structured output. Those are Python runtime objects that LangChain can inspect
-and convert to JSON Schema. Elixir structs and typespecs do not provide the
-same runtime validation and field-description contract. BeamWeaver takes JSON
-Schema-shaped contracts through `BeamWeaver.Schema` in stable agent modules.
-Raw JSON Schema maps are still available for dynamic builders and wire-level
-provider/tool payloads.
-{% endhint %}
-
-#### Tool Strategy
-
-Tool strategy asks the model to call a synthetic schema tool. This works with
-models that support tool calling.
-
-```elixir
-alias BeamWeaver.Core.Message
-
-defmodule MyApp.ContactSchema do
-  use BeamWeaver.Schema
-
-  title "contact_info"
-  strict true
-
-  field :name, :string, required: true
-  field :email, :string, required: true
-  field :phone, :string, required: true
-end
-
-defmodule MyApp.ContactAgent do
-  use BeamWeaver.Agent
-
-  model BeamWeaver.Models.init_chat_model!("openai:gpt-5.4-mini")
-  response_schema MyApp.ContactSchema, name: "contact_info", strategy: :tool
-end
-
-{:ok, %{structured_response: contact}} =
-  MyApp.ContactAgent.invoke(%{
-    messages: [
-      Message.user("Extract contact info: John Doe, john@example.com, 555-123-4567")
+  alias BeamWeaver.Models.FakeChatModel
+
+  name "support_agent"
+  description "Answers questions about Acme orders."
+
+  model "fake:chat",
+    responses: [
+      FakeChatModel.tool_call("lookup_order", %{"order_id" => "A-1001"}),
+      "Your order A-1001 shipped on Monday."
     ]
-  })
-```
 
-#### Provider Strategy
-
-Provider strategy uses provider-native structured output when the model supports
-it:
-
-```elixir
-response_schema MyApp.ContactSchema, name: "contact_info", strategy: :provider
-```
-
-Auto strategy selects provider-native structured output when supported safely by
-the model profile and falls back to tool strategy otherwise:
-
-```elixir
-response_schema MyApp.ContactSchema, name: "contact_info", strategy: :auto
-```
-
-### Memory
-
-Agents keep conversation history in state and checkpoints. You can extend state
-with additional short-term fields.
-
-#### Defining State Via Middleware
-
-Middleware-scoped state is preferred when the state exists for a specific
-middleware/tool package.
-
-```elixir
-defmodule MyApp.PreferenceMiddleware do
-  @behaviour BeamWeaver.Agent.Middleware
-
-  def state_schema(_middleware) do
-    %{
-      user_preferences:
-        BeamWeaver.Agent.Schema.field(:user_preferences, :map, required: false)
-    }
-  end
-
-  def before_model(state, _runtime) do
-    preferences = Map.get(state, :user_preferences, %{})
-    Map.put(state, :user_preferences, Map.put_new(preferences, :style, "technical"))
-  end
+  system_prompt "You are Acme's support agent. Look orders up before you answer."
+  tools [MyApp.Tools.LookupOrder]
 end
 
-defmodule MyApp.PreferenceAgent do
+{:ok, result} = MyApp.SupportAgent.invoke(%{messages: ["Where is my order A-1001?"]})
+result.messages |> List.last() |> BeamWeaver.Core.Message.text()
+#=> "Your order A-1001 shipped on Monday."
+```
+
+`"fake:chat"` is a scripted model, so the examples on this page run without an
+API key: each entry of `responses:` is what the model says on one turn. The
+[Quickstart](quickstart.md) builds this agent step by step.
+
+## Declare an agent
+
+`use BeamWeaver.Agent` turns a module into an agent. Inside it, you write
+declarations such as `model` and `tools`, one per line, without parentheses.
+The module gets `invoke/2`, `stream_events/2`, `resume/2`, `resume_review/2`
+and `get_state/1`.
+
+To use a real model, change the `model` line. The script goes away, because the
+model now decides what to do:
+
+```elixir
+model "anthropic:claude-haiku-4-5", temperature: 0.2, timeout: 60_000
+```
+
+BeamWeaver evaluates every declaration each time the agent runs, not when the
+module compiles: the `model` expression, the options after it, and the rest.
+A declaration can therefore read your configuration. That lets tests use the
+fake model while production uses a real one (see
+[Testing](testing.md#choose-the-model-from-config)):
+
+```elixir
+model Application.fetch_env!(:my_app, :support_model), timeout: Application.get_env(:my_app, :model_timeout, 60_000)
+```
+
+## Declarations
+
+| Declaration | What it does |
+| --- | --- |
+| `name "support_agent"` | Names the agent in traces, on its replies, and when another agent delegates to it. Defaults to the module name. |
+| `description "..."` | Says what the agent does. A parent agent reads it to decide when to delegate to this one. |
+| `model "provider:model", opts` | The chat model and its options. `timeout:` also limits each model step. See [Models](models.md). |
+| `system_prompt "..."` | Instructions sent ahead of the conversation on every model call. A string or a system message; it is not stored in the state. |
+| `tools [...]` | Tools the model may call. See [Tools](tools.md). |
+| `middleware [...]` | Code that runs around model and tool calls, such as retries and limits. See [Middleware](middleware.md). |
+| `response_schema MyApp.Schemas.Triage` | Asks for a structured final answer, returned in `result.structured_response`. See [Structured Output](structured_output.md). |
+| `response_format strategy` | The same, with a strategy you build yourself, for example from a JSON Schema map. |
+| `context_schema do ... end` | Declares and checks the fields of the per-call `context:`. See [Run an agent](#run-an-agent). |
+| `interrupt_on %{"issue_refund" => true}` | Pauses before these tools run, so a person can approve them. See [Human-in-the-Loop](human_in_the_loop.md). |
+| `interrupt_before [:tools]`, `interrupt_after [:model]` | Pauses every run before or after those steps; `resume/2` continues it. See [Human-in-the-Loop](human_in_the_loop.md#pause-before-or-after-a-step). |
+| `checkpointer`, `store`, `cache` | Default storage for calls that don't pass their own. Read the warning below. |
+| `recursion_limit 50` | The most steps one run may take. See [How the loop stops](#how-the-loop-stops). |
+| `tool_timeout 30_000` | Limits each tool call, in milliseconds; a call that runs longer returns an error to the model. |
+| `step_timeout 60_000`, `run_timeout 300_000` | Limit one step, or the whole run, in milliseconds. See [Durable Execution](durable_execution.md). |
+
+`tools` and `middleware` take a list or a block. These two snippets declare
+the same agent:
+
+```elixir
+model "fake:chat"
+
+tools [MyApp.Tools.LookupOrder]
+
+middleware [
+  BeamWeaver.Agent.Middleware.ModelRetry,
+  {BeamWeaver.Agent.Middleware.ModelCallLimit, run_limit: 10}
+]
+```
+
+```elixir
+model "fake:chat"
+
+tools do
+  tool MyApp.Tools.LookupOrder
+end
+
+middleware do
+  use BeamWeaver.Agent.Middleware.ModelRetry
+  use BeamWeaver.Agent.Middleware.ModelCallLimit, run_limit: 10
+end
+```
+
+In a block, `include some_list` adds a whole list, such as the tools a helper
+function returns. A [toolkit](tools.md#group-tools) module in `tools` adds the
+tools it returns, and `tool MyApp.OrderTools, region: "eu"` passes options to
+its `tools/1`; other tools take no options.
+[Built-in Middleware](builtin_middleware.md) covers each middleware module and
+its options.
+
+{% hint style="warning" %}
+**Declared storage must outlive the call.** Declarations are evaluated on
+every call, so a saver declared as `checkpointer BeamWeaver.Checkpoint.ETS.new()`
+would be a new, empty table each time, and the agent would forget every
+thread. A module that creates an ETS saver, store or cache in a declaration
+doesn't compile. Create them once, in your supervision tree or a test's
+`setup`, and pass them per call with `checkpointer:`, `store:` and `cache:`.
+{% endhint %}
+
+Declare storage that lives in a database, so every call reaches the same
+data, or a function that returns storage you created once, such as
+`checkpointer MyApp.AgentStorage.checkpointer()`. When such a function returns
+a new ETS saver or store each time, the agent logs a warning on its first
+call.
+
+```elixir
+checkpointer BeamWeaver.Checkpoint.Ecto.new(repo: MyApp.Repo)
+store BeamWeaver.Memory.Ecto.new(repo: MyApp.Repo)
+```
+
+### Deep agent declarations
+
+These declarations switch on the capabilities of a
+[deep agent](deep_agents.md). Each adds middleware, and most add tools or
+instructions too.
+
+| Declaration | Adds | Guide |
+| --- | --- | --- |
+| `filesystem BeamWeaver.Filesystem.State.new()` | File tools such as `read_file` and `write_file` | [Filesystem](filesystem.md) |
+| `filesystem_permissions [...]` | Rules for which paths the file tools may use | [Filesystem](filesystem.md) |
+| `skills ["/skills"]` | Skills the agent reads when a task needs them | [Skills](skills.md) |
+| `memory ["/AGENTS.md"]` | Memory files loaded into the instructions | [Memory Files](memory_files.md) |
+| `subagents do subagent MyApp.PolicyExpert end` | The `task` tool, to hand work to other agents | [Subagents](subagents.md) |
+| `async_subagents [...]` | Tools to run tasks on remote agents in the background | [Subagents](subagents.md) |
+| `execution_mode :research_then_generate` | How the agent runs when it is a subagent | [Subagents](subagents.md) |
+| `compact_conversation true` | Summarizes older history, and a tool to do it on demand | [Context Management](context_management.md) |
+| `overflow_recovery true` | Recovery when a request is too big for the model | [Context Management](context_management.md) |
+| `prompt_caching true` | Provider prompt caching | [Caching](caching.md) |
+
+### Less common declarations
+
+| Declaration | What it does |
+| --- | --- |
+| `model_opts temperature: 0.2` | Model options, merged over the ones written after `model`. |
+| `validate_tools true` | Checks tool-call arguments against the tool schemas first; invalid calls go back to the model without running the tool. |
+| `exclude_tools ["lookup_order"]` | Hides tools from the model, including tools that a capability adds. |
+| `tool_descriptions %{"lookup_order" => "..."}` | Replaces the descriptions the model sees. |
+| `capability_profile :auto` | Applies the [capability profile](profiles.md) of the agent's model, or the profile you give. |
+| `input_schema`, `output_schema` | Maps of `BeamWeaver.Agent.Schema.field/3` that the input and the final state must match. Keys they don't declare are dropped. An empty input on a thread with saved state, which continues it, and a `BeamWeaver.Graph.Command` aren't checked. |
+
+## Run an agent
+
+`invoke/2` takes the input state and options, and returns one of three shapes:
+
+- `{:ok, state}`: the run finished. `state.messages` holds the conversation;
+  agents with a response schema also return `state.structured_response`.
+- `{:interrupted, interrupt}`: the run paused. Continue a tool approval with
+  `resume_review/2`, and any other pause with `resume/2`.
+- `{:error, %BeamWeaver.Core.Error{}}`: the run failed; `type` says why.
+
+Plain strings in `messages` become user messages; `BeamWeaver.Core.Message`
+structs work too. Here the step limit is too small for a tool round, so the
+agent answers that it needs more steps (see [How the loop stops](#how-the-loop-stops)):
+
+```elixir
+input = %{messages: [BeamWeaver.Core.Message.user("Where is my order A-1001?")]}
+
+case MyApp.SupportAgent.invoke(input, recursion_limit: 2) do
+  {:ok, state} -> BeamWeaver.Core.Message.text(List.last(state.messages))
+  {:interrupted, _interrupt} -> :waiting_for_review
+  {:error, %BeamWeaver.Core.Error{type: type}} -> type
+end
+#=> "Sorry, need more steps to process this request."
+```
+
+These options work on every call:
+
+| Option | What it does |
+| --- | --- |
+| `checkpointer: saver` | Saves the thread's state after each step. See [Checkpoints and Time Travel](checkpoints.md). |
+| `config: %{"configurable" => %{"thread_id" => "ticket-42"}}` | Picks the thread to load and save. |
+| `context: %{customer_id: "ada"}` | Per-call data for tools and middleware. See [Runtime Context](runtime_context.md). |
+| `store: store` | The memory store for long-term memory. See [Long-Term Memory](long_term_memory.md). |
+| `recursion_limit: 25` | Overrides the agent's step limit for this call. |
+| `trace: [name: "support-chat", user_id: "ada"]` | Names and tags the run in traces. See [Tracing](tracing.md). |
+| `model_opts: [temperature: 0]` | Extra model options for this call. |
+
+With a checkpointer and a thread id, each call continues the conversation:
+
+```elixir
+saver = BeamWeaver.Checkpoint.ETS.new()
+opts = [checkpointer: saver, config: %{"configurable" => %{"thread_id" => "ticket-42"}}]
+
+{:ok, _first} = MyApp.SupportAgent.invoke(%{messages: ["Where is my order A-1001?"]}, opts)
+{:ok, second} = MyApp.SupportAgent.invoke(%{messages: ["Thanks! Which day again?"]}, opts)
+
+length(second.messages)
+#=> 6
+```
+
+When a crash or a deploy stopped the last run halfway, for example during a
+tool call, call `invoke/2` with an empty input: it finishes that run instead
+of starting a new turn. See
+[Durable Execution](durable_execution.md#what-survives-a-crash).
+
+An agent that needs per-call data declares it with `context_schema`. Fields
+are optional unless you mark them `required: true`, and every call is checked:
+
+```elixir
+defmodule MyApp.AccountAgent do
   use BeamWeaver.Agent
 
-  model BeamWeaver.Models.init_chat_model!("openai:gpt-5.4")
+  model "fake:chat", responses: ["Your account is in good standing."]
+  system_prompt "You help Acme customers with their accounts."
 
-  middleware do
-    use MyApp.PreferenceMiddleware
+  context_schema do
+    field :customer_id, :string, required: true
   end
 end
+
+MyApp.AccountAgent.invoke(%{messages: ["How is my account?"]})
+#=> {:error, %BeamWeaver.Core.Error{type: :invalid_context}}
 ```
 
-Put state extensions on the middleware that owns the behavior so schema, hooks,
-and tools stay together.
+```elixir
+{:ok, state} = MyApp.AccountAgent.invoke(%{messages: ["How is my account?"]}, context: %{customer_id: "ada"})
+state.messages |> List.last() |> BeamWeaver.Core.Message.text()
+#=> "Your account is in good standing."
+```
 
-{% hint style="info" %}
-**Custom State Ownership**
+## Stream, pause and inspect
 
-LangChain documents two custom-state routes: middleware-owned state and
-`state_schema` passed directly to `create_agent`. BeamWeaver keeps the
-middleware-owned route for agents. In practice, custom agent state is almost
-always read or written by specific middleware or tools, so colocating the
-schema with that middleware reduces global agent configuration and keeps
-ownership clear. Low-level graph schemas remain available in `BeamWeaver.Graph`
-when you are building a graph directly.
-{% endhint %}
-
-For long-term memory shared across conversations, configure a store such as
-`BeamWeaver.Memory.ETS` or `BeamWeaver.Memory.Ecto` and access it through
-`runtime.store`.
-
-### Streaming
-
-Use `stream_events/2` to observe intermediate graph and model events.
+`stream_events/2` with `live: true` returns typed events while the run
+progresses: tokens, tool starts and finishes, state updates and the final
+message. See [Streaming](streaming.md).
 
 ```elixir
-alias BeamWeaver.Core.Message
-alias BeamWeaver.Stream.Envelope
-alias BeamWeaver.Stream.Events
+{:ok, events} = MyApp.SupportAgent.stream_events(%{messages: ["Where is my order A-1001?"]}, live: true)
 
-{:ok, events} =
-  MyApp.SupportAgent.stream_events(
-    %{messages: [Message.user("Search for AI news and summarize it")]}
-  )
+for %BeamWeaver.Stream.Envelope{event: %BeamWeaver.Stream.Events.ToolStart{tool_name: name}} <- events,
+    do: name
+#=> ["lookup_order"]
+```
 
-for %Envelope{event: event} <- events do
-  case event do
-    %Events.Message{message: message} ->
-      IO.puts("Agent: " <> Message.text(message))
+An interrupt pauses a run until you resume it. Here the support agent gets an
+`issue_refund` tool that needs approval:
 
-    %Events.ToolStart{tool_name: name} ->
-      IO.puts("Calling tool: " <> name)
+```elixir
+defmodule MyApp.Tools.IssueRefund do
+  use BeamWeaver.Tool
 
-    %Events.ToolFinish{tool_name: name} ->
-      IO.puts("Finished tool: " <> name)
+  name "issue_refund"
+  description "Refund an order in full."
 
-    _other ->
-      :ok
+  schema do
+    field :order_id, :string, description: "The order id"
   end
+
+  @impl true
+  def invoke(_tool, %{"order_id" => order_id}, _opts), do: {:ok, "Refunded order #{order_id}."}
 end
+
+defmodule MyApp.SupportAgent do
+  use BeamWeaver.Agent
+
+  alias BeamWeaver.Models.FakeChatModel
+
+  model "fake:chat",
+    responses: [
+      FakeChatModel.tool_call("issue_refund", %{"order_id" => "A-1001"}),
+      "I refunded order A-1001."
+    ]
+
+  tools [MyApp.Tools.LookupOrder, MyApp.Tools.IssueRefund]
+  interrupt_on %{"issue_refund" => true}
+end
+
+saver = BeamWeaver.Checkpoint.ETS.new()
+opts = [checkpointer: saver, config: %{"configurable" => %{"thread_id" => "ticket-43"}}]
+
+{:interrupted, interrupt} = MyApp.SupportAgent.invoke(%{messages: ["Please refund order A-1001."]}, opts)
+Enum.map(interrupt.value.action_requests, & &1.name)
+#=> ["issue_refund"]
 ```
 
-If you need state-shaped updates instead of raw typed envelopes, project the
-event list:
+The paused run is saved in the checkpointer. `resume_review/2` continues it
+with the reviewer's decision; [Human-in-the-Loop](human_in_the_loop.md) covers
+editing and rejecting calls:
 
 ```elixir
-alias BeamWeaver.Stream.Transformers
-
-{:ok, events} = MyApp.SupportAgent.stream_events(%{messages: [Message.user("hello")]})
-values = Transformers.stream(events, :values)
+{:ok, state} = MyApp.SupportAgent.resume_review([BeamWeaver.Agent.HITL.decision(:approve)], opts)
+state.messages |> List.last() |> BeamWeaver.Core.Message.text()
+#=> "I refunded order A-1001."
 ```
 
-{% hint style="info" %}
-**Stream Shape**
-
-LangChain streams can surface callback-style event dictionaries or state
-chunks. BeamWeaver's primary stream surface is typed
-`%BeamWeaver.Stream.Envelope{}` values, which are ordinary `Enumerable`
-streams. Python's `stream_events(..., version="v3")` projection object is not
-mirrored directly; use typed envelopes and projection reducers instead.
-{% endhint %}
-
-### Middleware
-
-Middleware is ordinary Elixir data. A middleware entry can be a module, a struct,
-or `{module, opts}`. Middleware can:
-
-- process state before the agent or model runs
-- modify the model request
-- validate or rewrite model responses
-- add or filter tools
-- handle tool execution failures
-- implement retry, fallback, call limits, summarization, PII handling,
-  human-in-the-loop, and context editing
-- return `BeamWeaver.Graph.Command` values for explicit jumps or state updates
-
-The middleware behaviour supports these callbacks:
+`get_state/1` reads a thread's latest checkpoint without running the agent.
+The snapshot's `values` is the saved state:
 
 ```elixir
-@callback before_agent(map(), BeamWeaver.Graph.Runtime.t()) :: term()
-@callback before_model(map(), BeamWeaver.Graph.Runtime.t()) :: term()
-@callback wrap_model_call(BeamWeaver.Agent.ModelRequest.t(), function()) :: term()
-@callback after_model(map(), BeamWeaver.Graph.Runtime.t()) :: term()
-@callback wrap_tool_call(BeamWeaver.Agent.ToolCallRequest.t(), function()) :: term()
-@callback after_agent(map(), BeamWeaver.Graph.Runtime.t()) :: term()
+{:ok, snapshot} = MyApp.SupportAgent.get_state(opts)
+Enum.map(snapshot.values.messages, & &1.role)
+#=> [:user, :assistant, :tool, :assistant]
 ```
 
-Common built-in middleware modules include:
+[Checkpoints and Time Travel](checkpoints.md) covers history, forks and
+editing state.
 
-- `BeamWeaver.Agent.Middleware.DynamicPrompt`
-- `BeamWeaver.Agent.Middleware.ToolSelection`
-- `BeamWeaver.Agent.Middleware.ToolRetry`
-- `BeamWeaver.Agent.Middleware.ModelRetry`
-- `BeamWeaver.Agent.Middleware.ModelFallback`
-- `BeamWeaver.Agent.Middleware.ToolCallLimit`
-- `BeamWeaver.Agent.Middleware.ModelCallLimit`
-- `BeamWeaver.Agent.Middleware.Summarization`
-- `BeamWeaver.Agent.Middleware.StructuredOutputRetry`
-- `BeamWeaver.Agent.Middleware.HumanInTheLoop`
-- `BeamWeaver.Agent.Middleware.ContextEditing`
-- `BeamWeaver.Agent.Middleware.PII`
-- `BeamWeaver.Agent.Middleware.TodoList`
-- `BeamWeaver.Agent.Middleware.ShellTool`
-- `BeamWeaver.Agent.Middleware.ToolEmulator`
+## How the loop stops
 
-See [Custom Middleware](custom_middleware.md) for implementing your own hooks.
-See [Prebuilt Middleware](prebuilt_middleware.md) for configuration examples
-and the places where BeamWeaver intentionally uses tools or graph composition
-instead of Python middleware classes. See [Guardrails](guardrails.md) for
-agent safety checks built from the same middleware lifecycle.
+Each turn, the model either answers or asks for tool calls. BeamWeaver runs the
+tools, adds their results to `messages`, and calls the model again. The run
+ends when:
 
-## Runtime-Built Agents
+- the model replies without tool calls; that reply is the answer;
+- the agent has a response schema and the structured answer arrives;
+- a tool declared with `return_direct true` runs; its result is the last
+  message (see [Tools](tools.md));
+- an interrupt pauses the run, returning `{:interrupted, interrupt}`;
+- middleware ends it, for example when `ModelCallLimit` reaches its limit;
+- the run reaches its step limit.
 
-Prefer module-defined agents for stable application code. Use
-`BeamWeaver.Agent.build/1` for config-driven or user-generated workflows.
+Every model call, tool round and `before_*` or `after_*` middleware hook is
+one step. An agent with tools or middleware may take up to 9,999 steps, so set
+`recursion_limit` to bound a runaway loop. When the model asks for tools but
+the steps left can't fit the tool round, another model call and the hooks
+after it, the agent answers "Sorry, need more steps to process this request."
+instead, so the run still ends with an answer. A run that reaches the limit
+anyway returns `{:error, %BeamWeaver.Core.Error{type: :recursion_limit}}`.
+
+## Agents built at runtime
+
+When the agent's shape comes from data, such as a tenant's settings,
+`BeamWeaver.Agent.build/1` builds it from options named like the declarations
+(`response_format:` stands in for `response_schema`). Run it with
+`BeamWeaver.Agent.invoke/3`:
 
 ```elixir
+settings = %{prompt: "You are Acme's support agent.", tools: ["lookup_order"]}
+available_tools = %{"lookup_order" => MyApp.Tools.LookupOrder}
+
 {:ok, agent} =
   BeamWeaver.Agent.build(
     name: "support_agent",
-    model: BeamWeaver.Models.init_chat_model!("openai:gpt-5.4"),
-    tools: [],
-    system_prompt: "You are helpful."
+    model: "fake:chat",
+    model_opts: [responses: ["Order A-1001 shipped on Monday.", "You're welcome!"]],
+    system_prompt: settings.prompt,
+    tools: Enum.map(settings.tools, &Map.fetch!(available_tools, &1))
   )
 
-{:ok, state} =
-  BeamWeaver.Agent.invoke(agent, %{
-    messages: [BeamWeaver.Core.Message.user("hi")]
-  })
+saver = BeamWeaver.Checkpoint.ETS.new()
+opts = [checkpointer: saver, config: %{"configurable" => %{"thread_id" => "ticket-44"}}]
+{:ok, state} = BeamWeaver.Agent.invoke(agent, %{messages: ["Where is my order A-1001?"]}, opts)
+
+state.messages |> List.last() |> BeamWeaver.Core.Message.text()
+#=> "Order A-1001 shipped on Monday."
 ```
 
-Runtime-built agents support the same model/tools loop, schemas, middleware,
-checkpointer, store, cache, interrupts, recursion limits, and event-streaming
-options represented by `BeamWeaver.Agent.Spec`.
+`build/1` returns `{:ok, agent}`, or `{:error, %BeamWeaver.Core.Error{}}` when
+`:model` is missing or invalid, when a tool, middleware entry or response
+format is invalid, when an option isn't one of the declarations (the error
+names it), or when a subagent can't be built (an `:invalid_subagent` error
+that names it; see [Subagents](subagents.md#checked-when-the-agent-is-built)).
+`BeamWeaver.Agent.stream_events/3`, `BeamWeaver.Agent.resume/3`,
+`BeamWeaver.Agent.resume_review/3` and `BeamWeaver.Agent.get_state/2` take the
+built agent as their first argument too.
+
+A built agent takes the call options of an agent module: a call's
+`checkpointer:`, `store:` and `cache:` replace the ones given to `build/1`, so
+one agent serves every thread:
+
+```elixir
+{:ok, _state} = BeamWeaver.Agent.invoke(agent, %{messages: ["Thanks!"]}, opts)
+{:ok, snapshot} = BeamWeaver.Agent.get_state(agent, opts)
+length(snapshot.values.messages)
+#=> 4
+```
+
+Prefer agent modules for agents your application defines in code.
+
+## Reference
+
+- [`BeamWeaver.Agent`](https://hexdocs.pm/beam_weaver/BeamWeaver.Agent.html): the agent DSL and the functions that run agents
+- [`BeamWeaver.Agent.Built`](https://hexdocs.pm/beam_weaver/BeamWeaver.Agent.Built.html): an agent built at runtime
+- [`BeamWeaver.Agent.Middleware`](https://hexdocs.pm/beam_weaver/BeamWeaver.Agent.Middleware.html): the middleware behaviour
+- [`BeamWeaver.Core.Error`](https://hexdocs.pm/beam_weaver/BeamWeaver.Core.Error.html): the error returned by failed runs
+- [`BeamWeaver.Models.FakeChatModel`](https://hexdocs.pm/beam_weaver/BeamWeaver.Models.FakeChatModel.html): the scripted model used on this page

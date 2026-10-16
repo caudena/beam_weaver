@@ -1,10 +1,23 @@
 defmodule BeamWeaver.Tracing do
   @moduledoc """
   Local run trees, context propagation, redaction, and exporter boundaries.
+
+  Runs are kept in memory on the node, so `get_run/1` and `get_tree/1` can
+  read them. Running runs always stay; once more runs are stored than
+  `config :beam_weaver, :tracing, max_runs:` allows (10,000 by default), the
+  runs that finished first are dropped. `max_runs: 0` keeps only the runs
+  still in progress, for nodes that only export. `clear/0` drops them all.
+
+  A run belongs to the process that started it. When that process exits
+  before the run finishes, as a node or tool task killed at its timeout does,
+  the stored run gets `status: :error` and `error: %{kind: :exit, reason: ...}`,
+  so `max_runs:` counts it as finished, and the exporter the run started with
+  gets its `:error` event, sent from another process.
   """
 
   alias BeamWeaver.Config
   alias BeamWeaver.Tracing.Context
+  alias BeamWeaver.Tracing.Exporter
   alias BeamWeaver.Tracing.Run
   alias BeamWeaver.Tracing.Store
 
@@ -47,9 +60,10 @@ defmodule BeamWeaver.Tracing do
       |> Keyword.put(:context_metadata, context_metadata)
 
     run = Run.new(name, run_opts)
+    exporter = exporter(opts)
 
-    :ok = Store.put(run)
-    export(:started, run, opts)
+    :ok = Store.put(run, exporter)
+    export_event(:started, run, exporter)
     Context.put(Context.from_run(run))
 
     {:ok, run}
@@ -118,9 +132,9 @@ defmodule BeamWeaver.Tracing do
   @doc """
   Runs `fun` inside a chain/group trace run.
 
-  This is the BeamWeaver-native counterpart to Python's callback-manager chain
-  grouping helpers. It records a normal trace run with `kind: :chain` and relies on
-  process context propagation instead of passing callback manager objects around.
+  Use it to group several steps under one parent run. It records a normal trace
+  run with `kind: :chain` and makes it the current process context, so runs
+  started inside `fun` become its children without passing the run around.
   """
   @spec with_chain_group(String.t() | atom(), keyword(), (-> term())) :: term()
   def with_chain_group(name, opts \\ [], fun) when is_function(fun, 0) do
@@ -130,7 +144,7 @@ defmodule BeamWeaver.Tracing do
   @doc """
   Emits a custom tracing event through `:telemetry` with the current trace context.
 
-  Consumers that used Python callback handlers should subscribe to
+  To receive these events, attach a `:telemetry` handler to
   `[:beam_weaver, :tracing, :event]` and branch on the `:event` metadata field.
   """
   @spec dispatch_event(atom() | String.t(), term(), keyword()) :: :ok
@@ -170,36 +184,48 @@ defmodule BeamWeaver.Tracing do
   defdelegate attach_context(context, fun), to: Context, as: :attach
 
   @doc """
-  Starts a task under `supervisor` with the current trace context attached.
-  """
-  @spec async(Supervisor.supervisor(), (-> term()), keyword()) :: Task.t()
-  def async(supervisor, fun, opts \\ []) when is_function(fun, 0) do
-    context = capture_context()
-    task_opts = Keyword.take(opts, [:shutdown])
+  Starts a task that runs `fun` with the caller's trace context attached.
 
-    Task.Supervisor.async_nolink(
-      supervisor,
-      fn ->
-        attach_context(context, fun)
-      end,
-      task_opts
-    )
+  ## Options
+
+    * `:supervisor` - start an unlinked task under this `Task.Supervisor`
+      instead of a task linked to the caller
+    * `:context` - trace context to attach instead of the caller's current one
+    * `:shutdown` - shutdown option for supervised tasks
+  """
+  @spec async((-> term()), keyword()) :: Task.t()
+  def async(fun, opts \\ []) when is_function(fun, 0) do
+    context = Keyword.get_lazy(opts, :context, &capture_context/0)
+    fun = fn -> attach_context(context, fun) end
+
+    case Keyword.get(opts, :supervisor) do
+      nil -> Task.async(fun)
+      supervisor -> Task.Supervisor.async_nolink(supervisor, fun, Keyword.take(opts, [:shutdown]))
+    end
   end
 
   @doc """
-  Returns a stored run.
+  Returns a stored run, or `:error` once it was dropped from the store.
   """
   @spec get_run(Run.id()) :: {:ok, Run.t()} | :error
   defdelegate get_run(run_id), to: Store, as: :get
 
   @doc """
-  Returns a run with nested child runs.
+  Returns a run with nested child runs, as `%{run: run, children: [tree]}`.
+
+  Child runs that were already dropped from the store are missing.
   """
   @spec get_tree(Run.id()) :: {:ok, map()} | :error
   defdelegate get_tree(run_id), to: Store, as: :tree
 
-  @doc false
-  defdelegate reset(), to: Store
+  @doc """
+  Drops every run from the local store.
+
+  Runs in progress are dropped too: finishing one afterwards returns `:error`
+  and exports nothing.
+  """
+  @spec clear() :: :ok
+  defdelegate clear(), to: Store
 
   @doc """
   Flushes the configured tracing exporter when it supports explicit draining.
@@ -235,7 +261,7 @@ defmodule BeamWeaver.Tracing do
 
     case Store.update(run_id, updater) do
       {:ok, run} ->
-        export(event, run, opts)
+        export_event(event, run, exporter(opts))
         pop_finished_context(run)
         {:ok, run}
 
@@ -244,27 +270,34 @@ defmodule BeamWeaver.Tracing do
     end
   end
 
-  defp export(event, %Run{} = run, opts) do
-    exporter = exporter_option(opts)
-    exporter_opts = Config.option(opts, :exporter_opts, [:tracing, :exporter_opts], [])
-
-    cond do
-      is_nil(exporter) ->
-        :ok
-
-      function_exported?(exporter, :export, 3) ->
-        try do
-          exporter.export(event, run, exporter_opts)
-          :ok
-        rescue
-          _exception -> :ok
-        catch
-          _kind, _reason -> :ok
-        end
-
-      true ->
-        :ok
+  # The exporter of a call's `:exporter` option, or the configured one, with
+  # its options; `nil` when nothing exports.
+  defp exporter(opts) do
+    case exporter_option(opts) do
+      nil -> nil
+      exporter -> {exporter, Config.option(opts, :exporter_opts, [:tracing, :exporter_opts], [])}
     end
+  end
+
+  @doc false
+  # Sends one event to an exporter. An exporter that raises, or whose module
+  # has no `export/3`, never breaks the run. The module is loaded first: an
+  # exporter named only in config isn't loaded until something calls it.
+  @spec export_event(Exporter.event(), Run.t(), {module(), keyword()} | nil) :: :ok
+  def export_event(_event, %Run{}, nil), do: :ok
+
+  def export_event(event, %Run{} = run, {exporter, exporter_opts}) do
+    if Code.ensure_loaded?(exporter) and function_exported?(exporter, :export, 3) do
+      try do
+        exporter.export(event, run, exporter_opts)
+      rescue
+        _exception -> :ok
+      catch
+        _kind, _reason -> :ok
+      end
+    end
+
+    :ok
   end
 
   defp exporter_option(opts) do

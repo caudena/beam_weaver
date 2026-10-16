@@ -1,7 +1,7 @@
 defmodule BeamWeaver.OpenAI.ChatModel.StructuredOutput do
   @moduledoc false
 
-  alias BeamWeaver.OpenAI.Error
+  alias BeamWeaver.Core.Error
   alias BeamWeaver.OpenAI.Messages
   alias BeamWeaver.Provider.Options
   alias BeamWeaver.Provider.StructuredOutput, as: Parser
@@ -42,7 +42,6 @@ defmodule BeamWeaver.OpenAI.ChatModel.StructuredOutput do
 
   def maybe_parse(message, opts) do
     Parser.maybe_parse(message, opts,
-      error_module: Error,
       provider_name: "OpenAI",
       refusal?: true
     )

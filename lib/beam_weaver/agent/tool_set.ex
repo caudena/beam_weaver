@@ -1,12 +1,5 @@
 defmodule BeamWeaver.Agent.ToolSet do
-  @moduledoc """
-  Scoped tool authority for one agent model/tool step.
-
-  A `ToolSet` is stored in private graph state after the model node chooses the
-  effective tools for a turn. The following validation/tool node reads the same
-  set, so dynamic middleware cannot expose one tool schema to the model and
-  execute a different static registry afterwards.
-  """
+  @moduledoc false
 
   alias BeamWeaver.Core.Error
   alias BeamWeaver.Core.Tool
@@ -79,6 +72,14 @@ defmodule BeamWeaver.Agent.ToolSet do
   def from_state(%{tool_set: %__MODULE__{} = tool_set}), do: tool_set
   def from_state(%{"tool_set" => %__MODULE__{} = tool_set}), do: tool_set
   def from_state(_state), do: nil
+
+  # The tool set itself isn't saved with the thread; a run that continues from
+  # a checkpoint finds the names of the tools in it under `tool_set_names`, or
+  # `nil` before the thread's first model call.
+  @spec saved_names(term()) :: [String.t()] | nil
+  def saved_names(%{tool_set_names: names}) when is_list(names), do: names
+  def saved_names(%{"tool_set_names" => names}) when is_list(names), do: names
+  def saved_names(_state), do: nil
 
   @spec validate(t()) :: :ok | {:error, Error.t()}
   def validate(%__MODULE__{} = tool_set) do

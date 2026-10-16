@@ -1,18 +1,17 @@
 defmodule BeamWeaver.Graph.Execution.TaskCollector do
-  @moduledoc """
-  Awaiting, cancellation, failure policy, and pending-write collection for graph execution tasks.
-  """
+  @moduledoc false
 
   alias BeamWeaver.Core.Error
+  alias BeamWeaver.Graph.Execution.ChannelLookup
   alias BeamWeaver.Graph.Execution.CheckpointIO
   alias BeamWeaver.Graph.Execution.Collection
   alias BeamWeaver.Graph.Execution.CommandRouter
   alias BeamWeaver.Graph.Execution.Halt
   alias BeamWeaver.Graph.Execution.StepOutcome
-  alias BeamWeaver.Graph.Execution.Stream
   alias BeamWeaver.Graph.Execution.TaskAwaiter
   alias BeamWeaver.Graph.Execution.TaskResult
   alias BeamWeaver.Graph.Interrupt
+  alias BeamWeaver.Graph.StateGraph
 
   @doc false
   @spec collect_tasks([map()], map(), map()) ::
@@ -22,13 +21,8 @@ defmodule BeamWeaver.Graph.Execution.TaskCollector do
     |> TaskAwaiter.await(run)
     |> collect_results(run, Collection.new(), :normal)
     |> case do
-      {:ok, %Collection{} = collection} ->
-        collection
-        |> Collection.add_events(drain_custom_stream_events(run))
-        |> Collection.to_step_outcome(run, graph)
-
-      {:halt, %Halt{} = halt} ->
-        {:halt, halt}
+      {:ok, %Collection{} = collection} -> Collection.to_step_outcome(collection, run, graph)
+      {:halt, %Halt{} = halt} -> {:halt, halt}
     end
   end
 
@@ -77,7 +71,8 @@ defmodule BeamWeaver.Graph.Execution.TaskCollector do
          collection,
          mode
        ) do
-    result = %{result | events: result.events ++ drain_custom_stream_events(run)}
+    result = %{result | updates: result.updates ++ join_writes(run, entry)}
+
     collect_results(rest, run, Collection.add_result(collection, entry, result), mode)
   end
 
@@ -87,8 +82,6 @@ defmodule BeamWeaver.Graph.Execution.TaskCollector do
          collection,
          :normal
        ) do
-    result = %{result | events: result.events ++ drain_custom_stream_events(run)}
-
     collect_results(
       rest,
       run,
@@ -103,7 +96,6 @@ defmodule BeamWeaver.Graph.Execution.TaskCollector do
          collection,
          mode
        ) do
-    result = %{result | events: result.events ++ drain_custom_stream_events(run)}
     collect_results(rest, run, Collection.add_result(collection, entry, result), mode)
   end
 
@@ -113,12 +105,12 @@ defmodule BeamWeaver.Graph.Execution.TaskCollector do
          collection,
          :normal
        ) do
-    result = %{result | events: result.events ++ drain_custom_stream_events(run)}
     command = result.command
 
     if CommandRouter.targets_task?(command, run, entry) do
       command = %{command | graph: nil}
       normalized = CommandRouter.normalize_node_result(command)
+      normalized = %{normalized | updates: normalized.updates ++ join_writes(run, entry)}
 
       collect_results(
         rest,
@@ -140,7 +132,6 @@ defmodule BeamWeaver.Graph.Execution.TaskCollector do
          collection,
          mode
        ) do
-    result = %{result | events: result.events ++ drain_custom_stream_events(run)}
     collect_results(rest, run, Collection.add_events(collection, result.events), mode)
   end
 
@@ -153,7 +144,6 @@ defmodule BeamWeaver.Graph.Execution.TaskCollector do
          collection,
          mode
        ) do
-    result = %{result | events: result.events ++ drain_custom_stream_events(run)}
     collection = Collection.add_task_error(collection, entry, error, result.events)
     handle_task_failure(error, rest, run, collection, mode)
   end
@@ -164,7 +154,6 @@ defmodule BeamWeaver.Graph.Execution.TaskCollector do
          collection,
          mode
        ) do
-    events = events ++ drain_custom_stream_events(run)
     collection = Collection.add_task_error(collection, entry, error, events)
     handle_task_failure(error, rest, run, collection, mode)
   end
@@ -191,20 +180,11 @@ defmodule BeamWeaver.Graph.Execution.TaskCollector do
     end
   end
 
-  defp drain_custom_stream_events(run), do: drain_custom_stream_events(run, [])
-
-  defp drain_custom_stream_events(run, events) do
-    expected_run_id = run.run_id
-
-    receive do
-      {:beam_weaver_graph_custom_stream, ^expected_run_id, value} ->
-        drain_custom_stream_events(run, [Stream.custom_event(value) | events])
-    after
-      0 -> events
-    end
-  end
-
   defp hard_budget_error?(%Error{type: type}), do: type in [:run_timeout, :step_timeout]
+
+  # A finished task records its arrival at the joins it is upstream of, as its
+  # own writes, so a retried step keeps it.
+  defp join_writes(run, entry), do: StateGraph.join_writes(run.compiled.graph, entry.prepared.node)
 
   defp interrupt_payload(%Interrupt{} = interrupt, run, entry) do
     %{
@@ -212,7 +192,7 @@ defmodule BeamWeaver.Graph.Execution.TaskCollector do
       value: interrupt.value,
       timing: :during,
       nodes: [entry.node],
-      state: run.state,
+      state: interrupt_state(run),
       config: run.config,
       step: run.step,
       task_id: entry.id
@@ -223,7 +203,17 @@ defmodule BeamWeaver.Graph.Execution.TaskCollector do
     interrupt
     |> Map.put(:timing, Map.get(interrupt, :timing, :during))
     |> Map.put(:nodes, Map.get(interrupt, :nodes, [entry.node]))
-    |> Map.put(:state, run.state)
+    |> Map.put(:state, interrupt_state(run))
+    |> Map.put(:config, merge_interrupt_config(run.config, Map.get(interrupt, :config)))
+    |> Map.put(:step, run.step)
+    |> Map.put(:task_id, entry.id)
+  end
+
+  # A subgraph that stopped at a breakpoint pauses its parent's task.
+  defp interrupt_payload(%{timing: timing, nodes: _nodes} = interrupt, run, entry)
+       when timing in [:before, :after] do
+    interrupt
+    |> Map.put(:state, interrupt_state(run))
     |> Map.put(:config, merge_interrupt_config(run.config, Map.get(interrupt, :config)))
     |> Map.put(:step, run.step)
     |> Map.put(:task_id, entry.id)
@@ -233,11 +223,14 @@ defmodule BeamWeaver.Graph.Execution.TaskCollector do
     %{
       timing: timing,
       nodes: CheckpointIO.ready_names(nodes),
-      state: run.state,
+      state: interrupt_state(run),
       config: run.config,
       step: run.step
     }
   end
+
+  # What the caller sees of the paused run: its public state, as in `get_state/2`.
+  defp interrupt_state(run), do: ChannelLookup.public_state(run.compiled.graph, run.state)
 
   defp merge_interrupt_config(parent_config, nil), do: parent_config
 

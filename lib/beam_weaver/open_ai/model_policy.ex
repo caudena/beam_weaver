@@ -1,12 +1,5 @@
 defmodule BeamWeaver.OpenAI.ModelPolicy do
-  @moduledoc """
-  OpenAI model-family request policy.
-
-  LangChain keeps several of these rules inside the ChatOpenAI constructor and
-  payload builder. BeamWeaver keeps them as pure policy helpers so request
-  builders, initializers, and tests can share the same behavior without
-  exposing Python client internals.
-  """
+  @moduledoc false
 
   @doc """
   Returns the constructor default temperature for a model when the caller did
@@ -102,6 +95,34 @@ defmodule BeamWeaver.OpenAI.ModelPolicy do
         true
     end
   end
+
+  @doc false
+  # Checks a reasoning effort against the model profile's list of efforts, on
+  # OpenAI and xAI models whose profile has one.
+  @spec validate_reasoning_effort(BeamWeaver.Models.Profile.t() | nil, term()) ::
+          :ok | {:error, BeamWeaver.Core.Error.t()}
+  def validate_reasoning_effort(
+        %{provider: provider, extra: %{reasoning_efforts: [_ | _] = efforts}} = profile,
+        reasoning
+      )
+      when provider in [:openai, :xai] do
+    effort = reasoning_effort(reasoning)
+
+    if is_nil(effort) or effort in Enum.map(efforts, &to_string/1) do
+      :ok
+    else
+      {:error,
+       BeamWeaver.Core.Error.new(:unsupported_model_param, "#{profile.id} does not take reasoning effort #{effort}", %{
+         provider: provider,
+         model: profile.id,
+         params: [:reasoning_effort],
+         value: effort,
+         supported: efforts
+       })}
+    end
+  end
+
+  def validate_reasoning_effort(_profile, _reasoning), do: :ok
 
   defp o1_model?(model) when is_binary(model) do
     model

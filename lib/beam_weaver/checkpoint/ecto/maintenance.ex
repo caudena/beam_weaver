@@ -4,6 +4,7 @@ defmodule BeamWeaver.Checkpoint.Ecto.Maintenance do
   import Ecto.Query
 
   alias BeamWeaver.Checkpoint.DeltaCompaction
+  alias BeamWeaver.Checkpoint.Ecto, as: EctoSaver
   alias BeamWeaver.Checkpoint.Ecto.Listing
   alias BeamWeaver.Checkpoint.Ecto.Query
 
@@ -41,6 +42,12 @@ defmodule BeamWeaver.Checkpoint.Ecto.Maintenance do
   end
 
   defp do_delete_for_runs(saver, run_ids) do
+    if Listing.queryable_metadata?(saver),
+      do: delete_for_runs_in_sql(saver, run_ids),
+      else: delete_for_runs_decoded(saver, run_ids)
+  end
+
+  defp delete_for_runs_in_sql(saver, run_ids) do
     matching_checkpoint =
       from(checkpoint in Query.checkpoints(saver),
         where:
@@ -66,6 +73,46 @@ defmodule BeamWeaver.Checkpoint.Ecto.Maintenance do
          {:ok, _result} <- Query.delete_all(saver, checkpoints) do
       :ok
     end
+  end
+
+  # The codec stores metadata that SQL can't read, so every checkpoint's
+  # metadata is decoded to find the runs.
+  defp delete_for_runs_decoded(saver, run_ids) do
+    run_ids = MapSet.new(run_ids)
+
+    query =
+      from(checkpoint in Query.checkpoints(saver),
+        select: {checkpoint.thread_id, checkpoint.checkpoint_ns, checkpoint.checkpoint_id, checkpoint.metadata}
+      )
+
+    with {:ok, rows} <- Query.all(saver, query),
+         {:ok, keys} <- run_checkpoint_keys(saver, rows, run_ids) do
+      keys
+      |> Enum.group_by(&elem(&1, 0), &Tuple.delete_at(&1, 0))
+      |> Enum.reduce_while(:ok, fn {thread_id, checkpoints}, :ok ->
+        case delete_checkpoints(saver, thread_id, checkpoints) do
+          :ok -> {:cont, :ok}
+          {:error, _reason} = error -> {:halt, error}
+        end
+      end)
+    end
+  end
+
+  defp run_checkpoint_keys(saver, rows, run_ids) do
+    Enum.reduce_while(rows, {:ok, []}, fn {thread_id, namespace, checkpoint_id, metadata}, {:ok, keys} ->
+      case EctoSaver.load_json_value(saver, metadata || %{}) do
+        {:ok, %{"run_id" => run_id}} ->
+          if MapSet.member?(run_ids, run_id),
+            do: {:cont, {:ok, [{thread_id, namespace, checkpoint_id} | keys]}},
+            else: {:cont, {:ok, keys}}
+
+        {:ok, _metadata} ->
+          {:cont, {:ok, keys}}
+
+        {:error, _reason} = error ->
+          {:halt, error}
+      end
+    end)
   end
 
   defp do_copy_thread(saver, source_thread_id, target_thread_id) do
@@ -150,15 +197,21 @@ defmodule BeamWeaver.Checkpoint.Ecto.Maintenance do
     end
   end
 
-  defp delete_records(_saver, _thread_id, []), do: :ok
-
   defp delete_records(saver, thread_id, records) do
+    checkpoints =
+      Enum.map(records, &{&1.config["configurable"]["checkpoint_ns"], &1.config["configurable"]["checkpoint_id"]})
+
+    delete_checkpoints(saver, thread_id, checkpoints)
+  end
+
+  # Deletes the given `{checkpoint_ns, checkpoint_id}` checkpoints of one
+  # thread and their writes.
+  defp delete_checkpoints(_saver, _thread_id, []), do: :ok
+
+  defp delete_checkpoints(saver, thread_id, checkpoints) do
     condition =
-      records
-      |> Enum.group_by(
-        & &1.config["configurable"]["checkpoint_ns"],
-        & &1.config["configurable"]["checkpoint_id"]
-      )
+      checkpoints
+      |> Enum.group_by(&elem(&1, 0), &elem(&1, 1))
       |> Enum.reduce(dynamic(false), fn {namespace, checkpoint_ids}, condition ->
         dynamic(
           [row],

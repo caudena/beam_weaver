@@ -168,7 +168,7 @@ defmodule BeamWeaver.Graph.RuntimeSurfaceTest do
 
     assert "graph contains duplicate declarations" in messages
     assert "graph references missing nodes" in messages
-    assert "graph contains invalid node callables" in messages
+    assert "graph contains invalid nodes" in messages
     assert "graph uses reserved node or channel names" in messages
 
     missing = Enum.find(report.diagnostics, &(&1.message == "graph references missing nodes"))
@@ -194,6 +194,40 @@ defmodule BeamWeaver.Graph.RuntimeSurfaceTest do
               message: "graph contains dead-end nodes",
               details: %{nodes: ["dead"]}
             }} = Graph.compile(graph, validate_static: true)
+  end
+
+  test "static validation follows the destinations of nodes that route with Command or Send" do
+    route = fn %{amount: amount} ->
+      %Command{goto: if(amount > 100, do: :manager, else: :auto)}
+    end
+
+    split = fn %{order_ids: ids} -> Enum.map(ids, &%BeamWeaver.Graph.Send{node: :check, update: %{id: &1}}) end
+
+    graph =
+      Graph.new()
+      |> Graph.add_node(:route, route, destinations: [:manager, :auto])
+      |> Graph.add_node(:manager, fn _state -> %{handled_by: :manager} end)
+      |> Graph.add_node(:auto, fn _state -> %Command{goto: Graph.end_node()} end, destinations: [Graph.end_node()])
+      |> Graph.add_node(:split, split, destinations: %{check: "one per order"})
+      |> Graph.add_node(:check, fn _state -> %{} end)
+      |> Graph.add_edge(Graph.start(), :route)
+      |> Graph.add_edge(:manager, :split)
+      |> Graph.add_edge(:check, Graph.end_node())
+
+    assert Graph.validation_report(graph, validate_static: true).diagnostics == []
+    assert {:ok, _compiled} = Graph.compile(graph, validate_static: true)
+
+    without_destinations =
+      Graph.new()
+      |> Graph.add_node(:route, route)
+      |> Graph.add_node(:manager, fn _state -> %{} end)
+      |> Graph.add_node(:auto, fn _state -> %{} end)
+      |> Graph.add_edge(Graph.start(), :route)
+      |> Graph.add_edge(:manager, Graph.end_node())
+      |> Graph.add_edge(:auto, Graph.end_node())
+
+    assert [%{message: "graph contains dead-end nodes", details: %{nodes: ["route"]}}] =
+             Graph.validation_report(without_destinations, validate_static: true).diagnostics
   end
 
   test "runtime injection, module nodes, and input/output projection use Elixir runtime structs" do
@@ -792,7 +826,7 @@ defmodule BeamWeaver.Graph.RuntimeSurfaceTest do
     graph =
       Graph.new()
       |> Graph.add_node(:slow, fn _state ->
-        send(parent, :slow_started)
+        send(parent, {:slow_started, self()})
         Process.sleep(:infinity)
       end)
       |> Graph.add_edge(Graph.start(), :slow)
@@ -800,15 +834,24 @@ defmodule BeamWeaver.Graph.RuntimeSurfaceTest do
       |> Graph.compile!()
 
     assert {:error, %Error{type: :step_timeout} = error} =
-             Compiled.invoke(graph, %{}, step_timeout: 20)
+             Compiled.invoke(graph, %{}, step_timeout: 200)
 
     assert error.details.node == "slow"
-    assert_receive :slow_started
 
     assert_receive {:graph_telemetry, [:beam_weaver, :graph, :node_cancel], %{count: 1}, %{node: "slow"}}
 
-    assert_receive {:graph_telemetry, [:beam_weaver, :graph, :step_timeout], %{duration: 20},
+    assert_receive {:graph_telemetry, [:beam_weaver, :graph, :step_timeout], %{duration: 200},
                     %{node: "slow", error: ^error}}
+
+    # On a loaded machine the step can time out before the node task runs at
+    # all. If it did start, it was killed with the step: it never returns.
+    receive do
+      {:slow_started, pid} ->
+        ref = Process.monitor(pid)
+        assert_receive {:DOWN, ^ref, :process, ^pid, _reason}
+    after
+      0 -> :ok
+    end
   end
 
   test "update_state returns a tagged ambiguity error when continuation cannot be inferred" do
@@ -866,6 +909,205 @@ defmodule BeamWeaver.Graph.RuntimeSurfaceTest do
 
     assert {:error, %Error{type: :invalid_update, message: "bulk update supersteps cannot be empty"}} =
              Compiled.bulk_update_state(graph, config, [[]])
+  end
+
+  test "nodes see the run's id in runtime.execution" do
+    parent = self()
+
+    graph =
+      Graph.new()
+      |> Graph.add_node(:work, fn _state, runtime ->
+        send(parent, {:run_ids, runtime.run_id, runtime.execution.run_id})
+        %{done: true}
+      end)
+      |> Graph.add_edge(Graph.start(), :work)
+      |> Graph.add_edge(:work, Graph.end_node())
+      |> Graph.compile!()
+
+    assert {:ok, _state} = Compiled.invoke(graph, %{})
+    assert_receive {:run_ids, run_id, run_id}
+    assert is_binary(run_id)
+
+    assert {:ok, _state} = Compiled.invoke(graph, %{}, run_id: "run-7")
+    assert_receive {:run_ids, "run-7", "run-7"}
+  end
+
+  test "the graph's bookkeeping stays out of node state, Send workers and interrupts" do
+    parent = self()
+
+    graph =
+      Graph.new()
+      |> Graph.add_reducer(:visits, &+/2)
+      |> Graph.add_node(:review, fn state ->
+        send(parent, {:state_keys, :review, Map.keys(state)})
+        %{visits: 1, status: :again}
+      end)
+      |> Graph.add_node(:fan_out, fn state ->
+        send(parent, {:state_keys, :fan_out, Map.keys(state)})
+        [%Graph.Send{node: :worker, update: %{item: 1}}]
+      end)
+      |> Graph.add_node(:worker, fn state ->
+        send(parent, {:state_keys, :worker, Map.keys(state)})
+        %{handled: state.item}
+      end)
+      |> Graph.add_node(:approve, fn _state -> %{approved: Graph.interrupt(:approve?)} end)
+      |> Graph.add_edge(Graph.start(), :review)
+      |> Graph.add_edge(:review, :review, when: %{status: :again}, max_runs: 1)
+      |> Graph.add_edge(:review, :fan_out, default: true)
+      |> Graph.add_edge(:worker, :approve)
+      |> Graph.add_edge(:approve, Graph.end_node())
+      |> Graph.compile!(checkpointer: CheckpointETS.new())
+
+    config = %{"configurable" => %{"thread_id" => "bookkeeping"}}
+
+    assert {:interrupted, interrupt} = Compiled.invoke(graph, %{visits: 0}, config: config)
+    assert interrupt.state == %{visits: 2, status: :again, handled: 1}
+
+    assert_received {:state_keys, :review, [:visits]}
+    assert_received {:state_keys, :review, second_visit}
+    assert Enum.sort(second_visit) == [:status, :visits]
+    assert_received {:state_keys, :fan_out, fan_out}
+    assert Enum.sort(fan_out) == [:status, :visits]
+    assert_received {:state_keys, :worker, worker}
+    assert Enum.sort(worker) == [:item, :status, :visits]
+  end
+
+  test "routers, when: functions and deps: conditions read the state without the graph's bookkeeping" do
+    parent = self()
+
+    seen = fn name, state ->
+      send(parent, {:routing_keys, name, Enum.sort(Map.keys(state))})
+      true
+    end
+
+    # After the second step `review` has arrived at the join and `audit` not
+    # yet, and the guarded edge has counted its run.
+    graph =
+      Graph.new()
+      |> Graph.add_node(:draft, fn _state -> %{draft: "Refund issued."} end)
+      |> Graph.add_node(:review, fn _state -> %{reviewed: true} end)
+      |> Graph.add_node(:check, fn _state -> %{checked: true} end)
+      |> Graph.add_node(:audit, fn _state -> %{audited: true} end)
+      |> Graph.add_node(:archive, fn _state -> %{archived: true} end)
+      |> Graph.add_node(:publish, fn _state -> %{published: true} end,
+        deps: [:review, :check],
+        when: fn _output, state -> seen.(:deps, state) end
+      )
+      |> Graph.add_edge(Graph.start(), :draft)
+      |> Graph.add_edge(:draft, :review, when: fn _update, state -> seen.(:when, state) end, max_runs: 1)
+      |> Graph.add_edge(:draft, :check)
+      |> Graph.add_edge(:check, :audit)
+      |> Graph.add_join([:review, :audit], :archive)
+      |> BeamWeaver.Graph.StateGraph.put_branch_routes(:review, &(seen.(:router, &1) && Graph.end_node()))
+      |> Graph.compile!()
+
+    assert {:ok, %{published: true, archived: true}} = Compiled.invoke(graph, %{})
+
+    assert_received {:routing_keys, :when, [:draft]}
+    assert_received {:routing_keys, :router, [:checked, :draft, :reviewed]}
+    assert_received {:routing_keys, :deps, [:checked, :draft, :reviewed]}
+  end
+
+  test "graph runs report their duration, graph and run id to telemetry" do
+    attach_graph_telemetry([:start, :stop, :node_start, :node_stop])
+
+    graph =
+      Graph.new(name: "TimedGraph")
+      |> Graph.add_node(:work, fn _state ->
+        Process.sleep(20)
+        %{done: true}
+      end)
+      |> Graph.add_edge(Graph.start(), :work)
+      |> Graph.add_edge(:work, Graph.end_node())
+      |> Graph.compile!()
+
+    assert {:ok, _state} = Compiled.invoke(graph, %{}, run_id: "timed-run")
+
+    assert_receive {:graph_telemetry, [:beam_weaver, :graph, :start], %{system_time: _, monotonic_time: _},
+                    %{graph: "TimedGraph", run_id: "timed-run"}}
+
+    assert_receive {:graph_telemetry, [:beam_weaver, :graph, :node_start], %{monotonic_time: _},
+                    %{graph: "TimedGraph", node: "work", step: 0}}
+
+    assert_receive {:graph_telemetry, [:beam_weaver, :graph, :node_stop], %{duration: node_duration},
+                    %{graph: "TimedGraph", node: "work", step: 0}}
+
+    assert_receive {:graph_telemetry, [:beam_weaver, :graph, :stop], %{duration: run_duration, system_time: _},
+                    %{graph: "TimedGraph", run_id: "timed-run"}}
+
+    assert System.convert_time_unit(node_duration, :native, :millisecond) >= 20
+    assert run_duration >= node_duration
+  end
+
+  test "failed and paused graph runs report their duration, graph and run id to telemetry" do
+    attach_graph_telemetry([:exception, :interrupt])
+
+    failing =
+      Graph.new(name: "FailingTelemetryGraph")
+      |> Graph.add_node(:boom, fn _state -> {:error, Error.new(:boom, "it broke")} end)
+      |> Graph.add_edge(Graph.start(), :boom)
+      |> Graph.add_edge(:boom, Graph.end_node())
+      |> Graph.compile!()
+
+    assert {:error, %Error{type: :boom} = error} = Compiled.invoke(failing, %{}, run_id: "failed-run")
+
+    assert_receive {:graph_telemetry, [:beam_weaver, :graph, :exception], %{duration: duration},
+                    %{graph: "FailingTelemetryGraph", run_id: "failed-run", error: ^error}}
+
+    assert is_integer(duration) and duration >= 0
+
+    paused =
+      Graph.new(name: "PausedTelemetryGraph")
+      |> Graph.add_node(:approve, fn _state -> %{approved: true} end)
+      |> Graph.add_edge(Graph.start(), :approve)
+      |> Graph.add_edge(:approve, Graph.end_node())
+      |> Graph.compile!(interrupt_before: [:approve])
+
+    assert {:interrupted, _interrupt} = Compiled.invoke(paused, %{}, run_id: "paused-run")
+
+    assert_receive {:graph_telemetry, [:beam_weaver, :graph, :interrupt], %{duration: _},
+                    %{graph: "PausedTelemetryGraph", run_id: "paused-run", nodes: ["approve"]}}
+  end
+
+  test "a Send whose update doesn't merge into the state fails its task, and the run returns the error" do
+    attach_graph_telemetry([:exception])
+    parent = self()
+
+    fan_out = fn sends ->
+      Graph.new(name: "BadSendGraph", state_schema: BeamWeaver.Graph.Messages.state_schema())
+      |> Graph.add_reducer(:count, &+/2)
+      |> Graph.add_node(:split, fn _state -> sends end)
+      |> Graph.add_node(:tally, fn state ->
+        send(parent, {:tallied, state.count})
+        %{}
+      end)
+      |> Graph.add_edge(Graph.start(), :split)
+      |> Graph.add_edge(:tally, Graph.end_node())
+      |> Graph.compile!()
+    end
+
+    # The `count` reducer raises on the second update; the first task still runs.
+    graph =
+      fan_out.([%Graph.Send{node: :tally, update: %{count: 1}}, %Graph.Send{node: :tally, update: %{count: "one"}}])
+
+    {result, root_id} =
+      BeamWeaver.Tracing.with_run("bad send", fn ->
+        {Compiled.invoke(graph, %{count: 0}, run_id: "bad-send"), BeamWeaver.Tracing.capture_context().run_id}
+      end)
+
+    assert {:error, %Error{type: :invalid_update, details: %{channel: :count}} = error} = result
+    assert_received {:tallied, 1}
+
+    assert_receive {:graph_telemetry, [:beam_weaver, :graph, :exception], _measurements,
+                    %{graph: "BadSendGraph", run_id: "bad-send", error: ^error}}
+
+    assert {:ok, %{children: [graph_run]}} = BeamWeaver.Tracing.get_tree(root_id)
+    assert %{name: "BadSendGraph", status: :error, error: %{type: :invalid_update}} = graph_run.run
+
+    human = %Graph.Send{node: :tally, update: %{messages: [%{"role" => "human", "content" => "Hi"}]}}
+
+    assert {:error, %Error{type: :invalid_update, details: %{channel: :messages}}} =
+             Compiled.invoke(fan_out.([human]), %{count: 0})
   end
 
   defp attach_graph_telemetry(events) do

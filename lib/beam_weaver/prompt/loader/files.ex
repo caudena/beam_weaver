@@ -2,7 +2,6 @@ defmodule BeamWeaver.Prompt.Loader.Files do
   @moduledoc false
 
   alias BeamWeaver.Core.Error
-  alias BeamWeaver.Prompt.Loader.Codec
   alias BeamWeaver.Result
 
   def reject_hub_path("lc://" <> _rest) do
@@ -28,14 +27,6 @@ defmodule BeamWeaver.Prompt.Loader.Files do
   def read_text_file(path, opts) do
     with {:ok, contents} <- read_file(path) do
       decode_text(contents, Keyword.get(opts, :encoding, :utf8))
-    end
-  end
-
-  def read_relative_text(path, opts, extensions) do
-    with :ok <- validate_relative_path(path, opts),
-         full_path <- resolve_relative_path(path, opts),
-         :ok <- validate_extension(full_path, extensions) do
-      read_file(full_path)
     end
   end
 
@@ -117,54 +108,6 @@ defmodule BeamWeaver.Prompt.Loader.Files do
 
       {:error, %Error{} = error} ->
         {:error, error}
-    end
-  end
-
-  defp validate_relative_path(path, opts) do
-    if Keyword.get(opts, :allow_dangerous_paths, false) do
-      :ok
-    else
-      cond do
-        Path.type(path) == :absolute ->
-          {:error, Error.new(:unsafe_prompt_path, "absolute prompt paths are not allowed", %{path: path})}
-
-        ".." in Path.split(path) ->
-          {:error,
-           Error.new(:unsafe_prompt_path, "prompt paths may not contain '..' components", %{
-             path: path
-           })}
-
-        true ->
-          :ok
-      end
-    end
-  end
-
-  defp resolve_relative_path(path, opts) do
-    base_dir = Keyword.get(opts, :base_dir, File.cwd!())
-
-    if Path.type(path) == :absolute do
-      Path.expand(path)
-    else
-      Path.expand(path, base_dir)
-    end
-  end
-
-  defp validate_extension(path, extensions) do
-    resolved_path = Codec.resolve_existing_path(path)
-
-    if Path.extname(path) in extensions and Path.extname(resolved_path) in extensions do
-      :ok
-    else
-      {:error,
-       Error.new(
-         :unsupported_prompt_format,
-         "referenced prompt file has an unsupported suffix",
-         %{
-           path: path,
-           extensions: extensions
-         }
-       )}
     end
   end
 end

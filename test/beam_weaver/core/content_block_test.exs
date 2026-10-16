@@ -68,6 +68,53 @@ defmodule BeamWeaver.Core.ContentBlockTest do
     assert no_type["cachePoint"] == %{"type" => "default"}
   end
 
+  test "a file part with a nested file map becomes a file block with its URL, id or data" do
+    assert {:ok, %ContentBlock.File{url: "https://example.test/label.pdf", data: nil}} =
+             ContentBlock.from(%{"type" => "file", "file" => %{"file_url" => "https://example.test/label.pdf"}})
+
+    assert {:ok, %ContentBlock.File{url: "https://example.test/old.pdf"}} =
+             ContentBlock.from(%{"type" => "file_url", "file_url" => %{"url" => "https://example.test/old.pdf"}})
+
+    assert {:ok, %ContentBlock.File{file_id: "file-abc", url: nil}} =
+             ContentBlock.from(%{"type" => "file", "file" => %{"file_id" => "file-abc"}})
+
+    # A data URL in `file_data` gives the block its base64 payload and media type.
+    assert {:ok, %ContentBlock.File{data: "JVBERi0=", mime_type: "application/pdf", filename: "label.pdf"}} =
+             ContentBlock.from(%{
+               "type" => "file",
+               "file" => %{"file_data" => "data:application/pdf;base64,JVBERi0=", "filename" => "label.pdf"}
+             })
+
+    assert {:ok, %ContentBlock.File{data: "aGVsbG8gd29ybGQ=", mime_type: "text/plain"}} =
+             ContentBlock.from(%{"type" => "file", "file" => %{"file_data" => "data:text/plain,hello%20world"}})
+
+    assert {:error, %Error{type: :invalid_content_block}} =
+             ContentBlock.from(%{"type" => "file", "file" => %{"file_data" => "data:application/pdf;base64,%%%"}})
+
+    # So does a data URL where a URL goes.
+    for part <- [
+          %{"type" => "file", "file" => %{"file_url" => "data:application/pdf;base64,JVBERi0=", "filename" => "a.pdf"}},
+          %{"type" => "file", "file" => %{"url" => "data:application/pdf;base64,JVBERi0="}},
+          %{"type" => "file_url", "file_url" => %{"url" => "data:application/pdf;base64,JVBERi0="}},
+          %{"type" => "file_url", "file_url" => "data:application/pdf;base64,JVBERi0="}
+        ] do
+      assert {:ok, %ContentBlock.File{url: nil, data: "JVBERi0=", mime_type: "application/pdf"}} =
+               ContentBlock.from(part)
+    end
+
+    assert {:ok, %ContentBlock.File{url: nil, data: "aGVsbG8gd29ybGQ=", mime_type: "text/plain"}} =
+             ContentBlock.from(%{"type" => "file_url", "file_url" => %{"url" => "data:text/plain,hello%20world"}})
+
+    assert {:error, %Error{type: :invalid_content_block}} =
+             ContentBlock.from(%{"type" => "file_url", "file_url" => "data:application/pdf;base64,%%%"})
+
+    assert [%ContentBlock.Text{}, %ContentBlock.File{url: "https://example.test/label.pdf"}] =
+             Message.user([
+               "Summarize the label.",
+               %{"type" => "file", "file" => %{"file_url" => "https://example.test/label.pdf"}}
+             ]).content
+  end
+
   test "content block helpers expose native known types and data classification" do
     assert :text in ContentBlock.known_types()
     assert :server_tool_call in ContentBlock.known_types()

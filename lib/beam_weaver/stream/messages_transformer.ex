@@ -1,11 +1,10 @@
 defmodule BeamWeaver.Stream.MessageStream do
   @moduledoc """
-  Native projection of a streamed assistant message.
+  Projection of one streamed assistant message.
 
-  Python LangGraph exposes mutable `ChatModelStream` objects from its v3
-  message transformer. BeamWeaver keeps the same observable information in an
-  immutable struct that can be reduced, inspected, and passed through normal
-  Elixir streams.
+  An immutable struct with the message's protocol events, its text deltas (see
+  `text/1`) and, once done, the final message (see `output/1`). It can be
+  reduced, inspected, and passed through normal Elixir streams.
   """
 
   alias BeamWeaver.Core.Message
@@ -64,17 +63,15 @@ end
 
 defmodule BeamWeaver.Stream.MessagesTransformer do
   @moduledoc """
-  Reduces LangGraph-style v3 message protocol events into BeamWeaver streams.
+  Reduces message protocol events into `BeamWeaver.Stream.MessageStream` structs.
 
-  The transformer is intentionally a pure immutable reducer. It accepts the
-  event dictionaries produced by the upstream Python tests and by BeamWeaver's
-  typed stream boundary, ignores legacy v1 chunks/tool messages/subgraph
-  namespaces, and returns native `%BeamWeaver.Stream.MessageStream{}` structs.
-  Async behavior is expressed through `BeamWeaver.Core.Async` rather than a
-  separate async stream class.
+  The transformer is intentionally a pure immutable reducer. It accepts typed
+  stream envelopes and `"messages"` protocol event maps, whose payloads follow
+  the `message-start`, `content-block-start`/`-delta`/`-finish` and
+  `message-finish` lifecycle. Bare chunk payloads, tool messages and events from
+  subgraph namespaces are ignored.
   """
 
-  alias BeamWeaver.Core.Async
   alias BeamWeaver.Core.Message
   alias BeamWeaver.Stream.MessagesTransformer.Parser
   alias BeamWeaver.Stream.MessageStream
@@ -83,7 +80,6 @@ defmodule BeamWeaver.Stream.MessagesTransformer do
             completed: [],
             open_order: [],
             ignored_runs: [],
-            async?: false,
             pump: nil,
             pre_projection: []
 
@@ -92,9 +88,8 @@ defmodule BeamWeaver.Stream.MessagesTransformer do
           completed: [MessageStream.t()],
           open_order: [term()],
           ignored_runs: [term()],
-          async?: boolean(),
           pump: (-> boolean()) | nil,
-          pre_projection: [function()]
+          pre_projection: [(term() -> term()) | {(term(), term() -> {term(), term()}), term()}]
         }
 
   @spec new(keyword() | map()) :: t()
@@ -102,7 +97,6 @@ defmodule BeamWeaver.Stream.MessagesTransformer do
     opts = if is_map(opts), do: Map.to_list(opts), else: opts
 
     %__MODULE__{
-      async?: Keyword.get(opts, :async?, false),
       pump: Keyword.get(opts, :pump),
       pre_projection: normalize_pre_projection(Keyword.get(opts, :pre_projection, []))
     }
@@ -114,7 +108,9 @@ defmodule BeamWeaver.Stream.MessagesTransformer do
 
   @spec process(t(), term()) :: {:ok, t(), [MessageStream.t()]} | {:pass, t()}
   def process(%__MODULE__{} = transformer, event) do
-    case apply_pre_projection(transformer, event) do
+    {result, transformer} = apply_pre_projection(transformer, event)
+
+    case result do
       {:ok, events} when is_list(events) ->
         process_projected_events(transformer, events)
 
@@ -155,37 +151,48 @@ defmodule BeamWeaver.Stream.MessagesTransformer do
     |> then(fn {:ok, next, emitted} -> {:ok, next, Enum.reverse(emitted)} end)
   end
 
-  defp apply_pre_projection(%__MODULE__{pre_projection: []}, event), do: {:ok, event}
+  defp apply_pre_projection(%__MODULE__{pre_projection: []} = transformer, event),
+    do: {{:ok, event}, transformer}
 
-  defp apply_pre_projection(%__MODULE__{pre_projection: transforms}, event) do
-    transforms
-    |> Enum.reduce_while({:ok, [event]}, fn transform, {:ok, current_events} ->
-      case apply_pre_projection_transform(transform, current_events) do
-        {:ok, []} -> {:halt, :drop}
-        {:ok, next_events} -> {:cont, {:ok, next_events}}
-        :drop -> {:halt, :drop}
-        {:error, error} -> {:halt, {:error, error}}
-      end
-    end)
-    |> case do
-      {:ok, [single]} -> {:ok, single}
-      {:ok, events} -> {:ok, events}
-      other -> other
+  defp apply_pre_projection(%__MODULE__{pre_projection: transforms} = transformer, event) do
+    {result, transforms} = run_transforms(transforms, [event], [])
+    {result, %{transformer | pre_projection: transforms}}
+  end
+
+  # Feeds each transform the events the previous one emitted; once a transform
+  # drops everything or fails, the rest are skipped.
+  defp run_transforms([], [single], done), do: {{:ok, single}, Enum.reverse(done)}
+  defp run_transforms([], events, done), do: {{:ok, events}, Enum.reverse(done)}
+
+  defp run_transforms([transform | rest], events, done) do
+    case apply_pre_projection_transform(transform, events) do
+      {{:ok, []}, transform} -> {:drop, Enum.reverse(done, [transform | rest])}
+      {{:ok, events}, transform} -> run_transforms(rest, events, [transform | done])
+      {error, transform} -> {error, Enum.reverse(done, [transform | rest])}
     end
   end
 
   defp apply_pre_projection_transform(transform, events) do
-    Enum.reduce_while(events, {:ok, []}, fn event, {:ok, acc} ->
-      case normalize_pre_projection_result(transform.(event)) do
-        {:ok, next_events} -> {:cont, {:ok, prepend_all(acc, next_events)}}
-        :drop -> {:cont, {:ok, acc}}
-        {:error, error} -> {:halt, {:error, error}}
+    Enum.reduce_while(events, {{:ok, []}, transform}, fn event, {{:ok, acc}, transform} ->
+      {result, transform} = call_transform(transform, event)
+
+      case normalize_pre_projection_result(result) do
+        {:ok, next_events} -> {:cont, {{:ok, prepend_all(acc, next_events)}, transform}}
+        :drop -> {:cont, {{:ok, acc}, transform}}
+        {:error, error} -> {:halt, {{:error, error}, transform}}
       end
     end)
     |> case do
-      {:ok, next_events} -> {:ok, Enum.reverse(next_events)}
+      {{:ok, next_events}, transform} -> {{:ok, Enum.reverse(next_events)}, transform}
       other -> other
     end
+  end
+
+  defp call_transform(fun, event) when is_function(fun, 1), do: {fun.(event), fun}
+
+  defp call_transform({fun, state}, event) do
+    {result, state} = fun.(event, state)
+    {result, {fun, state}}
   end
 
   defp normalize_pre_projection_result({:ok, events}) when is_list(events), do: {:ok, events}
@@ -195,11 +202,8 @@ defmodule BeamWeaver.Stream.MessagesTransformer do
   defp normalize_pre_projection_result({:error, error}), do: {:error, error}
   defp normalize_pre_projection_result(event), do: {:ok, [event]}
 
-  @spec process_many(t() | [term()], [term()] | keyword(), keyword()) ::
-          {:ok, t(), [MessageStream.t()]}
-  def process_many(transformer_or_events, events_or_opts, opts \\ [])
-
-  def process_many(%__MODULE__{} = transformer, events, _opts) when is_list(events) do
+  @spec process_many(t(), [term()]) :: {:ok, t(), [MessageStream.t()]}
+  def process_many(%__MODULE__{} = transformer, events) when is_list(events) do
     Enum.reduce(events, {:ok, transformer, []}, fn event, {:ok, acc, emitted} ->
       case process(acc, event) do
         {:ok, next, new_streams} -> {:ok, next, prepend_all(emitted, new_streams)}
@@ -207,21 +211,6 @@ defmodule BeamWeaver.Stream.MessagesTransformer do
       end
     end)
     |> then(fn {:ok, next, emitted} -> {:ok, next, Enum.reverse(emitted)} end)
-  end
-
-  def process_many(events, opts, async_opts) when is_list(events) do
-    process_many(new(opts), events, async_opts)
-  end
-
-  @spec async_process_many(t() | [term()], [term()] | keyword(), keyword()) :: Async.handle()
-  def async_process_many(transformer_or_events, events_or_opts, opts \\ [])
-
-  def async_process_many(%__MODULE__{} = transformer, events, opts) when is_list(events) do
-    Async.run_call(opts, fn _call_opts -> process_many(transformer, events) end)
-  end
-
-  def async_process_many(events, opts, async_opts) when is_list(events) do
-    async_process_many(new(opts), events, async_opts)
   end
 
   @spec streams(t()) :: [MessageStream.t()]
@@ -488,20 +477,15 @@ defmodule BeamWeaver.Stream.MessagesTransformer do
   end
 
   defp normalize_pre_projection(nil), do: []
-  defp normalize_pre_projection(fun) when is_function(fun, 1), do: [fun]
+  defp normalize_pre_projection(funs) when is_list(funs), do: Enum.map(funs, &validate_pre_projection!/1)
+  defp normalize_pre_projection(transform), do: [validate_pre_projection!(transform)]
 
-  defp normalize_pre_projection(funs) when is_list(funs) do
-    Enum.map(funs, fn
-      fun when is_function(fun, 1) ->
-        fun
+  defp validate_pre_projection!(fun) when is_function(fun, 1), do: fun
+  defp validate_pre_projection!({fun, _state} = transform) when is_function(fun, 2), do: transform
 
-      other ->
-        raise ArgumentError, "pre_projection transforms must be unary functions, got #{inspect(other)}"
-    end)
-  end
-
-  defp normalize_pre_projection(other) do
-    raise ArgumentError, "pre_projection transforms must be a function or list, got #{inspect(other)}"
+  defp validate_pre_projection!(other) do
+    raise ArgumentError,
+          "pre_projection transforms must be unary functions or {fun/2, state} pairs, got #{inspect(other)}"
   end
 
   defp map_get(map, key, default \\ nil)

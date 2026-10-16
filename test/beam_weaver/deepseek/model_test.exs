@@ -187,24 +187,24 @@ defmodule BeamWeaver.DeepSeek.ModelTest do
     end
   end
 
-  test "Chat rejects non-map model_kwargs from model and invocation options" do
+  test "Chat rejects non-map extra_body from model and invocation options" do
     messages = [Message.user("hello")]
 
     for {model, opts} <- [
-          {ChatModel.new(model_kwargs: [:not, :a, :map]), []},
-          {ChatModel.new(), [model_kwargs: "not-a-map"]}
+          {ChatModel.new(extra_body: [:not, :a, :map]), []},
+          {ChatModel.new(), [extra_body: "not-a-map"]}
         ] do
       assert {:error, error} = ChatModel.request_body(model, messages, opts)
       assert error.type == :invalid_request
-      assert error.details.param == :model_kwargs
+      assert error.details.param == :extra_body
     end
   end
 
-  test "Chat validates tools, response format, and tool choice from the final model_kwargs body" do
+  test "Chat validates tools, response format, and tool choice from the final extra_body body" do
     messages = [Message.user("hello")]
 
     assert {:error, error} =
-             ChatModel.request_body(ChatModel.new(model_kwargs: %{tools: "not-a-list"}), messages)
+             ChatModel.request_body(ChatModel.new(extra_body: %{tools: "not-a-list"}), messages)
 
     assert error.type == :invalid_request
     assert error.details.param == :tools
@@ -214,7 +214,7 @@ defmodule BeamWeaver.DeepSeek.ModelTest do
 
     assert {:error, error} =
              ChatModel.request_body(
-               ChatModel.new(model_kwargs: %{tools: [strict, loose]}),
+               ChatModel.new(extra_body: %{tools: [strict, loose]}),
                messages
              )
 
@@ -223,7 +223,7 @@ defmodule BeamWeaver.DeepSeek.ModelTest do
 
     assert {:error, error} =
              ChatModel.request_body(
-               ChatModel.new(model_kwargs: %{response_format: %{type: :json_schema}}),
+               ChatModel.new(extra_body: %{response_format: %{type: :json_schema}}),
                messages
              )
 
@@ -232,7 +232,7 @@ defmodule BeamWeaver.DeepSeek.ModelTest do
     assert {:error, error} =
              ChatModel.request_body(
                ChatModel.new(
-                 model_kwargs: %{
+                 extra_body: %{
                    thinking: %{type: :disabled},
                    tools: [@chat_function_tool],
                    tool_choice: %{type: :function, function: %{name: "missing"}}
@@ -247,7 +247,7 @@ defmodule BeamWeaver.DeepSeek.ModelTest do
     assert {:ok, body} =
              ChatModel.request_body(
                ChatModel.new(
-                 model_kwargs: %{
+                 extra_body: %{
                    thinking: %{type: :disabled},
                    tools: [@chat_function_tool],
                    tool_choice: %{type: :function, function: %{name: "lookup"}},
@@ -425,7 +425,6 @@ defmodule BeamWeaver.DeepSeek.ModelTest do
 
     for opts <- [
           [model: "deepseek-v4-pro"],
-          [model_kwargs: %{model: "deepseek-v4-pro"}],
           [extra_body: %{model: "deepseek-v4-pro"}]
         ] do
       assert {:ok, body} = ResponsesModel.request_body(model, messages, opts)
@@ -434,7 +433,6 @@ defmodule BeamWeaver.DeepSeek.ModelTest do
 
     for opts <- [
           [model: "unknown"],
-          [model_kwargs: %{model: "unknown"}],
           [extra_body: %{model: "unknown"}]
         ] do
       assert {:error, error} = ResponsesModel.request_body(model, messages, opts)
@@ -443,10 +441,7 @@ defmodule BeamWeaver.DeepSeek.ModelTest do
     end
 
     assert {:ok, body} =
-             ResponsesModel.request_body(model, messages,
-               model_kwargs: %{stream: true},
-               extra_body: %{stream: true}
-             )
+             ResponsesModel.request_body(model, messages, extra_body: %{stream: true})
 
     assert body["model"] == "deepseek-flash"
     assert body["stream"] == false
@@ -454,7 +449,6 @@ defmodule BeamWeaver.DeepSeek.ModelTest do
     assert {:ok, streaming_body} =
              ResponsesModel.request_body(model, messages,
                stream: true,
-               model_kwargs: %{stream: false},
                extra_body: %{stream: false}
              )
 
@@ -467,11 +461,10 @@ defmodule BeamWeaver.DeepSeek.ModelTest do
 
     for {param, opts} <- [
           {:tools, [tools: :bad]},
-          {:model_kwargs, [model_kwargs: :bad]},
           {:extra_body, [extra_body: :bad]},
           {:reasoning, [reasoning: :high]},
           {:text, [text: :json]},
-          {:text, [model_kwargs: %{text: :json}]}
+          {:text, [extra_body: %{text: :json}]}
         ] do
       assert {:error, error} = ResponsesModel.request_body(model, messages, opts)
       assert error.type == :invalid_request
@@ -485,7 +478,6 @@ defmodule BeamWeaver.DeepSeek.ModelTest do
 
     for opts <- [
           [store: false],
-          [model_kwargs: %{store: false}],
           [extra_body: %{store: false}],
           [extra_body: %{store: nil}]
         ] do

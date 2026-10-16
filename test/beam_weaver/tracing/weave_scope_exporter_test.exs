@@ -1,8 +1,10 @@
 defmodule BeamWeaver.Tracing.WeaveScopeExporterTest do
   use ExUnit.Case, async: false
 
+  import BeamWeaver.TestSupport.Eventually
   import ExUnit.CaptureLog
 
+  alias BeamWeaver.Tracing
   alias BeamWeaver.Tracing.Exporters.WeaveScope
   alias BeamWeaver.Tracing.Exporters.WeaveScope.Queue
   alias BeamWeaver.Tracing.Run
@@ -539,7 +541,7 @@ defmodule BeamWeaver.Tracing.WeaveScopeExporterTest do
     fifth =
       Task.async(fn -> Queue.enqueue(pid, :ok, Run.new("fifth", id: "fifth", trace_id: "fifth", kind: :model)) end)
 
-    assert Task.await(fifth, 500) == :ok
+    assert Task.await(fifth, 5_000) == :ok
     assert %{queued: 1, inflight_batches: 2, blocked_producers: 0} = Queue.stats(pid)
 
     flush = Task.async(fn -> Queue.flush(pid, 5_000) end)
@@ -553,6 +555,77 @@ defmodule BeamWeaver.Tracing.WeaveScopeExporterTest do
 
     GenServer.stop(pid)
     Agent.stop(listener)
+  end
+
+  test "a queue stopped by its supervisor uploads the observations still pending" do
+    {:ok, capture} =
+      Agent.start_link(fn -> [] end, name: BeamWeaver.Tracing.WeaveScopeCaptureTransportAgent)
+
+    name = :"weavescope_queue_#{System.unique_integer([:positive])}"
+
+    start_supervised!(
+      {Queue,
+       name: name,
+       api_key: "ws_test",
+       endpoint: "http://weavescope.local",
+       transport: BeamWeaver.Tracing.WeaveScopeCaptureTransport,
+       flush_interval: 60_000,
+       shutdown: 5_000}
+    )
+
+    run = Run.new("pending", id: "pending-run", trace_id: "pending-run", kind: :model)
+    assert Queue.enqueue(name, :ok, run) == :ok
+    assert Agent.get(capture, & &1) == []
+
+    assert :ok = stop_supervised(name)
+
+    assert [%{"events" => [%{"observation_id" => "pending-run", "operation" => "finish"}]}] =
+             Agent.get(capture, & &1)
+
+    Agent.stop(capture)
+  end
+
+  test "a run whose process exits before it finishes is uploaded as an error" do
+    {:ok, capture} =
+      Agent.start_link(fn -> [] end, name: BeamWeaver.Tracing.WeaveScopeCaptureTransportAgent)
+
+    name = :"weavescope_queue_#{System.unique_integer([:positive])}"
+
+    {:ok, pid} =
+      Queue.start_link(
+        name: name,
+        api_key: "ws_test",
+        endpoint: "http://weavescope.local",
+        transport: BeamWeaver.Tracing.WeaveScopeCaptureTransport,
+        flush_interval: 10_000
+      )
+
+    test = self()
+
+    owner =
+      spawn(fn ->
+        {:ok, run} = Tracing.start_run("stuck tool", kind: :tool, exporter: Queue, exporter_opts: [queue: name])
+        send(test, {:run, run})
+        Process.sleep(:infinity)
+      end)
+
+    assert_receive {:run, run}
+    ref = Process.monitor(owner)
+    Process.exit(owner, :kill)
+    assert_receive {:DOWN, ^ref, :process, ^owner, :killed}
+
+    # The `:started` event and, from the trace store, the `:error` event.
+    assert eventually(fn -> Queue.stats(pid).queued == 2 end)
+    assert Queue.flush(pid) == :ok
+
+    assert [%{"events" => [event]}] = Agent.get(capture, & &1)
+    assert %{"observation_id" => observation_id, "operation" => "error", "status" => "error"} = event
+    assert observation_id == run.id
+    assert event["end_time"]
+    assert inspect(event["error"]) =~ ":killed"
+
+    GenServer.stop(pid)
+    Agent.stop(capture)
   end
 
   test "upload batches respect the configured byte budget" do

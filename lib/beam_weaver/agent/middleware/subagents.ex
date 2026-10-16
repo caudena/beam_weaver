@@ -1,19 +1,57 @@
 defmodule BeamWeaver.Agent.Middleware.Subagents do
-  @moduledoc "Adds the DeepAgents `task` tool for synchronous subagents."
+  @moduledoc """
+  Adds the `task` tool, which hands work to a subagent and waits for its answer.
 
-  @behaviour BeamWeaver.Agent.Middleware
+  The `subagents` declaration adds this middleware. Each subagent runs as a
+  separate agent run inside the `task` call:
 
+    * It starts from the parent's state, without `messages`, the parent's
+      private keys and a few keys of the parent's own, such as `todos`; the
+      keys it changes come back to the parent.
+    * It saves its checkpoints with the parent's checkpointer, in the parent's
+      thread under its own namespace, and uses the parent's store and
+      `context:`, unless it declares its own checkpointer or store. With a
+      checkpointer of its own, in a parent run without a thread, it saves in
+      a thread named after the parent run's `run_id`.
+    * It may take as many steps as the parent's recursion limit, unless it
+      sets its own `recursion_limit`.
+    * It runs its own middleware and capabilities, not the parent's.
+    * When it pauses for human review, the parent run pauses with the
+      subagent's review; resuming the parent resumes the subagent. A parent
+      run without a checkpointer fails with `:missing_checkpointer` before it
+      starts when a subagent, or a subagent of a subagent, reviews tool calls.
+    * It is built when a `task` call runs it. `BeamWeaver.Agent.build/1`, or
+      an agent module's first call, checks every subagent without building
+      it, and fails with an `:invalid_subagent` error that names one that
+      can't be built.
+    * Its events reach the parent's stream under the namespace
+      `["tools", "subagent.<name>"]`, with `subagent_name` and `tool_call_id`
+      in the envelope metadata.
+
+  The subagents list may hold a `BeamWeaver.Agent.GeneralPurposeSubagentProfile`
+  to configure or turn off the built-in `general-purpose` subagent. See
+  [Subagents](subagents.md).
+  """
+
+  use BeamWeaver.Agent.Middleware
+
+  alias BeamWeaver.Agent
   alias BeamWeaver.Agent.Builder
+  alias BeamWeaver.Agent.Built
+  alias BeamWeaver.Agent.Compiler
+  alias BeamWeaver.Agent.GeneralPurposeSubagentProfile
+  alias BeamWeaver.Agent.Middleware
   alias BeamWeaver.Agent.Middleware.CompactConversation
   alias BeamWeaver.Agent.Middleware.Filesystem
-  alias BeamWeaver.Agent.Middleware.HumanInTheLoop
   alias BeamWeaver.Agent.Middleware.ModelCallLimit
   alias BeamWeaver.Agent.Middleware.Skills
   alias BeamWeaver.Agent.Middleware.Summarization
   alias BeamWeaver.Agent.Middleware.TodoList
   alias BeamWeaver.Agent.Middleware.ToolCallNormalization
   alias BeamWeaver.Agent.ModelRequest
-  alias BeamWeaver.Agent.Runner
+  alias BeamWeaver.Agent.ModelResolver
+  alias BeamWeaver.Agent.ProviderProfile
+  alias BeamWeaver.Agent.Spec, as: AgentSpec
   alias BeamWeaver.Agent.State, as: AgentState
   alias BeamWeaver.Agent.StructuredOutput
   alias BeamWeaver.Agent.StructuredOutput.ProviderStrategy
@@ -24,13 +62,18 @@ defmodule BeamWeaver.Agent.Middleware.Subagents do
   alias BeamWeaver.Agent.Subagent.Spec
   alias BeamWeaver.Checkpoint
   alias BeamWeaver.Core.Error
+  alias BeamWeaver.Core.ID
   alias BeamWeaver.Core.Message
   alias BeamWeaver.Core.Tool
   alias BeamWeaver.Filesystem.State
   alias BeamWeaver.Graph
   alias BeamWeaver.Graph.Channels.BinaryOperatorAggregate
   alias BeamWeaver.Graph.Command
+  alias BeamWeaver.Graph.Execution.ChannelLookup
   alias BeamWeaver.Graph.Execution.Namespace
+  alias BeamWeaver.Graph.Execution.Replay
+  alias BeamWeaver.Graph.StateGraph
+  alias BeamWeaver.Stream.Sink
 
   require Logger
 
@@ -192,18 +235,22 @@ defmodule BeamWeaver.Agent.Middleware.Subagents do
   </example>
   """
 
+  # Keys of the parent's state that stay with the parent, both ways. An
+  # agent's private keys don't reach its `task` tool at all.
   @child_state_exclusions [
     :messages,
     :todos,
     :structured_response,
-    :skills_metadata,
-    :skills_load_errors,
-    :memory_contents,
     :subagent_outputs,
     :subagent_cache
   ]
 
   @child_state_exclusion_names MapSet.new(Enum.map(@child_state_exclusions, &Atom.to_string/1))
+
+  # A failed resume with these errors means the person's decisions were wrong
+  # for the paused subagent: the parent run fails with the error and stays
+  # paused, as a direct review does.
+  @resume_error_types [:invalid_human_decision, :invalid_resume]
 
   defstruct subagents: [],
             model: nil,
@@ -212,7 +259,6 @@ defmodule BeamWeaver.Agent.Middleware.Subagents do
             permissions: [],
             skills: [],
             interrupt_on: nil,
-            checkpointer: nil,
             summarization: true,
             compact_conversation: true,
             host: nil,
@@ -220,33 +266,122 @@ defmodule BeamWeaver.Agent.Middleware.Subagents do
             system_prompt: @task_system_prompt,
             task_description: @task_description
 
+  @doc """
+  Builds the middleware. Raises `ArgumentError` when a subagent can't be
+  used: an unknown option, a missing name or description, a duplicate name,
+  or an invalid `execution_mode`, `capture_output` or `base_middleware`.
+  """
   def new(opts \\ []) do
+    case build(opts) do
+      {:ok, middleware} -> middleware
+      {:error, %Error{message: message}} -> raise ArgumentError, message
+    end
+  end
+
+  @doc false
+  # `new/1` that returns an `:invalid_subagent` error instead of raising it,
+  # so `BeamWeaver.Agent.build/1` can return it.
+  @spec build(keyword()) :: {:ok, struct()} | {:error, Error.t()}
+  def build(opts \\ []) do
     host = Keyword.get(opts, :host)
 
-    subagents =
+    {profiles, entries} =
       opts
       |> Keyword.get(:subagents, [])
       |> List.wrap()
-      |> maybe_add_general_purpose_subagent(opts, host)
-      |> Enum.map(&normalize_subagent(&1, opts, host))
-      |> validate_subagents!()
+      |> Enum.split_with(&match?(%GeneralPurposeSubagentProfile{}, &1))
 
-    %__MODULE__{
-      subagents: subagents,
-      model: Keyword.get(opts, :model),
-      backend: Keyword.get(opts, :backend, State.new()),
-      parent_tools: Keyword.get(opts, :parent_tools, []),
-      permissions: Keyword.get(opts, :permissions, []),
-      skills: Keyword.get(opts, :skills, []),
-      interrupt_on: Keyword.get(opts, :interrupt_on),
-      checkpointer: Keyword.get(opts, :checkpointer),
-      summarization: Keyword.get(opts, :summarization, true),
-      compact_conversation: Keyword.get(opts, :compact_conversation, true),
-      host: host,
-      child_mode: normalize_child_mode(Keyword.get(opts, :child_mode, :foreground)),
-      system_prompt: Keyword.get(opts, :system_prompt) || @task_system_prompt,
-      task_description: Keyword.get(opts, :task_description) || @task_description
-    }
+    with {:ok, child_mode} <- child_mode(Keyword.get(opts, :child_mode, :foreground)),
+         {:ok, subagents} <-
+           entries
+           |> maybe_add_general_purpose_subagent(opts, host, merge_general_purpose_profiles(profiles))
+           |> normalize_subagents(host),
+         :ok <- check_subagents(subagents) do
+      {:ok,
+       %__MODULE__{
+         subagents: subagents,
+         model: Keyword.get(opts, :model),
+         backend: Keyword.get(opts, :backend, State.new()),
+         parent_tools: Keyword.get(opts, :parent_tools, []),
+         permissions: Keyword.get(opts, :permissions, []),
+         skills: Keyword.get(opts, :skills, []),
+         interrupt_on: Keyword.get(opts, :interrupt_on),
+         summarization: Keyword.get(opts, :summarization, true),
+         compact_conversation: Keyword.get(opts, :compact_conversation, true),
+         host: host,
+         child_mode: child_mode,
+         system_prompt: Keyword.get(opts, :system_prompt) || @task_system_prompt,
+         task_description: Keyword.get(opts, :task_description) || @task_description
+       }}
+    end
+  end
+
+  @doc false
+  # Checks every subagent the way a `task` call builds it, without compiling
+  # its graph: an agent checks its subagents when it is built, and a `task`
+  # call builds only the subagent it runs. `opts` go to
+  # `BeamWeaver.Agent.Compiler.validate/2`.
+  @spec validate(struct(), keyword()) :: :ok | {:error, Error.t()}
+  def validate(%__MODULE__{subagents: subagents} = middleware, opts \\ []) do
+    Enum.find_value(subagents, :ok, fn %Compiled{name: name} = subagent ->
+      case validate_subagent(subagent, middleware, opts) do
+        :ok -> nil
+        {:error, %Error{} = error} -> {:error, invalid_subagent(name, error)}
+      end
+    end)
+  end
+
+  defp validate_subagent(%Compiled{agent: %Spec{} = spec}, middleware, opts) do
+    spec
+    |> agents_options(subagent_context(spec, middleware))
+    |> Enum.find_value(:ok, fn options ->
+      with {:ok, agent_spec} <- Builder.validate(options, opts),
+           :ok <- check_middleware_nodes(agent_spec) do
+        nil
+      end
+    end)
+  rescue
+    # Middleware and capability constructors raise for options they can't take.
+    error in [ArgumentError, KeyError] -> {:error, Error.new(:invalid_subagent, Exception.message(error))}
+  end
+
+  defp validate_subagent(%Compiled{agent: %Built{}}, _middleware, _opts), do: :ok
+  defp validate_subagent(%Compiled{agent: :host_managed}, _middleware, _opts), do: :ok
+
+  defp validate_subagent(%Compiled{agent: module}, _middleware, opts) when is_atom(module) do
+    if BeamWeaver.Behaviour.exported?(module, :__beam_weaver_agent_spec__, 0),
+      do: Compiler.validate_module(module, opts),
+      else: {:error, Error.new(:invalid_subagent, "#{inspect(module)} is not an agent module")}
+  end
+
+  defp validate_subagent(%Compiled{agent: agent}, _middleware, _opts) do
+    {:error,
+     Error.new(
+       :invalid_subagent,
+       "agent must be an agent module or an agent from BeamWeaver.Agent.build/1, got: #{inspect(agent)}"
+     )}
+  end
+
+  # Two middleware of one name that hook into the same step declare the same
+  # node of the agent's graph, which only building the graph would find.
+  defp check_middleware_nodes(%AgentSpec{middleware: middleware}) do
+    {:ok, middleware} = Middleware.normalize_all(middleware)
+
+    duplicates =
+      for hook <- [:before_agent, :before_model, :after_model, :after_agent],
+          {name, count} <-
+            middleware |> Enum.filter(&Middleware.hook?(&1, hook)) |> Enum.frequencies_by(&Middleware.name/1),
+          count > 1,
+          do: "#{name}.#{hook}"
+
+    if duplicates == [] do
+      :ok
+    else
+      {:error,
+       Error.new(:invalid_graph, "graph contains duplicate declarations: #{Enum.join(duplicates, ", ")}", %{
+         duplicates: Enum.map(duplicates, &%{value: &1, kind: :node})
+       })}
+    end
   end
 
   @impl true
@@ -306,6 +441,7 @@ defmodule BeamWeaver.Agent.Middleware.Subagents do
     ]
   end
 
+  @impl true
   def wrap_model_call(%__MODULE__{system_prompt: nil}, %ModelRequest{} = request, handler),
     do: handler.(request)
 
@@ -319,46 +455,169 @@ defmodule BeamWeaver.Agent.Middleware.Subagents do
     |> handler.()
   end
 
-  defp maybe_add_general_purpose_subagent(subagents, _opts, host) when not is_nil(host), do: subagents
+  # A parent without a checkpointer fails before it starts when a subagent
+  # pauses for review, or a subagent of a subagent at any depth does, as an
+  # agent with its own `interrupt_on` does.
+  @impl true
+  def requires_checkpointer?(%__MODULE__{subagents: subagents, interrupt_on: rules}),
+    do: Enum.any?(subagents, &child_requires_checkpointer?(&1, rules, []))
 
-  defp maybe_add_general_purpose_subagent(subagents, opts, nil) do
-    if Enum.any?(subagents, &(subagent_name(&1) == "general-purpose")) do
-      subagents
+  # `visited` holds the agent modules on the way down, so modules that name
+  # each other as subagents are looked at once.
+  defp child_requires_checkpointer?(%Compiled{agent: %Spec{} = spec}, parent_rules, visited) do
+    rules = review_rules(spec.interrupt_on, parent_rules)
+
+    rules != nil or middleware_requires_checkpointer?(spec.middleware) or
+      Enum.any?(List.wrap(spec.subagents), &nested_requires_checkpointer?(&1, rules, visited))
+  end
+
+  # A built agent's middleware includes the middleware of its own subagents,
+  # which looks further down.
+  defp child_requires_checkpointer?(%Compiled{agent: %Built{spec: spec}}, _parent_rules, _visited),
+    do: middleware_requires_checkpointer?(spec.middleware)
+
+  defp child_requires_checkpointer?(%Compiled{agent: module}, _parent_rules, visited) when is_atom(module) do
+    if module not in visited and function_exported?(module, :__beam_weaver_agent_spec__, 0) do
+      spec = module.__beam_weaver_agent_spec__()
+      rules = review_rules(spec.interrupt_on, nil)
+
+      rules != nil or middleware_requires_checkpointer?(spec.middleware) or
+        Enum.any?(List.wrap(spec.subagents), &nested_requires_checkpointer?(&1, rules, [module | visited]))
     else
-      [general_purpose_subagent(opts) | subagents]
+      false
     end
   end
 
-  defp normalize_subagent(%Compiled{} = subagent, _opts, _host), do: subagent
+  defp child_requires_checkpointer?(_subagent, _parent_rules, _visited), do: false
 
-  defp normalize_subagent(%Spec{} = subagent, _opts, host) when not is_nil(host) do
-    %Compiled{
-      name: subagent.name,
-      description: subagent.description,
-      agent: :host_managed,
-      inherit_messages: false,
-      capture_output: nil,
-      execution_mode: normalize_execution_mode(subagent.execution_mode)
+  # An entry of a subagent's own `subagents` list, which takes that
+  # subagent's review rules unless it has its own. The general-purpose
+  # subagent and async subagents add nothing: they review with those rules
+  # or not at all.
+  defp nested_requires_checkpointer?(%Compiled{} = subagent, rules, visited),
+    do: child_requires_checkpointer?(subagent, rules, visited)
+
+  defp nested_requires_checkpointer?(entry, rules, visited) do
+    case Spec.cast(entry) do
+      {:ok, spec} -> child_requires_checkpointer?(%Compiled{agent: spec}, rules, visited)
+      {:error, _message} -> false
+    end
+  end
+
+  defp middleware_requires_checkpointer?(middleware) do
+    case Middleware.normalize_all(middleware || []) do
+      {:ok, middleware} -> Enum.any?(middleware, &Middleware.requires_checkpointer?/1)
+      {:error, _error} -> false
+    end
+  end
+
+  defp maybe_add_general_purpose_subagent(subagents, _opts, host, _profile) when not is_nil(host), do: subagents
+
+  defp maybe_add_general_purpose_subagent(subagents, opts, nil, profile) do
+    cond do
+      Enum.any?(subagents, &(subagent_name(&1) == "general-purpose")) -> subagents
+      profile.enabled == false -> subagents
+      true -> [general_purpose_subagent(opts, profile) | subagents]
+    end
+  end
+
+  defp merge_general_purpose_profiles(profiles) do
+    Enum.reduce(profiles, %GeneralPurposeSubagentProfile{}, fn profile, acc ->
+      %GeneralPurposeSubagentProfile{
+        enabled: if(is_nil(profile.enabled), do: acc.enabled, else: profile.enabled),
+        description: profile.description || acc.description,
+        system_prompt: profile.system_prompt || acc.system_prompt
+      }
+    end)
+  end
+
+  defp normalize_subagents(entries, host) do
+    entries
+    |> Enum.reduce_while({:ok, []}, fn entry, {:ok, subagents} ->
+      case normalize_subagent(entry, host) do
+        {:ok, subagent} -> {:cont, {:ok, [subagent | subagents]}}
+        {:error, message} -> {:halt, {:error, invalid_subagent(subagent_name(entry), message)}}
+      end
+    end)
+    |> case do
+      {:ok, subagents} -> {:ok, Enum.reverse(subagents)}
+      error -> error
+    end
+  end
+
+  defp normalize_subagent(%Compiled{} = subagent, _host) do
+    with {:ok, capture_output} <- capture_output(subagent.capture_output),
+         {:ok, execution_mode} <- execution_mode(subagent.execution_mode) do
+      {:ok, %{subagent | capture_output: capture_output, execution_mode: execution_mode}}
+    end
+  end
+
+  # A spec is checked here and built into an agent when a `task` call asks for
+  # it, so a parent run doesn't build every subagent, and their subagents.
+  defp normalize_subagent(%Spec{} = subagent, nil) do
+    with :ok <- check_base_middleware(subagent.base_middleware),
+         {:ok, capture_output} <- capture_output(subagent.capture_output),
+         {:ok, execution_mode} <- execution_mode(subagent.execution_mode) do
+      {:ok,
+       %Compiled{
+         name: subagent.name,
+         description: subagent.description,
+         agent: subagent,
+         recursion_limit: subagent.recursion_limit,
+         inherit_messages: subagent.inherit_messages == true,
+         capture_output: capture_output,
+         execution_mode: execution_mode
+       }}
+    end
+  end
+
+  defp normalize_subagent(%Spec{} = subagent, _host) do
+    with {:ok, execution_mode} <- execution_mode(subagent.execution_mode) do
+      {:ok,
+       %Compiled{
+         name: subagent.name,
+         description: subagent.description,
+         agent: :host_managed,
+         inherit_messages: false,
+         capture_output: nil,
+         execution_mode: execution_mode
+       }}
+    end
+  end
+
+  defp normalize_subagent(entry, host) do
+    with {:ok, spec} <- Spec.cast(entry), do: normalize_subagent(spec, host)
+  end
+
+  # An `:invalid_subagent` error that names the subagent, when it has a name.
+  defp invalid_subagent(name, %Error{} = error) do
+    Error.new(:invalid_subagent, subagent_message(name, error.message), %{subagent: name, error: error})
+  end
+
+  defp invalid_subagent(name, message) when is_binary(message),
+    do: Error.new(:invalid_subagent, subagent_message(name, message), %{subagent: name})
+
+  defp subagent_message(name, message) do
+    if blank?(name), do: message, else: "subagent #{inspect(name)}: #{message}"
+  end
+
+  defp general_purpose_subagent(opts, %GeneralPurposeSubagentProfile{} = profile) do
+    %Spec{
+      name: "general-purpose",
+      description:
+        profile.description ||
+          Keyword.get(opts, :general_purpose_description, @default_general_purpose_description),
+      system_prompt:
+        profile.system_prompt || Keyword.get(opts, :general_purpose_system_prompt, @default_subagent_prompt),
+      base_middleware: [:deepagents]
     }
   end
 
-  defp normalize_subagent(map, opts, host) when is_map(map) and not is_nil(host),
-    do: map |> Spec.new() |> normalize_subagent(opts, host)
-
-  defp normalize_subagent(opts, build_opts, host) when is_list(opts) and not is_nil(host),
-    do: opts |> Spec.new() |> normalize_subagent(build_opts, host)
-
-  defp normalize_subagent(%Spec{} = subagent, opts, nil), do: normalize_subagent(subagent, opts)
-  defp normalize_subagent(map, opts, nil) when is_map(map), do: normalize_subagent(map, opts)
-  defp normalize_subagent(opts, build_opts, nil) when is_list(opts), do: normalize_subagent(opts, build_opts)
-
-  defp general_purpose_subagent(opts) do
-    %Spec{
-      name: "general-purpose",
-      description: Keyword.get(opts, :general_purpose_description, @default_general_purpose_description),
-      system_prompt: Keyword.get(opts, :general_purpose_system_prompt, @default_subagent_prompt),
-      base_middleware: [:deepagents]
-    }
+  defp check_base_middleware(entries) do
+    case Enum.find(List.wrap(entries), &is_binary/1) do
+      nil -> :ok
+      entry -> {:error, "base_middleware entries must use atom or module values, got #{inspect(entry)}"}
+    end
   end
 
   defp subagent_name(%Compiled{name: name}), do: name
@@ -367,65 +626,68 @@ defmodule BeamWeaver.Agent.Middleware.Subagents do
   defp subagent_name(opts) when is_list(opts), do: Keyword.get(opts, :name)
   defp subagent_name(_other), do: nil
 
-  defp normalize_subagent(%Compiled{} = subagent, _opts), do: subagent
+  # What a spec subagent runs with: its own settings, and the parent's model,
+  # tools, files and review rules where it has none.
+  defp subagent_context(%Spec{} = subagent, %__MODULE__{} = parent) do
+    {:ok, execution_mode} = execution_mode(subagent.execution_mode)
 
-  defp normalize_subagent(%Spec{} = subagent, opts) do
-    model = subagent.model || Keyword.fetch!(opts, :model)
-    parent_backend = Keyword.get(opts, :backend, State.new())
-    backend = subagent_backend(subagent, parent_backend)
-    parent_tools = Keyword.get(opts, :parent_tools, [])
-    tools = subagent.tools || parent_tools || []
-    permissions = subagent.permissions || Keyword.get(opts, :permissions, [])
-    skills = subagent.skills || Keyword.get(opts, :skills, [])
-    interrupt_on = subagent.interrupt_on || Keyword.get(opts, :interrupt_on)
-    summarization = Keyword.get(opts, :summarization, true)
-    compact_conversation = Keyword.get(opts, :compact_conversation, true)
-    execution_mode = normalize_execution_mode(subagent.execution_mode)
-    capture_output = normalize_capture_output(subagent.capture_output)
-
-    structured_output_strategy =
-      subagent
-      |> subagent_structured_output_strategy(model, tools, execution_mode)
-
-    {agent, generate_agent} =
-      build_subagent_agents!(
-        subagent,
-        model,
-        tools,
-        backend,
-        permissions,
-        skills,
-        interrupt_on,
-        summarization,
-        compact_conversation,
-        execution_mode,
-        Keyword.get(opts, :checkpointer)
-      )
-
-    %Compiled{
-      name: subagent.name,
-      description: subagent.description,
-      agent: agent,
-      generate_agent: generate_agent,
-      tool_count: length(List.wrap(tools)),
-      inherit_messages: subagent.inherit_messages == true,
-      capture_output: capture_output,
+    %{
+      model: subagent.model || parent.model,
+      model_opts: subagent.model_opts,
+      tools: subagent.tools || parent.parent_tools || [],
+      backend: subagent_backend(subagent, parent.backend),
+      permissions: subagent.permissions || parent.permissions,
+      skills: subagent.skills || parent.skills,
+      interrupt_on: review_rules(subagent.interrupt_on, parent.interrupt_on),
+      summarization: parent.summarization,
+      compact_conversation: parent.compact_conversation,
       execution_mode: execution_mode,
-      structured_output_strategy: structured_output_strategy
+      response_format: subagent.response_format
     }
   end
 
-  defp normalize_subagent(map, opts) when is_map(map),
-    do: map |> Spec.new() |> normalize_subagent(opts)
+  @doc false
+  # The subagent `name` as a `task` call runs it: built with the parent's
+  # model, tools and capability settings.
+  @spec build_subagent(struct(), String.t()) :: {:ok, Compiled.t()} | {:error, Error.t()}
+  def build_subagent(%__MODULE__{subagents: subagents} = middleware, name) do
+    case Enum.find(subagents, &(&1.name == name)) do
+      %Compiled{} = subagent -> ready_subagent(subagent, middleware)
+      nil -> {:error, Error.new(:invalid_subagent, "unknown subagent", %{name: name})}
+    end
+  end
 
-  defp normalize_subagent(opts, build_opts) when is_list(opts),
-    do: opts |> Spec.new() |> normalize_subagent(build_opts)
+  defp ready_subagent(%Compiled{agent: %Spec{} = spec} = subagent, %__MODULE__{} = middleware) do
+    context = subagent_context(spec, middleware)
 
-  defp subagent_structured_output_strategy(%Spec{} = subagent, model, _tools, :research_then_generate),
-    do: structured_output_strategy(subagent.response_format, model, [])
+    with {:ok, [agent | generate]} <- build_agents(agents_options(spec, context)) do
+      {:ok,
+       %{
+         subagent
+         | agent: agent,
+           generate_agent: List.first(generate),
+           tool_count: length(List.wrap(context.tools)),
+           structured_output_strategy: subagent_structured_output_strategy(spec, context)
+       }}
+    end
+  end
 
-  defp subagent_structured_output_strategy(%Spec{} = subagent, model, tools, _execution_mode),
-    do: structured_output_strategy(subagent.response_format, model, tools)
+  defp ready_subagent(%Compiled{} = subagent, _middleware), do: {:ok, subagent}
+
+  defp build_agents(options) do
+    Enum.reduce_while(options, {:ok, []}, fn options, {:ok, agents} ->
+      case Builder.build(options) do
+        {:ok, agent} -> {:cont, {:ok, agents ++ [agent]}}
+        {:error, %Error{}} = error -> {:halt, error}
+      end
+    end)
+  end
+
+  defp subagent_structured_output_strategy(%Spec{} = subagent, %{execution_mode: :research_then_generate} = context),
+    do: structured_output_strategy(subagent.response_format, context.model, [])
+
+  defp subagent_structured_output_strategy(%Spec{} = subagent, context),
+    do: structured_output_strategy(subagent.response_format, context.model, context.tools)
 
   defp structured_output_strategy(nil, _model, _tools), do: nil
 
@@ -440,99 +702,25 @@ defmodule BeamWeaver.Agent.Middleware.Subagents do
   defp structured_output_strategy_name(%ToolStrategy{}), do: :tool
   defp structured_output_strategy_name(_strategy), do: nil
 
-  defp build_subagent_agents!(
-         %Spec{} = subagent,
-         model,
-         tools,
-         backend,
-         permissions,
-         skills,
-         interrupt_on,
-         summarization,
-         compact_conversation,
-         :research_then_generate,
-         checkpointer
-       ) do
-    research_agent =
-      build_subagent_agent!(
-        subagent,
-        name_suffix: "research",
-        model: model,
-        tools: tools,
-        backend: backend,
-        permissions: permissions,
-        skills: skills,
-        interrupt_on: interrupt_on,
-        summarization: summarization,
-        compact_conversation: compact_conversation,
-        execution_mode: :agent_loop,
-        response_format: nil,
-        checkpointer: checkpointer,
-        prompt_suffix:
-          "## Research Phase\nYou are in the RESEARCH phase. Your job is to call any tools you need to gather additional context (e.g., related deals). When done, summarize what you found in your final message.\nIf you don't need any additional data, just say 'No additional research needed.'"
-      )
+  @research_prompt """
+  ## Research Phase
+  You are in the RESEARCH phase. Your job is to call any tools you need to gather additional context (e.g., related deals). When done, summarize what you found in your final message.
+  If you don't need any additional data, just say 'No additional research needed.'\
+  """
 
-    generate_subagent = %{subagent | inherit_messages: false, base_middleware: []}
-
-    generate_agent =
-      build_subagent_agent!(
-        generate_subagent,
-        name_suffix: "generate",
-        model: model,
-        tools: [],
-        backend: nil,
-        permissions: [],
-        skills: [],
-        interrupt_on: interrupt_on,
-        summarization: false,
-        compact_conversation: false,
-        execution_mode: :structured_once,
-        response_format: subagent.response_format,
-        checkpointer: checkpointer,
-        prompt_suffix: nil
-      )
-
-    {research_agent, generate_agent}
+  # The `BeamWeaver.Agent.build/1` options of the agents a spec subagent
+  # runs: its agent loop, and for `:research_then_generate` the generate pass
+  # after it.
+  defp agents_options(%Spec{} = subagent, %{execution_mode: :research_then_generate} = context) do
+    research = %{context | execution_mode: :agent_loop, response_format: nil}
+    [agent_options(subagent, research, "research", @research_prompt), generate_agent_options(subagent, context)]
   end
 
-  defp build_subagent_agents!(
-         %Spec{} = subagent,
-         model,
-         tools,
-         backend,
-         permissions,
-         skills,
-         interrupt_on,
-         summarization,
-         compact_conversation,
-         execution_mode,
-         checkpointer
-       ) do
-    agent =
-      build_subagent_agent!(
-        subagent,
-        name_suffix: nil,
-        model: model,
-        tools: tools,
-        backend: backend,
-        permissions: permissions,
-        skills: skills,
-        interrupt_on: interrupt_on,
-        summarization: summarization,
-        compact_conversation: compact_conversation,
-        execution_mode: execution_mode,
-        response_format: subagent.response_format,
-        checkpointer: checkpointer,
-        prompt_suffix: nil
-      )
+  defp agents_options(%Spec{} = subagent, context), do: [agent_options(subagent, context, nil, nil)]
 
-    {agent, nil}
-  end
-
-  defp build_subagent_agent!(%Spec{} = subagent, opts) do
-    name_suffix = Keyword.get(opts, :name_suffix)
-    prompt_suffix = Keyword.get(opts, :prompt_suffix)
-
+  # The subagent runs with every declaration of its spec, plus the inherited
+  # model, tools and review rules and the `base_middleware` capabilities.
+  defp agent_options(%Spec{} = subagent, context, name_suffix, prompt_suffix) do
     name =
       ["deepagents.subagent.#{subagent.name}", name_suffix]
       |> Enum.reject(&blank?/1)
@@ -540,63 +728,77 @@ defmodule BeamWeaver.Agent.Middleware.Subagents do
 
     system_prompt =
       [subagent.system_prompt, prompt_suffix]
-      |> Enum.reject(&(is_nil(&1) or blank?(&1)))
+      |> Enum.reject(&blank?/1)
       |> Enum.join("\n\n")
 
-    {:ok, agent} =
-      Builder.build(
-        name: name,
-        model: Keyword.fetch!(opts, :model),
-        tools: Keyword.fetch!(opts, :tools),
-        middleware:
-          subagent_middleware(
-            subagent,
-            subagent.middleware || [],
-            Keyword.fetch!(opts, :model),
-            Keyword.fetch!(opts, :backend),
-            Keyword.fetch!(opts, :permissions),
-            Keyword.fetch!(opts, :skills),
-            Keyword.fetch!(opts, :interrupt_on),
-            Keyword.fetch!(opts, :summarization),
-            Keyword.fetch!(opts, :compact_conversation),
-            Keyword.fetch!(opts, :execution_mode)
-          ),
-        system_prompt: system_prompt,
-        response_format: Keyword.fetch!(opts, :response_format),
-        checkpointer: Keyword.fetch!(opts, :checkpointer),
-        recursion_limit: 9999
-      )
-
-    agent
+    subagent
+    |> Spec.agent_options()
+    |> Map.merge(%{
+      name: name,
+      model: context.model,
+      tools: context.tools,
+      middleware: subagent_middleware(subagent, context),
+      system_prompt: system_prompt,
+      response_format: context.response_format,
+      interrupt_on: context.interrupt_on
+    })
+    |> without_nil_values()
   end
 
-  defp validate_subagents!([]),
-    do: raise(ArgumentError, "at least one subagent must be specified")
+  # The generate pass of `:research_then_generate` is one structured model
+  # call: no tools, capabilities or review, only the subagent's middleware.
+  defp generate_agent_options(%Spec{} = subagent, context) do
+    without_nil_values(%{
+      name: "deepagents.subagent.#{subagent.name}.generate",
+      model: context.model,
+      model_opts: subagent.model_opts,
+      middleware: subagent_middleware(%{subagent | base_middleware: []}, %{context | execution_mode: :structured_once}),
+      system_prompt: subagent.system_prompt,
+      response_format: context.response_format,
+      context_schema: subagent.context_schema,
+      checkpointer: subagent.checkpointer,
+      store: subagent.store
+    })
+  end
 
-  defp validate_subagents!(subagents) do
-    names = Enum.map(subagents, & &1.name)
+  defp without_nil_values(options), do: Map.reject(options, fn {_key, value} -> is_nil(value) end)
 
+  # A subagent's own review rules win, and `false` or an empty map turns
+  # review off; without rules of its own it takes the parent's.
+  defp review_rules(nil, parent_rules), do: enabled_review_rules(parent_rules)
+  defp review_rules(rules, _parent_rules), do: enabled_review_rules(rules)
+
+  defp enabled_review_rules(rules) when rules in [nil, false, []] or rules == %{}, do: nil
+  defp enabled_review_rules(rules), do: rules
+
+  defp check_subagents([]) do
+    {:error, Error.new(:invalid_subagent, "no subagents: declare one, or keep the general-purpose subagent enabled")}
+  end
+
+  defp check_subagents(subagents) do
     duplicates =
-      names
-      |> Enum.frequencies()
+      subagents
+      |> Enum.frequencies_by(& &1.name)
       |> Enum.filter(fn {_name, count} -> count > 1 end)
       |> Enum.map(fn {name, _count} -> name end)
 
-    if duplicates != [] do
-      raise ArgumentError, "duplicate subagent names: #{Enum.join(duplicates, ", ")}"
+    if duplicates == [] do
+      Enum.find_value(subagents, :ok, &check_subagent_fields/1)
+    else
+      {:error,
+       Error.new(:invalid_subagent, "duplicate subagent names: #{Enum.join(duplicates, ", ")}", %{
+         subagents: duplicates
+       })}
     end
+  end
 
-    Enum.each(subagents, fn
-      %Compiled{name: name, description: description, agent: agent} ->
-        cond do
-          blank?(name) -> raise ArgumentError, "subagent name is required"
-          blank?(description) -> raise ArgumentError, "subagent #{name} description is required"
-          is_nil(agent) -> raise ArgumentError, "compiled subagent #{name} agent is required"
-          true -> :ok
-        end
-    end)
-
-    subagents
+  defp check_subagent_fields(%Compiled{name: name, description: description, agent: agent}) do
+    cond do
+      blank?(name) -> {:error, Error.new(:invalid_subagent, "subagent name is required")}
+      blank?(description) -> {:error, invalid_subagent(name, "description is required")}
+      is_nil(agent) -> {:error, invalid_subagent(name, "agent is required")}
+      true -> nil
+    end
   end
 
   defp subagent_trace_tools(%__MODULE__{subagents: subagents}) do
@@ -636,7 +838,7 @@ defmodule BeamWeaver.Agent.Middleware.Subagents do
     end
   end
 
-  defp run_task(%__MODULE__{subagents: subagents}, input) do
+  defp run_task(%__MODULE__{subagents: subagents} = middleware, input) do
     name = value(input, :subagent_type) || value(input, :subagent_name) || value(input, :name)
     description = value(input, :description, "")
     parent_state = value(input, :state, %{}) || %{}
@@ -650,17 +852,20 @@ defmodule BeamWeaver.Agent.Middleware.Subagents do
             cached_task_output(input, cache, subagent, input_hash)
 
           :miss ->
-            case invoke_subagent(subagent, parent_state, description, input) do
-              {:ok, state} ->
-                result = subagent_result(state)
+            with {:ok, subagent} <- ready_subagent(subagent, middleware),
+                 {:ok, state} <- run_subagent(subagent, parent_state, description, input) do
+              task_output(input, parent_state, state, subagent_result(state), subagent,
+                input_hash: input_hash,
+                cached?: false
+              )
+            else
+              # The tools node pauses the parent run with the subagent's
+              # interrupt, or fails it when the decisions didn't fit.
+              {:interrupted, interrupt} ->
+                throw({:beam_weaver_graph_interrupt, interrupt})
 
-                task_output(input, parent_state, state, result, subagent,
-                  input_hash: input_hash,
-                  cached?: false
-                )
-
-              {:interrupted, state} ->
-                "Subagent interrupted: #{inspect(state)}"
+              {:resume_error, %Error{} = error} ->
+                throw({:beam_weaver_graph_error, error})
 
               {:error, %Error{} = error} ->
                 format_subagent_error(error)
@@ -740,19 +945,15 @@ defmodule BeamWeaver.Agent.Middleware.Subagents do
     "We cannot invoke subagent #{name} because it does not exist, the only allowed types are #{allowed}"
   end
 
-  defp normalize_child_mode(mode) when mode in [:foreground, :background], do: mode
-  defp normalize_child_mode(mode), do: raise(ArgumentError, "invalid child_mode #{inspect(mode)}")
+  defp child_mode(mode) when mode in [:foreground, :background], do: {:ok, mode}
+  defp child_mode(mode), do: {:error, Error.new(:invalid_subagent, "invalid child_mode #{inspect(mode)}")}
 
-  defp invoke_subagent(%Compiled{agent: agent} = subagent, parent_state, description, input)
+  defp run_subagent(%Compiled{agent: agent} = subagent, parent_state, description, input)
        when subagent.execution_mode != :research_then_generate or is_nil(subagent.generate_agent) do
-    Runner.invoke(
-      agent,
-      child_state(parent_state, description, subagent),
-      child_invoke_opts(input, subagent)
-    )
+    run_child(subagent, agent, child_state(parent_state, description, subagent), input, nil)
   end
 
-  defp invoke_subagent(
+  defp run_subagent(
          %Compiled{execution_mode: :research_then_generate, agent: research_agent, generate_agent: generate_agent} =
            subagent,
          parent_state,
@@ -761,27 +962,157 @@ defmodule BeamWeaver.Agent.Middleware.Subagents do
        ) do
     Logger.debug("#{subagent.name} using agent loop with #{subagent.tool_count || 0} tools")
 
-    case Runner.invoke(
-           research_agent,
-           child_state(parent_state, description, subagent),
-           child_invoke_opts(input, subagent, "research")
-         ) do
-      {:ok, research_state} ->
-        research_result = subagent_result(research_state)
-        log_research_result(subagent.name, research_result)
-        generate_description = research_then_generate_description(description, research_result)
+    with {:ok, research_state} <-
+           run_child(subagent, research_agent, child_state(parent_state, description, subagent), input, "research") do
+      research_result = subagent_result(research_state)
+      log_research_result(subagent.name, research_result)
+      generate_description = research_then_generate_description(description, research_result)
+      generate_input = child_state(parent_state, generate_description, %{subagent | inherit_messages: false})
 
-        case Runner.invoke(
-               generate_agent,
-               child_state(parent_state, generate_description, %{subagent | inherit_messages: false}),
-               child_invoke_opts(input, subagent, "generate")
-             ) do
-          {:ok, generate_state} -> {:ok, Map.merge(research_state, generate_state)}
-          other -> other
+      with {:ok, generate_state} <- run_child(subagent, generate_agent, generate_input, input, "generate") do
+        {:ok, Map.merge(research_state, generate_state)}
+      end
+    end
+  end
+
+  # One subagent run lives in the parent's thread under a namespace made from
+  # the `task` call, so a step that runs again finds it: a paused run resumes
+  # when the parent resumes its interrupt, a finished run returns its answer
+  # without running again, and an unfinished one continues.
+  defp run_child(%Compiled{} = subagent, agent, child_input, input, phase) do
+    runtime = runtime_from_input(input)
+    agent = with_parent_adapters(agent, runtime)
+    opts = child_invoke_opts(agent, runtime, input, subagent, phase)
+    stream_metadata = %{subagent_name: subagent.name, tool_call_id: value(input, :tool_call_id)}
+
+    case child_status(agent, opts) do
+      :new ->
+        child_input = without_child_private_keys(child_input, agent)
+        with_child_stream(runtime, stream_metadata, &Agent.invoke(agent, child_input, opts ++ &1))
+
+      {:unfinished, config} ->
+        with_child_stream(runtime, stream_metadata, &Agent.invoke(agent, %{}, Keyword.put(opts, :config, config) ++ &1))
+
+      {:finished, values} ->
+        {:ok, values}
+
+      {:paused, interrupt} ->
+        case resume_value(runtime, interrupt) do
+          {:ok, resume} ->
+            runtime
+            |> with_child_stream(stream_metadata, &Agent.resume(agent, resume, opts ++ &1))
+            |> resume_result()
+
+          :none ->
+            {:interrupted, interrupt}
         end
+    end
+    |> case do
+      {:interrupted, interrupt} -> {:interrupted, parent_interrupt(interrupt, stream_metadata)}
+      other -> other
+    end
+  end
 
-      other ->
-        other
+  # The parent's state reaches the `task` tool without the parent's private
+  # and managed keys. A key the subagent itself keeps private, managed or
+  # internal starts fresh too, so its middleware counts its own run.
+  defp without_child_private_keys(child_input, agent) do
+    case child_graph(agent) do
+      %StateGraph{} = graph -> ChannelLookup.public_state(graph, child_input)
+      _other -> child_input
+    end
+  end
+
+  defp child_graph(%Built{compiled: %{graph: graph}}), do: graph
+
+  defp child_graph(module) do
+    case module.graph() do
+      %{graph: %StateGraph{} = graph} -> graph
+      graph -> graph
+    end
+  end
+
+  defp resume_result({:error, %Error{type: type} = error}) when type in @resume_error_types,
+    do: {:resume_error, error}
+
+  defp resume_result(result), do: result
+
+  # The parent's interrupt carries the subagent's review, so `resume_review/2`
+  # on the parent answers it, and its id, which a resumed step matches to the
+  # paused subagent.
+  defp parent_interrupt(interrupt, metadata) do
+    %{
+      id: value(interrupt, :id),
+      value: value(interrupt, :value),
+      task_id: nil,
+      resumes: [],
+      metadata: Map.merge(metadata, value(interrupt, :metadata) || %{})
+    }
+  end
+
+  defp child_status(agent, opts) do
+    with checkpointer when not is_nil(checkpointer) <- Keyword.get(opts, :checkpointer),
+         thread_id when thread_id not in [nil, ""] <- get_in(opts, [:config, "configurable", "thread_id"]),
+         {:ok, snapshot} <- child_snapshot(agent, opts) do
+      cond do
+        snapshot.interrupts != [] -> {:paused, hd(snapshot.interrupts)}
+        snapshot.next == [] -> {:finished, snapshot.values}
+        true -> {:unfinished, snapshot.config}
+      end
+    else
+      _new -> :new
+    end
+  end
+
+  defp child_snapshot(%Built{compiled: compiled}, opts),
+    do: Graph.Compiled.get_state(compiled, Keyword.fetch!(opts, :config))
+
+  defp child_snapshot(agent, opts), do: Agent.get_state(agent, opts)
+
+  # A resumed step reruns every `task` call. The resume value belongs to the
+  # subagent whose interrupt the parent paused with; other paused subagents
+  # pause the parent again, one review at a time.
+  defp resume_value(runtime, interrupt) do
+    with %{resume_values: [_ | _] = resumes} <- runtime_value(runtime, :scratchpad),
+         true <- value(interrupt, :id) in parent_interrupt_ids(runtime) do
+      {:ok, List.last(resumes)}
+    else
+      _other -> :none
+    end
+  end
+
+  defp parent_interrupt_ids(runtime) do
+    case runtime_value(runtime, :checkpointer) do
+      nil ->
+        []
+
+      checkpointer ->
+        %{checkpointer: checkpointer}
+        |> Replay.pending_interrupt_records(runtime_value(runtime, :config, %{}))
+        |> Enum.map(&value(&1, :id))
+    end
+  end
+
+  # Like a subgraph, the subagent uses the parent's checkpointer and store
+  # unless it has its own.
+  defp with_parent_adapters(%Built{compiled: compiled} = agent, runtime) do
+    compiled = %{
+      compiled
+      | checkpointer: compiled.checkpointer || runtime_value(runtime, :checkpointer),
+        store: compiled.store || runtime_value(runtime, :store)
+    }
+
+    %{agent | compiled: compiled}
+  end
+
+  defp with_parent_adapters(agent, _runtime), do: agent
+
+  # A streamed parent run, live or collected (both read the same sink), gets
+  # the subagent's events in its stream as they happen.
+  defp with_child_stream(runtime, metadata, run) do
+    case runtime_value(runtime, :stream_sink) do
+      %Sink{} = sink -> run.(stream_sink: Sink.child(sink, metadata: metadata), stream_mode: :events)
+      _none -> run.([])
     end
   end
 
@@ -815,139 +1146,90 @@ defmodule BeamWeaver.Agent.Middleware.Subagents do
     text != "" and not String.contains?(String.downcase(text), "no additional research needed")
   end
 
-  defp subagent_middleware(
-         subagent,
-         user_middleware,
-         model,
-         backend,
-         permissions,
-         skills,
-         interrupt_on,
-         summarization,
-         compact_conversation,
-         execution_mode
-       ) do
-    base_middleware =
-      subagent.base_middleware
-      |> List.wrap()
-      |> Enum.flat_map(
-        &base_middleware_entry(&1, model, backend, permissions, skills, summarization, compact_conversation)
+  # Every subagent gets tool call normalization, and a `:structured_once` one
+  # a one-call limit, unless its own middleware has one of the same module:
+  # its own `ModelCallLimit` replaces the one-call limit, as an agent's own
+  # entry replaces a capability's.
+  defp subagent_middleware(subagent, context) do
+    own = List.wrap(subagent.middleware || [])
+    own_modules = Enum.map(own, &middleware_module/1)
+
+    implied =
+      Enum.reject(
+        [ToolCallNormalization.new(), maybe_model_call_limit(context.execution_mode)],
+        &(is_nil(&1) or middleware_module(&1) in own_modules)
       )
 
     [
-      base_middleware,
-      ToolCallNormalization.new(),
-      maybe_model_call_limit(execution_mode),
-      List.wrap(user_middleware),
-      maybe_hitl(interrupt_on)
+      subagent.base_middleware |> List.wrap() |> Enum.flat_map(&base_middleware_entry(&1, context)),
+      implied,
+      own
     ]
     |> List.flatten()
     |> Enum.reject(&is_nil/1)
   end
 
-  defp base_middleware_entry(:deepagents, model, backend, permissions, skills, summarization, compact_conversation) do
+  defp middleware_module(%module{}), do: module
+  defp middleware_module({module, _opts}) when is_atom(module), do: module
+  defp middleware_module(module) when is_atom(module), do: module
+  defp middleware_module(_entry), do: nil
+
+  defp base_middleware_entry(:deepagents, context) do
     [
       default_todo_list(),
-      maybe_skills(backend, skills),
-      filesystem_middleware(backend, permissions),
-      maybe_summarization(model, backend, summarization),
-      maybe_compact_conversation(model, backend || State.new(), summarization, compact_conversation)
+      maybe_skills(context.backend, context.skills),
+      filesystem_middleware(context.backend, context.permissions),
+      maybe_summarization(context, context.summarization),
+      maybe_compact_conversation(
+        context.model,
+        context.backend || State.new(),
+        context.summarization,
+        context.compact_conversation
+      )
     ]
   end
 
-  defp base_middleware_entry(
-         {TodoList, opts},
-         _model,
-         _backend,
-         _permissions,
-         _skills,
-         _summarization,
-         _compact_conversation
-       ),
-       do: [todo_list(opts)]
+  defp base_middleware_entry({TodoList, opts}, _context), do: [todo_list(opts)]
+  defp base_middleware_entry(TodoList, _context), do: [default_todo_list()]
 
-  defp base_middleware_entry(TodoList, _model, _backend, _permissions, _skills, _summarization, _compact_conversation),
-    do: [default_todo_list()]
-
-  defp base_middleware_entry(
-         {Filesystem, opts},
-         _model,
-         backend,
-         permissions,
-         _skills,
-         _summarization,
-         _compact_conversation
-       ),
-       do: [filesystem_middleware(Keyword.get(opts, :backend, backend), Keyword.get(opts, :permissions, permissions))]
-
-  defp base_middleware_entry(Filesystem, _model, backend, permissions, _skills, _summarization, _compact_conversation),
-    do: [filesystem_middleware(backend, permissions)]
-
-  defp base_middleware_entry(
-         {Skills, opts},
-         _model,
-         backend,
-         _permissions,
-         skills,
-         _summarization,
-         _compact_conversation
-       ),
-       do: [maybe_skills(Keyword.get(opts, :backend, backend), Keyword.get(opts, :skills, skills))]
-
-  defp base_middleware_entry(Skills, _model, backend, _permissions, skills, _summarization, _compact_conversation),
-    do: [maybe_skills(backend, skills)]
-
-  defp base_middleware_entry(
-         {Summarization, opts},
-         model,
-         _backend,
-         _permissions,
-         _skills,
-         _summarization,
-         _compact_conversation
-       ),
-       do: [maybe_summarization(model, nil, opts)]
-
-  defp base_middleware_entry(
-         Summarization,
-         model,
-         _backend,
-         _permissions,
-         _skills,
-         summarization,
-         _compact_conversation
-       ),
-       do: [maybe_summarization(model, nil, summarization)]
-
-  defp base_middleware_entry(
-         {CompactConversation, opts},
-         model,
-         backend,
-         _permissions,
-         _skills,
-         summarization,
-         _compact_conversation
-       ),
-       do: [maybe_compact_conversation(model, backend || State.new(), summarization || true, opts)]
-
-  defp base_middleware_entry(
-         CompactConversation,
-         model,
-         backend,
-         _permissions,
-         _skills,
-         summarization,
-         compact_conversation
-       ),
-       do: [maybe_compact_conversation(model, backend || State.new(), summarization || true, compact_conversation)]
-
-  defp base_middleware_entry(value, _model, _backend, _permissions, _skills, _summarization, _compact_conversation)
-       when is_binary(value) do
-    raise ArgumentError, "base_middleware entries must use atom or module values, got #{inspect(value)}"
+  defp base_middleware_entry({Filesystem, opts}, context) do
+    [
+      filesystem_middleware(
+        Keyword.get(opts, :backend, context.backend),
+        Keyword.get(opts, :permissions, context.permissions)
+      )
+    ]
   end
 
-  defp base_middleware_entry(value, _model, _backend, _permissions, _skills, _summarization, _compact_conversation),
-    do: [value]
+  defp base_middleware_entry(Filesystem, context),
+    do: [filesystem_middleware(context.backend, context.permissions)]
+
+  defp base_middleware_entry({Skills, opts}, context),
+    do: [maybe_skills(Keyword.get(opts, :backend, context.backend), Keyword.get(opts, :skills, context.skills))]
+
+  defp base_middleware_entry(Skills, context), do: [maybe_skills(context.backend, context.skills)]
+
+  defp base_middleware_entry({Summarization, opts}, context),
+    do: [maybe_summarization(context, opts)]
+
+  defp base_middleware_entry(Summarization, context),
+    do: [maybe_summarization(context, context.summarization)]
+
+  defp base_middleware_entry({CompactConversation, opts}, context),
+    do: [maybe_compact_conversation(context.model, context.backend || State.new(), context.summarization || true, opts)]
+
+  defp base_middleware_entry(CompactConversation, context) do
+    [
+      maybe_compact_conversation(
+        context.model,
+        context.backend || State.new(),
+        context.summarization || true,
+        context.compact_conversation
+      )
+    ]
+  end
+
+  defp base_middleware_entry(value, _context), do: [value]
 
   defp todo_list(settings) when is_list(settings) do
     settings
@@ -970,56 +1252,46 @@ defmodule BeamWeaver.Agent.Middleware.Subagents do
   defp subagent_backend(%Spec{filesystem: nil}, parent_backend), do: parent_backend
   defp subagent_backend(%Spec{filesystem: backend}, _parent_backend), do: backend
 
-  defp normalize_execution_mode(nil), do: :agent_loop
-  defp normalize_execution_mode(:agent_loop), do: :agent_loop
-  defp normalize_execution_mode(:structured_once), do: :structured_once
-  defp normalize_execution_mode(:research_then_generate), do: :research_then_generate
+  defp execution_mode(nil), do: {:ok, :agent_loop}
 
-  defp normalize_execution_mode(mode) do
-    raise ArgumentError,
-          "unknown subagent execution_mode #{inspect(mode)}; expected :agent_loop, :structured_once, or :research_then_generate"
+  defp execution_mode(mode) when mode in [:agent_loop, :structured_once, :research_then_generate],
+    do: {:ok, mode}
+
+  defp execution_mode(mode) do
+    {:error,
+     "unknown subagent execution_mode #{inspect(mode)}; expected :agent_loop, :structured_once, or :research_then_generate"}
   end
 
-  defp normalize_capture_output(value) when value in [nil, false], do: nil
+  defp capture_output(value) when value in [nil, false], do: {:ok, nil}
 
-  defp normalize_capture_output(value) when is_atom(value),
-    do: capture_config(value, [])
+  # Already normalized, as in a compiled subagent built by this middleware.
+  defp capture_output(%{key: key, dedupe: _dedupe, parent_result: _result} = capture) when is_binary(key),
+    do: {:ok, capture}
 
-  defp normalize_capture_output({key, opts}) when is_list(opts) or is_map(opts),
-    do: capture_config(key, opts)
+  defp capture_output(value) when is_atom(value), do: capture_config(value, [])
+  defp capture_output({key, opts}) when is_list(opts) or is_map(opts), do: capture_config(key, opts)
 
-  defp normalize_capture_output(opts) when is_list(opts) or is_map(opts) do
-    key =
-      option_value(opts, :key) ||
-        option_value(opts, :capture_key)
+  defp capture_output(opts) when is_list(opts) or is_map(opts),
+    do: capture_config(option_value(opts, :key) || option_value(opts, :capture_key), opts)
 
-    capture_config(key, opts)
-  end
+  defp capture_output(value), do: {:error, "invalid capture_output #{inspect(value)}"}
 
-  defp normalize_capture_output(value) do
-    raise ArgumentError, "invalid capture_output #{inspect(value)}"
-  end
+  defp capture_config(nil, _opts), do: {:error, "capture_output requires a key"}
 
-  defp capture_config(nil, _opts), do: raise(ArgumentError, "capture_output requires a key")
-
-  defp capture_config(key, _opts) when not is_atom(key) do
-    raise ArgumentError, "capture_output key must be an atom, got #{inspect(key)}"
-  end
+  defp capture_config(key, _opts) when not is_atom(key),
+    do: {:error, "capture_output key must be an atom, got #{inspect(key)}"}
 
   defp capture_config(key, opts) do
-    %{
-      key: to_string(key),
-      dedupe: option_value(opts, :dedupe, true) != false,
-      parent_result: normalize_parent_result(option_value(opts, :parent_result, :ack))
-    }
+    with {:ok, parent_result} <- parent_result(option_value(opts, :parent_result, :ack)) do
+      {:ok, %{key: to_string(key), dedupe: option_value(opts, :dedupe, true) != false, parent_result: parent_result}}
+    end
   end
 
-  defp normalize_parent_result(:full), do: :full
-  defp normalize_parent_result(value) when value in [nil, :ack], do: :ack
+  defp parent_result(:full), do: {:ok, :full}
+  defp parent_result(value) when value in [nil, :ack], do: {:ok, :ack}
 
-  defp normalize_parent_result(value) do
-    raise ArgumentError, "invalid capture_output parent_result #{inspect(value)}; expected :ack or :full"
-  end
+  defp parent_result(value),
+    do: {:error, "invalid capture_output parent_result #{inspect(value)}; expected :ack or :full"}
 
   defp option_value(opts, key, default \\ nil)
   defp option_value(opts, key, default) when is_list(opts) and is_atom(key), do: Keyword.get(opts, key, default)
@@ -1043,14 +1315,36 @@ defmodule BeamWeaver.Agent.Middleware.Subagents do
   defp maybe_skills(nil, _skills), do: nil
   defp maybe_skills(backend, skills), do: Skills.new(backend: backend, skills: skills)
 
-  defp maybe_summarization(_model, _backend, summarization) when summarization in [nil, false],
-    do: nil
+  defp maybe_summarization(_context, summarization) when summarization in [nil, false], do: nil
 
-  defp maybe_summarization(model, _backend, settings) when is_list(settings),
-    do: Summarization.new(Keyword.put_new(settings, :model, model))
+  # Fractional limits are taken of the subagent's model's context window, as
+  # an agent's own are of its model's.
+  defp maybe_summarization(context, settings) when is_list(settings) do
+    settings
+    |> Keyword.put_new(:model, context.model)
+    |> Keyword.put_new_lazy(:max_input_tokens, fn -> context_window(context.model, context.model_opts) end)
+    |> Summarization.new()
+  end
 
-  defp maybe_summarization(model, _backend, _enabled),
-    do: Summarization.new(model: model, trigger: {:messages, 20}, keep: {:messages, 8})
+  defp maybe_summarization(context, _enabled), do: maybe_summarization(context, [])
+
+  # A "provider:model" string is resolved as the subagent's agent resolves
+  # it, with its model options, only to read its profile.
+  defp context_window(model, opts) when is_binary(model) or (is_atom(model) and not is_nil(model)) do
+    with true <- Keyword.keyword?(opts),
+         opts = ProviderProfile.apply_provider_profile(to_string(model), opts, run_pre_init: false),
+         {:ok, resolved} <- ModelResolver.resolve_agent_model(model, opts) do
+      profile_context_window(resolved)
+    else
+      _unresolved -> nil
+    end
+  end
+
+  defp context_window(model, _opts), do: profile_context_window(model)
+
+  defp profile_context_window(%{profile: %{max_input_tokens: limit}}) when is_integer(limit), do: limit
+  defp profile_context_window(%{profile: %{"max_input_tokens" => limit}}) when is_integer(limit), do: limit
+  defp profile_context_window(_model), do: nil
 
   defp maybe_compact_conversation(_model, _backend, summarization, _compact)
        when summarization in [nil, false],
@@ -1071,14 +1365,10 @@ defmodule BeamWeaver.Agent.Middleware.Subagents do
   defp maybe_compact_conversation(model, backend, _summarization, _enabled),
     do: CompactConversation.new(model: model, backend: backend)
 
-  defp maybe_hitl(nil), do: nil
-  defp maybe_hitl(false), do: nil
-  defp maybe_hitl(interrupt_on), do: HumanInTheLoop.new(interrupt_on: interrupt_on)
-
   defp child_state(parent_state, description, %Compiled{inherit_messages: true}) when is_map(parent_state) do
     parent_messages =
       parent_state
-      |> parent_state_value(:messages)
+      |> Map.get(:messages)
       |> List.wrap()
       |> stable_parent_messages()
 
@@ -1198,14 +1488,59 @@ defmodule BeamWeaver.Agent.Middleware.Subagents do
     end
   end
 
-  defp child_invoke_opts(input, %Compiled{} = subagent, phase \\ nil) do
-    runtime = runtime_from_input(input)
-    config = child_config(runtime, input, subagent.name, phase)
+  defp child_invoke_opts(agent, runtime, input, %Compiled{} = subagent, phase) do
+    checkpointer = agent_checkpointer(agent, runtime)
+
+    config =
+      runtime
+      |> child_config(input, subagent.name, phase)
+      |> maybe_put_child_thread(checkpointer, runtime)
 
     []
     |> maybe_put_opt(:context, runtime_value(runtime, :context))
     |> Keyword.put(:config, config)
     |> Keyword.put(:trace, subagent_trace(subagent, phase))
+    |> maybe_put_opt(:checkpointer, checkpointer)
+    |> maybe_put_opt(:store, agent_store(agent, runtime))
+    |> maybe_put_opt(:recursion_limit, child_recursion_limit(subagent, agent, runtime))
+  end
+
+  # A subagent saves its checkpoints in the parent's thread. When the parent
+  # run has none, because only the subagent has a checkpointer, it saves in
+  # a thread named after the parent run, so two runs never share one.
+  defp maybe_put_child_thread(config, nil, _runtime), do: config
+
+  defp maybe_put_child_thread(%{"configurable" => configurable} = config, _checkpointer, runtime) do
+    if Map.get(configurable, "thread_id") in [nil, ""] do
+      execution = runtime_value(runtime, :execution, %{})
+      run_id = runtime_value(runtime, :run_id) || runtime_value(execution, :run_id) || ID.uuidv7()
+      put_in(config, ["configurable", "thread_id"], to_string(run_id))
+    else
+      config
+    end
+  end
+
+  defp agent_checkpointer(%Built{compiled: compiled}, _runtime), do: compiled.checkpointer
+  defp agent_checkpointer(module, runtime), do: module.checkpointer() || runtime_value(runtime, :checkpointer)
+
+  defp agent_store(%Built{compiled: compiled}, _runtime), do: compiled.store
+  defp agent_store(module, runtime), do: module.store() || runtime_value(runtime, :store)
+
+  defp child_recursion_limit(%Compiled{recursion_limit: limit}, _agent, _runtime) when is_integer(limit), do: limit
+
+  defp child_recursion_limit(_subagent, agent, runtime),
+    do: declared_recursion_limit(agent) || parent_recursion_limit(runtime)
+
+  defp declared_recursion_limit(%Built{}), do: nil
+  defp declared_recursion_limit(module), do: module.__beam_weaver_agent_spec__().recursion_limit
+
+  # A node sees the steps its run has left; the parent run's limit is those
+  # plus the current step.
+  defp parent_recursion_limit(runtime) do
+    case {runtime_value(runtime, :recursion_limit), runtime_value(runtime, :step)} do
+      {left, step} when is_integer(left) and is_integer(step) -> left + step
+      _other -> nil
+    end
   end
 
   defp task_result_metadata(%Compiled{} = subagent, opts) do
@@ -1303,7 +1638,7 @@ defmodule BeamWeaver.Agent.Middleware.Subagents do
   end
 
   defp captured_result(child_state, result) when is_map(child_state) do
-    case parent_state_value(child_state, :structured_response) do
+    case Map.get(child_state, :structured_response) do
       nil -> maybe_decode_json_result(result)
       response -> response
     end
@@ -1321,10 +1656,17 @@ defmodule BeamWeaver.Agent.Middleware.Subagents do
   defp captured_parent_result(value) when is_binary(value), do: value
   defp captured_parent_result(value), do: BeamWeaver.JSON.encode!(value)
 
-  defp capture_ack(%Compiled{}, _capture, _input_hash, _cached?), do: "{}"
+  # What the parent's model reads instead of a captured answer: the task is
+  # done, so it shouldn't run it again or guess the answer.
+  defp capture_ack(%Compiled{name: name}, capture, _input_hash, false),
+    do: "The #{name} subagent finished the task. Its answer was saved as \"#{capture.key}\" and is not shown here."
+
+  defp capture_ack(%Compiled{name: name}, capture, _input_hash, true),
+    do:
+      "The #{name} subagent already finished this task. Its saved answer \"#{capture.key}\" was reused and is not shown here."
 
   defp state_map(state, key) do
-    case parent_state_value(state, key) do
+    case Map.get(state, key) do
       value when is_map(value) -> value
       _other -> %{}
     end
@@ -1383,7 +1725,7 @@ defmodule BeamWeaver.Agent.Middleware.Subagents do
     checkpoint_map =
       configurable
       |> Map.get("checkpoint_map", %{})
-      |> normalize_checkpoint_map()
+      |> Namespace.recast_checkpoint_map()
       |> maybe_put_namespace_checkpoint(parent_ns, Map.get(configurable, "checkpoint_id"))
 
     child_configurable =
@@ -1432,14 +1774,6 @@ defmodule BeamWeaver.Agent.Middleware.Subagents do
     Map.new(map, fn {key, value} -> {to_string(key), value} end)
   end
 
-  defp normalize_checkpoint_map(map) when is_map(map) do
-    Map.new(map, fn {namespace, checkpoint_id} ->
-      {Namespace.recast(namespace), checkpoint_id}
-    end)
-  end
-
-  defp normalize_checkpoint_map(_other), do: %{}
-
   defp maybe_put_namespace_checkpoint(map, _namespace, nil), do: map
 
   defp maybe_put_namespace_checkpoint(map, namespace, checkpoint_id),
@@ -1468,7 +1802,7 @@ defmodule BeamWeaver.Agent.Middleware.Subagents do
        when is_map(parent_state) and is_map(child_state) do
     child_state
     |> Enum.reject(fn {key, value} ->
-      child_state_excluded_key?(key) or parent_state_value(parent_state, key) == value
+      child_state_excluded_key?(key) or Map.get(parent_state, key) == value
     end)
     |> Map.new()
   end
@@ -1563,22 +1897,6 @@ defmodule BeamWeaver.Agent.Middleware.Subagents do
   end
 
   defp child_state_excluded_key?(key), do: MapSet.member?(@child_state_exclusion_names, to_string(key))
-
-  defp parent_state_value(parent_state, key) when is_atom(key) do
-    Map.get(parent_state, key, Map.get(parent_state, Atom.to_string(key)))
-  end
-
-  defp parent_state_value(parent_state, key) when is_binary(key) do
-    Map.get(parent_state, key) || parent_state_atom_value(parent_state, key)
-  end
-
-  defp parent_state_value(parent_state, key), do: Map.get(parent_state, key)
-
-  defp parent_state_atom_value(parent_state, key) do
-    Map.get(parent_state, String.to_existing_atom(key))
-  rescue
-    ArgumentError -> nil
-  end
 
   defp maybe_put_opt(opts, _key, nil), do: opts
   defp maybe_put_opt(opts, key, value), do: Keyword.put(opts, key, value)

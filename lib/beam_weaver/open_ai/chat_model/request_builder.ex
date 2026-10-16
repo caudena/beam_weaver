@@ -3,27 +3,34 @@ defmodule BeamWeaver.OpenAI.ChatModel.RequestBuilder do
 
   alias BeamWeaver.Models.ParamPolicy
   alias BeamWeaver.OpenAI.ChatModel.StructuredOutput
-  alias BeamWeaver.OpenAI.Error
+  alias BeamWeaver.Core.Error
   alias BeamWeaver.OpenAI.Messages
+  alias BeamWeaver.OpenAI.Messages.Request
   alias BeamWeaver.OpenAI.ModelPolicy
   alias BeamWeaver.OpenAI.ToolCalling
+  alias BeamWeaver.Provider.ChatCompletionsWire
   alias BeamWeaver.Provider.Options
 
-  def request_body(model, messages, opts \\ []) do
-    {messages, previous_response_id} = previous_response_context(messages, opts)
+  # `config` adapts the request to another provider's Responses API:
+  # `:response_id` returns the id of an assistant reply that provider stored,
+  # which `use_previous_response_id: true` continues from (default: OpenAI's).
+  def request_body(model, messages, opts \\ [], config \\ []) do
+    {messages, previous_response_id} = previous_response_context(messages, opts, config)
 
     store = effective_store(model, opts)
 
     with :ok <- validate_request_params(model, opts),
          :ok <- validate_gpt6_options(model, opts),
+         :ok <- ModelPolicy.validate_reasoning_effort(model.profile, reasoning_option(model, opts)),
          {:ok, message_input} <- Messages.to_responses_input(messages, store: store),
          {:ok, input_items} <- Messages.normalize_input_items(Keyword.get(opts, :input_items)),
          {:ok, structured_output} <- StructuredOutput.format(opts) do
       input = message_input ++ input_items
       model_name = Keyword.get(opts, :model, model.model)
-      model_kwargs = option(model, opts, :model_kwargs) || %{}
+      # `extra_body` goes in last, except "text", which merges into the text param.
+      {extra_text, extra_body} = model |> Options.extra_body(opts) |> Map.pop("text")
       reasoning = reasoning_option(model, opts)
-      text = text_option(model, opts, model_kwargs, structured_output)
+      text = text_option(model, opts, extra_text, structured_output)
 
       body =
         %{
@@ -31,7 +38,6 @@ defmodule BeamWeaver.OpenAI.ChatModel.RequestBuilder do
           "input" => input,
           "stream" => Keyword.get(opts, :stream, false)
         }
-        |> merge_model_kwargs(model_kwargs)
         |> Options.put_optional(
           "access_programs",
           Options.normalize_option_map(option(model, opts, :access_programs))
@@ -103,18 +109,15 @@ defmodule BeamWeaver.OpenAI.ChatModel.RequestBuilder do
           "search_parameters",
           Options.normalize_value(option(model, opts, :search_parameters))
         )
-        |> Options.put_optional(
-          "tool_choice",
-          Options.normalize_value(Keyword.get(opts, :tool_choice))
-        )
+        |> Options.put_optional("tool_choice", tool_choice(Keyword.get(opts, :tool_choice)))
         |> Options.put_optional("truncation", Keyword.get(opts, :truncation))
-        |> Options.merge_extra_body(Keyword.get(opts, :extra_body, %{}))
+        |> Options.merge_extra_body(extra_body)
 
       {:ok, body}
     end
   end
 
-  defp previous_response_context(messages, opts) do
+  defp previous_response_context(messages, opts, config) do
     explicit_id = Keyword.get(opts, :previous_response_id)
 
     cond do
@@ -122,7 +125,7 @@ defmodule BeamWeaver.OpenAI.ChatModel.RequestBuilder do
         {messages, explicit_id}
 
       Keyword.get(opts, :use_previous_response_id) == true ->
-        Messages.last_after_previous_response(messages)
+        Request.last_after_previous_response(messages, Keyword.get(config, :response_id, &Request.response_id/1))
 
       true ->
         {messages, nil}
@@ -137,6 +140,7 @@ defmodule BeamWeaver.OpenAI.ChatModel.RequestBuilder do
         :access_programs,
         :audio,
         :deferred,
+        :extra_body,
         :frequency_penalty,
         :logprobs,
         :max_completion_tokens,
@@ -146,7 +150,6 @@ defmodule BeamWeaver.OpenAI.ChatModel.RequestBuilder do
         :metadata,
         :moderation,
         :modalities,
-        :model_kwargs,
         :parallel_tool_calls,
         :prompt,
         :prompt_cache_key,
@@ -166,68 +169,15 @@ defmodule BeamWeaver.OpenAI.ChatModel.RequestBuilder do
         :verbosity
       ])
 
-    opts_params =
-      opts
-      |> Map.new()
-      |> Map.take([
-        :access_programs,
-        :audio,
-        :background,
-        :conversation,
-        :context_management,
-        :deferred,
-        :extra_body,
-        :frequency_penalty,
-        :include,
-        :instructions,
-        :max_tool_calls,
-        :max_completion_tokens,
-        :max_output_tokens,
-        :max_tokens,
-        :max_turns,
-        :metadata,
-        :moderation,
-        :modalities,
-        :model_kwargs,
-        :parallel_tool_calls,
-        :prompt,
-        :prompt_cache_key,
-        :prompt_cache_options,
-        :prompt_cache_retention,
-        :presence_penalty,
-        :previous_response_id,
-        :provider_opts,
-        :reasoning,
-        :reasoning_effort,
-        :response_format,
-        :safety_identifier,
-        :search_parameters,
-        :seed,
-        :service_tier,
-        :store,
-        :stream,
-        :stream_options,
-        :text,
-        :structured_output,
-        :temperature,
-        :tool_choice,
-        :tools,
-        :logprobs,
-        :top_logprobs,
-        :top_p,
-        :truncation,
-        :use_previous_response_id,
-        :user,
-        :verbosity
-      ])
+    # Every model parameter of the call is checked, including ones this API
+    # has no field for, so a foreign option such as `stop` is an error rather
+    # than dropped.
+    opts_params = Map.new(opts)
 
     params = Map.merge(model_params, opts_params)
     policy = Keyword.get(opts, :param_policy, model.param_policy)
 
-    ParamPolicy.validate(model.profile, params, policy,
-      api: :responses,
-      metadata: Keyword.get(opts, :metadata, %{})
-    )
+    ParamPolicy.validate(model.profile, params, policy, api: :responses)
   end
 
   defp validate_gpt6_options(model, opts) do
@@ -310,18 +260,24 @@ defmodule BeamWeaver.OpenAI.ChatModel.RequestBuilder do
 
   defp option(model, opts, key), do: Keyword.get(opts, key, Map.get(model, key))
 
+  # `:auto`, `:none` and `:required` (or Anthropic's `:any`) pass through; a
+  # bare tool name forces that function.
+  defp tool_choice(choice) do
+    case ChatCompletionsWire.tool_choice(choice) do
+      %{"type" => "function", "function" => %{"name" => name}} = function ->
+        function |> Map.delete("function") |> Map.put("name", name)
+
+      other ->
+        other
+    end
+  end
+
   defp effective_store(model, opts) do
-    case Keyword.get(opts, :extra_body, %{}) do
-      %{store: store} -> store
+    case Options.extra_body(model, opts) do
       %{"store" => store} -> store
       _extra_body -> option(model, opts, :store)
     end
   end
-
-  defp merge_model_kwargs(body, model_kwargs) when map_size(model_kwargs) == 0, do: body
-
-  defp merge_model_kwargs(body, model_kwargs) when is_map(model_kwargs),
-    do: Map.merge(body, Options.stringify_keys(model_kwargs))
 
   defp reasoning_option(model, opts) do
     case option(model, opts, :reasoning) do
@@ -336,18 +292,12 @@ defmodule BeamWeaver.OpenAI.ChatModel.RequestBuilder do
     end
   end
 
-  defp text_option(model, opts, model_kwargs, structured_output) do
+  defp text_option(model, opts, extra_text, structured_output) do
     explicit_text = Keyword.get(opts, :text) |> Options.normalize_option_map()
-
-    model_kwargs_text =
-      model_kwargs
-      |> Options.stringify_keys()
-      |> Map.get("text")
-      |> Options.normalize_option_map()
 
     %{}
     |> Options.merge_optional_map(explicit_text)
-    |> Options.merge_optional_map(model_kwargs_text)
+    |> Options.merge_optional_map(Options.normalize_option_map(extra_text))
     |> Options.merge_optional_map(structured_output)
     |> Options.put_optional("verbosity", Options.normalize_value(option(model, opts, :verbosity)))
     |> Options.empty_to_nil()

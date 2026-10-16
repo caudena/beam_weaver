@@ -1,11 +1,163 @@
 defmodule BeamWeaver.Core.ToolTest do
   use ExUnit.Case, async: true
 
-  alias BeamWeaver.Core.Async
   alias BeamWeaver.Core.Error
   alias BeamWeaver.Core.Message
   alias BeamWeaver.Core.Tool
   alias BeamWeaver.Core.ToolResult
+
+  defmodule RefusingTool do
+    use BeamWeaver.Tool
+
+    name "refuse"
+    description "Refuses or answers with a bare value."
+
+    schema do
+      field :answer, :string
+    end
+
+    @impl true
+    def invoke(_tool, %{"answer" => "no"}, _opts), do: {:error, "not allowed"}
+    def invoke(_tool, %{"answer" => answer}, _opts), do: answer
+  end
+
+  defmodule GetInvoice do
+    use BeamWeaver.Tool
+
+    name "get_invoice"
+    description "Get the invoice of an order."
+    response_format :content_and_artifact
+
+    schema do
+      field :order_id, :string
+    end
+
+    @impl true
+    def invoke(_tool, %{"order_id" => id}, _opts),
+      do: {:ok, {"Invoice for #{id}: $49.00, paid.", %{pdf_url: "https://acme.example/invoices/#{id}.pdf"}}}
+  end
+
+  defmodule SetPriority do
+    use BeamWeaver.Tool
+
+    alias BeamWeaver.Graph.Command
+
+    name "set_priority"
+    description "Set the priority of the current ticket."
+    response_format :content_and_artifact
+    injected :tool_call_id, :tool_call_id
+
+    schema do
+      field :priority, :string
+    end
+
+    @impl true
+    def invoke(_tool, %{"priority" => priority, tool_call_id: id}, _opts) do
+      message = Message.tool("Priority set to #{priority}.", tool_call_id: id)
+      {:ok, %Command{update: %{priority: priority, messages: [message]}}}
+    end
+  end
+
+  defmodule UndescribedTool do
+    @moduledoc """
+    Look up the shipping status of an order.
+    """
+
+    use BeamWeaver.Tool
+
+    schema do
+      field :order_id, :string
+    end
+
+    @impl true
+    def invoke(_tool, _args, _opts), do: {:ok, "shipped"}
+  end
+
+  defmodule DescribedTool do
+    @moduledoc "Not sent to the model."
+
+    use BeamWeaver.Tool
+
+    description "Sent to the model."
+
+    @impl true
+    def invoke(_tool, _args, _opts), do: {:ok, "ok"}
+  end
+
+  defmodule HiddenDocTool do
+    @moduledoc false
+
+    use BeamWeaver.Tool
+
+    @impl true
+    def invoke(_tool, _args, _opts), do: {:ok, "ok"}
+  end
+
+  test "an agent keeps a content_and_artifact tool's artifact in the tool message metadata" do
+    model =
+      BeamWeaver.Models.init_chat_model!("fake:chat",
+        responses: [
+          BeamWeaver.Models.FakeChatModel.tool_call("get_invoice", %{"order_id" => "A-1001"}),
+          "Your invoice is attached."
+        ]
+      )
+
+    {:ok, agent} = BeamWeaver.Agent.build(model: model, tools: [GetInvoice])
+    assert {:ok, %{messages: messages}} = BeamWeaver.Agent.invoke(agent, %{messages: ["Invoice for A-1001?"]})
+
+    assert %Message{content: "Invoice for A-1001: $49.00, paid.", metadata: metadata} =
+             Enum.find(messages, &(&1.role == :tool))
+
+    assert metadata.artifact == %{pdf_url: "https://acme.example/invoices/A-1001.pdf"}
+    assert metadata.status == "success"
+  end
+
+  test "a content_and_artifact tool's command, tool message or list of them passes through as it is" do
+    model =
+      BeamWeaver.Models.init_chat_model!("fake:chat",
+        responses: [BeamWeaver.Models.FakeChatModel.tool_call("set_priority", %{"priority" => "urgent"}), "Done."]
+      )
+
+    {:ok, agent} = BeamWeaver.Agent.build(model: model, tools: [SetPriority])
+    assert {:ok, result} = BeamWeaver.Agent.invoke(agent, %{messages: ["My package arrived broken!"]})
+
+    assert result.priority == "urgent"
+    assert %Message{content: "Priority set to urgent."} = Enum.find(result.messages, &(&1.role == :tool))
+
+    returning = fn output ->
+      Tool.from_function!(
+        name: "lookup",
+        description: "Looks something up.",
+        input_schema: %{type: "object", properties: %{}},
+        response_format: :content_and_artifact,
+        handler: fn _input, _opts -> output end
+      )
+    end
+
+    message = Message.tool("found", tool_call_id: "call-1")
+    command = %BeamWeaver.Graph.Command{update: %{messages: [message]}}
+
+    for output <- [command, message, [command], [message, command]] do
+      assert {:ok, ^output} = Tool.invoke(returning.(output), %{})
+    end
+
+    assert {:ok, %ToolResult{content: "found", artifact: %{id: 1}}} =
+             Tool.invoke(returning.({:content_and_artifact, "found", %{id: 1}}), %{})
+  end
+
+  test "a tool without a description is described by its moduledoc" do
+    assert Tool.description(UndescribedTool) == "Look up the shipping status of an order."
+    assert Tool.tool_call_schema(UndescribedTool)["description"] == "Look up the shipping status of an order."
+    assert Tool.description(DescribedTool) == "Sent to the model."
+    assert Tool.description(HiddenDocTool) == ""
+  end
+
+  test "module tools may return an error reason or a bare value" do
+    assert {:error, %Error{type: :tool_error, message: "not allowed"}} =
+             Tool.invoke(RefusingTool, %{"answer" => "no"})
+
+    assert {:ok, "yes"} = Tool.invoke(RefusingTool, %{"answer" => "yes"})
+  end
 
   test "validates required input before invoking a tool handler" do
     tool =
@@ -103,7 +255,6 @@ defmodule BeamWeaver.Core.ToolTest do
       )
 
     assert {:ok, "handled"} = Tool.invoke(string_handler, %{})
-    assert {:ok, "handled"} = string_handler |> Tool.async_invoke(%{}) |> Async.await()
 
     callable_handler =
       Tool.from_function!(
@@ -180,7 +331,6 @@ defmodule BeamWeaver.Core.ToolTest do
 
     string_tool = %{validation_tool | handle_validation_error: "bad input"}
     assert {:ok, "bad input"} = Tool.invoke(string_tool, %{})
-    assert {:ok, "bad input"} = string_tool |> Tool.async_invoke(%{}) |> Async.await()
 
     unhandled = %{validation_tool | handle_validation_error: false}
     assert {:error, %Error{type: :invalid_input}} = Tool.invoke(unhandled, %{})
@@ -310,7 +460,7 @@ defmodule BeamWeaver.Core.ToolTest do
              Tool.invoke(tool, %{query: "cats", state: %{user: "ada"}, tool_call_id: "call-1"})
   end
 
-  test "exposes BaseTool-style args, single-input, run, async, and tool-call schema helpers" do
+  test "exposes BaseTool-style args, single-input, invoke, and tool-call schema helpers" do
     tool =
       Tool.from_function!(
         name: "lookup",
@@ -342,10 +492,8 @@ defmodule BeamWeaver.Core.ToolTest do
              }
            }
 
-    assert {:ok, {"beam", "acme"}} = Tool.run(tool, %{"query" => "beam"}, tenant: "acme")
-
-    handle = Tool.async_invoke(tool, %{"query" => "async"}, tenant: "acme")
-    assert {:ok, {"async", "acme"}} = Async.await(handle)
+    assert {:ok, {"beam", "acme"}} = Tool.invoke(tool, %{"query" => "beam"}, tenant: "acme")
+    assert {:ok, {"async", "acme"}} = Tool.invoke(tool, %{"query" => "async"}, tenant: "acme")
   end
 
   test "single-input tools accept scalar values without Python positional APIs" do
@@ -426,15 +574,13 @@ defmodule BeamWeaver.Core.ToolTest do
     assert {:ok, %Message{content: "42:", tool_call_id: ""}} = Tool.invoke(tool, tool_call)
     assert tool_call == %{type: "tool_call", name: "echo", id: "", args: %{value: 42}}
 
-    async_call = %{type: "tool_call", name: "echo", id: "async-id", args: %{value: 7}}
+    call_with_id = %{type: "tool_call", name: "echo", id: "async-id", args: %{value: 7}}
 
-    assert {:ok, %Message{content: "7:async-id", tool_call_id: "async-id"}} =
-             tool |> Tool.async_invoke(async_call) |> Async.await()
-
-    assert async_call == %{type: "tool_call", name: "echo", id: "async-id", args: %{value: 7}}
+    assert {:ok, %Message{content: "7:async-id", tool_call_id: "async-id"}} = Tool.invoke(tool, call_with_id)
+    assert call_with_id == %{type: "tool_call", name: "echo", id: "async-id", args: %{value: 7}}
   end
 
-  test "content_and_artifact tools split raw invocation content and tool-call artifacts" do
+  test "content_and_artifact tools return a ToolResult, or a tool message for a tool call" do
     tool =
       Tool.from_function!(
         name: "artifact_tool",
@@ -451,7 +597,8 @@ defmodule BeamWeaver.Core.ToolTest do
         end
       )
 
-    assert {:ok, "BEAM"} = Tool.invoke(tool, %{value: "beam"})
+    assert {:ok, %ToolResult{content: "BEAM", artifact: %{raw: "beam"}, status: :success}} =
+             Tool.invoke(tool, %{value: "beam"})
 
     assert {:ok, %Message{content: "BEAM", artifacts: [%{raw: "beam"}], tool_call_id: "call-1"}} =
              Tool.invoke(tool, %{

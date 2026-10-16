@@ -1,23 +1,37 @@
 defmodule BeamWeaver.Agent.Middleware.ModelCallLimit do
   @moduledoc """
-  Tracks model-call counts and enforces thread/run limits.
+  Caps the model calls of a thread, of a run, or both.
+
+  Options:
+
+    * `:thread_limit` - model calls allowed on a thread, across `invoke/2`
+      calls. The count is saved with the thread, so it carries over only when
+      the agent runs with a checkpointer; without one, each call is a new
+      thread.
+    * `:run_limit` - model calls allowed in one `invoke/2` call.
+    * `:exit_behavior` - `:error` (the default) fails the run with a
+      `:model_call_limit_exceeded` error; `:end` ends it with an assistant
+      message instead.
+    * `:message` - replaces the text of that assistant message.
+
+  Neither limit has a default; set at least one.
   """
 
-  @behaviour BeamWeaver.Agent.Middleware
+  use BeamWeaver.Agent.Middleware
 
   alias BeamWeaver.Core.Error
   alias BeamWeaver.Core.Message
   alias BeamWeaver.Graph
   alias BeamWeaver.Options
 
-  defstruct thread_limit: 10,
+  defstruct thread_limit: nil,
             run_limit: nil,
             exit_behavior: :error,
             message: nil
 
   def new(opts \\ []) do
     %__MODULE__{
-      thread_limit: Keyword.get(opts, :thread_limit, Keyword.get(opts, :max_calls, 10)),
+      thread_limit: Keyword.get(opts, :thread_limit, Keyword.get(opts, :max_calls)),
       run_limit: Keyword.get(opts, :run_limit),
       exit_behavior: opts |> Keyword.get(:exit_behavior, :error) |> normalize_exit_behavior(),
       message: Keyword.get(opts, :message)
@@ -31,15 +45,12 @@ defmodule BeamWeaver.Agent.Middleware.ModelCallLimit do
   @impl true
   def state_schema(_middleware) do
     %{
-      thread_model_call_count: Graph.private_channel(BeamWeaver.Graph.Channels.LastValue),
+      thread_model_call_count: Graph.private_channel(BeamWeaver.Graph.Channels.LastValue, checkpoint: true),
       run_model_call_count: Graph.private_channel(BeamWeaver.Graph.Channels.UntrackedValue)
     }
   end
 
   @impl true
-  def can_jump_to(_middleware, :before_model), do: [:end]
-  def can_jump_to(_middleware, _hook), do: []
-
   def before_model(%__MODULE__{} = middleware, state, _runtime) do
     thread_count = count(state, :thread_model_call_count)
     run_count = count(state, :run_model_call_count)
@@ -65,6 +76,7 @@ defmodule BeamWeaver.Agent.Middleware.ModelCallLimit do
     end
   end
 
+  @impl true
   def after_model(%__MODULE__{}, state, _runtime) do
     %{
       thread_model_call_count: count(state, :thread_model_call_count) + 1,
@@ -119,8 +131,9 @@ defmodule BeamWeaver.Agent.Middleware.ModelCallLimit do
     "Model call limits exceeded: " <> Enum.join(exceeded, ", ")
   end
 
-  defp limit_fragment(_scope, _count, nil), do: nil
-  defp limit_fragment(scope, count, limit), do: "#{scope} limit (#{count}/#{limit})"
+  defp limit_fragment(scope, count, limit) do
+    if exceeded?(count, limit), do: "#{scope} limit (#{count}/#{limit})"
+  end
 
   defp limit_details(thread_count, run_count, %__MODULE__{} = middleware) do
     %{

@@ -3,9 +3,11 @@ defmodule BeamWeaver.DeepSeek.ChatModel do
   DeepSeek OpenAI-compatible Chat Completions model.
   """
 
+  use BeamWeaver.Provider.RedactedInspect
+
   alias BeamWeaver.Core.LanguageModel
   alias BeamWeaver.DeepSeek.Client
-  alias BeamWeaver.DeepSeek.Error
+  alias BeamWeaver.Core.Error
   alias BeamWeaver.DeepSeek.Messages
   alias BeamWeaver.DeepSeek.Options
   alias BeamWeaver.Models.InvocationMetadata
@@ -24,7 +26,7 @@ defmodule BeamWeaver.DeepSeek.ChatModel do
             beta_endpoint: @default_beta_endpoint,
             api_key: nil,
             default_headers: [],
-            model_kwargs: %{},
+            extra_body: %{},
             thinking: nil,
             reasoning_effort: nil,
             temperature: nil,
@@ -51,7 +53,7 @@ defmodule BeamWeaver.DeepSeek.ChatModel do
 
   @type t :: %__MODULE__{}
 
-  use BeamWeaver.Provider.ChatModel
+  use BeamWeaver.Provider.ChatModel, stream_source: :deepseek_chat_completions
 
   @spec new(keyword() | map()) :: t()
   def new(opts \\ []) do
@@ -70,6 +72,7 @@ defmodule BeamWeaver.DeepSeek.ChatModel do
 
   @spec request_body(t(), [BeamWeaver.Core.Message.t()], keyword()) ::
           {:ok, map()} | {:error, Error.t()}
+  @impl true
   def request_body(%__MODULE__{} = model, messages, opts \\ []),
     do: Options.to_body(model, messages, opts)
 
@@ -117,37 +120,31 @@ defmodule BeamWeaver.DeepSeek.ChatModel do
     )
   end
 
-  defp model_stream_metadata(%__MODULE__{} = model, body, opts) do
+  @impl true
+  def stream_metadata(%__MODULE__{} = model, body, opts) do
     model
     |> InvocationMetadata.provider(:deepseek, body, opts, :chat_completions)
     |> InvocationMetadata.to_metadata_map()
   end
 
-  defp runtime_adapter do
-    %ChatRuntime.Adapter{
-      request: &request_body/3,
-      invoke: fn model, body, opts -> Client.chat_completions(client(model), body, opts) end,
-      stream: fn model, body, opts ->
-        Client.chat_completions_stream(client(model), body, opts)
-      end,
-      stream_response: fn model, body, opts ->
-        Client.chat_completions_stream_response(client(model), body, opts)
-      end,
-      stream_events: fn model, body, opts ->
-        Client.chat_completions_stream_typed_events(client(model), body, opts)
-      end,
-      decode: fn
-        %BeamWeaver.Core.Message{} = message, _opts -> {:ok, message}
-        response, _opts -> Messages.chat_response_to_message(response)
-      end,
-      parse: fn model, message, opts ->
-        StructuredOutput.maybe_parse(message, Options.response_parse_opts(model, opts),
-          error_module: Error,
-          provider_name: "DeepSeek"
-        )
-      end,
-      metadata: &model_stream_metadata/3,
-      source: :deepseek_chat_completions
-    }
-  end
+  @impl true
+  def send_request(:invoke, model, body, opts), do: Client.chat_completions(client(model), body, opts)
+  def send_request(:stream, model, body, opts), do: Client.chat_completions_stream(client(model), body, opts)
+
+  def send_request(:stream_response, model, body, opts),
+    do: Client.chat_completions_stream_response(client(model), body, opts)
+
+  def send_request(:stream_events, model, body, opts),
+    do: Client.chat_completions_stream_typed_events(client(model), body, opts)
+
+  @impl true
+  def forced_tool_choice?(%__MODULE__{} = model, opts), do: Options.forced_tool_choice?(model, opts)
+
+  @impl true
+  def decode_response(%BeamWeaver.Core.Message{} = message, _opts), do: {:ok, message}
+  def decode_response(response, _opts), do: Messages.chat_response_to_message(response)
+
+  @impl true
+  def parse_response(model, message, opts),
+    do: StructuredOutput.maybe_parse(message, Options.response_parse_opts(model, opts), provider_name: "DeepSeek")
 end

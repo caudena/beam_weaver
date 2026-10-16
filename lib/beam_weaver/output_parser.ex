@@ -3,7 +3,6 @@ defmodule BeamWeaver.OutputParser do
   Runnable-compatible output parsers.
   """
 
-  alias BeamWeaver.Core.Async
   alias BeamWeaver.Core.Error
   alias BeamWeaver.Core.Message
   alias BeamWeaver.Core.Messages
@@ -81,8 +80,26 @@ defmodule BeamWeaver.OutputParser do
         as: Keyword.get(opts, :as)
       })
 
+  @doc """
+  Parses JSON and checks it against a JSON Schema: required keys, types and
+  enums.
+
+  `schema` is a JSON Schema map or a module that declares one, such as a
+  `BeamWeaver.Schema` module. `as:` casts the checked map into a struct module.
+  """
+  @spec schema(map() | module(), keyword()) :: struct()
   def schema(schema, opts \\ []),
-    do: Parser.new(:schema, %{schema: schema, as: Keyword.get(opts, :as)})
+    do: Parser.new(:schema, %{schema: json_schema!(schema), as: Keyword.get(opts, :as)})
+
+  defp json_schema!(schema) when is_map(schema), do: schema
+
+  defp json_schema!(module) when is_atom(module) do
+    BeamWeaver.Schema.module_schema(module) ||
+      raise ArgumentError, "#{inspect(module)} does not declare a JSON schema"
+  end
+
+  defp json_schema!(other),
+    do: raise(ArgumentError, "expected a JSON Schema map or a schema module, got: #{inspect(other)}")
 
   @doc false
   def put_opts(%Parser{} = parser, opts),
@@ -113,20 +130,6 @@ defmodule BeamWeaver.OutputParser do
   def parse_with_prompt(parser, completion, _prompt, opts \\ []),
     do: parse(parser, completion, opts)
 
-  @spec async_parse(term(), term(), keyword()) :: Async.handle()
-  def async_parse(parser, input, opts \\ []),
-    do: BeamWeaver.Runnable.async_invoke(parser, input, opts)
-
-  @spec async_parse_result(term(), term(), keyword()) :: Async.handle()
-  def async_parse_result(parser, generations, opts \\ []) do
-    Async.run_call(opts, &parse_result(parser, generations, &1))
-  end
-
-  @spec async_parse_with_prompt(term(), term(), term(), keyword()) :: Async.handle()
-  def async_parse_with_prompt(parser, completion, prompt, opts \\ []) do
-    Async.run_call(opts, &parse_with_prompt(parser, completion, prompt, &1))
-  end
-
   def parse_partial(%Parser{} = parser, input),
     do: BeamWeaver.Runnable.invoke(put_opts(parser, partial: true), input)
 
@@ -151,15 +154,6 @@ defmodule BeamWeaver.OutputParser do
 
   def get_format_instructions(%Parser{kind: :list}), do: "Return a list of values."
   def get_format_instructions(_parser), do: ""
-
-  def output_schema_for(%Parser{kind: :string}), do: %{"type" => "string"}
-  def output_schema_for(%Parser{kind: :json}), do: %{"type" => "any"}
-  def output_schema_for(%Parser{kind: :list}), do: %{"type" => "array"}
-  def output_schema_for(%Parser{kind: :csv}), do: %{"type" => "array"}
-  def output_schema_for(%Parser{kind: :xml}), do: %{"type" => "object"}
-  def output_schema_for(%Parser{kind: :openai_tools}), do: %{"type" => "array"}
-  def output_schema_for(%Parser{kind: :openai_functions}), do: %{"type" => "object"}
-  def output_schema_for(%Parser{kind: :schema, opts: %{schema: schema}}), do: schema
 
   @spec text(term()) :: String.t()
   def text(%Message{} = message), do: Message.text(message)
@@ -274,7 +268,7 @@ defmodule BeamWeaver.OutputParser do
           {:ok, [map()] | map() | nil} | {:error, Error.t()}
   def parse_openai_tools(input, opts \\ []), do: OpenAIOutputParser.parse_tools(input, opts)
 
-  @spec stream_openai_tools(Parser.t(), term()) ::
+  @spec stream_openai_tools(struct(), term()) ::
           {:ok, Enumerable.t()} | {:error, Error.t()}
   def stream_openai_tools(%Parser{kind: :openai_tools} = parser, input),
     do: OpenAIOutputParser.stream_tools(parser.opts || %{}, input)
@@ -344,21 +338,4 @@ defmodule BeamWeaver.OutputParser do
   defp diff(old, new) do
     [%{"op" => "replace", "path" => "", "value" => new, "old" => old}]
   end
-end
-
-defimpl BeamWeaver.Runnable.Introspect,
-  for: [
-    BeamWeaver.OutputParser.Parser
-  ] do
-  def graph(parser, _opts), do: BeamWeaver.Runnable.Graph.single(parser)
-  def input_schema(_parser), do: %{"type" => "any"}
-  def output_schema(parser), do: BeamWeaver.OutputParser.output_schema_for(parser)
-  def config_specs(_parser), do: []
-end
-
-defimpl BeamWeaver.Runnable.Spec,
-  for: [
-    BeamWeaver.OutputParser.Parser
-  ] do
-  def to_spec(parser), do: BeamWeaver.OutputParser.Spec.to_spec(parser)
 end

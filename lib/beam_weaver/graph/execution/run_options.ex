@@ -12,8 +12,6 @@ defmodule BeamWeaver.Graph.Execution.RunOptions do
     :context,
     :model_opts,
     :stream_modes,
-    :collect_stream?,
-    :failure_policy,
     :step_timeout,
     :run_timeout,
     :recursion_limit,
@@ -24,7 +22,8 @@ defmodule BeamWeaver.Graph.Execution.RunOptions do
     :command_goto,
     :resume_fetch,
     :resume_requested?,
-    :clear_pending_writes?
+    :clear_pending_writes?,
+    :subgraph_thread
   ]
 
   @type t :: %__MODULE__{}
@@ -45,24 +44,28 @@ defmodule BeamWeaver.Graph.Execution.RunOptions do
       trace: trace,
       context: Keyword.get(opts, :context),
       model_opts: Keyword.get(opts, :model_opts, []),
-      stream_modes: Stream.normalize_modes(Keyword.get(opts, :stream_mode, :updates)),
-      collect_stream?: Keyword.get(opts, :collect_stream?, false),
-      failure_policy: Options.normalize_failure_policy(Keyword.get(opts, :failure_policy, compiled.failure_policy)),
+      stream_modes: stream_modes(opts),
       step_timeout: Options.normalize_timeout(Keyword.get(opts, :step_timeout, compiled.step_timeout)),
       run_timeout: run_timeout,
       recursion_limit: Keyword.get(opts, :recursion_limit, 25),
-      run_id: new_run_id(),
+      run_id: Keyword.get_lazy(opts, :run_id, &ID.uuidv7/0),
       task_supervisor: Keyword.get(opts, :task_supervisor),
       stream_sink: Keyword.get(opts, :stream_sink),
       continue_from_checkpoint?: Keyword.get(opts, :continue_from_checkpoint?, false),
       command_goto: Keyword.get(opts, :command_goto),
       resume_fetch: Keyword.fetch(opts, :resume),
       resume_requested?: Keyword.has_key?(opts, :resume),
-      clear_pending_writes?: Keyword.get(opts, :clear_pending_writes?, false)
+      clear_pending_writes?: Keyword.get(opts, :clear_pending_writes?, false),
+      subgraph_thread: Keyword.get(opts, :subgraph_thread)
     }
   end
 
-  defp new_run_id do
-    ID.uuidv7()
+  # Only a run with a stream sink sends events; `stream_events/3` has already
+  # checked the modes it passes.
+  defp stream_modes(opts) do
+    case Stream.normalize_modes(Keyword.get(opts, :stream_mode, :events)) do
+      {:ok, modes} -> modes
+      {:error, _error} -> MapSet.new([:events])
+    end
   end
 end

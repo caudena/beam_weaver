@@ -3,8 +3,10 @@ defmodule BeamWeaver.Stream.Lifecycle do
   Projects typed graph stream envelopes into subgraph lifecycle events.
 
   The projector is intentionally a pure read-side reducer. It uses the same
-  envelope data as `BeamWeaver.Stream.Subgraphs` and emits immutable lifecycle
-  envelopes instead of exposing Python-style live lifecycle channels.
+  envelope data as `BeamWeaver.Stream.Subgraphs` and emits two immutable
+  lifecycle envelopes per subgraph run, in the subgraph's namespace:
+  `:started`, then the status `BeamWeaver.Stream.Subgraphs` gives the run
+  (`:completed`, `:failed` or `:interrupted`).
   """
 
   alias BeamWeaver.Stream

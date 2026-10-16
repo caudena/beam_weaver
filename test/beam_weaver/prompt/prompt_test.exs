@@ -4,7 +4,6 @@ defmodule BeamWeaver.PromptTest do
   alias BeamWeaver.Core.ContentBlock
   alias BeamWeaver.Core.Error
   alias BeamWeaver.Core.Message
-  alias BeamWeaver.Core.Messages.Utils
   alias BeamWeaver.Core.Tool
   alias BeamWeaver.ExampleSelector
   alias BeamWeaver.Prompt
@@ -142,22 +141,12 @@ defmodule BeamWeaver.PromptTest do
              Runnable.invoke(Prompt.string(template), %{name: "hello"})
   end
 
-  test "prompt formatting facade exposes values strings async helpers and template checks" do
+  test "prompt formatting facade exposes values strings and template checks" do
     prompt = Prompt.string("Hello {name}")
 
     assert {:ok, value} = Prompt.format_prompt(prompt, %{name: "Ada"})
     assert %Prompt.Value{text: "Hello Ada"} = value
     assert {:ok, "Hello Ada"} = Prompt.format(prompt, %{name: "Ada"})
-
-    assert {:ok, "Hello Ada"} =
-             prompt
-             |> Prompt.async_format(%{name: "Ada"})
-             |> BeamWeaver.Core.Async.await()
-
-    assert {:ok, %Prompt.Value{text: "Hello Ada"}} =
-             prompt
-             |> Prompt.async_format_prompt(%{name: "Ada"})
-             |> BeamWeaver.Core.Async.await()
 
     assert Prompt.pretty_repr(prompt) == "Hello {name}"
     assert {:ok, ["name"]} = Prompt.template_variables("Hello {name}", :simple)
@@ -295,7 +284,7 @@ defmodule BeamWeaver.PromptTest do
       )
 
     assert Prompt.variables(prompt) == ["question"]
-    assert Runnable.input_schema(prompt)["required"] == ["question"]
+    assert Prompt.input_schema(prompt)["required"] == ["question"]
 
     assert {:ok, value} = Runnable.invoke(prompt, %{question: "Ready?"})
 
@@ -308,8 +297,8 @@ defmodule BeamWeaver.PromptTest do
   test "chat templates support role aliases" do
     prompt =
       Prompt.chat([
-        {"human", "Question: {input}"},
-        {"ai", "Answer: {answer}"}
+        {"user", "Question: {input}"},
+        {"assistant", "Answer: {answer}"}
       ])
 
     assert {:ok, value} = Runnable.invoke(prompt, %{input: "Q", answer: "A"})
@@ -382,8 +371,8 @@ defmodule BeamWeaver.PromptTest do
 
     prompt =
       base
-      |> Prompt.append({"human", "{question}"})
-      |> Prompt.extend([{"ai", "Draft"}, Prompt.message(:user, "Follow-up")])
+      |> Prompt.append({"user", "{question}"})
+      |> Prompt.extend([{"assistant", "Draft"}, Prompt.message(:user, "Follow-up")])
 
     prompt = Prompt.concat(prompt, Prompt.chat([{"assistant", "Done"}]))
 
@@ -418,19 +407,47 @@ defmodule BeamWeaver.PromptTest do
              )
   end
 
-  test "chat prompts normalize generic chat roles to native user messages" do
-    prompt = Prompt.chat([{"critic", "Review {topic}"}])
+  test "chat prompts read roles like Message.from/1 and reject the roles it doesn't know" do
+    prompt =
+      Prompt.chat([
+        {"developer", "Be {tone}."},
+        Prompt.message(:developer, "Cite sources."),
+        {"user", "{question}"}
+      ])
 
-    assert {:ok, value} = Runnable.invoke(prompt, %{topic: "beam"})
+    assert {:ok, value} = Runnable.invoke(prompt, %{tone: "terse", question: "2+2?"})
 
-    assert [%Message{role: :user, content: "Review beam", metadata: metadata} = message] =
-             Prompt.to_messages(value)
+    assert [
+             %Message{role: :system, content: "Be terse.", metadata: %{openai_role: :developer}},
+             %Message{role: :system, content: "Cite sources.", metadata: %{openai_role: :developer}},
+             %Message{role: :user, content: "2+2?"}
+           ] = Prompt.to_messages(value)
 
-    assert metadata == %{}
-    assert {:ok, "Human: Review beam"} = Utils.get_buffer_string([message])
+    for role <- ["human", "ai", "critic", :human, nil] do
+      for prompt <- [Prompt.chat([{role, "Review {topic}"}]), Prompt.chat([Prompt.message(role, "Review {topic}")])] do
+        assert {:error, %Error{type: :invalid_role, details: %{role: ^role}}} =
+                 Runnable.invoke(prompt, %{topic: "beam"})
 
-    assert {:ok, ~s(<message type="human">Review beam</message>)} =
-             Utils.get_buffer_string([message], format: :xml)
+        assert {:error, %Error{type: :invalid_role}} = Prompt.to_spec(prompt)
+      end
+    end
+  end
+
+  test "prompt specs load the roles Message.from/1 reads and refuse the others" do
+    spec = fn role ->
+      %{
+        "type" => "prompt_chat",
+        "messages" => [%{"kind" => "message_template", "role" => role, "template" => "{question}"}]
+      }
+    end
+
+    assert {:ok, prompt} = Prompt.from_spec(spec.("developer"))
+    assert {:ok, value} = Runnable.invoke(prompt, %{question: "2+2?"})
+    assert [%Message{role: :system, metadata: %{openai_role: :developer}}] = Prompt.to_messages(value)
+
+    for role <- ["human", "ai", "critic"] do
+      assert {:error, %Error{type: :invalid_role, details: %{role: ^role}}} = Prompt.from_spec(spec.(role))
+    end
   end
 
   test "content-block, image, and dict templates preserve structured content" do
@@ -488,8 +505,8 @@ defmodule BeamWeaver.PromptTest do
         Prompt.placeholder(:history, optional: true)
       ])
 
-    assert {:ok, spec} = Runnable.to_spec(prompt)
-    assert {:ok, restored} = Runnable.from_spec(spec)
+    assert {:ok, spec} = Prompt.to_spec(prompt)
+    assert {:ok, restored} = Prompt.from_spec(spec)
 
     assert {:ok, value} =
              Runnable.invoke(restored, %{name: "diagram", img: "abc", audio_data: "xyz"})
@@ -597,7 +614,7 @@ defmodule BeamWeaver.PromptTest do
             %{input: "2+2", output: "4"},
             %{input: "2+3", output: "5"}
           ]),
-        example_prompt: Prompt.chat([{"human", "{input}"}, {"ai", "{output}"}]),
+        example_prompt: Prompt.chat([{"user", "{input}"}, {"assistant", "{output}"}]),
         suffix_messages: [Prompt.message(:user, "{input}")]
       )
 
@@ -614,12 +631,9 @@ defmodule BeamWeaver.PromptTest do
 
     assert Prompt.pretty_repr(prompt) =~ "{input}"
 
-    assert {:ok, async_value} =
-             prompt
-             |> Prompt.async_format_prompt(%{input: "1 + 1"})
-             |> BeamWeaver.Core.Async.await()
+    assert {:ok, formatted} = Prompt.format_prompt(prompt, %{input: "1 + 1"})
 
-    assert Enum.map(Prompt.to_messages(async_value), & &1.role) == [
+    assert Enum.map(Prompt.to_messages(formatted), & &1.role) == [
              :system,
              :user,
              :assistant,
@@ -658,14 +672,14 @@ defmodule BeamWeaver.PromptTest do
 
     prompt =
       Prompt.structured_chat(
-        [{"human", "hi {{person.name}}"}],
+        [{"user", "hi {{person.name}}"}],
         schema,
         template_format: :mustache,
         value: 7
       )
 
     assert Prompt.variables(prompt) == ["person"]
-    assert Runnable.output_schema(prompt) == schema
+    assert Prompt.output_schema(prompt) == schema
 
     assert {:ok, value} = Runnable.invoke(prompt, %{person: %{name: "Ada"}})
     assert Prompt.to_messages(value) == [Message.user("hi Ada")]
@@ -673,7 +687,7 @@ defmodule BeamWeaver.PromptTest do
     chain =
       Prompt.pipe_structured(prompt, %StructuredPromptModel{parent: self()}, name: :structured_prompt_chain)
 
-    assert Runnable.get_name(chain) == "structured_prompt_chain"
+    assert Runnable.name(chain) == "structured_prompt_chain"
 
     assert {:ok, %Message{metadata: %{structured_response: %{"name" => "yo", "value" => 7}}}} =
              Runnable.invoke(chain, %{person: %{name: "Ada"}})
@@ -694,14 +708,14 @@ defmodule BeamWeaver.PromptTest do
 
     prompt =
       Prompt.structured_chat(
-        [{"human", "score {{person.name}}"}],
+        [{"user", "score {{person.name}}"}],
         schema,
         template_format: :mustache,
         value: 7
       )
 
-    assert {:ok, spec} = Runnable.to_spec(prompt)
-    assert {:ok, restored} = Runnable.from_spec(spec)
+    assert {:ok, spec} = Prompt.to_spec(prompt)
+    assert {:ok, restored} = Prompt.from_spec(spec)
     assert {:ok, value} = Runnable.invoke(restored, %{person: %{name: "Ada"}})
     assert Prompt.to_messages(value) == [Message.user("score Ada")]
     assert restored.structured_output_opts == [value: 7]
@@ -710,7 +724,7 @@ defmodule BeamWeaver.PromptTest do
   test "structured chat prompts report invalid mustache templates as tagged prompt errors" do
     prompt =
       Prompt.structured_chat(
-        [{"human", "hi {{}}"}],
+        [{"user", "hi {{}}"}],
         %{"type" => "object", "properties" => %{}, "title" => "answer"},
         template_format: :mustache
       )
@@ -723,12 +737,7 @@ defmodule BeamWeaver.PromptTest do
     document = %BeamWeaver.Core.Document{content: "Beam", metadata: %{"source" => "docs"}}
 
     assert {:ok, "docs: Beam"} =
-             Prompt.format_document(document, Prompt.string("{source}: {page_content}"))
-
-    assert {:ok, "docs: Beam"} =
-             document
-             |> Prompt.async_format_document(Prompt.string("{source}: {page_content}"))
-             |> BeamWeaver.Core.Async.await()
+             Prompt.format_document(document, Prompt.string("{source}: {content}"))
   end
 
   test "prompts implement runnable batch, stream, transform, introspection, and safe specs" do
@@ -744,17 +753,17 @@ defmodule BeamWeaver.PromptTest do
     assert {:ok, transform} = Runnable.transform(prompt, [%{name: "Ada"}, %{name: "Grace"}])
     assert Enum.map(transform, &Prompt.to_string/1) == ["Hello Ada", "Hello Grace"]
 
-    assert Runnable.input_schema(prompt)["required"] == ["name"]
-    assert Runnable.output_schema(prompt) == %{"type" => "string"}
+    assert Prompt.input_schema(prompt)["required"] == ["name"]
+    assert Prompt.output_schema(prompt) == %{"type" => "string"}
 
-    assert {:ok, spec} = Runnable.to_spec(prompt)
-    assert {:ok, restored} = Runnable.from_spec(spec)
+    assert {:ok, spec} = Prompt.to_spec(prompt)
+    assert {:ok, restored} = Prompt.from_spec(spec)
     assert {:ok, restored_value} = Runnable.invoke(restored, %{name: "Ada"})
     assert Prompt.to_string(restored_value) == "Hello Ada"
 
     assert {:error, %Error{type: :unsupported_runnable_spec}} =
              Prompt.string("Hello {name}", partials: %{name: fn -> "Ada" end})
-             |> Runnable.to_spec()
+             |> Prompt.to_spec()
   end
 
   test "prompts load and save native JSON/YAML specs" do
@@ -781,6 +790,118 @@ defmodule BeamWeaver.PromptTest do
                {:system, "Use short answers."},
                {:user, "Hi"}
              ]
+    end
+  end
+
+  test "prompts with literal messages save and load, keeping braces in their text" do
+    dir = tmp_dir!("prompt-literal-save")
+
+    prompt =
+      Prompt.chat([
+        Message.system("Reply in JSON like {\"category\": \"billing\"}."),
+        Message.assistant([%{"type" => "text", "text" => "Understood."}], name: "triage"),
+        {:user, "{ticket}"}
+      ])
+
+    for file <- ["prompt.json", "prompt.yaml"] do
+      path = Path.join(dir, file)
+      assert :ok = Prompt.save(prompt, path)
+      assert {:ok, loaded} = Prompt.load(path)
+
+      assert {:ok, value} = Runnable.invoke(loaded, %{ticket: "Charged twice"})
+      assert {:ok, original} = Runnable.invoke(prompt, %{ticket: "Charged twice"})
+      assert Prompt.to_messages(value) == Prompt.to_messages(original)
+    end
+
+    assert {:error, %Error{type: :invalid_message}} = Prompt.to_spec(Prompt.chat([42]))
+  end
+
+  test "prompt files keep empty strings, empty lists, empty maps and lists of integers" do
+    dir = tmp_dir!("prompt-empty-values")
+
+    partials = %{
+      "extra" => "",
+      "tags" => [],
+      "options" => %{},
+      "codes" => [104, 105],
+      "nested" => %{"lists" => [[], [1, 2]], "text" => "", "map" => %{}, "label: #1" => "kept"}
+    }
+
+    prompt =
+      Prompt.chat(
+        [
+          {:system, "Be brief.{extra}"},
+          Message.assistant("", tool_calls: [%{id: "call-1", name: "lookup", args: %{}}]),
+          {:user, "{question}"}
+        ],
+        partials: partials
+      )
+
+    for file <- ["prompt.json", "prompt.yaml"] do
+      path = Path.join(dir, file)
+      assert :ok = Prompt.save(prompt, path)
+      assert {:ok, loaded} = Prompt.load(path)
+      assert loaded.partials == partials
+
+      assert {:ok, value} = Runnable.invoke(loaded, %{question: "Where is A-1001?"})
+
+      assert [
+               %Message{role: :system, content: "Be brief."},
+               %Message{role: :assistant, content: "", tool_calls: [%{id: "call-1", name: "lookup", args: args}]},
+               %Message{role: :user, content: "Where is A-1001?"}
+             ] = Prompt.to_messages(value)
+
+      assert args == %{}
+    end
+
+    broken = Path.join(dir, "broken.yaml")
+    File.write!(broken, "type: prompt_string\ntemplate: Hello: {name}\n")
+
+    assert {:error, %Error{type: :invalid_prompt_spec, details: %{reason: reason}}} = Prompt.load(broken)
+    assert reason =~ "line 2"
+  end
+
+  test "input values override partials whether either uses atom or string keys" do
+    for {partials, input} <- [
+          {%{tone: "short"}, %{"tone" => "friendly"}},
+          {%{"tone" => "short"}, %{tone: "friendly"}}
+        ] do
+      string = Prompt.string("Answer in a {tone} tone.") |> Prompt.partial(partials)
+      chat = Prompt.chat([{:system, "Answer in a {tone} tone."}]) |> Prompt.partial(partials)
+
+      assert {:ok, "Answer in a friendly tone."} = Prompt.format(string, input)
+      assert {:ok, "Answer in a friendly tone."} = Prompt.format(chat, input)
+      assert {:ok, "Answer in a short tone."} = Prompt.format(string, %{})
+    end
+
+    called = self()
+    lazy = Prompt.partial(Prompt.string("{date}"), %{date: fn -> send(called, :partial_called) end})
+    assert {:ok, "2026-10-10"} = Prompt.format(lazy, %{"date" => "2026-10-10"})
+    refute_received :partial_called
+
+    assert %{partials: %{"tone" => "long"} = partials} =
+             Prompt.string("{tone}") |> Prompt.partial(%{tone: "short"}) |> Prompt.partial(%{"tone" => "long"})
+
+    assert map_size(partials) == 1
+
+    message = Prompt.message(:system, "Be {tone}.", partials: %{tone: "brief"})
+    assert {:ok, "Be warm."} = Prompt.format(Prompt.chat([message]), %{"tone" => "warm"})
+  end
+
+  test "few-shot builders reject options they don't take instead of dropping them" do
+    examples = [%{input: "2+2", output: "4"}]
+
+    assert_raise ArgumentError, ~r/prefix_messages: and suffix_messages:/, fn ->
+      Prompt.few_shot_chat(
+        examples: examples,
+        example_prompt: Prompt.chat([{:user, "{input}"}, {:assistant, "{output}"}]),
+        prefix: "You are a calculator.",
+        suffix: "{input}"
+      )
+    end
+
+    assert_raise ArgumentError, ~r/unknown options \[:input_variables\] for Prompt.few_shot\/1/, fn ->
+      Prompt.few_shot(examples: examples, example_prompt: Prompt.string("{input}"), input_variables: [:input])
     end
   end
 

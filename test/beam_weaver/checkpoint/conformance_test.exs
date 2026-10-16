@@ -5,19 +5,19 @@ defmodule BeamWeaver.Checkpoint.ConformanceTest do
   alias BeamWeaver.Checkpoint.Ecto
   alias BeamWeaver.Checkpoint.ETS
   alias BeamWeaver.Checkpoint.PendingWrite
-  alias BeamWeaver.Checkpoint.ResumeDelivery
-  alias BeamWeaver.Compaction.Canonical
-  alias BeamWeaver.Core.Async
   alias BeamWeaver.Graph.Channel
   alias BeamWeaver.Graph.Channels.DeltaSnapshot
+  alias BeamWeaver.Graph.Interrupt
   alias BeamWeaver.Test.LivePostgres
   alias BeamWeaver.Test.LiveSQLite
   alias BeamWeaver.Test.PostgresRepo
   alias BeamWeaver.Test.SQLiteRepo
 
-  for adapter <- [:ets, :postgres, :sqlite] do
+  # The `_encrypted` savers store every checkpoint, write and metadata map
+  # encrypted, so SQL can't read their metadata.
+  for adapter <- [:ets, :postgres, :sqlite, :postgres_encrypted, :sqlite_encrypted] do
     describe "#{adapter} checkpoint saver conformance" do
-      if adapter == :postgres do
+      if adapter in [:postgres, :postgres_encrypted] do
         @describetag :postgres
       end
 
@@ -74,6 +74,46 @@ defmodule BeamWeaver.Checkpoint.ConformanceTest do
         assert record.source == "input"
         assert record.step == -1
         assert record.metadata.run_id == metadata.run_id
+      end
+
+      test "gives back maps with the keys they were put with, at any depth", %{saver: saver} do
+        line = %{sku: "S-1", qty: 2}
+        order = %{:id => "A-1001", :status => :open, :lines => [line], "gift_note" => "Happy birthday"}
+        channel_values = %{order: order, totals: %{1 => 40, 2 => 15}, paid: %{true => ["A-1001"], false => []}}
+        metadata = metadata(source: "loop", step: 1, step_update: %{load: %{order: order}})
+
+        assert {:ok, stored} =
+                 Checkpoint.put(saver, config(), checkpoint(channel_values: channel_values), metadata, %{})
+
+        interrupt = %Interrupt{id: "interrupt-1", value: %{question: "Refund this line?", line: line}}
+        writes = [{"order", %{order: order}}, {"__interrupt__", [interrupt]}]
+        assert :ok = Checkpoint.put_writes(saver, stored, writes, "task-1")
+
+        assert %{checkpoint: loaded, metadata: loaded_metadata, pending_writes: pending_writes} =
+                 Checkpoint.get_tuple(saver, stored)
+
+        assert loaded["channel_values"] == channel_values
+        assert loaded_metadata["step_update"] == %{load: %{order: order}}
+        assert pending_writes == [{"task-1", "order", %{order: order}}, {"task-1", "__interrupt__", [interrupt]}]
+      end
+
+      # `Checkpoint.ETS` compares a filter's top-level values for equality;
+      # the Ecto saver matches the leaves of nested maps.
+      if adapter != :ets do
+        test "matches nested metadata filters whether their keys are atoms or strings", %{saver: saver} do
+          config = config()
+          put_checkpoint!(saver, config, %{}, metadata(step: 1, step_update: %{"review" => %{"verdict" => "revise"}}))
+          put_checkpoint!(saver, config, %{}, metadata(step: 2, step_update: %{review: %{verdict: "accept", score: 4}}))
+
+          assert [%{metadata: %{"step" => 1}}] =
+                   Checkpoint.list(saver, config, filter: %{step_update: %{review: %{verdict: "revise"}}})
+
+          assert [%{metadata: %{"step" => 2}}] =
+                   Checkpoint.list(saver, config, filter: %{step_update: %{"review" => %{"verdict" => "accept"}}})
+
+          assert [%{metadata: %{"step" => 2}}] =
+                   Checkpoint.list(saver, config, filter: %{step_update: %{review: %{verdict: "accept"}}})
+        end
       end
 
       test "merges config metadata, strips null characters, and restores missing checkpoint defaults",
@@ -244,8 +284,7 @@ defmodule BeamWeaver.Checkpoint.ConformanceTest do
 
         namespaces =
           saver
-          |> Checkpoint.async_list(%{"configurable" => %{"thread_id" => thread_b}})
-          |> Async.await()
+          |> Checkpoint.list(%{"configurable" => %{"thread_id" => thread_b}})
           |> Enum.map(& &1.config["configurable"]["checkpoint_ns"])
           |> MapSet.new()
 
@@ -308,60 +347,49 @@ defmodule BeamWeaver.Checkpoint.ConformanceTest do
                  Checkpoint.get_tuple(saver, next)
       end
 
-      test "async saver facade mirrors get list put writes copy delete prune operations", %{
-        saver: saver
-      } do
+      test "saver facade covers get list put writes copy delete prune operations", %{saver: saver} do
         thread_id = unique("async-thread")
         run_id = unique("run")
 
         assert {:ok, stored} =
-                 Checkpoint.async_put(
+                 Checkpoint.put(
                    saver,
                    config(thread_id),
                    checkpoint(channel_values: %{"value" => 1}),
                    metadata(step: 0, run_id: run_id),
                    %{"value" => 1}
                  )
-                 |> Async.await()
 
-        assert :ok =
-                 Checkpoint.async_put_writes(saver, stored, [{"value", 2}], unique("task"))
-                 |> Async.await()
+        assert :ok = Checkpoint.put_writes(saver, stored, [{"value", 2}], unique("task"))
 
         assert %{
                  checkpoint: %{"channel_values" => %{"value" => 1}},
                  pending_writes: [{_task_id, "value", 2}]
-               } = Checkpoint.async_get_tuple(saver, stored) |> Async.await()
+               } = Checkpoint.get_tuple(saver, stored)
 
-        assert %{"channel_values" => %{"value" => 1}} =
-                 Checkpoint.async_get(saver, stored) |> Async.await()
+        assert %{"channel_values" => %{"value" => 1}} = Checkpoint.get(saver, stored)
 
         assert [%{metadata: %{"run_id" => ^run_id}}] =
-                 Checkpoint.async_list(saver, config(thread_id), filter: %{run_id: run_id})
-                 |> Async.await()
+                 Checkpoint.list(saver, config(thread_id), filter: %{run_id: run_id})
 
-        assert :ok =
-                 Checkpoint.async_copy_thread(saver, thread_id, "#{thread_id}-copy")
-                 |> Async.await()
+        assert :ok = Checkpoint.copy_thread(saver, thread_id, "#{thread_id}-copy")
 
         assert %{checkpoint: %{"channel_values" => %{"value" => 1}}} =
                  Checkpoint.get_tuple(saver, config("#{thread_id}-copy"))
 
-        assert :ok = Checkpoint.async_delete_for_runs(saver, [run_id]) |> Async.await()
+        assert :ok = Checkpoint.delete_for_runs(saver, [run_id])
         assert [] = Checkpoint.list(saver, config(thread_id), filter: %{run_id: run_id})
 
         assert {:ok, pruned} =
-                 Checkpoint.async_put(
+                 Checkpoint.put(
                    saver,
                    config(thread_id),
                    checkpoint(channel_values: %{"value" => 3}),
                    metadata(step: 1),
                    %{"value" => 3}
                  )
-                 |> Async.await()
 
-        assert :ok =
-                 Checkpoint.async_prune(saver, [thread_id], strategy: :delete) |> Async.await()
+        assert :ok = Checkpoint.prune(saver, [thread_id], strategy: :delete)
 
         assert nil == Checkpoint.get_tuple(saver, pruned)
       end
@@ -459,10 +487,8 @@ defmodule BeamWeaver.Checkpoint.ConformanceTest do
         assert Enum.map(history["items"].writes, & &1.value) == ["a", "b"]
       end
 
-      test "delta channel history omits target writes and is safe under concurrent async calls",
-           %{
-             saver: saver
-           } do
+      test "delta channel history omits target writes and returns ancestor writes without a seed",
+           %{saver: saver} do
         thread_id = unique("thread")
 
         root =
@@ -499,13 +525,10 @@ defmodule BeamWeaver.Checkpoint.ConformanceTest do
             metadata(step: 2)
           )
 
-        first = Checkpoint.async_get_delta_channel_history(saver, latest, ["items"])
-        second = Checkpoint.async_get_delta_channel_history(saver, latest, ["items"])
+        history = Checkpoint.get_delta_channel_history(saver, latest, ["items"])
 
-        for result <- [Async.await(first), Async.await(second)] do
-          assert result["items"].seed == Channel.missing()
-          assert Enum.map(result["items"].writes, & &1.value) == ["pending", "first", "second"]
-        end
+        assert history["items"].seed == Channel.missing()
+        assert Enum.map(history["items"].writes, & &1.value) == ["pending", "first", "second"]
       end
 
       test "delta channel history handles empty channels, independent seeds, and plain migration seeds",
@@ -984,55 +1007,27 @@ defmodule BeamWeaver.Checkpoint.ConformanceTest do
         assert [] = Checkpoint.list(saver, config(other_thread))
       end
 
-      if adapter != :ets do
-        test "strict resume delivery commits and replays an exact receipt", %{saver: saver} do
-          source =
-            put_checkpoint!(
-              saver,
-              config(),
-              %{"messages" => ["parent"]},
-              metadata(step: 0)
-            )
+      if adapter in [:postgres, :sqlite] do
+        test "a prefix of nil, false or \"\" names no schema, as in the migration" do
+          for prefix <- [nil, false, ""] do
+            saver = new_saver(unquote(adapter), prefix: prefix)
+            stored = put_checkpoint!(saver, config(), %{"step" => 1}, metadata(step: 0))
 
-          assert :ok =
-                   Checkpoint.put_writes(
-                     saver,
-                     source,
-                     [{"messages", "unrelated pending value"}],
-                     "unrelated-task",
-                     "parent:work"
-                   )
-
-          payload = %{"result" => "child done"}
-
-          assert {:ok, delivery} =
-                   ResumeDelivery.new(%{
-                     delivery_id: unique("delivery"),
-                     source_checkpoint_id: root_id(source),
-                     source_ordinal: 1,
-                     payload: payload,
-                     payload_hash: Canonical.hash(payload),
-                     terminal_evidence: %{
-                       "state" => "completed",
-                       "result_hash" => Canonical.hash(payload)
-                     }
-                   })
-
-          assert {:ok, stage} = Checkpoint.stage_resume(saver, source, delivery)
-          assert {:ok, receipt} = Checkpoint.continue_staged(saver, stage)
-          assert :ok = Checkpoint.verify_resume_receipt(saver, receipt)
-          assert {:ok, ^receipt} = Checkpoint.continue_staged(saver, stage)
-
-          assert %{pending_writes: [{"unrelated-task", "messages", "unrelated pending value"}]} =
-                   Checkpoint.get_tuple(saver, receipt.resulting_config)
+            assert %{checkpoint: %{"channel_values" => %{"step" => 1}}} = Checkpoint.get_tuple(saver, stored)
+            assert [_tuple] = Checkpoint.list(saver, stored)
+          end
         end
       end
     end
   end
 
-  defp new_saver(:ets), do: ETS.new()
+  defp new_saver(adapter, opts \\ [])
 
-  defp new_saver(:postgres) do
+  defp new_saver(:ets, _opts), do: ETS.new()
+  defp new_saver(:postgres_encrypted, _opts), do: new_saver(:postgres, serialization: encryption())
+  defp new_saver(:sqlite_encrypted, _opts), do: new_saver(:sqlite, serialization: encryption())
+
+  defp new_saver(:postgres, opts) do
     assert LivePostgres.available?()
 
     checkpoints = LivePostgres.unique_table("bw_conformance_checkpoints")
@@ -1045,10 +1040,10 @@ defmodule BeamWeaver.Checkpoint.ConformanceTest do
       LivePostgres.clear_migration(version)
     end)
 
-    Ecto.new(repo: PostgresRepo, checkpoints_table: checkpoints, writes_table: writes)
+    Ecto.new([repo: PostgresRepo, checkpoints_table: checkpoints, writes_table: writes] ++ opts)
   end
 
-  defp new_saver(:sqlite) do
+  defp new_saver(:sqlite, opts) do
     checkpoints = LiveSQLite.unique_table("bw_conformance_checkpoints")
     writes = LiveSQLite.unique_table("bw_conformance_writes")
 
@@ -1064,8 +1059,10 @@ defmodule BeamWeaver.Checkpoint.ConformanceTest do
       LiveSQLite.clear_migration(version)
     end)
 
-    Ecto.new(repo: SQLiteRepo, checkpoints_table: checkpoints, writes_table: writes)
+    Ecto.new([repo: SQLiteRepo, checkpoints_table: checkpoints, writes_table: writes] ++ opts)
   end
+
+  defp encryption, do: [codec: BeamWeaver.Serialization.Encrypted, encryption_key: :crypto.strong_rand_bytes(32)]
 
   defp put_checkpoint!(saver, config, channel_values, metadata) do
     checkpoint =

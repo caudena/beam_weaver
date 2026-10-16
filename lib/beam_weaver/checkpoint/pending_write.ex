@@ -2,10 +2,10 @@ defmodule BeamWeaver.Checkpoint.PendingWrite do
   @moduledoc """
   Rich checkpoint pending-write record.
 
-  Checkpoint adapters still expose LangGraph-compatible `{task_id, channel,
-  value}` tuples through `:pending_writes`. This struct carries the metadata the
-  graph execution runtime needs for deterministic replay, namespaces, and future
-  channel-specific reconstruction without breaking that tuple surface.
+  Checkpoint adapters expose pending writes as plain `{task_id, channel, value}`
+  tuples through `:pending_writes` (see `tuple/1`). This struct also carries the
+  metadata the graph execution runtime needs for deterministic replay,
+  namespaces, and future channel-specific reconstruction.
   """
 
   defstruct [

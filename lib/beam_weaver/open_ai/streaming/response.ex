@@ -1,8 +1,10 @@
 defmodule BeamWeaver.OpenAI.Streaming.Response do
   @moduledoc false
 
+  import BeamWeaver.MapShape, only: [put_present: 3]
+
   alias BeamWeaver.OpenAI.Streaming.Shared
-  alias BeamWeaver.OpenAI.Streaming.SSE
+  alias BeamWeaver.Provider.SSE
 
   @spec response(binary() | term()) :: map()
   def response(body) when is_binary(body) do
@@ -219,7 +221,7 @@ defmodule BeamWeaver.OpenAI.Streaming.Response do
       item
       |> ensure_item("function_call")
       |> Map.put("arguments", arguments)
-      |> put_optional("name", data["name"])
+      |> put_present("name", data["name"])
     end)
   end
 
@@ -393,7 +395,4 @@ defmodule BeamWeaver.OpenAI.Streaming.Response do
       _missing -> new_item
     end
   end
-
-  defp put_optional(map, _key, nil), do: map
-  defp put_optional(map, key, value), do: Map.put(map, key, value)
 end

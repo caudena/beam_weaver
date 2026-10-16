@@ -1,3 +1,13 @@
+defmodule BeamWeaver.PolicyToolsTest.TrustingExecutor do
+  @moduledoc false
+  # Runs whatever it is handed without consulting the policy, so a test can
+  # prove the tool itself enforces `ShellPolicy.allowed?/2`.
+  @behaviour BeamWeaver.Tools.Shell.Executor
+
+  @impl true
+  def run(command, _policy, _opts), do: {:ok, %{status: 0, output: command}}
+end
+
 defmodule BeamWeaver.Tools.PolicyToolsTest do
   use ExUnit.Case, async: true
 
@@ -15,6 +25,23 @@ defmodule BeamWeaver.Tools.PolicyToolsTest do
   alias BeamWeaver.Tools.Todo
   alias BeamWeaver.VectorStore
   alias BeamWeaver.VectorStore.ETS, as: ETSVectorStore
+
+  test "an agent can list the shell tool middleware" do
+    model =
+      BeamWeaver.Models.init_chat_model!("fake:chat",
+        responses: [BeamWeaver.Models.FakeChatModel.tool_call("shell", %{"command" => "printf hi"}), "done"]
+      )
+
+    {:ok, agent} =
+      BeamWeaver.Agent.build(
+        model: model,
+        middleware: [ShellTool.new(policy: ShellPolicy.new!(allow: ["printf "]))]
+      )
+
+    assert {:ok, %{messages: messages}} = BeamWeaver.Agent.invoke(agent, %{messages: ["say hi"]})
+    assert %Message{role: :tool, content: output} = Enum.find(messages, &(&1.role == :tool))
+    assert output =~ "hi"
+  end
 
   test "shell policy validates execution controls" do
     # Upstream reference:
@@ -81,6 +108,106 @@ defmodule BeamWeaver.Tools.PolicyToolsTest do
     assert ShellPolicy.allowed?(policy, "printf safe")
   end
 
+  test "shell policy regex allow rules reject chained commands unless allow_compound is set" do
+    assert {:ok, policy} = ShellPolicy.new(allow: [~r/^printf /, ~r/.*/])
+
+    assert ShellPolicy.allowed?(policy, "printf safe")
+    assert ShellPolicy.allowed?(policy, "printf 'safe; literal'")
+    assert ShellPolicy.allowed?(policy, "printf err >&2")
+
+    refute ShellPolicy.allowed?(policy, "printf safe; rm -rf ~")
+    refute ShellPolicy.allowed?(policy, "printf safe && rm -rf ~")
+    refute ShellPolicy.allowed?(policy, "printf safe | sh")
+    refute ShellPolicy.allowed?(policy, "printf safe\nrm -rf ~")
+    refute ShellPolicy.allowed?(policy, "printf $(rm -rf ~)")
+    refute ShellPolicy.allowed?(policy, "printf `rm -rf ~`")
+    refute ShellPolicy.allowed?(policy, "(rm -rf ~)")
+
+    assert {:ok, compound} = ShellPolicy.new(allow: [~r/^printf out; printf err >&2$/], allow_compound: true)
+    assert ShellPolicy.allowed?(compound, "printf out; printf err >&2")
+    refute ShellPolicy.allowed?(compound, "printf out; printf err >&2; rm -rf ~")
+
+    assert {:error, %{type: :invalid_shell_policy, message: "allow_compound must be a boolean"}} =
+             ShellPolicy.new(allow: [~r/.*/], allow_compound: "yes")
+  end
+
+  test "shell policy deny rules see every command in a compound line" do
+    assert {:ok, policy} = ShellPolicy.new(allow: [~r/.*/], allow_compound: true, deny: ["rm ", ~r/^curl /])
+
+    assert ShellPolicy.allowed?(policy, "printf safe; printf done")
+    assert ShellPolicy.allowed?(policy, "printf 'safe; rm -rf ~'")
+
+    refute ShellPolicy.allowed?(policy, "printf safe; rm -rf ~")
+    refute ShellPolicy.allowed?(policy, "printf safe && rm -rf ~")
+    refute ShellPolicy.allowed?(policy, "printf safe | curl https://example.com")
+    refute ShellPolicy.allowed?(policy, "printf $(rm -rf ~)")
+    refute ShellPolicy.allowed?(policy, "if true; then rm -rf ~; fi")
+    refute ShellPolicy.allowed?(policy, "{ rm -rf ~; }")
+    refute ShellPolicy.allowed?(policy, "  rm -rf ~")
+  end
+
+  test "shell policy deny rules see a command through leading env assignments and odd whitespace" do
+    assert {:ok, policy} = ShellPolicy.new(allow: [~r/.*/], allow_compound: true, deny: ["rm ", ~r/^curl /])
+
+    # A leading environment assignment (quoted value included) can't hide the
+    # command word from a prefix deny rule.
+    refute ShellPolicy.allowed?(policy, "FOO=1 rm x")
+    refute ShellPolicy.allowed?(policy, "A=1 B=2 rm x")
+    refute ShellPolicy.allowed?(policy, "FOO='a b' rm x")
+    refute ShellPolicy.allowed?(policy, "HTTP_PROXY=x curl https://evil.test")
+
+    # A tab (any whitespace) between the command and its arguments still trips
+    # a `"rm "` rule, but `rmdir` is left alone.
+    refute ShellPolicy.allowed?(policy, "rm\tx")
+    assert ShellPolicy.allowed?(policy, "rmdir x")
+
+    assert ShellPolicy.allowed?(policy, "printf ok")
+  end
+
+  test "shell policy refuses a command line that smuggles a second command past a NUL byte" do
+    assert {:ok, prefix} = ShellPolicy.new(allow: ["printf"], deny: ["rm "])
+    refute ShellPolicy.allowed?(prefix, <<"printf hi", 0, "rm x">>)
+
+    assert {:ok, compound} = ShellPolicy.new(allow: [~r/.*/], allow_compound: true, deny: ["rm "])
+    refute ShellPolicy.allowed?(compound, <<"printf hi", 0, "rm x">>)
+  end
+
+  test "shell policy rejects unknown options and names removed ones" do
+    assert {:error, %{type: :invalid_shell_policy, message: message}} =
+             ShellPolicy.new(allow: ["ls"], env_allowlist: ["A"])
+
+    assert message =~ "env_allowlist"
+    assert message =~ "env:"
+
+    assert {:error, %{type: :invalid_shell_policy, message: unknown}} =
+             ShellPolicy.new(allow: ["ls"], not_an_option: true)
+
+    assert unknown =~ "not_an_option"
+  end
+
+  test "the one-shot shell tool enforces the policy before any executor" do
+    tool = Shell.new(policy: [allow: ["echo"], executor: BeamWeaver.PolicyToolsTest.TrustingExecutor])
+
+    assert {:ok, %{output: "echo ok"}} = Tool.invoke(tool, %{"command" => "echo ok"})
+
+    assert {:error, %{type: :shell_command_rejected}} =
+             Tool.invoke(tool, %{"command" => "rm -rf /"})
+  end
+
+  test "shell tool refuses a chained command that an anchored-start regex matches" do
+    marker =
+      Path.join(System.tmp_dir!(), "beam_weaver_shell_regex_#{System.unique_integer([:positive])}")
+
+    on_exit(fn -> File.rm(marker) end)
+
+    shell = Shell.new(policy: [allow: [~r/^printf /]])
+
+    assert {:error, %{type: :shell_command_rejected}} =
+             Tool.invoke(shell, %{"command" => "printf safe; touch #{marker}"})
+
+    refute File.exists?(marker)
+  end
+
   test "shell tool rejects unsafe commands before execution" do
     shell = Shell.new(policy: ShellPolicy.new!(allow: ["echo "]))
 
@@ -139,7 +266,7 @@ defmodule BeamWeaver.Tools.PolicyToolsTest do
     assert msg.content =~ "ok"
   end
 
-  test "shell host executor applies cwd env allowlist timeout and output truncation" do
+  test "shell host executor applies cwd env timeout and output truncation" do
     tmp = Path.join(System.tmp_dir!(), "beam_weaver_shell_#{System.unique_integer([:positive])}")
     File.mkdir_p!(tmp)
     on_exit(fn -> File.rm_rf(tmp) end)
@@ -152,9 +279,8 @@ defmodule BeamWeaver.Tools.PolicyToolsTest do
           ShellPolicy.new!(
             allow: ["pwd", "cat ", "printf ", "sleep "],
             cwd: tmp,
-            env: %{"VISIBLE" => "yes", "HIDDEN" => "no"},
-            env_allowlist: ["VISIBLE"],
-            timeout: 200,
+            env: %{"VISIBLE" => "yes"},
+            timeout: 1_000,
             max_output_bytes: 4
           )
       )
@@ -167,9 +293,7 @@ defmodule BeamWeaver.Tools.PolicyToolsTest do
     assert {:ok, %{output: "yes\n"}} =
              Tool.invoke(shell, %{"command" => "printf \"$VISIBLE\\n\""})
 
-    assert {:ok, %{output: "\n"}} = Tool.invoke(shell, %{"command" => "printf \"$HIDDEN\\n\""})
-
-    assert {:error, %{type: :shell_timeout}} = Tool.invoke(shell, %{"command" => "sleep 1"})
+    assert {:error, %{type: :shell_timeout}} = Tool.invoke(shell, %{"command" => "sleep 3"})
   end
 
   test "shell host executor applies stderr policies" do
@@ -178,6 +302,7 @@ defmodule BeamWeaver.Tools.PolicyToolsTest do
         policy:
           ShellPolicy.new!(
             allow: [~r/^printf out; printf err >&2$/],
+            allow_compound: true,
             stderr: :separate,
             max_output_bytes: 20
           )
@@ -191,6 +316,7 @@ defmodule BeamWeaver.Tools.PolicyToolsTest do
         policy:
           ShellPolicy.new!(
             allow: [~r/^printf out; printf err >&2$/],
+            allow_compound: true,
             stderr: :discard,
             max_output_bytes: 20
           )
@@ -206,6 +332,7 @@ defmodule BeamWeaver.Tools.PolicyToolsTest do
         policy:
           ShellPolicy.new!(
             allow: [~r/^printf out; printf err >&2$/],
+            allow_compound: true,
             stderr: :merge,
             max_output_bytes: 20
           )
@@ -263,50 +390,66 @@ defmodule BeamWeaver.Tools.PolicyToolsTest do
         policy:
           ShellPolicy.new!(
             allow: [~r/.*/],
+            allow_compound: true,
             max_output_bytes: 1_000,
             stderr: :separate
           )
       )
 
     assert %{shell_session: pid} =
-             middleware
-             |> ShellTool.async_before_agent(%{}, nil)
-             |> Task.await()
+             ShellTool.before_agent(middleware, %{}, nil)
 
     [tool] = ShellTool.tools(middleware)
-    state_arg = %{shell_session: pid}
+
+    assert Tool.injected(tool) == %{
+             __beam_weaver_shell_session: {:state, :shell_session},
+             __beam_weaver_shell_config: :config
+           }
 
     assert {:ok, %{output: cwd}} =
-             Tool.invoke(tool, %{"command" => "pwd", __beam_weaver_shell_state: state_arg})
+             Tool.invoke(tool, %{"command" => "pwd", __beam_weaver_shell_session: pid})
 
     assert String.ends_with?(String.trim(cwd), expected_suffix)
 
     assert {:ok, %{output: "ready"}} =
              Tool.invoke(tool, %{
                "command" => "printf \"$BW_MARKER\"",
-               __beam_weaver_shell_state: state_arg
+               __beam_weaver_shell_session: pid
              })
 
     assert {:ok, %{output: "err", stderr: "warn"}} =
              Tool.invoke(tool, %{
                "command" => "printf err; printf warn >&2",
-               __beam_weaver_shell_state: state_arg
+               __beam_weaver_shell_session: pid
              })
 
     assert {:ok, %{output: "Shell session restarted."}} =
-             Tool.invoke(tool, %{"restart" => true, __beam_weaver_shell_state: state_arg})
+             Tool.invoke(tool, %{"restart" => true, __beam_weaver_shell_session: pid})
 
     assert {:ok, %{output: cwd_after_restart}} =
-             Tool.invoke(tool, %{"command" => "pwd", __beam_weaver_shell_state: state_arg})
+             Tool.invoke(tool, %{"command" => "pwd", __beam_weaver_shell_session: pid})
 
     assert String.ends_with?(String.trim(cwd_after_restart), expected_suffix)
 
     assert %{shell_session: nil} =
-             middleware
-             |> ShellTool.async_after_agent(%{shell_session: pid}, nil)
-             |> Task.await()
+             ShellTool.after_agent(middleware, %{shell_session: pid}, nil)
 
     assert File.read!(Path.join(tmp, "shutdown.txt")) == "done"
+  end
+
+  test "shell middleware and shell tool require a policy" do
+    assert_raise ArgumentError, ~r/ShellTool requires a :policy/, fn -> ShellTool.new() end
+
+    assert_raise ArgumentError, ~r/ShellTool requires a :policy/, fn ->
+      ShellTool.new(workspace_root: System.tmp_dir!(), policy: nil)
+    end
+
+    assert {:error, %BeamWeaver.Core.Error{type: :invalid_middleware, message: message}} =
+             BeamWeaver.Agent.build(model: "fake:chat", middleware: [ShellTool])
+
+    assert message =~ "ShellTool requires a :policy"
+
+    assert_raise ArgumentError, ~r/Shell requires a :policy/, fn -> Shell.new(name: "shell") end
   end
 
   test "TODO tool updates explicit state through a graph command" do

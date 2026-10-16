@@ -3,8 +3,6 @@ defmodule BeamWeaver.Prompt.Runtime do
 
   import Kernel, except: [to_string: 1]
 
-  alias BeamWeaver.Core.Async
-  alias BeamWeaver.Core.ChatModel
   alias BeamWeaver.Core.Document
   alias BeamWeaver.Core.Error
   alias BeamWeaver.Models
@@ -23,15 +21,7 @@ defmodule BeamWeaver.Prompt.Runtime do
         Keyword.merge(prompt.structured_output_opts, model_opts)
       )
 
-    model_step =
-      Runnable.lambda(
-        fn value, call_opts ->
-          ChatModel.invoke(structured_model, Value.to_messages(value), call_opts)
-        end,
-        name: :structured_output_model
-      )
-
-    Runnable.sequence([prompt, model_step], name: Keyword.get(sequence_opts, :name))
+    Runnable.sequence([prompt, structured_model], name: Keyword.get(sequence_opts, :name))
   end
 
   def format(prompt, input, opts \\ []) do
@@ -42,18 +32,9 @@ defmodule BeamWeaver.Prompt.Runtime do
 
   def format_prompt(prompt, input, opts \\ []), do: Runnable.invoke(prompt, input, opts)
 
-  @spec async_format(term(), term(), keyword()) :: Async.handle()
-  def async_format(prompt, input, opts \\ []) do
-    Async.run_call(opts, &format(prompt, input, &1))
-  end
-
-  @spec async_format_prompt(term(), term(), keyword()) :: Async.handle()
-  def async_format_prompt(prompt, input, opts \\ []),
-    do: Runnable.async_invoke(prompt, input, opts)
-
   def format_document(%Document{} = document, prompt) do
     input =
-      Map.merge(document.metadata, %{page_content: document.content, content: document.content})
+      Map.put(document.metadata, :content, document.content)
 
     with {:ok, value} <- Runnable.invoke(prompt, input) do
       {:ok, Value.to_string(value)}
@@ -64,11 +45,6 @@ defmodule BeamWeaver.Prompt.Runtime do
     content = Map.get(document, :content) || Map.get(document, "content") || ""
     metadata = Map.get(document, :metadata) || Map.get(document, "metadata") || %{}
     format_document(Document.new!(content, metadata: metadata), prompt)
-  end
-
-  @spec async_format_document(Document.t() | map(), term(), keyword()) :: Async.handle()
-  def async_format_document(document, prompt, opts \\ []) do
-    Async.run_call(opts, fn _call_opts -> format_document(document, prompt) end)
   end
 
   def batch(prompt, inputs, opts) when is_list(inputs) do

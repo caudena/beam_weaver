@@ -1,12 +1,5 @@
 defmodule BeamWeaver.Graph.NodeSpec do
-  @moduledoc """
-  Normalized internal graph node declaration.
-
-  Public graph builders accept functions, modules, structs, compiled graphs,
-  tools, models, runnables, and agent modules. The runtime executes this
-  explicit spec so conversions stay inspectable and validation can reason about
-  node metadata without guessing from arbitrary terms.
-  """
+  @moduledoc false
 
   alias BeamWeaver.CachePolicy
   alias BeamWeaver.Core.Error
@@ -32,19 +25,39 @@ defmodule BeamWeaver.Graph.NodeSpec do
     metadata: %{},
     defer: false,
     retry: 0,
-    timeout: 5_000,
+    timeout: :infinity,
     cache: false,
     triggers: []
   ]
 
   @type t :: %__MODULE__{}
 
+  # The options `Graph.add_node/4` takes. Anything else is a mistake, such as
+  # `retry_policy:` for `retry:`, that would otherwise be ignored silently.
+  @options [
+    :cache,
+    :defer,
+    :deps,
+    :destinations,
+    :error_handler,
+    :input,
+    :input_schema,
+    :metadata,
+    :output,
+    :output_schema,
+    :retry,
+    :timeout,
+    :triggers,
+    :when
+  ]
+
   @spec new(String.t(), term(), keyword()) :: {:ok, t()} | {:error, Error.t()}
   def new(name, callable, opts \\ []) do
-    with {:ok, node} <- BeamWeaver.Graph.IntoNode.to_node(callable, name, opts),
+    with :ok <- validate_options(name, opts),
+         {:ok, node} <- BeamWeaver.Graph.IntoNode.to_node(callable, name, opts),
          {:ok, retry, retry_policy} <-
-           normalize_retry(Keyword.get(opts, :retry, Keyword.get(opts, :retries, 0))),
-         {:ok, timeout, execution_policy} <- normalize_timeout(Keyword.get(opts, :timeout, 5_000)),
+           normalize_retry(Keyword.get(opts, :retry, 0)),
+         {:ok, timeout, execution_policy} <- normalize_timeout(Keyword.get(opts, :timeout, :infinity)),
          {:ok, cache, cache_policy} <- normalize_cache(Keyword.get(opts, :cache, false)) do
       {:ok,
        %__MODULE__{
@@ -62,13 +75,28 @@ defmodule BeamWeaver.Graph.NodeSpec do
          defer: Keyword.get(opts, :defer, false) == true,
          retry: retry,
          retry_policy: retry_policy,
-         error_handler: Keyword.get(opts, :error_handler, Keyword.get(opts, :on_error)),
+         error_handler: Keyword.get(opts, :error_handler),
          timeout: timeout,
          execution_policy: execution_policy,
          cache: cache,
          cache_policy: cache_policy,
          triggers: Keyword.get(opts, :triggers, []) |> BeamWeaver.Graph.Execution.normalize_channels()
        }}
+    end
+  end
+
+  defp validate_options(name, opts) do
+    case opts |> Keyword.keys() |> Enum.uniq() |> Enum.reject(&(&1 in @options)) do
+      [] ->
+        :ok
+
+      unknown ->
+        {:error,
+         Error.new(:invalid_node, "node #{name} has unknown options: #{Enum.map_join(unknown, ", ", &inspect/1)}", %{
+           node: name,
+           options: unknown,
+           accepted: @options
+         })}
     end
   end
 
@@ -99,29 +127,34 @@ defmodule BeamWeaver.Graph.NodeSpec do
      })}
   end
 
-  defp normalize_timeout(%ExecutionPolicy{} = policy) do
+  # A node's `timeout:`, and a `Send`'s: milliseconds, `:infinity`, a float
+  # of seconds, `ExecutionPolicy` or `TimeoutPolicy` options or structs.
+  # Without a time limit, the node runs until it finishes.
+  @doc false
+  @spec normalize_timeout(term()) :: {:ok, timeout() | nil, ExecutionPolicy.t()} | {:error, Error.t()}
+  def normalize_timeout(%ExecutionPolicy{} = policy) do
     with {:ok, policy} <- ExecutionPolicy.new(policy), do: {:ok, policy.timeout, policy}
   end
 
-  defp normalize_timeout(%TimeoutPolicy{} = policy) do
+  def normalize_timeout(%TimeoutPolicy{} = policy) do
     with {:ok, timeout} <- TimeoutPolicy.effective_timeout(policy) do
       {:ok, timeout || :infinity, ExecutionPolicy.new!(timeout: timeout || :infinity)}
     end
   end
 
-  defp normalize_timeout(timeout) when timeout in [nil, :infinity] do
+  def normalize_timeout(timeout) when timeout in [nil, :infinity] do
     {:ok, :infinity, ExecutionPolicy.new!(timeout: :infinity)}
   end
 
-  defp normalize_timeout(timeout) when is_float(timeout) and timeout >= 0 do
+  def normalize_timeout(timeout) when is_float(timeout) and timeout >= 0 do
     normalize_timeout(round(timeout * 1_000))
   end
 
-  defp normalize_timeout(timeout) when is_integer(timeout) and timeout >= 0 do
+  def normalize_timeout(timeout) when is_integer(timeout) and timeout >= 0 do
     {:ok, timeout, ExecutionPolicy.new!(timeout: timeout)}
   end
 
-  defp normalize_timeout(opts) when is_list(opts) do
+  def normalize_timeout(opts) when is_list(opts) do
     if timeout_policy_options?(opts) do
       normalize_timeout_policy(opts)
     else
@@ -129,7 +162,7 @@ defmodule BeamWeaver.Graph.NodeSpec do
     end
   end
 
-  defp normalize_timeout(opts) when is_map(opts) do
+  def normalize_timeout(opts) when is_map(opts) do
     if timeout_policy_options?(opts) do
       normalize_timeout_policy(opts)
     else
@@ -137,7 +170,7 @@ defmodule BeamWeaver.Graph.NodeSpec do
     end
   end
 
-  defp normalize_timeout(other) do
+  def normalize_timeout(other) do
     {:error,
      Error.new(:invalid_graph, "invalid node timeout policy", %{
        timeout: inspect(other)

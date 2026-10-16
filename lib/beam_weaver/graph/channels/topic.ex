@@ -1,6 +1,10 @@
 defmodule BeamWeaver.Graph.Channels.Topic do
   @moduledoc """
-  Pub/sub-style channel that stores a list of values.
+  Channel that collects the writes of a step into a list.
+
+  The nodes of the next step read the list; after that step it is cleared,
+  unless it was written again. With `accumulate: true` the list keeps the
+  writes of every step.
   """
 
   use BeamWeaver.Graph.Channel

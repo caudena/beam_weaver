@@ -1,8 +1,35 @@
 defmodule BeamWeaver.Agent.Middleware.CompactConversation do
-  @moduledoc "Manual DeepAgents conversation compaction tool middleware."
+  @moduledoc """
+  Middleware that adds a `compact_conversation` tool, so the model can compact
+  its conversation on demand.
 
-  @behaviour BeamWeaver.Agent.Middleware
+  The tool summarizes older messages with the configured model, keeps the most
+  recent ones, and saves the summarized messages to a file. The summary takes
+  their place before the next model call, unless something rewrote the thread
+  in between, such as a `Summarization` listed before this middleware. The
+  pending compaction is saved with the thread (with a checkpointer), so a run
+  that pauses or stops after the tool call applies it, once, when it continues.
 
+  Options:
+
+    * `:model` - the model that writes the summary. Required.
+    * `:minimum_messages` - the tool does nothing until the thread has this
+      many messages (20 by default; `nil` for no minimum).
+    * `:keep_messages` - how many of the newest messages to keep word for word
+      (8 by default).
+    * `:backend` - the filesystem the summarized messages are saved to.
+    * `:conversation_history_prefix` - the directory for those files.
+    * `:system_prompt` - the prompt section that tells the model about the
+      tool; `nil` leaves it out.
+
+  The `compact_conversation` agent declaration adds this middleware and, after
+  it, automatic summarization (`BeamWeaver.Agent.Middleware.Summarization`),
+  configured separately under its `summarization:` option.
+  """
+
+  use BeamWeaver.Agent.Middleware
+
+  alias BeamWeaver.Agent.Middleware.Helpers
   alias BeamWeaver.Agent.ModelRequest
   alias BeamWeaver.Core.ChatModel
   alias BeamWeaver.Core.ID
@@ -15,14 +42,7 @@ defmodule BeamWeaver.Agent.Middleware.CompactConversation do
   alias BeamWeaver.Graph.Command
   alias BeamWeaver.Graph.Overwrite
 
-  import BeamWeaver.Agent.Middleware.Helpers,
-    only: [
-      append_prompt: 2,
-      artifact_prefix: 2,
-      maybe_put_files_update: 3,
-      state_value: 2,
-      state_value: 3
-    ]
+  import BeamWeaver.Agent.Middleware.Helpers, only: [append_prompt: 2, artifact_prefix: 2, maybe_put_files_update: 3]
 
   @system_prompt """
   ## Compact conversation Tool `compact_conversation`
@@ -43,7 +63,19 @@ defmodule BeamWeaver.Agent.Middleware.CompactConversation do
             conversation_history_prefix: "/conversation_history",
             system_prompt: @system_prompt
 
+  @options [
+    :model,
+    :backend,
+    :state_key,
+    :event_key,
+    :minimum_messages,
+    :keep_messages,
+    :conversation_history_prefix,
+    :system_prompt
+  ]
+
   def new(opts \\ []) do
+    validate_options!(opts)
     backend = Keyword.get(opts, :backend, State.new())
 
     %__MODULE__{
@@ -63,12 +95,24 @@ defmodule BeamWeaver.Agent.Middleware.CompactConversation do
     }
   end
 
+  defp validate_options!(opts) do
+    case Keyword.keys(opts) -- @options do
+      [] ->
+        :ok
+
+      unknown ->
+        raise ArgumentError,
+              "CompactConversation doesn't take #{inspect(unknown)}; its options are #{inspect(@options)}. " <>
+                "Settings for automatic summarization go under `summarization:` in the `compact_conversation` declaration."
+    end
+  end
+
   @impl true
   def name(_middleware), do: :deepagents_compact_conversation
 
   @impl true
   def state_schema(%__MODULE__{event_key: event_key}) do
-    %{event_key => Graph.private_channel(BeamWeaver.Graph.Channels.LastValue)}
+    %{event_key => Graph.private_channel(BeamWeaver.Graph.Channels.LastValue, checkpoint: true)}
   end
 
   @impl true
@@ -86,15 +130,17 @@ defmodule BeamWeaver.Agent.Middleware.CompactConversation do
     ]
   end
 
+  @impl true
   def before_model(%__MODULE__{} = middleware, state, _runtime) do
-    messages = state_value(state, :messages, []) || []
+    messages = Map.get(state, :messages, []) || []
 
-    case state_value(state, middleware.event_key) do
+    case Map.get(state, middleware.event_key) do
       event when is_map(event) -> apply_event(middleware, messages, event)
       _missing -> %{}
     end
   end
 
+  @impl true
   def wrap_model_call(%__MODULE__{system_prompt: nil}, %ModelRequest{} = request, handler),
     do: handler.(request)
 
@@ -106,7 +152,7 @@ defmodule BeamWeaver.Agent.Middleware.CompactConversation do
 
   defp run_compact(%__MODULE__{} = middleware, input) do
     state = value(input, :state, %{}) || %{}
-    messages = state_value(state, :messages, []) || []
+    messages = Map.get(state, :messages, []) || []
     tool_call_id = value(input, :tool_call_id)
 
     if eligible?(middleware, messages) do
@@ -120,7 +166,7 @@ defmodule BeamWeaver.Agent.Middleware.CompactConversation do
   end
 
   defp compact_messages(%__MODULE__{} = middleware, input, messages, tool_call_id) do
-    cutoff = safe_cutoff(messages, max(length(messages) - middleware.keep_messages, 0))
+    cutoff = Helpers.safe_cut_index(messages, max(length(messages) - middleware.keep_messages, 0))
 
     if cutoff <= 0 do
       tool_command(
@@ -141,6 +187,7 @@ defmodule BeamWeaver.Agent.Middleware.CompactConversation do
 
         event = %{
           cutoff_index: cutoff,
+          message_ids: Enum.map(to_summarize, & &1.id),
           summary_message: summary_message,
           file_path: file_path
         }
@@ -166,29 +213,33 @@ defmodule BeamWeaver.Agent.Middleware.CompactConversation do
     end
   end
 
-  defp apply_event(_middleware, messages, event) do
+  # The tool's event applies once, before the next model call: its summary
+  # replaces the messages it covers, and the event is cleared. When the thread
+  # no longer starts with those messages, because automatic summarization or
+  # another edit rewrote it after the tool ran, the event is only cleared: its
+  # cut no longer fits the thread.
+  defp apply_event(middleware, messages, event) do
     summary_message = event_value(event, :summary_message)
     cutoff = event_value(event, :cutoff_index) || 0
+    cleared = %{middleware.event_key => nil}
 
-    cond do
-      not match?(%Message{}, summary_message) ->
-        %{}
+    if match?(%Message{}, summary_message) and cutoff > 0 and
+         covered_messages?(messages, cutoff, event_value(event, :message_ids)) do
+      recent =
+        messages
+        |> Enum.drop(Helpers.safe_cut_index(messages, cutoff))
+        |> Utils.strip_reasoning_blocks()
 
-      Enum.any?(messages, &(&1.id == summary_message.id)) ->
-        %{}
-
-      cutoff <= 0 ->
-        %{}
-
-      true ->
-        recent =
-          messages
-          |> Enum.drop(safe_cutoff(messages, cutoff))
-          |> Utils.strip_reasoning_blocks()
-
-        %{messages: Overwrite.new([summary_message | recent])}
+      Map.put(cleared, :messages, Overwrite.new([summary_message | recent]))
+    else
+      cleared
     end
   end
+
+  defp covered_messages?(messages, cutoff, ids) when is_list(ids) and length(ids) == cutoff,
+    do: messages |> Enum.take(cutoff) |> Enum.map(& &1.id) == ids
+
+  defp covered_messages?(_messages, _cutoff, _ids), do: false
 
   defp eligible?(%__MODULE__{minimum_messages: nil}, _messages), do: true
 
@@ -198,7 +249,7 @@ defmodule BeamWeaver.Agent.Middleware.CompactConversation do
   defp create_summary(%__MODULE__{} = middleware, rendered) do
     prompt = Message.user("Summarize this conversation concisely:\n\n" <> rendered)
 
-    case ChatModel.invoke(middleware.model, [prompt], metadata: %{source: :compact_conversation}) do
+    case ChatModel.invoke(middleware.model, [prompt], trace_metadata: %{source: :compact_conversation}) do
       {:ok, %Message{} = message} -> {:ok, Message.text(message)}
       {:error, error} -> {:error, error.message}
     end
@@ -221,56 +272,11 @@ defmodule BeamWeaver.Agent.Middleware.CompactConversation do
   end
 
   defp render_messages(messages) do
-    case Utils.get_buffer_string(messages) do
+    case Utils.buffer_string(messages) do
       {:ok, rendered} -> {:ok, rendered}
       _error -> {:ok, inspect(messages)}
     end
   end
-
-  defp safe_cutoff(messages, index) when index >= length(messages), do: index
-
-  defp safe_cutoff(messages, index) do
-    case Enum.at(messages, index) do
-      %Message{role: :tool, tool_call_id: id} when is_binary(id) ->
-        case matching_assistant_index(messages, index, id) do
-          nil -> skip_tool_messages(messages, index)
-          assistant_index -> assistant_index
-        end
-
-      _message ->
-        index
-    end
-  end
-
-  defp matching_assistant_index(messages, index, tool_call_id) do
-    messages
-    |> Enum.take(index)
-    |> Enum.with_index()
-    |> Enum.reverse()
-    |> Enum.find_value(fn
-      {%Message{role: :assistant, tool_calls: calls}, assistant_index} when is_list(calls) ->
-        if Enum.any?(calls, &(tool_call_id(&1) == tool_call_id)), do: assistant_index
-
-      _other ->
-        nil
-    end)
-  end
-
-  defp skip_tool_messages(messages, index) do
-    messages
-    |> Enum.drop(index)
-    |> Enum.take_while(&match?(%Message{role: :tool}, &1))
-    |> length()
-    |> Kernel.+(index)
-  end
-
-  defp tool_call_id(%{id: id}) when is_binary(id), do: id
-  defp tool_call_id(%{call_id: id}) when is_binary(id), do: id
-  defp tool_call_id(%{provider_id: id}) when is_binary(id), do: id
-  defp tool_call_id(%{"id" => id}) when is_binary(id), do: id
-  defp tool_call_id(%{"call_id" => id}) when is_binary(id), do: id
-  defp tool_call_id(%{"provider_id" => id}) when is_binary(id), do: id
-  defp tool_call_id(_call), do: nil
 
   defp tool_command(content, tool_call_id, opts \\ []) do
     metadata =

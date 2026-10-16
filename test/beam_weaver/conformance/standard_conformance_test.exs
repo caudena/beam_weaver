@@ -6,7 +6,6 @@ defmodule BeamWeaver.TestSupport.Conformance.StandardConformanceFixtures do
     |> BeamWeaver.Core.ChatHistory.ETS.for_session("standard")
   end
 
-  def text_loader, do: BeamWeaver.DocumentLoader.text("standard document")
   def character_splitter, do: BeamWeaver.TextSplitter.character(chunk_size: 10, chunk_overlap: 1)
 
   def vector_store,
@@ -35,11 +34,6 @@ end
 defmodule BeamWeaver.TestSupport.Conformance.ChatHistoryETSTest do
   use BeamWeaver.TestSupport.Conformance.ChatHistoryCase,
     session: &BeamWeaver.TestSupport.Conformance.StandardConformanceFixtures.chat_history_session/0
-end
-
-defmodule BeamWeaver.TestSupport.Conformance.DocumentLoaderTextTest do
-  use BeamWeaver.TestSupport.Conformance.DocumentLoaderCase,
-    loader: &BeamWeaver.TestSupport.Conformance.StandardConformanceFixtures.text_loader/0
 end
 
 defmodule BeamWeaver.TestSupport.Conformance.TextSplitterCharacterTest do

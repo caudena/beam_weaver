@@ -3,7 +3,6 @@ defmodule BeamWeaver.Core.EmbeddingModel do
   Behaviour for embedding model providers.
   """
 
-  alias BeamWeaver.Core.Async
   alias BeamWeaver.Core.Error
 
   @type vector :: [number()]
@@ -47,30 +46,6 @@ defmodule BeamWeaver.Core.EmbeddingModel do
 
   def embed_query(_model, _query, _opts),
     do: {:error, Error.new(:invalid_query, "query must be a string")}
-
-  @doc """
-  Starts async document embedding.
-  """
-  @spec async_embed_documents(term(), [String.t()], keyword()) :: Async.handle()
-  def async_embed_documents(model, documents, opts \\ []) do
-    Async.run_call(opts, &embed_documents(model, documents, &1))
-  end
-
-  @doc """
-  Starts async query embedding.
-  """
-  @spec async_embed_query(term(), String.t(), keyword()) :: Async.handle()
-  def async_embed_query(model, query, opts \\ []) do
-    Async.run_call(opts, &embed_query(model, query, &1))
-  end
-
-  @doc """
-  Starts an ordered async batch of query embeddings.
-  """
-  @spec async_batch_queries(term(), [String.t()], keyword()) :: [Async.handle()]
-  def async_batch_queries(model, queries, opts \\ []) when is_list(queries) do
-    Async.batch_call(queries, opts, &embed_query(model, &1, &2))
-  end
 
   @doc """
   Validates returned embedding vectors.

@@ -2,66 +2,102 @@
 
 [![ci](https://github.com/caudena/beam_weaver/actions/workflows/ci.yml/badge.svg)](https://github.com/caudena/beam_weaver/actions/workflows/ci.yml)
 
-Elixir-native LangChain, LangGraph, and Deep Agents for traceable LLM apps:
-OTP workflows, tools, memory, human-in-the-loop, streaming, custom
-clients/adapters, minimal deps, and WeaveScope tracing.
+BeamWeaver is an Elixir library for building applications on large language
+models (LLMs) such as GPT, Claude and Gemini. You write tools as Elixir
+modules, and an agent lets the model call them in a loop until it can answer.
+Graphs run workflows with steps you define; they survive restarts and can
+pause for a person's approval. Deep agents plan, keep files and hand work to
+subagents. It all runs inside your own application, with streaming and
+tracing built in.
 
-BeamWeaver brings the practical parts of LangChain, LangGraph, and Deep Agents
-to the BEAM without a Python runtime, hosted control plane, or framework lock-in.
-Agents, tools, graph workflows, subagents, memory, persistence, retrieval,
-structured output, streaming, and tracing are native Elixir modules built around
-OTP supervision, explicit adapters, tagged errors, telemetry, and Ecto/ETS
-storage boundaries.
+**New here?** The [Quickstart](docs/quickstart.md) builds a working agent in
+about ten minutes; you need an API key only for the last step.
 
-It is not a Python wrapper. It is an Elixir library designed for applications
-that already rely on OTP, supervision trees, Ecto, telemetry, and explicit
-runtime boundaries.
+**Documentation:** [docs.weavescope.com/beamweaver](https://docs.weavescope.com/beamweaver) ·
+[API reference](https://hexdocs.pm/beam_weaver)
 
-BeamWeaver is not affiliated with LangChain.
-
-Documentation: [docs.weavescope.com/beamweaver](https://docs.weavescope.com/beamweaver)
-
-## Why Switch To BeamWeaver
-
-- **Elixir-native runtime:** build agents and workflows inside your existing
-  OTP supervision tree instead of running a separate Python service.
-- **One system for agents and graphs:** use the agent DSL for common model/tool
-  loops, or drop to graph workflows for deterministic branching, fan-out,
-  interrupts, time travel, and durable execution.
-- **Traceability from day one:** local traces, typed event streams, token and
-  cost metadata, redaction, and native queued export to WeaveScope.
-- **Bring your own boundaries:** use built-in provider adapters or plug in your
-  own clients, transports, models, tools, filesystems, stores, and sandboxes.
-- **Production state:** checkpoints, memory, caches, record managers, vector
-  stores, and replay transports with ETS and Ecto-backed adapters.
-- **Small dependency surface:** no app framework requirement, no Python sidecar,
-  and no hidden hosted runtime.
-
-## What You Can Build
-
-- Customer support agents with tools, structured output, memory, and traceable
-  model calls.
-- Durable multi-step workflows with graph state, checkpoints, retries,
-  interrupts, time travel, and resumable execution.
-- Deep research and analysis agents with subagents, planning, virtual
-  filesystems, skills, summarization, and sandboxed tool execution.
-- Retrieval pipelines with document loading, splitting, embeddings, vector
-  stores, record managers, and incremental indexing.
-- Production LLM services with provider fallback, rate limits, redaction,
-  telemetry, event streams, and WeaveScope tracing.
-
-## Native WeaveScope Tracing
-
-BeamWeaver traces agents, graphs, model calls, tool calls, subagents, retries,
-token usage, costs, errors, custom fields, and run trees. Use it locally during
-development, or configure [WeaveScope](https://weavescope.com) export when you
-want production traces your team can inspect.
-
-![WeaveScope tracing view](docs/assets/weavescope-tracing.png)
-
-Configure WeaveScope once:
+## Install
 
 ```elixir
+def deps do
+  [
+    {:beam_weaver, "~> 0.1.32"}
+  ]
+end
+```
+
+## An agent with a tool
+
+```elixir
+defmodule MyApp.Tools.LookupOrder do
+  use BeamWeaver.Tool
+
+  name "lookup_order"
+  description "Look up the shipping status of an order by its id."
+
+  schema do
+    field :order_id, :string
+  end
+
+  @impl true
+  def invoke(_tool, %{"order_id" => order_id}, _opts) do
+    {:ok, "Order #{order_id} shipped on Monday."}
+  end
+end
+
+defmodule MyApp.SupportAgent do
+  use BeamWeaver.Agent
+
+  model "openai:gpt-5.4-mini"
+  system_prompt "You are Acme's support agent. Look orders up before you answer."
+  tools [MyApp.Tools.LookupOrder]
+end
+
+{:ok, result} = MyApp.SupportAgent.invoke(%{messages: ["Where is my order A-1001?"]})
+result.messages |> List.last() |> BeamWeaver.Core.Message.text()
+# e.g. "Your order A-1001 shipped on Monday."
+```
+
+The tool's `name`, `description` and `schema` tell the model what it does.
+The model decides when to call `lookup_order`; BeamWeaver runs the tool and
+hands the result back until the model has an answer. This example calls
+OpenAI, so it needs an [API key](docs/models.md#api-keys). The
+[Quickstart](docs/quickstart.md) builds the same agent step by step and runs
+it without one.
+
+## What you get
+
+| Feature | What it gives you |
+| --- | --- |
+| [Agents](docs/agents.md) | Agent modules with a model, tools, instructions and middleware. |
+| [Tools](docs/tools.md) | Typed tool modules, with access to state, runtime context and the memory store. |
+| [Structured output](docs/structured_output.md) | Answers validated against a schema. |
+| [Middleware](docs/builtin_middleware.md) | Retries, model fallback, call limits, PII redaction, summarization, tool selection. |
+| [Memory](docs/long_term_memory.md) | Conversation threads, long-term memory stores, and memory files. |
+| [Human-in-the-loop](docs/human_in_the_loop.md) | Pause before sensitive tool calls; approve, edit or reject, then resume. |
+| [Streaming](docs/streaming.md) | Typed events for tokens, tool calls and state updates. |
+| [Graphs](docs/graphs.md) | Workflows with branches, parallel steps, subgraphs and interrupts. |
+| [Durable execution](docs/durable_execution.md) | Checkpoints in Postgres or SQLite, resume after failures, time travel. |
+| [Deep agents](docs/deep_agents.md) | Planning, a virtual filesystem, skills, subagents and sandboxed code execution. |
+| [Retrieval](docs/retrieval.md) | Text splitters, embeddings, vector stores, retrievers and incremental indexing. |
+| [Testing](docs/testing.md) | Scripted fake models and recorded provider responses for fast, offline tests. |
+| [Tracing](docs/tracing.md) | Run trees with token usage and costs, exported to WeaveScope. |
+
+## Providers
+
+OpenAI, Anthropic, Google Gemini, xAI, DeepSeek, Moonshot (Kimi) and Z.ai chat
+models, OpenAI and xAI embeddings, and TypeSafe decision models. Switching
+provider means changing the model string, and scripted fake models stand in
+for all of them in tests. See [Providers](docs/providers.md).
+
+## Tracing with WeaveScope
+
+Every run is traced: agents, graph steps, model calls, tool calls and
+subagents, with tokens, costs and errors. Traces stay local until you add
+[WeaveScope](https://weavescope.com) credentials:
+
+```elixir
+# config/runtime.exs
 config :beam_weaver,
   weave_scope: [
     endpoint: "https://app.weavescope.com",
@@ -69,221 +105,16 @@ config :beam_weaver,
   ]
 ```
 
-Then attach trace identity and custom fields at call sites. Put IDs and
-dimensions you want to filter by in `fields`; keep extra, non-indexed context in
-`metadata`.
+![WeaveScope tracing view](https://raw.githubusercontent.com/caudena/beam_weaver/master/docs/assets/weavescope-tracing.png)
 
-```elixir
-def run_report(report, user) do
-  input = %{
-    topic: report.topic,
-    sources: report.source_urls,
-    audience: report.audience
-  }
+## Learn more
 
-  MyApp.Agents.ReportAgent.invoke(input,
-    trace: [
-      name: "report.workflow",
-      user_id: user.id,
-      thread_id: report.id,
-      execution_mode: "production",
-      fields: %{
-        account_id: user.account_id,
-        project_id: report.project_id,
-        report_id: report.id,
-        plan: user.plan,
-        source_count: length(input.sources)
-      },
-      metadata: %{trigger: "scheduled_report"}
-    ]
-  )
-end
-```
+- [Quickstart](docs/quickstart.md): a working agent in ten minutes, no API key needed.
+- [Concepts](docs/concepts.md): agents, graphs, deep agents, threads and memory on one page.
+- [Examples](docs/examples.md): runnable scripts for every feature.
+- [Coming from LangChain](docs/coming_from_langchain.md): where familiar concepts live in BeamWeaver.
+- [Changelog](CHANGELOG.md)
 
-## Core Capabilities
+## License
 
-| Capability | What BeamWeaver Provides |
-| --- | --- |
-| Agents | Module-defined agents and runtime-built agents with tools, middleware, structured output, memory, and HITL interrupts. |
-| Graph workflows | LangGraph-style state graphs with reducers, commands, subgraphs, checkpoints, pending writes, and durable execution. |
-| Deep agents | Planning tools, TODO state, virtual filesystems, skills, subagents, async subagents, context engineering, and summarization. |
-| Models | Chat, embedding, and typed decision models; provider adapters, profiles, parameter validation, caching, streaming, structured output, token usage, and cost metadata. |
-| Tools | Typed tools, injected runtime arguments, tool nodes, tool middleware, shell/filesystem tools, and tool-call tracing. |
-| Retrieval | Document loaders, text splitters, embeddings, vector stores, retrievers, record managers, and indexing flows. |
-| Persistence | ETS and Ecto-backed memory, checkpoints, caches, record managers, and vector stores. |
-| Observability | Local run trees, typed event streams, telemetry, redaction, and native WeaveScope export. |
-
-## Supported Providers And Models
-
-BeamWeaver ships checked-in model profiles for current provider families and
-permissive fallback profiles for future compatible IDs. Use explicit provider
-prefixes when a model name is ambiguous.
-
-| Provider | Supported examples |
-| --- | --- |
-| OpenAI | `openai:gpt-6-astra`, `openai:gpt-6.1-sol`, `openai:gpt-6-sol`, `openai:gpt-6-luna`, `openai:gpt-5.6-sol`, `openai:gpt-5.6-terra`, `openai:gpt-5.6-luna`, `openai:gpt-5.6`, `openai:gpt-5.5`, `openai:gpt-5.4`, `openai:gpt-5.4-mini`, `openai:gpt-4.1`, `openai:text-embedding-3-large`, `openai:text-embedding-3-small` |
-| Anthropic | `anthropic:claude-fable-5-1`, `anthropic:claude-mythos-5-1`, `anthropic:claude-opus-5-5`, `anthropic:claude-opus-5`, `anthropic:claude-sonnet-5`, `anthropic:claude-opus-4-8`, `anthropic:claude-opus-4-7`, `anthropic:claude-opus-4-6`, `anthropic:claude-opus-4-5`, `anthropic:claude-sonnet-4-6`, `anthropic:claude-sonnet-4-5`, `anthropic:claude-haiku-4-5`, `anthropic:claude-fable-5`, `anthropic:claude-mythos-5` |
-| Google Gemini | `google:gemini-3.8-flash`, `google:gemini-3.7-flash`, `google:gemini-3.6-flash`, `google:gemini-3.5-flash`, `google:gemini-3.5-flash-lite`, `google:gemini-3.1-flash-lite`, `google:gemini-3.1-pro-preview`, plus compatible stable Gemini 2.5 IDs |
-| DeepSeek | `deepseek:deepseek-flash`, `deepseek:deepseek-v4-pro` (legacy Flash names remain compatible) |
-| Moonshot/Kimi | `moonshot:kimi-k3`, `moonshot:kimi-k2.7-code`, `moonshot:kimi-k2.7-code-highspeed`, `moonshot:kimi-k2.6`, `moonshot:kimi-k2.5` |
-| xAI | `xai:grok-4.6`, `xai:grok-4.5`, `xai:grok-4.3`, `xai:grok-4.20-0309-reasoning`, `xai:grok-4.20-0309-non-reasoning`, `xai:grok-4.20-multi-agent-0309`, `xai:grok-build-0.1`, `xai:v1` embeddings |
-| Z.ai | `zai:glm-5.3`, `zai:glm-5.3-flash`, `zai:glm-5.2` |
-| [TypeSafe / Jev](docs/partners/typesafe.md) | `typesafe:jev-1.13.0`, `typesafe:jev-latest`, `typesafe:jev-preview` — decision models supporting Choice, Score, and Noul |
-| Test models | Fake chat and embedding models, plus replay transports for deterministic provider tests. |
-
-Inspect the exact profile set in your checkout:
-
-```bash
-mix beam_weaver.models.profiles
-```
-
-### TypeSafe / Jev Decision Models
-
-Jev supports standalone Choice, Score, and Noul evaluations through
-`BeamWeaver.Models.init_decision_model/2` and
-`BeamWeaver.Core.DecisionModel.invoke/3`. It returns typed decisions and
-probabilities and can also select chat models through routing middleware.
-
-```elixir
-{:ok, jev} = BeamWeaver.Models.init_decision_model("typesafe:jev-1.13.0")
-```
-
-See the [TypeSafe guide](docs/partners/typesafe.md) and run
-`mix run examples/typesafe_dynamic_routing.exs` for the live Luna/Sol routing
-example (`--offline` selects fixtures explicitly).
-
-## Install
-
-Add BeamWeaver to your application:
-
-```elixir
-def deps do
-  [
-    {:beam_weaver, "~> 0.1.19"}
-  ]
-end
-```
-
-Configure only the providers you use:
-
-```elixir
-config :beam_weaver,
-  openai: [api_key: System.fetch_env!("OPENAI_API_KEY")],
-  anthropic: [api_key: System.fetch_env!("ANTHROPIC_API_KEY")],
-  google: [api_key: System.fetch_env!("GOOGLE_API_KEY")],
-  deepseek: [api_key: System.fetch_env!("DEEPSEEK_API_KEY")],
-  xai: [api_key: System.fetch_env!("XAI_API_KEY")],
-  moonshot: [api_key: System.fetch_env!("MOONSHOT_API_KEY")],
-  zai: [api_key: System.fetch_env!("ZAI_API_KEY")],
-  typesafe: [api_key: System.get_env("TYPESAFE_API_KEY") || System.fetch_env!("TYPESAFE_API")]
-```
-
-## Quickstart
-
-Start with the module DSL for application code. The DSL keeps the agent's model,
-prompt, tools, middleware, memory, and harness-style capabilities in one module,
-so a reader can see what the agent does without chasing a runtime options map.
-It also makes the common path much easier: adding planning, prompt caching,
-conversation compaction, overflow recovery, filesystems, or subagents is a
-declaration instead of custom orchestration code.
-
-```elixir
-defmodule MyApp.Agents.SupportAgent do
-  use BeamWeaver.Agent
-
-  alias BeamWeaver.Agent.Middleware
-  alias BeamWeaver.Core.Message
-
-  name "support.reply"
-  description "Answer customer support questions with account context."
-
-  model "openai:gpt-5.4-mini", temperature: 0.2, timeout: 30_000
-  system_prompt "Answer support questions clearly. Ask for missing details."
-
-  # Agent harness capabilities are regular declarations.
-  prompt_caching true
-  compact_conversation true
-  overflow_recovery true
-
-  middleware do
-    use Middleware.TodoList, tool_name: "write_todos"
-    use Middleware.ToolCallNormalization
-    use Middleware.StructuredOutputRetry, max_retries: 2
-    use Middleware.ModelRetry, max_retries: 2, initial_delay: 100, retry_on: :transient
-    use Middleware.ToolRetry, max_retries: 1, on_failure: :continue
-    use Middleware.ToolCallLimit, run_limit: 8, exit_behavior: :end
-    use Middleware.ToolSelection, deny: ["internal_admin_tool"]
-    use Middleware.PII, detectors: [:email, :credit_card], strategy: :redact
-  end
-
-  def run(question, user) do
-    __MODULE__.invoke(%{messages: [Message.user(question)]},
-      trace: [
-        name: "support.reply",
-        user_id: user.id,
-        execution_mode: "support_reply",
-        fields: %{account_id: user.account_id}
-      ]
-    )
-  end
-end
-```
-
-Use `BeamWeaver.Agent.build/1` when the agent shape is dynamic or generated from
-configuration:
-
-```elixir
-defmodule MyApp.DynamicSupportAgent do
-  alias BeamWeaver.Agent
-  alias BeamWeaver.Core.Message
-
-  def run(question, user) do
-    model =
-      BeamWeaver.Models.init_chat_model!("openai:gpt-5.4-mini",
-        temperature: 0.2,
-        timeout: 30_000
-      )
-
-    {:ok, agent} =
-      Agent.build(
-        name: "support.reply",
-        model: model,
-        system_prompt: "Answer support questions clearly."
-      )
-
-    Agent.invoke(agent, %{messages: [Message.user(question)]},
-      trace: [
-        name: "support.reply",
-        user_id: user.id,
-        execution_mode: "support_reply",
-        fields: %{account_id: user.account_id}
-      ]
-    )
-  end
-end
-```
-
-## Application-owned durable compaction
-
-Applications that already own durable conversations can use
-`BeamWeaver.ContextBudget` and `BeamWeaver.Compaction` directly. This is
-separate from the model-invoked `compact_conversation` tool: the application
-supplies one ordered lane, its existing semantic checkpoint, exact rendering,
-and a summarizer callback, then persists and activates the returned checkpoint
-using its own transaction and recovery rules.
-
-The engine mutates no application state and starts no process. Portable mode is
-complete; provider-native opaque compaction is not implemented by this API and
-fails closed. The [Application-Owned Compaction](docs/compaction.md) guide
-covers source-event hashing, request and callback construction, semantic output,
-result states, transactional activation, automatic-compaction state, and crash
-recovery.
-
-## Observability With WeaveScope
-
-Tracing is local by default. Add WeaveScope credentials when you want run trees,
-model calls, tool calls, token usage, costs, errors, and custom fields in the
-WeaveScope UI. BeamWeaver automatically uses the queued WeaveScope exporter when
-both `endpoint` and `api_key` are configured. Use `trace:` on agent, graph,
-runnable, model, or tool calls to attach application identity such as `user_id`,
-`thread_id`, `execution_mode`, and indexed custom fields.
+Apache-2.0. See [LICENSE](https://github.com/caudena/beam_weaver/blob/master/LICENSE).

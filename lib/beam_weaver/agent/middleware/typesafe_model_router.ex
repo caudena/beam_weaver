@@ -9,10 +9,15 @@ defmodule BeamWeaver.Agent.Middleware.TypeSafeModelRouter do
   Put this middleware before ModelFallback so fallback models are not replaced
   again by routing. The route persists across tool turns and checkpoint resume;
   the next invocation recomputes it from the latest user message.
+
+  A chosen model gets the agent's model options that its profile takes; the
+  settings of the agent's model itself (`api_key:`, `base_url:`, `endpoint:`,
+  `transport:`, `extra_body:` and the like) never reach it.
   """
-  @behaviour BeamWeaver.Agent.Middleware
+  use BeamWeaver.Agent.Middleware
 
   alias BeamWeaver.Agent.{ModelRequest, ModelResolver, State, Usage}
+  alias BeamWeaver.Agent.Middleware.Helpers
   alias BeamWeaver.Core.{DecisionModel, Error, Message}
   alias BeamWeaver.{Graph, MapAccess, Models, Runnable}
   alias BeamWeaver.TypeSafe.{ChoiceAnswer, Input, Question, Response}
@@ -52,6 +57,7 @@ defmodule BeamWeaver.Agent.Middleware.TypeSafeModelRouter do
   @impl true
   def state_schema(_), do: %{model_route: Graph.channel(BeamWeaver.Graph.Channels.LastValue)}
 
+  @impl true
   def before_agent(%__MODULE__{} = router, state, runtime) do
     latest =
       Enum.reduce(State.messages(state), nil, fn
@@ -66,13 +72,14 @@ defmodule BeamWeaver.Agent.Middleware.TypeSafeModelRouter do
     end
   end
 
+  @impl true
   def wrap_model_call(%__MODULE__{} = router, %ModelRequest{} = request, handler) do
     route = MapAccess.get(request.state || %{}, :model_route, %{})
 
     if route["accepted"] == true do
       with {:ok, choice} <- fetch_choice(router, route),
-           :ok <- validate_selectors(request.model_opts || [], choice.model),
-           opts <- remove_model_selectors(request.model_opts || []) do
+           :ok <- validate_selectors(request.model_opts || [], choice.model) do
+        opts = Helpers.call_options_for(request.model_opts || [], request.model, choice.model)
         request |> ModelRequest.override(model: choice.model, model_opts: opts) |> handler.()
       end
     else
@@ -177,7 +184,7 @@ defmodule BeamWeaver.Agent.Middleware.TypeSafeModelRouter do
                function_exported?(model.__struct__, :invoke, 3),
              do: raise(ArgumentError, "route models must be chat model values")
 
-      case validate_selectors(Map.to_list(Map.take(model, [:model_kwargs, :extra_body])), model) do
+      case validate_selectors(Map.to_list(Map.take(model, [:extra_body])), model) do
         :ok -> :ok
         {:error, error} -> raise ArgumentError, error.message
       end
@@ -210,12 +217,10 @@ defmodule BeamWeaver.Agent.Middleware.TypeSafeModelRouter do
   defp validate_selectors(opts, model) do
     selectors =
       [Keyword.get(opts, :model)] ++
-        Enum.flat_map([:model_kwargs, :extra_body], fn key ->
-          case Keyword.get(opts, key) do
-            %{} = value -> [Map.get(value, :model), Map.get(value, "model")]
-            _ -> []
-          end
-        end)
+        case Keyword.get(opts, :extra_body) do
+          %{} = value -> [Map.get(value, :model), Map.get(value, "model")]
+          _ -> []
+        end
 
     id = ModelResolver.get_model_identifier(model)
     provider = ModelResolver.get_model_provider(model)
@@ -224,11 +229,5 @@ defmodule BeamWeaver.Agent.Middleware.TypeSafeModelRouter do
     if Enum.all?(selectors, &(is_nil(&1) or (is_binary(&1) and &1 in allowed))),
       do: :ok,
       else: {:error, Error.new(:conflicting_model_route, "explicit model option conflicts with the accepted Jev route")}
-  end
-
-  defp remove_model_selectors(opts) do
-    Enum.reduce([:model_kwargs, :extra_body], Keyword.delete(opts, :model), fn key, acc ->
-      if is_map(Keyword.get(acc, key)), do: Keyword.update!(acc, key, &Map.drop(&1, [:model, "model"])), else: acc
-    end)
   end
 end

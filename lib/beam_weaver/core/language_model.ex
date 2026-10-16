@@ -5,7 +5,7 @@ defmodule BeamWeaver.Core.LanguageModel do
 
   alias BeamWeaver.Core.Error
   alias BeamWeaver.Core.Message
-  alias BeamWeaver.Core.MessageLike
+  alias BeamWeaver.Core.Messages.TokenCounter
   alias BeamWeaver.Prompt
   alias BeamWeaver.Tokenizer
 
@@ -30,26 +30,29 @@ defmodule BeamWeaver.Core.LanguageModel do
   end
 
   def normalize_chat_input(input) do
-    with {:ok, message} <- MessageLike.to_message(input) do
+    with {:ok, message} <- Message.from(input) do
       {:ok, [message]}
     end
   end
 
   @doc """
-  Counts text approximately. This is intentionally cheap and deterministic.
+  Estimates tokens cheaply and deterministically: about four characters per
+  token, plus three per message for its role and framing.
+
+  Messages are counted like
+  `BeamWeaver.Core.Messages.Utils.count_tokens_approximately/2`, so a budget
+  means the same everywhere the `:approximate` counter is used, such as
+  `BeamWeaver.Core.Messages.Utils.trim/2`.
   """
   @spec count_tokens_approximately(term()) :: non_neg_integer()
-  def count_tokens_approximately(value) when is_binary(value) do
-    value
-    |> String.split(~r/\s+/, trim: true)
-    |> length()
-  end
+  def count_tokens_approximately(value) when is_binary(value),
+    do: ceil(String.length(value) / 4)
 
-  def count_tokens_approximately(%Message{} = message),
-    do: count_tokens_approximately(Message.text(message))
+  def count_tokens_approximately(%Message{} = message), do: TokenCounter.count([message])
 
-  def count_tokens_approximately(messages) when is_list(messages) do
-    Enum.reduce(messages, 0, &(&2 + count_tokens_approximately(&1)))
+  def count_tokens_approximately(values) when is_list(values) do
+    {messages, others} = Enum.split_with(values, &match?(%Message{}, &1))
+    TokenCounter.count(messages) + Enum.reduce(others, 0, &(&2 + count_tokens_approximately(&1)))
   end
 
   def count_tokens_approximately(_value), do: 0

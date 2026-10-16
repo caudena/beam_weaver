@@ -5,6 +5,12 @@ defmodule BeamWeaver.SkillTest do
   alias BeamWeaver.Skill
 
   describe "parse/2" do
+    test "an empty metadata value stays an empty string" do
+      document = "---\nname: notes\ndescription: Take notes.\nmetadata:\n  owner: \"\"\n---\nWrite notes.\n"
+
+      assert {:ok, %Skill{metadata: %{"owner" => ""}}} = Skill.parse(document)
+    end
+
     test "parses the complete supported metadata subset" do
       document = """
       ---

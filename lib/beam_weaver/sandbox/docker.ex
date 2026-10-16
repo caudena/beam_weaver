@@ -6,17 +6,30 @@ defmodule BeamWeaver.Sandbox.Docker do
   filesystem/command operations inside a container. Plain Docker is suitable for
   local development; production deployments should select a hardened runtime
   such as gVisor (`runsc`) or Kata through the `:runtime` option.
+
+  `new/1` only describes the container. `start!/1` starts it and returns the
+  sandbox that every operation then uses; operations on a sandbox that isn't
+  started return the error `"container_not_started"` and start nothing. Pass
+  `container: name` instead to use a container you started yourself.
+
+  The process that calls `start!/1` owns the container. With `remove: true`
+  (the default) the container is removed when that process exits, and Docker
+  removes it if it stops; with `remove: false` it keeps running until you call
+  `stop/1`. `stop/1` always removes it.
   """
 
   use BeamWeaver.Sandbox
 
   alias BeamWeaver.Sandbox
 
+  @not_started "container_not_started"
+
   defstruct [
     :container,
     :image,
     :runtime,
     :name,
+    :reaper,
     mounts: [],
     labels: %{},
     cpus: 1,
@@ -56,13 +69,25 @@ defmodule BeamWeaver.Sandbox.Docker do
     }
   end
 
+  @doc """
+  Starts the sandbox's container and returns the started sandbox.
+
+  Use the returned sandbox for every operation. The calling process owns the
+  container: with `remove: true` (the default) it is removed when this process
+  exits. A sandbox that is already started is returned as it is. Raises when
+  Docker can't start the container.
+  """
+  @spec start!(t()) :: t()
   def start!(%__MODULE__{container: nil} = sandbox) do
     name =
       sandbox.name ||
         "beam-weaver-sandbox-" <> Base.encode16(:crypto.strong_rand_bytes(6), case: :lower)
 
+    # `--init` runs an init as PID 1 that reaps orphaned processes, such as the
+    # children of a command stopped after a timeout; `sleep` alone never would.
     args =
-      ["run", "-d", "--name", name, "--network", sandbox.network, "--workdir", sandbox.root]
+      ["run", "-d", "--init", "--name", name, "--network", sandbox.network, "--workdir", sandbox.root]
+      |> maybe_flag("--rm", sandbox.remove?)
       |> maybe_runtime(sandbox.runtime)
       |> maybe_option("--cpus", sandbox.cpus)
       |> maybe_option("--memory", sandbox.memory)
@@ -80,17 +105,24 @@ defmodule BeamWeaver.Sandbox.Docker do
       ])
 
     case System.cmd("docker", args, stderr_to_stdout: true) do
-      {_output, 0} -> %{sandbox | container: name}
-      {output, status} -> raise "docker sandbox failed to start (#{status}): #{output}"
+      {output, 0} ->
+        reaper = if sandbox.remove?, do: remove_on_exit(self(), container_id(output) || name)
+        %{sandbox | container: name, reaper: reaper}
+
+      {output, status} ->
+        raise "docker sandbox failed to start (#{status}): #{output}"
     end
   end
 
   def start!(%__MODULE__{} = sandbox), do: sandbox
 
+  @doc "Removes the sandbox's container, running or not."
   @spec stop(t()) :: :ok | {:error, binary()}
   def stop(%__MODULE__{container: nil}), do: :ok
 
-  def stop(%__MODULE__{container: container}) do
+  def stop(%__MODULE__{container: container, reaper: reaper}) do
+    if is_pid(reaper), do: Process.exit(reaper, :kill)
+
     case System.cmd("docker", ["rm", "-f", container], stderr_to_stdout: true) do
       {_output, 0} -> :ok
       {output, _status} -> {:error, String.trim(output)}
@@ -99,7 +131,7 @@ defmodule BeamWeaver.Sandbox.Docker do
 
   @doc "Returns bounded immutable identity and label evidence for a live container."
   @spec inspect_container(t()) :: {:ok, map()} | {:error, binary()}
-  def inspect_container(%__MODULE__{container: nil}), do: {:error, "container_not_started"}
+  def inspect_container(%__MODULE__{container: nil}), do: {:error, @not_started}
 
   def inspect_container(%__MODULE__{container: container}) do
     format = "{{json .}}"
@@ -142,7 +174,7 @@ defmodule BeamWeaver.Sandbox.Docker do
   def start_exec(sandbox, command, opts \\ [])
 
   def start_exec(%__MODULE__{container: nil}, _command, _opts),
-    do: {:error, "container_not_started"}
+    do: {:error, @not_started}
 
   def start_exec(%__MODULE__{} = sandbox, command, opts)
       when is_binary(command) and byte_size(command) in 1..16_384 do
@@ -233,8 +265,10 @@ defmodule BeamWeaver.Sandbox.Docker do
   end
 
   @impl true
+  def write(%__MODULE__{container: nil}, path, _content, _opts),
+    do: %Sandbox.WriteResult{path: path, error: @not_started}
+
   def write(%__MODULE__{} = sandbox, path, content, _opts) do
-    sandbox = start!(sandbox)
     container_path = container_path!(sandbox, path)
 
     tmp =
@@ -267,8 +301,9 @@ defmodule BeamWeaver.Sandbox.Docker do
   end
 
   @impl true
+  def read(%__MODULE__{container: nil}, _path, _opts), do: %Sandbox.ReadResult{error: @not_started}
+
   def read(%__MODULE__{} = sandbox, path, opts) do
-    sandbox = start!(sandbox)
     container_path = container_path!(sandbox, path)
     offset = Keyword.get(opts, :offset, 0)
     limit = Keyword.get(opts, :limit, 2_000)
@@ -312,13 +347,23 @@ defmodule BeamWeaver.Sandbox.Docker do
   end
 
   @impl true
+  def execute(%__MODULE__{container: nil}, _command, _opts),
+    do: %Sandbox.ExecuteResult{exit_code: nil, output: "", error: @not_started, truncated: false}
+
   def execute(%__MODULE__{} = sandbox, command, opts) do
     case opts |> Keyword.get(:timeout, 120) |> timeout_ms() do
       {:ok, timeout} ->
-        sandbox = start!(sandbox)
-
         workdir = Keyword.get(opts, :workdir, sandbox.root)
-        args = ["exec", "--workdir", workdir, sandbox.container, "sh", "-lc", command]
+        pid_file = "/tmp/beam_weaver_execute_#{Base.encode16(:crypto.strong_rand_bytes(8), case: :lower)}.pid"
+
+        # The exec'd shell leads its own process group inside the container and
+        # records its pid while the command runs, so a timeout can stop the
+        # command and everything it started.
+        wrapper =
+          "printf '%s' \"$$\" > #{shell_quote(pid_file)}; sh -lc #{shell_quote(command)}; " <>
+            "status=$?; rm -f #{shell_quote(pid_file)}; exit $status"
+
+        args = ["exec", "--workdir", workdir, sandbox.container, "sh", "-c", wrapper]
 
         task =
           Task.async(fn ->
@@ -332,6 +377,7 @@ defmodule BeamWeaver.Sandbox.Docker do
             %Sandbox.ExecuteResult{exit_code: exit_code, output: output, truncated: truncated?}
 
           nil ->
+            stop_timed_out_command(sandbox, pid_file)
             %Sandbox.ExecuteResult{exit_code: 124, output: "", error: "timeout", truncated: false}
         end
 
@@ -349,8 +395,10 @@ defmodule BeamWeaver.Sandbox.Docker do
   end
 
   @impl true
+  def edit(%__MODULE__{container: nil}, path, _old, _new, _opts),
+    do: %Sandbox.EditResult{path: path, error: @not_started}
+
   def edit(%__MODULE__{} = sandbox, path, old, new, opts) do
-    sandbox = start!(sandbox)
     container_path = container_path!(sandbox, path)
 
     case read(sandbox, path, []) do
@@ -397,6 +445,8 @@ defmodule BeamWeaver.Sandbox.Docker do
   end
 
   @impl true
+  def ls(%__MODULE__{container: nil}, _path, _opts), do: %Sandbox.ListResult{error: @not_started}
+
   def ls(%__MODULE__{} = sandbox, path, _opts) do
     container_path = container_path!(sandbox, path)
     cmd = "find #{shell_quote(container_path)} -maxdepth 1 -mindepth 1 -printf '%y|%p\\n'"
@@ -419,6 +469,8 @@ defmodule BeamWeaver.Sandbox.Docker do
   end
 
   @impl true
+  def glob(%__MODULE__{container: nil}, _pattern, _opts), do: %Sandbox.GlobResult{error: @not_started}
+
   def glob(%__MODULE__{} = sandbox, pattern, opts) do
     path = Keyword.get(opts, :path, "/")
     container_path = container_path!(sandbox, path)
@@ -443,6 +495,8 @@ defmodule BeamWeaver.Sandbox.Docker do
   end
 
   @impl true
+  def grep(%__MODULE__{container: nil}, _pattern, _opts), do: %Sandbox.GrepResult{error: @not_started}
+
   def grep(%__MODULE__{} = sandbox, pattern, opts) do
     path = Keyword.get(opts, :path, "/")
     container_path = container_path!(sandbox, path)
@@ -482,9 +536,10 @@ defmodule BeamWeaver.Sandbox.Docker do
   end
 
   @impl true
-  def download_files(%__MODULE__{} = sandbox, paths, _opts) do
-    sandbox = start!(sandbox)
+  def download_files(%__MODULE__{container: nil}, paths, _opts),
+    do: Enum.map(paths, &%Sandbox.DownloadResult{path: &1, error: @not_started})
 
+  def download_files(%__MODULE__{} = sandbox, paths, _opts) do
     Enum.map(paths, fn path ->
       container_path = container_path!(sandbox, path)
 
@@ -494,18 +549,86 @@ defmodule BeamWeaver.Sandbox.Docker do
           "beam_weaver_docker_download_#{System.unique_integer([:positive])}"
         )
 
+      # `-L` copies the file a symlink in the container leads to, inside the
+      # container. Without it, Docker copies the symlink itself, and reading
+      # that copy would read whatever it names on this host.
       try do
-        case System.cmd("docker", ["cp", "#{sandbox.container}:#{container_path}", tmp], stderr_to_stdout: true) do
-          {_output, 0} ->
-            %Sandbox.DownloadResult{path: path, content: File.read!(tmp)}
-
-          {output, _status} ->
-            %Sandbox.DownloadResult{path: path, error: String.trim(output)}
+        with {_output, 0} <-
+               System.cmd("docker", ["cp", "-L", "#{sandbox.container}:#{container_path}", tmp], stderr_to_stdout: true),
+             {:ok, %File.Stat{type: :regular}} <- File.lstat(tmp),
+             {:ok, content} <- File.read(tmp) do
+          %Sandbox.DownloadResult{path: path, content: content}
+        else
+          {:ok, %File.Stat{type: :directory}} -> %Sandbox.DownloadResult{path: path, error: "is_directory"}
+          {:ok, %File.Stat{}} -> %Sandbox.DownloadResult{path: path, error: "invalid_path"}
+          {:error, reason} -> %Sandbox.DownloadResult{path: path, error: List.to_string(:file.format_error(reason))}
+          {output, _status} -> %Sandbox.DownloadResult{path: path, error: String.trim(output)}
         end
       after
-        File.rm(tmp)
+        File.rm_rf(tmp)
       end
     end)
+  end
+
+  # The path the container's `realpath` takes each path to, as a sandbox
+  # path. A path whose file is outside the root has none.
+  @impl true
+  def canonical_paths(%__MODULE__{container: nil}, paths, _opts),
+    do: Enum.map(paths, fn _path -> {:error, @not_started} end)
+
+  def canonical_paths(%__MODULE__{} = sandbox, paths, _opts) do
+    located =
+      Enum.map(paths, fn path ->
+        if is_binary(path) and String.valid?(path), do: container_path(sandbox, path), else: {:error, "invalid_path"}
+      end)
+
+    container_paths = for {:ok, path} <- located, uniq: true, do: path
+
+    case realpaths(sandbox, container_paths) do
+      {:ok, resolved} ->
+        Enum.map(located, fn
+          {:ok, path} -> if is_binary(resolved[path]), do: {:ok, resolved[path]}, else: {:error, "invalid_path"}
+          {:error, _reason} -> {:error, "invalid_path"}
+        end)
+
+      {:error, error} ->
+        Enum.map(paths, fn _path -> {:error, error} end)
+    end
+  end
+
+  # The sandbox path of each container path's real path, from one `python3`
+  # call in the container: `nil` when the real path is outside the root.
+  defp realpaths(_sandbox, []), do: {:ok, %{}}
+
+  defp realpaths(sandbox, container_paths) do
+    request = %{"root" => sandbox.root, "paths" => container_paths} |> BeamWeaver.JSON.encode!() |> Base.encode64()
+
+    cmd = """
+    python3 - <<'PY'
+    import base64, json, os
+    request = json.loads(base64.b64decode("#{request}"))
+    root = os.path.realpath(request["root"])
+    base = root.rstrip("/")
+    def virtual(path):
+      real = os.path.realpath(path)
+      if real == root:
+        return "/"
+      if real.startswith(base + "/"):
+        return real[len(base):]
+      return None
+    print(json.dumps([virtual(path) for path in request["paths"]]))
+    PY
+    """
+
+    with %Sandbox.ExecuteResult{exit_code: 0, output: output} <- execute(sandbox, cmd, []),
+         {:ok, resolved} when is_list(resolved) and length(resolved) == length(container_paths) <-
+           BeamWeaver.JSON.decode(String.trim(output)) do
+      {:ok, Map.new(Enum.zip(container_paths, resolved))}
+    else
+      %Sandbox.ExecuteResult{error: error} when is_binary(error) -> {:error, error}
+      %Sandbox.ExecuteResult{output: output} when output not in [nil, ""] -> {:error, String.trim(output)}
+      _invalid -> {:error, "invalid_sandbox_response"}
+    end
   end
 
   defp maybe_runtime(args, nil), do: args
@@ -557,21 +680,67 @@ defmodule BeamWeaver.Sandbox.Docker do
     args ++ options
   end
 
+  # Removes the container once `owner` exits. It runs unlinked, so it outlives
+  # an owner that crashes; `stop/1` kills it.
+  defp remove_on_exit(owner, container) do
+    spawn(fn ->
+      ref = Process.monitor(owner)
+
+      receive do
+        {:DOWN, ^ref, :process, _owner, _reason} ->
+          System.cmd("docker", ["rm", "-f", container], stderr_to_stdout: true)
+      end
+    end)
+  end
+
+  # `docker run -d` prints the new container's id last, after any image pull
+  # progress.
+  defp container_id(output) do
+    id = output |> String.split("\n", trim: true) |> List.last("") |> String.trim()
+    if id =~ ~r/\A[0-9a-f]{64}\z/, do: id
+  end
+
+  # Runs inside the container once `execute/3` times out: waits briefly for the
+  # command's pid file (in case it is still starting), SIGTERMs its process
+  # group, gives it a second to exit, then SIGKILLs whatever is left.
+  defp stop_timed_out_command(%__MODULE__{} = sandbox, pid_file) do
+    file = shell_quote(pid_file)
+
+    script = """
+    i=0; while ! test -s #{file} && test $i -lt 40; do sleep 0.05; i=$((i+1)); done
+    pid=$(cat #{file} 2>/dev/null) || exit 0
+    kill -TERM "-$pid" 2>/dev/null
+    i=0; while kill -0 "-$pid" 2>/dev/null && test $i -lt 20; do sleep 0.05; i=$((i+1)); done
+    kill -KILL "-$pid" 2>/dev/null
+    rm -f #{file}
+    """
+
+    System.cmd("docker", ["exec", sandbox.container, "sh", "-c", script], stderr_to_stdout: true)
+    :ok
+  end
+
   defp shell_quote(value), do: "'" <> String.replace(to_string(value), "'", "'\"'\"'") <> "'"
 
   defp container_path!(%__MODULE__{} = sandbox, path) do
+    case container_path(sandbox, path) do
+      {:ok, container_path} -> container_path
+      {:error, message} -> raise ArgumentError, message
+    end
+  end
+
+  defp container_path(%__MODULE__{} = sandbox, path) do
     cond do
       not is_binary(path) or not String.starts_with?(path, "/") ->
-        raise ArgumentError, "sandbox paths must be absolute virtual paths"
+        {:error, "sandbox paths must be absolute virtual paths"}
 
       String.contains?(path, ["\0", "~"]) or Enum.member?(Path.split(path), "..") ->
-        raise ArgumentError, "invalid sandbox path"
+        {:error, "invalid sandbox path"}
 
       path == sandbox.root or String.starts_with?(path, sandbox.root <> "/") ->
-        path
+        {:ok, path}
 
       true ->
-        Path.join(sandbox.root, String.trim_leading(path, "/"))
+        {:ok, Path.join(sandbox.root, String.trim_leading(path, "/"))}
     end
   end
 

@@ -21,10 +21,14 @@ defmodule BeamWeaver.Checkpoint.Normalization do
   def normalize_tuple(tuple, _saver), do: tuple
 
   def normalize_metadata(config, metadata) do
-    config
-    |> metadata_from_config()
-    |> Map.merge(metadata || %{})
-    |> sanitize_json_string_values()
+    metadata =
+      config
+      |> metadata_from_config()
+      |> Map.merge(metadata || %{})
+
+    # Metadata rarely holds a NUL byte; without one it is kept as it is
+    # instead of being rebuilt.
+    if nul_free?(metadata), do: metadata, else: sanitize_json_string_values(metadata)
   end
 
   defp stringify_config(config) when is_list(config), do: stringify_config(Map.new(config))
@@ -112,6 +116,23 @@ defmodule BeamWeaver.Checkpoint.Normalization do
       _other -> %{}
     end
   end
+
+  # True when `sanitize_json_string_values/1` would return `value` unchanged.
+  defp nul_free?(%_{}), do: true
+  defp nul_free?(value) when is_binary(value), do: :binary.match(value, <<0>>) == :nomatch
+  defp nul_free?(value) when is_list(value), do: nul_free_list?(value)
+
+  defp nul_free?(value) when is_map(value),
+    do: Enum.all?(value, fn {key, nested} -> nul_free_key?(key) and nul_free?(nested) end)
+
+  defp nul_free?(_value), do: true
+
+  defp nul_free_list?([]), do: true
+  defp nul_free_list?([head | tail]), do: nul_free?(head) and nul_free_list?(tail)
+  defp nul_free_list?(_improper_tail), do: false
+
+  defp nul_free_key?(key) when is_binary(key), do: nul_free?(key)
+  defp nul_free_key?(_key), do: true
 
   defp sanitize_json_string_values(%_{} = struct), do: struct
 

@@ -1,8 +1,30 @@
 defmodule BeamWeaver do
   @moduledoc """
-  OTP-native Elixir runtime and library surface for LangChain-style agents.
+  BeamWeaver builds LLM agents and workflows in Elixir.
 
-  BeamWeaver translates selected LangChain behavior into idiomatic Elixir
-  modules, structs, behaviours, and supervision trees.
+  ```elixir
+  defmodule MyApp.SupportAgent do
+    use BeamWeaver.Agent
+
+    model "fake:chat", responses: ["Order A-1001 shipped on Monday."]
+    system_prompt "You are Acme's support agent."
+  end
+
+  {:ok, result} = MyApp.SupportAgent.invoke(%{messages: ["Where is my order A-1001?"]})
+  result.messages |> List.last() |> BeamWeaver.Core.Message.text()
+  #=> "Order A-1001 shipped on Monday."
+  ```
+
+  Where to start:
+
+    * `BeamWeaver.Agent` - agent modules: a model, instructions and tools.
+    * `BeamWeaver.Tool` - tools the model can call.
+    * `BeamWeaver.Graph` - workflows built from nodes and edges.
+    * `BeamWeaver.Models` - models from any provider, named `"provider:model"`.
+    * `BeamWeaver.Checkpoint` and `BeamWeaver.Memory` - threads and long-term memory.
+    * `BeamWeaver.Stream` - events while a run progresses.
+
+  The [Quickstart](quickstart.md) builds a first agent without an API key, and
+  [Concepts](concepts.md) explains how the pieces fit together.
   """
 end

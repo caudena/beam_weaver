@@ -11,6 +11,7 @@ defmodule BeamWeaver.Provider.CapabilityResponseTest do
     assert {:ok, model} =
              Models.init_chat_model("xai:grok-4.20-0309-non-reasoning",
                reasoning_effort: "high",
+               api_key: "test-key",
                transport: BeamWeaver.TestSupport.Conformance.Fakes.Transport,
                transport_opts: [parent: self()]
              )
@@ -26,6 +27,7 @@ defmodule BeamWeaver.Provider.CapabilityResponseTest do
     assert {:ok, model} =
              Models.init_chat_model("xai:grok-4.20-0309-non-reasoning",
                reasoning_effort: "high",
+               api_key: "test-key",
                transport: BeamWeaver.TestSupport.Conformance.Fakes.Transport,
                transport_opts: [
                  parent: self(),
@@ -55,6 +57,7 @@ defmodule BeamWeaver.Provider.CapabilityResponseTest do
     assert {:ok, model} =
              Models.init_chat_model("xai:grok-4.20-0309-non-reasoning",
                reasoning_effort: "high",
+               api_key: "test-key",
                transport: BeamWeaver.TestSupport.Conformance.Fakes.Transport,
                transport_opts: [parent: self()]
              )

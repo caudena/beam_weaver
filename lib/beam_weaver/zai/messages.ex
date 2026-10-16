@@ -1,23 +1,28 @@
 defmodule BeamWeaver.ZAI.Messages do
-  @moduledoc """
-  Z.ai Chat Completions message translation.
-  """
+  @moduledoc false
 
   alias BeamWeaver.Core.ContentBlock
   alias BeamWeaver.Core.Message
-  alias BeamWeaver.Core.Messages
+  alias BeamWeaver.Models.Profile
   alias BeamWeaver.Models.ProfileRegistry.ZAI, as: ZAIProfiles
   alias BeamWeaver.Models.UsageCost
   alias BeamWeaver.OpenAI.MessageParts
   alias BeamWeaver.Result
-  alias BeamWeaver.ZAI.Error
+  alias BeamWeaver.Core.Error
+  alias BeamWeaver.MapShape
+  alias BeamWeaver.Provider.ChatCompletionsWire
 
-  @spec to_chat_messages([Message.t()]) :: {:ok, [map()]} | {:error, Error.t()}
-  def to_chat_messages(messages) when is_list(messages) do
-    Result.traverse(messages, &to_chat_message/1)
+  # Media input follows the model's profile: GLM-5.3-Flash reads images, video
+  # and PDFs, by URL or as base64 data, and files uploaded to Z.ai by their id;
+  # the other models take text only. A `nil` profile allows media.
+  @spec to_chat_messages([Message.t()], Profile.t() | nil) :: {:ok, [map()]} | {:error, Error.t()}
+  def to_chat_messages(messages, profile \\ nil)
+
+  def to_chat_messages(messages, profile) when is_list(messages) do
+    Result.traverse(messages, &to_chat_message(&1, profile))
   end
 
-  def to_chat_messages(_messages) do
+  def to_chat_messages(_messages, _profile) do
     {:error, Error.new(:invalid_messages, "Z.ai messages must be a list")}
   end
 
@@ -32,18 +37,14 @@ defmodule BeamWeaver.ZAI.Messages do
     usage = usage_metadata(response)
     metadata = metadata(response, choice, usage)
 
-    Message.new(:assistant, response_content(message),
+    Message.new(:assistant, ChatCompletionsWire.response_content(message),
       id: response["id"],
       metadata: metadata,
       response_metadata: metadata,
       usage_metadata: usage,
       status: choice["finish_reason"],
-      tool_calls: tool_calls(message)
+      tool_calls: ChatCompletionsWire.tool_calls(message)
     )
-    |> case do
-      {:ok, message} -> {:ok, message}
-      {:error, error} -> {:error, Error.new(error.type, error.message, error.details)}
-    end
   end
 
   def chat_response_to_message(_response) do
@@ -77,7 +78,7 @@ defmodule BeamWeaver.ZAI.Messages do
       finish_reason: choice["finish_reason"],
       reasoning_content: message["reasoning_content"],
       headers: header_metadata[:headers],
-      transport: transport_metadata(header_metadata),
+      transport: BeamWeaver.Provider.ResponseDecoder.transport_metadata(header_metadata),
       raw_provider_response: response,
       estimated_cost: usage && usage[:total_cost],
       cost_currency: "USD"
@@ -104,7 +105,7 @@ defmodule BeamWeaver.ZAI.Messages do
 
   def usage_metadata(_response), do: nil
 
-  defp to_chat_message(%Message{role: :tool} = message) do
+  defp to_chat_message(%Message{role: :tool} = message, _profile) do
     call_id = message.tool_call_id || message.id
 
     if is_binary(call_id) and call_id != "" do
@@ -112,70 +113,60 @@ defmodule BeamWeaver.ZAI.Messages do
        %{
          "role" => "tool",
          "tool_call_id" => call_id,
-         "content" => tool_output(message.content)
+         "content" => ChatCompletionsWire.tool_output(message.content)
        }
-       |> put_optional("name", message.name)}
+       |> MapShape.put_optional("name", message.name)}
     else
       {:error, Error.new(:invalid_tool_message, "tool messages require a tool_call_id or id")}
     end
   end
 
-  defp to_chat_message(%Message{role: :assistant} = message) do
-    with {:ok, content} <- assistant_content(message) do
+  defp to_chat_message(%Message{role: :assistant} = message, profile) do
+    with {:ok, content} <- assistant_content(message, profile) do
       {:ok,
        %{
          "role" => "assistant",
          "content" => content
        }
-       |> put_optional("name", message.name)
-       |> put_optional("tool_calls", assistant_tool_calls(message))
-       |> put_optional("reasoning_content", assistant_reasoning_content(message))}
+       |> MapShape.put_optional("name", message.name)
+       |> MapShape.put_optional("tool_calls", ChatCompletionsWire.assistant_tool_calls(message))
+       |> MapShape.put_optional("reasoning_content", ChatCompletionsWire.assistant_reasoning_content(message))}
     end
   end
 
-  defp to_chat_message(%Message{} = message) when message.role in [:system, :user] do
-    with {:ok, content} <- content_to_zai(message.content) do
+  defp to_chat_message(%Message{} = message, profile) when message.role in [:system, :user] do
+    with {:ok, content} <- content_to_zai(message.content, profile) do
       {:ok,
        %{
          "role" => Atom.to_string(message.role),
          "content" => content
        }
-       |> put_optional("name", message.name)}
+       |> MapShape.put_optional("name", message.name)}
     end
   end
 
-  defp to_chat_message(_message),
+  defp to_chat_message(_message, _profile),
     do: {:error, Error.new(:invalid_message, "expected a BeamWeaver message")}
 
-  defp tool_output(content) when is_binary(content), do: content
+  defp assistant_content(%Message{content: content}, _profile) when is_binary(content), do: {:ok, content}
 
-  defp tool_output(content) when is_map(content) or is_list(content) do
-    case BeamWeaver.JSON.encode(content) do
-      {:ok, json} -> json
-      {:error, _error} -> inspect(content)
-    end
+  defp assistant_content(%Message{content: content}, profile) when is_list(content) do
+    content_to_parts(content, %{profile: profile, skip_reasoning?: true})
   end
 
-  defp tool_output(content), do: to_string(content)
+  defp assistant_content(%Message{content: content}, _profile), do: {:ok, to_string(content)}
 
-  defp assistant_content(%Message{content: content}) when is_binary(content), do: {:ok, content}
+  defp content_to_zai(content, _profile) when is_binary(content), do: {:ok, content}
 
-  defp assistant_content(%Message{content: content}) when is_list(content) do
-    content_to_parts(content, skip_reasoning?: true)
-  end
+  defp content_to_zai(content, profile) when is_list(content),
+    do: content_to_parts(content, %{profile: profile, skip_reasoning?: false})
 
-  defp assistant_content(%Message{content: content}), do: {:ok, to_string(content)}
+  defp content_to_zai(content, _profile), do: {:ok, to_string(content)}
 
-  defp content_to_zai(content) when is_binary(content), do: {:ok, content}
-  defp content_to_zai(content) when is_list(content), do: content_to_parts(content)
-  defp content_to_zai(content), do: {:ok, to_string(content)}
-
-  defp content_to_parts(content, opts \\ []) when is_list(content) do
-    skip_reasoning? = Keyword.get(opts, :skip_reasoning?, false)
-
+  defp content_to_parts(content, context) when is_list(content) do
     content
-    |> assert_atom_content_blocks!()
-    |> Result.traverse(&content_part(&1, skip_reasoning?))
+    |> BeamWeaver.MapShape.assert_atom_keys_in!()
+    |> Result.traverse(&content_part(&1, context))
     |> case do
       {:ok, parts} ->
         case Enum.reject(parts, &is_nil/1) do
@@ -188,165 +179,144 @@ defmodule BeamWeaver.ZAI.Messages do
     end
   end
 
-  defp content_part(%ContentBlock.Text{text: text}, _skip_reasoning?),
+  defp content_part(%ContentBlock.Text{text: text}, _context),
     do: {:ok, %{"type" => "text", "text" => text}}
 
-  defp content_part(%ContentBlock.PlainText{text: text}, _skip_reasoning?),
+  defp content_part(%ContentBlock.PlainText{text: text}, _context),
     do: {:ok, %{"type" => "text", "text" => text}}
 
-  defp content_part(%ContentBlock.Reasoning{}, true), do: {:ok, nil}
+  defp content_part(%ContentBlock.Reasoning{}, %{skip_reasoning?: true}), do: {:ok, nil}
 
-  defp content_part(%ContentBlock.Reasoning{reasoning: text}, _skip_reasoning?),
+  defp content_part(%ContentBlock.Reasoning{reasoning: text}, _context),
     do: {:ok, %{"type" => "reasoning", "reasoning" => text}}
 
-  defp content_part(%ContentBlock.Image{}, _skip_reasoning?), do: unsupported_content(:image)
-  defp content_part(%ContentBlock.Video{}, _skip_reasoning?), do: unsupported_content(:video)
+  defp content_part(%ContentBlock.Image{} = block, context),
+    do: image_part(block.url, block.data, block.mime_type, context)
 
-  defp content_part(%ContentBlock.Unknown{value: value}, _skip_reasoning?) when is_map(value),
+  defp content_part(%ContentBlock.Video{} = block, context),
+    do: video_part(block.url, block.data, block.mime_type, context)
+
+  defp content_part(%ContentBlock.File{} = block, context), do: file_part(block, context)
+
+  defp content_part(%ContentBlock.Unknown{value: value}, _context) when is_map(value),
     do: {:ok, BeamWeaver.MapShape.stringify_keys(value)}
 
-  defp content_part(%{} = block, skip_reasoning?) do
+  defp content_part(%{__struct__: _module, type: type}, context), do: unsupported_content(type, context)
+
+  defp content_part(%{} = block, context) do
     BeamWeaver.MapShape.assert_atom_keys!(block)
 
-    case provider_type(Map.get(block, :type)) do
+    case ChatCompletionsWire.provider_type(Map.get(block, :type)) do
       "text" ->
         {:ok, %{"type" => "text", "text" => Map.get(block, :text) || Map.get(block, :content) || ""}}
 
-      "reasoning" when skip_reasoning? ->
-        {:ok, nil}
-
       "reasoning" ->
-        {:ok, %{"type" => "reasoning", "reasoning" => Map.get(block, :reasoning) || Map.get(block, :text)}}
+        if context.skip_reasoning?,
+          do: {:ok, nil},
+          else: {:ok, %{"type" => "reasoning", "reasoning" => Map.get(block, :reasoning) || Map.get(block, :text)}}
 
       "image" ->
-        unsupported_content(:image)
+        image_part(
+          Map.get(block, :url),
+          Map.get(block, :data) || Map.get(block, :base64),
+          Map.get(block, :mime_type),
+          context
+        )
 
       "image_url" ->
-        unsupported_content(:image_url)
+        image_part(provider_url(block, :image_url), nil, nil, context)
 
-      "video" ->
-        unsupported_content(:video)
+      type when type in ["video", "video_url"] ->
+        video_part(
+          Map.get(block, :url) || provider_url(block, :video_url),
+          Map.get(block, :data) || Map.get(block, :base64),
+          Map.get(block, :mime_type),
+          context
+        )
 
-      "video_url" ->
-        unsupported_content(:video_url)
+      type when type in ["file", "file_url"] ->
+        with {:ok, file} <- ContentBlock.from(block), do: content_part(file, context)
+
+      type when type in ["audio", "audio_url", "input_audio"] ->
+        unsupported_content(:audio, context)
 
       _other ->
         {:ok, BeamWeaver.MapShape.stringify_keys(block)}
     end
   end
 
-  defp content_part(text, _skip_reasoning?) when is_binary(text),
+  defp content_part(text, _context) when is_binary(text),
     do: {:ok, %{"type" => "text", "text" => text}}
 
-  defp content_part(other, _skip_reasoning?),
+  defp content_part(other, _context),
     do: {:ok, %{"type" => "text", "text" => to_string(other)}}
 
-  defp unsupported_content(feature) do
+  # Images and video are a URL or base64 data, sent as a data URL.
+  defp image_part(url, data, mime_type, context),
+    do: media_part(:image, :image_inputs, "image_url", url, data, mime_type || "image/png", context)
+
+  defp video_part(url, data, mime_type, context),
+    do: media_part(:video, :video_inputs, "video_url", url, data, mime_type || "video/mp4", context)
+
+  defp media_part(kind, feature, part, url, data, mime_type, context) do
+    cond do
+      not supports?(context, feature) -> unsupported_content(kind, context)
+      is_binary(url) -> {:ok, %{"type" => part, part => %{"url" => url}}}
+      is_binary(data) -> {:ok, %{"type" => part, part => %{"url" => MessageParts.data_url(mime_type, data)}}}
+      true -> media_error(kind, "Z.ai #{kind} blocks need a url or base64 data", context)
+    end
+  end
+
+  # Documents go in a `file` part: the id of a file uploaded with Z.ai's file
+  # API, a URL, or base64 data.
+  defp file_part(%ContentBlock.File{} = block, context) do
+    cond do
+      not supports?(context, :pdf_inputs) ->
+        unsupported_content(:file, context)
+
+      file = file_source(block) ->
+        {:ok, %{"type" => "file", "file" => MapShape.put_optional(file, "filename", block.filename)}}
+
+      true ->
+        media_error(:file, "Z.ai file blocks need a file_id, a url or base64 data", context)
+    end
+  end
+
+  defp file_source(%ContentBlock.File{file_id: id}) when is_binary(id), do: %{"file_id" => id}
+  defp file_source(%ContentBlock.File{url: url}) when is_binary(url), do: %{"file_url" => url}
+
+  defp file_source(%ContentBlock.File{data: data} = block) when is_binary(data),
+    do: %{"file_data" => MessageParts.data_url(block.mime_type || "application/pdf", data)}
+
+  defp file_source(%ContentBlock.File{}), do: nil
+
+  defp provider_url(block, key) do
+    case Map.get(block, key) do
+      %{url: url} -> url
+      %{"url" => url} -> url
+      url when is_binary(url) -> url
+      _other -> nil
+    end
+  end
+
+  defp supports?(%{profile: nil}, _feature), do: true
+  defp supports?(%{profile: profile}, feature), do: Map.get(profile, feature) == true
+
+  defp unsupported_content(feature, %{profile: profile}) do
+    model = profile && profile.id
+
     {:error,
-     Error.new(:unsupported_feature, "Z.ai GLM-5.2 adapter currently supports text input only", %{
+     Error.new(:unsupported_feature, "Z.ai #{model || "model"} does not take #{feature} input", %{
        provider: :zai,
+       model: model,
        feature: feature
      })}
   end
 
-  defp provider_type(type) when is_atom(type), do: Atom.to_string(type)
-  defp provider_type(type), do: type
-
-  defp assert_atom_content_blocks!(content) do
-    Enum.each(content, fn
-      block when is_struct(block) -> BeamWeaver.MapShape.assert_atom_keys!(Map.from_struct(block))
-      block when is_map(block) -> BeamWeaver.MapShape.assert_atom_keys!(block)
-      _block -> :ok
-    end)
-
-    content
+  defp media_error(feature, message, %{profile: profile}) do
+    {:error,
+     Error.new(:invalid_content_block, message, %{provider: :zai, model: profile && profile.id, feature: feature})}
   end
-
-  defp assistant_tool_calls(%Message{} = message) do
-    case message.tool_calls || [] do
-      [] -> nil
-      calls -> Enum.map(calls, &assistant_tool_call/1)
-    end
-  end
-
-  defp assistant_tool_call(call) do
-    call = BeamWeaver.MapShape.stringify_keys(call)
-
-    %{
-      "id" => call["provider_id"] || call["call_id"] || call["id"],
-      "type" => "function",
-      "function" => %{
-        "name" => call["name"],
-        "arguments" => encode_arguments(call["arguments"] || call["args"])
-      }
-    }
-    |> MessageParts.reject_nil_values()
-  end
-
-  defp assistant_reasoning_content(%Message{} = message) do
-    metadata_value(message.metadata, :reasoning_content) ||
-      content_reasoning(message.content)
-  end
-
-  defp content_reasoning(content) when is_list(content) do
-    content
-    |> Enum.flat_map(fn
-      %ContentBlock.Reasoning{reasoning: text} when is_binary(text) -> [text]
-      %{"type" => "reasoning", "reasoning" => text} when is_binary(text) -> [text]
-      %{"type" => "reasoning", "text" => text} when is_binary(text) -> [text]
-      %{type: :reasoning, reasoning: text} when is_binary(text) -> [text]
-      %{type: :reasoning, text: text} when is_binary(text) -> [text]
-      _block -> []
-    end)
-    |> Enum.join("")
-    |> empty_to_nil()
-  end
-
-  defp content_reasoning(_content), do: nil
-
-  defp response_content(message) do
-    reasoning = message["reasoning_content"]
-    content = message["content"]
-
-    cond do
-      is_binary(reasoning) and reasoning != "" and is_binary(content) and content != "" ->
-        [
-          %{type: :reasoning, reasoning: reasoning},
-          %{type: :text, text: content}
-        ]
-
-      is_binary(reasoning) and reasoning != "" and is_list(content) ->
-        [%{type: :reasoning, reasoning: reasoning} | Enum.map(content, &response_content_block/1)]
-
-      is_binary(reasoning) and reasoning != "" ->
-        [%{type: :reasoning, reasoning: reasoning}]
-
-      is_binary(content) ->
-        content
-
-      is_list(content) ->
-        Enum.map(content, &response_content_block/1)
-
-      true ->
-        ""
-    end
-  end
-
-  defp tool_calls(%{"tool_calls" => tool_calls}) when is_list(tool_calls) do
-    Enum.map(tool_calls, fn call ->
-      function = call["function"] || %{}
-
-      Messages.tool_call(
-        id: call["id"],
-        provider_id: call["id"],
-        call_id: call["id"],
-        name: function["name"],
-        args: decode_arguments(function["arguments"])
-      )
-    end)
-  end
-
-  defp tool_calls(_message), do: []
 
   defp cached_tokens(usage) do
     usage["cached_tokens"] ||
@@ -375,56 +345,6 @@ defmodule BeamWeaver.ZAI.Messages do
 
   defp positive(value) when is_number(value) and value > 0, do: value
   defp positive(_value), do: nil
-
-  defp encode_arguments(arguments) when is_binary(arguments), do: arguments
-  defp encode_arguments(arguments), do: BeamWeaver.JSON.encode!(arguments || %{})
-
-  defp decode_arguments(arguments) when is_binary(arguments) do
-    case BeamWeaver.JSON.decode(arguments) do
-      {:ok, decoded} -> decoded
-      {:error, _error} -> arguments
-    end
-  end
-
-  defp decode_arguments(arguments), do: arguments
-
-  defp response_content_block(%{"type" => type, "text" => text}) when type in ["text", "output_text"] do
-    %{type: :text, text: text}
-  end
-
-  defp response_content_block(%{"type" => "reasoning", "reasoning" => reasoning}) do
-    %{type: :reasoning, reasoning: reasoning}
-  end
-
-  defp response_content_block(block) when is_map(block) do
-    %{
-      type: block["type"],
-      text: block["text"],
-      reasoning: block["reasoning"],
-      raw_provider_block: block
-    }
-    |> MessageParts.reject_nil_values()
-  end
-
-  defp response_content_block(block), do: block
-
-  defp transport_metadata(%{request_id: request_id}) when is_binary(request_id) and request_id != "" do
-    %{request_id: request_id}
-  end
-
-  defp transport_metadata(_metadata), do: nil
-
-  defp metadata_value(metadata, key) when is_map(metadata),
-    do: Map.get(metadata, key) || Map.get(metadata, Atom.to_string(key))
-
-  defp metadata_value(_metadata, _key), do: nil
-
-  defp empty_to_nil(""), do: nil
-  defp empty_to_nil(value), do: value
-
-  defp put_optional(map, _key, nil), do: map
-  defp put_optional(map, _key, []), do: map
-  defp put_optional(map, key, value), do: Map.put(map, key, value)
 
   defp priced_usage(%{"model" => model} = response, usage) when is_binary(model) do
     case ZAIProfiles.resolve(model) do

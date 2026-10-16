@@ -3,6 +3,7 @@ defmodule BeamWeaver.Models.ProfileRegistry.Google do
 
   alias BeamWeaver.Core.Error
   alias BeamWeaver.Models.Profile
+  alias BeamWeaver.Models.ProfileRegistry
   alias BeamWeaver.Models.ProfileRegistry.Params
 
   @deprecated_google_models %{
@@ -598,7 +599,6 @@ defmodule BeamWeaver.Models.ProfileRegistry.Google do
         }
       })
   }
-  def profiles_map, do: @profiles
   def profiles, do: Map.values(@profiles)
 
   def resolve(model) do
@@ -610,7 +610,7 @@ defmodule BeamWeaver.Models.ProfileRegistry.Google do
         unavailable_model_error(model)
 
       true ->
-        fetch_or_fallback(@profiles, :google, model)
+        ProfileRegistry.fetch_or_fallback(@profiles, :google, model)
     end
   end
 
@@ -638,12 +638,5 @@ defmodule BeamWeaver.Models.ProfileRegistry.Google do
        access: metadata.access,
        reason: metadata.reason
      })}
-  end
-
-  defp fetch_or_fallback(profiles, provider, model) do
-    case Map.fetch(profiles, {provider, model}) do
-      {:ok, profile} -> {:ok, profile}
-      :error -> {:fallback, provider, model}
-    end
   end
 end

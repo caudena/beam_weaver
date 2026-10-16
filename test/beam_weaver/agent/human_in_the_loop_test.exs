@@ -227,6 +227,24 @@ defmodule BeamWeaver.Agent.HumanInTheLoopTest do
     end
   end
 
+  defmodule RuleMapAgent do
+    use BeamWeaver.Agent
+
+    context_schema do
+      field(:parent, :any, required: true)
+    end
+
+    model(%ReviewModel{
+      parent: :context,
+      tool_calls: [
+        %{id: "call-lookup", name: "lookup", args: %{"query" => "raw"}}
+      ]
+    })
+
+    tools(ReviewAgent.tools())
+    interrupt_on(%{"lookup" => %{description: "Check the lookup"}})
+  end
+
   defmodule NoCheckpointAgent do
     use BeamWeaver.Agent
 
@@ -476,6 +494,73 @@ defmodule BeamWeaver.Agent.HumanInTheLoopTest do
                config: config,
                context: %{parent: self()}
              )
+  end
+
+  test "a rule map without allowed_decisions still pauses and allows every decision" do
+    opts = [checkpointer: CheckpointETS.new(), config: thread("hitl-rule-map"), context: %{parent: self()}]
+
+    assert {:interrupted, interrupt} = RuleMapAgent.invoke(%{messages: [Message.user("lookup")]}, opts)
+
+    assert %{
+             action_requests: [%{name: "lookup", description: "Check the lookup"}],
+             review_configs: [%{allowed_decisions: ["approve", "edit", "reject", "respond"]}]
+           } = interrupt.value
+
+    refute_received {:lookup_executed, _query}
+
+    assert {:ok, %{messages: messages}} =
+             RuleMapAgent.resume_review([HITL.decision(:respond, message: "answered")], opts)
+
+    assert Enum.any?(messages, &match?(%Message{role: :tool, content: "answered"}, &1))
+  end
+
+  test "interrupt_on rules that can't be read raise instead of turning review off" do
+    for interrupt_on <- [
+          %{"lookup" => %{allowed_decisions: []}},
+          %{"lookup" => %{allowed_decisions: [:approve, :maybe]}},
+          %{"lookup" => %{"allowed_decisions" => ["approve", "skip"]}},
+          %{"lookup" => "yes"},
+          ["lookup"]
+        ] do
+      assert_raise ArgumentError, fn -> HumanInTheLoop.new(interrupt_on: interrupt_on) end
+    end
+
+    assert %HumanInTheLoop{interrupt_on: %{"lookup" => %{allowed_decisions: [:approve, :reject]}}} =
+             HumanInTheLoop.new(interrupt_on: [lookup: %{"allowed_decisions" => ["approve", "reject"]}])
+  end
+
+  test "edited arguments are checked against the tool's own input schema" do
+    opts = [checkpointer: CheckpointETS.new(), config: thread("hitl-edit-tool-schema"), context: %{parent: self()}]
+
+    assert {:interrupted, _interrupt} = RuleMapAgent.invoke(%{messages: [Message.user("lookup")]}, opts)
+
+    edit = HITL.decision(:edit, edited_action: %{name: "lookup", args: %{"query" => 123}})
+
+    assert {:error, %Error{type: :invalid_human_decision}} = RuleMapAgent.resume_review([edit], opts)
+    refute_received {:lookup_executed, _query}
+
+    edit = HITL.decision(:edit, edited_action: %{name: "lookup", args: %{"query" => "edited"}})
+
+    assert {:ok, %{messages: messages}} = RuleMapAgent.resume_review([edit], opts)
+    assert %Message{role: :assistant, content: "final: lookup:edited"} = List.last(messages)
+    assert_receive {:lookup_executed, "edited"}
+  end
+
+  test "a refused decision keeps the review pending, so one valid resume completes the run" do
+    opts = [checkpointer: CheckpointETS.new(), config: thread("hitl-retry-after-refusal"), context: %{parent: self()}]
+
+    assert {:interrupted, interrupt} = ReviewAgent.invoke(%{messages: [Message.user("lookup")]}, opts)
+
+    bad_edit = HITL.decision(:edit, edited_action: %{name: "lookup", args: %{"query" => 123}})
+    assert {:error, %Error{type: :invalid_human_decision}} = ReviewAgent.resume_review([bad_edit], opts)
+
+    assert {:ok, snapshot} = ReviewAgent.get_state(opts)
+    assert [%{id: pending_id}] = snapshot.interrupts
+    assert pending_id == interrupt.id
+
+    assert {:ok, %{messages: messages}} = ReviewAgent.resume_review([HITL.decision(:approve)], opts)
+    assert %Message{role: :assistant, content: "final: lookup:raw"} = List.last(messages)
+    assert_receive {:lookup_executed, "raw"}
   end
 
   test "HITL requires a checkpointer and pending interrupts are visible in state" do

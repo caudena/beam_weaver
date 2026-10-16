@@ -4,6 +4,9 @@ defmodule BeamWeaver.RateLimiter.TokenBucket do
 
   The bucket supports immediate rejection, queued waiting with explicit timeout,
   burst capacity, periodic refill, and queued-caller cancellation.
+
+  As a child of a supervisor, a bucket's child id is its `:name`, so several
+  named buckets can share one supervisor. Pass `:id` to choose another id.
   """
 
   use GenServer
@@ -44,6 +47,14 @@ defmodule BeamWeaver.RateLimiter.TokenBucket do
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts \\ []) do
     GenServer.start_link(__MODULE__, opts, name: opts[:name])
+  end
+
+  @doc false
+  def child_spec(opts) do
+    %{
+      id: Keyword.get_lazy(opts, :id, fn -> Keyword.get(opts, :name, __MODULE__) end),
+      start: {__MODULE__, :start_link, [Keyword.delete(opts, :id)]}
+    }
   end
 
   @spec acquire(GenServer.server(), pos_integer(), keyword()) :: :ok | {:error, Error.t()}

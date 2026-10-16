@@ -26,10 +26,15 @@ defmodule BeamWeaver.Agent.BeforeCompile do
       attrs.response_format
     )
 
+    DSL.reject_in_memory_adapters!(env, attrs, nodes)
+
+    {storage_quotes, attrs} = storage_callbacks(env, attrs)
+
     context_schema_quote = DSL.schema_quote(attrs.context_schema, attrs.context_schema_entries)
+    model_opts_quote = DSL.model_opts_quote(attrs.model_options, attrs.model_opts)
 
     spec_quote =
-      DSL.spec_quote(env.module, %{attrs | context_schema: context_schema_quote})
+      DSL.spec_quote(env.module, %{attrs | context_schema: context_schema_quote, model_opts: model_opts_quote})
 
     graph_quote =
       cond do
@@ -50,27 +55,40 @@ defmodule BeamWeaver.Agent.BeforeCompile do
           )
       end
 
-    checkpointer_quote =
-      if attrs.checkpointer do
-        quote do
-          @impl BeamWeaver.Agent
-          def checkpointer, do: unquote(attrs.checkpointer)
-        end
-      end
-
-    store_quote =
-      if attrs.store do
-        quote do
-          @impl BeamWeaver.Agent
-          def store, do: unquote(attrs.store)
-        end
-      end
-
     quote do
       unquote(spec_quote)
       unquote_splicing(List.wrap(graph_quote))
-      unquote(checkpointer_quote)
-      unquote(store_quote)
+      unquote_splicing(storage_quotes)
     end
+  end
+
+  # `checkpointer/0` and `store/0` return what the declarations of the same
+  # name evaluate to, `nil` when there is none. A module may define either
+  # function instead of declaring it, and then runs with what it returns.
+  # (A definition here can't override one from `use`, so `use` defines none.)
+  defp storage_callbacks(env, attrs) do
+    Enum.flat_map_reduce([:checkpointer, :store], attrs, fn name, attrs ->
+      declared = Map.fetch!(attrs, name)
+
+      cond do
+        not Module.defines?(env.module, {name, 0}) ->
+          callback =
+            quote do
+              @impl BeamWeaver.Agent
+              def unquote(name)(), do: unquote(declared)
+            end
+
+          {[callback], attrs}
+
+        is_nil(declared) ->
+          {[], Map.put(attrs, name, quote(do: unquote(name)()))}
+
+        true ->
+          raise CompileError,
+            file: env.file,
+            line: env.line,
+            description: "#{inspect(env.module)} declares `#{name}` and defines #{name}/0; keep one of them"
+      end
+    end)
   end
 end

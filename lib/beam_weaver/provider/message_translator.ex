@@ -1,10 +1,5 @@
 defmodule BeamWeaver.Provider.MessageTranslator do
-  @moduledoc """
-  Behaviour for provider-specific message translation.
-
-  Provider implementations convert between BeamWeaver's neutral message/content
-  structs and each provider's wire shape at the boundary.
-  """
+  @moduledoc false
 
   alias BeamWeaver.Core.Message
 

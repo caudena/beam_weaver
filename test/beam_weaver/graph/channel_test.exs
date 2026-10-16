@@ -93,7 +93,7 @@ defmodule BeamWeaver.Graph.ChannelTest do
   test "use BeamWeaver.Graph.Channel supplies default optional callbacks" do
     channel = DefaultedChannel.new(key: "defaulted")
 
-    assert BeamWeaver.Graph.Channel.Dispatch.impl_for(channel)
+    assert BeamWeaver.Graph.Channel.implemented_by?(channel.__struct__)
     assert Channel.value_type(channel) == :custom
     assert Channel.update_type(channel) == :custom
     assert Channel.null_version(channel) == nil
@@ -142,14 +142,13 @@ defmodule BeamWeaver.Graph.ChannelTest do
              Channel.update(channel, [%Overwrite{value: 1}, %Overwrite{value: 2}])
   end
 
-  test "any value clears on empty update after being available" do
+  test "any value keeps the last of several writes until it is written again" do
     channel = AnyValue.new()
 
     assert {:ok, channel, true} = Channel.update(channel, ["same", "same"])
     assert Channel.get(channel) == {:ok, "same"}
-    assert {:ok, channel, true} = Channel.update(channel, [])
-    assert {:error, %{type: :empty_channel}} = Channel.get(channel)
-    assert {:ok, _channel, false} = Channel.update(channel, [])
+    assert {:ok, ^channel, false} = Channel.update(channel, [])
+    assert Channel.get(channel) == {:ok, "same"}
   end
 
   test "ephemeral values clear on the next empty update and can be guarded" do

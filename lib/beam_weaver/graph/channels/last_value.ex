@@ -23,30 +23,10 @@ defmodule BeamWeaver.Graph.Channels.LastValue do
   end
 
   def update(channel, [value]), do: {:ok, %{channel | value: value}, true}
-
-  @impl true
-  def get(%__MODULE__{value: value, key: key}) do
-    if value == Channel.missing(), do: {:error, Channel.empty_error(key)}, else: {:ok, value}
-  end
-
-  @impl true
-  def checkpoint(%__MODULE__{value: value}), do: value
-
-  @impl true
-  def from_checkpoint(channel, checkpoint) do
-    if checkpoint == Channel.missing(),
-      do: %{channel | value: Channel.missing()},
-      else: %{channel | value: checkpoint}
-  end
-
-  @impl true
-  def available?(%__MODULE__{value: value}), do: value != Channel.missing()
 end
 
 defmodule BeamWeaver.Graph.Channels.LastValueAfterFinish do
-  @moduledoc """
-  Last-value channel that is readable only after `finish/1`.
-  """
+  @moduledoc false
 
   use BeamWeaver.Graph.Channel
 

@@ -18,8 +18,8 @@ defmodule BeamWeaver.Compaction do
       a summary call;
     * `:compacted` — portable semantic summarization produced a checkpoint.
 
-  See the **Application-Owned Compaction** guide for event construction,
-  callback contracts, persistence, and recovery examples.
+  See the [Compaction Engine](compaction_engine.md) guide for event
+  construction, callback contracts, persistence, and recovery examples.
   """
 
   alias BeamWeaver.Compaction.{Engine, Request, Result}

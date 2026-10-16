@@ -14,7 +14,7 @@ defmodule BeamWeaver.Graph.Compiled.Batch do
       |> Keyword.get(:max_concurrency, System.schedulers_online())
       |> positive_int()
 
-    timeout = Keyword.get(opts, :timeout, 5_000)
+    timeout = Keyword.get(opts, :timeout, :infinity)
 
     stream =
       inputs

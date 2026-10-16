@@ -186,6 +186,68 @@ defmodule BeamWeaver.Agent.StructuredOutputRetryTest do
     assert feedback =~ "conditions"
   end
 
+  test "the retry request holds the failed answer, answered with the error" do
+    table = :ets.new(:structured_retry_failed_answer, [:set, :public])
+
+    model =
+      model(table, [
+        weather_call("1", %{"temperature" => 75.0}),
+        weather_call("2", %{"temperature" => 75.0, "conditions" => "rainy"})
+      ])
+
+    assert {:ok, state} =
+             Agent.invoke(OneRetryAgent, %{messages: [Message.user("weather in Seattle")]}, context: %{model: model})
+
+    assert_received {:structured_retry_call, 2, second_messages, _opts}
+
+    assert [
+             %Message{role: :user},
+             %Message{role: :assistant, tool_calls: [%{id: "1"}]},
+             %Message{role: :tool, tool_call_id: "1", metadata: %{error_type: :structured_output_validation_error}}
+           ] = second_messages
+
+    assert [:user, :assistant, :tool, :assistant, :tool] = Enum.map(state.messages, & &1.role)
+  end
+
+  defmodule Triage do
+    use BeamWeaver.Schema
+
+    field :category, :string
+    field :priority, :string
+  end
+
+  defmodule ScriptedRetryAgent do
+    use BeamWeaver.Agent
+
+    alias BeamWeaver.Models.FakeChatModel
+
+    model "fake:chat",
+      responses: [
+        FakeChatModel.final(%{category: "shipping"}),
+        FakeChatModel.final(%{category: "shipping", priority: "high"})
+      ]
+
+    middleware [StructuredOutputRetry]
+    response_schema Triage
+  end
+
+  test "a scripted model answers the retry with its next turn" do
+    assert {:ok, result} = ScriptedRetryAgent.invoke(%{messages: ["My order A-1001 never arrived!"]})
+    assert result.structured_response == %{"category" => "shipping", "priority" => "high"}
+    assert [:user, :assistant, :user, :assistant] = Enum.map(result.messages, & &1.role)
+  end
+
+  test "the error returned after the last retry has no raw reply" do
+    table = :ets.new(:structured_retry_error_details, [:set, :public])
+    model = model(table, [weather_call("1", %{"temperature" => "invalid", "conditions" => "sunny"})])
+
+    assert {:error, %Error{details: details}} =
+             Agent.invoke(OneRetryAgent, %{messages: [Message.user("weather in Oslo")]}, context: %{model: model})
+
+    refute Map.has_key?(details, :failed_reply)
+    assert %{model_response: %{role: :assistant}} = details
+  end
+
   test "validates retry options" do
     assert_raise ArgumentError, ~r/max_retries/, fn ->
       StructuredOutputRetry.new(max_retries: -1)
@@ -216,8 +278,14 @@ defmodule BeamWeaver.Agent.StructuredOutputRetryTest do
                StructuredOutput.tool(schema, handle_errors: [:structured_output_validation_error])
              )
 
-    assert [%Message{role: :tool, metadata: %{error_type: :structured_output_validation_error}}] =
-             response.messages
+    assert [
+             ^invalid_message,
+             %Message{
+               role: :tool,
+               tool_call_id: "call-invalid",
+               metadata: %{error_type: :structured_output_validation_error}
+             }
+           ] = response.messages
 
     assert {:error, %Error{type: :structured_output_validation_error}} =
              StructuredOutput.handle_model_output(
@@ -252,6 +320,186 @@ defmodule BeamWeaver.Agent.StructuredOutputRetryTest do
     assert error_message =~ "location_schema"
   end
 
+  defmodule Echo do
+    use BeamWeaver.Tool
+
+    name "echo"
+    description "Echo a value."
+
+    schema do
+      field :value, :string
+    end
+
+    @impl true
+    def invoke(_tool, %{"value" => value}, _opts), do: {:ok, value}
+  end
+
+  defmodule SecondTryAgent do
+    use BeamWeaver.Agent
+
+    alias BeamWeaver.Models.FakeChatModel
+
+    model "fake:chat",
+      responses: [
+        FakeChatModel.final(%{category: "shipping"}),
+        FakeChatModel.final(%{category: "shipping", priority: "high"})
+      ]
+
+    response_schema BeamWeaver.Agent.StructuredOutputRetryTest.Triage, strategy: :tool
+  end
+
+  defmodule NeverValidAgent do
+    use BeamWeaver.Agent
+
+    alias BeamWeaver.Models.FakeChatModel
+
+    model "fake:chat", responses: [FakeChatModel.final(%{})], parent: self()
+    response_schema BeamWeaver.Agent.StructuredOutputRetryTest.Triage, strategy: :tool, max_retries: 1
+  end
+
+  defmodule NoErrorHandlingAgent do
+    use BeamWeaver.Agent
+
+    alias BeamWeaver.Models.FakeChatModel
+
+    model "fake:chat", responses: [FakeChatModel.final(%{})], parent: self()
+    response_schema BeamWeaver.Agent.StructuredOutputRetryTest.Triage, strategy: :tool, handle_errors: false
+  end
+
+  defmodule ToolsThenSecondTryAgent do
+    use BeamWeaver.Agent
+
+    alias BeamWeaver.Models.FakeChatModel
+
+    model "fake:chat",
+      responses: [
+        FakeChatModel.tool_call("echo", %{"value" => "A-1001 is lost"}),
+        "Order A-1001 is lost.",
+        FakeChatModel.final(%{priority: "high"}),
+        FakeChatModel.final(%{category: "shipping", priority: "high"})
+      ]
+
+    tools [BeamWeaver.Agent.StructuredOutputRetryTest.Echo]
+    response_schema BeamWeaver.Agent.StructuredOutputRetryTest.Triage, strategy: :tool
+  end
+
+  defmodule TextFirstAgent do
+    use BeamWeaver.Agent
+
+    alias BeamWeaver.Models.FakeChatModel
+
+    model "fake:chat",
+      responses: ["It's about shipping, and urgent.", FakeChatModel.final(%{category: "shipping", priority: "high"})]
+
+    response_schema BeamWeaver.Agent.StructuredOutputRetryTest.Triage, strategy: :tool
+  end
+
+  defmodule TextOnlyAgent do
+    use BeamWeaver.Agent
+
+    model "fake:chat", responses: ["It's about shipping, and urgent."], parent: self()
+    response_schema BeamWeaver.Agent.StructuredOutputRetryTest.Triage, strategy: :tool, max_retries: 1
+  end
+
+  defmodule ToolsThenTextOnlyAgent do
+    use BeamWeaver.Agent
+
+    alias BeamWeaver.Models.FakeChatModel
+
+    model "fake:chat",
+      responses: [FakeChatModel.tool_call("echo", %{"value" => "A-1001 is lost"}), "Order A-1001 is lost."],
+      parent: self()
+
+    tools [BeamWeaver.Agent.StructuredOutputRetryTest.Echo]
+    response_schema BeamWeaver.Agent.StructuredOutputRetryTest.Triage, strategy: :tool, max_retries: 1
+  end
+
+  defmodule RetriedTextAgent do
+    use BeamWeaver.Agent
+
+    alias BeamWeaver.Models.FakeChatModel
+
+    model "fake:chat",
+      responses: ["It's about shipping, and urgent.", FakeChatModel.final(%{category: "shipping", priority: "high"})]
+
+    middleware [BeamWeaver.Agent.Middleware.StructuredOutputRetry]
+    response_schema BeamWeaver.Agent.StructuredOutputRetryTest.Triage, strategy: :tool, handle_errors: false
+  end
+
+  test "StructuredOutputRetry retries an answer that calls no tool" do
+    assert {:ok, result} = RetriedTextAgent.invoke(%{messages: ["My order never arrived!"]})
+
+    assert result.structured_response == %{"category" => "shipping", "priority" => "high"}
+    assert Enum.map(result.messages, & &1.role) == [:user, :assistant, :user, :assistant, :tool]
+  end
+
+  test "a tool-strategy answer that calls no tool goes back to the model with the error" do
+    assert {:ok, result} = TextFirstAgent.invoke(%{messages: ["My order never arrived!"]})
+
+    assert result.structured_response == %{"category" => "shipping", "priority" => "high"}
+    assert Enum.map(result.messages, & &1.role) == [:user, :assistant, :user, :assistant, :tool]
+
+    error = Enum.at(result.messages, 2)
+    assert Message.text(error) =~ "Structured output error: the answer must be a call to the triage tool"
+  end
+
+  test "answers that call no tool count against max_retries" do
+    assert {:error, %Error{type: :missing_structured_output, details: %{attempts: 2}}} =
+             TextOnlyAgent.invoke(%{messages: ["My order never arrived!"]})
+
+    assert_received {:fake_chat_model_call, _messages, _opts}
+    assert_received {:fake_chat_model_call, _messages, _opts}
+    refute_received {:fake_chat_model_call, _messages, _opts}
+  end
+
+  test "the structured-response call after a tool loop stops after max_retries answers that call no tool" do
+    assert {:error, %Error{type: :missing_structured_output, details: %{attempts: 2}}} =
+             ToolsThenTextOnlyAgent.invoke(%{messages: ["My order never arrived!"]}, recursion_limit: 50)
+
+    # The tool round, then two answers in the structured-response call.
+    for _call <- 1..4, do: assert_received({:fake_chat_model_call, _messages, _opts})
+    refute_received {:fake_chat_model_call, _messages, _opts}
+  end
+
+  test "an invalid tool-strategy answer goes back to the model, which answers again" do
+    assert {:ok, result} = SecondTryAgent.invoke(%{messages: ["My order never arrived!"]})
+
+    assert result.structured_response == %{"category" => "shipping", "priority" => "high"}
+    assert Enum.map(result.messages, & &1.role) == [:user, :assistant, :tool, :assistant, :tool]
+
+    [_user, %Message{tool_calls: [call]}, error | _rest] = result.messages
+    assert error.tool_call_id == call.id
+    assert Message.text(error) =~ "Structured output error"
+    assert Message.text(error) =~ "priority"
+  end
+
+  test "the structured-response call after a tool loop retries an invalid answer too" do
+    assert {:ok, result} = ToolsThenSecondTryAgent.invoke(%{messages: ["My order never arrived!"]})
+
+    assert result.structured_response == %{"category" => "shipping", "priority" => "high"}
+
+    assert Enum.map(result.messages, & &1.role) ==
+             [:user, :assistant, :tool, :assistant, :assistant, :tool, :assistant, :tool]
+  end
+
+  test "the run fails once the answers fail max_retries times in a row" do
+    assert {:error, %Error{type: :structured_output_validation_error, details: %{attempts: 2, missing: missing}}} =
+             NeverValidAgent.invoke(%{messages: ["My order never arrived!"]})
+
+    assert Enum.sort(missing) == ["category", "priority"]
+    assert_received {:fake_chat_model_call, _messages, _opts}
+    assert_received {:fake_chat_model_call, _messages, _opts}
+    refute_received {:fake_chat_model_call, _messages, _opts}
+  end
+
+  test "with handle_errors: false the first invalid answer fails the run" do
+    assert {:error, %Error{type: :structured_output_validation_error}} =
+             NoErrorHandlingAgent.invoke(%{messages: ["My order never arrived!"]})
+
+    assert_received {:fake_chat_model_call, _messages, _opts}
+    refute_received {:fake_chat_model_call, _messages, _opts}
+  end
+
   defp model(table, tool_calls) do
     %SequentialStructuredModel{table: table, parent: self(), tool_calls: tool_calls}
   end
@@ -260,15 +508,13 @@ defmodule BeamWeaver.Agent.StructuredOutputRetryTest do
     [%{id: id, name: "WeatherReport", args: args}]
   end
 
-  defp feedback_message?(%Message{role: :user, content: content}) when is_binary(content) do
+  defp feedback_message?(%Message{role: role, content: content}) when role in [:user, :tool] and is_binary(content) do
     content =~ "Error:" and content =~ "Please try again"
   end
 
   defp feedback_message?(_message), do: false
 
-  defp feedback_content(%Message{role: :user, content: content}) when is_binary(content) do
-    if feedback_message?(%Message{role: :user, content: content}), do: content
+  defp feedback_content(%Message{content: content} = message) do
+    if feedback_message?(message), do: content
   end
-
-  defp feedback_content(_message), do: nil
 end

@@ -1,9 +1,11 @@
 defmodule BeamWeaver.OpenAI.ChatCompletions.Messages.Stream do
   @moduledoc false
 
+  import BeamWeaver.MapShape, only: [put_optional: 3]
+
   alias BeamWeaver.Core.Messages.MessageChunk
   alias BeamWeaver.OpenAI.ChatCompletions.Messages.Response
-  alias BeamWeaver.OpenAI.Error
+  alias BeamWeaver.Core.Error
   alias BeamWeaver.OpenAI.MessageParts
 
   def stream_body_to_message(body) when is_binary(body) do
@@ -84,8 +86,4 @@ defmodule BeamWeaver.OpenAI.ChatCompletions.Messages.Stream do
         nil
     end)
   end
-
-  defp put_optional(map, _key, nil), do: map
-  defp put_optional(map, _key, []), do: map
-  defp put_optional(map, key, value), do: Map.put(map, key, value)
 end

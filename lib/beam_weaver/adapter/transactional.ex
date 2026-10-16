@@ -1,9 +1,5 @@
 defprotocol BeamWeaver.Adapter.Transactional do
-  @moduledoc """
-  Optional transaction capability for durable adapters.
-
-  Adapters without a durable transaction boundary execute the function directly.
-  """
+  @moduledoc false
 
   @fallback_to_any true
 

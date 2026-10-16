@@ -1,12 +1,12 @@
 defmodule BeamWeaver.Filesystem.Sandbox do
-  @moduledoc "Adapter from `BeamWeaver.Sandbox` implementations to DeepAgents backends."
+  @moduledoc "Adapter that exposes a `BeamWeaver.Sandbox` as an executable filesystem backend."
 
   use BeamWeaver.Filesystem
   use BeamWeaver.Filesystem.Executable
 
   alias BeamWeaver.Filesystem
   alias BeamWeaver.Filesystem.Executable
-  alias BeamWeaver.Filesystem.Utils
+  alias BeamWeaver.Filesystem.FileDataUtils
 
   @max_binary_bytes 500 * 1024
   @max_output_bytes 500 * 1024
@@ -74,6 +74,10 @@ defmodule BeamWeaver.Filesystem.Sandbox do
     |> Enum.map(&%Filesystem.DownloadResult{path: &1.path, content: &1.content, error: &1.error})
   end
 
+  @impl BeamWeaver.Filesystem
+  def canonical_paths(%__MODULE__{sandbox: sandbox}, paths, opts),
+    do: BeamWeaver.Sandbox.canonical_paths(sandbox, paths, opts)
+
   defp list_result(%{entries: entries, error: nil}),
     do: %Filesystem.LsResult{
       entries: Enum.map(entries || [], &struct(Filesystem.FileInfo, atomize(&1)))
@@ -82,7 +86,7 @@ defmodule BeamWeaver.Filesystem.Sandbox do
   defp list_result(%{error: error}), do: %Filesystem.LsResult{error: error}
 
   defp read_result(%{file_data: data, error: nil}),
-    do: %Filesystem.ReadResult{file_data: Utils.normalize_file_data(data)}
+    do: %Filesystem.ReadResult{file_data: FileDataUtils.normalize_file_data(data)}
 
   defp read_result(%{error: error}), do: %Filesystem.ReadResult{error: error}
 

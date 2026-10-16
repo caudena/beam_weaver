@@ -1,12 +1,11 @@
 defmodule BeamWeaver.Moonshot.Messages do
-  @moduledoc """
-  Moonshot/Kimi Chat Completions message translation.
-  """
+  @moduledoc false
 
   alias BeamWeaver.Core.ContentBlock
   alias BeamWeaver.Core.Message
-  alias BeamWeaver.Core.Messages
-  alias BeamWeaver.Moonshot.Error
+  alias BeamWeaver.Core.Error
+  alias BeamWeaver.MapShape
+  alias BeamWeaver.Provider.ChatCompletionsWire
   alias BeamWeaver.Moonshot.Tools
   alias BeamWeaver.OpenAI.MessageParts
   alias BeamWeaver.Result
@@ -43,17 +42,17 @@ defmodule BeamWeaver.Moonshot.Messages do
     message = choice["message"] || %{}
     metadata = metadata(response, choice)
 
-    Message.new(:assistant, response_content(message),
+    Message.new(:assistant, ChatCompletionsWire.response_content(message),
       id: response["id"],
       metadata: metadata,
       response_metadata: metadata,
       usage_metadata: usage_metadata(response),
       status: choice["finish_reason"],
-      tool_calls: tool_calls(message)
+      tool_calls: ChatCompletionsWire.tool_calls(message)
     )
     |> case do
       {:ok, message} -> {:ok, enrich_cache_write_ttl(message)}
-      {:error, error} -> {:error, Error.new(error.type, error.message, error.details)}
+      {:error, _error} = error -> error
     end
   end
 
@@ -81,17 +80,11 @@ defmodule BeamWeaver.Moonshot.Messages do
       logprobs: choice["logprobs"],
       reasoning_content: message["reasoning_content"],
       headers: header_metadata[:headers],
-      transport: transport_metadata(header_metadata),
+      transport: BeamWeaver.Provider.ResponseDecoder.transport_metadata(header_metadata),
       raw_provider_response: response
     }
     |> MessageParts.reject_nil_values()
   end
-
-  defp transport_metadata(%{request_id: request_id}) when is_binary(request_id) and request_id != "" do
-    %{request_id: request_id}
-  end
-
-  defp transport_metadata(_metadata), do: nil
 
   @spec usage_metadata(map()) :: map() | nil
   def usage_metadata(%{"usage" => usage}) when is_map(usage) do
@@ -156,9 +149,9 @@ defmodule BeamWeaver.Moonshot.Messages do
        %{
          "role" => "tool",
          "tool_call_id" => call_id,
-         "content" => tool_output(message.content)
+         "content" => ChatCompletionsWire.tool_output(message.content)
        }
-       |> put_optional("name", message.name)}
+       |> MapShape.put_optional("name", message.name)}
     else
       {:error, Error.new(:invalid_tool_message, "tool messages require a tool_call_id or id")}
     end
@@ -171,15 +164,15 @@ defmodule BeamWeaver.Moonshot.Messages do
          "role" => "assistant",
          "content" => content
        }
-       |> put_optional("name", message.name)
-       |> put_optional("tool_calls", assistant_tool_calls(message))
-       |> put_optional("reasoning_content", assistant_reasoning_content(message))
-       |> put_optional("partial", metadata_value(message.metadata, :partial))}
+       |> MapShape.put_optional("name", message.name)
+       |> MapShape.put_optional("tool_calls", ChatCompletionsWire.assistant_tool_calls(message))
+       |> MapShape.put_optional("reasoning_content", ChatCompletionsWire.assistant_reasoning_content(message))
+       |> MapShape.put_optional("partial", ChatCompletionsWire.metadata_value(message.metadata, :partial))}
     end
   end
 
   defp to_chat_message(%Message{role: :system} = message) do
-    case metadata_value(message.metadata, :moonshot_dynamic_tools) do
+    case ChatCompletionsWire.metadata_value(message.metadata, :moonshot_dynamic_tools) do
       nil ->
         standard_input_message(message)
 
@@ -200,15 +193,14 @@ defmodule BeamWeaver.Moonshot.Messages do
          "role" => Atom.to_string(message.role),
          "content" => content
        }
-       |> put_optional("name", message.name)}
+       |> MapShape.put_optional("name", message.name)}
     end
   end
 
   defp dynamic_tool_message(%Message{content: content}, tools)
        when content in ["", []] and is_list(tools) and tools != [] do
-    rendered = Tools.to_chat_tools(tools)
-
-    with :ok <- Tools.validate_chat_tools(rendered) do
+    with {:ok, rendered} <- Tools.render_chat_tools(tools),
+         :ok <- Tools.validate_chat_tools(rendered) do
       {:ok, %{"role" => "system", "tools" => rendered}}
     end
   end
@@ -227,17 +219,6 @@ defmodule BeamWeaver.Moonshot.Messages do
      )}
   end
 
-  defp tool_output(content) when is_binary(content), do: content
-
-  defp tool_output(content) when is_map(content) or is_list(content) do
-    case BeamWeaver.JSON.encode(content) do
-      {:ok, json} -> json
-      {:error, _error} -> inspect(content)
-    end
-  end
-
-  defp tool_output(content), do: to_string(content)
-
   defp assistant_content(%Message{content: content}) when is_binary(content), do: {:ok, content}
 
   defp assistant_content(%Message{content: content}) when is_list(content) do
@@ -254,7 +235,7 @@ defmodule BeamWeaver.Moonshot.Messages do
     skip_reasoning? = Keyword.get(opts, :skip_reasoning?, false)
 
     content
-    |> assert_atom_content_blocks!()
+    |> BeamWeaver.MapShape.assert_atom_keys_in!()
     |> Result.traverse(&content_part(&1, skip_reasoning?))
     |> case do
       {:ok, parts} ->
@@ -296,11 +277,14 @@ defmodule BeamWeaver.Moonshot.Messages do
   defp content_part(%ContentBlock.Unknown{value: value}, _skip_reasoning?) when is_map(value),
     do: {:ok, BeamWeaver.MapShape.stringify_keys(value)}
 
+  # Other content blocks, such as citations and tool results, have no Kimi part.
+  defp content_part(%{__struct__: _module, type: type}, _skip_reasoning?), do: unsupported_content_block(type)
+
   defp content_part(%{} = block, skip_reasoning?) do
     BeamWeaver.MapShape.assert_atom_keys!(block)
     provider_block = BeamWeaver.MapShape.stringify_keys(block)
 
-    case provider_type(Map.get(block, :type)) do
+    case ChatCompletionsWire.provider_type(Map.get(block, :type)) do
       "text" ->
         {:ok, %{"type" => "text", "text" => Map.get(block, :text) || Map.get(block, :content) || ""}}
 
@@ -423,104 +407,13 @@ defmodule BeamWeaver.Moonshot.Messages do
      })}
   end
 
-  defp provider_type(type) when is_atom(type), do: Atom.to_string(type)
-  defp provider_type(type), do: type
-
-  defp assert_atom_content_blocks!(content) do
-    Enum.each(content, fn
-      block when is_struct(block) -> BeamWeaver.MapShape.assert_atom_keys!(Map.from_struct(block))
-      block when is_map(block) -> BeamWeaver.MapShape.assert_atom_keys!(block)
-      _block -> :ok
-    end)
-
-    content
+  defp unsupported_content_block(type) do
+    {:error,
+     Error.new(:unsupported_feature, "Moonshot Kimi does not support #{type} content blocks", %{
+       provider: :moonshot,
+       feature: type
+     })}
   end
-
-  defp assistant_tool_calls(%Message{} = message) do
-    case message.tool_calls || [] do
-      [] -> nil
-      calls -> Enum.map(calls, &assistant_tool_call/1)
-    end
-  end
-
-  defp assistant_tool_call(call) do
-    call = BeamWeaver.MapShape.stringify_keys(call)
-
-    %{
-      "id" => call["provider_id"] || call["call_id"] || call["id"],
-      "type" => "function",
-      "function" => %{
-        "name" => call["name"],
-        "arguments" => encode_arguments(call["arguments"] || call["args"])
-      }
-    }
-    |> MessageParts.reject_nil_values()
-  end
-
-  defp assistant_reasoning_content(%Message{} = message) do
-    metadata_value(message.metadata, :reasoning_content) ||
-      content_reasoning(message.content)
-  end
-
-  defp content_reasoning(content) when is_list(content) do
-    content
-    |> Enum.flat_map(fn
-      %ContentBlock.Reasoning{reasoning: text} when is_binary(text) -> [text]
-      %{"type" => "reasoning", "reasoning" => text} when is_binary(text) -> [text]
-      %{"type" => "reasoning", "text" => text} when is_binary(text) -> [text]
-      %{type: :reasoning, reasoning: text} when is_binary(text) -> [text]
-      %{type: :reasoning, text: text} when is_binary(text) -> [text]
-      _block -> []
-    end)
-    |> Enum.join("")
-    |> empty_to_nil()
-  end
-
-  defp content_reasoning(_content), do: nil
-
-  defp response_content(message) do
-    reasoning = message["reasoning_content"]
-    content = message["content"]
-
-    cond do
-      is_binary(reasoning) and reasoning != "" and is_binary(content) and content != "" ->
-        [
-          %{type: :reasoning, reasoning: reasoning},
-          %{type: :text, text: content}
-        ]
-
-      is_binary(reasoning) and reasoning != "" and is_list(content) ->
-        [%{type: :reasoning, reasoning: reasoning} | Enum.map(content, &response_content_block/1)]
-
-      is_binary(reasoning) and reasoning != "" ->
-        [%{type: :reasoning, reasoning: reasoning}]
-
-      is_binary(content) ->
-        content
-
-      is_list(content) ->
-        Enum.map(content, &response_content_block/1)
-
-      true ->
-        ""
-    end
-  end
-
-  defp tool_calls(%{"tool_calls" => tool_calls}) when is_list(tool_calls) do
-    Enum.map(tool_calls, fn call ->
-      function = call["function"] || %{}
-
-      Messages.tool_call(
-        id: call["id"],
-        provider_id: call["id"],
-        call_id: call["id"],
-        name: function["name"],
-        args: decode_arguments(function["arguments"])
-      )
-    end)
-  end
-
-  defp tool_calls(_message), do: []
 
   defp input_token_details(usage) do
     %{
@@ -543,48 +436,4 @@ defmodule BeamWeaver.Moonshot.Messages do
     }
     |> BeamWeaver.MapShape.reject_nil_or_empty()
   end
-
-  defp encode_arguments(arguments) when is_binary(arguments), do: arguments
-  defp encode_arguments(arguments), do: BeamWeaver.JSON.encode!(arguments || %{})
-
-  defp decode_arguments(arguments) when is_binary(arguments) do
-    case BeamWeaver.JSON.decode(arguments) do
-      {:ok, decoded} -> decoded
-      {:error, _error} -> arguments
-    end
-  end
-
-  defp decode_arguments(arguments), do: arguments
-
-  defp response_content_block(%{"type" => type, "text" => text}) when type in ["text", "output_text"] do
-    %{type: :text, text: text}
-  end
-
-  defp response_content_block(%{"type" => "reasoning", "reasoning" => reasoning}) do
-    %{type: :reasoning, reasoning: reasoning}
-  end
-
-  defp response_content_block(block) when is_map(block) do
-    %{
-      type: block["type"],
-      text: block["text"],
-      reasoning: block["reasoning"],
-      raw_provider_block: block
-    }
-    |> MessageParts.reject_nil_values()
-  end
-
-  defp response_content_block(block), do: block
-
-  defp metadata_value(metadata, key) when is_map(metadata),
-    do: Map.get(metadata, key) || Map.get(metadata, Atom.to_string(key))
-
-  defp metadata_value(_metadata, _key), do: nil
-
-  defp empty_to_nil(""), do: nil
-  defp empty_to_nil(value), do: value
-
-  defp put_optional(map, _key, nil), do: map
-  defp put_optional(map, _key, []), do: map
-  defp put_optional(map, key, value), do: Map.put(map, key, value)
 end

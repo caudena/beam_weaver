@@ -12,7 +12,7 @@ defmodule BeamWeaver.Graph.Execution.Resume do
     {:ok, scalar_resume_with_consumed(compiled, config, resume)}
   end
 
-  def normalize(compiled, config, {:ok, resume}) when is_map(resume) do
+  def normalize(compiled, config, {:ok, resume}) when is_map(resume) and not is_struct(resume) do
     pending = Replay.pending_interrupt_records(compiled, config)
 
     cond do
@@ -51,12 +51,19 @@ defmodule BeamWeaver.Graph.Execution.Resume do
     end
   end
 
+  # Pins a resume value that every task would receive to the given tasks.
+  # Values already keyed by task id are left as they are.
+  @spec for_tasks(term(), [String.t()]) :: term()
+  def for_tasks(nil, _task_ids), do: nil
+  def for_tasks(resume, _task_ids) when is_map(resume) and not is_struct(resume), do: resume
+  def for_tasks(resume, task_ids), do: Map.new(task_ids, &{&1, values_for_task(resume, &1)})
+
   @spec values_for_task(term(), String.t()) :: list()
   def values_for_task(nil, _task_id), do: []
   def values_for_task(%GraphResume{} = resume, _task_id), do: [resume]
   def values_for_task(values, _task_id) when is_list(values), do: values
 
-  def values_for_task(resume, task_id) when is_map(resume) do
+  def values_for_task(resume, task_id) when is_map(resume) and not is_struct(resume) do
     (Map.get(resume, task_id) || Map.get(resume, to_string(task_id)) || [])
     |> List.wrap()
   end

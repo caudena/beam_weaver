@@ -177,17 +177,9 @@ defmodule BeamWeaver.Graph.Execution.SubgraphRouter do
   defp checkpoint_map(configurable, namespace) do
     configurable
     |> Map.get("checkpoint_map", %{})
-    |> normalize_checkpoint_map()
+    |> Namespace.recast_checkpoint_map()
     |> maybe_put_namespace_checkpoint(namespace, Map.get(configurable, "checkpoint_id"))
   end
-
-  defp normalize_checkpoint_map(map) when is_map(map) do
-    Map.new(map, fn {namespace, checkpoint_id} ->
-      {Namespace.recast(namespace), checkpoint_id}
-    end)
-  end
-
-  defp normalize_checkpoint_map(_other), do: %{}
 
   defp maybe_put_namespace_checkpoint(map, _namespace, nil), do: map
 

@@ -3,7 +3,7 @@ defmodule BeamWeaver.OpenAI.Messages.Response do
 
   alias BeamWeaver.Core.Message
   alias BeamWeaver.Core.Messages
-  alias BeamWeaver.OpenAI.Error
+  alias BeamWeaver.Core.Error
   alias BeamWeaver.OpenAI.Messages.Shared
 
   @spec to_message(map()) :: {:ok, Message.t()} | {:error, Error.t()}
@@ -28,10 +28,6 @@ defmodule BeamWeaver.OpenAI.Messages.Response do
       status: response["status"],
       tool_calls: tool_calls
     )
-    |> case do
-      {:ok, message} -> {:ok, message}
-      {:error, error} -> {:error, Error.new(error.type, error.message, error.details)}
-    end
   end
 
   def to_message(_response) do
@@ -441,7 +437,7 @@ defmodule BeamWeaver.OpenAI.Messages.Response do
       reasoning_context: get_in(response, ["reasoning", "context"]),
       access_programs: response["access_programs"],
       headers: header_metadata[:headers],
-      transport: transport_metadata(header_metadata),
+      transport: BeamWeaver.Provider.ResponseDecoder.transport_metadata(header_metadata),
       provider_metadata: response["metadata"],
       moderation: response["moderation"],
       prompt_cache_diagnostics: response["prompt_cache_diagnostics"],
@@ -453,12 +449,6 @@ defmodule BeamWeaver.OpenAI.Messages.Response do
     }
     |> Shared.reject_nil_values()
   end
-
-  defp transport_metadata(%{request_id: request_id}) when is_binary(request_id) and request_id != "" do
-    %{request_id: request_id}
-  end
-
-  defp transport_metadata(_metadata), do: nil
 
   defp normalize_output(output) when is_list(output),
     do: output

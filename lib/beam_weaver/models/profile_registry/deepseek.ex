@@ -156,7 +156,6 @@ defmodule BeamWeaver.Models.ProfileRegistry.DeepSeek do
 
   def supported_models, do: @supported_models
   def vision_model?(model), do: model in @vision_models
-  def profiles_map, do: @profiles
   def profiles, do: Map.values(@profiles)
 
   def resolve(model) when is_binary(model) do

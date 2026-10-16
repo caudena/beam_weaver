@@ -6,20 +6,20 @@ defmodule BeamWeaver.Prompt.Partials do
   alias BeamWeaver.Prompt.Variables
 
   def merge_vars(partials, input) do
-    base =
-      partials
-      |> Map.new()
-      |> resolve_partials(input)
+    vars = if is_map(input), do: input, else: %{input: input}
 
-    input =
-      if is_map(input),
-        do: input,
-        else: %{input: input}
-
-    case base do
-      {:ok, partials} -> {:ok, Map.merge(partials, input)}
-      {:error, %Error{} = error} -> {:error, error}
+    with {:ok, partials} <- partials |> Map.new() |> drop_overridden(vars) |> resolve_partials(input) do
+      {:ok, Map.merge(partials, vars)}
     end
+  end
+
+  # A variable overrides the partial of the same name whether either uses an
+  # atom or a string key.
+  def merge(partials, vars), do: partials |> drop_overridden(vars) |> Map.merge(vars)
+
+  defp drop_overridden(partials, vars) do
+    names = MapSet.new(Map.keys(vars), &Kernel.to_string/1)
+    Map.reject(partials, fn {key, _value} -> MapSet.member?(names, Kernel.to_string(key)) end)
   end
 
   def validate_input(%StringTemplate{validate?: true} = prompt, vars) do

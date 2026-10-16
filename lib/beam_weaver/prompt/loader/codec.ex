@@ -97,8 +97,11 @@ defmodule BeamWeaver.Prompt.Loader.Codec do
     end
   end
 
+  # Strings come back as binaries and mappings as maps, so `""`, `[]`, `{}` and
+  # a list of integers stay apart.
   defp parse_yaml(path, contents) do
-    documents = :yamerl_constr.string(String.to_charlist(contents))
+    documents =
+      :yamerl_constr.string(String.to_charlist(contents), str_node_as_binary: true, map_node_format: :map)
 
     case documents do
       [document] ->
@@ -111,13 +114,19 @@ defmodule BeamWeaver.Prompt.Loader.Codec do
          })}
     end
   rescue
-    error ->
-      {:error,
-       Error.new(:invalid_prompt_spec, "prompt YAML could not be parsed", %{
-         path: path,
-         reason: Exception.message(error)
-       })}
+    error -> {:error, yaml_error(path, Exception.message(error))}
+  catch
+    # yamerl throws its parse errors.
+    :throw, {:yamerl_exception, errors} -> {:error, yaml_error(path, yamerl_reason(errors))}
   end
+
+  defp yaml_error(path, reason),
+    do: Error.new(:invalid_prompt_spec, "prompt YAML could not be parsed", %{path: path, reason: reason})
+
+  defp yamerl_reason([{:yamerl_parsing_error, _severity, text, line, column, _name, _token, _extra} | _rest]),
+    do: "#{text} (line #{line}, column #{column})"
+
+  defp yamerl_reason(errors), do: inspect(errors)
 
   defp encode_yaml(value, indent) when is_map(value) and map_size(value) == 0,
     do: [spaces(indent), "{}"]
@@ -127,9 +136,9 @@ defmodule BeamWeaver.Prompt.Loader.Codec do
     |> Enum.sort_by(fn {key, _value} -> key end)
     |> Enum.map(fn {key, map_value} ->
       if scalar_yaml?(map_value) do
-        [spaces(indent), key, ": ", yaml_scalar(map_value), "\n"]
+        [spaces(indent), yaml_key(key), ": ", yaml_scalar(map_value), "\n"]
       else
-        [spaces(indent), key, ":\n", encode_yaml(map_value, indent + 2)]
+        [spaces(indent), yaml_key(key), ":\n", encode_yaml(map_value, indent + 2)]
       end
     end)
   end
@@ -160,21 +169,16 @@ defmodule BeamWeaver.Prompt.Loader.Codec do
   defp yaml_scalar(value) when is_map(value) and map_size(value) == 0, do: "{}"
   defp yaml_scalar(value) when is_binary(value), do: BeamWeaver.JSON.encode!(value)
 
-  defp normalize_yaml(value) when is_list(value) do
-    cond do
-      printable_charlist?(value) ->
-        List.to_string(value)
-
-      keywordish?(value) ->
-        Map.new(value, fn {key, map_value} ->
-          {Kernel.to_string(key), normalize_yaml(map_value)}
-        end)
-
-      true ->
-        Enum.map(value, &normalize_yaml/1)
-    end
+  # A key that isn't a plain name, such as one with ": " or "#" in it, is quoted.
+  defp yaml_key(key) do
+    if Regex.match?(~r/\A[A-Za-z_][A-Za-z0-9_]*\z/, key), do: key, else: yaml_scalar(key)
   end
 
+  defp normalize_yaml(value) when is_map(value) do
+    Map.new(value, fn {key, map_value} -> {Kernel.to_string(key), normalize_yaml(map_value)} end)
+  end
+
+  defp normalize_yaml(value) when is_list(value), do: Enum.map(value, &normalize_yaml/1)
   defp normalize_yaml(value) when is_binary(value), do: value
   defp normalize_yaml(value) when is_integer(value), do: value
   defp normalize_yaml(value) when is_float(value), do: value
@@ -182,9 +186,6 @@ defmodule BeamWeaver.Prompt.Loader.Codec do
   defp normalize_yaml(false), do: false
   defp normalize_yaml(:null), do: nil
   defp normalize_yaml(value) when is_atom(value), do: Kernel.to_string(value)
-
-  defp keywordish?(values), do: Enum.all?(values, &match?({_key, _value}, &1))
-  defp printable_charlist?(values), do: values != [] and Enum.all?(values, &is_integer/1)
 
   defp spaces(0), do: ""
   defp spaces(count), do: String.duplicate(" ", count)

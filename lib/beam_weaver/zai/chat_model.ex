@@ -1,14 +1,17 @@
 defmodule BeamWeaver.ZAI.ChatModel do
   @moduledoc """
-  Z.ai GLM-5.2 Chat Completions chat model implementation.
+  Z.ai GLM Chat Completions chat model implementation.
   """
 
+  use BeamWeaver.Provider.RedactedInspect
+
+  alias BeamWeaver.Provider.OpenAICompatibleClient, as: Compat
   alias BeamWeaver.Core.LanguageModel
   alias BeamWeaver.Models.InvocationMetadata
   alias BeamWeaver.Provider.ChatModel.Options, as: ChatOptions
   alias BeamWeaver.Provider.StructuredOutput
   alias BeamWeaver.ZAI.Client
-  alias BeamWeaver.ZAI.Error
+  alias BeamWeaver.Core.Error
   alias BeamWeaver.ZAI.Messages
   alias BeamWeaver.ZAI.Options
   alias BeamWeaver.ZAI.Tools
@@ -20,7 +23,7 @@ defmodule BeamWeaver.ZAI.ChatModel do
             endpoint: @default_endpoint,
             api_key: nil,
             default_headers: [],
-            model_kwargs: %{},
+            extra_body: %{},
             do_sample: nil,
             temperature: nil,
             top_p: nil,
@@ -40,6 +43,7 @@ defmodule BeamWeaver.ZAI.ChatModel do
             profile: nil,
             tokenizer: nil,
             param_policy: nil,
+            streaming: false,
             include_response_headers: false,
             transport: nil,
             transport_opts: [],
@@ -47,12 +51,12 @@ defmodule BeamWeaver.ZAI.ChatModel do
 
   @type t :: %__MODULE__{}
 
-  use BeamWeaver.Provider.ChatModel
+  use BeamWeaver.Provider.ChatModel, stream_source: :zai_chat_completions
 
   @spec new(keyword() | map()) :: t()
   def new(opts \\ []) do
     opts = ChatOptions.keyword_options(opts)
-    opts = normalize_endpoint_opts(opts)
+    opts = Compat.expand_base_url(opts, endpoint: "chat/completions")
     model = Keyword.get(opts, :model, @default_model)
     profile = ChatOptions.profile_option(opts, :zai, model)
 
@@ -66,6 +70,7 @@ defmodule BeamWeaver.ZAI.ChatModel do
 
   @spec request_body(t(), [BeamWeaver.Core.Message.t()], keyword()) ::
           {:ok, map()} | {:error, Error.t()}
+  @impl true
   def request_body(%__MODULE__{} = model, messages, opts \\ []) do
     tools = Keyword.get(opts, :tools, [])
     builder_opts = Keyword.delete(opts, :tools)
@@ -89,21 +94,6 @@ defmodule BeamWeaver.ZAI.ChatModel do
       transport_opts: model.transport_opts,
       timeout: model.timeout
     }
-  end
-
-  defp normalize_endpoint_opts(opts) do
-    case {Keyword.fetch(opts, :base_url), Keyword.has_key?(opts, :endpoint)} do
-      {{:ok, base_url}, false} ->
-        opts
-        |> Keyword.delete(:base_url)
-        |> Keyword.put(:endpoint, Client.endpoint(base_url, "chat/completions"))
-
-      {{:ok, _base_url}, true} ->
-        Keyword.delete(opts, :base_url)
-
-      _other ->
-        opts
-    end
   end
 
   defp maybe_put_tools(body, []), do: {:ok, body}
@@ -142,37 +132,32 @@ defmodule BeamWeaver.ZAI.ChatModel do
     end
   end
 
-  defp model_stream_metadata(%__MODULE__{} = model, body, opts) do
+  @impl true
+  def stream_metadata(%__MODULE__{} = model, body, opts) do
     model
     |> InvocationMetadata.provider(:zai, body, opts, :chat_completions)
     |> InvocationMetadata.to_metadata_map()
   end
 
-  defp runtime_adapter do
-    %ChatRuntime.Adapter{
-      request: &request_body/3,
-      invoke: fn model, body, opts -> Client.chat_completions(client(model), body, opts) end,
-      stream: fn model, body, opts ->
-        Client.chat_completions_stream(client(model), body, opts)
-      end,
-      stream_response: fn model, body, opts ->
-        Client.chat_completions_stream_response(client(model), body, opts)
-      end,
-      stream_events: fn model, body, opts ->
-        Client.chat_completions_stream_typed_events(client(model), body, opts)
-      end,
-      decode: fn
-        %BeamWeaver.Core.Message{} = message, _opts -> {:ok, message}
-        response, _opts -> Messages.chat_response_to_message(response)
-      end,
-      parse: fn message, opts ->
-        StructuredOutput.maybe_parse(message, opts,
-          error_module: Error,
-          provider_name: "Z.ai"
-        )
-      end,
-      metadata: &model_stream_metadata/3,
-      source: :zai_chat_completions
-    }
-  end
+  @impl true
+  def send_request(:invoke, model, body, opts), do: Client.chat_completions(client(model), body, opts)
+  def send_request(:stream, model, body, opts), do: Client.chat_completions_stream(client(model), body, opts)
+
+  def send_request(:stream_response, model, body, opts),
+    do: Client.chat_completions_stream_response(client(model), body, opts)
+
+  def send_request(:stream_events, model, body, opts),
+    do: Client.chat_completions_stream_typed_events(client(model), body, opts)
+
+  # Z.ai takes only automatic tool choice.
+  @impl true
+  def forced_tool_choice?(_model, _opts), do: false
+
+  @impl true
+  def decode_response(%BeamWeaver.Core.Message{} = message, _opts), do: {:ok, message}
+  def decode_response(response, _opts), do: Messages.chat_response_to_message(response)
+
+  @impl true
+  def parse_response(_model, message, opts),
+    do: StructuredOutput.maybe_parse(message, opts, provider_name: "Z.ai")
 end

@@ -1,30 +1,3 @@
-defprotocol BeamWeaver.Filesystem.Backend do
-  @moduledoc """
-  Protocol dispatch for BeamWeaver filesystem backends.
-
-  Custom backends must implement this protocol, usually by using
-  `BeamWeaver.Filesystem`.
-  """
-
-  def ls(backend, path, opts)
-  def read(backend, path, opts)
-  def write(backend, path, content, opts)
-  def edit(backend, path, old, new, opts)
-  def glob(backend, pattern, opts)
-  def grep(backend, pattern, opts)
-  def upload_files(backend, files, opts)
-  def download_files(backend, paths, opts)
-end
-
-defprotocol BeamWeaver.Filesystem.ExecutableBackend do
-  @moduledoc """
-  Protocol dispatch for filesystem backends that can execute commands.
-  """
-
-  def id(backend)
-  def execute(backend, command, opts)
-end
-
 defmodule BeamWeaver.Filesystem do
   @moduledoc """
   Filesystem backend behaviour used by agent filesystem capabilities.
@@ -34,9 +7,6 @@ defmodule BeamWeaver.Filesystem do
   graph state, a BeamWeaver memory store, local disk, Docker, or a remote
   sandbox service.
   """
-
-  alias BeamWeaver.Core.Async
-  alias BeamWeaver.Filesystem.Backend, as: FilesystemBackend
 
   defmodule FileInfo do
     @moduledoc "Metadata for one virtual filesystem entry."
@@ -62,7 +32,7 @@ defmodule BeamWeaver.Filesystem do
   end
 
   defmodule FileData do
-    @moduledoc "File content in DeepAgents v2 shape."
+    @moduledoc "File content with its encoding (utf-8 text, or base64 for binary data) and timestamps."
     defstruct [:content, encoding: "utf-8", created_at: nil, modified_at: nil]
 
     @type t :: %__MODULE__{
@@ -176,26 +146,11 @@ defmodule BeamWeaver.Filesystem do
   def invalid_path, do: @invalid_path
   def directory_error, do: @is_directory
 
-  @deprecated "Use directory_error/0 instead"
-  # credo:disable-for-next-line Credo.Check.Readability.PredicateFunctionNames
-  def is_directory, do: directory_error()
-
   def permission_denied, do: @permission_denied
 
   defmacro __using__(_opts) do
     quote do
       @behaviour BeamWeaver.Filesystem
-
-      defimpl BeamWeaver.Filesystem.Backend, for: __MODULE__ do
-        def ls(backend, path, opts), do: @for.ls(backend, path, opts)
-        def read(backend, path, opts), do: @for.read(backend, path, opts)
-        def write(backend, path, content, opts), do: @for.write(backend, path, content, opts)
-        def edit(backend, path, old, new, opts), do: @for.edit(backend, path, old, new, opts)
-        def glob(backend, pattern, opts), do: @for.glob(backend, pattern, opts)
-        def grep(backend, pattern, opts), do: @for.grep(backend, pattern, opts)
-        def upload_files(backend, files, opts), do: @for.upload_files(backend, files, opts)
-        def download_files(backend, paths, opts), do: @for.download_files(backend, paths, opts)
-      end
     end
   end
 
@@ -207,27 +162,50 @@ defmodule BeamWeaver.Filesystem do
   @callback grep(term(), String.t(), keyword()) :: GrepResult.t()
   @callback upload_files(term(), [{String.t(), iodata()}], keyword()) :: [UploadResult.t()]
   @callback download_files(term(), [String.t()], keyword()) :: [DownloadResult.t()]
+  @callback canonical_paths(term(), [String.t()], keyword()) :: [{:ok, String.t()} | {:error, term()}]
 
-  def ls(backend, path, opts \\ []), do: FilesystemBackend.ls(backend, path, opts)
-  def read(backend, path, opts \\ []), do: FilesystemBackend.read(backend, path, opts)
+  @optional_callbacks canonical_paths: 3
 
-  def write(backend, path, content, opts \\ []),
-    do: FilesystemBackend.write(backend, path, content, opts)
+  # Each function calls the backend struct's module.
+  def ls(%module{} = backend, path, opts \\ []), do: module.ls(backend, path, opts)
+  def read(%module{} = backend, path, opts \\ []), do: module.read(backend, path, opts)
+  def write(%module{} = backend, path, content, opts \\ []), do: module.write(backend, path, content, opts)
+  def edit(%module{} = backend, path, old, new, opts \\ []), do: module.edit(backend, path, old, new, opts)
+  def glob(%module{} = backend, pattern, opts \\ []), do: module.glob(backend, pattern, opts)
+  def grep(%module{} = backend, pattern, opts \\ []), do: module.grep(backend, pattern, opts)
+  def upload_files(%module{} = backend, files, opts \\ []), do: module.upload_files(backend, files, opts)
+  def download_files(%module{} = backend, paths, opts \\ []), do: module.download_files(backend, paths, opts)
 
-  def edit(backend, path, old, new, opts \\ []),
-    do: FilesystemBackend.edit(backend, path, old, new, opts)
+  @doc """
+  The path of the file `backend` reaches for each of `paths`, in order.
 
-  def glob(backend, pattern, opts \\ []), do: FilesystemBackend.glob(backend, pattern, opts)
-  def grep(backend, pattern, opts \\ []), do: FilesystemBackend.grep(backend, pattern, opts)
+  That is the path without `.` segments and repeated slashes and, on a backend
+  with symlinks such as `BeamWeaver.Filesystem.Local`, with every symlink on
+  the way followed: for a link `/notes/key.txt` to `/secrets/key.txt`, it is
+  `/secrets/key.txt`. The part of a path that doesn't exist yet is kept, so a
+  new file's path is its folder's path plus its name. `BeamWeaver.Filesystem.Permission`
+  checks this path as well as the one the model wrote, so a link can't give a
+  denied file an allowed name.
 
-  def upload_files(backend, files, opts \\ []),
-    do: FilesystemBackend.upload_files(backend, files, opts)
+  Each result is `{:ok, path}`, or `{:error, reason}` for a path the backend
+  can't resolve, such as a relative path or one through a symlink that is
+  broken or leads out of the backend.
 
-  def download_files(backend, paths, opts \\ []),
-    do: FilesystemBackend.download_files(backend, paths, opts)
+  The callback is optional: a backend without it has no links, and its paths
+  come back cleaned. A backend that wraps another one should pass the call to
+  it.
+  """
+  @spec canonical_paths(t(), [String.t()], keyword()) :: [{:ok, String.t()} | {:error, term()}]
+  def canonical_paths(%module{} = backend, paths, opts \\ []) when is_list(paths) do
+    if BeamWeaver.Behaviour.exported?(module, :canonical_paths, 3),
+      do: module.canonical_paths(backend, paths, opts),
+      else: Enum.map(paths, &BeamWeaver.Filesystem.Path.clean_path/1)
+  end
 
-  def ls_info(backend, path, opts \\ []), do: ls(backend, path, opts)
-  def glob_info(backend, pattern, opts \\ []), do: glob(backend, pattern, opts)
+  @doc "Whether `backend` is a struct whose module implements this behaviour."
+  @spec backend?(term()) :: boolean()
+  def backend?(%module{}), do: BeamWeaver.Behaviour.implemented_by?(module, __MODULE__)
+  def backend?(_other), do: false
 
   def grep_raw(backend, pattern, opts \\ []) do
     case grep(backend, pattern, opts) do
@@ -240,40 +218,16 @@ defmodule BeamWeaver.Filesystem do
         "Error: #{error}"
     end
   end
-
-  def async_ls(backend, path, opts \\ []), do: Async.run_call(opts, &ls(backend, path, &1))
-  def async_read(backend, path, opts \\ []), do: Async.run_call(opts, &read(backend, path, &1))
-
-  def async_write(backend, path, content, opts \\ []),
-    do: Async.run_call(opts, &write(backend, path, content, &1))
-
-  def async_edit(backend, path, old, new, opts \\ []),
-    do: Async.run_call(opts, &edit(backend, path, old, new, &1))
-
-  def async_glob(backend, pattern, opts \\ []),
-    do: Async.run_call(opts, &glob(backend, pattern, &1))
-
-  def async_grep(backend, pattern, opts \\ []),
-    do: Async.run_call(opts, &grep(backend, pattern, &1))
-
-  def async_upload_files(backend, files, opts \\ []),
-    do: Async.run_call(opts, &upload_files(backend, files, &1))
-
-  def async_download_files(backend, paths, opts \\ []),
-    do: Async.run_call(opts, &download_files(backend, paths, &1))
 end
 
 defmodule BeamWeaver.Filesystem.Executable do
   @moduledoc """
-  Extension behaviour for DeepAgents backends that can execute shell commands.
+  Extension behaviour for filesystem backends that can also execute shell commands.
 
   This behaviour does not imply security. Local shell adapters are explicitly
   unsafe; real isolation must be provided by Docker/gVisor/Kata, Firecracker, or
   a managed sandbox service.
   """
-
-  alias BeamWeaver.Core.Async
-  alias BeamWeaver.Filesystem.ExecutableBackend
 
   defmodule ExecuteResult do
     @moduledoc "Result returned by executable filesystem backends."
@@ -295,34 +249,14 @@ defmodule BeamWeaver.Filesystem.Executable do
   defmacro __using__(_opts) do
     quote do
       @behaviour BeamWeaver.Filesystem.Executable
-
-      defimpl BeamWeaver.Filesystem.ExecutableBackend, for: __MODULE__ do
-        def id(backend), do: @for.id(backend)
-        def execute(backend, command, opts), do: @for.execute(backend, command, opts)
-      end
     end
   end
 
-  def id(backend), do: ExecutableBackend.id(backend)
+  def id(%module{} = backend), do: module.id(backend)
+  def execute(%module{} = backend, command, opts \\ []), do: module.execute(backend, command, opts)
 
-  def execute(backend, command, opts \\ []),
-    do: ExecutableBackend.execute(backend, command, opts)
-
-  def async_execute(backend, command, opts \\ []),
-    do: Async.run_call(opts, &execute(backend, command, &1))
-
-  def execute_accepts_timeout?(backend) when is_struct(backend) do
-    executable?(backend)
-  end
-
-  def execute_accepts_timeout?(_backend), do: false
-
-  def executable?(backend) when is_struct(backend) do
-    case ExecutableBackend.impl_for(backend) do
-      nil -> false
-      _impl -> executable_enabled?(backend)
-    end
-  end
+  def executable?(%module{} = backend),
+    do: BeamWeaver.Behaviour.implemented_by?(module, __MODULE__) and executable_enabled?(backend)
 
   def executable?(_backend), do: false
 

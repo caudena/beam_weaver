@@ -1,10 +1,5 @@
 defmodule BeamWeaver.Models.InvocationMetadata do
-  @moduledoc """
-  Normalized model invocation metadata used by stream events, telemetry, and tracing.
-
-  This keeps provider-specific request maps at the provider boundary while giving
-  the rest of BeamWeaver one typed shape to consume.
-  """
+  @moduledoc false
 
   defstruct provider: nil,
             model: nil,

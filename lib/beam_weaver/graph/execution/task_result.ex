@@ -1,7 +1,5 @@
 defmodule BeamWeaver.Graph.Execution.TaskResult do
-  @moduledoc """
-  Normalized result returned by a completed graph execution task.
-  """
+  @moduledoc false
 
   alias BeamWeaver.Core.Error
 

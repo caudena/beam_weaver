@@ -34,7 +34,6 @@ defmodule BeamWeaver.Provider.JsonObjectFormat do
   end
 
   def normalize(other, opts) do
-    error_module = Keyword.get(opts, :error_module, Error)
     message = Keyword.get(opts, :error_message, "provider supports JSON object response_format only")
 
     details =
@@ -44,7 +43,7 @@ defmodule BeamWeaver.Provider.JsonObjectFormat do
         supported: [@wire_format]
       })
 
-    {:error, apply(error_module, :new, [:invalid_response_format, message, details])}
+    {:error, Error.new(:invalid_response_format, message, details)}
   end
 
   @spec instruction(String.t(), map(), boolean() | nil) :: map()

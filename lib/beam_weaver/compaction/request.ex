@@ -58,19 +58,16 @@ defmodule BeamWeaver.Compaction.Request do
   def new(%__MODULE__{} = request), do: validate(request)
 
   def new(%{} = attrs) do
-    {:ok, struct!(__MODULE__, attrs)}
-    |> then(fn {:ok, request} -> validate(request) end)
+    __MODULE__ |> struct!(attrs) |> validate()
   rescue
-    _error -> {:error, Error.new(:invalid_compaction_request, "required compaction request fields are missing")}
+    error in [ArgumentError, KeyError] ->
+      {:error,
+       Error.new(:invalid_compaction_request, "required compaction request fields are missing", %{
+         reason: Exception.message(error)
+       })}
   end
 
   def new(_attrs), do: {:error, Error.new(:invalid_compaction_request, "compaction request must be a map")}
-
-  @doc "Returns the inclusive first and last source chat sequence."
-  @spec source_range(t()) :: {pos_integer(), pos_integer()}
-  def source_range(%__MODULE__{events: events}) do
-    {List.first(events).chat_seq, List.last(events).chat_seq}
-  end
 
   defp validate(%__MODULE__{} = request) do
     with :ok <- ids(request),

@@ -16,7 +16,9 @@ defmodule BeamWeaver.Migrations.Postgres do
     :record_manager
   ]
 
-  @current_versions Map.new(@adapter_order, &{&1, if(&1 == :checkpoint, do: 2, else: 1)})
+  @current_versions %{checkpoint: 2, memory: 2, cache: 1, vector_store: 1, record_manager: 1}
+  @vector_indexes [:ivfflat, :hnsw, false]
+  @max_indexed_dimensions 2_000
 
   @doc false
   def initial_version, do: @initial_version
@@ -237,9 +239,18 @@ defmodule BeamWeaver.Migrations.Postgres do
     spec(key, Keyword.fetch!(adapter_opts, :checkpoints_table), adapter_opts)
   end
 
+  # `default_ttl:` only shapes how schema version 2 fills in the lifetime of
+  # existing records.
   defp normalize_spec(:memory = key, opts) do
-    adapter_opts = [table: Keyword.get(opts, :table, "beam_weaver_memory_items")]
-    spec(key, Keyword.fetch!(adapter_opts, :table), adapter_opts)
+    table = Keyword.get(opts, :table, "beam_weaver_memory_items")
+
+    adapter_opts =
+      case memory_default_ttl!(Keyword.get(opts, :default_ttl)) do
+        nil -> [table: table]
+        default_ttl -> [table: table, default_ttl: default_ttl]
+      end
+
+    spec(key, table, adapter_opts)
   end
 
   defp normalize_spec(:cache = key, opts) do
@@ -252,7 +263,7 @@ defmodule BeamWeaver.Migrations.Postgres do
       table: Keyword.get(opts, :table, "beam_weaver_vectors"),
       dimensions: Keyword.get(opts, :dimensions, 1_536),
       distance: Util.normalize_distance(Keyword.get(opts, :distance, :cosine)),
-      index: Keyword.get(opts, :index, :ivfflat),
+      index: vector_index!(Keyword.get(opts, :index, :ivfflat), Keyword.get(opts, :dimensions, 1_536)),
       index_opts: Keyword.get(opts, :index_opts, []),
       create_extension?: Keyword.get(opts, :create_extension?, true)
     ]
@@ -268,6 +279,27 @@ defmodule BeamWeaver.Migrations.Postgres do
   defp normalize_spec(adapter, _opts) do
     raise ArgumentError, "unknown BeamWeaver migration adapter: #{inspect(adapter)}"
   end
+
+  defp memory_default_ttl!(default_ttl) when is_nil(default_ttl) or (is_number(default_ttl) and default_ttl > 0),
+    do: default_ttl
+
+  defp memory_default_ttl!(default_ttl) do
+    raise ArgumentError, "memory default_ttl must be a positive number of minutes, got: #{inspect(default_ttl)}"
+  end
+
+  defp vector_index!(index, _dimensions) when index not in @vector_indexes do
+    raise ArgumentError, "vector_store index must be :ivfflat, :hnsw or false, got: #{inspect(index)}"
+  end
+
+  defp vector_index!(index, dimensions) when index != false and dimensions > @max_indexed_dimensions do
+    raise ArgumentError, """
+    pgvector can't index embeddings with more than #{@max_indexed_dimensions} dimensions, \
+    and the vector_store migration has dimensions: #{dimensions}. Pass index: false to search \
+    without an index, or use an embedding model with fewer dimensions.
+    """
+  end
+
+  defp vector_index!(index, _dimensions), do: index
 
   defp spec(key, primary_table, adapter_opts) do
     %{

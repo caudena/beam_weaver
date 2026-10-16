@@ -1,10 +1,5 @@
 defmodule BeamWeaver.Adapter.ValueCodec do
-  @moduledoc """
-  Shared safe value encoding boundary for durable adapters.
-
-  It wraps `BeamWeaver.Serialization` so adapters do not each invent their own
-  tagged JSON policy.
-  """
+  @moduledoc false
 
   alias BeamWeaver.Serialization
 

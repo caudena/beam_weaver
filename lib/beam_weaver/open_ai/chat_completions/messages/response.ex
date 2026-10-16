@@ -3,7 +3,7 @@ defmodule BeamWeaver.OpenAI.ChatCompletions.Messages.Response do
 
   alias BeamWeaver.Core.Message
   alias BeamWeaver.Core.Messages
-  alias BeamWeaver.OpenAI.Error
+  alias BeamWeaver.Core.Error
   alias BeamWeaver.OpenAI.MessageParts
 
   def response_to_message(%{"error" => %{"message" => message} = error})
@@ -22,10 +22,6 @@ defmodule BeamWeaver.OpenAI.ChatCompletions.Messages.Response do
       status: choice["finish_reason"],
       tool_calls: tool_calls(message)
     )
-    |> case do
-      {:ok, message} -> {:ok, message}
-      {:error, error} -> {:error, Error.new(error.type, error.message, error.details)}
-    end
   end
 
   def response_to_message(_response) do
@@ -53,17 +49,11 @@ defmodule BeamWeaver.OpenAI.ChatCompletions.Messages.Response do
       logprobs: choice["logprobs"],
       audio: message["audio"],
       headers: header_metadata[:headers],
-      transport: transport_metadata(header_metadata),
+      transport: BeamWeaver.Provider.ResponseDecoder.transport_metadata(header_metadata),
       raw_provider_response: response
     }
     |> MessageParts.reject_nil_values()
   end
-
-  defp transport_metadata(%{request_id: request_id}) when is_binary(request_id) and request_id != "" do
-    %{request_id: request_id}
-  end
-
-  defp transport_metadata(_metadata), do: nil
 
   def usage_metadata(%{"usage" => usage}) when is_map(usage) do
     input_tokens = usage["prompt_tokens"] || usage["input_tokens"]
@@ -120,21 +110,12 @@ defmodule BeamWeaver.OpenAI.ChatCompletions.Messages.Response do
         provider_id: call["id"],
         call_id: call["id"],
         name: function["name"],
-        args: decode_arguments(function["arguments"])
+        args: BeamWeaver.Provider.ChatCompletionsWire.decode_arguments(function["arguments"])
       )
     end)
   end
 
   defp tool_calls(_message), do: []
-
-  defp decode_arguments(arguments) when is_binary(arguments) do
-    case BeamWeaver.JSON.decode(arguments) do
-      {:ok, decoded} -> decoded
-      {:error, _error} -> arguments
-    end
-  end
-
-  defp decode_arguments(arguments), do: arguments
 
   defp input_token_details(usage) when is_map(usage) do
     case usage["prompt_tokens_details"] || usage["input_tokens_details"] do

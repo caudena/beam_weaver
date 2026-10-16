@@ -7,7 +7,6 @@ defmodule BeamWeaver.TestSupport.Conformance.ChatModelCase do
     quote bind_quoted: [opts: opts] do
       use ExUnit.Case, async: true
 
-      alias BeamWeaver.Core.Async
       alias BeamWeaver.Core.ChatModel
       alias BeamWeaver.Core.ContentBlock
       alias BeamWeaver.Core.LanguageModel
@@ -43,28 +42,6 @@ defmodule BeamWeaver.TestSupport.Conformance.ChatModelCase do
 
         assert {:ok, %Message{role: :assistant} = response} = ChatModel.invoke(model, "hello")
         assert Message.text(response) != ""
-      end
-
-      test "chat model async invoke and batch preserve behavior and order" do
-        model = build_subject()
-        messages = fixture(:messages)
-
-        assert {:ok, %Message{} = async_response} =
-                 model
-                 |> ChatModel.async_invoke(messages)
-                 |> Async.await()
-
-        assert Message.text(async_response) != ""
-
-        handles =
-          ChatModel.async_batch(model, [
-            [Message.user("first")],
-            [Message.user("second")]
-          ])
-
-        assert [{:ok, first}, {:ok, second}] = Async.await_batch(handles)
-        assert Message.text(first) =~ "first"
-        assert Message.text(second) =~ "second"
       end
 
       test "chat model sync batch preserves behavior and order" do

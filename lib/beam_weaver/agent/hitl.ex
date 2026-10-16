@@ -7,6 +7,8 @@ defmodule BeamWeaver.Agent.HITL do
   decisions back through `BeamWeaver.Agent.resume_review/3`.
   """
 
+  import BeamWeaver.MapShape, only: [reject_nil_values: 1]
+
   alias BeamWeaver.Core.Error
 
   defmodule ActionRequest do
@@ -177,6 +179,4 @@ defmodule BeamWeaver.Agent.HITL do
 
   defp decision_map(%Decision{} = decision), do: to_map(decision)
   defp decision_map(%{} = decision), do: decision
-
-  defp reject_nil_values(map), do: Map.reject(map, fn {_key, value} -> is_nil(value) end)
 end

@@ -1,22 +1,3 @@
-defprotocol BeamWeaver.Sandbox.Backend do
-  @moduledoc """
-  Protocol dispatch for sandbox backends.
-
-  Custom sandboxes must implement this protocol, usually by using
-  `BeamWeaver.Sandbox`.
-  """
-
-  def write(sandbox, path, content, opts)
-  def read(sandbox, path, opts)
-  def execute(sandbox, command, opts)
-  def edit(sandbox, path, old, new, opts)
-  def ls(sandbox, path, opts)
-  def glob(sandbox, pattern, opts)
-  def grep(sandbox, pattern, opts)
-  def upload_files(sandbox, files, opts)
-  def download_files(sandbox, paths, opts)
-end
-
 defmodule BeamWeaver.Sandbox do
   @moduledoc """
   Sandbox backend behaviour and facade.
@@ -26,10 +7,10 @@ defmodule BeamWeaver.Sandbox do
   claiming to be a hardened remote sandbox.
   """
 
-  alias BeamWeaver.Core.Async
+  import BeamWeaver.MapShape, only: [put_present: 3]
+
   alias BeamWeaver.Core.Error
   alias BeamWeaver.Core.ID
-  alias BeamWeaver.Sandbox.Backend, as: SandboxBackend
   alias BeamWeaver.Telemetry
   alias BeamWeaver.Tracing.Redactor
 
@@ -122,33 +103,23 @@ defmodule BeamWeaver.Sandbox do
   @callback grep(term(), String.t(), keyword()) :: GrepResult.t()
   @callback upload_files(term(), [{String.t(), iodata()}], keyword()) :: [UploadResult.t()]
   @callback download_files(term(), [String.t()], keyword()) :: [DownloadResult.t()]
+  @callback canonical_paths(term(), [String.t()], keyword()) :: [{:ok, String.t()} | {:error, String.t()}]
+
+  @optional_callbacks canonical_paths: 3
 
   defmacro __using__(_opts) do
     quote do
       @behaviour BeamWeaver.Sandbox
-
-      defimpl BeamWeaver.Sandbox.Backend, for: __MODULE__ do
-        def write(sandbox, path, content, opts), do: @for.write(sandbox, path, content, opts)
-        def read(sandbox, path, opts), do: @for.read(sandbox, path, opts)
-        def execute(sandbox, command, opts), do: @for.execute(sandbox, command, opts)
-        def edit(sandbox, path, old, new, opts), do: @for.edit(sandbox, path, old, new, opts)
-        def ls(sandbox, path, opts), do: @for.ls(sandbox, path, opts)
-        def glob(sandbox, pattern, opts), do: @for.glob(sandbox, pattern, opts)
-        def grep(sandbox, pattern, opts), do: @for.grep(sandbox, pattern, opts)
-        def upload_files(sandbox, files, opts), do: @for.upload_files(sandbox, files, opts)
-        def download_files(sandbox, paths, opts), do: @for.download_files(sandbox, paths, opts)
-      end
     end
   end
 
   def local(opts \\ []), do: BeamWeaver.Sandbox.Local.new(opts)
 
-  def write(sandbox, path, content, opts \\ []),
-    do: SandboxBackend.write(sandbox, path, content, opts)
+  # Each function calls the sandbox struct's module.
+  def write(%module{} = sandbox, path, content, opts \\ []), do: module.write(sandbox, path, content, opts)
+  def read(%module{} = sandbox, path, opts \\ []), do: module.read(sandbox, path, opts)
 
-  def read(sandbox, path, opts \\ []), do: SandboxBackend.read(sandbox, path, opts)
-
-  def execute(sandbox, command, opts \\ []) do
+  def execute(%module{} = sandbox, command, opts \\ []) do
     start = System.monotonic_time()
     metadata = execute_metadata(sandbox, command, opts)
 
@@ -161,7 +132,7 @@ defmodule BeamWeaver.Sandbox do
     try do
       result =
         sandbox
-        |> SandboxBackend.execute(command, opts)
+        |> module.execute(command, opts)
         |> put_execute_metadata(metadata, opts)
 
       event = if timeout_result?(result), do: :timeout, else: :stop
@@ -194,32 +165,33 @@ defmodule BeamWeaver.Sandbox do
     end
   end
 
-  def edit(sandbox, path, old, new, opts \\ []),
-    do: SandboxBackend.edit(sandbox, path, old, new, opts)
+  def edit(%module{} = sandbox, path, old, new, opts \\ []), do: module.edit(sandbox, path, old, new, opts)
+  def ls(%module{} = sandbox, path, opts \\ []), do: module.ls(sandbox, path, opts)
+  def glob(%module{} = sandbox, pattern, opts \\ []), do: module.glob(sandbox, pattern, opts)
+  def grep(%module{} = sandbox, pattern, opts \\ []), do: module.grep(sandbox, pattern, opts)
+  def upload_files(%module{} = sandbox, files, opts \\ []), do: module.upload_files(sandbox, files, opts)
+  def download_files(%module{} = sandbox, paths, opts \\ []), do: module.download_files(sandbox, paths, opts)
 
-  def ls(sandbox, path, opts \\ []), do: SandboxBackend.ls(sandbox, path, opts)
-  def glob(sandbox, pattern, opts \\ []), do: SandboxBackend.glob(sandbox, pattern, opts)
-  def grep(sandbox, pattern, opts \\ []), do: SandboxBackend.grep(sandbox, pattern, opts)
+  @doc """
+  The path of the file `sandbox` reaches for each of `paths`, in order, with
+  every symlink on the way followed; see `BeamWeaver.Filesystem.canonical_paths/3`,
+  which calls this for a `BeamWeaver.Filesystem.Sandbox`.
 
-  def upload_files(sandbox, files, opts \\ []),
-    do: SandboxBackend.upload_files(sandbox, files, opts)
+  The callback is optional: a sandbox without it is treated as having no
+  links, and its paths come back cleaned. An adapter that wraps another
+  sandbox should pass the call to it.
+  """
+  @spec canonical_paths(term(), [String.t()], keyword()) :: [{:ok, String.t()} | {:error, String.t()}]
+  def canonical_paths(%module{} = sandbox, paths, opts \\ []) when is_list(paths) do
+    if BeamWeaver.Behaviour.exported?(module, :canonical_paths, 3),
+      do: module.canonical_paths(sandbox, paths, opts),
+      else: Enum.map(paths, &BeamWeaver.Filesystem.Path.clean_path/1)
+  end
 
-  def download_files(sandbox, paths, opts \\ []),
-    do: SandboxBackend.download_files(sandbox, paths, opts)
-
-  def async_read(sandbox, path, opts \\ []), do: Async.run_call(opts, &read(sandbox, path, &1))
-
-  def async_write(sandbox, path, content, opts \\ []),
-    do: Async.run_call(opts, &write(sandbox, path, content, &1))
-
-  def async_execute(sandbox, command, opts \\ []),
-    do: Async.run_call(opts, &execute(sandbox, command, &1))
-
-  def async_upload_files(sandbox, files, opts \\ []),
-    do: Async.run_call(opts, &upload_files(sandbox, files, &1))
-
-  def async_download_files(sandbox, paths, opts \\ []),
-    do: Async.run_call(opts, &download_files(sandbox, paths, &1))
+  @doc "Whether `sandbox` is a struct whose module implements this behaviour."
+  @spec sandbox?(term()) :: boolean()
+  def sandbox?(%module{}), do: BeamWeaver.Behaviour.implemented_by?(module, __MODULE__)
+  def sandbox?(_other), do: false
 
   def error(type, message, details \\ %{}), do: Error.new(type, message, details)
 
@@ -242,9 +214,9 @@ defmodule BeamWeaver.Sandbox do
     result_metadata =
       metadata
       |> Map.merge(result.metadata || %{})
-      |> maybe_put(:exit_code, result.exit_code)
-      |> maybe_put(:truncated, result.truncated)
-      |> maybe_put(:error, result.error)
+      |> put_present(:exit_code, result.exit_code)
+      |> put_present(:truncated, result.truncated)
+      |> put_present(:error, result.error)
       |> clean_metadata()
       |> Redactor.redact()
 
@@ -294,9 +266,6 @@ defmodule BeamWeaver.Sandbox do
     end)
     |> Map.new()
   end
-
-  defp maybe_put(map, _key, nil), do: map
-  defp maybe_put(map, key, value), do: Map.put(map, key, value)
 end
 
 defmodule BeamWeaver.Sandbox.OutputBuffer do
@@ -350,16 +319,29 @@ end
 defmodule BeamWeaver.Sandbox.Local do
   @moduledoc """
   Local filesystem sandbox adapter.
+
+  Files live in the `:root` directory and commands run there with `sh`, on the
+  host, as the user that runs your application. Commands start from a minimal
+  environment: `PATH`, `HOME`, `LANG`, the `LC_*` variables, `TMPDIR`, `USER`
+  and `SHELL`, plus the variables in `:env`. Pass `inherit_env: true` to give
+  them your application's whole environment instead.
   """
 
   use BeamWeaver.Sandbox
 
   alias BeamWeaver.Filesystem.Path, as: FilesystemPath
   alias BeamWeaver.Sandbox
+  alias BeamWeaver.Tools.Shell.CommandRunner
 
   @default_max_output_bytes 512_000
 
-  defstruct root: nil, max_binary_preview: 512_000, max_output_bytes: @default_max_output_bytes
+  # `env` can carry credentials meant only for the commands.
+  @derive {Inspect, except: [:env]}
+  defstruct root: nil,
+            env: %{},
+            inherit_env: false,
+            max_binary_preview: 512_000,
+            max_output_bytes: @default_max_output_bytes
 
   def new(opts \\ []) do
     root =
@@ -371,6 +353,8 @@ defmodule BeamWeaver.Sandbox.Local do
 
     %__MODULE__{
       root: root,
+      env: opts |> Keyword.get(:env, %{}) |> Map.new(fn {key, value} -> {to_string(key), value} end),
+      inherit_env: Keyword.get(opts, :inherit_env, false),
       max_binary_preview: Keyword.get(opts, :max_binary_preview, 512_000),
       max_output_bytes: Keyword.get(opts, :max_output_bytes, @default_max_output_bytes)
     }
@@ -401,34 +385,28 @@ defmodule BeamWeaver.Sandbox.Local do
 
   @impl true
   def execute(%__MODULE__{} = sandbox, command, opts) do
-    case opts |> Keyword.get(:timeout, 120) |> timeout_ms() do
-      {:ok, timeout} ->
-        task =
-          Task.async(fn ->
-            {{output, truncated?}, exit_code} =
-              System.cmd("sh", ["-c", command],
-                cd: sandbox.root,
-                stderr_to_stdout: true,
-                into: %BeamWeaver.Sandbox.OutputBuffer{max_bytes: sandbox.max_output_bytes}
-              )
+    with {:ok, timeout} <- opts |> Keyword.get(:timeout, 120) |> timeout_ms() do
+      case CommandRunner.run(command,
+             shell: CommandRunner.shell(),
+             cd: sandbox.root,
+             env: sandbox.env,
+             inherit_env: sandbox.inherit_env,
+             timeout: timeout,
+             into: %BeamWeaver.Sandbox.OutputBuffer{max_bytes: sandbox.max_output_bytes}
+           ) do
+        {:ok, {output, truncated?}, exit_code} ->
+          %Sandbox.ExecuteResult{exit_code: exit_code, output: output, truncated: truncated?}
 
-            {output, exit_code, truncated?}
-          end)
+        {:timeout, _kill_attempted?} ->
+          %Sandbox.ExecuteResult{exit_code: 124, output: "", error: "timeout", truncated: false}
 
-        case Task.yield(task, timeout) || Task.shutdown(task, :brutal_kill) do
-          {:ok, {output, exit_code, truncated?}} ->
-            %Sandbox.ExecuteResult{exit_code: exit_code, output: output, truncated: truncated?}
-
-          nil ->
-            %Sandbox.ExecuteResult{exit_code: 124, output: "", error: "timeout", truncated: false}
-        end
-
+        {:error, reason} ->
+          %Sandbox.ExecuteResult{exit_code: 1, output: "", error: CommandRunner.error_message(reason)}
+      end
+    else
       {:error, error} ->
         %Sandbox.ExecuteResult{exit_code: nil, output: "", error: error, truncated: false}
     end
-  rescue
-    exception ->
-      %Sandbox.ExecuteResult{exit_code: 1, output: "", error: Exception.message(exception)}
   end
 
   @impl true
@@ -499,23 +477,20 @@ defmodule BeamWeaver.Sandbox.Local do
   def glob(%__MODULE__{} = sandbox, pattern, opts) do
     base = Keyword.get(opts, :path, "/")
 
-    case resolve(sandbox, base) do
-      {:ok, resolved} ->
-        matches =
-          resolved
-          |> Path.join(pattern)
-          |> Path.wildcard(match_dot: true)
-          |> Enum.filter(&safe_resolved_path?(sandbox, &1))
-          |> Enum.sort()
-          |> Enum.map(fn path ->
-            %{"path" => glob_path(sandbox, base, path, resolved), "is_dir" => File.dir?(path)}
-            |> maybe_put_size(sandbox, base, path)
-          end)
+    with {:ok, resolved} <- resolve(sandbox, base),
+         {:ok, paths} <- safe_wildcard(resolved, pattern) do
+      matches =
+        paths
+        |> Enum.filter(&safe_resolved_path?(sandbox, &1))
+        |> Enum.sort()
+        |> Enum.map(fn path ->
+          %{"path" => glob_path(sandbox, base, path, resolved), "is_dir" => File.dir?(path)}
+          |> maybe_put_size(sandbox, base, path)
+        end)
 
-        %Sandbox.GlobResult{matches: matches}
-
-      {:error, reason} ->
-        %Sandbox.GlobResult{error: error_string(reason)}
+      %Sandbox.GlobResult{matches: matches}
+    else
+      {:error, reason} -> %Sandbox.GlobResult{error: error_string(reason)}
     end
   end
 
@@ -526,21 +501,26 @@ defmodule BeamWeaver.Sandbox.Local do
     include =
       opts |> Keyword.get(:glob, Keyword.get(opts, :include, "**/*")) |> normalize_grep_glob()
 
-    case resolve(sandbox, base) do
-      {:ok, resolved} ->
-        matches =
-          resolved
-          |> Path.join(include)
-          |> Path.wildcard(match_dot: true)
-          |> Enum.filter(&safe_resolved_path?(sandbox, &1))
-          |> Enum.reject(&File.dir?/1)
-          |> Enum.flat_map(&grep_file(&1, pattern, resolved, base, host_path?(sandbox, base)))
+    with {:ok, resolved} <- resolve(sandbox, base),
+         {:ok, paths} <- safe_wildcard(resolved, include) do
+      matches =
+        paths
+        |> Enum.filter(&safe_resolved_path?(sandbox, &1))
+        |> Enum.reject(&File.dir?/1)
+        |> Enum.flat_map(&grep_file(&1, pattern, resolved, base, host_path?(sandbox, base)))
 
-        %Sandbox.GrepResult{matches: matches}
-
-      {:error, reason} ->
-        %Sandbox.GrepResult{error: error_string(reason)}
+      %Sandbox.GrepResult{matches: matches}
+    else
+      {:error, reason} -> %Sandbox.GrepResult{error: error_string(reason)}
     end
+  end
+
+  # `Path.wildcard/2` raises on a malformed pattern such as `{a`; return an
+  # error result instead of crashing the tool call.
+  defp safe_wildcard(resolved, pattern) do
+    {:ok, resolved |> Path.join(pattern) |> Path.wildcard(match_dot: true)}
+  rescue
+    _exception -> {:error, "invalid_pattern"}
   end
 
   @impl true
@@ -573,10 +553,31 @@ defmodule BeamWeaver.Sandbox.Local do
     end)
   end
 
+  # The file a path reaches is the real path `resolve/2` checks it against,
+  # relative to the root.
+  @impl true
+  def canonical_paths(%__MODULE__{root: root}, paths, _opts) do
+    real_root = FilesystemPath.real_root(root)
+    Enum.map(paths, &FilesystemPath.canonical_path(real_root, &1))
+  end
+
+  # A path is always a sandbox path: an absolute path rooted at `root`, so
+  # `/secrets/key.txt` is `root`'s `secrets/key.txt`. A host path that happens
+  # to point inside `root` (`<root>/secrets/key.txt`) is taken literally as the
+  # sandbox path `/<root>/secrets/...`, which resolves under `root` and does
+  # not exist, rather than being reinterpreted as `/secrets/...`. That keeps
+  # the path the sandbox reads identical to the one a `Filesystem.Permission`
+  # rule checks, so a host path can't slip past a deny rule.
+  #
+  # `virtual_to_real/2` validates containment and refuses a symlink that
+  # escapes the root; the returned candidate is the plain `root`-relative join
+  # (not the realpath), so it stays comparable to `root` for the containment
+  # filter the listing calls apply.
   defp resolve(%__MODULE__{root: root}, path) when is_binary(path) do
-    with {:ok, virtual_path, candidate} <- sandbox_path(root, path),
+    with {:ok, virtual_path} <- FilesystemPath.clean_path(path),
          {:ok, _resolved, _virtual} <- FilesystemPath.virtual_to_real(root, virtual_path) do
-      {:ok, candidate}
+      relative = String.trim_leading(virtual_path, "/")
+      {:ok, Path.expand(Path.join(root, relative))}
     end
   end
 

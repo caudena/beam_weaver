@@ -2,90 +2,38 @@ defmodule BeamWeaver.Graph.Compiled.Runtime do
   @moduledoc false
 
   alias BeamWeaver.Core.Error
+  alias BeamWeaver.Core.ID
   alias BeamWeaver.Graph.Command
   alias BeamWeaver.Graph.Execution.CommandRouter
   alias BeamWeaver.Graph.Execution.Runner
   alias BeamWeaver.Graph.Execution.Stream, as: ExecutionStream
   alias BeamWeaver.Graph.Execution.SubgraphRouter
   alias BeamWeaver.Stream, as: BWStream
+  alias BeamWeaver.Stream.Envelope
+  alias BeamWeaver.Stream.Events
+  alias BeamWeaver.Stream.Sink
 
-  def invoke(compiled, %Command{} = command, opts) do
-    opts =
-      command
-      |> CommandRouter.command_opts(opts, false)
-      |> rebase_time_travel_opts(compiled)
-
-    case Runner.execute(
-           compiled,
-           graph_input(compiled, CommandRouter.command_update(command)),
-           opts
-         ) do
-      {:ok, result, _events} -> {:ok, graph_output(compiled, result)}
-      {:interrupted, interrupt, _events} -> {:interrupted, interrupt}
-      {:parent_command, command, _events} -> CommandRouter.parent_command_error(command)
-      {:error, error, _events} -> {:error, error}
+  def invoke(compiled, input, opts) do
+    with {:ok, input, opts} <- run_input(compiled, input, opts) do
+      case Runner.execute(compiled, input, opts) do
+        {:ok, result} -> {:ok, graph_output(compiled, result)}
+        other -> run_result(other)
+      end
     end
   end
-
-  def invoke(compiled, input, opts) when is_map(input) do
-    opts =
-      opts
-      |> Keyword.put(:collect_stream?, false)
-      |> rebase_time_travel_opts(compiled)
-
-    case Runner.execute(
-           compiled,
-           graph_input(compiled, CommandRouter.normalize_update(input)),
-           opts
-         ) do
-      {:ok, result, _events} -> {:ok, graph_output(compiled, result)}
-      {:interrupted, interrupt, _events} -> {:interrupted, interrupt}
-      {:parent_command, command, _events} -> CommandRouter.parent_command_error(command)
-      {:error, error, _events} -> {:error, error}
-    end
-  end
-
-  def invoke(_compiled, _input, _opts),
-    do: {:error, Error.new(:invalid_input, "graph input must be a map")}
-
-  def stream(compiled, %Command{} = command, opts) do
-    command_opts =
-      command
-      |> CommandRouter.command_opts(opts, true)
-      |> rebase_time_travel_opts(compiled)
-
-    input = graph_input(compiled, CommandRouter.command_update(command))
-    do_stream(compiled, input, command_opts, Keyword.get(opts, :live, false))
-  end
-
-  def stream(compiled, input, opts) when is_map(input) do
-    stream_opts =
-      opts
-      |> Keyword.put(:collect_stream?, true)
-      |> rebase_time_travel_opts(compiled)
-
-    input = graph_input(compiled, CommandRouter.normalize_update(input))
-    do_stream(compiled, input, stream_opts, Keyword.get(opts, :live, false))
-  end
-
-  def stream(_compiled, _input, _opts),
-    do: {:error, Error.new(:invalid_input, "graph input must be a map")}
 
   def stream_events(compiled, input, opts) do
-    opts = Keyword.put(opts, :stream_mode, :events)
+    with {:ok, input, run_opts} <- run_input(compiled, input, opts),
+         {:ok, modes} <- ExecutionStream.normalize_modes(Keyword.get(opts, :stream_mode, :events)) do
+      run_opts =
+        run_opts
+        |> Keyword.put(:stream_mode, modes)
+        |> Keyword.put_new_lazy(:run_id, &ID.uuidv7/0)
 
-    if Keyword.get(opts, :live, false) do
-      stream(compiled, input, opts)
-    else
-      case stream(compiled, input, opts) do
-        {:ok, events} ->
-          {:ok, lifecycle_events(compiled, events, opts, :ok)}
-
-        {:interrupted, %{events: events} = interrupt} ->
-          {:interrupted, Map.put(interrupt, :events, lifecycle_events(compiled, events, opts, :interrupted))}
-
-        other ->
-          other
+      if Keyword.get(opts, :live, false) do
+        {:ok, event_stream(compiled, input, run_opts, fn _result -> :ok end)}
+      else
+        collect_events(compiled, input, run_opts)
       end
     end
   end
@@ -94,15 +42,11 @@ defmodule BeamWeaver.Graph.Compiled.Runtime do
     opts =
       opts
       |> Keyword.put(:resume, resume)
-      |> Keyword.put(:collect_stream?, false)
       |> rebase_time_travel_opts(compiled)
 
-    case Runner.execute(compiled, %{}, opts) do
-      {:ok, result, _events} -> {:ok, result}
-      {:interrupted, interrupt, _events} -> {:interrupted, interrupt}
-      {:parent_command, command, _events} -> CommandRouter.parent_command_error(command)
-      {:error, error, _events} -> {:error, error}
-    end
+    compiled
+    |> Runner.execute(%{}, opts)
+    |> run_result()
   end
 
   def graph_input(%{graph: %{input_schema: input_schema}}, input) when is_map(input) do
@@ -135,98 +79,108 @@ defmodule BeamWeaver.Graph.Compiled.Runtime do
     end
   end
 
-  defp do_stream(compiled, input, opts, true), do: live_stream(compiled, input, opts)
+  defp run_input(compiled, %Command{} = command, opts) do
+    opts =
+      command
+      |> CommandRouter.command_opts(opts)
+      |> rebase_time_travel_opts(compiled)
 
-  defp do_stream(compiled, input, opts, false) do
-    case Runner.execute(compiled, input, opts) do
-      {:ok, _result, events} -> {:ok, events}
-      {:interrupted, interrupt, events} -> {:interrupted, Map.put(interrupt, :events, events)}
-      {:parent_command, command, _events} -> CommandRouter.parent_command_error(command)
-      {:error, error, _events} -> {:error, error}
+    {:ok, graph_input(compiled, CommandRouter.command_update(command)), opts}
+  end
+
+  defp run_input(compiled, input, opts) when is_map(input) do
+    {:ok, graph_input(compiled, CommandRouter.normalize_update(input)), rebase_time_travel_opts(opts, compiled)}
+  end
+
+  defp run_input(_compiled, _input, _opts),
+    do: {:error, Error.new(:invalid_input, "graph input must be a map")}
+
+  defp run_result({:ok, result}), do: {:ok, result}
+  defp run_result({:interrupted, interrupt}), do: {:interrupted, interrupt}
+  defp run_result({:parent_command, command}), do: CommandRouter.parent_command_error(command)
+  defp run_result({:error, error}), do: {:error, error}
+
+  # Without `live: true` the run streams exactly as a live one does and is read
+  # to the end here, so both return the same events in the same order. The run
+  # reports how it ended before its stream closes.
+  defp collect_events(compiled, input, opts) do
+    caller = self()
+    ref = make_ref()
+
+    report = fn
+      {:ok, _output} -> send(caller, {ref, :ok})
+      result -> send(caller, {ref, result})
+    end
+
+    events =
+      compiled
+      |> event_stream(input, opts, report)
+      |> Enum.to_list()
+
+    receive do
+      {^ref, :ok} -> {:ok, events}
+      {^ref, {:interrupted, interrupt}} -> {:interrupted, Map.put(interrupt, :events, events)}
+      {^ref, result} -> run_result(result)
+    after
+      0 -> stream_failure(events)
     end
   end
 
-  defp live_stream(compiled, input, opts) do
-    modes = ExecutionStream.normalize_modes(Keyword.get(opts, :stream_mode, :updates))
-
-    producer =
-      {:sink, compiled.name,
-       fn sink ->
-         opts =
-           opts
-           |> Keyword.put(:collect_stream?, true)
-           |> Keyword.put(:stream_sink, sink)
-
-         case Runner.execute(compiled, input, opts) do
-           {:ok, _result, _events} ->
-             :ok
-
-           {:interrupted, interrupt, _events} ->
-             BeamWeaver.Stream.Sink.emit(
-               sink,
-               BWStream.envelope(
-                 BWStream.event(:debug, %{type: :interrupt, interrupt: interrupt}),
-                 run_id: Map.get(interrupt, :run_id),
-                 graph: compiled.name,
-                 namespace: Map.get(interrupt, :namespace, [])
-               )
-             )
-
-           {:parent_command, command, _events} ->
-             BeamWeaver.Stream.Sink.emit(
-               sink,
-               BWStream.envelope(
-                 BWStream.event(:debug, %{type: :parent_command, command: command}),
-                 graph: compiled.name
-               )
-             )
-
-           {:error, %Error{} = error, _events} ->
-             {:error, error}
-         end
-       end}
-
-    stream =
-      [producer]
-      |> BWStream.mux(
-        run_id: Keyword.get(opts, :run_id),
-        graph: compiled.name,
-        heartbeat: Keyword.get(opts, :heartbeat),
-        max_buffer: Keyword.get(opts, :max_buffer, 256),
-        overflow: Keyword.get(opts, :overflow, :block),
-        timeout: Keyword.get(opts, :stream_timeout, :infinity),
-        cancel_timeout: Keyword.get(opts, :cancel_timeout, 100),
-        producer_supervisor: Keyword.get(opts, :producer_supervisor)
-      )
-      |> Elixir.Stream.map(&BWStream.format(&1, modes))
-
-    {:ok, stream}
+  # The run never reported back, so the stream ended on the error that stopped
+  # it, such as a crash or `stream_timeout:`.
+  defp stream_failure(events) do
+    case List.last(events) do
+      %Envelope{event: %Events.Error{error: %Error{} = error}} -> {:error, error}
+      _other -> {:error, Error.new(:stream_error, "graph stream ended without a result")}
+    end
   end
 
-  defp lifecycle_events(compiled, events, opts, status) do
-    run_id = Keyword.get(opts, :run_id)
-    namespace = Keyword.get(opts, :namespace, [])
-    metadata = Keyword.get(opts, :metadata, %{})
+  defp event_stream(compiled, input, opts, report) do
+    modes = Keyword.fetch!(opts, :stream_mode)
+    run_id = Keyword.fetch!(opts, :run_id)
 
-    started =
-      BWStream.envelope(
-        BWStream.event(:debug, %{type: :start, status: :running}),
-        run_id: run_id,
-        graph: compiled.name,
-        namespace: namespace,
-        metadata: metadata
-      )
+    # The producer has no name, so events that don't come from a node keep
+    # `node: nil`.
+    producer =
+      {:sink, nil,
+       fn sink ->
+         result = Runner.execute(compiled, input, Keyword.put(opts, :stream_sink, sink))
+         report.(result)
+         emit_outcome(sink, compiled, run_id, result)
+       end}
 
-    done =
-      BWStream.envelope(
-        BWStream.event(:done, %{result: %{status: status}}),
-        run_id: run_id,
-        graph: compiled.name,
-        namespace: namespace,
-        metadata: metadata
-      )
+    [producer]
+    |> BWStream.mux(
+      run_id: run_id,
+      graph: compiled.name,
+      metadata: Keyword.get(opts, :metadata, %{}),
+      heartbeat: Keyword.get(opts, :heartbeat),
+      max_buffer: Keyword.get(opts, :max_buffer, 256),
+      overflow: Keyword.get(opts, :overflow, :block),
+      timeout: Keyword.get(opts, :stream_timeout, :infinity),
+      cancel_timeout: Keyword.get(opts, :cancel_timeout, 100),
+      producer_supervisor: Keyword.get(opts, :producer_supervisor)
+    )
+    |> Elixir.Stream.filter(&ExecutionStream.selected?(modes, &1.event))
+    |> Elixir.Stream.map(&BWStream.format(&1, modes))
+  end
 
-    [started | Enum.to_list(events)] ++ [done]
+  defp emit_outcome(_sink, _compiled, _run_id, {:ok, _result}), do: :ok
+
+  defp emit_outcome(sink, compiled, run_id, {:interrupted, interrupt}) do
+    emit_debug(sink, compiled, run_id, %{type: :interrupt, interrupt: interrupt})
+  end
+
+  # The stream ends with an `Error` event: a top-level graph has no parent
+  # for the command, so the run fails as `invoke/3` reports it.
+  defp emit_outcome(_sink, _compiled, _run_id, {:parent_command, command}),
+    do: CommandRouter.parent_command_error(command)
+
+  defp emit_outcome(_sink, _compiled, _run_id, {:error, %Error{} = error}), do: {:error, error}
+
+  defp emit_debug(sink, compiled, run_id, payload) do
+    Sink.emit(sink, BWStream.envelope(BWStream.event(:debug, payload), run_id: run_id, graph: compiled.name))
+    :ok
   end
 
   defp maybe_clear_rebased_pending_writes(opts, config, rebased) when config != rebased,

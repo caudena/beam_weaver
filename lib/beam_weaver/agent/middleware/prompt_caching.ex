@@ -1,7 +1,7 @@
 defmodule BeamWeaver.Agent.Middleware.PromptCaching do
   @moduledoc "Applies provider-aware prompt-cache controls to model calls."
 
-  @behaviour BeamWeaver.Agent.Middleware
+  use BeamWeaver.Agent.Middleware
 
   alias BeamWeaver.Agent.ModelRequest
   alias BeamWeaver.Anthropic.Middleware.PromptCaching, as: AnthropicPromptCaching
@@ -24,6 +24,7 @@ defmodule BeamWeaver.Agent.Middleware.PromptCaching do
   @impl true
   def name(_middleware), do: :deepagents_prompt_caching
 
+  @impl true
   def wrap_model_call(%__MODULE__{} = middleware, %ModelRequest{} = request, handler) do
     request
     |> maybe_cache_anthropic_system_message(middleware)

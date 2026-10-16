@@ -3,6 +3,7 @@ defmodule BeamWeaver.Memory.ETSTest do
 
   alias BeamWeaver.Memory
   alias BeamWeaver.Memory.ETS
+  alias BeamWeaver.Memory.GetOp
   alias BeamWeaver.Memory.ListNamespacesOp
   alias BeamWeaver.Memory.MatchCondition
 
@@ -47,5 +48,40 @@ defmodule BeamWeaver.Memory.ETSTest do
     }
 
     assert [[["users", "u1"], ["users", "u2"]]] = Memory.batch(store, [op])
+  end
+
+  test "a read that refreshes a record never reverts a put that runs at the same time" do
+    store = ETS.new(default_ttl: 60, refresh_ttl: true)
+    assert {:ok, _item} = Memory.put(store, ["notes"], "k", %{"v" => 0})
+
+    readers = for _reader <- 1..4, do: Task.async(fn -> read_until_stopped(store) end)
+
+    reverted =
+      Enum.count(1..5_000, fn version ->
+        {:ok, _item} = Memory.put(store, ["notes"], "k", %{"v" => version})
+        [%{value: %{"v" => stored}}] = Memory.batch(store, [%GetOp{namespace: ["notes"], key: "k", refresh_ttl: false}])
+        stored != version
+      end)
+
+    Enum.each(readers, &send(&1.pid, :stop))
+    Enum.each(readers, &Task.await/1)
+
+    assert reverted == 0
+    assert {:ok, %{value: %{"v" => 5_000}}} = Memory.get(store, ["notes"], "k")
+  end
+
+  test "refresh_ttl: nil is the default, false, and other values raise" do
+    assert %ETS{refresh_ttl: false} = ETS.new(refresh_ttl: nil)
+    assert_raise ArgumentError, ~r/:refresh_ttl/, fn -> ETS.new(refresh_ttl: "yes") end
+  end
+
+  defp read_until_stopped(store) do
+    receive do
+      :stop -> :ok
+    after
+      0 ->
+        {:ok, _item} = Memory.get(store, ["notes"], "k")
+        read_until_stopped(store)
+    end
   end
 end

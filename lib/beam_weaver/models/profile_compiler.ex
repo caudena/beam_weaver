@@ -1,13 +1,7 @@
 defmodule BeamWeaver.Models.ProfileCompiler do
-  @moduledoc """
-  Compiles models.dev-style data into BeamWeaver model profiles.
+  @moduledoc false
 
-  This is the Elixir-native equivalent of the pure profile transformation logic
-  from `langchain_model_profiles.cli`: it maps raw provider data, applies
-  provider/model augmentations, validates keys against `Profile`, and returns
-  deterministic profile structs. Fetching remote data and writing generated
-  source files remain separate tooling concerns.
-  """
+  import BeamWeaver.MapShape, only: [reject_nil_values: 1]
 
   alias BeamWeaver.Core.Error
   alias BeamWeaver.Models.Profile
@@ -235,10 +229,6 @@ defmodule BeamWeaver.Models.ProfileCompiler do
   end
 
   defp normalize_key(key), do: key
-
-  defp reject_nil_values(map) do
-    Map.reject(map, fn {_key, value} -> is_nil(value) end)
-  end
 
   defp truthy?(value), do: value == true
 

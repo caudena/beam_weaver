@@ -1,10 +1,23 @@
 defmodule BeamWeaver.Moonshot.Options do
   @moduledoc false
 
+  import BeamWeaver.Provider.Options,
+    only: [
+      extra_body: 2,
+      merge_extra_body: 3,
+      normalize_option_map: 1,
+      normalize_value: 1,
+      option: 3,
+      put_optional: 3,
+      stringify_keys: 1
+    ]
+
   alias BeamWeaver.Models.ParamPolicy
-  alias BeamWeaver.Moonshot.Error
+  alias BeamWeaver.Models.ProfileRegistry
+  alias BeamWeaver.Core.Error
   alias BeamWeaver.Moonshot.Messages
-  alias BeamWeaver.OpenAI.MessageParts
+  alias BeamWeaver.Provider.ChatCompletionsWire
+  alias BeamWeaver.Provider.JsonObjectFormat
 
   @kimi_model_policies %{
     "kimi-k3" => %{
@@ -34,12 +47,16 @@ defmodule BeamWeaver.Moonshot.Options do
     }
   }
 
+  # `extra_body` can't replace these: the client sets them for the call.
+  @reserved_body_fields ["model", "messages", "stream"]
+
   @spec to_body(term(), [BeamWeaver.Core.Message.t()], keyword()) ::
           {:ok, map()} | {:error, Error.t()}
   def to_body(model, messages, opts \\ []) do
     with :ok <- validate_profile_params(model, opts),
          {:ok, moonshot_messages} <- Messages.to_chat_messages(messages),
-         {:ok, response_format} <- response_format(model, opts),
+         {:ok, response_format, instruction} <- response_format(model, opts),
+         moonshot_messages = JsonObjectFormat.inject_instruction(moonshot_messages, instruction),
          :ok <- validate_partial_response_format(moonshot_messages, response_format),
          {:ok, body} <- build_body(model, moonshot_messages, response_format, opts),
          :ok <- validate_kimi_policy(body),
@@ -48,17 +65,32 @@ defmodule BeamWeaver.Moonshot.Options do
     end
   end
 
+  @doc false
+  # Kimi K2 models take `tool_choice: "required"` only with thinking disabled.
+  def forced_tool_choice?(model, opts) do
+    case Map.fetch(@kimi_model_policies, option(model, opts, :model)) do
+      {:ok, policy} ->
+        "required" in policy.tool_choice_when_thinking or
+          (policy.thinking == :toggle and thinking_type(normalize_value(option(model, opts, :thinking))) == "disabled")
+
+      :error ->
+        true
+    end
+  end
+
+  defp thinking_type(%{"type" => type}), do: type
+  defp thinking_type(_thinking), do: nil
+
   defp build_body(model, messages, response_format, opts) do
     model_name = option(model, opts, :model)
-    model_kwargs = option(model, opts, :model_kwargs) || %{}
+    extra_body = extra_body(model, opts)
 
     body =
       %{
         "model" => model_name,
         "messages" => messages
       }
-      |> merge_model_kwargs(model_kwargs)
-      |> put_optional("tool_choice", normalize_value(option(model, opts, :tool_choice)))
+      |> put_optional("tool_choice", ChatCompletionsWire.tool_choice(option(model, opts, :tool_choice)))
       |> put_optional("response_format", response_format)
       |> put_optional("thinking", normalize_value(option(model, opts, :thinking)))
       |> put_optional(
@@ -73,11 +105,12 @@ defmodule BeamWeaver.Moonshot.Options do
       |> put_optional("n", option(model, opts, :n))
       |> put_optional("stop", Keyword.get(opts, :stop))
       |> put_optional("stream", Keyword.get(opts, :stream, false))
-      |> put_optional("stream_options", normalize_map(Keyword.get(opts, :stream_options)))
+      |> put_optional("stream_options", normalize_option_map(Keyword.get(opts, :stream_options)))
       |> put_optional("prompt_cache_key", option(model, opts, :prompt_cache_key))
       |> put_optional("safety_identifier", option(model, opts, :safety_identifier))
+      |> merge_extra_body(extra_body, reserved: @reserved_body_fields)
 
-    case rejected_model_kwargs(model_kwargs) do
+    case rejected_extra_body_keys(extra_body) do
       [] ->
         {:ok, body}
 
@@ -95,35 +128,56 @@ defmodule BeamWeaver.Moonshot.Options do
     end
   end
 
+  # Returns the wire format and, for a model that ignores JSON Schema
+  # formats (the profile's `json_mode_only`, such as Kimi K2.6), the system
+  # instruction that carries the schema with JSON mode instead.
   defp response_format(model, opts) do
-    case option(model, opts, :response_format) || option(model, opts, :structured_output) do
-      nil ->
-        {:ok, nil}
+    format = option(model, opts, :response_format) || option(model, opts, :structured_output)
 
-      %{"type" => _type} = format ->
-        {:ok, format}
+    with {:ok, format} <- wire_response_format(format) do
+      case format do
+        %{"type" => "json_schema", "json_schema" => %{"name" => name, "schema" => schema} = spec} ->
+          if json_mode_only?(model, opts),
+            do: JsonObjectFormat.normalize(%{"name" => name, "schema" => schema, "strict" => spec["strict"]}),
+            else: {:ok, format, nil}
 
-      %{type: type} = format when is_binary(type) ->
-        {:ok, MessageParts.stringify_keys(format)}
-
-      %{type: type} = format when is_atom(type) ->
-        {:ok, format |> Map.put(:type, Atom.to_string(type)) |> MessageParts.stringify_keys()}
-
-      %{name: name, schema: schema} = format when is_binary(name) and is_map(schema) ->
-        {:ok, Messages.structured_output_format(name, schema, strict: Map.get(format, :strict, true))}
-
-      %{"name" => name, "schema" => schema} = format when is_binary(name) and is_map(schema) ->
-        {:ok, Messages.structured_output_format(name, schema, strict: Map.get(format, "strict", true))}
-
-      {name, schema} when is_binary(name) and is_map(schema) ->
-        {:ok, Messages.structured_output_format(name, schema)}
-
-      other ->
-        {:error,
-         Error.new(:invalid_response_format, "structured output requires a name and schema", %{
-           response_format: inspect(other)
-         })}
+        format ->
+          {:ok, format, nil}
+      end
     end
+  end
+
+  defp wire_response_format(nil), do: {:ok, nil}
+  defp wire_response_format(%{"type" => _type} = format), do: {:ok, format}
+  defp wire_response_format(%{type: type} = format) when is_binary(type), do: {:ok, stringify_keys(format)}
+
+  defp wire_response_format(%{type: type} = format) when is_atom(type),
+    do: {:ok, format |> Map.put(:type, Atom.to_string(type)) |> stringify_keys()}
+
+  defp wire_response_format(%{name: name, schema: schema} = format) when is_binary(name) and is_map(schema),
+    do: {:ok, Messages.structured_output_format(name, schema, strict: Map.get(format, :strict, true))}
+
+  defp wire_response_format(%{"name" => name, "schema" => schema} = format) when is_binary(name) and is_map(schema),
+    do: {:ok, Messages.structured_output_format(name, schema, strict: Map.get(format, "strict", true))}
+
+  defp wire_response_format({name, schema}) when is_binary(name) and is_map(schema),
+    do: {:ok, Messages.structured_output_format(name, schema)}
+
+  defp wire_response_format(other) do
+    {:error,
+     Error.new(:invalid_response_format, "structured output requires a name and schema", %{
+       response_format: inspect(other)
+     })}
+  end
+
+  defp json_mode_only?(model, opts) do
+    profile =
+      case option(model, opts, :model) do
+        name when name == model.model -> model.profile
+        name -> with {:ok, profile} <- ProfileRegistry.fetch(:moonshot, name), do: profile
+      end
+
+    match?(%{extra: %{json_mode_only: true}}, profile)
   end
 
   defp validate_profile_params(model, opts) do
@@ -135,7 +189,6 @@ defmodule BeamWeaver.Moonshot.Options do
         :max_completion_tokens,
         :max_output_tokens,
         :max_tokens,
-        :model_kwargs,
         :n,
         :presence_penalty,
         :prompt_cache_key,
@@ -149,14 +202,13 @@ defmodule BeamWeaver.Moonshot.Options do
         :tool_choice,
         :top_p
       ])
-      |> Map.merge(Map.new(Keyword.drop(opts, [:metadata])))
+      |> Map.merge(Map.new(opts))
 
     ParamPolicy.validate(
       Map.get(model, :profile),
       params,
       Keyword.get(opts, :param_policy, Map.get(model, :param_policy)),
-      api: :chat_completions,
-      metadata: Keyword.get(opts, :metadata, %{})
+      api: :chat_completions
     )
   end
 
@@ -278,15 +330,11 @@ defmodule BeamWeaver.Moonshot.Options do
     tool_choice = Map.get(body, "tool_choice")
     supported = Map.fetch!(policy, :tool_choice_when_thinking)
 
-    cond do
-      tool_choice == "required" and "required" not in supported ->
-        tool_choice_error(model_name, tool_choice, supported)
-
-      thinking_type == "disabled" or is_nil(tool_choice) or tool_choice in supported ->
-        :ok
-
-      true ->
-        tool_choice_error(model_name, tool_choice, supported)
+    # With thinking disabled, every tool choice is accepted.
+    if thinking_type == "disabled" or is_nil(tool_choice) or tool_choice in supported do
+      :ok
+    else
+      tool_choice_error(model_name, tool_choice, supported)
     end
   end
 
@@ -400,25 +448,9 @@ defmodule BeamWeaver.Moonshot.Options do
       option(model, opts, :max_tokens)
   end
 
-  defp option(model, opts, key), do: Keyword.get(opts, key, Map.get(model, key))
-
-  defp normalize_map(nil), do: nil
-  defp normalize_map(value) when is_map(value), do: MessageParts.stringify_keys(value)
-
-  defp normalize_value(nil), do: nil
-  defp normalize_value(value) when is_map(value), do: MessageParts.stringify_keys(value)
-  defp normalize_value(value) when is_list(value), do: Enum.map(value, &normalize_value/1)
-  defp normalize_value(value) when is_atom(value), do: Atom.to_string(value)
-  defp normalize_value(value), do: value
-
-  defp merge_model_kwargs(body, model_kwargs) when map_size(model_kwargs) == 0, do: body
-
-  defp merge_model_kwargs(body, model_kwargs) when is_map(model_kwargs),
-    do: Map.merge(body, MessageParts.stringify_keys(model_kwargs))
-
-  defp rejected_model_kwargs(model_kwargs) when is_map(model_kwargs) do
-    model_kwargs
-    |> MessageParts.stringify_keys()
+  # Deprecated OpenAI params these APIs reject even through `extra_body`.
+  defp rejected_extra_body_keys(extra_body) do
+    extra_body
     |> Map.keys()
     |> Enum.filter(&(&1 in ["functions", "function_call"]))
     |> Enum.map(fn
@@ -426,8 +458,4 @@ defmodule BeamWeaver.Moonshot.Options do
       "function_call" -> :function_call
     end)
   end
-
-  defp put_optional(body, _key, nil), do: body
-  defp put_optional(body, _key, []), do: body
-  defp put_optional(body, key, value), do: Map.put(body, key, value)
 end

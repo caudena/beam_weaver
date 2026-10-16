@@ -18,7 +18,7 @@ defmodule BeamWeaver.Graph.StateGraphTest do
     assert {:error,
             %{
               type: :invalid_graph,
-              message: "graph contains invalid node callables",
+              message: "graph contains invalid nodes",
               details: %{invalid: [%{node: "bad", callable: ":not_a_node"}]}
             }} = Graph.compile(graph)
   end

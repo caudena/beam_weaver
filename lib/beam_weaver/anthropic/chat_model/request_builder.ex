@@ -1,7 +1,7 @@
 defmodule BeamWeaver.Anthropic.ChatModel.RequestBuilder do
   @moduledoc false
 
-  alias BeamWeaver.Anthropic.Error
+  alias BeamWeaver.Core.Error
   alias BeamWeaver.Anthropic.ChatModel.ModelResolution
   alias BeamWeaver.Anthropic.Messages
   alias BeamWeaver.Anthropic.Tools
@@ -17,13 +17,13 @@ defmodule BeamWeaver.Anthropic.ChatModel.RequestBuilder do
     :context_management,
     :diagnostics,
     :effort,
+    :extra_body,
     :fallback_credit_token,
     :fallbacks,
     :inference_geo,
     :max_tokens,
     :metadata,
     :mcp_servers,
-    :model_kwargs,
     :output_config,
     :parallel_tool_calls,
     :response_format,
@@ -79,6 +79,7 @@ defmodule BeamWeaver.Anthropic.ChatModel.RequestBuilder do
   def request_body(model, messages, opts \\ []) do
     with {:ok, model} <- ModelResolution.resolve(model, opts),
          :ok <- validate_request_params(model, opts),
+         :ok <- validate_metadata(option(model, opts, :metadata), model.model),
          :ok <- validate_sampling_params(model, opts),
          :ok <- validate_thinking_params(model, opts),
          :ok <- validate_tool_compatibility(model, opts),
@@ -90,7 +91,6 @@ defmodule BeamWeaver.Anthropic.ChatModel.RequestBuilder do
          :ok <- validate_per_turn_effort(model, formatted_messages, opts),
          {:ok, output_config} <- output_config(model, opts),
          :ok <- validate_compaction_params(model, opts, output_config) do
-      model_kwargs = option(model, opts, :model_kwargs) || %{}
       tools = tools(opts)
       fallbacks = option(model, opts, :fallbacks)
       fallback_credit_token = option(model, opts, :fallback_credit_token)
@@ -112,7 +112,6 @@ defmodule BeamWeaver.Anthropic.ChatModel.RequestBuilder do
           "max_tokens" => max_tokens(model, opts),
           "messages" => formatted_messages
         }
-        |> Options.merge_extra_body(model_kwargs, reserved: @reserved_body_fields)
         |> Options.put_optional(
           "cache_control",
           Options.normalize_option_map(option(model, opts, :cache_control))
@@ -170,9 +169,7 @@ defmodule BeamWeaver.Anthropic.ChatModel.RequestBuilder do
         |> Options.put_optional("speed", Options.normalize_value(option(model, opts, :speed)))
         |> Options.put_optional("betas", betas)
         |> maybe_put_container(model, messages, opts)
-        |> Options.merge_extra_body(Keyword.get(opts, :extra_body, %{}),
-          reserved: @reserved_body_fields
-        )
+        |> Options.merge_extra_body(Options.extra_body(model, opts), reserved: @reserved_body_fields)
 
       {:ok, body}
     end
@@ -235,18 +232,63 @@ defmodule BeamWeaver.Anthropic.ChatModel.RequestBuilder do
       |> Map.from_struct()
       |> Map.take(@supported_model_params)
 
-    opts_params =
-      opts
-      |> Map.new()
-      |> Map.take(@supported_model_params ++ [:extra_body, :provider_opts, :stop])
-
-    params = Map.merge(model_params, opts_params)
+    # Every model parameter of the call is checked, so a foreign option such
+    # as `reasoning_effort` is an error rather than dropped.
+    params = Map.merge(model_params, Map.new(opts))
     policy = Keyword.get(opts, :param_policy, model.param_policy)
 
-    case ParamPolicy.validate(model.profile, params, policy, metadata: Keyword.get(opts, :metadata, %{})) do
-      :ok -> :ok
-      {:error, error} -> {:error, Error.new(error.type, error.message, error.details)}
+    ParamPolicy.validate(model.profile, params, policy)
+  end
+
+  @max_user_id_length 512
+
+  @doc false
+  # Anthropic's API reference gives the request `metadata` one field,
+  # `user_id`, a string of at most 512 characters (or null). A model's
+  # metadata is checked when the model is created (see
+  # `BeamWeaver.Anthropic.Provider`) and with each call's.
+  @spec validate_metadata(term(), String.t() | nil) :: :ok | {:error, Error.t()}
+  def validate_metadata(nil, _model), do: :ok
+
+  def validate_metadata(metadata, model) when is_map(metadata) do
+    {user_ids, others} = Map.split(metadata, [:user_id, "user_id"])
+    user_ids = user_ids |> Map.values() |> Enum.reject(&is_nil/1)
+
+    cond do
+      others != %{} ->
+        keys = Map.keys(others)
+
+        metadata_error(model, "Anthropic metadata takes only :user_id, not #{Enum.map_join(keys, ", ", &inspect/1)}",
+          keys: keys
+        )
+
+      not Enum.all?(user_ids, &is_binary/1) ->
+        metadata_error(model, "Anthropic metadata :user_id must be a string",
+          field: "metadata.user_id",
+          expected: :string
+        )
+
+      Enum.any?(user_ids, &Options.longer_than?(&1, @max_user_id_length)) ->
+        metadata_error(model, "Anthropic metadata :user_id takes at most #{@max_user_id_length} characters",
+          field: "metadata.user_id",
+          max_length: @max_user_id_length
+        )
+
+      true ->
+        :ok
     end
+  end
+
+  def validate_metadata(_metadata, model),
+    do: metadata_error(model, "Anthropic metadata must be a map with only :user_id", expected: :map)
+
+  defp metadata_error(model, message, details) do
+    {:error,
+     Error.new(
+       :unsupported_model_param,
+       message,
+       Enum.into(details, %{provider: :anthropic, model: model, params: [:metadata]})
+     )}
   end
 
   defp validate_sampling_params(model, opts) do
@@ -793,6 +835,17 @@ defmodule BeamWeaver.Anthropic.ChatModel.RequestBuilder do
     end
   end
 
+  @doc false
+  # Whether a call may force a tool call: some Claude models take only `:auto`
+  # or `:none`, and others drop a forced choice while thinking.
+  def forced_tool_choice?(model, opts) do
+    modes = profile_extra(model, :tool_choice_modes)
+    thinking? = thinking_enabled?(option(model, opts, :thinking)) or always_on_thinking_model?(model)
+
+    not (is_list(modes) and :any not in modes) and
+      not (thinking? and profile_extra(model, :forced_tool_choice_with_thinking) != true)
+  end
+
   defp tool_choice(model, opts) do
     choice = Keyword.get(opts, :tool_choice)
     parallel = Keyword.get(opts, :parallel_tool_calls, Map.get(model, :parallel_tool_calls))
@@ -1063,8 +1116,10 @@ defmodule BeamWeaver.Anthropic.ChatModel.RequestBuilder do
     end)
   end
 
+  # A call's `max_output_tokens` or `max_completion_tokens` is the same cap.
   defp max_tokens(model, opts) do
-    Keyword.get(opts, :max_tokens, model.max_tokens || profile_max_tokens(model) || 4096)
+    Keyword.get(opts, :max_tokens) || Keyword.get(opts, :max_output_tokens) ||
+      Keyword.get(opts, :max_completion_tokens) || model.max_tokens || profile_max_tokens(model) || 4096
   end
 
   defp profile_max_tokens(%{profile: %{max_output_tokens: value}}), do: value

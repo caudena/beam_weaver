@@ -8,7 +8,7 @@ defmodule BeamWeaver.Agent.Middleware.ToolEmulator do
   original tool handler.
   """
 
-  @behaviour BeamWeaver.Agent.Middleware
+  use BeamWeaver.Agent.Middleware
 
   alias BeamWeaver.Agent.ToolCallRequest
   alias BeamWeaver.Core.ChatModel
@@ -51,6 +51,7 @@ defmodule BeamWeaver.Agent.Middleware.ToolEmulator do
   @impl true
   def name(_middleware), do: :tool_emulator
 
+  @impl true
   def wrap_tool_call(%__MODULE__{} = middleware, %ToolCallRequest{} = request, handler) do
     if emulate?(middleware, request) do
       emulate_tool(middleware, request)

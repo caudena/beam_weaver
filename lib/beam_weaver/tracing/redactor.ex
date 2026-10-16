@@ -1,7 +1,5 @@
 defmodule BeamWeaver.Tracing.Redactor do
-  @moduledoc """
-  Redacts secrets from trace inputs, outputs, metadata, usage, and errors.
-  """
+  @moduledoc false
 
   @doc """
   Redacts the same secret shapes protected by transport redaction.

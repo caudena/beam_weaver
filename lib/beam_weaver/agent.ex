@@ -1,26 +1,91 @@
 defmodule BeamWeaver.Agent do
-  @moduledoc """
-  Behaviour and DSL for user-defined BeamWeaver agents.
+  @moduledoc ~S"""
+  Agent modules: a chat model, instructions and tools that run in a loop until
+  the model answers.
 
-  Agents are normal Elixir modules. The DSL builds a graph at runtime, while
-  compile-time checks catch common static mistakes such as duplicate node names
-  and missing entry points.
+  ```elixir
+  defmodule MyApp.Tools.LookupOrder do
+    use BeamWeaver.Tool
+
+    name "lookup_order"
+    description "Look up the shipping status of an order by its id."
+
+    schema do
+      field :order_id, :string
+    end
+
+    @impl true
+    def invoke(_tool, %{"order_id" => order_id}, _opts), do: {:ok, "Order #{order_id} shipped on Monday."}
+  end
+
+  defmodule MyApp.SupportAgent do
+    use BeamWeaver.Agent
+
+    alias BeamWeaver.Models.FakeChatModel
+
+    model "fake:chat",
+      responses: [
+        FakeChatModel.tool_call("lookup_order", %{"order_id" => "A-1001"}),
+        "Your order A-1001 shipped on Monday."
+      ]
+
+    system_prompt "You are Acme's support agent."
+    tools [MyApp.Tools.LookupOrder]
+  end
+
+  {:ok, result} = MyApp.SupportAgent.invoke(%{messages: ["Where is my order A-1001?"]})
+  result.messages |> List.last() |> BeamWeaver.Core.Message.text()
+  #=> "Your order A-1001 shipped on Monday."
+  ```
+
+  `use BeamWeaver.Agent` gives the module `invoke/2`, `stream_events/2`,
+  `resume/2`, `resume_review/2` and `get_state/1`, which call the functions
+  of the same name in this module.
+
+  ## Declarations
+
+  | Declaration | What it does |
+  | --- | --- |
+  | `model "provider:model", opts` | The chat model and its options. |
+  | `system_prompt "..."` | Instructions sent ahead of the conversation. |
+  | `tools [...]`, or `tools do tool Mod end` | Tools the model may call. |
+  | `middleware [...]`, or `middleware do use Mod, opts end` | Code around model and tool calls. |
+  | `response_schema Schema, opts` | A structured final answer, in `structured_response`. |
+  | `context_schema do field ... end` | The fields of the per-call `context:`. |
+  | `interrupt_on %{"tool_name" => true}` | Pauses before those tools for human review. |
+  | `recursion_limit 50` | The most steps one run may take. |
+  | `tool_timeout`, `step_timeout`, `run_timeout` | Time limits, in milliseconds, for each tool call, each step and the whole run. |
+  | `name "..."`, `description "..."` | The agent's name and what it does. |
+  | `filesystem`, `skills`, `memory`, `subagents`, `async_subagents` | Deep agent capabilities. |
+  | `compact_conversation`, `overflow_recovery`, `prompt_caching` | Context and cost management. |
+  | `capability_profile :auto` | Applies the capability profile of the agent's model. |
+
+  Declarations, including the options after `model "..."`, are evaluated each
+  time the agent runs, so they can read your configuration. For the same
+  reason, storage you declare must outlive the call: a module that creates an
+  ETS saver, store or cache in a declaration, such as
+  `checkpointer BeamWeaver.Checkpoint.ETS.new()`, doesn't compile, because
+  every call would get a new, empty one. Create it once and pass it per call
+  with `checkpointer:`, `store:` or `cache:`, or declare storage kept in your
+  database, such as `BeamWeaver.Checkpoint.Ecto`. Instead of a model, a
+  module can define `graph/0` to run a graph built with `BeamWeaver.Graph`.
+
+  The [Agents](agents.md) guide covers each declaration, and
+  [Deep Agents](deep_agents.md) covers the capabilities.
   """
 
   alias BeamWeaver.Agent.Built
   alias BeamWeaver.Agent.DSL
-  alias BeamWeaver.Agent.Spec
-  alias BeamWeaver.Core.Async
   alias BeamWeaver.Core.Error
   alias BeamWeaver.Graph.Compiled
-  alias BeamWeaver.Graph.StateGraph
 
   @type input :: map()
   @type agent_module :: module()
   @type built_agent :: Built.t()
 
-  @callback graph() :: StateGraph.t() | Compiled.t()
-  @callback __beam_weaver_agent_spec__() :: Spec.t()
+  @callback graph() :: BeamWeaver.Graph.t() | Compiled.t()
+  @doc false
+  @callback __beam_weaver_agent_spec__() :: struct()
   @callback checkpointer() :: struct() | nil
   @callback store() :: struct() | nil
 
@@ -49,14 +114,14 @@ defmodule BeamWeaver.Agent do
   defmacro model(expr_ast) do
     quote bind_quoted: [expr_ast: Macro.escape(expr_ast)] do
       @beam_weaver_model expr_ast
-      @beam_weaver_model_opts []
+      @beam_weaver_model_options nil
     end
   end
 
-  defmacro model(expr_ast, opts) do
-    quote bind_quoted: [expr_ast: Macro.escape(expr_ast), opts: opts] do
+  defmacro model(expr_ast, opts_ast) do
+    quote bind_quoted: [expr_ast: Macro.escape(expr_ast), opts_ast: Macro.escape(opts_ast)] do
       @beam_weaver_model expr_ast
-      @beam_weaver_model_opts opts
+      @beam_weaver_model_options opts_ast
     end
   end
 
@@ -70,59 +135,27 @@ defmodule BeamWeaver.Agent do
     end
   end
 
-  defmacro tools(do: block) do
-    tools_ast = DSL.tools_block_ast!(__CALLER__, block)
+  for {macro_name, attr} <- [
+        tools: :beam_weaver_tools,
+        middleware: :beam_weaver_middleware,
+        subagents: :beam_weaver_subagents,
+        async_subagents: :beam_weaver_async_subagents
+      ] do
+    defmacro unquote(macro_name)(do: block) do
+      ast = DSL.block_ast!(__CALLER__, unquote(macro_name), block)
+      attr = unquote(attr)
 
-    quote bind_quoted: [tools_ast: Macro.escape(tools_ast)] do
-      @beam_weaver_tools tools_ast
+      quote bind_quoted: [attr: attr, ast: Macro.escape(ast)] do
+        Module.put_attribute(__MODULE__, attr, ast)
+      end
     end
-  end
 
-  defmacro tools(expr_ast) do
-    quote bind_quoted: [expr_ast: Macro.escape(expr_ast)] do
-      @beam_weaver_tools expr_ast
-    end
-  end
+    defmacro unquote(macro_name)(expr_ast) do
+      attr = unquote(attr)
 
-  defmacro middleware(do: block) do
-    middleware_ast = DSL.middleware_block_ast!(__CALLER__, block)
-
-    quote bind_quoted: [middleware_ast: Macro.escape(middleware_ast)] do
-      @beam_weaver_middleware middleware_ast
-    end
-  end
-
-  defmacro middleware(expr_ast) do
-    quote bind_quoted: [expr_ast: Macro.escape(expr_ast)] do
-      @beam_weaver_middleware expr_ast
-    end
-  end
-
-  defmacro subagents(do: block) do
-    subagents_ast = DSL.subagents_block_ast!(__CALLER__, block)
-
-    quote bind_quoted: [subagents_ast: Macro.escape(subagents_ast)] do
-      @beam_weaver_subagents subagents_ast
-    end
-  end
-
-  defmacro subagents(expr_ast) do
-    quote bind_quoted: [expr_ast: Macro.escape(expr_ast)] do
-      @beam_weaver_subagents expr_ast
-    end
-  end
-
-  defmacro async_subagents(do: block) do
-    async_subagents_ast = DSL.async_subagents_block_ast!(__CALLER__, block)
-
-    quote bind_quoted: [async_subagents_ast: Macro.escape(async_subagents_ast)] do
-      @beam_weaver_async_subagents async_subagents_ast
-    end
-  end
-
-  defmacro async_subagents(expr_ast) do
-    quote bind_quoted: [expr_ast: Macro.escape(expr_ast)] do
-      @beam_weaver_async_subagents expr_ast
+      quote bind_quoted: [attr: attr, expr_ast: Macro.escape(expr_ast)] do
+        Module.put_attribute(__MODULE__, attr, expr_ast)
+      end
     end
   end
 
@@ -214,10 +247,13 @@ defmodule BeamWeaver.Agent do
     end
   end
 
-  defmacro interrupts(opts) do
-    quote bind_quoted: [opts: opts] do
-      @beam_weaver_interrupt_before Keyword.get(opts, :before, [])
-      @beam_weaver_interrupt_after Keyword.get(opts, :after, [])
+  defmacro interrupts(opts_ast) do
+    before_ast = quote(do: Keyword.get(unquote(opts_ast), :before, []))
+    after_ast = quote(do: Keyword.get(unquote(opts_ast), :after, []))
+
+    quote bind_quoted: [before_ast: Macro.escape(before_ast), after_ast: Macro.escape(after_ast)] do
+      @beam_weaver_interrupt_before before_ast
+      @beam_weaver_interrupt_after after_ast
     end
   end
 
@@ -243,7 +279,7 @@ defmodule BeamWeaver.Agent do
 
     schema =
       schema
-      |> BeamWeaver.Schema.to_json_schema()
+      |> response_json_schema()
       |> maybe_put_schema_title(Keyword.get(opts, :name))
       |> maybe_put_schema_description(Keyword.get(opts, :description))
 
@@ -251,7 +287,7 @@ defmodule BeamWeaver.Agent do
 
     strategy_opts =
       opts
-      |> Keyword.take([:name, :description, :strict, :tool_message_content, :handle_errors])
+      |> Keyword.take([:name, :description, :strict, :tool_message_content, :handle_errors, :max_retries])
 
     case strategy do
       :auto -> BeamWeaver.Agent.StructuredOutput.auto(schema, strategy_opts)
@@ -293,6 +329,19 @@ defmodule BeamWeaver.Agent do
     end
   end
 
+  # A module must declare its schema: one that declares none, or doesn't
+  # exist, would ask the model for an empty object.
+  defp response_json_schema(schema) when is_atom(schema) do
+    if String.starts_with?(Atom.to_string(schema), "Elixir.") and is_nil(BeamWeaver.Schema.module_schema(schema)) do
+      raise ArgumentError,
+            "response_schema #{inspect(schema)} is not a schema module: `use BeamWeaver.Schema` in it, or define `json_schema/0`"
+    end
+
+    BeamWeaver.Schema.to_json_schema(schema)
+  end
+
+  defp response_json_schema(schema), do: BeamWeaver.Schema.to_json_schema(schema)
+
   defp maybe_put_schema_title(schema, nil), do: schema
   defp maybe_put_schema_title(schema, name) when is_map(schema), do: Map.put(schema, "title", to_string(name))
 
@@ -302,66 +351,88 @@ defmodule BeamWeaver.Agent do
     do: Map.put(schema, "description", to_string(description))
 
   @doc """
-  Builds a runtime agent from an options map or keyword list.
+  Builds an agent at runtime, from options with the same names as the
+  declarations: `:model`, `:system_prompt`, `:tools`, `:middleware`,
+  `:response_format`, `:checkpointer`, `:store` and so on. An option that
+  isn't one of them is an `:invalid_agent` error that names it.
 
-  The returned agent uses the same `%BeamWeaver.Agent.Spec{}` and graph compiler
-  as the `use BeamWeaver.Agent` DSL. Prefer module-defined agents for stable
-  application code; use this for config-driven or user-generated workflows.
+  Each subagent is checked as a `task` call would build it, without building
+  it: one that can't be built, for example with a tool that isn't one or a
+  model that can't be resolved, is an `:invalid_subagent` error that names
+  it. An agent module checks its subagents the same way on its first call.
+
+  Run the result with `invoke/3`, which takes the same call options as for an
+  agent module: a call's `:checkpointer`, `:store` and `:cache` replace the
+  ones given here. Prefer agent modules for agents your application defines
+  in code. See [Agents built at runtime](agents.md#agents-built-at-runtime).
   """
   @spec build(keyword() | map()) :: {:ok, Built.t()} | {:error, Error.t()}
   defdelegate build(opts), to: BeamWeaver.Agent.Builder
 
   @doc """
-  Invokes an agent module.
+  Runs an agent until the model answers.
+
+  `agent` is an agent module or a built agent; `input` is the starting state,
+  such as `%{messages: ["Where is my order?"]}`. Returns `{:ok, state}`,
+  `{:interrupted, interrupt}` when the run pauses, or `{:error, error}`.
+
+  Options:
+
+    * `:checkpointer` and `:config` - save the thread named by
+      `%{"configurable" => %{"thread_id" => id}}`, to continue it later.
+    * `:context` - per-call data for tools and middleware.
+    * `:store` - the memory store for long-term memory.
+    * `:recursion_limit` - the most steps this run may take.
+    * `:step_timeout`, `:run_timeout` - time limits for one step and for this
+      run, in milliseconds.
+    * `:trace` - a name and fields for this run's trace.
+    * `:model_opts` - extra model options for this run.
   """
-  @spec invoke(agent_module(), input(), keyword()) ::
-          {:ok, map()} | {:interrupted, map()} | {:error, Error.t()}
-  @spec invoke(built_agent(), input(), keyword()) ::
+  @spec invoke(agent_module() | built_agent(), input(), keyword()) ::
           {:ok, map()} | {:interrupted, map()} | {:error, Error.t()}
   defdelegate invoke(agent, input, opts \\ []), to: BeamWeaver.Agent.Runner
 
   @doc """
-  Starts a Task-backed agent invocation.
-  """
-  @spec async_invoke(agent_module() | built_agent(), input(), keyword()) :: Async.handle()
-  defdelegate async_invoke(agent, input, opts \\ []), to: BeamWeaver.Agent.Runner
+  Runs an agent and returns its events as `BeamWeaver.Stream.Envelope` structs:
+  tokens, tool calls, state updates and the final message.
 
-  @doc """
-  Streams typed event envelopes from an agent invocation.
+  Pass `live: true` to receive events while the run progresses; without it the
+  same events come back as a list when the run ends. `stream_mode:` keeps only
+  some channels, such as `[:messages, :tools]`. Takes the options of
+  `invoke/3`. See [Streaming](streaming.md).
   """
-  @spec stream_events(agent_module(), input(), keyword()) ::
-          {:ok, Enumerable.t()} | {:interrupted, map()} | {:error, Error.t()}
-  @spec stream_events(built_agent(), input(), keyword()) ::
+  @spec stream_events(agent_module() | built_agent(), input(), keyword()) ::
           {:ok, Enumerable.t()} | {:interrupted, map()} | {:error, Error.t()}
   defdelegate stream_events(agent, input, opts \\ []), to: BeamWeaver.Agent.Runner
 
   @doc """
-  Resumes the latest interrupted checkpoint for an agent module.
+  Continues a paused thread with a resume value. Pass the checkpointer, config
+  and context of the call that paused. With `nil`, it also continues a run
+  that a breakpoint (`interrupt_before`, `interrupt_after`) or a crash stopped.
   """
-  @spec resume(agent_module(), term(), keyword()) ::
-          {:ok, map()} | {:interrupted, map()} | {:error, Error.t()}
-  @spec resume(built_agent(), term(), keyword()) ::
+  @spec resume(agent_module() | built_agent(), term(), keyword()) ::
           {:ok, map()} | {:interrupted, map()} | {:error, Error.t()}
   defdelegate resume(agent, resume, opts \\ []), to: BeamWeaver.Agent.Runner
 
   @doc """
-  Resumes an agent from framework-agnostic HITL review decisions.
+  Continues a thread paused by `interrupt_on` with review decisions, such as
+  `[BeamWeaver.Agent.HITL.decision(:approve)]`. See
+  [Human-in-the-Loop](human_in_the_loop.md).
   """
-  @spec resume_review(agent_module(), term(), keyword()) ::
+  @spec resume_review(agent_module() | built_agent(), term(), keyword()) ::
           {:ok, map()} | {:interrupted, map()} | {:error, Error.t()}
-  defdelegate resume_review(agent_module, review_or_decisions, opts \\ []),
+  defdelegate resume_review(agent, review_or_decisions, opts \\ []),
     to: BeamWeaver.Agent.Runner
 
   @doc """
-  Returns the latest checkpoint state for an agent module.
+  Reads the latest saved snapshot of the thread in `opts[:config]`:
+  `{:ok, snapshot}`, or `:error` when the thread has no checkpoint.
   """
-  @spec get_state(agent_module(), keyword() | map()) ::
-          {:ok, map()} | :error | {:error, Error.t()}
-  @spec get_state(built_agent(), keyword() | map()) :: {:ok, map()} | :error | {:error, Error.t()}
+  @spec get_state(agent_module() | built_agent(), keyword()) :: {:ok, map()} | :error | {:error, Error.t()}
   defdelegate get_state(agent, opts \\ []), to: BeamWeaver.Agent.Runner
 
   @doc """
-  Compiles the graph for an agent module.
+  Compiles an agent module's graph, for example to use the agent as a subgraph.
   """
   @spec compiled_graph(agent_module(), keyword()) :: {:ok, Compiled.t()} | {:error, Error.t()}
   defdelegate compiled_graph(agent_module, opts \\ []), to: BeamWeaver.Agent.Runner

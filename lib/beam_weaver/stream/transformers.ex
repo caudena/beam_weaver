@@ -1,11 +1,11 @@
 defmodule BeamWeaver.Stream.Transformers do
   @moduledoc """
-  Native reducers for graph data stream projections.
+  Reducer for graph data stream projections.
 
-  LangGraph exposes one transformer class per stream mode. BeamWeaver keeps the
-  same behavior as an immutable reducer over typed stream envelopes. The reducer
-  can be scoped to a graph namespace and emits `{mode, envelope}` tuples for the
-  selected projection modes.
+  A single immutable reducer over typed stream envelopes covers every stream
+  mode (`:values`, `:updates`, `:custom`, `:checkpoints`, `:tasks`, `:debug`,
+  `:lifecycle`). The reducer can be scoped to a graph namespace and emits
+  `{mode, envelope}` tuples for the selected projection modes.
   """
 
   alias BeamWeaver.Stream.Envelope

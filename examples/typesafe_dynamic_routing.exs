@@ -2,6 +2,7 @@
 # Offline fixtures: mix run examples/typesafe_dynamic_routing.exs --offline
 # Export TYPESAFE_API_KEY (or TYPESAFE_API) and OPENAI_API_KEY before live runs.
 
+Code.require_file("support.exs", __DIR__)
 Code.require_file("typesafe_routing_prompts.exs", __DIR__)
 
 defmodule BeamWeaver.Examples.TypeSafeRouting do
@@ -181,6 +182,7 @@ defmodule BeamWeaver.Examples.TypeSafeRouting do
         {:ok, state} ->
           IO.inspect(state.model_route, label: "Model route (below 0.8 or on error: Luna)")
           IO.puts("Answer: " <> Message.text(List.last(state.messages)))
+          if prompt == @simple, do: BeamWeaver.Examples.Support.assert_tools_called!(state.messages, ["multiply"])
 
         {:error, error} ->
           raise "Agent failed: #{error.type}: #{error.message}"

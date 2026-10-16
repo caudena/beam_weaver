@@ -5,7 +5,7 @@ defmodule BeamWeaver.Provider.OpenAICompatibleStreamingTest do
   alias BeamWeaver.Core.Messages.ToolCall
   alias BeamWeaver.Provider.OpenAICompatibleStreaming, as: Streaming
   alias BeamWeaver.Stream.Events
-  alias BeamWeaver.ZAI.Error
+  alias BeamWeaver.Core.Error
 
   test "one reducer reconstructs reasoning, text, tools, finish reason, usage, and unknown deltas" do
     body = """
@@ -45,7 +45,6 @@ defmodule BeamWeaver.Provider.OpenAICompatibleStreamingTest do
     %{
       provider: :test_provider,
       provider_name: "Test provider",
-      error_module: Error,
       usage_metadata: fn %{"usage" => usage} ->
         %{
           input_tokens: usage["prompt_tokens"],

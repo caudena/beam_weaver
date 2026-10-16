@@ -16,6 +16,19 @@ defmodule BeamWeaver.Migrations do
   durable adapter table. The repository selects the migration dialect:
   PostgreSQL supports all durable adapters, while SQLite currently supports
   `:checkpoint` only.
+
+  On PostgreSQL, `prefix:` puts the tables in that schema, which `up/1`
+  creates unless `create_schema: false` is given; pass the same `:prefix` to
+  the adapters. A `:vector_store` entry takes `dimensions:`, `distance:`,
+  `index:` (`:ivfflat`, `:hnsw`, or `false` for no index, which embeddings of
+  more than 2,000 dimensions need) and `index_opts:`.
+
+  Memory schema version 2 keeps each record's lifetime. A record already
+  stored gets the time from its last write to its expiry. A store created
+  with `refresh_on_read?: true` moved the expiry of the records it read, so
+  for those records that time is longer than their lifetime: give the
+  `:memory` entry that store's `default_ttl:`, in minutes, to cap it, as in
+  `up(adapters: [{:memory, default_ttl: 60 * 24}])`.
   """
 
   use Ecto.Migration

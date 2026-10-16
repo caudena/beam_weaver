@@ -1,27 +1,48 @@
 defmodule BeamWeaver.Agent.Middleware.OverflowRecovery do
   @moduledoc """
-  Read-side clipping for DeepAgents context-overflow recovery.
+  Recovers from context overflow errors by clipping large tool results.
 
-  The helper targets the preserved message suffix that ends with a consecutive
-  batch of tool messages. Large generic tool results are offloaded to the
-  filesystem backend; `read_file` results are head-sliced and point back to the
-  original file path because the full data is already available there.
+  When a model call fails because the request is too long for the model, the
+  middleware clips the trailing batch of tool results and retries once. A
+  generic result is saved to a file under `/large_tool_results/` and replaced
+  with a preview of its first and last lines; a `read_file` result is cut to
+  its first 4,000 characters and points back to the file it came from. When
+  the retry succeeds, the clipped results replace the full ones in the saved
+  thread, and with `BeamWeaver.Filesystem.State` the saved files are added to
+  the thread's files, so later calls don't send the full results again.
+
+  Options:
+
+    * `:keep` - how large the trailing batch may be before it is clipped:
+      `{:tokens, n}` (the default is `{:tokens, 5_000}`) or `{:fraction, f}` of
+      `:max_input_tokens` (5,000 tokens when that is unknown).
+    * `:max_input_tokens` - the model's context window; `overflow_recovery`
+      sets it from the agent's model.
+    * `:backend` - the filesystem the results are saved to.
+    * `:token_counter` - `:approximate` or a function of a message list.
+    * `:large_tool_results_prefix` - the directory for the saved results.
   """
 
-  @behaviour BeamWeaver.Agent.Middleware
+  use BeamWeaver.Agent.Middleware
 
+  alias BeamWeaver.Agent.ExtendedModelResponse
   alias BeamWeaver.Agent.Middleware.Helpers
   alias BeamWeaver.Agent.Middleware.Offload
   alias BeamWeaver.Agent.ModelRequest
+  alias BeamWeaver.Agent.ModelResponse
+  alias BeamWeaver.Agent.State, as: AgentState
   alias BeamWeaver.Core.Error
   alias BeamWeaver.Core.ID
   alias BeamWeaver.Core.Message
   alias BeamWeaver.Core.Messages.Utils, as: MessageUtils
   alias BeamWeaver.Filesystem
   alias BeamWeaver.Filesystem.State
+  alias BeamWeaver.Graph.Command
   alias BeamWeaver.Options
 
   @chars_per_token 4
+  @default_keep {:tokens, 5_000}
+  @default_threshold_tokens 5_000
 
   @too_large_tool_msg """
   Tool result too large, the result of this tool call %{tool_call_id} was saved in the filesystem at this path: %{file_path}
@@ -45,7 +66,7 @@ defmodule BeamWeaver.Agent.Middleware.OverflowRecovery do
             files_update: nil,
             clipped?: false,
             backend: nil,
-            keep: {:messages, 8},
+            keep: @default_keep,
             max_input_tokens: nil,
             token_counter: :approximate,
             large_tool_results_prefix: nil,
@@ -67,10 +88,15 @@ defmodule BeamWeaver.Agent.Middleware.OverflowRecovery do
         }
 
   def new(opts \\ []) do
+    keep = Keyword.get(opts, :keep, @default_keep)
+    max_input_tokens = Keyword.get(opts, :max_input_tokens)
+    # Raises for a setting other than `{:tokens, n}` or `{:fraction, f}`.
+    derive_threshold_tokens(keep, max_input_tokens)
+
     %__MODULE__{
       backend: Keyword.get(opts, :backend, State.new()),
-      keep: Keyword.get(opts, :keep, {:messages, 8}),
-      max_input_tokens: Keyword.get(opts, :max_input_tokens),
+      keep: keep,
+      max_input_tokens: max_input_tokens,
       token_counter: Keyword.get(opts, :token_counter, :approximate),
       large_tool_results_prefix: Keyword.get(opts, :large_tool_results_prefix),
       state_key: Keyword.get(opts, :state_key, :files),
@@ -81,6 +107,7 @@ defmodule BeamWeaver.Agent.Middleware.OverflowRecovery do
   @impl true
   def name(_middleware), do: :deepagents_overflow_clip
 
+  @impl true
   def wrap_model_call(%__MODULE__{retry?: false}, %ModelRequest{} = request, handler),
     do: handler.(request)
 
@@ -98,32 +125,41 @@ defmodule BeamWeaver.Agent.Middleware.OverflowRecovery do
     end
   end
 
-  @doc "Derives the tail clipping threshold from a DeepAgents keep setting."
+  @doc """
+  Derives the tail clipping threshold, in tokens, from a `:keep` setting.
+
+  `{:tokens, n}` uses `n`, and `{:fraction, f}` uses `f` times
+  `max_input_tokens`, or 5,000 tokens when that is unknown. Any other setting
+  raises `ArgumentError`.
+  """
   def derive_threshold_tokens({:tokens, value}, _max_input_tokens)
-      when is_integer(value),
+      when is_integer(value) and value > 0,
       do: value
 
   def derive_threshold_tokens({:fraction, value}, max_input_tokens)
-      when is_number(value) do
+      when is_number(value) and value > 0 and value <= 1 do
     case max_input_tokens do
       limit when is_integer(limit) and limit > 0 -> trunc(limit * value)
-      _missing -> 5_000
+      _missing -> @default_threshold_tokens
     end
   end
 
   def derive_threshold_tokens({kind, _value}, _max_input_tokens) when is_binary(kind) do
-    {:error, message} = Options.atom_enum_error("keep kind", kind, [:tokens, :fraction, :messages])
+    {:error, message} = Options.atom_enum_error("keep kind", kind, [:tokens, :fraction])
     raise ArgumentError, message
   end
 
-  def derive_threshold_tokens(_keep, _max_input_tokens), do: 5_000
+  def derive_threshold_tokens(keep, _max_input_tokens) do
+    raise ArgumentError,
+          "overflow_recovery keep must be {:tokens, n} or {:fraction, f} with 0 < f <= 1, got: #{inspect(keep)}"
+  end
 
   @doc """
   Clips an oversized trailing tool-message batch.
 
   Options:
 
-  - `:keep` - context keep setting, default `{:messages, 8}`.
+  - `:keep` - `{:tokens, n}` or `{:fraction, f}`, default `{:tokens, 5_000}`.
   - `:max_input_tokens` - model input token limit for fractional keep settings.
   - `:token_counter` - `:approximate` or a one-arity function.
   - `:large_tool_results_prefix` - virtual output prefix.
@@ -139,10 +175,6 @@ defmodule BeamWeaver.Agent.Middleware.OverflowRecovery do
         maybe_clip_tail(messages, backend, opts, start, tail)
     end
   end
-
-  @doc "Task-backed async variant of `clip_tail/3`."
-  def aclip_tail(messages, backend \\ State.new(), opts \\ []),
-    do: Task.async(fn -> clip_tail(messages, backend, opts) end)
 
   defp retry_after_clip(%__MODULE__{} = middleware, %ModelRequest{} = request, handler, original) do
     backend = middleware.backend || State.new()
@@ -160,15 +192,34 @@ defmodule BeamWeaver.Agent.Middleware.OverflowRecovery do
 
     if result.clipped? do
       request
-      |> ModelRequest.override(%{
+      |> ModelRequest.override(
         messages: result.messages,
         state: retry_state(request.state, middleware.state_key, result.files_update)
-      })
+      )
       |> handler.()
+      |> save_clip(middleware, request, result)
     else
       original
     end
   end
+
+  # A successful retry also saves the clipped results in place of the full
+  # ones, and the saved files with a state filesystem, so the next call on the
+  # thread doesn't overflow again.
+  defp save_clip({:ok, %ModelResponse{} = response}, %__MODULE__{} = middleware, request, result) do
+    saved_ids = MapSet.new(for %Message{id: id} <- AgentState.messages(request.state || %{}), do: id)
+
+    case Enum.filter(result.replacements, &MapSet.member?(saved_ids, &1.id)) do
+      [] when is_nil(result.files_update) ->
+        {:ok, response}
+
+      replacements ->
+        update = Helpers.maybe_put_files_update(%{messages: replacements}, middleware.state_key, result.files_update)
+        %ExtendedModelResponse{model_response: response, command: %Command{update: update}}
+    end
+  end
+
+  defp save_clip(other, _middleware, _request, _result), do: other
 
   defp retry_state(state, _state_key, nil), do: state || %{}
 
@@ -193,7 +244,7 @@ defmodule BeamWeaver.Agent.Middleware.OverflowRecovery do
   defp maybe_clip_tail(messages, backend, opts, start, tail) do
     threshold =
       derive_threshold_tokens(
-        Keyword.get(opts, :keep, {:messages, 8}),
+        Keyword.get(opts, :keep, @default_keep),
         Keyword.get(opts, :max_input_tokens)
       )
 

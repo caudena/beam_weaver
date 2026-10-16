@@ -2,6 +2,7 @@ defmodule BeamWeaver.Template.Mustache do
   @moduledoc false
 
   alias BeamWeaver.Core.Error
+  alias BeamWeaver.Template.Simple
 
   def render(template, vars, opts \\ [])
 
@@ -250,39 +251,12 @@ defmodule BeamWeaver.Template.Mustache do
   defp fetch_value([current | _stack], "."), do: {:ok, current}
 
   defp fetch_value(stack, name) do
-    [head | rest] = String.split(name, ".")
+    path = String.split(name, ".")
 
     Enum.find_value(stack, :error, fn context ->
-      with {:ok, value} <- fetch_segment(context, head),
-           {:ok, value} <- fetch_path(value, rest) do
-        {:ok, value}
-      else
-        :error -> nil
-      end
+      with :error <- Simple.fetch_path(context, path), do: nil
     end)
   end
-
-  defp fetch_path(value, []), do: {:ok, value}
-
-  defp fetch_path(value, [segment | rest]) do
-    with {:ok, nested} <- fetch_segment(value, segment) do
-      fetch_path(nested, rest)
-    end
-  end
-
-  defp fetch_segment(%{__struct__: _module} = struct, segment) do
-    struct
-    |> Map.from_struct()
-    |> fetch_segment(segment)
-  end
-
-  defp fetch_segment(map, segment) when is_map(map) do
-    Enum.find_value(map, :error, fn {key, value} ->
-      if to_string(key) == segment, do: {:ok, value}, else: nil
-    end)
-  end
-
-  defp fetch_segment(_value, _segment), do: :error
 
   defp truthy?(nil), do: false
   defp truthy?(false), do: false

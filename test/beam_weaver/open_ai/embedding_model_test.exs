@@ -1,7 +1,6 @@
 defmodule BeamWeaver.OpenAI.EmbeddingModelTest do
   use ExUnit.Case, async: true
 
-  alias BeamWeaver.Core.Async
   alias BeamWeaver.Core.EmbeddingModel, as: CoreEmbeddingModel
   alias BeamWeaver.Models.Profile
   alias BeamWeaver.OpenAI.EmbeddingModel
@@ -49,7 +48,7 @@ defmodule BeamWeaver.OpenAI.EmbeddingModelTest do
     assert {:ok, [0.1, 0.2]} = CoreEmbeddingModel.embed_query(model, "alpha")
   end
 
-  test "async query embedding preserves runtime kwargs and replay request shape" do
+  test "query embedding applies runtime options and extra body to the request shape" do
     request_body = %{
       "model" => "text-embedding-3-small",
       "input" => "async alpha",
@@ -65,14 +64,12 @@ defmodule BeamWeaver.OpenAI.EmbeddingModelTest do
 
     model = replay_model(write_gzip_cassette([{request_body, response_body}]))
 
-    task =
-      EmbeddingModel.async_embed_query(model, "async alpha",
-        model: "text-embedding-3-small",
-        dimensions: 2,
-        extra_body: %{encoding_format: "float"}
-      )
-
-    assert {:ok, [0.7, 0.8]} = Async.await(task)
+    assert {:ok, [0.7, 0.8]} =
+             EmbeddingModel.embed_query(model, "async alpha",
+               model: "text-embedding-3-small",
+               dimensions: 2,
+               extra_body: %{encoding_format: "float"}
+             )
   end
 
   test "chunks document embedding requests without exceeding caller chunk size" do
@@ -181,7 +178,7 @@ defmodule BeamWeaver.OpenAI.EmbeddingModelTest do
              CoreEmbeddingModel.embed_documents(model, ["", "alpha", " ", "beta"])
   end
 
-  test "async batch query embeddings preserve input order" do
+  test "consecutive query embeddings each replay their own single-input request" do
     interactions = [
       {
         %{"model" => "text-embedding-3-small", "input" => "first"},
@@ -195,11 +192,7 @@ defmodule BeamWeaver.OpenAI.EmbeddingModelTest do
 
     model = replay_model(write_gzip_cassette(interactions))
 
-    assert [
-             {:ok, [0.1]},
-             {:ok, [0.2]}
-           ] =
-             EmbeddingModel.async_batch_queries(model, ["first", "second"]) |> Async.await_batch()
+    assert [{:ok, [0.1]}, {:ok, [0.2]}] = Enum.map(["first", "second"], &EmbeddingModel.embed_query(model, &1))
   end
 
   test "returns a provider error when OpenAI omits embedding data" do

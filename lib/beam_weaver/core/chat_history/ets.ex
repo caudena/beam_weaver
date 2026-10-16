@@ -1,5 +1,5 @@
 defmodule BeamWeaver.Core.ChatHistory.ETS.Session do
-  @moduledoc "Session-scoped ETS chat history adapter."
+  @moduledoc false
 
   @behaviour BeamWeaver.Core.ChatHistory
 
@@ -73,7 +73,7 @@ defmodule BeamWeaver.Core.ChatHistory.ETS do
     %__MODULE__{table: table}
   end
 
-  @spec for_session(t(), term()) :: Session.t()
+  @spec for_session(t(), term()) :: struct()
   def for_session(%__MODULE__{table: table}, session_id) do
     %Session{table: table, session_id: to_string(session_id)}
   end

@@ -1,6 +1,9 @@
 defmodule BeamWeaver.Graph.Channels.BinaryOperatorAggregate do
   @moduledoc """
   Channel that folds updates through a binary reducer.
+
+  When the reducer raises, the update fails with an `:invalid_update` error
+  that carries the exception's message.
   """
 
   use BeamWeaver.Graph.Channel
@@ -31,22 +34,11 @@ defmodule BeamWeaver.Graph.Channels.BinaryOperatorAggregate do
   end
 
   @impl true
-  def get(%__MODULE__{value: value, key: key}) do
-    if value == Channel.missing(), do: {:error, Channel.empty_error(key)}, else: {:ok, value}
-  end
-
-  @impl true
-  def checkpoint(%__MODULE__{value: value}), do: value
-
-  @impl true
   def from_checkpoint(channel, checkpoint) do
     if checkpoint == Channel.missing(),
       do: %{channel | value: channel.initial},
       else: %{channel | value: checkpoint}
   end
-
-  @impl true
-  def available?(%__MODULE__{value: value}), do: value != Channel.missing()
 
   defp apply_updates(value, [], _operator, _seen_overwrite), do: {:ok, value}
 
@@ -60,14 +52,19 @@ defmodule BeamWeaver.Graph.Channels.BinaryOperatorAggregate do
         end
 
       :error ->
-        next =
-          cond do
-            seen_overwrite -> value
-            value == Channel.missing() -> update
-            true -> operator.(value, update)
-          end
-
-        apply_updates(next, rest, operator, seen_overwrite)
+        cond do
+          seen_overwrite -> apply_updates(value, rest, operator, seen_overwrite)
+          value == Channel.missing() -> apply_updates(update, rest, operator, seen_overwrite)
+          true -> apply_operator(value, update, rest, operator)
+        end
     end
+  end
+
+  defp apply_operator(value, update, rest, operator) do
+    operator.(value, update)
+  rescue
+    exception -> {:error, Exception.message(exception)}
+  else
+    next -> apply_updates(next, rest, operator, false)
   end
 end

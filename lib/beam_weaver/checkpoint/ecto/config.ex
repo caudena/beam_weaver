@@ -1,8 +1,6 @@
 defmodule BeamWeaver.Checkpoint.Ecto.Config do
   @moduledoc false
 
-  alias BeamWeaver.Checkpoint
-
   def generated_id do
     System.unique_integer([:positive, :monotonic])
     |> Integer.to_string()
@@ -47,14 +45,6 @@ defmodule BeamWeaver.Checkpoint.Ecto.Config do
 
   def load_write_value(%{"__beam_weaver_checkpoint_write__" => 1, "value" => value}), do: value
   def load_write_value(value), do: value
-
-  def before_checkpoint_id(nil), do: nil
-
-  def before_checkpoint_id(config) do
-    config
-    |> Checkpoint.configurable()
-    |> Map.get("checkpoint_id")
-  end
 
   def stringify_keys(map) when is_map(map) do
     Map.new(map, fn {key, value} -> {to_string(key), value} end)

@@ -1,7 +1,6 @@
 defmodule BeamWeaver.OpenAI.ChatModelTest do
   use ExUnit.Case
 
-  alias BeamWeaver.Core.Async
   alias BeamWeaver.Core.ChatModel, as: CoreChatModel
   alias BeamWeaver.Core.Message
   alias BeamWeaver.Core.Messages.ToolCall
@@ -15,15 +14,14 @@ defmodule BeamWeaver.OpenAI.ChatModelTest do
   alias BeamWeaver.OpenAI.ModelPolicy
   alias BeamWeaver.OpenAI.Responses
   alias BeamWeaver.OpenAI.ToolCalling
-  alias BeamWeaver.Runtime.Agent
   alias BeamWeaver.Tokenizer.Approximate
   alias BeamWeaver.Tracing
 
   setup do
-    Tracing.reset()
+    Tracing.clear()
 
     on_exit(fn ->
-      Tracing.reset()
+      Tracing.clear()
     end)
 
     :ok
@@ -184,7 +182,7 @@ defmodule BeamWeaver.OpenAI.ChatModelTest do
     assert response.metadata.id == "resp_replay"
   end
 
-  test "async invoke uses the same replay-backed Responses API request shape" do
+  test "provider invoke forwards request metadata into the Responses API request" do
     request_body = %{
       "model" => "gpt-5.4-mini",
       "input" => [
@@ -207,10 +205,7 @@ defmodule BeamWeaver.OpenAI.ChatModelTest do
     model =
       replay_model(write_gzip_cassette(request_body, BeamWeaver.JSON.encode!(response_body)))
 
-    task =
-      ChatModel.async_invoke(model, [Message.user("async ping")], metadata: %{request_id: "async_1"})
-
-    assert {:ok, response} = Async.await(task)
+    assert {:ok, response} = ChatModel.invoke(model, [Message.user("async ping")], metadata: %{request_id: "async_1"})
     assert Message.text(response) == "async pong"
     assert response.metadata.id == "resp_async"
   end
@@ -218,29 +213,26 @@ defmodule BeamWeaver.OpenAI.ChatModelTest do
   test "Responses API maps context-window provider errors to tagged overflow errors" do
     model = context_overflow_model()
 
-    assert {:error, %BeamWeaver.OpenAI.Error{type: :context_overflow} = error} =
+    assert {:error, %BeamWeaver.Core.Error{type: :context_overflow} = error} =
              CoreChatModel.invoke(model, [Message.user("test")])
 
     assert error.message =~ "Input tokens exceed the configured limit"
     assert error.details.code == "context_length_exceeded"
     assert error.details.error_type == "invalid_request_error"
 
-    assert {:error, %BeamWeaver.OpenAI.Error{type: :context_overflow}} =
-             model
-             |> ChatModel.async_invoke([Message.user("test")])
-             |> Async.await()
+    assert {:error, %BeamWeaver.Core.Error{type: :context_overflow}} = ChatModel.invoke(model, [Message.user("test")])
 
     assert {:ok, stream} = ChatModel.stream(context_overflow_model(), [Message.user("test")])
 
     assert [
              %BeamWeaver.Stream.Events.Error{
-               error: %BeamWeaver.OpenAI.Error{type: :context_overflow}
+               error: %BeamWeaver.Core.Error{type: :context_overflow}
              }
            ] = Enum.to_list(stream)
 
     prompt_too_long = context_overflow_model("prompt is too long: 300000 tokens > 200000 maximum")
 
-    assert {:error, %BeamWeaver.OpenAI.Error{type: :context_overflow} = prompt_error} =
+    assert {:error, %BeamWeaver.Core.Error{type: :context_overflow} = prompt_error} =
              CoreChatModel.invoke(prompt_too_long, [Message.user("test")])
 
     assert prompt_error.message =~ "prompt is too long"
@@ -361,14 +353,13 @@ defmodule BeamWeaver.OpenAI.ChatModelTest do
     assert error.details.response.role == :assistant
     assert error.details.response.content_preview == ~s({"response":"good"})
 
-    task =
-      ChatModel.async_invoke(model, [Message.user("respond with good")],
-        response_format: %{name: "BadModel", schema: schema, validator: validator}
-      )
+    assert {:error, provider_error} =
+             ChatModel.invoke(model, [Message.user("respond with good")],
+               response_format: %{name: "BadModel", schema: schema, validator: validator}
+             )
 
-    assert {:error, async_error} = Async.await(task)
-    assert async_error.type == :structured_output_parse_error
-    assert async_error.details.parsed == %{"response" => "good"}
+    assert provider_error.type == :structured_output_parse_error
+    assert provider_error.details.parsed == %{"response" => "good"}
   end
 
   test "structured output preserves valid falsy parsed values" do
@@ -429,7 +420,7 @@ defmodule BeamWeaver.OpenAI.ChatModelTest do
 
     model = replay_model(write_gzip_cassette(request_body, response_body))
 
-    assert {:error, %BeamWeaver.OpenAI.Error{type: :openai_refusal} = error} =
+    assert {:error, %BeamWeaver.Core.Error{type: :openai_refusal} = error} =
              CoreChatModel.invoke(model, [Message.user("refuse")], response_format: %{name: "Answer", schema: schema})
 
     assert %{type: :refusal, refusal: "I cannot comply."} = error.details.refusal
@@ -480,11 +471,9 @@ defmodule BeamWeaver.OpenAI.ChatModelTest do
     assert response.metadata.request_id == "req-openai-1"
     refute Map.has_key?(response.metadata.headers, "content-type")
 
-    task = ChatModel.async_invoke(model, [Message.user("headers")])
-
-    assert {:ok, async_response} = Async.await(task)
-    assert async_response.metadata.headers == %{request_id: "req-openai-1", openai_processing_ms: "17"}
-    assert async_response.metadata.request_id == "req-openai-1"
+    assert {:ok, provider_response} = ChatModel.invoke(model, [Message.user("headers")])
+    assert provider_response.metadata.headers == %{request_id: "req-openai-1", openai_processing_ms: "17"}
+    assert provider_response.metadata.request_id == "req-openai-1"
   end
 
   test "audio input and output modality shape round-trips through replay" do
@@ -602,7 +591,7 @@ defmodule BeamWeaver.OpenAI.ChatModelTest do
     assert {:ok, response} =
              CoreChatModel.invoke(model, [Message.user("option check")],
                model: "gpt-5.5",
-               model_kwargs: %{custom_non_openai_param: "kept"},
+               extra_body: %{custom_non_openai_param: "kept"},
                verbosity: :high,
                reasoning_effort: :none,
                temperature: 0.4,
@@ -741,8 +730,7 @@ defmodule BeamWeaver.OpenAI.ChatModelTest do
                %ChatModel{model: "future-model", profile: unknown},
                [Message.user("hello")],
                temperature: 0.3,
-               model_kwargs: %{custom_vendor_param: true},
-               extra_body: %{another_vendor_param: "ok"},
+               extra_body: %{custom_vendor_param: true, another_vendor_param: "ok"},
                provider_opts: %{trace: true}
              )
 
@@ -1240,7 +1228,7 @@ defmodule BeamWeaver.OpenAI.ChatModelTest do
            ] = events
   end
 
-  test "async stream_response and stream_events reconstruct streamed Responses output" do
+  test "stream, stream_response, and stream_events reconstruct streamed Responses output" do
     request_body = %{
       "model" => "gpt-5.4-mini",
       "input" => [
@@ -1280,17 +1268,14 @@ defmodule BeamWeaver.OpenAI.ChatModelTest do
     model =
       replay_model(write_gzip_cassette(request_body, response_body, content_type: "text/event-stream"))
 
-    stream_task = ChatModel.async_stream(model, [Message.user("async stream")])
-    assert {:ok, stream} = Async.await(stream_task)
+    assert {:ok, stream} = ChatModel.stream(model, [Message.user("async stream")])
     assert Enum.to_list(stream) == ["async ", "done"]
 
-    response_task = ChatModel.async_stream_response(model, [Message.user("async stream")])
-    assert {:ok, response} = Async.await(response_task)
+    assert {:ok, response} = ChatModel.stream_response(model, [Message.user("async stream")])
     assert Message.text(response) == "async done"
     assert response.metadata.usage == %{"total_tokens" => 9}
 
-    events_task = ChatModel.async_stream_events(model, [Message.user("async stream")])
-    assert {:ok, events} = Async.await(events_task)
+    assert {:ok, events} = ChatModel.stream_events(model, [Message.user("async stream")])
 
     assert Enum.any?(
              events,
@@ -1403,7 +1388,7 @@ defmodule BeamWeaver.OpenAI.ChatModelTest do
            ] = events
   end
 
-  test "async batch preserves input order while matching each replay request body" do
+  test "batch preserves input order while matching each replay request body" do
     interactions = [
       {
         %{
@@ -1439,60 +1424,11 @@ defmodule BeamWeaver.OpenAI.ChatModelTest do
 
     model = replay_model(write_gzip_cassette(interactions))
 
-    tasks =
-      ChatModel.async_batch(model, [
-        [Message.user("first")],
-        [Message.user("second")]
-      ])
-
-    assert [
-             {:ok, first},
-             {:ok, second}
-           ] = Async.await_batch(tasks)
+    assert [{:ok, first}, {:ok, second}] =
+             CoreChatModel.batch(model, [[Message.user("first")], [Message.user("second")]])
 
     assert Message.text(first) == "first response"
     assert Message.text(second) == "second response"
-  end
-
-  test "replay-backed OpenAI calls can run inside the supervised agent runtime" do
-    request_body = %{
-      "model" => "gpt-5.4-mini",
-      "input" => [
-        %{"type" => "message", "role" => "user", "content" => "agent ping"}
-      ],
-      "stream" => false
-    }
-
-    response_body = %{
-      "output" => [
-        %{
-          "type" => "message",
-          "content" => [
-            %{"type" => "output_text", "text" => "agent pong"}
-          ]
-        }
-      ]
-    }
-
-    cassette_path = write_gzip_cassette(request_body, BeamWeaver.JSON.encode!(response_body))
-    model = replay_model(cassette_path)
-    agent = start_supervised!({Agent, id: "openai_agent_#{System.unique_integer([:positive])}"})
-    :ok = Agent.subscribe(agent)
-    {:ok, parent_run} = Tracing.start_run("request")
-
-    assert {:ok, work} =
-             Agent.start_model_call(agent, [Message.user("agent ping")], fn messages ->
-               CoreChatModel.invoke(model, messages)
-             end)
-
-    assert_receive {:beam_weaver_agent, _agent_id, {:completed, work_id, %Message{role: :assistant} = response}}
-
-    assert work_id == work.id
-    assert Message.text(response) == "agent pong"
-
-    assert {:ok, %{children: [%{run: child_run}]}} = Tracing.get_tree(parent_run.id)
-    assert child_run.id == work.trace_run_id
-    assert child_run.parent_id == parent_run.id
   end
 
   defp replay_model(cassette_path) do

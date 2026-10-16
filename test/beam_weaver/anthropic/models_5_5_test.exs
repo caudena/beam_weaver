@@ -75,8 +75,6 @@ defmodule BeamWeaver.Anthropic.Models55Test do
     boundary_costs = UsageCost.calculate(profile, %{usage | input_tokens: 100_000})
     assert_in_delta boundary_costs.total_cost, 0.00295, 1.0e-12
 
-    serialized = BeamWeaver.Provider.Options.stringify_keys(profile.extra)
-    assert UsageCost.calculate(serialized, usage) == costs
     # Output length never selects the long-prompt tier.
     assert UsageCost.calculate(profile, %{input_tokens: 1, output_tokens: 128_000}).output_cost == 0.064
   end
@@ -316,6 +314,7 @@ defmodule BeamWeaver.Anthropic.Models55Test do
     model =
       ChatModel.new(
         model: "claude-haiku-5-5",
+        api_key: "test-key",
         transport: BeamWeaver.TestSupport.Conformance.Fakes.Transport,
         transport_opts: [body: body, headers: [{"content-type", "text/event-stream"}]]
       )

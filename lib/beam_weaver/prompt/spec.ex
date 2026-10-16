@@ -1,7 +1,11 @@
 defmodule BeamWeaver.Prompt.Spec do
   @moduledoc false
 
+  import BeamWeaver.MapShape, only: [put_present: 3]
+
   alias BeamWeaver.Core.Error
+  alias BeamWeaver.Core.Message
+  alias BeamWeaver.Core.Messages.Serialization
   alias BeamWeaver.Prompt
   alias BeamWeaver.Result
 
@@ -68,7 +72,8 @@ defmodule BeamWeaver.Prompt.Spec do
   end
 
   def to_spec(%Prompt.MessageTemplate{} = template) do
-    with :ok <- exportable_partials(template.partials) do
+    with :ok <- exportable_partials(template.partials),
+         {:ok, _role} <- role(template.role) do
       {:ok,
        %{
          "kind" => "message_template",
@@ -136,6 +141,10 @@ defmodule BeamWeaver.Prompt.Spec do
     end
   end
 
+  def to_spec(other) do
+    {:error, Error.new(:unsupported_runnable_spec, "prompt part cannot be saved", %{part: inspect(other)})}
+  end
+
   def from_spec(%{"type" => "prompt_string"} = spec) do
     {:ok,
      Prompt.string(Map.fetch!(spec, "template"),
@@ -165,7 +174,7 @@ defmodule BeamWeaver.Prompt.Spec do
           partials: Map.get(spec, "partials", %{}),
           template_format: format(Map.get(spec, "template_format", "simple"))
         ]
-        |> maybe_put(:example_prompt, example_prompt)
+        |> put_present(:example_prompt, example_prompt)
 
       {:ok, Prompt.few_shot(opts)}
     end
@@ -183,7 +192,7 @@ defmodule BeamWeaver.Prompt.Spec do
           partials: Map.get(spec, "partials", %{}),
           template_format: format(Map.get(spec, "template_format", "simple"))
         ]
-        |> maybe_put(:example_prompt, example_prompt)
+        |> put_present(:example_prompt, example_prompt)
 
       {:ok, Prompt.few_shot_chat(opts)}
     end
@@ -210,11 +219,13 @@ defmodule BeamWeaver.Prompt.Spec do
     do: {:error, Error.new(:invalid_runnable_spec, "invalid prompt spec", %{spec: spec})}
 
   def from_message_spec(%{"kind" => "message_template"} = spec) do
-    {:ok,
-     Prompt.message(role(Map.fetch!(spec, "role")), Map.fetch!(spec, "template"),
-       partials: Map.get(spec, "partials", %{}),
-       template_format: format(Map.get(spec, "template_format", "simple"))
-     )}
+    with {:ok, role} <- role(Map.fetch!(spec, "role")) do
+      {:ok,
+       Prompt.message(role, Map.fetch!(spec, "template"),
+         partials: Map.get(spec, "partials", %{}),
+         template_format: format(Map.get(spec, "template_format", "simple"))
+       )}
+    end
   end
 
   def from_message_spec(%{"kind" => "messages_placeholder"} = spec) do
@@ -242,6 +253,8 @@ defmodule BeamWeaver.Prompt.Spec do
      )}
   end
 
+  def from_message_spec(%{"kind" => "message"} = spec), do: spec |> Map.delete("kind") |> Message.from()
+
   def from_message_spec(spec),
     do: {:error, Error.new(:invalid_runnable_spec, "invalid prompt message spec", %{spec: spec})}
 
@@ -252,7 +265,24 @@ defmodule BeamWeaver.Prompt.Spec do
   defp message_spec({role, template}, template_format),
     do: to_spec(Prompt.message(role, template, template_format: template_format))
 
-  defp message_spec(message, _template_format), do: to_spec(message)
+  # A literal message is saved as it is, not as a template, so braces in its
+  # text stay text.
+  defp message_spec(%Message{} = message, _template_format) do
+    spec =
+      message
+      |> Serialization.encode()
+      |> Map.drop(["version", "type"])
+      |> Map.reject(fn {_key, value} -> value in [%{}, []] end)
+      |> Map.put("kind", "message")
+
+    {:ok, spec}
+  end
+
+  defp message_spec(%_{} = part, _template_format), do: to_spec(part)
+
+  defp message_spec(part, template_format) do
+    with {:ok, message} <- Message.from(part), do: message_spec(message, template_format)
+  end
 
   defp from_message_specs(messages) do
     Result.traverse(messages, &from_message_spec/1)
@@ -285,18 +315,22 @@ defmodule BeamWeaver.Prompt.Spec do
   defp maybe_from_spec(nil), do: {:ok, nil}
   defp maybe_from_spec(spec), do: from_spec(spec)
 
-  defp maybe_put(opts, _key, nil), do: opts
-  defp maybe_put(opts, key, value), do: Keyword.put(opts, key, value)
-
   defp format("simple"), do: :simple
   defp format(:simple), do: :simple
   defp format(other), do: other
 
-  defp role("system"), do: :system
-  defp role("user"), do: :user
-  defp role("human"), do: :user
-  defp role("assistant"), do: :assistant
-  defp role("ai"), do: :assistant
-  defp role("tool"), do: :tool
-  defp role(role), do: role
+  # A template takes the roles `Message.from/1` reads, so a file can't hold a
+  # prompt that fails when it is formatted. "developer" stays a string and
+  # renders as a system message.
+  defp role(role) do
+    with {:ok, _message} <- Message.from({role, ""}) do
+      {:ok, known_role(role)}
+    end
+  end
+
+  defp known_role("system"), do: :system
+  defp known_role("user"), do: :user
+  defp known_role("assistant"), do: :assistant
+  defp known_role("tool"), do: :tool
+  defp known_role(role), do: role
 end

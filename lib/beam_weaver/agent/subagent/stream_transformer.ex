@@ -1,11 +1,10 @@
 defmodule BeamWeaver.Agent.Subagent.RunStream do
   @moduledoc """
-  Immutable DeepAgents subagent stream summary.
+  Immutable summary of one subagent run, built from stream events.
 
-  Python DeepAgents exposes live `RunStream` handles. BeamWeaver keeps
-  the same observable metadata as immutable structs produced from stream events:
-  the declared subagent name, user-facing tool-call cause, latest output,
-  terminal status, nested subagents, and the events observed under the run path.
+  It holds the declared subagent name, the tool call that started the run (see
+  `cause/1`), the latest output, the terminal status, nested subagents, and the
+  events observed under the run path.
   """
 
   defstruct path: [],
@@ -49,39 +48,26 @@ defmodule BeamWeaver.Agent.Subagent.RunStream do
   def output(%__MODULE__{values: values}), do: List.last(values)
 end
 
-defmodule BeamWeaver.Agent.Subagent.AsyncRunStream do
-  @moduledoc """
-  Async marker variant for DeepAgents subagent stream summaries.
-
-  The BEAM representation is immutable like `RunStream`; the separate
-  struct exists so callers can preserve Python's sync/async distinction when a
-  producer marks child stream events as async.
-  """
-
-  defstruct path: [],
-            graph_name: nil,
-            trigger_call_id: nil,
-            task_input: nil,
-            status: :started,
-            error: nil,
-            events: [],
-            values: [],
-            updates: [],
-            subagents: []
-end
-
 defmodule BeamWeaver.Agent.Subagent.StreamTransformer do
   @moduledoc """
-  Projects declared DeepAgents subagent executions from graph stream events.
+  Projects the subagent runs of an agent's stream into
+  `BeamWeaver.Agent.Subagent.RunStream` summaries.
 
-  The transformer mirrors `deepagents._subagent_transformer` without exposing
-  LangGraph's live mux internals. It learns the declared subagent type and the
-  user-facing tool-call id from parent-scope `tools` task-start events, then
-  promotes matching child namespaces such as `tools:<parent_task_id>` into
-  typed `RunStream` summaries.
+  Feed it the events of `BeamWeaver.Agent.stream_events/3` for an agent with
+  `subagents`. Each `task` call to a subagent named in `subagent_names:`
+  becomes one run: the subagent's name, the call that started it, its task,
+  status, events, values and updates, and the runs of its own subagents. A run
+  is matched to its events by the `tool_call_id` in their envelope metadata.
+
+      {:ok, events} = MyApp.SupportResearcher.stream_events(input, live: true)
+      transformer = StreamTransformer.new(subagent_names: ["policy_expert"])
+      {:ok, transformer, _runs} = StreamTransformer.process_many(transformer, events)
+      StreamTransformer.finalize(transformer).log
+
+  It also reads Agent Protocol events, where a subagent run's namespace is
+  `tools:<task id>` under the task that started it.
   """
 
-  alias BeamWeaver.Agent.Subagent.AsyncRunStream
   alias BeamWeaver.Agent.Subagent.RunStream
   alias BeamWeaver.Core.Error
   alias BeamWeaver.Stream.Envelope
@@ -92,6 +78,7 @@ defmodule BeamWeaver.Agent.Subagent.StreamTransformer do
             subagent_names: MapSet.new(),
             pending: %{},
             task_paths: %{},
+            calls: %{},
             handles: %{},
             log: []
 
@@ -100,7 +87,8 @@ defmodule BeamWeaver.Agent.Subagent.StreamTransformer do
           subagent_names: MapSet.t(String.t()),
           pending: map(),
           task_paths: map(),
-          handles: %{optional([String.t()]) => RunStream.t()},
+          calls: map(),
+          handles: %{optional(term()) => RunStream.t()},
           log: [RunStream.t()]
         }
 
@@ -121,14 +109,24 @@ defmodule BeamWeaver.Agent.Subagent.StreamTransformer do
   def init(%__MODULE__{} = transformer), do: %{subagents: transformer.log}
 
   @spec process(t(), term()) :: {:ok, t(), [RunStream.t()]} | {:pass, t()}
-  def process(%__MODULE__{} = transformer, event) do
-    normalized = normalize_event(event)
+  def process(%__MODULE__{} = transformer, %Envelope{event: event} = envelope)
+      when is_struct(event, Events.ToolStart) or is_struct(event, Events.ToolFinish) or
+             is_struct(event, Events.ToolError) or is_map_key(envelope.metadata, :tool_call_id) or
+             is_struct(event, Events.Debug) do
+    transformer
+    |> observe_subagent_event(envelope)
+    |> start_task_call(envelope)
+    |> finish_task_call(envelope)
+    |> interrupt_open_runs(envelope)
+    |> emit_result(transformer)
+  end
 
-    case normalized do
+  def process(%__MODULE__{} = transformer, event) do
+    case normalize_event(event) do
       %{method: "tasks", namespace: namespace, data: data} ->
         transformer
         |> capture_pending(namespace, data)
-        |> maybe_start_handle(namespace, data, event)
+        |> maybe_start_handle(namespace, data)
         |> maybe_finish_handle(namespace, data, event)
         |> emit_result(transformer)
 
@@ -160,9 +158,9 @@ defmodule BeamWeaver.Agent.Subagent.StreamTransformer do
   @spec finalize(t()) :: t()
   def finalize(%__MODULE__{} = transformer) do
     transformer.handles
-    |> Enum.filter(fn {_path, handle} -> handle.status == :started end)
-    |> Enum.reduce(transformer, fn {path, _handle}, acc ->
-      update_handle(acc, path, &%{&1 | status: :completed})
+    |> Enum.filter(fn {_key, handle} -> handle.status == :started end)
+    |> Enum.reduce(transformer, fn {key, _handle}, acc ->
+      update_handle(acc, key, &%{&1 | status: :completed})
     end)
   end
 
@@ -172,20 +170,121 @@ defmodule BeamWeaver.Agent.Subagent.StreamTransformer do
     message = if status == :failed, do: error_message(reason), else: nil
 
     transformer.handles
-    |> Enum.filter(fn {_path, handle} -> handle.status == :started end)
-    |> Enum.reduce(transformer, fn {path, _handle}, acc ->
-      update_handle(acc, path, &%{&1 | status: status, error: message || &1.error})
+    |> Enum.filter(fn {_key, handle} -> handle.status == :started end)
+    |> Enum.reduce(transformer, fn {key, _handle}, acc ->
+      update_handle(acc, key, &%{&1 | status: status, error: message || &1.error})
     end)
   end
 
   defp emit_result(%__MODULE__{} = next, %__MODULE__{} = previous) do
-    new_paths = Map.keys(next.handles) -- Map.keys(previous.handles)
-    new_handles = Enum.map(new_paths, &Map.fetch!(next.handles, &1))
+    new_keys = Map.keys(next.handles) -- Map.keys(previous.handles)
+    new_handles = Enum.map(new_keys, &Map.fetch!(next.handles, &1))
 
     if next == previous and new_handles == [],
       do: {:pass, next},
       else: {:ok, next, new_handles}
   end
+
+  # Subagent events forwarded by the `task` tool carry the call's id in their
+  # envelope metadata; the call's `ToolStart` names the subagent.
+
+  defp start_task_call(transformer, %Envelope{event: %Events.ToolStart{tool_name: "task"} = start} = envelope) do
+    input = start.input || %{}
+    subagent_type = data_value(input, :subagent_type) || data_value(input, :subagent_name)
+    parent = Map.get(transformer.calls, envelope_call_id(envelope))
+
+    cond do
+      not MapSet.member?(transformer.subagent_names, to_string(subagent_type)) ->
+        transformer
+
+      is_nil(parent) and Namespace.normalize(envelope.namespace, stringify: true) != transformer.scope ->
+        transformer
+
+      true ->
+        info = %{
+          subagent_type: to_string(subagent_type),
+          task_input: data_value(input, :description),
+          parent: parent
+        }
+
+        %{transformer | pending: Map.put(transformer.pending, {:call, start.tool_call_id}, info)}
+    end
+  end
+
+  defp start_task_call(transformer, _envelope), do: transformer
+
+  defp observe_subagent_event(transformer, %Envelope{} = envelope) do
+    call_id = envelope_call_id(envelope)
+
+    case {Map.get(transformer.calls, call_id), Map.get(transformer.pending, {:call, call_id})} do
+      {nil, nil} ->
+        transformer
+
+      {nil, info} ->
+        path = Namespace.normalize(envelope.namespace, stringify: true)
+        handle = %{new_handle(path, %{info | parent: nil} |> Map.put(:tool_call_id, call_id)) | path: path}
+        key = handle_key(handle)
+
+        transformer
+        |> put_handle(key, handle)
+        |> Map.update!(:pending, &Map.delete(&1, {:call, call_id}))
+        |> Map.update!(:calls, &Map.put(&1, call_id, key))
+        |> attach_handle(info.parent, handle)
+        |> observe_call_event(key, envelope)
+
+      {key, _info} ->
+        observe_call_event(transformer, key, envelope)
+    end
+  end
+
+  defp observe_call_event(transformer, key, %Envelope{event: event, namespace: namespace} = envelope) do
+    own_events? = Namespace.normalize(namespace, stringify: true) == elem(key, 0)
+
+    update_handle(transformer, key, fn handle ->
+      handle
+      |> Map.update!(:events, &(&1 ++ [envelope]))
+      |> maybe_append_own(own_events?, event)
+    end)
+  end
+
+  defp maybe_append_own(handle, true, %Events.GraphValue{value: value}),
+    do: Map.update!(handle, :values, &(&1 ++ [value]))
+
+  defp maybe_append_own(handle, true, %Events.GraphUpdate{update: update}),
+    do: Map.update!(handle, :updates, &(&1 ++ [update]))
+
+  defp maybe_append_own(handle, _own?, _event), do: handle
+
+  defp finish_task_call(transformer, %Envelope{event: %Events.ToolFinish{tool_call_id: call_id}}),
+    do: finish_call(transformer, call_id, :completed, nil)
+
+  defp finish_task_call(transformer, %Envelope{event: %Events.ToolError{tool_call_id: call_id, message: message}}),
+    do: finish_call(transformer, call_id, :failed, message)
+
+  defp finish_task_call(transformer, _envelope), do: transformer
+
+  defp finish_call(transformer, call_id, status, error) do
+    case Map.get(transformer.calls, call_id) do
+      nil -> transformer
+      key -> update_handle(transformer, key, &%{&1 | status: status, error: error || &1.error})
+    end
+  end
+
+  defp interrupt_open_runs(transformer, %Envelope{event: %Events.Debug{payload: %{type: :interrupt}}}),
+    do: fail(transformer, %{type: :interrupted})
+
+  defp interrupt_open_runs(transformer, _envelope), do: transformer
+
+  defp envelope_call_id(%Envelope{metadata: metadata}) when is_map(metadata), do: Map.get(metadata, :tool_call_id)
+  defp envelope_call_id(_envelope), do: nil
+
+  defp attach_handle(transformer, nil, handle), do: %{transformer | log: transformer.log ++ [handle]}
+
+  defp attach_handle(transformer, parent_key, handle),
+    do: update_handle(transformer, parent_key, &Map.update!(&1, :subagents, fn subagents -> subagents ++ [handle] end))
+
+  # Agent Protocol events: a run's namespace is `tools:<task id>` under the
+  # `tools` task whose input holds the `task` call.
 
   defp capture_pending(%__MODULE__{} = transformer, namespace, data) do
     if parent_scope?(transformer, namespace) and task_start?(data) and task_name(data) == "tools" do
@@ -208,21 +307,22 @@ defmodule BeamWeaver.Agent.Subagent.StreamTransformer do
     end
   end
 
-  defp maybe_start_handle(%__MODULE__{} = transformer, namespace, data, raw_event) do
+  defp maybe_start_handle(%__MODULE__{} = transformer, namespace, data) do
     with true <- task_start?(data),
          {parent_namespace, parent_task_id} <- parent_task_key(namespace),
          true <- parent_scope?(transformer, parent_namespace),
          info when not is_nil(info) <-
            Map.get(transformer.pending, {parent_namespace, parent_task_id}),
          true <- MapSet.member?(transformer.subagent_names, info.subagent_type),
-         false <- Map.has_key?(transformer.handles, namespace) do
-      handle = new_handle(namespace, info, raw_event)
+         nil <- path_key(transformer, namespace) do
+      handle = new_handle(namespace, info)
+      key = handle_key(handle)
 
       transformer
-      |> put_handle(namespace, handle)
+      |> put_handle(key, handle)
       |> Map.update!(:pending, &Map.delete(&1, {parent_namespace, parent_task_id}))
-      |> Map.update!(:task_paths, &Map.put(&1, {parent_namespace, parent_task_id}, namespace))
-      |> append_handle(parent_namespace, handle)
+      |> Map.update!(:task_paths, &Map.put(&1, {parent_namespace, parent_task_id}, key))
+      |> attach_handle(path_key(transformer, parent_namespace), handle)
     else
       _other -> transformer
     end
@@ -231,16 +331,15 @@ defmodule BeamWeaver.Agent.Subagent.StreamTransformer do
   defp maybe_finish_handle(%__MODULE__{} = transformer, namespace, data, raw_event) do
     if task_terminal?(data) and task_name(data) == "tools" do
       parent_task_id = data_value(data, :id) || data_value(data, :task_id)
-      path = Map.get(transformer.task_paths, {namespace, parent_task_id})
 
-      case path do
+      case Map.get(transformer.task_paths, {namespace, parent_task_id}) do
         nil ->
           transformer
 
-        path ->
+        key ->
           {status, error} = terminal_status(data)
 
-          update_handle(transformer, path, fn handle ->
+          update_handle(transformer, key, fn handle ->
             observed = observe_event(handle, raw_event, namespace, data, "tasks")
             %{observed | status: status, error: error || handle.error}
           end)
@@ -252,17 +351,17 @@ defmodule BeamWeaver.Agent.Subagent.StreamTransformer do
 
   defp route_data(%__MODULE__{} = transformer, method, namespace, data, raw_event) do
     transformer
-    |> matching_paths(namespace)
-    |> Enum.reduce(transformer, fn path, acc ->
-      update_handle(acc, path, &observe_event(&1, raw_event, namespace, data, method))
+    |> matching_keys(namespace)
+    |> Enum.reduce(transformer, fn key, acc ->
+      update_handle(acc, key, &observe_event(&1, raw_event, namespace, data, method))
     end)
   end
 
   defp mark_namespace_terminal(%__MODULE__{} = transformer, namespace, status, error, raw_event) do
     transformer
-    |> matching_paths(namespace)
-    |> Enum.reduce(transformer, fn path, acc ->
-      update_handle(acc, path, fn handle ->
+    |> matching_keys(namespace)
+    |> Enum.reduce(transformer, fn key, acc ->
+      update_handle(acc, key, fn handle ->
         observed = observe_event(handle, raw_event, namespace, error, "error")
         %{observed | status: status, error: error || handle.error}
       end)
@@ -270,13 +369,6 @@ defmodule BeamWeaver.Agent.Subagent.StreamTransformer do
   end
 
   defp observe_event(%RunStream{} = handle, raw_event, _namespace, data, method) do
-    handle
-    |> Map.update!(:events, &(&1 ++ [raw_event]))
-    |> maybe_append_value(method, data)
-    |> maybe_append_update(method, data)
-  end
-
-  defp observe_event(%AsyncRunStream{} = handle, raw_event, _namespace, data, method) do
     handle
     |> Map.update!(:events, &(&1 ++ [raw_event]))
     |> maybe_append_value(method, data)
@@ -316,46 +408,31 @@ defmodule BeamWeaver.Agent.Subagent.StreamTransformer do
 
   defp pending_info(_tool_calls), do: nil
 
-  defp new_handle(path, info, raw_event) do
-    struct =
-      if async_event?(raw_event),
-        do: AsyncRunStream,
-        else: RunStream
-
-    struct(struct, %{
+  defp new_handle(path, info) do
+    %RunStream{
       path: path,
       graph_name: info.subagent_type,
       trigger_call_id: blank_to_nil(info.tool_call_id),
       task_input: blank_to_nil(info.task_input)
-    })
+    }
   end
 
-  defp append_handle(
-         %__MODULE__{scope: parent_namespace} = transformer,
-         parent_namespace,
-         handle
-       ),
-       do: %{transformer | log: transformer.log ++ [handle]}
+  # A run is known by its path and the call that started it, so parallel calls
+  # to one subagent stay apart.
+  defp handle_key(%RunStream{path: path, trigger_call_id: call_id}), do: {path, call_id}
 
-  defp append_handle(%__MODULE__{} = transformer, parent_namespace, handle) do
-    update_handle(transformer, parent_namespace, fn parent ->
-      Map.update!(parent, :subagents, &(&1 ++ [handle]))
-    end)
-  end
+  defp put_handle(%__MODULE__{} = transformer, key, handle),
+    do: %{transformer | handles: Map.put(transformer.handles, key, handle)}
 
-  defp put_handle(%__MODULE__{} = transformer, path, handle),
-    do: %{transformer | handles: Map.put(transformer.handles, path, handle)}
-
-  defp update_handle(%__MODULE__{} = transformer, path, fun) do
-    case Map.fetch(transformer.handles, path) do
+  defp update_handle(%__MODULE__{} = transformer, key, fun) do
+    case Map.fetch(transformer.handles, key) do
       {:ok, handle} ->
         new_handle = fun.(handle)
-        handles = replace_handle_map(transformer.handles, path, new_handle)
 
         %{
           transformer
-          | handles: handles,
-            log: replace_handle(transformer.log, path, new_handle)
+          | handles: replace_handle_map(transformer.handles, key, new_handle),
+            log: replace_handle(transformer.log, key, new_handle)
         }
 
       :error ->
@@ -363,42 +440,37 @@ defmodule BeamWeaver.Agent.Subagent.StreamTransformer do
     end
   end
 
-  defp replace_handle(handles, path, new_handle) do
-    Enum.map(handles, fn
-      %{path: ^path} ->
+  defp replace_handle(handles, key, new_handle) do
+    Enum.map(handles, fn handle ->
+      if handle_key(handle) == key do
         new_handle
-
-      %{subagents: subagents} = handle ->
-        %{handle | subagents: replace_handle(subagents, path, new_handle)}
-
-      handle ->
-        handle
+      else
+        %{handle | subagents: replace_handle(handle.subagents, key, new_handle)}
+      end
     end)
   end
 
-  defp replace_handle_map(handles, path, new_handle) do
+  defp replace_handle_map(handles, key, new_handle) do
     Map.new(handles, fn
-      {^path, _handle} -> {path, new_handle}
-      {handle_path, handle} -> {handle_path, replace_handle_in_parent(handle, path, new_handle)}
+      {^key, _handle} -> {key, new_handle}
+      {handle_key, handle} -> {handle_key, %{handle | subagents: replace_handle(handle.subagents, key, new_handle)}}
     end)
   end
 
-  defp replace_handle_in_parent(%{subagents: subagents} = handle, path, new_handle) do
-    %{handle | subagents: replace_handle(subagents, path, new_handle)}
+  defp path_key(%__MODULE__{handles: handles}, path) do
+    Enum.find_value(handles, fn {{handle_path, _call_id} = key, _handle} -> if handle_path == path, do: key end)
   end
 
-  defp replace_handle_in_parent(handle, _path, _new_handle), do: handle
-
-  defp matching_paths(%__MODULE__{} = transformer, namespace) do
+  defp matching_keys(%__MODULE__{} = transformer, namespace) do
     transformer.handles
     |> Map.keys()
-    |> Enum.filter(&prefix?(&1, namespace))
-    |> Enum.sort_by(&length/1, :desc)
+    |> Enum.filter(fn {path, _call_id} -> prefix?(path, namespace) end)
+    |> Enum.sort_by(fn {path, _call_id} -> length(path) end, :desc)
     |> Enum.take(1)
   end
 
-  defp parent_scope?(%__MODULE__{scope: scope, handles: handles}, namespace) do
-    namespace == scope or Map.has_key?(handles, namespace)
+  defp parent_scope?(%__MODULE__{scope: scope} = transformer, namespace) do
+    namespace == scope or not is_nil(path_key(transformer, namespace))
   end
 
   defp parent_task_key(namespace) when is_list(namespace) and namespace != [] do
@@ -544,15 +616,4 @@ defmodule BeamWeaver.Agent.Subagent.StreamTransformer do
   defp error_message(error) when is_binary(error), do: error
   defp error_message(nil), do: nil
   defp error_message(error), do: inspect(error)
-
-  defp async_event?(%Envelope{metadata: metadata}),
-    do: data_value(metadata || %{}, :async) == true
-
-  defp async_event?(%{"params" => params}),
-    do: data_value(data_value(params, :metadata, %{}), :async) == true
-
-  defp async_event?(%{params: params}),
-    do: data_value(data_value(params, :metadata, %{}), :async) == true
-
-  defp async_event?(_event), do: false
 end

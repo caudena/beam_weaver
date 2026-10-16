@@ -48,7 +48,7 @@ defimpl BeamWeaver.Adapter.Sweepable, for: BeamWeaver.Memory.ETS do
       |> Enum.reduce(0, fn
         {{namespace, key}, item}, acc ->
           if Query.expired?(item) do
-            :ets.delete(store.items, {namespace, key})
+            BeamWeaver.Memory.ETS.delete(store, namespace, key)
             acc + 1
           else
             acc

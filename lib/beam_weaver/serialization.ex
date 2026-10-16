@@ -39,6 +39,7 @@ defmodule BeamWeaver.Serialization.Registry do
               "beam_weaver.graph.overwrite" => BeamWeaver.Graph.Overwrite,
               "beam_weaver.graph.messages.remove" => BeamWeaver.Graph.Messages.Remove,
               "beam_weaver.graph.execution.task_request" => BeamWeaver.Graph.Execution.TaskRequest,
+              "beam_weaver.graph.execution.node_output" => BeamWeaver.Graph.Execution.NodeOutput,
               "beam_weaver.graph.execution_info" => BeamWeaver.Graph.ExecutionInfo,
               "beam_weaver.graph.channels.delta_snapshot" => BeamWeaver.Graph.Channels.DeltaSnapshot,
               "beam_weaver.core.error" => BeamWeaver.Core.Error,
@@ -90,14 +91,22 @@ end
 defmodule BeamWeaver.Serialization.Config do
   @moduledoc """
   Explicit serialization configuration for durable adapters.
+
+  `:codec` and `:registry` select the codec and the structs it may load. Every
+  other option, such as `:encryption_key` for
+  `BeamWeaver.Serialization.Encrypted`, is kept in `opts` and passed to the
+  codec. `inspect/1` doesn't show them.
   """
 
+  @derive {Inspect, only: [:codec, :registry]}
   defstruct codec: BeamWeaver.Serialization.JSON,
-            registry: BeamWeaver.Serialization.Registry.new()
+            registry: BeamWeaver.Serialization.Registry.new(),
+            opts: []
 
   @type t :: %__MODULE__{
           codec: module(),
-          registry: BeamWeaver.Serialization.Registry.t()
+          registry: BeamWeaver.Serialization.Registry.t(),
+          opts: keyword()
         }
 
   @spec new(keyword() | map() | t() | nil) :: t()
@@ -106,16 +115,26 @@ defmodule BeamWeaver.Serialization.Config do
   def new(opts) when is_map(opts), do: opts |> Map.to_list() |> new()
 
   def new(opts) when is_list(opts) do
-    %__MODULE__{
-      codec: Keyword.get(opts, :codec, BeamWeaver.Serialization.JSON),
-      registry: Keyword.get(opts, :registry, BeamWeaver.Serialization.Registry.new())
-    }
+    {codec, opts} = Keyword.pop(opts, :codec, BeamWeaver.Serialization.JSON)
+    {registry, opts} = Keyword.pop_lazy(opts, :registry, &BeamWeaver.Serialization.Registry.new/0)
+    %__MODULE__{codec: codec, registry: registry, opts: opts}
   end
+
+  @doc false
+  @spec codec_opts(t()) :: keyword()
+  def codec_opts(%__MODULE__{} = config), do: Keyword.put(config.opts, :registry, config.registry)
 end
 
 defmodule BeamWeaver.Serialization.JSON do
   @moduledoc """
-  JSON/type-tagged portable serialization.
+  JSON serialization that loads back the values it saved.
+
+  Atoms, tuples, binaries that aren't UTF-8, dates and times, and the structs
+  in the `BeamWeaver.Serialization.Registry` are tagged. Map keys keep their
+  type at any depth: a JSON object names its atom keys under
+  `"__beam_weaver_atom_keys__"`, and a map with other keys, such as integers,
+  is saved as a list of entries. Loading creates no atoms, so an atom key
+  that doesn't exist in the running system comes back as a string.
   """
 
   @behaviour BeamWeaver.Serialization.Codec
@@ -163,14 +182,16 @@ defmodule BeamWeaver.Serialization do
   Safe public serialization facade.
   """
 
+  alias BeamWeaver.Serialization.Config
+
   def dump(value, opts \\ []) do
     config = config(opts)
-    config.codec.dump(value, Keyword.put(opts, :registry, config.registry))
+    config.codec.dump(value, Config.codec_opts(config))
   end
 
   def load(binary, opts \\ []) do
     config = config(opts)
-    config.codec.load(binary, Keyword.put(opts, :registry, config.registry))
+    config.codec.load(binary, Config.codec_opts(config))
   end
 
   @doc """
@@ -204,6 +225,6 @@ defmodule BeamWeaver.Serialization do
   defp config(opts) do
     opts
     |> Keyword.get(:serialization, opts)
-    |> BeamWeaver.Serialization.Config.new()
+    |> Config.new()
   end
 end

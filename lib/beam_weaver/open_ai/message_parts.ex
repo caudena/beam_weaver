@@ -1,7 +1,5 @@
 defmodule BeamWeaver.OpenAI.MessageParts do
-  @moduledoc """
-  Shared OpenAI content-block helpers.
-  """
+  @moduledoc false
 
   def stringify_keys(map) when is_map(map), do: BeamWeaver.MapShape.stringify_keys(map)
 

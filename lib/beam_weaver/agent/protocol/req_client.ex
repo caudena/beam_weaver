@@ -1,5 +1,5 @@
 defmodule BeamWeaver.Agent.Protocol.ReqClient do
-  @moduledoc "Req-backed Agent Protocol client used by async DeepAgents subagents."
+  @moduledoc "Req-backed Agent Protocol client used by async subagents."
 
   @behaviour BeamWeaver.Agent.Protocol.Client
 

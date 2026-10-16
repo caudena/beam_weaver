@@ -74,7 +74,7 @@ defmodule BeamWeaver.Core.Messages.TokenCounter do
 
   defp block_type(block), do: Map.get(block, :type)
 
-  defp add_role_chars(chars, %Message{role: role}), do: chars + String.length(role_name(role))
+  defp add_role_chars(chars, %Message{role: role}), do: chars + String.length(Atom.to_string(role))
 
   defp add_name_chars(chars, %Message{name: name}, true) when is_binary(name),
     do: chars + String.length(name)
@@ -105,11 +105,10 @@ defmodule BeamWeaver.Core.Messages.TokenCounter do
   end
 
   defp json_length(value) do
-    value
-    |> BeamWeaver.JSON.encode!()
-    |> String.length()
-  rescue
-    _exception -> value |> inspect() |> String.length()
+    case BeamWeaver.JSON.encode(value) do
+      {:ok, json} -> String.length(json)
+      {:error, _error} -> value |> inspect() |> String.length()
+    end
   end
 
   defp ceil_tokens(chars, chars_per_token) do
@@ -176,9 +175,4 @@ defmodule BeamWeaver.Core.Messages.TokenCounter do
     |> Float.ceil()
     |> trunc()
   end
-
-  defp role_name(:user), do: "user"
-  defp role_name(:assistant), do: "assistant"
-  defp role_name(:system), do: "system"
-  defp role_name(:tool), do: "tool"
 end

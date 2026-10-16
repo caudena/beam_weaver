@@ -240,7 +240,7 @@ defmodule BeamWeaver.Models.WrapperTest do
     assert metadata["total_cost"] == 0
   end
 
-  test "cached LLM completions support sync, batch, and async facades" do
+  test "cached LLM completions hit the cache across complete and batch calls" do
     cache = BeamWeaver.Cache.ETS.new()
     parent = self()
 
@@ -257,11 +257,7 @@ defmodule BeamWeaver.Models.WrapperTest do
     assert_received {:fake_llm_call, "other", []}
     refute_received {:fake_llm_call, "prompt", _opts}
 
-    assert [{:ok, "completion"}, {:ok, "completion"}] =
-             llm
-             |> LLM.async_batch(["prompt", "other"])
-             |> BeamWeaver.Core.Async.await_batch()
-
+    assert [{:ok, "completion"}, {:ok, "completion"}] = LLM.batch(llm, ["prompt", "other"])
     refute_received {:fake_llm_call, _prompt, _opts}
   end
 
@@ -280,13 +276,6 @@ defmodule BeamWeaver.Models.WrapperTest do
     assert_received {:fake_llm_stream, "prompt", []}
 
     assert {:ok, ["streamed"]} = LLM.stream(llm, "prompt")
-    refute_received {:fake_llm_stream, _prompt, _opts}
-
-    assert {:ok, ["streamed"]} =
-             llm
-             |> LLM.async_stream("prompt")
-             |> BeamWeaver.Core.Async.await()
-
     refute_received {:fake_llm_stream, _prompt, _opts}
   end
 
@@ -385,13 +374,6 @@ defmodule BeamWeaver.Models.WrapperTest do
     assert {:ok, "completion"} = LLM.complete(llm, "prompt", temperature: 0.1)
     assert_received {:fake_llm_call, "prompt", [temperature: 0.1]}
 
-    assert {:ok, "completion"} =
-             llm
-             |> LLM.async_complete("prompt", temperature: 0.1)
-             |> BeamWeaver.Core.Async.await()
-
-    assert_received {:fake_llm_call, "prompt", [temperature: 0.1]}
-
     embeddings = %BeamWeaver.Models.FakeEmbeddingModel{dimensions: 4}
 
     assert {:ok, [doc_vector]} = EmbeddingModel.embed_documents(embeddings, ["doc"], [])
@@ -436,5 +418,37 @@ defmodule BeamWeaver.Models.WrapperTest do
 
     assert {:error, %Error{type: :unsupported_model_param}} =
              ChatModel.invoke(strict, [Message.user("hello")], temperature: 0.5)
+  end
+
+  describe "inside a trace" do
+    setup do
+      {:ok, limiter} = BeamWeaver.RateLimiter.start_bucket(capacity: 10, initial_tokens: 10)
+      %{limiter: limiter}
+    end
+
+    test "wrapped models report the model they wrap", %{limiter: limiter} do
+      {:ok, run} = BeamWeaver.Tracing.start_run("wrapped models")
+      fake = Models.init_chat_model!("fake:chat", responses: [Models.FakeChatModel.final(%{"value" => "ok"})])
+      schema = %{"type" => "object", "properties" => %{"value" => %{"type" => "string"}}}
+
+      for wrapped <- [
+            Models.cached(fake, BeamWeaver.Cache.ETS.new(visibility: :private)),
+            Models.with_rate_limiter(fake, limiter: limiter),
+            Models.bind_tools(fake, []),
+            Models.with_structured_output(fake, schema)
+          ] do
+        assert {:ok, %Message{}} = ChatModel.invoke(wrapped, [Message.user("hi")])
+      end
+
+      BeamWeaver.Tracing.finish_run(run)
+    end
+
+    test "an agent runs on a wrapped model", %{limiter: limiter} do
+      fake = Models.init_chat_model!("fake:chat", responses: ["Order A-1001 shipped."])
+      {:ok, agent} = BeamWeaver.Agent.build(model: Models.with_rate_limiter(fake, limiter: limiter))
+
+      assert {:ok, %{messages: messages}} = BeamWeaver.Agent.invoke(agent, %{messages: ["Where is A-1001?"]})
+      assert Message.text(List.last(messages)) == "Order A-1001 shipped."
+    end
   end
 end

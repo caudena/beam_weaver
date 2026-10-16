@@ -1,25 +1,26 @@
 defmodule BeamWeaver.Graph.Execution do
-  @moduledoc """
-  Small graph execution runtime helpers shared by the graph executor.
-
-  This module is intentionally narrow for now: it owns version bookkeeping and
-  deterministic task IDs while the existing executor is migrated toward a full
-  channel-triggered graph scheduler.
-  """
+  @moduledoc false
 
   alias BeamWeaver.Checkpoint
+  alias BeamWeaver.Graph.Execution.ChannelLookup
   alias BeamWeaver.Graph.Execution.ChannelVersion
   alias BeamWeaver.Graph.Execution.Step
   alias BeamWeaver.Graph.Execution.Task, as: ExecutionTask
+  alias BeamWeaver.Graph.Execution.TaskRequest
 
+  # `step_start` is the id of the checkpoint whose state the tasks of a stopped
+  # step started from, when that isn't this checkpoint's own state: after
+  # `update_state/4` on a paused or failed thread, the new checkpoint holds
+  # the state with the update.
   @type checkpoint_state :: %{
           values: map(),
           channel_versions: map(),
           versions_seen: map(),
           pending_writes: list(),
           pending_write_paths: list(),
-          next: list(),
-          step: integer()
+          next: [TaskRequest.t()],
+          step: integer(),
+          step_start: String.t() | nil
         }
 
   @spec checkpoint_state(map() | nil) :: checkpoint_state()
@@ -31,55 +32,72 @@ defmodule BeamWeaver.Graph.Execution do
       pending_writes: [],
       pending_write_paths: [],
       next: [],
-      step: -1
+      step: -1,
+      step_start: nil
     }
 
   def checkpoint_state(%{checkpoint: checkpoint} = tuple) when is_map(checkpoint) do
     %{
-      values: get_checkpoint_map(checkpoint, "channel_values"),
+      values: checkpoint_values(checkpoint),
       channel_versions: normalize_versions(get_checkpoint_map(checkpoint, "channel_versions")),
       versions_seen: normalize_versions_seen(get_checkpoint_map(checkpoint, "versions_seen")),
       pending_writes: Map.get(tuple, :pending_writes, []),
       pending_write_paths: Map.get(tuple, :pending_write_paths, []),
       next: checkpoint_next(checkpoint),
-      step: checkpoint_step(tuple)
+      step: checkpoint_step(tuple),
+      step_start: Map.get(checkpoint, "step_start")
     }
   end
 
+  # The state a checkpoint saved. Checkpoints saved as JSON before map keys
+  # kept their types list the state's atom keys in "atom_channels".
+  @spec checkpoint_values(map()) :: map()
+  def checkpoint_values(checkpoint) when is_map(checkpoint) do
+    checkpoint
+    |> get_checkpoint_map("channel_values")
+    |> ChannelLookup.restore_atom_keys(Map.get(checkpoint, "atom_channels"))
+  end
+
+  # A join's channel is left out: replayed arrivals don't fire the join on their
+  # own, the step merge does once every upstream node has arrived.
   @spec pending_channels(list()) :: [String.t()]
   def pending_channels(pending_writes) when is_list(pending_writes) do
     pending_writes
     |> Enum.flat_map(fn
-      {_task_id, channel, _value} ->
-        if Step.reserved_channel?(channel), do: [], else: [channel]
-
-      {_task_id, channel, _value, _path} ->
-        if Step.reserved_channel?(channel), do: [], else: [channel]
-
-      _other ->
-        []
+      {_task_id, channel, _value} -> triggering_channel(channel)
+      {_task_id, channel, _value, _path} -> triggering_channel(channel)
+      _other -> []
     end)
     |> normalize_channels()
   end
 
   def pending_channels(_pending_writes), do: []
 
-  @spec pending_task_ids(list()) :: [String.t()]
-  def pending_task_ids(pending_writes) when is_list(pending_writes) do
+  defp triggering_channel(channel) do
+    channel = to_string(channel)
+
+    if Step.reserved_channel?(channel) or String.starts_with?(channel, "__barrier__:"),
+      do: [],
+      else: [channel]
+  end
+
+  # The tasks that finished in a step that stopped partway: those with a write
+  # other than an error or an interrupt. A finished task always has its route.
+  @spec finished_task_ids(list()) :: [String.t()]
+  def finished_task_ids(pending_writes) when is_list(pending_writes) do
     pending_writes
-    |> Enum.reject(fn
-      {_task_id, channel, _value} -> Step.reserved_channel?(channel)
-      {_task_id, channel, _value, _path} -> Step.reserved_channel?(channel)
-      _other -> true
-    end)
-    |> Enum.map(fn
-      {task_id, _channel, _value} -> task_id
-      {task_id, _channel, _value, _path} -> task_id
+    |> Enum.flat_map(fn
+      {task_id, channel, _value} -> finished_task(task_id, channel)
+      {task_id, channel, _value, _path} -> finished_task(task_id, channel)
+      _other -> []
     end)
     |> Enum.uniq()
   end
 
-  def pending_task_ids(_pending_writes), do: []
+  def finished_task_ids(_pending_writes), do: []
+
+  defp finished_task(_task_id, channel) when channel in ["__error__", "__interrupt__"], do: []
+  defp finished_task(task_id, _channel), do: [task_id]
 
   @spec updated_channels(map() | nil) :: [String.t()]
   def updated_channels(update) when is_map(update) do
@@ -128,12 +146,35 @@ defmodule BeamWeaver.Graph.Execution do
         namespace,
         step,
         to_string(node),
-        path,
+        id_term(path),
         normalize_versions(trigger_versions)
       })
 
     "task_" <> Base.encode16(:crypto.hash(:sha256, payload), case: :lower)
   end
+
+  # A task's path with map keys as strings at any depth, as checkpoints saved
+  # as JSON before map keys kept their types give it back. Hashing this form
+  # gives a `Send` task restored from such a checkpoint the id it had when it
+  # was scheduled, so its pending writes and the answer to its interrupt still
+  # find it.
+  defp id_term(%module{} = struct) do
+    struct
+    |> Map.from_struct()
+    |> Map.new(fn {field, value} -> {field, id_term(value)} end)
+    |> Map.put(:__struct__, module)
+  end
+
+  defp id_term(map) when is_map(map),
+    do: Map.new(map, fn {key, value} -> {id_key(key), id_term(value)} end)
+
+  defp id_term([head | tail]), do: [id_term(head) | id_term(tail)]
+  defp id_term(tuple) when is_tuple(tuple), do: tuple |> Tuple.to_list() |> id_term() |> List.to_tuple()
+  defp id_term(value), do: value
+
+  defp id_key(key) when is_atom(key), do: Atom.to_string(key)
+  defp id_key(key) when is_number(key), do: to_string(key)
+  defp id_key(key), do: key
 
   @spec prepare_task(
           String.t(),
@@ -172,6 +213,13 @@ defmodule BeamWeaver.Graph.Execution do
       "node" => to_string(node),
       "update" => normalize_path_value(update)
     })
+  end
+
+  # A `Send` like an earlier one of its step, told apart by `repeat`.
+  def task_path({node, update, timeout, repeat}) do
+    path = %{"node" => to_string(node), "update" => normalize_path_value(update), "repeat" => repeat}
+
+    encode_task_path(if timeout, do: Map.put(path, "timeout", normalize_path_value(timeout)), else: path)
   end
 
   def task_path(path) when is_binary(path), do: path
@@ -216,31 +264,18 @@ defmodule BeamWeaver.Graph.Execution do
 
   defp checkpoint_step(_tuple), do: -1
 
+  # The tasks a checkpoint says run next, as requests.
   defp checkpoint_next(checkpoint) do
     case Map.get(checkpoint, "next_tasks", Map.get(checkpoint, :next_tasks, [])) do
       [_first | _rest] = next_tasks ->
-        Enum.map(next_tasks, &decode_next_task/1)
+        Enum.map(next_tasks, &TaskRequest.from_checkpoint/1)
 
       _empty ->
         Map.get(checkpoint, "next", Map.get(checkpoint, :next, []))
         |> List.wrap()
-        |> Enum.map(&to_string/1)
+        |> Enum.map(&TaskRequest.from_checkpoint/1)
     end
   end
-
-  defp decode_next_task(%{"node" => node, "update" => update, "timeout" => timeout}),
-    do: %{"node" => to_string(node), "update" => update || %{}, "timeout" => timeout}
-
-  defp decode_next_task(%{node: node, update: update, timeout: timeout}),
-    do: %{node: to_string(node), update: update || %{}, timeout: timeout}
-
-  defp decode_next_task(%{"node" => node, "update" => update}),
-    do: {to_string(node), update || %{}}
-
-  defp decode_next_task(%{node: node, update: update}), do: {to_string(node), update || %{}}
-  defp decode_next_task(%{"node" => node}), do: to_string(node)
-  defp decode_next_task(%{node: node}), do: to_string(node)
-  defp decode_next_task(node), do: to_string(node)
 
   defp normalize_versions(versions) when is_map(versions) do
     Map.new(versions, fn {key, value} -> {to_string(key), value} end)

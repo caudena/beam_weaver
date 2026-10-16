@@ -311,10 +311,7 @@ defmodule BeamWeaver.Provider.StructuredOutput do
     end
   end
 
-  defp provider_error(type, message, opts, details) do
-    error_module = Keyword.fetch!(opts, :error_module)
-    error_module.new(type, message, details)
-  end
+  defp provider_error(type, message, _opts, details), do: BeamWeaver.Core.Error.new(type, message, details)
 
   defp provider_name(opts), do: Keyword.get(opts, :provider_name, "Provider")
 end

@@ -161,8 +161,12 @@ defmodule BeamWeaver.Memory.Query do
 
   def expired?(_item), do: false
 
-  def refresh_expiry(item, nil), do: item
-  def refresh_expiry(item, ttl_minutes), do: Map.put(item, :expires_at, expires_at(ttl_minutes))
+  # The stores' `:refresh_ttl` option. `nil` is the default, `false`.
+  def refresh_ttl_option!(refresh_ttl) when is_boolean(refresh_ttl), do: refresh_ttl
+  def refresh_ttl_option!(nil), do: false
+
+  def refresh_ttl_option!(other),
+    do: raise(ArgumentError, "expected :refresh_ttl to be a boolean, got: #{inspect(other)}")
 
   def expires_at(nil), do: nil
   def expires_at(:not_provided), do: nil

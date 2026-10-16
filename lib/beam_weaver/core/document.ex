@@ -6,13 +6,12 @@ defmodule BeamWeaver.Core.Document do
   alias BeamWeaver.Core.Error
 
   @enforce_keys [:content]
-  defstruct [:id, :content, metadata: %{}, type: "Document"]
+  defstruct [:id, :content, metadata: %{}]
 
   @type t :: %__MODULE__{
           id: String.t() | nil,
           content: String.t(),
-          metadata: map(),
-          type: String.t()
+          metadata: map()
         }
 
   @doc """
@@ -47,6 +46,23 @@ defmodule BeamWeaver.Core.Document do
   end
 
   @doc """
+  Builds a document from a document, a string, or a map with `:content` and
+  optional `:id` and `:metadata`.
+  """
+  @spec from(t() | String.t() | map()) :: {:ok, t()} | {:error, Error.t()}
+  def from(%__MODULE__{} = document) do
+    with :ok <- validate(document), do: {:ok, document}
+  end
+
+  def from(content) when is_binary(content), do: new(content)
+
+  def from(%{content: content} = map),
+    do: new(content, id: Map.get(map, :id), metadata: Map.get(map, :metadata, %{}))
+
+  def from(_value),
+    do: {:error, Error.new(:invalid_document, "expected a document, a string, or a map with :content")}
+
+  @doc """
   Validates a document shape.
   """
   @spec validate(term()) :: :ok | {:error, Error.t()}
@@ -59,33 +75,4 @@ defmodule BeamWeaver.Core.Document do
 
   defp id(nil), do: nil
   defp id(value), do: to_string(value)
-
-  @doc """
-  LangChain serialization namespace retained for document interop.
-  """
-  @spec lc_namespace() :: [String.t()]
-  def lc_namespace, do: ["langchain", "schema", "document"]
-
-  @spec serializable?() :: true
-  def serializable?, do: true
-
-  @doc """
-  Returns a compact prompt-facing string that omits internal fields like `id`.
-  """
-  @spec langchain_string(t()) :: String.t()
-  def langchain_string(%__MODULE__{content: content, metadata: metadata}) when metadata == %{} do
-    "page_content=#{quote_content(content)}"
-  end
-
-  def langchain_string(%__MODULE__{content: content, metadata: metadata}) do
-    "page_content=#{quote_content(content)} metadata=#{inspect(metadata)}"
-  end
-
-  defp quote_content(content) do
-    "'" <> String.replace(content, "'", "\\'") <> "'"
-  end
-end
-
-defimpl String.Chars, for: BeamWeaver.Core.Document do
-  def to_string(document), do: BeamWeaver.Core.Document.langchain_string(document)
 end

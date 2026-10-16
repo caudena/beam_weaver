@@ -44,30 +44,18 @@ defmodule BeamWeaver.Core.ModelContractTest do
     assert {:ok, stream} = ChatModel.stream(model, "hello")
     assert [%Message{role: :assistant, content: "invoke: hello"}] = Enum.to_list(stream)
 
-    assert {:ok, async_stream} =
-             model
-             |> ChatModel.async_stream([Message.user("async hello")])
-             |> BeamWeaver.Core.Async.await()
-
-    assert [%Message{content: "invoke: async hello"}] = Enum.to_list(async_stream)
+    assert {:ok, message_stream} = ChatModel.stream(model, [Message.user("async hello")])
+    assert [%Message{content: "invoke: async hello"}] = Enum.to_list(message_stream)
   end
 
-  test "chat model facade generates ordered responses and typed stream events" do
+  test "chat model facade batches ordered responses and typed stream events" do
     model = %InvokeOnlyChatModel{reply: "native"}
 
-    assert {:ok, [first, second]} =
-             ChatModel.generate(model, ["one", %Prompt.Value{text: "two"}])
+    assert [{:ok, first}, {:ok, second}] =
+             ChatModel.batch(model, ["one", %Prompt.Value{text: "two"}])
 
     assert first.content == "native: one"
     assert second.content == "native: two"
-
-    assert {:ok, [%Message{content: "native: prompt"}]} =
-             ChatModel.generate_prompt(model, [%Prompt.Value{text: "prompt"}])
-
-    assert {:ok, [%Message{content: "native: async"}]} =
-             model
-             |> ChatModel.async_generate(["async"])
-             |> BeamWeaver.Core.Async.await()
 
     assert {:ok, events} = ChatModel.stream_events(model, "events", run_id: "run-1")
 
@@ -106,51 +94,12 @@ defmodule BeamWeaver.Core.ModelContractTest do
     assert vector_error.type == :invalid_embedding
   end
 
-  test "embedding facade exposes sync and Task-backed async query/document embedding" do
+  test "embedding facade embeds a query and a matching document to the same vector" do
     model = %BeamWeaver.Models.FakeEmbeddingModel{dimensions: 3}
 
     assert {:ok, [doc_vector]} = EmbeddingModel.embed_documents(model, ["same"])
     assert {:ok, query_vector} = EmbeddingModel.embed_query(model, "same")
     assert doc_vector == query_vector
-
-    assert {:ok, [^doc_vector]} =
-             EmbeddingModel.async_embed_documents(model, ["same"])
-             |> BeamWeaver.Core.Async.await()
-
-    assert {:ok, ^query_vector} =
-             EmbeddingModel.async_embed_query(model, "same") |> BeamWeaver.Core.Async.await()
-  end
-
-  test "function embedding model adapts explicit embedding functions to the behaviour" do
-    parent = self()
-
-    model =
-      BeamWeaver.Models.FunctionEmbeddingModel.new!(
-        fn documents, opts ->
-          send(parent, {:function_embed_documents, documents, opts})
-          Enum.map(documents, fn document -> [String.length(document) * 1.0, 1.0] end)
-        end,
-        embed_query: fn query, opts ->
-          send(parent, {:function_embed_query, query, opts})
-          [String.length(query) * 1.0, 2.0]
-        end
-      )
-
-    assert {:ok, [[5.0, 1.0], [4.0, 1.0]]} =
-             EmbeddingModel.embed_documents(model, ["alpha", "beta"], user: "u1")
-
-    assert_receive {:function_embed_documents, ["alpha", "beta"], [user: "u1"]}
-
-    assert {:ok, [5.0, 2.0]} = EmbeddingModel.embed_query(model, "gamma", source: :query)
-    assert_receive {:function_embed_query, "gamma", [source: :query]}
-
-    fallback =
-      BeamWeaver.Models.FunctionEmbeddingModel.new!(fn documents -> [[length(documents)]] end)
-
-    assert {:ok, [1]} = EmbeddingModel.embed_query(fallback, "one")
-
-    assert {:ok, [[3.0, 1.0]]} =
-             EmbeddingModel.async_embed_documents(model, ["one"]) |> BeamWeaver.Core.Async.await()
   end
 
   test "fake embedding model supports deterministic and random test-double modes" do
@@ -180,11 +129,6 @@ defmodule BeamWeaver.Core.ModelContractTest do
 
     assert {:ok, ["a", "b"]} = LLM.stream(model, "hello")
 
-    assert {:ok, ["a", "b"]} =
-             model
-             |> LLM.async_stream("hello")
-             |> BeamWeaver.Core.Async.await()
-
     assert {:error, error} = LLM.stream(%BadStreamLLM{}, "hello")
     assert error.type == :invalid_response
   end
@@ -197,29 +141,17 @@ defmodule BeamWeaver.Core.ModelContractTest do
     assert {:ok, "ab"} = LLM.complete(model, "third")
 
     assert {:ok, ["c", "d"]} = LLM.stream(model, "streamed")
-
-    assert {:ok, ["a", "b"]} =
-             model
-             |> LLM.async_stream("async streamed")
-             |> BeamWeaver.Core.Async.await()
+    assert {:ok, ["a", "b"]} = LLM.stream(model, "async streamed")
   end
 
-  test "LLM facade exposes invoke generate prompt values and Task-backed async generation" do
+  test "LLM facade exposes invoke and batch" do
     model = %BeamWeaver.Models.FakeLLM{response: "completion", parent: self()}
 
     assert {:ok, "completion"} = LLM.invoke(model, "single")
     assert_received {:fake_llm_call, "single", []}
 
-    assert {:ok, ["completion", "completion"]} = LLM.generate(model, ["a", "b"])
+    assert [{:ok, "completion"}, {:ok, "completion"}] = LLM.batch(model, ["a", "b"])
     assert_received {:fake_llm_call, "a", []}
     assert_received {:fake_llm_call, "b", []}
-
-    assert {:ok, ["completion"]} = LLM.generate_prompt(model, [%Prompt.Value{text: "prompt"}])
-    assert_received {:fake_llm_call, "prompt", []}
-
-    assert {:ok, ["completion"]} =
-             model
-             |> LLM.async_generate_prompt([%Prompt.Value{text: "async prompt"}])
-             |> BeamWeaver.Core.Async.await()
   end
 end

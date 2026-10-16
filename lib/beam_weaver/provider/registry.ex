@@ -8,6 +8,18 @@ defmodule BeamWeaver.Provider.Registry do
   alias BeamWeaver.Models.ProfileRegistry
 
   @registry_key {__MODULE__, :registry}
+  @builtin_key {__MODULE__, :builtin}
+  @builtin_adapters [
+    BeamWeaver.OpenAI.Provider,
+    BeamWeaver.Anthropic.Provider,
+    BeamWeaver.XAI.Provider,
+    BeamWeaver.Google.Provider,
+    BeamWeaver.TypeSafe.Provider,
+    BeamWeaver.Moonshot.Provider,
+    BeamWeaver.ZAI.Provider,
+    BeamWeaver.DeepSeek.Provider,
+    BeamWeaver.Provider.Fake
+  ]
 
   @type entry :: %{
           provider: atom(),
@@ -34,10 +46,7 @@ defmodule BeamWeaver.Provider.Registry do
   def register(provider, spec) when is_atom(provider) do
     entry = build_entry(provider, spec)
 
-    registry =
-      @registry_key
-      |> persistent_get(%{})
-      |> Map.put(provider, entry)
+    registry = @registry_key |> :persistent_term.get(%{}) |> Map.put(provider, entry)
 
     :persistent_term.put(@registry_key, registry)
     :ok
@@ -47,10 +56,7 @@ defmodule BeamWeaver.Provider.Registry do
   @spec unregister(atom() | String.t()) :: :ok
   def unregister(provider) do
     with {:ok, provider} <- normalize_provider(provider) do
-      registry =
-        @registry_key
-        |> persistent_get(%{})
-        |> Map.delete(provider)
+      registry = @registry_key |> :persistent_term.get(%{}) |> Map.delete(provider)
 
       :persistent_term.put(@registry_key, registry)
     end
@@ -190,27 +196,16 @@ defmodule BeamWeaver.Provider.Registry do
     end
   end
 
-  defp entries do
-    Map.merge(builtin_entries(), persistent_get(@registry_key, %{}))
-  end
+  defp entries, do: Map.merge(builtin_entries(), :persistent_term.get(@registry_key, %{}))
 
+  # Built-in adapters never change at runtime; build their entries (profile
+  # lists included) once per VM.
   defp builtin_entries do
-    [
-      BeamWeaver.OpenAI.Provider,
-      BeamWeaver.Anthropic.Provider,
-      BeamWeaver.XAI.Provider,
-      BeamWeaver.Google.Provider,
-      BeamWeaver.TypeSafe.Provider,
-      BeamWeaver.Moonshot.Provider,
-      BeamWeaver.ZAI.Provider,
-      BeamWeaver.DeepSeek.Provider,
-      BeamWeaver.Provider.Fake
-    ]
-    |> Enum.filter(&Code.ensure_loaded?/1)
-    |> Map.new(fn adapter ->
-      provider = adapter.provider()
-      {provider, build_entry(provider, adapter)}
-    end)
+    with nil <- :persistent_term.get(@builtin_key, nil) do
+      entries = Map.new(@builtin_adapters, &{&1.provider(), build_entry(&1.provider(), &1)})
+      :persistent_term.put(@builtin_key, entries)
+      entries
+    end
   end
 
   defp build_entry(provider, adapter) when is_atom(adapter) do
@@ -228,30 +223,30 @@ defmodule BeamWeaver.Provider.Registry do
   defp build_entry(provider, spec) when is_list(spec), do: build_entry(provider, Map.new(spec))
 
   defp build_entry(provider, spec) when is_map(spec) do
-    adapter = BeamWeaver.MapAccess.get(spec, :adapter)
-
     base =
-      if is_atom(adapter) do
-        build_entry(provider, adapter)
-      else
-        %{
-          provider: provider,
-          adapter: nil,
-          chat_model: nil,
-          embedding_model: nil,
-          decision_model: nil,
-          profiles: [],
-          capabilities: %{}
-        }
+      case spec[:adapter] do
+        adapter when is_atom(adapter) and not is_nil(adapter) ->
+          build_entry(provider, adapter)
+
+        _none ->
+          %{
+            provider: provider,
+            adapter: nil,
+            chat_model: nil,
+            embedding_model: nil,
+            decision_model: nil,
+            profiles: [],
+            capabilities: %{}
+          }
       end
 
     %{
       base
-      | chat_model: Map.get(spec, :chat_model, Map.get(spec, "chat_model", base.chat_model)),
-        embedding_model: Map.get(spec, :embedding_model, Map.get(spec, "embedding_model", base.embedding_model)),
-        decision_model: Map.get(spec, :decision_model, Map.get(spec, "decision_model", base.decision_model)),
-        profiles: normalize_profiles(Map.get(spec, :profiles, Map.get(spec, "profiles", base.profiles))),
-        capabilities: Map.get(spec, :capabilities, Map.get(spec, "capabilities", base.capabilities))
+      | chat_model: Map.get(spec, :chat_model, base.chat_model),
+        embedding_model: Map.get(spec, :embedding_model, base.embedding_model),
+        decision_model: Map.get(spec, :decision_model, base.decision_model),
+        profiles: normalize_profiles(Map.get(spec, :profiles, base.profiles)),
+        capabilities: Map.get(spec, :capabilities, base.capabilities)
     }
   end
 
@@ -259,9 +254,9 @@ defmodule BeamWeaver.Provider.Registry do
   defp normalize_profiles(_profiles), do: []
 
   defp callback_value(adapter, callback, args) do
-    arity = length(args)
+    Code.ensure_loaded(adapter)
 
-    if function_exported?(adapter, callback, arity) do
+    if function_exported?(adapter, callback, length(args)) do
       case apply(adapter, callback, args) do
         {:ok, value} -> value
         {:error, _error} -> nil
@@ -285,11 +280,5 @@ defmodule BeamWeaver.Provider.Registry do
     else
       {:error, Error.new(:unsupported_provider, "unsupported provider", %{provider: original})}
     end
-  end
-
-  defp persistent_get(key, default) do
-    :persistent_term.get(key)
-  rescue
-    ArgumentError -> default
   end
 end

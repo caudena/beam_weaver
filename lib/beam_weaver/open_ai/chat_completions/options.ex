@@ -1,11 +1,9 @@
 defmodule BeamWeaver.OpenAI.ChatCompletions.Options do
-  @moduledoc """
-  Normalized OpenAI Chat Completions request options.
-  """
+  @moduledoc false
 
   alias BeamWeaver.OpenAI.ChatCompletions.Options.Body
   alias BeamWeaver.OpenAI.ChatCompletions.Options.Validation
-  alias BeamWeaver.OpenAI.Error
+  alias BeamWeaver.Core.Error
 
   defstruct opts: []
 

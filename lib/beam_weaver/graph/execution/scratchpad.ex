@@ -1,13 +1,5 @@
 defmodule BeamWeaver.Graph.Execution.Scratchpad do
-  @moduledoc """
-  Per-task graph execution scratchpad.
-
-  LangGraph uses a scratchpad to track resume values, interrupt counters, call
-  counters, and subgraph counters. In BeamWeaver this is an immutable struct
-  stored in the executing process dictionary only for the lifetime of one node
-  invocation, so `BeamWeaver.Graph.interrupt/1` can be called without passing a
-  runtime argument through every user function.
-  """
+  @moduledoc false
 
   alias BeamWeaver.Graph.Interrupt
   alias BeamWeaver.Graph.Resume
@@ -18,6 +10,7 @@ defmodule BeamWeaver.Graph.Execution.Scratchpad do
     :task_id,
     :node,
     :step,
+    :first_state,
     resume_values: [],
     consumed_resume_values: [],
     interrupt_counter: 0,
@@ -29,6 +22,7 @@ defmodule BeamWeaver.Graph.Execution.Scratchpad do
           task_id: String.t(),
           node: String.t(),
           step: non_neg_integer(),
+          first_state: term(),
           resume_values: list(),
           consumed_resume_values: list(),
           interrupt_counter: non_neg_integer(),

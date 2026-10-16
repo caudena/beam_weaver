@@ -221,7 +221,7 @@ defmodule BeamWeaver.Graph.ToolStreamTest do
              &match?(
                %Envelope{
                  event: %Events.ToolStart{tool_call_id: "tc1", tool_name: "echo"},
-                 node: nil,
+                 node: "tools",
                  namespace: []
                },
                &1

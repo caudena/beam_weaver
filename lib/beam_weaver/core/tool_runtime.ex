@@ -2,9 +2,11 @@ defmodule BeamWeaver.Core.ToolRuntime do
   @moduledoc """
   Runtime data available to tools during execution.
 
-  This is BeamWeaver's explicit Elixir equivalent of LangChain's ToolRuntime:
-  tools opt into it through normal injected-argument metadata instead of Python
-  annotations.
+  A tool receives it by declaring an injected argument with the `:tool_runtime`
+  source, such as `injected :runtime, :tool_runtime`. It bundles the tool call,
+  the state that the `:state` source gives (in an agent, without its private
+  keys), the graph runtime, and the run's context, store, config and
+  checkpointer.
   """
 
   alias BeamWeaver.Stream.Events
@@ -69,8 +71,8 @@ defmodule BeamWeaver.Core.ToolRuntime do
   Emits a streamed output delta for the current tool call.
 
   The event is visible through typed event streams as `%BeamWeaver.Stream.Events.ToolDelta{}`.
-  Outside a graph/tool runtime this is a no-op, matching LangGraph's writer behavior
-  when no tool stream handler is installed.
+  When no stream writer is installed, for example outside a graph/tool runtime,
+  this is a no-op.
   """
   @spec emit_output_delta(t(), term()) :: :ok
   def emit_output_delta(%__MODULE__{runtime: %{stream_writer: writer}} = tool_runtime, delta)

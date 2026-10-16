@@ -260,10 +260,10 @@ defmodule BeamWeaver.Google.StreamingTest do
             {[sse(candidate([call_part("call-ping", "ping")], false))], ok_response(), :invalid_provider_stream}
 
           :provider ->
-            {[sse(provider_error)], ok_response(), :response_error}
+            {[sse(provider_error)], ok_response(), :http_error}
 
           :provider_after_stop ->
-            {[sse(terminal()), sse(provider_error)], ok_response(), :response_error}
+            {[sse(terminal()), sse(provider_error)], ok_response(), :http_error}
 
           :http ->
             {[], {:ok, Response.new(status: 503, body: provider_error, headers: [{"x-request-id", "req-error"}])},
@@ -365,8 +365,14 @@ defmodule BeamWeaver.Google.StreamingTest do
   defp unwrap(%Envelope{event: event}), do: event
   defp unwrap(event), do: event
 
+  # An error chunk in the stream fails like the same error in a 503 response.
   defp assert_failure_details(error, failure) do
-    if failure in [:provider, :provider_after_stop, :http], do: assert(error.message == "try again")
+    if failure in [:provider, :provider_after_stop, :http] do
+      assert error.message == "try again"
+      assert error.details.status == 503
+      assert error.details.retryable
+    end
+
     if failure == :http, do: assert(error.details.request_id == "req-error")
   end
 

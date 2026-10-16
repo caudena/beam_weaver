@@ -33,7 +33,7 @@ defmodule BeamWeaver.Tools.Shell.HostExecutorTest do
   end
 
   test "separate stderr preserves shell syntax failures and nonzero status" do
-    policy = ShellPolicy.new!(allow: [~r/.*/], stderr: :separate, timeout: 1_000)
+    policy = ShellPolicy.new!(allow: [~r/.*/], allow_compound: true, stderr: :separate, timeout: 1_000)
 
     assert {:ok, %{status: status, output: "", stderr: stderr}} =
              HostExecutor.run("(", policy)
@@ -42,7 +42,10 @@ defmodule BeamWeaver.Tools.Shell.HostExecutorTest do
     assert stderr != ""
   end
 
-  test "zero-timeout separate-stderr commands emit no shell errors or scratch leaks" do
+  @tag :tmp_dir
+  test "zero-timeout separate-stderr commands emit no shell errors or scratch leaks",
+       %{tmp_dir: tmp_dir} do
+    isolate_tmp_dir(tmp_dir)
     policy = ShellPolicy.new!(allow: ["sleep"], stderr: :separate, timeout: 0)
 
     before = scratch_dirs()
@@ -68,6 +71,18 @@ defmodule BeamWeaver.Tools.Shell.HostExecutorTest do
       {port, _message} when is_port(port) -> true
       {:EXIT, port, _reason} when is_port(port) -> true
       _message -> false
+    end)
+  end
+
+  # Session and executor scratch dirs live under `System.tmp_dir!/0`. Pointing
+  # TMPDIR at this test's own directory keeps scratch dirs from other suites that
+  # share the system temp dir out of the before/after comparison.
+  defp isolate_tmp_dir(tmp_dir) do
+    previous = System.get_env("TMPDIR")
+    System.put_env("TMPDIR", tmp_dir)
+
+    on_exit(fn ->
+      if previous, do: System.put_env("TMPDIR", previous), else: System.delete_env("TMPDIR")
     end)
   end
 

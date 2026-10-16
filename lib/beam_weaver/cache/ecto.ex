@@ -1,16 +1,28 @@
 defmodule BeamWeaver.Cache.Ecto do
   @moduledoc """
   Ecto/Postgres cache adapter implementing `BeamWeaver.Cache`.
+
+  ## Options
+
+    * `:repo` - the Ecto repo (required)
+    * `:table` - the table name, as given to the migration
+    * `:prefix` - the Postgres schema that holds the table, as given to the
+      migration's `prefix:`
+    * `:serialization` - a `BeamWeaver.Serialization.Config` or its options,
+      such as `codec: BeamWeaver.Serialization.Encrypted` with an
+      `:encryption_key`
   """
 
   @behaviour BeamWeaver.Cache
 
   alias BeamWeaver.Adapter.Error, as: AdapterError
   alias BeamWeaver.Core.Error
+  alias BeamWeaver.Migrations.Postgres.Util
 
   defstruct repo: nil,
             query_module: Ecto.Adapters.SQL,
             table: "beam_weaver_cache_entries",
+            prefix: nil,
             serialization: %BeamWeaver.Serialization.Config{}
 
   def new(opts) do
@@ -18,6 +30,7 @@ defmodule BeamWeaver.Cache.Ecto do
       repo: Keyword.fetch!(opts, :repo),
       query_module: Keyword.get(opts, :query_module, Ecto.Adapters.SQL),
       table: Keyword.get(opts, :table, "beam_weaver_cache_entries"),
+      prefix: Keyword.get(opts, :prefix),
       serialization: BeamWeaver.Serialization.Config.new(Keyword.get(opts, :serialization))
     }
   end
@@ -26,7 +39,7 @@ defmodule BeamWeaver.Cache.Ecto do
   def lookup(%__MODULE__{} = cache, namespace, key, _opts) do
     sql = """
     SELECT value, metadata, expires_at
-    FROM #{cache.table}
+    FROM #{table(cache)}
     WHERE namespace = $1 AND key = $2
     """
 
@@ -53,7 +66,7 @@ defmodule BeamWeaver.Cache.Ecto do
   @impl true
   def put(%__MODULE__{} = cache, namespace, key, value, opts) do
     sql = """
-    INSERT INTO #{cache.table} (namespace, key, value, metadata, expires_at)
+    INSERT INTO #{table(cache)} (namespace, key, value, metadata, expires_at)
     VALUES ($1, $2, $3, $4, $5)
     ON CONFLICT (namespace, key)
     DO UPDATE SET value = EXCLUDED.value,
@@ -80,7 +93,7 @@ defmodule BeamWeaver.Cache.Ecto do
 
   @impl true
   def delete(%__MODULE__{} = cache, namespace, key, _opts) do
-    case query(cache, "DELETE FROM #{cache.table} WHERE namespace = $1 AND key = $2", [
+    case query(cache, "DELETE FROM #{table(cache)} WHERE namespace = $1 AND key = $2", [
            BeamWeaver.Cache.stable_key(namespace),
            BeamWeaver.Cache.stable_key(key)
          ]) do
@@ -91,14 +104,14 @@ defmodule BeamWeaver.Cache.Ecto do
 
   @impl true
   def clear(%__MODULE__{} = cache, nil, _opts) do
-    case query(cache, "DELETE FROM #{cache.table}", []) do
+    case query(cache, "DELETE FROM #{table(cache)}", []) do
       {:ok, _result} -> :ok
       {:error, error} -> {:error, normalize_error(error)}
     end
   end
 
   def clear(%__MODULE__{} = cache, namespace, _opts) do
-    case query(cache, "DELETE FROM #{cache.table} WHERE namespace = $1", [
+    case query(cache, "DELETE FROM #{table(cache)} WHERE namespace = $1", [
            BeamWeaver.Cache.stable_key(namespace)
          ]) do
       {:ok, _result} -> :ok
@@ -109,13 +122,15 @@ defmodule BeamWeaver.Cache.Ecto do
   def sweep_expired(%__MODULE__{} = cache, _opts \\ []) do
     case query(
            cache,
-           "DELETE FROM #{cache.table} WHERE expires_at IS NOT NULL AND expires_at <= now()",
+           "DELETE FROM #{table(cache)} WHERE expires_at IS NOT NULL AND expires_at <= now()",
            []
          ) do
       {:ok, result} -> {:ok, Map.get(result, :num_rows, 0)}
       {:error, error} -> {:error, normalize_error(error)}
     end
   end
+
+  defp table(%__MODULE__{} = cache), do: Util.qualify(cache.prefix, cache.table)
 
   defp query(%__MODULE__{} = cache, sql, params) do
     AdapterError.query(cache, sql, params,

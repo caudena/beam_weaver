@@ -2,7 +2,6 @@ defmodule BeamWeaver.OpenAI.ModerationMiddlewareTest do
   use ExUnit.Case, async: true
 
   alias BeamWeaver.Agent.Middleware
-  alias BeamWeaver.Core.Async
   alias BeamWeaver.Core.Message
   alias BeamWeaver.OpenAI
   alias BeamWeaver.OpenAI.ModerationMiddleware
@@ -111,17 +110,11 @@ defmodule BeamWeaver.OpenAI.ModerationMiddlewareTest do
     assert List.last(updated_messages).content =~ "flagged"
   end
 
-  test "async_before_model uses Task-backed moderation" do
+  test "before_model callback jumps to end when invoked directly" do
     middleware = middleware_for("async", @flagged_result, exit_behavior: :end)
 
-    task =
-      ModerationMiddleware.async_before_model(
-        middleware,
-        %{messages: [Message.user("async")]},
-        runtime()
-      )
-
-    assert {:jump, :end, %{messages: [%Message{role: :assistant}]}} = Async.await(task)
+    assert {:jump, :end, %{messages: [%Message{role: :assistant}]}} =
+             ModerationMiddleware.before_model(middleware, %{messages: [Message.user("async")]}, runtime())
   end
 
   test "OpenAI namespace builds moderation middleware with provider options" do
@@ -150,11 +143,38 @@ defmodule BeamWeaver.OpenAI.ModerationMiddlewareTest do
              )
   end
 
+  test "a failed moderation request returns the client's error" do
+    missing_key =
+      ModerationMiddleware.new(
+        api_key: nil,
+        transport: BeamWeaver.TestSupport.Conformance.Fakes.Transport,
+        transport_opts: [parent: self()]
+      )
+
+    assert {:error, %BeamWeaver.Core.Error{type: :missing_api_key}} =
+             ModerationMiddleware.moderate(missing_key, "hello")
+
+    refute_received {:fake_transport_request, _request}
+
+    rate_limited =
+      middleware_for("hello", @ok_result,
+        transport_opts: [status: 429, body: %{"error" => %{"message" => "Rate limit reached", "type" => "requests"}}]
+      )
+
+    assert {:error, %BeamWeaver.Core.Error{type: :http_error, message: "Rate limit reached", details: %{status: 429}}} =
+             ModerationMiddleware.moderate(rate_limited, "hello")
+
+    # The middleware passes the error on.
+    assert {:error, %BeamWeaver.Core.Error{type: :missing_api_key}} =
+             Middleware.call_hook(missing_key, :before_model, %{messages: [Message.user("hello")]}, runtime())
+  end
+
   defp middleware_for(text, result, opts \\ []) do
     ModerationMiddleware.new(
       Keyword.merge(
         [
           model: "test",
+          api_key: "sk-test",
           transport: BeamWeaver.TestSupport.Conformance.Fakes.Transport,
           transport_opts: [
             expect: %{

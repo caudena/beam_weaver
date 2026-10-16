@@ -19,7 +19,8 @@ defmodule BeamWeaver.DeepSeek.Provider do
         {:ok, BeamWeaver.DeepSeek.ChatModel}
 
       {:ok, :responses} ->
-        {:ok, BeamWeaver.DeepSeek.ResponsesModel}
+        with :ok <- BeamWeaver.DeepSeek.ResponsesModel.validate_options(opts),
+             do: {:ok, BeamWeaver.DeepSeek.ResponsesModel}
 
       {:error, api} ->
         {:error,

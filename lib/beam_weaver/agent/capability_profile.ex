@@ -1,5 +1,13 @@
 defmodule BeamWeaver.Agent.CapabilityProfile do
-  @moduledoc "DeepAgents harness behavior profile."
+  @moduledoc """
+  Per-model tuning for a deep agent: system prompt text, hidden tools, tool
+  descriptions, extra middleware and general-purpose subagent settings.
+
+  An agent applies a profile with the `capability_profile` declaration:
+  `capability_profile :auto` uses `for_model/2` for the agent's model, and
+  `capability_profile profile` uses the one you give. See
+  [Capability Profiles](profiles.md).
+  """
 
   alias BeamWeaver.Agent.CapabilityProfileConfig
   alias BeamWeaver.Agent.GeneralPurposeSubagentProfile
@@ -132,7 +140,13 @@ defmodule BeamWeaver.Agent.CapabilityProfile do
   def materialize_extra_middleware(%__MODULE__{middleware: middleware}),
     do: List.wrap(middleware)
 
-  @doc "Merges two harness profiles with additive Python DeepAgents semantics."
+  @doc """
+  Merges `override` into `base`.
+
+  Prompt texts set in `override` win, tool descriptions and middleware merge by
+  tool name and middleware module (`override` wins), and excluded tools and
+  middleware are combined.
+  """
   @spec merge(__MODULE__.t(), __MODULE__.t()) :: __MODULE__.t()
   def merge(%__MODULE__{} = base, %__MODULE__{} = override) do
     gp = merge_general_purpose(base.general_purpose_subagent, override.general_purpose_subagent)

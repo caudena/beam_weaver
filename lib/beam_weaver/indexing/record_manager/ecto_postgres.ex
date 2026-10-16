@@ -15,6 +15,7 @@ defmodule BeamWeaver.Indexing.RecordManager.EctoPostgres do
   defstruct repo: nil,
             query_module: Ecto.Adapters.SQL,
             table: "beam_weaver_indexing_records",
+            prefix: nil,
             namespace: :default
 
   def new(opts) do
@@ -22,6 +23,7 @@ defmodule BeamWeaver.Indexing.RecordManager.EctoPostgres do
       repo: Keyword.fetch!(opts, :repo),
       query_module: Keyword.get(opts, :query_module, Ecto.Adapters.SQL),
       table: Keyword.get(opts, :table, "beam_weaver_indexing_records"),
+      prefix: Keyword.get(opts, :prefix),
       namespace: Keyword.get(opts, :namespace, :default)
     }
   end
@@ -32,7 +34,7 @@ defmodule BeamWeaver.Indexing.RecordManager.EctoPostgres do
 
     sql = """
     SELECT id, source_id, hash, metadata, updated_at
-    FROM #{manager.table}
+    FROM #{table(manager)}
     WHERE namespace = $1 AND id = $2
     LIMIT 1
     """
@@ -54,7 +56,7 @@ defmodule BeamWeaver.Indexing.RecordManager.EctoPostgres do
     namespace = namespace(manager, opts, record.namespace)
 
     sql = """
-    INSERT INTO #{manager.table} (namespace, id, source_id, hash, metadata, updated_at)
+    INSERT INTO #{table(manager)} (namespace, id, source_id, hash, metadata, updated_at)
     VALUES ($1, $2, $3, $4, $5, now())
     ON CONFLICT (namespace, id)
     DO UPDATE SET source_id = EXCLUDED.source_id,
@@ -90,7 +92,7 @@ defmodule BeamWeaver.Indexing.RecordManager.EctoPostgres do
 
     sql = """
     SELECT id, source_id, hash, metadata, updated_at
-    FROM #{manager.table}
+    FROM #{table(manager)}
     WHERE namespace = $1#{source_sql}
     ORDER BY updated_at ASC, id ASC
     """
@@ -108,7 +110,7 @@ defmodule BeamWeaver.Indexing.RecordManager.EctoPostgres do
   def delete(%__MODULE__{} = manager, ids, opts) do
     namespace = namespace(manager, opts)
 
-    case query(manager, "DELETE FROM #{manager.table} WHERE namespace = $1 AND id = ANY($2)", [
+    case query(manager, "DELETE FROM #{table(manager)} WHERE namespace = $1 AND id = ANY($2)", [
            namespace,
            Enum.map(ids, &to_string/1)
          ]) do
@@ -116,6 +118,9 @@ defmodule BeamWeaver.Indexing.RecordManager.EctoPostgres do
       {:error, error} -> {:error, normalize_error(error)}
     end
   end
+
+  # The table, in the Postgres schema `prefix:` names, quoted as the migration quotes it.
+  defp table(%__MODULE__{} = manager), do: BeamWeaver.Migrations.Postgres.Util.qualify(manager.prefix, manager.table)
 
   defp query(%__MODULE__{} = manager, sql, params) do
     AdapterError.query(manager, sql, params,

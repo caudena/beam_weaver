@@ -3,7 +3,7 @@ defmodule BeamWeaver.Core.ContentBlock do
   Typed content blocks used by messages and streaming chunks.
   """
 
-  alias BeamWeaver.Core.ContentBlockLike
+  alias BeamWeaver.Core.ContentBlock.Normalizer
   alias BeamWeaver.Core.Error
   alias BeamWeaver.MapAccess
   alias BeamWeaver.Result
@@ -57,6 +57,8 @@ defmodule BeamWeaver.Core.ContentBlock do
     @moduledoc false
     defstruct [:provider_type, :value, type: :unknown, metadata: %{}]
   end
+
+  @block_structs [Text, PlainText, Image, Audio, File, Video, Reasoning, Citation, ToolResult, Unknown]
 
   @known_types [
     :text,
@@ -199,7 +201,15 @@ defmodule BeamWeaver.Core.ContentBlock do
   Converts a content-block-like value into a typed content block.
   """
   @spec from(term()) :: {:ok, term()} | {:error, Error.t()}
-  def from(value), do: ContentBlockLike.to_content_block(value)
+  def from("data:" <> _rest = uri), do: from_data_uri(uri)
+  def from(text) when is_binary(text), do: {:ok, text(text)}
+  def from(%module{} = block) when module in @block_structs, do: {:ok, block}
+  def from(map) when is_map(map) and not is_struct(map), do: Normalizer.from_map(map)
+
+  def from(value),
+    do:
+      {:error,
+       Error.new(:invalid_content_block, "value cannot be converted to a content block", %{value: inspect(value)})}
 
   @doc """
   Converts a list of content-block-like values into typed content blocks.

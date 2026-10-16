@@ -136,17 +136,6 @@ defmodule BeamWeaver.Stream.Mux do
       {:halt, %{state | done?: true}}
     else
       receive do
-        {:beam_weaver_mux_emit, token, ref, pid, name, item} ->
-          state =
-            if task_token?(state.tasks, pid, token) do
-              enqueue_item(state, ref, pid, name, item, %{})
-            else
-              send(pid, {:beam_weaver_mux_ack, ref, {:error, cancelled_error()}})
-              state
-            end
-
-          next(state)
-
         {:beam_weaver_mux_emit, token, ref, pid, name, item, emit_opts} ->
           state =
             if task_token?(state.tasks, pid, token) do
@@ -302,10 +291,22 @@ defmodule BeamWeaver.Stream.Mux do
     {[event], %{state | tasks: %{}, done?: true}}
   end
 
+  # A producer task replies once it returns, right after its done message.
+  # Take that reply so it doesn't stay in the caller's mailbox.
+  defp await_task_reply(%Task{ref: ref}) do
+    receive do
+      {^ref, _reply} -> :ok
+    after
+      1_000 -> :ok
+    end
+
+    Process.demonitor(ref, [:flush])
+  end
+
   defp finish_task(%{mux: mux} = state, pid, result) do
     {task_info, tasks} = Map.pop(state.tasks, pid)
 
-    if task_info, do: Process.demonitor(task_info.task.ref, [:flush])
+    if task_info, do: await_task_reply(task_info.task)
 
     event =
       case result do
@@ -386,14 +387,11 @@ defmodule BeamWeaver.Stream.Mux do
 
   defp queue_trim_to(state, _max_size), do: state
 
-  defp start_task(%__MODULE__{policy: %{producer_supervisor: nil}}, spec, sink, trace_context) do
-    Task.async(fn -> Tracing.attach_context(trace_context, fn -> run_producer(spec, sink) end) end)
-  end
-
-  defp start_task(%__MODULE__{policy: %{producer_supervisor: supervisor}}, spec, sink, trace_context) do
-    Task.Supervisor.async_nolink(supervisor, fn ->
-      Tracing.attach_context(trace_context, fn -> run_producer(spec, sink) end)
-    end)
+  defp start_task(%__MODULE__{policy: policy}, spec, sink, trace_context) do
+    Tracing.async(fn -> run_producer(spec, sink) end,
+      context: trace_context,
+      supervisor: policy.producer_supervisor
+    )
   end
 
   defp run_producer(spec, %Sink{} = sink) do

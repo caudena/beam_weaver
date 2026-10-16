@@ -1,94 +1,90 @@
 defmodule BeamWeaver.Graph.Execution.TaskPlanner do
   @moduledoc false
 
+  alias BeamWeaver.Core.Error
   alias BeamWeaver.Graph.Execution
-  alias BeamWeaver.Graph.Execution.ChannelState
+  alias BeamWeaver.Graph.Execution.ChannelMerge
   alias BeamWeaver.Graph.Execution.Resume
   alias BeamWeaver.Graph.Execution.Scratchpad
+  alias BeamWeaver.Graph.Execution.Task, as: ExecutionTask
   alias BeamWeaver.Graph.Execution.TaskRequest
-  alias BeamWeaver.TimeoutPolicy
+  alias BeamWeaver.Graph.NodeSpec
 
-  @spec prepare(map(), TaskRequest.t()) :: map()
+  # What a task needs to run. A task that can't run fails with the reason:
+  # a `Send` whose update doesn't merge into the state, or whose `timeout` is
+  # invalid, or a route to a node the graph doesn't have.
+  @spec prepare(map(), TaskRequest.t()) :: {:ok, map()} | {:error, Error.t(), ExecutionTask.t()}
   def prepare(%{compiled: compiled} = run, ready_entry) do
     node_name = TaskRequest.name(ready_entry)
-    node_state = ChannelState.ready_state(ready_entry, run.state, compiled.graph)
-    raw_path = TaskRequest.raw_path(ready_entry)
-    spec = Map.fetch!(compiled.graph.nodes, node_name)
 
     prepared =
       Execution.prepare_task(
         compiled.name,
         run.config,
         run.step,
-        spec.name,
-        node_state,
-        raw_path,
+        node_name,
+        nil,
+        TaskRequest.raw_path(ready_entry),
         run.task_trigger_versions,
         TaskRequest.kind(ready_entry)
       )
 
-    %{
-      spec: spec,
-      prepared: prepared,
-      node_state: node_state,
-      scratchpad:
-        Scratchpad.new(
-          task_id: prepared.id,
-          node: prepared.node,
-          step: prepared.step,
-          resume_values: Resume.values_for_task(run.resume, prepared.id)
-        ),
-      error: TaskRequest.error(ready_entry),
-      timeout: normalize_task_timeout(TaskRequest.timeout(ready_entry) || spec.timeout),
-      started_at: System.monotonic_time(:millisecond)
-    }
-  end
-
-  @spec normalize_task_timeout(term()) :: non_neg_integer() | :infinity
-  def normalize_task_timeout(:infinity), do: :infinity
-  def normalize_task_timeout(nil), do: :infinity
-  def normalize_task_timeout(%TimeoutPolicy{} = policy), do: timeout_policy_timeout(policy)
-
-  def normalize_task_timeout(timeout) when is_list(timeout) do
-    if timeout_policy_options?(timeout), do: timeout_policy_timeout(timeout), else: 5_000
-  end
-
-  def normalize_task_timeout(timeout) when is_map(timeout) do
-    if timeout_policy_options?(timeout), do: timeout_policy_timeout(timeout), else: 5_000
-  end
-
-  def normalize_task_timeout(timeout) when is_float(timeout) and timeout >= 0,
-    do: round(timeout * 1_000)
-
-  def normalize_task_timeout(timeout) when is_integer(timeout) and timeout >= 0, do: timeout
-  def normalize_task_timeout(_timeout), do: 5_000
-
-  defp timeout_policy_timeout(policy) do
-    case TimeoutPolicy.effective_timeout(policy) do
-      {:ok, nil} -> :infinity
-      {:ok, timeout} -> timeout
-      {:error, _error} -> 5_000
+    with {:ok, spec} <- fetch_node(compiled.graph, node_name),
+         {:ok, timeout} <- task_timeout(ready_entry, spec),
+         {:ok, node_state} <- ChannelMerge.ready_state(ready_entry, run.state, compiled.graph) do
+      {:ok,
+       %{
+         spec: spec,
+         prepared: %{prepared | input: node_state},
+         node_state: node_state,
+         scratchpad:
+           Scratchpad.new(
+             task_id: prepared.id,
+             node: prepared.node,
+             step: prepared.step,
+             resume_values: Resume.values_for_task(run.resume, prepared.id)
+           ),
+         first_state: first_state(run, ready_entry),
+         error: TaskRequest.error(ready_entry),
+         timeout: timeout,
+         started_at: System.monotonic_time(:millisecond)
+       }}
+    else
+      {:error, %Error{} = error} -> {:error, error, prepared}
     end
   end
 
-  defp timeout_policy_options?(opts) when is_list(opts) do
-    Enum.any?(opts, fn
-      {key, _value} -> timeout_policy_key?(key)
-      _other -> false
-    end)
+  defp fetch_node(graph, node_name) do
+    case Map.fetch(graph.nodes, node_name) do
+      {:ok, spec} ->
+        {:ok, spec}
+
+      :error ->
+        {:error, Error.new(:invalid_graph, "graph references a missing node", %{node: node_name})}
+    end
   end
 
-  defp timeout_policy_options?(opts) when is_map(opts) do
-    opts
-    |> Map.keys()
-    |> Enum.any?(&timeout_policy_key?/1)
+  # A `Send`'s own `timeout` takes the forms that a node's `timeout:` takes.
+  defp task_timeout(ready_entry, spec) do
+    case TaskRequest.timeout(ready_entry) do
+      nil ->
+        {:ok, spec.timeout || :infinity}
+
+      timeout ->
+        with {:ok, timeout, _policy} <- NodeSpec.normalize_timeout(timeout),
+             do: {:ok, timeout || :infinity}
+    end
   end
 
-  defp timeout_policy_key?(key) when key in [:run_timeout, :idle_timeout, :refresh_on],
-    do: true
+  # In a step that a run continues, the state the task had when the step
+  # first ran; nil otherwise. A `Send` whose update didn't merge into that
+  # state failed then, so its task never ran.
+  defp first_state(%{continued_from: nil}, _ready_entry), do: nil
 
-  defp timeout_policy_key?(key) when key in ["run_timeout", "idle_timeout", "refresh_on"],
-    do: true
-
-  defp timeout_policy_key?(_key), do: false
+  defp first_state(%{continued_from: state, compiled: compiled}, ready_entry) do
+    case ChannelMerge.ready_state(ready_entry, state, compiled.graph) do
+      {:ok, state} -> state
+      {:error, %Error{}} -> nil
+    end
+  end
 end

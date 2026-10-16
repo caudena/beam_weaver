@@ -1,6 +1,8 @@
 defmodule BeamWeaver.Agent.Subagent.AsyncSpec do
   @moduledoc "Remote Agent Protocol subagent descriptor."
 
+  use BeamWeaver.Provider.RedactedInspect
+
   defstruct [:name, :description, :graph_id, :url, :client, headers: %{}]
 
   @type t :: %__MODULE__{

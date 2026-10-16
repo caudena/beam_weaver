@@ -1,73 +1,79 @@
 # Summary
 
 * [Overview](README.md)
-* [Getting Started](getting_started.md)
-* [Semantic DSL](semantic_dsl.md)
-* [Thinking In BeamWeaver](thinking_in_beamweaver.md)
-* [Workflows And Agents](workflows_and_agents.md)
 
-## Capabilities
+## Get Started
 
-* [Persistence](persistence.md)
-* [Memory](memory.md)
-* [Composed Agent Capabilities](agent_harness.md)
-* [Deep Agents Quickstart](deep_agents_quickstart.md)
-* [Customization](customization.md)
-* [Profiles](profiles.md)
-* [Filesystem](filesystem.md)
-* [Filesystem Permissions](permissions.md)
-* [Skills](skills.md)
-* [Sandboxes](sandboxes.md)
-* [Subagents](subagents.md)
-* [Immutable Todos](todos.md)
-* [Async Subagents](async_subagents.md)
-* [Subgraphs](subgraphs.md)
-* [Time Travel](time_travel.md)
-* [Durable Execution](durable_execution.md)
-* [Fault Tolerance](fault_tolerance.md)
-* [Event Streaming](event_streaming.md)
+* [Quickstart](quickstart.md)
+* [Concepts](concepts.md)
+* [Examples](examples.md)
+* [Coming from LangChain](coming_from_langchain.md)
 
-## Core Components
+## Agents
 
 * [Agents](agents.md)
-* [Context Engineering](context_engineering.md)
-* [Application-Owned Compaction](compaction.md)
 * [Models](models.md)
-* [Prompt Caching](prompt_caching.md)
 * [Messages](messages.md)
 * [Tools](tools.md)
+* [Structured Output](structured_output.md)
 * [Middleware](middleware.md)
-* [Custom Middleware](custom_middleware.md)
-* [Prebuilt Middleware](prebuilt_middleware.md)
-* [Guardrails](guardrails.md)
-* [Human-In-The-Loop](human_in_the_loop.md)
-* [Runtime](runtime.md)
+* [Built-in Middleware](builtin_middleware.md)
+* [Runtime Context](runtime_context.md)
+* [Streaming](streaming.md)
+
+## Memory and Context
+
 * [Short-Term Memory](short_term_memory.md)
 * [Long-Term Memory](long_term_memory.md)
-* [Structured Output](structured_output.md)
-* [Graph](graph.md)
+* [Memory Files](memory_files.md)
+* [Context Management](context_management.md)
 
-## Data And Retrieval
+## Oversight and Safety
+
+* [Human-in-the-Loop](human_in_the_loop.md)
+* [Guardrails](guardrails.md)
+
+## Deep Agents
+
+* [Deep Agents](deep_agents.md)
+* [Filesystem](filesystem.md)
+* [Skills](skills.md)
+* [Subagents](subagents.md)
+* [Sandboxes](sandboxes.md)
+* [Capability Profiles](profiles.md)
+
+## Graphs
+
+* [Graphs](graphs.md)
+* [Graph State](graph_state.md)
+* [Workflow Patterns](workflow_patterns.md)
+* [Subgraphs](subgraphs.md)
+* [Checkpoints and Time Travel](checkpoints.md)
+* [Durable Execution](durable_execution.md)
+
+## Retrieval
 
 * [Retrieval](retrieval.md)
-* [Prompts And Parsers](prompts_parsers.md)
-* [Adapters](adapters.md)
-* [Core](core.md)
+* [Prompts and Parsers](prompts_and_parsers.md)
 
-## Partners
+## Production
 
-* [Partner Matrix](partners.md)
-* [OpenAI](partners/openai.md)
-* [Anthropic](partners/anthropic.md)
-* [Google](partners/google.md)
-* [DeepSeek](partners/deepseek.md)
-* [Moonshot/Kimi](partners/moonshot.md)
-* [xAI](partners/xai.md)
-* [Z.ai](partners/zai.md)
-
-## Operations
-
-* [Going To Production](going_to_production.md)
-* [Rate Limiting](rate_limiting.md)
-* [Replay](replay.md)
+* [Going to Production](going_to_production.md)
+* [Testing](testing.md)
 * [Tracing](tracing.md)
+* [Storage](storage.md)
+* [Caching](caching.md)
+* [Rate Limiting](rate_limiting.md)
+* [Compaction Engine](compaction_engine.md)
+
+## Providers
+
+* [Providers](providers.md)
+  * [OpenAI](providers/openai.md)
+  * [Anthropic](providers/anthropic.md)
+  * [Google Gemini](providers/google.md)
+  * [DeepSeek](providers/deepseek.md)
+  * [Moonshot (Kimi)](providers/moonshot.md)
+  * [xAI](providers/xai.md)
+  * [Z.ai](providers/zai.md)
+  * [TypeSafe](providers/typesafe.md)

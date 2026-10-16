@@ -3,7 +3,6 @@ defmodule BeamWeaver.Agent.MiddlewareBuiltinTest do
 
   alias BeamWeaver.Agent
   alias BeamWeaver.Agent.Decision
-  alias BeamWeaver.Agent.FinalResponsePolicy
   alias BeamWeaver.Agent.Middleware.ContextEditing
   alias BeamWeaver.Agent.Middleware.ModelCallLimit
   alias BeamWeaver.Agent.Middleware.ModelFallback
@@ -111,7 +110,7 @@ defmodule BeamWeaver.Agent.MiddlewareBuiltinTest do
   end
 
   defmodule LoggingModelMiddleware do
-    @behaviour BeamWeaver.Agent.Middleware
+    use BeamWeaver.Agent.Middleware
 
     defstruct []
 
@@ -127,7 +126,7 @@ defmodule BeamWeaver.Agent.MiddlewareBuiltinTest do
   end
 
   defmodule LoggingToolMiddleware do
-    @behaviour BeamWeaver.Agent.Middleware
+    use BeamWeaver.Agent.Middleware
 
     defstruct []
 
@@ -826,11 +825,11 @@ defmodule BeamWeaver.Agent.MiddlewareBuiltinTest do
   end
 
   defmodule DecisionMiddleware do
-    @behaviour BeamWeaver.Agent.Middleware
+    use BeamWeaver.Agent.Middleware
 
     def name(_middleware), do: :decision_middleware
 
-    def before_model(_state, _runtime) do
+    def before_model(_middleware, _state, _runtime) do
       %Decision.Jump{
         destination: :end,
         update: %{messages: [Message.assistant("typed decision")]}
@@ -955,8 +954,8 @@ defmodule BeamWeaver.Agent.MiddlewareBuiltinTest do
     assert %Message{role: :assistant, content: content, metadata: %{status: "error"}} =
              List.last(messages)
 
-    assert content =~ "Model call failed after 2 attempts"
-    assert content =~ "primary_failed"
+    # `primary_failed` isn't a transient error, so it isn't retried.
+    assert content =~ "Model call failed after 1 attempt with primary_failed"
   end
 
   test "model retry supports custom retry predicates and failure formatting" do
@@ -1635,7 +1634,7 @@ defmodule BeamWeaver.Agent.MiddlewareBuiltinTest do
       ToolCallLimit.new(thread_limit: 1, run_limit: 2)
     end
 
-    assert ToolCallLimit.name(ToolCallLimit.new(tool_name: "search")) ==
+    assert ToolCallLimit.name(ToolCallLimit.new(tool_name: "search", run_limit: 1)) ==
              :"tool_call_limit:search"
 
     middleware = ToolCallLimit.new(tool_name: "search", thread_limit: 0, exit_behavior: :error)
@@ -1834,6 +1833,7 @@ defmodule BeamWeaver.Agent.MiddlewareBuiltinTest do
         model: %ProfileSummaryModel{parent: parent},
         trigger: {:fraction, 0.8},
         keep: {:fraction, 0.5},
+        max_input_tokens: 1_000,
         token_counter: fn messages -> length(messages) * 200 end,
         summary_prompt: "Extract:\n{messages}"
       )
@@ -1890,7 +1890,7 @@ defmodule BeamWeaver.Agent.MiddlewareBuiltinTest do
            ] = rewritten
   end
 
-  test "summarization passes source metadata and formats history as message buffer text" do
+  test "summarization tags its trace run with its source and formats history as message buffer text" do
     middleware =
       BeamWeaver.Agent.Middleware.Summarization.new(
         model: %CapturingSummaryModel{parent: self()},
@@ -1923,7 +1923,8 @@ defmodule BeamWeaver.Agent.MiddlewareBuiltinTest do
     assert prompt =~ "AI: I'll check."
     assert prompt =~ "Tool: 72F and sunny"
     refute prompt =~ "metadata metadata"
-    assert Keyword.fetch!(opts, :metadata) == %{source: :summarization}
+    assert Keyword.fetch!(opts, :trace_metadata) == %{source: :summarization}
+    refute Keyword.has_key?(opts, :metadata)
   end
 
   test "summarization can trigger from matching provider usage metadata" do
@@ -2300,8 +2301,7 @@ defmodule BeamWeaver.Agent.MiddlewareBuiltinTest do
 
     refute Map.has_key?(state, :usage)
 
-    assert {:ok, %Message{content: "with usage"}} =
-             FinalResponsePolicy.extract(:latest_assistant, state)
+    assert %Message{content: "with usage"} = List.last(state.messages)
   end
 
   test "PII block prevents downstream model execution" do

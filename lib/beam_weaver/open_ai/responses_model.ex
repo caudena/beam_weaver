@@ -7,6 +7,8 @@ defmodule BeamWeaver.OpenAI.ResponsesModel do
   struct without changing the existing default.
   """
 
+  use BeamWeaver.Provider.RedactedInspect
+
   @behaviour BeamWeaver.Core.ChatModel
 
   alias BeamWeaver.OpenAI.ChatModel
@@ -24,27 +26,12 @@ defmodule BeamWeaver.OpenAI.ResponsesModel do
   def stream(%__MODULE__{} = model, messages, opts \\ []),
     do: ChatModel.stream(to_chat_model(model), messages, opts)
 
-  def async_invoke(%__MODULE__{} = model, messages, opts \\ []),
-    do: ChatModel.async_invoke(to_chat_model(model), messages, opts)
-
-  def async_batch(%__MODULE__{} = model, message_batches, opts \\ []),
-    do: ChatModel.async_batch(to_chat_model(model), message_batches, opts)
-
-  def async_stream(%__MODULE__{} = model, messages, opts \\ []),
-    do: ChatModel.async_stream(to_chat_model(model), messages, opts)
-
   def stream_response(%__MODULE__{} = model, messages, opts \\ []),
     do: ChatModel.stream_response(to_chat_model(model), messages, opts)
-
-  def async_stream_response(%__MODULE__{} = model, messages, opts \\ []),
-    do: ChatModel.async_stream_response(to_chat_model(model), messages, opts)
 
   @impl true
   def stream_events(%__MODULE__{} = model, messages, opts \\ []),
     do: ChatModel.stream_events(to_chat_model(model), messages, opts)
-
-  def async_stream_events(%__MODULE__{} = model, messages, opts \\ []),
-    do: ChatModel.async_stream_events(to_chat_model(model), messages, opts)
 
   @impl true
   def stream_typed_events(%__MODULE__{} = model, messages, opts \\ []),
@@ -54,9 +41,6 @@ defmodule BeamWeaver.OpenAI.ResponsesModel do
   def stream_exact_typed_events(%__MODULE__{} = model, body, opts \\ [])
       when is_binary(body),
       do: ChatModel.stream_exact_typed_events(to_chat_model(model), body, opts)
-
-  def async_stream_typed_events(%__MODULE__{} = model, messages, opts \\ []),
-    do: ChatModel.async_stream_typed_events(to_chat_model(model), messages, opts)
 
   def request_body(%__MODULE__{} = model, messages, opts \\ []),
     do: ChatModel.request_body(to_chat_model(model), messages, opts)

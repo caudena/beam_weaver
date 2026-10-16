@@ -3,23 +3,20 @@ defmodule BeamWeaver.Graph.Execution.StepTransition do
 
   alias BeamWeaver.Core.Error
   alias BeamWeaver.Graph.Execution
-  alias BeamWeaver.Graph.Execution.ChannelState
+  alias BeamWeaver.Graph.Execution.ChannelMerge
   alias BeamWeaver.Graph.Execution.CheckpointIO
   alias BeamWeaver.Graph.Execution.Halt
+  alias BeamWeaver.Graph.Execution.Route
   alias BeamWeaver.Graph.Execution.Run
   alias BeamWeaver.Graph.Execution.Scheduler
   alias BeamWeaver.Graph.Execution.StepOutcome
   alias BeamWeaver.Graph.Execution.Stream
   alias BeamWeaver.Graph.Execution.TaskCollector
   alias BeamWeaver.Graph.Execution.TaskExecutor
-  alias BeamWeaver.Graph.Send
 
   @spec advance(Run.t()) ::
           {:continue, Run.t()}
-          | {:halt,
-             {:interrupted, map(), list()}
-             | {:parent_command, term(), list()}
-             | {:error, Error.t(), list()}}
+          | {:halt, {:interrupted, map()} | {:parent_command, term()} | {:error, Error.t()}}
   def advance(%Run{ready: ready, compiled: compiled} = run) do
     case interrupted_before(run, ready) do
       nil ->
@@ -35,29 +32,34 @@ defmodule BeamWeaver.Graph.Execution.StepTransition do
         end
 
       interrupt ->
-        {:halt, {:interrupted, interrupt, run.events}}
+        {:halt, {:interrupted, interrupt}}
     end
   end
 
   defp complete_step(run, ready, %StepOutcome{} = outcome) do
     compiled = run.compiled
 
-    schedule =
-      Scheduler.prepare_next_tasks(
-        compiled.plan || compiled.graph,
-        ready,
-        outcome.state,
-        outcome.next,
-        outcome.sends,
-        &route_condition/2
-      )
+    # A step that continues one that stopped partway also routes from the
+    # tasks that had finished then.
+    routes = run.replay_routes ++ outcome.routes
+    completed = Enum.map(run.replay_routes, & &1.node) ++ CheckpointIO.ready_names(ready)
+    routing_state = Route.put_outputs(outcome.state, run.replay_routes, compiled.graph)
 
-    case ChannelState.merge_step_updates(outcome.state, schedule.updates, compiled.graph) do
+    case Scheduler.prepare_next_tasks(compiled.plan || compiled.graph, routes, routing_state) do
+      {:ok, schedule} -> schedule_next_step(run, ready, outcome, completed, routing_state, schedule)
+      {:error, %Error{} = error} -> {:halt, {:error, error}}
+    end
+  end
+
+  defp schedule_next_step(run, ready, outcome, completed, routing_state, schedule) do
+    compiled = run.compiled
+
+    case ChannelMerge.merge_step_updates(routing_state, schedule.updates, compiled.graph) do
       {:ok, schedule_step_update, scheduled_state} ->
         public_step_update =
           outcome.step_update
           |> Map.merge(schedule_step_update)
-          |> hide_ephemeral_internal_update()
+          |> Scheduler.hide_node_outputs()
 
         updated_channels =
           (Execution.updated_channels(public_step_update) ++
@@ -65,7 +67,7 @@ defmodule BeamWeaver.Graph.Execution.StepTransition do
              Execution.pending_channels(run.replay_pending_writes) ++
              run.replay_input_updated_channels)
           |> Execution.normalize_channels()
-          |> Enum.reject(&ephemeral_internal_channel?/1)
+          |> Enum.reject(&Scheduler.node_outputs_channel?/1)
 
         next_ready =
           Scheduler.add_channel_tasks(
@@ -74,12 +76,7 @@ defmodule BeamWeaver.Graph.Execution.StepTransition do
             updated_channels
           )
 
-        versions_seen =
-          Execution.mark_versions_seen(
-            run.versions_seen,
-            CheckpointIO.ready_names(ready),
-            run.channel_versions
-          )
+        versions_seen = Execution.mark_versions_seen(run.versions_seen, completed, run.channel_versions)
 
         channel_versions =
           Execution.next_channel_versions(
@@ -89,98 +86,76 @@ defmodule BeamWeaver.Graph.Execution.StepTransition do
             compiled.graph
           )
 
-        events =
-          run.events
-          |> Stream.add_events(outcome.events, run)
-          |> Stream.add_step_events(run, ready, public_step_update, scheduled_state)
+        Stream.emit_tasks(run, outcome.events)
+        Stream.emit_step(run, ready, public_step_update, scheduled_state)
 
-        case CheckpointIO.maybe_write_checkpoint(compiled, run.config, scheduled_state, %{
-               source: "loop",
-               step: run.step,
-               run_id: run.run_id,
-               nodes: CheckpointIO.ready_names(ready),
-               next: CheckpointIO.ready_names(next_ready),
-               next_tasks: CheckpointIO.checkpoint_next_records(next_ready, compiled.graph),
-               tasks: CheckpointIO.checkpoint_task_records(outcome.events),
-               interrupts: [],
-               channel_versions: channel_versions,
-               versions_seen: versions_seen,
-               updated_channels: updated_channels,
-               step_update: public_step_update
-             }) do
-          {:ok, config} ->
-            checkpoint_events = Stream.checkpoint_events(run, config, scheduled_state)
-            events = Stream.add_events(events, checkpoint_events, run)
+        metadata = %{
+          source: "loop",
+          step: run.step,
+          run_id: run.run_id,
+          nodes: completed,
+          next: CheckpointIO.ready_names(next_ready),
+          next_tasks: CheckpointIO.checkpoint_next_records(next_ready, compiled.graph),
+          tasks: CheckpointIO.checkpoint_task_records(outcome.events),
+          interrupts: [],
+          channel_versions: channel_versions,
+          versions_seen: versions_seen,
+          updated_channels: updated_channels,
+          step_update: public_step_update
+        }
 
-            case interrupted_after(%{run | state: scheduled_state, events: events}, ready) do
+        case CheckpointIO.maybe_write_checkpoint(compiled, run.config, scheduled_state, metadata, run.known_checkpoint) do
+          {:ok, config, known_checkpoint} ->
+            Stream.emit_checkpoint(run, config, scheduled_state)
+
+            case interrupted_after(%{run | state: scheduled_state}, completed) do
               nil ->
                 {:continue,
                  %{
                    run
                    | state: scheduled_state,
                      ready: next_ready,
-                     events: events,
                      config: config,
+                     known_checkpoint: known_checkpoint,
                      channel_versions: channel_versions,
                      versions_seen: versions_seen,
                      task_trigger_versions: channel_versions,
                      replay_pending_writes: [],
+                     replay_routes: [],
                      replay_input_updated_channels: [],
                      skip_interrupt_before?: false,
+                     continued_from: nil,
                      step: run.step + 1
                  }}
 
               interrupt ->
-                {:halt, {:interrupted, interrupt, events}}
+                {:halt, {:interrupted, interrupt}}
             end
 
           {:error, %Error{} = error} ->
-            {:halt, {:error, error, events}}
+            {:halt, {:error, error}}
         end
 
       {:error, %Error{} = error} ->
-        {:halt, {:error, error, run.events}}
+        {:halt, {:error, error}}
     end
   end
 
   defp halt_with_pending(run, %Halt{} = halt) do
-    events = Stream.add_events(run.events, halt.events, run)
+    Stream.emit_tasks(run, halt.events)
 
     case CheckpointIO.persist_pending_writes(run, halt.pending_writes) do
-      :ok -> {:halt, {halt.reason, halt.payload, events}}
-      {:error, %Error{} = persist_error} -> {:halt, {:error, persist_error, events}}
+      :ok -> {:halt, {halt.reason, halt.payload}}
+      {:error, %Error{} = persist_error} -> {:halt, {:error, persist_error}}
     end
   end
 
   defp interrupted_before(%{skip_interrupt_before?: true}, _ready), do: nil
+  defp interrupted_before(_run, []), do: nil
 
   defp interrupted_before(run, ready),
     do: TaskCollector.interrupt_for(run.compiled.interrupt_before, ready, run, :before)
 
   defp interrupted_after(run, ready),
     do: TaskCollector.interrupt_for(run.compiled.interrupt_after, ready, run, :after)
-
-  defp route_condition(spec, state) do
-    result =
-      case :erlang.fun_info(spec.router, :arity) do
-        {:arity, 1} -> spec.router.(state)
-        {:arity, 2} -> spec.router.(state, spec.path_map)
-      end
-
-    result
-    |> List.wrap()
-    |> Enum.map(fn
-      %Send{} = send -> send
-      route -> Map.get(spec.path_map, route, to_string(route))
-    end)
-    |> Enum.reject(&(&1 == "__end__"))
-  end
-
-  defp hide_ephemeral_internal_update(update) do
-    update
-    |> Map.delete(:__node_outputs__)
-    |> Map.delete("__node_outputs__")
-  end
-
-  defp ephemeral_internal_channel?(channel), do: to_string(channel) == "__node_outputs__"
 end

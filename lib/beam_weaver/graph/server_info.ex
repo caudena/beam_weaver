@@ -2,9 +2,10 @@ defmodule BeamWeaver.Graph.ServerInfo do
   @moduledoc """
   Server-side graph metadata exposed to nodes and tool runtimes.
 
-  This is a native BeamWeaver struct hydrated from graph config. It covers the
-  user-facing LangGraph runtime information without coupling graph execution to
-  remote platform SDK objects.
+  A plain struct with the assistant id, graph id and authenticated user.
+  `from_configurable/1` builds it from the run config's configurable map
+  (`:assistant_id`, `:graph_id`, `:auth_user`) and returns `nil` when none of
+  them are set.
   """
 
   defmodule User do

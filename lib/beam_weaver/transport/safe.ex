@@ -11,9 +11,18 @@ defmodule BeamWeaver.Transport.Safe do
   the socket peer address or an exact write count, so transport failures remain
   ambiguous after dispatch; a completed response is the only write evidence.
 
+  With the default transport, requests stay out of the connection pool that
+  provider calls share, so URLs from users or models can't grow it. They run
+  on isolated pools instead: a request reuses connections only with requests
+  to the same origin with the same connection settings (for a pinned request,
+  the same address and host name), and at most 16 of these pools exist (see
+  `BeamWeaver.Transport.ReqFinch` to change the limit).
+
   Callers may independently set `:connect_timeout`, `:stream_idle_timeout`,
   and `:total_timeout`. The legacy `:timeout` remains the fallback for all
-  three limits.
+  three limits. `:max_request_header_bytes` and `:max_response_header_bytes`
+  (65,536 bytes each by default) limit the request and response headers; a
+  response over its limit fails with `:response_headers_too_large`.
   """
 
   @behaviour BeamWeaver.Transport
@@ -231,7 +240,7 @@ defmodule BeamWeaver.Transport.Safe do
   defp prepare_request(request, opts, %{pin_resolved?: false} = policy) do
     with {:ok, canonical_url} <- validate_url(request.url, policy),
          :ok <- validate_request_headers(request.headers, opts) do
-      {:ok, %{request | url: canonical_url}, opts, nil}
+      {:ok, %{request | url: canonical_url}, put_mint_connect_options(opts), nil}
     end
   end
 
@@ -259,9 +268,7 @@ defmodule BeamWeaver.Transport.Safe do
       wire_opts =
         opts
         |> Keyword.put(:connect_options, connect_options)
-        |> Keyword.put(:mint_connect_options,
-          max_header_list_size: Keyword.get(opts, :max_response_header_bytes, @default_maximum_header_bytes)
-        )
+        |> put_mint_connect_options()
         |> Keyword.drop([:unix_socket, :inet6])
 
       {:ok, %{request | url: pinned_url, headers: headers}, wire_opts, target}
@@ -272,6 +279,16 @@ defmodule BeamWeaver.Transport.Safe do
       {:error, %Error{} = error} ->
         {:error, error}
     end
+  end
+
+  # Mint enforces the response header limit while it reads the headers. HTTP
+  # connection options also keep the request off the pool provider calls
+  # share: `Transport.ReqFinch` runs it on a bounded, isolated pool, so URLs
+  # from users or models can't grow the shared one.
+  defp put_mint_connect_options(opts) do
+    Keyword.put(opts, :mint_connect_options,
+      max_header_list_size: Keyword.get(opts, :max_response_header_bytes, @default_maximum_header_bytes)
+    )
   end
 
   defp annotate_target(response, nil), do: response

@@ -1,591 +1,285 @@
 # Messages
 
-Messages are the shared context unit for BeamWeaver models, agents, prompts,
-tools, and graph state. A message carries:
-
-- a role: `:system`, `:user`, `:assistant`, or `:tool`
-- content: a string or a list of content blocks
-- metadata: IDs, names, usage, provider response details, tool calls, artifacts,
-  and server-side tool data
-
-BeamWeaver keeps one persistent public message value:
-`%BeamWeaver.Core.Message{}`. Role-specific constructors create that same struct.
-
-{% hint style="info" %}
-**One Message Struct**
-
-LangChain's Python docs use separate classes such as `SystemMessage`,
-`HumanMessage`, `AIMessage`, and `ToolMessage`. Python classes make that API
-natural because runtime type checks and object inheritance are the normal
-extension points. BeamWeaver uses a single `%BeamWeaver.Core.Message{}` with an
-atom role because pattern matching, structs, protocols, and tagged results are
-the native boundary. This keeps provider translation, graph state, checkpoint
-serialization, and tool execution on one value model.
-{% endhint %}
-
-## Basic Usage
-
-Create messages with `BeamWeaver.Core.Message` and pass them to any chat model:
-
-```elixir
-alias BeamWeaver.Core.{ChatModel, Message}
-
-{:ok, model} = BeamWeaver.Models.init_chat_model("openai:gpt-5-nano")
-
-messages = [
-  Message.system("You are a helpful assistant."),
-  Message.user("Hello, how are you?")
-]
-
-{:ok, response} = ChatModel.invoke(model, messages)
-IO.puts(Message.text(response))
-```
-
-### Text Prompts
-
-For a single standalone request, pass a string. The chat model boundary treats it
-as a user message:
-
-```elixir
-{:ok, response} =
-  BeamWeaver.Core.ChatModel.invoke(model, "Write a haiku about spring")
-```
-
-Use a text prompt when there is no conversation history, no system instruction,
-and no multimodal input.
-
-### Message Prompts
-
-Use message lists for multi-turn conversations, system instructions, tool calls,
-and multimodal content:
+A conversation in BeamWeaver is a list of `%BeamWeaver.Core.Message{}`
+structs: instructions, what the user said, the model's replies and tool
+results. You work with messages when you call a model yourself, seed a
+conversation, or read an agent's result.
 
 ```elixir
 alias BeamWeaver.Core.Message
 
-messages = [
-  Message.system("You are a poetry expert."),
-  Message.user("Write a haiku about spring."),
-  Message.assistant("Cherry blossoms bloom..."),
-  Message.user("Make it shorter.")
+history = [
+  Message.system("You are Acme's support agent."),
+  Message.user("Where is my order A-1001?"),
+  Message.assistant("It shipped on Monday.")
 ]
 
-{:ok, response} = BeamWeaver.Core.ChatModel.invoke(model, messages)
+Enum.map(history, &{&1.role, Message.text(&1)})
+#=> [system: "You are Acme's support agent.", user: "Where is my order A-1001?", assistant: "It shipped on Monday."]
 ```
 
-### Map Format
+## Roles and constructors
 
-BeamWeaver can normalize OpenAI-style maps and role/content tuples through the
-`BeamWeaver.Core.MessageLike` protocol:
+Each message has a role, and each role has a constructor:
+
+| Role | Constructor | Use it for |
+| --- | --- | --- |
+| `:system` | `Message.system/2` | Instructions for the model. |
+| `:user` | `Message.user/2` | What the user says, including images and files. |
+| `:assistant` | `Message.assistant/2` | The model's replies, and earlier replies when you seed a conversation. |
+| `:tool` | `Message.tool/2` | The result of a tool call. |
+
+The second argument takes the other fields as options, such as `name:`,
+`id:`, `metadata:`, `tool_calls:` and `tool_call_id:`. Constructors raise on
+invalid content; `BeamWeaver.Core.Message.new/3` returns an error tuple instead:
+
+```elixir
+Message.new(:robot, "Beep.")
+#=> {:error, %BeamWeaver.Core.Error{type: :invalid_role}}
+```
+
+Messages that arrive as plain data, such as JSON from a browser or a stored
+transcript, convert with `BeamWeaver.Core.Message.from/1`. It accepts a
+string (a user message), a `{role, content}` tuple, or a map with `"role"` and
+`"content"` keys. `BeamWeaver.Core.Messages.Utils.normalize/1` converts a whole
+list:
 
 ```elixir
 alias BeamWeaver.Core.Messages.Utils
 
 {:ok, messages} =
   Utils.normalize([
-    %{"role" => "system", "content" => "You are a poetry expert."},
-    %{"role" => "user", "content" => "Write a haiku about spring."},
-    {:assistant, "Cherry blossoms bloom..."}
+    %{"role" => "user", "content" => "Where is my order A-1001?"},
+    %{"role" => "assistant", "content" => "It shipped on Monday."},
+    "Thanks!"
   ])
+
+Enum.map(messages, & &1.role)
+#=> [:user, :assistant, :user]
 ```
 
-Prefer constructors in new application code. Map normalization is useful at
-transport boundaries, replay fixtures, migration paths, and user-supplied data
-where the message shape arrives as plain JSON.
+A `"developer"` role becomes a system message. Agents accept plain strings in
+`messages` and turn them into user messages for you.
 
-{% hint style="info" %}
-**Map Lists At The Boundary**
+## The message struct
 
-LangChain accepts lists of raw dictionaries directly in many model calls.
-BeamWeaver validates chat-model message lists as `%BeamWeaver.Core.Message{}`
-values so provider modules receive one stable internal shape. Normalize raw
-maps first with `Utils.normalize/1`, or use `Message.system/2`,
-`Message.user/2`, `Message.assistant/2`, and `Message.tool/2` directly.
-{% endhint %}
+| Field | Holds |
+| --- | --- |
+| `role` | `:system`, `:user`, `:assistant` or `:tool`. |
+| `content` | A string, or a list of content blocks. |
+| `name` | Who wrote it. An agent puts its name on its replies. |
+| `id` | An id; messages in an agent's state get one. |
+| `tool_calls` | On replies: the tools the model asked to call. |
+| `tool_call_id` | On tool results: the call this result answers. |
+| `usage_metadata` | On replies: token counts (see [Models](models.md#token-usage)). |
+| `response_metadata` | On replies: details from the provider, such as the model used. |
+| `metadata` | Extra data, yours or the provider's. |
+| `artifacts` | On tool results you build with `Message.tool/2`: data for your application that providers don't send to the model. |
+| `server_tool_calls`, `server_tool_results` | Tools Google ran itself, such as web search. Anthropic and OpenAI put these in content blocks. |
 
-{% hint style="info" %}
-**Role Names**
+## Text and content blocks
 
-LangChain uses `human` and `ai` in some APIs and `user` and `assistant` in
-provider-facing APIs. BeamWeaver stores `:user` and `:assistant`; the
-normalizer accepts common aliases so imported histories and provider payloads
-can be converted at the edge. Provider-specific roles, such as OpenAI's
-`developer`, are represented as system messages with provider metadata and are
-rendered by the provider request builder when that provider needs them.
-{% endhint %}
-
-## Message Roles
-
-| Role | Constructor | Purpose |
-|---|---|---|
-| `:system` | `Message.system/2` | instructions that shape model behavior |
-| `:user` | `Message.user/2` | user input, multimodal requests, or provider tool-result blocks |
-| `:assistant` | `Message.assistant/2` | model output, tool calls, reasoning, usage, and response metadata |
-| `:tool` | `Message.tool/2` | client-side tool execution results sent back to the model |
-
-### System Messages
-
-System messages are instructions or persistent context:
+Content is a string or a list of blocks. Blocks put images, files and audio
+next to text. Build them with `BeamWeaver.Core.ContentBlock`:
 
 ```elixir
-alias BeamWeaver.Core.Message
+alias BeamWeaver.Core.ContentBlock
 
-messages = [
-  Message.system("""
-  You are a senior Elixir developer.
-  Provide concise code examples and explain tradeoffs.
-  """),
-  Message.user("How do I create a supervised worker?")
-]
-```
-
-Provider-specific prompt-cache or routing hints live in metadata or content
-block metadata and are interpreted only by provider request builders that
-understand them.
-
-```elixir
-Message.system([
-  %{type: :text, text: "You analyze literary works."},
-  %{type: :text, text: "<long source text>", metadata: %{cache_hint: :ephemeral}}
-])
-```
-
-### User Messages
-
-User messages represent user input. A plain string is enough for text:
-
-```elixir
-Message.user("What is machine learning?", id: "msg_123", name: "alice")
-```
-
-The `:name` field is preserved on the message and passed to providers that
-accept it. Some providers ignore names or restrict characters, so keep names
-short and provider-safe when they are model-visible.
-
-For multimodal input, provide content blocks:
-
-```elixir
-alias BeamWeaver.Core.{ContentBlock, Message}
-
-message =
+photo =
   Message.user([
-    ContentBlock.text("Describe this image."),
-    ContentBlock.image(%{url: "https://example.com/path/to/image.jpg"})
+    ContentBlock.text("The box arrived damaged. Can I get a refund?"),
+    ContentBlock.image(url: "https://example.com/uploads/box.jpg")
   ])
+
+Message.text(photo)
+#=> "The box arrived damaged. Can I get a refund?"
 ```
 
-### Assistant Messages
+`Message.text/1` joins the text of a message and skips the other blocks. Use it
+to read any reply, whatever its content.
 
-Assistant messages are model outputs. They may include text, content blocks,
-tool calls, provider response metadata, and token usage:
+| Constructor | Block |
+| --- | --- |
+| `ContentBlock.text(text)` | Text. |
+| `ContentBlock.image(url: url)` | An image at a URL. |
+| `ContentBlock.image(data: base64, mime_type: "image/png")` | An image sent inline, base64-encoded. |
+| `ContentBlock.file(data: base64, mime_type: "application/pdf", filename: name)` | A file such as a PDF. `file_id:` refers to a file uploaded to the provider. |
+| `ContentBlock.audio(...)`, `ContentBlock.video(...)` | Audio and video, with the same options as images. |
+| `ContentBlock.reasoning(text)` | A model's reasoning, as reasoning models return it. |
 
-```elixir
-message =
-  Message.assistant("I can help with that.",
-    id: "msg_456",
-    response_metadata: %{"model" => "gpt-5-nano", "finish_reason" => "stop"},
-    usage_metadata: %{
-      input_tokens: 8,
-      output_tokens: 24,
-      total_tokens: 32
-    }
-  )
-
-Message.text(message)
-message.usage_metadata
-message.response_metadata
-```
-
-You can add an assistant message manually when restoring history:
+Each block has a `type`:
 
 ```elixir
-messages = [
-  Message.system("You are helpful."),
-  Message.user("Can you help me?"),
-  Message.assistant("Yes. What do you need?"),
-  Message.user("What is 2 + 2?")
-]
-```
-
-#### Tool Calls
-
-When a model requests client-side tool execution, tool calls are stored on the
-assistant message:
-
-```elixir
-message =
-  Message.assistant("",
-    tool_calls: [
-      %{id: "call_weather", name: "get_weather", args: %{"location" => "Paris"}}
-    ]
-  )
-
-for call <- message.tool_calls do
-  IO.inspect({Map.get(call, :name) || call["name"], Map.get(call, :args) || call["args"]})
-end
-```
-
-Standalone model calls return tool-call requests. Agents execute the tool loop
-for you.
-
-#### Token Usage
-
-Provider token accounting is stored in `message.usage_metadata` when returned:
-
-```elixir
-{:ok, response} = BeamWeaver.Core.ChatModel.invoke(model, "Hello!")
-
-case response.usage_metadata do
-  nil -> :provider_did_not_return_usage
-  usage -> Map.get(usage, :total_tokens) || usage["total_tokens"]
-end
-```
-
-For aggregate application usage, collect message usage maps directly or consume
-BeamWeaver tracing and telemetry events.
-
-{% hint style="info" %}
-**Usage Metadata**
-
-LangChain exposes usage aggregation through callback handlers and context
-managers. BeamWeaver keeps usage on messages and emits telemetry/tracing
-events from the call boundary. That fits supervised Elixir services better
-than mutable callback objects shared across unrelated invocations.
-{% endhint %}
-
-### Tool Messages
-
-Tool messages send the result of a client-side tool call back to the model. The
-`tool_call_id` should match the assistant tool call:
-
-```elixir
-alias BeamWeaver.Core.Message
-
-ai_message =
-  Message.assistant("",
-    tool_calls: [
-      %{id: "call_123", name: "get_weather", args: %{"location" => "San Francisco"}}
-    ]
-  )
-
-tool_message =
-  Message.tool("Sunny, 72 F",
-    tool_call_id: "call_123",
-    name: "get_weather"
-  )
-
-messages = [
-  Message.user("What is the weather in San Francisco?"),
-  ai_message,
-  tool_message
-]
-```
-
-Tool outputs can keep downstream-only data in `:artifacts` while sending concise
-content to the model:
-
-```elixir
-Message.tool("Found the relevant passage.",
-  tool_call_id: "call_search",
-  name: "search_books",
-  artifacts: [%{document_id: "doc_123", page: 0}]
-)
-```
-
-`BeamWeaver.Core.ToolResult` and `:content_and_artifact` tools populate the same
-tool-message shape.
-
-{% hint style="info" %}
-**Artifacts**
-
-LangChain's `ToolMessage` has an `artifact` field. BeamWeaver stores
-downstream-only payloads as a list in `message.artifacts` because a tool call
-can carry more than one useful application artifact over time. Provider
-translators send `message.content` to the model and keep artifacts available
-for application code, tracing, retrieval UIs, and checkpointed state.
-{% endhint %}
-
-## Message Content
-
-Message content is either:
-
-1. a string
-2. a list of content-block-like values
-
-Strings are best for ordinary text. Lists are best for multimodal input,
-reasoning blocks, citations, tool results, server-side tool calls, and
-provider-specific data.
-
-```elixir
-alias BeamWeaver.Core.{ContentBlock, Message}
-
-text_message = Message.user("Hello, how are you?")
-
-block_message =
+invoice =
   Message.user([
-    ContentBlock.text("Describe this image."),
-    ContentBlock.image(%{url: "https://example.com/image.jpg"}),
-    %{type: :citation, url: "https://example.com/source", start_index: 0}
+    ContentBlock.text("Please check this invoice."),
+    ContentBlock.file(data: Base.encode64("%PDF-1.7 ..."), mime_type: "application/pdf", filename: "invoice.pdf")
   ])
+
+Enum.map(invoice.content, & &1.type)
+#=> [:text, :file]
 ```
 
-Use `Message.text/1` to extract text from strings and text-like blocks:
+`ContentBlock.from/1` turns a data URI, such as `"data:image/png;base64,..."`,
+into the block for its media type. Not every model reads every kind of block, so check with
+`BeamWeaver.Provider.Compatibility.supports?/2` and a feature such as
+`:image_input`, `:pdf_input` or `:audio_input` before you send one (see
+[Model profiles](models.md#model-profiles)). A block the API has no input for,
+such as video on Anthropic or OpenAI, makes the call return an error before
+anything is sent.
+
+## Tool calls and tool results
+
+When the model wants a tool, its reply lists `tool_calls`, each with an `id`,
+a `name` and `args`. Your code runs the tool and answers with a tool message
+whose `tool_call_id` matches the call. An agent does this loop for you; here it
+is by hand, with the `lookup_order` tool from the [Quickstart](quickstart.md):
 
 ```elixir
-Message.text(block_message)
-```
+defmodule MyApp.Tools.LookupOrder do
+  use BeamWeaver.Tool
 
-Use `Message.content_blocks/1` to normalize content into typed BeamWeaver
-blocks:
+  name "lookup_order"
+  description "Look up the shipping status of an order by its id."
 
-```elixir
-{:ok, blocks} = Message.content_blocks(block_message)
-```
+  schema do
+    field :order_id, :string, description: "The order id"
+  end
 
-{% hint style="info" %}
-**Content Blocks Are Explicit**
+  @impl true
+  def invoke(_tool, %{"order_id" => order_id}, _opts), do: {:ok, "Order #{order_id} shipped on Monday."}
+end
 
-LangChain's `content_blocks` property lazily parses provider-native Python
-objects while keeping a permissive `content` field for backwards
-interop. BeamWeaver uses explicit constructors and
-`Message.content_blocks/1` because Elixir code tends to make conversion points
-visible. Provider-native maps are still accepted at boundaries, but portable
-application code should prefer `BeamWeaver.Core.ContentBlock` helpers. Message
-serialization is also explicit through `Messages.Utils`; there is no global
-environment variable that changes the shape of every model output in a running
-OTP system.
-{% endhint %}
+alias BeamWeaver.Core.ChatModel
+alias BeamWeaver.Models.FakeChatModel
 
-## Standard Content Blocks
-
-`BeamWeaver.Core.ContentBlock.known_types/0` returns the native block types the
-core understands:
-
-| Type | Constructor or shape | Purpose |
-|---|---|---|
-| `:text` | `ContentBlock.text/2` | text content |
-| `:plain_text` | `ContentBlock.plain_text/2` | document-style plain text |
-| `:image` | `ContentBlock.image/1` | image URL, data URI, or base64 data |
-| `:audio` | `ContentBlock.audio/1` | audio URL or base64 data |
-| `:video` | `ContentBlock.video/1` | video URL or base64 data |
-| `:file` | `ContentBlock.file/1` | PDFs and other files |
-| `:reasoning` | `ContentBlock.reasoning/2` | model reasoning summaries or thinking output |
-| `:citation` | `ContentBlock.citation/1` | source annotations |
-| `:tool_result` | `ContentBlock.tool_result/1` | provider tool-result block |
-| `:tool_call` | `%{type: :tool_call, ...}` | complete streamed or provider tool call |
-| `:tool_call_chunk` | `%{type: :tool_call_chunk, ...}` | partial streamed client-side tool call |
-| `:server_tool_call` | `%{type: :server_tool_call, ...}` | provider-executed tool call |
-| `:server_tool_call_chunk` | `%{type: :server_tool_call_chunk, ...}` | partial server-side tool call |
-| `:server_tool_result` | `%{type: :server_tool_result, ...}` | provider-executed tool result |
-| `:unknown` | `ContentBlock.unknown/3` | provider-specific escape hatch |
-
-Content block names are Elixir atoms inside BeamWeaver. Provider translators
-render the provider's external string names at the HTTP boundary.
-
-### Text And Reasoning
-
-```elixir
-[
-  ContentBlock.text("Final answer."),
-  ContentBlock.reasoning("I compared the available evidence."),
-  ContentBlock.citation(%{
-    url: "https://example.com/article",
-    title: "Article",
-    start_index: 32,
-    end_index: 88
-  })
-]
-```
-
-Reasoning fields vary by provider. BeamWeaver normalizes common OpenAI,
-Anthropic, Google, xAI, and Z.ai reasoning shapes into reasoning blocks where provider
-translators have coverage, and preserves unknown provider data instead of
-dropping it.
-
-### Multimodal
-
-Core messages can represent image, audio, video, and file blocks:
-
-```elixir
-payload = Base.encode64("binary image bytes")
-
-Message.user([
-  ContentBlock.text("Describe this image."),
-  ContentBlock.image(%{url: "https://example.com/image.jpg"}),
-  ContentBlock.image(%{data: payload, mime_type: "image/jpeg"}),
-  ContentBlock.file(%{file_id: "file-abc123", filename: "brief.pdf"}),
-  ContentBlock.audio(%{data: Base.encode64("wav bytes"), mime_type: "audio/wav"})
-])
-```
-
-Data URIs are parsed into typed blocks:
-
-```elixir
-{:ok, block} =
-  ContentBlock.from("data:image/png;base64,#{Base.encode64("png bytes")}")
-```
-
-{% hint style="info" %}
-**Provider Translation**
-
-The core message struct can hold more block types than any one model provider
-accepts. OpenAI, Anthropic, Google, and xAI translators cover the scoped block
-shapes tested for those providers. Z.ai currently accepts text input in
-BeamWeaver. Other provider-native formats belong in provider translators or
-`ContentBlock.unknown/3` until a native adapter defines how the data should be
-rendered.
-{% endhint %}
-
-### Tool Calling Blocks
-
-Assistant messages can carry complete tool calls in `message.tool_calls` or in
-content blocks. Providers that emit `tool_call_chunks` support incremental
-argument assembly with the chunk merge helpers:
-
-```elixir
-alias BeamWeaver.Core.Messages
-alias BeamWeaver.Core.Messages.MessageChunk
-
-chunks = [
-  Messages.ai_chunk("",
-    tool_call_chunks: [
-      Messages.tool_call_chunk(
-        id: "call_weather",
-        index: 0,
-        name: "weather",
-        args: ~s({"city":)
-      )
-    ]
-  ),
-  Messages.ai_chunk("",
-    tool_call_chunks: [
-      Messages.tool_call_chunk(id: "call_weather", index: 0, args: ~s("Nicosia"}))
+{:ok, model} =
+  BeamWeaver.Models.init_chat_model("fake:chat",
+    responses: [
+      FakeChatModel.tool_call("lookup_order", %{"order_id" => "A-1001"}),
+      "Your order A-1001 shipped on Monday."
     ]
   )
-]
 
-message =
-  chunks
-  |> MessageChunk.merge_many()
-  |> MessageChunk.to_message()
+question = Message.user("Where is my order A-1001?")
+{:ok, call_reply} = ChatModel.invoke(model, [question], tools: [MyApp.Tools.LookupOrder])
 
-message.tool_calls
+[call] = call_reply.tool_calls
+{call.name, call.args}
+#=> {"lookup_order", %{"order_id" => "A-1001"}}
 ```
 
-When a provider emits a final `%BeamWeaver.Stream.Events.Message{}`, retain its
-complete message for subsequent turns, including usage and provider replay data.
-Google delivers executable streamed tool calls through that final message;
-its live custom `:tool_call_delta` events are not tool-call chunks.
-
-Malformed streamed tool arguments are preserved in
-`message.metadata[:invalid_tool_calls]` so callers can surface a useful error or
-ask the model to retry.
-
-{% hint style="info" %}
-**Chunk Merging**
-
-LangChain examples combine `AIMessageChunk` values with the Python `+`
-operator. Elixir does not overload arithmetic operators for structs, so
-BeamWeaver uses `MessageChunk.merge/2`, `MessageChunk.merge_many/1`, and
-`MessageChunk.to_message/1`. The merge step is explicit and testable, which is
-important for streamed tool calls where providers may send IDs, names, and JSON
-argument fragments in different events.
-{% endhint %}
-
-### Server-Side Tool Blocks
-
-Some providers execute tools server-side and return tool calls/results inside a
-single assistant response. BeamWeaver can preserve those blocks on message
-content and on the dedicated fields:
+`BeamWeaver.Core.Tool.invoke/3` runs the tool for a call and returns the tool
+message, with `tool_call_id` already set:
 
 ```elixir
-Message.assistant([
-  %{type: :server_tool_call, id: "srv_1", name: "web_search", args: %{"query" => "news"}},
-  %{type: :server_tool_result, tool_call_id: "srv_1", status: "success"},
-  %{type: :apply_patch_call, call_id: "patch_1", input: "*** Begin Patch\n..."},
-  %{type: :apply_patch_call_output, call_id: "patch_1", output: "applied"},
-  ContentBlock.text("Here is the summary.")
-])
+{:ok, result} = BeamWeaver.Core.Tool.invoke(MyApp.Tools.LookupOrder, call)
+{result.role, result.tool_call_id == call.id}
+#=> {:tool, true}
 ```
 
-Client-side tools still use assistant `tool_calls` followed by `:tool` messages.
-Server-side tool blocks represent provider work that already happened during
-the model request. Provider-specific blocks such as OpenAI `apply_patch_call`
-and `apply_patch_call_output` are preserved so a later provider turn can replay
-the same assistant history.
-
-### Unknown Provider Blocks
-
-Use `ContentBlock.unknown/3` or plain maps when a provider returns data that
-does not yet have a portable BeamWeaver block:
+Send the whole exchange back, and the model answers:
 
 ```elixir
-ContentBlock.unknown("vendor.private", %{"payload" => %{"deep" => true}})
+{:ok, answer} = ChatModel.invoke(model, [question, call_reply, result], tools: [MyApp.Tools.LookupOrder])
+Message.text(answer)
+#=> "Your order A-1001 shipped on Monday."
 ```
 
-Unknown blocks are preserved for application logic and provider translators.
-They are not treated as portable model input until a translator defines their
-provider-specific rendering.
+To write a tool result yourself, use
+`Message.tool("Order A-1001 shipped on Monday.", tool_call_id: call.id, name: "lookup_order")`.
+Pass `artifacts:` to keep data, such as raw records, for your application:
+providers send only `content` to the model. A tool module returns such data
+in a `ToolResult` instead, and an agent stores it in the tool message's
+`metadata.artifact` (see [Tools](tools.md#artifacts)).
 
-## Serialization
+## Usage metadata
 
-Use `BeamWeaver.Core.Messages.Utils` for safe plain-data serialization:
+Replies carry the provider's token counts in `usage_metadata`.
+`BeamWeaver.Core.Messages.Utils.add_usage/2` adds two of them:
 
 ```elixir
-alias BeamWeaver.Core.{Message, Messages.Utils}
-
-messages = [
-  Message.user("hello", id: "msg_1"),
-  Message.assistant("world", usage_metadata: %{total_tokens: 4})
-]
-
-{:ok, encoded} = Utils.messages_to_dict(messages)
-{:ok, decoded} = Utils.messages_from_dict(encoded)
+Utils.add_usage(%{input_tokens: 12, output_tokens: 6, total_tokens: 18}, %{input_tokens: 30, output_tokens: 4, total_tokens: 34})
+#=> %{input_tokens: 42, output_tokens: 10, total_tokens: 52}
 ```
 
-Serialized messages include a BeamWeaver message version and only plain data.
-That shape is suitable for checkpoints, replay fixtures, and test assertions.
+[Models](models.md#token-usage) shows where the counts come from and how to
+total an agent run.
 
-## Message Utilities
+## Work with history
 
-`BeamWeaver.Core.Messages.Utils` includes common history operations:
-
-```elixir
-alias BeamWeaver.Core.Messages.Utils
-
-{:ok, trimmed} =
-  Utils.trim(messages,
-    max_tokens: 2_000,
-    strategy: :last,
-    token_counter: &my_token_counter/1
-  )
-
-{:ok, merged} = Utils.merge_runs(messages)
-{:ok, filtered} = Utils.filter(messages, exclude_tool_calls: true)
-{:ok, count} = Utils.count_tokens_approximately(messages)
-{:ok, printable} = Utils.pretty_print(messages)
-```
-
-These helpers operate on message-like values and return tagged results. Use
-them before provider calls, in middleware, or when preparing checkpointed
-conversation state.
-
-## Use With Chat Models
-
-Chat models accept a string, one message-like value, or a list of
-`%BeamWeaver.Core.Message{}` values:
+`BeamWeaver.Core.Messages.Utils` prepares a history before you send or store
+it. Its functions accept messages or plain data and return `{:ok, result}`.
+This is the conversation from the last section, with a system prompt and one
+more user turn:
 
 ```elixir
-alias BeamWeaver.Core.{ChatModel, Message}
-
 history = [
-  Message.system("You translate English to French."),
-  Message.user("Translate: I love programming.")
+  Message.system("You are Acme's support agent."),
+  question,
+  call_reply,
+  result,
+  answer,
+  Message.user("Thanks!")
 ]
 
-{:ok, response} = ChatModel.invoke(model, history)
+{:ok, without_tools} = Utils.filter(history, exclude_tool_calls: true)
+Enum.map(without_tools, & &1.role)
+#=> [:system, :user, :assistant, :user]
 ```
 
-For streaming tokens and semantic events, see [Event Streaming](event_streaming.md)
-and [Models](models.md). For agent-managed message state, checkpoints, tool
-loops, and middleware, see [Agents](agents.md) and
-[Short-Term Memory](short_term_memory.md).
+`filter/2` also keeps or drops messages by role, name or id, with options such
+as `include_roles: [:user]` and `exclude_ids: [...]`.
+
+`trim/2` keeps the newest messages that fit a budget. By default it estimates
+tokens like `count_tokens_approximately/2`: about four characters per token,
+plus a few per message. Pass `token_counter:` a function that counts a
+message's tokens to use your model's tokenizer. A tool result is never kept
+without the call it answers. Here the tool result fits in the budget but its
+call doesn't, so both are left out:
+
+```elixir
+{:ok, recent} = Utils.trim(history, max_tokens: 40, strategy: :last, include_system: true)
+Enum.map(recent, & &1.role)
+#=> [:system, :assistant, :user]
+```
+
+`encode/1` turns messages into plain maps that you can store as JSON, and
+`decode/1` turns them back:
+
+```elixir
+{:ok, stored} = Utils.encode(history)
+json = JSON.encode!(stored)
+
+{:ok, restored} = json |> JSON.decode!() |> Utils.decode()
+Enum.map(restored, &Message.text/1) == Enum.map(history, &Message.text/1)
+#=> true
+```
+
+`buffer_string/2` renders a transcript as text, for example to put a
+conversation inside a prompt:
+
+```elixir
+Utils.buffer_string([question, Message.assistant("It shipped on Monday.")])
+#=> {:ok, "Human: Where is my order A-1001?\nAI: It shipped on Monday."}
+```
+
+`merge_runs/2` joins consecutive messages that have the same role (except
+tool results), and
+`count_tokens_approximately/2` estimates the size of a history. An agent's
+history is managed for you; [Short-Term Memory](short_term_memory.md) and
+[Context Management](context_management.md) cover trimming and summarizing it.
+
+## Streaming chunks
+
+A streamed reply arrives as chunks: text deltas and partial tool calls that
+add up to the final message. [Streaming](streaming.md) covers chunks and how
+to merge them.
+
+## Reference
+
+- [`BeamWeaver.Core.Message`](https://hexdocs.pm/beam_weaver/BeamWeaver.Core.Message.html): the message struct and its constructors
+- [`BeamWeaver.Core.ContentBlock`](https://hexdocs.pm/beam_weaver/BeamWeaver.Core.ContentBlock.html): text, image, file and other content blocks
+- [`BeamWeaver.Core.Messages.Utils`](https://hexdocs.pm/beam_weaver/BeamWeaver.Core.Messages.Utils.html): filter, trim, merge, count and serialize messages
+- [`BeamWeaver.Core.Messages.ToolCall`](https://hexdocs.pm/beam_weaver/BeamWeaver.Core.Messages.ToolCall.html): a tool call on a model reply
+- [`BeamWeaver.Core.Tool`](https://hexdocs.pm/beam_weaver/BeamWeaver.Core.Tool.html): run a tool for a tool call

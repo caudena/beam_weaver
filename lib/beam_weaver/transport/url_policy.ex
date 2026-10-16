@@ -70,6 +70,11 @@ defmodule BeamWeaver.Transport.URLPolicy do
       is_nil(scheme) or is_nil(host) ->
         unsafe(url, "URL must include scheme and host")
 
+      invalid_bracketed_host?(uri) ->
+        unsafe(url, "URL host in brackets must be an IPv6 address without a zone id", %{
+          authority: uri.authority
+        })
+
       uri.userinfo not in [nil, ""] ->
         unsafe(url, "URL userinfo is not allowed")
 
@@ -215,6 +220,30 @@ defmodule BeamWeaver.Transport.URLPolicy do
     end
   catch
     _kind, _reason -> nil
+  end
+
+  # `URI.parse/1` reads a bracketed host it doesn't know, such as an IPv6
+  # address with a zone id (`[fe80::1%25en0]`), as a host name ("fe80"). A
+  # host in brackets must be a plain IPv6 address; zone ids only matter for
+  # link-local addresses, which are refused anyway.
+  defp invalid_bracketed_host?(%URI{authority: authority, host: host}) when is_binary(authority) do
+    case authority |> String.split("@") |> List.last() do
+      "[" <> rest ->
+        case String.split(rest, "]", parts: 2) do
+          [literal, _port] -> literal != host or not ipv6_address?(literal)
+          [_unclosed] -> true
+        end
+
+      _host_port ->
+        false
+    end
+  end
+
+  defp invalid_bracketed_host?(_uri), do: false
+
+  defp ipv6_address?(literal) do
+    not String.contains?(literal, "%") and
+      match?({:ok, _address}, :inet.parse_ipv6strict_address(String.to_charlist(literal)))
   end
 
   defp canonical_url(uri, scheme, host) do
@@ -399,17 +428,19 @@ defmodule BeamWeaver.Transport.URLPolicy do
 
   defp ip_scope({0, 0, 0, 0, 0, 0, 0, 0}), do: :reserved
 
-  defp ip_scope({0, 0, 0, 0, 0, 0xFFFF, high, low}) do
-    ip_scope({high >>> 8, high &&& 0xFF, low >>> 8, low &&& 0xFF})
-  end
+  # IPv4-mapped (::ffff:0:0/96) and IPv4-translated (SIIT, ::ffff:0:0:0/96)
+  # addresses reach the IPv4 address in their low 32 bits.
+  defp ip_scope({0, 0, 0, 0, 0, 0xFFFF, high, low}), do: embedded_ipv4_scope(high, low)
+  defp ip_scope({0, 0, 0, 0, 0xFFFF, 0, high, low}), do: embedded_ipv4_scope(high, low)
 
   # The deprecated IPv4-compatible range is not globally routable. Do not
   # treat a public-looking low 32 bits as authority to dial this special range.
   defp ip_scope({0, 0, 0, 0, 0, 0, _high, _low}), do: :reserved
 
-  defp ip_scope({0x64, 0xFF9B, 0, 0, 0, 0, high, low}) do
-    ip_scope({high >>> 8, high &&& 0xFF, low >>> 8, low &&& 0xFF})
-  end
+  defp ip_scope({0x64, 0xFF9B, 0, 0, 0, 0, high, low}), do: embedded_ipv4_scope(high, low)
+
+  # 6to4 (2002::/16) tunnels to the IPv4 address in bits 16 to 47.
+  defp ip_scope({0x2002, high, low, _, _, _, _, _}), do: embedded_ipv4_scope(high, low)
 
   defp ip_scope({first, second, third, fourth, _, _, _, _} = address) do
     cond do
@@ -419,10 +450,15 @@ defmodule BeamWeaver.Transport.URLPolicy do
       documentation_ipv6?(first, second) -> :reserved
       (first &&& 0xFE00) == 0xFC00 -> :private
       (first &&& 0xFFC0) == 0xFE80 -> :reserved
+      # Deprecated site-local addresses (fec0::/10).
+      (first &&& 0xFFC0) == 0xFEC0 -> :reserved
       (first &&& 0xFF00) == 0xFF00 -> :reserved
       true -> :public
     end
   end
+
+  defp embedded_ipv4_scope(high, low),
+    do: ip_scope({high >>> 8, high &&& 0xFF, low >>> 8, low &&& 0xFF})
 
   # 64:ff9b:1::/48 is reserved for local-use NAT64 translation and is not a
   # public destination. The globally scoped 64:ff9b::/96 is handled above by

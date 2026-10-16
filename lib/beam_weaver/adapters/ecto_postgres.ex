@@ -1,7 +1,5 @@
 defmodule BeamWeaver.Adapters.EctoPostgres do
-  @moduledoc """
-  Shared helpers for BeamWeaver Ecto/Postgres adapters.
-  """
+  @moduledoc false
 
   alias BeamWeaver.Adapter.Error, as: AdapterError
   alias BeamWeaver.Core.Error

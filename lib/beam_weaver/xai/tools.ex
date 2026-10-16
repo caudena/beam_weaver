@@ -10,7 +10,7 @@ defmodule BeamWeaver.XAI.Tools do
 
   alias BeamWeaver.OpenAI.ChatCompletions
   alias BeamWeaver.OpenAI.ToolCalling
-  alias BeamWeaver.XAI.Error
+  alias BeamWeaver.Core.Error
 
   @builtin_types [
     "attachment_search",
@@ -66,6 +66,18 @@ defmodule BeamWeaver.XAI.Tools do
   end
 
   def to_chat_completions_tool(tool), do: ChatCompletions.Messages.tool_to_openai(tool)
+
+  @doc false
+  @spec render_chat_completions_tools([term()]) :: {:ok, [map()]} | {:error, Error.t()}
+  def render_chat_completions_tools(tools) when is_list(tools) do
+    BeamWeaver.Result.traverse(tools, fn tool ->
+      tool = if is_map(tool) and not is_struct(tool), do: BeamWeaver.MapShape.stringify_keys(tool), else: tool
+
+      if builtin_tool?(tool),
+        do: {:ok, tool},
+        else: ChatCompletions.Messages.Request.render_tool(tool)
+    end)
+  end
 
   @doc false
   @spec validate_responses_tools([map()]) :: :ok | {:error, Error.t()}

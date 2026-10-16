@@ -26,6 +26,13 @@ defmodule BeamWeaver.OutputParserTest do
     end
   end
 
+  defmodule Triage do
+    use BeamWeaver.Schema
+
+    field :category, :string, enum: ["shipping", "billing", "other"]
+    field :priority, :string, enum: ["low", "high"]
+  end
+
   defmodule DogArgs do
     defstruct [:species]
 
@@ -59,12 +66,8 @@ defmodule BeamWeaver.OutputParserTest do
 
     assert Enum.to_list(chunks) == ["one", "two", "three"]
 
-    assert {:ok, async_chunks} =
-             OutputParser.string()
-             |> Runnable.async_transform(["a", "b"])
-             |> BeamWeaver.Core.Async.await()
-
-    assert Enum.to_list(async_chunks) == ["a", "b"]
+    assert {:ok, text_chunks} = Runnable.transform(OutputParser.string(), ["a", "b"])
+    assert Enum.to_list(text_chunks) == ["a", "b"]
   end
 
   test "json parser supports full and partial JSON parsing" do
@@ -255,9 +258,7 @@ defmodule BeamWeaver.OutputParserTest do
 
     assert Enum.to_list(stream) == [["alpha"], ["beta"]]
 
-    assert {:ok, spec} = Runnable.to_spec(OutputParser.numbered_list())
-    assert {:ok, restored} = Runnable.from_spec(spec)
-    assert {:ok, ["one", "two"]} = Runnable.invoke(restored, "1. one\n2. two")
+    assert {:ok, ["one", "two"]} = Runnable.invoke(OutputParser.numbered_list(), "1. one\n2. two")
   end
 
   test "csv and xml parsers handle common structured outputs" do
@@ -319,7 +320,7 @@ defmodule BeamWeaver.OutputParserTest do
              Runnable.invoke(OutputParser.xml(), malicious)
   end
 
-  test "xml parser transform and Task-backed parsing follow native stream semantics" do
+  test "xml parser transform and parse follow native stream semantics" do
     # Upstream reference:
     input = "<foo><bar><baz></baz><baz>slim.shady</baz></bar><baz>tag</baz></foo>"
 
@@ -339,20 +340,10 @@ defmodule BeamWeaver.OutputParserTest do
     assert [%{name: "body", text: "Text of the body.", children: []}] =
              Enum.to_list(root_only_chunks)
 
-    assert {:ok, %{name: "foo"}} =
-             OutputParser.xml()
-             |> OutputParser.async_parse(input)
-             |> BeamWeaver.Core.Async.await()
-
-    assert {:ok, async_chunks} =
-             OutputParser.xml()
-             |> Runnable.async_transform(String.graphemes(input))
-             |> BeamWeaver.Core.Async.await()
-
-    assert Enum.count(async_chunks) == 2
+    assert {:ok, %{name: "foo"}} = OutputParser.parse(OutputParser.xml(), input)
   end
 
-  test "parse_result uses the first generation-like value and parser specs round-trip" do
+  test "parse_result uses the first generation-like value" do
     # Upstream reference:
     assert {:ok, "first"} =
              OutputParser.parse_result(
@@ -368,33 +359,16 @@ defmodule BeamWeaver.OutputParserTest do
     ]
 
     for {parser, input, expected} <- parsers do
-      assert {:ok, spec} = Runnable.to_spec(parser)
-      assert {:ok, restored} = Runnable.from_spec(spec)
-      assert {:ok, ^expected} = Runnable.invoke(restored, input)
+      assert {:ok, ^expected} = Runnable.invoke(parser, input)
     end
-
-    assert {:error, %Error{type: :unsupported_runnable_spec}} =
-             Runnable.to_spec(OutputParser.schema(%{"type" => "object"}, as: Answer))
   end
 
-  test "parser base facade supports prompt-aware and Task-backed parsing" do
+  test "parser base facade supports parse, parse_result, and prompt-aware parsing" do
     assert {:ok, %{"answer" => 42}} =
              OutputParser.parse_with_prompt(OutputParser.json(), ~s({"answer":42}), "ignored")
 
-    assert {:ok, %{"answer" => 42}} =
-             OutputParser.json()
-             |> OutputParser.async_parse(~s({"answer":42}))
-             |> BeamWeaver.Core.Async.await()
-
-    assert {:ok, %{"answer" => 42}} =
-             OutputParser.json()
-             |> OutputParser.async_parse_result([~s({"answer":42})])
-             |> BeamWeaver.Core.Async.await()
-
-    assert {:ok, %{"answer" => 42}} =
-             OutputParser.json()
-             |> OutputParser.async_parse_with_prompt(~s({"answer":42}), "ignored")
-             |> BeamWeaver.Core.Async.await()
+    assert {:ok, %{"answer" => 42}} = OutputParser.parse(OutputParser.json(), ~s({"answer":42}))
+    assert {:ok, %{"answer" => 42}} = OutputParser.parse_result(OutputParser.json(), [~s({"answer":42})])
   end
 
   test "OpenAI tools parser decodes tool call args" do
@@ -556,19 +530,6 @@ defmodule BeamWeaver.OutputParserTest do
                  args: %{"names" => ["suzy", "alex"]}
                }
              ]
-           ]
-
-    assert {:ok, async_stream} =
-             OutputParser.openai_tools()
-             |> Runnable.async_stream(chunks)
-             |> BeamWeaver.Core.Async.await()
-
-    assert async_stream |> Enum.to_list() |> List.last() == [
-             %{
-               id: "call_names",
-               name: "NameCollector",
-               args: %{"names" => ["suzy", "alex"]}
-             }
            ]
   end
 
@@ -855,6 +816,24 @@ defmodule BeamWeaver.OutputParserTest do
              Runnable.invoke(OutputParser.schema(schema), ~s(["not", "object"]))
   end
 
+  test "schema parser takes a schema module as well as a JSON Schema map" do
+    parser = OutputParser.schema(Triage)
+
+    assert {:ok, %{"category" => "billing", "priority" => "low"}} =
+             OutputParser.parse(parser, ~s({"category": "billing", "priority": "low"}))
+
+    assert {:error, %Error{type: :output_parser_error, message: "parsed output field is not in enum"}} =
+             OutputParser.parse(parser, ~s({"category": "toys", "priority": "low"}))
+
+    assert {:error, %Error{details: %{missing: ["priority"]}}} =
+             OutputParser.parse(parser, ~s({"category": "billing"}))
+
+    assert OutputParser.get_format_instructions(parser) =~ ~s("enum":["shipping","billing","other"])
+    assert OutputParser.schema(Triage) == OutputParser.schema(Triage.json_schema())
+
+    assert_raise ArgumentError, ~r/does not declare a JSON schema/, fn -> OutputParser.schema(Answer) end
+  end
+
   test "schema parser validates field types and can cast into structs with existing atoms" do
     schema = %{
       "type" => "object",
@@ -921,7 +900,7 @@ defmodule BeamWeaver.OutputParserTest do
              )
   end
 
-  test "parser helpers expose format instructions, streaming transforms, and safe specs" do
+  test "parser helpers expose format instructions and streaming transforms" do
     parser = OutputParser.json(partial: true)
 
     assert OutputParser.get_format_instructions(parser) == "Return a valid JSON value."
@@ -933,24 +912,13 @@ defmodule BeamWeaver.OutputParserTest do
     assert {:ok, stream} = OutputParser.transform(parser, [~s({"answer":), "42}"])
     assert Enum.to_list(stream) == [%{}, %{"answer" => 42}]
 
-    assert {:ok, spec} = Runnable.to_spec(OutputParser.openai_tools(first_only: true))
-    assert {:ok, restored} = Runnable.from_spec(spec)
-    assert {:ok, nil} = Runnable.invoke(restored, [])
+    assert {:ok, nil} = Runnable.invoke(OutputParser.openai_tools(first_only: true), [])
 
-    assert {:ok, spec} =
-             Runnable.to_spec(
-               OutputParser.openai_functions(
-                 first_only: false,
-                 args_only: true,
-                 key_name: "answer",
-                 partial: true
-               )
-             )
-
-    assert {:ok, restored} = Runnable.from_spec(spec)
+    functions =
+      OutputParser.openai_functions(first_only: false, args_only: true, key_name: "answer", partial: true)
 
     assert {:ok, [42]} =
-             Runnable.invoke(restored, [
+             Runnable.invoke(functions, [
                %{"function" => %{"name" => "answer", "arguments" => ~s({"answer":42)}}
              ])
   end

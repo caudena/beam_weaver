@@ -3,6 +3,8 @@ defmodule BeamWeaver.Google.Tools do
   Google Gemini tool declaration helpers.
   """
 
+  import BeamWeaver.MapShape, only: [put_present: 3]
+
   @behaviour BeamWeaver.Provider.ToolRenderer
 
   alias BeamWeaver.Core.Error
@@ -68,7 +70,7 @@ defmodule BeamWeaver.Google.Tools do
 
     {:ok, rendered}
   rescue
-    exception -> {:error, Error.new(:invalid_tool, Exception.message(exception))}
+    error in ArgumentError -> {:error, Error.new(:invalid_tool, Exception.message(error))}
   end
 
   @impl true
@@ -192,6 +194,28 @@ defmodule BeamWeaver.Google.Tools do
   defp sanitize_schema_value(value) when is_list(value), do: Enum.map(value, &sanitize_schema_value/1)
   defp sanitize_schema_value(value), do: value
 
+  @builtin_tool_kinds %{
+    "googleSearch" => :google_search,
+    "googleSearchRetrieval" => :google_search_retrieval,
+    "googleMaps" => :google_maps,
+    "codeExecution" => :code_execution,
+    "fileSearch" => :file_search,
+    "urlContext" => :url_context,
+    "computerUse" => :computer_use,
+    "mcpServers" => :mcp_servers
+  }
+
+  @doc false
+  # The kinds of the built-in tools in a tool list, such as `:computer_use`.
+  def builtin_tool_kinds(tools) do
+    tools
+    |> Enum.filter(&builtin_tool?/1)
+    |> Enum.flat_map(fn tool -> tool |> Map.keys() |> Enum.map(&builtin_tool_key(to_string(&1))) end)
+    |> Enum.map(&Map.get(@builtin_tool_kinds, &1))
+    |> Enum.reject(&is_nil/1)
+    |> Enum.uniq()
+  end
+
   @doc false
   def mixed_execution?(tools) do
     Enum.any?(tools, &builtin_tool?/1) and Enum.any?(tools, &(not builtin_tool?(&1)))
@@ -212,13 +236,10 @@ defmodule BeamWeaver.Google.Tools do
   defp function_calling_config(mode, names \\ nil) do
     config =
       %{"mode" => mode}
-      |> maybe_put("allowedFunctionNames", names)
+      |> put_present("allowedFunctionNames", names)
 
     %{"functionCallingConfig" => config}
   end
-
-  defp maybe_put(map, _key, nil), do: map
-  defp maybe_put(map, key, value), do: Map.put(map, key, value)
 
   defp builtin_tool_key("google_search"), do: "googleSearch"
   defp builtin_tool_key("google_search_retrieval"), do: "googleSearchRetrieval"

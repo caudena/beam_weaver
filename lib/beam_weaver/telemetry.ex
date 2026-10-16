@@ -33,9 +33,7 @@ defmodule BeamWeaver.Telemetry.WeaveScopeEvent do
 end
 
 defmodule BeamWeaver.Telemetry do
-  @moduledoc """
-  Thin helper for typed BeamWeaver telemetry metadata.
-  """
+  @moduledoc false
 
   alias BeamWeaver.Telemetry.AdapterEvent
   alias BeamWeaver.Telemetry.WeaveScopeEvent

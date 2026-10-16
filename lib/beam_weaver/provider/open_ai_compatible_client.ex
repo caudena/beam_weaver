@@ -1,7 +1,14 @@
 defmodule BeamWeaver.Provider.OpenAICompatibleClient do
   @moduledoc false
 
+  # Pieces shared by the OpenAI-compatible provider clients (OpenAI, xAI,
+  # DeepSeek, Moonshot, Z.ai). A client builds one `HTTPClient` per call with
+  # `http/5` and pipes it into `HTTPClient.post_json/3`, `get/2`,
+  # `stream_sse/5` or `collect_sse/4`.
+
+  alias BeamWeaver.Config
   alias BeamWeaver.Provider.HTTPClient
+  alias BeamWeaver.Transport.Request
 
   @doc false
   def endpoint(base_url, path) do
@@ -9,89 +16,47 @@ defmodule BeamWeaver.Provider.OpenAICompatibleClient do
   end
 
   @doc false
-  def chat_completions_endpoint(%{chat_completions_endpoint: endpoint}, _fallback) do
-    endpoint
-  end
+  def configured_url(opts, key, config_path, default),
+    do: Keyword.get(opts, key) || Config.get(config_path, default)
 
-  def chat_completions_endpoint(opts, fallback) when is_list(opts) and is_function(fallback, 1) do
-    Keyword.get(opts, :chat_completions_endpoint, fallback.(opts))
-  end
-
+  # Defaults `opts[key]` to `path` under the configured base URL.
   @doc false
-  def normalize_client(%_{} = client, opts, _new_fun, fields) when is_list(opts) do
-    override_client(client, opts, fields)
-  end
-
-  def normalize_client(opts, overrides, new_fun, fields)
-      when is_list(opts) and is_list(overrides) and is_function(new_fun, 1) do
-    opts
-    |> new_fun.()
-    |> override_client(overrides, fields)
-  end
-
-  @doc false
-  def override_client(client, opts, fields) when is_list(opts) and is_list(fields) do
-    Enum.reduce(fields, client, fn field, acc ->
-      case Keyword.fetch(opts, field) do
-        {:ok, value} -> Map.put(acc, field, value)
-        :error -> acc
-      end
+  def put_endpoint(opts, key, provider, default_base_url, path) do
+    Keyword.put_new_lazy(opts, key, fn ->
+      opts |> configured_url(:base_url, [provider, :base_url], default_base_url) |> endpoint(path)
     end)
   end
 
+  # Model options accept `:base_url` as shorthand: it fills each endpoint
+  # option in `endpoints` (`key: path`) not given explicitly, then is dropped.
   @doc false
-  def request(client, body, opts, http_client)
-      when (is_map(body) or is_binary(body)) and is_function(http_client, 2) do
-    client
-    |> http_client.(opts)
-    |> HTTPClient.request(body, opts)
+  def expand_base_url(opts, endpoints) do
+    case Keyword.pop(opts, :base_url) do
+      {nil, opts} ->
+        opts
+
+      {base_url, opts} ->
+        Enum.reduce(endpoints, opts, fn {key, path}, acc -> Keyword.put_new(acc, key, endpoint(base_url, path)) end)
+    end
   end
 
   @doc false
-  def post_json(client, body, opts, http_client)
-      when (is_map(body) or is_binary(body)) and is_function(http_client, 2) do
-    client
-    |> http_client.(opts)
-    |> HTTPClient.post_json(body, opts)
-  end
+  def user_agent(opts, default), do: {"user-agent", Keyword.get(opts, :user_agent, default)}
 
+  # Per-call `:api_key`, `:transport`, `:transport_opts` and `:timeout` override
+  # the client's own; a per-call `:endpoint` overrides `endpoint`.
   @doc false
-  def get(client, opts, http_client) when is_function(http_client, 2) do
-    client
-    |> http_client.(opts)
-    |> HTTPClient.get(opts)
-  end
-
-  @doc false
-  def stream_sse(client, body, opts, http_client, parser, error_decoder)
-      when (is_map(body) or is_binary(body)) and is_function(http_client, 2) do
-    client
-    |> http_client.(opts)
-    |> HTTPClient.stream_sse(body, opts, parser, error_decoder)
-  end
-
-  @doc false
-  def collect_sse(client, body, opts, http_client, decoder)
-      when (is_map(body) or is_binary(body)) and is_function(http_client, 2) do
-    client
-    |> http_client.(opts)
-    |> HTTPClient.collect_sse(body, opts, decoder)
-  end
-
-  @doc false
-  def http_client(provider, client, opts, overrides \\ []) do
+  def http(provider, client, endpoint, opts, headers \\ []) do
     %HTTPClient{
       provider: provider,
-      endpoint: Keyword.get(opts, :endpoint, Map.fetch!(client, :endpoint)),
-      api_key: Keyword.get(opts, :api_key, Map.get(client, :api_key)),
-      auth_header: Keyword.get(overrides, :auth_header, "authorization"),
-      auth_prefix: Keyword.get(overrides, :auth_prefix, "Bearer"),
-      default_headers: Keyword.get(overrides, :default_headers, default_headers(client)),
-      transport: Keyword.get(opts, :transport, Map.get(client, :transport)),
-      transport_opts: Keyword.get(opts, :transport_opts, Map.get(client, :transport_opts, [])),
-      timeout: Keyword.get(opts, :timeout, Map.get(client, :timeout, 15_000))
+      endpoint: endpoint,
+      api_key: Keyword.get(opts, :api_key, client.api_key),
+      auth_header: "authorization",
+      auth_prefix: "Bearer",
+      default_headers: headers ++ Request.normalize_headers(client.default_headers),
+      transport: Keyword.get(opts, :transport, client.transport),
+      transport_opts: Keyword.get(opts, :transport_opts, client.transport_opts),
+      timeout: Keyword.get(opts, :timeout, client.timeout)
     }
   end
-
-  defp default_headers(client), do: Map.get(client, :default_headers, [])
 end

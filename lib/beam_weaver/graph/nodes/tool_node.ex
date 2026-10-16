@@ -6,6 +6,12 @@ defmodule BeamWeaver.Graph.Nodes.ToolNode do
   list, or a raw tool-call list. It returns tool messages in the same shape a
   graph reducer can append to state. Tools may also return graph commands when
   the command update includes the tool message required by the original call.
+
+  A tool that injects `:state` gets the state without the keys listed in the
+  `:private_keys` option, and so does its `BeamWeaver.Core.ToolRuntime`; it
+  reads one of them by naming it, as in `{:state, :key}`. An agent's tools node
+  lists the agent's private and managed keys, so its tools get the state as
+  the run returns it.
   """
 
   alias BeamWeaver.Core.Error
@@ -18,16 +24,18 @@ defmodule BeamWeaver.Graph.Nodes.ToolNode do
 
   defstruct tools: %{},
             handle_errors: true,
-            timeout: 5_000,
+            timeout: :infinity,
             wrap_tool_call: [],
-            messages_key: :messages
+            messages_key: :messages,
+            private_keys: MapSet.new()
 
   @type t :: %__MODULE__{
           tools: %{String.t() => term()},
           handle_errors: boolean() | atom() | [atom()] | String.t() | function(),
           timeout: timeout(),
           wrap_tool_call: [term()],
-          messages_key: atom() | String.t()
+          messages_key: atom() | String.t(),
+          private_keys: MapSet.t(String.t())
         }
 
   @spec new([term()], keyword()) :: t()
@@ -35,9 +43,10 @@ defmodule BeamWeaver.Graph.Nodes.ToolNode do
     %__MODULE__{
       tools: Map.new(tools, fn tool -> {Tool.name(tool), tool} end),
       handle_errors: Keyword.get(opts, :handle_errors, true),
-      timeout: Keyword.get(opts, :timeout, 5_000),
+      timeout: Keyword.get(opts, :timeout, :infinity),
       wrap_tool_call: Keyword.get(opts, :wrap_tool_call, []),
-      messages_key: Keyword.get(opts, :messages_key, :messages)
+      messages_key: Keyword.get(opts, :messages_key, :messages),
+      private_keys: opts |> Keyword.get(:private_keys, []) |> MapSet.new(&to_string/1)
     }
   end
 

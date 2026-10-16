@@ -1,16 +1,35 @@
 defmodule BeamWeaver.Core.ChatModel do
   @moduledoc """
-  Behaviour for chat model providers.
+  Calls chat models, and the behaviour that chat model structs implement.
+
+  ```elixir
+  alias BeamWeaver.Core.{ChatModel, Message}
+
+  model = BeamWeaver.Models.init_chat_model!("fake:chat", responses: ["Order A-1001 shipped on Monday."])
+
+  {:ok, reply} = ChatModel.invoke(model, [Message.user("Where is my order A-1001?")])
+  reply.content
+  #=> "Order A-1001 shipped on Monday."
+  ```
+
+  `invoke/3` returns one assistant message, `stream/3` and
+  `stream_typed_events/3` stream the reply, and `batch/3` sends several
+  requests one after another. Options such as `tools:`, `temperature:` and `max_tokens:`
+  apply to one call. `trace_metadata:` adds a map to the call's trace run and
+  is never sent; `metadata:` is a field of the provider's request, on the APIs
+  that have one. Get a model from `BeamWeaver.Models.init_chat_model/2`; see
+  [Models](models.md).
+
+  A provider of your own implements `c:invoke/3`, and optionally the streaming
+  callbacks, on its model struct.
   """
 
-  alias BeamWeaver.Core.Async
   alias BeamWeaver.Core.Error
   alias BeamWeaver.Core.LanguageModel
   alias BeamWeaver.Core.Message
   alias BeamWeaver.Core.Tool
   alias BeamWeaver.MapAccess
   alias BeamWeaver.Models.ProfileRegistry.Params, as: ProfileParams
-  alias BeamWeaver.Result
   alias BeamWeaver.Stream, as: BWStream
   alias BeamWeaver.Stream.Events
   alias BeamWeaver.Tracing
@@ -69,7 +88,6 @@ defmodule BeamWeaver.Core.ChatModel do
     :messages,
     :metadata,
     :mcp_servers,
-    :model_kwargs,
     :organization,
     :project,
     :prompt,
@@ -156,7 +174,7 @@ defmodule BeamWeaver.Core.ChatModel do
         {:error,
          Error.new(:unsupported_feature, "decision models cannot generate chat; use Core.DecisionModel.invoke/3")}
 
-      is_atom(module) and function_exported_loaded?(module, :resolve_invocation_model, 2) ->
+      is_atom(module) and BeamWeaver.Behaviour.exported?(module, :resolve_invocation_model, 2) ->
         module.resolve_invocation_model(model, opts)
 
       true ->
@@ -165,7 +183,8 @@ defmodule BeamWeaver.Core.ChatModel do
   end
 
   @doc """
-  Invokes a chat model after validating message input.
+  Sends `messages` (a list of messages, or a string for one user message) to
+  the model and returns its reply: `{:ok, message}` or `{:error, error}`.
   """
   @spec invoke(term(), term(), keyword()) ::
           {:ok, Message.t()} | {:error, Error.t() | term()}
@@ -223,7 +242,7 @@ defmodule BeamWeaver.Core.ChatModel do
                   [
                     outputs: model_outputs(message, usage),
                     usage: usage,
-                    metadata: model_finish_metadata(model, opts, message, usage)
+                    metadata: model_finish_metadata(message, usage)
                   ]
               )
 
@@ -260,7 +279,7 @@ defmodule BeamWeaver.Core.ChatModel do
          :ok <- validate_messages(messages),
          {:ok, model} <- resolve_invocation_model(model, opts),
          :ok <- BeamWeaver.Provider.Capability.validate_invocation(model, opts) do
-      if function_exported_loaded?(model.__struct__, :stream, 3) do
+      if BeamWeaver.Behaviour.exported?(model.__struct__, :stream, 3) do
         model.__struct__.stream(model, messages, opts)
       else
         case invoke(model, messages, opts) do
@@ -280,59 +299,6 @@ defmodule BeamWeaver.Core.ChatModel do
   end
 
   @doc """
-  Generates one chat response for each input, returning either all messages or
-  the first tagged error.
-  """
-  @spec generate(term(), [term()], keyword()) :: {:ok, [Message.t()]} | {:error, term()}
-  def generate(model, inputs, opts \\ []) when is_list(inputs) do
-    inputs
-    |> then(&batch(model, &1, opts))
-    |> Result.collect()
-  end
-
-  @doc """
-  Generates chat responses from prompt values or prompt-like inputs.
-  """
-  @spec generate_prompt(term(), [term()], keyword()) :: {:ok, [Message.t()]} | {:error, term()}
-  def generate_prompt(model, prompts, opts \\ []) when is_list(prompts) do
-    generate(model, prompts, opts)
-  end
-
-  @doc """
-  Starts an async chat model invocation.
-  """
-  @spec async_invoke(term(), [Message.t()], keyword()) :: Async.handle()
-  def async_invoke(model, messages, opts \\ []) do
-    Async.run_call(opts, &invoke(model, messages, &1))
-  end
-
-  @doc """
-  Starts async chat model streaming.
-  """
-  @spec async_stream(term(), [Message.t()], keyword()) :: Async.handle()
-  def async_stream(model, messages, opts \\ []) do
-    Async.run_call(opts, &stream(model, messages, &1))
-  end
-
-  @doc """
-  Starts an ordered async batch of chat invocations.
-  """
-  @spec async_batch(term(), [[Message.t()]], keyword()) :: [Async.handle()]
-  def async_batch(model, message_batches, opts \\ []) when is_list(message_batches) do
-    Async.batch_call(message_batches, opts, &invoke(model, &1, &2))
-  end
-
-  @spec async_generate(term(), [term()], keyword()) :: Async.handle()
-  def async_generate(model, inputs, opts \\ []) do
-    Async.run_call(opts, &generate(model, inputs, &1))
-  end
-
-  @spec async_generate_prompt(term(), [term()], keyword()) :: Async.handle()
-  def async_generate_prompt(model, prompts, opts \\ []) do
-    Async.run_call(opts, &generate_prompt(model, prompts, &1))
-  end
-
-  @doc """
   Streams typed chat events.
 
   Providers with a native `stream_events/3` keep their event shape. Other
@@ -346,7 +312,7 @@ defmodule BeamWeaver.Core.ChatModel do
          :ok <- validate_messages(messages),
          {:ok, model} <- resolve_invocation_model(model, opts),
          :ok <- BeamWeaver.Provider.Capability.validate_invocation(model, opts) do
-      if function_exported_loaded?(model.__struct__, :stream_events, 3) do
+      if BeamWeaver.Behaviour.exported?(model.__struct__, :stream_events, 3) do
         model.__struct__.stream_events(model, messages, opts)
       else
         case stream(model, messages, opts) do
@@ -355,11 +321,6 @@ defmodule BeamWeaver.Core.ChatModel do
         end
       end
     end
-  end
-
-  @spec async_stream_events(term(), term(), keyword()) :: Async.handle()
-  def async_stream_events(model, input, opts \\ []) do
-    Async.run_call(opts, &stream_events(model, input, &1))
   end
 
   @doc """
@@ -377,7 +338,7 @@ defmodule BeamWeaver.Core.ChatModel do
          :ok <- validate_messages(messages),
          {:ok, model} <- resolve_invocation_model(model, opts),
          :ok <- BeamWeaver.Provider.Capability.validate_invocation(model, opts) do
-      if function_exported_loaded?(model.__struct__, :stream_typed_events, 3) do
+      if BeamWeaver.Behaviour.exported?(model.__struct__, :stream_typed_events, 3) do
         model.__struct__.stream_typed_events(model, messages, opts)
       else
         case stream(model, messages, opts) do
@@ -386,11 +347,6 @@ defmodule BeamWeaver.Core.ChatModel do
         end
       end
     end
-  end
-
-  @spec async_stream_typed_events(term(), term(), keyword()) :: Async.handle()
-  def async_stream_typed_events(model, input, opts \\ []) do
-    Async.run_call(opts, &stream_typed_events(model, input, &1))
   end
 
   @doc """
@@ -402,7 +358,7 @@ defmodule BeamWeaver.Core.ChatModel do
   @spec stream_exact_typed_events(term(), binary(), keyword()) ::
           {:ok, Enumerable.t()} | {:error, Error.t() | term()}
   def stream_exact_typed_events(model, body, opts \\ []) when is_binary(body) do
-    if function_exported_loaded?(model.__struct__, :stream_exact_typed_events, 3) do
+    if BeamWeaver.Behaviour.exported?(model.__struct__, :stream_exact_typed_events, 3) do
       model.__struct__.stream_exact_typed_events(model, body, opts)
     else
       {:error, Error.new(:unsupported_feature, "chat model does not support exact request dispatch")}
@@ -429,6 +385,12 @@ defmodule BeamWeaver.Core.ChatModel do
 
   defp event_envelope(_model, %BWStream.Envelope{} = envelope, _opts), do: envelope
 
+  # A live stream's own events: the `Error` that ends a failed stream, and
+  # heartbeats.
+  defp event_envelope(model, %event{} = stream_event, opts) when event in [Events.Error, Events.Debug] do
+    BWStream.envelope(stream_event, run_id: Keyword.get(opts, :run_id), node: model_name(model))
+  end
+
   defp event_envelope(model, %Message{} = message, opts) do
     BWStream.envelope(
       %Events.Message{message: message},
@@ -453,7 +415,9 @@ defmodule BeamWeaver.Core.ChatModel do
     )
   end
 
-  defp stream_event_envelopes(model, events, opts) do
+  # The stream ends with `Done`, unless it failed: then its `Error` is last.
+  @doc false
+  def stream_event_envelopes(model, events, opts) do
     done =
       BWStream.envelope(
         %Events.Done{},
@@ -461,16 +425,28 @@ defmodule BeamWeaver.Core.ChatModel do
         node: model_name(model)
       )
 
-    events
-    |> Elixir.Stream.map(&event_envelope(model, &1, opts))
-    |> Elixir.Stream.concat([done])
+    Elixir.Stream.transform(
+      events,
+      fn -> :streaming end,
+      fn
+        _event, :failed ->
+          {:halt, :failed}
+
+        event, :streaming ->
+          case event_envelope(model, event, opts) do
+            %BWStream.Envelope{event: %Events.Error{}} = envelope -> {[envelope], :failed}
+            envelope -> {[envelope], :streaming}
+          end
+      end,
+      fn
+        :streaming -> {[done], :streaming}
+        :failed -> {[], :failed}
+      end,
+      fn _state -> :ok end
+    )
   end
 
   defp model_name(%{__struct__: module}), do: module |> Module.split() |> List.last()
-
-  defp function_exported_loaded?(module, function, arity) do
-    Code.ensure_loaded?(module) and function_exported?(module, function, arity)
-  end
 
   defp trace_model_call?(opts) do
     trace? = Keyword.get(opts, :trace?, Keyword.get(opts, :trace, true))
@@ -506,7 +482,7 @@ defmodule BeamWeaver.Core.ChatModel do
   defp model_start_metadata(model, opts) do
     provider = model_provider(model)
     identifier = model_identifier(model)
-    profile = field_value(model, :profile)
+    profile = model |> traced_model() |> field_value(:profile)
 
     %{}
     |> maybe_put(:model_provider, provider)
@@ -525,13 +501,16 @@ defmodule BeamWeaver.Core.ChatModel do
     |> maybe_put(:structured_output_schema_bytes, Keyword.get(opts, :structured_output_schema_bytes))
     |> maybe_put(:structured_output_schema_properties, Keyword.get(opts, :structured_output_schema_properties))
     |> maybe_put(:structured_output_tool_names, Keyword.get(opts, :structured_output_tool_names))
+    |> Map.merge(Map.new(Keyword.get(opts, :trace_metadata) || %{}))
     |> TraceOptions.metadata(Keyword.get(opts, :trace))
   end
 
-  defp model_finish_metadata(model, opts, %Message{} = message, usage) do
+  # The run keeps its start metadata, so the finish adds only what the reply
+  # tells.
+  defp model_finish_metadata(%Message{} = message, usage) do
     response_metadata = message.response_metadata || %{}
 
-    model_start_metadata(model, opts)
+    %{}
     |> maybe_put(:response_metadata, response_metadata)
     |> maybe_put(
       :finish_reason,
@@ -563,7 +542,7 @@ defmodule BeamWeaver.Core.ChatModel do
       |> model_param_map()
       |> approved_param_map(param_keys)
       |> reject_nil_or_empty()
-      |> maybe_merge_model_kwargs(model, param_keys)
+      |> maybe_merge_extra_body(model, param_keys)
 
     call_params =
       opts
@@ -673,6 +652,7 @@ defmodule BeamWeaver.Core.ChatModel do
 
   defp model_param_map(%{__struct__: _module} = model) do
     model
+    |> traced_model()
     |> Map.from_struct()
     |> Map.drop([:api_key, :default_headers, :endpoint, :organization, :project])
   end
@@ -680,10 +660,10 @@ defmodule BeamWeaver.Core.ChatModel do
   defp model_param_map(model) when is_map(model), do: model
   defp model_param_map(_model), do: %{}
 
-  defp maybe_merge_model_kwargs(params, model, param_keys) do
-    case field_value(model, :model_kwargs) do
-      kwargs when is_map(kwargs) and map_size(kwargs) > 0 ->
-        Map.merge(params, approved_param_map(kwargs, param_keys))
+  defp maybe_merge_extra_body(params, model, param_keys) do
+    case field_value(model, :extra_body) do
+      extra_body when is_map(extra_body) and map_size(extra_body) > 0 ->
+        Map.merge(params, approved_param_map(extra_body, param_keys))
 
       _other ->
         params
@@ -691,10 +671,21 @@ defmodule BeamWeaver.Core.ChatModel do
   end
 
   defp model_provider(model) do
+    model = traced_model(model)
+
     (field_value(model, :model_provider) ||
        field_value(model, :provider) ||
        module_provider(model))
     |> normalize_string()
+  end
+
+  # Wrappers such as `Models.cached/3` keep the model they wrap in `:model`;
+  # traces describe the wrapped model.
+  defp traced_model(model) do
+    case field_value(model, :model) do
+      %{__struct__: _module} = inner -> traced_model(inner)
+      _other -> model
+    end
   end
 
   defp module_provider(%{__struct__: module}) do
@@ -716,6 +707,8 @@ defmodule BeamWeaver.Core.ChatModel do
   defp module_provider(_model), do: nil
 
   defp model_identifier(model) do
+    model = traced_model(model)
+
     (module_value(model, :model_name) ||
        module_value(model, :model_id) ||
        field_value(model, :model) ||
@@ -724,11 +717,7 @@ defmodule BeamWeaver.Core.ChatModel do
   end
 
   defp module_value(%{__struct__: module} = model, function) do
-    if function_exported_loaded?(module, function, 1) do
-      apply(module, function, [model])
-    end
-  rescue
-    _exception -> nil
+    if BeamWeaver.Behaviour.exported?(module, function, 1), do: apply(module, function, [model])
   end
 
   defp module_value(_model, _function), do: nil

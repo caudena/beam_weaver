@@ -132,10 +132,13 @@ defmodule BeamWeaver.ProviderConformanceTest do
       Fixtures.assert_message!(message, Fixtures.load!(:xai, "single_tool_call")["expected"]["message"])
     end
 
-    test "reasoning request shape omits unsupported stop sequences" do
+    test "stop sequences are rejected before the request, since Responses has no stop" do
       model = Fixtures.model(:xai, "reasoning_omits_stop")
 
-      assert {:ok, message} = ChatModel.invoke(model, [Message.user("stop check")], stop: ["END"])
+      assert {:error, %BeamWeaver.Core.Error{type: :unsupported_model_param, details: %{params: [:stop]}}} =
+               ChatModel.invoke(model, [Message.user("stop check")], stop: ["END"])
+
+      assert {:ok, message} = ChatModel.invoke(model, [Message.user("stop check")])
 
       Fixtures.assert_request!(:xai, "reasoning_omits_stop")
       Fixtures.assert_message!(message, Fixtures.load!(:xai, "reasoning_omits_stop")["expected"]["message"])
@@ -267,7 +270,7 @@ defmodule BeamWeaver.ProviderConformanceTest do
     end
 
     test "provider-native structured output parses Kimi JSON response" do
-      model = Fixtures.model(:moonshot, "provider_structured_success")
+      model = Fixtures.model(:moonshot, "provider_structured_success", model: "kimi-k3")
 
       assert {:ok, message} =
                ChatModel.invoke(model, [Message.user("answer as JSON")],

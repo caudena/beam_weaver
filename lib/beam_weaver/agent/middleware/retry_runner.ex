@@ -6,8 +6,39 @@ defmodule BeamWeaver.Agent.Middleware.RetryRunner do
 
   @spec run(RetryPolicy.t(), (-> term()), keyword()) :: term()
   def run(%RetryPolicy{} = policy, fun, opts \\ []) when is_function(fun, 0) do
-    retry(policy, Keyword.get(opts, :attempt, 1), fun, Keyword.get(opts, :telemetry_prefix))
+    prefix = Keyword.get(opts, :telemetry_prefix)
+
+    on_retry = fn attempt, error ->
+      if prefix, do: :telemetry.execute(prefix ++ [:retry], %{attempt: attempt}, %{error: error})
+    end
+
+    RetryPolicy.run(policy, fn -> normalize_result(fun.()) end,
+      attempt: Keyword.get(opts, :attempt, 1),
+      on_retry: on_retry
+    )
   end
+
+  # Like `run/3`, and also returns how many attempts it made: fewer than the
+  # policy's `max_attempts` when an error isn't one it retries.
+  @spec run_counting(RetryPolicy.t(), (-> term()), keyword()) :: {term(), pos_integer()}
+  def run_counting(%RetryPolicy{} = policy, fun, opts \\ []) when is_function(fun, 0) do
+    attempts = :counters.new(1, [])
+
+    result =
+      run(
+        policy,
+        fn ->
+          :counters.add(attempts, 1, 1)
+          fun.()
+        end,
+        opts
+      )
+
+    {result, :counters.get(attempts, 1)}
+  end
+
+  defp normalize_result({:error, error}), do: {:error, normalize_error(error)}
+  defp normalize_result(result), do: result
 
   @spec normalize_error(term()) :: Error.t()
   def normalize_error(%Error{} = error), do: error
@@ -66,33 +97,4 @@ defmodule BeamWeaver.Agent.Middleware.RetryRunner do
   defp normalize_retry_on({m, f, a}) when is_atom(m) and is_atom(f) and is_list(a), do: {m, f, a}
   defp normalize_retry_on(value) when is_tuple(value), do: Tuple.to_list(value)
   defp normalize_retry_on(value), do: value
-
-  defp retry(%RetryPolicy{} = policy, attempt, fun, telemetry_prefix) do
-    case fun.() do
-      {:error, error} ->
-        normalized = normalize_error(error)
-
-        if attempt < policy.max_attempts and RetryPolicy.retry?(policy, normalized) do
-          emit_retry(telemetry_prefix, attempt, normalized)
-          sleep(policy, attempt)
-          retry(policy, attempt + 1, fun, telemetry_prefix)
-        else
-          {:error, normalized}
-        end
-
-      other ->
-        other
-    end
-  end
-
-  defp emit_retry(nil, _attempt, _error), do: :ok
-
-  defp emit_retry(prefix, attempt, error) do
-    :telemetry.execute(prefix ++ [:retry], %{attempt: attempt}, %{error: error})
-  end
-
-  defp sleep(%RetryPolicy{} = policy, attempt) do
-    delay = RetryPolicy.delay(policy, attempt)
-    if delay > 0, do: Process.sleep(delay)
-  end
 end

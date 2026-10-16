@@ -1,7 +1,7 @@
 defmodule BeamWeaver.Anthropic.ChatModel.ModelResolution do
   @moduledoc false
 
-  alias BeamWeaver.Anthropic.Error
+  alias BeamWeaver.Core.Error
   alias BeamWeaver.Models.ProfileRegistry
 
   @spec resolve(BeamWeaver.Anthropic.ChatModel.t(), keyword()) ::
@@ -31,8 +31,8 @@ defmodule BeamWeaver.Anthropic.ChatModel.ModelResolution do
                  max_tokens: capped_max_tokens(model, profile, opts)
              }}
 
-          {:error, error} ->
-            {:error, Error.new(error.type, error.message, error.details)}
+          {:error, _error} = error ->
+            error
         end
     end
   end

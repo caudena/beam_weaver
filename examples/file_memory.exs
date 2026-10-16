@@ -19,7 +19,7 @@ alias BeamWeaver.Core.Message
 alias BeamWeaver.Examples.Support
 alias BeamWeaver.Filesystem.Local
 
-root = Path.join(System.tmp_dir!(), "beam_weaver_file_memory")
+root = Support.tmp_dir("file_memory")
 memory_file = Path.join(root, "AGENTS.md")
 
 if "--reset" in System.argv(), do: File.rm_rf!(root)
@@ -37,8 +37,9 @@ IO.puts("Memory file: #{memory_file}\n\n#{File.read!(memory_file)}")
     filesystem: Local.new(root: root),
     memory: ["/AGENTS.md"],
     system_prompt: """
-    You are a personal assistant. When the user asks you to remember something, add one short line to /AGENTS.md \
-    with edit_file and confirm in one sentence. Keep every answer to one or two sentences.
+    You are a personal assistant. Follow the preferences recorded in your memory. When the user asks you to \
+    remember something, add one short line to /AGENTS.md with edit_file and confirm in one sentence. Keep every \
+    answer to one or two sentences.
     """
   )
 
@@ -50,10 +51,12 @@ converse = fn text ->
   IO.puts("[user] #{text}")
   if tools != [], do: IO.puts("  tools: #{Enum.join(tools, ", ")}")
   IO.puts("  agent: #{messages |> List.last() |> Message.text()}\n")
+  messages
 end
 
 # Two separate conversations: the second one knows the preference only through the file.
-converse.("Please remember that I prefer answers in German.")
-converse.("How is the weather usually in Lisbon in May?")
+remembered = converse.("Please remember that I want temperatures in Fahrenheit.")
+converse.("How warm is Lisbon usually in May?")
 
 IO.puts("Memory file after this run:\n\n#{File.read!(memory_file)}")
+Support.assert_tools_called!(remembered, [["edit_file", "write_file"]])

@@ -22,6 +22,7 @@
       ["content-type", "application/json"]
     ],
     "json": {
+      "include": ["reasoning.encrypted_content"],
       "input": [
         {
           "content": "stop check",

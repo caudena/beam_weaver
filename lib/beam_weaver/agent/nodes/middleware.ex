@@ -10,10 +10,13 @@ defmodule BeamWeaver.Agent.Nodes.Middleware do
 
   def new(middleware, hook), do: %__MODULE__{middleware: middleware, hook: hook}
 
+  # The hook's update is written as it is, like a node's: a key with a
+  # reducer, such as an append, gets the value even when it equals the
+  # current one.
   def invoke(%__MODULE__{middleware: middleware, hook: hook}, state, runtime) do
-    result = Middleware.call_hook(middleware, hook, state, runtime)
-
-    normalize_result(result, state)
+    middleware
+    |> Middleware.call_hook(hook, state, runtime)
+    |> normalize_result()
   rescue
     exception ->
       {:error,
@@ -23,41 +26,13 @@ defmodule BeamWeaver.Agent.Nodes.Middleware do
        })}
   end
 
-  defp normalize_result(nil, _state), do: %{}
-  defp normalize_result(%Command{} = command, _state), do: command
+  defp normalize_result(nil), do: %{}
+  defp normalize_result(%Command{} = command), do: command
 
-  defp normalize_result(other, state) do
+  defp normalize_result(other) do
     case Decision.normalize(other) do
-      {:ok, decision} -> decision |> Decision.to_update() |> state_delta(state)
+      {:ok, decision} -> Decision.to_update(decision)
       {:error, %Error{} = error} -> {:error, error}
     end
-  end
-
-  defp state_delta(update, state) when is_map(update) and is_map(state) do
-    Map.reject(update, fn {key, value} ->
-      state_value(state, key) == {:ok, value}
-    end)
-  end
-
-  defp state_delta(update, _state), do: update
-
-  defp state_value(state, key) when is_atom(key) do
-    cond do
-      Map.has_key?(state, key) -> {:ok, Map.fetch!(state, key)}
-      Map.has_key?(state, Atom.to_string(key)) -> {:ok, Map.fetch!(state, Atom.to_string(key))}
-      true -> :error
-    end
-  end
-
-  defp state_value(state, key) when is_binary(key) do
-    if Map.has_key?(state, key) do
-      {:ok, Map.fetch!(state, key)}
-    else
-      atom = String.to_existing_atom(key)
-
-      if Map.has_key?(state, atom), do: {:ok, Map.fetch!(state, atom)}, else: :error
-    end
-  rescue
-    ArgumentError -> :error
   end
 end

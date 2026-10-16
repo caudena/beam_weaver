@@ -3,7 +3,7 @@ defmodule BeamWeaver.Tools.Todo do
   State tool that updates explicit agent state through graph commands.
   """
 
-  @behaviour BeamWeaver.Core.Tool
+  use BeamWeaver.Core.Tool
   @behaviour BeamWeaver.ToolKit
 
   alias BeamWeaver.Core.Error
@@ -129,22 +129,10 @@ defmodule BeamWeaver.Tools.Todo do
   def injected(_tool), do: %{state: :state, tool_call_id: :tool_call_id}
 
   @impl true
-  def return_direct(_tool), do: false
-
-  @impl true
-  def response_format(_tool), do: nil
-
-  @impl true
   def output_schema(_tool), do: %{"type" => "object"}
 
   @impl true
   def tags(_tool), do: [:todo]
-
-  @impl true
-  def metadata(_tool), do: %{}
-
-  @impl true
-  def provider_opts(_tool), do: %{}
 
   @impl true
   def invoke(%__MODULE__{} = tool, input, _opts) do
@@ -152,7 +140,7 @@ defmodule BeamWeaver.Tools.Todo do
     call_id = Map.get(input, :tool_call_id) || Map.get(input, "tool_call_id")
     todos = Map.get(state, tool.state_key, Map.get(state, to_string(tool.state_key), [])) || []
 
-    with {:ok, todos, _result} <- apply_todos(todos, input) do
+    with {:ok, todos, _result} <- apply_todos(tool, todos, input) do
       message =
         Message.tool("Updated todo list to #{inspect_todos(todos)}",
           tool_call_id: call_id,
@@ -164,9 +152,9 @@ defmodule BeamWeaver.Tools.Todo do
     end
   end
 
-  defp apply_todos(_current, input) do
+  defp apply_todos(tool, _current, input) do
     case get_value(input, :todos, :missing) do
-      :missing -> {:error, Error.new(:invalid_todos, "write_todos input must include a todos array")}
+      :missing -> {:error, Error.new(:invalid_todos, "#{name(tool)} input must include a todos array")}
       todos -> replace_todos(todos)
     end
   end

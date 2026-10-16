@@ -1,19 +1,22 @@
 defmodule BeamWeaver.Graph.Execution.Stream do
-  @moduledoc """
-  Stream event helpers for compiled graph execution.
+  @moduledoc false
 
-  Internally this module uses typed `BeamWeaver.Stream` events. Legacy graph
-  stream modes are formatted at the boundary to preserve existing public shapes.
-  """
+  # Sends a run's events to its stream sink as they happen. Live and collected
+  # streams both read the sink, so this is the only path events take. A run
+  # without a sink (`invoke/3`, `resume/3`) builds and sends nothing.
 
-  alias BeamWeaver.Graph.Execution.ChannelState
+  alias BeamWeaver.Core.Error
+  alias BeamWeaver.Core.Message
+  alias BeamWeaver.Graph.Execution.ChannelLookup
   alias BeamWeaver.Graph.Execution.Namespace
   alias BeamWeaver.Graph.Execution.TaskRequest
   alias BeamWeaver.Stream, as: BWStream
   alias BeamWeaver.Stream.Envelope
   alias BeamWeaver.Stream.Events
+  alias BeamWeaver.Stream.Sink
 
-  @stream_modes [
+  @modes [
+    :events,
     :values,
     :updates,
     :custom,
@@ -22,60 +25,89 @@ defmodule BeamWeaver.Graph.Execution.Stream do
     :checkpoints,
     :tasks,
     :debug,
-    :events
+    :lifecycle
   ]
 
-  @spec normalize_modes(atom() | String.t() | [atom() | String.t()]) :: MapSet.t(atom())
-  def normalize_modes(mode) when mode in @stream_modes, do: MapSet.new([mode])
+  # `:events` selects every event; anything else is one mode or a list of them.
+  @spec normalize_modes(term()) :: {:ok, MapSet.t(atom())} | {:error, Error.t()}
+  def normalize_modes(%MapSet{} = modes), do: modes |> MapSet.to_list() |> normalize_modes()
+  def normalize_modes(mode) when is_atom(mode), do: normalize_modes([mode])
 
-  def normalize_modes(mode) when is_binary(mode),
-    do: normalize_modes(BWStream.normalize_mode(mode))
-
-  def normalize_modes(modes) when is_list(modes), do: MapSet.new(modes, &normalize_mode/1)
-
-  @spec add_step_events(list(), map(), [term()], map(), map()) :: list()
-  def add_step_events(events, run, ready, update, state) do
-    message_events = message_stream_events(run, update)
-
-    update_events =
-      []
-      |> maybe_event(
-        run,
-        :updates,
-        %Events.GraphUpdate{
-          update: Map.new(ready_names(ready), fn node -> {node, public_state(run, update)} end)
-        }
-      )
-      |> maybe_event(run, :values, %Events.GraphValue{value: public_state(run, state)})
-
-    events ++ message_events ++ update_events
+  def normalize_modes([_ | _] = modes) do
+    case Enum.reject(modes, &(&1 in @modes)) do
+      [] -> {:ok, MapSet.new(modes)}
+      invalid -> {:error, invalid_modes(invalid)}
+    end
   end
 
-  @spec checkpoint_events(map(), map(), map()) :: list()
-  def checkpoint_events(run, config, state) do
-    maybe_event(
-      [],
-      run,
-      :checkpoints,
-      %Events.Checkpoint{config: config, values: public_state(run, state), step: run.step}
-    )
+  def normalize_modes(modes), do: {:error, invalid_modes(modes)}
+
+  # `:debug` also selects tasks and checkpoints. An `Error` event always passes,
+  # so a failed run is visible whatever was selected.
+  @spec selected?(MapSet.t(atom()), term()) :: boolean()
+  def selected?(_modes, %Events.Error{}), do: true
+  def selected?(modes, event), do: mode_selected?(modes, BWStream.event_mode(event))
+
+  @spec emit_tasks(map(), list()) :: :ok
+  def emit_tasks(%{stream_sink: nil}, _task_events), do: :ok
+
+  def emit_tasks(run, task_events) do
+    for {:task, %Events.Task{} = event} <- task_events do
+      emit(run, event, node: event.node, task_id: event.task_id, step: event.step || run.step)
+    end
+
+    :ok
   end
 
-  @spec add_events(list(), list(), map()) :: list()
-  def add_events(events, new_events, run) do
-    formatted =
-      Enum.flat_map(new_events, fn
-        {:task, payload} ->
-          maybe_event([], run, :tasks, event_for(payload, :tasks))
+  # A finished step: the messages it added, the update keyed by the nodes that
+  # ran, and the whole state after it.
+  @spec emit_step(map(), [term()], map(), map()) :: :ok
+  def emit_step(%{stream_sink: nil}, _ready, _update, _state), do: :ok
 
-        {:custom, payload} ->
-          custom_events(payload, run)
+  def emit_step(run, ready, update, state) do
+    if mode_selected?(run.stream_modes, :messages) do
+      update
+      |> messages_from_update()
+      |> Enum.each(&emit(run, %Events.Message{message: &1}))
+    end
 
-        other ->
-          [other]
-      end)
+    if mode_selected?(run.stream_modes, :updates) do
+      public_update = public_state(run, update)
+      emit(run, %Events.GraphUpdate{update: Map.new(ready, &{TaskRequest.name(&1), public_update})})
+    end
 
-    events ++ formatted
+    if mode_selected?(run.stream_modes, :values) do
+      emit(run, %Events.GraphValue{value: public_state(run, state)})
+    end
+
+    :ok
+  end
+
+  @spec emit_checkpoint(map(), map(), map()) :: :ok
+  def emit_checkpoint(%{stream_sink: nil}, _config, _state), do: :ok
+
+  def emit_checkpoint(run, config, state) do
+    if mode_selected?(run.stream_modes, :checkpoints) do
+      emit(run, %Events.Checkpoint{config: config, values: public_state(run, state), step: run.step})
+    end
+
+    :ok
+  end
+
+  # The `stream_writer` of a node's runtime: every value the node writes is an
+  # event of its task, sent at once. An envelope passes through as it is.
+  @spec writer(map(), String.t(), String.t()) :: (term() -> :ok)
+  def writer(%{stream_sink: nil}, _node, _task_id), do: fn _value -> :ok end
+
+  def writer(run, node, task_id) do
+    fn
+      %Envelope{event: event} = envelope ->
+        if selected?(run.stream_modes, event), do: Sink.emit(run.stream_sink, envelope)
+        :ok
+
+      value ->
+        emit(run, value, node: node, task_id: task_id)
+    end
   end
 
   @spec task_event(atom(), String.t(), term(), non_neg_integer(), String.t(), String.t() | nil) ::
@@ -92,144 +124,53 @@ defmodule BeamWeaver.Graph.Execution.Stream do
      }}
   end
 
-  @spec custom_event(term()) :: {:custom, term()}
-  def custom_event(payload), do: {:custom, payload}
+  defp emit(run, value, opts \\ []) do
+    event = BWStream.IntoEvent.into_event(value)
 
-  defp custom_events(%Events.ToolStart{} = event, run), do: maybe_event([], run, :tools, event)
-  defp custom_events(%Events.ToolDelta{} = event, run), do: maybe_event([], run, :tools, event)
-  defp custom_events(%Events.ToolFinish{} = event, run), do: maybe_event([], run, :tools, event)
-  defp custom_events(%Events.ToolError{} = event, run), do: maybe_event([], run, :tools, event)
+    if selected?(run.stream_modes, event) do
+      envelope_opts =
+        Keyword.merge(
+          [run_id: run.run_id, graph: run.compiled.name, step: run.step, namespace: namespace(run)],
+          opts
+        )
 
-  defp custom_events(%Envelope{} = envelope, run) do
-    mode = BWStream.event_mode(envelope.event)
-
-    if MapSet.member?(run.stream_modes, mode) or MapSet.member?(run.stream_modes, :events) or
-         (mode in [:tasks, :checkpoints] and MapSet.member?(run.stream_modes, :debug)) do
-      emit_to_sink(run, envelope)
-      [BWStream.format(envelope, run.stream_modes)]
-    else
-      []
+      Sink.emit(run.stream_sink, BWStream.envelope(event, envelope_opts))
     end
+
+    :ok
   end
 
-  defp custom_events(%Events.Message{} = event, run) do
-    []
-    |> maybe_event(run, :messages, event)
-    |> maybe_event(run, :custom, %Events.Custom{payload: event})
+  defp mode_selected?(modes, mode) do
+    MapSet.member?(modes, :events) or MapSet.member?(modes, mode) or
+      (mode in [:tasks, :checkpoints] and MapSet.member?(modes, :debug))
   end
 
-  defp custom_events(%Events.Custom{} = event, run), do: maybe_event([], run, :custom, event)
-
-  defp custom_events(%{type: :tool_event} = payload, run) do
-    maybe_event([], run, :tools, BeamWeaver.Stream.IntoEvent.into_event(payload))
-  end
-
-  defp custom_events(%{type: :message, message: message} = payload, run) do
-    []
-    |> maybe_event(run, :messages, %Events.Message{
-      message: message,
-      metadata: Map.get(payload, :metadata, %{})
+  defp invalid_modes(modes) do
+    Error.new(:invalid_stream_mode, "stream_mode must be a stream mode or a list of them", %{
+      stream_mode: modes,
+      allowed: @modes
     })
-    |> maybe_event(run, :custom, %Events.Custom{payload: payload})
   end
 
-  defp custom_events(%{type: :ui, message: ui_message}, run) do
-    maybe_event([], run, :custom, %Events.Custom{payload: ui_message})
-  end
-
-  defp custom_events(payload, run) do
-    maybe_event([], run, :custom, BeamWeaver.Stream.IntoEvent.into_event(payload))
-  end
-
-  defp message_stream_events(run, update) do
-    update
-    |> messages_from_update()
-    |> Enum.reduce([], fn message, events ->
-      maybe_event(events, run, :messages, %Events.Message{message: message})
-    end)
-  end
-
+  # A step's update holds the messages as they were written: a string or a map
+  # becomes a message, and removal markers are left out.
   defp messages_from_update(update) when is_map(update) do
     update
     |> Map.get(:messages, Map.get(update, "messages", []))
     |> List.wrap()
-    |> Enum.reject(&is_nil/1)
+    |> Enum.flat_map(fn
+      %Message{} = message ->
+        [message]
+
+      value ->
+        case Message.from(value) do
+          {:ok, message} -> [message]
+          {:error, _error} -> []
+        end
+    end)
   end
 
   defp messages_from_update(_update), do: []
-
-  defp maybe_event(events, run, mode, payload) do
-    if MapSet.member?(run.stream_modes, mode) or
-         MapSet.member?(run.stream_modes, :events) or
-         (mode in [:tasks, :checkpoints] and MapSet.member?(run.stream_modes, :debug)) do
-      [format_stream_event(run, mode, payload) | events]
-    else
-      events
-    end
-  end
-
-  defp format_stream_event(run, mode, payload) do
-    envelope =
-      payload
-      |> event_for(mode)
-      |> BWStream.envelope(envelope_opts(run, payload))
-
-    emit_to_sink(run, envelope)
-    BWStream.format(envelope, run.stream_modes)
-  end
-
-  defp emit_to_sink(%{stream_sink: nil}, _envelope), do: :ok
-
-  defp emit_to_sink(%{stream_sink: sink}, %Envelope{} = envelope) do
-    BeamWeaver.Stream.Sink.emit(sink, envelope)
-    :ok
-  end
-
-  defp emit_to_sink(_run, _envelope), do: :ok
-
-  defp event_for(%Events.GraphUpdate{} = event, _mode), do: event
-  defp event_for(%Events.GraphValue{} = event, _mode), do: event
-  defp event_for(%Events.Message{} = event, _mode), do: event
-  defp event_for(%Events.ToolStart{} = event, _mode), do: event
-  defp event_for(%Events.ToolDelta{} = event, _mode), do: event
-  defp event_for(%Events.ToolFinish{} = event, _mode), do: event
-  defp event_for(%Events.ToolError{} = event, _mode), do: event
-  defp event_for(%Events.Checkpoint{} = event, _mode), do: event
-  defp event_for(%Events.Task{} = event, _mode), do: event
-  defp event_for(%Events.Custom{} = event, _mode), do: event
-  defp event_for(payload, :updates), do: %Events.GraphUpdate{update: payload}
-  defp event_for(payload, :values), do: %Events.GraphValue{value: payload}
-  defp event_for(payload, :messages), do: %Events.Message{message: payload}
-  defp event_for(payload, :custom), do: %Events.Custom{payload: payload}
-  defp event_for(payload, :tasks) when is_map(payload), do: struct(Events.Task, payload)
-
-  defp event_for(payload, :checkpoints) when is_map(payload),
-    do: struct(Events.Checkpoint, payload)
-
-  defp event_for(payload, :tools),
-    do: BeamWeaver.Stream.IntoEvent.into_event(%{type: :tool_event, payload: payload})
-
-  defp envelope_opts(run, %Events.Task{} = event) do
-    run
-    |> base_envelope_opts()
-    |> Keyword.put(:node, event.node)
-    |> Keyword.put(:task_id, event.task_id)
-    |> Keyword.put(:step, event.step || run.step)
-  end
-
-  defp envelope_opts(run, %Events.Checkpoint{} = event),
-    do: Keyword.put(base_envelope_opts(run), :step, event.step || run.step)
-
-  defp envelope_opts(run, _payload), do: base_envelope_opts(run)
-
-  defp base_envelope_opts(run) do
-    [
-      run_id: run.run_id,
-      graph: run.compiled.name,
-      step: run.step,
-      namespace: namespace(run)
-    ]
-  end
 
   defp namespace(run) do
     run.config
@@ -239,13 +180,8 @@ defmodule BeamWeaver.Graph.Execution.Stream do
     |> Namespace.normalize()
   end
 
-  defp ready_names(ready), do: Enum.map(ready, &TaskRequest.name/1)
-
   defp public_state(%{compiled: %{graph: graph}}, state) when is_map(state),
-    do: ChannelState.public_state(graph, state)
+    do: ChannelLookup.public_state(graph, state)
 
   defp public_state(_run, state), do: state
-
-  defp normalize_mode(mode) when is_atom(mode), do: mode
-  defp normalize_mode(mode) when is_binary(mode), do: BWStream.normalize_mode(mode)
 end

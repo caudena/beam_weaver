@@ -3,23 +3,9 @@ defmodule BeamWeaver.Core.ChatHistoryTest do
 
   # Upstream reference:
 
-  alias BeamWeaver.Core.Async
   alias BeamWeaver.Core.ChatHistory
-  alias BeamWeaver.Core.ChatLoader
-  alias BeamWeaver.Core.ChatSession
   alias BeamWeaver.Core.Error
   alias BeamWeaver.Core.Message
-
-  defmodule FixtureChatLoader do
-    @behaviour ChatLoader
-
-    defstruct sessions: []
-
-    @impl true
-    def lazy_load(%__MODULE__{sessions: sessions}) do
-      Stream.map(sessions, & &1)
-    end
-  end
 
   test "ETS chat history appends messages in order and clears a session" do
     store = ChatHistory.ETS.new()
@@ -28,9 +14,9 @@ defmodule BeamWeaver.Core.ChatHistoryTest do
     assert {:ok, []} = ChatHistory.get_messages(session)
 
     assert :ok = ChatHistory.add_messages(session, [Message.user("hello")])
-    assert :ok = ChatHistory.add_messages(session, [Message.assistant("world")])
+    assert :ok = ChatHistory.add_messages(session, [Message.assistant("world"), Message.user("again")])
 
-    assert {:ok, [%Message{content: "hello"}, %Message{content: "world"}]} =
+    assert {:ok, [%Message{content: "hello"}, %Message{content: "world"}, %Message{content: "again"}]} =
              ChatHistory.get_messages(session)
 
     assert :ok = ChatHistory.clear(session)
@@ -70,24 +56,6 @@ defmodule BeamWeaver.Core.ChatHistoryTest do
     assert {:ok, "Human: hello\nAI: hi"} = ChatHistory.buffer_string(session)
   end
 
-  test "async chat history helpers use Task-backed public calls" do
-    store = ChatHistory.ETS.new()
-    session = ChatHistory.ETS.for_session(store, "async")
-
-    assert :ok =
-             ChatHistory.async_add_messages(session, [
-               Message.user("hello"),
-               Message.assistant("world")
-             ])
-             |> Async.await()
-
-    assert {:ok, [%Message{content: "hello"}, %Message{content: "world"}]} =
-             ChatHistory.async_get_messages(session) |> Async.await()
-
-    assert :ok = ChatHistory.async_clear(session) |> Async.await()
-    assert {:ok, []} = ChatHistory.get_messages(session)
-  end
-
   test "memory-backed chat history uses the explicit memory store contract" do
     store = BeamWeaver.Memory.ETS.new()
 
@@ -114,31 +82,5 @@ defmodule BeamWeaver.Core.ChatHistoryTest do
   test "unsupported history sources return tagged errors" do
     assert {:error, %Error{type: :unsupported_chat_history}} =
              ChatHistory.get_messages(%{})
-  end
-
-  test "chat sessions and chat loaders normalize lazy sessions into eager native structs" do
-    assert {:ok, session} =
-             ChatSession.new(
-               messages: [{"human", "hello"}, Message.assistant("hi")],
-               functions: [%{"name" => "lookup"}]
-             )
-
-    assert [%Message{role: :user}, %Message{role: :assistant}] = session.messages
-    assert ChatSession.to_map(session).functions == [%{"name" => "lookup"}]
-
-    loader =
-      %FixtureChatLoader{
-        sessions: [
-          session,
-          %{messages: [{"human", "next"}], functions: []}
-        ]
-      }
-
-    assert {:ok, lazy} = ChatLoader.lazy_load(loader)
-    assert [%ChatSession{}, %ChatSession{}] = Enum.to_list(lazy)
-
-    assert {:ok, [%ChatSession{} = first, %ChatSession{} = second]} = ChatLoader.load(loader)
-    assert Message.text(List.first(first.messages)) == "hello"
-    assert Message.text(List.first(second.messages)) == "next"
   end
 end

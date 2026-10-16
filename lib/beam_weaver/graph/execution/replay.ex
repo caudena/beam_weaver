@@ -4,45 +4,83 @@ defmodule BeamWeaver.Graph.Execution.Replay do
   alias BeamWeaver.Checkpoint
   alias BeamWeaver.Core.Error
   alias BeamWeaver.Graph.Execution
+  alias BeamWeaver.Graph.Execution.ChannelLookup
   alias BeamWeaver.Graph.Execution.CheckpointIO
   alias BeamWeaver.Graph.Execution.DeltaReplay
   alias BeamWeaver.Graph.Execution.Scheduler
   alias BeamWeaver.Graph.Execution.SubgraphRouter
   alias BeamWeaver.Graph.Execution.TaskRequest
 
-  @spec restore_checkpoint_state(map(), map()) :: {:ok, Execution.checkpoint_state()} | {:error, Error.t()}
-  def restore_checkpoint_state(%{checkpointer: nil}, _config), do: {:ok, Execution.checkpoint_state(nil)}
+  # The state also holds what is known of the checkpoint it was read from
+  # (`:known_checkpoint`), so writing the run's first checkpoint after it
+  # doesn't read it again.
+  @spec restore_checkpoint_state(map(), map()) :: {:ok, map()} | {:error, Error.t()}
+  def restore_checkpoint_state(%{checkpointer: nil}, _config), do: {:ok, empty_checkpoint_state()}
 
   def restore_checkpoint_state(%{checkpointer: checkpointer} = compiled, config) do
     config = SubgraphRouter.checkpoint_config(compiled, config)
+    tuple = CheckpointIO.get_tuple(checkpointer, config)
 
-    case CheckpointIO.get_tuple(checkpointer, config) do
-      nil ->
-        {:ok, Execution.checkpoint_state(nil)}
-
-      tuple ->
-        restored = Execution.checkpoint_state(tuple)
-
-        with {:ok, values} <- DeltaReplay.restore_channel_values(compiled, tuple, restored.values) do
-          {:ok, %{restored | values: values}}
-        end
+    with {:ok, restored} <- restore_found_tuple(compiled, tuple) do
+      {:ok, Map.put(restored, :known_checkpoint, CheckpointIO.known_checkpoint(config, tuple))}
     end
   end
+
+  defp restore_found_tuple(_compiled, nil), do: {:ok, empty_checkpoint_state()}
+  defp restore_found_tuple(compiled, tuple), do: restore_tuple(compiled, tuple)
+
+  # A checkpoint's state as a run keeps it: every channel saved with the
+  # thread, the graph's own bookkeeping included, under the graph's keys.
+  @spec restore_tuple(map(), map()) :: {:ok, map()} | {:error, Error.t()}
+  def restore_tuple(compiled, tuple) do
+    restored = Execution.checkpoint_state(tuple)
+    values = ChannelLookup.graph_keys(compiled.graph, restored.values)
+
+    with {:ok, values} <- DeltaReplay.restore_channel_values(compiled, tuple, values) do
+      {:ok, Map.merge(restored, %{values: values, checkpoint?: true})}
+    end
+  end
+
+  @spec empty_checkpoint_state() :: map()
+  def empty_checkpoint_state, do: Map.put(Execution.checkpoint_state(nil), :checkpoint?, false)
 
   @spec replay_pending?(map()) :: boolean()
   def replay_pending?(%{pending_writes: pending_writes, next: next}) do
     pending_writes != [] and (next != [] or pending_error_writes?(pending_writes))
   end
 
+  # Continues the checkpoint that the config names, as when replaying an
+  # earlier step: the input is empty and the config has a `checkpoint_id`.
   @spec continue_from_checkpoint?(map(), map(), map()) :: boolean()
-  def continue_from_checkpoint?(config, input, _restored) when input == %{} do
+  def continue_from_checkpoint?(config, input, _restored) when input == %{},
+    do: checkpoint_id?(config)
+
+  def continue_from_checkpoint?(_config, _input, _restored), do: false
+
+  # Continues the thread's latest checkpoint instead of starting from the
+  # entry points:
+  #
+  #   * on a resume with no new input, even when nothing is left to run (the
+  #     run then returns the state);
+  #   * when the checkpoint has steps that its last run didn't finish, because
+  #     a crash or a breakpoint stopped it, and the run brings no new input or
+  #     is a subgraph that its parent resumes (it gets the parent's state as
+  #     input).
+  @spec continue_latest_checkpoint?(map(), map(), boolean(), map()) :: boolean()
+  def continue_latest_checkpoint?(config, input, resume_requested?, restored) do
+    no_input? = input == %{}
+
+    Map.get(restored, :checkpoint?, false) and not checkpoint_id?(config) and
+      ((no_input? and resume_requested?) or
+         (restored.next != [] and (no_input? or resume_requested?)))
+  end
+
+  defp checkpoint_id?(config) do
     config
     |> Checkpoint.configurable()
     |> Map.get("checkpoint_id")
     |> is_binary()
   end
-
-  def continue_from_checkpoint?(_config, _input, _restored), do: false
 
   @spec initial_ready(map(), map(), map(), boolean()) :: [TaskRequest.t()]
   def initial_ready(
@@ -64,7 +102,7 @@ defmodule BeamWeaver.Graph.Execution.Replay do
 
     completed_task_ids =
       restored.pending_writes
-      |> Execution.pending_task_ids()
+      |> Execution.finished_task_ids()
       |> MapSet.new()
       |> MapSet.union(handled_error_task_ids)
 
@@ -90,16 +128,29 @@ defmodule BeamWeaver.Graph.Execution.Replay do
         |> Enum.any?(&MapSet.member?(completed_task_ids, &1))
       end)
 
-    error_ready
-    |> Kernel.++(replay_ready)
-    |> Enum.uniq_by(fn request ->
-      {TaskRequest.kind(request), TaskRequest.name(request), TaskRequest.error(request)}
-    end)
+    # Every unfinished `Send` runs again, not one per node.
+    Enum.uniq_by(error_ready ++ replay_ready, &TaskRequest.key/1)
   end
 
   @spec initial_step(map(), boolean()) :: non_neg_integer()
   def initial_step(_restored, false), do: 0
   def initial_step(restored, true), do: restored.step + 1
+
+  # The ids that the ready tasks get when a step runs at `step` with
+  # `trigger_versions`, computed the way the task planner computes them.
+  @spec task_ids(map(), map(), integer(), map(), [term()]) :: [String.t()]
+  def task_ids(compiled, config, step, trigger_versions, ready) do
+    Enum.map(ready, fn entry ->
+      Execution.task_id(
+        compiled.name,
+        config,
+        step,
+        TaskRequest.name(entry),
+        TaskRequest.raw_path(entry),
+        trigger_versions
+      )
+    end)
+  end
 
   @spec task_trigger_versions(map(), map(), boolean()) :: map()
   def task_trigger_versions(restored, _input_channel_versions, true),
@@ -249,7 +300,12 @@ defmodule BeamWeaver.Graph.Execution.Replay do
   defp replay_error(error), do: error
 
   defp parent_interrupt_record(%{id: _id} = interrupt, task_id),
-    do: %{interrupt | task_id: task_id}
+    do: Map.put(interrupt, :task_id, task_id)
+
+  # A subgraph that stopped at a breakpoint pauses its parent task with a
+  # record that has no interrupt id.
+  defp parent_interrupt_record(%{} = interrupt, task_id),
+    do: interrupt |> Map.put_new(:id, nil) |> Map.put(:task_id, task_id)
 
   defp parent_interrupt_record(interrupt, _task_id), do: interrupt
 end

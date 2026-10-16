@@ -20,31 +20,31 @@ defmodule BeamWeaver.Tracing.MiddlewareTraceTest do
   alias BeamWeaver.Tracing.Store
 
   defmodule ToolWrapper do
-    @behaviour BeamWeaver.Agent.Middleware
+    use BeamWeaver.Agent.Middleware
 
     def name(_middleware), do: :tool_wrapper
 
-    def wrap_tool_call(request, handler) do
+    def wrap_tool_call(_middleware, request, handler) do
       handler.(request)
     end
   end
 
   defmodule ModelWrapper do
-    @behaviour BeamWeaver.Agent.Middleware
+    use BeamWeaver.Agent.Middleware
 
     def name(_middleware), do: :model_wrapper
 
-    def wrap_model_call(request, handler) do
+    def wrap_model_call(_middleware, request, handler) do
       handler.(request)
     end
   end
 
   setup do
-    Tracing.reset()
+    Tracing.clear()
     Context.clear()
 
     on_exit(fn ->
-      Tracing.reset()
+      Tracing.clear()
       Context.clear()
     end)
 
@@ -123,8 +123,8 @@ defmodule BeamWeaver.Tracing.MiddlewareTraceTest do
 
     assert {:ok, _finished_parent} = Tracing.finish_run(parent)
 
-    todo = run_by_name!("TodoListMiddleware.wrap_model_call")
-    filesystem = run_by_name!("FilesystemMiddleware.wrap_model_call")
+    todo = run_by_name!("TodoList.wrap_model_call")
+    filesystem = run_by_name!("Filesystem.wrap_model_call")
     model = run_by_kind_child!(:model, filesystem.id)
 
     assert todo.parent_id == parent.id
@@ -156,7 +156,7 @@ defmodule BeamWeaver.Tracing.MiddlewareTraceTest do
 
     assert {:ok, _finished_parent} = Tracing.finish_run(parent)
 
-    wrapper = run_by_name!("ModelWrapperMiddleware.wrap_model_call")
+    wrapper = run_by_name!("ModelWrapper.wrap_model_call")
 
     assert wrapper.parent_id == parent.id
     assert wrapper.status == :error
@@ -185,7 +185,7 @@ defmodule BeamWeaver.Tracing.MiddlewareTraceTest do
 
     assert {:ok, _finished_parent} = Tracing.finish_run(parent)
 
-    hook = run_by_name!("TodoListMiddleware.after_model")
+    hook = run_by_name!("TodoList.after_model")
 
     assert hook.parent_id == parent.id
     assert hook.inputs.messages_count == 1
@@ -223,8 +223,8 @@ defmodule BeamWeaver.Tracing.MiddlewareTraceTest do
 
     assert {:ok, _finished_parent} = Tracing.finish_run(parent)
 
-    scoped = run_by_name!("ToolCallLimitMiddleware[tool_call_limit:search].after_model")
-    global = run_by_name!("ToolCallLimitMiddleware[tool_call_limit].after_model")
+    scoped = run_by_name!("ToolCallLimit[tool_call_limit:search].after_model")
+    global = run_by_name!("ToolCallLimit[tool_call_limit].after_model")
 
     assert scoped.parent_id == parent.id
     assert global.parent_id == parent.id
@@ -266,7 +266,7 @@ defmodule BeamWeaver.Tracing.MiddlewareTraceTest do
 
     assert {:ok, _finished_parent} = Tracing.finish_run(parent)
 
-    wrapper = run_by_name!("ToolWrapperMiddleware.wrap_tool_call")
+    wrapper = run_by_name!("ToolWrapper.wrap_tool_call")
     tool_run = run_by_name!("trace_echo")
 
     assert wrapper.parent_id == parent.id

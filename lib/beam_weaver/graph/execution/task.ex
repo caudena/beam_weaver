@@ -1,7 +1,5 @@
 defmodule BeamWeaver.Graph.Execution.Task do
-  @moduledoc """
-  Prepared graph execution task metadata before it is started in a BEAM task.
-  """
+  @moduledoc false
 
   defstruct [
     :id,

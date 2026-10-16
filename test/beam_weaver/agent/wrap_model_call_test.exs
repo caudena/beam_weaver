@@ -72,11 +72,11 @@ defmodule BeamWeaver.Agent.WrapModelCallTest do
   end
 
   defmodule LoggingMiddleware do
-    @behaviour BeamWeaver.Agent.Middleware
+    use BeamWeaver.Agent.Middleware
 
     def name(_middleware), do: :logging
 
-    def wrap_model_call(request, handler) do
+    def wrap_model_call(_middleware, request, handler) do
       send(request.runtime.context.parent, :outer_before)
       response = handler.(request)
       send(request.runtime.context.parent, :outer_after)
@@ -85,11 +85,11 @@ defmodule BeamWeaver.Agent.WrapModelCallTest do
   end
 
   defmodule InnerLoggingMiddleware do
-    @behaviour BeamWeaver.Agent.Middleware
+    use BeamWeaver.Agent.Middleware
 
     def name(_middleware), do: :inner_logging
 
-    def wrap_model_call(request, handler) do
+    def wrap_model_call(_middleware, request, handler) do
       send(request.runtime.context.parent, :inner_before)
       response = handler.(request)
       send(request.runtime.context.parent, :inner_after)
@@ -98,11 +98,11 @@ defmodule BeamWeaver.Agent.WrapModelCallTest do
   end
 
   defmodule UppercaseMiddleware do
-    @behaviour BeamWeaver.Agent.Middleware
+    use BeamWeaver.Agent.Middleware
 
     def name(_middleware), do: :uppercase
 
-    def wrap_model_call(request, handler) do
+    def wrap_model_call(_middleware, request, handler) do
       with {:ok, %ModelResponse{messages: [%Message{} = message]}} <- handler.(request) do
         Message.assistant(String.upcase(message.content))
       end
@@ -110,11 +110,11 @@ defmodule BeamWeaver.Agent.WrapModelCallTest do
   end
 
   defmodule SystemPromptMiddleware do
-    @behaviour BeamWeaver.Agent.Middleware
+    use BeamWeaver.Agent.Middleware
 
     def name(_middleware), do: :system_prompt
 
-    def wrap_model_call(request, handler) do
+    def wrap_model_call(_middleware, request, handler) do
       request
       |> ModelRequest.override(system_message: Message.system("native system prompt"))
       |> handler.()
@@ -122,11 +122,11 @@ defmodule BeamWeaver.Agent.WrapModelCallTest do
   end
 
   defmodule RecoverNetworkMiddleware do
-    @behaviour BeamWeaver.Agent.Middleware
+    use BeamWeaver.Agent.Middleware
 
     def name(_middleware), do: :recover_network
 
-    def wrap_model_call(request, handler) do
+    def wrap_model_call(_middleware, request, handler) do
       case handler.(request) do
         {:error, %Error{type: :network_error}} ->
           Message.assistant("Network issue, try again later")
@@ -138,11 +138,11 @@ defmodule BeamWeaver.Agent.WrapModelCallTest do
   end
 
   defmodule InnerCommandMiddleware do
-    @behaviour BeamWeaver.Agent.Middleware
+    use BeamWeaver.Agent.Middleware
 
     def name(_middleware), do: :inner_command
 
-    def wrap_model_call(request, handler) do
+    def wrap_model_call(_middleware, request, handler) do
       with {:ok, %ModelResponse{} = response} <- handler.(request) do
         [message | _] = response.messages
 
@@ -160,11 +160,11 @@ defmodule BeamWeaver.Agent.WrapModelCallTest do
   end
 
   defmodule OuterCommandMiddleware do
-    @behaviour BeamWeaver.Agent.Middleware
+    use BeamWeaver.Agent.Middleware
 
     def name(_middleware), do: :outer_command
 
-    def wrap_model_call(request, handler) do
+    def wrap_model_call(_middleware, request, handler) do
       with {:ok, %ModelResponse{} = response} <- handler.(request) do
         %ExtendedModelResponse{
           model_response: response,
@@ -180,22 +180,22 @@ defmodule BeamWeaver.Agent.WrapModelCallTest do
   end
 
   defmodule RetryOuterMiddleware do
-    @behaviour BeamWeaver.Agent.Middleware
+    use BeamWeaver.Agent.Middleware
 
     def name(_middleware), do: :retry_outer
 
-    def wrap_model_call(request, handler) do
+    def wrap_model_call(_middleware, request, handler) do
       _discarded = handler.(request)
       handler.(request)
     end
   end
 
   defmodule StructuredConflictMiddleware do
-    @behaviour BeamWeaver.Agent.Middleware
+    use BeamWeaver.Agent.Middleware
 
     def name(_middleware), do: :structured_conflict
 
-    def wrap_model_call(request, handler) do
+    def wrap_model_call(_middleware, request, handler) do
       with {:ok, %ModelResponse{} = response} <- handler.(request) do
         %ExtendedModelResponse{
           model_response: %{response | structured_response: %{from: "model"}},
@@ -206,11 +206,11 @@ defmodule BeamWeaver.Agent.WrapModelCallTest do
   end
 
   defmodule MessageOverwriteMiddleware do
-    @behaviour BeamWeaver.Agent.Middleware
+    use BeamWeaver.Agent.Middleware
 
     def name(_middleware), do: :message_overwrite
 
-    def wrap_model_call(request, handler) do
+    def wrap_model_call(_middleware, request, handler) do
       with {:ok, %ModelResponse{} = response} <- handler.(request) do
         %ExtendedModelResponse{
           model_response: response,

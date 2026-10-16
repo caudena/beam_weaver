@@ -2,9 +2,9 @@ defmodule BeamWeaver.Diagnostics do
   @moduledoc """
   Runtime diagnostics.
 
-  This is the Elixir-native counterpart to LangChain's runtime environment and
-  sys-info helpers. It returns plain data for callers and only prints when
-  explicitly asked.
+  Reports the BeamWeaver, Elixir and OTP versions and basic VM details, for
+  example to include in a bug report. It returns plain data for callers and
+  only prints when explicitly asked.
   """
 
   @doc """

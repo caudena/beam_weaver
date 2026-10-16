@@ -258,7 +258,8 @@ defmodule BeamWeaver.Skill do
   defp starts_with_whitespace?(_line), do: false
 
   defp decode_frontmatter(yaml) do
-    documents = :yamerl_constr.string(String.to_charlist(yaml), keep_duplicate_keys: true)
+    documents =
+      :yamerl_constr.string(String.to_charlist(yaml), keep_duplicate_keys: true, str_node_as_binary: true)
 
     case documents do
       [document] ->
@@ -431,18 +432,13 @@ defmodule BeamWeaver.Skill do
     {:error, Error.new(:invalid_skill, message, details)}
   end
 
+  # Strings come back as binaries, so a list is a mapping (key-value pairs,
+  # kept as a list to find duplicate keys) or a sequence, and "" stays "".
   defp normalize_yaml(value) when is_list(value) do
-    cond do
-      yaml_mapping?(value) ->
-        Map.new(value, fn {key, map_value} ->
-          {normalize_yaml_key(key), normalize_yaml(map_value)}
-        end)
-
-      charlist?(value) ->
-        List.to_string(value)
-
-      true ->
-        Enum.map(value, &normalize_yaml/1)
+    if yaml_mapping?(value) do
+      Map.new(value, fn {key, map_value} -> {normalize_yaml_key(key), normalize_yaml(map_value)} end)
+    else
+      Enum.map(value, &normalize_yaml/1)
     end
   end
 
@@ -455,14 +451,9 @@ defmodule BeamWeaver.Skill do
   defp normalize_yaml(value) when is_atom(value), do: to_string(value)
   defp normalize_yaml(value), do: value
 
-  defp yaml_mapping?(value), do: Enum.all?(value, &match?({_key, _value}, &1))
-  defp charlist?(value), do: Enum.all?(value, &is_integer/1)
+  defp yaml_mapping?(value), do: value != [] and Enum.all?(value, &match?({_key, _value}, &1))
 
   defp normalize_yaml_key(value) when is_binary(value), do: value
-
-  defp normalize_yaml_key(value) when is_list(value) do
-    if charlist?(value), do: List.to_string(value), else: value
-  end
 
   defp normalize_yaml_key(value), do: value
 

@@ -236,6 +236,29 @@ defmodule BeamWeaver.Agent.TodoListMiddlewareTest do
     assert Enum.map(messages, & &1.tool_call_id) == ["call-1", "call-2"]
   end
 
+  test "a renamed todo tool keeps its name in the prompt and the errors" do
+    middleware = TodoList.new(tool_name: "plan")
+
+    assert middleware.system_prompt =~ "## `plan`"
+    assert middleware.system_prompt =~ "The `plan` tool should never be called multiple times"
+    refute middleware.system_prompt =~ "write_todos"
+
+    calls = [
+      %{id: "call-1", name: "plan", args: %{"todos" => []}},
+      %{id: "call-2", name: "plan", args: %{"todos" => []}}
+    ]
+
+    assert %{messages: [first, _second]} =
+             TodoList.after_model(middleware, %{messages: [Message.assistant("", tool_calls: calls)]}, nil)
+
+    assert first.content =~ "The `plan` tool should never be called multiple times in parallel."
+    refute first.content =~ "write_todos"
+
+    [tool] = TodoList.tools(middleware)
+    assert {:error, error} = BeamWeaver.Tools.Todo.invoke(tool, %{state: %{}, tool_call_id: "call-3"}, [])
+    assert error.message == "plan input must include a todos array"
+  end
+
   defp model(table, tool_calls) do
     %SequentialTodoModel{table: table, parent: self(), tool_calls: tool_calls}
   end

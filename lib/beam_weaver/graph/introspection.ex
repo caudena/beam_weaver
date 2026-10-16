@@ -162,7 +162,7 @@ defmodule BeamWeaver.Graph.Introspection do
       [] ->
         graph.channels
         |> Map.keys()
-        |> Enum.reject(&(Map.get(graph.channel_visibility, &1, :public) == :private or internal_channel?(&1)))
+        |> Enum.reject(&hidden_channel?(graph, &1))
         |> Enum.map(&to_string/1)
         |> Enum.sort()
 
@@ -175,7 +175,7 @@ defmodule BeamWeaver.Graph.Introspection do
     public =
       graph.channels
       |> Map.keys()
-      |> Enum.reject(&(Map.get(graph.channel_visibility, &1, :public) == :private or internal_channel?(&1)))
+      |> Enum.reject(&hidden_channel?(graph, &1))
       |> Enum.map(&to_string/1)
 
     graph.output_schema
@@ -189,9 +189,14 @@ defmodule BeamWeaver.Graph.Introspection do
   defp hidden_channels(graph) do
     graph.channels
     |> Map.keys()
-    |> Enum.filter(&(Map.get(graph.channel_visibility, &1, :public) == :private or internal_channel?(&1)))
+    |> Enum.filter(&hidden_channel?(graph, &1))
     |> Enum.map(&to_string/1)
     |> Enum.sort()
+  end
+
+  defp hidden_channel?(graph, key) do
+    Map.get(graph.channel_visibility, key, :public) in [:private, :private_checkpointed] or
+      internal_channel?(key)
   end
 
   defp managed_metadata(graph) do
@@ -213,7 +218,10 @@ defmodule BeamWeaver.Graph.Introspection do
 
   defp schema_keys(_schema), do: []
 
-  defp internal_channel?(key), do: to_string(key) in ["__node_outputs__", "__edge_runs__"]
+  defp internal_channel?(key) do
+    key = to_string(key)
+    key in ["__node_outputs__", "__edge_runs__"] or String.starts_with?(key, "__barrier__:")
+  end
 end
 
 defmodule BeamWeaver.Graph.Renderer do

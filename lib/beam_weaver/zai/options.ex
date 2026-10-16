@@ -1,26 +1,38 @@
 defmodule BeamWeaver.ZAI.Options do
   @moduledoc false
 
+  import BeamWeaver.Provider.Options,
+    only: [
+      extra_body: 2,
+      merge_extra_body: 3,
+      normalize_option_map: 1,
+      normalize_value: 1,
+      option: 3,
+      put_optional: 3
+    ]
+
   alias BeamWeaver.Models.ParamPolicy
-  alias BeamWeaver.OpenAI.MessageParts
+  alias BeamWeaver.Models.ProfileRegistry
   alias BeamWeaver.Provider.JsonObjectFormat
-  alias BeamWeaver.ZAI.Error
+  alias BeamWeaver.Core.Error
   alias BeamWeaver.ZAI.Messages
 
-  @model "glm-5.2"
-  @reasoning_efforts ["max", "xhigh", "high", "medium", "low", "minimal", "none"]
+  @default_model "glm-5.2"
+
+  # `extra_body` can't replace these: the client sets them for the call.
+  @reserved_body_fields ["model", "messages", "stream"]
 
   @spec to_body(term(), [BeamWeaver.Core.Message.t()], keyword()) ::
           {:ok, map()} | {:error, Error.t()}
   def to_body(model, messages, opts \\ []) do
     with :ok <- validate_profile_params(model, opts),
-         {:ok, zai_messages} <- Messages.to_chat_messages(messages),
+         {:ok, zai_messages} <- Messages.to_chat_messages(messages, message_profile(model, opts)),
          {:ok, response_format, schema_instruction} <- response_format(model, opts),
          zai_messages <- JsonObjectFormat.inject_instruction(zai_messages, schema_instruction),
          {:ok, body} <- build_body(model, zai_messages, response_format, opts),
-         :ok <- validate_model(body),
-         :ok <- validate_thinking(body),
-         :ok <- validate_reasoning_effort(body),
+         {:ok, profile} <- resolve_profile(body),
+         :ok <- validate_thinking(body, profile),
+         :ok <- validate_reasoning_effort(body, profile),
          :ok <- validate_tool_stream(body),
          :ok <- validate_tool_choice(body),
          :ok <- validate_stop(body["stop"]) do
@@ -30,21 +42,20 @@ defmodule BeamWeaver.ZAI.Options do
 
   defp build_body(model, messages, response_format, opts) do
     model_name = option(model, opts, :model)
-    model_kwargs = option(model, opts, :model_kwargs) || %{}
+    extra_body = extra_body(model, opts)
 
     body =
       %{
         "model" => model_name,
         "messages" => messages
       }
-      |> merge_model_kwargs(model_kwargs)
       |> put_optional("do_sample", option(model, opts, :do_sample))
       |> put_optional("temperature", option(model, opts, :temperature))
       |> put_optional("top_p", option(model, opts, :top_p))
       |> put_optional("max_tokens", max_tokens(model, opts))
-      |> put_optional("stop", Keyword.get(opts, :stop))
+      |> put_optional("stop", option(model, opts, :stop))
       |> put_optional("stream", Keyword.get(opts, :stream, false))
-      |> put_optional("stream_options", normalize_map(Keyword.get(opts, :stream_options)))
+      |> put_optional("stream_options", normalize_option_map(Keyword.get(opts, :stream_options)))
       |> put_optional("tool_stream", option(model, opts, :tool_stream))
       |> put_optional("thinking", normalize_value(option(model, opts, :thinking)))
       |> put_optional("reasoning_effort", normalize_value(option(model, opts, :reasoning_effort)))
@@ -52,14 +63,15 @@ defmodule BeamWeaver.ZAI.Options do
       |> put_optional("tool_choice", normalize_value(option(model, opts, :tool_choice)))
       |> put_optional("request_id", option(model, opts, :request_id))
       |> put_optional("user_id", option(model, opts, :user_id))
+      |> merge_extra_body(extra_body, reserved: @reserved_body_fields)
 
-    case rejected_model_kwargs(model_kwargs) do
+    case rejected_extra_body_keys(extra_body) do
       [] ->
         {:ok, body}
 
       keys ->
         {:error,
-         Error.new(:unsupported_model_param, "Z.ai GLM-5.2 does not support deprecated OpenAI params", %{
+         Error.new(:unsupported_model_param, "Z.ai does not support deprecated OpenAI params", %{
            provider: :zai,
            model: model_name,
            params: keys
@@ -71,8 +83,7 @@ defmodule BeamWeaver.ZAI.Options do
     format = option(model, opts, :response_format) || option(model, opts, :structured_output)
 
     JsonObjectFormat.normalize(format,
-      error_module: Error,
-      error_message: "Z.ai GLM-5.2 supports JSON object response_format only"
+      error_message: "Z.ai supports JSON object response_format only"
     )
   end
 
@@ -85,7 +96,6 @@ defmodule BeamWeaver.ZAI.Options do
         :max_completion_tokens,
         :max_output_tokens,
         :max_tokens,
-        :model_kwargs,
         :reasoning_effort,
         :request_id,
         :response_format,
@@ -99,88 +109,101 @@ defmodule BeamWeaver.ZAI.Options do
         :top_p,
         :user_id
       ])
-      |> Map.merge(Map.new(Keyword.drop(opts, [:metadata])))
+      |> Map.merge(Map.new(opts))
 
     ParamPolicy.validate(
       Map.get(model, :profile),
       params,
       Keyword.get(opts, :param_policy, Map.get(model, :param_policy)),
-      api: :chat_completions,
-      metadata: Keyword.get(opts, :metadata, %{})
+      api: :chat_completions
     )
   end
 
-  defp validate_model(%{"model" => model}) do
-    case BeamWeaver.Models.ProfileRegistry.ZAI.resolve(model) do
-      {:ok, _profile} ->
-        :ok
+  # The profile that decides which media the messages may carry: the model's
+  # own, or the registry's for a call that names another model.
+  defp message_profile(model, opts) do
+    case option(model, opts, :model) do
+      name when name == model.model ->
+        model.profile
+
+      name ->
+        case ProfileRegistry.ZAI.resolve(name) do
+          {:ok, profile} -> profile
+          {:error, _error} -> nil
+        end
+    end
+  end
+
+  defp resolve_profile(%{"model" => model}) do
+    case ProfileRegistry.ZAI.resolve(model) do
+      {:ok, profile} ->
+        {:ok, profile}
 
       _ ->
         {:error,
          Error.new(:unsupported_model, "Z.ai model is not supported", %{
            provider: :zai,
            model: model,
-           expected: "zai:#{@model}"
+           expected: "zai:#{@default_model}"
          })}
     end
   end
 
-  defp validate_thinking(%{"thinking" => %{"type" => type}} = body)
-       when type in ["enabled", "disabled"] do
-    if type == "disabled" and body["reasoning_effort"] in [nil, "none"] do
-      :ok
-    else
-      :ok
+  defp validate_thinking(%{"thinking" => thinking} = body, profile) do
+    supported = profile_values(profile, :thinking_modes)
+
+    case thinking do
+      %{"type" => type} ->
+        if supported == [] or type in supported,
+          do: :ok,
+          else: thinking_error(body, "Z.ai #{body["model"]} received unsupported thinking mode", supported)
+
+      _missing_type ->
+        thinking_error(body, "Z.ai thinking option must include a type", supported)
     end
   end
 
-  defp validate_thinking(%{"thinking" => %{"type" => type}}) do
+  defp validate_thinking(_body, _profile), do: :ok
+
+  defp thinking_error(body, message, supported) do
     {:error,
-     Error.new(:unsupported_model_param, "Z.ai GLM-5.2 received unsupported thinking mode", %{
+     Error.new(:unsupported_model_param, message, %{
        provider: :zai,
-       model: @model,
+       model: body["model"],
        param: :thinking,
-       value: %{"type" => type},
-       supported: [%{"type" => "enabled"}, %{"type" => "disabled"}]
+       value: body["thinking"],
+       supported: Enum.map(supported, &%{"type" => &1})
      })}
   end
 
-  defp validate_thinking(%{"thinking" => value}) do
-    {:error,
-     Error.new(:unsupported_model_param, "Z.ai GLM-5.2 thinking option must include a type", %{
-       provider: :zai,
-       model: @model,
-       param: :thinking,
-       value: value,
-       supported: [%{"type" => "enabled"}, %{"type" => "disabled"}]
-     })}
+  defp validate_reasoning_effort(%{"reasoning_effort" => effort} = body, profile) do
+    supported = profile_values(profile, :reasoning_efforts)
+
+    if supported == [] or effort in supported do
+      :ok
+    else
+      {:error,
+       Error.new(:unsupported_model_param, "Z.ai #{body["model"]} received unsupported reasoning_effort", %{
+         provider: :zai,
+         model: body["model"],
+         param: :reasoning_effort,
+         value: effort,
+         supported: supported
+       })}
+    end
   end
 
-  defp validate_thinking(_body), do: :ok
+  defp validate_reasoning_effort(_body, _profile), do: :ok
 
-  defp validate_reasoning_effort(%{"reasoning_effort" => effort}) when effort in @reasoning_efforts,
-    do: :ok
-
-  defp validate_reasoning_effort(%{"reasoning_effort" => effort}) do
-    {:error,
-     Error.new(:unsupported_model_param, "Z.ai GLM-5.2 received unsupported reasoning_effort", %{
-       provider: :zai,
-       model: @model,
-       param: :reasoning_effort,
-       value: effort,
-       supported: @reasoning_efforts
-     })}
-  end
-
-  defp validate_reasoning_effort(_body), do: :ok
+  defp profile_values(profile, key), do: profile.extra |> Map.get(key, []) |> Enum.map(&to_string/1)
 
   defp validate_tool_stream(%{"tool_stream" => true, "stream" => true}), do: :ok
 
-  defp validate_tool_stream(%{"tool_stream" => true}) do
+  defp validate_tool_stream(%{"tool_stream" => true} = body) do
     {:error,
      Error.new(:unsupported_model_param, "Z.ai tool_stream requires stream: true", %{
        provider: :zai,
-       model: @model,
+       model: body["model"],
        param: :tool_stream,
        required: %{stream: true}
      })}
@@ -191,11 +214,11 @@ defmodule BeamWeaver.ZAI.Options do
   defp validate_tool_choice(%{"tool_choice" => nil}), do: :ok
   defp validate_tool_choice(%{"tool_choice" => "auto"}), do: :ok
 
-  defp validate_tool_choice(%{"tool_choice" => value}) do
+  defp validate_tool_choice(%{"tool_choice" => value} = body) do
     {:error,
-     Error.new(:unsupported_model_param, "Z.ai GLM-5.2 currently supports only automatic tool choice", %{
+     Error.new(:unsupported_model_param, "Z.ai currently supports only automatic tool choice", %{
        provider: :zai,
-       model: @model,
+       model: body["model"],
        param: :tool_choice,
        value: value,
        supported: ["auto"]
@@ -231,25 +254,9 @@ defmodule BeamWeaver.ZAI.Options do
       option(model, opts, :max_completion_tokens)
   end
 
-  defp option(model, opts, key), do: Keyword.get(opts, key, Map.get(model, key))
-
-  defp normalize_map(nil), do: nil
-  defp normalize_map(value) when is_map(value), do: MessageParts.stringify_keys(value)
-
-  defp normalize_value(nil), do: nil
-  defp normalize_value(value) when is_map(value), do: MessageParts.stringify_keys(value)
-  defp normalize_value(value) when is_list(value), do: Enum.map(value, &normalize_value/1)
-  defp normalize_value(value) when is_atom(value), do: Atom.to_string(value)
-  defp normalize_value(value), do: value
-
-  defp merge_model_kwargs(body, model_kwargs) when map_size(model_kwargs) == 0, do: body
-
-  defp merge_model_kwargs(body, model_kwargs) when is_map(model_kwargs),
-    do: Map.merge(body, MessageParts.stringify_keys(model_kwargs))
-
-  defp rejected_model_kwargs(model_kwargs) when is_map(model_kwargs) do
-    model_kwargs
-    |> MessageParts.stringify_keys()
+  # Deprecated OpenAI params these APIs reject even through `extra_body`.
+  defp rejected_extra_body_keys(extra_body) do
+    extra_body
     |> Map.keys()
     |> Enum.filter(&(&1 in ["functions", "function_call", "max_completion_tokens"]))
     |> Enum.map(fn
@@ -258,8 +265,4 @@ defmodule BeamWeaver.ZAI.Options do
       "max_completion_tokens" -> :max_completion_tokens
     end)
   end
-
-  defp put_optional(body, _key, nil), do: body
-  defp put_optional(body, _key, []), do: body
-  defp put_optional(body, key, value), do: Map.put(body, key, value)
 end

@@ -1,8 +1,9 @@
 defmodule BeamWeaver.OpenAI.ChatCompletions.Options.Validation do
   @moduledoc false
 
+  alias BeamWeaver.Provider.Options
   alias BeamWeaver.Models.ParamPolicy
-  alias BeamWeaver.OpenAI.Error
+  alias BeamWeaver.Core.Error
   alias BeamWeaver.OpenAI.ModelPolicy
 
   def validate(model, opts) do
@@ -11,6 +12,7 @@ defmodule BeamWeaver.OpenAI.ChatCompletions.Options.Validation do
       |> Map.from_struct()
       |> Map.take([
         :audio,
+        :extra_body,
         :frequency_penalty,
         :function_call,
         :functions,
@@ -21,7 +23,6 @@ defmodule BeamWeaver.OpenAI.ChatCompletions.Options.Validation do
         :metadata,
         :modalities,
         :moderation,
-        :model_kwargs,
         :parallel_tool_calls,
         :presence_penalty,
         :prompt_cache_key,
@@ -47,12 +48,15 @@ defmodule BeamWeaver.OpenAI.ChatCompletions.Options.Validation do
              Map.get(model, :profile),
              params,
              Keyword.get(opts, :param_policy, Map.get(model, :param_policy)),
-             api: :chat_completions,
-             metadata: Keyword.get(opts, :metadata, %{})
+             api: :chat_completions
            ),
          :ok <- validate_gpt6_reasoning_effort(model, opts),
-         :ok <- validate_gpt6_sampling(model, opts) do
-      :ok
+         :ok <-
+           ModelPolicy.validate_reasoning_effort(
+             Map.get(model, :profile),
+             Keyword.get(opts, :reasoning_effort, Map.get(model, :reasoning_effort))
+           ) do
+      validate_gpt6_sampling(model, opts)
     end
   end
 
@@ -141,19 +145,11 @@ defmodule BeamWeaver.OpenAI.ChatCompletions.Options.Validation do
   end
 
   defp function_tools?(model, opts) do
-    model_kwargs = Keyword.get(opts, :model_kwargs, Map.get(model, :model_kwargs, %{})) || %{}
+    extra_body = Options.extra_body(model, opts)
 
-    non_empty_list?(Keyword.get(opts, :tools) || map_option(model_kwargs, :tools)) or
-      non_empty_list?(
-        Keyword.get(opts, :functions, Map.get(model, :functions)) ||
-          map_option(model_kwargs, :functions)
-      )
+    non_empty_list?(Keyword.get(opts, :tools) || extra_body["tools"]) or
+      non_empty_list?(Keyword.get(opts, :functions, Map.get(model, :functions)) || extra_body["functions"])
   end
-
-  defp map_option(map, key) when is_map(map),
-    do: Map.get(map, key) || Map.get(map, Atom.to_string(key))
-
-  defp map_option(_map, _key), do: nil
 
   defp non_empty_list?([_first | _rest]), do: true
   defp non_empty_list?(_value), do: false

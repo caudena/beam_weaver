@@ -7,7 +7,7 @@ defmodule BeamWeaver.Agent.Middleware.AsyncSubagents do
   tools.
   """
 
-  @behaviour BeamWeaver.Agent.Middleware
+  use BeamWeaver.Agent.Middleware
 
   alias BeamWeaver.Agent.ModelRequest
   alias BeamWeaver.Agent.Protocol.Client
@@ -48,9 +48,16 @@ defmodule BeamWeaver.Agent.Middleware.AsyncSubagents do
   @impl true
   def name(_middleware), do: :deepagents_async_subagents
 
+  # Each task tool writes only the tasks it changed, and the writes merge, so
+  # parallel calls on different tasks keep every change.
   @impl true
   def state_schema(_middleware) do
-    %{async_tasks: Graph.channel(BeamWeaver.Graph.Channels.LastValue)}
+    %{
+      async_tasks:
+        Graph.channel({BeamWeaver.Graph.Channels.BinaryOperatorAggregate, &Map.merge/2},
+          initial: %{}
+        )
+    }
   end
 
   @impl true
@@ -85,6 +92,7 @@ defmodule BeamWeaver.Agent.Middleware.AsyncSubagents do
     ]
   end
 
+  @impl true
   def wrap_model_call(%__MODULE__{system_prompt: nil}, %ModelRequest{} = request, handler),
     do: handler.(request)
 
@@ -160,7 +168,6 @@ defmodule BeamWeaver.Agent.Middleware.AsyncSubagents do
             remote_id(remote) ||
               "async-" <> Base.encode16(:crypto.strong_rand_bytes(8), case: :lower)
 
-          tasks = tasks(input)
           now = timestamp()
 
           task =
@@ -183,7 +190,7 @@ defmodule BeamWeaver.Agent.Middleware.AsyncSubagents do
               updates: []
             })
 
-          task_command(input, "start_async_task", Map.put(tasks, task_id, task), task)
+          task_command(input, "start_async_task", task_id, task)
 
         {:error, reason} ->
           "Async subagent error: #{format_error(reason)}"
@@ -206,12 +213,7 @@ defmodule BeamWeaver.Agent.Middleware.AsyncSubagents do
             |> Map.put(:last_checked_at, now)
             |> maybe_touch_updated_at(task, now)
 
-          maybe_task_command(
-            input,
-            "check_async_task",
-            Map.put(tasks(input), task_id, task),
-            task
-          )
+          maybe_task_command(input, "check_async_task", task_id, task)
         else
           :no_remote_client -> encode_task(task)
           {:error, :unknown_subagent} -> encode_task(task)
@@ -251,7 +253,7 @@ defmodule BeamWeaver.Agent.Middleware.AsyncSubagents do
             |> Map.put(:last_updated_at, now)
             |> merge_remote(remote)
 
-          task_command(input, "update_async_task", Map.put(tasks, task_id, task), task)
+          task_command(input, "update_async_task", task_id, task)
         else
           :no_remote_client ->
             task =
@@ -259,7 +261,7 @@ defmodule BeamWeaver.Agent.Middleware.AsyncSubagents do
               |> Map.update(:updates, [update], &(&1 ++ [update]))
               |> Map.put(:last_updated_at, now)
 
-            task_command(input, "update_async_task", Map.put(tasks, task_id, task), task)
+            task_command(input, "update_async_task", task_id, task)
 
           {:error, :unknown_subagent} ->
             "Unknown async subagent: #{task_value(task, :subagent_name)}"
@@ -290,7 +292,7 @@ defmodule BeamWeaver.Agent.Middleware.AsyncSubagents do
             |> Map.put(:last_updated_at, now)
             |> merge_remote(remote)
 
-          task_command(input, "cancel_async_task", Map.put(tasks, task_id, task), task)
+          task_command(input, "cancel_async_task", task_id, task)
         else
           :no_remote_client ->
             task =
@@ -299,7 +301,7 @@ defmodule BeamWeaver.Agent.Middleware.AsyncSubagents do
               |> Map.put(:last_checked_at, now)
               |> Map.put(:last_updated_at, now)
 
-            task_command(input, "cancel_async_task", Map.put(tasks, task_id, task), task)
+            task_command(input, "cancel_async_task", task_id, task)
 
           {:error, :unknown_subagent} ->
             "Unknown async subagent: #{task_value(task, :subagent_name)}"
@@ -346,7 +348,9 @@ defmodule BeamWeaver.Agent.Middleware.AsyncSubagents do
         id when is_binary(id) and id != "" ->
           %Command{
             update: %{
-              async_tasks: Map.merge(all_tasks, updated),
+              # Only the tasks it refreshed, so a parallel call's change to
+              # another task stays.
+              async_tasks: Map.reject(refreshed, fn {task_id, task} -> all_tasks[task_id] == task end),
               messages: [
                 Message.tool(message,
                   tool_call_id: id,
@@ -366,7 +370,8 @@ defmodule BeamWeaver.Agent.Middleware.AsyncSubagents do
     end
   end
 
-  defp task_command(input, tool_name, tasks, task) do
+  # Writes only this task, so parallel calls on other tasks keep their changes.
+  defp task_command(input, tool_name, task_id, task) do
     message =
       Message.tool(encode_task(task),
         tool_call_id: value(input, :tool_call_id),
@@ -374,12 +379,12 @@ defmodule BeamWeaver.Agent.Middleware.AsyncSubagents do
         metadata: %{async_subagent: task_metadata(task)}
       )
 
-    %Command{update: %{async_tasks: tasks, messages: [message]}}
+    %Command{update: %{async_tasks: %{task_id => task}, messages: [message]}}
   end
 
-  defp maybe_task_command(input, tool_name, tasks, task) do
+  defp maybe_task_command(input, tool_name, task_id, task) do
     case value(input, :tool_call_id) do
-      id when is_binary(id) and id != "" -> task_command(input, tool_name, tasks, task)
+      id when is_binary(id) and id != "" -> task_command(input, tool_name, task_id, task)
       _other -> encode_task(task)
     end
   end

@@ -4,9 +4,9 @@ defmodule BeamWeaver.XAI do
   """
 
   alias BeamWeaver.Config
+  alias BeamWeaver.Provider.OpenAICompatibleClient, as: Compat
   alias BeamWeaver.XAI.ChatCompletionsModel
   alias BeamWeaver.XAI.ChatModel
-  alias BeamWeaver.XAI.Client
   alias BeamWeaver.XAI.EmbeddingModel
   alias BeamWeaver.XAI.Tools
 
@@ -56,28 +56,7 @@ defmodule BeamWeaver.XAI do
 
   defp provider_opts(opts, endpoint_path) do
     opts
-    |> Keyword.put_new(:api_key, Config.get([:xai, :api_key]))
-    |> put_endpoint_default(endpoint_path)
-  end
-
-  defp put_endpoint_default(opts, endpoint_path) do
-    cond do
-      Keyword.has_key?(opts, :endpoint) ->
-        opts
-
-      base_url = configured_base_url(opts) ->
-        Keyword.put(opts, :endpoint, Client.endpoint(base_url, endpoint_path))
-
-      true ->
-        opts
-    end
-  end
-
-  defp configured_base_url(opts) do
-    if Keyword.has_key?(opts, :base_url) do
-      Keyword.fetch!(opts, :base_url) || @default_base_url
-    else
-      Config.get([:xai, :base_url], @default_base_url)
-    end
+    |> Keyword.put_new_lazy(:api_key, fn -> Config.get([:xai, :api_key]) end)
+    |> Compat.put_endpoint(:endpoint, :xai, @default_base_url, endpoint_path)
   end
 end

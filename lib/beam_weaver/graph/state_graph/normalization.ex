@@ -103,6 +103,7 @@ defmodule BeamWeaver.Graph.StateGraph.Normalization do
     do: subscribers |> List.wrap() |> Enum.map(&normalize_node/1) |> Enum.uniq()
 
   def normalize_visibility(:private), do: :private
+  def normalize_visibility(:private_checkpointed), do: :private_checkpointed
   def normalize_visibility("private"), do: :private
   def normalize_visibility(true), do: :private
   def normalize_visibility(_visibility), do: :public

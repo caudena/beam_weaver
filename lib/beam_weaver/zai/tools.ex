@@ -5,7 +5,7 @@ defmodule BeamWeaver.ZAI.Tools do
 
   alias BeamWeaver.OpenAI.ChatCompletions
   alias BeamWeaver.OpenAI.ToolCalling
-  alias BeamWeaver.ZAI.Error
+  alias BeamWeaver.Core.Error
 
   @function_name ~r/^[a-zA-Z0-9_-]{1,64}$/
   @max_tools 128

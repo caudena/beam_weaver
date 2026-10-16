@@ -40,18 +40,16 @@ defmodule BeamWeaver.Examples.LongTermMemory.SaveMemory do
 
   alias BeamWeaver.Examples.LongTermMemory.Scope
 
-  name("save_memory")
+  name "save_memory"
 
-  description(
-    "Remember one fact or preference about the user. Use a short stable key such as preferred_language; saving under an existing key replaces that memory."
-  )
+  description "Remember one fact about the user under a short key such as diet; saving a key again replaces it."
 
-  injected(:store, :store, type: :object)
-  injected(:context, :context, type: :object)
+  injected :store, :store, type: :object
+  injected :context, :context, type: :object
 
   schema do
-    field(:key, :string, required: true)
-    field(:content, :string, required: true)
+    field :key, :string
+    field :content, :string
   end
 
   def invoke(_tool, input, _opts) do
@@ -71,14 +69,14 @@ defmodule BeamWeaver.Examples.LongTermMemory.SearchMemories do
 
   alias BeamWeaver.Examples.LongTermMemory.Scope
 
-  name("search_memories")
-  description("List what is remembered about the user, optionally only the memories containing a word or phrase.")
+  name "search_memories"
+  description "List what is remembered about the user, optionally only the memories containing a word or phrase."
 
-  injected(:store, :store, type: :object)
-  injected(:context, :context, type: :object)
+  injected :store, :store, type: :object
+  injected :context, :context, type: :object
 
   schema do
-    field(:query, :string, required: false)
+    field :query, :string, required: false
   end
 
   def invoke(_tool, input, _opts) do
@@ -95,14 +93,14 @@ defmodule BeamWeaver.Examples.LongTermMemory.DeleteMemory do
 
   alias BeamWeaver.Examples.LongTermMemory.Scope
 
-  name("delete_memory")
-  description("Forget one memory by its key.")
+  name "delete_memory"
+  description "Forget one memory by its key."
 
-  injected(:store, :store, type: :object)
-  injected(:context, :context, type: :object)
+  injected :store, :store, type: :object
+  injected :context, :context, type: :object
 
   schema do
-    field(:key, :string, required: true)
+    field :key, :string
   end
 
   def invoke(_tool, input, _opts) do
@@ -205,12 +203,13 @@ converse = fn user_id, text ->
   IO.puts("\n[#{user_id}] #{text}")
   Enum.each(calls, &IO.puts("  tool: #{&1}"))
   IO.puts("  agent: #{messages |> List.last() |> Message.text()}")
+  messages
 end
 
 show.("Memories of ada before this run:")
 
 # Every call is a new conversation; what carries over is in the store.
-converse.("ada", "I'm vegetarian and I live in Lisbon. Please remember both.")
+saved = converse.("ada", "I'm vegetarian and I live in Lisbon. Please remember both.")
 converse.("ada", "Suggest a dinner for tonight.")
 converse.("bob", "Suggest a dinner for tonight.")
 
@@ -230,10 +229,13 @@ city_key =
 show.("Memories of ada after the application edited them:")
 
 converse.("ada", "Where do I live, and is there anything you should avoid cooking for me?")
-converse.("ada", "Please forget where I live.")
+forgot = converse.("ada", "Please forget where I live.")
 
 show.("Memories of ada at the end:")
 
 IO.puts(
   "\nbob has #{length(Memory.search(store, ["users", "bob", "memories"]))} memories; namespaces: #{inspect(Memory.list_namespaces(store, prefix: ["users"]))}"
 )
+
+Support.assert_tools_called!(saved, ["save_memory"])
+Support.assert_tools_called!(forgot, ["delete_memory"])

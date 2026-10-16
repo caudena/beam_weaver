@@ -1,5 +1,23 @@
 defmodule BeamWeaver.Models.FakeEmbeddingModel do
-  @moduledoc false
+  @moduledoc """
+  Deterministic embedding model for tests, examples, and documentation.
+
+  ```elixir
+  {:ok, embeddings} = BeamWeaver.Models.init_embeddings("fake:embedding")
+  {:ok, vector} = BeamWeaver.Core.EmbeddingModel.embed_query(embeddings, "refund policy")
+  length(vector)
+  #=> 3
+  ```
+
+  The same text always gets the same vector, so indexing, deduplication, and
+  caching behave predictably. The vectors carry no meaning: similarity scores,
+  and with them search rankings, are arbitrary.
+
+  Options: `dimensions:` sets the vector size (default 3), `mode: :random`
+  returns random vectors, `error:` makes every call fail with that error, and
+  `parent:` sends `{:fake_embedding_documents, texts, opts}` and
+  `{:fake_embedding_query, text, opts}` messages to a test process.
+  """
 
   @behaviour BeamWeaver.Core.EmbeddingModel
 

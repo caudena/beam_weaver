@@ -1,8 +1,10 @@
 defmodule BeamWeaver.OpenAI.Streaming.Messages do
   @moduledoc false
 
+  import BeamWeaver.MapShape, only: [reject_nil_values: 1]
+
   alias BeamWeaver.Core.ContentBlock
-  alias BeamWeaver.Core.Error, as: CoreError
+  alias BeamWeaver.Core.Error
   alias BeamWeaver.Core.Messages
   alias BeamWeaver.OpenAI.Streaming.Lifecycle
   alias BeamWeaver.Stream
@@ -11,7 +13,7 @@ defmodule BeamWeaver.OpenAI.Streaming.Messages do
   @spec message_chunks(binary() | [map()] | term()) :: [term()]
   def message_chunks(body) when is_binary(body) do
     body
-    |> BeamWeaver.OpenAI.Streaming.SSE.events()
+    |> BeamWeaver.Provider.SSE.events()
     |> message_chunks()
   end
 
@@ -26,7 +28,7 @@ defmodule BeamWeaver.OpenAI.Streaming.Messages do
   @spec typed_events(binary() | [map()] | term()) :: [BeamWeaver.Stream.Envelope.t()]
   def typed_events(body) when is_binary(body) do
     body
-    |> BeamWeaver.OpenAI.Streaming.SSE.events()
+    |> BeamWeaver.Provider.SSE.events()
     |> typed_events()
   end
 
@@ -294,7 +296,7 @@ defmodule BeamWeaver.OpenAI.Streaming.Messages do
     message = provider_error["message"] || "Model response failed"
 
     error =
-      CoreError.new(:response_failed, message, %{
+      Error.new(:response_failed, message, %{
         event: data,
         response: response,
         status: metadata.status,
@@ -338,6 +340,4 @@ defmodule BeamWeaver.OpenAI.Streaming.Messages do
     }
     |> reject_nil_values()
   end
-
-  defp reject_nil_values(map), do: Map.reject(map, fn {_key, value} -> is_nil(value) end)
 end

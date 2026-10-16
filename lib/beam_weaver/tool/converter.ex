@@ -21,10 +21,10 @@ defmodule BeamWeaver.Tool.Converter do
       Code.ensure_loaded?(module) and function_exported?(module, :__beam_weaver_tool__, 0) ->
         to_tool(struct(module), opts)
 
-      Code.ensure_loaded?(module) and function_exported?(module, :name, 1) ->
+      Tool.implemented_by?(module) ->
         to_tool_from_behaviour(module, opts)
 
-      Code.ensure_loaded?(module) and function_exported?(module, :tools, 1) ->
+      ToolKit.implemented_by?(module) ->
         {:error, Error.new(:invalid_tool, "toolkits must be converted with to_tools/2")}
 
       true ->
@@ -34,7 +34,7 @@ defmodule BeamWeaver.Tool.Converter do
 
   def to_tool(%module{} = tool, opts) do
     cond do
-      function_exported?(module, :name, 1) ->
+      Tool.implemented_by?(module) ->
         to_tool_from_behaviour(tool, opts)
 
       runnable?(tool) ->
@@ -90,7 +90,7 @@ defmodule BeamWeaver.Tool.Converter do
   end
 
   defp convert_one_or_many(module, opts) when is_atom(module) do
-    if Code.ensure_loaded?(module) and function_exported?(module, :tools, 1) do
+    if ToolKit.implemented_by?(module) do
       with {:ok, tools} <- ToolKit.tools(module, opts) do
         to_tools(tools, opts)
       end

@@ -93,7 +93,7 @@ defmodule BeamWeaver.Examples.ResponsesToolTransport do
     # response delivered in a different batch from the tool argument deltas.
     acc =
       Enum.reduce(events, acc, fn event, acc ->
-        reducer.(acc, "event: #{event["type"]}\ndata: #{BeamWeaver.JSON.encode!(event)}\n\n")
+        reducer.(acc, "event: #{event["type"]}\ndata: #{JSON.encode!(event)}\n\n")
       end)
 
     {:ok, Response.new(status: 200, headers: [{"content-type", "text/event-stream"}], body: ""), acc}

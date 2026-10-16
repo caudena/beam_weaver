@@ -9,6 +9,7 @@ defmodule BeamWeaver.Prompt.Builders do
     ImageTemplate,
     MessagesPlaceholder,
     MessageTemplate,
+    Partials,
     StringTemplate,
     StructuredChatTemplate,
     StructuredTemplate
@@ -52,17 +53,18 @@ defmodule BeamWeaver.Prompt.Builders do
     partials = Map.new(partials)
 
     case prompt do
-      %StringTemplate{} -> %{prompt | partials: Map.merge(prompt.partials, partials)}
-      %ChatTemplate{} -> %{prompt | partials: Map.merge(prompt.partials, partials)}
-      %FewShotTemplate{} -> %{prompt | partials: Map.merge(prompt.partials, partials)}
-      %FewShotChatTemplate{} -> %{prompt | partials: Map.merge(prompt.partials, partials)}
+      %StringTemplate{} -> %{prompt | partials: Partials.merge(prompt.partials, partials)}
+      %ChatTemplate{} -> %{prompt | partials: Partials.merge(prompt.partials, partials)}
+      %FewShotTemplate{} -> %{prompt | partials: Partials.merge(prompt.partials, partials)}
+      %FewShotChatTemplate{} -> %{prompt | partials: Partials.merge(prompt.partials, partials)}
       other -> other
     end
   end
 
-  def few_shot(opts), do: struct(FewShotTemplate, normalize_few_shot_opts(opts))
+  def few_shot(opts), do: struct(FewShotTemplate, few_shot_opts(opts, FewShotTemplate, :few_shot))
 
-  def few_shot_chat(opts), do: struct(FewShotChatTemplate, normalize_few_shot_opts(opts))
+  def few_shot_chat(opts),
+    do: struct(FewShotChatTemplate, few_shot_opts(opts, FewShotChatTemplate, :few_shot_chat))
 
   def image(url, opts \\ []) do
     %ImageTemplate{
@@ -94,11 +96,29 @@ defmodule BeamWeaver.Prompt.Builders do
     }
   end
 
-  defp normalize_few_shot_opts(opts) do
-    opts
-    |> Keyword.update(:partials, %{}, &Map.new/1)
-    |> Keyword.put_new(:template_format, :simple)
+  # An option the template doesn't have raises instead of being dropped.
+  defp few_shot_opts(opts, template, builder) do
+    allowed = template |> struct() |> Map.from_struct() |> Map.keys()
+
+    case Keyword.keys(opts) -- allowed do
+      [] ->
+        opts
+        |> Keyword.update(:partials, %{}, &Map.new/1)
+        |> Keyword.put_new(:template_format, :simple)
+
+      unknown ->
+        raise ArgumentError,
+              "unknown options #{inspect(unknown)} for Prompt.#{builder}/1" <> few_shot_hint(builder, unknown)
+    end
   end
+
+  defp few_shot_hint(:few_shot_chat, unknown) do
+    if Enum.any?(unknown, &(&1 in [:prefix, :suffix])),
+      do: "; a chat prompt takes lists of messages as prefix_messages: and suffix_messages:",
+      else: ""
+  end
+
+  defp few_shot_hint(_builder, _unknown), do: ""
 
   defp structured_output_opts(opts) do
     explicit =

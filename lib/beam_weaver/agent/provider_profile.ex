@@ -1,5 +1,8 @@
 defmodule BeamWeaver.Agent.ProviderProfile do
-  @moduledoc "Thin provider initialization hook for DeepAgents model options."
+  @moduledoc """
+  Default model options for a provider or `provider:model` spec, plus an
+  optional `pre_init` hook that runs before the model is created.
+  """
 
   import Kernel, except: [apply: 3]
 

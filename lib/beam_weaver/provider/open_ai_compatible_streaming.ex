@@ -1,17 +1,18 @@
 defmodule BeamWeaver.Provider.OpenAICompatibleStreaming do
   @moduledoc false
 
+  import BeamWeaver.MapShape, only: [put_present: 3]
+
   alias BeamWeaver.Core.Messages
   alias BeamWeaver.Core.Messages.MessageChunk
   alias BeamWeaver.OpenAI.MessageParts
-  alias BeamWeaver.OpenAI.Streaming.SSE
+  alias BeamWeaver.Provider.SSE
   alias BeamWeaver.Stream
   alias BeamWeaver.Stream.Events
 
   @type config :: %{
           required(:provider) => atom(),
           required(:provider_name) => String.t(),
-          required(:error_module) => module(),
           required(:usage_metadata) => (map() -> map() | nil),
           required(:stream_metadata) => ([map()], BeamWeaver.Core.Message.t(), keyword() -> map()),
           optional(:choice_usage) => boolean(),
@@ -57,17 +58,67 @@ defmodule BeamWeaver.Provider.OpenAICompatibleStreaming do
 
   def typed_events(_body, _config), do: []
 
+  # A live stream is parsed batch by batch and ends with the complete reply.
+  # Until the stream closes, the parser state keeps every event and holds the
+  # `Done` events back, so that they follow the reply: `finish_typed_events/3`
+  # emits both.
+  @type stream_state :: %{events: [map()], done: [Stream.Envelope.t()]}
+
+  @spec typed_events([map()], stream_state() | nil, config()) :: {[Stream.Envelope.t()], stream_state()}
+  def typed_events(events, state, config) when is_list(events),
+    do: events |> typed_events(config) |> hold_events(events, state)
+
+  @spec hold_events([Stream.Envelope.t()], [map()], stream_state() | nil) ::
+          {[Stream.Envelope.t()], stream_state()}
+  def hold_events(typed, events, state) do
+    %{events: seen, done: done} = state || %{events: [], done: []}
+    {batch_done, typed} = Enum.split_with(typed, &match?(%Stream.Envelope{event: %Events.Done{}}, &1))
+
+    {typed, %{events: Enum.reverse(events, seen), done: done ++ batch_done}}
+  end
+
+  # `reply` builds the complete reply from the stream's events; `:none` means
+  # the stream had no reply to build.
+  @spec finish_typed_events(
+          stream_state() | nil,
+          atom(),
+          ([map()] -> {:ok, BeamWeaver.Core.Message.t()} | :none | {:error, term()})
+        ) :: {:ok, [Stream.Envelope.t()]} | {:error, term()}
+  def finish_typed_events(state, provider, reply) do
+    %{events: seen, done: done} = state || %{events: [], done: []}
+
+    case reply.(Enum.reverse(seen)) do
+      {:ok, message} ->
+        {:ok, [Stream.envelope(%Events.Message{message: message}, metadata: %{provider: provider}) | done]}
+
+      :none ->
+        {:ok, done}
+
+      {:error, _error} = error ->
+        error
+    end
+  end
+
   @spec stream_body_to_message(binary() | term(), config(), keyword()) ::
           {:ok, BeamWeaver.Core.Message.t()} | {:error, term()}
   def stream_body_to_message(body, config, opts \\ [])
 
   def stream_body_to_message(body, config, opts) when is_binary(body) do
-    events = SSE.events(body)
-    chunks = message_chunks(events, config)
+    case body |> SSE.events() |> events_to_message(config, opts) do
+      {:ok, message} -> {:ok, message}
+      :none -> {:error, error(config, :invalid_response, "#{config.provider_name} stream had no chunks")}
+    end
+  end
 
-    case MessageChunk.merge_many(chunks) do
+  def stream_body_to_message(_body, config, _opts) do
+    {:error, error(config, :invalid_response, "#{config.provider_name} stream body must be binary")}
+  end
+
+  @spec events_to_message([map()], config(), keyword()) :: {:ok, BeamWeaver.Core.Message.t()} | :none
+  def events_to_message(events, config, opts) do
+    case events |> message_chunks(config) |> MessageChunk.merge_many() do
       nil ->
-        {:error, error(config, :invalid_response, "#{config.provider_name} stream had no chunks")}
+        :none
 
       chunk ->
         message = MessageChunk.to_message(chunk)
@@ -91,9 +142,109 @@ defmodule BeamWeaver.Provider.OpenAICompatibleStreaming do
     end
   end
 
-  def stream_body_to_message(_body, config, _opts) do
-    {:error, error(config, :invalid_response, "#{config.provider_name} stream body must be binary")}
+  # The Chat Completions response a stream's events add up to: the latest
+  # value of each top-level field, and for each choice its latest fields and a
+  # message with the content, reasoning and tool-call arguments joined.
+  @spec chat_completion([map()]) :: map()
+  def chat_completion(events) when is_list(events) do
+    {response, choices} =
+      Enum.reduce(events, {%{}, %{}}, fn
+        %{"data" => %{} = data}, {response, choices} ->
+          choices = data |> Map.get("choices") |> List.wrap() |> Enum.reduce(choices, &put_choice/2)
+          {put_fields(response, Map.delete(data, "choices")), choices}
+
+        _event, acc ->
+          acc
+      end)
+
+    choices =
+      choices
+      |> Enum.sort_by(fn {index, _choice} -> index end)
+      |> Enum.map(fn {index, choice} -> finish_choice(index, choice) end)
+
+    Map.put(response, "choices", choices)
   end
+
+  defp put_choice(%{} = choice, choices) do
+    index = choice["index"] || 0
+    delta = choice["delta"] || %{}
+    current = Map.get(choices, index, %{fields: %{}, message: %{}, tool_calls: %{}})
+
+    message =
+      Enum.reduce(delta, current.message, fn
+        {key, text}, acc when key in ["content", "reasoning_content", "refusal"] -> append_text(acc, key, text)
+        {"tool_calls", _calls}, acc -> acc
+        {key, value}, acc -> put_present(acc, key, value)
+      end)
+
+    tool_calls = delta |> Map.get("tool_calls") |> List.wrap() |> Enum.reduce(current.tool_calls, &put_tool_call/2)
+
+    Map.put(choices, index, %{
+      fields: put_fields(current.fields, Map.drop(choice, ["index", "delta"])),
+      message: message,
+      tool_calls: tool_calls
+    })
+  end
+
+  defp put_choice(_choice, choices), do: choices
+
+  defp put_tool_call(%{} = call, calls) do
+    function = call["function"] || %{}
+
+    Map.update(calls, call["index"] || 0, put_tool_call_fields(%{"function" => %{}}, call, function), fn current ->
+      put_tool_call_fields(current, call, function)
+    end)
+  end
+
+  defp put_tool_call(_call, calls), do: calls
+
+  defp put_tool_call_fields(current, call, function) do
+    current
+    |> put_present("id", call["id"])
+    |> put_present("type", call["type"])
+    |> Map.update!("function", fn current_function ->
+      current_function
+      |> put_present("name", function["name"])
+      |> append_text("arguments", function["arguments"])
+    end)
+  end
+
+  defp finish_choice(index, choice) do
+    tool_calls =
+      choice.tool_calls
+      |> Enum.sort_by(fn {call_index, _call} -> call_index end)
+      |> Enum.map(fn {_call_index, call} -> Map.put_new(call, "type", "function") end)
+
+    message =
+      choice.message
+      |> Map.put_new("role", "assistant")
+      |> BeamWeaver.MapShape.put_optional("tool_calls", tool_calls)
+
+    choice.fields
+    |> Map.put("index", index)
+    |> Map.put("message", message)
+  end
+
+  # Keeps each field's latest value; log probabilities add up token by token.
+  defp put_fields(fields, values) do
+    Enum.reduce(values, fields, fn
+      {_key, nil}, acc -> acc
+      {"logprobs", logprobs}, acc -> Map.update(acc, "logprobs", logprobs, &join_logprobs(&1, logprobs))
+      {key, value}, acc -> Map.put(acc, key, value)
+    end)
+  end
+
+  defp join_logprobs(%{} = current, %{} = logprobs) do
+    Map.merge(current, logprobs, fn
+      _key, left, right when is_list(left) and is_list(right) -> left ++ right
+      _key, _left, right -> right
+    end)
+  end
+
+  defp join_logprobs(_current, logprobs), do: logprobs
+
+  defp append_text(map, key, text) when is_binary(text), do: Map.update(map, key, text, &(&1 <> text))
+  defp append_text(map, _key, _text), do: map
 
   defp message_chunks(events, config) do
     events
@@ -124,7 +275,7 @@ defmodule BeamWeaver.Provider.OpenAICompatibleStreaming do
        when is_binary(reasoning) do
     block =
       %{type: :reasoning, reasoning: reasoning}
-      |> put_optional(:index, Map.get(config, :reasoning_index))
+      |> put_present(:index, Map.get(config, :reasoning_index))
 
     emit_message_chunk(
       state,
@@ -275,10 +426,5 @@ defmodule BeamWeaver.Provider.OpenAICompatibleStreaming do
   defp chunk_id(id, %{include_chunk_id: true}), do: id
   defp chunk_id(_id, _config), do: nil
 
-  defp error(config, type, message) do
-    apply(config.error_module, :new, [type, message])
-  end
-
-  defp put_optional(map, _key, nil), do: map
-  defp put_optional(map, key, value), do: Map.put(map, key, value)
+  defp error(_config, type, message), do: BeamWeaver.Core.Error.new(type, message)
 end

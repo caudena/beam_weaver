@@ -261,7 +261,7 @@ defmodule BeamWeaver.Agent.Subagent.StreamTransformerTest do
         "namespace" => namespace,
         "data" => %{
           "id" => "child-task",
-          "name" => "PatchToolCallsMiddleware.before_agent",
+          "name" => "ToolCallNormalization.before_agent",
           "input" => nil,
           "triggers" => []
         }

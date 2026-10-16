@@ -8,7 +8,6 @@ defmodule BeamWeaver.Cache do
   """
 
   alias BeamWeaver.Adapter.Dispatch
-  alias BeamWeaver.Core.Async
   alias BeamWeaver.Core.Error
   alias BeamWeaver.Telemetry.AdapterEvent
   alias BeamWeaver.Telemetry.AdapterHelpers
@@ -83,10 +82,11 @@ defmodule BeamWeaver.Cache do
   end
 
   @doc """
-  Looks up multiple `{namespace, key}` entries and returns a map of cache hits.
+  Looks up multiple `{namespace, key}` entries and returns a map of cache hits
+  keyed by `{namespace, key}`.
 
-  Missing or expired entries are omitted. This is the native batch equivalent of
-  LangGraph's `BaseCache.get/1` contract.
+  Missing or expired entries are omitted. An adapter error stops the lookup and
+  is returned as `{:error, error}`.
   """
   @spec get_many(term(), [{namespace(), key()}], keyword()) ::
           %{optional({namespace(), key()}) => term()} | {:error, Error.t()}
@@ -104,9 +104,8 @@ defmodule BeamWeaver.Cache do
   @doc """
   Stores multiple `{namespace, key}` entries.
 
-  Pair values may be raw values or `{value, ttl_seconds}` tuples. TTLs use
-  seconds here to mirror LangGraph cache policy data; the underlying adapter
-  still receives BeamWeaver's millisecond `:ttl` option.
+  Pair values may be raw values or `{value, ttl_seconds}` tuples. TTLs here are
+  whole seconds; they are converted to the adapter's millisecond `:ttl` option.
   """
   @spec set_many(term(), map() | list(), keyword()) :: :ok | {:error, Error.t()}
   def set_many(cache, pairs, opts \\ []) when is_map(pairs) or is_list(pairs) do
@@ -138,61 +137,6 @@ defmodule BeamWeaver.Cache do
         {:error, error} -> {:halt, {:error, error}}
       end
     end)
-  end
-
-  @doc "Starts a Task-backed cache lookup."
-  @spec async_lookup(term(), namespace(), key(), keyword()) :: Async.handle()
-  def async_lookup(cache, namespace, key, opts \\ []) do
-    {async_opts, call_opts} = Async.split_opts(opts)
-    Async.run(fn -> lookup(cache, namespace, key, call_opts) end, async_opts)
-  end
-
-  @doc "Starts a Task-backed cache update."
-  @spec async_put(term(), namespace(), key(), term(), keyword()) :: Async.handle()
-  def async_put(cache, namespace, key, value, opts \\ []) do
-    {async_opts, call_opts} = Async.split_opts(opts)
-    Async.run(fn -> put(cache, namespace, key, value, call_opts) end, async_opts)
-  end
-
-  @doc "Starts a Task-backed cache update."
-  @spec async_update(term(), namespace(), key(), term(), keyword()) :: Async.handle()
-  def async_update(cache, namespace, key, value, opts \\ []) do
-    async_put(cache, namespace, key, value, opts)
-  end
-
-  @doc "Starts a Task-backed cache delete."
-  @spec async_delete(term(), namespace(), key(), keyword()) :: Async.handle()
-  def async_delete(cache, namespace, key, opts \\ []) do
-    {async_opts, call_opts} = Async.split_opts(opts)
-    Async.run(fn -> delete(cache, namespace, key, call_opts) end, async_opts)
-  end
-
-  @doc "Starts a Task-backed cache clear."
-  @spec async_clear(term(), namespace() | nil, keyword()) :: Async.handle()
-  def async_clear(cache, namespace \\ nil, opts \\ []) do
-    {async_opts, call_opts} = Async.split_opts(opts)
-    Async.run(fn -> clear(cache, namespace, call_opts) end, async_opts)
-  end
-
-  @doc "Starts a Task-backed batch cache lookup."
-  @spec async_get_many(term(), [{namespace(), key()}], keyword()) :: Async.handle()
-  def async_get_many(cache, full_keys, opts \\ []) do
-    {async_opts, call_opts} = Async.split_opts(opts)
-    Async.run(fn -> get_many(cache, full_keys, call_opts) end, async_opts)
-  end
-
-  @doc "Starts a Task-backed batch cache update."
-  @spec async_set_many(term(), map() | list(), keyword()) :: Async.handle()
-  def async_set_many(cache, pairs, opts \\ []) do
-    {async_opts, call_opts} = Async.split_opts(opts)
-    Async.run(fn -> set_many(cache, pairs, call_opts) end, async_opts)
-  end
-
-  @doc "Starts a Task-backed batch namespace clear."
-  @spec async_clear_many(term(), [namespace()] | nil, keyword()) :: Async.handle()
-  def async_clear_many(cache, namespaces \\ nil, opts \\ []) do
-    {async_opts, call_opts} = Async.split_opts(opts)
-    Async.run(fn -> clear_many(cache, namespaces, call_opts) end, async_opts)
   end
 
   @spec sweep_expired(term(), keyword()) :: {:ok, non_neg_integer()} | :ok | {:error, Error.t()}

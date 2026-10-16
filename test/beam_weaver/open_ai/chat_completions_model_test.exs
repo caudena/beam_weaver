@@ -1,7 +1,6 @@
 defmodule BeamWeaver.OpenAI.ChatCompletionsModelTest do
   use ExUnit.Case
 
-  alias BeamWeaver.Core.Async
   alias BeamWeaver.Core.ChatModel, as: CoreChatModel
   alias BeamWeaver.Core.ContentBlock
   alias BeamWeaver.Core.Message
@@ -656,33 +655,31 @@ defmodule BeamWeaver.OpenAI.ChatCompletionsModelTest do
     assert error.details.error["type"] == "invalid_request_error"
   end
 
-  test "maps Chat Completions context-window errors across sync async and stream calls" do
+  test "maps Chat Completions context-window errors across facade, provider, and stream calls" do
     model = context_overflow_model()
 
-    assert {:error, %BeamWeaver.OpenAI.Error{type: :context_overflow} = error} =
+    assert {:error, %BeamWeaver.Core.Error{type: :context_overflow} = error} =
              CoreChatModel.invoke(model, [Message.user("test")])
 
     assert error.message =~ "Input tokens exceed the configured limit"
     assert error.details.code == "context_length_exceeded"
 
-    assert {:error, %BeamWeaver.OpenAI.Error{type: :context_overflow}} =
-             model
-             |> ChatCompletionsModel.async_invoke([Message.user("test")])
-             |> Async.await()
+    assert {:error, %BeamWeaver.Core.Error{type: :context_overflow}} =
+             ChatCompletionsModel.invoke(model, [Message.user("test")])
 
     assert {:ok, stream} =
              ChatCompletionsModel.stream(context_overflow_model(), [Message.user("test")])
 
     assert [
              %BeamWeaver.Stream.Events.Error{
-               error: %BeamWeaver.OpenAI.Error{type: :context_overflow}
+               error: %BeamWeaver.Core.Error{type: :context_overflow}
              }
            ] = Enum.to_list(stream)
 
     context_window =
       context_overflow_model("Your input exceeds the context window of this model.")
 
-    assert {:error, %BeamWeaver.OpenAI.Error{type: :context_overflow} = stream_error} =
+    assert {:error, %BeamWeaver.Core.Error{type: :context_overflow} = stream_error} =
              ChatCompletionsModel.stream_response(context_window, [Message.user("test")])
 
     assert stream_error.message =~ "context window"
@@ -882,6 +879,60 @@ defmodule BeamWeaver.OpenAI.ChatCompletionsModelTest do
 
     assert error.type == :unsupported_model_param
     assert error.details.params == [:reasoning]
+  end
+
+  test "max_output_tokens works on Chat Completions, set on the model or on a call" do
+    for id <- ["openai:gpt-5.4-mini", "xai:grok-4.6"] do
+      model = Models.init_chat_model!(id, api: :chat_completions, max_output_tokens: 500)
+      assert {:ok, body} = model.__struct__.request_body(model, [Message.user("Hi")])
+      assert body["max_completion_tokens"] == 500
+
+      # An agent sends its model options with every call.
+      assert {:ok, body} = model.__struct__.request_body(model, [Message.user("Hi")], max_output_tokens: 300)
+      assert body["max_completion_tokens"] == 300
+    end
+  end
+
+  test "a request carries one output cap, under the name the model takes" do
+    for {id, opts, call_opts, expected} <- [
+          {"openai:gpt-4.1", [max_completion_tokens: 64], [], %{"max_completion_tokens" => 64}},
+          {"openai:gpt-4.1", [max_tokens: 64], [], %{"max_tokens" => 64}},
+          {"openai:gpt-4.1", [max_tokens: 64, max_completion_tokens: 32], [], %{"max_completion_tokens" => 32}},
+          {"openai:gpt-4.1", [max_completion_tokens: 64], [max_tokens: 16], %{"max_tokens" => 16}},
+          {"openai:gpt-4.1", [max_tokens: 64], [max_output_tokens: 16], %{"max_completion_tokens" => 16}},
+          {"openai:gpt-5.4-mini", [max_tokens: 64], [], %{"max_completion_tokens" => 64}},
+          {"openai:gpt-5.4-mini", [max_completion_tokens: 64], [max_tokens: 16], %{"max_completion_tokens" => 16}},
+          {"xai:grok-4.6", [max_tokens: 64, max_completion_tokens: 32], [], %{"max_completion_tokens" => 32}}
+        ] do
+      model = Models.init_chat_model!(id, [api: :chat_completions] ++ opts)
+      assert {:ok, body} = model.__struct__.request_body(model, [Message.user("Hi")], call_opts)
+
+      assert Map.take(body, ["max_tokens", "max_completion_tokens"]) == expected,
+             "#{id} with #{inspect(opts)} and call options #{inspect(call_opts)}"
+    end
+  end
+
+  test "a block Chat Completions has no part for is an error on OpenAI and xAI, not a crash" do
+    models = [
+      Models.init_chat_model!("openai:gpt-5.4-mini", api: :chat_completions),
+      Models.init_chat_model!("xai:grok-4.6", api: :chat_completions)
+    ]
+
+    blocks = [
+      ContentBlock.video(%{url: "https://example.test/clip.mp4"}),
+      ContentBlock.audio(%{url: "https://example.test/call.mp3"}),
+      ContentBlock.image(%{file_id: "file_1"}),
+      ContentBlock.citation(%{url: "https://example.test", title: "Source"})
+    ]
+
+    for model <- models, block <- blocks, role <- [:user, :assistant] do
+      message = Message.new!(role, [ContentBlock.text("What is in this?"), block])
+
+      assert {:error, %BeamWeaver.Core.Error{type: :unsupported_feature, details: details}} =
+               model.__struct__.request_body(model, [Message.user("Hi"), message])
+
+      assert details == %{api: :chat_completions, feature: block.type}
+    end
   end
 
   defp replay_model(cassette_path) do

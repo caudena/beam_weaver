@@ -3,7 +3,6 @@ defmodule BeamWeaver.VectorStoreStandardTest do
 
   # Native coverage for:
 
-  alias BeamWeaver.Core.Async
   alias BeamWeaver.Core.Document
   alias BeamWeaver.Models.FakeEmbeddingModel
   alias BeamWeaver.VectorStore
@@ -11,11 +10,8 @@ defmodule BeamWeaver.VectorStoreStandardTest do
 
   defp new_store, do: ETS.new(embedding: %FakeEmbeddingModel{dimensions: 6})
 
-  test "fresh stores are empty before and after independent tests" do
+  test "fresh stores start empty" do
     assert {:ok, []} = VectorStore.similarity_search(new_store(), "foo", k: 1)
-
-    assert {:ok, []} =
-             VectorStore.async_similarity_search(new_store(), "foo", k: 1) |> Async.await()
   end
 
   test "add_documents returns generated ids, searches by similarity, and does not mutate input structs" do
@@ -120,6 +116,8 @@ defmodule BeamWeaver.VectorStoreStandardTest do
               %Document{id: "1", content: "new foo", metadata: %{id: 1, some_other_field: "foo"}},
               %Document{id: "2", content: "bar", metadata: %{id: 2}}
             ]} = VectorStore.similarity_search(store, "new foo", k: 2)
+
+    assert {:ok, [%Document{id: "1", content: "new foo"}]} = VectorStore.get_by_ids(store, ["1"])
   end
 
   test "get_by_ids returns existing documents in requested order and skips missing ids" do
@@ -157,79 +155,6 @@ defmodule BeamWeaver.VectorStoreStandardTest do
               %Document{id: "foo", content: "foo", metadata: %{id: 1}},
               %Document{id: ^generated, content: "bar", metadata: %{id: 2}}
             ]} = VectorStore.get_by_ids(store, ["foo", generated])
-  end
-
-  test "Task-backed async vectorstore operations mirror sync semantics" do
-    store = new_store()
-
-    documents = [
-      Document.new!("foo", metadata: %{id: 1}),
-      Document.new!("bar", metadata: %{id: 2})
-    ]
-
-    assert {:ok, ids} = VectorStore.async_add_documents(store, documents) |> Async.await()
-
-    assert {:ok, [%Document{content: "bar"}, %Document{content: "foo"}]} =
-             VectorStore.async_similarity_search(store, "bar", k: 2) |> Async.await()
-
-    assert documents == [
-             Document.new!("foo", metadata: %{id: 1}),
-             Document.new!("bar", metadata: %{id: 2})
-           ]
-
-    assert :ok = VectorStore.async_delete(store, [hd(ids)]) |> Async.await()
-
-    assert {:ok, [%Document{content: "bar"}]} =
-             VectorStore.async_similarity_search(store, "foo", k: 1) |> Async.await()
-
-    assert {:ok, []} =
-             VectorStore.async_get_by_ids(store, ["missing-1", "missing-2"]) |> Async.await()
-  end
-
-  test "Task-backed async upsert and get_by_ids cover mixed document ids" do
-    store = new_store()
-
-    assert {:ok, ["1", "2"]} =
-             VectorStore.async_add_documents(
-               store,
-               [
-                 Document.new!("foo", metadata: %{id: 1}),
-                 Document.new!("bar", metadata: %{id: 2})
-               ],
-               ids: ["1", "2"]
-             )
-             |> Async.await()
-
-    assert {:ok, ["1"]} =
-             VectorStore.async_add_documents(
-               store,
-               [Document.new!("new foo", metadata: %{id: 1, some_other_field: "foo"})],
-               ids: ["1"]
-             )
-             |> Async.await()
-
-    assert {:ok,
-            [
-              %Document{id: "1", content: "new foo"},
-              %Document{id: "2", content: "bar"}
-            ]} = VectorStore.async_get_by_ids(store, ["1", "2"]) |> Async.await()
-
-    mixed_store = new_store()
-
-    assert {:ok, ["foo", generated]} =
-             VectorStore.async_add_documents(
-               mixed_store,
-               [
-                 Document.new!("foo", id: "foo", metadata: %{id: 1}),
-                 Document.new!("bar", metadata: %{id: 2})
-               ]
-             )
-             |> Async.await()
-
-    assert is_binary(generated)
-
-    assert {:ok, [%Document{id: "foo"}, %Document{id: ^generated}]} =
-             VectorStore.async_get_by_ids(mixed_store, ["foo", generated]) |> Async.await()
   end
 
   test "add_texts accepts a single string and metadata lists" do
@@ -277,14 +202,13 @@ defmodule BeamWeaver.VectorStoreStandardTest do
     assert {:ok, [%Document{metadata: %{rank: 1}}, %Document{metadata: %{rank: 2}}]} =
              VectorStore.get_by_ids(text_store, ["text-b", "text-g"])
 
-    assert {:ok, async_store} =
-             VectorStore.async_from_texts(ETS, ["delta"],
+    assert {:ok, single_text_store} =
+             VectorStore.from_texts(ETS, ["delta"],
                ids: ["text-d"],
                embedding: %FakeEmbeddingModel{dimensions: 6}
              )
-             |> Async.await()
 
-    assert {:ok, [%Document{id: "text-d"}]} = VectorStore.get_by_ids(async_store, ["text-d"])
+    assert {:ok, [%Document{id: "text-d"}]} = VectorStore.get_by_ids(single_text_store, ["text-d"])
   end
 
   test "ETS store filters can use metadata maps or full document predicates" do

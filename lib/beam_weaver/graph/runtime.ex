@@ -20,7 +20,6 @@ defmodule BeamWeaver.Graph.Runtime do
     :stream_sink,
     :stream_writer,
     :stream_modes,
-    :collect_stream?,
     :run_id,
     :recursion_limit,
     :task_id,
@@ -47,7 +46,6 @@ defmodule BeamWeaver.Graph.Runtime do
           stream_sink: BeamWeaver.Stream.Sink.t() | nil,
           stream_writer: (term() -> :ok),
           stream_modes: MapSet.t(atom()) | nil,
-          collect_stream?: boolean() | nil,
           run_id: String.t(),
           recursion_limit: non_neg_integer() | nil,
           task_id: String.t() | nil,
@@ -136,9 +134,9 @@ defmodule BeamWeaver.Graph.Runtime do
   @doc """
   Ensures runtime execution info exists, hydrating it from graph config/task data.
 
-  This mirrors LangGraph's distributed-executor guard without adding a remote
-  platform runtime: if `runtime.execution` is already populated, it is returned
-  unchanged; otherwise BeamWeaver builds native `%ExecutionInfo{}` metadata.
+  If `runtime.execution` is already populated, the runtime is returned
+  unchanged; otherwise this builds an `%ExecutionInfo{}` with the checkpoint id
+  and namespace, task id, thread id and run id found in `config` and `task`.
   """
   @spec ensure_execution_info(t(), map(), map() | struct()) :: t()
   def ensure_execution_info(%__MODULE__{execution: %ExecutionInfo{}} = runtime, _config, _task),

@@ -35,7 +35,6 @@ defmodule BeamWeaver.Models.ProfileRegistry.Fake do
       })
   }
 
-  def profiles_map, do: @profiles
   def profiles, do: Map.values(@profiles)
 
   def resolve(model) do

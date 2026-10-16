@@ -1,23 +1,10 @@
-defprotocol BeamWeaver.Indexing.RecordManager.Backend do
-  @moduledoc """
-  Protocol dispatch for indexing record managers.
-  """
-
-  def get(manager, id, opts)
-  def put(manager, record, opts)
-  def list(manager, opts)
-  def delete(manager, ids, opts)
-end
-
 defmodule BeamWeaver.Indexing.RecordManager do
   @moduledoc """
   Record manager contract for indexing cleanup and idempotence.
   """
 
-  alias BeamWeaver.Core.Async
   alias BeamWeaver.Core.Error
   alias BeamWeaver.Indexing.Record
-  alias BeamWeaver.Indexing.RecordManager.Backend, as: RecordManagerBackend
 
   @callback get(term(), String.t(), keyword()) :: {:ok, Record.t() | nil} | {:error, Error.t()}
   @callback put(term(), Record.t(), keyword()) :: :ok | {:error, Error.t()}
@@ -27,25 +14,24 @@ defmodule BeamWeaver.Indexing.RecordManager do
   defmacro __using__(_opts) do
     quote do
       @behaviour BeamWeaver.Indexing.RecordManager
-
-      defimpl BeamWeaver.Indexing.RecordManager.Backend, for: __MODULE__ do
-        def get(manager, id, opts), do: @for.get(manager, id, opts)
-        def put(manager, record, opts), do: @for.put(manager, record, opts)
-        def list(manager, opts), do: @for.list(manager, opts)
-        def delete(manager, ids, opts), do: @for.delete(manager, ids, opts)
-      end
     end
   end
 
-  def get(manager, id, opts \\ []), do: RecordManagerBackend.get(manager, id, opts)
-  def put(manager, record, opts \\ []), do: RecordManagerBackend.put(manager, record, opts)
-  def list(manager, opts \\ []), do: RecordManagerBackend.list(manager, opts)
+  # Each function calls the record manager struct's module.
+  def get(%module{} = manager, id, opts \\ []), do: module.get(manager, id, opts)
+  def put(%module{} = manager, record, opts \\ []), do: module.put(manager, record, opts)
+  def list(%module{} = manager, opts \\ []), do: module.list(manager, opts)
+  def delete(%module{} = manager, ids, opts \\ []), do: module.delete(manager, List.wrap(ids), opts)
 
-  def delete(manager, ids, opts \\ []),
-    do: RecordManagerBackend.delete(manager, List.wrap(ids), opts)
+  @doc "Whether `manager` is a struct whose module implements this behaviour."
+  @spec record_manager?(term()) :: boolean()
+  def record_manager?(%module{}), do: BeamWeaver.Behaviour.implemented_by?(module, __MODULE__)
+  def record_manager?(_other), do: false
 
   @doc """
-  Returns a monotonic-ish wall-clock timestamp for standard-test compatibility.
+  Returns the current wall-clock time in seconds, as a float.
+
+  `update/3` rejects a `:time_at_least` option later than this time.
   """
   @spec get_time(term()) :: float()
   def get_time(_manager), do: System.system_time(:microsecond) / 1_000_000
@@ -53,9 +39,9 @@ defmodule BeamWeaver.Indexing.RecordManager do
   @doc """
   Upserts record keys with optional source/group IDs.
 
-  This is the BeamWeaver-native equivalent of LangChain's `RecordManager.update`.
-  Existing indexing code can still use `put/3` with explicit `%Record{}` structs
-  when it needs hash metadata.
+  Writes one `%Record{}` per key; the optional `:group_ids` list (one entry per
+  key) sets each record's source id. Use `put/3` with explicit `%Record{}`
+  structs when you need per-record hash metadata.
   """
   @spec update(term(), [String.t()], keyword()) :: :ok | {:error, Error.t()}
   def update(manager, keys, opts \\ []) when is_list(keys) do
@@ -125,54 +111,6 @@ defmodule BeamWeaver.Indexing.RecordManager do
 
   @spec delete_keys(term(), [String.t()], keyword()) :: :ok | {:error, Error.t()}
   def delete_keys(manager, keys, opts \\ []), do: delete(manager, keys, opts)
-
-  @spec async_get(term(), String.t(), keyword()) :: Async.handle()
-  def async_get(manager, id, opts \\ []) do
-    {async_opts, call_opts} = Async.split_opts(opts)
-    Async.run(fn -> get(manager, id, call_opts) end, async_opts)
-  end
-
-  @spec async_put(term(), Record.t(), keyword()) :: Async.handle()
-  def async_put(manager, record, opts \\ []) do
-    {async_opts, call_opts} = Async.split_opts(opts)
-    Async.run(fn -> put(manager, record, call_opts) end, async_opts)
-  end
-
-  @spec async_list(term(), keyword()) :: Async.handle()
-  def async_list(manager, opts \\ []) do
-    {async_opts, call_opts} = Async.split_opts(opts)
-    Async.run(fn -> list(manager, call_opts) end, async_opts)
-  end
-
-  @spec async_delete(term(), [String.t()], keyword()) :: Async.handle()
-  def async_delete(manager, ids, opts \\ []) do
-    {async_opts, call_opts} = Async.split_opts(opts)
-    Async.run(fn -> delete(manager, ids, call_opts) end, async_opts)
-  end
-
-  @spec async_update(term(), [String.t()], keyword()) :: Async.handle()
-  def async_update(manager, keys, opts \\ []) do
-    {async_opts, call_opts} = Async.split_opts(opts)
-    Async.run(fn -> update(manager, keys, call_opts) end, async_opts)
-  end
-
-  @spec async_exists(term(), [String.t()], keyword()) :: Async.handle()
-  def async_exists(manager, keys, opts \\ []) do
-    {async_opts, call_opts} = Async.split_opts(opts)
-    Async.run(fn -> exists(manager, keys, call_opts) end, async_opts)
-  end
-
-  @spec async_list_keys(term(), keyword()) :: Async.handle()
-  def async_list_keys(manager, opts \\ []) do
-    {async_opts, call_opts} = Async.split_opts(opts)
-    Async.run(fn -> list_keys(manager, call_opts) end, async_opts)
-  end
-
-  @spec async_delete_keys(term(), [String.t()], keyword()) :: Async.handle()
-  def async_delete_keys(manager, keys, opts \\ []) do
-    {async_opts, call_opts} = Async.split_opts(opts)
-    Async.run(fn -> delete_keys(manager, keys, call_opts) end, async_opts)
-  end
 
   defp validate_group_ids(_keys, nil), do: :ok
 

@@ -74,6 +74,10 @@ defimpl BeamWeaver.Adapter.Retainable, for: BeamWeaver.Cache.ETS do
   end
 end
 
+defimpl BeamWeaver.Adapter.Retainable, for: BeamWeaver.Memory.Ecto do
+  def prune(store, opts), do: BeamWeaver.Memory.Ecto.prune(store, opts)
+end
+
 defimpl BeamWeaver.Adapter.Retainable, for: BeamWeaver.Memory.ETS do
   def prune(store, opts) do
     namespace = Keyword.get(opts, :namespace)
@@ -92,7 +96,7 @@ defimpl BeamWeaver.Adapter.Retainable, for: BeamWeaver.Memory.ETS do
         {{entry_namespace, key}, %{updated_at: updated_at}}, acc
         when not is_nil(cutoff) ->
           if DateTime.compare(updated_at, cutoff) != :gt do
-            :ets.delete(store.items, {entry_namespace, key})
+            BeamWeaver.Memory.ETS.delete(store, entry_namespace, key)
             acc + 1
           else
             acc
@@ -108,7 +112,7 @@ defimpl BeamWeaver.Adapter.Retainable, for: BeamWeaver.Memory.ETS do
       |> Enum.filter(fn {{entry_namespace, _key}, _entry} ->
         is_nil(namespace) or entry_namespace == namespace
       end)
-      |> prune_to_limit(store.items, Keyword.get(opts, :max_entries))
+      |> prune_to_limit(store, Keyword.get(opts, :max_entries))
 
     {:ok, age_deleted + limit_deleted}
   end
@@ -125,15 +129,15 @@ defimpl BeamWeaver.Adapter.Retainable, for: BeamWeaver.Memory.ETS do
     end
   end
 
-  defp prune_to_limit(_entries, _table, nil), do: 0
-  defp prune_to_limit(_entries, _table, max_entries) when max_entries < 0, do: 0
+  defp prune_to_limit(_entries, _store, nil), do: 0
+  defp prune_to_limit(_entries, _store, max_entries) when max_entries < 0, do: 0
 
-  defp prune_to_limit(entries, table, max_entries) when is_integer(max_entries) do
+  defp prune_to_limit(entries, store, max_entries) when is_integer(max_entries) do
     entries
     |> Enum.sort_by(fn {_key, item} -> item.updated_at end, {:desc, DateTime})
     |> Enum.drop(max_entries)
     |> Enum.reduce(0, fn {{namespace, key}, _item}, acc ->
-      :ets.delete(table, {namespace, key})
+      BeamWeaver.Memory.ETS.delete(store, namespace, key)
       acc + 1
     end)
   end

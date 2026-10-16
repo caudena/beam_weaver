@@ -109,14 +109,16 @@ defmodule BeamWeaver.Models.ParamPolicy do
                      :x_grok_conv_id
                    ])
 
-  @escape_hatches MapSet.new([:extra_body, :model_kwargs, :provider_opts])
+  @escape_hatches MapSet.new([:extra_body, :provider_opts])
 
   @aliases %{
-    max_tokens: :max_output_tokens,
-    max_completion_tokens: :max_output_tokens,
     structured_output: :response_format,
     stream: :streaming
   }
+
+  # The output cap has a different name on each API, and every model takes
+  # all three, so a profile that lists one of them supports the others.
+  @output_cap_params [:max_tokens, :max_completion_tokens, :max_output_tokens]
 
   @spec new(mode() | keyword() | map() | t() | nil) :: t()
   def new(nil), do: %__MODULE__{}
@@ -130,6 +132,13 @@ defmodule BeamWeaver.Models.ParamPolicy do
 
   def new(_other), do: %__MODULE__{}
 
+  @doc """
+  Returns true for a standard model parameter: an option a chat or embedding
+  call can carry, such as `:temperature`, `:tools` or `:stop`.
+  """
+  @spec standard_param?(term()) :: boolean()
+  def standard_param?(key), do: MapSet.member?(@standard_params, key)
+
   @spec default_for(Profile.t() | nil) :: t()
   def default_for(%Profile{extra: %{unknown: true}}), do: %__MODULE__{mode: :permissive}
   def default_for(%Profile{}), do: %__MODULE__{mode: :strict}
@@ -139,6 +148,10 @@ defmodule BeamWeaver.Models.ParamPolicy do
   Validates user-supplied model params against a profile.
 
   Escape hatches are intentionally ignored here; they are provider-boundary maps.
+  In `:warn` mode, unsupported params emit a
+  `[:beam_weaver, :models, :param_warning]` telemetry event that names the
+  provider, the model and the params, never their values. `opts` takes
+  `:api`, the API whose params the profile lists.
   """
   @spec validate(Profile.t() | nil, keyword() | map(), t() | mode() | nil, keyword()) ::
           :ok | {:error, Error.t()}
@@ -164,7 +177,7 @@ defmodule BeamWeaver.Models.ParamPolicy do
         :ok
 
       {:warn, unsupported} ->
-        emit_warning(profile, unsupported, opts)
+        emit_warning(profile, unsupported)
         :ok
 
       {:strict, unsupported} ->
@@ -201,36 +214,28 @@ defmodule BeamWeaver.Models.ParamPolicy do
 
   defp ignored_param?(key, _value), do: MapSet.member?(@escape_hatches, key)
 
-  defp standard_param?(key), do: MapSet.member?(@standard_params, key)
-
   defp supported?(profile, key, api)
 
   defp supported?(%Profile{} = profile, :stream, _api), do: profile.streaming == true
 
   defp supported?(%Profile{} = profile, key, nil),
-    do: Profile.supports_param?(profile, aliased(key))
+    do: Enum.any?(names(key), &Profile.supports_param?(profile, &1))
 
   defp supported?(%Profile{} = profile, key, api),
-    do:
-      Profile.supports_param?(profile, api, key) or
-        Profile.supports_param?(profile, api, aliased(key))
+    do: Enum.any?(names(key), &Profile.supports_param?(profile, api, &1))
 
   defp supported?(profile, key, _api), do: supported?(profile, key)
 
   defp supported?(_profile, _key), do: true
 
-  defp aliased(key), do: Map.get(@aliases, key, key)
+  defp names(key) when key in @output_cap_params, do: @output_cap_params
+  defp names(key), do: Enum.uniq([key, Map.get(@aliases, key, key)])
 
-  defp emit_warning(profile, unsupported, opts) do
+  defp emit_warning(profile, unsupported) do
     :telemetry.execute(
       [:beam_weaver, :models, :param_warning],
       %{count: length(unsupported)},
-      %{
-        provider: profile_value(profile, :provider),
-        model: profile_value(profile, :id),
-        params: unsupported,
-        metadata: Keyword.get(opts, :metadata, %{})
-      }
+      %{provider: profile_value(profile, :provider), model: profile_value(profile, :id), params: unsupported}
     )
   end
 

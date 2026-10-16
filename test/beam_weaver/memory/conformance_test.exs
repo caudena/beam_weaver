@@ -1,7 +1,6 @@
 defmodule BeamWeaver.Memory.ConformanceTest do
   use ExUnit.Case, async: false
 
-  alias BeamWeaver.Core.Async
   alias BeamWeaver.Memory
   alias BeamWeaver.Memory.Ecto
   alias BeamWeaver.Memory.ETS
@@ -93,6 +92,14 @@ defmodule BeamWeaver.Memory.ConformanceTest do
                |> Enum.map(& &1.key) == ["two"]
       end
 
+      test "search with an empty namespace prefix finds the records of every namespace", %{store: store} do
+        put!(store, ["docs", "a"], "one", %{"kind" => "report"})
+        put!(store, ["other"], "two", %{"kind" => "note"})
+
+        assert store |> Memory.search([]) |> Enum.map(& &1.key) |> Enum.sort() == ["one", "two"]
+        assert [%{key: "two"}] = Memory.search(store, [], filter: %{"kind" => "note"})
+      end
+
       test "lists namespaces with prefix, suffix, wildcards, depth, limit, and offset", %{
         store: store
       } do
@@ -166,30 +173,20 @@ defmodule BeamWeaver.Memory.ConformanceTest do
         assert search_item.key == "prefs"
       end
 
-      test "async store facade mirrors sync get put delete search namespace and batch calls", %{
-        store: store
-      } do
-        assert {:ok, _item} =
-                 Memory.async_put(store, ["async"], "one", %{"body" => "alpha"}, metadata: %{m: 1})
-                 |> Async.await()
+      test "store facade covers get put delete search namespace and batch calls", %{store: store} do
+        assert {:ok, _item} = Memory.put(store, ["async"], "one", %{"body" => "alpha"}, metadata: %{m: 1})
 
-        assert {:ok, item} = Memory.async_get(store, ["async"], "one") |> Async.await()
+        assert {:ok, item} = Memory.get(store, ["async"], "one")
         assert item.value == %{"body" => "alpha"}
         assert metadata_value(item.metadata, "m") == 1
 
-        assert [%{key: "one"}] =
-                 Memory.async_search(store, ["async"], query: "alpha") |> Async.await()
+        assert [%{key: "one"}] = Memory.search(store, ["async"], query: "alpha")
+        assert [["async"]] = Memory.list_namespaces(store, prefix: ["async"])
 
-        assert [["async"]] =
-                 Memory.async_list_namespaces(store, prefix: ["async"]) |> Async.await()
-
-        assert [item] =
-                 Memory.async_batch(store, [%GetOp{namespace: ["async"], key: "one"}])
-                 |> Async.await()
-
+        assert [item] = Memory.batch(store, [%GetOp{namespace: ["async"], key: "one"}])
         assert item.key == "one"
 
-        assert :ok = Memory.async_delete(store, ["async"], "one") |> Async.await()
+        assert :ok = Memory.delete(store, ["async"], "one")
         assert :error = Memory.get(store, ["async"], "one")
       end
 
@@ -213,27 +210,93 @@ defmodule BeamWeaver.Memory.ConformanceTest do
         assert [nil, "value2"] = Memory.get_many(store, ["kv"], ["foo", "bar"])
       end
 
-      test "base-store async batch key helpers use Task-backed handles", %{store: store} do
-        assert :ok =
-                 Memory.async_put_many(store, ["async-kv"], [
-                   {"foo", "value1"},
-                   {"bar", "value2"}
-                 ])
-                 |> Async.await()
+      test "default_ttl applies to records put without ttl:, and reads leave expiry alone by default" do
+        store = new_store(unquote(adapter), default_ttl: 60)
 
-        assert ["value1", "value2", nil] =
-                 Memory.async_get_many(store, ["async-kv"], ["foo", "bar", "missing"])
-                 |> Async.await()
+        assert {:ok, defaulted} = Memory.put(store, ["ttl"], "defaulted", %{"v" => 1})
+        assert defaulted.ttl == 60
+        assert_in_delta DateTime.diff(defaulted.expires_at, DateTime.utc_now()), 3_600, 5
 
-        assert ["bar", "foo"] =
-                 Memory.async_yield_keys(store, ["async-kv"])
-                 |> Async.await()
+        assert {:ok, own} = Memory.put(store, ["ttl"], "own", %{"v" => 2}, ttl: 1)
+        assert own.ttl == 1
+        assert {:ok, %{ttl: nil, expires_at: nil}} = Memory.put(store, ["ttl"], "kept", %{"v" => 3}, ttl: nil)
 
-        assert :ok =
-                 Memory.async_delete_many(store, ["async-kv"], ["foo", "bar"])
-                 |> Async.await()
+        Process.sleep(10)
+        assert {:ok, %{expires_at: expires_at}} = Memory.get(store, ["ttl"], "own")
+        assert expires_at == own.expires_at
+        assert [%{expires_at: ^expires_at}] = Memory.search(store, ["ttl"], filter: %{"v" => 2})
+      end
 
-        assert [nil, nil] = Memory.get_many(store, ["async-kv"], ["foo", "bar"])
+      test "refresh_ttl starts a record's own lifetime again when it is read" do
+        store = new_store(unquote(adapter), default_ttl: 60, refresh_ttl: true)
+
+        assert {:ok, item} = Memory.put(store, ["ttl"], "short", %{"v" => 1}, ttl: 1)
+        Process.sleep(10)
+
+        assert {:ok, read} = Memory.get(store, ["ttl"], "short")
+        assert DateTime.compare(read.expires_at, item.expires_at) == :gt
+        assert DateTime.diff(read.expires_at, DateTime.utc_now()) <= 60
+        assert read.updated_at == item.updated_at
+
+        Process.sleep(10)
+        assert [found] = Memory.search(store, ["ttl"])
+        assert DateTime.compare(found.expires_at, read.expires_at) == :gt
+        assert {:ok, %{expires_at: stored}} = Memory.get(store, ["ttl"], "short")
+        assert DateTime.compare(stored, found.expires_at) != :lt
+      end
+
+      test "refresh_ttl on batch operations overrides the store's setting" do
+        store = new_store(unquote(adapter))
+
+        assert {:ok, item} = Memory.put(store, ["ttl"], "k", %{"v" => 1}, ttl: 1)
+        Process.sleep(10)
+
+        assert [same] = Memory.batch(store, [%GetOp{namespace: ["ttl"], key: "k"}])
+        assert same.expires_at == item.expires_at
+
+        assert [refreshed] = Memory.batch(store, [%GetOp{namespace: ["ttl"], key: "k", refresh_ttl: true}])
+        assert DateTime.compare(refreshed.expires_at, item.expires_at) == :gt
+
+        Process.sleep(10)
+        assert [[found]] = Memory.batch(store, [%SearchOp{namespace: ["ttl"], refresh_ttl: true}])
+        assert DateTime.compare(found.expires_at, refreshed.expires_at) == :gt
+        assert {:ok, %{expires_at: expires_at}} = Memory.get(store, ["ttl"], "k")
+        assert expires_at == found.expires_at
+
+        refreshing = new_store(unquote(adapter), refresh_ttl: true)
+        assert {:ok, item} = Memory.put(refreshing, ["ttl"], "k", %{"v" => 1}, ttl: 1)
+        Process.sleep(10)
+        assert [kept] = Memory.batch(refreshing, [%GetOp{namespace: ["ttl"], key: "k", refresh_ttl: false}])
+        assert kept.expires_at == item.expires_at
+      end
+
+      test "prune keeps the most recently updated records, by count and by age", %{store: store} do
+        for key <- ~w(a b c d) do
+          put!(store, ["notes"], key, %{"v" => key})
+          Process.sleep(2)
+        end
+
+        put!(store, ["other"], "x", %{"v" => "x"})
+
+        assert {:ok, 2} = Memory.prune(store, namespace: ["notes"], max_entries: 2)
+        assert ["c", "d"] = Memory.yield_keys(store, ["notes"])
+        assert {:ok, _item} = Memory.get(store, ["other"], "x")
+
+        Process.sleep(2)
+        cutoff = DateTime.utc_now()
+        Process.sleep(2)
+        put!(store, ["notes"], "e", %{"v" => "e"})
+
+        assert {:ok, 2} = Memory.prune(store, namespace: ["notes"], older_than: cutoff)
+        assert ["e"] = Memory.yield_keys(store, ["notes"])
+
+        assert {:ok, 1} = Memory.prune(store, max_entries: 1)
+        assert ["e"] = Memory.yield_keys(store, ["notes"])
+        assert :error = Memory.get(store, ["other"], "x")
+
+        assert {:ok, 0} = Memory.prune(store, max_age_ms: 60_000)
+        assert {:ok, 1} = Memory.prune(store, max_age_ms: 0)
+        assert [] = Memory.yield_keys(store, ["notes"])
       end
     end
   end
@@ -482,13 +545,13 @@ defmodule BeamWeaver.Memory.ConformanceTest do
     end)
   end
 
-  test "ets memory vector operations work through Task-backed async facade" do
+  test "ets memory vector search applies equality and range filters" do
     embeddings = %CharacterEmbeddings{parent: self()}
     store = ETS.new(index: %{dims: embeddings.dimensions, embed: embeddings})
 
     for index <- 0..9 do
       assert {:ok, _item} =
-               Memory.async_put(
+               Memory.put(
                  store,
                  ["async-vectors"],
                  "doc#{index}",
@@ -498,32 +561,31 @@ defmodule BeamWeaver.Memory.ConformanceTest do
                    "index" => index
                  }
                )
-               |> Async.await()
     end
 
     assert [%{key: "doc0"} | _] =
-             Memory.async_search(store, ["async-vectors"],
+             Memory.search(store, ["async-vectors"],
                query: "apple 0",
                filter: %{"color" => "red"}
              )
-             |> Async.await()
 
     results =
       0..4
       |> Enum.map(fn index ->
-        Memory.async_search(store, ["async-vectors"],
+        Memory.search(store, ["async-vectors"],
           query: "apple #{index}",
           filter: %{"index" => %{"$gte" => index}}
         )
       end)
-      |> Async.await_batch()
 
     assert Enum.all?(results, &(&1 != []))
   end
 
-  defp new_store(:ets), do: ETS.new()
+  defp new_store(adapter, opts \\ [])
 
-  defp new_store(:ecto) do
+  defp new_store(:ets, opts), do: ETS.new(opts)
+
+  defp new_store(:ecto, opts) do
     assert LivePostgres.available?()
 
     table = LivePostgres.unique_table("bw_conformance_memory")
@@ -534,7 +596,7 @@ defmodule BeamWeaver.Memory.ConformanceTest do
       LivePostgres.clear_migration(version)
     end)
 
-    Ecto.new(repo: PostgresRepo, table: table)
+    Ecto.new([repo: PostgresRepo, table: table] ++ opts)
   end
 
   defp metadata_value(metadata, key) do

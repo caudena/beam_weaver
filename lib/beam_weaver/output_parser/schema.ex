@@ -16,7 +16,7 @@ defmodule BeamWeaver.OutputParser.Schema do
   def cast(data, nil), do: {:ok, data}
 
   def cast(data, module) when is_atom(module) do
-    ensure_schema_module_compiled(module)
+    BeamWeaver.Schema.ensure_schema_module_compiled(module)
 
     cond do
       function_exported?(module, :new, 1) ->
@@ -46,31 +46,10 @@ defmodule BeamWeaver.OutputParser.Schema do
     end)
   end
 
-  def normalize_module_schema(module) when is_atom(module) do
-    ensure_schema_module_compiled(module)
-
-    cond do
-      function_exported?(module, :json_schema, 0) -> module.json_schema()
-      function_exported?(module, :schema, 0) -> module.schema()
-      true -> nil
-    end
-  end
+  def normalize_module_schema(module) when is_atom(module), do: BeamWeaver.Schema.module_schema(module)
 
   def normalize_module_schema(schema) when is_map(schema), do: schema
   def normalize_module_schema(_schema), do: nil
-
-  defp ensure_schema_module_compiled(module) do
-    case Code.ensure_compiled(module) do
-      {:module, _module} ->
-        :ok
-
-      {:error, :nofile} ->
-        :error
-
-      {:error, reason} ->
-        raise ArgumentError, "schema module #{inspect(module)} could not be loaded: #{inspect(reason)}"
-    end
-  end
 
   defp validate_required(schema, data) do
     required = BeamWeaver.MapAccess.get(schema, :required, [])

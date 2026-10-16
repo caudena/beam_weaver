@@ -163,17 +163,20 @@ defmodule BeamWeaver.Graph.Nodes.ToolNode.Input do
 
   defp tool_call_with_context?(_input), do: false
 
-  defp tool_call_id(call) do
+  @doc false
+  def tool_call_id(call) do
     get_value(call, :call_id) || get_value(call, :tool_call_id) || get_value(call, :id)
   end
 
-  defp tool_call_name(call) do
+  @doc false
+  def tool_call_name(call) do
     get_value(call, :name) ||
       nested_value(call, :function, :name) ||
       nested_value(call, "function", "name")
   end
 
-  defp tool_call_args(call) do
+  @doc false
+  def tool_call_args(call) do
     args =
       get_value(call, :args) ||
         get_value(call, :arguments) ||
@@ -193,13 +196,14 @@ defmodule BeamWeaver.Graph.Nodes.ToolNode.Input do
     end
   end
 
-  defp decode_args(args) when is_binary(args) do
+  @doc false
+  def decode_args(args) when is_binary(args) do
     case BeamWeaver.JSON.decode(args) do
       {:ok, decoded} when is_map(decoded) -> decoded
       _other -> %{"input" => args}
     end
   end
 
-  defp decode_args(args) when is_map(args), do: args
-  defp decode_args(_args), do: %{}
+  def decode_args(args) when is_map(args), do: args
+  def decode_args(_args), do: %{}
 end

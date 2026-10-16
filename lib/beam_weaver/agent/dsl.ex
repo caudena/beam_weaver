@@ -16,7 +16,8 @@ defmodule BeamWeaver.Agent.DSL do
     store: [attr: :beam_weaver_store],
     cache: [attr: :beam_weaver_cache],
     model: [attr: :beam_weaver_model],
-    model_opts: [attr: :beam_weaver_model_opts, default: []],
+    model_options: [attr: :beam_weaver_model_options],
+    model_opts: [attr: :beam_weaver_model_opts],
     tools: [attr: :beam_weaver_tools],
     validate_tools: [attr: :beam_weaver_validate_tools],
     system_prompt: [attr: :beam_weaver_system_prompt],
@@ -46,13 +47,17 @@ defmodule BeamWeaver.Agent.DSL do
     schema_target: [attr: :beam_weaver_schema_target],
     interrupt_before: [attr: :beam_weaver_interrupt_before],
     interrupt_after: [attr: :beam_weaver_interrupt_after],
-    debug: [attr: :beam_weaver_debug],
     recursion_limit: [attr: :beam_weaver_recursion_limit],
-    execution_mode: [attr: :beam_weaver_execution_mode]
+    execution_mode: [attr: :beam_weaver_execution_mode],
+    capability_profile: [attr: :beam_weaver_capability_profile],
+    tool_timeout: [attr: :beam_weaver_tool_timeout],
+    step_timeout: [attr: :beam_weaver_step_timeout],
+    run_timeout: [attr: :beam_weaver_run_timeout]
   ]
 
   @special_macros [
     :model,
+    :model_options,
     :context_schema,
     :context_schema_entries,
     :schema_target,
@@ -67,7 +72,7 @@ defmodule BeamWeaver.Agent.DSL do
     {:name, nil, :ast},
     {:description, nil, :ast},
     {:model, nil, :ast},
-    {:model_opts, [], :escape},
+    {:model_opts, [], :ast},
     {:tools, [], :ast},
     {:validate_tools, false, :ast},
     {:middleware, [], :ast},
@@ -93,10 +98,36 @@ defmodule BeamWeaver.Agent.DSL do
     {:output_schema, nil, :ast},
     {:interrupt_before, [], :ast},
     {:interrupt_after, [], :ast},
-    {:debug, false, :ast},
     {:recursion_limit, nil, :ast},
-    {:execution_mode, nil, :ast}
+    {:execution_mode, nil, :ast},
+    {:capability_profile, nil, :ast},
+    {:tool_timeout, nil, :ast},
+    {:step_timeout, nil, :ast},
+    {:run_timeout, nil, :ast}
   ]
+
+  # In-memory adapters whose `new` creates ETS tables, with the declaration
+  # that takes each and its database-backed counterpart.
+  @in_memory_adapters %{
+    BeamWeaver.Checkpoint.ETS => {:checkpointer, "saver", "BeamWeaver.Checkpoint.Ecto"},
+    BeamWeaver.Memory.ETS => {:store, "store", "BeamWeaver.Memory.Ecto"},
+    BeamWeaver.Cache.ETS => {:cache, "cache", "BeamWeaver.Cache.Ecto"}
+  }
+
+  # What every call loses when its declaration builds a new adapter.
+  @in_memory_losses %{
+    checkpointer: "every call starts its thread over and get_state/1 finds nothing",
+    store: "what one call saves is gone in the next",
+    cache: "nothing one call caches is found by the next"
+  }
+
+  # The declaration a collected attribute comes from, when the names differ.
+  @declaration_names %{
+    model_options: :model,
+    context_schema_entries: :context_schema,
+    interrupt_before: :interrupts,
+    interrupt_after: :interrupts
+  }
 
   def imports do
     [
@@ -211,10 +242,21 @@ defmodule BeamWeaver.Agent.DSL do
     {field, spec_attr_value_ast(Map.get(attrs, field), default, mode)}
   end
 
-  defp spec_attr_value_ast(nil, default, :escape), do: Macro.escape(default)
-  defp spec_attr_value_ast(value, _default, :escape), do: Macro.escape(value)
   defp spec_attr_value_ast(nil, default, :ast), do: default
   defp spec_attr_value_ast(value, _default, :ast), do: value
+
+  @doc false
+  # The options written after `model "..."` and the ones from `model_opts`,
+  # merged when the agent runs; `model_opts` wins on a shared key.
+  def model_opts_quote(nil, nil), do: nil
+  def model_opts_quote(model_options, nil), do: model_options
+  def model_opts_quote(nil, model_opts), do: model_opts
+
+  def model_opts_quote(model_options, model_opts) do
+    quote do
+      Keyword.merge(unquote(model_options), unquote(model_opts))
+    end
+  end
 
   def graph_builder_quote(
         module,
@@ -295,7 +337,7 @@ defmodule BeamWeaver.Agent.DSL do
     quote do
       @impl BeamWeaver.Agent
       def graph do
-        BeamWeaver.Agent.Compiler.compile_graph(__beam_weaver_agent_spec__())
+        BeamWeaver.Agent.Compiler.module_graph(__beam_weaver_agent_spec__())
       end
     end
   end
@@ -363,49 +405,98 @@ defmodule BeamWeaver.Agent.DSL do
     end
   end
 
+  @doc false
+  # Declarations are evaluated on every call, so one that builds an in-memory
+  # saver, store or cache gives every call a new, empty one, and leaves its
+  # ETS tables behind. Raises a `CompileError` for the first such call in a
+  # declaration, outside anonymous functions, which run only when called.
+  def reject_in_memory_adapters!(env, attrs, nodes) do
+    declarations =
+      Enum.map(attrs, fn {name, ast} -> {Map.get(@declaration_names, name, name), ast} end) ++
+        Enum.map(nodes, fn {_name, fun_ast, _opts} -> {:node, fun_ast} end)
+
+    offenders =
+      for {declaration, ast} <- declarations,
+          call = in_memory_adapter_call(ast, env),
+          do: {declaration, call}
+
+    case Enum.sort_by(offenders, fn {_declaration, {_module, call}} -> call_line(call, env) end) do
+      [] ->
+        :ok
+
+      [{declaration, {module, call}} | _later] ->
+        raise CompileError,
+          file: env.file,
+          line: call_line(call, env),
+          description: in_memory_adapter_message(env.module, declaration, module, call)
+    end
+  end
+
+  defp in_memory_adapter_call({:fn, _meta, _clauses}, _env), do: nil
+  defp in_memory_adapter_call({:&, _meta, _args}, _env), do: nil
+
+  defp in_memory_adapter_call({{:., _dot_meta, [module_ast, :new]}, _meta, args} = call, env) when is_list(args) do
+    module = expand_module(module_ast, env)
+
+    if Map.has_key?(@in_memory_adapters, module),
+      do: {module, call},
+      else: in_memory_adapter_call(args, env)
+  end
+
+  defp in_memory_adapter_call({form, _meta, args}, env) when is_list(args),
+    do: in_memory_adapter_call(form, env) || in_memory_adapter_call(args, env)
+
+  defp in_memory_adapter_call({left, right}, env),
+    do: in_memory_adapter_call(left, env) || in_memory_adapter_call(right, env)
+
+  defp in_memory_adapter_call(list, env) when is_list(list),
+    do: Enum.find_value(list, &in_memory_adapter_call(&1, env))
+
+  defp in_memory_adapter_call(_ast, _env), do: nil
+
+  defp expand_module({:__aliases__, _meta, _parts} = alias_ast, env), do: Macro.expand(alias_ast, env)
+  defp expand_module(module, _env) when is_atom(module), do: module
+  defp expand_module(_ast, _env), do: nil
+
+  defp call_line({_call, meta, _args}, env), do: Keyword.get(meta, :line, env.line)
+
+  defp in_memory_adapter_message(agent, declaration, module, call) do
+    {option, noun, durable} = Map.fetch!(@in_memory_adapters, module)
+
+    {loss, keep} =
+      if declaration == option do
+        {Map.fetch!(@in_memory_losses, option),
+         "pass it to each call with `#{option}: #{noun}`; or declare a function that returns it, " <>
+           "such as `#{option} MyApp.Storage.#{option}()`"}
+      else
+        {"what it holds is lost after every call",
+         "declare a function that returns it, such as `MyApp.Storage.#{option}()`"}
+      end
+
+    "the `#{declaration}` declaration creates a new, empty in-memory #{noun} with " <>
+      "`#{Macro.to_string(call)}` each time #{inspect(agent)} runs. Declarations are evaluated on " <>
+      "every call, so #{loss}, and every call leaves new ETS tables behind. Create the #{noun} once, " <>
+      "in your application's supervision tree or a test's setup, and #{keep}; or use #{durable}, " <>
+      "which keeps its data in your database."
+  end
+
   defp schema_entry({:field, type, opts}), do: BeamWeaver.Agent.Schema.field(nil, type, opts)
 
   def block_expressions({:__block__, _meta, expressions}), do: expressions
   def block_expressions(expression), do: [expression]
 
-  def tools_block_ast!(caller, block) do
-    entries =
-      block
-      |> block_expressions()
-      |> Enum.map(&tools_block_entry!(caller, &1))
+  @block_hints %{
+    tools: {"tools", ""},
+    middleware: {"middleware", ". Use `use MyMiddleware` or `include my_middleware_list`."},
+    subagents: {"subagent", ". Use `subagent MyAgent` or `include subagent_specs`."},
+    async_subagents: {"async subagent", ". Use `async_subagent \"name\", opts` or `include async_specs`."}
+  }
 
-    quote do
-      List.flatten([unquote_splicing(entries)])
-    end
-  end
-
-  def middleware_block_ast!(caller, block) do
-    entries =
-      block
-      |> block_expressions()
-      |> Enum.map(&middleware_block_entry!(caller, &1))
-
-    quote do
-      List.flatten([unquote_splicing(entries)])
-    end
-  end
-
-  def subagents_block_ast!(caller, block) do
-    entries =
-      block
-      |> block_expressions()
-      |> Enum.map(&subagents_block_entry!(caller, &1))
-
-    quote do
-      List.flatten([unquote_splicing(entries)])
-    end
-  end
-
-  def async_subagents_block_ast!(caller, block) do
-    entries =
-      block
-      |> block_expressions()
-      |> Enum.map(&async_subagents_block_entry!(caller, &1))
+  @doc false
+  # Expands a `tools do`, `middleware do`, `subagents do`, or `async_subagents do`
+  # block into one flattened list expression.
+  def block_ast!(caller, kind, block) do
+    entries = block |> block_expressions() |> Enum.map(&block_entry!(caller, kind, &1))
 
     quote do
       List.flatten([unquote_splicing(entries)])
@@ -420,80 +511,28 @@ defmodule BeamWeaver.Agent.DSL do
     end)
   end
 
-  defp tools_block_entry!(_caller, {:tool, _meta, [tool_ast]}) do
-    tool_ast
-  end
+  defp block_entry!(_caller, _kind, {:include, _meta, [list_ast]}), do: list_ast
 
-  defp tools_block_entry!(_caller, {:tool, _meta, [tool_ast, opts_ast]}) do
-    quote do
-      {unquote(tool_ast), unquote(opts_ast)}
-    end
-  end
+  defp block_entry!(_caller, :tools, {:tool, _meta, [tool_ast]}), do: tool_ast
 
-  defp tools_block_entry!(_caller, {:include, _meta, [tools_ast]}) do
-    tools_ast
-  end
+  defp block_entry!(_caller, :tools, {:tool, _meta, [tool_ast, opts_ast]}),
+    do: quote(do: {unquote(tool_ast), unquote(opts_ast)})
 
-  defp tools_block_entry!(caller, other) do
-    raise CompileError,
-      file: caller.file,
-      line: caller.line,
-      description: "unsupported tools declaration: #{Macro.to_string(other)}"
-  end
+  defp block_entry!(_caller, :middleware, {:use, _meta, [module_ast]}), do: module_ast
 
-  defp middleware_block_entry!(_caller, {:use, _meta, [module_ast]}) do
-    module_ast
-  end
+  defp block_entry!(_caller, :middleware, {:use, _meta, [module_ast, opts_ast]}),
+    do: quote(do: {unquote(module_ast), unquote(opts_ast)})
 
-  defp middleware_block_entry!(_caller, {:use, _meta, [module_ast, opts_ast]}) do
-    quote do
-      {unquote(module_ast), unquote(opts_ast)}
-    end
-  end
+  defp block_entry!(_caller, :subagents, {:subagent, _meta, [module_ast]}),
+    do: quote(do: BeamWeaver.Agent.Subagent.Spec.from_agent_module(unquote(module_ast), []))
 
-  defp middleware_block_entry!(_caller, {:include, _meta, [middleware_ast]}) do
-    middleware_ast
-  end
+  defp block_entry!(_caller, :subagents, {:subagent, _meta, [module_ast, opts_ast]}),
+    do: quote(do: BeamWeaver.Agent.Subagent.Spec.from_agent_module(unquote(module_ast), unquote(opts_ast)))
 
-  defp middleware_block_entry!(caller, other) do
-    raise CompileError,
-      file: caller.file,
-      line: caller.line,
-      description:
-        "unsupported middleware declaration: #{Macro.to_string(other)}. Use `use MyMiddleware` or `include my_middleware_list`."
-  end
+  defp block_entry!(_caller, :async_subagents, {:async_subagent, _meta, [opts_ast]}),
+    do: quote(do: BeamWeaver.Agent.Subagent.AsyncSpec.new(unquote(opts_ast)))
 
-  defp subagents_block_entry!(_caller, {:subagent, _meta, [module_ast]}) do
-    quote do
-      BeamWeaver.Agent.Subagent.Spec.from_agent_module(unquote(module_ast), [])
-    end
-  end
-
-  defp subagents_block_entry!(_caller, {:subagent, _meta, [module_ast, opts_ast]}) do
-    quote do
-      BeamWeaver.Agent.Subagent.Spec.from_agent_module(unquote(module_ast), unquote(opts_ast))
-    end
-  end
-
-  defp subagents_block_entry!(_caller, {:include, _meta, [subagents_ast]}) do
-    subagents_ast
-  end
-
-  defp subagents_block_entry!(caller, other) do
-    raise CompileError,
-      file: caller.file,
-      line: caller.line,
-      description:
-        "unsupported subagent declaration: #{Macro.to_string(other)}. Use `subagent MyAgent` or `include subagent_specs`."
-  end
-
-  defp async_subagents_block_entry!(_caller, {:async_subagent, _meta, [opts_ast]}) do
-    quote do
-      BeamWeaver.Agent.Subagent.AsyncSpec.new(unquote(opts_ast))
-    end
-  end
-
-  defp async_subagents_block_entry!(_caller, {:async_subagent, _meta, [name_ast, opts_ast]}) do
+  defp block_entry!(_caller, :async_subagents, {:async_subagent, _meta, [name_ast, opts_ast]}) do
     quote do
       unquote(opts_ast)
       |> Keyword.put_new(:name, unquote(name_ast))
@@ -501,16 +540,13 @@ defmodule BeamWeaver.Agent.DSL do
     end
   end
 
-  defp async_subagents_block_entry!(_caller, {:include, _meta, [async_subagents_ast]}) do
-    async_subagents_ast
-  end
+  defp block_entry!(caller, kind, other) do
+    {label, hint} = Map.fetch!(@block_hints, kind)
 
-  defp async_subagents_block_entry!(caller, other) do
     raise CompileError,
       file: caller.file,
       line: caller.line,
-      description:
-        "unsupported async subagent declaration: #{Macro.to_string(other)}. Use `async_subagent \"name\", opts` or `include async_specs`."
+      description: "unsupported #{label} declaration: #{Macro.to_string(other)}#{hint}"
   end
 
   defp graph_block_entry!(caller, {:state, _meta, [[do: state_block]]}, acc) do
@@ -612,9 +648,9 @@ defmodule BeamWeaver.Agent.DSL do
     end
   end
 
-  defp schema_entry_quote({key, {:field, type_ast, opts}}) do
+  defp schema_entry_quote({key, {:field, type_ast, opts_ast}}) do
     quote do
-      {unquote(Macro.escape(key)), {:field, unquote(type_ast), unquote(Macro.escape(opts))}}
+      {unquote(Macro.escape(key)), {:field, unquote(type_ast), unquote(opts_ast)}}
     end
   end
 

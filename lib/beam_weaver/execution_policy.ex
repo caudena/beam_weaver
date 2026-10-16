@@ -1,12 +1,15 @@
 defmodule BeamWeaver.ExecutionPolicy do
   @moduledoc """
   Shared execution policy for bounded runtime work.
+
+  `timeout` is in milliseconds and defaults to `:infinity`: as a graph node's
+  `timeout:`, a policy without one lets the node run until it finishes.
   """
 
   alias BeamWeaver.Core.Error
   alias BeamWeaver.Policy
 
-  defstruct timeout: 5_000,
+  defstruct timeout: :infinity,
             max_concurrency: nil,
             metadata: %{}
 

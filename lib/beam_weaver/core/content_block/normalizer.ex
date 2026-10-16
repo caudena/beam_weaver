@@ -33,7 +33,7 @@ defmodule BeamWeaver.Core.ContentBlock.Normalizer do
     "server_tool_call_chunk" => :server_tool_call_chunk
   }
 
-  @spec from_map(map()) :: {:ok, term()}
+  @spec from_map(map()) :: {:ok, term()} | {:error, BeamWeaver.Core.Error.t()}
   def from_map(map) do
     type = ContentBlock.get(map, :type)
 
@@ -87,8 +87,8 @@ defmodule BeamWeaver.Core.ContentBlock.Normalizer do
            metadata: metadata(map)
          })}
 
-      type in [:file, "file"] ->
-        {:ok, file_block(map)}
+      type in [:file, "file", :file_url, "file_url"] ->
+        file_block(map)
 
       type in [:reasoning, "reasoning"] ->
         {:ok, reasoning_block(map)}
@@ -252,27 +252,50 @@ defmodule BeamWeaver.Core.ContentBlock.Normalizer do
     end
   end
 
+  # The file can sit in a nested `file` map, as in OpenAI Chat Completions and
+  # Z.ai parts: `%{"type" => "file", "file" => %{"file_url" => url}}`, or
+  # `"file_id"`, or `"file_data"` with a data URL. Z.ai's older part is
+  # `%{"type" => "file_url", "file_url" => %{"url" => url}}`. A data URL where
+  # a URL goes is the file's data.
   defp file_block(map) do
-    file = ContentBlock.get(map, :file)
-
-    {file_id, data, filename} =
-      if is_map(file) do
-        {ContentBlock.get(file, :file_id), ContentBlock.get(file, :file_data) || ContentBlock.get(file, :data),
-         ContentBlock.get(file, :filename)}
-      else
-        {ContentBlock.get(map, :file_id), ContentBlock.get(map, :data) || ContentBlock.get(map, :base64),
-         ContentBlock.get(map, :filename)}
+    source =
+      case ContentBlock.get(map, :file) do
+        file when is_map(file) -> file
+        _missing -> map
       end
 
-    ContentBlock.file(%{
-      file_id: file_id,
-      filename: filename,
-      url: ContentBlock.get(map, :url),
-      data: data,
-      mime_type: ContentBlock.get(map, :mime_type),
-      metadata: metadata(map)
-    })
+    data = ContentBlock.get(source, :file_data) || ContentBlock.get(source, :data) || ContentBlock.get(source, :base64)
+
+    url =
+      url_value(ContentBlock.get(source, :url) || ContentBlock.get(source, :file_url) || ContentBlock.get(map, :url))
+
+    {data, url} = if is_nil(data) and data_uri?(url), do: {url, nil}, else: {data, url}
+
+    with {:ok, data, data_mime_type} <- file_data(data) do
+      {:ok,
+       ContentBlock.file(%{
+         file_id: ContentBlock.get(source, :file_id),
+         filename: ContentBlock.get(source, :filename),
+         url: url,
+         data: data,
+         mime_type: ContentBlock.get(map, :mime_type) || ContentBlock.get(source, :mime_type) || data_mime_type,
+         metadata: metadata(map)
+       })}
+    end
   end
+
+  # File data is base64; a data URL gives its payload and media type.
+  defp file_data("data:" <> _rest = uri) do
+    with {:ok, %{media_type: media_type, encoding: encoding, data: data}} <- ContentBlock.parse_data_uri(uri) do
+      {:ok, if(encoding == :base64, do: data, else: Base.encode64(data)), media_type}
+    end
+  end
+
+  defp file_data(data), do: {:ok, data, nil}
+
+  defp url_value(url) when is_binary(url), do: url
+  defp url_value(%{} = value), do: ContentBlock.get(value, :url)
+  defp url_value(_value), do: nil
 
   defp reasoning_block(map) do
     reasoning = ContentBlock.get(map, :reasoning) || ContentBlock.get(map, :text)

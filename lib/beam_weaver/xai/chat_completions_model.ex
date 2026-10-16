@@ -3,13 +3,16 @@ defmodule BeamWeaver.XAI.ChatCompletionsModel do
   xAI Chat Completions chat model implementation.
   """
 
+  use BeamWeaver.Provider.RedactedInspect
+
+  alias BeamWeaver.Provider.OpenAICompatibleClient, as: Compat
   alias BeamWeaver.Core.LanguageModel
   alias BeamWeaver.Models.InvocationMetadata
   alias BeamWeaver.OpenAI.ChatCompletions.Options
   alias BeamWeaver.Provider.ChatModel.Options, as: ChatOptions
   alias BeamWeaver.Provider.StructuredOutput
   alias BeamWeaver.XAI.Client
-  alias BeamWeaver.XAI.Error
+  alias BeamWeaver.Core.Error
   alias BeamWeaver.XAI.Messages
   alias BeamWeaver.XAI.Tools
 
@@ -22,7 +25,7 @@ defmodule BeamWeaver.XAI.ChatCompletionsModel do
             api_key: nil,
             x_grok_conv_id: nil,
             default_headers: [],
-            model_kwargs: %{},
+            extra_body: %{},
             temperature: nil,
             reasoning_effort: nil,
             max_tokens: nil,
@@ -46,6 +49,7 @@ defmodule BeamWeaver.XAI.ChatCompletionsModel do
             profile: nil,
             tokenizer: nil,
             param_policy: nil,
+            streaming: false,
             include_response_headers: false,
             transport: nil,
             transport_opts: [],
@@ -53,12 +57,12 @@ defmodule BeamWeaver.XAI.ChatCompletionsModel do
 
   @type t :: %__MODULE__{}
 
-  use BeamWeaver.Provider.ChatModel
+  use BeamWeaver.Provider.ChatModel, stream_source: :xai_chat_completions
 
   @spec new(keyword() | map()) :: t()
   def new(opts \\ []) do
     opts = ChatOptions.keyword_options(opts)
-    opts = normalize_endpoint_opts(opts, "chat/completions")
+    opts = Compat.expand_base_url(opts, endpoint: "chat/completions")
     model = Keyword.get(opts, :model, @default_model)
     profile = ChatOptions.profile_option(opts, :xai, model)
     n = Keyword.get(opts, :n)
@@ -75,7 +79,6 @@ defmodule BeamWeaver.XAI.ChatCompletionsModel do
     struct!(
       __MODULE__,
       opts
-      |> Keyword.delete(:streaming)
       |> Keyword.put(:model, model)
       |> Keyword.put(:profile, profile)
     )
@@ -83,21 +86,18 @@ defmodule BeamWeaver.XAI.ChatCompletionsModel do
 
   @spec request_body(t(), [BeamWeaver.Core.Message.t()], keyword()) ::
           {:ok, map()} | {:error, Error.t()}
+  @impl true
   def request_body(%__MODULE__{} = model, messages, opts \\ []) do
     tools = Keyword.get(opts, :tools, [])
 
-    builder_opts =
-      opts
-      |> Keyword.delete(:tools)
-      |> maybe_drop_stop_for_reasoning(model)
-
-    %Options{opts: builder_opts}
-    |> Options.to_body(model, messages)
-    |> convert_error()
-    |> normalize_xai_structured_output()
-    |> maybe_put_stream_usage(model, opts)
-    |> maybe_put_tools(tools)
-    |> maybe_put_deferred(model, opts)
+    with :ok <- validate_stop(model, opts) do
+      %Options{opts: Keyword.delete(opts, :tools)}
+      |> Options.to_body(model, messages)
+      |> normalize_xai_structured_output()
+      |> maybe_put_stream_usage(model, opts)
+      |> maybe_put_tools(tools)
+      |> maybe_put_deferred(model, opts)
+    end
   end
 
   defp normalize_xai_structured_output({:ok, body}),
@@ -131,29 +131,12 @@ defmodule BeamWeaver.XAI.ChatCompletionsModel do
     }
   end
 
-  defp normalize_endpoint_opts(opts, endpoint_path) do
-    case {Keyword.fetch(opts, :base_url), Keyword.has_key?(opts, :endpoint)} do
-      {{:ok, base_url}, false} ->
-        opts
-        |> Keyword.delete(:base_url)
-        |> Keyword.put(:endpoint, Client.endpoint(base_url, endpoint_path))
-
-      {{:ok, _base_url}, true} ->
-        Keyword.delete(opts, :base_url)
-
-      _other ->
-        opts
-    end
-  end
-
   defp maybe_put_tools({:ok, body}, []), do: {:ok, body}
 
   defp maybe_put_tools({:ok, body}, tools) when is_list(tools) do
-    chat_tools = Tools.to_chat_completions_tools(tools)
-
-    case Tools.validate_chat_completions_tools(chat_tools) do
-      :ok -> {:ok, Map.put(body, "tools", chat_tools)}
-      {:error, _error} = error -> error
+    with {:ok, chat_tools} <- Tools.render_chat_completions_tools(tools),
+         :ok <- Tools.validate_chat_completions_tools(chat_tools) do
+      {:ok, Map.put(body, "tools", chat_tools)}
     end
   end
 
@@ -186,18 +169,26 @@ defmodule BeamWeaver.XAI.ChatCompletionsModel do
 
   defp maybe_put_deferred(other, _model, _opts), do: other
 
-  defp maybe_drop_stop_for_reasoning(opts, %__MODULE__{profile: %{reasoning_output: true}}),
-    do: Keyword.delete(opts, :stop)
-
-  defp maybe_drop_stop_for_reasoning(opts, _model), do: opts
-
-  defp convert_error({:error, %BeamWeaver.OpenAI.Error{} = error}) do
-    {:error, Error.new(error.type, error.message, error.details)}
+  # Grok reasoning models take no stop sequences.
+  defp validate_stop(%__MODULE__{profile: %{reasoning_output: true}} = model, opts) do
+    if Keyword.get(opts, :stop) in [nil, []] do
+      :ok
+    else
+      {:error,
+       Error.new(:unsupported_model_param, "xAI reasoning models do not take stop sequences", %{
+         provider: :xai,
+         model: Keyword.get(opts, :model, model.model),
+         params: [:stop]
+       })}
+    end
   end
 
-  defp convert_error(other), do: other
+  defp validate_stop(_model, _opts), do: :ok
 
-  defp model_stream_metadata(%__MODULE__{} = model, body, opts, api) do
+  @impl true
+  def stream_metadata(%__MODULE__{} = model, body, opts), do: stream_metadata(model, body, opts, :chat_completions)
+
+  defp stream_metadata(%__MODULE__{} = model, body, opts, api) do
     model
     |> InvocationMetadata.provider(:xai, body, opts, api)
     |> InvocationMetadata.to_metadata_map()
@@ -207,30 +198,20 @@ defmodule BeamWeaver.XAI.ChatCompletionsModel do
   defp put_optional(body, _key, []), do: body
   defp put_optional(body, key, value), do: Map.put(body, key, value)
 
-  defp runtime_adapter do
-    %ChatRuntime.Adapter{
-      request: &request_body/3,
-      invoke: fn model, body, opts -> Client.chat_completions(client(model), body, opts) end,
-      stream: fn model, body, opts ->
-        Client.chat_completions_stream(client(model), body, opts)
-      end,
-      stream_response: fn model, body, opts ->
-        Client.chat_completions_stream_response(client(model), body, opts)
-      end,
-      stream_events: fn model, body, opts ->
-        Client.chat_completions_stream_typed_events(client(model), body, opts)
-      end,
-      decode: fn response, _opts -> Messages.chat_completions_to_message(response) end,
-      parse: fn message, opts ->
-        StructuredOutput.maybe_parse(message, opts,
-          error_module: Error,
-          provider_name: "xAI"
-        )
-      end,
-      metadata: fn model, body, opts ->
-        model_stream_metadata(model, body, opts, :chat_completions)
-      end,
-      source: :xai_chat_completions
-    }
-  end
+  @impl true
+  def send_request(:invoke, model, body, opts), do: Client.chat_completions(client(model), body, opts)
+  def send_request(:stream, model, body, opts), do: Client.chat_completions_stream(client(model), body, opts)
+
+  def send_request(:stream_response, model, body, opts),
+    do: Client.chat_completions_stream_response(client(model), body, opts)
+
+  def send_request(:stream_events, model, body, opts),
+    do: Client.chat_completions_stream_typed_events(client(model), body, opts)
+
+  @impl true
+  def decode_response(response, _opts), do: Messages.chat_completions_to_message(response)
+
+  @impl true
+  def parse_response(_model, message, opts),
+    do: StructuredOutput.maybe_parse(message, opts, provider_name: "xAI")
 end

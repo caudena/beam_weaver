@@ -9,11 +9,14 @@ defmodule BeamWeaver.Anthropic do
 
   @doc """
   Builds an Anthropic Messages API chat model.
+
+  The API key and `base_url` (the API root, `"https://api.anthropic.com"` by
+  default) come from `config :beam_weaver, :anthropic` unless given.
   """
   @spec chat_model(keyword()) :: ChatModel.t()
   def chat_model(opts \\ []) do
     opts
-    |> provider_opts("v1/messages")
+    |> provider_opts()
     |> put_count_tokens_endpoint()
     |> ChatModel.new()
   end
@@ -24,9 +27,10 @@ defmodule BeamWeaver.Anthropic do
   @spec tools() :: module()
   def tools, do: Tools
 
-  defp provider_opts(opts, _endpoint_path) do
+  defp provider_opts(opts) do
     opts
     |> Keyword.put_new(:api_key, Config.get([:anthropic, :api_key]))
+    |> Keyword.put_new_lazy(:base_url, fn -> Config.get([:anthropic, :base_url]) end)
   end
 
   defp put_count_tokens_endpoint(opts) do

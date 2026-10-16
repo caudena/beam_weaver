@@ -44,12 +44,12 @@ defmodule BeamWeaver.Checkpoint.Ecto.Query do
   def checkpoints(saver), do: {saver.checkpoints_table, CheckpointRow}
   def writes(saver), do: {saver.writes_table, WriteRow}
 
-  def all(saver, query), do: run(saver, &saver.repo.all(query, &1), [])
-  def one(saver, query), do: run(saver, &saver.repo.one(query, &1), [])
-  def delete_all(saver, query), do: run(saver, &saver.repo.delete_all(query, &1), [])
+  def all(saver, query), do: run(saver, &saver.repo.all(query, &1))
+  def one(saver, query), do: run(saver, &saver.repo.one(query, &1))
+  def delete_all(saver, query), do: run(saver, &saver.repo.delete_all(query, &1))
 
   def insert_all(saver, source, rows, opts \\ []) do
-    run(saver, &saver.repo.insert_all(source, rows, Keyword.merge(opts, &1)), [])
+    run(saver, &saver.repo.insert_all(source, rows, Keyword.merge(opts, &1)))
   end
 
   def transaction(saver, fun) when is_function(fun, 0) do
@@ -113,7 +113,11 @@ defmodule BeamWeaver.Checkpoint.Ecto.Query do
   defp ok_result({:ok, _result}), do: :ok
   defp ok_result({:error, _reason} = error), do: error
 
-  defp run(_saver, fun, opts) do
+  # The saver's `prefix` applies to every table of a query, subqueries included.
+  # Like the migration, `nil`, `false` and `""` name no schema.
+  defp run(saver, fun) do
+    opts = if saver.prefix in [nil, false, ""], do: [], else: [prefix: saver.prefix]
+
     case fun.(opts) do
       {:error, %Error{} = error} -> {:error, error}
       result -> {:ok, result}

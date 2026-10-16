@@ -1,7 +1,5 @@
 defmodule BeamWeaver.Provider.ToolRenderer do
-  @moduledoc """
-  Behaviour for rendering BeamWeaver tools into provider-native declarations.
-  """
+  @moduledoc false
 
   alias BeamWeaver.Core.Error
 

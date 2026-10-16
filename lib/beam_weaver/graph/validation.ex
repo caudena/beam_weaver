@@ -1,10 +1,5 @@
 defmodule BeamWeaver.Graph.Validation do
-  @moduledoc """
-  Graph validation.
-
-  `StateGraph` owns immutable builder data. This module owns validation so the
-  builder does not also carry graph analysis and diagnostics logic.
-  """
+  @moduledoc false
 
   alias BeamWeaver.Core.Error
   alias BeamWeaver.Graph.Compiled
@@ -56,7 +51,7 @@ defmodule BeamWeaver.Graph.Validation do
     )
     |> maybe_add_diagnostic(
       invalid_nodes(graph),
-      "graph contains invalid node callables",
+      "graph contains invalid nodes",
       &%{invalid: &1}
     )
     |> maybe_add_diagnostic(
@@ -159,14 +154,24 @@ defmodule BeamWeaver.Graph.Validation do
     Enum.any?(graph.finish_points, &(not MapSet.member?(known, &1)))
   end
 
+  # A node whose options were invalid is kept as an `:invalid` spec holding the
+  # error, so the graph reports it here instead of running without them.
   defp invalid_nodes(graph) do
     invalid =
       graph.nodes
-      |> Enum.reject(fn {_name, spec} -> valid_node_callable?(spec.fun) end)
-      |> Enum.map(fn {name, spec} -> %{node: name, callable: inspect_callable(spec.fun)} end)
+      |> Enum.filter(fn {_name, spec} -> invalid_spec?(spec) or not valid_node_callable?(spec.fun) end)
+      |> Enum.map(fn {name, spec} -> invalid_node(name, spec) end)
 
     if invalid == [], do: nil, else: invalid
   end
+
+  defp invalid_spec?(%NodeSpec{kind: :invalid}), do: true
+  defp invalid_spec?(_spec), do: false
+
+  defp invalid_node(name, %NodeSpec{kind: :invalid, metadata: %{error: %Error{message: message}}} = spec),
+    do: %{node: name, callable: inspect_callable(spec.fun), error: message}
+
+  defp invalid_node(name, spec), do: %{node: name, callable: inspect_callable(spec.fun)}
 
   defp valid_node_callable?(fun) when is_function(fun, 1), do: true
   defp valid_node_callable?(fun) when is_function(fun, 2), do: true
@@ -302,6 +307,7 @@ defmodule BeamWeaver.Graph.Validation do
     can_finish =
       graph.finish_points
       |> MapSet.to_list()
+      |> Kernel.++(nodes_routing_to_end(graph))
       |> traverse(reverse)
       |> MapSet.new()
 
@@ -362,7 +368,31 @@ defmodule BeamWeaver.Graph.Validation do
     |> merge_adjacency(waiting)
     |> merge_adjacency(guarded_adjacency(graph))
     |> merge_adjacency(dependency_adjacency(graph))
+    |> merge_adjacency(destination_adjacency(graph))
   end
+
+  # A node that routes with `Command` or `Send` lists its targets in
+  # `destinations:`.
+  defp destination_adjacency(graph) do
+    graph.nodes
+    |> Enum.map(fn {node, spec} ->
+      {node, spec |> destinations() |> Enum.reject(&(&1 == "__end__"))}
+    end)
+    |> Enum.reject(fn {_node, targets} -> targets == [] end)
+    |> Map.new()
+  end
+
+  defp nodes_routing_to_end(graph) do
+    for {node, spec} <- graph.nodes, "__end__" in destinations(spec), do: node
+  end
+
+  defp destinations(%{destinations: destinations}) when is_map(destinations),
+    do: destinations |> Map.keys() |> Enum.map(&to_string/1)
+
+  defp destinations(%{destinations: destinations}) when is_list(destinations),
+    do: Enum.map(destinations, &to_string/1)
+
+  defp destinations(_spec), do: []
 
   defp guarded_adjacency(graph) do
     graph.guarded_edges
@@ -406,15 +436,7 @@ defmodule BeamWeaver.Graph.Validation do
 
   defp valid_managed?(_managed), do: false
 
-  defp valid_channel?(%{__struct__: module}) do
-    Code.ensure_loaded?(module) and
-      function_exported?(module, :update, 2) and
-      function_exported?(module, :get, 1) and
-      function_exported?(module, :checkpoint, 1) and
-      function_exported?(module, :from_checkpoint, 2) and
-      function_exported?(module, :copy, 1) and
-      function_exported?(module, :available?, 1)
-  end
+  defp valid_channel?(%{__struct__: module}), do: BeamWeaver.Graph.Channel.implemented_by?(module)
 
   defp valid_channel?(_channel), do: false
 

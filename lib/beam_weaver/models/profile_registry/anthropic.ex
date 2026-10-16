@@ -3,6 +3,7 @@ defmodule BeamWeaver.Models.ProfileRegistry.Anthropic do
 
   alias BeamWeaver.Core.Error
   alias BeamWeaver.Models.Profile
+  alias BeamWeaver.Models.ProfileRegistry
   alias BeamWeaver.Models.ProfileRegistry.Params
 
   @anthropic_deprecated_models %{
@@ -857,7 +858,6 @@ defmodule BeamWeaver.Models.ProfileRegistry.Anthropic do
         }
       })
   }
-  def profiles_map, do: @profiles
   def profiles, do: Map.values(@profiles)
 
   def resolve(model) do
@@ -869,7 +869,7 @@ defmodule BeamWeaver.Models.ProfileRegistry.Anthropic do
         retired_model_error(model)
 
       true ->
-        fetch_or_fallback(@profiles, :anthropic, model)
+        ProfileRegistry.fetch_or_fallback(@profiles, :anthropic, model)
     end
   end
 
@@ -900,12 +900,5 @@ defmodule BeamWeaver.Models.ProfileRegistry.Anthropic do
        expected: "anthropic:#{replacement}",
        retirement_date: metadata.retirement_date
      })}
-  end
-
-  defp fetch_or_fallback(profiles, provider, model) do
-    case Map.fetch(profiles, {provider, model}) do
-      {:ok, profile} -> {:ok, profile}
-      :error -> {:fallback, provider, model}
-    end
   end
 end

@@ -3,10 +3,15 @@ defmodule BeamWeaver.DeepSeek.Client do
   Raw client for DeepSeek's native, OpenAI-compatible, and Anthropic-compatible APIs.
   """
 
+  use BeamWeaver.Provider.RedactedInspect
+
+  alias BeamWeaver.Anthropic.Streaming, as: AnthropicStreaming
   alias BeamWeaver.Config
+  alias BeamWeaver.Core.Error
   alias BeamWeaver.DeepSeek.Client.ResponseDecoder
-  alias BeamWeaver.DeepSeek.Error
-  alias BeamWeaver.Provider.OpenAICompatibleClient
+  alias BeamWeaver.OpenAI.Streaming, as: OpenAIStreaming
+  alias BeamWeaver.Provider.HTTPClient
+  alias BeamWeaver.Provider.OpenAICompatibleClient, as: Compat
   alias BeamWeaver.Provider.OpenAICompatibleStreaming
   alias BeamWeaver.Provider.Options, as: ProviderOptions
   alias BeamWeaver.Transport.Request
@@ -33,38 +38,18 @@ defmodule BeamWeaver.DeepSeek.Client do
 
   @type t :: %__MODULE__{}
 
-  @client_fields [
-    :base_url,
-    :beta_base_url,
-    :anthropic_base_url,
-    :endpoint,
-    :chat_completions_endpoint,
-    :beta_chat_completions_endpoint,
-    :responses_endpoint,
-    :completions_endpoint,
-    :models_endpoint,
-    :balance_endpoint,
-    :anthropic_messages_endpoint,
-    :api_key,
-    :default_headers,
-    :transport,
-    :transport_opts,
-    :timeout
-  ]
-
-  @doc "Builds a DeepSeek client from keyword options or a map."
-  @spec new(keyword() | map()) :: t()
+  @doc "Builds a DeepSeek client from keyword options."
+  @spec new(keyword()) :: t()
   def new(opts \\ []) do
-    opts = if is_map(opts), do: Map.to_list(opts), else: opts
-    configured_base_url = configured_url(opts, :base_url, [:deepseek, :base_url], @default_base_url)
+    configured_base_url = Compat.configured_url(opts, :base_url, [:deepseek, :base_url], @default_base_url)
     api_root = api_root(configured_base_url)
     base_url = stable_base_url(configured_base_url, api_root)
 
     beta_base_url =
-      configured_url(opts, :beta_base_url, [:deepseek, :beta_base_url], endpoint(api_root, "beta"))
+      Compat.configured_url(opts, :beta_base_url, [:deepseek, :beta_base_url], endpoint(api_root, "beta"))
 
     anthropic_base_url =
-      configured_url(
+      Compat.configured_url(
         opts,
         :anthropic_base_url,
         [:deepseek, :anthropic_base_url],
@@ -94,7 +79,7 @@ defmodule BeamWeaver.DeepSeek.Client do
           endpoint(beta_base_url, "chat/completions")
       end
 
-    struct(__MODULE__,
+    %__MODULE__{
       base_url: base_url,
       beta_base_url: beta_base_url,
       anthropic_base_url: anthropic_base_url,
@@ -116,274 +101,153 @@ defmodule BeamWeaver.DeepSeek.Client do
       transport: ProviderOptions.default_transport(Keyword.get(opts, :transport)),
       transport_opts: Keyword.get(opts, :transport_opts, []),
       timeout: Keyword.get(opts, :timeout, @default_timeout)
-    )
+    }
   end
 
-  @spec chat_completions(t() | keyword(), map(), keyword()) ::
-          {:ok, map()} | {:error, Error.t()}
-  def chat_completions(client_or_opts, body, opts \\ []) when is_map(body) do
-    client = normalize_client(client_or_opts, opts)
-    opts = with_endpoint(opts, chat_completions_endpoint(client, body, opts))
-
+  @spec chat_completions(t(), map(), keyword()) :: {:ok, map()} | {:error, Error.t()}
+  def chat_completions(%__MODULE__{} = client, body, opts \\ []) when is_map(body) do
     client
-    |> do_request(body, opts)
+    |> http(chat_endpoint(client, body, opts), opts)
+    |> HTTPClient.post_json(body, opts)
     |> ResponseDecoder.json(opts)
   end
 
-  @spec chat_completions_stream(t() | keyword(), map(), keyword()) ::
-          {:ok, Enumerable.t()} | {:error, Error.t()}
-  def chat_completions_stream(client_or_opts, body, opts \\ []) when is_map(body) do
-    client = normalize_client(client_or_opts, opts)
-    opts = with_endpoint(opts, chat_completions_endpoint(client, body, opts))
-
-    do_stream(client, body, opts, &OpenAICompatibleStreaming.text_deltas/1)
-  end
-
-  @spec chat_completions_stream_response(t() | keyword(), map(), keyword()) ::
-          {:ok, map()} | {:error, Error.t()}
-  def chat_completions_stream_response(client_or_opts, body, opts \\ []) when is_map(body) do
-    client = normalize_client(client_or_opts, opts)
-    opts = with_endpoint(opts, chat_completions_endpoint(client, body, opts))
-
-    do_stream_collect(client, body, opts, &ResponseDecoder.chat_completions_stream_response(&1, opts))
-  end
-
-  @spec chat_completions_stream_typed_events(t() | keyword(), map(), keyword()) ::
-          {:ok, Enumerable.t()} | {:error, Error.t()}
-  def chat_completions_stream_typed_events(client_or_opts, body, opts \\ [])
-      when is_map(body) do
-    client = normalize_client(client_or_opts, opts)
-    opts = with_endpoint(opts, chat_completions_endpoint(client, body, opts))
-
-    do_stream(client, body, opts, &deepseek_chat_typed_events/2)
-  end
-
-  @spec responses(t() | keyword(), map(), keyword()) :: {:ok, map()} | {:error, Error.t()}
-  def responses(client_or_opts, body, opts \\ []) when is_map(body) do
-    client = normalize_client(client_or_opts, opts)
-    opts = with_endpoint(opts, client.responses_endpoint)
-
+  @spec chat_completions_stream(t(), map(), keyword()) :: {:ok, Enumerable.t()} | {:error, Error.t()}
+  def chat_completions_stream(%__MODULE__{} = client, body, opts \\ []) when is_map(body) do
     client
-    |> do_request(body, opts)
+    |> http(chat_endpoint(client, body, opts), opts)
+    |> stream(body, opts, &OpenAICompatibleStreaming.text_deltas/1)
+  end
+
+  @spec chat_completions_stream_response(t(), map(), keyword()) :: {:ok, map()} | {:error, Error.t()}
+  def chat_completions_stream_response(%__MODULE__{} = client, body, opts \\ []) when is_map(body) do
+    client
+    |> http(chat_endpoint(client, body, opts), opts)
+    |> HTTPClient.collect_sse(body, opts, &ResponseDecoder.chat_completions_stream_response(&1, opts))
+  end
+
+  @spec chat_completions_stream_typed_events(t(), map(), keyword()) ::
+          {:ok, Enumerable.t()} | {:error, Error.t()}
+  def chat_completions_stream_typed_events(%__MODULE__{} = client, body, opts \\ []) when is_map(body) do
+    client
+    |> http(chat_endpoint(client, body, opts), opts)
+    |> typed_stream(body, opts, &deepseek_chat_typed_events/2)
+  end
+
+  @spec responses(t(), map(), keyword()) :: {:ok, map()} | {:error, Error.t()}
+  def responses(%__MODULE__{} = client, body, opts \\ []) when is_map(body) do
+    client
+    |> http(client.responses_endpoint, opts)
+    |> HTTPClient.post_json(body, opts)
     |> ResponseDecoder.json(opts)
   end
 
-  @spec responses_stream(t() | keyword(), map(), keyword()) ::
-          {:ok, Enumerable.t()} | {:error, Error.t()}
-  def responses_stream(client_or_opts, body, opts \\ []) when is_map(body) do
-    client = normalize_client(client_or_opts, opts)
-    opts = with_endpoint(opts, client.responses_endpoint)
+  @spec responses_stream(t(), map(), keyword()) :: {:ok, Enumerable.t()} | {:error, Error.t()}
+  def responses_stream(%__MODULE__{} = client, body, opts \\ []) when is_map(body),
+    do: client |> http(client.responses_endpoint, opts) |> stream(body, opts, &OpenAIStreaming.text_deltas/1)
 
-    do_stream(client, body, opts, &BeamWeaver.OpenAI.Streaming.text_deltas/1)
-  end
-
-  @spec responses_stream_response(t() | keyword(), map(), keyword()) ::
-          {:ok, map()} | {:error, Error.t()}
-  def responses_stream_response(client_or_opts, body, opts \\ []) when is_map(body) do
-    client = normalize_client(client_or_opts, opts)
-    opts = with_endpoint(opts, client.responses_endpoint)
-
-    do_stream_collect(client, body, opts, &ResponseDecoder.responses_stream_response(&1, opts))
-  end
-
-  @spec responses_stream_events(t() | keyword(), map(), keyword()) ::
-          {:ok, Enumerable.t()} | {:error, Error.t()}
-  def responses_stream_events(client_or_opts, body, opts \\ []) when is_map(body) do
-    client = normalize_client(client_or_opts, opts)
-    opts = with_endpoint(opts, client.responses_endpoint)
-
-    do_stream(client, body, opts, &BeamWeaver.OpenAI.Streaming.lifecycle_events/1)
-  end
-
-  @spec responses_stream_typed_events(t() | keyword(), map(), keyword()) ::
-          {:ok, Enumerable.t()} | {:error, Error.t()}
-  def responses_stream_typed_events(client_or_opts, body, opts \\ []) when is_map(body) do
-    client = normalize_client(client_or_opts, opts)
-    opts = with_endpoint(opts, client.responses_endpoint)
-
-    do_stream(client, body, opts, &deepseek_responses_typed_events/1)
-  end
-
-  @spec completions(t() | keyword(), map(), keyword()) :: {:ok, map()} | {:error, Error.t()}
-  def completions(client_or_opts, body, opts \\ []) when is_map(body) do
-    client = normalize_client(client_or_opts, opts)
-    opts = with_endpoint(opts, client.completions_endpoint)
-
+  @spec responses_stream_response(t(), map(), keyword()) :: {:ok, map()} | {:error, Error.t()}
+  def responses_stream_response(%__MODULE__{} = client, body, opts \\ []) when is_map(body) do
     client
-    |> do_request(body, opts)
+    |> http(client.responses_endpoint, opts)
+    |> HTTPClient.collect_sse(body, opts, &ResponseDecoder.responses_stream_response(&1, opts))
+  end
+
+  @spec responses_stream_events(t(), map(), keyword()) :: {:ok, Enumerable.t()} | {:error, Error.t()}
+  def responses_stream_events(%__MODULE__{} = client, body, opts \\ []) when is_map(body),
+    do: client |> http(client.responses_endpoint, opts) |> stream(body, opts, &OpenAIStreaming.lifecycle_events/1)
+
+  @spec responses_stream_typed_events(t(), map(), keyword()) :: {:ok, Enumerable.t()} | {:error, Error.t()}
+  def responses_stream_typed_events(%__MODULE__{} = client, body, opts \\ []) when is_map(body),
+    do: client |> http(client.responses_endpoint, opts) |> typed_stream(body, opts, &deepseek_responses_typed_events/1)
+
+  @spec completions(t(), map(), keyword()) :: {:ok, map()} | {:error, Error.t()}
+  def completions(%__MODULE__{} = client, body, opts \\ []) when is_map(body) do
+    client
+    |> http(client.completions_endpoint, opts)
+    |> HTTPClient.post_json(body, opts)
     |> ResponseDecoder.json(opts)
   end
 
-  @spec completions_stream(t() | keyword(), map(), keyword()) ::
-          {:ok, Enumerable.t()} | {:error, Error.t()}
-  def completions_stream(client_or_opts, body, opts \\ []) when is_map(body) do
-    client = normalize_client(client_or_opts, opts)
-    opts = with_endpoint(opts, client.completions_endpoint)
+  @spec completions_stream(t(), map(), keyword()) :: {:ok, Enumerable.t()} | {:error, Error.t()}
+  def completions_stream(%__MODULE__{} = client, body, opts \\ []) when is_map(body),
+    do: client |> http(client.completions_endpoint, opts) |> stream(body, opts, &OpenAIStreaming.text_deltas/1)
 
-    do_stream(client, body, opts, &BeamWeaver.OpenAI.Streaming.text_deltas/1)
-  end
-
-  @spec completions_stream_response(t() | keyword(), map(), keyword()) ::
-          {:ok, map()} | {:error, Error.t()}
-  def completions_stream_response(client_or_opts, body, opts \\ []) when is_map(body) do
-    client = normalize_client(client_or_opts, opts)
-    opts = with_endpoint(opts, client.completions_endpoint)
-
-    do_stream_collect(client, body, opts, &ResponseDecoder.completions_stream_response(&1, opts))
-  end
-
-  @spec models(t() | keyword(), keyword()) :: {:ok, map()} | {:error, Error.t()}
-  def models(client_or_opts, opts \\ []) do
-    client = normalize_client(client_or_opts, opts)
-    opts = with_endpoint(opts, client.models_endpoint)
-
+  @spec completions_stream_response(t(), map(), keyword()) :: {:ok, map()} | {:error, Error.t()}
+  def completions_stream_response(%__MODULE__{} = client, body, opts \\ []) when is_map(body) do
     client
-    |> do_get(opts)
+    |> http(client.completions_endpoint, opts)
+    |> HTTPClient.collect_sse(body, opts, &ResponseDecoder.completions_stream_response(&1, opts))
+  end
+
+  @spec models(t(), keyword()) :: {:ok, map()} | {:error, Error.t()}
+  def models(%__MODULE__{} = client, opts \\ []),
+    do: client |> http(client.models_endpoint, opts) |> HTTPClient.get(opts) |> ResponseDecoder.json(opts)
+
+  @spec balance(t(), keyword()) :: {:ok, map()} | {:error, Error.t()}
+  def balance(%__MODULE__{} = client, opts \\ []),
+    do: client |> http(client.balance_endpoint, opts) |> HTTPClient.get(opts) |> ResponseDecoder.json(opts)
+
+  @spec anthropic_messages(t(), map(), keyword()) :: {:ok, map()} | {:error, Error.t()}
+  def anthropic_messages(%__MODULE__{} = client, body, opts \\ []) when is_map(body) do
+    client
+    |> anthropic_http(opts)
+    |> HTTPClient.post_json(body, opts)
     |> ResponseDecoder.json(opts)
   end
 
-  @spec balance(t() | keyword(), keyword()) :: {:ok, map()} | {:error, Error.t()}
-  def balance(client_or_opts, opts \\ []) do
-    client = normalize_client(client_or_opts, opts)
-    opts = with_endpoint(opts, client.balance_endpoint)
+  @spec anthropic_messages_stream(t(), map(), keyword()) :: {:ok, Enumerable.t()} | {:error, Error.t()}
+  def anthropic_messages_stream(%__MODULE__{} = client, body, opts \\ []) when is_map(body),
+    do: client |> anthropic_http(opts) |> stream(body, opts, &AnthropicStreaming.text_deltas/1)
 
+  @spec anthropic_messages_stream_response(t(), map(), keyword()) :: {:ok, map()} | {:error, Error.t()}
+  def anthropic_messages_stream_response(%__MODULE__{} = client, body, opts \\ []) when is_map(body) do
     client
-    |> do_get(opts)
-    |> ResponseDecoder.json(opts)
+    |> anthropic_http(opts)
+    |> HTTPClient.collect_sse(body, opts, &ResponseDecoder.anthropic_stream_response(&1, opts))
   end
 
-  @spec anthropic_messages(t() | keyword(), map(), keyword()) ::
-          {:ok, map()} | {:error, Error.t()}
-  def anthropic_messages(client_or_opts, body, opts \\ []) when is_map(body) do
-    client = normalize_client(client_or_opts, opts)
-    opts = with_endpoint(opts, client.anthropic_messages_endpoint)
+  @spec anthropic_messages_stream_events(t(), map(), keyword()) :: {:ok, Enumerable.t()} | {:error, Error.t()}
+  def anthropic_messages_stream_events(%__MODULE__{} = client, body, opts \\ []) when is_map(body),
+    do: client |> anthropic_http(opts) |> stream(body, opts, &AnthropicStreaming.lifecycle_events/1)
 
-    client
-    |> do_request(body, opts, :anthropic)
-    |> ResponseDecoder.json(opts)
-  end
-
-  @spec anthropic_messages_stream(t() | keyword(), map(), keyword()) ::
+  @spec anthropic_messages_stream_typed_events(t(), map(), keyword()) ::
           {:ok, Enumerable.t()} | {:error, Error.t()}
-  def anthropic_messages_stream(client_or_opts, body, opts \\ []) when is_map(body) do
-    client = normalize_client(client_or_opts, opts)
-    opts = with_endpoint(opts, client.anthropic_messages_endpoint)
-
-    do_stream(client, body, opts, &BeamWeaver.Anthropic.Streaming.text_deltas/1, :anthropic)
-  end
-
-  @spec anthropic_messages_stream_response(t() | keyword(), map(), keyword()) ::
-          {:ok, map()} | {:error, Error.t()}
-  def anthropic_messages_stream_response(client_or_opts, body, opts \\ []) when is_map(body) do
-    client = normalize_client(client_or_opts, opts)
-    opts = with_endpoint(opts, client.anthropic_messages_endpoint)
-
-    do_stream_collect(
-      client,
-      body,
-      opts,
-      &ResponseDecoder.anthropic_stream_response(&1, opts),
-      :anthropic
-    )
-  end
-
-  @spec anthropic_messages_stream_events(t() | keyword(), map(), keyword()) ::
-          {:ok, Enumerable.t()} | {:error, Error.t()}
-  def anthropic_messages_stream_events(client_or_opts, body, opts \\ []) when is_map(body) do
-    client = normalize_client(client_or_opts, opts)
-    opts = with_endpoint(opts, client.anthropic_messages_endpoint)
-
-    do_stream(client, body, opts, &BeamWeaver.Anthropic.Streaming.lifecycle_events/1, :anthropic)
-  end
-
-  @spec anthropic_messages_stream_typed_events(t() | keyword(), map(), keyword()) ::
-          {:ok, Enumerable.t()} | {:error, Error.t()}
-  def anthropic_messages_stream_typed_events(client_or_opts, body, opts \\ [])
-      when is_map(body) do
-    client = normalize_client(client_or_opts, opts)
-    opts = with_endpoint(opts, client.anthropic_messages_endpoint)
-
-    do_stream(client, body, opts, &deepseek_anthropic_typed_events/2, :anthropic)
-  end
+  def anthropic_messages_stream_typed_events(%__MODULE__{} = client, body, opts \\ []) when is_map(body),
+    do: client |> anthropic_http(opts) |> typed_stream(body, opts, &deepseek_anthropic_typed_events/2)
 
   @doc false
   @spec request(t(), map(), keyword()) :: Request.t()
-  def request(%__MODULE__{} = client, body, opts \\ []) when is_map(body) do
-    OpenAICompatibleClient.request(client, body, opts, &http_client/2)
-  end
+  def request(%__MODULE__{} = client, body, opts \\ []) when is_map(body),
+    do: client |> http(client.endpoint, opts) |> HTTPClient.request(body, opts)
 
   @doc "Returns a normalized endpoint for a base URL and path."
   @spec endpoint(String.t(), String.t()) :: String.t()
-  def endpoint(base_url, path), do: OpenAICompatibleClient.endpoint(base_url, path)
+  def endpoint(base_url, path), do: Compat.endpoint(base_url, path)
 
-  defp do_request(client, body, opts, auth \\ :bearer) do
-    OpenAICompatibleClient.post_json(client, body, opts, &http_client(&1, &2, auth))
+  defp stream(http, body, opts, parser),
+    do: HTTPClient.stream_sse(http, body, opts, parser, &ResponseDecoder.stream_error(&1, opts))
+
+  defp typed_stream(http, body, opts, parser),
+    do: HTTPClient.stream_typed_sse(http, body, opts, parser, &ResponseDecoder.stream_error(&1, opts))
+
+  defp http(client, endpoint, opts),
+    do: Compat.http(:deepseek, client, endpoint, opts, [Compat.user_agent(opts, "beam_weaver-deepseek/0.1")])
+
+  defp anthropic_http(client, opts) do
+    headers = [
+      {"anthropic-version", Keyword.get(opts, :anthropic_version, "2023-06-01")},
+      Compat.user_agent(opts, "beam_weaver-deepseek/0.1")
+    ]
+
+    http = Compat.http(:deepseek, client, client.anthropic_messages_endpoint, opts, headers)
+    %{http | auth_header: "x-api-key", auth_prefix: nil}
   end
 
-  defp do_get(client, opts) do
-    OpenAICompatibleClient.get(client, opts, &http_client/2)
-  end
-
-  defp do_stream(client, body, opts, parser, auth \\ :bearer) do
-    OpenAICompatibleClient.stream_sse(
-      client,
-      body,
-      opts,
-      &http_client(&1, &2, auth),
-      parser,
-      &ResponseDecoder.stream_error(&1, opts)
-    )
-  end
-
-  defp do_stream_collect(client, body, opts, decoder, auth \\ :bearer) do
-    OpenAICompatibleClient.collect_sse(
-      client,
-      body,
-      opts,
-      &http_client(&1, &2, auth),
-      decoder
-    )
-  end
-
-  defp http_client(client, opts), do: http_client(client, opts, :bearer)
-
-  defp http_client(client, opts, :bearer) do
-    OpenAICompatibleClient.http_client(:deepseek, client, opts,
-      auth_header: "authorization",
-      auth_prefix: "Bearer",
-      default_headers: default_headers(client, opts)
-    )
-  end
-
-  defp http_client(client, opts, :anthropic) do
-    OpenAICompatibleClient.http_client(:deepseek, client, opts,
-      auth_header: "x-api-key",
-      auth_prefix: nil,
-      default_headers: anthropic_headers(client, opts)
-    )
-  end
-
-  defp default_headers(client, opts) do
-    [{"user-agent", Keyword.get(opts, :user_agent, "beam_weaver-deepseek/0.1")}]
-    |> Kernel.++(Request.normalize_headers(client.default_headers))
-  end
-
-  defp anthropic_headers(client, opts) do
-    [{"anthropic-version", Keyword.get(opts, :anthropic_version, "2023-06-01")}]
-    |> Kernel.++(default_headers(client, opts))
-  end
-
-  defp normalize_client(client_or_opts, opts) do
-    OpenAICompatibleClient.normalize_client(client_or_opts, opts, &new/1, @client_fields)
-  end
-
-  defp chat_completions_endpoint(client, body, opts) do
-    cond do
-      Keyword.has_key?(opts, :endpoint) -> Keyword.fetch!(opts, :endpoint)
-      Keyword.get(opts, :beta, false) -> client.beta_chat_completions_endpoint
-      beta_chat_request?(body) -> client.beta_chat_completions_endpoint
-      true -> client.chat_completions_endpoint
-    end
+  defp chat_endpoint(client, body, opts) do
+    if Keyword.get(opts, :beta, false) or beta_chat_request?(body),
+      do: client.beta_chat_completions_endpoint,
+      else: client.chat_completions_endpoint
   end
 
   defp beta_chat_request?(body), do: prefix_request?(body) or strict_tools?(body)
@@ -413,18 +277,6 @@ defmodule BeamWeaver.DeepSeek.Client do
   end
 
   defp field(_value, _name, default), do: default
-
-  defp with_endpoint(opts, fallback) do
-    Keyword.put_new(opts, :endpoint, fallback)
-  end
-
-  defp configured_url(opts, key, config_path, default) do
-    if Keyword.has_key?(opts, key) do
-      Keyword.fetch!(opts, key) || default
-    else
-      Config.get(config_path, default)
-    end
-  end
 
   defp api_root(base_url) do
     base_url = base_url |> to_string() |> String.trim_trailing("/")
@@ -460,7 +312,6 @@ defmodule BeamWeaver.DeepSeek.Client do
       OpenAICompatibleStreaming.typed_events(events, %{
         provider: :deepseek,
         provider_name: "DeepSeek",
-        error_module: Error,
         usage_metadata: &BeamWeaver.OpenAI.ChatCompletions.Messages.Response.usage_metadata/1,
         stream_metadata: &empty_stream_metadata/3,
         choice_usage: false,
@@ -516,8 +367,4 @@ defmodule BeamWeaver.DeepSeek.Client do
   end
 
   defp put_deepseek_provider(event), do: event
-end
-
-defimpl Inspect, for: BeamWeaver.DeepSeek.Client do
-  def inspect(struct, opts), do: BeamWeaver.Provider.RedactedInspect.redacted_struct(struct, opts)
 end

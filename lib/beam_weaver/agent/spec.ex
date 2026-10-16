@@ -1,10 +1,5 @@
 defmodule BeamWeaver.Agent.Spec do
-  @moduledoc """
-  Normalized declaration data for a BeamWeaver agent module.
-
-  The public DSL compiles into this struct first; graph construction then reads
-  plain data instead of reaching back into module attributes.
-  """
+  @moduledoc false
 
   defstruct [
     :module,
@@ -18,7 +13,6 @@ defmodule BeamWeaver.Agent.Spec do
     :checkpointer,
     :store,
     :cache,
-    :debug,
     :recursion_limit,
     :execution_mode,
     :filesystem,
@@ -33,6 +27,10 @@ defmodule BeamWeaver.Agent.Spec do
     :exclude_tools,
     :tool_descriptions,
     :interrupt_on,
+    :capability_profile,
+    :tool_timeout,
+    :step_timeout,
+    :run_timeout,
     model_opts: [],
     validate_tools: false,
     tools: [],
@@ -70,10 +68,13 @@ defmodule BeamWeaver.Agent.Spec do
           exclude_tools: term(),
           tool_descriptions: term(),
           interrupt_on: term(),
+          capability_profile: term(),
+          tool_timeout: timeout() | nil,
+          step_timeout: timeout() | nil,
+          run_timeout: timeout() | nil,
           validate_tools: boolean(),
           interrupt_before: list() | :all,
           interrupt_after: list() | :all,
-          debug: boolean() | nil,
           execution_mode: atom() | nil,
           recursion_limit: non_neg_integer() | nil
         }
@@ -108,15 +109,17 @@ defmodule BeamWeaver.Agent.Spec do
     :output_schema,
     :interrupt_before,
     :interrupt_after,
-    :debug,
     :recursion_limit,
-    :execution_mode
+    :execution_mode,
+    :capability_profile,
+    :tool_timeout,
+    :step_timeout,
+    :run_timeout
   ]
 
   @default_attrs %{
     model_opts: [],
-    validate_tools: false,
-    debug: false
+    validate_tools: false
   }
 
   @list_attrs [:tools, :middleware]

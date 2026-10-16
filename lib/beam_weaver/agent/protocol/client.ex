@@ -1,5 +1,5 @@
 defmodule BeamWeaver.Agent.Protocol.Client do
-  @moduledoc "Minimal Agent Protocol client behaviour for async DeepAgents subagents."
+  @moduledoc "Minimal Agent Protocol client behaviour for async subagents: start, check, update and cancel remote runs."
 
   alias BeamWeaver.Agent.Subagent.AsyncSpec
 

@@ -5,6 +5,7 @@ defmodule BeamWeaver.VectorStore.ETS do
 
   @behaviour BeamWeaver.VectorStore
 
+  alias BeamWeaver.VectorStore
   alias BeamWeaver.Core.Document
   alias BeamWeaver.Core.EmbeddingModel
   alias BeamWeaver.Core.Error
@@ -34,8 +35,8 @@ defmodule BeamWeaver.VectorStore.ETS do
 
   @impl true
   def add_documents(%__MODULE__{} = store, documents, opts) do
-    with :ok <- validate_documents(documents),
-         {:ok, vectors} <- embed_documents(store.embedding, documents, opts) do
+    with :ok <- VectorStore.validate_documents(documents),
+         {:ok, vectors} <- VectorStore.embed_documents(store.embedding, documents, opts) do
       explicit_ids = Keyword.get(opts, :ids, [])
 
       ids =
@@ -43,7 +44,7 @@ defmodule BeamWeaver.VectorStore.ETS do
         |> Enum.zip(vectors)
         |> Enum.with_index()
         |> Enum.map(fn {{document, vector}, index} ->
-          id = id_for(document, explicit_ids, index)
+          id = VectorStore.id_for(document, explicit_ids, index)
 
           :ets.insert(
             store.table,
@@ -227,12 +228,6 @@ defmodule BeamWeaver.VectorStore.ETS do
     end)
   end
 
-  defp embed_documents(embedding, documents, opts) do
-    documents
-    |> Enum.map(& &1.content)
-    |> then(&EmbeddingModel.embed_documents(embedding, &1, opts))
-  end
-
   defp filter_match?(_document, filter) when filter in [%{}, nil], do: true
 
   defp filter_match?(%Document{} = document, filter) when is_function(filter, 1) do
@@ -276,24 +271,4 @@ defmodule BeamWeaver.VectorStore.ETS do
 
   defp dump_entries(_payload),
     do: {:error, Error.new(:vector_store_load_failed, "vector store dump missing entries")}
-
-  defp validate_documents(documents) do
-    if Enum.all?(documents, &match?(%Document{}, &1)),
-      do: :ok,
-      else: {:error, Error.new(:invalid_documents, "expected BeamWeaver documents")}
-  end
-
-  defp id_for(%Document{} = document, explicit_ids, index) do
-    explicit_ids
-    |> Enum.at(index)
-    |> Kernel.||(document.id)
-    |> Kernel.||(stable_id(document))
-    |> to_string()
-  end
-
-  defp stable_id(%Document{} = document) do
-    :sha256
-    |> :crypto.hash(:erlang.term_to_binary({document.content, document.metadata}))
-    |> Base.encode16(case: :lower)
-  end
 end

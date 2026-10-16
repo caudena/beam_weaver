@@ -3,7 +3,6 @@ defmodule BeamWeaver.Agent.MiddlewareFrameworkTest do
 
   # Native coverage for:
 
-  alias BeamWeaver.Core.Async
   alias BeamWeaver.Core.ChatModel
   alias BeamWeaver.Core.Message
   alias BeamWeaver.Core.Tool
@@ -45,133 +44,157 @@ defmodule BeamWeaver.Agent.MiddlewareFrameworkTest do
   end
 
   defmodule OrderOne do
+    use BeamWeaver.Agent.Middleware
+
     def name(_middleware), do: :order_one
 
-    def before_model(_state, runtime) do
+    def before_model(_middleware, _state, runtime) do
       send(runtime.context.parent, "OrderOne.before_model")
       nil
     end
 
-    def wrap_model_call(request, handler) do
+    def wrap_model_call(_middleware, request, handler) do
       send(request.runtime.context.parent, "OrderOne.wrap_model_call")
       handler.(request)
     end
 
-    def after_model(_state, runtime) do
+    def after_model(_middleware, _state, runtime) do
       send(runtime.context.parent, "OrderOne.after_model")
       nil
     end
   end
 
   defmodule OrderTwo do
+    use BeamWeaver.Agent.Middleware
+
     def name(_middleware), do: :order_two
 
-    def before_model(_state, runtime) do
+    def before_model(_middleware, _state, runtime) do
       send(runtime.context.parent, "OrderTwo.before_model")
       nil
     end
 
-    def wrap_model_call(request, handler) do
+    def wrap_model_call(_middleware, request, handler) do
       send(request.runtime.context.parent, "OrderTwo.wrap_model_call")
       handler.(request)
     end
 
-    def after_model(_state, runtime) do
+    def after_model(_middleware, _state, runtime) do
       send(runtime.context.parent, "OrderTwo.after_model")
       nil
     end
   end
 
   defmodule AgentHooks do
+    use BeamWeaver.Agent.Middleware
+
     def name(_middleware), do: :agent_hooks
 
-    def before_agent(state, runtime) do
+    def before_agent(_middleware, _state, runtime) do
       send(runtime.context.parent, "before_agent")
-      state
+      nil
     end
 
-    def before_model(_state, runtime) do
+    def before_model(_middleware, _state, runtime) do
       send(runtime.context.parent, "before_model")
       nil
     end
 
-    def after_model(_state, runtime) do
+    def after_model(_middleware, _state, runtime) do
       send(runtime.context.parent, "after_model")
       nil
     end
 
-    def after_agent(state, runtime) do
+    def after_agent(_middleware, _state, runtime) do
       send(runtime.context.parent, "after_agent")
-      state
+      nil
     end
   end
 
   defmodule JumpToEnd do
-    def name(_middleware), do: :jump_to_end
-    def can_jump_to(_middleware, :before_model), do: [:end]
-    def can_jump_to(_middleware, _hook), do: []
+    use BeamWeaver.Agent.Middleware
 
-    def before_model(_state, runtime) do
+    def name(_middleware), do: :jump_to_end
+
+    def before_model(_middleware, _state, runtime) do
       send(runtime.context.parent, "jump_before_model")
       %{jump_to: :end}
     end
   end
 
+  defmodule StructDefaults do
+    use BeamWeaver.Agent.Middleware
+
+    defstruct greeting: "Hello from the struct"
+
+    def before_model(%__MODULE__{greeting: greeting}, _state, _runtime) do
+      {:jump, :end, %{messages: [Message.assistant(greeting)]}}
+    end
+  end
+
   defmodule PrivateStateMiddleware do
+    use BeamWeaver.Agent.Middleware
+
     def name(_middleware), do: :private_state
 
     def state_schema(_middleware) do
       %{private_state: Graph.private_channel(LastValue)}
     end
 
-    def before_model(_state, runtime) do
+    def before_model(_middleware, _state, runtime) do
       send(runtime.context.parent, "private_before_model")
       %{private_state: "hidden"}
     end
   end
 
   defmodule RuntimeProbe do
+    use BeamWeaver.Agent.Middleware
+
     def name(_middleware), do: :runtime_probe
 
-    def before_model(_state, runtime) do
+    def before_model(_middleware, _state, runtime) do
       send(runtime.context.parent, {:runtime_before_model, runtime.node})
       nil
     end
 
-    def wrap_model_call(request, handler) do
+    def wrap_model_call(_middleware, request, handler) do
       send(request.runtime.context.parent, {:runtime_wrap_model, request.runtime.node})
       handler.(request)
     end
 
-    def after_model(_state, runtime) do
+    def after_model(_middleware, _state, runtime) do
       send(runtime.context.parent, {:runtime_after_model, runtime.node})
       nil
     end
   end
 
   defmodule AgentHookOne do
+    use BeamWeaver.Agent.Middleware
+
     def name(_middleware), do: :agent_hook_one
 
-    def before_agent(_state, runtime) do
+    def before_agent(_middleware, _state, runtime) do
       send(runtime.context.parent, "before_1")
       nil
     end
 
-    def after_agent(_state, runtime) do
+    def after_agent(_middleware, _state, runtime) do
       send(runtime.context.parent, "after_1")
       nil
     end
   end
 
   defmodule AgentHookTwo do
+    use BeamWeaver.Agent.Middleware
+
     def name(_middleware), do: :agent_hook_two
 
-    def before_agent(_state, runtime) do
+    def before_agent(_middleware, _state, runtime) do
       send(runtime.context.parent, "before_2")
       %{messages: [Message.user("added by before_agent")]}
     end
 
-    def after_agent(_state, runtime) do
+    def after_agent(_middleware, _state, runtime) do
       send(runtime.context.parent, "after_2")
       nil
     end
@@ -203,6 +226,13 @@ defmodule BeamWeaver.Agent.MiddlewareFrameworkTest do
 
     model(%FrameworkModel{parent: :context})
     middleware([JumpToEnd])
+  end
+
+  defmodule BareStructAgent do
+    use BeamWeaver.Agent
+
+    model(%FrameworkModel{parent: :context})
+    middleware([StructDefaults])
   end
 
   defmodule PrivateStateAgent do
@@ -289,6 +319,18 @@ defmodule BeamWeaver.Agent.MiddlewareFrameworkTest do
     refute_receive {:model_call, _count}, 50
   end
 
+  test "jumps need no declaration in the middleware behaviour" do
+    refute {:can_jump_to, 2} in BeamWeaver.Agent.Middleware.behaviour_info(:callbacks)
+    refute function_exported?(JumpToEnd, :can_jump_to, 2)
+  end
+
+  test "a struct middleware listed as a bare module gets its default struct" do
+    assert {:ok, %StructDefaults{}} = BeamWeaver.Agent.Middleware.normalize(StructDefaults)
+
+    assert {:ok, %{messages: [_user, %Message{role: :assistant, content: "Hello from the struct"}]}} =
+             BareStructAgent.invoke(%{messages: [Message.user("hello")]}, context: %{parent: self()})
+  end
+
   test "compiled agent graph exposes deterministic introspection for middleware routes" do
     assert {:ok, compiled} = BeamWeaver.Agent.compiled_graph(OrderAgent)
 
@@ -314,19 +356,6 @@ defmodule BeamWeaver.Agent.MiddlewareFrameworkTest do
     assert_receive {:runtime_before_model, "runtime_probe.before_model"}
     assert_receive {:runtime_wrap_model, "model"}
     assert_receive {:runtime_after_model, "runtime_probe.after_model"}
-  end
-
-  test "Task-backed async agent invocation uses the same middleware path" do
-    assert {:ok, %{messages: messages}} =
-             OrderAgent.async_invoke(%{messages: [Message.user("hello")]},
-               context: %{parent: self()}
-             )
-             |> Async.await()
-
-    assert Enum.map(messages, & &1.role) == [:user, :assistant, :tool, :assistant]
-    assert_receive "OrderOne.before_model"
-    assert_receive "OrderTwo.before_model"
-    assert_receive "OrderOne.wrap_model_call"
   end
 
   def echo_tool do

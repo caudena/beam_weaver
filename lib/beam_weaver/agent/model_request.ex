@@ -5,60 +5,34 @@ defmodule BeamWeaver.Agent.ModelRequest do
 
   alias BeamWeaver.Core.Message
 
-  @fields [
-    :model,
-    :messages,
-    :system_message,
-    :tool_choice,
-    :response_format,
-    :tool_set,
-    :state,
-    :runtime,
-    :tools,
-    :model_opts
-  ]
-
   defstruct [
     :model,
-    :messages,
     :system_message,
     :tool_choice,
     :response_format,
     :tool_set,
-    :state,
     :runtime,
+    messages: [],
+    state: %{},
     tools: [],
     model_opts: []
   ]
 
   @type t :: %__MODULE__{
           model: term(),
-          messages: [BeamWeaver.Core.Message.t()] | nil,
+          messages: [BeamWeaver.Core.Message.t()],
           system_message: BeamWeaver.Core.Message.t() | [BeamWeaver.Core.Message.t()] | nil,
           tool_choice: term(),
-          tools: [term()] | nil,
-          tool_set: BeamWeaver.Agent.ToolSet.t() | nil,
+          tools: [term()],
+          tool_set: term(),
           response_format: term(),
-          state: map() | nil,
+          state: map(),
           runtime: BeamWeaver.Graph.Runtime.t() | nil,
-          model_opts: keyword() | nil
+          model_opts: keyword()
         }
 
-  @spec new(keyword() | map()) :: t()
-  def new(opts \\ []) do
-    opts = if is_map(opts), do: opts, else: Map.new(opts)
-
-    %__MODULE__{}
-    |> override(opts)
-    |> then(fn request ->
-      %{
-        request
-        | messages: request.messages || [],
-          tools: request.tools || [],
-          model_opts: request.model_opts || []
-      }
-    end)
-  end
+  @spec new(keyword()) :: t()
+  def new(opts \\ []) when is_list(opts), do: override(%__MODULE__{}, opts)
 
   @spec system_prompt(t()) :: String.t() | nil
   def system_prompt(%__MODULE__{system_message: nil}), do: nil
@@ -77,53 +51,30 @@ defmodule BeamWeaver.Agent.ModelRequest do
     end
   end
 
-  @spec override(t(), keyword() | map()) :: t()
-  def override(%__MODULE__{} = request, overrides) when is_list(overrides),
-    do: override(request, Map.new(overrides))
+  @doc """
+  Returns a copy of the request with the given fields replaced.
 
-  def override(%__MODULE__{} = request, overrides) when is_map(overrides) do
-    overrides = normalize_system_prompt_overrides(overrides)
+  `:system_prompt` is accepted as a string shorthand for `:system_message`.
+  Replacing `:tools` also rebuilds the request's tool set.
+  """
+  @spec override(t(), keyword()) :: t()
+  def override(%__MODULE__{} = request, overrides) when is_list(overrides) do
+    overrides = put_system_prompt(overrides, Keyword.pop(overrides, :system_prompt, :unset))
+    updated = struct!(request, overrides)
 
-    updated =
-      Enum.reduce(overrides, request, fn {key, value}, acc ->
-        key = normalize_field(key)
-
-        if key in @fields do
-          Map.put(acc, key, value)
-        else
-          acc
-        end
-      end)
-
-    if Map.has_key?(overrides, :tools) or Map.has_key?(overrides, "tools") do
-      tools = Map.get(overrides, :tools, Map.get(overrides, "tools", updated.tools))
-      %{updated | tool_set: BeamWeaver.Agent.ToolSet.new(tools, source: :middleware)}
-    else
-      updated
+    case Keyword.fetch(overrides, :tools) do
+      {:ok, tools} -> %{updated | tool_set: BeamWeaver.Agent.ToolSet.new(tools, source: :middleware)}
+      :error -> updated
     end
   end
 
-  defp normalize_system_prompt_overrides(overrides) do
-    has_system_message? =
-      Map.has_key?(overrides, :system_message) or Map.has_key?(overrides, "system_message")
+  defp put_system_prompt(overrides, {:unset, _rest}), do: overrides
 
-    has_system_prompt? =
-      Map.has_key?(overrides, :system_prompt) or Map.has_key?(overrides, "system_prompt")
+  defp put_system_prompt(_overrides, {prompt, rest}) do
+    if Keyword.has_key?(rest, :system_message),
+      do: raise(ArgumentError, "cannot specify both system_message and system_prompt")
 
-    if has_system_message? and has_system_prompt? do
-      raise ArgumentError, "cannot specify both system_message and system_prompt"
-    end
-
-    if has_system_prompt? do
-      prompt = Map.get(overrides, :system_prompt, Map.get(overrides, "system_prompt"))
-
-      overrides
-      |> Map.delete(:system_prompt)
-      |> Map.delete("system_prompt")
-      |> Map.put(:system_message, prompt_to_system_message(prompt))
-    else
-      overrides
-    end
+    Keyword.put(rest, :system_message, prompt_to_system_message(prompt))
   end
 
   defp prompt_to_system_message(nil), do: nil
@@ -134,17 +85,4 @@ defmodule BeamWeaver.Agent.ModelRequest do
     raise ArgumentError,
           "system_prompt must be a string, system message, or nil, got: #{inspect(prompt)}"
   end
-
-  defp normalize_field(key) when is_atom(key), do: key
-  defp normalize_field("model"), do: :model
-  defp normalize_field("messages"), do: :messages
-  defp normalize_field("system_message"), do: :system_message
-  defp normalize_field("tool_choice"), do: :tool_choice
-  defp normalize_field("response_format"), do: :response_format
-  defp normalize_field("tool_set"), do: :tool_set
-  defp normalize_field("state"), do: :state
-  defp normalize_field("runtime"), do: :runtime
-  defp normalize_field("tools"), do: :tools
-  defp normalize_field("model_opts"), do: :model_opts
-  defp normalize_field(key), do: key
 end

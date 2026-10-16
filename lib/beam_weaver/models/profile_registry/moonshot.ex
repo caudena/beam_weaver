@@ -3,6 +3,7 @@ defmodule BeamWeaver.Models.ProfileRegistry.Moonshot do
 
   alias BeamWeaver.Core.Error
   alias BeamWeaver.Models.Profile
+  alias BeamWeaver.Models.ProfileRegistry
   alias BeamWeaver.Models.ProfileRegistry.Params
 
   @context_window 262_144
@@ -169,6 +170,7 @@ defmodule BeamWeaver.Models.ProfileRegistry.Moonshot do
                  extra:
                    Map.merge(@base_extra, @thinking_toggle_extra)
                    |> Map.merge(%{
+                     json_mode_only: true,
                      pricing_source_url: "https://platform.kimi.ai/docs/pricing/chat-k26",
                      input_cache_hit_price_per_mtok: 0.16,
                      input_cache_miss_price_per_mtok: 0.95,
@@ -186,6 +188,7 @@ defmodule BeamWeaver.Models.ProfileRegistry.Moonshot do
                  extra:
                    Map.merge(@base_extra, @thinking_toggle_extra)
                    |> Map.merge(%{
+                     json_mode_only: true,
                      pricing_source_url: "https://platform.kimi.ai/docs/pricing/chat-k25",
                      unavailable_to_new_users: true,
                      sunset_at: "2026-08-31",
@@ -199,14 +202,13 @@ defmodule BeamWeaver.Models.ProfileRegistry.Moonshot do
               {{:moonshot, id}, Profile.new(Map.merge(@base_profile, profile))}
             end)
 
-  def profiles_map, do: @profiles
   def profiles, do: Map.values(@profiles)
 
   def resolve(model) do
     if Map.has_key?(@moonshot_deprecated_models, model) do
       deprecated_model_error(model)
     else
-      fetch_or_fallback(@profiles, :moonshot, model)
+      ProfileRegistry.fetch_or_fallback(@profiles, :moonshot, model)
     end
   end
 
@@ -222,12 +224,5 @@ defmodule BeamWeaver.Models.ProfileRegistry.Moonshot do
        expected: "moonshot:#{replacement}",
        discontinued_at: metadata.discontinued_at
      })}
-  end
-
-  defp fetch_or_fallback(profiles, provider, model) do
-    case Map.fetch(profiles, {provider, model}) do
-      {:ok, profile} -> {:ok, profile}
-      :error -> {:fallback, provider, model}
-    end
   end
 end

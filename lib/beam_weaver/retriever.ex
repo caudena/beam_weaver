@@ -3,7 +3,6 @@ defmodule BeamWeaver.Retriever do
   Runnable-compatible retriever contract.
   """
 
-  alias BeamWeaver.Core.Async
   alias BeamWeaver.Core.Document
   alias BeamWeaver.Core.Error
   alias BeamWeaver.Core.Tool
@@ -24,12 +23,19 @@ defmodule BeamWeaver.Retriever do
   def retrieve(_retriever, _query, _opts),
     do: {:error, Error.new(:invalid_retriever_query, "retriever query must be a string")}
 
-  def async_retrieve(retriever, query, opts \\ []) do
-    Async.run_call(opts, &retrieve(retriever, query, &1))
-  end
-
   def as_runnable(retriever), do: struct(BeamWeaver.Retriever.Runnable, retriever: retriever)
 
+  @doc """
+  Builds a search tool with one `query` argument that returns the documents
+  the retriever finds, joined into one text.
+
+  Options: `name:` (default `"file_search"`), `description:`,
+  `document_separator:` (default `"\\n\\n"`), and `document_formatter:` (a
+  function from document to text) or `document_prompt:` (a prompt) to format
+  each document. With `response_format: :content_and_artifact`, the documents
+  also travel as the result's artifact, which an agent keeps in the tool
+  message's `metadata.artifact`.
+  """
   def as_tool(retriever, opts \\ []) do
     response_format = Keyword.get(opts, :response_format)
     separator = Keyword.get(opts, :document_separator, "\n\n")

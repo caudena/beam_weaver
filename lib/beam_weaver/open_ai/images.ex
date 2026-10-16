@@ -10,24 +10,26 @@ defmodule BeamWeaver.OpenAI.Images do
   alias BeamWeaver.Tracing
   alias BeamWeaver.Tracing.Runner
 
-  @endpoint "https://api.openai.com/v1/images/generations"
   @request_fields [:size, :quality, :background, :output_format, :output_compression, :n]
 
   @doc "Generate images and emit the image-model usage as a generation run."
   @spec generate(String.t(), keyword()) :: {:ok, map()} | {:error, term()}
   def generate(prompt, opts \\ []) when is_binary(prompt) and is_list(opts) do
     model = Keyword.get(opts, :model, "gpt-image-2.5-flare")
-    endpoint = Keyword.get(opts, :endpoint, @endpoint)
     exporter_opts = Keyword.take(opts, [:exporter, :exporter_opts])
     metadata = %{model_provider: "openai", model_name: model, api: "images"}
     body = request_body(model, prompt, opts)
-    client_opts = Keyword.take(opts, [:api_key, :organization, :project, :transport, :transport_opts, :timeout])
+
+    client =
+      opts |> Keyword.take([:base_url, :api_key, :organization, :project, :transport, :transport_opts]) |> Client.new()
+
+    endpoint = Keyword.get(opts, :endpoint) || Client.endpoint(client, "images/generations")
 
     Runner.run(
       "openai:#{model}:images",
       [kind: :generation, inputs: %{prompt: prompt}, tags: [:model, :openai, :image], metadata: metadata],
       exporter_opts,
-      fn -> Client.post_json(client_opts, endpoint, body, timeout: Keyword.get(opts, :timeout, 90_000)) end,
+      fn -> Client.post_json(client, endpoint, body, timeout: Keyword.get(opts, :timeout, 90_000)) end,
       fn run, result -> finish_run(run, result, metadata, exporter_opts) end
     )
   end

@@ -168,7 +168,7 @@ defmodule BeamWeaver.Migrations.Postgres.VectorStore.V01 do
     ON #{table} (namespace)
     """)
 
-    execute(index_sql(prefix, table, opts))
+    if opts.index, do: execute(index_sql(prefix, table, opts))
   end
 
   def down(%{opts: opts} = spec) do

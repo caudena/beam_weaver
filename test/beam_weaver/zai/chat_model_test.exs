@@ -9,7 +9,7 @@ defmodule BeamWeaver.ZAI.ChatModelTest do
   alias BeamWeaver.Models
   alias BeamWeaver.ZAI.ChatModel
   alias BeamWeaver.ZAI.Client
-  alias BeamWeaver.ZAI.Error
+  alias BeamWeaver.Core.Error
   alias BeamWeaver.ZAI.Messages
   alias BeamWeaver.ZAI.Streaming
 
@@ -109,6 +109,13 @@ defmodule BeamWeaver.ZAI.ChatModelTest do
     assert body["response_format"] == %{"type" => "json_object"}
   end
 
+  test "stop sequences given when the model is created are sent, and a call's own replace them" do
+    {:ok, model} = Models.init_chat_model("zai:glm-5.2", stop: ["END"], api_key: "zai-secret")
+
+    assert {:ok, %{"stop" => ["END"]}} = ChatModel.request_body(model, [Message.user("hi")])
+    assert {:ok, %{"stop" => ["DONE"]}} = ChatModel.request_body(model, [Message.user("hi")], stop: ["DONE"])
+  end
+
   test "request validation rejects unsupported GLM-5.2 options before transport" do
     assert {:error, tool_stream_error} =
              ChatModel.request_body(ChatModel.new(), [Message.user("hi")], tool_stream: true)
@@ -132,10 +139,36 @@ defmodule BeamWeaver.ZAI.ChatModelTest do
     assert format_error.type == :invalid_response_format
 
     assert {:error, model_error} =
-             ChatModel.request_body(%{ChatModel.new() | model: "glm-5.1"}, [Message.user("hi")])
+             ChatModel.request_body(%{ChatModel.new() | model: "glm-4"}, [Message.user("hi")])
 
     assert model_error.type == :unsupported_model
     assert model_error.details.expected == "zai:glm-5.2"
+  end
+
+  test "thinking and reasoning_effort are validated against each GLM model's profile" do
+    assert {:ok, body} =
+             ChatModel.request_body(ChatModel.new(model: "glm-5.2"), [Message.user("hi")],
+               reasoning_effort: :medium,
+               thinking: %{type: :disabled}
+             )
+
+    assert body["reasoning_effort"] == "medium"
+
+    assert {:error, effort_error} =
+             ChatModel.request_body(ChatModel.new(model: "glm-5.3"), [Message.user("hi")], reasoning_effort: :medium)
+
+    assert effort_error.details.param == :reasoning_effort
+    assert effort_error.details.model == "glm-5.3"
+    assert effort_error.details.supported == ["low", "high", "max"]
+
+    assert {:error, thinking_error} =
+             ChatModel.request_body(ChatModel.new(model: "glm-5.3"), [Message.user("hi")], thinking: %{type: :disabled})
+
+    assert thinking_error.details.param == :thinking
+    assert thinking_error.details.supported == [%{"type" => "enabled"}]
+
+    assert {:ok, _body} =
+             ChatModel.request_body(ChatModel.new(model: "glm-5.3"), [Message.user("hi")], reasoning_effort: :max)
   end
 
   test "function tool validation enforces Z.ai name and count limits" do
@@ -173,15 +206,95 @@ defmodule BeamWeaver.ZAI.ChatModelTest do
     assert too_many.details.max == 128
   end
 
-  test "text-only input rejects media content" do
-    assert {:error, error} =
-             ChatModel.request_body(
-               ChatModel.new(),
-               [Message.user([ContentBlock.text("inspect"), ContentBlock.image(%{url: "https://example.test/a.png"})])]
-             )
+  test "text-only models return an error for media content" do
+    for block <- [
+          ContentBlock.image(%{url: "https://example.test/a.png"}),
+          ContentBlock.video(%{url: "https://example.test/a.mp4"}),
+          ContentBlock.file(%{url: "https://example.test/a.pdf", mime_type: "application/pdf"}),
+          ContentBlock.audio(%{data: "UklGRg==", mime_type: "audio/wav"})
+        ] do
+      assert {:error, error} =
+               ChatModel.request_body(ChatModel.new(), [Message.user([ContentBlock.text("inspect"), block])])
 
-    assert error.type == :unsupported_feature
-    assert error.details.feature == :image
+      assert error.type == :unsupported_feature
+      assert error.details.feature == block.type
+      assert error.details.model == "glm-5.2"
+    end
+  end
+
+  test "GLM-5.3-Flash sends images, video and PDFs as its profile allows" do
+    model = ChatModel.new(model: "glm-5.3-flash")
+
+    assert {:ok, body} =
+             ChatModel.request_body(model, [
+               Message.user([
+                 ContentBlock.text("inspect"),
+                 ContentBlock.image(%{url: "https://example.test/a.png"}),
+                 ContentBlock.image(%{data: "iVBORw0KGgo=", mime_type: "image/png"}),
+                 ContentBlock.video(%{url: "https://example.test/a.mp4"}),
+                 ContentBlock.video(%{data: "AAAAGGZ0eXA=", mime_type: "video/mp4"}),
+                 ContentBlock.file(%{url: "https://example.test/a.pdf", mime_type: "application/pdf"}),
+                 ContentBlock.file(%{data: "JVBERi0=", mime_type: "application/pdf", filename: "label.pdf"})
+               ])
+             ])
+
+    assert [%{"content" => parts}] = body["messages"]
+
+    # The shapes Z.ai accepted in a live check: base64 media goes as data URLs,
+    # and documents go in a `file` part.
+    assert parts == [
+             %{"type" => "text", "text" => "inspect"},
+             %{"type" => "image_url", "image_url" => %{"url" => "https://example.test/a.png"}},
+             %{"type" => "image_url", "image_url" => %{"url" => "data:image/png;base64,iVBORw0KGgo="}},
+             %{"type" => "video_url", "video_url" => %{"url" => "https://example.test/a.mp4"}},
+             %{"type" => "video_url", "video_url" => %{"url" => "data:video/mp4;base64,AAAAGGZ0eXA="}},
+             %{"type" => "file", "file" => %{"file_url" => "https://example.test/a.pdf"}},
+             %{
+               "type" => "file",
+               "file" => %{"file_data" => "data:application/pdf;base64,JVBERi0=", "filename" => "label.pdf"}
+             }
+           ]
+
+    assert {:error, %{type: :unsupported_feature, details: %{feature: :audio}}} =
+             ChatModel.request_body(model, [
+               Message.user([ContentBlock.audio(%{data: "UklGRg==", mime_type: "audio/wav"})])
+             ])
+
+    for block <- [ContentBlock.file(%{mime_type: "application/pdf"}), ContentBlock.video(%{file_id: "file-2"})] do
+      assert {:error, %{type: :invalid_content_block, details: %{feature: feature}}} =
+               ChatModel.request_body(model, [Message.user([block])])
+
+      assert feature == block.type
+    end
+  end
+
+  test "GLM-5.3-Flash sends a file uploaded with Z.ai's file API by its id" do
+    model = ChatModel.new(model: "glm-5.3-flash")
+    file_id = "1791644111109-9214b92b4a3c4be69032592ffe6522b3.pdf"
+
+    message =
+      Message.user([
+        ContentBlock.text("Which carrier is on this label?"),
+        ContentBlock.file(file_id: file_id),
+        ContentBlock.file(file_id: file_id, filename: "a1001-label.pdf"),
+        %{"type" => "file", "file" => %{"file_id" => file_id}}
+      ])
+
+    assert {:ok, body} = ChatModel.request_body(model, [message])
+    assert [%{"content" => [_text | files]}] = body["messages"]
+
+    # The part Z.ai documents for files uploaded with its file API, checked
+    # against the live API.
+    assert files == [
+             %{"type" => "file", "file" => %{"file_id" => file_id}},
+             %{"type" => "file", "file" => %{"file_id" => file_id, "filename" => "a1001-label.pdf"}},
+             %{"type" => "file", "file" => %{"file_id" => file_id}}
+           ]
+
+    assert {:error, %{type: :unsupported_feature, details: %{feature: :file, model: "glm-5.3"}}} =
+             ChatModel.request_body(ChatModel.new(model: "glm-5.3"), [
+               Message.user([ContentBlock.file(file_id: file_id)])
+             ])
   end
 
   test "Chat Completions response preserves log IDs, usage details, and estimated cost" do
@@ -371,6 +484,7 @@ defmodule BeamWeaver.ZAI.ChatModelTest do
 
     error_model =
       ChatModel.new(
+        api_key: "test-key",
         transport: BeamWeaver.TestSupport.Conformance.Fakes.Transport,
         transport_opts: [
           expect: %{method: :post, path: "/api/paas/v4/chat/completions"},
@@ -397,6 +511,7 @@ defmodule BeamWeaver.ZAI.ChatModelTest do
   test "insufficient balance is normalized as non-retryable quota error" do
     error_model =
       ChatModel.new(
+        api_key: "test-key",
         transport: BeamWeaver.TestSupport.Conformance.Fakes.Transport,
         transport_opts: [
           expect: %{method: :post, path: "/api/paas/v4/chat/completions"},
@@ -421,7 +536,7 @@ defmodule BeamWeaver.ZAI.ChatModelTest do
   end
 
   test "model initializer supports current explicit Z.ai identifiers" do
-    for model <- ["glm-5.3", "glm-5.3-flash", "glm-5.2"] do
+    for model <- ["glm-5.3", "glm-5.3-flash", "glm-5.3-flashx", "glm-5.2", "glm-5.1", "glm-5", "glm-4.7", "glm-4.6"] do
       assert {:ok, %ChatModel{model: ^model}} = Models.init_chat_model("zai:" <> model)
     end
 
@@ -429,9 +544,84 @@ defmodule BeamWeaver.ZAI.ChatModelTest do
     assert invalid.type == :invalid_model
     assert invalid.details.expected == "zai:glm-5.2"
 
-    assert {:error, unsupported} = Models.init_chat_model("zai:glm-5.1")
+    assert {:error, unsupported} = Models.init_chat_model("zai:glm-4")
     assert unsupported.type == :unsupported_model
     assert unsupported.details.expected == "zai:glm-5.3"
+  end
+
+  test "GLM-5.1 and older models take no reasoning effort but can turn thinking off" do
+    for model <- ["glm-5.1", "glm-5", "glm-4.7", "glm-4.6"] do
+      assert {:ok, body} =
+               ChatModel.request_body(ChatModel.new(model: model), [Message.user("hi")], thinking: %{type: :disabled})
+
+      assert body["thinking"] == %{"type" => "disabled"}
+
+      assert {:error, error} =
+               ChatModel.request_body(ChatModel.new(model: model), [Message.user("hi")], reasoning_effort: :low)
+
+      assert error.type == :unsupported_model_param
+      assert error.details.params == [:reasoning_effort]
+
+      assert {:error, %{type: :unsupported_feature, details: %{feature: :image}}} =
+               ChatModel.request_body(ChatModel.new(model: model), [
+                 Message.user([ContentBlock.image(%{url: "https://example.test/a.png"})])
+               ])
+    end
+  end
+
+  test "GLM-5.3-FlashX takes the media and efforts of GLM-5.3-Flash" do
+    model = ChatModel.new(model: "glm-5.3-flashx")
+
+    assert {:ok, body} =
+             ChatModel.request_body(
+               model,
+               [
+                 Message.user([
+                   ContentBlock.image(%{data: "iVBORw0KGgo=", mime_type: "image/png"}),
+                   ContentBlock.file(%{url: "https://example.test/a.pdf", mime_type: "application/pdf"})
+                 ])
+               ],
+               reasoning_effort: :low
+             )
+
+    assert body["reasoning_effort"] == "low"
+    assert [%{"content" => [%{"type" => "image_url"}, %{"type" => "file"}]}] = body["messages"]
+
+    assert {:error, effort_error} = ChatModel.request_body(model, [Message.user("hi")], reasoning_effort: :medium)
+    assert effort_error.details.supported == ["low", "high", "max"]
+
+    assert {:error, thinking_error} = ChatModel.request_body(model, [Message.user("hi")], thinking: %{type: :disabled})
+    assert thinking_error.details.param == :thinking
+  end
+
+  test "a Z.ai file part in message content is sent as a file by URL" do
+    model = ChatModel.new(model: "glm-5.3-flash")
+
+    message =
+      Message.user([
+        %{"type" => "text", "text" => "Summarize the label."},
+        %{"type" => "file", "file" => %{"file_url" => "https://example.test/label.pdf"}},
+        %{"type" => "file", "file" => %{"file_data" => "data:application/pdf;base64,JVBERi0=", "filename" => "a.pdf"}},
+        %{"type" => "file_url", "file_url" => %{"url" => "https://example.test/old.pdf"}}
+      ])
+
+    assert {:ok, body} = ChatModel.request_body(model, [message])
+
+    assert [%{"content" => [_text | files]}] = body["messages"]
+
+    assert files == [
+             %{"type" => "file", "file" => %{"file_url" => "https://example.test/label.pdf"}},
+             %{
+               "type" => "file",
+               "file" => %{"file_data" => "data:application/pdf;base64,JVBERi0=", "filename" => "a.pdf"}
+             },
+             %{"type" => "file", "file" => %{"file_url" => "https://example.test/old.pdf"}}
+           ]
+
+    # A raw message, built without normalizing its content, reads the same parts.
+    raw = %Message{role: :user, content: [%{type: :file, file: %{file_url: "https://example.test/label.pdf"}}]}
+    assert {:ok, %{"messages" => [%{"content" => [part]}]}} = ChatModel.request_body(model, [raw])
+    assert part == %{"type" => "file", "file" => %{"file_url" => "https://example.test/label.pdf"}}
   end
 
   defp weather_tool do

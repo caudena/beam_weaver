@@ -7,7 +7,6 @@ defmodule BeamWeaver.TestSupport.Conformance.LLMCase do
     quote bind_quoted: [opts: opts] do
       use ExUnit.Case, async: true
 
-      alias BeamWeaver.Core.Async
       alias BeamWeaver.Core.LanguageModel
       alias BeamWeaver.Core.LLM
       alias BeamWeaver.TestSupport.Conformance.Subject
@@ -29,26 +28,7 @@ defmodule BeamWeaver.TestSupport.Conformance.LLMCase do
         assert error.type == :invalid_prompt
       end
 
-      test "LLM async API returns a text completion" do
-        model = build_subject()
-
-        assert {:ok, completion} =
-                 model
-                 |> LLM.async_complete(fixture(:prompt))
-                 |> Async.await()
-
-        assert is_binary(completion)
-      end
-
       if Subject.capability?(@beamweaver_subject, :batch) do
-        test "LLM async batch preserves ordered completions" do
-          model = build_subject()
-
-          handles = LLM.async_batch(model, ["first", "second"])
-          assert [{:ok, first}, {:ok, second}] = Async.await_batch(handles)
-          assert first =~ "first"
-          assert second =~ "second"
-        end
       end
 
       if Subject.capability?(@beamweaver_subject, :streaming) do

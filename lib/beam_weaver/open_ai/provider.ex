@@ -4,6 +4,7 @@ defmodule BeamWeaver.OpenAI.Provider do
   @behaviour BeamWeaver.Provider.Adapter
 
   alias BeamWeaver.Models.ProfileRegistry
+  alias BeamWeaver.OpenAI.RequestMetadata
 
   @impl true
   def provider, do: :openai
@@ -11,12 +12,31 @@ defmodule BeamWeaver.OpenAI.Provider do
   @impl true
   def profiles, do: ProfileRegistry.profiles(:openai)
 
+  # A model's `metadata` fails when the model is created, as it would on
+  # every call.
   @impl true
   def chat_model(opts) do
-    case Keyword.get(opts, :api, :responses) do
-      :chat_completions -> {:ok, BeamWeaver.OpenAI.ChatCompletionsModel}
-      "chat_completions" -> {:ok, BeamWeaver.OpenAI.ChatCompletionsModel}
-      _other -> {:ok, BeamWeaver.OpenAI.ChatModel}
+    with {:ok, module} <- chat_module(opts),
+         :ok <- RequestMetadata.validate(Keyword.get(opts, :metadata), Keyword.get(opts, :model)),
+         do: {:ok, module}
+  end
+
+  defp chat_module(opts) do
+    case Keyword.get(opts, :api) || :responses do
+      api when api in [:responses, "responses"] ->
+        {:ok, BeamWeaver.OpenAI.ChatModel}
+
+      api when api in [:chat_completions, "chat_completions"] ->
+        {:ok, BeamWeaver.OpenAI.ChatCompletionsModel}
+
+      api ->
+        {:error,
+         BeamWeaver.Core.Error.new(:invalid_provider_option, "unsupported OpenAI API selection", %{
+           provider: :openai,
+           option: :api,
+           value: api,
+           supported: [:responses, :chat_completions]
+         })}
     end
   end
 

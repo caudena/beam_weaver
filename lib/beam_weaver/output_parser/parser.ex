@@ -1,7 +1,5 @@
 defmodule BeamWeaver.OutputParser.Parser do
-  @moduledoc """
-  Runnable parser struct returned by `BeamWeaver.OutputParser` constructors.
-  """
+  @moduledoc false
 
   @behaviour BeamWeaver.Runnable
 

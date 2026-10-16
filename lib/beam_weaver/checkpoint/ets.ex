@@ -65,9 +65,8 @@ defmodule BeamWeaver.Checkpoint.ETS do
     before_order = before_commit_order(saver, before_config)
 
     records =
-      saver.checkpoints
-      |> :ets.tab2list()
-      |> Enum.map(fn {_key, record} -> record end)
+      saver
+      |> thread_records(configurable["thread_id"])
       |> Enum.filter(
         &(matches_config?(&1, configurable) and matches_filter?(&1, filter) and
             before_checkpoint?(&1, before_order))
@@ -142,11 +141,8 @@ defmodule BeamWeaver.Checkpoint.ETS do
 
   @impl true
   def delete_thread(%__MODULE__{} = saver, thread_id) do
-    for {{^thread_id, namespace, checkpoint_id}, _record} <- :ets.tab2list(saver.checkpoints) do
-      :ets.delete(saver.checkpoints, {thread_id, namespace, checkpoint_id})
-      delete_writes_for_checkpoint(saver, thread_id, namespace, checkpoint_id)
-    end
-
+    :ets.match_delete(saver.checkpoints, {{thread_id, :_, :_}, :_})
+    :ets.match_delete(saver.writes, {{thread_id, :_, :_, :_, :_}, :_})
     :ok
   end
 
@@ -166,8 +162,8 @@ defmodule BeamWeaver.Checkpoint.ETS do
   @impl true
   def copy_thread(%__MODULE__{} = saver, source_thread_id, target_thread_id) do
     source_records =
-      for {{^source_thread_id, namespace, checkpoint_id}, record} <-
-            :ets.tab2list(saver.checkpoints) do
+      for {{_thread, namespace, checkpoint_id}, record} <-
+            :ets.match_object(saver.checkpoints, {{source_thread_id, :_, :_}, :_}) do
         {namespace, checkpoint_id, record}
       end
 
@@ -175,8 +171,8 @@ defmodule BeamWeaver.Checkpoint.ETS do
       copied = rewrite_thread(record, target_thread_id)
       :ets.insert(saver.checkpoints, {{target_thread_id, namespace, checkpoint_id}, copied})
 
-      for {{^source_thread_id, ^namespace, ^checkpoint_id, task_id, index}, write} <-
-            :ets.tab2list(saver.writes) do
+      for {{_thread, _namespace, _checkpoint_id, task_id, index}, write} <-
+            :ets.match_object(saver.writes, {{source_thread_id, namespace, checkpoint_id, :_, :_}, :_}) do
         :ets.insert(
           saver.writes,
           {{target_thread_id, namespace, checkpoint_id, task_id, index}, write}
@@ -231,17 +227,25 @@ defmodule BeamWeaver.Checkpoint.ETS do
     do: {:ok, checkpoint_id}
 
   defp latest_checkpoint_id(saver, thread_id, namespace) do
-    saver.checkpoints
-    |> :ets.tab2list()
-    |> Enum.flat_map(fn
-      {{^thread_id, ^namespace, checkpoint_id}, record} -> [{record.commit_order, checkpoint_id}]
-      _other -> []
-    end)
+    saver
+    |> commit_orders(thread_id, namespace)
     |> Enum.max_by(&elem(&1, 0), fn -> nil end)
     |> case do
       nil -> nil
       {_order, checkpoint_id} -> checkpoint_id
     end
+  end
+
+  # The commit order and id of each checkpoint of the thread, read without
+  # copying the checkpoints out of the table.
+  defp commit_orders(saver, thread_id, namespace) when is_binary(thread_id) and is_binary(namespace) do
+    :ets.select(saver.checkpoints, [{{{thread_id, namespace, :"$1"}, %{commit_order: :"$2"}}, [], [{{:"$2", :"$1"}}]}])
+  end
+
+  defp commit_orders(saver, thread_id, namespace) do
+    for {{_thread, _namespace, checkpoint_id}, record} <-
+          :ets.match_object(saver.checkpoints, {{thread_id, namespace, :_}, :_}),
+        do: {record.commit_order, checkpoint_id}
   end
 
   defp checkpoint_id(%__MODULE__{} = saver, checkpoint) do
@@ -294,11 +298,16 @@ defmodule BeamWeaver.Checkpoint.ETS do
     do: saver |> put_pending_writes([record]) |> List.first()
 
   defp put_pending_writes(saver, records) when is_list(records) do
-    keys = MapSet.new(records, &checkpoint_key/1)
+    parents = Map.new(records, &{checkpoint_key(&1), stored_parent_key(saver, &1)})
+
+    keys =
+      records
+      |> MapSet.new(&checkpoint_key/1)
+      |> MapSet.union(MapSet.new(for {_key, parent_key} <- parents, parent_key, do: parent_key))
 
     pending =
-      saver.writes
-      |> :ets.tab2list()
+      saver
+      |> checkpoint_writes(keys)
       |> Enum.reduce(%{}, fn
         {{thread, namespace, checkpoint, task, index}, {channel, value, path}}, acc ->
           key = {thread, namespace, checkpoint}
@@ -322,16 +331,61 @@ defmodule BeamWeaver.Checkpoint.ETS do
       end)
 
     Enum.map(records, fn record ->
-      writes =
-        pending
-        |> Map.get(checkpoint_key(record), [])
-        |> Enum.sort_by(&{&1.task_id, &1.index})
+      key = checkpoint_key(record)
+      writes = sorted_writes(pending, key)
 
       record
       |> Map.put(:pending_write_records, writes)
       |> Map.put(:pending_writes, Enum.map(writes, &PendingWrite.tuple/1))
       |> Map.put(:pending_write_paths, Enum.map(writes, &PendingWrite.path_tuple/1))
+      |> put_parent_pending_writes(Map.fetch!(parents, key), pending)
     end)
+  end
+
+  defp sorted_writes(pending, key), do: pending |> Map.get(key, []) |> Enum.sort_by(&{&1.task_id, &1.index})
+
+  # Reading a tuple needs its parent's pending writes. They come with the
+  # tuple, so the parent checkpoint isn't read as well.
+  defp put_parent_pending_writes(record, nil, _pending), do: record
+
+  defp put_parent_pending_writes(record, parent_key, pending) do
+    writes = pending |> sorted_writes(parent_key) |> Enum.map(&PendingWrite.tuple/1)
+    Map.put(record, :parent_pending_writes, writes)
+  end
+
+  defp stored_parent_key(saver, %{parent_config: parent_config}) when is_map(parent_config) do
+    configurable = Checkpoint.configurable(parent_config)
+    key = {configurable["thread_id"], Map.get(configurable, "checkpoint_ns", ""), configurable["checkpoint_id"]}
+
+    if binary_key?(key) and :ets.member(saver.checkpoints, key), do: key
+  end
+
+  defp stored_parent_key(_saver, _record), do: nil
+
+  defp binary_key?({thread, namespace, checkpoint}),
+    do: is_binary(thread) and is_binary(namespace) and is_binary(checkpoint)
+
+  # The checkpoints of a thread are the keys that start with its id, so they
+  # are read without going through the other threads' checkpoints.
+  defp thread_records(saver, thread_id) when is_binary(thread_id) do
+    for {_key, record} <- :ets.match_object(saver.checkpoints, {{thread_id, :_, :_}, :_}), do: record
+  end
+
+  defp thread_records(saver, _thread_id) do
+    for {_key, record} <- :ets.tab2list(saver.checkpoints), do: record
+  end
+
+  # The pending writes of the given checkpoints, read by key prefix, or by
+  # copying the table when it holds no more writes than there are checkpoints
+  # to look up.
+  defp checkpoint_writes(saver, keys) do
+    if Enum.all?(keys, &binary_key?/1) and :ets.info(saver.writes, :size) > MapSet.size(keys) do
+      Enum.flat_map(keys, fn {thread, namespace, checkpoint} ->
+        :ets.match_object(saver.writes, {{thread, namespace, checkpoint, :_, :_}, :_})
+      end)
+    else
+      :ets.tab2list(saver.writes)
+    end
   end
 
   defp checkpoint_key(record) do
@@ -406,12 +460,8 @@ defmodule BeamWeaver.Checkpoint.ETS do
   defp keep_latest_by_namespace(saver, thread_id) do
     grouped =
       saver.checkpoints
-      |> :ets.tab2list()
-      |> Enum.flat_map(fn
-        {{^thread_id, namespace, _checkpoint_id}, record} -> [{namespace, record}]
-        _other -> []
-      end)
-      |> Enum.group_by(fn {namespace, _record} -> namespace end, fn {_ns, record} -> record end)
+      |> :ets.match_object({{thread_id, :_, :_}, :_})
+      |> Enum.group_by(fn {{_thread, namespace, _id}, _record} -> namespace end, fn {_key, record} -> record end)
 
     Enum.each(grouped, fn {namespace, records} ->
       keep = DeltaCompaction.keep_ids(records)
@@ -427,12 +477,8 @@ defmodule BeamWeaver.Checkpoint.ETS do
     end)
   end
 
-  defp delete_writes_for_checkpoint(saver, thread_id, namespace, checkpoint_id) do
-    for {{^thread_id, ^namespace, ^checkpoint_id, task_id, index}, _write} <-
-          :ets.tab2list(saver.writes) do
-      :ets.delete(saver.writes, {thread_id, namespace, checkpoint_id, task_id, index})
-    end
-  end
+  defp delete_writes_for_checkpoint(saver, thread_id, namespace, checkpoint_id),
+    do: :ets.match_delete(saver.writes, {{thread_id, namespace, checkpoint_id, :_, :_}, :_})
 
   defp stringify_keys(map) when is_map(map) do
     Map.new(map, fn {key, value} -> {to_string(key), value} end)

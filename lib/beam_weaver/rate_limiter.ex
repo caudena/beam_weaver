@@ -3,7 +3,6 @@ defmodule BeamWeaver.RateLimiter do
   Rate limiting behaviours and implementations for bounded model and tool work.
   """
 
-  alias BeamWeaver.Core.Async
   alias BeamWeaver.RateLimiter.Error
   alias BeamWeaver.RateLimiter.TokenBucket
 
@@ -34,14 +33,6 @@ defmodule BeamWeaver.RateLimiter do
   @spec acquire(server(), amount(), keyword()) :: result()
   def acquire(limiter, amount \\ 1, opts \\ []) do
     TokenBucket.acquire(limiter, amount, opts)
-  end
-
-  @doc """
-  Starts an async token acquisition.
-  """
-  @spec async_acquire(server(), amount(), keyword()) :: Async.handle()
-  def async_acquire(limiter, amount \\ 1, opts \\ []) do
-    Async.run_call(opts, &acquire(limiter, amount, &1))
   end
 
   @doc """

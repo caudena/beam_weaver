@@ -1,5 +1,7 @@
 defmodule BeamWeaver.TextSplitter.HTMLSemantic do
   @moduledoc false
+
+  import BeamWeaver.MapShape, only: [put_present: 3]
   alias BeamWeaver.Core.Document
   alias BeamWeaver.TextSplitter.RecursiveCharacter
 
@@ -26,14 +28,7 @@ defmodule BeamWeaver.TextSplitter.HTMLSemantic do
             add_start_index: false,
             length_function: nil
 
-  def new(opts \\ []) do
-    opts =
-      opts
-      |> normalize_alias(:headers_to_split_on, :headers)
-      |> normalize_alias(:max_chunk_size, :chunk_size)
-
-    struct(__MODULE__, opts)
-  end
+  def new(opts \\ []), do: struct(__MODULE__, opts)
 
   def split_text(%__MODULE__{} = splitter, text) when is_binary(text) do
     splitter
@@ -47,9 +42,7 @@ defmodule BeamWeaver.TextSplitter.HTMLSemantic do
         do: document.metadata,
         else: %{}
 
-    splitter
-    |> split_html(document.content, parent_metadata)
-    |> Enum.map(&%{&1 | id: document.id})
+    split_html(splitter, document.content, parent_metadata)
   end
 
   defp split_html(%__MODULE__{} = splitter, html, parent_metadata) do
@@ -255,7 +248,7 @@ defmodule BeamWeaver.TextSplitter.HTMLSemantic do
           chunk_overlap: splitter.chunk_overlap,
           keep_separator: splitter.keep_separator
         ]
-        |> maybe_put(:separators, splitter.separators)
+        |> put_present(:separators, splitter.separators)
 
       opts
       |> RecursiveCharacter.new()
@@ -332,14 +325,4 @@ defmodule BeamWeaver.TextSplitter.HTMLSemantic do
     |> String.replace("&quot;", "\"")
     |> String.replace("&#39;", "'")
   end
-
-  defp normalize_alias(opts, from, to) do
-    case Keyword.fetch(opts, from) do
-      {:ok, value} -> opts |> Keyword.delete(from) |> Keyword.put(to, value)
-      :error -> opts
-    end
-  end
-
-  defp maybe_put(opts, _key, nil), do: opts
-  defp maybe_put(opts, key, value), do: Keyword.put(opts, key, value)
 end

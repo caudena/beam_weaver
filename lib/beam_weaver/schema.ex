@@ -19,6 +19,8 @@ defmodule BeamWeaver.Schema do
   legacy `__beam_weaver_schema__/0` callback.
   """
 
+  import BeamWeaver.MapShape, only: [put_present: 3]
+
   @primitive_types [
     :string,
     :integer,
@@ -93,23 +95,8 @@ defmodule BeamWeaver.Schema do
     |> stringify_schema()
   end
 
-  def to_json_schema(module) when is_atom(module) do
-    ensure_schema_module_compiled(module)
-
-    cond do
-      function_exported?(module, :json_schema, 0) ->
-        module.json_schema()
-
-      function_exported?(module, :schema, 0) ->
-        module.schema()
-
-      function_exported?(module, :__beam_weaver_schema__, 0) ->
-        module.__beam_weaver_schema__()
-
-      true ->
-        BeamWeaver.Tool.Schema.type_schema(module)
-    end
-  end
+  def to_json_schema(module) when is_atom(module),
+    do: module_schema(module) || BeamWeaver.Tool.Schema.type_schema(module)
 
   def to_json_schema({:array, item_type}) do
     %{"type" => "array", "items" => to_json_schema(item_type)}
@@ -124,6 +111,22 @@ defmodule BeamWeaver.Schema do
   end
 
   def to_json_schema(type), do: BeamWeaver.Tool.Schema.type_schema(type) |> stringify_schema()
+
+  @doc """
+  Returns the JSON schema a module declares through `json_schema/0`,
+  `schema/0`, or `use BeamWeaver.Schema`, or `nil` when it declares none.
+  """
+  @spec module_schema(module()) :: map() | nil
+  def module_schema(module) when is_atom(module) do
+    ensure_schema_module_compiled(module)
+
+    cond do
+      function_exported?(module, :json_schema, 0) -> module.json_schema()
+      function_exported?(module, :schema, 0) -> module.schema()
+      function_exported?(module, :__beam_weaver_schema__, 0) -> module.__beam_weaver_schema__()
+      true -> nil
+    end
+  end
 
   defp object_schema(fields, title, description, strict?) do
     {properties, required} =
@@ -149,8 +152,8 @@ defmodule BeamWeaver.Schema do
       "properties" => properties,
       "required" => required
     }
-    |> maybe_put("title", title)
-    |> maybe_put("description", description)
+    |> put_present("title", title)
+    |> put_present("description", description)
     |> maybe_put("additionalProperties", false, strict?)
   end
 
@@ -164,8 +167,8 @@ defmodule BeamWeaver.Schema do
 
   defp merge_field_opts(schema, opts) do
     schema
-    |> maybe_put("description", Keyword.get(opts, :description))
-    |> maybe_put("enum", Keyword.get(opts, :enum))
+    |> put_present("description", Keyword.get(opts, :description))
+    |> put_present("enum", Keyword.get(opts, :enum))
     |> maybe_put_default(opts)
     |> maybe_nullable(Keyword.get(opts, :nullable, false))
     |> maybe_put("additionalProperties", false, Keyword.get(opts, :strict, false))
@@ -184,10 +187,7 @@ defmodule BeamWeaver.Schema do
     Map.put(schema, "type", Enum.uniq(List.wrap(type) ++ ["null"]))
   end
 
-  defp maybe_put(schema, _key, nil), do: schema
-  defp maybe_put(schema, key, value), do: Map.put(schema, key, value)
-
-  defp maybe_put(schema, key, value, true), do: maybe_put(schema, key, value)
+  defp maybe_put(schema, key, value, true), do: put_present(schema, key, value)
   defp maybe_put(schema, _key, _value, false), do: schema
 
   defp stringify_schema(schema), do: BeamWeaver.MapShape.stringify_keys(schema)
@@ -223,7 +223,8 @@ defmodule BeamWeaver.Schema do
     end
   end
 
-  defp ensure_schema_module_compiled(module) do
+  @doc false
+  def ensure_schema_module_compiled(module) do
     case Code.ensure_compiled(module) do
       {:module, _module} ->
         :ok

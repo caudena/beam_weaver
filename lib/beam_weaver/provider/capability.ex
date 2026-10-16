@@ -1,11 +1,5 @@
 defmodule BeamWeaver.Provider.Capability do
-  @moduledoc """
-  Provider and model capability helpers.
-
-  Profiles remain the source of truth. This module gives the rest of
-  BeamWeaver a feature-oriented vocabulary and a fail-fast validator for
-  requested model behavior.
-  """
+  @moduledoc false
 
   alias BeamWeaver.Core.Error
   alias BeamWeaver.Models.Profile
@@ -78,7 +72,7 @@ defmodule BeamWeaver.Provider.Capability do
           :ok
 
         {:warn, features} ->
-          emit_warning(provider, model_id, features, opts)
+          emit_warning(provider, model_id, features)
           :ok
 
         {_policy, [feature | _rest] = features} ->
@@ -179,16 +173,13 @@ defmodule BeamWeaver.Provider.Capability do
     end
   end
 
-  defp emit_warning(provider, model, features, opts) do
+  # The event names the features only: the call's options, such as its
+  # `metadata`, which can carry a user id, stay out of telemetry.
+  defp emit_warning(provider, model, features) do
     :telemetry.execute(
       [:beam_weaver, :provider, :unsupported_feature],
       %{count: length(features)},
-      %{
-        provider: provider,
-        model: model,
-        features: features,
-        metadata: Keyword.get(opts, :metadata, %{})
-      }
+      %{provider: provider, model: model, features: features}
     )
   end
 

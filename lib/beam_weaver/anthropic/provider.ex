@@ -3,6 +3,7 @@ defmodule BeamWeaver.Anthropic.Provider do
 
   @behaviour BeamWeaver.Provider.Adapter
 
+  alias BeamWeaver.Anthropic.ChatModel.RequestBuilder
   alias BeamWeaver.Core.Error
   alias BeamWeaver.Models.ProfileRegistry
 
@@ -12,8 +13,13 @@ defmodule BeamWeaver.Anthropic.Provider do
   @impl true
   def profiles, do: ProfileRegistry.profiles(:anthropic)
 
+  # A model's `metadata` fails when the model is created, as it would on
+  # every call.
   @impl true
-  def chat_model(_opts), do: {:ok, BeamWeaver.Anthropic.ChatModel}
+  def chat_model(opts) do
+    with :ok <- RequestBuilder.validate_metadata(Keyword.get(opts, :metadata), Keyword.get(opts, :model)),
+         do: {:ok, BeamWeaver.Anthropic.ChatModel}
+  end
 
   @impl true
   def embedding_model(_opts) do

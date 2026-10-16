@@ -1,22 +1,16 @@
 defmodule BeamWeaver.Graph.Execution.TaskExecutor do
-  @moduledoc """
-  graph execution task preparation and node execution.
-
-  This module owns the boundary where pure graph execution task descriptions become
-  supervised BEAM tasks.
-  """
+  @moduledoc false
 
   alias BeamWeaver.Core.Error
+  alias BeamWeaver.RetryPolicy
   alias BeamWeaver.Graph.Command
   alias BeamWeaver.Graph.Execution.Cache
   alias BeamWeaver.Graph.Execution.CommandRouter
   alias BeamWeaver.Graph.Execution.ExecutableTask
   alias BeamWeaver.Graph.Execution.NodeInvoker
   alias BeamWeaver.Graph.Execution.NodeOutput
-  alias BeamWeaver.Graph.Execution.Retry
   alias BeamWeaver.Graph.Execution.Scratchpad
   alias BeamWeaver.Graph.Execution.Stream
-  alias BeamWeaver.Graph.Execution.TaskLauncher
   alias BeamWeaver.Graph.Execution.TaskPlanner
   alias BeamWeaver.Graph.Execution.TaskResult
   alias BeamWeaver.Graph.Execution.TaskRun
@@ -26,50 +20,80 @@ defmodule BeamWeaver.Graph.Execution.TaskExecutor do
   @spec run_step_tasks(map()) :: [ExecutableTask.t()]
   def run_step_tasks(%{ready: ready} = run) do
     Enum.map(ready, fn ready_entry ->
-      plan = TaskPlanner.prepare(run, ready_entry)
-      prepared = plan.prepared
-      task_run = TaskRun.new(run, plan)
-
-      %ExecutableTask{
-        id: prepared.id,
-        node: prepared.node,
-        path: prepared.path,
-        step: prepared.step,
-        timeout: outer_task_timeout(plan),
-        started_at: plan.started_at,
-        prepared: prepared,
-        task: start_node_task(task_run)
-      }
+      case TaskPlanner.prepare(run, ready_entry) do
+        {:ok, plan} -> start_task(run, plan)
+        {:error, %Error{} = error, prepared} -> failed_task(run, prepared, error)
+      end
     end)
   end
 
-  @doc false
-  @spec normalize_task_timeout(term()) :: non_neg_integer() | :infinity
-  defdelegate normalize_task_timeout(timeout), to: TaskPlanner
+  defp start_task(run, plan) do
+    prepared = plan.prepared
+
+    %ExecutableTask{
+      id: prepared.id,
+      node: prepared.node,
+      path: prepared.path,
+      step: prepared.step,
+      timeout: plan.timeout,
+      deadline: task_deadline(plan),
+      prepared: prepared,
+      task: start_node_task(TaskRun.new(run, plan))
+    }
+  end
+
+  # A task that can't start fails as a node that returns an error does,
+  # without running the node, its retries or its error handler: the step's
+  # other tasks finish and the run returns the error.
+  defp failed_task(run, prepared, error) do
+    Telemetry.execute(:node_failure, %{count: 1}, %{
+      graph: run.compiled.name,
+      node: prepared.node,
+      step: run.step,
+      error: error
+    })
+
+    failed = Stream.task_event(:error, prepared.node, error, run.step, prepared.id, prepared.path)
+
+    %ExecutableTask{
+      id: prepared.id,
+      node: prepared.node,
+      path: prepared.path,
+      step: prepared.step,
+      timeout: :infinity,
+      deadline: :infinity,
+      prepared: prepared,
+      task: Task.completed({:error, error, [failed]})
+    }
+  end
 
   defp start_node_task(%TaskRun{} = task_run) do
-    TaskLauncher.start(task_run.run, fn -> execute_node(task_run) end)
+    Tracing.async(fn -> execute_node(task_run) end,
+      context: Map.get(task_run.run, :trace_context),
+      supervisor: task_run.run.task_supervisor
+    )
   end
 
-  defp outer_task_timeout(%{timeout: :infinity}), do: :infinity
-
-  defp outer_task_timeout(%{timeout: timeout, spec: spec})
+  # The awaiter's backstop for the whole task: every attempt's node timeout plus
+  # the retry delays between them, with slack so the per-attempt timeout in
+  # `invoke_attempt/2` normally fires first. Either way the task fails with the
+  # same `:node_timeout` error.
+  defp task_deadline(%{timeout: timeout, spec: spec, started_at: started_at})
        when is_integer(timeout) and timeout > 0 do
-    timeout * final_attempt(spec) + retry_delay_budget(spec) + 50
+    started_at + timeout * final_attempt(spec) + retry_delay_budget(spec) + 50
   end
 
-  defp outer_task_timeout(_plan), do: :infinity
+  defp task_deadline(_plan), do: :infinity
 
   defp execute_node(%TaskRun{} = task_run) do
     run = task_run.run
     spec = task_run.spec
     prepared = task_run.prepared
 
-    Telemetry.execute(:node_start, %{system_time: System.system_time()}, %{
-      graph: run.compiled.name,
-      node: spec.name,
-      step: run.step
-    })
+    started_at =
+      Telemetry.start(:node_start, %{graph: run.compiled.name, node: spec.name, step: run.step})
+
+    task_run = %{task_run | started_at: started_at}
 
     started =
       Stream.task_event(:start, spec.name, task_run.state, run.step, prepared.id, prepared.path)
@@ -102,13 +126,14 @@ defmodule BeamWeaver.Graph.Execution.TaskExecutor do
               step: run.step
             })
 
-            Retry.run(spec.retry_policy || spec.retry, fn attempt ->
-              runtime = runtime_attempt(task_run.runtime, attempt, first_attempt_time)
-
-              Scratchpad.with(task_run.scratchpad, fn ->
-                invoke_attempt(task_run, runtime)
-              end)
-            end)
+            RetryPolicy.run(
+              spec.retry_policy,
+              fn attempt ->
+                runtime = runtime_attempt(task_run.runtime, attempt, first_attempt_time)
+                Scratchpad.with(task_run.scratchpad, fn -> invoke_attempt(task_run, runtime) end)
+              end,
+              on_retry: &Telemetry.execute(:retry, %{count: 1}, %{error: &2, attempt: &1})
+            )
         end
         |> maybe_handle_node_error(task_run, first_attempt_time)
       end
@@ -240,19 +265,15 @@ defmodule BeamWeaver.Graph.Execution.TaskExecutor do
   end
 
   defp invoke_attempt(%TaskRun{timeout: :infinity} = task_run, runtime) do
-    NodeInvoker.invoke(task_run.spec, task_run.state, runtime)
+    NodeInvoker.invoke(task_run.spec, task_run.state, runtime, task_run.run.compiled.graph)
   end
 
   defp invoke_attempt(%TaskRun{timeout: timeout} = task_run, runtime)
        when is_integer(timeout) and timeout > 0 do
-    trace_context = Tracing.capture_context()
-
     task =
-      Task.async(fn ->
-        Tracing.attach_context(trace_context, fn ->
-          Scratchpad.with(task_run.scratchpad, fn ->
-            NodeInvoker.invoke(task_run.spec, task_run.state, runtime)
-          end)
+      Tracing.async(fn ->
+        Scratchpad.with(task_run.scratchpad, fn ->
+          NodeInvoker.invoke(task_run.spec, task_run.state, runtime, task_run.run.compiled.graph)
         end)
       end)
 
@@ -275,7 +296,7 @@ defmodule BeamWeaver.Graph.Execution.TaskExecutor do
   end
 
   defp invoke_attempt(%TaskRun{} = task_run, runtime) do
-    NodeInvoker.invoke(task_run.spec, task_run.state, runtime)
+    NodeInvoker.invoke(task_run.spec, task_run.state, runtime, task_run.run.compiled.graph)
   end
 
   defp node_timeout_error(%TaskRun{} = task_run) do
@@ -315,7 +336,8 @@ defmodule BeamWeaver.Graph.Execution.TaskExecutor do
 
     normalize_error_handler_result(
       call_error_handler(handler, error, task_run.state, runtime),
-      error
+      error,
+      task_run.spec.name
     )
   end
 
@@ -340,19 +362,23 @@ defmodule BeamWeaver.Graph.Execution.TaskExecutor do
 
     normalize_error_handler_result(
       call_error_handler(handler, error, task_run.state, runtime),
-      error
+      error,
+      task_run.spec.name
     )
   end
 
   defp maybe_handle_node_error(result, _task_run, _first_attempt_time), do: result
 
-  defp normalize_error_handler_result(result, original_error) do
+  defp normalize_error_handler_result(result, original_error, node) do
     case result do
       {:ok, %Command{} = command} ->
         {:ok, command}
 
       {:ok, {:error, %Error{} = handled_error}} ->
         {:error, handled_error}
+
+      {:ok, {:error, reason}} ->
+        {:error, NodeInvoker.node_error(node, reason)}
 
       {:ok, {:ok, value}} ->
         {:ok, value}
@@ -420,7 +446,7 @@ defmodule BeamWeaver.Graph.Execution.TaskExecutor do
     spec = task_run.spec
     prepared = task_run.prepared
 
-    Telemetry.execute(:node_stop, %{system_time: System.system_time()}, %{
+    Telemetry.stop(:node_stop, task_run.started_at, %{
       graph: run.compiled.name,
       node: spec.name,
       step: run.step

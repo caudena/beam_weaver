@@ -1,15 +1,14 @@
 defmodule BeamWeaver.Agent.Middleware.Memory do
   @moduledoc "Middleware that loads `AGENTS.md` memory files into the system prompt."
 
-  @behaviour BeamWeaver.Agent.Middleware
+  use BeamWeaver.Agent.Middleware
 
   alias BeamWeaver.Agent.ModelRequest
   alias BeamWeaver.Filesystem
   alias BeamWeaver.Filesystem.State
   alias BeamWeaver.Graph
 
-  import BeamWeaver.Agent.Middleware.Helpers,
-    only: [append_prompt: 2, runtime_store: 1, state_value: 2]
+  import BeamWeaver.Agent.Middleware.Helpers, only: [append_prompt: 2, runtime_store: 1]
 
   @memory_system_prompt """
   <agent_memory>
@@ -46,6 +45,7 @@ defmodule BeamWeaver.Agent.Middleware.Memory do
     %{state_key => Graph.private_channel(BeamWeaver.Graph.Channels.LastValue)}
   end
 
+  @impl true
   def before_model(%__MODULE__{} = middleware, state, runtime) do
     if Map.has_key?(state || %{}, middleware.state_key) or
          Map.has_key?(state || %{}, to_string(middleware.state_key)) do
@@ -55,12 +55,13 @@ defmodule BeamWeaver.Agent.Middleware.Memory do
     end
   end
 
+  @impl true
   def wrap_model_call(%__MODULE__{} = middleware, %ModelRequest{} = request, handler) do
     memory =
-      case state_value(request.state, middleware.state_key) do
+      case Map.get(request.state, middleware.state_key) do
         memory when is_map(memory) -> memory
         memory when is_binary(memory) -> %{"memory" => memory}
-        _other -> load_memory(middleware, request.state || %{}, request.runtime)
+        _other -> load_memory(middleware, request.state, request.runtime)
       end
 
     request =

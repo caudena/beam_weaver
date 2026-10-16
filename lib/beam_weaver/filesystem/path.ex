@@ -1,6 +1,9 @@
 defmodule BeamWeaver.Filesystem.Path do
   @moduledoc false
 
+  # The most symlinks one path may pass through, as on Linux.
+  @max_links 40
+
   def sanitize_tool_call_id(tool_call_id) do
     tool_call_id
     |> to_string()
@@ -61,21 +64,53 @@ defmodule BeamWeaver.Filesystem.Path do
 
   def clean_path(_path), do: {:error, "invalid_path"}
 
-  def virtual_to_real(root, path) do
-    with {:ok, path} <- clean_path(path) do
-      relative = String.trim_leading(path, "/")
-      root = secure_root(root)
-      real = Elixir.Path.expand(Elixir.Path.join(root, relative))
+  # A glob pattern must stay under the directory it searches: no `..`
+  # segment, not even one spelled with `\` escapes such as `.\.`, which the
+  # matcher reads as `..`, and, as in a path, no `~`.
+  def clean_pattern(pattern) when is_binary(pattern) do
+    segments = pattern |> String.replace("\\", "") |> String.split("/")
 
-      with true <- under_root?(real, root),
-           {:ok, real} <- secure_candidate(real, root),
-           true <- under_root?(real, root) do
-        {:ok, real, path}
-      else
-        _error -> {:error, "invalid_path"}
-      end
+    if String.contains?(pattern, ["\0", "~"]) or ".." in segments,
+      do: {:error, "invalid_pattern"},
+      else: {:ok, pattern}
+  end
+
+  def clean_pattern(_pattern), do: {:error, "invalid_pattern"}
+
+  def virtual_to_real(root, path), do: root |> real_root() |> resolve_virtual(path)
+
+  # `root` with its symlinks resolved, to resolve many paths under it with
+  # `resolve_virtual/2` without resolving the root again for each.
+  def real_root(root) do
+    root = Elixir.Path.expand(root)
+
+    case realpath_existing(root) do
+      {:ok, real} -> real
+      {:error, _reason} -> root
     end
   end
+
+  def resolve_virtual(real_root, path) do
+    with {:ok, path} <- clean_path(path),
+         {:ok, real} <- resolve_under_root(real_root, path |> Elixir.Path.split() |> tl(), real_root) do
+      {:ok, real, path}
+    else
+      _error -> {:error, "invalid_path"}
+    end
+  end
+
+  # The virtual path of the file `path` reaches under `real_root`: the real
+  # path `resolve_virtual/2` resolves it to, which has every symlink on the
+  # way followed, relative to the root.
+  def canonical_path(real_root, path) do
+    with {:ok, real, _virtual} <- resolve_virtual(real_root, path) do
+      {:ok, real_to_virtual(real_root, real)}
+    end
+  end
+
+  defp real_to_virtual(root, root), do: "/"
+  defp real_to_virtual("/", real), do: real
+  defp real_to_virtual(root, real), do: String.replace_prefix(real, root, "")
 
   def under_path?(path, "/"), do: String.starts_with?(path, "/")
 
@@ -87,87 +122,72 @@ defmodule BeamWeaver.Filesystem.Path do
   def relative(path, "/"), do: String.trim_leading(path, "/")
   def relative(path, base), do: String.trim_leading(String.replace_prefix(path, base, ""), "/")
 
-  defp secure_root(root) do
-    root = Elixir.Path.expand(root)
+  # Follows `segments` from `current`, a real directory under the real
+  # `root`, resolving each symlink on the way. A symlink that points outside
+  # the root fails the path, even when a later segment leads back in. Once a
+  # segment doesn't exist, nothing below it does either, so the rest are
+  # joined as they are: the path where a new file would go.
+  defp resolve_under_root(_root, [], current), do: {:ok, current}
 
-    case realpath_existing(root) do
-      {:ok, real} -> real
-      {:error, _reason} -> root
-    end
-  end
+  defp resolve_under_root(root, [segment | rest], current) do
+    candidate = Elixir.Path.join(current, segment)
 
-  defp secure_candidate(candidate, root) do
-    case File.lstat(candidate) do
-      {:ok, _stat} ->
-        realpath_existing(candidate)
+    case :file.read_link(String.to_charlist(candidate)) do
+      {:ok, target} ->
+        with {:ok, resolved} <- follow_link(current, target, 0),
+             true <- under_root?(resolved, root) do
+          resolve_under_root(root, rest, resolved)
+        else
+          _outside_or_dangling -> {:error, :invalid_path}
+        end
+
+      {:error, :einval} ->
+        resolve_under_root(root, rest, candidate)
 
       {:error, _missing} ->
-        ancestor = nearest_existing_parent(candidate, root)
-
-        with {:ok, real_parent} <- realpath_existing(ancestor),
-             true <- under_root?(real_parent, root) do
-          {:ok, candidate}
-        else
-          _error -> {:error, :invalid_path}
-        end
-    end
-  end
-
-  defp nearest_existing_parent(path, root) do
-    parent = Elixir.Path.dirname(path)
-
-    cond do
-      File.exists?(parent) -> parent
-      parent == path -> root
-      not under_root?(parent, root) -> root
-      true -> nearest_existing_parent(parent, root)
+        {:ok, Elixir.Path.join([candidate | rest])}
     end
   end
 
   defp under_root?(path, root), do: path == root or String.starts_with?(path, root <> "/")
 
-  defp realpath_existing(path, depth \\ 0)
-
-  defp realpath_existing(_path, depth) when depth > 40, do: {:error, :eloop}
-
-  defp realpath_existing(path, depth) do
-    path = Elixir.Path.expand(path)
-
+  # The real path of `path`, an absolute path to something that exists.
+  defp realpath_existing(path) do
     case Elixir.Path.split(path) do
-      ["/" | segments] -> resolve_segments("/", segments, depth)
-      [segment | segments] -> resolve_segments(segment, segments, depth)
-      [] -> {:ok, path}
+      ["/" | segments] -> walk("/", segments, 0)
+      _relative -> {:error, :einval}
     end
   end
 
-  defp resolve_segments(current, [], _depth), do: {:ok, current}
+  # Follows `segments` from `current`, a real directory, to something that
+  # exists, following symlinks the way the OS does: a `..` climbs from where
+  # the path has led so far, so after a symlink it climbs from the link's
+  # target, not from the link. Reading `..` as text instead would check one
+  # file and open another.
+  defp walk(current, [], _links), do: {:ok, current}
+  defp walk(current, ["." | rest], links), do: walk(current, rest, links)
+  defp walk(current, [".." | rest], links), do: walk(Elixir.Path.dirname(current), rest, links)
 
-  defp resolve_segments(current, [segment | rest], depth) do
+  defp walk(current, [segment | rest], links) do
     candidate = Elixir.Path.join(current, segment)
 
-    case resolve_link_or_existing(candidate, depth) do
-      {:ok, resolved} -> resolve_segments(resolved, rest, depth)
+    case :file.read_link(String.to_charlist(candidate)) do
+      {:ok, target} -> follow_link(current, target, links, rest)
+      {:error, :einval} -> if File.exists?(candidate), do: walk(candidate, rest, links), else: {:error, :enoent}
       {:error, reason} -> {:error, reason}
     end
   end
 
-  defp resolve_link_or_existing(candidate, depth) do
-    case :file.read_link(String.to_charlist(candidate)) do
-      {:ok, target} ->
-        target = List.to_string(target)
+  # Follows the symlink `target`, read from a link in the real directory
+  # `dir`, and then `rest`. An absolute target starts again from `/`.
+  defp follow_link(dir, target, links, rest \\ [])
 
-        target =
-          if Elixir.Path.type(target) == :absolute,
-            do: target,
-            else: Elixir.Path.expand(target, Elixir.Path.dirname(candidate))
+  defp follow_link(_dir, _target, links, _rest) when links >= @max_links, do: {:error, :eloop}
 
-        realpath_existing(target, depth + 1)
-
-      {:error, :einval} ->
-        if File.exists?(candidate), do: {:ok, candidate}, else: {:error, :enoent}
-
-      {:error, reason} ->
-        {:error, reason}
+  defp follow_link(dir, target, links, rest) do
+    case target |> IO.chardata_to_string() |> Elixir.Path.split() do
+      ["/" | segments] -> walk("/", segments ++ rest, links + 1)
+      segments -> walk(dir, segments ++ rest, links + 1)
     end
   end
 

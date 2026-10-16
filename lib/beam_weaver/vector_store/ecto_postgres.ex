@@ -9,6 +9,7 @@ defmodule BeamWeaver.VectorStore.EctoPostgres do
 
   @behaviour BeamWeaver.VectorStore
 
+  alias BeamWeaver.VectorStore
   alias BeamWeaver.Adapter.Error, as: AdapterError
   alias BeamWeaver.Core.Document
   alias BeamWeaver.Core.EmbeddingModel
@@ -19,6 +20,7 @@ defmodule BeamWeaver.VectorStore.EctoPostgres do
   defstruct repo: nil,
             query_module: Ecto.Adapters.SQL,
             table: "beam_weaver_vectors",
+            prefix: nil,
             namespace: :default,
             embedding: nil,
             dimensions: 1_536,
@@ -31,6 +33,7 @@ defmodule BeamWeaver.VectorStore.EctoPostgres do
       repo: Keyword.fetch!(opts, :repo),
       query_module: Keyword.get(opts, :query_module, Ecto.Adapters.SQL),
       table: Keyword.get(opts, :table, "beam_weaver_vectors"),
+      prefix: Keyword.get(opts, :prefix),
       namespace: Keyword.get(opts, :namespace, :default),
       embedding: Keyword.fetch!(opts, :embedding),
       dimensions: Keyword.get(opts, :dimensions, 1_536),
@@ -42,16 +45,16 @@ defmodule BeamWeaver.VectorStore.EctoPostgres do
 
   @impl true
   def add_documents(%__MODULE__{} = store, documents, opts) do
-    with :ok <- validate_documents(documents),
-         {:ok, vectors} <- embed_documents(store.embedding, documents, opts) do
+    with :ok <- VectorStore.validate_documents(documents),
+         {:ok, vectors} <- VectorStore.embed_documents(store.embedding, documents, opts) do
       explicit_ids = Keyword.get(opts, :ids, [])
 
       Enum.reduce_while(Enum.zip(documents, vectors), {:ok, []}, fn {document, vector}, {:ok, ids} ->
         index = length(ids)
-        id = id_for(document, explicit_ids, index)
+        id = VectorStore.id_for(document, explicit_ids, index)
 
         sql = """
-        INSERT INTO #{store.table}
+        INSERT INTO #{table(store)}
           (id, namespace, content, metadata, embedding, created_at, updated_at)
         VALUES ($1, $2, $3, $4, ($5::text)::vector, now(), now())
         ON CONFLICT (namespace, id)
@@ -83,7 +86,7 @@ defmodule BeamWeaver.VectorStore.EctoPostgres do
 
   @impl true
   def delete(%__MODULE__{} = store, ids, _opts) do
-    sql = "DELETE FROM #{store.table} WHERE namespace = $1 AND id = ANY($2)"
+    sql = "DELETE FROM #{table(store)} WHERE namespace = $1 AND id = ANY($2)"
 
     case query(store, sql, [namespace(store), ids]) do
       {:ok, _result} -> :ok
@@ -94,7 +97,7 @@ defmodule BeamWeaver.VectorStore.EctoPostgres do
   def get_by_ids(%__MODULE__{} = store, ids, _opts) do
     sql = """
     SELECT id, content, metadata, embedding::text, 0 AS score
-    FROM #{store.table}
+    FROM #{table(store)}
     WHERE namespace = $1 AND id = ANY($2)
     ORDER BY array_position($2, id)
     """
@@ -177,7 +180,7 @@ defmodule BeamWeaver.VectorStore.EctoPostgres do
 
       sql = """
       SELECT id, content, metadata, embedding::text, #{score_sql(store, "$2")} AS score
-      FROM #{store.table}
+      FROM #{table(store)}
       WHERE #{if where == "", do: "TRUE", else: where}
       ORDER BY embedding #{distance_operator(store)} ($2::text)::vector
       LIMIT #{max(k, 0)}
@@ -200,14 +203,6 @@ defmodule BeamWeaver.VectorStore.EctoPostgres do
        do: :inner_product
 
   defp normalize_distance(_distance), do: :cosine
-
-  defp id_for(%Document{} = document, explicit_ids, index) do
-    explicit_ids
-    |> Enum.at(index)
-    |> Kernel.||(document.id)
-    |> Kernel.||(stable_id(document))
-    |> to_string()
-  end
 
   defp order_documents(documents, ids) do
     by_id = Map.new(documents, &{&1.id, &1})
@@ -235,23 +230,14 @@ defmodule BeamWeaver.VectorStore.EctoPostgres do
   defp score_sql(%__MODULE__{}, param),
     do: "1 - (embedding <=> (#{param}::text)::vector)"
 
+  # The table, in the Postgres schema `prefix:` names, quoted as the migration quotes it.
+  defp table(%__MODULE__{} = store), do: BeamWeaver.Migrations.Postgres.Util.qualify(store.prefix, store.table)
+
   defp query(%__MODULE__{} = store, sql, params) do
     AdapterError.query(store, sql, params,
       type: :vector_store_error,
       message: "vector store adapter error"
     )
-  end
-
-  defp embed_documents(embedding, documents, opts) do
-    documents
-    |> Enum.map(& &1.content)
-    |> then(&EmbeddingModel.embed_documents(embedding, &1, opts))
-  end
-
-  defp validate_documents(documents) do
-    if Enum.all?(documents, &match?(%Document{}, &1)),
-      do: :ok,
-      else: {:error, Error.new(:invalid_documents, "expected BeamWeaver documents")}
   end
 
   defp rows_from_result(%{columns: columns, rows: rows}) when is_list(columns) do
@@ -321,12 +307,6 @@ defmodule BeamWeaver.VectorStore.EctoPostgres do
       {number, _rest} -> number
       :error -> 0.0
     end
-  end
-
-  defp stable_id(%Document{} = document) do
-    :sha256
-    |> :crypto.hash(:erlang.term_to_binary({document.content, document.metadata}))
-    |> Base.encode16(case: :lower)
   end
 
   defp namespace(store), do: to_string(store.namespace)

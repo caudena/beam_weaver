@@ -1,16 +1,47 @@
 defprotocol BeamWeaver.Stream.IntoEvent do
+  @moduledoc false
   @fallback_to_any true
   def into_event(value)
 end
 
 defprotocol BeamWeaver.Stream.Finalize do
+  @moduledoc """
+  Turns what a stream collected into its final value.
+
+  A list of message chunks, such as the `chunk` of each
+  `BeamWeaver.Stream.Events.MessageChunk`, becomes one finished message with
+  its text and tool calls. Other values come back unchanged. See
+  [Streaming](streaming.md).
+  """
+
   @fallback_to_any true
   def finalize(value)
 end
 
 defmodule BeamWeaver.Stream do
   @moduledoc """
-  Typed stream event helpers.
+  Typed events from agents, graphs and models.
+
+  A stream is an enumerable of `BeamWeaver.Stream.Envelope` structs. Each
+  envelope holds an `event`, one of the structs in `BeamWeaver.Stream.Events`,
+  and where it came from: the run, the node and the namespace.
+
+  ```elixir
+  alias BeamWeaver.Stream.{Envelope, Events}
+
+  defmodule MyApp.Greeter do
+    use BeamWeaver.Agent
+
+    model "fake:chat", responses: ["Hello there, Ada."], stream: true
+  end
+
+  {:ok, events} = MyApp.Greeter.stream_events(%{messages: ["Hi, I'm Ada."]}, live: true)
+  for %Envelope{event: %Events.Token{text: text}} <- events, into: "", do: text
+  #=> "Hello there, Ada."
+  ```
+
+  This module also builds events (`event/2`, `envelope/2`) for code that emits
+  its own. See [Streaming](streaming.md).
   """
 
   alias BeamWeaver.Core.Error

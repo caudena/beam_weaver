@@ -1,7 +1,7 @@
 defmodule BeamWeaver.Stream.LiveResourceTest do
   use ExUnit.Case, async: true
 
-  alias BeamWeaver.OpenAI.Error, as: OpenAIError
+  alias BeamWeaver.Core.Error, as: OpenAIError
   alias BeamWeaver.Stream
   alias BeamWeaver.Stream.Events
 
@@ -22,8 +22,14 @@ defmodule BeamWeaver.Stream.LiveResourceTest do
         on_cancel: fn -> send(parent, :producer_exited) end
       )
 
-    assert [%Events.Custom{payload: :first}] = Enum.take(stream, 1)
-    assert_receive :producer_exited, 500
+    # `timeout:` is the heartbeat interval, so heartbeats may come before the
+    # item; once the producer goes quiet after it, the next event is a heartbeat.
+    assert [%Events.Custom{payload: :first}, %Events.Debug{payload: %{type: :heartbeat}}] =
+             stream
+             |> Elixir.Stream.drop_while(&(not match?(%Events.Custom{}, &1)))
+             |> Enum.take(2)
+
+    assert_receive :producer_exited
   end
 
   test "live_resource can run producers under a task supervisor" do
@@ -46,12 +52,12 @@ defmodule BeamWeaver.Stream.LiveResourceTest do
 
     task = Task.async(fn -> Enum.take(stream, 1) end)
 
-    assert_receive {:producer_pid, producer_pid}, 500
+    assert_receive {:producer_pid, producer_pid}
     assert producer_pid in Task.Supervisor.children(supervisor)
 
     send(producer_pid, :release)
 
-    assert [%Events.Custom{payload: :supervised}] = Task.await(task, 1_000)
+    assert [%Events.Custom{payload: :supervised}] = Task.await(task, 5_000)
   end
 
   test "live_resource stops its producer when the consumer exits" do
@@ -61,15 +67,28 @@ defmodule BeamWeaver.Stream.LiveResourceTest do
       spawn(fn ->
         Stream.live_resource(fn _emit ->
           send(parent, {:producer_pid, self()})
+
+          receive do
+            {:ping, from} -> send(from, :pong)
+          end
+
           Process.sleep(:infinity)
         end)
         |> Enum.to_list()
       end)
 
-    assert_receive {:producer_pid, producer}, 500
+    assert_receive {:producer_pid, producer}
     producer_ref = Process.monitor(producer)
+
+    # Monitoring is asynchronous, and the kill below reaches the producer from
+    # another process, so it could overtake the monitor request and turn the
+    # :DOWN into `:noproc`. Signals between two processes stay in order, so once
+    # the producer answers this ping the monitor is in place.
+    send(producer, {:ping, self()})
+    assert_receive :pong
+
     Process.exit(consumer, :kill)
-    assert_receive {:DOWN, ^producer_ref, :process, ^producer, :killed}, 500
+    assert_receive {:DOWN, ^producer_ref, :process, ^producer, :killed}
   end
 
   test "live_resource reports supervised producer crashes as stream errors" do

@@ -5,8 +5,8 @@
       "metadata": {
         "finish_reason": "stop",
         "id": "chatcmpl_kimi_structured",
-        "model": "kimi-k2.6",
-        "model_name": "kimi-k2.6",
+        "model": "kimi-k3",
+        "model_name": "kimi-k3",
         "model_provider": "moonshot",
         "parsed": {
           "answer": "pong from Kimi fixture"
@@ -38,7 +38,7 @@
           "role": "user"
         }
       ],
-      "model": "kimi-k2.6",
+      "model": "kimi-k3",
       "response_format": {
         "json_schema": {
           "name": "answer_output",
@@ -76,7 +76,7 @@
         }
       ],
       "id": "chatcmpl_kimi_structured",
-      "model": "kimi-k2.6",
+      "model": "kimi-k3",
       "usage": {
         "completion_tokens": 6,
         "prompt_tokens": 5,

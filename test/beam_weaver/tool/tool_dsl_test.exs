@@ -2,6 +2,7 @@ defmodule BeamWeaver.Tool.DSLTest do
   use ExUnit.Case, async: true
 
   alias BeamWeaver.Core.Tool
+  alias BeamWeaver.Core.ToolResult
   alias BeamWeaver.Runnable
   alias BeamWeaver.Tool.Converter
   alias BeamWeaver.Tool.Renderer
@@ -57,7 +58,7 @@ defmodule BeamWeaver.Tool.DSLTest do
   end
 
   defmodule DirectTool do
-    @behaviour BeamWeaver.Core.Tool
+    use BeamWeaver.Core.Tool
 
     defstruct []
 
@@ -95,7 +96,7 @@ defmodule BeamWeaver.Tool.DSLTest do
     assert Tool.raw_input_schema(%SearchDocs{}).properties["runtime"].type == "object"
     refute Map.has_key?(Tool.input_schema(%SearchDocs{}).properties, "runtime")
 
-    assert {:ok, %{query: "refunds", limit: 5}} =
+    assert {:ok, %ToolResult{content: %{query: "refunds", limit: 5}, artifact: nil}} =
              Tool.invoke(%SearchDocs{}, %{query: "refunds", runtime: %{}})
   end
 

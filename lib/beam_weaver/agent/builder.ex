@@ -1,10 +1,5 @@
 defmodule BeamWeaver.Agent.Builder do
-  @moduledoc """
-  Builds runtime-configured agents.
-
-  Module-defined agents remain the canonical API for application code. This
-  module keeps dynamic agent construction separate from the DSL macro surface.
-  """
+  @moduledoc false
 
   alias BeamWeaver.Agent.Built
   alias BeamWeaver.Agent.Capabilities
@@ -13,15 +8,97 @@ defmodule BeamWeaver.Agent.Builder do
   alias BeamWeaver.Core.Error
   alias BeamWeaver.Graph
 
+  # The options `build/1` takes, named like the declarations of an agent module.
+  @options [
+    :name,
+    :description,
+    :model,
+    :model_opts,
+    :system_prompt,
+    :tools,
+    :validate_tools,
+    :middleware,
+    :response_format,
+    :context_schema,
+    :input_schema,
+    :output_schema,
+    :interrupt_on,
+    :interrupt_before,
+    :interrupt_after,
+    :checkpointer,
+    :store,
+    :cache,
+    :recursion_limit,
+    :tool_timeout,
+    :step_timeout,
+    :run_timeout,
+    :filesystem,
+    :filesystem_permissions,
+    :skills,
+    :memory,
+    :subagents,
+    :async_subagents,
+    :compact_conversation,
+    :overflow_recovery,
+    :prompt_caching,
+    :exclude_tools,
+    :tool_descriptions,
+    :capability_profile
+  ]
+
+  @option_names Map.new(@options, &{Atom.to_string(&1), &1})
+
   @spec build(keyword() | map()) :: {:ok, Built.t()} | {:error, Error.t()}
   def build(opts) when is_list(opts) or is_map(opts) do
-    with {:ok, spec} <- runtime_spec(opts),
-         spec <- Capabilities.apply(spec),
-         graph <- Compiler.compile_graph(spec),
-         {:ok, compiled} <- Graph.compile(graph, Compiler.compile_opts(spec, [])) do
+    with {:ok, spec} <- validate(opts),
+         {:ok, compiled} <- Graph.compile(Compiler.compile_graph(spec), Compiler.compile_opts(spec, [])) do
       {:ok, %Built{spec: spec, compiled: compiled}}
     end
   end
+
+  @doc false
+  # Checks the options as `build/1` does and returns the spec it would
+  # compile, without compiling the graph. A parent agent checks its subagents
+  # this way when it is built; a `task` call builds the one it runs.
+  # `validate_opts` go to `Compiler.validate/2`.
+  @spec validate(keyword() | map(), keyword()) :: {:ok, Spec.t()} | {:error, Error.t()}
+  def validate(opts, validate_opts \\ []) when is_list(opts) or is_map(opts) do
+    with :ok <- validate_options(opts),
+         {:ok, spec} <- runtime_spec(opts),
+         {:ok, spec} <- Capabilities.apply(spec),
+         :ok <- Compiler.validate(spec, validate_opts) do
+      {:ok, spec}
+    end
+  end
+
+  defp validate_options(opts) when is_list(opts) do
+    if Keyword.keyword?(opts) do
+      validate_option_names(Keyword.keys(opts))
+    else
+      {:error, Error.new(:invalid_agent, "BeamWeaver.Agent.build/1 takes a keyword list or a map")}
+    end
+  end
+
+  defp validate_options(opts) when is_map(opts), do: validate_option_names(Map.keys(opts))
+
+  defp validate_option_names(names) do
+    case Enum.reject(names, &known_option?/1) do
+      [] ->
+        :ok
+
+      unknown ->
+        {:error,
+         Error.new(
+           :invalid_agent,
+           "unknown BeamWeaver.Agent.build/1 options: #{Enum.map_join(unknown, ", ", &to_string/1)}",
+           %{options: unknown}
+         )}
+    end
+  end
+
+  defp known_option?(key) when is_atom(key), do: key in @options
+  defp known_option?(key) when is_binary(key), do: Map.has_key?(@option_names, key)
+  defp known_option?(_key), do: false
 
   defp runtime_spec(opts) do
     if is_nil(option(opts, :model)) do
@@ -30,50 +107,10 @@ defmodule BeamWeaver.Agent.Builder do
          option: :model
        })}
     else
-      {:ok,
-       %Spec{
-         module: Built,
-         name: option(opts, :name, "BeamWeaver.Agent.Built"),
-         model: option(opts, :model),
-         model_opts: option(opts, :model_opts, []),
-         tools: List.wrap(option(opts, :tools, [])),
-         validate_tools: option(opts, :validate_tools, false),
-         middleware: List.wrap(option(opts, :middleware, [])),
-         system_prompt: option(opts, :system_prompt),
-         response_format: option(opts, :response_format),
-         checkpointer: option(opts, :checkpointer),
-         store: option(opts, :store),
-         cache: option(opts, :cache),
-         filesystem: option(opts, :filesystem, option(opts, :backend)),
-         filesystem_permissions: option(opts, :filesystem_permissions, option(opts, :permissions)),
-         skills: option(opts, :skills),
-         memory: option(opts, :memory),
-         subagents: option(opts, :subagents),
-         async_subagents: option(opts, :async_subagents),
-         compact_conversation: option(opts, :compact_conversation),
-         overflow_recovery: option(opts, :overflow_recovery, option(opts, :overflow_clip)),
-         prompt_caching: option(opts, :prompt_caching),
-         exclude_tools: option(opts, :exclude_tools),
-         tool_descriptions: option(opts, :tool_descriptions),
-         interrupt_on: option(opts, :interrupt_on),
-         context_schema: option(opts, :context_schema),
-         input_schema: option(opts, :input_schema),
-         output_schema: option(opts, :output_schema),
-         interrupt_before: List.wrap(option(opts, :interrupt_before, [])),
-         interrupt_after: List.wrap(option(opts, :interrupt_after, [])),
-         debug: option(opts, :debug, false),
-         recursion_limit: option(opts, :recursion_limit)
-       }}
+      {:ok, Spec.from_dsl_attrs(Built, Map.new(@options, &{&1, option(opts, &1)}))}
     end
   end
 
-  defp option(opts, key, default \\ nil)
-
-  defp option(opts, key, default) when is_list(opts) do
-    Keyword.get(opts, key, default)
-  end
-
-  defp option(opts, key, default) when is_map(opts) do
-    Map.get(opts, key, Map.get(opts, to_string(key), default))
-  end
+  defp option(opts, key) when is_list(opts), do: Keyword.get(opts, key)
+  defp option(opts, key) when is_map(opts), do: Map.get(opts, key, Map.get(opts, Atom.to_string(key)))
 end

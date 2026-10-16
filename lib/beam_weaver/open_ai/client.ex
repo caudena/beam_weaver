@@ -3,18 +3,24 @@ defmodule BeamWeaver.OpenAI.Client do
   Small OpenAI Responses API client built on `BeamWeaver.Transport`.
   """
 
+  use BeamWeaver.Provider.RedactedInspect
+
   alias BeamWeaver.Config
+  alias BeamWeaver.Core.Error
   alias BeamWeaver.OpenAI.Client.ResponseDecoder
-  alias BeamWeaver.OpenAI.Error
-  alias BeamWeaver.Provider.OpenAICompatibleClient
+  alias BeamWeaver.OpenAI.Streaming
+  alias BeamWeaver.Provider.HTTPClient
+  alias BeamWeaver.Provider.OpenAICompatibleClient, as: Compat
+  alias BeamWeaver.Provider.OpenAICompatibleStreaming
   alias BeamWeaver.Provider.Options, as: ProviderOptions
   alias BeamWeaver.Transport.Request
 
   @default_base_url "https://api.openai.com/v1"
-  @default_endpoint @default_base_url <> "/responses"
   @default_timeout 15_000
 
-  defstruct endpoint: @default_endpoint,
+  defstruct base_url: @default_base_url,
+            endpoint: @default_base_url <> "/responses",
+            chat_completions_endpoint: @default_base_url <> "/chat/completions",
             api_key: nil,
             organization: nil,
             project: nil,
@@ -24,7 +30,9 @@ defmodule BeamWeaver.OpenAI.Client do
             timeout: @default_timeout
 
   @type t :: %__MODULE__{
+          base_url: String.t(),
           endpoint: String.t(),
+          chat_completions_endpoint: String.t(),
           api_key: String.t() | (-> String.t() | nil) | nil,
           organization: String.t() | nil,
           project: String.t() | nil,
@@ -39,8 +47,12 @@ defmodule BeamWeaver.OpenAI.Client do
   """
   @spec new(keyword()) :: t()
   def new(opts \\ []) do
-    struct(__MODULE__,
-      endpoint: Keyword.get(opts, :endpoint, @default_endpoint),
+    base_url = Compat.configured_url(opts, :base_url, [:openai, :base_url], @default_base_url)
+
+    %__MODULE__{
+      base_url: base_url,
+      endpoint: Keyword.get(opts, :endpoint, endpoint(base_url, "responses")),
+      chat_completions_endpoint: Keyword.get(opts, :chat_completions_endpoint, endpoint(base_url, "chat/completions")),
       api_key: Config.option(opts, :api_key, [:openai, :api_key]),
       organization: Config.option(opts, :organization, [:openai, :organization]),
       project: Config.option(opts, :project, [:openai, :project]),
@@ -48,46 +60,42 @@ defmodule BeamWeaver.OpenAI.Client do
       transport: ProviderOptions.default_transport(Keyword.get(opts, :transport)),
       transport_opts: Keyword.get(opts, :transport_opts, []),
       timeout: Keyword.get(opts, :timeout, @default_timeout)
-    )
+    }
   end
 
   @doc """
   Posts a JSON body to the Responses API and decodes a JSON response body.
   """
-  @spec responses(t() | keyword(), map(), keyword()) :: {:ok, map()} | {:error, Error.t()}
-  def responses(client_or_opts, body, opts \\ []) when is_map(body) do
-    client_or_opts
-    |> normalize_client(opts)
-    |> do_request(body, opts)
+  @spec responses(t(), map(), keyword()) :: {:ok, map()} | {:error, Error.t()}
+  def responses(%__MODULE__{} = client, body, opts \\ []) when is_map(body) do
+    client
+    |> http(client.endpoint, opts)
+    |> HTTPClient.post_json(body, opts)
     |> ResponseDecoder.json(opts)
   end
 
   @doc """
   Posts a JSON body and decodes a JSON response body.
   """
-  @spec post_json(t() | keyword(), String.t(), map(), keyword()) ::
-          {:ok, map()} | {:error, Error.t()}
-  def post_json(client_or_opts, endpoint, body, opts \\ [])
-      when is_binary(endpoint) and is_map(body) do
-    client_or_opts
-    |> normalize_client(opts)
-    |> do_request(body, Keyword.put(opts, :endpoint, endpoint))
+  @spec post_json(t(), String.t(), map(), keyword()) :: {:ok, map()} | {:error, Error.t()}
+  def post_json(%__MODULE__{} = client, endpoint, body, opts \\ []) when is_binary(endpoint) and is_map(body) do
+    client
+    |> http(endpoint, opts)
+    |> HTTPClient.post_json(body, Keyword.put(opts, :endpoint, endpoint))
     |> ResponseDecoder.json(opts)
   end
 
   @doc """
   Posts a streaming JSON body and returns parsed text deltas.
   """
-  @spec post_stream(t() | keyword(), String.t(), map(), keyword()) ::
-          {:ok, Enumerable.t()} | {:error, Error.t()}
-  def post_stream(client_or_opts, endpoint, body, opts \\ [])
-      when is_binary(endpoint) and is_map(body) do
-    client_or_opts
-    |> normalize_client(opts)
-    |> do_stream(
+  @spec post_stream(t(), String.t(), map(), keyword()) :: {:ok, Enumerable.t()} | {:error, Error.t()}
+  def post_stream(%__MODULE__{} = client, endpoint, body, opts \\ []) when is_binary(endpoint) and is_map(body) do
+    client
+    |> http(endpoint, opts)
+    |> HTTPClient.stream_sse(
       body,
       Keyword.put(opts, :endpoint, endpoint),
-      &BeamWeaver.OpenAI.Streaming.text_deltas/1,
+      &Streaming.text_deltas/1,
       &ResponseDecoder.text_stream/1
     )
   end
@@ -95,218 +103,151 @@ defmodule BeamWeaver.OpenAI.Client do
   @doc """
   Posts a streaming Responses API body and returns parsed text deltas.
   """
-  @spec responses_stream(t() | keyword(), map(), keyword()) ::
-          {:ok, Enumerable.t()} | {:error, Error.t()}
-  def responses_stream(client_or_opts, body, opts \\ []) when is_map(body) do
-    client_or_opts
-    |> normalize_client(opts)
-    |> do_stream(
-      body,
-      opts,
-      &BeamWeaver.OpenAI.Streaming.text_deltas/1,
-      &ResponseDecoder.text_stream/1
-    )
+  @spec responses_stream(t(), map(), keyword()) :: {:ok, Enumerable.t()} | {:error, Error.t()}
+  def responses_stream(%__MODULE__{} = client, body, opts \\ []) when is_map(body) do
+    client
+    |> http(client.endpoint, opts)
+    |> HTTPClient.stream_sse(body, opts, &Streaming.text_deltas/1, &ResponseDecoder.text_stream/1)
   end
 
   @doc """
   Posts a streaming Responses API body and reconstructs the final JSON response.
   """
-  @spec responses_stream_response(t() | keyword(), map(), keyword()) ::
-          {:ok, map()} | {:error, Error.t()}
-  def responses_stream_response(client_or_opts, body, opts \\ []) when is_map(body) do
-    client_or_opts
-    |> normalize_client(opts)
-    |> do_stream_collect(body, opts, &ResponseDecoder.responses_stream_map(&1, opts))
+  @spec responses_stream_response(t(), map(), keyword()) :: {:ok, map()} | {:error, Error.t()}
+  def responses_stream_response(%__MODULE__{} = client, body, opts \\ []) when is_map(body) do
+    client
+    |> http(client.endpoint, opts)
+    |> HTTPClient.collect_sse(body, opts, &ResponseDecoder.responses_stream_map(&1, opts))
   end
 
   @doc """
   Posts a streaming Responses API body and returns content-block lifecycle events.
   """
-  @spec responses_stream_events(t() | keyword(), map(), keyword()) ::
-          {:ok, Enumerable.t()} | {:error, Error.t()}
-  def responses_stream_events(client_or_opts, body, opts \\ []) when is_map(body) do
-    client_or_opts
-    |> normalize_client(opts)
-    |> do_stream(
-      body,
-      opts,
-      &BeamWeaver.OpenAI.Streaming.lifecycle_events/1,
-      &ResponseDecoder.lifecycle_events/1
-    )
+  @spec responses_stream_events(t(), map(), keyword()) :: {:ok, Enumerable.t()} | {:error, Error.t()}
+  def responses_stream_events(%__MODULE__{} = client, body, opts \\ []) when is_map(body) do
+    client
+    |> http(client.endpoint, opts)
+    |> HTTPClient.stream_sse(body, opts, &Streaming.lifecycle_events/1, &ResponseDecoder.lifecycle_events/1)
   end
 
   @doc """
   Posts a streaming Responses API body and returns typed BeamWeaver stream envelopes.
   """
-  @spec responses_stream_typed_events(t() | keyword(), map(), keyword()) ::
+  @spec responses_stream_typed_events(t(), map() | binary(), keyword()) ::
           {:ok, Enumerable.t()} | {:error, Error.t()}
-  def responses_stream_typed_events(client_or_opts, body, opts \\ [])
+  def responses_stream_typed_events(%__MODULE__{} = client, body, opts \\ [])
       when is_map(body) or is_binary(body) do
-    client_or_opts
-    |> normalize_client(opts)
-    |> do_stream(
-      body,
-      opts,
-      &BeamWeaver.OpenAI.Streaming.typed_events/1,
-      &ResponseDecoder.typed_events/1
-    )
+    client
+    |> http(client.endpoint, opts)
+    |> HTTPClient.stream_typed_sse(body, opts, &Streaming.typed_events/1, &ResponseDecoder.typed_events/1)
   end
 
   @doc """
   Posts a JSON body to the Chat Completions API and decodes a JSON response body.
   """
-  @spec chat_completions(t() | keyword(), map(), keyword()) ::
-          {:ok, map()} | {:error, Error.t()}
-  def chat_completions(client_or_opts, body, opts \\ []) when is_map(body) do
-    client_or_opts
-    |> normalize_client(Keyword.put(opts, :endpoint, endpoint("chat/completions")))
-    |> do_request(body, Keyword.put(opts, :endpoint, endpoint("chat/completions")))
+  @spec chat_completions(t(), map(), keyword()) :: {:ok, map()} | {:error, Error.t()}
+  def chat_completions(%__MODULE__{} = client, body, opts \\ []) when is_map(body) do
+    client
+    |> http(client.chat_completions_endpoint, opts)
+    |> HTTPClient.post_json(body, opts)
     |> ResponseDecoder.json(opts)
   end
 
   @doc """
   Posts a streaming Chat Completions body and returns parsed text deltas.
   """
-  @spec chat_completions_stream(t() | keyword(), map(), keyword()) ::
-          {:ok, Enumerable.t()} | {:error, Error.t()}
-  def chat_completions_stream(client_or_opts, body, opts \\ []) when is_map(body) do
-    client_or_opts
-    |> normalize_client(Keyword.put(opts, :endpoint, endpoint("chat/completions")))
-    |> do_stream(
-      body,
-      Keyword.put(opts, :endpoint, endpoint("chat/completions")),
-      &BeamWeaver.OpenAI.Streaming.text_deltas/1,
-      &ResponseDecoder.text_stream/1
-    )
+  @spec chat_completions_stream(t(), map(), keyword()) :: {:ok, Enumerable.t()} | {:error, Error.t()}
+  def chat_completions_stream(%__MODULE__{} = client, body, opts \\ []) when is_map(body) do
+    client
+    |> http(client.chat_completions_endpoint, opts)
+    |> HTTPClient.stream_sse(body, opts, &Streaming.text_deltas/1, &ResponseDecoder.text_stream/1)
   end
 
   @doc """
   Posts a streaming Chat Completions body and reconstructs the final JSON response.
   """
-  @spec chat_completions_stream_response(t() | keyword(), map(), keyword()) ::
-          {:ok, map()} | {:error, Error.t()}
-  def chat_completions_stream_response(client_or_opts, body, opts \\ []) when is_map(body) do
-    client_or_opts
-    |> normalize_client(Keyword.put(opts, :endpoint, endpoint("chat/completions")))
-    |> do_stream_collect(
-      body,
-      Keyword.put(opts, :endpoint, endpoint("chat/completions")),
-      &ResponseDecoder.chat_completions_stream_response(&1, opts)
-    )
+  @spec chat_completions_stream_response(t(), map(), keyword()) :: {:ok, map()} | {:error, Error.t()}
+  def chat_completions_stream_response(%__MODULE__{} = client, body, opts \\ []) when is_map(body) do
+    client
+    |> http(client.chat_completions_endpoint, opts)
+    |> HTTPClient.collect_sse(body, opts, &ResponseDecoder.chat_completions_stream_response(&1, opts))
   end
 
   @doc """
   Posts a streaming Chat Completions body and returns typed BeamWeaver stream envelopes.
+
+  The stream ends with the complete reply, decoded like a reply from
+  `chat_completions/3`, followed by its `Done` events.
   """
-  @spec chat_completions_stream_typed_events(t() | keyword(), map(), keyword()) ::
+  @spec chat_completions_stream_typed_events(t(), map(), keyword()) ::
           {:ok, Enumerable.t()} | {:error, Error.t()}
-  def chat_completions_stream_typed_events(client_or_opts, body, opts \\ []) when is_map(body) do
-    client_or_opts
-    |> normalize_client(Keyword.put(opts, :endpoint, endpoint("chat/completions")))
-    |> do_stream(
+  def chat_completions_stream_typed_events(%__MODULE__{} = client, body, opts \\ []) when is_map(body) do
+    finish = &ResponseDecoder.finish_chat_completions_typed_events(&1, &2, opts)
+
+    client
+    |> http(client.chat_completions_endpoint, opts)
+    |> HTTPClient.stream_typed_sse(
       body,
-      Keyword.put(opts, :endpoint, endpoint("chat/completions")),
-      &BeamWeaver.OpenAI.Streaming.typed_events/1,
+      Keyword.put(opts, :parser_finalizer, finish),
+      &chat_completions_typed_events/2,
       &ResponseDecoder.typed_events/1
     )
   end
 
+  # Parses a batch of a live Chat Completions stream, holding its `Done`
+  # events back for the complete reply that ends the stream.
+  defp chat_completions_typed_events(events, state),
+    do: events |> Streaming.typed_events() |> OpenAICompatibleStreaming.hold_events(events, state)
+
   @doc """
   Retrieves a Responses API response.
   """
-  def retrieve_response(client_or_opts, response_id, opts \\ []) when is_binary(response_id) do
-    endpoint = endpoint("responses/#{response_id}")
-
-    client_or_opts
-    |> normalize_client(Keyword.put(opts, :endpoint, endpoint))
-    |> do_get(Keyword.put(opts, :endpoint, endpoint))
+  def retrieve_response(%__MODULE__{} = client, response_id, opts \\ []) when is_binary(response_id) do
+    client
+    |> http(endpoint(client, "responses/#{response_id}"), opts)
+    |> HTTPClient.get(opts)
     |> ResponseDecoder.json(opts)
   end
 
   @doc """
   Lists input items for a Responses API response.
   """
-  def list_response_input_items(client_or_opts, response_id, opts \\ [])
-      when is_binary(response_id) do
-    endpoint = endpoint("responses/#{response_id}/input_items")
-
-    client_or_opts
-    |> normalize_client(Keyword.put(opts, :endpoint, endpoint))
-    |> do_get(Keyword.put(opts, :endpoint, endpoint))
+  def list_response_input_items(%__MODULE__{} = client, response_id, opts \\ []) when is_binary(response_id) do
+    client
+    |> http(endpoint(client, "responses/#{response_id}/input_items"), opts)
+    |> HTTPClient.get(opts)
     |> ResponseDecoder.json(opts)
   end
 
   @doc """
   Compacts a Responses API response when the provider supports it.
   """
-  def compact_response(client_or_opts, response_id, body \\ %{}, opts \\ [])
+  def compact_response(%__MODULE__{} = client, response_id, body \\ %{}, opts \\ [])
       when is_binary(response_id) and is_map(body) do
-    endpoint = endpoint("responses/#{response_id}/compact")
-
-    client_or_opts
-    |> normalize_client(Keyword.put(opts, :endpoint, endpoint))
-    |> do_request(body, Keyword.put(opts, :endpoint, endpoint))
+    client
+    |> http(endpoint(client, "responses/#{response_id}/compact"), opts)
+    |> HTTPClient.post_json(body, opts)
     |> ResponseDecoder.json(opts)
   end
 
   @doc false
   @spec request(t(), map(), keyword()) :: Request.t()
-  def request(%__MODULE__{} = client, body, opts \\ []) when is_map(body) do
-    OpenAICompatibleClient.request(client, body, opts, &http_client/2)
-  end
+  def request(%__MODULE__{} = client, body, opts \\ []) when is_map(body),
+    do: client |> http(client.endpoint, opts) |> HTTPClient.request(body, opts)
 
   @doc """
-  Returns the default OpenAI API endpoint for a path.
+  Returns the OpenAI API URL for `path` under a client's (or a raw) base URL.
   """
-  @spec endpoint(String.t()) :: String.t()
-  def endpoint(path) when is_binary(path) do
-    OpenAICompatibleClient.endpoint(@default_base_url, path)
+  @spec endpoint(t() | String.t(), String.t()) :: String.t()
+  def endpoint(%__MODULE__{base_url: base_url}, path), do: endpoint(base_url, path)
+  def endpoint(base_url, path) when is_binary(path), do: Compat.endpoint(base_url, path)
+
+  defp http(client, endpoint, opts) do
+    headers =
+      for {name, value} <- [{"openai-project", client.project}, {"openai-organization", client.organization}],
+          value not in [nil, ""],
+          do: {name, value}
+
+    Compat.http(:openai, client, endpoint, opts, headers)
   end
-
-  defp do_request(%__MODULE__{} = client, body, opts) do
-    OpenAICompatibleClient.post_json(client, body, opts, &http_client/2)
-  end
-
-  defp do_stream(%__MODULE__{} = client, body, opts, parser, error_decoder) do
-    OpenAICompatibleClient.stream_sse(client, body, opts, &http_client/2, parser, error_decoder)
-  end
-
-  defp do_stream_collect(%__MODULE__{} = client, body, opts, decoder) do
-    OpenAICompatibleClient.collect_sse(client, body, opts, &http_client/2, decoder)
-  end
-
-  defp do_get(%__MODULE__{} = client, opts) do
-    OpenAICompatibleClient.get(client, opts, &http_client/2)
-  end
-
-  defp normalize_client(client_or_opts, opts),
-    do:
-      OpenAICompatibleClient.normalize_client(client_or_opts, opts, &new/1, [
-        :endpoint,
-        :api_key,
-        :organization,
-        :project,
-        :default_headers,
-        :transport,
-        :transport_opts,
-        :timeout
-      ])
-
-  defp http_client(%__MODULE__{} = client, opts) do
-    OpenAICompatibleClient.http_client(:openai, client, opts,
-      auth_header: "authorization",
-      auth_prefix: "Bearer",
-      default_headers: headers(client) ++ client.default_headers
-    )
-  end
-
-  defp headers(%__MODULE__{} = client) do
-    []
-    |> maybe_put_header("openai-organization", client.organization)
-    |> maybe_put_header("openai-project", client.project)
-  end
-
-  defp maybe_put_header(headers, _name, nil), do: headers
-  defp maybe_put_header(headers, _name, ""), do: headers
-  defp maybe_put_header(headers, name, value), do: [{name, value} | headers]
 end

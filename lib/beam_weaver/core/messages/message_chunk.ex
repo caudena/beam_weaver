@@ -6,11 +6,9 @@ defmodule BeamWeaver.Core.Messages.MessageChunk do
   alias BeamWeaver.Core.Message
   alias BeamWeaver.Core.Messages.AIChunk
   alias BeamWeaver.Core.Messages.Chunk
-  alias BeamWeaver.Core.Messages.FunctionChunk
   alias BeamWeaver.Core.Messages.InvalidToolCall
   alias BeamWeaver.Core.Messages.ToolCall
   alias BeamWeaver.Core.Messages.ToolCallChunk
-  alias BeamWeaver.Core.Messages.ToolChunk
 
   @spec merge(term(), term()) :: term()
   def merge(nil, right), do: right
@@ -55,8 +53,6 @@ defmodule BeamWeaver.Core.Messages.MessageChunk do
   end
 
   defp normalize(%AIChunk{} = chunk), do: struct(Chunk, Map.from_struct(chunk))
-  defp normalize(%ToolChunk{} = chunk), do: struct(Chunk, Map.from_struct(chunk))
-  defp normalize(%FunctionChunk{} = chunk), do: struct(Chunk, Map.from_struct(chunk))
   defp normalize(%Chunk{} = chunk), do: chunk
 
   defp normalize(%Message{} = message) do

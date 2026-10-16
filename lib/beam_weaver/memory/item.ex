@@ -1,6 +1,9 @@
 defmodule BeamWeaver.Memory.Item do
   @moduledoc """
   Typed long-term memory item.
+
+  `ttl` is the record's lifetime in minutes, or `nil` when it doesn't expire;
+  `expires_at` is when it expires.
   """
 
   defstruct [
@@ -10,7 +13,8 @@ defmodule BeamWeaver.Memory.Item do
     metadata: %{},
     created_at: nil,
     updated_at: nil,
-    expires_at: nil
+    expires_at: nil,
+    ttl: nil
   ]
 
   @type t :: %__MODULE__{
@@ -20,7 +24,8 @@ defmodule BeamWeaver.Memory.Item do
           metadata: map(),
           created_at: DateTime.t(),
           updated_at: DateTime.t(),
-          expires_at: DateTime.t() | nil
+          expires_at: DateTime.t() | nil,
+          ttl: number() | nil
         }
 end
 
@@ -37,7 +42,8 @@ defmodule BeamWeaver.Memory.SearchItem do
     metadata: %{},
     created_at: nil,
     updated_at: nil,
-    expires_at: nil
+    expires_at: nil,
+    ttl: nil
   ]
 
   def from_item(item, score \\ nil)

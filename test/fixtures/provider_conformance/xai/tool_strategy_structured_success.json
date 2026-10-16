@@ -31,6 +31,7 @@
       ["content-type", "application/json"]
     ],
     "json": {
+      "include": ["reasoning.encrypted_content"],
       "input": [
         {
           "content": "answer through the schema tool",

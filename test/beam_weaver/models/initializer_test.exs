@@ -50,6 +50,84 @@ defmodule BeamWeaver.Models.InitializerTest do
     assert chat_completions.max_completion_tokens == 64
   end
 
+  test "init_chat_model rejects options the provider doesn't take" do
+    assert {:error, typo} = Models.init_chat_model("openai:gpt-5.4-mini", temprature: 0.2)
+    assert typo.type == :unsupported_model_param
+    assert typo.details.params == [:temprature]
+    assert typo.details.provider == :openai
+
+    assert {:error, foreign} = Models.init_chat_model("anthropic:claude-haiku-4-5", reasoning_effort: :low)
+    assert foreign.details.params == [:reasoning_effort]
+    refute foreign.message =~ "when you call"
+
+    assert {:error, call_option} = Models.init_chat_model("openai:gpt-5.4-mini", tools: [%{"type" => "web_search"}])
+    assert call_option.details.params == [:tools]
+    assert call_option.message =~ "pass :tools when you call the model"
+
+    assert {:error, %{details: %{params: [:respones]}}} = Models.init_chat_model("fake:chat", respones: ["Hi"])
+    assert {:ok, _fake} = Models.init_chat_model("fake:chat", responses: ["Hi"], api_key: "unused", timeout: 5_000)
+    assert {:error, %{details: %{params: [:temperature]}}} = Models.init_embeddings("fake:embedding", temperature: 0.1)
+
+    assert {:error, %{type: :invalid_provider_option, details: %{option: :api}}} =
+             Models.init_chat_model("openai:gpt-5.4-mini", api: :chat_completion)
+
+    assert {:error, %{details: %{params: [:api]}}} =
+             Models.init_chat_model("anthropic:claude-haiku-4-5", api: :responses)
+  end
+
+  test "an option error names the provider for every API" do
+    for {id, opts, provider} <- [
+          {"openai:gpt-5.4-mini", [api: :chat_completions], :openai},
+          {"xai:grok-4.6", [api: :chat_completions], :xai},
+          {"xai:grok-4.6", [], :xai},
+          {"deepseek:deepseek-v4-flash", [api: :responses], :deepseek}
+        ] do
+      assert {:error, %{type: :unsupported_model_param, details: %{provider: ^provider, params: [:temprature]}}} =
+               Models.init_chat_model(id, [{:temprature, 0.2} | opts])
+    end
+
+    assert {:error, %{details: %{provider: :openai}}} =
+             Models.init_embeddings("openai:text-embedding-3-small", temprature: 0.2)
+  end
+
+  test "init_chat_model takes the common names for the output cap and stop sequences" do
+    assert %{max_tokens: 1_000, stop_sequences: ["END"]} =
+             Models.init_chat_model!("anthropic:claude-haiku-4-5", max_output_tokens: 1_000, stop: ["END"])
+
+    assert %{max_output_tokens: 1_000, stop_sequences: ["END"]} =
+             Models.init_chat_model!("google:gemini-3.5-flash", max_tokens: 1_000, stop: ["END"])
+
+    assert %{max_tokens: 500} =
+             Models.init_chat_model!("anthropic:claude-haiku-4-5", max_tokens: 500, max_output_tokens: 1_000)
+  end
+
+  test "init_chat_model keeps stream: true as the model's default" do
+    for id <- [
+          "openai:gpt-5.4-mini",
+          "anthropic:claude-haiku-4-5",
+          "google:gemini-3.5-flash",
+          "xai:grok-4.6",
+          "moonshot:kimi-k2.6",
+          "zai:glm-5.2",
+          "deepseek:deepseek-v4-flash",
+          "fake:chat"
+        ] do
+      assert %{streaming: true} = Models.init_chat_model!(id, stream: true)
+    end
+
+    assert %{streaming: true} = Models.init_chat_model!("openai:gpt-5.4-mini", api: :chat_completions, stream: true)
+    assert %{streaming: true} = Models.init_chat_model!("xai:grok-4.6", api: :chat_completions, stream: true)
+  end
+
+  test "init_options leaves an agent's call options for the calls" do
+    opts = [temperature: 0.2, tool_choice: :auto, tools: [%{"type" => "web_search"}], stream: true, timeout: 5_000]
+
+    assert Models.init_options("openai:gpt-5.4-mini", opts) == [temperature: 0.2, stream: true, timeout: 5_000]
+    assert Models.init_options("anthropic:claude-haiku-4-5", stop: ["END"], tool_choice: :auto) == [stop: ["END"]]
+    assert Models.init_options("openai:gpt-5.4-mini", temprature: 0.2) == [temprature: 0.2]
+    assert Models.init_options("openai:gpt-5.4-mini", tool_timeout: 30_000, timeout: 5_000) == [timeout: 5_000]
+  end
+
   test "init_chat_model returns tagged errors for unsupported providers" do
     assert {:error, error} = Models.init_chat_model("unknown:model")
     assert error.type == :unsupported_provider
@@ -138,7 +216,7 @@ defmodule BeamWeaver.Models.InitializerTest do
   end
 
   test "init_chat_model accepts explicit Z.ai identifiers but not bare GLM aliases" do
-    for model <- ["glm-5.3", "glm-5.3-flash", "glm-5.2"] do
+    for model <- ["glm-5.3", "glm-5.3-flash", "glm-5.3-flashx", "glm-5.2", "glm-5.1", "glm-5", "glm-4.7", "glm-4.6"] do
       assert {:ok, %BeamWeaver.ZAI.ChatModel{model: ^model}} =
                Models.init_chat_model("zai:" <> model)
     end
@@ -147,9 +225,19 @@ defmodule BeamWeaver.Models.InitializerTest do
     assert bare.type == :invalid_model
     assert bare.details.expected == "zai:glm-5.2"
 
-    assert {:error, unsupported} = Models.init_chat_model("zai:glm-5.1")
+    assert {:error, bare} = Models.init_chat_model("glm-5.3-flash")
+    assert bare.details.expected == "zai:glm-5.3-flash"
+
+    assert {:error, unsupported} = Models.init_chat_model("zai:glm-4")
     assert unsupported.type == :unsupported_model
     assert unsupported.details.expected == "zai:glm-5.3"
+    assert "glm-5.3-flashx" in unsupported.details.supported
+  end
+
+  test "init_chat_model names the prefixed id the caller gave for bare DeepSeek identifiers" do
+    assert {:error, bare} = Models.init_chat_model("deepseek-v4-pro")
+    assert bare.type == :invalid_model
+    assert bare.details.expected == "deepseek:deepseek-v4-pro"
   end
 
   test "init_chat_model rejects discontinued Moonshot identifiers with replacements" do
@@ -187,6 +275,8 @@ defmodule BeamWeaver.Models.InitializerTest do
     assert model.dimensions == 4
     assert {:ok, vector} = BeamWeaver.Core.EmbeddingModel.embed_query(model, "hello")
     assert length(vector) == 4
+
+    assert {:ok, %{mode: :random}} = Models.init_embeddings("fake:embedding", mode: :random)
   end
 
   test "OpenAI embedding profile lookup rejects deprecated ada embeddings" do
@@ -197,12 +287,13 @@ defmodule BeamWeaver.Models.InitializerTest do
   end
 
   test "token counting is explicit through functions, MFA, model callbacks, or approximate fallback" do
-    assert {:ok, 2} = LanguageModel.count_tokens(:approximate, "hello world")
+    # About four characters per token, plus three per message for its role and framing.
+    assert {:ok, 3} = LanguageModel.count_tokens(:approximate, "hello world")
     assert {:ok, 7} = LanguageModel.count_tokens(fn _ -> 7 end, "ignored")
-    assert {:ok, 5} = LanguageModel.count_tokens({TokenCounter, :count, [3]}, "hello world")
+    assert {:ok, 6} = LanguageModel.count_tokens({TokenCounter, :count, [3]}, "hello world")
 
     assert {:ok, model} = Models.init_chat_model("fake:chat")
-    assert {:ok, 2} = LanguageModel.count_tokens(model, [Message.user("hello world")])
+    assert {:ok, 7} = LanguageModel.count_tokens(model, [Message.user("hello world")])
   end
 
   test "static vocabulary tokenizer gives deterministic IDs and can drive model token counts" do
@@ -373,19 +464,12 @@ defmodule BeamWeaver.Models.InitializerTest do
       :telemetry.detach(attach_id)
     end)
 
-    assert :ok =
-             ParamPolicy.validate(profile, [temperature: 0.2], %ParamPolicy{mode: :warn},
-               metadata: %{request_id: "warn-1"}
-             )
+    params = [temperature: 0.2, metadata: %{user_id: "user_123"}]
+    assert :ok = ParamPolicy.validate(profile, params, %ParamPolicy{mode: :warn})
 
-    assert_receive {^ref, %{count: 1},
-                    %{
-                      provider: :fake,
-                      model: "warn-profile",
-                      params: [:temperature],
-                      metadata: %{request_id: "warn-1"}
-                    }},
-                   1_000
+    # The event names the params, never their values.
+    assert_receive {^ref, %{count: 2}, %{model: "warn-profile"} = metadata}, 1_000
+    assert metadata == %{provider: :fake, model: "warn-profile", params: [:temperature, :metadata]}
   end
 
   test "provider escape hatches bypass standard param validation explicitly" do
@@ -395,8 +479,7 @@ defmodule BeamWeaver.Models.InitializerTest do
              ParamPolicy.validate(
                profile,
                [
-                 extra_body: %{temperature: 0.2},
-                 model_kwargs: %{future_param: true},
+                 extra_body: %{temperature: 0.2, future_param: true},
                  provider_opts: %{trace: "x"}
                ],
                %ParamPolicy{mode: :strict}

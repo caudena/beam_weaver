@@ -77,11 +77,11 @@ defmodule BeamWeaver.Agent.PrebuiltTailTest do
   end
 
   defmodule SyntheticToolMessageMiddleware do
-    @behaviour BeamWeaver.Agent.Middleware
+    use BeamWeaver.Agent.Middleware
 
     def name(_middleware), do: :synthetic_tool_message_middleware
 
-    def after_model(state, runtime) do
+    def after_model(_middleware, state, runtime) do
       messages = Map.get(state, :messages, [])
 
       case List.last(messages) do

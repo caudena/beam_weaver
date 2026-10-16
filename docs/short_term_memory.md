@@ -1,427 +1,310 @@
 # Short-Term Memory
 
-Short-term memory is conversation state scoped to one thread. In BeamWeaver,
-that state lives in the graph state for an agent or graph and is persisted
-through an explicit checkpoint adapter.
-
-The common short-term memory field is `:messages`, backed by
-`BeamWeaver.Graph.Messages.channel/1`. It stores system, user, assistant, and
-tool messages and knows how to append, replace, delete, and clear messages by
-ID.
-
-{% hint style="info" %}
-**Thread State**
-
-LangChain describes a thread as a conversation session. BeamWeaver uses the
-same concept at the checkpoint boundary: pass a stable
-`config: %{"configurable" => %{"thread_id" => "..."}}` to keep one
-conversation isolated from another. `context:` is separate and remains per-run
-data for tools and middleware.
-{% endhint %}
-
-## Enable Memory
-
-Agents already include message state. To persist it across turns, pass a
-checkpointer and reuse the same `thread_id`:
+Short-term memory is a thread's own history: the messages and other state of
+one conversation, saved by a checkpointer after every step. Use it whenever a
+conversation spans more than one call, so the agent knows what was already
+said.
 
 ```elixir
-alias BeamWeaver.Checkpoint.ETS, as: CheckpointETS
-alias BeamWeaver.Core.Message
-
-checkpointer = CheckpointETS.new()
-config = %{"configurable" => %{"thread_id" => "thread-1"}}
-
-{:ok, _state} =
-  MyApp.Agent.invoke(
-    %{messages: [Message.user("Hi! My name is Bob.")]},
-    checkpointer: checkpointer,
-    config: config
-  )
-
-{:ok, state} =
-  MyApp.Agent.invoke(
-    %{messages: [Message.user("What is my name?")]},
-    checkpointer: checkpointer,
-    config: config
-  )
-
-state.messages |> List.last() |> Message.text()
-```
-
-Use `BeamWeaver.Checkpoint.ETS` for tests, examples, and local workflows.
-
-## Production Persistence
-
-Use the Ecto checkpointer with PostgreSQL or SQLite for durable deployments:
-
-```elixir
-checkpointer = BeamWeaver.Checkpoint.Ecto.new(repo: MyApp.Repo)
-
-MyApp.Agent.invoke(
-  %{messages: [BeamWeaver.Core.Message.user("remember this")]},
-  checkpointer: checkpointer,
-  config: %{"configurable" => %{"thread_id" => "thread-123"}}
-)
-```
-
-Create tables in your application migration with the versioned migration API:
-
-```elixir
-defmodule MyApp.Repo.Migrations.CreateBeamWeaverCheckpoints do
-  use Ecto.Migration
-
-  def up do
-    BeamWeaver.Migrations.up(adapters: [:checkpoint])
-  end
-
-  def down do
-    BeamWeaver.Migrations.down(adapters: [:checkpoint], version: 1)
-  end
-end
-```
-
-{% hint style="warning" %}
-**Database Setup**
-
-LangChain's Postgres saver examples call `checkpointer.setup()` from Python.
-BeamWeaver does not create tables from the runtime path. Schema changes belong
-in normal Ecto migrations so production releases, rollbacks, and database
-permissions stay explicit. PostgreSQL and SQLite use the same Ecto checkpoint
-queries; their migration DDL and write-locking strategy are database-specific.
-Applications using SQLite add `ecto_sqlite3` directly. Azure Cosmos DB, Redis,
-and distributed checkpoint coordination are not part of this persistence
-surface.
-{% endhint %}
-
-## Custom Agent Memory
-
-Default agent state contains `:messages`, `:remaining_steps`, private routing
-channels, and usage metadata. Add custom short-term state through middleware
-that owns the behavior:
-
-```elixir
-defmodule MyApp.PreferenceMemory do
-  @behaviour BeamWeaver.Agent.Middleware
-
-  alias BeamWeaver.Graph
-  alias BeamWeaver.Graph.Channels.LastValue
-
-  def name(_middleware), do: :preference_memory
-
-  def state_schema(_middleware) do
-    %{preferences: Graph.channel(LastValue)}
-  end
-end
-
-defmodule MyApp.Agent do
+defmodule MyApp.SupportAgent do
   use BeamWeaver.Agent
 
-  model BeamWeaver.Models.init_chat_model!("openai:gpt-5.4")
+  model "fake:chat",
+    responses: [
+      "Hi Ada! Order A-1001 shipped on Monday.",
+      "You're Ada, and you asked about order A-1001."
+    ]
 
-  middleware do
-    use MyApp.PreferenceMemory
-  end
+  system_prompt "You are Acme's support agent."
 end
 
-MyApp.Agent.invoke(%{
-  messages: [BeamWeaver.Core.Message.user("Hello")],
-  preferences: %{theme: "dark"}
-})
+saver = BeamWeaver.Checkpoint.ETS.new()
+opts = [checkpointer: saver, config: %{"configurable" => %{"thread_id" => "ticket-42"}}]
+
+{:ok, _first} = MyApp.SupportAgent.invoke(%{messages: ["Hi, I'm Ada. Where is order A-1001?"]}, opts)
+{:ok, second} = MyApp.SupportAgent.invoke(%{messages: ["Who am I, and what did I ask?"]}, opts)
+
+Enum.map(second.messages, &BeamWeaver.Core.Message.text/1)
+#=> ["Hi, I'm Ada. Where is order A-1001?", "Hi Ada! Order A-1001 shipped on Monday.",
+#    "Who am I, and what did I ask?", "You're Ada, and you asked about order A-1001."]
 ```
 
-{% hint style="info" %}
-**State Ownership**
+The second call loaded the first exchange before it asked the model. The
+checkpointer saves the thread after each step, and the `thread_id` in
+`config:` says which thread to load.
 
-LangChain documents both middleware-owned state and a direct `state_schema`
-argument on `create_agent`. BeamWeaver keeps the agent API single-path:
-middleware declares the state it reads or writes. This keeps schema, hooks, and
-tools colocated. Direct state schemas remain available when you build a
-low-level `BeamWeaver.Graph` yourself.
-{% endhint %}
+## Threads
 
-Elixir structs and typespecs are not Python `TypedDict` or Pydantic models.
-Use `BeamWeaver.Agent.Schema.field/3`, graph channels, and explicit JSON Schema
-maps where runtime validation or provider schemas are needed.
-
-## Trim Messages
-
-Use `BeamWeaver.Core.Messages.Utils.trim/2` when the model should see only the
-recent part of a conversation. In an agent, run trimming in `before_model`
-middleware and overwrite the message channel:
+Each `thread_id` is its own conversation. A new id starts empty, and a call
+without a checkpointer always starts fresh:
 
 ```elixir
-defmodule MyApp.TrimMessages do
-  @behaviour BeamWeaver.Agent.Middleware
+other = [checkpointer: saver, config: %{"configurable" => %{"thread_id" => "ticket-43"}}]
 
+{:ok, fresh} = MyApp.SupportAgent.invoke(%{messages: ["Hello!"]}, other)
+length(fresh.messages)
+#=> 2
+```
+
+Pick thread ids your application can find again, such as a support ticket's
+id. Create the saver once, for example in your supervision tree, and pass it
+on every call. An agent module can't declare an ETS saver: its declarations
+are evaluated on every call, so `checkpointer BeamWeaver.Checkpoint.ETS.new()`
+would give each call a new, empty table, and the module doesn't compile.
+Declare `BeamWeaver.Checkpoint.Ecto`, or a function that returns the saver
+you created once.
+
+Data that belongs to the call rather than to the conversation, such as the
+signed-in customer's id, goes in `context:` instead. See
+[Runtime Context](runtime_context.md).
+
+## Read a thread back
+
+`get_state/1` returns the latest saved snapshot of a thread. Its `values` are
+the state the next call will start from:
+
+```elixir
+{:ok, snapshot} = MyApp.SupportAgent.get_state(opts)
+length(snapshot.values.messages)
+#=> 4
+```
+
+A thread with no saved checkpoint returns `:error`:
+
+```elixir
+unknown = [checkpointer: saver, config: %{"configurable" => %{"thread_id" => "ticket-99"}}]
+MyApp.SupportAgent.get_state(unknown)
+#=> :error
+```
+
+To forget a conversation, delete its checkpoints:
+
+```elixir
+BeamWeaver.Checkpoint.delete_thread(saver, "ticket-43")
+#=> :ok
+```
+
+Every step of a thread is kept, not only the latest one. You can list that
+history, resume from an earlier step, or fork a thread; see
+[Checkpoints and Time Travel](checkpoints.md).
+
+## Long threads
+
+Every model call sends the whole thread. A long thread gets slower and more
+expensive with each turn, and in the end it no longer fits in the model's
+context window. There are three ways to keep it short:
+
+| Option | The model sees | The saved thread keeps |
+| --- | --- | --- |
+| Trim before each model call | The newest messages | Every message |
+| Delete old messages | The newest messages | The newest messages |
+| Summarize old messages | A summary and the newest messages | A summary and the newest messages |
+
+The system prompt is not part of the thread, so none of these removes it.
+
+### Trim before each model call
+
+A middleware that wraps the model call can send the model a shorter list
+while the thread keeps everything:
+
+```elixir
+defmodule MyApp.TrimHistory do
+  use BeamWeaver.Agent.Middleware
+
+  alias BeamWeaver.Agent.ModelRequest
   alias BeamWeaver.Core.Messages.Utils
-  alias BeamWeaver.Graph.Overwrite
 
-  def name(_middleware), do: :trim_messages
+  # Send the model only the newest messages that fit in 2,000 tokens.
+  @impl true
+  def wrap_model_call(_middleware, request, handler) do
+    {:ok, recent} = Utils.trim(request.messages, max_tokens: 2_000, start_on: :user)
 
-  def before_model(state, _runtime) do
-    messages = Map.get(state, :messages, Map.get(state, "messages", []))
-
-    if length(messages) <= 3 do
-      nil
-    else
-      with {:ok, trimmed} <-
-             Utils.trim(messages,
-               max_tokens: 2_000,
-               strategy: :last,
-               include_system: true
-             ) do
-        %{messages: Overwrite.new(trimmed)}
-      end
-    end
+    request
+    |> ModelRequest.override(messages: recent)
+    |> handler.()
   end
 end
 ```
 
-`Utils.trim/2` preserves tool-call adjacency: assistant messages keep only tool
-calls with matching retained tool results, and orphan tool messages are dropped.
-
-{% hint style="info" %}
-**Middleware Instead Of Decorators**
-
-LangChain uses decorators such as `@before_model` and `@after_model`.
-BeamWeaver uses middleware modules, structs, and callbacks. The lifecycle point
-is the same, but the implementation is normal Elixir data that can be tested,
-supervised, and reused.
-{% endhint %}
-
-## Delete Messages
-
-Use `BeamWeaver.Graph.Messages.remove/1` for specific messages and
-`remove_all/0` to clear the message history:
+Add it to an agent with `middleware [MyApp.TrimHistory]`.
+`BeamWeaver.Core.Messages.Utils.trim/2` keeps the newest messages that fit in
+`max_tokens`, counting about four characters per token. `start_on: :user` makes
+the kept part start with a user message, and it never keeps a tool result
+without the call that asked for it:
 
 ```elixir
-defmodule MyApp.DeleteOldMessages do
-  @behaviour BeamWeaver.Agent.Middleware
+alias BeamWeaver.Core.Message
+alias BeamWeaver.Core.Messages.Utils
+
+messages = [
+  Message.user("Where is order A-1001?"),
+  Message.assistant("Order A-1001 shipped on Monday."),
+  Message.user("When will it arrive?"),
+  Message.assistant("It arrives on Thursday."),
+  Message.user("Thanks!")
+]
+
+{:ok, recent} = Utils.trim(messages, max_tokens: 30, start_on: :user)
+Enum.map(recent, &Message.text/1)
+#=> ["When will it arrive?", "It arrives on Thursday.", "Thanks!"]
+```
+
+### Delete old messages
+
+To drop old messages from the thread itself, update `messages` from a
+`before_model` hook with a `BeamWeaver.Graph.Messages.remove/1` marker for
+each message to delete, by its id:
+
+```elixir
+defmodule MyApp.KeepRecentMessages do
+  use BeamWeaver.Agent.Middleware
 
   alias BeamWeaver.Graph.Messages
 
-  def name(_middleware), do: :delete_old_messages
-
-  def after_model(state, _runtime) do
-    messages = Map.get(state, :messages, Map.get(state, "messages", []))
-
-    if length(messages) > 6 do
-      old_messages =
-        messages
-        |> Enum.take(length(messages) - 6)
-        |> Enum.filter(&is_binary(&1.id))
-        |> Enum.map(&Messages.remove(&1.id))
-
-      %{messages: old_messages}
-    end
+  # Before each model call, delete all but the newest messages from the thread.
+  # The kept part starts at a user message, so no tool result loses its call.
+  @impl true
+  def before_model(_middleware, %{messages: messages}, _runtime) when length(messages) > 4 do
+    recent = messages |> Enum.take(-4) |> Enum.drop_while(&(&1.role != :user))
+    %{messages: Enum.map(messages -- recent, &Messages.remove(&1.id))}
   end
+
+  def before_model(_middleware, _state, _runtime), do: nil
 end
-```
 
-To clear everything:
-
-```elixir
-%{messages: [BeamWeaver.Graph.Messages.remove_all()]}
-```
-
-{% hint style="warning" %}
-**Provider-Valid Histories**
-
-Deleting messages can create invalid provider input. Keep assistant tool calls
-paired with matching tool-result messages, and check provider requirements
-around first message role, system message placement, and multimodal blocks.
-BeamWeaver reducers can delete safely by ID, but provider request builders
-still validate the final history before sending it.
-{% endhint %}
-
-## Summarize Messages
-
-Use `BeamWeaver.Agent.Middleware.Summarization` to summarize older turns and
-keep recent messages:
-
-```elixir
-defmodule MyApp.SummarizingAgent do
+defmodule MyApp.SupportAgent do
   use BeamWeaver.Agent
 
-  model BeamWeaver.Models.init_chat_model!("openai:gpt-5.4")
+  model "fake:chat",
+    responses: [
+      "Order A-1001 shipped on Monday.",
+      "It arrives on Thursday.",
+      "Yes, you can change it until Wednesday.",
+      "You're welcome, Ada!"
+    ]
 
-  middleware do
-    use BeamWeaver.Agent.Middleware.Summarization,
-     model: BeamWeaver.Models.init_chat_model!("openai:gpt-5.4-mini"),
-     trigger: {:tokens, 4_000},
-     keep: {:messages, 20}
+  system_prompt "You are Acme's support agent."
+  middleware [MyApp.KeepRecentMessages]
+end
+
+opts = [checkpointer: saver, config: %{"configurable" => %{"thread_id" => "ticket-44"}}]
+
+for question <- ["Where is order A-1001?", "When will it arrive?", "Can I change the address?"] do
+  {:ok, _result} = MyApp.SupportAgent.invoke(%{messages: [question]}, opts)
+end
+
+{:ok, result} = MyApp.SupportAgent.invoke(%{messages: ["Thanks!"]}, opts)
+Enum.map(result.messages, &BeamWeaver.Core.Message.text/1)
+#=> ["Can I change the address?", "Yes, you can change it until Wednesday.",
+#    "Thanks!", "You're welcome, Ada!"]
+```
+
+Deleted messages are gone from the next checkpoint on, so the agent can no
+longer refer back to them. To replace the whole list at once instead, return
+`%{messages: BeamWeaver.Graph.Overwrite.new(recent)}`;
+`BeamWeaver.Graph.Messages.remove_all/0` followed by new messages does the
+same.
+
+### Summarize old messages
+
+A summary keeps the gist of what was deleted. The summarization middleware
+asks a model, usually a small and cheap one, to summarize the older messages
+and keeps the newest ones as they are:
+
+```elixir
+middleware [
+  {BeamWeaver.Agent.Middleware.Summarization,
+   model: "openai:gpt-5.4-mini", trigger: {:tokens, 50_000}, keep: {:messages, 20}}
+]
+```
+
+See [Context Management](context_management.md#summarize-old-messages) for
+how it works and for the other ways to keep long runs inside the context
+window.
+
+## Keep extra keys in state
+
+The state of a thread can hold more than messages. Pass another key with the
+input and it is saved with the thread; a tool reads it by injecting
+`{:state, key}`, which the model never sees:
+
+```elixir
+defmodule MyApp.Tools.LookupOrder do
+  use BeamWeaver.Tool
+
+  name "lookup_order"
+  description "Look up the shipping status of an order by its id."
+
+  injected :customer, {:state, :customer}
+
+  schema do
+    field :order_id, :string, description: "The order id"
+  end
+
+  @impl true
+  def invoke(_tool, %{"order_id" => order_id} = input, _opts) do
+    {:ok, "Order #{order_id} for #{input.customer} shipped on Monday."}
   end
 end
-```
 
-The summarizer can trigger on message count, token count, or a fraction of the
-model profile context window. It rewrites the message channel with one system
-summary followed by retained recent turns.
-
-{% hint style="info" %}
-**Summarization Policy**
-
-LangChain's `SummarizationMiddleware` and BeamWeaver's summarization middleware
-solve the same problem. BeamWeaver requires an explicit summary model value and
-returns normal graph state updates. This keeps provider selection, retry policy,
-and test fakes visible in the agent declaration.
-{% endhint %}
-
-## Custom Strategies
-
-Custom memory strategies are ordinary middleware. Use them when trimming,
-deleting, or summarization is not enough:
-
-```elixir
-defmodule MyApp.FilterToolNoise do
-  @behaviour BeamWeaver.Agent.Middleware
-
-  alias BeamWeaver.Graph.Overwrite
-
-  def name(_middleware), do: :filter_tool_noise
-
-  def before_model(state, _runtime) do
-    messages = Map.get(state, :messages, Map.get(state, "messages", []))
-    filtered = Enum.reject(messages, &noisy_tool_result?/1)
-
-    if filtered == messages, do: nil, else: %{messages: Overwrite.new(filtered)}
-  end
-
-  defp noisy_tool_result?(%BeamWeaver.Core.Message{role: :tool, metadata: metadata}) do
-    metadata[:ephemeral?] == true or metadata["ephemeral?"] == true
-  end
-
-  defp noisy_tool_result?(_message), do: false
-end
-```
-
-Keep custom memory policies close to the application behavior they protect:
-privacy filters, domain-specific retention, and tool-output pruning usually
-belong in separate middleware modules.
-
-## Read Memory In Tools
-
-Tools read short-term memory by declaring injected state:
-
-```elixir
-alias BeamWeaver.Core.Tool
-
-get_last_user_message =
-  Tool.from_function!(
-    name: "get_last_user_message",
-    description: "Get the most recent user message.",
-    input_schema: %{
-      "type" => "object",
-      "properties" => %{"state" => %{"type" => "object"}},
-      "required" => ["state"]
-    },
-    injected: [state: :state],
-    handler: fn input, _opts ->
-      state = input[:state] || input["state"] || %{}
-
-      state
-      |> then(&Map.get(&1, :messages, Map.get(&1, "messages", [])))
-      |> Enum.reverse()
-      |> Enum.find(&match?(%BeamWeaver.Core.Message{role: :user}, &1))
-      |> case do
-        nil -> "No user messages found."
-        message -> BeamWeaver.Core.Message.text(message)
-      end
-    end
-  )
-```
-
-Injected fields are removed from the model-visible schema, so the model only
-sees arguments it is allowed to provide.
-
-## Write Memory From Tools
-
-Return `BeamWeaver.Graph.Command` when a tool needs to update short-term state:
-
-```elixir
-alias BeamWeaver.Core.{Message, Tool}
-alias BeamWeaver.Graph.Command
-
-set_user_name =
-  Tool.from_function!(
-    name: "set_user_name",
-    description: "Set the user's name in conversation state.",
-    input_schema: %{
-      "type" => "object",
-      "properties" => %{
-        "new_name" => %{"type" => "string"},
-        "tool_call_id" => %{"type" => "string"}
-      },
-      "required" => ["new_name", "tool_call_id"]
-    },
-    injected: [tool_call_id: :tool_call_id],
-    handler: fn input, _opts ->
-      name = input["new_name"] || input[:new_name]
-      call_id = input["tool_call_id"] || input[:tool_call_id]
-
-      %Command{
-        update: %{
-          user_name: name,
-          messages: [Message.tool("User name set to #{name}.", tool_call_id: call_id)]
-        }
-      }
-    end
-  )
-```
-
-Define reducers or channels for state fields that multiple tools may update in
-parallel. For example, `BeamWeaver.Agent.Middleware.TodoList` owns its TODO
-state and installs the tool that mutates it.
-
-## Dynamic Prompts From Memory
-
-Use `BeamWeaver.Agent.Middleware.DynamicPrompt` when the system prompt depends
-on state or per-run context:
-
-```elixir
-defmodule MyApp.ContextPromptAgent do
+defmodule MyApp.SupportAgent do
   use BeamWeaver.Agent
 
-  model BeamWeaver.Models.init_chat_model!("openai:gpt-5.4")
+  alias BeamWeaver.Models.FakeChatModel
 
-  context_schema do
-    field :user_name, :string, required: true
-  end
+  model "fake:chat",
+    responses: [
+      FakeChatModel.tool_call("lookup_order", %{"order_id" => "A-1001"}),
+      "Order A-1001 shipped on Monday.",
+      FakeChatModel.tool_call("lookup_order", %{"order_id" => "A-1002"}),
+      "Order A-1002 shipped on Monday too."
+    ]
 
-  middleware do
-    use BeamWeaver.Agent.Middleware.DynamicPrompt,
-     prompt: fn request ->
-       user_name = request.runtime.context.user_name
-       "You are a helpful assistant. Address the user as #{user_name}."
-     end
-  end
+  system_prompt "You are Acme's support agent."
+  tools [MyApp.Tools.LookupOrder]
 end
+
+opts = [checkpointer: saver, config: %{"configurable" => %{"thread_id" => "ticket-45"}}]
+
+{:ok, _first} = MyApp.SupportAgent.invoke(%{messages: ["Where is order A-1001?"], customer: "Ada"}, opts)
+{:ok, second} = MyApp.SupportAgent.invoke(%{messages: ["And order A-1002?"]}, opts)
+
+second.messages |> Enum.filter(&(&1.role == :tool)) |> List.last() |> BeamWeaver.Core.Message.text()
+#=> "Order A-1002 for Ada shipped on Monday."
 ```
 
-This replaces Python callable prompt decorators with a middleware entry that is
-visible in the agent spec.
+The second call didn't pass `customer`, but the thread still had it. Use atom
+keys for extra state. A tool can also change state by returning a
+`BeamWeaver.Graph.Command` (see [Tools](tools.md)), and middleware can declare
+keys with their own merge rules (see [Middleware](middleware.md) and
+[Graph State](graph_state.md)).
 
-## Inspect And Modify Checkpointed State
+## Store threads in production
 
-Compiled graphs and agents expose state inspection through the checkpointer:
+`Checkpoint.ETS` keeps threads in memory, so they are lost when the node
+stops. In production, save them in Postgres or SQLite with
+`Checkpoint.Ecto`:
 
 ```elixir
-config = %{"configurable" => %{"thread_id" => "thread-1"}}
+saver = BeamWeaver.Checkpoint.Ecto.new(repo: MyApp.Repo)
 
-{:ok, state} =
-  MyApp.Agent.get_state(
-    checkpointer: checkpointer,
-    config: config
-  )
-
-{:ok, _config} =
-  BeamWeaver.Graph.Compiled.update_state(
-    compiled_graph,
-    config,
-    %{messages: [BeamWeaver.Graph.Messages.remove_all()]}
-  )
+MyApp.SupportAgent.invoke(%{messages: ["Where is order A-1001?"]},
+  checkpointer: saver,
+  config: %{"configurable" => %{"thread_id" => "ticket-42"}}
+)
 ```
 
-Use these APIs for administrative repair, tests, or explicit memory management.
-Normal conversation turns should update memory through agent invocation,
-middleware, tools, or graph nodes.
+The Ecto saver is a plain struct, so you can build it wherever you need it.
+[Storage](storage.md) covers the migrations, and
+[Checkpoints and Time Travel](checkpoints.md) covers thread history.
+
+## Reference
+
+- [`BeamWeaver.Checkpoint`](https://hexdocs.pm/beam_weaver/BeamWeaver.Checkpoint.html): reading and deleting saved threads
+- [`BeamWeaver.Checkpoint.ETS`](https://hexdocs.pm/beam_weaver/BeamWeaver.Checkpoint.ETS.html): in-memory checkpointer for development and tests
+- [`BeamWeaver.Checkpoint.Ecto`](https://hexdocs.pm/beam_weaver/BeamWeaver.Checkpoint.Ecto.html): Postgres and SQLite checkpointer
+- [`BeamWeaver.Agent`](https://hexdocs.pm/beam_weaver/BeamWeaver.Agent.html): `invoke/3` and `get_state/2`
+- [`BeamWeaver.Core.Messages.Utils`](https://hexdocs.pm/beam_weaver/BeamWeaver.Core.Messages.Utils.html): trimming and counting messages
+- [`BeamWeaver.Graph.Messages`](https://hexdocs.pm/beam_weaver/BeamWeaver.Graph.Messages.html): removing messages from the thread by id
+- [`BeamWeaver.Graph.Overwrite`](https://hexdocs.pm/beam_weaver/BeamWeaver.Graph.Overwrite.html): replacing a state key instead of merging into it
+- [`BeamWeaver.Agent.Middleware.Summarization`](https://hexdocs.pm/beam_weaver/BeamWeaver.Agent.Middleware.Summarization.html): summarizing old messages

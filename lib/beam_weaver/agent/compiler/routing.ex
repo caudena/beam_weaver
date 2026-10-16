@@ -2,6 +2,7 @@ defmodule BeamWeaver.Agent.Compiler.Routing do
   @moduledoc false
 
   alias BeamWeaver.Agent.State
+  alias BeamWeaver.Agent.StructuredOutput.ResultHandler
 
   def model_router(state) do
     case State.jump_to(state) do
@@ -46,6 +47,17 @@ defmodule BeamWeaver.Agent.Compiler.Routing do
     end
   end
 
+  # Between two `after_model` hooks: a jump to the model or the end skips the
+  # hooks left, and anything else goes to the next hook. Tool calls, also
+  # after a jump to the tools, reach the tools only once every hook, such as
+  # a review, has seen them; the last hook's router sends them there.
+  def after_model_router(state, next) do
+    case State.jump_to(state) do
+      target when target in [:model, :end] -> target
+      _tools_or_none -> next
+    end
+  end
+
   def middleware_router(state, default) do
     case State.jump_to(state) do
       :model -> :model
@@ -70,6 +82,8 @@ defmodule BeamWeaver.Agent.Compiler.Routing do
     end
   end
 
+  # A structured answer that failed ends on its error, a tool message or, for
+  # an answer that called no tool, a user message: the model answers again.
   defp route_model_messages(state) do
     messages = State.messages(state)
 
@@ -81,6 +95,9 @@ defmodule BeamWeaver.Agent.Compiler.Routing do
         :end
 
       latest_ai_has_tool_calls?(messages) ->
+        :model
+
+      structured_output_retry?(messages) ->
         :model
 
       true ->
@@ -102,6 +119,11 @@ defmodule BeamWeaver.Agent.Compiler.Routing do
         :model
     end
   end
+
+  defp structured_output_retry?([_ | _] = messages),
+    do: ResultHandler.structured_output_error?(List.last(messages))
+
+  defp structured_output_retry?(_messages), do: false
 
   defp pending_tool_calls(messages) when is_list(messages) do
     case last_ai_and_following_tool_messages(messages) do

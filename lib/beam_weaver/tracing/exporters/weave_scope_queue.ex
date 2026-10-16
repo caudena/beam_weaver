@@ -1,7 +1,10 @@
 defmodule BeamWeaver.Tracing.Exporters.WeaveScope.Config do
   @moduledoc false
 
+  use BeamWeaver.Provider.RedactedInspect
+
   @default_flush_interval 250
+  @default_shutdown 120_000
 
   defstruct api_key: nil,
             endpoint: nil,
@@ -18,6 +21,7 @@ defmodule BeamWeaver.Tracing.Exporters.WeaveScope.Config do
             backoff: 2.0,
             jitter: 0.0,
             max_attempts: 5,
+            shutdown: @default_shutdown,
             redactor: &BeamWeaver.Tracing.Redactor.redact/1
 
   def new(opts \\ []) do
@@ -37,6 +41,7 @@ defmodule BeamWeaver.Tracing.Exporters.WeaveScope.Config do
       backoff: Keyword.get(opts, :backoff, 2.0),
       jitter: Keyword.get(opts, :jitter, 0.0),
       max_attempts: Keyword.get(opts, :max_attempts, 5),
+      shutdown: Keyword.get(opts, :shutdown, @default_shutdown),
       redactor: Keyword.get(opts, :redactor, &BeamWeaver.Tracing.Redactor.redact/1)
     }
   end
@@ -63,6 +68,10 @@ defmodule BeamWeaver.Tracing.Exporters.WeaveScope.Queue do
   Rejections returned by
   WeaveScope are terminal because they represent invalid payload events, not
   transient transport failures.
+
+  When the queue stops, for example when the application shuts down, it
+  uploads the observations still pending, retrying failed uploads, for up to
+  its `:shutdown` time (120 seconds by default) less one second.
   """
 
   use GenServer
@@ -83,6 +92,7 @@ defmodule BeamWeaver.Tracing.Exporters.WeaveScope.Queue do
             dead_letters: [],
             config: %Config{},
             backpressure_active?: false,
+            draining?: false,
             retry_timer: nil
 
   @spec start_link(keyword()) :: GenServer.on_start()
@@ -96,7 +106,7 @@ defmodule BeamWeaver.Tracing.Exporters.WeaveScope.Queue do
       id: Keyword.get(opts, :id, Keyword.get(opts, :name, __MODULE__)),
       start: {__MODULE__, :start_link, [opts]},
       restart: :permanent,
-      shutdown: Keyword.get(opts, :shutdown, 120_000),
+      shutdown: Config.new(opts).shutdown,
       type: :worker
     }
   end
@@ -233,14 +243,52 @@ defmodule BeamWeaver.Tracing.Exporters.WeaveScope.Queue do
     end
   end
 
+  # Uploads what is still pending before the queue exits. Uploads run in
+  # separate processes, so their results are received here until the queue is
+  # drained or the shutdown time runs out.
   @impl true
   def terminate(_reason, state) do
-    if not :queue.is_empty(state.queue) or map_size(state.inflight) > 0 do
-      Logger.error("BeamWeaver WeaveScope exporter stopped with pending observations")
+    deadline = drain_deadline(state.config.shutdown)
+    state = drain(dispatch_due(%{state | draining?: true}), deadline)
+
+    if not drained?(state) do
+      Logger.error("BeamWeaver WeaveScope exporter stopped with #{pending_count(state)} pending observations")
     end
 
     :ok
   end
+
+  defp drain(state, deadline) do
+    if drained?(state) do
+      state
+    else
+      receive do
+        {:upload_result, _token, _result} = message -> drain_message(message, state, deadline)
+        {:DOWN, _monitor, :process, _pid, _reason} = message -> drain_message(message, state, deadline)
+      after
+        remaining(deadline) -> state
+      end
+    end
+  end
+
+  defp drain_message(message, state, deadline) do
+    {:noreply, state} = handle_info(message, state)
+    drain(state, deadline)
+  end
+
+  defp drained?(state) do
+    :queue.is_empty(state.queue) and :queue.is_empty(state.waiting) and map_size(state.inflight) == 0
+  end
+
+  defp drain_deadline(:infinity), do: :infinity
+
+  defp drain_deadline(shutdown) when is_integer(shutdown),
+    do: System.monotonic_time(:millisecond) + max(shutdown - 1_000, 0)
+
+  defp drain_deadline(_brutal_kill), do: System.monotonic_time(:millisecond)
+
+  defp remaining(:infinity), do: :infinity
+  defp remaining(deadline), do: max(deadline - System.monotonic_time(:millisecond), 0)
 
   defp enqueue_item(%__MODULE__{config: config} = state, item) do
     queue = :queue.in(item, state.queue)
@@ -325,7 +373,7 @@ defmodule BeamWeaver.Tracing.Exporters.WeaveScope.Queue do
       state
     else
       {items, queue} =
-        if state.flush_waiters == [] do
+        if state.flush_waiters == [] and not state.draining? do
           take_due(
             state.queue,
             state.config.batch_size,

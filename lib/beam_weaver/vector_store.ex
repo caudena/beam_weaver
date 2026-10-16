@@ -4,9 +4,9 @@ defmodule BeamWeaver.VectorStore do
   """
 
   alias BeamWeaver.Adapter.Dispatch
-  alias BeamWeaver.Core.Async
   alias BeamWeaver.Core.Document
   alias BeamWeaver.Core.Error
+  alias BeamWeaver.Core.EmbeddingModel
   alias BeamWeaver.RetrievalPolicy
   alias BeamWeaver.Telemetry.AdapterEvent
   alias BeamWeaver.Telemetry.AdapterHelpers
@@ -23,7 +23,7 @@ defmodule BeamWeaver.VectorStore do
   @callback max_marginal_relevance_search(term(), String.t(), keyword()) ::
               {:ok, [Document.t()]} | {:error, Error.t()}
 
-  def from_documents(store_or_module, documents, opts \\ []) when is_list(documents) do
+  def from_documents(store_or_module, documents, opts \\ []) do
     with {:ok, store} <- build_store(store_or_module, opts),
          {:ok, _ids} <- add_documents(store, documents, opts) do
       {:ok, store}
@@ -37,56 +37,28 @@ defmodule BeamWeaver.VectorStore do
     end
   end
 
-  def async_from_documents(store_or_module, documents, opts \\ []) do
-    {async_opts, call_opts} = Async.split_opts(opts)
-
-    case build_store(store_or_module, call_opts) do
-      {:ok, store} ->
-        Async.run(
-          fn ->
-            with {:ok, _ids} <- add_documents(store, documents, call_opts) do
-              {:ok, store}
-            end
-          end,
-          async_opts
-        )
-
-      {:error, %Error{} = error} ->
-        Async.run(fn -> {:error, error} end, async_opts)
-    end
-  end
-
-  def async_from_texts(store_or_module, texts, opts \\ []) do
-    {async_opts, call_opts} = Async.split_opts(opts)
-
-    case build_store(store_or_module, call_opts) do
-      {:ok, store} ->
-        Async.run(
-          fn ->
-            with {:ok, _ids} <- add_texts(store, texts, call_opts) do
-              {:ok, store}
-            end
-          end,
-          async_opts
-        )
-
-      {:error, %Error{} = error} ->
-        Async.run(fn -> {:error, error} end, async_opts)
-    end
-  end
-
   def embedding(%{embedding: embedding}), do: {:ok, embedding}
   def embedding(_store), do: {:ok, nil}
 
+  @doc """
+  Embeds and stores documents and returns their ids.
+
+  `documents` is any enumerable of documents, such as the stream that
+  `BeamWeaver.TextSplitter.split_documents/2` returns. Adding a document whose
+  id is already stored replaces it.
+  """
+  @spec add_documents(term(), Enumerable.t(), keyword()) :: {:ok, [String.t()]} | {:error, Error.t()}
   def add_documents(store, documents, opts \\ []) do
-    result = store_call(store, :add_documents, [documents, opts])
+    with {:ok, documents} <- document_list(documents) do
+      result = store_call(store, :add_documents, [documents, opts])
 
-    emit(store, :add_documents, %{count: AdapterHelpers.result_count(result)}, %{
-      result: result,
-      metadata: %{input_count: length(documents)}
-    })
+      emit(store, :add_documents, %{count: AdapterHelpers.result_count(result)}, %{
+        result: result,
+        metadata: %{input_count: length(documents)}
+      })
 
-    result
+      result
+    end
   end
 
   def add_texts(store, texts, opts \\ []) do
@@ -107,21 +79,6 @@ defmodule BeamWeaver.VectorStore do
     add_documents(store, documents, opts)
   end
 
-  def async_add_documents(store, documents, opts \\ []) do
-    {async_opts, call_opts} = Async.split_opts(opts)
-    Async.run(fn -> add_documents(store, documents, call_opts) end, async_opts)
-  end
-
-  def async_add_texts(store, texts, opts \\ []) do
-    {async_opts, call_opts} = Async.split_opts(opts)
-    Async.run(fn -> add_texts(store, texts, call_opts) end, async_opts)
-  end
-
-  def async_delete(store, ids, opts \\ []) do
-    {async_opts, call_opts} = Async.split_opts(opts)
-    Async.run(fn -> delete(store, ids, call_opts) end, async_opts)
-  end
-
   def delete(store, ids, opts \\ []) do
     ids = List.wrap(ids)
     result = store_call(store, :delete, [ids, opts])
@@ -139,11 +96,6 @@ defmodule BeamWeaver.VectorStore do
       {:called, result} -> result
       {:missing, {:error, _error} = error} -> error
     end
-  end
-
-  def async_get_by_ids(store, ids, opts \\ []) do
-    {async_opts, call_opts} = Async.split_opts(opts)
-    Async.run(fn -> get_by_ids(store, ids, call_opts) end, async_opts)
   end
 
   def search(store, query, search_type, opts \\ []) do
@@ -171,20 +123,10 @@ defmodule BeamWeaver.VectorStore do
     end
   end
 
-  def async_search(store, query, search_type, opts \\ []) do
-    {async_opts, call_opts} = Async.split_opts(opts)
-    Async.run(fn -> search(store, query, search_type, call_opts) end, async_opts)
-  end
-
   def similarity_search(store, query, opts \\ []) do
     result = store_call(store, :similarity_search, [query, opts])
     emit_search(store, :similarity_search, query, opts, result)
     result
-  end
-
-  def async_similarity_search(store, query, opts \\ []) do
-    {async_opts, call_opts} = Async.split_opts(opts)
-    Async.run(fn -> similarity_search(store, query, call_opts) end, async_opts)
   end
 
   def similarity_search_with_score(store, query, opts \\ []) do
@@ -204,20 +146,6 @@ defmodule BeamWeaver.VectorStore do
 
       {:ok, scored}
     end
-  end
-
-  def async_similarity_search_with_relevance_scores(store, query, opts \\ []) do
-    {async_opts, call_opts} = Async.split_opts(opts)
-
-    Async.run(
-      fn -> similarity_search_with_relevance_scores(store, query, call_opts) end,
-      async_opts
-    )
-  end
-
-  def async_similarity_search_with_score(store, query, opts \\ []) do
-    {async_opts, call_opts} = Async.split_opts(opts)
-    Async.run(fn -> similarity_search_with_score(store, query, call_opts) end, async_opts)
   end
 
   def similarity_search_by_vector(store, vector, opts \\ []) do
@@ -242,20 +170,6 @@ defmodule BeamWeaver.VectorStore do
     end
   end
 
-  def async_similarity_search_by_vector(store, vector, opts \\ []) do
-    {async_opts, call_opts} = Async.split_opts(opts)
-    Async.run(fn -> similarity_search_by_vector(store, vector, call_opts) end, async_opts)
-  end
-
-  def async_similarity_search_with_score_by_vector(store, vector, opts \\ []) do
-    {async_opts, call_opts} = Async.split_opts(opts)
-
-    Async.run(
-      fn -> similarity_search_with_score_by_vector(store, vector, call_opts) end,
-      async_opts
-    )
-  end
-
   def max_marginal_relevance_search(store, query, opts \\ []) do
     result = store_call(store, :max_marginal_relevance_search, [query, opts])
     emit_search(store, :max_marginal_relevance_search, query, opts, result)
@@ -278,25 +192,46 @@ defmodule BeamWeaver.VectorStore do
     end
   end
 
-  def async_max_marginal_relevance_search(store, query, opts \\ []) do
-    {async_opts, call_opts} = Async.split_opts(opts)
-    Async.run(fn -> max_marginal_relevance_search(store, query, call_opts) end, async_opts)
-  end
-
-  def async_max_marginal_relevance_search_by_vector(store, vector, opts \\ []) do
-    {async_opts, call_opts} = Async.split_opts(opts)
-
-    Async.run(
-      fn -> max_marginal_relevance_search_by_vector(store, vector, call_opts) end,
-      async_opts
-    )
-  end
-
   def as_retriever(store, opts \\ []) do
     struct(BeamWeaver.VectorStore.Retriever,
       store: store,
       policy: RetrievalPolicy.new!(opts)
     )
+  end
+
+  # Helpers shared by the bundled stores.
+
+  @doc false
+  def validate_documents(documents) do
+    if Enum.all?(documents, &match?(%Document{}, &1)),
+      do: :ok,
+      else: {:error, Error.new(:invalid_documents, "expected BeamWeaver documents")}
+  end
+
+  @doc false
+  def embed_documents(embedding, documents, opts),
+    do: EmbeddingModel.embed_documents(embedding, Enum.map(documents, & &1.content), opts)
+
+  # The explicit id at `index`, else the document's own id, else a content hash.
+  @doc false
+  def id_for(%Document{} = document, explicit_ids, index),
+    do: to_string(Enum.at(explicit_ids, index) || document.id || stable_id(document))
+
+  defp stable_id(%Document{} = document) do
+    :sha256
+    |> :crypto.hash(:erlang.term_to_binary({document.content, document.metadata}))
+    |> Base.encode16(case: :lower)
+  end
+
+  defp document_list(documents) when is_list(documents), do: {:ok, documents}
+
+  defp document_list(documents) do
+    if Enumerable.impl_for(documents),
+      do: {:ok, Enum.to_list(documents)},
+      else: {:error, Error.new(:invalid_documents, "expected an enumerable of BeamWeaver documents")}
+  rescue
+    # A lazy stream, such as a splitter's, raises while it is enumerated.
+    exception -> {:error, Error.new(:invalid_documents, Exception.message(exception))}
   end
 
   defp metadata_for_index(nil, _index), do: %{}
@@ -409,9 +344,12 @@ defmodule BeamWeaver.VectorStore do
     defstruct [:store, :policy]
 
     def retrieve(%__MODULE__{store: store, policy: policy}, query, opts) do
+      # Stores read the MMR trade-off as `lambda:`.
+      {lambda, opts} = Keyword.pop(opts, :mmr_lambda, policy.mmr_lambda)
+
       opts =
         Keyword.merge(
-          [k: policy.k, filter: policy.filter, score_threshold: policy.score_threshold],
+          [k: policy.k, filter: policy.filter, score_threshold: policy.score_threshold, lambda: lambda],
           opts
         )
 

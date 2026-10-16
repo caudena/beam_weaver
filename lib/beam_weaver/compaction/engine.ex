@@ -24,7 +24,7 @@ defmodule BeamWeaver.Compaction.Engine do
     with {:ok, request} <- Request.new(request),
          :ok <- portable(request),
          {:ok, before} <- initial_budget(request),
-         {:ok, request} <- rebase_accounting(request, before),
+         {:ok, request} <- rebase_anti_thrash(request, before),
          :ok <- eligible(request, before),
          {:ok, prefix, tail, projected, manifest, projected_budget} <- project(request, before),
          {:continue, prefix} <-
@@ -34,9 +34,9 @@ defmodule BeamWeaver.Compaction.Engine do
          {:ok, after_budget} <- budget(request, final_bytes, final_categories),
          :ok <- effective(request, before, after_budget),
          checkpoint <- checkpoint(request, :portable, semantic, tail, manifest, before, after_budget, usage) do
-      {:ok, result(:compacted, checkpoint, request.events, tail, before, after_budget, usage)}
+      {:ok, result(:compacted, checkpoint, request, tail, before, after_budget, usage)}
     else
-      {:skip, reason, before} -> {:ok, skipped(request, before, reason)}
+      {:skip, reason, request, before} -> {:ok, skipped(request, before, reason)}
       {:pruned, %Result{} = result} -> {:ok, result}
       {:continue, []} -> {:error, Error.new(:current_input_item_too_large, "no safe history prefix can be compacted")}
       {:error, %Error{}} = error -> error
@@ -59,11 +59,11 @@ defmodule BeamWeaver.Compaction.Engine do
 
     cond do
       request.trigger == :auto and not request.structural_pressure and suppression != nil ->
-        {:skip, suppression, before}
+        {:skip, suppression, request, before}
 
       request.trigger == :auto and not request.structural_pressure and
           before.estimated_tokens < before.trigger_tokens ->
-        {:skip, :below_trigger, before}
+        {:skip, :below_trigger, request, before}
 
       true ->
         :ok
@@ -99,7 +99,7 @@ defmodule BeamWeaver.Compaction.Engine do
       checkpoint =
         checkpoint(request, :pruned, nil, projected, manifest, before, after_budget, nil)
 
-      {:pruned, result(:pruned, checkpoint, request.events, projected, before, after_budget, nil)}
+      {:pruned, result(:pruned, checkpoint, request, projected, before, after_budget, nil)}
     else
       {:continue, prefix}
     end
@@ -278,10 +278,15 @@ defmodule BeamWeaver.Compaction.Engine do
          ratio >= request.policy.minimum_total_reclaim_ratio do
       :ok
     else
+      # The application saves this state, so automatic compaction waits for
+      # new context instead of retrying the same history.
+      {:ok, anti_thrash} = State.record_ineffective(request.anti_thrash)
+
       {:error,
        Error.new(:ineffective_compaction, "compaction did not reclaim enough context", %{
          tokens_before: before.estimated_tokens,
-         tokens_after: after_budget.estimated_tokens
+         tokens_after: after_budget.estimated_tokens,
+         anti_thrash: anti_thrash
        })}
     end
   end
@@ -352,10 +357,13 @@ defmodule BeamWeaver.Compaction.Engine do
       )
   end
 
-  defp result(status, checkpoint, source, retained, before, after_budget, usage) do
+  defp result(status, checkpoint, request, retained, before, after_budget, usage) do
+    source = request.events
+
     %Result{
       status: status,
       compaction_checkpoint: checkpoint,
+      anti_thrash: request.anti_thrash,
       tokens_before: before.estimated_tokens,
       tokens_after: after_budget.estimated_tokens,
       tokens_reclaimed: before.estimated_tokens - after_budget.estimated_tokens,
@@ -371,6 +379,7 @@ defmodule BeamWeaver.Compaction.Engine do
     %Result{
       status: :skipped,
       compaction_checkpoint: nil,
+      anti_thrash: request.anti_thrash,
       tokens_before: before.estimated_tokens,
       tokens_after: before.estimated_tokens,
       tokens_reclaimed: 0,
@@ -434,13 +443,12 @@ defmodule BeamWeaver.Compaction.Engine do
     )
   end
 
-  defp rebase_accounting(request, budget) do
-    with {:ok, state} <-
-           State.rebase_accounting(request.anti_thrash, %{
-             method: budget.method,
-             version: budget.version,
-             profile_hash: budget.profile_hash
-           }) do
+  # The result returns this state, so the application keeps the rebase.
+  defp rebase_anti_thrash(request, budget) do
+    identity = %{method: budget.method, version: budget.version, profile_hash: budget.profile_hash}
+
+    with {:ok, state} <- State.rebase_accounting(request.anti_thrash, identity),
+         {:ok, state} <- State.for_root_turn(state, request.root_turn_id) do
       {:ok, %{request | anti_thrash: state}}
     end
   end

@@ -9,8 +9,7 @@ defmodule BeamWeaver.Google.ChatModelTest do
   alias BeamWeaver.Google.Client
   alias BeamWeaver.Google.Tools
   alias BeamWeaver.Models
-  alias BeamWeaver.Provider.DecodeMessage
-  alias BeamWeaver.Provider.EncodeMessage
+  alias BeamWeaver.Provider.MessageCodec
 
   test "namespace and client constructors read Google config defaults and derive endpoints" do
     with_config(
@@ -33,6 +32,27 @@ defmodule BeamWeaver.Google.ChatModelTest do
         assert {"x-goog-api-key", "env-secret"} in request.headers
       end
     )
+  end
+
+  defmodule UnusedTransport do
+    @behaviour BeamWeaver.Transport
+
+    @impl true
+    def request(_request, _opts), do: raise("the client's own transport was used")
+  end
+
+  test "per-call api_key, transport and transport_opts override the client's own" do
+    client = Client.new(api_key: "client-key", transport: UnusedTransport, transport_opts: [unused: true])
+
+    assert {:ok, %{"candidates" => []}} =
+             Client.generate_content(client, "gemini-3.5-flash", %{},
+               api_key: "call-key",
+               transport: BeamWeaver.TestSupport.Conformance.Fakes.Transport,
+               transport_opts: [parent: self(), body: %{"candidates" => []}]
+             )
+
+    assert_received {:fake_transport_request, request}
+    assert {"x-goog-api-key", "call-key"} in request.headers
   end
 
   test "request body supports system messages, tools, structured output, thinking, and safety" do
@@ -541,11 +561,43 @@ defmodule BeamWeaver.Google.ChatModelTest do
            ]
   end
 
+  test "a signed text part of a reply goes back with its signature" do
+    assert {:ok, reply} =
+             MessageCodec.decode(
+               %{
+                 "candidates" => [
+                   %{
+                     "finishReason" => "STOP",
+                     "content" => %{
+                       "role" => "model",
+                       "parts" => [
+                         %{"text" => "Checking the order.", "thought" => true, "thoughtSignature" => "sig-thought"},
+                         %{"text" => "Order A-1001 shipped.", "thoughtSignature" => "sig-text"}
+                       ]
+                     }
+                   }
+                 ]
+               },
+               provider: :google
+             )
+
+    assert {:ok, body} =
+             ChatModel.request_body(%ChatModel{model: "gemini-3.5-flash"}, [Message.user("Where is A-1001?"), reply])
+
+    assert List.last(body["contents"]) == %{
+             "role" => "model",
+             "parts" => [
+               %{"text" => "Checking the order.", "thought" => true, "thoughtSignature" => "sig-thought"},
+               %{"text" => "Order A-1001 shipped.", "thoughtSignature" => "sig-text"}
+             ]
+           }
+  end
+
   test "decoded Gemini function calls preserve thought signatures for replay without duplicating call blocks in content" do
     long_signature = String.duplicate("sig-a", 1_000)
 
     assert {:ok, decoded} =
-             DecodeMessage.decode(
+             MessageCodec.decode(
                %{
                  "responseId" => "google-response-1",
                  "candidates" => [
@@ -740,7 +792,7 @@ defmodule BeamWeaver.Google.ChatModelTest do
 
     assert {:ok, stream} = CoreChatModel.stream_exact_typed_events(model, ~s({"contents":[]}))
     events = Enum.to_list(stream)
-    assert %BeamWeaver.Stream.Events.Error{error: %{type: :invalid_provider_stream}} = List.last(events)
+    assert %{event: %BeamWeaver.Stream.Events.Error{error: %{type: :invalid_provider_stream}}} = List.last(events)
     refute Enum.any?(events, &match?(%{event: %BeamWeaver.Stream.Events.Done{}}, &1))
   end
 
@@ -948,11 +1000,11 @@ defmodule BeamWeaver.Google.ChatModelTest do
   end
 
   test "provider message protocols route google through the native translator" do
-    assert {:ok, encoded} = EncodeMessage.encode(Message.user("hello"), provider: :google)
+    assert {:ok, encoded} = MessageCodec.encode(Message.user("hello"), provider: :google)
     assert encoded == %{"role" => "user", "parts" => [%{"text" => "hello"}]}
 
     assert {:ok, decoded} =
-             DecodeMessage.decode(
+             MessageCodec.decode(
                %{
                  "candidates" => [
                    %{

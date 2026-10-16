@@ -1,7 +1,15 @@
 defmodule BeamWeaver.Graph.UI do
   @moduledoc """
-  UI message helpers equivalent to LangGraph's UI message reducer surface.
+  Helpers for UI messages kept in graph state.
+
+  A UI message names a client-side component and the props to render it with.
+  Nodes send them with `push_ui_message/4` and `delete_ui_message/3`. The
+  `reducer/2` behind `channel/1` and `state_schema/1` keeps one entry per id:
+  new ids are appended, known ids are replaced (or their props merged when sent
+  with `merge: true`), and removals drop the entry.
   """
+
+  import BeamWeaver.MapShape, only: [put_present: 3]
 
   alias BeamWeaver.Core.Error
   alias BeamWeaver.Graph
@@ -22,7 +30,7 @@ defmodule BeamWeaver.Graph.UI do
   @spec state_schema(keyword()) :: map()
   def state_schema(opts \\ []), do: %{ui: channel(opts)}
 
-  @spec channel(keyword()) :: Graph.ChannelSpec.t()
+  @spec channel(keyword()) :: Graph.channel_spec()
   def channel(opts \\ []),
     do: Graph.channel({BinaryOperatorAggregate, &reducer/2}, Keyword.put_new(opts, :initial, []))
 
@@ -32,7 +40,7 @@ defmodule BeamWeaver.Graph.UI do
       opts
       |> Keyword.get(:metadata, %{})
       |> Map.merge(%{merge: Keyword.get(opts, :merge, false)})
-      |> maybe_put(:message_id, message_id(Keyword.get(opts, :message)))
+      |> put_present(:message_id, message_id(Keyword.get(opts, :message)))
 
     %{
       type: :ui,
@@ -160,9 +168,6 @@ defmodule BeamWeaver.Graph.UI do
   defp id!(other) do
     raise ArgumentError, "UI message is missing an ID: #{inspect(other)}"
   end
-
-  defp maybe_put(metadata, _key, nil), do: metadata
-  defp maybe_put(metadata, key, value), do: Map.put(metadata, key, value)
 
   defp message_id(%{id: id}) when is_binary(id), do: id
   defp message_id(%{"id" => id}) when is_binary(id), do: id

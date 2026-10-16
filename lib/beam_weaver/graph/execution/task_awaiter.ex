@@ -87,83 +87,39 @@ defmodule BeamWeaver.Graph.Execution.TaskAwaiter do
   defp normalize_task_result(entry, {:exit, reason}), do: task_exit(entry, reason)
   defp normalize_task_result(entry, nil), do: task_timeout(:node, entry, %{})
 
+  # `:infinity` sorts after every integer, so plain `min` picks the nearest
+  # finite deadline when there is one.
   defp wait_timeout(entries, run) do
+    now = System.monotonic_time(:millisecond)
+
     entries
-    |> Enum.flat_map(fn entry ->
-      [
-        remaining_task_timeout(entry),
-        remaining_step_timeout(run),
-        remaining_run_timeout(run)
-      ]
-    end)
-    |> Enum.reject(&(&1 == :infinity))
-    |> case do
-      [] -> :infinity
-      finite -> Enum.min(finite)
-    end
+    |> Enum.flat_map(&deadlines(&1, run))
+    |> Enum.map(fn {_source, deadline} -> remaining(deadline, now) end)
+    |> Enum.min(fn -> :infinity end)
   end
 
   defp timeout_entry(unresolved, run) do
     now = System.monotonic_time(:millisecond)
 
     Enum.find(unresolved, fn entry ->
-      timeout_expired?(remaining_task_timeout(entry, now)) or
-        timeout_expired?(remaining_step_timeout(run, now)) or
-        timeout_expired?(remaining_run_timeout(run, now))
+      Enum.any?(deadlines(entry, run), fn {_source, deadline} -> remaining(deadline, now) == 0 end)
     end) || List.first(unresolved)
   end
 
   defp timeout_source(entry, run) do
-    [
-      {:node, remaining_task_timeout(entry)},
-      {:step, remaining_step_timeout(run)},
-      {:run, remaining_run_timeout(run)}
-    ]
-    |> Enum.reject(fn {_source, timeout} -> timeout == :infinity end)
-    |> case do
-      [] ->
-        :node
+    now = System.monotonic_time(:millisecond)
 
-      finite ->
-        {source, _timeout} = Enum.min_by(finite, fn {_source, timeout} -> timeout end)
-        source
-    end
+    entry
+    |> deadlines(run)
+    |> Enum.min_by(fn {_source, deadline} -> remaining(deadline, now) end)
+    |> elem(0)
   end
 
-  defp remaining_task_timeout(%{timeout: :infinity}), do: :infinity
+  defp deadlines(entry, run),
+    do: [node: entry.deadline, step: run.step_deadline, run: run.run_deadline]
 
-  defp remaining_task_timeout(%{timeout: timeout, started_at: started_at}) do
-    remaining_task_timeout(
-      %{timeout: timeout, started_at: started_at},
-      System.monotonic_time(:millisecond)
-    )
-  end
-
-  defp remaining_task_timeout(%{timeout: :infinity}, _now), do: :infinity
-
-  defp remaining_task_timeout(%{timeout: timeout, started_at: started_at}, now) do
-    elapsed = now - started_at
-    max(timeout - elapsed, 0)
-  end
-
-  defp remaining_step_timeout(%{step_deadline: :infinity}), do: :infinity
-
-  defp remaining_step_timeout(%{step_deadline: deadline}),
-    do: remaining_step_timeout(%{step_deadline: deadline}, System.monotonic_time(:millisecond))
-
-  defp remaining_step_timeout(%{step_deadline: :infinity}, _now), do: :infinity
-  defp remaining_step_timeout(%{step_deadline: deadline}, now), do: max(deadline - now, 0)
-
-  defp remaining_run_timeout(%{run_deadline: :infinity}), do: :infinity
-
-  defp remaining_run_timeout(%{run_deadline: deadline}),
-    do: remaining_run_timeout(%{run_deadline: deadline}, System.monotonic_time(:millisecond))
-
-  defp remaining_run_timeout(%{run_deadline: :infinity}, _now), do: :infinity
-  defp remaining_run_timeout(%{run_deadline: deadline}, now), do: max(deadline - now, 0)
-
-  defp timeout_expired?(:infinity), do: false
-  defp timeout_expired?(remaining), do: remaining <= 0
+  defp remaining(:infinity, _now), do: :infinity
+  defp remaining(deadline, now), do: max(deadline - now, 0)
 
   defp task_timeout(:run, entry, run) do
     error =

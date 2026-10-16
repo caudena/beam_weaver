@@ -13,11 +13,11 @@ defmodule BeamWeaver.Tracing.ToolTraceTest do
   alias BeamWeaver.Tools.Shell
 
   defmodule UnregisteredToolInterceptor do
-    @behaviour BeamWeaver.Agent.Middleware
+    use BeamWeaver.Agent.Middleware
 
     def name(_middleware), do: :unregistered_tool_interceptor
 
-    def wrap_tool_call(request, handler) do
+    def wrap_tool_call(_middleware, request, handler) do
       case request.tool_call.name do
         "magic_tool" ->
           Message.tool("magic:#{request.tool_call.args["value"]}",
@@ -32,22 +32,22 @@ defmodule BeamWeaver.Tracing.ToolTraceTest do
   end
 
   defmodule RetryWrapper do
-    @behaviour BeamWeaver.Agent.Middleware
+    use BeamWeaver.Agent.Middleware
 
     def name(_middleware), do: :retry_wrapper
 
-    def wrap_tool_call(%ToolCallRequest{} = request, handler) do
+    def wrap_tool_call(_middleware, %ToolCallRequest{} = request, handler) do
       _ignored_first_attempt = handler.(request)
       handler.(request)
     end
   end
 
   setup do
-    Tracing.reset()
+    Tracing.clear()
     Context.clear()
 
     on_exit(fn ->
-      Tracing.reset()
+      Tracing.clear()
       Context.clear()
     end)
 
@@ -263,7 +263,7 @@ defmodule BeamWeaver.Tracing.ToolTraceTest do
 
     [wrapper] =
       Store.list()
-      |> Enum.filter(&(&1.name == "RetryWrapperMiddleware.wrap_tool_call"))
+      |> Enum.filter(&(&1.name == "RetryWrapper.wrap_tool_call"))
 
     assert wrapper.parent_id == parent.id
     assert first.parent_id == wrapper.id

@@ -2,6 +2,7 @@ defmodule BeamWeaver.TextSplitterTest do
   use ExUnit.Case, async: true
 
   alias BeamWeaver.Core.Document
+  alias BeamWeaver.Core.Error
   alias BeamWeaver.TextSplitter
   alias BeamWeaver.Tokenizer.Approximate
 
@@ -166,7 +167,48 @@ defmodule BeamWeaver.TextSplitterTest do
     chunks = Enum.to_list(stream)
 
     assert Enum.any?(chunks, &(&1.content =~ "plain"))
-    assert Enum.any?(chunks, &(&1.id == "mapped" and &1.metadata.source == "map"))
+    assert Enum.any?(chunks, &(&1.id == "mapped:0" and &1.metadata.source == "map"))
+  end
+
+  test "chunks of a document with an id get distinct ids derived from it, and index as separate chunks" do
+    prose = "Refunds take 5 days. Store credit is instant."
+    markdown = "# Refunds\nRefunds take 5 days.\n# Credit\nStore credit is instant."
+    html = "<h1>Refunds</h1><p>Refunds take 5 days.</p><h1>Credit</h1><p>Store credit is instant.</p>"
+
+    for {splitter, content} <- [
+          {TextSplitter.recursive_character(chunk_size: 25, chunk_overlap: 0), prose},
+          {TextSplitter.recursive_character(chunk_size: 25, chunk_overlap: 0, add_start_index: true), prose},
+          {TextSplitter.token(chunk_size: 5, chunk_overlap: 0), prose},
+          {TextSplitter.markdown_headers(headers: [{"#", "title"}]), markdown},
+          {TextSplitter.markdown_syntax(), markdown},
+          {TextSplitter.html_headers(headers: [{"h1", "title"}]), html},
+          {TextSplitter.html_semantic(headers: [{"h1", "title"}], preserve_parent_metadata: true), html}
+        ] do
+      document = Document.new!(content, id: "refunds", metadata: %{"source" => "refunds.md"})
+      plain = Document.new!(content, metadata: %{"source" => "plain.md"})
+
+      {:ok, stream} = TextSplitter.split_documents(splitter, [document, plain])
+      {chunks, plain_chunks} = stream |> Enum.to_list() |> Enum.split_with(&(&1.metadata["source"] == "refunds.md"))
+
+      assert length(chunks) > 1, inspect(splitter)
+      assert Enum.map(chunks, & &1.id) == Enum.map(0..(length(chunks) - 1), &"refunds:#{&1}")
+      assert Enum.all?(chunks, &(&1.metadata["parent_id"] == "refunds"))
+      assert Enum.all?(plain_chunks, &is_nil(&1.id))
+      refute Enum.any?(plain_chunks, &Map.has_key?(&1.metadata, "parent_id"))
+    end
+
+    document = Document.new!(prose, id: "refunds", metadata: %{"source" => "refunds.md"})
+
+    {:ok, chunks} =
+      TextSplitter.split_documents(TextSplitter.recursive_character(chunk_size: 25, chunk_overlap: 0), [document])
+
+    store = BeamWeaver.VectorStore.ETS.new(embedding: %BeamWeaver.Models.FakeEmbeddingModel{})
+    records = BeamWeaver.Indexing.RecordManager.ETS.new()
+
+    assert {:ok, %{added: 2, skipped: 0}} =
+             BeamWeaver.Indexing.index(store, chunks, record_manager: records)
+
+    assert {:ok, [_, _]} = BeamWeaver.VectorStore.get_by_ids(store, ["refunds:0", "refunds:1"])
   end
 
   test "create_documents accepts per-input metadata and does not share metadata maps" do
@@ -393,6 +435,33 @@ defmodule BeamWeaver.TextSplitterTest do
            ] = Enum.to_list(stream)
   end
 
+  test "markdown syntax chunks all keep the document's metadata" do
+    markdown = "# Refunds\nRefunds take 5 days.\n# Credit\nStore credit is instant."
+
+    {:ok, stream} =
+      TextSplitter.split_documents(TextSplitter.markdown_syntax(), [
+        Document.new!(markdown, metadata: %{"source" => "refunds.md"})
+      ])
+
+    assert [
+             %Document{metadata: %{"source" => "refunds.md", "Header 1" => "Refunds"}},
+             %Document{metadata: %{"source" => "refunds.md", "Header 1" => "Credit"}}
+           ] = Enum.to_list(stream)
+  end
+
+  test "html headers keep headings that aren't listed as section text" do
+    html = "<h1>Guide</h1><p>intro</p><h2>Install</h2><p>steps</p><h1>Reference</h1><p>api</p>"
+
+    {:ok, stream} = TextSplitter.split_documents(TextSplitter.html_headers(headers: [{"h1", "title"}]), [html])
+
+    assert [
+             %Document{content: "intro Install steps", metadata: %{"title" => "Guide"} = guide},
+             %Document{content: "api", metadata: %{"title" => "Reference"}}
+           ] = Enum.to_list(stream)
+
+    assert map_size(guide) == 1
+  end
+
   test "html headers reset deeper metadata, infer font-size headers, and strip unsafe blocks" do
     html = """
     <h1>Guide</h1><p>intro</p>
@@ -559,7 +628,7 @@ defmodule BeamWeaver.TextSplitterTest do
   end
 
   test "recursive JSON splitter preserves map chunks, empty maps, and repeated calls" do
-    splitter = TextSplitter.recursive_json(max_chunk_size: 80)
+    splitter = TextSplitter.recursive_json(chunk_size: 80)
 
     first = TextSplitter.split_json(splitter, %{"a" => 1, "b" => 2})
     second = TextSplitter.split_json(splitter, %{"c" => 3, "d" => 4})
@@ -591,7 +660,7 @@ defmodule BeamWeaver.TextSplitterTest do
   end
 
   test "recursive JSON splitter supports list conversion and bounded document output" do
-    splitter = TextSplitter.recursive_json(max_chunk_size: 120)
+    splitter = TextSplitter.recursive_json(chunk_size: 120)
 
     data = %{
       "key0" => String.duplicate("x", 50),
@@ -616,7 +685,7 @@ defmodule BeamWeaver.TextSplitterTest do
   end
 
   test "recursive JSON splitter honors minimum chunk size and document metadata" do
-    splitter = TextSplitter.recursive_json(max_chunk_size: 45, min_chunk_size: 20)
+    splitter = TextSplitter.recursive_json(chunk_size: 45, min_chunk_size: 20)
 
     chunks =
       TextSplitter.split_json(splitter, %{
@@ -771,5 +840,105 @@ defmodule BeamWeaver.TextSplitterTest do
 
     assert [%Document{content: "from url", metadata: %{source: "https://example.test/doc"}}] =
              Enum.to_list(url_stream)
+  end
+
+  describe "split_url/3" do
+    test "refuses private, loopback, link-local and metadata addresses before any request" do
+      splitter = TextSplitter.html_headers()
+      fetcher = fn url -> flunk("fetched #{url}") end
+
+      for url <- [
+            "https://127.0.0.1/admin",
+            "https://localhost:4000/",
+            "https://10.0.0.5/wiki",
+            "https://192.168.1.1/",
+            "https://169.254.169.254/latest/meta-data/",
+            "https://metadata.google.internal/computeMetadata/v1/",
+            "https://[::1]/",
+            "https://[fe80::1]/",
+            "https://user:secret@example.com/",
+            "http://example.com/"
+          ] do
+        assert {:error, %Error{type: :unsafe_url}} = TextSplitter.split_url(splitter, url, fetcher: fetcher)
+        assert {:error, %Error{type: :unsafe_url}} = TextSplitter.split_url(splitter, url)
+      end
+    end
+
+    test "refuses a host name that resolves to a private address" do
+      resolver = fn "intranet.example", 443 -> {:ok, [{10, 0, 0, 7}]} end
+
+      assert {:error, %Error{type: :unsafe_url, message: "DNS resolution produced a blocked address"}} =
+               TextSplitter.split_url(TextSplitter.html_headers(), "https://intranet.example/wiki",
+                 url_policy: [resolver: resolver]
+               )
+    end
+
+    test "fetches what the policy allows and refuses a redirect to a blocked address" do
+      splitter = TextSplitter.html_headers()
+      page = "<h1>Guide</h1><p>from url</p>"
+
+      url =
+        start_http_server([
+          "HTTP/1.1 200 OK\r\ncontent-length: #{byte_size(page)}\r\nconnection: close\r\n\r\n" <> page
+        ])
+
+      # The default policy refuses the local server without connecting to it.
+      assert {:error, %Error{type: :unsafe_url}} = TextSplitter.split_url(splitter, url)
+      refute_received {:http_request, _request}
+
+      policy = [schemes: ["http"], allow_localhost?: true]
+      assert {:ok, stream} = TextSplitter.split_url(splitter, url, url_policy: policy)
+
+      assert [%Document{content: "from url", metadata: %{"Header 1" => "Guide", source: ^url}}] =
+               Enum.to_list(stream)
+
+      assert_received {:http_request, "GET /guide " <> _rest}
+
+      redirect =
+        start_http_server([
+          "HTTP/1.1 302 Found\r\nlocation: http://169.254.169.254/latest/meta-data/\r\n" <>
+            "content-length: 0\r\nconnection: close\r\n\r\n"
+        ])
+
+      assert {:error, %Error{type: :unsafe_url, details: %{url: "http://169.254.169.254/latest/meta-data/"}}} =
+               TextSplitter.split_url(splitter, redirect, url_policy: policy)
+
+      no_redirects = Keyword.put(policy, :follow_redirects?, false)
+
+      redirect =
+        start_http_server([
+          "HTTP/1.1 302 Found\r\nlocation: http://127.0.0.1:1/\r\ncontent-length: 0\r\nconnection: close\r\n\r\n"
+        ])
+
+      assert {:error, %Error{type: :text_splitter_error, details: %{status: 302}}} =
+               TextSplitter.split_url(splitter, redirect, url_policy: no_redirects)
+    end
+  end
+
+  # Serves one canned response per connection and reports each request.
+  defp start_http_server(responses) do
+    parent = self()
+    {:ok, listen} = :gen_tcp.listen(0, [:binary, active: false, reuseaddr: true, ip: {127, 0, 0, 1}])
+    {:ok, port} = :inet.port(listen)
+    server = spawn(fn -> serve(listen, responses, parent) end)
+
+    on_exit(fn ->
+      :gen_tcp.close(listen)
+      Process.exit(server, :kill)
+    end)
+
+    "http://127.0.0.1:#{port}/guide"
+  end
+
+  defp serve(_listen, [], _parent), do: :ok
+
+  defp serve(listen, [response | rest], parent) do
+    with {:ok, socket} <- :gen_tcp.accept(listen, 5_000),
+         {:ok, request} <- :gen_tcp.recv(socket, 0, 1_000) do
+      send(parent, {:http_request, request})
+      :gen_tcp.send(socket, response)
+      :gen_tcp.close(socket)
+      serve(listen, rest, parent)
+    end
   end
 end

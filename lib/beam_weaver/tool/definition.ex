@@ -55,11 +55,13 @@ defmodule BeamWeaver.Tool.Definition do
       module |> Module.split() |> List.last() |> Macro.underscore()
   end
 
+  # Without `description`, the tool falls back to its `@moduledoc`. This runs
+  # while the module compiles, so the attribute is read, not the compiled docs.
   defp tool_description(module) do
     Module.get_attribute(module, :beam_weaver_tool_description) ||
-      case Code.fetch_docs(module) do
-        {:docs_v1, _, _, _, %{"en" => doc}, _, _} -> doc
-        _other -> ""
+      case Module.get_attribute(module, :moduledoc) do
+        {_line, doc} when is_binary(doc) -> String.trim(doc)
+        _none -> ""
       end
   end
 

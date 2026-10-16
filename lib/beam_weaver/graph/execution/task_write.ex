@@ -1,8 +1,7 @@
 defmodule BeamWeaver.Graph.Execution.TaskWrite do
-  @moduledoc """
-  Write emitted by a graph execution task before it is committed to checkpoint storage.
-  """
+  @moduledoc false
 
+  alias BeamWeaver.Graph.Execution.Route
   alias BeamWeaver.Graph.Execution.Task, as: ExecutionTask
 
   defstruct [:task_id, :channel, :value, :path]
@@ -34,6 +33,17 @@ defmodule BeamWeaver.Graph.Execution.TaskWrite do
       task_id: task.id,
       channel: "__interrupt__",
       value: interrupt,
+      path: task.path || ""
+    }
+  end
+
+  # The route of a task that finished, encoded when it is saved.
+  @spec route(ExecutionTask.t(), Route.t()) :: t()
+  def route(%ExecutionTask{} = task, %Route{} = route) do
+    %__MODULE__{
+      task_id: task.id,
+      channel: Route.channel(),
+      value: route,
       path: task.path || ""
     }
   end

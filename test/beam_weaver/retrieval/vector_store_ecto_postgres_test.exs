@@ -3,7 +3,6 @@ defmodule BeamWeaver.VectorStoreEctoPostgresTest do
 
   # - pgvector adapter behavior translated to an explicit SQL-boundary adapter
 
-  alias BeamWeaver.Core.Async
   alias BeamWeaver.Core.Document
   alias BeamWeaver.Models.FakeEmbeddingModel
   alias BeamWeaver.Retriever
@@ -33,7 +32,7 @@ defmodule BeamWeaver.VectorStoreEctoPostgresTest do
              VectorStore.similarity_search(store, "alpha", k: 4, filter: %{group: %{in: ["a"]}})
   end
 
-  test "vectorstore add_texts and async variants delegate through document storage" do
+  test "vectorstore add_texts delegates through document storage" do
     store = ETS.new(embedding: %FakeEmbeddingModel{})
 
     assert {:ok, ["3", "4"]} =
@@ -48,11 +47,10 @@ defmodule BeamWeaver.VectorStoreEctoPostgresTest do
               %Document{id: "4", content: "world", metadata: %{kind: "noun"}}
             ]} = VectorStore.get_by_ids(store, ["3", "4"])
 
-    task = VectorStore.async_add_texts(store, ["foo", "bar"], ids: ["5", "6"])
-    assert {:ok, ["5", "6"]} = Async.await(task)
+    assert {:ok, ["5", "6"]} = VectorStore.add_texts(store, ["foo", "bar"], ids: ["5", "6"])
   end
 
-  test "vectorstore async search, get, MMR, and delete mirror sync facade behavior" do
+  test "vectorstore facade covers search, get, MMR, and delete" do
     store = ETS.new(embedding: %FakeEmbeddingModel{})
 
     assert {:ok, ["a", "b"]} =
@@ -61,49 +59,34 @@ defmodule BeamWeaver.VectorStoreEctoPostgresTest do
                metadatas: [%{kind: "a"}, %{kind: "b"}]
              )
 
-    assert {:ok, [%Document{id: "a"}]} =
-             VectorStore.async_similarity_search(store, "alpha", k: 1)
-             |> Async.await()
+    assert {:ok, [%Document{id: "a"}]} = VectorStore.similarity_search(store, "alpha", k: 1)
 
     assert {:ok, [{%Document{}, vector_score}]} =
-             VectorStore.async_similarity_search_with_score_by_vector(store, [1.0, 1.0, 1.0], k: 1)
-             |> Async.await()
+             VectorStore.similarity_search_with_score_by_vector(store, [1.0, 1.0, 1.0], k: 1)
 
     assert is_number(vector_score)
 
-    assert {:ok, [{%Document{id: "a"}, score}]} =
-             VectorStore.async_similarity_search_with_score(store, "alpha", k: 1)
-             |> Async.await()
-
+    assert {:ok, [{%Document{id: "a"}, score}]} = VectorStore.similarity_search_with_score(store, "alpha", k: 1)
     assert is_number(score)
 
     assert {:ok, [{%Document{id: "a"}, ^score}]} =
-             VectorStore.async_similarity_search_with_relevance_scores(store, "alpha",
+             VectorStore.similarity_search_with_relevance_scores(store, "alpha",
                k: 1,
                score_threshold: score
              )
-             |> Async.await()
 
     assert {:ok, [%Document{id: "a"}]} =
-             VectorStore.async_search(store, "alpha", :similarity_score,
+             VectorStore.search(store, "alpha", :similarity_score,
                k: 2,
                score_threshold: score
              )
-             |> Async.await()
 
-    assert {:ok, [%Document{id: "a"}, %Document{id: "b"}]} =
-             VectorStore.async_get_by_ids(store, ["a", "b"])
-             |> Async.await()
+    assert {:ok, [%Document{id: "a"}, %Document{id: "b"}]} = VectorStore.get_by_ids(store, ["a", "b"])
 
-    assert {:ok, [%Document{}]} =
-             VectorStore.async_max_marginal_relevance_search(store, "alpha", k: 1)
-             |> Async.await()
+    assert {:ok, [%Document{}]} = VectorStore.max_marginal_relevance_search(store, "alpha", k: 1)
+    assert {:ok, [%Document{}]} = VectorStore.max_marginal_relevance_search_by_vector(store, [1.0, 1.0, 1.0], k: 1)
 
-    assert {:ok, [%Document{}]} =
-             VectorStore.async_max_marginal_relevance_search_by_vector(store, [1.0, 1.0, 1.0], k: 1)
-             |> Async.await()
-
-    assert :ok = VectorStore.async_delete(store, ["a"]) |> Async.await()
+    assert :ok = VectorStore.delete(store, ["a"])
     assert {:ok, []} = VectorStore.get_by_ids(store, ["a"])
 
     assert {:error, %{type: :unsupported_vector_search_type}} =
@@ -121,19 +104,16 @@ defmodule BeamWeaver.VectorStoreEctoPostgresTest do
     assert {:ok, ["6"]} = VectorStore.add_documents(store, [Document.new!("updated")], ids: ["6"])
     assert {:ok, [%Document{id: "6", content: "updated"}]} = VectorStore.get_by_ids(store, ["6"])
 
-    task = VectorStore.async_add_documents(store, [Document.new!("async", id: "8")])
-    assert {:ok, ["8"]} = Async.await(task)
+    assert {:ok, ["8"]} = VectorStore.add_documents(store, [Document.new!("async", id: "8")])
   end
 
-  test "retriever async wrapper preserves ordered document results" do
-    # Translates core in-memory indexer async retriever behavior to BeamWeaver async handles.
+  test "retriever wrapper returns vectorstore search results" do
+    # Translates core in-memory indexer retriever behavior to the vectorstore retriever wrapper.
     store = ETS.new(embedding: %FakeEmbeddingModel{})
     assert {:ok, [_id]} = VectorStore.add_texts(store, ["standard retriever document"])
     retriever = VectorStore.as_retriever(store, k: 1)
 
-    task = Retriever.async_retrieve(retriever, "standard")
-
-    assert {:ok, [%Document{}]} = Async.await(task)
+    assert {:ok, [%Document{}]} = Retriever.retrieve(retriever, "standard")
   end
 
   test "filter SQL generation supports equality, membership, comparison, and rejects unsupported operators" do

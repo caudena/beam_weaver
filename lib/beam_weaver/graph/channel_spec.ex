@@ -1,11 +1,5 @@
 defmodule BeamWeaver.Graph.ChannelSpec do
-  @moduledoc """
-  Explicit state-schema channel declaration.
-
-  This is BeamWeaver's Elixir-native equivalent of LangGraph's channel
-  annotations. It keeps schema metadata as normal data instead of relying on
-  Python-style type annotations.
-  """
+  @moduledoc false
 
   defstruct [
     :channel,
@@ -15,7 +9,9 @@ defmodule BeamWeaver.Graph.ChannelSpec do
     managed?: false
   ]
 
-  @type visibility :: :public | :private
+  # `:private_checkpointed` keys stay out of the output like `:private` ones,
+  # but are saved in checkpoints, so the next run on a thread starts from them.
+  @type visibility :: :public | :private | :private_checkpointed
 
   @type t :: %__MODULE__{
           channel: term(),
@@ -31,7 +27,7 @@ defmodule BeamWeaver.Graph.ChannelSpec do
       channel: channel,
       opts:
         opts
-        |> Keyword.drop([:subscribers, :subscriber, :triggers, :visibility, :private]),
+        |> Keyword.drop([:subscribers, :subscriber, :triggers, :visibility, :private, :checkpoint]),
       subscribers:
         opts
         |> Keyword.get(
@@ -45,7 +41,10 @@ defmodule BeamWeaver.Graph.ChannelSpec do
   end
 
   @spec private(term(), keyword()) :: t()
-  def private(channel, opts \\ []), do: new(channel, Keyword.put(opts, :visibility, :private))
+  def private(channel, opts \\ []) do
+    visibility = if Keyword.get(opts, :checkpoint, false), do: :private_checkpointed, else: :private
+    new(channel, Keyword.put(opts, :visibility, visibility))
+  end
 
   @spec managed(term(), keyword()) :: t()
   def managed(managed, opts \\ []) do
@@ -54,6 +53,7 @@ defmodule BeamWeaver.Graph.ChannelSpec do
 
   defp visibility(opts) do
     cond do
+      Keyword.get(opts, :visibility) == :private_checkpointed -> :private_checkpointed
       Keyword.get(opts, :private, false) -> :private
       Keyword.get(opts, :visibility) in [:private, "private"] -> :private
       true -> :public

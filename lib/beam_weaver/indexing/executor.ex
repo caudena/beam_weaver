@@ -23,31 +23,26 @@ defmodule BeamWeaver.Indexing.Executor do
       |> Enum.reduce_while({:ok, result}, fn batch, {:ok, acc} ->
         docs = Enum.map(batch, & &1.document)
 
-        case VectorStore.add_documents(vector_store, docs, opts) do
-          {:ok, ids} ->
-            case put_records(record_manager, batch, namespace, opts) do
-              :ok ->
-                {:cont,
-                 {:ok,
-                  %{
-                    acc
-                    | added: acc.added + Enum.count(batch, &(&1.action == :add)),
-                      updated: acc.updated + Enum.count(batch, &(&1.action == :update)),
-                      indexed_ids: acc.indexed_ids ++ ids
-                  }}}
-
-              {:error, error} ->
-                {:cont, {:ok, %{acc | failed: acc.failed + length(batch), errors: [error | acc.errors]}}}
-            end
-
-          {:error, error} ->
-            error_result = %{
+        with {:ok, ids} <- VectorStore.add_documents(vector_store, docs, opts),
+             :ok <- put_records(record_manager, batch, namespace, opts) do
+          {:cont,
+           {:ok,
+            %{
               acc
-              | failed: acc.failed + length(batch),
-                errors: [error | acc.errors]
-            }
-
-            {:cont, {:ok, error_result}}
+              | added: acc.added + Enum.count(batch, &(&1.action == :add)),
+                updated: acc.updated + Enum.count(batch, &(&1.action == :update)),
+                indexed_ids: acc.indexed_ids ++ ids
+            }}}
+        else
+          {:error, error} ->
+            {:cont,
+             {:ok,
+              %{
+                acc
+                | failed: acc.failed + length(batch),
+                  failed_ids: acc.failed_ids ++ Enum.map(docs, & &1.id),
+                  errors: [error | acc.errors]
+              }}}
         end
       end)
     end

@@ -8,7 +8,6 @@ defmodule BeamWeaver.Memory do
   """
 
   alias BeamWeaver.Adapter.Dispatch
-  alias BeamWeaver.Core.Async
   alias BeamWeaver.Core.Error
   alias BeamWeaver.Memory.Query
   alias BeamWeaver.Telemetry.AdapterEvent
@@ -58,10 +57,10 @@ defmodule BeamWeaver.Memory do
   end
 
   @doc """
-  Retrieves multiple keys from one namespace in the input order.
+  Retrieves the values of multiple keys from one namespace in the input order.
 
-  Missing keys are returned as `nil`, matching the observable LangChain
-  `BaseStore.mget` contract while keeping BeamWeaver's namespaced memory model.
+  Missing keys are returned as `nil`. If any read fails, the first error is
+  returned as `{:error, error}`.
   """
   @spec get_many(store(), namespace(), [key()]) :: [term()] | {:error, term()}
   def get_many(store, namespace, keys) when is_list(keys) do
@@ -216,61 +215,6 @@ defmodule BeamWeaver.Memory do
     })
 
     result
-  end
-
-  @spec async_batch(store(), [struct()], keyword()) :: Async.handle()
-  def async_batch(store, ops, opts \\ []) do
-    Async.run(fn -> batch(store, ops) end, opts)
-  end
-
-  @spec async_put(store(), namespace(), key(), term(), keyword()) :: Async.handle()
-  def async_put(store, namespace, key, value, opts \\ []) do
-    {async_opts, call_opts} = Async.split_opts(opts)
-    Async.run(fn -> put(store, namespace, key, value, call_opts) end, async_opts)
-  end
-
-  @spec async_get(store(), namespace(), key(), keyword()) :: Async.handle()
-  def async_get(store, namespace, key, opts \\ []) do
-    Async.run(fn -> get(store, namespace, key) end, opts)
-  end
-
-  @spec async_delete(store(), namespace(), key(), keyword()) :: Async.handle()
-  def async_delete(store, namespace, key, opts \\ []) do
-    Async.run(fn -> delete(store, namespace, key) end, opts)
-  end
-
-  @spec async_get_many(store(), namespace(), [key()], keyword()) :: Async.handle()
-  def async_get_many(store, namespace, keys, opts \\ []) do
-    Async.run(fn -> get_many(store, namespace, keys) end, opts)
-  end
-
-  @spec async_put_many(store(), namespace(), [{key(), term()}], keyword()) :: Async.handle()
-  def async_put_many(store, namespace, key_value_pairs, opts \\ []) do
-    {async_opts, call_opts} = Async.split_opts(opts)
-    Async.run(fn -> put_many(store, namespace, key_value_pairs, call_opts) end, async_opts)
-  end
-
-  @spec async_delete_many(store(), namespace(), [key()], keyword()) :: Async.handle()
-  def async_delete_many(store, namespace, keys, opts \\ []) do
-    Async.run(fn -> delete_many(store, namespace, keys) end, opts)
-  end
-
-  @spec async_yield_keys(store(), namespace(), keyword()) :: Async.handle()
-  def async_yield_keys(store, namespace, opts \\ []) do
-    {async_opts, call_opts} = Async.split_opts(opts)
-    Async.run(fn -> yield_keys(store, namespace, call_opts) end, async_opts)
-  end
-
-  @spec async_search(store(), namespace(), keyword()) :: Async.handle()
-  def async_search(store, namespace, opts \\ []) do
-    {async_opts, call_opts} = Async.split_opts(opts)
-    Async.run(fn -> search(store, namespace, call_opts) end, async_opts)
-  end
-
-  @spec async_list_namespaces(store(), keyword()) :: Async.handle()
-  def async_list_namespaces(store, opts \\ []) do
-    {async_opts, call_opts} = Async.split_opts(opts)
-    Async.run(fn -> list_namespaces(store, call_opts) end, async_opts)
   end
 
   @spec normalize_namespace(namespace()) :: [String.t()]

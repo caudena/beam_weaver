@@ -2,14 +2,17 @@ defmodule BeamWeaver.OpenAI.ModerationMiddleware do
   @moduledoc """
   Agent middleware backed by OpenAI's moderation endpoint.
 
-  This keeps the LangChain moderation behavior while using BeamWeaver's native
-  middleware contract: hook functions return updates, jumps, or tagged errors
-  instead of raising Python exceptions.
+  It checks user input and model output, and optionally tool results. Flagged
+  content is handled by `:exit_behavior`: `:end` (the default) ends the run
+  with a violation message, `:replace` replaces the flagged content with that
+  message, and `:error` returns a tagged `:openai_moderation_violation` error
+  instead of raising.
   """
 
-  @behaviour BeamWeaver.Agent.Middleware
+  use BeamWeaver.Provider.RedactedInspect
 
-  alias BeamWeaver.Core.Async
+  use BeamWeaver.Agent.Middleware
+
   alias BeamWeaver.Core.Error
   alias BeamWeaver.Core.Message
   alias BeamWeaver.OpenAI.Client
@@ -64,9 +67,6 @@ defmodule BeamWeaver.OpenAI.ModerationMiddleware do
   def name(_middleware), do: :openai_moderation
 
   @impl true
-  def can_jump_to(_middleware, hook) when hook in [:before_model, :after_model], do: [:end]
-  def can_jump_to(_middleware, _hook), do: []
-
   def before_model(%__MODULE__{check_input: false, check_tool_results: false}, _state, _runtime),
     do: nil
 
@@ -80,6 +80,7 @@ defmodule BeamWeaver.OpenAI.ModerationMiddleware do
     end
   end
 
+  @impl true
   def after_model(%__MODULE__{check_output: false}, _state, _runtime), do: nil
 
   def after_model(%__MODULE__{} = middleware, state, _runtime) do
@@ -93,33 +94,18 @@ defmodule BeamWeaver.OpenAI.ModerationMiddleware do
   end
 
   @doc """
-  Task-backed equivalent of Python's async `before_model` hook.
-  """
-  @spec async_before_model(t(), map(), BeamWeaver.Graph.Runtime.t(), keyword()) :: Async.handle()
-  def async_before_model(%__MODULE__{} = middleware, state, runtime, opts \\ []) do
-    Async.run(fn -> before_model(middleware, state, runtime) end, opts)
-  end
-
-  @doc """
-  Task-backed equivalent of Python's async `after_model` hook.
-  """
-  @spec async_after_model(t(), map(), BeamWeaver.Graph.Runtime.t(), keyword()) :: Async.handle()
-  def async_after_model(%__MODULE__{} = middleware, state, runtime, opts \\ []) do
-    Async.run(fn -> after_model(middleware, state, runtime) end, opts)
-  end
-
-  @doc """
   Calls the OpenAI moderation endpoint for a single text value.
+
+  A request that fails returns the client's error unchanged, such as
+  `:missing_api_key`, `:http_error` or `:transport_error`.
   """
   @spec moderate(t(), String.t()) :: {:ok, map()} | {:error, Error.t()}
   def moderate(%__MODULE__{} = middleware, text) when is_binary(text) do
     body = %{"model" => middleware.model, "input" => text}
 
-    case Client.post_json(
-           middleware.client || Client.new(),
-           Client.endpoint("moderations"),
-           body
-         ) do
+    client = middleware.client || Client.new()
+
+    case Client.post_json(client, Client.endpoint(client, "moderations"), body) do
       {:ok, %{"results" => [result | _]}} ->
         {:ok, result}
 
@@ -133,11 +119,8 @@ defmodule BeamWeaver.OpenAI.ModerationMiddleware do
            }
          )}
 
-      {:error, error} ->
-        {:error,
-         Error.new(:openai_moderation_request_failed, "OpenAI moderation request failed", %{
-           reason: inspect(error)
-         })}
+      {:error, %Error{}} = error ->
+        error
     end
   end
 
@@ -165,7 +148,7 @@ defmodule BeamWeaver.OpenAI.ModerationMiddleware do
   defp maybe_moderate_tool_messages(_middleware, messages, false), do: {:ok, messages, false}
 
   defp maybe_moderate_tool_messages(middleware, messages, true) do
-    case last_role_index(messages, :assistant) do
+    case BeamWeaver.Agent.Middleware.Helpers.last_role_index(messages, :assistant) do
       nil -> {:ok, messages, false}
       index -> moderate_tool_messages_after(middleware, messages, index + 1, false)
     end
@@ -198,7 +181,7 @@ defmodule BeamWeaver.OpenAI.ModerationMiddleware do
     do: {:ok, messages, false}
 
   defp maybe_moderate_last_role(middleware, messages, role, stage, true) do
-    case last_role_index(messages, role) do
+    case BeamWeaver.Agent.Middleware.Helpers.last_role_index(messages, role) do
       nil -> {:ok, messages, false}
       index -> moderate_message_at(middleware, messages, index, stage, Enum.at(messages, index))
     end
@@ -300,16 +283,6 @@ defmodule BeamWeaver.OpenAI.ModerationMiddleware do
   defp flagged?(%{flagged: true}), do: true
   defp flagged?(_result), do: false
 
-  defp last_role_index(messages, role) do
-    messages
-    |> Enum.with_index()
-    |> Enum.reverse()
-    |> Enum.find_value(fn
-      {%Message{role: ^role}, index} -> index
-      _other -> nil
-    end)
-  end
-
   defp state_messages(state) do
     Map.get(state, :messages, []) || []
   end
@@ -329,7 +302,7 @@ defmodule BeamWeaver.OpenAI.ModerationMiddleware do
 
   defp client_from_opts(opts) do
     opts
-    |> Keyword.take([:api_key, :organization, :project, :transport, :transport_opts, :timeout])
+    |> Keyword.take([:api_key, :base_url, :organization, :project, :transport, :transport_opts, :timeout])
     |> Client.new()
   end
 end

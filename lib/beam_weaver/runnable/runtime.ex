@@ -1,14 +1,30 @@
 defmodule BeamWeaver.Runnable.Runtime do
   @moduledoc false
 
+  alias BeamWeaver.Core.ChatModel
+  alias BeamWeaver.Core.DecisionModel
   alias BeamWeaver.Core.Error
   alias BeamWeaver.Result
   alias BeamWeaver.Runnable.Config
 
+  # Runnable options that configure the run itself. A chat model step gets the
+  # rest, such as `temperature:`; `metadata:` would otherwise reach providers
+  # that send it with the request.
+  @run_config_keys [
+    :config,
+    :tags,
+    :metadata,
+    :run_name,
+    :run_id,
+    :max_concurrency,
+    :recursion_limit,
+    :configurable,
+    :context,
+    :task_supervisor
+  ]
+
   def name(%{name: name}) when (is_binary(name) or is_atom(name)) and not is_nil(name),
     do: to_string(name)
-
-  def name(%BeamWeaver.Runnable.Listener{runnable: runnable}), do: name(runnable)
 
   def name(%{__struct__: module}), do: inspect(module)
   def name(module) when is_atom(module), do: inspect(module)
@@ -66,47 +82,6 @@ defmodule BeamWeaver.Runnable.Runtime do
   def batch(_runnable, _inputs, _opts),
     do: {:error, Error.new(:invalid_runnable_input, "batch input must be a list")}
 
-  def batch_as_completed(runnable, inputs, opts \\ [])
-
-  def batch_as_completed(runnable, inputs, opts) when is_list(inputs) do
-    runnable = coerce(runnable)
-    config = Config.normalize(opts)
-    call_opts = Config.to_opts(config)
-    max_concurrency = config.max_concurrency
-    timeout = Keyword.get(call_opts, :timeout, 300_000)
-    context = BeamWeaver.Tracing.capture_context()
-
-    stream =
-      inputs
-      |> Enum.with_index()
-      |> Task.async_stream(
-        fn {input, index} ->
-          BeamWeaver.Tracing.attach_context(context, fn -> {index, invoke(runnable, input, call_opts)} end)
-        end,
-        ordered: false,
-        max_concurrency: max_concurrency,
-        timeout: timeout,
-        on_timeout: :kill_task
-      )
-      |> Stream.map(fn
-        {:ok, {index, {:ok, output}}} ->
-          {index, {:ok, output}}
-
-        {:ok, {index, {:error, %Error{} = error}}} ->
-          {index, {:error, error}}
-
-        {:exit, reason} ->
-          {:unknown, {:error, Error.new(:runnable_batch_exit, "batch task exited", %{reason: inspect(reason)})}}
-      end)
-
-    {:ok, stream}
-  rescue
-    exception -> {:error, exception_error(:runnable_batch_exception, exception)}
-  end
-
-  def batch_as_completed(_runnable, _inputs, _opts),
-    do: {:error, Error.new(:invalid_runnable_input, "batch input must be a list")}
-
   def stream(runnable, input, opts \\ []) do
     runnable = coerce(runnable)
     config = Config.normalize(opts)
@@ -120,13 +95,18 @@ defmodule BeamWeaver.Runnable.Runtime do
     emit(:stream_start, %{system_time: System.system_time()}, metadata(runnable, config))
 
     result =
-      if runnable_impl?(runnable, :stream, 3) do
-        runnable.__struct__.stream(runnable, input, Config.to_opts(config))
-      else
-        case invoke(runnable, input, Config.to_opts(config)) do
-          {:ok, output} -> {:ok, [output]}
-          {:error, %Error{} = error} -> {:error, error}
-        end
+      cond do
+        chat_model?(runnable) ->
+          ChatModel.stream(runnable, input, chat_model_opts(Config.to_opts(config)))
+
+        runnable_impl?(runnable, :stream, 3) ->
+          runnable.__struct__.stream(runnable, input, Config.to_opts(config))
+
+        true ->
+          case invoke(runnable, input, Config.to_opts(config)) do
+            {:ok, output} -> {:ok, [output]}
+            {:error, %Error{} = error} -> {:error, error}
+          end
       end
 
     case normalize_stream_result(result) do
@@ -174,85 +154,6 @@ defmodule BeamWeaver.Runnable.Runtime do
     exception -> {:error, exception_error(:runnable_transform_exception, exception)}
   end
 
-  def stream_events(runnable, input, opts \\ []) do
-    runnable = coerce(runnable)
-    config = Config.normalize(opts)
-    metadata = metadata(runnable, config)
-
-    case stream(runnable, input, Config.to_opts(config)) do
-      {:ok, stream} ->
-        envelope_opts = [
-          run_id: config.run_id,
-          node: metadata.runnable,
-          metadata: metadata
-        ]
-
-        start =
-          BeamWeaver.Stream.envelope(
-            BeamWeaver.Stream.event(:debug, %{kind: :start}),
-            envelope_opts
-          )
-
-        done =
-          BeamWeaver.Stream.envelope(
-            BeamWeaver.Stream.event(:done, %{result: nil}),
-            envelope_opts
-          )
-
-        events =
-          stream
-          |> Stream.map(&BeamWeaver.Stream.envelope(&1, envelope_opts))
-          |> then(&Stream.concat([[start], &1, [done]]))
-          |> filter_stream_events(opts)
-
-        {:ok, events}
-
-      {:error, %Error{} = error} ->
-        {:error, error}
-    end
-  end
-
-  def stream_log(runnable, input, opts \\ []) do
-    runnable = coerce(runnable)
-    config = Config.normalize(opts)
-
-    with {:ok, stream} <- stream(runnable, input, Config.to_opts(config)) do
-      output = Enum.to_list(stream)
-      final = BeamWeaver.Stream.Finalize.finalize(output)
-      id = config.run_id
-
-      patches =
-        [
-          %BeamWeaver.Runnable.RunLogPatch{
-            ops: [
-              %{
-                "op" => "replace",
-                "path" => "",
-                "value" => %BeamWeaver.Runnable.RunLog{
-                  id: id,
-                  streamed_output: [],
-                  final_output: nil,
-                  logs: %{}
-                }
-              }
-            ]
-          }
-        ] ++
-          Enum.map(output, fn item ->
-            %BeamWeaver.Runnable.RunLogPatch{
-              ops: [%{"op" => "add", "path" => "/streamed_output/-", "value" => item}]
-            }
-          end) ++
-          [
-            %BeamWeaver.Runnable.RunLogPatch{
-              ops: [%{"op" => "replace", "path" => "/final_output", "value" => final}]
-            }
-          ]
-
-      {:ok, patches}
-    end
-  end
-
   def coerce(%{__struct__: _module} = runnable), do: runnable
   def coerce(fun) when is_function(fun), do: %BeamWeaver.Runnable.Lambda{fun: fun}
   def coerce(module) when is_atom(module), do: module
@@ -270,6 +171,9 @@ defmodule BeamWeaver.Runnable.Runtime do
 
   defp do_invoke(%{__struct__: module} = runnable, input, opts) do
     cond do
+      # A chat model's own `invoke/3` takes a message list; `ChatModel.invoke/3`
+      # also accepts a string or a formatted prompt.
+      chat_model?(runnable) -> ChatModel.invoke(runnable, input, chat_model_opts(opts))
       exported?(module, :invoke, 3) -> module.invoke(runnable, input, opts)
       exported?(module, :invoke, 2) -> module.invoke(runnable, input)
       true -> {:error, Error.new(:invalid_runnable, "runnable struct must implement invoke/3")}
@@ -361,6 +265,15 @@ defmodule BeamWeaver.Runnable.Runtime do
 
   defp runnable_impl?(_runnable, _callback, _arity), do: false
 
+  # Model wrappers such as `Models.cached/3` implement the chat model behaviour
+  # also when they wrap a decision model, which takes a map instead.
+  defp chat_model?(%{__struct__: module} = runnable),
+    do: BeamWeaver.Behaviour.implemented_by?(module, ChatModel) and not DecisionModel.model?(runnable)
+
+  defp chat_model?(_runnable), do: false
+
+  defp chat_model_opts(opts), do: Keyword.drop(opts, @run_config_keys)
+
   defp exported?(module, function, arity) when is_atom(module) do
     Code.ensure_loaded?(module) and function_exported?(module, function, arity)
   end
@@ -386,44 +299,6 @@ defmodule BeamWeaver.Runnable.Runtime do
       :telemetry.execute([:beam_weaver, :runnable, event], measurements, metadata)
     end
   end
-
-  defp filter_stream_events(events, opts) do
-    filters = %{
-      include_names: normalized_filter_values(Keyword.get(opts, :include_names, [])),
-      exclude_names: normalized_filter_values(Keyword.get(opts, :exclude_names, [])),
-      include_tags: normalized_filter_values(Keyword.get(opts, :include_tags, [])),
-      exclude_tags: normalized_filter_values(Keyword.get(opts, :exclude_tags, []))
-    }
-
-    Stream.filter(events, &event_visible?(&1, filters))
-  end
-
-  defp event_visible?(%BeamWeaver.Stream.Envelope{} = event, filters) do
-    name = normalize_filter_value(event.node)
-    tags = event.metadata |> Map.get(:tags, []) |> Enum.map(&normalize_filter_value/1)
-
-    included_by_name? =
-      filters.include_names == [] or name in filters.include_names
-
-    included_by_tag? =
-      filters.include_tags == [] or Enum.any?(tags, &(&1 in filters.include_tags))
-
-    excluded_by_name? = name in filters.exclude_names
-    excluded_by_tag? = Enum.any?(tags, &(&1 in filters.exclude_tags))
-
-    included_by_name? and included_by_tag? and not excluded_by_name? and not excluded_by_tag?
-  end
-
-  defp normalized_filter_values(values) do
-    values
-    |> List.wrap()
-    |> Enum.reject(&is_nil/1)
-    |> Enum.map(&normalize_filter_value/1)
-  end
-
-  defp normalize_filter_value(value) when is_atom(value), do: Atom.to_string(value)
-  defp normalize_filter_value(value) when is_binary(value), do: value
-  defp normalize_filter_value(value), do: to_string(value)
 
   defp exception_error(type, exception) do
     Error.new(type, Exception.message(exception), %{exception: inspect(exception.__struct__)})

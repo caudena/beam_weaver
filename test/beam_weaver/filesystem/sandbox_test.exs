@@ -69,4 +69,27 @@ defmodule BeamWeaver.Filesystem.SandboxTest do
     assert %Filesystem.GrepResult{matches: [%Filesystem.GrepMatch{path: "/file", line: 1, text: "ok"}]} =
              Filesystem.grep(backend, "ok")
   end
+
+  test "glob and grep on a local sandbox don't reach files outside its directory" do
+    tmp_dir = Path.join(System.tmp_dir!(), "beam_weaver_sandbox_fs_#{System.unique_integer([:positive])}")
+    on_exit(fn -> File.rm_rf(tmp_dir) end)
+    root = Path.join(tmp_dir, "root")
+    File.mkdir_p!(Path.join(root, "docs"))
+    File.write!(Path.join(root, "docs/guide.md"), "TOKEN inside\n")
+    File.write!(Path.join(tmp_dir, "outside.txt"), "TOKEN outside\n")
+    # Points at the directory that holds the root, so `/up/root/...` leads back in.
+    File.ln_s!(tmp_dir, Path.join(root, "up"))
+    backend = Filesystem.Sandbox.new(sandbox: Sandbox.local(root: root))
+
+    for pattern <- ["../*", "..\\/*", ".\\./*"] do
+      assert %Filesystem.GlobResult{matches: []} = Filesystem.glob(backend, pattern, path: "/")
+      assert %Filesystem.GrepResult{matches: []} = Filesystem.grep(backend, "TOKEN", path: "/", glob: pattern)
+    end
+
+    assert %Filesystem.GlobResult{matches: matches} = Filesystem.glob(backend, "**/*", path: "/")
+    assert Enum.map(matches, & &1.path) == ["/docs", "/docs/guide.md"]
+
+    assert %Filesystem.GrepResult{matches: [%Filesystem.GrepMatch{path: "/docs/guide.md"}]} =
+             Filesystem.grep(backend, "TOKEN", path: "/")
+  end
 end

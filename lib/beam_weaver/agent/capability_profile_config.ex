@@ -21,9 +21,6 @@ defmodule BeamWeaver.Agent.CapabilityProfileConfig do
 
   def from_map(map) when is_map(map), do: new(map)
 
-  def from_capability_profile(%CapabilityProfile{} = profile),
-    do: new(CapabilityProfile.to_map(profile))
-
   def to_capability_profile(%__MODULE__{} = config) do
     CapabilityProfile.new(
       base_system_prompt: config.base_system_prompt,

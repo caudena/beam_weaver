@@ -1,9 +1,15 @@
 defmodule BeamWeaver.Core.ChatHistory do
   @moduledoc """
-  Minimal chat history contract used by runnable message-history wrappers.
+  The messages of one conversation, kept between calls.
+
+  `BeamWeaver.Core.ChatHistory.ETS` keeps them in memory, for tests and local
+  examples, and `BeamWeaver.Core.ChatHistory.Memory` in a `BeamWeaver.Memory`
+  store. Their `for_session/2` returns the history of one session, which
+  `get_messages/1`, `add_messages/2` and `clear/1` read and change. Agents
+  don't need one: with a checkpointer, they keep each thread's conversation
+  in its checkpoints.
   """
 
-  alias BeamWeaver.Core.Async
   alias BeamWeaver.Core.Error
   alias BeamWeaver.Core.Message
   alias BeamWeaver.Core.Messages.Utils
@@ -51,40 +57,8 @@ defmodule BeamWeaver.Core.ChatHistory do
   @spec buffer_string(term(), keyword()) :: {:ok, String.t()} | {:error, Error.t()}
   def buffer_string(history, opts \\ []) do
     with {:ok, messages} <- get_messages(history) do
-      Utils.get_buffer_string(messages, opts)
+      Utils.buffer_string(messages, opts)
     end
-  end
-
-  @doc """
-  Starts Task-backed message retrieval.
-  """
-  @spec async_get_messages(term(), keyword()) :: Async.handle()
-  def async_get_messages(history, opts \\ []) do
-    Async.run(fn -> get_messages(history) end, opts)
-  end
-
-  @doc """
-  Starts Task-backed message append.
-  """
-  @spec async_add_messages(term(), [Message.t()], keyword()) :: Async.handle()
-  def async_add_messages(history, messages, opts \\ []) do
-    Async.run(fn -> add_messages(history, messages) end, opts)
-  end
-
-  @doc """
-  Starts Task-backed single message append.
-  """
-  @spec async_add_message(term(), Message.t(), keyword()) :: Async.handle()
-  def async_add_message(history, message, opts \\ []) do
-    Async.run(fn -> add_message(history, message) end, opts)
-  end
-
-  @doc """
-  Starts Task-backed history clearing.
-  """
-  @spec async_clear(term(), keyword()) :: Async.handle()
-  def async_clear(history, opts \\ []) do
-    Async.run(fn -> clear(history) end, opts)
   end
 
   defp call(%{__struct__: module}, function, args) do

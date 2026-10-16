@@ -1,6 +1,10 @@
 defmodule BeamWeaver.Memory.Store do
   @moduledoc """
-  Behaviour for LangGraph-style long-term memory stores.
+  Behaviour for long-term memory stores.
+
+  A store keeps items under a namespace (a list of strings) and a key, shared
+  across threads and runs. Applications usually call it through
+  `BeamWeaver.Memory`.
   """
 
   @type store :: struct()

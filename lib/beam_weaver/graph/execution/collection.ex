@@ -2,24 +2,22 @@ defmodule BeamWeaver.Graph.Execution.Collection do
   @moduledoc false
 
   alias BeamWeaver.Core.Error
-  alias BeamWeaver.Graph.Execution.ChannelState
+  alias BeamWeaver.Graph.Execution
+  alias BeamWeaver.Graph.Execution.ChannelMerge
   alias BeamWeaver.Graph.Execution.Halt
+  alias BeamWeaver.Graph.Execution.Route
   alias BeamWeaver.Graph.Execution.StepOutcome
   alias BeamWeaver.Graph.Execution.TaskResult
   alias BeamWeaver.Graph.Execution.TaskWrite
 
   defstruct updates: [],
-            completed_nodes: [],
-            sends: [],
-            next: [],
+            routes: [],
             events: [],
             pending_writes: []
 
   @type t :: %__MODULE__{
           updates: list(),
-          completed_nodes: [String.t()],
-          sends: list(),
-          next: list(),
+          routes: [Route.t()],
           events: list(),
           pending_writes: list()
         }
@@ -59,13 +57,22 @@ defmodule BeamWeaver.Graph.Execution.Collection do
     add_task_error(collection, entry, result.error, result.events)
   end
 
+  # A finished task's writes and route. Its pending writes, saved only if the
+  # step stops partway, include the route.
   @spec add_normalized_result(t(), map(), map(), list()) :: t()
   def add_normalized_result(%__MODULE__{} = collection, entry, normalized, events) do
     updates = normalized_updates(normalized)
+    route = Route.new(entry.prepared.node, normalized)
 
-    collection
-    |> add_completed_node(entry)
-    |> add_normalized(normalized, updates, events, task_pending_writes(entry, updates))
+    %{
+      collection
+      | updates: collection.updates ++ updates,
+        routes: collection.routes ++ [route],
+        events: collection.events ++ events,
+        pending_writes:
+          collection.pending_writes ++
+            task_pending_writes(entry, updates) ++ [TaskWrite.route(entry.prepared, route)]
+    }
   end
 
   @spec add_task_error(t(), map(), Error.t(), list()) :: t()
@@ -97,38 +104,21 @@ defmodule BeamWeaver.Graph.Execution.Collection do
 
   @spec to_step_outcome(t(), map(), map()) :: {:ok, StepOutcome.t()} | {:halt, Halt.t()}
   def to_step_outcome(%__MODULE__{} = collection, run, graph) do
-    updates = collection.updates ++ waiting_edge_updates(collection.completed_nodes, graph)
+    replayed = Execution.pending_channels(Map.get(run, :replay_pending_writes) || [])
 
-    case ChannelState.merge_step_updates(run.state, updates, graph) do
+    case ChannelMerge.apply_step_writes(run.state, collection.updates, graph, replayed) do
       {:ok, step_update, next_state} ->
         {:ok,
          %StepOutcome{
            step_update: step_update,
            state: next_state,
-           sends: collection.sends,
-           next: collection.next,
+           routes: collection.routes,
            events: collection.events
          }}
 
       {:error, %Error{} = error} ->
         {:halt, halt(collection, :error, error)}
     end
-  end
-
-  defp add_normalized(collection, normalized, updates, events, task_writes) do
-    %{
-      collection
-      | updates: collection.updates ++ updates,
-        sends: collection.sends ++ normalized.sends,
-        next: collection.next ++ normalized.next,
-        events: collection.events ++ events,
-        pending_writes: collection.pending_writes ++ task_writes
-    }
-  end
-
-  defp add_completed_node(%__MODULE__{} = collection, entry) do
-    node = entry.prepared.node
-    %{collection | completed_nodes: Enum.uniq(collection.completed_nodes ++ [node])}
   end
 
   defp normalized_updates(%{updates: updates}) when is_list(updates), do: updates
@@ -138,17 +128,5 @@ defmodule BeamWeaver.Graph.Execution.Collection do
 
   defp task_pending_writes(entry, updates) when is_list(updates) do
     Enum.flat_map(updates, &TaskWrite.from_update(entry.prepared, &1))
-  end
-
-  defp waiting_edge_updates([], _graph), do: []
-
-  defp waiting_edge_updates(completed_nodes, graph) do
-    graph
-    |> Map.get(:waiting_edges, [])
-    |> Enum.flat_map(fn spec ->
-      completed_nodes
-      |> Enum.filter(&(&1 in spec.upstream))
-      |> Enum.map(&%{spec.channel => &1})
-    end)
   end
 end

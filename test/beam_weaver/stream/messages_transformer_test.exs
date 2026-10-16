@@ -1,7 +1,6 @@
 defmodule BeamWeaver.Stream.MessagesTransformerTest do
   use ExUnit.Case, async: true
 
-  alias BeamWeaver.Core.Async
   alias BeamWeaver.Core.Message
   alias BeamWeaver.Core.Messages
   alias BeamWeaver.Agent.Middleware.PII
@@ -232,14 +231,6 @@ defmodule BeamWeaver.Stream.MessagesTransformerTest do
              )
 
     assert MessagesTransformer.finalize(active).by_run == %{}
-  end
-
-  test "Task-backed async processing covers async-mode projection without a Python async class" do
-    task = MessagesTransformer.async_process_many(lifecycle("async stream"), async?: true)
-    assert {:ok, t, _emitted} = Async.await(task)
-    assert [%MessageStream{} = stream] = MessagesTransformer.streams(t)
-    assert MessageStream.text(stream) == "async stream"
-    assert MessageStream.output!(stream).content == "async stream"
   end
 
   test "typed BeamWeaver message envelopes can be projected as whole messages" do

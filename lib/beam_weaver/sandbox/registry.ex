@@ -313,7 +313,7 @@ defmodule BeamWeaver.Sandbox.Registry do
   end
 
   defp validate_sandbox_backend(sandbox, spec) do
-    if Sandbox.Backend.impl_for(sandbox) do
+    if Sandbox.sandbox?(sandbox) do
       :ok
     else
       {:error,

@@ -46,9 +46,4 @@ defmodule BeamWeaver.Provider.ChatModel.Options do
 
   @spec put_present(keyword(), atom(), term()) :: keyword()
   def put_present(opts, key, value), do: BeamWeaver.MapShape.put_present(opts, key, value)
-
-  @spec default_response_header_opt(map(), keyword()) :: keyword()
-  def default_response_header_opt(%{include_response_headers: include_response_headers}, opts) do
-    Keyword.put_new(opts, :include_response_headers, include_response_headers)
-  end
 end

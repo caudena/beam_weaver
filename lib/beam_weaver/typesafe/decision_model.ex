@@ -3,6 +3,9 @@ defmodule BeamWeaver.TypeSafe.DecisionModel do
   Jev decision model. Evaluate `state` and named `questions` through
   `BeamWeaver.Core.DecisionModel` or `BeamWeaver.Runnable`.
   """
+
+  use BeamWeaver.Provider.RedactedInspect
+
   @behaviour BeamWeaver.Core.DecisionModel
   @behaviour BeamWeaver.Runnable
 
@@ -148,8 +151,4 @@ defmodule BeamWeaver.TypeSafe.DecisionModel do
       fun.()
     end
   end
-end
-
-defimpl Inspect, for: BeamWeaver.TypeSafe.DecisionModel do
-  def inspect(value, opts), do: BeamWeaver.Provider.RedactedInspect.redacted_struct(value, opts)
 end

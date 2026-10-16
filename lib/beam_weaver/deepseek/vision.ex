@@ -1,7 +1,7 @@
 defmodule BeamWeaver.DeepSeek.Vision do
   @moduledoc false
 
-  alias BeamWeaver.DeepSeek.Error
+  alias BeamWeaver.Core.Error
   alias BeamWeaver.Models.ProfileRegistry.DeepSeek
 
   @image_types ~w(input_image image_url file)

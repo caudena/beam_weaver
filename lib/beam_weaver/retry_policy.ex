@@ -115,6 +115,35 @@ defmodule BeamWeaver.RetryPolicy do
 
   def retry?(_policy, _error), do: false
 
+  @doc """
+  Calls `fun` until it returns anything but a retryable `{:error, error}`,
+  sleeping `delay/2` between attempts, and returns the last result.
+
+  `fun` may take the 1-based attempt number. Options: `:attempt` (the first
+  attempt's number, default `1`) and `:on_retry`, called with the failed
+  attempt number and error before each retry.
+  """
+  @spec run(t(), (-> term()) | (pos_integer() -> term()), keyword()) :: term()
+  def run(%__MODULE__{} = policy, fun, opts \\ []) when is_function(fun, 0) or is_function(fun, 1) do
+    run(policy, fun, Keyword.get(opts, :attempt, 1), Keyword.get(opts, :on_retry, fn _attempt, _error -> :ok end))
+  end
+
+  defp run(policy, fun, attempt, on_retry) do
+    case if(is_function(fun, 1), do: fun.(attempt), else: fun.()) do
+      {:error, error} = result ->
+        if attempt < policy.max_attempts and retry?(policy, error) do
+          on_retry.(attempt, error)
+          with delay when delay > 0 <- delay(policy, attempt), do: Process.sleep(delay)
+          run(policy, fun, attempt + 1, on_retry)
+        else
+          result
+        end
+
+      result ->
+        result
+    end
+  end
+
   @spec delay(t(), pos_integer()) :: non_neg_integer()
   def delay(%__MODULE__{backoff: backoff} = policy, _attempt) when backoff == 0,
     do: policy.initial_delay |> min(policy.max_delay) |> add_jitter(policy.jitter) |> min(policy.max_delay)
@@ -139,10 +168,9 @@ defmodule BeamWeaver.RetryPolicy do
   @doc """
   Returns the parent checkpoint namespace for a nested task namespace.
 
-  LangGraph encodes nested task namespaces as pipe-separated `name:id` segments
-  with optional numeric attempt markers. BeamWeaver keeps this as a pure helper so
-  checkpoint/retry code can preserve the same parent-command routing behavior
-  without exposing Python's private `_retry` module.
+  Nested task namespaces are pipe-separated `name:id` segments with optional
+  numeric attempt markers. This drops the last segment and the attempt markers
+  around it, so `"node:1|1|child:2|1"` returns `"node:1"`.
   """
   @spec checkpoint_parent_namespace(String.t() | nil) :: String.t()
   def checkpoint_parent_namespace(nil), do: ""

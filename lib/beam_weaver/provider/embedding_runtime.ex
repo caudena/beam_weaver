@@ -1,7 +1,6 @@
 defmodule BeamWeaver.Provider.EmbeddingRuntime do
   @moduledoc false
 
-  alias BeamWeaver.Core.Async
   alias BeamWeaver.Result
   alias BeamWeaver.Tokenizer
 
@@ -17,11 +16,6 @@ defmodule BeamWeaver.Provider.EmbeddingRuntime do
     else
       embed_document_batches(documents, chunk_size, opts, embed_fun)
     end
-  end
-
-  @doc false
-  def async_embed_documents(model, documents, opts, embed_documents_fun) do
-    Async.run_call(opts, &embed_documents_fun.(model, documents, &1))
   end
 
   @doc false
@@ -44,16 +38,6 @@ defmodule BeamWeaver.Provider.EmbeddingRuntime do
       {:error, error} ->
         {:error, error}
     end
-  end
-
-  @doc false
-  def async_embed_query(model, query, opts, embed_query_fun) do
-    Async.run_call(opts, &embed_query_fun.(model, query, &1))
-  end
-
-  @doc false
-  def async_batch_queries(model, queries, opts, embed_query_fun) when is_list(queries) do
-    Async.batch_call(queries, opts, &embed_query_fun.(model, &1, &2))
   end
 
   @doc false
@@ -258,10 +242,7 @@ defmodule BeamWeaver.Provider.EmbeddingRuntime do
 
   defp maybe_skip_empty(documents, _skip_empty?), do: documents
 
-  defp error(opts, type, message, details \\ %{}) do
-    error_module = Keyword.fetch!(opts, :error_module)
-    error_module.new(type, message, details)
-  end
+  defp error(_opts, type, message, details \\ %{}), do: BeamWeaver.Core.Error.new(type, message, details)
 
   defp provider_name(opts), do: Keyword.fetch!(opts, :provider_name)
 end

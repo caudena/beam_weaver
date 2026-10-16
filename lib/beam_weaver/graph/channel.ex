@@ -1,35 +1,21 @@
-defprotocol BeamWeaver.Graph.Channel.Dispatch do
-  @moduledoc """
-  Protocol dispatch for graph channels.
-
-  Custom channel structs must implement this protocol, usually by using
-  `BeamWeaver.Graph.Channel`.
-  """
-
-  def update(channel, updates)
-  def get(channel)
-  def checkpoint(channel)
-  def from_checkpoint(channel, checkpoint)
-  def copy(channel)
-  def available?(channel)
-  def value_type(channel)
-  def update_type(channel)
-  def null_version(channel)
-  def version_equal?(channel, left, right)
-  def consume(channel)
-  def finish(channel)
-end
-
 defmodule BeamWeaver.Graph.Channel do
   @moduledoc """
-  Behaviour for LangGraph-style state channels.
+  Behaviour for graph state channels.
 
-  Channels own how updates are accepted, merged, checkpointed, restored, and
-  consumed. Public functions return tagged tuples instead of raising.
+  Each key of a graph's state is backed by a channel. Channels own how updates
+  are accepted, merged, checkpointed, restored, and consumed. Public functions
+  return tagged tuples instead of raising.
+
+  A channel is a struct whose module calls `use BeamWeaver.Graph.Channel`;
+  the functions below dispatch to that module.
+
+  At the end of each step, `update/2` gets the step's writes to the key, and a
+  channel that holds a value but got no write gets `update(channel, [])`, so a
+  channel can drop a value that lasts one step, as
+  `BeamWeaver.Graph.Channels.EphemeralValue` does.
   """
 
   alias BeamWeaver.Core.Error
-  alias BeamWeaver.Graph.Channel.Dispatch, as: ChannelDispatch
 
   @missing :__beam_weaver_missing__
 
@@ -63,6 +49,21 @@ defmodule BeamWeaver.Graph.Channel do
 
       alias BeamWeaver.Graph.Channel
 
+      # Defaults for single-value channels, whose struct has `:key` and `:value`.
+      @impl true
+      def get(%{value: value, key: key}) do
+        if value == Channel.missing(), do: {:error, Channel.empty_error(key)}, else: {:ok, value}
+      end
+
+      @impl true
+      def checkpoint(%{value: value}), do: value
+
+      @impl true
+      def from_checkpoint(channel, checkpoint), do: %{channel | value: checkpoint}
+
+      @impl true
+      def available?(%{value: value}), do: value != Channel.missing()
+
       @impl true
       def copy(channel), do: struct(__MODULE__, Map.from_struct(channel))
 
@@ -84,56 +85,38 @@ defmodule BeamWeaver.Graph.Channel do
       @impl true
       def finish(channel), do: {:ok, channel, false}
 
-      defoverridable copy: 1,
+      defoverridable get: 1,
+                     checkpoint: 1,
+                     from_checkpoint: 2,
+                     available?: 1,
+                     copy: 1,
                      value_type: 1,
                      update_type: 1,
                      null_version: 1,
                      version_equal?: 3,
                      consume: 1,
                      finish: 1
-
-      defimpl BeamWeaver.Graph.Channel.Dispatch, for: __MODULE__ do
-        def update(channel, updates), do: @for.update(channel, updates)
-        def get(channel), do: @for.get(channel)
-        def checkpoint(channel), do: @for.checkpoint(channel)
-        def from_checkpoint(channel, checkpoint), do: @for.from_checkpoint(channel, checkpoint)
-        def copy(channel), do: @for.copy(channel)
-        def available?(channel), do: @for.available?(channel)
-        def value_type(channel), do: @for.value_type(channel)
-        def update_type(channel), do: @for.update_type(channel)
-        def null_version(channel), do: @for.null_version(channel)
-        def version_equal?(channel, left, right), do: @for.version_equal?(channel, left, right)
-        def consume(channel), do: @for.consume(channel)
-        def finish(channel), do: @for.finish(channel)
-      end
     end
   end
 
   def missing, do: @missing
 
-  def update(channel, updates), do: ChannelDispatch.update(channel, updates)
-  def get(channel), do: ChannelDispatch.get(channel)
-  def checkpoint(channel), do: ChannelDispatch.checkpoint(channel)
+  @doc "Whether `module` implements this behaviour."
+  @spec implemented_by?(module()) :: boolean()
+  def implemented_by?(module), do: BeamWeaver.Behaviour.implemented_by?(module, __MODULE__)
 
-  def from_checkpoint(channel, checkpoint),
-    do: ChannelDispatch.from_checkpoint(channel, checkpoint)
-
-  def copy(channel), do: ChannelDispatch.copy(channel)
-  def available?(channel), do: ChannelDispatch.available?(channel)
-
-  def value_type(channel), do: ChannelDispatch.value_type(channel)
-
-  def update_type(channel), do: ChannelDispatch.update_type(channel)
-
-  def null_version(channel), do: ChannelDispatch.null_version(channel)
-
-  def version_equal?(channel, left, right) do
-    ChannelDispatch.version_equal?(channel, left, right)
-  end
-
-  def consume(channel), do: ChannelDispatch.consume(channel)
-
-  def finish(channel), do: ChannelDispatch.finish(channel)
+  def update(%module{} = channel, updates), do: module.update(channel, updates)
+  def get(%module{} = channel), do: module.get(channel)
+  def checkpoint(%module{} = channel), do: module.checkpoint(channel)
+  def from_checkpoint(%module{} = channel, checkpoint), do: module.from_checkpoint(channel, checkpoint)
+  def copy(%module{} = channel), do: module.copy(channel)
+  def available?(%module{} = channel), do: module.available?(channel)
+  def value_type(%module{} = channel), do: module.value_type(channel)
+  def update_type(%module{} = channel), do: module.update_type(channel)
+  def null_version(%module{} = channel), do: module.null_version(channel)
+  def version_equal?(%module{} = channel, left, right), do: module.version_equal?(channel, left, right)
+  def consume(%module{} = channel), do: module.consume(channel)
+  def finish(%module{} = channel), do: module.finish(channel)
 
   def empty_error(key) do
     Error.new(:empty_channel, "channel has no value", %{channel: key})

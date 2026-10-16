@@ -3,7 +3,7 @@ defmodule BeamWeaver.Indexing.Documents do
 
   alias BeamWeaver.Core.Document
   alias BeamWeaver.Core.Error
-  alias BeamWeaver.DocumentLike
+
   alias BeamWeaver.Indexing.Hash
   alias BeamWeaver.Result
 
@@ -11,7 +11,7 @@ defmodule BeamWeaver.Indexing.Documents do
   def normalize(documents, opts) do
     documents
     |> Result.traverse(fn value ->
-      case DocumentLike.to_document(value) do
+      case Document.from(value) do
         {:ok, %Document{} = document} ->
           id = document.id || document_id(document, opts)
           {:ok, %{document | id: id}}
@@ -69,8 +69,10 @@ defmodule BeamWeaver.Indexing.Documents do
     end
   end
 
+  # Without a source, the chunks of a document belong to the document they were
+  # split from ("parent_id"), so a shorter version's cleanup reaches them all.
   defp metadata_source(%Document{metadata: metadata}) do
-    Enum.find_value([:source_id, "source_id", :source, "source"], fn key ->
+    Enum.find_value([:source_id, "source_id", :source, "source", "parent_id"], fn key ->
       case fetch_metadata(metadata, key) do
         {:ok, nil} -> nil
         {:ok, value} -> to_string(value)

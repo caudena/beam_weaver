@@ -55,7 +55,7 @@ defmodule BeamWeaver.DeepSeek.ContractTest do
 
     for param <- [:frequency_penalty, :presence_penalty] do
       assert {:error, error} =
-               ChatModel.request_body(model, messages, model_kwargs: %{param => 0.5})
+               ChatModel.request_body(model, messages, extra_body: %{param => 0.5})
 
       assert error.type == :unsupported_model_param
       assert param in error.details.params

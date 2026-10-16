@@ -1,15 +1,13 @@
 defmodule BeamWeaver.IndexingTest do
   use ExUnit.Case, async: true
 
-  alias BeamWeaver.Core.Async
   alias BeamWeaver.Core.Document
   alias BeamWeaver.Indexing
-  alias BeamWeaver.Indexing.DocumentIndex, as: ReadWriteIndex
-  alias BeamWeaver.Indexing.DocumentIndex.Memory, as: MemoryDocumentIndex
   alias BeamWeaver.Indexing.Record
   alias BeamWeaver.Indexing.RecordManager
   alias BeamWeaver.Indexing.RecordManager.ETS, as: RecordETS
   alias BeamWeaver.Models.FakeEmbeddingModel
+  alias BeamWeaver.TextSplitter
   alias BeamWeaver.VectorStore
   alias BeamWeaver.VectorStore.ETS, as: VectorETS
 
@@ -56,12 +54,106 @@ defmodule BeamWeaver.IndexingTest do
       do: VectorStore.max_marginal_relevance_search(store.inner, query, opts)
   end
 
+  # Rejects writes of documents from the sources in `reject`, an Agent.
+  defmodule RejectingVectorStore do
+    @behaviour BeamWeaver.VectorStore
+
+    alias BeamWeaver.Core.Error
+    alias BeamWeaver.Models.FakeEmbeddingModel
+    alias BeamWeaver.VectorStore
+    alias BeamWeaver.VectorStore.ETS, as: VectorETS
+
+    defstruct [:inner, :reject]
+
+    def new do
+      {:ok, reject} = Agent.start_link(fn -> [] end)
+      %__MODULE__{inner: VectorETS.new(embedding: %FakeEmbeddingModel{}), reject: reject}
+    end
+
+    def add_documents(store, documents, opts) do
+      rejected = Agent.get(store.reject, & &1)
+
+      if Enum.any?(documents, &(&1.metadata.source in rejected)),
+        do: {:error, Error.new(:write_rejected, "simulated write failure")},
+        else: VectorStore.add_documents(store.inner, documents, opts)
+    end
+
+    def delete(store, ids, opts), do: VectorStore.delete(store.inner, ids, opts)
+    def get_by_ids(store, ids, opts), do: VectorStore.get_by_ids(store.inner, ids, opts)
+    def similarity_search(store, query, opts), do: VectorStore.similarity_search(store.inner, query, opts)
+
+    def similarity_search_with_score(store, query, opts),
+      do: VectorStore.similarity_search_with_score(store.inner, query, opts)
+
+    def similarity_search_by_vector(store, vector, opts),
+      do: VectorStore.similarity_search_by_vector(store.inner, vector, opts)
+
+    def max_marginal_relevance_search(store, query, opts),
+      do: VectorStore.max_marginal_relevance_search(store.inner, query, opts)
+  end
+
+  test "cleanup keeps the old chunks of a source whose new chunks failed to write" do
+    first = [
+      Document.new!("refunds take 5 days", id: "refunds-v1", metadata: %{source: "refunds.md"}),
+      Document.new!("shipping takes 3 days", id: "shipping-v1", metadata: %{source: "shipping.md"})
+    ]
+
+    second = [
+      Document.new!("refunds take 3 days", id: "refunds-v2", metadata: %{source: "refunds.md"}),
+      Document.new!("shipping takes 2 days", id: "shipping-v2", metadata: %{source: "shipping.md"})
+    ]
+
+    for cleanup <- [:incremental, {:full, ["refunds.md", "shipping.md"]}] do
+      store = RejectingVectorStore.new()
+      records = RecordETS.new()
+      opts = [record_manager: records, cleanup: cleanup, batch_size: 1]
+
+      assert {:ok, %{added: 2}} = Indexing.index(store, first, opts)
+
+      Agent.update(store.reject, fn _ -> ["refunds.md"] end)
+
+      assert {:ok, result} = Indexing.index(store, second, opts)
+
+      assert %{added: 1, failed: 1, failed_ids: ["refunds-v2"], errors: [%{type: :write_rejected}]} = result
+      assert result.deleted_ids == ["shipping-v1"]
+
+      # The refunds article stays searchable in its old version.
+      assert {:ok, [%Document{content: "refunds take 5 days"}]} = VectorStore.get_by_ids(store, ["refunds-v1"])
+      assert {:ok, %BeamWeaver.Indexing.Record{}} = RecordManager.get(records, "refunds-v1")
+
+      # Once the write succeeds, the next run cleans up the old version.
+      Agent.update(store.reject, fn _ -> [] end)
+
+      assert {:ok, %{added: 1, skipped: 1, deleted_ids: ["refunds-v1"]}} = Indexing.index(store, second, opts)
+    end
+  end
+
+  test "full cleanup with force keeps sources whose new chunks failed to write" do
+    store = RejectingVectorStore.new()
+    records = RecordETS.new()
+
+    first = [
+      Document.new!("refunds take 5 days", id: "refunds-v1", metadata: %{source: "refunds.md"}),
+      Document.new!("old faq", id: "faq-v1", metadata: %{source: "faq.md"})
+    ]
+
+    assert {:ok, %{added: 2}} = Indexing.index(store, first, record_manager: records)
+
+    Agent.update(store.reject, fn _ -> ["refunds.md"] end)
+    second = [Document.new!("refunds take 3 days", id: "refunds-v2", metadata: %{source: "refunds.md"})]
+
+    assert {:ok, %{failed: 1, deleted_ids: ["faq-v1"]}} =
+             Indexing.index(store, second, record_manager: records, cleanup: :full, force?: true)
+
+    assert {:ok, [%Document{id: "refunds-v1"}]} = VectorStore.get_by_ids(store, ["refunds-v1"])
+  end
+
   test "record manager makes indexing idempotent and force update explicit" do
     store = VectorETS.new(embedding: %FakeEmbeddingModel{})
     records = RecordETS.new()
     docs = [Document.new!("alpha", id: "a", metadata: %{source: "s1"})]
 
-    assert BeamWeaver.Indexing.RecordManager.Backend.impl_for(records)
+    assert BeamWeaver.Indexing.RecordManager.record_manager?(records)
 
     assert {:ok, %{added: 1, updated: 0, skipped: 0}} =
              Indexing.index(store, docs, record_manager: records)
@@ -173,6 +265,29 @@ defmodule BeamWeaver.IndexingTest do
              VectorStore.similarity_search(store, "Other source", k: 1)
   end
 
+  test "incremental cleanup deletes the chunks a shorter document no longer has" do
+    store = VectorETS.new(embedding: %FakeEmbeddingModel{})
+    records = RecordETS.new()
+    opts = [record_manager: records, cleanup: :incremental]
+    splitter = TextSplitter.recursive_character(chunk_size: 25, chunk_overlap: 0)
+
+    refunds = Document.new!("Refunds take 5 days.\nStore credit is instant.\nGift cards never expire.", id: "refunds")
+    shipping = Document.new!("Parcels ship in 2 days.", id: "shipping")
+
+    {:ok, chunks} = TextSplitter.split_documents(splitter, [refunds, shipping])
+    assert {:ok, %{added: 4}} = Indexing.index(store, chunks, opts)
+
+    {:ok, chunks} = TextSplitter.split_documents(splitter, [Document.new!("Refunds take 3 days.", id: "refunds")])
+    assert {:ok, result} = Indexing.index(store, chunks, opts)
+
+    assert {result.updated, result.deleted, Enum.sort(result.deleted_ids)} == {1, 2, ["refunds:1", "refunds:2"]}
+
+    assert {:ok, [%Document{id: "refunds:0", content: "Refunds take 3 days."}]} =
+             VectorStore.get_by_ids(store, ["refunds:0", "refunds:1", "refunds:2"])
+
+    assert {:ok, [%Document{id: "shipping:0"}]} = VectorStore.get_by_ids(store, ["shipping:0"])
+  end
+
   test "source_id_key and explicit scoped cleanup scope cleanup to current document sources" do
     store = VectorETS.new(embedding: %FakeEmbeddingModel{})
     records = RecordETS.new()
@@ -259,7 +374,12 @@ defmodule BeamWeaver.IndexingTest do
     records = RecordETS.new()
 
     on_exit(fn ->
-      if Process.alive?(store.delete_flag), do: Agent.stop(store.delete_flag)
+      # The agent is linked to the test process and may already be gone.
+      try do
+        Agent.stop(store.delete_flag)
+      catch
+        :exit, _reason -> :ok
+      end
     end)
 
     first = [
@@ -401,17 +521,7 @@ defmodule BeamWeaver.IndexingTest do
              )
   end
 
-  test "async indexing uses BeamWeaver async handles" do
-    store = VectorETS.new(embedding: %FakeEmbeddingModel{})
-    records = RecordETS.new()
-
-    task =
-      Indexing.async_index(store, [Document.new!("alpha", id: "a")], record_manager: records)
-
-    assert {:ok, %{added: 1}} = Async.await(task)
-  end
-
-  test "record manager facade covers standard update exists list delete and async helpers" do
+  test "record manager facade covers standard update exists list and delete" do
     # Upstream reference:
     records = RecordETS.new(namespace: :records)
 
@@ -427,11 +537,11 @@ defmodule BeamWeaver.IndexingTest do
     assert {:error, %{type: :invalid_record_manager_time}} =
              RecordManager.update(records, ["future"], time_at_least: RecordManager.get_time(records) + 60)
 
-    assert :ok = RecordManager.async_update(records, ["c"], group_ids: ["s3"]) |> Async.await()
-    assert [true] = RecordManager.async_exists(records, ["c"]) |> Async.await()
-    assert ["c"] = RecordManager.async_list_keys(records, group_ids: ["s3"]) |> Async.await()
+    assert :ok = RecordManager.update(records, ["c"], group_ids: ["s3"])
+    assert [true] = RecordManager.exists(records, ["c"])
+    assert ["c"] = RecordManager.list_keys(records, group_ids: ["s3"])
 
-    assert :ok = RecordManager.async_delete_keys(records, ["a", "c"]) |> Async.await()
+    assert :ok = RecordManager.delete_keys(records, ["a", "c"])
     assert [false, true, false] = RecordManager.exists(records, ["a", "b", "c"])
   end
 
@@ -459,65 +569,5 @@ defmodule BeamWeaver.IndexingTest do
 
     after_time = DateTime.to_unix(updated_at, :microsecond) / 1_000_000 - 1
     assert ["a"] = RecordManager.list_keys(records, after: after_time, limit: 1)
-  end
-
-  test "memory document index supports standard upsert get delete retrieve and async helpers" do
-    index = MemoryDocumentIndex.new(top_k: 1)
-
-    assert {:ok, %{succeeded: ["foo-id", generated], failed: []}} =
-             ReadWriteIndex.upsert(index, [
-               Document.new!("foo foo", id: "foo-id", metadata: %{kind: "known"}),
-               Document.new!("bar", metadata: %{kind: "generated"})
-             ])
-
-    assert is_binary(generated)
-
-    assert {:ok,
-            [
-              %Document{id: "foo-id", content: "foo foo"},
-              %Document{id: ^generated, content: "bar"}
-            ]} = ReadWriteIndex.get(index, ["foo-id", generated, "missing"])
-
-    assert {:ok, %{succeeded: ["foo-id"], failed: []}} =
-             ReadWriteIndex.upsert(index, [Document.new!("foo2", id: "foo-id")])
-
-    assert {:ok, [%Document{id: "foo-id", content: "foo2"}]} =
-             ReadWriteIndex.get(index, ["foo-id"])
-
-    assert {:ok, [%Document{id: "foo-id"}]} = BeamWeaver.Retriever.retrieve(index, "foo")
-
-    assert {:ok, %{succeeded: ["foo-id"], num_deleted: 1, num_failed: 0, failed: []}} =
-             ReadWriteIndex.delete(index, ["missing", "foo-id"])
-
-    assert {:ok, []} = ReadWriteIndex.get(index, ["foo-id"])
-    assert {:error, %{type: :missing_document_ids}} = ReadWriteIndex.delete(index)
-
-    assert {:ok, %{succeeded: ["async-id"]}} =
-             ReadWriteIndex.async_upsert(index, [Document.new!("async", id: "async-id")])
-             |> Async.await()
-
-    assert {:ok, [%Document{id: "async-id"}]} =
-             ReadWriteIndex.async_get(index, ["async-id"]) |> Async.await()
-
-    assert {:ok, %{succeeded: ["async-id"]}} =
-             ReadWriteIndex.async_delete(index, ["async-id"]) |> Async.await()
-  end
-
-  test "memory document index retrieves ranked documents through sync and async retriever facade" do
-    # Upstream reference:
-    index = MemoryDocumentIndex.new(top_k: 2)
-
-    documents = [
-      Document.new!("hello world", id: "1"),
-      Document.new!("goodbye cat", id: "2")
-    ]
-
-    assert {:ok, %{succeeded: ["1", "2"]}} = ReadWriteIndex.upsert(index, documents)
-
-    assert {:ok, [%Document{id: "1"}, %Document{id: "2"}]} =
-             BeamWeaver.Retriever.retrieve(index, "hello")
-
-    assert {:ok, [%Document{id: "2"}, %Document{id: "1"}]} =
-             BeamWeaver.Retriever.async_retrieve(index, "cat") |> Async.await()
   end
 end

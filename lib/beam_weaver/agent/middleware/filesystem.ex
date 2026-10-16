@@ -1,7 +1,13 @@
 defmodule BeamWeaver.Agent.Middleware.Filesystem do
-  @moduledoc "Middleware that contributes DeepAgents filesystem tools."
+  @moduledoc """
+  Middleware that gives an agent the filesystem tools from
+  `BeamWeaver.Tools.Filesystem` and a system prompt describing them.
 
-  @behaviour BeamWeaver.Agent.Middleware
+  It also writes oversized tool results and user messages to files and shows
+  the model a short preview with the file path instead.
+  """
+
+  use BeamWeaver.Agent.Middleware
 
   alias BeamWeaver.Agent.ExtendedModelResponse
   alias BeamWeaver.Agent.Middleware.Offload
@@ -19,8 +25,7 @@ defmodule BeamWeaver.Agent.Middleware.Filesystem do
   alias BeamWeaver.Graph.Overwrite
   alias BeamWeaver.Tools.Filesystem, as: FilesystemTools
 
-  import BeamWeaver.Agent.Middleware.Helpers,
-    only: [append_prompt: 2, artifact_prefix: 2, maybe_put_files_update: 3]
+  import BeamWeaver.Agent.Middleware.Helpers, only: [append_prompt: 2, artifact_prefix: 2, maybe_put_files_update: 3]
 
   @chars_per_token 4
   @tool_token_limit_before_evict 20_000
@@ -56,7 +61,8 @@ defmodule BeamWeaver.Agent.Middleware.Filesystem do
   You have access to an `execute` tool for running shell commands in a sandboxed environment.
   Use this tool to run commands, scripts, tests, builds, and other shell operations.
 
-  - execute: run a shell command in the sandbox (returns output and exit code)
+  - execute: run a shell command in the sandbox. It returns the command's output followed by a line with its exit code, such as `[Command failed with exit code 1]`.
+  - A command that runs longer than its `timeout` (in seconds, at most 3600) is stopped and returns an error instead; pass a larger `timeout` for long builds or tests.
   """
 
   @too_large_tool_msg """
@@ -136,6 +142,7 @@ defmodule BeamWeaver.Agent.Middleware.Filesystem do
     )
   end
 
+  @impl true
   def wrap_model_call(%__MODULE__{} = middleware, %ModelRequest{} = request, handler) do
     {messages, command} = evict_and_truncate_human_messages(middleware, request)
 
@@ -150,6 +157,7 @@ defmodule BeamWeaver.Agent.Middleware.Filesystem do
     |> maybe_attach_command(command)
   end
 
+  @impl true
   def wrap_tool_call(%__MODULE__{} = middleware, %ToolCallRequest{} = request, handler) do
     result = handler.(request)
 

@@ -1,9 +1,10 @@
 defmodule BeamWeaver.Graph.Interrupt do
   @moduledoc """
-  Human-in-the-loop interrupt emitted by a graph execution task.
+  A pause raised by `BeamWeaver.Graph.interrupt/1` inside a node.
 
-  The struct is intentionally small and serializable. Runtime-only details such
-  as counters live in `BeamWeaver.Graph.Execution.Scratchpad`.
+  `value` is what the node handed to the caller. Resume the thread with
+  `BeamWeaver.Graph.Compiled.resume/3`. See
+  [Human-in-the-Loop](human_in_the_loop.md).
   """
 
   defstruct [:id, :value, :task_id, :node, :step, resumes: []]

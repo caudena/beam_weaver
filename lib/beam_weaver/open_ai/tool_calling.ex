@@ -193,7 +193,7 @@ defmodule BeamWeaver.OpenAI.ToolCalling do
     do: Renderer.openai_tool!(tool, render_opts)
 
   defp beamweaver_tool?(%Tool{}), do: true
-  defp beamweaver_tool?(%{__struct__: module}), do: function_exported?(module, :name, 1)
+  defp beamweaver_tool?(%{__struct__: module}), do: Tool.implemented_by?(module)
   defp beamweaver_tool?(_tool), do: false
 
   defp normalize_tool_map(%{"type" => "function", "function" => function} = tool)

@@ -54,8 +54,7 @@ defmodule BeamWeaver.Compaction.Semantic do
     with {:ok, attrs} <- Fields.normalize(attrs, @field_names) do
       case Map.keys(attrs) -- @fields do
         [] ->
-          {:ok, struct!(__MODULE__, attrs)}
-          |> then(fn {:ok, semantic} -> Validator.validate_shape(semantic) end)
+          __MODULE__ |> struct!(attrs) |> Validator.validate_shape()
 
         unknown ->
           {:error, Error.new(:invalid_compaction_semantic, "unknown semantic fields", %{fields: unknown})}
@@ -65,7 +64,7 @@ defmodule BeamWeaver.Compaction.Semantic do
         {:error, Error.new(:invalid_compaction_semantic, "semantic output has duplicate fields")}
     end
   rescue
-    _error -> {:error, Error.new(:invalid_compaction_semantic, "required semantic fields are missing")}
+    ArgumentError -> {:error, Error.new(:invalid_compaction_semantic, "required semantic fields are missing")}
   end
 
   def new(_attrs), do: {:error, Error.new(:invalid_compaction_semantic, "semantic output must be a map")}

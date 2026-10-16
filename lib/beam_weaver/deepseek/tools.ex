@@ -3,7 +3,7 @@ defmodule BeamWeaver.DeepSeek.Tools do
   Tool declaration helpers for DeepSeek Chat Completions and Responses APIs.
   """
 
-  alias BeamWeaver.DeepSeek.Error
+  alias BeamWeaver.Core.Error
   alias BeamWeaver.OpenAI.ChatCompletions
   alias BeamWeaver.OpenAI.ToolCalling
   alias BeamWeaver.Tool.Renderer
@@ -41,6 +41,15 @@ defmodule BeamWeaver.DeepSeek.Tools do
   @doc "Converts tools to DeepSeek Chat Completions declarations."
   @spec to_chat_tools([term()]) :: [map()]
   def to_chat_tools(tools) when is_list(tools), do: Enum.map(tools, &to_chat_tool/1)
+
+  # Like `to_chat_tool/1`, but a tool Chat Completions can't take, such as a
+  # built-in tool of the Responses API, is an error instead of an exception.
+  @doc false
+  @spec render_chat_tool(term()) :: {:ok, map()} | {:error, Error.t()}
+  def render_chat_tool(tool) when is_map(tool) and not is_struct(tool),
+    do: tool |> BeamWeaver.MapShape.stringify_keys() |> ChatCompletions.Messages.Request.render_tool()
+
+  def render_chat_tool(tool), do: {:ok, to_chat_tool(tool)}
 
   @doc "Converts one tool to a DeepSeek Chat Completions declaration."
   @spec to_chat_tool(term()) :: map()

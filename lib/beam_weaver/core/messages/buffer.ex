@@ -296,9 +296,10 @@ defmodule BeamWeaver.Core.Messages.Buffer do
   end
 
   defp json_string(value) do
-    BeamWeaver.JSON.encode!(value)
-  rescue
-    _exception -> inspect(value)
+    case BeamWeaver.JSON.encode(value) do
+      {:ok, json} -> json
+      {:error, _error} -> inspect(value)
+    end
   end
 
   defp xml_escape(value) do

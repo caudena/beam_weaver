@@ -3,8 +3,9 @@ defmodule BeamWeaver.Core.DecisionModel do
   Models that evaluate state against typed questions instead of generating text.
 
   Inputs contain `:state` and `:questions`. Implementations also implement
-  `BeamWeaver.Runnable`, so decisions compose with graphs, batching and async
-  calls. `Runnable.stream/3` yields one completed result, not token deltas.
+  `BeamWeaver.Runnable`, so `Runnable.invoke/3`, `Runnable.batch/3` and
+  `Runnable.sequence/2` take them. `Runnable.stream/3` yields one completed
+  result, not token deltas.
   """
 
   alias BeamWeaver.Core.Error
@@ -31,6 +32,4 @@ defmodule BeamWeaver.Core.DecisionModel do
   end
 
   def batch(model, inputs, opts \\ []), do: Runnable.batch(model, inputs, opts)
-  def async_invoke(model, input, opts \\ []), do: Runnable.async_invoke(model, input, opts)
-  def async_batch(model, inputs, opts \\ []), do: Runnable.async_batch(model, inputs, opts)
 end

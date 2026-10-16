@@ -2,8 +2,11 @@ defmodule BeamWeaver.Graph.Channels.DeltaChannel do
   @moduledoc """
   Reducer channel that checkpoints as missing and can replay pending writes.
 
-  This is the in-memory channel piece of LangGraph's beta DeltaChannel. Saver
-  history integration is handled by the checkpoint delta-history helper.
+  Instead of storing its full value in every checkpoint, the channel rebuilds it
+  by replaying recorded writes (see `replay_writes/2` and `replay_history/4`);
+  a full snapshot is saved every `:snapshot_frequency` updates (default 1000).
+  This module is the in-memory channel; reading the write history from
+  checkpoint savers is handled by the checkpoint layer.
   """
 
   use BeamWeaver.Graph.Channel
@@ -47,11 +50,6 @@ defmodule BeamWeaver.Graph.Channels.DeltaChannel do
   end
 
   @impl true
-  def get(%__MODULE__{value: value, key: key}) do
-    if value == Channel.missing(), do: {:error, Channel.empty_error(key)}, else: {:ok, value}
-  end
-
-  @impl true
   def checkpoint(_channel), do: Channel.missing()
 
   @impl true
@@ -67,9 +65,6 @@ defmodule BeamWeaver.Graph.Channels.DeltaChannel do
         %{channel | value: checkpoint}
     end
   end
-
-  @impl true
-  def available?(%__MODULE__{value: value}), do: value != Channel.missing()
 
   def replay_writes(channel, pending_writes) do
     values =

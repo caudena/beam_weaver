@@ -57,6 +57,18 @@ defmodule BeamWeaver.MapShape do
   def normalize_value(value) when is_atom(value), do: Atom.to_string(value)
   def normalize_value(value), do: value
 
+  @doc "Asserts every map or struct in `values` has atom keys; returns `values`."
+  @spec assert_atom_keys_in!(list()) :: list()
+  def assert_atom_keys_in!(values) when is_list(values) do
+    Enum.each(values, fn
+      value when is_struct(value) -> assert_atom_keys!(Map.from_struct(value))
+      value when is_map(value) -> assert_atom_keys!(value)
+      _value -> :ok
+    end)
+
+    values
+  end
+
   @spec assert_atom_keys!(term()) :: term()
   def assert_atom_keys!(map) when is_map(map) do
     case Enum.find(map, fn {key, _value} -> not is_atom(key) end) do

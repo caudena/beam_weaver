@@ -1,14 +1,9 @@
 defmodule BeamWeaver.DeepSeek.Messages do
-  @moduledoc """
-  DeepSeek message translation and response normalization.
-
-  DeepSeek uses OpenAI-compatible wire shapes, with additional handling for
-  reasoning replay, prefix completion, provider metadata, and cache-aware cost.
-  """
+  @moduledoc false
 
   alias BeamWeaver.Core.ContentBlock
   alias BeamWeaver.Core.Message
-  alias BeamWeaver.DeepSeek.Error
+  alias BeamWeaver.Core.Error
   alias BeamWeaver.Models.ProfileRegistry
   alias BeamWeaver.Models.UsageCost
   alias BeamWeaver.OpenAI.ChatCompletions
@@ -44,8 +39,7 @@ defmodule BeamWeaver.DeepSeek.Messages do
          {:ok, wire_messages} <-
            messages
            |> Enum.map(&text_only_message/1)
-           |> ChatCompletions.Messages.to_openai_messages()
-           |> convert_error(),
+           |> ChatCompletions.Messages.to_openai_messages(),
          {:ok, wire_messages} <- decorate_chat_messages(wire_messages, messages),
          :ok <- validate_prefix_messages(wire_messages) do
       {:ok, wire_messages}
@@ -73,7 +67,6 @@ defmodule BeamWeaver.DeepSeek.Messages do
   def chat_response_to_message(response) when is_map(response) do
     response
     |> ChatCompletions.Messages.response_to_message()
-    |> convert_error()
     |> put_provider_metadata(response, :chat_completions)
     |> put_reasoning_metadata(response)
     |> put_usage_cost(response)
@@ -87,7 +80,6 @@ defmodule BeamWeaver.DeepSeek.Messages do
   def responses_to_message(response) when is_map(response) do
     response
     |> OpenAIMessages.response_to_message()
-    |> convert_error()
     |> hydrate_responses_replay_blocks()
     |> put_provider_metadata(response, :responses)
     |> put_usage_cost(response)
@@ -449,12 +441,6 @@ defmodule BeamWeaver.DeepSeek.Messages do
     do: BeamWeaver.MapAccess.get(metadata, key)
 
   defp metadata_value(_metadata, _key), do: nil
-
-  defp convert_error({:error, %BeamWeaver.OpenAI.Error{} = error}) do
-    {:error, Error.new(error.type, error.message, error.details)}
-  end
-
-  defp convert_error(other), do: other
 
   defp put_optional(map, _key, value) when value in [nil, false, "", []], do: map
   defp put_optional(map, key, value), do: Map.put(map, key, value)

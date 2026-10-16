@@ -5,6 +5,14 @@ defmodule BeamWeaver.Serialization.Encrypted do
   This codec keeps the default safe JSON wire format as the plaintext payload
   and encrypts it only when callers opt in with an explicit 32-byte key. It is a
   checkpoint/store adapter concern, not a global serialization side effect.
+
+  Select it in a serialization config, with the key as `:encryption_key` (raw)
+  or `:encryption_key_base64`:
+
+      BeamWeaver.Checkpoint.Ecto.new(
+        repo: MyApp.Repo,
+        serialization: [codec: BeamWeaver.Serialization.Encrypted, encryption_key: key]
+      )
   """
 
   @behaviour BeamWeaver.Serialization.Codec
@@ -18,7 +26,7 @@ defmodule BeamWeaver.Serialization.Encrypted do
 
   @impl true
   def dump(value, opts \\ []) do
-    inner_codec = option(opts, :inner_codec, JSON)
+    inner_codec = Keyword.get(opts, :inner_codec, JSON)
 
     with {:ok, key} <- encryption_key(opts),
          {:ok, plaintext} <- inner_codec.dump(value, opts) do
@@ -39,7 +47,7 @@ defmodule BeamWeaver.Serialization.Encrypted do
 
   @impl true
   def load(binary, opts \\ []) when is_binary(binary) do
-    inner_codec = option(opts, :inner_codec, JSON)
+    inner_codec = Keyword.get(opts, :inner_codec, JSON)
 
     with {:ok, key} <- encryption_key(opts),
          {:ok, envelope} <- BeamWeaver.JSON.decode(binary) do
@@ -71,10 +79,10 @@ defmodule BeamWeaver.Serialization.Encrypted do
 
   defp encryption_key(opts) do
     cond do
-      key = option(opts, :encryption_key) ->
+      key = Keyword.get(opts, :encryption_key) ->
         validate_key(key)
 
-      key = option(opts, :encryption_key_base64) ->
+      key = Keyword.get(opts, :encryption_key_base64) ->
         case Base.decode64(key) do
           {:ok, decoded} -> validate_key(decoded)
           :error -> invalid_key("base64 encryption key is invalid")
@@ -130,24 +138,6 @@ defmodule BeamWeaver.Serialization.Encrypted do
 
       :error ->
         {:error, Error.new(:serialization_error, "encrypted payload authentication failed")}
-    end
-  end
-
-  defp option(opts, key, default \\ nil) do
-    opts_value = Keyword.get(opts, key, :missing)
-    serialization = Keyword.get(opts, :serialization, [])
-
-    serialization_value =
-      if is_list(serialization) do
-        Keyword.get(serialization, key, :missing)
-      else
-        :missing
-      end
-
-    cond do
-      opts_value != :missing -> opts_value
-      serialization_value != :missing -> serialization_value
-      true -> default
     end
   end
 end

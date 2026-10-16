@@ -2,7 +2,7 @@ defmodule BeamWeaver.DeepSeek.ClientTest do
   use ExUnit.Case, async: true
 
   alias BeamWeaver.DeepSeek.Client
-  alias BeamWeaver.DeepSeek.Error
+  alias BeamWeaver.Core.Error
   alias BeamWeaver.Transport.Request
   alias BeamWeaver.Transport.Response
 
@@ -237,7 +237,7 @@ defmodule BeamWeaver.DeepSeek.ClientTest do
 
     data: {"id":"chat-stream","model":"deepseek-v4-pro","choices":[{"index":1,"delta":{"reasoning_content":"thought","content":"second"},"finish_reason":null}]}
 
-    data: {"id":"chat-stream","model":"deepseek-v4-pro","choices":[{"index":0,"delta":{},"finish_reason":"insufficient_system_resource"},{"index":1,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}
+    data: {"id":"chat-stream","model":"deepseek-v4-pro","choices":[{"index":0,"delta":{},"finish_reason":"length"},{"index":1,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}
 
     data: [DONE]
 
@@ -278,8 +278,7 @@ defmodule BeamWeaver.DeepSeek.ClientTest do
 
     assert get_in(response, ["choices", Access.at(1), "finish_reason"]) == "stop"
 
-    assert get_in(response, ["choices", Access.at(0), "finish_reason"]) ==
-             "insufficient_system_resource"
+    assert get_in(response, ["choices", Access.at(0), "finish_reason"]) == "length"
 
     assert response["usage"] == %{
              "prompt_tokens" => 3,
@@ -427,6 +426,39 @@ defmodule BeamWeaver.DeepSeek.ClientTest do
 
     assert [%BeamWeaver.Stream.Events.Error{error: %Error{type: :rate_limit_error}}] =
              Enum.to_list(stream)
+  end
+
+  test "an Anthropic-compatible stream cut off by an error event fails like the same HTTP error" do
+    sse = """
+    event: message_start
+    data: {"type":"message_start","message":{"id":"msg-1","type":"message","role":"assistant","model":"deepseek-v4-flash","content":[],"usage":{"input_tokens":2,"output_tokens":0}}}
+
+    event: content_block_start
+    data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}
+
+    event: content_block_delta
+    data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}
+
+    event: error
+    data: {"type":"error","error":{"type":"rate_limit_error","message":"slow down"}}
+
+    """
+
+    client =
+      test_client(
+        response_body: sse,
+        chunks: chunk_every(sse, 11),
+        response_headers: [{"x-ds-trace-id", "trace-stream"}]
+      )
+
+    body = %{"model" => "deepseek-v4-flash", "messages" => [], "stream" => true}
+
+    assert {:ok, stream} = Client.anthropic_messages_stream(client, body)
+    assert ["hi", %BeamWeaver.Stream.Events.Error{error: %Error{} = error}] = Enum.to_list(stream)
+    assert {error.type, error.details.status, error.details.request_id} == {:rate_limit_error, 429, "trace-stream"}
+
+    assert {:error, %Error{type: :rate_limit_error, message: "slow down", details: %{retryable: true}}} =
+             Client.anthropic_messages_stream_response(client, body)
   end
 
   test "client Inspect redacts eager and lazy API keys without resolving lazy secrets" do

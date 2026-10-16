@@ -9,26 +9,19 @@ defmodule BeamWeaver.Graph.Execution.ChannelCheckpoint do
 
   @spec checkpoint_channel_values(StateGraph.t(), map()) :: map()
   def checkpoint_channel_values(%StateGraph{channels: channels} = graph, state) do
-    Enum.reduce(state, %{}, fn {key, value}, values ->
-      cond do
-        ChannelLookup.private_channel?(graph, key) or ChannelLookup.managed_key?(graph, key) ->
-          values
+    state
+    |> Enum.filter(fn {key, _value} -> ChannelLookup.checkpointed_channel?(graph, key) end)
+    |> Enum.reduce(%{}, fn {key, value}, values ->
+      case ChannelLookup.channel_for(%StateGraph{channels: channels}, key) do
+        nil ->
+          Map.put(values, key, value)
 
-        node_outputs_key?(key) ->
-          values
+        channel ->
+          checkpoint = checkpoint_channel_value(channel, value)
 
-        true ->
-          case ChannelLookup.channel_for(%StateGraph{channels: channels}, key) do
-            nil ->
-              Map.put(values, key, value)
-
-            channel ->
-              checkpoint = checkpoint_channel_value(channel, value)
-
-              if checkpoint == Channel.missing(),
-                do: values,
-                else: Map.put(values, key, checkpoint)
-          end
+          if checkpoint == Channel.missing(),
+            do: values,
+            else: Map.put(values, key, checkpoint)
       end
     end)
   end
@@ -42,7 +35,7 @@ defmodule BeamWeaver.Graph.Execution.ChannelCheckpoint do
         not MapSet.member?(requested, to_string(key)) ->
           values
 
-        ChannelLookup.private_channel?(graph, key) ->
+        not ChannelLookup.checkpointed_channel?(graph, key) ->
           values
 
         true ->
@@ -57,8 +50,8 @@ defmodule BeamWeaver.Graph.Execution.ChannelCheckpoint do
   @spec checkpoint_channel_deltas(StateGraph.t(), map()) :: map()
   def checkpoint_channel_deltas(%StateGraph{channels: channels} = graph, step_update) do
     Enum.reduce(channels, %{}, fn {key, channel}, deltas ->
-      case {ChannelLookup.private_channel?(graph, key), channel, state_channel_value(step_update, key)} do
-        {false, %DeltaChannel{}, {:ok, value}} ->
+      case {ChannelLookup.checkpointed_channel?(graph, key), channel, state_channel_value(step_update, key)} do
+        {true, %DeltaChannel{}, {:ok, value}} ->
           Map.put(deltas, to_string(key), List.wrap(value))
 
         _other ->
@@ -86,7 +79,4 @@ defmodule BeamWeaver.Graph.Execution.ChannelCheckpoint do
         :error
     end
   end
-
-  defp node_outputs_key?(key) when key in [:__node_outputs__, "__node_outputs__"], do: true
-  defp node_outputs_key?(_key), do: false
 end

@@ -28,11 +28,11 @@ defmodule BeamWeaver.Filesystem.Search do
 
   def grep_files(files, pattern, opts \\ []) do
     base = Keyword.get(opts, :path, "/")
-    glob = Keyword.get(opts, :glob)
+    glob_match? = matcher(Keyword.get(opts, :glob))
 
     files
     |> Enum.filter(fn {path, _data} ->
-      Path.under_path?(path, base) and glob_match?(path, glob, base)
+      Path.under_path?(path, base) and glob_match?.(Path.relative(path, base))
     end)
     |> Enum.flat_map(fn {path, data} ->
       data = FileDataUtils.normalize_file_data(data)
@@ -57,29 +57,38 @@ defmodule BeamWeaver.Filesystem.Search do
 
   def glob_files(files, pattern, opts \\ []) do
     base = Keyword.get(opts, :path, "/")
+    pattern_match? = matcher(pattern)
 
     files
     |> Map.keys()
     |> Enum.filter(fn path ->
-      Path.under_path?(path, base) and wildcard_match?(Path.relative(path, base), pattern)
+      Path.under_path?(path, base) and pattern_match?.(Path.relative(path, base))
     end)
     |> Enum.sort()
     |> Enum.map(fn path -> %FileInfo{path: path, is_dir: false, size: file_size(files[path])} end)
   end
 
-  def wildcard_match?(_value, nil), do: true
-  def wildcard_match?(value, ""), do: value == ""
+  def wildcard_match?(value, pattern) when is_binary(value), do: matcher(pattern).(value)
 
-  def wildcard_match?(value, pattern) when is_binary(value) and is_binary(pattern) do
-    regex =
-      pattern
-      |> Regex.escape()
-      |> String.replace("\\*\\*", ".*")
-      |> String.replace("\\*", "[^/]*")
-      |> String.replace("\\?", "[^/]")
-      |> then(&("^" <> &1 <> "$"))
+  defp matcher(nil), do: fn _value -> true end
+  defp matcher(""), do: &(&1 == "")
 
-    Regex.match?(Regex.compile!(regex), value)
+  defp matcher(pattern) when is_binary(pattern) do
+    regex = wildcard_regex(pattern)
+    &Regex.match?(regex, &1)
+  end
+
+  # `**/` matches zero or more directories, so `**/*.md` also matches a
+  # top-level `a.md`; `**` elsewhere matches anything, `*` and `?` stay within
+  # one path segment.
+  defp wildcard_regex(pattern) do
+    pattern
+    |> Regex.escape()
+    |> String.replace("\\*\\*/", "(?:.*/)?")
+    |> String.replace("\\*\\*", ".*")
+    |> String.replace("\\*", "[^/]*")
+    |> String.replace("\\?", "[^/]")
+    |> then(&Regex.compile!("^" <> &1 <> "$"))
   end
 
   def build_grep_results_dict(matches) do
@@ -125,9 +134,6 @@ defmodule BeamWeaver.Filesystem.Search do
     end)
     |> Enum.join("\n")
   end
-
-  defp glob_match?(_path, nil, _base), do: true
-  defp glob_match?(path, glob, base), do: wildcard_match?(Path.relative(path, base), glob)
 
   defp file_size(nil), do: nil
 

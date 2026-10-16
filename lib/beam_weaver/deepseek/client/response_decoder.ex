@@ -1,114 +1,56 @@
 defmodule BeamWeaver.DeepSeek.Client.ResponseDecoder do
   @moduledoc false
 
-  alias BeamWeaver.Core.Error, as: CoreError
-  alias BeamWeaver.DeepSeek.Error
+  import BeamWeaver.MapShape, only: [reject_nil_values: 1]
+
+  alias BeamWeaver.Core.Error
   alias BeamWeaver.Provider.ResponseDecoder, as: ProviderResponseDecoder
   alias BeamWeaver.Transport.Response
 
-  @doc false
-  def json({:ok, %Response{} = response} = result, opts) do
-    result
-    |> ProviderResponseDecoder.json(decoder_opts(opts))
-    |> attach_result_headers(response, opts)
-    |> normalize_error()
-  end
+  @header_fields [x_ds_trace_id: "x-ds-trace-id"]
 
+  @doc false
   def json(result, opts) do
-    result
-    |> ProviderResponseDecoder.json(decoder_opts(opts))
-    |> normalize_error()
-  end
-
-  @doc false
-  def stream_error({:ok, %Response{} = response}, opts) do
-    {:error, normalize_http_error(response, opts)}
-  end
-
-  def stream_error({:error, error}, opts) do
-    {:error, ProviderResponseDecoder.transport_error(error, decoder_opts(opts))}
-  end
-
-  @doc false
-  def chat_completions_stream_response(
-        {:ok, %Response{status: status, body: body} = response},
-        opts
-      )
-      when status in 200..299 do
-    case chat_completion_response(body) do
-      {:ok, decoded} ->
-        {:ok, attach_headers(decoded, response, opts)}
-
-      {:error, error} ->
-        {:error,
-         Error.new(
-           Map.get(error, :type, :invalid_response),
-           Map.get(error, :message, "DeepSeek chat-completions stream was invalid"),
-           Map.get(error, :details, %{})
-         )}
+    with {:ok, decoded} <- ProviderResponseDecoder.json(result, decoder_opts(opts)) do
+      {:ok, attach_result_headers(decoded, result, opts)}
     end
   end
 
-  def chat_completions_stream_response({:ok, %Response{} = response}, opts) do
-    {:error, normalize_http_error(response, opts)}
-  end
+  @doc false
+  def stream_error({:ok, %Response{} = response}, opts),
+    do: {:error, ProviderResponseDecoder.http_error(response, decoder_opts(opts))}
 
-  def chat_completions_stream_response({:error, error}, opts) do
-    {:error, ProviderResponseDecoder.transport_error(error, decoder_opts(opts))}
+  def stream_error({:error, error}, opts),
+    do: {:error, ProviderResponseDecoder.transport_error(error, decoder_opts(opts))}
+
+  @doc false
+  def chat_completions_stream_response(result, opts) do
+    ProviderResponseDecoder.decode(result, decoder_opts(opts), fn response ->
+      with {:ok, decoded} <- chat_completion_response(response.body) do
+        {:ok, attach_headers(decoded, response, opts)}
+      end
+    end)
   end
 
   @doc false
-  def responses_stream_response(
-        {:ok, %Response{status: status, body: body} = response},
-        opts
-      )
-      when status in 200..299 do
-    decoded = BeamWeaver.OpenAI.Streaming.response(body)
-    {:ok, attach_headers(decoded, response, opts)}
-  end
-
-  def responses_stream_response({:ok, %Response{} = response}, opts) do
-    {:error, normalize_http_error(response, opts)}
-  end
-
-  def responses_stream_response({:error, error}, opts) do
-    {:error, ProviderResponseDecoder.transport_error(error, decoder_opts(opts))}
+  def responses_stream_response(result, opts) do
+    ProviderResponseDecoder.decode(result, decoder_opts(opts), fn response ->
+      {:ok, response.body |> BeamWeaver.OpenAI.Streaming.response() |> attach_headers(response, opts)}
+    end)
   end
 
   @doc false
-  def completions_stream_response(
-        {:ok, %Response{status: status, body: body} = response},
-        opts
-      )
-      when status in 200..299 do
-    decoded = completion_response(body)
-    {:ok, attach_headers(decoded, response, opts)}
-  end
-
-  def completions_stream_response({:ok, %Response{} = response}, opts) do
-    {:error, normalize_http_error(response, opts)}
-  end
-
-  def completions_stream_response({:error, error}, opts) do
-    {:error, ProviderResponseDecoder.transport_error(error, decoder_opts(opts))}
+  def completions_stream_response(result, opts) do
+    ProviderResponseDecoder.decode(result, decoder_opts(opts), fn response ->
+      {:ok, response.body |> completion_response() |> attach_headers(response, opts)}
+    end)
   end
 
   @doc false
-  def anthropic_stream_response(
-        {:ok, %Response{status: status, body: body} = response},
-        opts
-      )
-      when status in 200..299 do
-    decoded = BeamWeaver.Anthropic.Streaming.response(body)
-    {:ok, attach_headers(decoded, response, opts)}
-  end
-
-  def anthropic_stream_response({:ok, %Response{} = response}, opts) do
-    {:error, normalize_http_error(response, opts)}
-  end
-
-  def anthropic_stream_response({:error, error}, opts) do
-    {:error, ProviderResponseDecoder.transport_error(error, decoder_opts(opts))}
+  def anthropic_stream_response(result, opts) do
+    ProviderResponseDecoder.decode(result, decoder_opts(opts), fn response ->
+      {:ok, response.body |> BeamWeaver.Anthropic.Streaming.response() |> attach_headers(response, opts)}
+    end)
   end
 
   defp chat_completion_response(body) do
@@ -328,73 +270,39 @@ defmodule BeamWeaver.DeepSeek.Client.ResponseDecoder do
 
   defp append_string(map, _key, _value), do: map
 
-  defp attach_result_headers({:ok, decoded}, %Response{} = response, opts)
-       when is_map(decoded) do
-    {:ok, attach_headers(decoded, response, opts)}
-  end
-
-  defp attach_result_headers(result, _response, _opts), do: result
+  defp attach_result_headers(decoded, {:ok, %Response{} = response}, opts), do: attach_headers(decoded, response, opts)
 
   defp attach_headers(decoded, %Response{headers: headers}, opts) when is_map(decoded) do
-    decoded = attach_header_metadata(decoded, headers)
+    decoded =
+      ProviderResponseDecoder.attach_header_metadata(
+        decoded,
+        ProviderResponseDecoder.header_metadata(headers, @header_fields, request_id: :x_ds_trace_id)
+      )
 
     if Keyword.get(opts, :include_response_headers, false) do
       decoded
       |> Map.put("_beamweaver_response_headers", Map.new(headers))
-      |> Map.put(
-        "_beamweaver_response_header_list",
-        Enum.map(headers, fn {name, value} -> [name, value] end)
-      )
+      |> Map.put("_beamweaver_response_header_list", Enum.map(headers, fn {name, value} -> [name, value] end))
     else
       decoded
     end
   end
 
-  defp attach_header_metadata(decoded, headers) do
-    metadata = header_metadata(headers)
-
-    if map_size(metadata) > 0 do
-      Map.put(decoded, "_beamweaver_response_header_metadata", metadata)
-    else
-      decoded
-    end
+  defp decoder_opts(opts) do
+    [
+      provider: :deepseek,
+      provider_name: "DeepSeek",
+      include_response_headers: Keyword.get(opts, :include_response_headers, false),
+      request_id_header: "x-ds-trace-id",
+      context_overflow?: &context_overflow?/3,
+      classify: &classify/1
+    ]
   end
 
-  defp header_metadata(headers) do
-    trace_id = headers |> normalized_headers() |> Map.get("x-ds-trace-id")
-
-    %{
-      headers: reject_empty_values(%{x_ds_trace_id: trace_id}),
-      request_id: trace_id
-    }
-    |> reject_empty_values()
-  end
-
-  defp normalized_headers(headers) when is_list(headers) do
-    Map.new(headers, fn {name, value} -> {name |> to_string() |> String.downcase(), value} end)
-  rescue
-    _error -> %{}
-  end
-
-  defp normalized_headers(_headers), do: %{}
-
-  defp normalize_http_error(response, opts) do
-    response
-    |> ProviderResponseDecoder.http_error(decoder_opts(opts))
-    |> normalize_error_value()
-  end
-
-  defp normalize_error({:error, %Error{} = error}), do: {:error, normalize_error_value(error)}
-  defp normalize_error({:error, %CoreError{} = error}), do: {:error, normalize_error_value(error)}
-  defp normalize_error(other), do: other
-
-  defp normalize_error_value(%{type: :context_overflow} = error), do: error
-
-  defp normalize_error_value(%{type: :http_error, details: details} = error) do
-    provider_error = details[:error] || details["error"] || %{}
-    status = details[:status] || details["status"]
-    code = error_field(provider_error, "code") || details[:code] || details["code"]
-    error_type = error_field(provider_error, "type") || details[:error_type] || details["error_type"]
+  defp classify(%{type: :http_error, details: details} = error) do
+    status = details[:status]
+    code = ProviderResponseDecoder.error_field(details[:error], "code") || details[:code]
+    error_type = ProviderResponseDecoder.error_field(details[:error], "type") || details[:error_type]
 
     type =
       cond do
@@ -407,73 +315,39 @@ defmodule BeamWeaver.DeepSeek.Client.ResponseDecoder do
         true -> :http_error
       end
 
-    %{error | type: type, details: normalize_retryable_details(details, type)}
+    details =
+      if type in [:authentication_error, :quota_error, :invalid_request_error],
+        do: Map.put(details, :retryable, false),
+        else: details
+
+    %{error | type: type, details: details}
   end
 
-  defp normalize_error_value(error), do: error
+  defp classify(error), do: error
 
   defp insufficient_balance?(status, code, error_type, message) do
     status == 402 or
       code in ["insufficient_balance", "insufficient_quota", "quota_exceeded"] or
       error_type in ["insufficient_balance", "insufficient_quota", "quota_exceeded"] or
-      insufficient_balance_message?(message)
-  end
-
-  defp insufficient_balance_message?(message) when is_binary(message) do
-    normalized = String.downcase(message)
-
-    String.contains?(normalized, "insufficient balance") or
-      String.contains?(normalized, "insufficient quota") or
-      String.contains?(normalized, "quota exceeded")
-  end
-
-  defp insufficient_balance_message?(_message), do: false
-
-  defp normalize_retryable_details(details, type)
-       when type in [:authentication_error, :quota_error, :invalid_request_error] and is_map(details) do
-    Map.put(details, :retryable, false)
-  end
-
-  defp normalize_retryable_details(details, _type), do: details
-
-  defp decoder_opts(opts) do
-    [
-      provider: :deepseek,
-      provider_name: "DeepSeek",
-      error_module: Error,
-      include_response_headers: Keyword.get(opts, :include_response_headers, false),
-      request_id_header: "x-ds-trace-id",
-      context_overflow?: &context_overflow?/3
-    ]
+      (is_binary(message) and
+         String.contains?(String.downcase(message), ["insufficient balance", "insufficient quota", "quota exceeded"]))
   end
 
   defp context_overflow?(400, provider_error, message) when is_binary(message) do
-    code = error_field(provider_error, "code")
-    normalized = String.downcase(message)
+    code = ProviderResponseDecoder.error_field(provider_error, "code")
 
     code in ["context_length_exceeded", "prompt_too_long"] or
-      String.contains?(normalized, "context length") or
-      String.contains?(normalized, "context window") or
-      String.contains?(normalized, "maximum context") or
-      String.contains?(normalized, "input tokens exceed") or
-      String.contains?(normalized, "too many tokens")
+      String.contains?(String.downcase(message), [
+        "context length",
+        "context window",
+        "maximum context",
+        "input tokens exceed",
+        "too many tokens"
+      ])
   end
 
   defp context_overflow?(_status, _provider_error, _message), do: false
 
-  defp error_field(%{} = error, field), do: BeamWeaver.MapAccess.get(error, field)
-  defp error_field(_error, _field), do: nil
-
   defp put_present(map, _key, value) when value in [nil, ""], do: map
   defp put_present(map, key, value), do: Map.put(map, key, value)
-
-  defp reject_nil_values(map), do: Map.reject(map, fn {_key, value} -> is_nil(value) end)
-
-  defp reject_empty_values(map) do
-    Map.reject(map, fn
-      {_key, value} when value in [nil, ""] -> true
-      {_key, value} when is_map(value) and map_size(value) == 0 -> true
-      _entry -> false
-    end)
-  end
 end

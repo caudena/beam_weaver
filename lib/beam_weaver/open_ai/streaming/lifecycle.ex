@@ -4,7 +4,7 @@ defmodule BeamWeaver.OpenAI.Streaming.Lifecycle do
   alias BeamWeaver.OpenAI.Streaming.Lifecycle.Content
   alias BeamWeaver.OpenAI.Streaming.Lifecycle.State
   alias BeamWeaver.OpenAI.Streaming.Shared
-  alias BeamWeaver.OpenAI.Streaming.SSE
+  alias BeamWeaver.Provider.SSE
 
   @output_item_types [
     "additional_tools",

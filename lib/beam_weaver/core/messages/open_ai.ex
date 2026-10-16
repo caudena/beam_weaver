@@ -1,11 +1,13 @@
 defmodule BeamWeaver.Core.Messages.OpenAI do
   @moduledoc false
 
+  import BeamWeaver.MapShape, only: [reject_nil_values: 1]
+
   alias BeamWeaver.Core.ContentBlock
   alias BeamWeaver.Core.Error
   alias BeamWeaver.Core.Message
   alias BeamWeaver.MapShape
-  alias BeamWeaver.Provider.EncodeMessage
+  alias BeamWeaver.Provider.MessageCodec
   alias BeamWeaver.Result
 
   @spec convert(term(), keyword(), (term() -> {:ok, [Message.t()]} | {:error, Error.t()})) ::
@@ -24,9 +26,10 @@ defmodule BeamWeaver.Core.Messages.OpenAI do
     end
   end
 
+  # An assistant message with tool calls encodes to several input items.
   defp convert_responses_input(messages, opts, normalizer) do
     with {:ok, messages} <- normalizer.(messages) do
-      Result.traverse(messages, &EncodeMessage.encode(&1, Keyword.put(opts, :provider, :openai)))
+      Result.flat_traverse(messages, &MessageCodec.encode(&1, Keyword.put(opts, :provider, :openai)))
     end
   end
 
@@ -93,7 +96,7 @@ defmodule BeamWeaver.Core.Messages.OpenAI do
     do: content_to_chat_completion(content, text_format, opts)
 
   defp content_to_chat_completion(content, :string, opts) when is_list(content) do
-    content = assert_atom_content_blocks!(content)
+    content = BeamWeaver.MapShape.assert_atom_keys_in!(content)
 
     if Enum.all?(content, &text_content_block?/1) do
       Enum.map_join(content, "\n", &text_content_block_text/1)
@@ -104,7 +107,7 @@ defmodule BeamWeaver.Core.Messages.OpenAI do
 
   defp content_to_chat_completion(content, :block, opts) when is_list(content) do
     content
-    |> assert_atom_content_blocks!()
+    |> BeamWeaver.MapShape.assert_atom_keys_in!()
     |> Enum.map(&content_block_to_chat_completion(&1, opts))
   end
 
@@ -464,18 +467,6 @@ defmodule BeamWeaver.Core.Messages.OpenAI do
 
   defp audio_format("audio/" <> subtype), do: subtype
   defp audio_format(_mime_type), do: "wav"
-
-  defp reject_nil_values(map), do: Map.reject(map, fn {_key, value} -> is_nil(value) end)
-
-  defp assert_atom_content_blocks!(content) do
-    Enum.each(content, fn
-      block when is_struct(block) -> MapShape.assert_atom_keys!(Map.from_struct(block))
-      block when is_map(block) -> MapShape.assert_atom_keys!(block)
-      _block -> :ok
-    end)
-
-    content
-  end
 
   defp block_type(block), do: Map.get(block, :type)
 

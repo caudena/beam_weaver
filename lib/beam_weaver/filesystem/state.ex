@@ -1,11 +1,32 @@
 defmodule BeamWeaver.Filesystem.State do
-  @moduledoc "Thread-scoped backend backed by BeamWeaver graph state."
+  @moduledoc """
+  Thread-scoped backend backed by BeamWeaver graph state.
+
+  Files live in the run's state under `:state_key` (default `:files`), keyed by
+  their path. The backend never changes the state itself: `write/4` and
+  `edit/5` return the updated files in their result's `files_update`, which
+  the file tools apply to the state. So `upload_files/3` can't store anything
+  and returns an error for every file: pass files in the agent's input as
+  `files: %{"/notes.md" => "..."}`, or set them with
+  `BeamWeaver.Graph.Compiled.update_state/4`.
+
+  Under a `BeamWeaver.Filesystem.Composite` route, the composite passes the
+  route's prefix as the `:route_prefix` option: the backend then sees only the
+  files under that prefix, and keeps the files it writes under their full
+  path, such as `/scratch/notes.md` for `/notes.md`.
+  """
 
   use BeamWeaver.Filesystem
 
   alias BeamWeaver.Filesystem
   alias BeamWeaver.Filesystem.Edit
-  alias BeamWeaver.Filesystem.Utils
+  alias BeamWeaver.Filesystem.FileDataUtils
+  alias BeamWeaver.Filesystem.Path, as: FsPath
+  alias BeamWeaver.Filesystem.Search
+
+  @upload_error "Filesystem.State can't upload files: they live in the thread's state. " <>
+                  "Pass them in the agent's input as files: %{path => content}, " <>
+                  "or set them with BeamWeaver.Graph.Compiled.update_state/4."
 
   defstruct state_key: :files
 
@@ -13,9 +34,9 @@ defmodule BeamWeaver.Filesystem.State do
 
   @impl true
   def ls(%__MODULE__{} = backend, path, opts) do
-    case Utils.clean_path(path) do
+    case FsPath.clean_path(path) do
       {:ok, path} ->
-        %Filesystem.LsResult{entries: backend |> files(opts) |> Utils.immediate_entries(path)}
+        %Filesystem.LsResult{entries: backend |> visible_files(opts) |> Search.immediate_entries(path)}
 
       {:error, error} ->
         %Filesystem.LsResult{error: error}
@@ -24,10 +45,10 @@ defmodule BeamWeaver.Filesystem.State do
 
   @impl true
   def read(%__MODULE__{} = backend, path, opts) do
-    with {:ok, path} <- Utils.clean_path(path),
-         {:ok, data} <- fetch_file(files(backend, opts), path),
-         {:ok, content} <- data |> Utils.normalize_file_data() |> Utils.read_content(opts) do
-      %Filesystem.ReadResult{file_data: %{Utils.normalize_file_data(data) | content: content}}
+    with {:ok, path} <- FsPath.clean_path(path),
+         {:ok, data} <- fetch_file(files(backend, opts), state_path(path, opts)),
+         {:ok, content} <- data |> FileDataUtils.normalize_file_data() |> FileDataUtils.read_content(opts) do
+      %Filesystem.ReadResult{file_data: %{FileDataUtils.normalize_file_data(data) | content: content}}
     else
       {:error, error} -> %Filesystem.ReadResult{error: error}
     end
@@ -35,11 +56,12 @@ defmodule BeamWeaver.Filesystem.State do
 
   @impl true
   def write(%__MODULE__{} = backend, path, content, opts) do
-    with {:ok, path} <- Utils.clean_path(path),
-         files <- files(backend, opts),
-         false <- Map.has_key?(files, path) do
+    with {:ok, path} <- FsPath.clean_path(path),
+         files = files(backend, opts),
+         key = state_path(path, opts),
+         false <- Map.has_key?(files, key) do
       updated =
-        Map.put(files, path, Utils.file_data(IO.iodata_to_binary(content), encoding: "utf-8"))
+        Map.put(files, key, FileDataUtils.file_data(IO.iodata_to_binary(content), encoding: "utf-8"))
 
       %Filesystem.WriteResult{path: path, files_update: updated}
     else
@@ -52,18 +74,19 @@ defmodule BeamWeaver.Filesystem.State do
   def edit(%__MODULE__{} = backend, path, old, new, opts) do
     replace_all? = Keyword.get(opts, :replace_all, false)
 
-    with {:ok, path} <- Utils.clean_path(path),
-         files <- files(backend, opts),
-         {:ok, data} <- fetch_file(files, path),
+    with {:ok, path} <- FsPath.clean_path(path),
+         files = files(backend, opts),
+         key = state_path(path, opts),
+         {:ok, data} <- fetch_file(files, key),
          %Filesystem.FileData{encoding: "utf-8", content: content} = data <-
-           Utils.normalize_file_data(data),
+           FileDataUtils.normalize_file_data(data),
          {:ok, occurrences, updated_content} <- Edit.replacement(content, old, new, replace_all?) do
-      updated_data = %{data | content: updated_content, modified_at: Utils.now()}
+      updated_data = %{data | content: updated_content, modified_at: FileDataUtils.now()}
 
       %Filesystem.EditResult{
         path: path,
         occurrences: occurrences,
-        files_update: Map.put(files, path, updated_data)
+        files_update: Map.put(files, key, updated_data)
       }
     else
       nil ->
@@ -79,10 +102,10 @@ defmodule BeamWeaver.Filesystem.State do
 
   @impl true
   def glob(%__MODULE__{} = backend, pattern, opts) do
-    case Utils.clean_path(Keyword.get(opts, :path, "/")) do
+    case FsPath.clean_path(Keyword.get(opts, :path, "/")) do
       {:ok, path} ->
         %Filesystem.GlobResult{
-          matches: backend |> files(opts) |> Utils.glob_files(pattern, path: path)
+          matches: backend |> visible_files(opts) |> Search.glob_files(pattern, path: path)
         }
 
       {:error, error} ->
@@ -92,12 +115,12 @@ defmodule BeamWeaver.Filesystem.State do
 
   @impl true
   def grep(%__MODULE__{} = backend, pattern, opts) do
-    case Utils.clean_path(Keyword.get(opts, :path, "/")) do
+    case FsPath.clean_path(Keyword.get(opts, :path, "/")) do
       {:ok, path} ->
         matches =
           backend
-          |> files(opts)
-          |> Utils.grep_files(pattern, path: path, glob: Keyword.get(opts, :glob))
+          |> visible_files(opts)
+          |> Search.grep_files(pattern, path: path, glob: Keyword.get(opts, :glob))
 
         %Filesystem.GrepResult{matches: matches}
 
@@ -107,22 +130,8 @@ defmodule BeamWeaver.Filesystem.State do
   end
 
   @impl true
-  def upload_files(%__MODULE__{} = backend, uploaded, opts) do
-    files = files(backend, opts)
-
-    {_files, results} =
-      Enum.reduce(uploaded, {files, []}, fn {path, content}, {files, results} ->
-        case Utils.clean_path(path) do
-          {:ok, path} ->
-            data = Utils.file_data_from_upload(content)
-            {Map.put(files, path, data), [%Filesystem.UploadResult{path: path} | results]}
-
-          {:error, error} ->
-            {files, [%Filesystem.UploadResult{path: path, error: error} | results]}
-        end
-      end)
-
-    Enum.reverse(results)
+  def upload_files(%__MODULE__{}, files, _opts) do
+    Enum.map(files, fn {path, _content} -> %Filesystem.UploadResult{path: path, error: @upload_error} end)
   end
 
   @impl true
@@ -130,14 +139,14 @@ defmodule BeamWeaver.Filesystem.State do
     files = files(backend, opts)
 
     Enum.map(paths, fn path ->
-      with {:ok, path} <- Utils.clean_path(path),
-           {:ok, data} <- fetch_file(files, path),
-           %Filesystem.FileData{} = data <- Utils.normalize_file_data(data),
+      with {:ok, path} <- FsPath.clean_path(path),
+           {:ok, data} <- fetch_file(files, state_path(path, opts)),
+           %Filesystem.FileData{} = data <- FileDataUtils.normalize_file_data(data),
            {:ok, content} <- decode_download(data) do
         %Filesystem.DownloadResult{path: path, content: content}
       else
-        nil -> %Filesystem.DownloadResult{path: path, error: "invalid_file_data"}
         {:error, error} -> %Filesystem.DownloadResult{path: path, error: error}
+        _invalid -> %Filesystem.DownloadResult{path: path, error: "invalid_file_data"}
       end
     end)
   end
@@ -145,6 +154,38 @@ defmodule BeamWeaver.Filesystem.State do
   defp files(%__MODULE__{state_key: state_key}, opts) do
     state = Keyword.get(opts, :state, %{}) || %{}
     Map.get(state, state_key, Map.get(state, to_string(state_key), %{})) || %{}
+  end
+
+  # The files this backend can see, by the paths its callers use: all of them,
+  # or under a route prefix only those below it, without the prefix.
+  defp visible_files(backend, opts) do
+    files = files(backend, opts)
+
+    case route_prefix(opts) do
+      nil ->
+        files
+
+      prefix ->
+        for {key, data} <- files, String.starts_with?(key, prefix <> "/"), into: %{} do
+          {String.replace_prefix(key, prefix, ""), data}
+        end
+    end
+  end
+
+  # The state key of `path`.
+  defp state_path(path, opts) do
+    case route_prefix(opts) do
+      nil -> path
+      prefix when path == "/" -> prefix
+      prefix -> prefix <> path
+    end
+  end
+
+  defp route_prefix(opts) do
+    case opts |> Keyword.get(:route_prefix) |> to_string() |> String.trim_trailing("/") do
+      "" -> nil
+      prefix -> prefix
+    end
   end
 
   defp fetch_file(files, path) do

@@ -30,6 +30,31 @@ defmodule BeamWeaver.Graph.PrivateChannelTest do
     refute Map.has_key?(values, "secret")
   end
 
+  test "private channels with checkpoint: true carry over between runs but stay out of the output" do
+    saver = CheckpointETS.new()
+
+    graph =
+      Graph.new(state_schema: %{runs: Graph.private_channel(LastValue, checkpoint: true)})
+      |> Graph.add_node(:count, fn state ->
+        runs = Map.get(state, :runs, 0)
+        %{runs: runs + 1, earlier_runs: runs}
+      end)
+      |> Graph.add_edge(Graph.start(), :count)
+      |> Graph.add_edge(:count, Graph.end_node())
+      |> Graph.compile!(checkpointer: saver)
+
+    config = %{"configurable" => %{"thread_id" => "private-checkpointed"}}
+
+    assert {:ok, %{earlier_runs: 0} = first} = Compiled.invoke(graph, %{}, config: config)
+    refute Map.has_key?(first, :runs)
+
+    assert {:ok, %{earlier_runs: 1} = second} = Compiled.invoke(graph, %{}, config: config)
+    refute Map.has_key?(second, :runs)
+
+    assert {:ok, snapshot} = Compiled.get_state(graph, config)
+    refute Map.has_key?(snapshot.values, :runs)
+  end
+
   test "private and untracked values are removed from persisted send payloads" do
     saver = CheckpointETS.new()
 

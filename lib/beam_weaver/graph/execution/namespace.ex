@@ -1,11 +1,5 @@
 defmodule BeamWeaver.Graph.Execution.Namespace do
-  @moduledoc """
-  BEAM-native checkpoint namespace helpers.
-
-  LangGraph serializes nested graph namespaces into strings that combine graph
-  path segments and task IDs. BeamWeaver keeps namespaces as lists internally
-  and serializes only at checkpoint boundaries.
-  """
+  @moduledoc false
 
   @separator "/"
   @task_separator ":"
@@ -58,9 +52,6 @@ defmodule BeamWeaver.Graph.Execution.Namespace do
     |> Enum.join(@separator)
   end
 
-  @spec task_segment(atom() | String.t(), String.t()) :: String.t()
-  def task_segment(node, task_id), do: to_string(node) <> @task_separator <> task_id
-
   defp strip_task_id(segment) do
     segment
     |> String.split(@task_separator, parts: 2)
@@ -68,4 +59,11 @@ defmodule BeamWeaver.Graph.Execution.Namespace do
   end
 
   defp numeric_segment?(segment), do: String.match?(segment, ~r/^\d+$/)
+
+  @doc false
+  # Recasts the namespace keys of a `checkpoint_map` to the current separator.
+  def recast_checkpoint_map(map) when is_map(map),
+    do: Map.new(map, fn {namespace, checkpoint_id} -> {recast(namespace), checkpoint_id} end)
+
+  def recast_checkpoint_map(_other), do: %{}
 end

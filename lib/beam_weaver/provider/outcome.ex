@@ -31,8 +31,19 @@ defmodule BeamWeaver.Provider.Outcome do
       refusal?(message) ->
         outcome(:completed, :refusal, :complete)
 
+      # Anthropic's safety classifiers end a reply they decline with the
+      # `refusal` stop reason, in a normal response.
+      status == "refusal" ->
+        outcome(:completed, :refusal, completeness(message))
+
       filtered?(status, message) ->
         outcome(:completed, :filtered, completeness(message))
+
+      # The Responses API ends a reply that its content filter cut off as
+      # incomplete, where Chat Completions has the `content_filter` finish
+      # reason.
+      status == "incomplete" and incomplete_reason == "content_filter" ->
+        outcome(:incomplete, :filtered, completeness(message))
 
       invalid_tool_calls?(message) ->
         outcome(remote_status(status), :awaiting_client_tools, :partial)
@@ -40,8 +51,18 @@ defmodule BeamWeaver.Provider.Outcome do
       status in ["max_tokens", "max_output_tokens", "length"] ->
         outcome(:incomplete, :output_limit, :partial)
 
+      # Anthropic and Z.ai end a reply that filled the model's context window
+      # with the `model_context_window_exceeded` stop reason.
+      status == "model_context_window_exceeded" ->
+        outcome(:incomplete, :context_limit, :partial)
+
       status == "incomplete" and context_limit?(incomplete_reason) ->
         outcome(:incomplete, :context_limit, :partial)
+
+      # xAI ends a reply that ran out of the time it may take as incomplete,
+      # with the `max_time_limit` reason.
+      status == "incomplete" and incomplete_reason == "max_time_limit" ->
+        outcome(:incomplete, :budget_exhausted, :partial)
 
       status == "incomplete" ->
         outcome(:incomplete, :output_limit, :partial)
@@ -123,8 +144,14 @@ defmodule BeamWeaver.Provider.Outcome do
     |> Enum.any?(fn block -> block_type(block) in [:refusal, "refusal"] end)
   end
 
+  # The finish reasons of a reply a content filter stopped: Chat Completions'
+  # `content_filter`, and Gemini's safety, recitation, blocklist,
+  # prohibited-content and personal-data stops, for text and for images.
+  @filtered_statuses ~w(content_filter safety blocked recitation blocklist prohibited_content spii
+                        image_safety image_prohibited_content image_recitation)
+
   defp filtered?(status, %Message{} = message) do
-    status in ["content_filter", "safety", "blocked"] or
+    status in @filtered_statuses or
       blocked_prompt_feedback?(metadata_value(message.response_metadata, :prompt_feedback))
   end
 
@@ -149,8 +176,10 @@ defmodule BeamWeaver.Provider.Outcome do
     end
   end
 
+  # xAI's reason for a prompt longer than the model takes is
+  # `max_prompt_tokens`.
   defp context_limit?(reason) do
-    reason in ["context_length_exceeded", "context_limit", "max_input_tokens"]
+    reason in ["context_length_exceeded", "context_limit", "max_input_tokens", "max_prompt_tokens"]
   end
 
   defp incomplete_reason(metadata) when is_map(metadata) do

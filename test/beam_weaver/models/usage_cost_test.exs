@@ -49,9 +49,9 @@ defmodule BeamWeaver.Models.UsageCostTest do
 
   test "uses the normal input rate when a profile has no cached-input rate" do
     profile = %{
-      "extra" => %{
-        "input_price_per_mtok" => 1.0,
-        "output_price_per_mtok" => 3.0
+      extra: %{
+        input_price_per_mtok: 1.0,
+        output_price_per_mtok: 3.0
       }
     }
 
@@ -138,13 +138,13 @@ defmodule BeamWeaver.Models.UsageCostTest do
     assert UsageCost.calculate(nil, %{input_tokens: 10}) == nil
   end
 
-  test "dated string-keyed rates override atom-keyed profile defaults" do
+  test "dated pricing history overrides profile defaults" do
     profile = %{
       input_price_per_mtok: 1.0,
       output_price_per_mtok: 2.0,
       pricing_history: [
-        %{"effective_at" => nil, "input_price_per_mtok" => 3.0, "output_price_per_mtok" => 4.0},
-        %{"effective_at" => "2026-09-10T04:00:00Z", "input_price_per_mtok" => 1.0, "output_price_per_mtok" => 2.0}
+        %{effective_at: nil, input_price_per_mtok: 3.0, output_price_per_mtok: 4.0},
+        %{effective_at: "2026-09-10T04:00:00Z", input_price_per_mtok: 1.0, output_price_per_mtok: 2.0}
       ]
     }
 
@@ -156,24 +156,24 @@ defmodule BeamWeaver.Models.UsageCostTest do
 
   test "selects UTC peak rates with inclusive starts and exclusive ends" do
     profile = %{
-      "input_price_per_mtok" => 1.0,
-      "cached_input_price_per_mtok" => 0.25,
-      "output_price_per_mtok" => 2.0,
-      "time_based_pricing" => %{
-        "default_mode" => "off_peak",
-        "peak_windows" => [
-          %{"start_minute" => 60, "end_minute" => 240},
-          %{"start_minute" => 360, "end_minute" => 600}
+      input_price_per_mtok: 1.0,
+      cached_input_price_per_mtok: 0.25,
+      output_price_per_mtok: 2.0,
+      time_based_pricing: %{
+        default_mode: :off_peak,
+        peak_windows: [
+          %{start_minute: 60, end_minute: 240},
+          %{start_minute: 360, end_minute: 600}
         ],
-        "off_peak" => %{
-          "input_price_per_mtok" => 1.0,
-          "cached_input_price_per_mtok" => 0.25,
-          "output_price_per_mtok" => 2.0
+        off_peak: %{
+          input_price_per_mtok: 1.0,
+          cached_input_price_per_mtok: 0.25,
+          output_price_per_mtok: 2.0
         },
-        "peak" => %{
-          "input_price_per_mtok" => 2.0,
-          "cached_input_price_per_mtok" => 0.5,
-          "output_price_per_mtok" => 4.0
+        peak: %{
+          input_price_per_mtok: 2.0,
+          cached_input_price_per_mtok: 0.5,
+          output_price_per_mtok: 4.0
         }
       }
     }
@@ -218,24 +218,24 @@ defmodule BeamWeaver.Models.UsageCostTest do
 
   test "calculates exact USD micros with one final rounding step" do
     pricing = %{
-      "schema_version" => 1,
-      "currency" => "USD",
-      "rounding" => "half_up",
-      "dimensions" => [
+      schema_version: 1,
+      currency: "USD",
+      rounding: "half_up",
+      dimensions: [
         %{
-          "name" => "input_tokens",
-          "unit_size" => 1_000_000,
-          "unit_price_usd_micros" => 2_000_000
+          name: "input_tokens",
+          unit_size: 1_000_000,
+          unit_price_usd_micros: 2_000_000
         },
         %{
-          "name" => "cached_input_tokens",
-          "unit_size" => 1_000_000,
-          "unit_price_usd_micros" => 500_000
+          name: "cached_input_tokens",
+          unit_size: 1_000_000,
+          unit_price_usd_micros: 500_000
         },
         %{
-          "name" => "output_tokens",
-          "unit_size" => 1_000_000,
-          "unit_price_usd_micros" => 4_000_000
+          name: "output_tokens",
+          unit_size: 1_000_000,
+          unit_price_usd_micros: 4_000_000
         }
       ]
     }

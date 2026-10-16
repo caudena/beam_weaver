@@ -1,6 +1,8 @@
 defmodule BeamWeaver.Tool.Schema.Fields do
   @moduledoc false
 
+  import BeamWeaver.MapShape, only: [put_present: 3]
+
   alias BeamWeaver.Core.Error
 
   def from_fields(fields) when is_list(fields) do
@@ -206,10 +208,7 @@ defmodule BeamWeaver.Tool.Schema.Fields do
 
   defp put_nested(schema, opts) do
     schema
-    |> maybe_put(:properties, Keyword.get(opts, :properties))
-    |> maybe_put(:items, Keyword.get(opts, :items) && type_schema(Keyword.get(opts, :items)))
+    |> put_present(:properties, Keyword.get(opts, :properties))
+    |> put_present(:items, Keyword.get(opts, :items) && type_schema(Keyword.get(opts, :items)))
   end
-
-  defp maybe_put(schema, _key, nil), do: schema
-  defp maybe_put(schema, key, value), do: Map.put(schema, key, value)
 end

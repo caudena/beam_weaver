@@ -136,7 +136,7 @@ defmodule BeamWeaver.Agent.RuntimeBuilderTest do
   end
 
   defmodule DynamicModelMiddleware do
-    @behaviour BeamWeaver.Agent.Middleware
+    use BeamWeaver.Agent.Middleware
 
     defstruct [:parent]
 
@@ -247,7 +247,7 @@ defmodule BeamWeaver.Agent.RuntimeBuilderTest do
              )
            )
 
-    assert Enum.any?(events, &match?(%Envelope{event: %Events.Done{}}, &1))
+    assert %Envelope{event: %Events.Debug{payload: %{type: :producer_stop}}} = List.last(events)
   end
 
   test "built agents forward model typed reasoning events while preserving final output" do
@@ -437,5 +437,136 @@ defmodule BeamWeaver.Agent.RuntimeBuilderTest do
 
   test "requires a model option" do
     assert {:error, %{type: :invalid_agent, details: %{option: :model}}} = Agent.build(tools: [])
+  end
+
+  defmodule StorageProbe do
+    use BeamWeaver.Agent.Middleware
+
+    defstruct [:parent]
+
+    @impl true
+    def before_model(%__MODULE__{parent: parent}, _state, runtime) do
+      send(parent, {:storage_probe, runtime.store, runtime.cache})
+      nil
+    end
+  end
+
+  test "a built agent runs with the checkpointer, store and cache of each call" do
+    {:ok, agent} =
+      Agent.build(
+        model: "fake:chat",
+        model_opts: [responses: ["Order A-1001 shipped on Monday.", "You're welcome!"]],
+        middleware: [%StorageProbe{parent: self()}]
+      )
+
+    saver = BeamWeaver.Checkpoint.ETS.new()
+    store = BeamWeaver.Memory.ETS.new()
+    cache = BeamWeaver.Cache.ETS.new()
+
+    opts = [
+      checkpointer: saver,
+      store: store,
+      cache: cache,
+      config: %{"configurable" => %{"thread_id" => "built-thread"}}
+    ]
+
+    assert {:ok, _first} = Agent.invoke(agent, %{messages: ["Where is my order?"]}, opts)
+    assert {:ok, second} = Agent.invoke(agent, %{messages: ["Thanks!"]}, opts)
+
+    assert Enum.map(second.messages, &Message.text/1) == [
+             "Where is my order?",
+             "Order A-1001 shipped on Monday.",
+             "Thanks!",
+             "You're welcome!"
+           ]
+
+    assert {:ok, snapshot} = Agent.get_state(agent, opts)
+    assert length(snapshot.values.messages) == 4
+    assert_received {:storage_probe, ^store, ^cache}
+  end
+
+  test "build/1 returns an error naming the options it doesn't know" do
+    assert {:error, %BeamWeaver.Core.Error{type: :invalid_agent, details: %{options: [:response_schema, :debug]}}} =
+             Agent.build(model: "fake:chat", response_schema: %{"title" => "Triage"}, debug: true)
+
+    assert {:error, %BeamWeaver.Core.Error{type: :invalid_agent, details: %{options: ["respons_format"]}}} =
+             Agent.build(%{"model" => "fake:chat", "respons_format" => nil})
+  end
+
+  test "build/1 returns an error for an invalid tool or middleware entry" do
+    tool =
+      Tool.from_function!(
+        name: "adder",
+        description: "Add two numbers",
+        input_schema: %{"required" => ["a", "b"]},
+        handler: fn %{"a" => a, "b" => b}, _opts -> a + b end
+      )
+
+    assert {:error, %BeamWeaver.Core.Error{type: :invalid_tool, details: %{options: [:retries]}}} =
+             Agent.build(model: "fake:chat", tools: [{tool, retries: 3}])
+
+    assert {:error, %BeamWeaver.Core.Error{type: :invalid_middleware}} =
+             Agent.build(model: "fake:chat", middleware: [String])
+  end
+
+  test "build/1 returns an error for a tool that isn't one and a response format without a schema" do
+    # A tool name raised FunctionClauseError; a module without a schema asked
+    # the model for an empty object.
+    assert {:error, %BeamWeaver.Core.Error{type: :invalid_tool, details: %{tool: ~s("lookup_order")}}} =
+             Agent.build(model: "fake:chat", tools: ["lookup_order"])
+
+    assert {:error,
+            %BeamWeaver.Core.Error{type: :invalid_agent, message: message, details: %{response_format: "String"}}} =
+             Agent.build(model: "fake:chat", response_format: String)
+
+    assert message =~ "response_format String declares no schema"
+
+    assert {:error, %BeamWeaver.Core.Error{type: :invalid_agent, details: %{response_format: ~s("triage")}}} =
+             Agent.build(model: "fake:chat", response_format: "triage")
+  end
+
+  test "a model that is neither a model string nor a model struct is an :invalid_agent_model error" do
+    assert {:error, %BeamWeaver.Core.Error{type: :invalid_agent_model, details: %{model: "a tuple of 2 elements"}}} =
+             Agent.build(model: {"fake:chat", []})
+
+    assert {:error, %BeamWeaver.Core.Error{type: :invalid_agent_model}} =
+             Agent.build(model: fn _state -> "fake:chat" end)
+  end
+
+  test "middleware or capability settings their constructors reject are errors, not exceptions" do
+    alias BeamWeaver.Agent.Middleware
+
+    for entry <- [
+          Middleware.DynamicPrompt,
+          {Middleware.CompactConversation, trigger: {:messages, 5}},
+          {Middleware.Summarization, keep: {:fraction, 0.5}, api_key: "sk-proj-not-a-real-key"},
+          {Middleware.OverflowRecovery, keep: {:messages, 8}}
+        ] do
+      assert {:error, %BeamWeaver.Core.Error{type: :invalid_middleware} = error} =
+               Agent.build(model: "fake:chat", middleware: [entry])
+
+      refute inspect(error) =~ "not-a-real-key"
+    end
+
+    assert {:error, %BeamWeaver.Core.Error{type: :invalid_middleware, message: message}} =
+             Agent.build(model: "fake:chat", middleware: [Middleware.DynamicPrompt])
+
+    assert message == "BeamWeaver.Agent.Middleware.DynamicPrompt: key :prompt not found"
+
+    assert {:error, %BeamWeaver.Core.Error{type: :invalid_agent, message: "CompactConversation doesn't take" <> _}} =
+             Agent.build(model: "fake:chat", compact_conversation: [trigger: {:messages, 5}])
+  end
+
+  test "errors about the model and its options don't show their values" do
+    assert {:error, %BeamWeaver.Core.Error{type: :invalid_agent_model} = tuple_model} =
+             Agent.build(model: {"openai:gpt-5.4", [api_key: "sk-proj-not-a-real-key"]})
+
+    assert {:error,
+            %BeamWeaver.Core.Error{type: :invalid_agent, details: %{model_opts: "a map with keys [:api_key]"}} =
+              map_opts} =
+             Agent.build(model: "fake:chat", model_opts: %{api_key: "sk-proj-not-a-real-key"})
+
+    refute inspect(tuple_model) =~ "not-a-real-key"
+    refute inspect(map_opts) =~ "not-a-real-key"
   end
 end

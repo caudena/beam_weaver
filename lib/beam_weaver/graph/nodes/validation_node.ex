@@ -6,6 +6,7 @@ defmodule BeamWeaver.Graph.Nodes.ValidationNode do
   list. It returns tool messages with validated arguments or validation errors.
   """
 
+  alias BeamWeaver.Graph.Nodes.ToolNode.Input
   alias BeamWeaver.Agent.ToolSet
   alias BeamWeaver.Core.Error
   alias BeamWeaver.Core.Message
@@ -50,12 +51,17 @@ defmodule BeamWeaver.Graph.Nodes.ValidationNode do
     end
   end
 
+  # In an agent, the tools the model was offered on its latest call, as the
+  # tools node runs them.
   defp apply_tool_set(%__MODULE__{} = node, input) do
-    case ToolSet.from_state(input) do
-      %ToolSet{} = tool_set ->
+    case {ToolSet.from_state(input), ToolSet.saved_names(input)} do
+      {%ToolSet{} = tool_set, _names} ->
         %{node | schemas: Map.new(ToolSet.list(tool_set), &schema_entry!/1)}
 
-      nil ->
+      {nil, names} when is_list(names) ->
+        %{node | schemas: Map.take(node.schemas, names)}
+
+      {nil, nil} ->
         node
     end
   end
@@ -166,63 +172,11 @@ defmodule BeamWeaver.Graph.Nodes.ValidationNode do
 
   defp normalize_tool_call(call) do
     %{
-      id: tool_call_id(call),
-      name: tool_call_name(call),
-      args: tool_call_args(call)
+      id: Input.tool_call_id(call),
+      name: Input.tool_call_name(call),
+      args: Input.tool_call_args(call)
     }
   end
-
-  defp tool_call_id(call) do
-    get_value(call, :call_id) || get_value(call, :tool_call_id) || get_value(call, :id)
-  end
-
-  defp tool_call_name(call) do
-    get_value(call, :name) ||
-      nested_value(call, [:function, :name]) ||
-      nested_value(call, ["function", "name"])
-  end
-
-  defp tool_call_args(call) do
-    args =
-      get_value(call, :args) ||
-        get_value(call, :arguments) ||
-        nested_value(call, [:function, :arguments]) ||
-        nested_value(call, ["function", "arguments"]) ||
-        %{}
-
-    decode_args(args)
-  end
-
-  defp get_value(map, key), do: Map.get(map, key) || Map.get(map, to_string(key))
-
-  defp nested_value(map, keys) when is_map(map) do
-    Enum.reduce_while(keys, map, fn key, acc ->
-      if is_map(acc) do
-        case Map.fetch(acc, key) do
-          {:ok, value} ->
-            {:cont, value}
-
-          :error ->
-            case Map.fetch(acc, to_string(key)) do
-              {:ok, value} -> {:cont, value}
-              :error -> {:halt, nil}
-            end
-        end
-      else
-        {:halt, nil}
-      end
-    end)
-  end
-
-  defp decode_args(args) when is_binary(args) do
-    case BeamWeaver.JSON.decode(args) do
-      {:ok, decoded} when is_map(decoded) -> decoded
-      _other -> %{"input" => args}
-    end
-  end
-
-  defp decode_args(args) when is_map(args), do: args
-  defp decode_args(_args), do: %{}
 
   defp format_valid_args(args) do
     case BeamWeaver.JSON.encode(args) do

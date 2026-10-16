@@ -3,6 +3,8 @@ defmodule BeamWeaver.Anthropic.Tools do
   Builders for Anthropic custom and server-side tool declarations.
   """
 
+  import BeamWeaver.MapShape, only: [reject_nil_values: 1]
+
   alias BeamWeaver.Core.Tool
   alias BeamWeaver.Tool.Renderer
 
@@ -30,7 +32,7 @@ defmodule BeamWeaver.Anthropic.Tools do
   def to_anthropic_tool(tool, opts) when is_atom(tool), do: Renderer.anthropic_tool!(tool, opts)
 
   def to_anthropic_tool(%{__struct__: module} = tool, opts) do
-    if function_exported?(module, :name, 1) do
+    if Tool.implemented_by?(module) do
       Renderer.anthropic_tool!(tool, opts)
     else
       tool |> Map.from_struct() |> to_anthropic_tool(opts)
@@ -241,6 +243,4 @@ defmodule BeamWeaver.Anthropic.Tools do
       ])
     )
   end
-
-  defp reject_nil_values(map), do: Map.reject(map, fn {_key, value} -> is_nil(value) end)
 end

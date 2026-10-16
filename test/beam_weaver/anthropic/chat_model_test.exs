@@ -4,7 +4,7 @@ defmodule BeamWeaver.Anthropic.ChatModelTest do
   alias BeamWeaver.Agent.StructuredOutput
   alias BeamWeaver.Anthropic.ChatModel
   alias BeamWeaver.Anthropic.Client
-  alias BeamWeaver.Anthropic.Error
+  alias BeamWeaver.Core.Error
   alias BeamWeaver.Anthropic.Messages
   alias BeamWeaver.Anthropic.OutputParsers
   alias BeamWeaver.Anthropic.Tools
@@ -299,6 +299,7 @@ defmodule BeamWeaver.Anthropic.ChatModelTest do
 
     response_client =
       Client.new(
+        api_key: "test-key",
         transport: BeamWeaver.TestSupport.Conformance.Fakes.Transport,
         transport_opts: [
           headers: [{"anthropic-workspace-id", "wrkspc_response"}],
@@ -760,6 +761,7 @@ defmodule BeamWeaver.Anthropic.ChatModelTest do
     transport_model =
       ChatModel.new(
         model: "claude-opus-5-5",
+        api_key: "test-key",
         transport: BeamWeaver.TestSupport.Conformance.Fakes.Transport,
         transport_opts: [parent: self(), body: response]
       )
@@ -1085,19 +1087,20 @@ defmodule BeamWeaver.Anthropic.ChatModelTest do
 
   test "raw extension maps cannot replace Anthropic-owned request fields" do
     messages = [Message.user("hello")]
-    model = ChatModel.new(model: "claude-fable-5")
 
-    for extension <- [:model_kwargs, :extra_body] do
-      opts =
-        [tool_choice: :any]
-        |> Keyword.put(extension, %{
-          model: "claude-fable-5-1",
-          thinking: %{type: :disabled},
-          tool_choice: %{type: :none},
-          betas: ["unvalidated-beta"],
-          extension_flag: true
-        })
+    extension = %{
+      model: "claude-fable-5-1",
+      thinking: %{type: :disabled},
+      tool_choice: %{type: :none},
+      betas: ["unvalidated-beta"],
+      extension_flag: true
+    }
 
+    # From the model and from the call.
+    for {model, opts} <- [
+          {ChatModel.new(model: "claude-fable-5", extra_body: extension), [tool_choice: :any]},
+          {ChatModel.new(model: "claude-fable-5"), [tool_choice: :any, extra_body: extension]}
+        ] do
       assert {:ok, body} = ChatModel.request_body(model, messages, opts)
       assert body["model"] == "claude-fable-5"
       assert body["tool_choice"] == %{"type" => "any"}
@@ -1298,6 +1301,7 @@ defmodule BeamWeaver.Anthropic.ChatModelTest do
   test "Anthropic prompt-length HTTP errors are normalized as context overflow" do
     model =
       ChatModel.new(
+        api_key: "test-key",
         transport: BeamWeaver.TestSupport.Conformance.Fakes.Transport,
         transport_opts: [
           expect: %{method: :post, path: "/v1/messages"},
@@ -1360,6 +1364,71 @@ defmodule BeamWeaver.Anthropic.ChatModelTest do
     assert opus.type == :deprecated_model
     assert opus.details.replacement == "claude-opus-4-8"
     assert opus.details.expected == "anthropic:claude-opus-4-8"
+  end
+
+  # Anthropic's request metadata has one field, `user_id`, a string of at
+  # most 512 characters. Anything else fails before the request, both when
+  # the model is created and on a call.
+  describe "metadata" do
+    for {name, metadata, message} <- [
+          {"another key", %{user_id: "user_123", source: :summarization},
+           "Anthropic metadata takes only :user_id, not :source"},
+          {"another string key", %{"tenant" => "acme"}, ~s(Anthropic metadata takes only :user_id, not "tenant")},
+          {"a user_id that isn't a string", %{user_id: 123}, "Anthropic metadata :user_id must be a string"},
+          {"a user_id longer than 512 characters", %{user_id: String.duplicate("u", 513)},
+           "Anthropic metadata :user_id takes at most 512 characters"},
+          {"a keyword list", [user_id: "user_123"], "Anthropic metadata must be a map with only :user_id"}
+        ] do
+      test "with #{name} fails before the request" do
+        metadata = unquote(Macro.escape(metadata))
+
+        assert {:error, %Error{type: :unsupported_model_param, message: unquote(message)} = error} =
+                 Models.init_chat_model("anthropic:claude-haiku-4-5", api_key: "k", metadata: metadata)
+
+        assert %{provider: :anthropic, model: "claude-haiku-4-5", params: [:metadata]} = error.details
+
+        model =
+          Models.init_chat_model!("anthropic:claude-haiku-4-5",
+            api_key: "k",
+            transport: BeamWeaver.TestSupport.Conformance.Fakes.Transport,
+            transport_opts: [parent: self()]
+          )
+
+        assert {:error, %Error{type: :unsupported_model_param, message: unquote(message)}} =
+                 CoreChatModel.invoke(model, [Message.user("ping")], metadata: metadata)
+
+        refute_received {:fake_transport_request, _request}
+      end
+    end
+
+    test "a model's own metadata is checked on every call" do
+      model = ChatModel.new(model: "claude-haiku-4-5", metadata: %{tenant: "acme"})
+
+      assert {:error, %Error{message: "Anthropic metadata takes only :user_id, not :tenant"} = error} =
+               ChatModel.request_body(model, [Message.user("ping")])
+
+      assert error.details.keys == [:tenant]
+    end
+
+    test "a user_id, set on the model or on the call, goes through" do
+      model = Models.init_chat_model!("anthropic:claude-haiku-4-5", api_key: "k", metadata: %{user_id: "user_123"})
+
+      assert {:ok, %{"metadata" => %{"user_id" => "user_123"}}} = ChatModel.request_body(model, [Message.user("ping")])
+
+      assert {:ok, %{"metadata" => %{"user_id" => "user_456"}}} =
+               ChatModel.request_body(model, [Message.user("ping")], metadata: %{"user_id" => "user_456"})
+
+      assert {:ok, %{"metadata" => %{"user_id" => nil}}} =
+               ChatModel.request_body(model, [Message.user("ping")], metadata: %{user_id: nil})
+    end
+
+    test "a user_id of 512 characters goes through, however many bytes they take" do
+      # "é" is two bytes.
+      user_id = String.duplicate("é", 512)
+      model = Models.init_chat_model!("anthropic:claude-haiku-4-5", api_key: "k", metadata: %{user_id: user_id})
+
+      assert {:ok, %{"metadata" => %{"user_id" => ^user_id}}} = ChatModel.request_body(model, [Message.user("ping")])
+    end
   end
 
   test "output parser extracts Anthropic tool_use blocks" do

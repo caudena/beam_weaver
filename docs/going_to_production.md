@@ -1,153 +1,239 @@
-# Going To Production
+# Going to Production
 
-BeamWeaver does not provide a hosted deployment platform, `langgraph.json`, or
-managed agent server. Production is your Elixir application: OTP supervision,
-releases, config, database migrations, schedulers, telemetry, and whatever HTTP
-or job boundary invokes your agents and graphs.
+A checklist for running BeamWeaver agents in a production Elixir application:
+where storage lives, how secrets and the signed-in customer reach a run, and
+how runs are bounded, observed, and resumed after a deploy. Each item is short
+and links to the page with the details.
 
-Use this page as a checklist and routing guide. The implementation details live
-in the linked topic pages so this guide stays small and avoids duplicating
-memory, sandbox, persistence, guardrail, and streaming docs.
+## A production call
 
-## Production Contract
-
-Every production invocation should separate conversation identity from trusted
-run context:
+A production call names the conversation, says who the customer is, labels
+the trace, and bounds the run. With a scripted model it runs as is:
 
 ```elixir
-config = %{"configurable" => %{"thread_id" => "thread-123"}}
+defmodule MyApp.Tools.LookupOrder do
+  use BeamWeaver.Tool
 
-context = %{
-  user_id: "user-123",
-  org_id: "org-456",
-  permissions: ["support:read"],
-  request_id: "req-789"
-}
+  name "lookup_order"
+  description "Look up the shipping status of one of the customer's orders."
 
-MyApp.SupportAgent.invoke(input, config: config, context: context)
+  injected :context, :context
+
+  schema do
+    field :order_id, :string, description: "The order id"
+  end
+
+  @impl true
+  def invoke(_tool, %{"order_id" => order_id} = input, _opts) do
+    {:ok, "Order #{order_id} for #{input.context.customer_id} shipped on Monday."}
+  end
+end
+
+defmodule MyApp.SupportAgent do
+  use BeamWeaver.Agent
+
+  alias BeamWeaver.Models.FakeChatModel
+
+  model "fake:chat",
+    responses: [
+      FakeChatModel.tool_call("lookup_order", %{"order_id" => "A-1001"}),
+      "Your order A-1001 shipped on Monday."
+    ]
+
+  system_prompt "You are Acme's support agent."
+  tools [MyApp.Tools.LookupOrder]
+
+  context_schema do
+    field :customer_id, :string, required: true
+  end
+end
+
+saver = BeamWeaver.Checkpoint.ETS.new()
+
+{:ok, result} =
+  MyApp.SupportAgent.invoke(%{messages: ["Where is order A-1001?"]},
+    checkpointer: saver,
+    config: %{"configurable" => %{"thread_id" => "ticket-42"}},
+    context: %{customer_id: "cus_ada"},
+    trace: [user_id: "cus_ada", thread_id: "ticket-42", execution_mode: "support_chat"],
+    run_timeout: 60_000,
+    recursion_limit: 20
+  )
+
+result.messages |> List.last() |> BeamWeaver.Core.Message.text()
+#=> "Your order A-1001 shipped on Monday."
 ```
 
-`thread_id` scopes checkpointed conversation state. Reuse it for follow-up turns
-in the same conversation and generate a new one for a separate thread.
-
-`context` carries per-run facts supplied by your application boundary: user ID,
-tenant, permissions, feature flags, locale, request IDs, and credential handles.
-Do not let the model choose ownership values. Derive them from authenticated
-request/session state and pass them through `context:` or `server_info:`.
-
-## Identity And Tenancy
-
-BeamWeaver has no built-in user system. Your application should authenticate the
-request, authorize access, and pass only trusted identity into BeamWeaver.
-
-| Scope | Use |
+| Option | Why |
 | --- | --- |
-| Thread | Conversation history, checkpoints, scratch files, and resumable interrupts. |
-| User | Private memory, private files, and per-user tools or credentials. |
-| Agent | Shared configuration for one agent module or assistant-like deployment. |
-| Organization | Shared policies, compliance rules, and organization knowledge. Prefer read-only access. |
+| `checkpointer:` | Saves each step, so the thread survives a crash or a deploy |
+| `config:` thread id | Picks the conversation: one thread per ticket or chat |
+| `context:` | The signed-in customer, from your session, never from the model |
+| `trace:` | Finds this run among the others in your traces |
+| `run_timeout:`, `recursion_limit:` | Stop a run that takes too long or loops |
 
-For memory and filesystem namespaces, derive scope from trusted runtime context:
-`user_id`, `org_id`, agent name, or assistant ID from your own service layer.
+## Create storage once
 
-See [Runtime](runtime.md), [Persistence](persistence.md), [Memory](memory.md),
-and [Filesystem](filesystem.md).
-
-## Deployment Shape
-
-Run BeamWeaver like any other OTP application:
-
-- start agents, queues, stores, and telemetry subscribers under supervision;
-- use releases and runtime config for provider keys and endpoint URLs;
-- run Ecto migrations for checkpoint, memory, and queue tables;
-- use Oban, Quantum, Kubernetes CronJobs, or another scheduler for background
-  consolidation and maintenance work;
-- expose your own HTTP, Phoenix Channel, LiveView, or job interface around
-  `invoke/3`, `stream_events/3`, and resume APIs.
-
-Do not rely on LangGraph Platform conventions such as `langgraph.json`, hosted
-thread APIs, or automatic deployment infrastructure. Integrate those
-as external services only where your application explicitly chooses to.
-
-## Checklist
-
-| Concern | Production decision | BeamWeaver docs |
-| --- | --- | --- |
-| Conversation state | Use a checkpointer and stable `thread_id`. | [Persistence](persistence.md), [Short-Term Memory](short_term_memory.md) |
-| Durable execution | Pick durable adapters and node boundaries; set timeouts and recursion limits. | [Durable Execution](durable_execution.md), [Fault Tolerance](fault_tolerance.md) |
-| Human review | Use checkpointed HITL for sensitive tools and resumable approvals. | [Human-In-The-Loop](human_in_the_loop.md) |
-| Long-term memory | Scope by user, agent, or org; make shared policy memory read-only. | [Memory](memory.md), [Long-Term Memory](long_term_memory.md) |
-| Files | Pick local, store-backed, composite, or sandbox-backed filesystems. | [Filesystem](filesystem.md), [Permissions](permissions.md) |
-| Code execution | Use sandbox adapters for untrusted command execution; keep secrets outside sandboxes. | [Sandboxes](sandboxes.md) |
-| Skills | Load only the skill sources each agent or subagent should see. | [Skills](skills.md), [Subagents](subagents.md) |
-| Model usage | Set model timeouts, retry/fallback policy, and provider limits. | [Models](models.md), [Fault Tolerance](fault_tolerance.md), [Rate Limiting](rate_limiting.md) |
-| Tool usage | Restrict tools, add HITL where needed, and limit or retry external API tools deliberately. | [Tools](tools.md), [Guardrails](guardrails.md), [Prebuilt Middleware](prebuilt_middleware.md) |
-| Sensitive data | Redact tracing data and avoid putting credentials in model-visible state. | [Tracing](tracing.md), [Guardrails](guardrails.md), [Sandboxes](sandboxes.md) |
-| Streaming UI | Consume one event stream and route typed envelopes to your UI or transport. | [Event Streaming](event_streaming.md) |
-| Observability | Attach telemetry, export traces intentionally, and monitor exporter queues. | [Tracing](tracing.md) |
-| Tests | Run integration tests for the adapters and workflows you deploy. | [Replay](replay.md) |
-
-## Invocation Patterns
-
-For request/response APIs, call `invoke/3` from a supervised request handler or
-job process:
+In production the checkpointer and the memory store live in your Ecto repo.
+Both are plain structs, so one module can build them for the whole app:
 
 ```elixir
-case MyApp.SupportAgent.invoke(input, config: config, context: context) do
-  {:ok, state} -> {:ok, state}
-  {:interrupted, interrupt} -> {:needs_review, interrupt}
-  {:error, error} -> {:error, error}
+defmodule MyApp.AgentStorage do
+  def checkpointer, do: BeamWeaver.Checkpoint.Ecto.new(repo: MyApp.Repo)
+  def store, do: BeamWeaver.Memory.Ecto.new(repo: MyApp.Repo)
 end
 ```
 
-For live UIs, call `stream_events/3` and forward typed envelopes through your
-transport:
+Create their tables with a migration (see
+[Storage](storage.md#create-the-tables)). Keep ETS adapters for tests and
+development: their tables belong to the process that created them, so create
+them once in a long-lived process, and never in an agent's declarations.
+
+## Supervision
+
+BeamWeaver is an OTP application and starts its own processes: the HTTP
+connection pools, the trace store and exporter queue, and the supervisor for
+rate limiter buckets. When the node stops, the exporter queue uploads the
+traces still queued. It starts no supervisor for your tasks: add the
+processes your application needs, such as a `Task.Supervisor` for agent runs
+(see [Run agents in the background](#run-agents-in-the-background)), to its
+own tree:
 
 ```elixir
-{:ok, events} =
-  MyApp.SupportAgent.stream_events(input,
-    config: config,
-    context: context,
-    live: true
-  )
+defmodule MyApp.Application do
+  use Application
 
-Enum.each(events, fn envelope ->
-  MyAppWeb.AgentChannel.push_event(socket, envelope)
-end)
+  @impl true
+  def start(_type, _args) do
+    children = [
+      MyApp.Repo,
+      {Task.Supervisor, name: MyApp.AgentTasks},
+      {BeamWeaver.RateLimiter.TokenBucket, name: MyApp.ModelLimiter, capacity: 50, refill_interval: 1_000},
+      %{
+        id: :memory_sweeper,
+        start: {BeamWeaver.Memory.TTLSweeper, :start_link, [MyApp.AgentStorage.store(), [interval: :timer.minutes(10)]]}
+      }
+    ]
+
+    with {:ok, pid} <- Supervisor.start_link(children, strategy: :one_for_one, name: MyApp.Supervisor) do
+      BeamWeaver.Migrations.verify_migrated!(repo: MyApp.Repo, adapters: [:checkpoint, :memory])
+      {:ok, pid}
+    end
+  end
+end
 ```
 
-Consume a live stream once. If multiple UI components need the same updates,
-fan out from one process through PubSub, channels, LiveView assigns, or your own
-projection state.
+## Secrets and configuration
 
-## Secrets
+Read provider keys and the WeaveScope key from the environment at runtime, in
+`config/runtime.exs`, never at compile time:
 
-Keep provider API keys, OAuth tokens, database credentials, and customer secrets
-outside model-visible state. Prefer host-side tools that perform authenticated
-work without exposing the credential to the model or sandbox.
+```elixir
+import Config
 
-For sandboxed code execution:
+if config_env() == :prod do
+  config :beam_weaver, :openai, api_key: System.fetch_env!("OPENAI_API_KEY")
 
-- do not upload secrets as files;
-- do not inject broad environment variables into the sandbox;
-- restrict network access where possible;
-- treat sandbox outputs as untrusted input;
-- implement credential proxying or host-side tools when sandbox code must call
-  authenticated APIs.
+  config :beam_weaver,
+    weave_scope: [
+      endpoint: "https://app.weavescope.com",
+      api_key: System.fetch_env!("WEAVESCOPE_API_KEY"),
+      otp_app: :my_app
+    ]
+end
+```
 
-See [Sandboxes](sandboxes.md), [Tools](tools.md), and [Guardrails](guardrails.md).
+Keep credentials out of everything the model sees: messages, prompts, state
+and tool arguments. A tool that calls an outside API reads its credentials
+from your configuration. Traces redact values that look like keys, but they
+record messages as they are (see [Tracing](tracing.md#redaction)). Code that
+runs in a sandbox gets no secrets at all (see [Sandboxes](sandboxes.md)).
 
-## Background Work
+## Identity and tenancy
 
-Use normal Elixir scheduling and jobs for production maintenance:
+BeamWeaver has no user accounts: your application authenticates the request
+and passes the customer in `context:`. Declare it with `context_schema`, so a
+call without it fails (see [Runtime Context](runtime_context.md)).
 
-- memory consolidation across recent conversations;
-- trace export queue flushing and dead-letter handling;
-- checkpoint pruning and retention;
-- sandbox cleanup by thread or agent scope;
-- index refresh and retrieval ingestion;
-- eval or conformance jobs against production-like adapters.
+- **Threads.** Derive thread ids from your records, such as the ticket id, and
+  check that the signed-in customer owns the ticket before you load its thread.
+  A thread id selects data; it doesn't grant access to it.
+- **Memory.** Build memory namespaces from `context:`, owner first (see
+  [Long-Term Memory](long_term_memory.md#scope-memory-per-customer)).
+- **Files and tools.** Scope filesystems and tool queries to the customer in
+  `context:`, not to ids the model supplies.
 
-These are application jobs, not BeamWeaver-specific hosted cron features. Use
-Oban or your existing scheduler and invoke BeamWeaver agents, graphs, memory
-stores, and checkpoint APIs from those jobs.
+## Bound every run
+
+| Limit | How | Details |
+| --- | --- | --- |
+| Run time | `run_timeout` and `step_timeout` in the agent or on a call, in milliseconds, which fail with `:run_timeout` and `:step_timeout`; `timeout:` on the model for each model call, and `tool_timeout` for each tool call | [Durable Execution](durable_execution.md) |
+| Steps | `recursion_limit` in the agent or on a call; an agent with tools allows 9,999 steps unless you set it | [Agents](agents.md) |
+| Model and tool calls | `ModelCallLimit` and `ToolCallLimit` middleware | [Guardrails](guardrails.md#limit-model-and-tool-calls) |
+| Provider errors | `ModelRetry`, `ModelFallback` and `ToolRetry` middleware | [Built-in Middleware](builtin_middleware.md) |
+| Request rate | A token bucket in front of model and API calls | [Rate Limiting](rate_limiting.md) |
+| Prompt size | Summarization, offloading and overflow recovery | [Context Management](context_management.md) |
+| Sensitive actions | `interrupt_on` for human approval | [Human-in-the-Loop](human_in_the_loop.md) |
+
+## Observe
+
+- Pass `trace:` with the user, thread and kind of work on every call, and
+  export to WeaveScope (see [Tracing](tracing.md#export-to-weavescope)).
+- Attach telemetry handlers for failed runs, timeouts, retries and exporter
+  dead letters (see [Tracing](tracing.md#metrics-with-telemetry)).
+- Watch token usage per model call in the traces, and keep prompt prefixes
+  stable to get cache hits (see [Caching](caching.md#prompt-caching)).
+- Bound the local trace store: it keeps the 10,000 runs that finished last in
+  the node's memory. A node that exports can set
+  `config :beam_weaver, tracing: [max_runs: 0]` to keep only the runs in
+  progress (see [Tracing](tracing.md#read-a-trace)).
+
+## Run agents in the background
+
+A web request shouldn't wait minutes for an agent. Start the run under your
+own `Task.Supervisor`, and stream its events to the page (see
+[Streaming](streaming.md#push-tokens-to-a-liveview)):
+
+```elixir
+task =
+  Task.Supervisor.async_nolink(MyApp.AgentTasks, fn ->
+    MyApp.SupportAgent.invoke(%{messages: ["Where is order A-1001?"]},
+      checkpointer: BeamWeaver.Checkpoint.Ecto.new(repo: MyApp.Repo),
+      config: %{"configurable" => %{"thread_id" => "ticket-42"}},
+      context: %{customer_id: "cus_ada"}
+    )
+  end)
+
+# A LiveView receives the result as a {ref, result} message in handle_info/2;
+# a background job can wait with Task.await(task, :timer.minutes(5)).
+```
+
+Work that doesn't belong to a request, such as consolidating memories,
+pruning old checkpoints (see [Checkpoints and Time Travel](checkpoints.md))
+or sweeping expired cache entries, belongs in your job scheduler, such as
+Oban.
+
+## Deploys and resuming runs
+
+- With a checkpointer, every finished step is saved, so a run cut off by a
+  deploy can continue from its last saved step instead of starting over:
+  invoke its thread again with an empty input (see
+  [Durable Execution](durable_execution.md#what-survives-a-crash)).
+- Runs waiting for human approval stay paused in the checkpointer across
+  deploys, and resume afterwards (see [Human-in-the-Loop](human_in_the_loop.md)).
+- Keep node and tool names stable while threads are paused: a resumed run
+  continues at the node it saved.
+- Give tools with side effects, such as refunds, an idempotency key, because a
+  resumed step can run again.
+- Stop the node gracefully: the exporter queue uploads the traces still
+  queued as the application stops, for up to its `shutdown:` time (see
+  [Tracing](tracing.md#export-to-weavescope)).
+
+## Reference
+
+- [`BeamWeaver.Agent`](https://hexdocs.pm/beam_weaver/BeamWeaver.Agent.html): call options such as `context:`, `trace:` and `run_timeout:`
+- [`BeamWeaver.Checkpoint.Ecto`](https://hexdocs.pm/beam_weaver/BeamWeaver.Checkpoint.Ecto.html): durable checkpoints
+- [`BeamWeaver.Memory.Ecto`](https://hexdocs.pm/beam_weaver/BeamWeaver.Memory.Ecto.html): durable memory store
+- [`BeamWeaver.Migrations`](https://hexdocs.pm/beam_weaver/BeamWeaver.Migrations.html): creating and checking tables
+- [`BeamWeaver.RateLimiter.TokenBucket`](https://hexdocs.pm/beam_weaver/BeamWeaver.RateLimiter.TokenBucket.html): rate limiter buckets in your supervision tree
+- [`BeamWeaver.Tracing`](https://hexdocs.pm/beam_weaver/BeamWeaver.Tracing.html): traces and `flush_exporter/1`

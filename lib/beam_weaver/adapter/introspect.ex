@@ -1,7 +1,5 @@
 defprotocol BeamWeaver.Adapter.Introspect do
-  @moduledoc """
-  Optional operational metadata for adapter structs.
-  """
+  @moduledoc false
 
   @fallback_to_any true
 

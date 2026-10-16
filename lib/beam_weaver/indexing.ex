@@ -6,7 +6,6 @@ defmodule BeamWeaver.Indexing do
   explicit vector store. Cleanup never runs unless requested.
   """
 
-  alias BeamWeaver.Core.Async
   alias BeamWeaver.Core.Document
   alias BeamWeaver.Core.Error
   alias BeamWeaver.Indexing.Cleanup
@@ -14,8 +13,6 @@ defmodule BeamWeaver.Indexing do
   alias BeamWeaver.Indexing.Executor
   alias BeamWeaver.Indexing.Hash
   alias BeamWeaver.Indexing.Planner
-
-  defstruct added: 0, updated: 0, skipped: 0, deleted: 0, errors: []
 
   def index(vector_store, documents, opts \\ []) do
     namespace = Keyword.get(opts, :namespace, :default)
@@ -30,10 +27,6 @@ defmodule BeamWeaver.Indexing do
     end
   rescue
     exception -> {:error, Error.new(:indexing_error, Exception.message(exception))}
-  end
-
-  def async_index(vector_store, documents, opts \\ []) do
-    Async.run_call(opts, &index(vector_store, documents, &1))
   end
 
   @doc "Returns the deterministic hash for a document."

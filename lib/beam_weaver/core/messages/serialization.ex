@@ -1,11 +1,10 @@
 defmodule BeamWeaver.Core.Messages.Serialization do
-  @moduledoc """
-  Safe plain-data serialization for messages.
-  """
+  @moduledoc false
+
+  import BeamWeaver.MapShape, only: [reject_nil_values: 1]
 
   alias BeamWeaver.Core.Error
   alias BeamWeaver.Core.Message
-  alias BeamWeaver.Core.MessageLike
 
   @version 1
 
@@ -33,7 +32,7 @@ defmodule BeamWeaver.Core.Messages.Serialization do
 
   @spec decode(map()) :: {:ok, Message.t()} | {:error, Error.t()}
   def decode(%{"version" => @version, "type" => "message"} = map) do
-    MessageLike.to_message(%{
+    Message.from(%{
       role: map["role"],
       content: decode_content(map["content"]),
       id: map["id"],
@@ -57,7 +56,7 @@ defmodule BeamWeaver.Core.Messages.Serialization do
      })}
   end
 
-  def decode(map) when is_map(map), do: MessageLike.to_message(map)
+  def decode(map) when is_map(map), do: Message.from(map)
 
   def decode(_value),
     do: {:error, Error.new(:invalid_message, "serialized message must be a map")}
@@ -90,6 +89,4 @@ defmodule BeamWeaver.Core.Messages.Serialization do
   defp encode_status(nil), do: nil
   defp encode_status(status) when is_atom(status), do: Atom.to_string(status)
   defp encode_status(status), do: status
-
-  defp reject_nil_values(map), do: Map.reject(map, fn {_key, value} -> is_nil(value) end)
 end

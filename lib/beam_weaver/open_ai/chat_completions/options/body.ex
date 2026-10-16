@@ -3,9 +3,10 @@ defmodule BeamWeaver.OpenAI.ChatCompletions.Options.Body do
 
   alias BeamWeaver.OpenAI.ChatCompletions.Messages
   alias BeamWeaver.OpenAI.ChatCompletions.Options.Validation
-  alias BeamWeaver.OpenAI.Error
+  alias BeamWeaver.Core.Error
   alias BeamWeaver.OpenAI.MessageParts
   alias BeamWeaver.OpenAI.ModelPolicy
+  alias BeamWeaver.Provider.ChatCompletionsWire
   alias BeamWeaver.Provider.Options
 
   @spec to_body(BeamWeaver.OpenAI.ChatCompletions.Options.t(), term(), [
@@ -15,9 +16,9 @@ defmodule BeamWeaver.OpenAI.ChatCompletions.Options.Body do
   def to_body(%BeamWeaver.OpenAI.ChatCompletions.Options{opts: opts}, model, messages) do
     with :ok <- Validation.validate(model, opts),
          {:ok, openai_messages} <- Messages.to_openai_messages(messages),
+         {:ok, tools} <- tools(opts),
          {:ok, response_format} <- response_format(opts) do
       model_name = Keyword.get(opts, :model, Map.get(model, :model))
-      model_kwargs = option(model, opts, :model_kwargs) || %{}
       openai_messages = coerce_openai_messages(model_name, openai_messages)
       reasoning_effort = Options.normalize_value(option(model, opts, :reasoning_effort))
 
@@ -26,12 +27,8 @@ defmodule BeamWeaver.OpenAI.ChatCompletions.Options.Body do
           "model" => model_name,
           "messages" => openai_messages
         }
-        |> merge_model_kwargs(model_kwargs)
-        |> Options.put_optional("tools", tools(opts))
-        |> Options.put_optional(
-          "tool_choice",
-          Options.normalize_value(Keyword.get(opts, :tool_choice))
-        )
+        |> Options.put_optional("tools", tools)
+        |> Options.put_optional("tool_choice", ChatCompletionsWire.tool_choice(Keyword.get(opts, :tool_choice)))
         |> Options.put_optional("response_format", response_format)
         |> Options.put_optional("reasoning_effort", reasoning_effort)
         |> Options.put_optional(
@@ -42,11 +39,7 @@ defmodule BeamWeaver.OpenAI.ChatCompletions.Options.Body do
             %{"effort" => reasoning_effort}
           )
         )
-        |> Options.put_optional("max_tokens", max_tokens_option(model_name, model, opts))
-        |> Options.put_optional(
-          "max_completion_tokens",
-          max_completion_tokens_option(model_name, model, opts)
-        )
+        |> put_output_cap(model_name, model, opts)
         |> Options.put_optional("top_p", option(model, opts, :top_p))
         |> Options.put_optional("frequency_penalty", option(model, opts, :frequency_penalty))
         |> Options.put_optional("presence_penalty", option(model, opts, :presence_penalty))
@@ -118,7 +111,7 @@ defmodule BeamWeaver.OpenAI.ChatCompletions.Options.Body do
           "search_parameters",
           Options.normalize_value(option(model, opts, :search_parameters))
         )
-        |> Options.merge_extra_body(Keyword.get(opts, :extra_body, %{}))
+        |> Options.merge_extra_body(Options.extra_body(model, opts))
 
       {:ok, body}
     end
@@ -126,8 +119,8 @@ defmodule BeamWeaver.OpenAI.ChatCompletions.Options.Body do
 
   defp tools(opts) do
     case Keyword.get(opts, :tools, []) do
-      [] -> nil
-      tools when is_list(tools) -> Messages.tools_to_openai(tools)
+      [] -> {:ok, nil}
+      tools when is_list(tools) -> Messages.Request.render_tools(tools)
     end
   end
 
@@ -161,30 +154,32 @@ defmodule BeamWeaver.OpenAI.ChatCompletions.Options.Body do
 
   defp option(model, opts, key), do: Keyword.get(opts, key, Map.get(model, key))
 
-  defp max_tokens_option(model_name, model, opts) do
-    max_tokens = option(model, opts, :max_tokens)
+  # A request carries one output cap: the call's, else the model's. GPT-5,
+  # GPT-6 and o-series models take it as `max_completion_tokens`; other
+  # models under the name it was given, with `max_output_tokens`, the
+  # Responses API's name, sent as `max_completion_tokens`.
+  @output_caps [
+    max_completion_tokens: "max_completion_tokens",
+    max_output_tokens: "max_completion_tokens",
+    max_tokens: "max_tokens"
+  ]
 
-    if ModelPolicy.completion_tokens_field_model?(model_name) do
-      nil
-    else
-      max_tokens
+  defp put_output_cap(body, model_name, model, opts) do
+    case output_cap(&Keyword.get(opts, &1)) || output_cap(&Map.get(model, &1)) do
+      nil ->
+        body
+
+      {field, value} ->
+        field = if ModelPolicy.completion_tokens_field_model?(model_name), do: "max_completion_tokens", else: field
+        Map.put(body, field, value)
     end
   end
 
-  defp max_completion_tokens_option(model_name, model, opts) do
-    option(model, opts, :max_completion_tokens) ||
-      option(model, opts, :max_output_tokens) ||
-      completion_tokens_alias(model_name, option(model, opts, :max_tokens))
+  defp output_cap(get) do
+    Enum.find_value(@output_caps, fn {key, field} ->
+      if value = get.(key), do: {field, value}
+    end)
   end
-
-  defp completion_tokens_alias(model_name, max_tokens) do
-    if ModelPolicy.completion_tokens_field_model?(model_name), do: max_tokens, else: nil
-  end
-
-  defp merge_model_kwargs(body, model_kwargs) when map_size(model_kwargs) == 0, do: body
-
-  defp merge_model_kwargs(body, model_kwargs) when is_map(model_kwargs),
-    do: Map.merge(body, Options.stringify_keys(model_kwargs))
 
   defp coerce_openai_messages(model_name, messages) when is_binary(model_name) do
     if o_series_model?(model_name) do

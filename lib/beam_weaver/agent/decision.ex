@@ -1,14 +1,10 @@
 defmodule BeamWeaver.Agent.Decision do
-  @moduledoc """
-  Typed internal decisions returned by agent middleware hooks.
-  """
+  @moduledoc false
 
   alias BeamWeaver.Core.Error
 
   defmodule Continue do
-    @moduledoc """
-    Normalized middleware decision that continues with an optional state update.
-    """
+    @moduledoc false
 
     defstruct update: %{}
 
@@ -16,9 +12,7 @@ defmodule BeamWeaver.Agent.Decision do
   end
 
   defmodule Update do
-    @moduledoc """
-    Normalized middleware decision that applies a state update.
-    """
+    @moduledoc false
 
     defstruct update: %{}
 
@@ -26,9 +20,7 @@ defmodule BeamWeaver.Agent.Decision do
   end
 
   defmodule Jump do
-    @moduledoc """
-    Normalized middleware decision that jumps to another agent loop stage.
-    """
+    @moduledoc false
 
     defstruct destination: nil, update: %{}
 
@@ -36,9 +28,7 @@ defmodule BeamWeaver.Agent.Decision do
   end
 
   defmodule Halt do
-    @moduledoc """
-    Normalized middleware decision that ends the agent loop.
-    """
+    @moduledoc false
 
     defstruct update: %{}
 
@@ -46,9 +36,7 @@ defmodule BeamWeaver.Agent.Decision do
   end
 
   defmodule Error do
-    @moduledoc """
-    Normalized middleware decision that returns a BeamWeaver error.
-    """
+    @moduledoc false
 
     defstruct [:error]
 

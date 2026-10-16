@@ -349,7 +349,7 @@ defmodule BeamWeaver.OpenAI.ToolCallingTest do
              %ToolCall{id: "call_two", name: "FakeCall", args: %{"data" => "ToolCall2"}}
            ]
 
-    assert {:ok, openai_messages} = Utils.convert_to_openai_messages(messages)
+    assert {:ok, openai_messages} = Utils.to_openai_messages(messages)
 
     assert %{
              "role" => "assistant",

@@ -121,8 +121,6 @@ defmodule BeamWeaver.Agent.Nodes.Model.Response do
       true ->
         inspect(model)
     end
-  rescue
-    _exception -> inspect(model)
   end
 
   defp message_details(%Message{} = message) do
@@ -268,18 +266,26 @@ defmodule BeamWeaver.Agent.Nodes.Model.Response do
     end
   end
 
+  # Without the steps for its tool calls, a run would stop with a recursion
+  # limit error halfway through a tool round. The model's reply becomes an
+  # answer that says so instead, while the run can still finish.
+  @default_step_costs %{tool_round: 2, return_direct: 1}
+
+  def maybe_limit_steps_response(request, response, step_costs \\ nil)
+
   def maybe_limit_steps_response(
         %ModelRequest{} = request,
-        %ModelResponse{messages: [%Message{} = message | _rest]} = response
+        %ModelResponse{messages: [%Message{} = message | rest]} = response,
+        step_costs
       ) do
-    if more_steps_needed?(request, message) do
+    if more_steps_needed?(request, message, rest, step_costs || @default_step_costs) do
       %ModelResponse{messages: [step_limit_message(message)]}
     else
       response
     end
   end
 
-  def maybe_limit_steps_response(_request, response), do: response
+  def maybe_limit_steps_response(_request, response, _step_costs), do: response
 
   defp base_response_update(%ModelResponse{} = response) do
     %{messages: response.messages}
@@ -294,7 +300,9 @@ defmodule BeamWeaver.Agent.Nodes.Model.Response do
     do: Map.put(update, :structured_response, value)
 
   defp maybe_put_tool_set(update, nil), do: update
-  defp maybe_put_tool_set(update, %ToolSet{} = tool_set), do: Map.put(update, :tool_set, tool_set)
+
+  defp maybe_put_tool_set(update, %ToolSet{} = tool_set),
+    do: Map.merge(update, %{tool_set: tool_set, tool_set_names: ToolSet.names(tool_set)})
 
   defp maybe_put_usage(update, nil), do: update
   defp maybe_put_usage(update, %Usage{} = usage), do: Map.put(update, :usage, usage)
@@ -362,27 +370,46 @@ defmodule BeamWeaver.Agent.Nodes.Model.Response do
 
   defp put_assistant_name_to_message(message, _name), do: message
 
+  # `remaining_steps` counts the model's own step. The tool calls that the
+  # response doesn't answer itself (as the structured-output tool strategy
+  # does) need `step_costs.tool_round` more steps, or `step_costs.return_direct`
+  # when every called tool ends the run.
   defp more_steps_needed?(
          %ModelRequest{state: state, runtime: runtime, tools: tools, tool_set: tool_set},
-         %Message{role: :assistant, tool_calls: tool_calls}
+         %Message{role: :assistant, tool_calls: tool_calls},
+         answers,
+         step_costs
        ) do
     remaining_steps =
-      state_value(state, :remaining_steps) || runtime_value(runtime, :recursion_limit)
+      Map.get(state, :remaining_steps) || runtime_value(runtime, :recursion_limit)
 
-    if is_integer(remaining_steps) do
-      tool_calls = tool_calls || []
-      has_tool_calls? = tool_calls != []
+    pending_calls = pending_tool_calls(tool_calls || [], answers)
+
+    if is_integer(remaining_steps) and pending_calls != [] do
       tools = if tool_set, do: ToolSet.list(tool_set), else: tools
-      all_return_direct? = Enum.all?(tool_calls, &return_direct_tool?(&1, tools))
 
-      (remaining_steps < 1 and all_return_direct?) or
-        (remaining_steps < 2 and has_tool_calls?)
+      needed =
+        if Enum.all?(pending_calls, &return_direct_tool?(&1, tools)),
+          do: step_costs.return_direct,
+          else: step_costs.tool_round
+
+      remaining_steps <= needed
     else
       false
     end
   end
 
-  defp more_steps_needed?(_request, _message), do: false
+  defp more_steps_needed?(_request, _message, _answers, _step_costs), do: false
+
+  defp pending_tool_calls(tool_calls, answers) do
+    answered =
+      for %Message{role: :tool, tool_call_id: id} <- answers, not is_nil(id), into: MapSet.new(), do: id
+
+    Enum.reject(tool_calls, &MapSet.member?(answered, tool_call_id(&1)))
+  end
+
+  defp tool_call_id(call),
+    do: Map.get(call, :call_id) || Map.get(call, :tool_call_id) || Map.get(call, :id) || Map.get(call, :provider_id)
 
   defp step_limit_message(%Message{} = response) do
     Message.assistant("Sorry, need more steps to process this request.", id: response.id)
@@ -394,10 +421,6 @@ defmodule BeamWeaver.Agent.Nodes.Model.Response do
     Enum.any?(tools, fn tool ->
       Tool.name(tool) == name and Tool.return_direct(tool)
     end)
-  end
-
-  defp state_value(state, key) when is_map(state) do
-    Map.get(state, key, Map.get(state, to_string(key)))
   end
 
   defp runtime_value(runtime, key) when is_map(runtime), do: Map.get(runtime, key)

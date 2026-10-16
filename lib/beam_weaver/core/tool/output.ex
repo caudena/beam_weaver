@@ -82,8 +82,9 @@ defmodule BeamWeaver.Core.Tool.Output do
   defp message_content_block?(_block), do: false
 
   defp stringify_content(content) do
-    BeamWeaver.JSON.encode!(content)
-  rescue
-    _exception -> inspect(content)
+    case BeamWeaver.JSON.encode(content) do
+      {:ok, json} -> json
+      {:error, _error} -> inspect(content)
+    end
   end
 end

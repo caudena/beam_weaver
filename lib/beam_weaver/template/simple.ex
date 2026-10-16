@@ -125,9 +125,10 @@ defmodule BeamWeaver.Template.Simple do
     valid_shape? and safe_segments?
   end
 
-  defp fetch_path(value, []), do: {:ok, value}
+  @doc false
+  def fetch_path(value, []), do: {:ok, value}
 
-  defp fetch_path(value, [segment | rest]) do
+  def fetch_path(value, [segment | rest]) do
     with {:ok, nested} <- fetch_segment(value, segment) do
       fetch_path(nested, rest)
     end

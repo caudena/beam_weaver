@@ -401,4 +401,9 @@ defmodule BeamWeaver.DeepSeek.V41Test do
 
     Enum.map(events, &"event: #{&1["type"]}\ndata: #{BeamWeaver.JSON.encode!(&1)}\n\n")
   end
+
+  test "a Responses built-in tool given to DeepSeek Chat Completions is an unsupported feature" do
+    assert {:error, %{type: :unsupported_feature, details: %{provider: :deepseek, tool_type: "web_search"}}} =
+             ChatModel.request_body(ChatModel.new(), [Message.user("Hi")], tools: [%{"type" => "web_search"}])
+  end
 end

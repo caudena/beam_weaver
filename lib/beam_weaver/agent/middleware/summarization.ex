@@ -1,10 +1,36 @@
 defmodule BeamWeaver.Agent.Middleware.Summarization do
   @moduledoc """
-  Summarizes long message histories with an explicit model dependency.
+  Replaces older messages with a summary once a thread gets long.
+
+  Before each model call it checks `:trigger`; when it is reached, `:model`
+  summarizes all but the newest messages and the thread is saved as one user
+  message with the summary followed by the messages it kept. A tool call is
+  never separated from its result.
+
+  Options:
+
+    * `:model` - the model that writes summaries, a model value or a
+      `"provider:model"` string. Required.
+    * `:trigger` - `{:messages, n}` (the default, 20), `{:tokens, n}`, or
+      `{:fraction, f}` of `:max_input_tokens`; a list fires on any of them and
+      `{:all, triggers}` on all. `nil` turns summarization off.
+    * `:keep` - how much to keep word for word: `{:messages, n}` (the default,
+      8), `{:tokens, n}` or `{:fraction, f}` of `:max_input_tokens`.
+    * `:max_input_tokens` - the context window of the agent's model, which
+      fractions are taken of. Required with a fraction; `compact_conversation`
+      sets it from the agent's model.
+    * `:summary_prompt` - the instruction for the summary; `{messages}` is
+      replaced with the old messages.
+    * `:summary_prefix` - the text before the summary in the saved message.
+    * `:token_counter` - `:approximate`, a model that counts tokens, or a
+      function of a message list.
+    * `:trim_tokens_to_summarize` - how many tokens of old messages the summary
+      model reads at most (4,000 by default; `nil` for all).
   """
 
-  @behaviour BeamWeaver.Agent.Middleware
+  use BeamWeaver.Agent.Middleware
 
+  alias BeamWeaver.Agent.Middleware.Helpers
   alias BeamWeaver.Agent.State
   alias BeamWeaver.Core.ChatModel
   alias BeamWeaver.Core.Error
@@ -18,6 +44,7 @@ defmodule BeamWeaver.Agent.Middleware.Summarization do
             summary_prefix: "Conversation summary:",
             trigger: {:messages, 20},
             keep: {:messages, 8},
+            max_input_tokens: nil,
             token_counter: :approximate,
             summary_prompt: "Summarize this conversation:\n\n{messages}",
             trim_tokens_to_summarize: 4_000
@@ -28,6 +55,7 @@ defmodule BeamWeaver.Agent.Middleware.Summarization do
       summary_prefix: Keyword.get(opts, :summary_prefix, "Conversation summary:"),
       trigger: Keyword.get(opts, :trigger, {:messages, 20}),
       keep: Keyword.get(opts, :keep, {:messages, 8}),
+      max_input_tokens: Keyword.get(opts, :max_input_tokens),
       token_counter: Keyword.get(opts, :token_counter, :approximate),
       summary_prompt: Keyword.get(opts, :summary_prompt, "Summarize this conversation:\n\n{messages}"),
       trim_tokens_to_summarize: Keyword.get(opts, :trim_tokens_to_summarize, 4_000)
@@ -41,6 +69,7 @@ defmodule BeamWeaver.Agent.Middleware.Summarization do
   @impl true
   def name(_middleware), do: :summarization
 
+  @impl true
   def before_model(%__MODULE__{} = middleware, state, _runtime) do
     messages = State.messages(state)
 
@@ -73,7 +102,7 @@ defmodule BeamWeaver.Agent.Middleware.Summarization do
     recent = Utils.strip_reasoning_blocks(recent)
 
     with {:ok, summary_prompt} <- summary_prompt(middleware, old) do
-      case ChatModel.invoke(middleware.model, [summary_prompt], metadata: %{source: :summarization}) do
+      case ChatModel.invoke(middleware.model, [summary_prompt], trace_metadata: %{source: :summarization}) do
         {:ok, %Message{} = summary} ->
           %{
             messages:
@@ -92,7 +121,7 @@ defmodule BeamWeaver.Agent.Middleware.Summarization do
   defp summary_prompt(middleware, messages) do
     messages = trim_messages_for_summary(middleware, messages)
 
-    case Utils.get_buffer_string(messages) do
+    case Utils.buffer_string(messages) do
       {:ok, text} ->
         {:ok, Message.user(String.replace(middleware.summary_prompt, "{messages}", text))}
 
@@ -108,74 +137,39 @@ defmodule BeamWeaver.Agent.Middleware.Summarization do
   end
 
   defp triggered?({kind, triggers}, middleware, messages, token_count)
-       when kind in [:all, "all"] and is_list(triggers) do
+       when kind == :all and is_list(triggers) do
     Enum.all?(triggers, &triggered?(&1, middleware, messages, token_count))
   end
 
   defp triggered?({kind, triggers}, middleware, messages, token_count)
-       when kind in [:any, "any"] and is_list(triggers) do
+       when kind == :any and is_list(triggers) do
     Enum.any?(triggers, &triggered?(&1, middleware, messages, token_count))
   end
 
   defp triggered?({:messages, count}, _middleware, messages, _token_count),
     do: length(messages) >= count
 
-  defp triggered?({"messages", count}, middleware, messages, token_count),
-    do: triggered?({:messages, count}, middleware, messages, token_count)
-
   defp triggered?({:tokens, tokens}, _middleware, _messages, token_count),
     do: token_count >= tokens
 
-  defp triggered?({"tokens", tokens}, middleware, messages, token_count),
-    do: triggered?({:tokens, tokens}, middleware, messages, token_count)
-
-  defp triggered?({:fraction, fraction}, middleware, _messages, token_count) do
-    case profile_limit(middleware.model) do
-      limit when is_integer(limit) and limit > 0 ->
-        token_count >= max(trunc(limit * fraction), 1)
-
-      _missing ->
-        false
-    end
-  end
-
-  defp triggered?({"fraction", fraction}, middleware, messages, token_count),
-    do: triggered?({:fraction, fraction}, middleware, messages, token_count)
+  defp triggered?({:fraction, fraction}, middleware, _messages, token_count),
+    do: token_count >= fraction_tokens(middleware, fraction)
 
   defp retention_cutoff(%__MODULE__{keep: nil}, messages), do: find_safe_cutoff(messages, 0)
 
   defp retention_cutoff(%__MODULE__{keep: {:messages, count}}, messages),
     do: find_safe_cutoff(messages, count)
 
-  defp retention_cutoff(%__MODULE__{keep: {"messages", count}}, messages),
-    do: find_safe_cutoff(messages, count)
-
   defp retention_cutoff(%__MODULE__{keep: {:tokens, tokens}} = middleware, messages),
     do: token_cutoff(middleware, messages, tokens)
 
-  defp retention_cutoff(%__MODULE__{keep: {"tokens", tokens}} = middleware, messages),
-    do: token_cutoff(middleware, messages, tokens)
+  defp retention_cutoff(%__MODULE__{keep: {:fraction, fraction}} = middleware, messages),
+    do: token_cutoff(middleware, messages, fraction_tokens(middleware, fraction))
 
-  defp retention_cutoff(%__MODULE__{keep: {:fraction, fraction}} = middleware, messages) do
-    case profile_limit(middleware.model) do
-      limit when is_integer(limit) and limit > 0 ->
-        token_cutoff(middleware, messages, max(trunc(limit * fraction), 1))
+  defp fraction_tokens(%__MODULE__{max_input_tokens: limit}, fraction), do: max(trunc(limit * fraction), 1)
 
-      _missing ->
-        find_safe_cutoff(messages, 0)
-    end
-  end
-
-  defp retention_cutoff(%__MODULE__{keep: {"fraction", fraction}} = middleware, messages),
-    do: retention_cutoff(%{middleware | keep: {:fraction, fraction}}, messages)
-
-  defp find_safe_cutoff(messages, messages_to_keep) do
-    messages
-    |> length()
-    |> Kernel.-(messages_to_keep)
-    |> max(0)
-    |> safe_cutoff_point(messages)
-  end
+  defp find_safe_cutoff(messages, messages_to_keep),
+    do: Helpers.safe_cut_index(messages, max(length(messages) - messages_to_keep, 0))
 
   defp token_cutoff(middleware, messages, target_tokens) do
     cutoff =
@@ -189,44 +183,7 @@ defmodule BeamWeaver.Agent.Middleware.Summarization do
         end
       end)
 
-    safe_cutoff_point(cutoff, messages)
-  end
-
-  defp safe_cutoff_point(index, messages) when index >= length(messages), do: index
-
-  defp safe_cutoff_point(index, messages) do
-    case Enum.at(messages, index) do
-      %Message{role: :tool, tool_call_id: id} when is_binary(id) ->
-        case matching_ai_index(messages, index, id) do
-          nil -> skip_tool_messages(messages, index)
-          ai_index -> ai_index
-        end
-
-      _message ->
-        index
-    end
-  end
-
-  defp matching_ai_index(messages, index, tool_call_id) do
-    messages
-    |> Enum.take(index)
-    |> Enum.with_index()
-    |> Enum.reverse()
-    |> Enum.find_value(fn
-      {%Message{role: :assistant, tool_calls: calls}, ai_index} when is_list(calls) ->
-        if Enum.any?(calls, &(tool_call_id(&1) == tool_call_id)), do: ai_index
-
-      _other ->
-        nil
-    end)
-  end
-
-  defp skip_tool_messages(messages, index) do
-    messages
-    |> Enum.drop(index)
-    |> Enum.take_while(&match?(%Message{role: :tool}, &1))
-    |> length()
-    |> Kernel.+(index)
+    Helpers.safe_cut_index(messages, cutoff)
   end
 
   defp trim_messages_for_summary(%__MODULE__{trim_tokens_to_summarize: nil}, messages),
@@ -329,22 +286,14 @@ defmodule BeamWeaver.Agent.Middleware.Summarization do
 
   defp metadata_value(_map, _key), do: nil
 
-  defp profile_limit(%{profile: %{max_input_tokens: limit}}) when is_integer(limit), do: limit
-  defp profile_limit(%{profile: %{"max_input_tokens" => limit}}) when is_integer(limit), do: limit
-  defp profile_limit(_model), do: nil
-
-  defp tool_call_id(%{"id" => id}), do: id
-  defp tool_call_id(%{id: id}), do: id
-  defp tool_call_id(_call), do: nil
-
   defp validate!(%__MODULE__{} = middleware) do
     validate_context_size!(middleware.trigger, :trigger, true)
     validate_context_size!(middleware.keep, :keep, false)
 
     if fractional?(middleware.trigger) or fractional?(middleware.keep) do
-      unless is_integer(profile_limit(middleware.model)) do
+      unless is_integer(middleware.max_input_tokens) and middleware.max_input_tokens > 0 do
         raise ArgumentError,
-              "model profile with max_input_tokens is required for fractional summarization limits"
+              "fractional summarization limits need :max_input_tokens, the context window of the agent's model"
       end
     end
 
@@ -358,19 +307,19 @@ defmodule BeamWeaver.Agent.Middleware.Summarization do
   end
 
   defp validate_context_size!({kind, values}, field, _allow_list?)
-       when kind in [:all, "all", :any, "any"] and is_list(values) do
+       when kind in [:all, :any] and is_list(values) do
     Enum.each(values, &validate_context_size!(&1, field, false))
   end
 
   defp validate_context_size!({kind, value}, field, _allow_list?)
-       when kind in [:messages, "messages", :tokens, "tokens"] do
+       when kind in [:messages, :tokens] do
     unless is_integer(value) and value > 0 do
       raise ArgumentError, "#{field} thresholds must be greater than 0"
     end
   end
 
   defp validate_context_size!({kind, value}, field, _allow_list?)
-       when kind in [:fraction, "fraction"] do
+       when kind == :fraction do
     unless is_number(value) and value > 0 and value <= 1 do
       raise ArgumentError, "fractional #{field} values must be between 0 and 1"
     end
@@ -381,7 +330,7 @@ defmodule BeamWeaver.Agent.Middleware.Summarization do
   end
 
   defp fractional?(values) when is_list(values), do: Enum.any?(values, &fractional?/1)
-  defp fractional?({kind, values}) when kind in [:all, "all", :any, "any"], do: fractional?(values)
-  defp fractional?({kind, _value}), do: kind in [:fraction, "fraction"]
+  defp fractional?({kind, values}) when kind in [:all, :any], do: fractional?(values)
+  defp fractional?({kind, _value}), do: kind == :fraction
   defp fractional?(_other), do: false
 end

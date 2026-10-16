@@ -1,918 +1,507 @@
-# Human-In-The-Loop
+# Human-in-the-Loop
 
-Human-in-the-loop (HITL) review lets a graph or agent pause and wait for an
-external decision before continuing. Use it for approval, review and edit
-flows, form collection, or any workflow where the next step depends on a human
-or service outside the graph.
+Pause an agent before it runs a sensitive tool, such as issuing a refund, and
+let a person approve, edit or reject the call. Graph nodes can pause the same
+way to ask a person for anything, and every paused run continues where it
+stopped, even days later.
 
-BeamWeaver has two layers:
+## Approve a tool call
 
-- `BeamWeaver.Graph.interrupt/1` is the low-level graph primitive. Call it from
-  a graph node when you want to pause at an application-defined point.
-- `BeamWeaver.Agent.Middleware.HumanInTheLoop` is the agent tool-review layer.
-  It packages selected tool calls into a standard review payload and applies
-  approve, edit, reject, or respond decisions on resume.
-
-`BeamWeaver.Agent.Middleware.HumanInTheLoop` checks model-proposed tool calls
-against a policy. When review is required, the middleware emits a graph
-interrupt before tool execution. The interrupted state is saved through the
-configured checkpointer, and the run resumes after your UI, CLI, or service
-passes back review decisions.
-
-{% hint style="info" %}
-**BeamWeaver Shape**
-
-LangChain's Python documentation uses `create_agent`, `GraphOutput.interrupts`,
-`Command(resume=...)`, `version="v2"`, and `stream_mode` chunks. BeamWeaver
-uses `use BeamWeaver.Agent` or `BeamWeaver.Agent.build/1`,
-`{:interrupted, interrupt}` tagged results, `BeamWeaver.Graph.Compiled.resume/3`,
-your agent module's generated `resume/3` or `resume_review/3`, and typed event
-envelopes from generated `stream_events/3`.
-{% endhint %}
-
-## Basic Agent Configuration
-
-For Deep Agents-style tool review, set `interrupt_on` directly on the agent.
-BeamWeaver turns this option into `BeamWeaver.Agent.Middleware.HumanInTheLoop`
-and pauses after the model proposes a matching tool call, before the tool
-executes.
+List the tools that need approval with `interrupt_on`, and give the agent a
+checkpointer and a thread id so it can save its state while it waits:
 
 ```elixir
-alias BeamWeaver.Agent
-alias BeamWeaver.Checkpoint.ETS, as: CheckpointETS
-alias BeamWeaver.Core.Message
+defmodule MyApp.Tools.IssueRefund do
+  use BeamWeaver.Tool
 
-checkpointer = CheckpointETS.new()
-config = %{"configurable" => %{"thread_id" => "hitl-review-1"}}
+  name "issue_refund"
+  description "Refund part or all of an order to the customer's card."
 
-{:ok, agent} =
-  Agent.build(
-    model: BeamWeaver.Models.init_chat_model!("openai:gpt-5.4"),
-    tools: [
-      MyApp.Tools.RemoveFile,
-      MyApp.Tools.FetchFile,
-      MyApp.Tools.NotifyEmail
-    ],
-    interrupt_on: %{
-      "remove_file" => true,
-      "fetch_file" => false,
-      "notify_email" => %{allowed_decisions: [:approve, :reject]}
-    },
-    checkpointer: checkpointer
-  )
-
-case Agent.invoke(
-       agent,
-       %{messages: [Message.user("Delete temp.txt and email the admin.")]},
-       config: config
-     ) do
-  {:interrupted, interrupt} ->
-    IO.inspect(interrupt.value.action_requests, label: "pending tool reviews")
-
-    Agent.resume(
-      agent,
-      %{decisions: [%{type: :approve}, %{type: :reject}]},
-      config: config
-    )
-
-  {:ok, state} ->
-    {:ok, state}
-end
-```
-
-Module-defined agents use the `interrupt_on` DSL:
-
-```elixir
-defmodule MyApp.ReviewedAgent do
-  use BeamWeaver.Agent
-
-  model BeamWeaver.Models.init_chat_model!("anthropic:claude-sonnet-4-6")
-
-  tools do
-    tool MyApp.Tools.RemoveFile
-    tool MyApp.Tools.FetchFile
-    tool MyApp.Tools.NotifyEmail
+  schema do
+    field :order_id, :string, description: "The order id"
+    field :amount, :number, description: "The amount to refund, in dollars"
   end
 
-  interrupt_on %{
-    "remove_file" => true,
-    "fetch_file" => false,
-    "notify_email" => %{allowed_decisions: [:approve, :reject]}
-  }
+  @impl true
+  def invoke(_tool, %{"order_id" => order_id, "amount" => amount}, _opts) do
+    {:ok, "Refunded $#{amount} for order #{order_id}."}
+  end
 end
-```
 
-`true` enables the default decisions for a tool: `:approve`, `:edit`,
-`:reject`, and `:respond`. `false` disables review for that tool. A map can
-restrict decisions with `:allowed_decisions`, gate review with `:when` or
-`:predicate`, and add review metadata such as `:description` or `:args_schema`.
+defmodule MyApp.SupportAgent do
+  use BeamWeaver.Agent
 
-{% hint style="warning" %}
-**Checkpoint Required**
+  alias BeamWeaver.Models.FakeChatModel
 
-Human review requires a checkpointer and a stable thread ID because the run
-pauses and resumes from persisted graph state. Use `BeamWeaver.Checkpoint.ETS`
-for local development or tests, and a durable checkpointer such as
-`BeamWeaver.Checkpoint.Ecto` in production.
-{% endhint %}
+  model "fake:chat",
+    responses: [
+      FakeChatModel.tool_call("issue_refund", %{"order_id" => "A-1001", "amount" => 25}),
+      "Your refund for order A-1001 is on its way."
+    ]
 
-## Pause Using Interrupt
-
-Call `BeamWeaver.Graph.interrupt/1` inside a graph node to pause execution and
-surface a JSON-safe payload to the caller:
-
-```elixir
-alias BeamWeaver.Graph
-
-approval_node = fn state ->
-  approved =
-    Graph.interrupt(%{
-      question: "Approve this action?",
-      details: state.action_details
-    })
-
-  %{approved: approved}
+  system_prompt "You are Acme's support agent."
+  tools [MyApp.Tools.IssueRefund]
+  interrupt_on %{"issue_refund" => true}
 end
-```
 
-When the graph reaches the interrupt:
-
-1. Execution pauses inside the node.
-2. The checkpointer saves the current thread state.
-3. The caller receives `{:interrupted, interrupt}`.
-4. The graph waits until the same thread is resumed.
-5. The resume value becomes the return value of `Graph.interrupt/1`.
-
-Interrupt payloads should be maps, lists, strings, numbers, booleans, or `nil`
-when possible. Persistent checkpointers must be able to serialize both the
-interrupt payload and the eventual resume value.
-
-{% hint style="warning" %}
-**Checkpoint Required**
-
-Dynamic interrupts need a checkpointer and a stable `thread_id`. Use
-`BeamWeaver.Checkpoint.ETS` for tests or local prototypes. Use
-`BeamWeaver.Checkpoint.Ecto` with PostgreSQL or SQLite for durable deployments. Always
-resume with the same `config`.
-{% endhint %}
-
-## Resuming Interrupts
-
-Resume a paused graph with `BeamWeaver.Graph.Compiled.resume/3` and the same
-thread configuration:
-
-```elixir
-alias BeamWeaver.Checkpoint.ETS, as: CheckpointETS
-alias BeamWeaver.Graph
-alias BeamWeaver.Graph.Compiled
-
-checkpointer = CheckpointETS.new()
-config = %{"configurable" => %{"thread_id" => "approval-1"}}
-
-graph =
-  Graph.new(name: "ApprovalFlow")
-  |> Graph.add_node(:approval, approval_node)
-  |> Graph.add_edge(Graph.start(), :approval)
-  |> Graph.add_edge(:approval, Graph.end_node())
-  |> Graph.compile!(checkpointer: checkpointer)
+saver = BeamWeaver.Checkpoint.ETS.new()
+opts = [checkpointer: saver, config: %{"configurable" => %{"thread_id" => "ticket-42"}}]
 
 {:interrupted, interrupt} =
-  Compiled.invoke(
-    graph,
-    %{action_details: "Transfer $500"},
-    config: config
-  )
-
-IO.inspect(interrupt.value, label: "waiting for")
-
-{:ok, state} =
-  Compiled.resume(graph, true, config: config)
-
-state.approved
-#=> true
+  MyApp.SupportAgent.invoke(%{messages: ["Please refund $25 for order A-1001."]}, opts)
 ```
 
-If the intended resume value is `nil`, use `Graph.null_resume()` so BeamWeaver
-can distinguish "resume with nil" from "no resume value was supplied":
-
-```elixir
-Compiled.resume(graph, Graph.null_resume(), config: config)
-```
-
-BeamWeaver also accepts `%BeamWeaver.Graph.Command{resume: value}` as graph
-input for command-driven graph control. For application
-code, `Compiled.resume/3` is usually clearer because it says directly that the
-run is continuing an interrupted checkpoint.
-
-{% hint style="info" %}
-**No `GraphOutput.interrupts`**
-
-LangGraph's Python examples use `result.interrupts` for `version="v2"` and
-`result["__interrupt__"]` for the older invoke shape. BeamWeaver returns a
-tagged result: `{:interrupted, interrupt}`. Inspect `interrupt.value`,
-`interrupt.id`, `interrupt.node`, and related fields instead.
-{% endhint %}
-
-## Handling Multiple Interrupts
-
-Parallel branches can pause at the same super-step. When there is more than one
-pending interrupt, resume with a map keyed by interrupt ID:
-
-```elixir
-alias BeamWeaver.Graph
-alias BeamWeaver.Graph.Compiled
-
-graph =
-  Graph.new(name: "ParallelQuestions")
-  |> Graph.add_reducer(:answers, fn existing, update ->
-    existing ++ List.wrap(update)
-  end)
-  |> Graph.add_node(:left, fn _state ->
-    answer = Graph.interrupt("question_a")
-    %{answers: ["a:#{answer}"]}
-  end)
-  |> Graph.add_node(:right, fn _state ->
-    answer = Graph.interrupt("question_b")
-    %{answers: ["b:#{answer}"]}
-  end)
-  |> Graph.add_edge(Graph.start(), :left)
-  |> Graph.add_edge(Graph.start(), :right)
-  |> Graph.add_edge(:left, Graph.end_node())
-  |> Graph.add_edge(:right, Graph.end_node())
-  |> Graph.compile!(checkpointer: checkpointer)
-
-{:interrupted, _interrupt} =
-  Compiled.invoke(graph, %{answers: []}, config: config)
-
-{:ok, snapshot} =
-  Compiled.get_state(graph, config)
-
-resume_values =
-  Map.new(snapshot.interrupts, fn interrupt ->
-    {interrupt.id, "answer for #{interrupt.value}"}
-  end)
-
-{:ok, state} =
-  Compiled.resume(graph, resume_values, config: config)
-```
-
-When only one interrupt is pending, a scalar resume value is accepted. When
-multiple interrupts are pending, use the map shape so each answer is paired
-with the intended paused task.
-
-## Approval, Review, And Validation Patterns
-
-Use `interrupt/1` directly when the graph itself owns the human interaction.
-For example, approve or cancel a branch:
-
-```elixir
-alias BeamWeaver.Graph.Command
-
-approval_node = fn state ->
-  decision =
-    BeamWeaver.Graph.interrupt(%{
-      question: "Proceed?",
-      details: state.action_details
-    })
-
-  if decision do
-    %Command{goto: :proceed}
-  else
-    %Command{goto: :cancel}
-  end
-end
-```
-
-Review and edit generated state:
-
-```elixir
-review_node = fn state ->
-  edited =
-    BeamWeaver.Graph.interrupt(%{
-      instruction: "Review and edit this draft",
-      content: state.generated_text
-    })
-
-  %{generated_text: edited}
-end
-```
-
-Validate human input by interrupting again when the resume value is invalid:
-
-```elixir
-age_node = fn _state ->
-  ask_age = fn ask, prompt ->
-    answer = BeamWeaver.Graph.interrupt(prompt)
-
-    if is_integer(answer) and answer > 0 do
-      answer
-    else
-      ask.(ask, "'#{answer}' is not a valid age. Please enter a positive number.")
-    end
-  end
-
-  age = ask_age.(ask_age, "What is your age?")
-
-  %{age: age}
-end
-```
-
-The node restarts from the beginning on each resume, so keep the interrupt
-sequence deterministic. See [Rules Of Interrupts](#rules-of-interrupts).
-
-## Decision Types
-
-BeamWeaver supports the same four review decisions as LangChain:
-
-| Decision | Behavior | Common use |
-| --- | --- | --- |
-| `:approve` | Execute the original tool call as-is. | Send an approved email draft. |
-| `:edit` | Execute a modified tool call. | Change the recipient, query, or file path before running. |
-| `:reject` | Skip execution and add rejection feedback as an error tool message. | Tell the agent why a proposed action is not allowed. |
-| `:respond` | Skip execution and use the human's message as the successful tool result. | Implement an `ask_user` tool where the human is the tool backend. |
-
-Allowed decisions are configured per tool. If multiple tool calls are paused in
-one interrupt, provide one decision for each action in the same order as the
-interrupt's `action_requests`.
-
-{% hint style="warning" %}
-**Edit Conservatively**
-
-`edit` can change the tool name and arguments before execution. Keep edits
-small and compatible with the original tool call. Large semantic changes may
-cause the model to reassess and call more tools than you expected.
-{% endhint %}
-
-## Advanced Middleware Configuration
-
-Top-level `interrupt_on` is the usual path. Add
-`BeamWeaver.Agent.Middleware.HumanInTheLoop` manually when you need custom
-middleware ordering, a custom `description_prefix`, or explicit tool schemas for
-early validation of edited arguments. `interrupt_on` maps tool names to review
-policies:
-
-```elixir
-defmodule MyApp.ReviewedAgent do
-  use BeamWeaver.Agent
-
-  alias BeamWeaver.Agent.Middleware.HumanInTheLoop
-
-  model BeamWeaver.Models.init_chat_model!("openai:gpt-5.4")
-
-  tools do
-    tool MyApp.Tools.WriteFile
-    tool MyApp.Tools.ExecuteSQL
-    tool MyApp.Tools.ReadData
-  end
-
-  middleware do
-    use HumanInTheLoop,
-      interrupt_on: %{
-        "write_file" => true,
-        "execute_sql" => %{allowed_decisions: [:approve, :reject]},
-        "read_data" => false
-      },
-      description_prefix: "Tool execution pending approval",
-      tools: [MyApp.Tools.WriteFile, MyApp.Tools.ExecuteSQL, MyApp.Tools.ReadData]
-  end
-end
-```
-
-`true` enables all decisions for that tool: `:approve`, `:edit`, `:reject`,
-and `:respond`. `false` means the middleware will not interrupt that tool.
-
-Useful middleware options:
-
-| Option | Meaning |
-| --- | --- |
-| `:interrupt_on` | Required map of tool names to `true`, `false`, or a review config map. |
-| `:interrupt_mode` | `:all` reviews all matching calls in a model response; `:first` pauses on the first matching call. |
-| `:description_prefix` | Prefix used for generated review descriptions. Defaults to `"Tool execution requires approval"`. |
-| `:tools` | Tool modules or structs used to validate edited tool arguments against tool schemas. |
-
-Review config options:
-
-| Option | Meaning |
-| --- | --- |
-| `:allowed_decisions` | List of allowed decision atoms or strings: `:approve`, `:edit`, `:reject`, `:respond`. |
-| `:description` | Static description string, or a function with arity 2 or 3. |
-| `:args_schema` | Optional argument schema included in the review config for UI validation. |
-| `:when` / `:predicate` | Function with arity 1, 2, or 3. Return `true` to review this call. |
-
-`description` functions receive the tool call and state. Arity-3 functions also
-receive runtime:
-
-```elixir
-middleware do
-  use BeamWeaver.Agent.Middleware.HumanInTheLoop,
-    interrupt_on: %{
-      "execute_sql" => %{
-        allowed_decisions: [:approve, :reject],
-        description: fn call, _state, runtime ->
-          context = runtime.context || %{}
-          user = Map.get(context, :user_id) || Map.get(context, "user_id", "unknown")
-          args = Map.get(call, :args, Map.get(call, "args", %{}))
-          "SQL requested by #{user}: #{inspect(args)}"
-        end
-      }
-    }
-end
-```
-
-Predicate functions receive the tool call, optionally the graph state, and
-optionally runtime. Use `interrupt_mode: :first` with predicates when one
-approval should pause a multi-tool response before any later matching calls are
-reviewed.
-
-{% hint style="warning" %}
-**Checkpoint Required**
-
-HITL requires a checkpointer because the graph must persist state while the run
-is paused. Use `BeamWeaver.Checkpoint.ETS` for tests or local prototypes. Use a
-persistent checkpointer such as `BeamWeaver.Checkpoint.Ecto` for durable
-deployments. Always resume with the same thread ID in `config`.
-{% endhint %}
-
-## Respond To Interrupts
-
-Invoke the agent with a checkpointer and a stable thread ID. A reviewed tool call
-returns `{:interrupted, interrupt}` instead of completing the run.
+The model asked for `issue_refund`, so the agent saved its state and returned
+`{:interrupted, interrupt}` instead of running the tool. Read the pending call
+with `BeamWeaver.Agent.HITL.from_interrupt/1`:
 
 ```elixir
 alias BeamWeaver.Agent.HITL
-alias BeamWeaver.Checkpoint.ETS, as: CheckpointETS
-alias BeamWeaver.Core.Message
 
-checkpointer = CheckpointETS.new()
-config = %{"configurable" => %{"thread_id" => "review-thread-1"}}
+{:ok, review} = HITL.from_interrupt(interrupt)
+[request] = review.action_requests
+{request.name, request.args}
+#=> {"issue_refund", %{"order_id" => "A-1001", "amount" => 25}}
+```
 
-case MyApp.ReviewedAgent.invoke(
-       %{messages: [Message.user("Delete old records from the database.")]},
-       checkpointer: checkpointer,
-       config: config
-     ) do
-  {:interrupted, interrupt} ->
-    {:ok, review} = HITL.from_interrupt(interrupt)
+When a person has decided, resume with the same `opts`, including any
+`context:` (it isn't saved with the thread). The agent runs the tool and
+carries on:
 
-    Enum.each(review.action_requests, fn action ->
-      IO.inspect(action, label: "pending action")
-    end)
+```elixir
+{:ok, result} = MyApp.SupportAgent.resume_review([HITL.decision(:approve)], opts)
 
-    MyApp.ReviewedAgent.resume(
-      %{decisions: [%{type: :approve}]},
-      checkpointer: checkpointer,
-      config: config
-    )
+result.messages |> List.last() |> BeamWeaver.Core.Message.text()
+#=> "Your refund for order A-1001 is on its way."
+```
 
-  {:ok, state} ->
-    {:ok, state}
+Calls to tools that aren't in `interrupt_on` run without a pause.
 
-  {:error, error} ->
-    {:error, error}
+## The review
+
+A review lists the pending calls in `action_requests` (tool name, arguments
+and a description for the reviewer) and what the reviewer may do with each
+in `review_configs`. `HITL.to_map/1` turns it into plain maps that you can
+encode as JSON for a browser or an API:
+
+```elixir
+HITL.to_map(review)
+#=> %{
+#     action_requests: [
+#       %{name: "issue_refund", args: %{"order_id" => "A-1001", "amount" => 25}, description: "Tool execution requires approval" <> _}
+#     ],
+#     review_configs: [
+#       %{action_name: "issue_refund", allowed_decisions: ["approve", "edit", "reject", "respond"]}
+#     ]
+#   }
+```
+
+## Decisions
+
+Answer each pending call with one decision:
+
+| Decision | What happens |
+|---|---|
+| `HITL.decision(:approve)` | The tool runs with the proposed arguments. |
+| `HITL.decision(:edit, edited_action: %{name: ..., args: ...})` | The tool runs with the arguments the person changed. |
+| `HITL.decision(:reject, message: "...")` | The tool doesn't run. The model gets `message` as a failed tool result and can tell the customer or try something else. |
+| `HITL.decision(:respond, message: "...")` | The tool doesn't run. `message` becomes the tool's successful result. |
+
+Each example below starts a new ticket and lets it pause first:
+
+```elixir
+pause_ticket = fn thread_id ->
+  opts = [checkpointer: saver, config: %{"configurable" => %{"thread_id" => thread_id}}]
+  {:interrupted, _interrupt} = MyApp.SupportAgent.invoke(%{messages: ["Please refund $25 for order A-1001."]}, opts)
+  opts
+end
+
+tool_result = fn {:ok, result} ->
+  result.messages |> Enum.find(&(&1.role == :tool)) |> BeamWeaver.Core.Message.text()
 end
 ```
 
-The interrupt value contains the review payload:
+An edit changes the arguments before the tool runs. Edited arguments must
+match the tool's input schema; an edit that doesn't is refused, and the
+review stays pending:
 
 ```elixir
-%{
-  action_requests: [
-    %{
-      name: "execute_sql",
-      args: %{"query" => "DELETE FROM records WHERE created_at < NOW() - INTERVAL '30 days';"},
-      description: "Tool execution pending approval\n\nTool: execute_sql\nArgs: ..."
-    }
-  ],
-  review_configs: [
-    %{
-      action_name: "execute_sql",
-      allowed_decisions: ["approve", "reject"]
-    }
-  ]
+opts = pause_ticket.("ticket-43")
+typo = HITL.decision(:edit, edited_action: %{name: "issue_refund", args: %{"order_id" => "A-1001", "amount" => "20"}})
+
+MyApp.SupportAgent.resume_review([typo], opts)
+#=> {:error, %BeamWeaver.Core.Error{type: :invalid_human_decision}}
+```
+
+Answer the same review again with a valid edit:
+
+```elixir
+edit = HITL.decision(:edit, edited_action: %{name: "issue_refund", args: %{"order_id" => "A-1001", "amount" => 20}})
+
+MyApp.SupportAgent.resume_review([edit], opts) |> tool_result.()
+#=> "Refunded $20 for order A-1001."
+```
+
+A rejection tells the model why:
+
+```elixir
+opts = pause_ticket.("ticket-44")
+reject = HITL.decision(:reject, message: "Refunds over $20 need a manager. Offer store credit instead.")
+
+MyApp.SupportAgent.resume_review([reject], opts) |> tool_result.()
+#=> "Refunds over $20 need a manager. Offer store credit instead."
+```
+
+Use `:respond` when a person is the real answer to the call, for example an
+`ask_customer` tool that a support agent answers. Decisions can also be plain
+maps, such as the JSON your page sends back:
+
+```elixir
+opts = pause_ticket.("ticket-45")
+decisions = [%{"type" => "respond", "message" => "A manager refunded the order by phone."}]
+
+MyApp.SupportAgent.resume_review(decisions, opts) |> tool_result.()
+#=> "A manager refunded the order by phone."
+```
+
+## Stream a run that pauses
+
+With `stream_events/2` and `live: true`, a pause arrives as a `Debug` event
+whose payload holds the interrupt (see [Streaming](streaming.md)):
+
+```elixir
+alias BeamWeaver.Stream.Events
+
+opts = [checkpointer: saver, config: %{"configurable" => %{"thread_id" => "ticket-46"}}]
+
+{:ok, events} =
+  MyApp.SupportAgent.stream_events(%{messages: ["Please refund $25 for order A-1001."]}, [live: true] ++ opts)
+
+interrupt =
+  Enum.find_value(events, fn
+    %{event: %Events.Debug{payload: %{type: :interrupt, interrupt: interrupt}}} -> interrupt
+    _event -> nil
+  end)
+
+{:ok, review} = HITL.from_interrupt(interrupt)
+hd(review.action_requests).name
+#=> "issue_refund"
+```
+
+Then resume with `resume_review/2` as before.
+
+## Review rules
+
+`interrupt_on` maps tool names to `true` (review every call, all four
+decisions allowed), `false` (never review), or a map of rules. A map of rules
+always turns review on:
+
+```elixir
+interrupt_on %{
+  "issue_refund" => %{
+    allowed_decisions: [:approve, :reject],
+    when: fn call -> call.args["amount"] > 100 end,
+    description: fn call, _state -> "Refund $#{call.args["amount"]} for order #{call.args["order_id"]}?" end
+  }
 }
 ```
 
-`BeamWeaver.Agent.HITL.from_interrupt/1` is optional, but it is useful for
-turning raw interrupt maps into framework-agnostic review structs that Phoenix,
-LiveView, CLI, or API code can render safely.
+| Key | Meaning |
+|---|---|
+| `allowed_decisions` | Which of `:approve`, `:edit`, `:reject` and `:respond` the reviewer may use. All four when you leave it out. |
+| `when` | A function of the tool call (and optionally the state and runtime). The call pauses only when it returns `true`; here, refunds over $100. |
+| `description` | A string, or a function of the call and the state, shown to the reviewer. |
+| `args_schema` | A JSON schema for the arguments. It is passed along in `review_configs` for your edit form, and edits that don't match it are refused on resume, like edits that don't match the tool's own schema. |
 
-{% hint style="info" %}
-**No LangGraph Command Object**
-
-Python examples resume with `Command(resume=...)`. BeamWeaver resume values are
-plain maps, raw decision lists, or `%BeamWeaver.Agent.HITL.Decision{}` structs.
-Use `resume/3` when you already have `%{decisions: [...]}`. Use
-`resume_review/3` when you want BeamWeaver to normalize a raw decision list or
-decision structs for you.
-{% endhint %}
-
-## Resume Decisions
-
-### Approve
-
-Approve the original tool call and continue execution:
+A rule BeamWeaver can't read, such as an empty `allowed_decisions` or an
+unknown decision, fails the agent's call (and `BeamWeaver.Agent.build/1`)
+with an `:invalid_agent` error that says what is wrong, rather than letting
+the tool run without review:
 
 ```elixir
-MyApp.ReviewedAgent.resume(
-  %{decisions: [%{type: :approve}]},
-  checkpointer: checkpointer,
-  config: config
-)
+{:error, error} = BeamWeaver.Agent.build(model: "fake:chat", interrupt_on: %{"issue_refund" => %{allowed_decisions: []}})
+error.message
+#=> "interrupt_on rule for \"issue_refund\" must allow at least one decision"
 ```
 
-### Edit
+A decision that isn't allowed fails the resume with
+`{:error, %BeamWeaver.Core.Error{type: :invalid_human_decision}}`, as does a
+decision list of the wrong length. The review stays pending, so the next
+`resume_review/2` with valid decisions continues the run. Offer only the
+allowed decisions in your UI.
 
-Edit the tool call before execution:
+## Several calls at once
 
-```elixir
-MyApp.ReviewedAgent.resume(
-  %{
-    decisions: [
-      %{
-        type: :edit,
-        edited_action: %{
-          name: "execute_sql",
-          args: %{
-            "query" => "DELETE FROM records WHERE status = 'archived' AND created_at < NOW() - INTERVAL '30 days';"
-          }
-        }
-      }
-    ]
-  },
-  checkpointer: checkpointer,
-  config: config
-)
-```
-
-When `:tools` or `:args_schema` is provided, BeamWeaver validates edited
-arguments before allowing the tool call to continue.
-
-### Reject
-
-Reject the tool call and send feedback to the model as a tool error:
+A model can ask for several tools in one turn. All the calls that need review
+go into one pause, in the order the model made them; the others wait and run
+together with the approved ones:
 
 ```elixir
-MyApp.ReviewedAgent.resume(
-  %{
-    decisions: [
-      %{
-        type: :reject,
-        message: "Do not delete records. Ask for a date range and dry-run count first."
-      }
-    ]
-  },
-  checkpointer: checkpointer,
-  config: config
-)
-```
+defmodule MyApp.Tools.LookupOrder do
+  use BeamWeaver.Tool
 
-### Respond
+  name "lookup_order"
+  description "Look up the shipping status of an order by its id."
 
-Use `:respond` when the tool's real backend is the human reply. BeamWeaver
-skips the tool implementation and returns the human message as a successful tool
-result:
-
-```elixir
-MyApp.ReviewedAgent.resume_review(
-  [
-    HITL.decision(:respond, message: "Blue.")
-  ],
-  checkpointer: checkpointer,
-  config: config
-)
-```
-
-### Multiple Decisions
-
-Provide one decision per pending action, in interrupt order:
-
-```elixir
-%{
-  decisions: [
-    %{type: :approve},
-    %{
-      type: :edit,
-      edited_action: %{
-        name: "send_email",
-        args: %{"to" => "legal@example.com", "subject" => "Review needed"}
-      }
-    },
-    %{type: :reject, message: "This action is not allowed for the current user."}
-  ]
-}
-```
-
-## Subagent Interrupts
-
-Synchronous `BeamWeaver.Agent.Subagent.Spec` subagents are normal BeamWeaver
-agents under the hood. The parent agent's `interrupt_on` configuration is passed
-to generated subagents unless the subagent supplies its own review map:
-
-```elixir
-alias BeamWeaver.Agent.Subagent
-
-BeamWeaver.Agent.build(
-  model: BeamWeaver.Models.init_chat_model!("openai:gpt-5.4"),
-  tools: [MyApp.Tools.DeleteFile, MyApp.Tools.ReadFile],
-  interrupt_on: %{
-    "delete_file" => true,
-    "read_file" => false
-  },
-  subagents: [
-    Subagent.Spec.new(
-      name: "file-manager",
-      description: "Manages file operations.",
-      system_prompt: "Review filesystem work carefully.",
-      tools: [MyApp.Tools.DeleteFile, MyApp.Tools.ReadFile],
-      interrupt_on: %{
-        "delete_file" => true,
-        "read_file" => true
-      }
-    )
-  ],
-  checkpointer: checkpointer
-)
-```
-
-If that subagent triggers a review, the parent run returns the same
-`{:interrupted, interrupt}` shape and resumes with the same thread config.
-
-{% hint style="info" %}
-**Subagent Override Shape**
-
-For `Subagent.Spec`, provide a custom `interrupt_on` map to change child review
-behavior. The current implementation treats `nil` and `false` as inheritance
-for this subagent field, so `false` is not a child-level opt-out from a parent
-policy. To avoid review in a child, provide a narrower map, remove the sensitive
-tool from that child, or use a prebuilt compiled subagent with its own
-middleware stack.
-{% endhint %}
-
-`BeamWeaver.Agent.Subagent.Compiled` uses the agent you provide. Configure HITL
-on that compiled agent directly. Async subagents run behind their own remote
-client; protect supervisor-side async tools such as `start_async_task` or
-`cancel_async_task` with parent `interrupt_on` when those operations need
-approval.
-
-## Streaming With HITL
-
-Use `BeamWeaver.Agent.stream_events/3` when your UI needs live events while the
-agent runs. BeamWeaver does not expose Python's `stream_mode=["updates",
-"messages"]` chunks; it returns typed stream envelopes or an interrupted result
-with the events collected up to the pause.
-
-```elixir
-alias BeamWeaver.Stream.Envelope
-
-case MyApp.ReviewedAgent.stream_events(
-       %{messages: [Message.user("Delete old records from the database.")]},
-       checkpointer: checkpointer,
-       config: config
-     ) do
-  {:interrupted, interrupt} ->
-    IO.inspect(interrupt.value.action_requests, label: "review required")
-
-    for %Envelope{} = envelope <- interrupt.events do
-      IO.inspect(envelope.event, label: "event before interrupt")
-    end
-
-  {:ok, events} ->
-    for %Envelope{} = envelope <- events do
-      IO.inspect(envelope.event, label: "event")
-    end
-end
-```
-
-{% hint style="warning" %}
-**Streaming Resume Shape**
-
-For most application code, call `MyApp.ReviewedAgent.resume/2` or
-`resume_review/2` after the human decision. The stream shape is
-BeamWeaver-specific and does not support LangChain's `version: "v2"` or
-`stream_mode` options.
-{% endhint %}
-
-## Execution Lifecycle
-
-The HITL middleware runs in `after_model`, after the model has produced an AI
-message and before any tool calls execute:
-
-1. The agent calls the model.
-2. The model returns an assistant message, possibly with tool calls.
-3. `HumanInTheLoop` inspects the tool calls against `interrupt_on`.
-4. Matching calls are packaged as `action_requests` and `review_configs`.
-5. The middleware calls `BeamWeaver.Graph.interrupt/1`.
-6. The checkpointer stores the paused graph state.
-7. A resume decision approves, edits, rejects, or responds to each pending
-   action.
-8. Approved and edited actions continue to the tool node. Rejected and responded
-   actions become synthesized tool messages. The graph then continues normally.
-
-## Custom HITL Logic
-
-Prefer `BeamWeaver.Agent.Middleware.HumanInTheLoop` for tool review. For
-specialized graph workflows, you can use the lower-level interrupt primitive
-inside a graph node or custom middleware:
-
-```elixir
-alias BeamWeaver.Graph
-
-approval_node = fn state ->
-  decision =
-    Graph.interrupt(%{
-      question: "Approve deployment?",
-      release: state[:release]
-    })
-
-  %{approved_by_human: decision}
-end
-```
-
-Low-level interrupts are not automatically rendered as HITL review payloads.
-Use the middleware when you want the standard `action_requests`,
-`review_configs`, and decision handling.
-
-## Interrupts In Tools
-
-The recommended BeamWeaver equivalent of LangGraph's "interrupt inside a tool"
-pattern is `BeamWeaver.Agent.Middleware.HumanInTheLoop`. The middleware pauses
-after the model proposes tool calls and before the tool node executes them,
-which keeps approval logic outside business tool implementations and gives you
-consistent `action_requests`, `review_configs`, and decision validation.
-
-```elixir
-middleware do
-  use BeamWeaver.Agent.Middleware.HumanInTheLoop,
-    interrupt_on: %{
-      "send_email" => %{
-        allowed_decisions: [:approve, :edit, :reject],
-        description: "Approve or edit this email before sending."
-      }
-    },
-    tools: [MyApp.Tools.SendEmail]
-end
-```
-
-Calling `BeamWeaver.Graph.interrupt/1` from arbitrary tool code is not a public
-tool API contract. It only works when the tool is executed within a graph task
-that has the interrupt scratchpad installed, and it will not produce the
-standard HITL review payload. Put reusable approval policy in the middleware
-unless you are deliberately writing custom graph runtime code.
-
-## Rules Of Interrupts
-
-Interrupts pause by throwing a private graph control signal. The runtime catches
-that signal, persists the checkpoint, and returns `{:interrupted, interrupt}`.
-When the graph resumes, the node starts again from the beginning and replay
-continues until the interrupted call receives the resume value.
-
-### Do Not Catch The Interrupt Signal
-
-Do not wrap `Graph.interrupt/1` in broad `try/catch` code that catches all
-throws. Catching the control signal prevents the runtime from observing the
-interrupt.
-
-Good shape:
-
-```elixir
-node = fn state ->
-  decision = BeamWeaver.Graph.interrupt("Approve?")
-
-  case MyApp.External.call(decision) do
-    {:ok, result} -> %{result: result}
-    {:error, reason} -> %{error: inspect(reason)}
-  end
-end
-```
-
-Risky shape:
-
-```elixir
-node = fn _state ->
-  try do
-    BeamWeaver.Graph.interrupt("Approve?")
-  catch
-    _kind, _value ->
-      %{error: "caught graph control signal"}
-  end
-end
-```
-
-### Keep Interrupt Order Stable
-
-Within a single node, resume values are matched to interrupt calls by the order
-in which that node reaches them. Keep the sequence stable across executions:
-
-```elixir
-node = fn _state ->
-  name = BeamWeaver.Graph.interrupt("What is your name?")
-  age = BeamWeaver.Graph.interrupt("What is your age?")
-  city = BeamWeaver.Graph.interrupt("What is your city?")
-
-  %{name: name, age: age, city: city}
-end
-```
-
-Avoid conditionally skipping interrupts or looping over data whose length may
-change between the original run and a resume.
-
-### Keep Payloads Serializable
-
-Interrupt values and resume values should be simple data: maps, lists, strings,
-numbers, booleans, and `nil`. Do not put functions, PIDs, ports, anonymous
-references, or application structs that your checkpointer cannot serialize into
-interrupt payloads.
-
-### Make Earlier Side Effects Idempotent
-
-Code before an interrupt runs again on resume. If a node writes to an external
-database, filesystem, queue, email provider, or payment service before it calls
-`Graph.interrupt/1`, make that side effect idempotent or move it after the
-interrupt.
-
-Safer shape:
-
-```elixir
-node = fn state ->
-  approved = BeamWeaver.Graph.interrupt("Create audit log?")
-
-  if approved do
-    MyApp.Audit.upsert_event!(state.event_id, state.audit_payload)
+  schema do
+    field :order_id, :string, description: "The order id"
   end
 
-  %{approved: approved}
+  @impl true
+  def invoke(_tool, %{"order_id" => order_id}, _opts), do: {:ok, "Order #{order_id} shipped on Monday."}
 end
-```
 
-## Using With Subgraphs
-
-If a parent node invokes a subgraph and the subgraph interrupts, BeamWeaver
-stores checkpoint namespace metadata so the parent can resume the child
-checkpoint. The parent graph is resumed with the same top-level thread config:
-
-```elixir
-{:interrupted, interrupt} =
-  BeamWeaver.Graph.Compiled.invoke(parent_graph, input, config: config)
-
-{:ok, state} =
-  BeamWeaver.Graph.Compiled.resume(
-    parent_graph,
-    %{interrupt.id => "approved"},
-    config: config
-  )
-```
-
-As with ordinary nodes, code before the interrupted point may run again. Keep
-parent-node setup work and child-node setup work deterministic or idempotent.
-
-## Static Breakpoints
-
-Static breakpoints pause before or after named nodes. They are useful for
-debugging and state inspection, not for product HITL workflows where the pause
-condition belongs in application logic.
-
-Compile a graph with `interrupt_before:` or `interrupt_after:`:
-
-```elixir
-graph =
-  Graph.new(name: "DebuggableFlow")
-  |> Graph.add_node(:load, load)
-  |> Graph.add_node(:process, process)
-  |> Graph.add_edge(:load, :process)
-  |> Graph.add_edge(Graph.start(), :load)
-  |> Graph.add_edge(:process, Graph.end_node())
-  |> Graph.compile!(
-    checkpointer: checkpointer,
-    interrupt_before: [:process]
-  )
-
-{:interrupted, breakpoint} =
-  Compiled.invoke(graph, %{input: "data"}, config: config)
-
-breakpoint.timing
-#=> :before
-
-{:ok, state} =
-  Compiled.resume(graph, nil, config: config)
-```
-
-The agent DSL exposes the same idea:
-
-```elixir
-defmodule MyApp.DebugAgent do
+defmodule MyApp.SupportAgent do
   use BeamWeaver.Agent
 
-  interrupt_before [:model]
-  interrupt_after [:tools]
+  alias BeamWeaver.Models.FakeChatModel
+
+  model "fake:chat",
+    responses: [
+      FakeChatModel.tool_calls([
+        {"lookup_order", %{"order_id" => "A-1001"}},
+        {"issue_refund", %{"order_id" => "A-1001", "amount" => 25}},
+        {"issue_refund", %{"order_id" => "A-1002", "amount" => 300}}
+      ]),
+      "I refunded order A-1001. A manager will look at order A-1002."
+    ]
+
+  tools [MyApp.Tools.LookupOrder, MyApp.Tools.IssueRefund]
+
+  interrupt_on %{
+    "issue_refund" => %{
+      allowed_decisions: [:approve, :reject],
+      description: fn call, _state -> "Refund $#{call.args["amount"]} for order #{call.args["order_id"]}?" end
+    }
+  }
+end
+
+opts = [checkpointer: saver, config: %{"configurable" => %{"thread_id" => "ticket-47"}}]
+
+{:interrupted, interrupt} =
+  MyApp.SupportAgent.invoke(%{messages: ["Refund orders A-1001 and A-1002, please."]}, opts)
+
+{:ok, review} = HITL.from_interrupt(interrupt)
+Enum.map(review.action_requests, & &1.description)
+#=> ["Refund $25 for order A-1001?", "Refund $300 for order A-1002?"]
+```
+
+Give one decision per request, in the same order:
+
+```elixir
+decisions = [HITL.decision(:approve), HITL.decision(:reject, message: "Over the $100 limit.")]
+{:ok, result} = MyApp.SupportAgent.resume_review(decisions, opts)
+
+for %{role: :tool} = message <- result.messages, do: BeamWeaver.Core.Message.text(message)
+#=> ["Over the $100 limit.", "Order A-1001 shipped on Monday.", "Refunded $25 for order A-1001."]
+```
+
+## A checkpointer is required
+
+A paused run lives in its checkpoint, so `interrupt_on` refuses to run without
+a checkpointer:
+
+```elixir
+MyApp.SupportAgent.invoke(%{messages: ["Refund orders A-1001 and A-1002, please."]})
+#=> {:error, %BeamWeaver.Core.Error{type: :missing_checkpointer}}
+```
+
+Resume with the same checkpointer and `thread_id` that paused the run.
+`Checkpoint.ETS` keeps runs in memory, which suits tests and development. In
+production use `BeamWeaver.Checkpoint.Ecto`, so a review can wait through
+restarts and deploys; `get_state/1` shows a thread's pending pauses at any
+time. See [Checkpoints and Time Travel](checkpoints.md).
+
+## Pause a graph node
+
+In a graph, call `BeamWeaver.Graph.interrupt/1` inside a node to pause and
+hand a value to the caller. The value you pass to `resume/2` becomes the
+return value of `Graph.interrupt/1`:
+
+```elixir
+defmodule MyApp.TicketTriage do
+  use BeamWeaver.Agent
+
+  alias BeamWeaver.Graph
+
+  def graph do
+    Graph.new()
+    |> Graph.add_node(:draft, &draft/1)
+    |> Graph.add_node(:review, &review/1)
+    |> Graph.add_node(:send, &send_reply/1)
+    |> Graph.add_edge(Graph.start(), :draft)
+    |> Graph.add_edge(:draft, :review)
+    |> Graph.add_edge(:review, :send)
+    |> Graph.add_edge(:send, Graph.end_node())
+  end
+
+  def draft(%{order_id: order_id}), do: %{reply: "We refunded order #{order_id}."}
+
+  def review(%{reply: reply}) do
+    %{reply: Graph.interrupt(%{question: "Send this reply?", reply: reply})}
+  end
+
+  def send_reply(%{reply: reply}), do: %{sent: reply}
+end
+
+opts = [checkpointer: saver, config: %{"configurable" => %{"thread_id" => "ticket-50"}}]
+
+{:interrupted, interrupt} = MyApp.TicketTriage.invoke(%{order_id: "A-1001"}, opts)
+interrupt.value
+#=> %{question: "Send this reply?", reply: "We refunded order A-1001."}
+```
+
+Here the person edits the reply before it goes out:
+
+```elixir
+{:ok, state} = MyApp.TicketTriage.resume("We refunded order A-1001. Expect it within 5 days.", opts)
+state.sent
+#=> "We refunded order A-1001. Expect it within 5 days."
+```
+
+Keep these rules in mind:
+
+- On resume the node runs again from the top, so code before
+  `Graph.interrupt/1` runs twice. Make it safe to repeat, or move side
+  effects after the interrupt.
+- A node may pause several times. Answers are matched to calls by order, so
+  call `Graph.interrupt/1` in the same order on every run.
+- `Graph.interrupt/1` pauses by throwing. Don't wrap it in a `try` that
+  catches everything.
+- Use plain data for the payload and the answer; both are saved in the
+  checkpoint.
+- `Graph.interrupt/1` works in graph nodes, not inside tools. To let a person
+  answer a tool call, use `interrupt_on` and a `:respond` decision.
+
+## Several pauses at once
+
+Parallel branches can pause in the same step. Then `invoke/2` reports one of
+the interrupts, `get_state/1` lists them all, and a single resume value is
+rejected with `{:error, %BeamWeaver.Core.Error{type: :invalid_resume}}`.
+Answer them with a map from interrupt id to value. The map works for a single
+pause too:
+
+```elixir
+opts = [checkpointer: saver, config: %{"configurable" => %{"thread_id" => "ticket-51"}}]
+{:interrupted, _interrupt} = MyApp.TicketTriage.invoke(%{order_id: "A-1002"}, opts)
+
+{:ok, snapshot} = MyApp.TicketTriage.get_state(opts)
+answers = Map.new(snapshot.interrupts, &{&1.id, "We refunded order A-1002."})
+
+{:ok, state} = MyApp.TicketTriage.resume(answers, opts)
+state.sent
+#=> "We refunded order A-1002."
+```
+
+In this map a `nil` value means "no answer yet", and that branch pauses
+again. To answer with `nil`, use `BeamWeaver.Graph.null_resume/0`.
+
+## Pause before or after a step
+
+`interrupt_before` and `interrupt_after` pause a run around whole steps,
+without code in a node: before every tool round, for example, so a person can
+look at the calls first. An agent's steps are `:model` and `:tools`. A graph's
+steps are its nodes, declared the same way in a graph module or passed to
+`Graph.compile!/2`:
+
+```elixir
+defmodule MyApp.CarefulAgent do
+  use BeamWeaver.Agent
+
+  alias BeamWeaver.Models.FakeChatModel
+
+  model "fake:chat",
+    responses: [
+      FakeChatModel.tool_call("issue_refund", %{"order_id" => "A-1001", "amount" => 25}),
+      "Your refund for order A-1001 is on its way."
+    ]
+
+  tools [MyApp.Tools.IssueRefund]
+  interrupt_before [:tools]
+end
+
+opts = [checkpointer: saver, config: %{"configurable" => %{"thread_id" => "ticket-52"}}]
+
+{:interrupted, interrupt} =
+  MyApp.CarefulAgent.invoke(%{messages: ["Please refund $25 for order A-1001."]}, opts)
+
+{interrupt.timing, interrupt.nodes}
+#=> {:before, ["tools"]}
+```
+
+A breakpoint has no review to answer: `resume/2` with `nil` continues the run
+past it, and the run pauses again the next time it reaches the tools:
+
+```elixir
+{:ok, result} = MyApp.CarefulAgent.resume(nil, opts)
+
+result.messages |> List.last() |> BeamWeaver.Core.Message.text()
+#=> "Your refund for order A-1001 is on its way."
+```
+
+To change the state before the run continues, for example to correct the
+tool call, use `BeamWeaver.Graph.Compiled.update_state/4` (see
+[Checkpoints and Time Travel](checkpoints.md#update-state-from-outside-a-run)).
+
+## Subgraphs and subagents
+
+A graph that runs as a node of another graph can pause too: the parent
+returns `{:interrupted, interrupt}` and you resume the parent with the same
+thread. See [Subgraphs](subgraphs.md).
+
+Subagents pause the same way. When a subagent's tool needs review, the
+parent returns `{:interrupted, interrupt}` with the subagent's review, and
+`resume_review/2` on the parent resumes the subagent. A subagent uses the
+parent's `interrupt_on` rules unless it has its own, and a parent whose
+subagents, or their own subagents, review tools needs a checkpointer; see
+[Subagents](subagents.md#human-review).
+
+## A review flow for your app
+
+A small module can own the whole loop. A controller or LiveView calls `ask/2`
+when a message arrives, shows a `{:review, review}` result as a card with a
+button per allowed decision, and calls `decide/2` with the person's choice:
+
+```elixir
+defmodule MyApp.RefundDesk do
+  alias BeamWeaver.Agent.HITL
+  alias BeamWeaver.Core.Message
+
+  def ask(ticket_id, question) do
+    MyApp.SupportAgent.invoke(%{messages: [question]}, opts(ticket_id)) |> present()
+  end
+
+  # `decisions` can come straight from JSON: [%{"type" => "approve"}]
+  def decide(ticket_id, decisions) do
+    MyApp.SupportAgent.resume_review(decisions, opts(ticket_id)) |> present()
+  end
+
+  defp present({:interrupted, interrupt}) do
+    {:ok, review} = HITL.from_interrupt(interrupt)
+    {:review, HITL.to_map(review)}
+  end
+
+  defp present({:ok, state}), do: {:answer, state.messages |> List.last() |> Message.text()}
+  defp present({:error, error}), do: {:error, error}
+
+  defp opts(ticket_id) do
+    [
+      checkpointer: BeamWeaver.Checkpoint.Ecto.new(repo: MyApp.Repo),
+      config: %{"configurable" => %{"thread_id" => ticket_id}}
+    ]
+  end
 end
 ```
 
-BeamWeaver supports compile-time static breakpoints. It does not expose
-LangGraph's per-invocation `interrupt_before` or `interrupt_after` arguments.
+Use the ticket id as the thread id, so each conversation keeps its own
+history and its own pending review. Record who decided what in your own
+tables if you need an audit trail.
 
-{% hint style="info" %}
-**Dynamic Interrupts For HITL**
+## Reference
 
-Use `BeamWeaver.Graph.interrupt/1` or `HumanInTheLoop` middleware for user-facing
-human review. Static breakpoints are a developer debugging tool.
-{% endhint %}
+- [`BeamWeaver.Agent`](https://hexdocs.pm/beam_weaver/BeamWeaver.Agent.html): `interrupt_on`, `resume/3`, `resume_review/3` and `get_state/2`
+- [`BeamWeaver.Agent.HITL`](https://hexdocs.pm/beam_weaver/BeamWeaver.Agent.HITL.html): reviews, decisions and `to_map/1`
+- [`BeamWeaver.Agent.Middleware.HumanInTheLoop`](https://hexdocs.pm/beam_weaver/BeamWeaver.Agent.Middleware.HumanInTheLoop.html): the middleware behind `interrupt_on`
+- [`BeamWeaver.Graph`](https://hexdocs.pm/beam_weaver/BeamWeaver.Graph.html): `interrupt/1` and `null_resume/0`
+- [`BeamWeaver.Graph.Interrupt`](https://hexdocs.pm/beam_weaver/BeamWeaver.Graph.Interrupt.html): a pending interrupt
+- [`BeamWeaver.Checkpoint.Ecto`](https://hexdocs.pm/beam_weaver/BeamWeaver.Checkpoint.Ecto.html): durable checkpoints for production

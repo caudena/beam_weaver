@@ -3,6 +3,8 @@ defmodule BeamWeaver.Transport.Request do
   Transport request passed to live and replay providers.
   """
 
+  use BeamWeaver.Provider.RedactedInspect
+
   @enforce_keys [:method, :url]
   defstruct method: :get,
             url: nil,

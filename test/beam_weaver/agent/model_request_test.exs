@@ -58,15 +58,7 @@ defmodule BeamWeaver.Agent.ModelRequestTest do
     assert Enum.at(request.system_message.content, 1).cache_control == %{"type" => "ephemeral"}
   end
 
-  test "string-key overrides do not create arbitrary atom fields" do
-    request =
-      ModelRequest.new()
-      |> ModelRequest.override(%{
-        "system_prompt" => "From string key",
-        "unknown_runtime_key" => "ignored"
-      })
-
-    assert ModelRequest.system_prompt(request) == "From string key"
-    refute Map.has_key?(request, :unknown_runtime_key)
+  test "override rejects unknown fields" do
+    assert_raise KeyError, fn -> ModelRequest.override(ModelRequest.new(), unknown_runtime_key: "x") end
   end
 end

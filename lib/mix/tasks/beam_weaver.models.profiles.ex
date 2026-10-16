@@ -14,6 +14,8 @@ defmodule Mix.Tasks.BeamWeaver.Models.Profiles do
   interactive prompt.
   """
 
+  import BeamWeaver.MapShape, only: [put_present: 3]
+
   use Mix.Task
 
   alias BeamWeaver.JSON
@@ -55,7 +57,7 @@ defmodule Mix.Tasks.BeamWeaver.Models.Profiles do
           Mix.shell().yes?("Write model profiles outside current directory?\nCurrent: #{current}\nTarget: #{target}")
         end
       ]
-      |> maybe_put(:source_path, opts[:source_json])
+      |> put_present(:source_path, opts[:source_json])
 
     case ProfileRefresh.refresh(provider, data_dir, refresh_opts) do
       {:ok, %{path: path, profiles: profiles}} ->
@@ -75,7 +77,7 @@ defmodule Mix.Tasks.BeamWeaver.Models.Profiles do
 
     if opts[:json] do
       profiles
-      |> Enum.map(&profile_json/1)
+      |> Enum.map(&BeamWeaver.Models.ProfileRefresh.profile_json/1)
       |> JSON.encode!(pretty: true)
       |> Mix.shell().info()
     else
@@ -84,9 +86,6 @@ defmodule Mix.Tasks.BeamWeaver.Models.Profiles do
       |> Mix.shell().info()
     end
   end
-
-  defp maybe_put(opts, _key, nil), do: opts
-  defp maybe_put(opts, key, value), do: Keyword.put(opts, key, value)
 
   defp profile_line(profile) do
     capabilities =
@@ -107,22 +106,6 @@ defmodule Mix.Tasks.BeamWeaver.Models.Profiles do
 
     "#{profile.provider}:#{profile.id} #{profile.name} [#{capabilities}]"
   end
-
-  defp profile_json(profile) do
-    profile
-    |> Map.from_struct()
-    |> normalize_json()
-  end
-
-  defp normalize_json(map) when is_map(map) do
-    Map.new(map, fn {key, value} -> {to_string(key), normalize_json(value)} end)
-  end
-
-  defp normalize_json(values) when is_list(values), do: Enum.map(values, &normalize_json/1)
-  defp normalize_json(nil), do: nil
-  defp normalize_json(value) when is_boolean(value), do: value
-  defp normalize_json(value) when is_atom(value), do: Atom.to_string(value)
-  defp normalize_json(value), do: value
 
   defp provider_atom!(provider) do
     Enum.find(ProfileRegistry.providers(), &(Atom.to_string(&1) == provider)) ||

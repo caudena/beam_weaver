@@ -1,6 +1,10 @@
 defmodule BeamWeaver.Transport.Cassette do
   @moduledoc """
-  Replay cassette loaded from Python VCR-style YAML.
+  Replay cassette of recorded HTTP interactions, loaded from VCR-style YAML.
+
+  The file (optionally gzipped) holds one YAML document with matching
+  `requests` and `responses` lists. `match/2` finds a recorded response by
+  method, URL and body.
   """
 
   alias BeamWeaver.Transport.Error
@@ -87,7 +91,7 @@ defmodule BeamWeaver.Transport.Cassette do
   end
 
   defp parse_yaml(contents) do
-    documents = :yamerl_constr.string(String.to_charlist(contents))
+    documents = :yamerl_constr.string(String.to_charlist(contents), str_node_as_binary: true, map_node_format: :map)
 
     case documents do
       [document] ->
@@ -102,6 +106,10 @@ defmodule BeamWeaver.Transport.Cassette do
        Error.new(:invalid_cassette, "cassette YAML could not be parsed", %{
          reason: Exception.message(error)
        })}
+  catch
+    # yamerl throws its parse errors.
+    :throw, {:yamerl_exception, errors} ->
+      {:error, Error.new(:invalid_cassette, "cassette YAML could not be parsed", %{reason: inspect(errors)})}
   end
 
   defp interactions(%{"requests" => requests, "responses" => responses})
@@ -192,19 +200,12 @@ defmodule BeamWeaver.Transport.Cassette do
   defp wildcard_redacted("**REDACTED**"), do: nil
   defp wildcard_redacted(value), do: value
 
-  defp normalize_yaml(value) when is_list(value) do
-    cond do
-      printable_charlist?(value) ->
-        List.to_string(value)
+  # Strings come back as binaries and mappings as maps, so an empty string, an
+  # empty list and a list of integers each keep their type.
+  defp normalize_yaml(value) when is_map(value),
+    do: Map.new(value, fn {key, map_value} -> {to_string(key), normalize_yaml(map_value)} end)
 
-      keywordish?(value) ->
-        Map.new(value, fn {key, map_value} -> {to_string(key), normalize_yaml(map_value)} end)
-
-      true ->
-        Enum.map(value, &normalize_yaml/1)
-    end
-  end
-
+  defp normalize_yaml(value) when is_list(value), do: Enum.map(value, &normalize_yaml/1)
   defp normalize_yaml(value) when is_binary(value), do: value
   defp normalize_yaml(value) when is_integer(value), do: value
   defp normalize_yaml(value) when is_float(value), do: value
@@ -212,12 +213,4 @@ defmodule BeamWeaver.Transport.Cassette do
   defp normalize_yaml(false), do: false
   defp normalize_yaml(:null), do: nil
   defp normalize_yaml(value) when is_atom(value), do: to_string(value)
-
-  defp keywordish?(values) do
-    Enum.all?(values, &match?({_key, _value}, &1))
-  end
-
-  defp printable_charlist?(values) do
-    values != [] and Enum.all?(values, &is_integer/1)
-  end
 end

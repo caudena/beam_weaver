@@ -2,13 +2,17 @@ defmodule BeamWeaver.Agent.Middleware.HumanInTheLoop do
   @moduledoc """
   Human review middleware for agent tool calls.
 
-  The middleware mirrors LangChain's human-in-the-loop behavior at the semantic
-  level: after the model emits tool calls, reviewable calls are batched into a
-  single graph interrupt. On resume, decisions approve, edit, reject, or respond
-  to each interrupted call while preserving the original tool-call IDs.
+  After the model emits tool calls, reviewable calls are batched into a single
+  graph interrupt. On resume, decisions approve, edit, reject, or respond to
+  each interrupted call while preserving the original tool-call IDs.
+
+  `interrupt_on` maps tool names to `true`, `false`, or a map of rules. A rule
+  map always turns review on: it allows all four decisions unless
+  `allowed_decisions` lists fewer. Edited arguments must match the rule's
+  `args_schema`, when it has one, and the tool's own input schema.
   """
 
-  @behaviour BeamWeaver.Agent.Middleware
+  use BeamWeaver.Agent.Middleware
 
   alias BeamWeaver.Agent.State
   alias BeamWeaver.Core.Error
@@ -19,12 +23,12 @@ defmodule BeamWeaver.Agent.Middleware.HumanInTheLoop do
   @decisions [:approve, :edit, :reject, :respond]
 
   defmodule ActionRequest do
-    @moduledoc "Typed HITL action request for application UIs."
+    @moduledoc false
     defstruct [:name, args: %{}, description: nil]
   end
 
   defmodule ReviewConfig do
-    @moduledoc "Typed HITL review config for one action request."
+    @moduledoc false
     defstruct [:action_name, allowed_decisions: [], args_schema: nil]
   end
 
@@ -34,7 +38,7 @@ defmodule BeamWeaver.Agent.Middleware.HumanInTheLoop do
   end
 
   defmodule ValidationError do
-    @moduledoc "Typed HITL validation error payload."
+    @moduledoc false
     defstruct [:message, details: %{}]
   end
 
@@ -50,6 +54,19 @@ defmodule BeamWeaver.Agent.Middleware.HumanInTheLoop do
           tools: map()
         }
 
+  @doc """
+  Builds the middleware. Agents build it from their `interrupt_on`
+  declaration.
+
+    * `:interrupt_on` - tool names mapped to `true`, `false` or a map of
+      rules with `allowed_decisions`, `when`, `description` and `args_schema`.
+    * `:interrupt_mode` - `:all` (the default) puts every matching call of a
+      model turn in one review; `:first` reviews only the first one.
+    * `:description_prefix` - the first line of the default description.
+
+  Raises `ArgumentError` for a rule it can't read, such as an unknown
+  decision, rather than skipping the review.
+  """
   @spec new(keyword()) :: t()
   def new(opts \\ []) do
     interrupt_on =
@@ -65,12 +82,24 @@ defmodule BeamWeaver.Agent.Middleware.HumanInTheLoop do
     }
   end
 
+  # The agent compiler hands the agent's tools to every review middleware, so
+  # edited arguments can be checked against the tool's own input schema.
+  @doc false
+  @spec bind_tools([term()], [term()]) :: [term()]
+  def bind_tools(middleware, tools) when is_list(middleware) do
+    Enum.map(middleware, fn
+      %__MODULE__{} = review -> %{review | tools: Map.merge(tool_map(tools), review.tools)}
+      other -> other
+    end)
+  end
+
   @impl true
   def name(_middleware), do: :human_in_the_loop
 
   @impl true
   def requires_checkpointer?(_middleware), do: true
 
+  @impl true
   def after_model(%__MODULE__{} = middleware, state, runtime) do
     with {:ok, messages} <- state_messages(state) do
       case last_ai_message(messages) do
@@ -301,21 +330,20 @@ defmodule BeamWeaver.Agent.Middleware.HumanInTheLoop do
   end
 
   defp validate_edited_args(middleware, edited_call, config) do
-    schema =
-      Map.get(config, :args_schema) ||
-        case Map.fetch(middleware.tools, edited_call.name) do
-          {:ok, tool} -> Tool.raw_input_schema(tool)
-          :error -> nil
-        end
-
-    if is_map(schema) do
-      case Tool.validate_input(schema, edited_call.args) do
-        :ok -> :ok
-        {:error, %Error{} = error} -> {:error, %{error | type: :invalid_human_decision}}
+    tool_schema =
+      case Map.fetch(middleware.tools, edited_call.name) do
+        {:ok, tool} -> Tool.input_schema(tool)
+        :error -> nil
       end
-    else
-      :ok
-    end
+
+    [Map.get(config, :args_schema), tool_schema]
+    |> Enum.filter(&is_map/1)
+    |> Enum.reduce_while(:ok, fn schema, :ok ->
+      case Tool.validate_input(schema, edited_call.args) do
+        :ok -> {:cont, :ok}
+        {:error, %Error{} = error} -> {:halt, {:error, %{error | type: :invalid_human_decision}}}
+      end
+    end)
   end
 
   defp reject_message(decision, call) do
@@ -361,42 +389,77 @@ defmodule BeamWeaver.Agent.Middleware.HumanInTheLoop do
   end
 
   defp normalize_interrupt_on(interrupt_on) when is_map(interrupt_on) do
-    Map.new(interrupt_on, fn {tool_name, config} ->
-      {to_string(tool_name), normalize_config(config)}
-    end)
+    interrupt_on
+    |> Enum.map(fn {tool_name, config} -> {to_string(tool_name), normalize_config(tool_name, config)} end)
     |> Enum.reject(fn {_tool, config} -> is_nil(config) end)
     |> Map.new()
   end
 
-  defp normalize_interrupt_on(_interrupt_on), do: %{}
+  defp normalize_interrupt_on(interrupt_on) when is_list(interrupt_on) do
+    if Enum.all?(interrupt_on, &match?({_tool, _config}, &1)),
+      do: interrupt_on |> Map.new() |> normalize_interrupt_on(),
+      else: invalid_interrupt_on!(interrupt_on)
+  end
 
-  defp normalize_config(true), do: %{allowed_decisions: @decisions}
-  defp normalize_config(false), do: nil
-  defp normalize_config(nil), do: nil
+  defp normalize_interrupt_on(value) when value in [nil, false], do: %{}
+  defp normalize_interrupt_on(interrupt_on), do: invalid_interrupt_on!(interrupt_on)
 
-  defp normalize_config(config) when is_list(config),
-    do: config |> Map.new() |> normalize_config()
+  defp invalid_interrupt_on!(interrupt_on) do
+    raise ArgumentError,
+          "interrupt_on must map tool names to true, false or a map of rules, got #{inspect(interrupt_on)}"
+  end
 
-  defp normalize_config(config) when is_map(config) do
-    allowed =
-      config
-      |> Map.get(:allowed_decisions, Map.get(config, "allowed_decisions", []))
-      |> List.wrap()
-      |> Enum.map(&decision_atom/1)
-      |> Enum.filter(&(&1 in @decisions))
+  # A rule map turns review on, like `true`; `allowed_decisions` only narrows
+  # what the reviewer may answer.
+  defp normalize_config(_tool, value) when value in [false, nil], do: nil
+  defp normalize_config(tool, true), do: normalize_config(tool, %{})
 
-    if allowed == [] do
-      nil
-    else
-      %{
-        :when => Map.get(config, :when, Map.get(config, "when")),
-        allowed_decisions: allowed,
-        description: Map.get(config, :description, Map.get(config, "description")),
-        args_schema: Map.get(config, :args_schema, Map.get(config, "args_schema")),
-        predicate: Map.get(config, :predicate, Map.get(config, "predicate"))
-      }
+  defp normalize_config(tool, config) when is_list(config) do
+    if Keyword.keyword?(config),
+      do: normalize_config(tool, Map.new(config)),
+      else: invalid_rule!(tool, config)
+  end
+
+  defp normalize_config(tool, config) when is_map(config) do
+    %{
+      :when => rule_value(config, :when),
+      allowed_decisions: allowed_decisions!(tool, rule_value(config, :allowed_decisions)),
+      description: rule_value(config, :description),
+      args_schema: rule_value(config, :args_schema),
+      predicate: rule_value(config, :predicate)
+    }
+  end
+
+  defp normalize_config(tool, config), do: invalid_rule!(tool, config)
+
+  defp allowed_decisions!(_tool, nil), do: @decisions
+
+  defp allowed_decisions!(tool, decisions) do
+    decisions = List.wrap(decisions)
+    unknown = Enum.reject(decisions, &decision_atom/1)
+
+    cond do
+      decisions == [] ->
+        raise ArgumentError,
+              "interrupt_on rule for #{inspect(to_string(tool))} must allow at least one decision"
+
+      unknown != [] ->
+        raise ArgumentError,
+              "interrupt_on rule for #{inspect(to_string(tool))} has unknown decisions " <>
+                "#{inspect(unknown)}; use :approve, :edit, :reject or :respond"
+
+      true ->
+        decisions |> Enum.map(&decision_atom/1) |> Enum.uniq()
     end
   end
+
+  defp invalid_rule!(tool, config) do
+    raise ArgumentError,
+          "interrupt_on rule for #{inspect(to_string(tool))} must be true, false or a map of rules, " <>
+            "got #{inspect(config)}"
+  end
+
+  defp rule_value(config, key), do: Map.get(config, key, Map.get(config, Atom.to_string(key)))
 
   defp normalize_interrupt_mode!(mode) when mode in [:all, "all", :batch, "batch"], do: :all
   defp normalize_interrupt_mode!(mode) when mode in [:first, "first"], do: :first
@@ -408,21 +471,13 @@ defmodule BeamWeaver.Agent.Middleware.HumanInTheLoop do
     tools
     |> List.wrap()
     |> Map.new(fn tool -> {Tool.name(tool), tool} end)
-  rescue
-    _exception -> %{}
   end
 
   defp decision_type(decision),
     do: decision_atom(Map.get(decision, :type, Map.get(decision, "type")))
 
   defp decision_atom(value) when value in @decisions, do: value
-
-  defp decision_atom(value) when is_binary(value) do
-    String.to_existing_atom(value)
-  rescue
-    ArgumentError -> nil
-  end
-
+  defp decision_atom(value) when is_binary(value), do: Enum.find(@decisions, &(Atom.to_string(&1) == value))
   defp decision_atom(_value), do: nil
 
   defp decision_message(%Decision{message: message}), do: message

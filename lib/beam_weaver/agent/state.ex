@@ -1,11 +1,14 @@
 defmodule BeamWeaver.Agent.State do
   @moduledoc false
 
+  alias BeamWeaver.Graph.Command
+
   @core_keys [
     :messages,
     :remaining_steps,
     :jump_to,
     :tool_set,
+    :tool_set_names,
     :usage,
     :structured_response,
     :raw_input
@@ -13,8 +16,16 @@ defmodule BeamWeaver.Agent.State do
 
   @string_key_aliases Map.new(@core_keys, fn key -> {Atom.to_string(key), key} end)
 
-  @spec project(map(), map() | nil) :: map()
-  def project(input, schema \\ nil) when is_map(input) do
+  @spec project(map() | Command.t(), map() | nil) :: map() | Command.t()
+  def project(input, schema \\ nil)
+
+  # A command continues the thread; only its state update is agent input.
+  def project(%Command{update: update} = command, schema) when is_map(update) and not is_struct(update),
+    do: %{command | update: project(update, schema)}
+
+  def project(%Command{} = command, _schema), do: command
+
+  def project(input, schema) when is_map(input) do
     known_keys = schema_keys(schema)
 
     projected =

@@ -44,7 +44,7 @@ jobs:
         run: mix deps.get
 
       - name: Build HexDocs
-        run: mix docs
+        run: mix docs --warnings-as-errors
 
   package:
     runs-on: ubuntu-latest

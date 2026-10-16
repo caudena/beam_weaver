@@ -1,9 +1,9 @@
 defmodule BeamWeaver.TimeoutPolicy do
   @moduledoc """
-  Native timeout policy for graph node/task attempts.
+  Timeout policy for graph node/task attempts.
 
-  BeamWeaver stores timeout durations as milliseconds to match OTP APIs. Float
-  inputs are treated as seconds for LangGraph-style interop.
+  BeamWeaver stores timeout durations as milliseconds to match OTP APIs.
+  Integer inputs are milliseconds; float inputs are treated as seconds.
   """
 
   alias BeamWeaver.Core.Error
@@ -85,10 +85,10 @@ defmodule BeamWeaver.TimeoutPolicy do
   @doc """
   Returns the effective BEAM task timeout for a policy.
 
-  LangGraph exposes separate run and idle budgets. BeamWeaver executes graph
-  nodes as supervised BEAM tasks, so the public graph boundary uses the earliest
-  configured budget as the hard task timeout. Step and graph run budgets remain
-  separate `Compiled` execution options.
+  A policy can set separate run and idle budgets. Graph nodes run as supervised
+  BEAM tasks with a single hard timeout, so this returns the smaller of the
+  configured budgets. Step and graph run budgets remain separate `Compiled`
+  execution options.
   """
   @spec effective_timeout(t() | keyword() | map() | number() | nil) ::
           {:ok, pos_integer() | nil} | {:error, Error.t()}

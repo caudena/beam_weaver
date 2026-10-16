@@ -21,7 +21,7 @@ defmodule BeamWeaver.TextSplitter.Shared do
   end
 
   def normalize_opts(opts, defaults \\ []) do
-    opts = normalize_aliases(opts)
+    opts = maybe_put_separator(opts)
 
     common_fields()
     |> Keyword.merge(defaults)
@@ -32,33 +32,6 @@ defmodule BeamWeaver.TextSplitter.Shared do
     case Keyword.fetch(opts, :separator) do
       {:ok, separator} ->
         opts |> Keyword.delete(:separator) |> Keyword.put(:separators, [separator])
-
-      :error ->
-        opts
-    end
-  end
-
-  defp normalize_aliases(opts) do
-    opts
-    |> maybe_put_separator()
-    |> maybe_put_regex_flag()
-    |> maybe_put_max_chunk_size()
-  end
-
-  defp maybe_put_regex_flag(opts) do
-    case Keyword.fetch(opts, :is_separator_regex) do
-      {:ok, value} ->
-        opts |> Keyword.delete(:is_separator_regex) |> Keyword.put(:separator_regex?, value)
-
-      :error ->
-        opts
-    end
-  end
-
-  defp maybe_put_max_chunk_size(opts) do
-    case Keyword.fetch(opts, :max_chunk_size) do
-      {:ok, size} ->
-        opts |> Keyword.delete(:max_chunk_size) |> Keyword.put(:chunk_size, size)
 
       :error ->
         opts
@@ -162,14 +135,14 @@ defmodule BeamWeaver.TextSplitter.Shared do
 
         metadata = Map.put(document.metadata, :start_index, start)
 
-        {next_position, [Document.new!(chunk, id: document.id, metadata: metadata) | acc]}
+        {next_position, [Document.new!(chunk, metadata: metadata) | acc]}
       end)
 
     Enum.reverse(docs)
   end
 
   def chunks_to_documents(chunks, %Document{} = document, _add_start_index?) do
-    Enum.map(chunks, &Document.new!(&1, id: document.id, metadata: document.metadata))
+    Enum.map(chunks, &Document.new!(&1, metadata: document.metadata))
   end
 
   def strip_markup(text) do

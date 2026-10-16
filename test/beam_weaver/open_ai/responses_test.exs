@@ -226,25 +226,29 @@ defmodule BeamWeaver.OpenAI.ResponsesTest do
     assert request.json == nil
   end
 
-  test "Responses prompt_cache_key follows first-class, model kwargs, and per-call precedence" do
-    # Upstream reference:
-    model = %BeamWeaver.OpenAI.ChatModel{
-      model: "gpt-5.4-mini",
-      prompt_cache_key: "first-class-cache",
-      model_kwargs: %{prompt_cache_key: "model-level-cache"}
-    }
+  test "Responses prompt_cache_key: option, then model extra_body, then call extra_body" do
+    model = %BeamWeaver.OpenAI.ChatModel{model: "gpt-5.4-mini", prompt_cache_key: "first-class-cache"}
+    messages = [Message.user("Hello")]
 
-    assert {:ok, from_model_kwargs} =
-             BeamWeaver.OpenAI.ChatModel.request_body(model, [Message.user("Hello")])
+    assert {:ok, body} = BeamWeaver.OpenAI.ChatModel.request_body(model, messages)
+    assert body["prompt_cache_key"] == "first-class-cache"
 
-    assert from_model_kwargs["prompt_cache_key"] == "first-class-cache"
+    assert {:ok, body} = BeamWeaver.OpenAI.ChatModel.request_body(model, messages, prompt_cache_key: "per-call-cache")
+    assert body["prompt_cache_key"] == "per-call-cache"
 
-    assert {:ok, per_call} =
-             BeamWeaver.OpenAI.ChatModel.request_body(model, [Message.user("Hello")],
-               prompt_cache_key: "per-call-cache"
+    # extra_body is the raw-body override, so it wins over the typed option ...
+    model = %{model | extra_body: %{prompt_cache_key: "model-extra-cache"}}
+
+    assert {:ok, body} = BeamWeaver.OpenAI.ChatModel.request_body(model, messages, prompt_cache_key: "per-call-cache")
+    assert body["prompt_cache_key"] == "model-extra-cache"
+
+    # ... and the call's extra_body wins over the model's.
+    assert {:ok, body} =
+             BeamWeaver.OpenAI.ChatModel.request_body(model, messages,
+               extra_body: %{prompt_cache_key: "call-extra-cache"}
              )
 
-    assert per_call["prompt_cache_key"] == "per-call-cache"
+    assert body["prompt_cache_key"] == "call-extra-cache"
   end
 
   test "Responses request body can continue after previous response id" do
@@ -252,7 +256,7 @@ defmodule BeamWeaver.OpenAI.ResponsesTest do
 
     messages = [
       Message.user("Hello"),
-      Message.assistant("Hi", response_metadata: %{id: "resp_123"}),
+      Message.assistant("Hi", response_metadata: %{id: "resp_123", model_provider: "openai"}),
       Message.user("How are you?"),
       Message.assistant("No response id"),
       Message.user("Continue")
@@ -274,6 +278,64 @@ defmodule BeamWeaver.OpenAI.ResponsesTest do
 
     refute Map.has_key?(all_messages, "previous_response_id")
     assert [%{"role" => "user", "content" => "Hello"}] = all_messages["input"]
+  end
+
+  test "a model from init_chat_model continues from its last stored response only" do
+    {:ok, model} = Models.init_chat_model("openai:gpt-5.4-mini", api_key: "test-key")
+
+    stored = [
+      Message.user("Hello"),
+      Message.assistant("Hi",
+        response_metadata: %{id: "resp_123", model_provider: "openai", raw_provider_response: %{"store" => true}}
+      ),
+      Message.user("Continue")
+    ]
+
+    assert {:ok, body} = ChatModel.request_body(model, stored, use_previous_response_id: true)
+    assert body["previous_response_id"] == "resp_123"
+    assert [%{"role" => "user", "content" => "Continue"}] = body["input"]
+
+    # A reply made with `store: false` isn't kept by OpenAI, so it can't be
+    # continued: the whole conversation is sent.
+    unstored =
+      List.replace_at(
+        stored,
+        1,
+        Message.assistant("Hi",
+          response_metadata: %{id: "resp_456", model_provider: "openai", raw_provider_response: %{"store" => false}}
+        )
+      )
+
+    assert {:ok, body} = ChatModel.request_body(model, unstored, use_previous_response_id: true)
+    refute Map.has_key?(body, "previous_response_id")
+    assert length(body["input"]) == 3
+  end
+
+  test "a reply from another provider's Responses API is never continued" do
+    {:ok, model} = Models.init_chat_model("openai:gpt-5.4-mini", api_key: "test-key")
+
+    # DeepSeek's Responses API ids start with `resp_` too, as after a fallback.
+    {:ok, deepseek_reply} =
+      BeamWeaver.DeepSeek.Messages.responses_to_message(%{
+        "id" => "resp_deepseek_123",
+        "object" => "response",
+        "model" => "deepseek-flash",
+        "status" => "completed",
+        "output" => [
+          %{
+            "type" => "message",
+            "id" => "msg_1",
+            "role" => "assistant",
+            "content" => [%{"type" => "output_text", "text" => "Order A-1001 shipped.", "annotations" => []}]
+          }
+        ]
+      })
+
+    messages = [Message.user("Where is A-1001?"), deepseek_reply, Message.user("When will it arrive?")]
+
+    assert {:ok, body} = ChatModel.request_body(model, messages, use_previous_response_id: true)
+    refute Map.has_key?(body, "previous_response_id")
+    assert length(body["input"]) == 3
   end
 
   test "Responses lifecycle helpers use GET/POST endpoints and decode provider payloads" do

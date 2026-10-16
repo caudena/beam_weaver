@@ -1,7 +1,5 @@
 defmodule BeamWeaver.Graph.Execution.CommandRouter do
-  @moduledoc """
-  Command routing helpers for graph execution.
-  """
+  @moduledoc false
 
   alias BeamWeaver.Checkpoint
   alias BeamWeaver.Core.Error
@@ -11,10 +9,9 @@ defmodule BeamWeaver.Graph.Execution.CommandRouter do
   alias BeamWeaver.Graph.Execution.TaskRequest
   alias BeamWeaver.Graph.Send
 
-  @spec command_opts(Command.t(), keyword(), boolean()) :: keyword()
-  def command_opts(%Command{} = command, opts, collect_stream?) do
+  @spec command_opts(Command.t(), keyword()) :: keyword()
+  def command_opts(%Command{} = command, opts) do
     opts
-    |> Keyword.put(:collect_stream?, collect_stream?)
     |> Keyword.put(:continue_from_checkpoint?, true)
     |> maybe_put_command_resume(command.resume)
     |> maybe_put_command_goto(command.goto)
@@ -97,9 +94,7 @@ defmodule BeamWeaver.Graph.Execution.CommandRouter do
       Enum.map(next, &TaskRequest.pull/1) ++
         Enum.map(sends, &TaskRequest.send(&1.node, &1.update || %{}, [Scheduler.tasks_channel()]))
 
-    Enum.uniq_by(ready ++ command_ready, fn entry ->
-      {TaskRequest.kind(entry), TaskRequest.name(entry), TaskRequest.update(entry)}
-    end)
+    Scheduler.add_tasks(ready, command_ready)
   end
 
   defp mixed_graph_results?(list) do

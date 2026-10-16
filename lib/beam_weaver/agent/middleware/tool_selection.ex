@@ -3,7 +3,7 @@ defmodule BeamWeaver.Agent.Middleware.ToolSelection do
   Filters and augments tools available to the model at runtime.
   """
 
-  @behaviour BeamWeaver.Agent.Middleware
+  use BeamWeaver.Agent.Middleware
 
   alias BeamWeaver.Agent.ModelRequest
   alias BeamWeaver.Agent.ToolSet
@@ -53,8 +53,6 @@ defmodule BeamWeaver.Agent.Middleware.ToolSelection do
   def name(_middleware), do: :tool_selection
 
   @impl true
-  def tool_node_required?(%__MODULE__{tools: tools}), do: tools not in [nil, []]
-
   def wrap_model_call(%__MODULE__{} = middleware, %ModelRequest{} = request, handler) do
     dynamic_tools = resolve_tools(middleware.tools, request)
 

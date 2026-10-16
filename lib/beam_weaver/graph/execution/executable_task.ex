@@ -1,7 +1,5 @@
 defmodule BeamWeaver.Graph.Execution.ExecutableTask do
-  @moduledoc """
-  Runtime wrapper for a prepared graph execution task running in a BEAM `Task`.
-  """
+  @moduledoc false
 
   alias BeamWeaver.Graph.Execution.Task, as: ExecutionTask
 
@@ -11,7 +9,7 @@ defmodule BeamWeaver.Graph.Execution.ExecutableTask do
     :path,
     :step,
     :timeout,
-    :started_at,
+    :deadline,
     :task,
     :prepared
   ]
@@ -22,7 +20,7 @@ defmodule BeamWeaver.Graph.Execution.ExecutableTask do
           path: String.t(),
           step: non_neg_integer(),
           timeout: timeout(),
-          started_at: integer(),
+          deadline: integer() | :infinity,
           task: Task.t(),
           prepared: ExecutionTask.t()
         }

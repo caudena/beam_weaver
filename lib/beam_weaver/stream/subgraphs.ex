@@ -37,10 +37,18 @@ defmodule BeamWeaver.Stream.Subgraphs do
   @moduledoc """
   Projects typed graph stream envelopes into subgraph run summaries.
 
-  Python LangGraph exposes `SubgraphRunStream` handles backed by child muxes.
-  BeamWeaver exposes the same user-visible information as immutable summaries
-  grouped by namespace, which fits the BEAM stream/event model and keeps graph
-  execution internals private.
+  Each `BeamWeaver.Stream.SubgraphRun` is an immutable summary of one subgraph
+  run, grouped by namespace: its status, events, values, updates, tasks and
+  nested subgraph runs. Summaries are built from collected events, not from
+  live stream handles, which keeps graph execution internals private.
+
+  A subgraph that fails sends no `Error` event; only a run that fails ends
+  with one. A summary's `status` is how the node that ran the subgraph ended,
+  from that node's `Task` events in the parent's namespace: `:failed`, with
+  the error's message as `error`, when the node failed after its retries and
+  error handler, `:interrupted` when it paused, and `:completed` otherwise.
+  The default stream mode, `:events`, and `:tasks` and `:debug` include those
+  events. See [Streaming](streaming.md#subgraphs).
   """
 
   alias BeamWeaver.Core.Error
@@ -85,13 +93,14 @@ defmodule BeamWeaver.Stream.Subgraphs do
     own_events =
       Enum.filter(subtree_events, &(Namespace.normalize(&1.namespace, stringify: true) == path))
 
-    {status, error} = terminal_status(subtree_events)
+    node_tasks = node_tasks(path, events)
+    {status, error} = task_status(node_tasks) || error_status(subtree_events) || {:completed, nil}
 
     %SubgraphRun{
       path: path,
       graph: graph_name(own_events, subtree_events),
       graph_name: path_graph_name(path),
-      trigger_call_id: trigger_call_id(path, events),
+      trigger_call_id: path_segment_id(path) || started_task_id(node_tasks),
       status: status,
       error: error,
       events: subtree_events,
@@ -107,7 +116,40 @@ defmodule BeamWeaver.Stream.Subgraphs do
     Enum.take(namespace, length(path)) == path
   end
 
-  defp terminal_status(events) do
+  # The `Task` events, in the parent's namespace, of the node that ran the
+  # subgraph.
+  defp node_tasks(path, events) do
+    {parent_path, _segment} = Enum.split(path, -1)
+    node = path_graph_name(path)
+    task_id = path_segment_id(path)
+
+    for %Envelope{namespace: namespace, event: %Events.Task{} = task} <- events,
+        to_string(task.node) == node and task_id in [nil, task.task_id],
+        Namespace.normalize(namespace, stringify: true) == parent_path,
+        do: task
+  end
+
+  # A subgraph runs as a node of its parent graph, and one that fails sends no
+  # `Error` event: only a run that fails ends with one. Its status is how that
+  # node's task ended: `:error` or `:timeout` when it failed for good, after
+  # its retries and error handler, and `:interrupt` when it paused. A node
+  # that ran several times, or in several tasks at once, failed if one of
+  # them did, since a failed task ends the run.
+  defp task_status([]), do: nil
+
+  defp task_status(tasks) do
+    cond do
+      failed = Enum.find(tasks, &(&1.kind in [:error, :timeout])) -> {:failed, error_message(failed.payload)}
+      Enum.any?(tasks, &(&1.kind == :interrupt)) -> {:interrupted, nil}
+      true -> {:completed, nil}
+    end
+  end
+
+  defp started_task_id(tasks), do: Enum.find_value(tasks, &(&1.kind == :start and &1.task_id))
+
+  # Without its node's task events (a stream without `Task` events, or events
+  # built by hand), an `Error` event in the subgraph's namespace ends it.
+  defp error_status(events) do
     case Enum.find(events, &match?(%Envelope{event: %Events.Error{}}, &1)) do
       %Envelope{event: %Events.Error{error: error}} ->
         if interrupted_error?(error),
@@ -115,7 +157,7 @@ defmodule BeamWeaver.Stream.Subgraphs do
           else: {:failed, error_message(error)}
 
       nil ->
-        {:completed, nil}
+        nil
     end
   end
 
@@ -146,10 +188,6 @@ defmodule BeamWeaver.Stream.Subgraphs do
     |> hd()
   end
 
-  defp trigger_call_id(path, events) do
-    path_segment_id(path) || parent_task_id(path, events)
-  end
-
   defp path_segment_id([]), do: nil
 
   defp path_segment_id(path) do
@@ -157,27 +195,6 @@ defmodule BeamWeaver.Stream.Subgraphs do
       [_name, id] -> id
       _other -> nil
     end
-  end
-
-  defp parent_task_id([], _events), do: nil
-
-  defp parent_task_id(path, events) do
-    {parent_path, [node]} = Enum.split(path, length(path) - 1)
-    node = path_graph_name([node])
-
-    Enum.find_value(events, fn
-      %Envelope{
-        namespace: namespace,
-        event: %Events.Task{kind: :start, node: event_node, task_id: task_id}
-      } ->
-        if Namespace.normalize(namespace, stringify: true) == parent_path and
-             to_string(event_node) == node,
-           do: task_id,
-           else: nil
-
-      _other ->
-        nil
-    end)
   end
 
   defp values(events) do

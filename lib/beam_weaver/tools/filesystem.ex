@@ -1,6 +1,12 @@
 defmodule BeamWeaver.Tools.Filesystem do
   @moduledoc """
-  DeepAgents filesystem tools backed by a `BeamWeaver.Filesystem`.
+  Agent filesystem tools (`ls`, `read_file`, `write_file`, `edit_file`, `glob`,
+  `grep`, plus `execute` for executable backends) backed by a
+  `BeamWeaver.Filesystem`.
+
+  `execute` returns the command's output followed by its exit code, such as
+  `[Command failed with exit code 1]`, or an error that says the command timed
+  out and was stopped.
   """
 
   alias BeamWeaver.Core.Message
@@ -10,9 +16,6 @@ defmodule BeamWeaver.Tools.Filesystem do
   alias BeamWeaver.Filesystem.Permission, as: FilesystemPermission
   alias BeamWeaver.Filesystem.State
   alias BeamWeaver.Graph.Command
-
-  @read_ops ~w(ls read_file glob grep)
-  @write_ops ~w(write_file edit_file)
 
   def tools(opts_or_backend, opts \\ [])
 
@@ -48,11 +51,12 @@ defmodule BeamWeaver.Tools.Filesystem do
       },
       fn input, _opts ->
         path = value(input, :path, "/")
+        opts = runtime_opts(input)
 
-        if allowed?(permissions, :read, path) do
+        if allowed?(backend, permissions, :read, path, opts) do
           backend
-          |> Filesystem.ls(path, runtime_opts(input))
-          |> filter_file_info_result(:entries, permissions)
+          |> Filesystem.ls(path, opts)
+          |> filter_file_info_result(:entries, backend, permissions, opts)
           |> render_entries(:entries)
         else
           "Error: Permission denied reading #{path}"
@@ -77,7 +81,7 @@ defmodule BeamWeaver.Tools.Filesystem do
       fn input, _opts ->
         path = value(input, :file_path) || value(input, :path)
 
-        if allowed?(permissions, :read, path) do
+        if allowed?(backend, permissions, :read, path, runtime_opts(input)) do
           result =
             Filesystem.read(
               backend,
@@ -126,9 +130,10 @@ defmodule BeamWeaver.Tools.Filesystem do
       fn input, _opts ->
         path = value(input, :file_path) || value(input, :path)
         content = value(input, :content, "")
+        opts = runtime_opts(input)
 
-        if allowed?(permissions, :write, path) do
-          result = Filesystem.write(backend, path, content, runtime_opts(input))
+        if allowed?(backend, permissions, :write, path, opts) do
+          result = Filesystem.write(backend, path, content, opts)
           write_command("write_file", input, result, state_key, "Wrote #{path}")
         else
           "Error: Permission denied writing #{path}"
@@ -154,7 +159,7 @@ defmodule BeamWeaver.Tools.Filesystem do
       fn input, _opts ->
         path = value(input, :file_path) || value(input, :path)
 
-        if allowed?(permissions, :write, path) do
+        if allowed?(backend, permissions, :write, path, runtime_opts(input)) do
           result =
             Filesystem.edit(
               backend,
@@ -186,11 +191,12 @@ defmodule BeamWeaver.Tools.Filesystem do
       },
       fn input, _opts ->
         path = value(input, :path, "/")
+        opts = runtime_opts(input)
 
-        if allowed?(permissions, :read, path) do
+        if allowed?(backend, permissions, :read, path, opts) do
           backend
-          |> Filesystem.glob(value(input, :pattern), runtime_opts(input, path: path))
-          |> filter_file_info_result(:matches, permissions)
+          |> Filesystem.glob(value(input, :pattern), Keyword.put(opts, :path, path))
+          |> filter_file_info_result(:matches, backend, permissions, opts)
           |> render_entries(:matches)
         else
           "Error: Permission denied reading #{path}"
@@ -214,21 +220,20 @@ defmodule BeamWeaver.Tools.Filesystem do
       },
       fn input, _opts ->
         path = value(input, :path, "/")
+        opts = runtime_opts(input)
 
-        if allowed?(permissions, :read, path) do
+        if allowed?(backend, permissions, :read, path, opts) do
           case Filesystem.grep(
                  backend,
                  value(input, :pattern),
                  runtime_opts(input, path: path, glob: value(input, :glob))
                ) do
             %Filesystem.GrepResult{error: nil, matches: matches} ->
-              matches =
-                matches
-                |> Kernel.||([])
-                |> Enum.filter(&allowed?(permissions, :read, &1.path))
-                |> Enum.map(&json_entry/1)
-
-              BeamWeaver.JSON.encode!(matches)
+              matches
+              |> Kernel.||([])
+              |> filter_allowed(backend, permissions, opts)
+              |> Enum.map(&json_entry/1)
+              |> BeamWeaver.JSON.encode!()
 
             %Filesystem.GrepResult{error: error} ->
               "Error: #{error}"
@@ -246,7 +251,8 @@ defmodule BeamWeaver.Tools.Filesystem do
         [
           tool(
             "execute",
-            "Execute a shell command inside the configured sandbox backend.",
+            "Execute a shell command inside the configured sandbox backend. " <>
+              "Returns the command's output followed by its exit code.",
             %{
               "type" => "object",
               "properties" => %{
@@ -258,8 +264,9 @@ defmodule BeamWeaver.Tools.Filesystem do
             fn input, _opts ->
               case normalize_timeout(value(input, :timeout)) do
                 {:ok, opts} ->
-                  result = Executable.execute(backend, value(input, :command, ""), opts)
-                  result.output || result.error || ""
+                  backend
+                  |> Executable.execute(value(input, :command, ""), opts)
+                  |> render_execute_result(Keyword.get(opts, :timeout))
 
                 {:error, error} ->
                   "Error: #{error}"
@@ -271,6 +278,49 @@ defmodule BeamWeaver.Tools.Filesystem do
       tools
     end
   end
+
+  # The model needs the exit code to tell a failed command from one that
+  # printed nothing, and a timeout must not look like empty output.
+  defp render_execute_result(result, timeout) do
+    output = Map.get(result, :output) || ""
+    error = Map.get(result, :error)
+    exit_code = Map.get(result, :exit_code)
+
+    status =
+      cond do
+        error in ["timeout", :timeout] ->
+          after_seconds =
+            case timeout do
+              nil -> ""
+              1 -> " after 1 second"
+              seconds -> " after #{seconds} seconds"
+            end
+
+          "Error: the command timed out#{after_seconds} and was stopped. " <>
+            "Pass a larger `timeout` (in seconds, at most 3600) or run a shorter command."
+
+        error not in [nil, ""] ->
+          "Error: #{error_text(error)}"
+
+        is_integer(exit_code) ->
+          outcome = if exit_code == 0, do: "succeeded", else: "failed"
+          truncated = if Map.get(result, :truncated) == true, do: "; output truncated", else: ""
+          "[Command #{outcome} with exit code #{exit_code}#{truncated}]"
+
+        true ->
+          "[Command finished without an exit code]"
+      end
+
+    cond do
+      output == "" -> status
+      String.ends_with?(output, "\n") -> output <> status
+      true -> output <> "\n" <> status
+    end
+  end
+
+  defp error_text(error) when is_binary(error), do: error
+  defp error_text(%{message: message}) when is_binary(message), do: message
+  defp error_text(error), do: inspect(error)
 
   defp tool(name, description, schema, handler) do
     Tool.from_function!(
@@ -296,17 +346,28 @@ defmodule BeamWeaver.Tools.Filesystem do
   defp json_entry(%{__struct__: _struct} = entry), do: Map.from_struct(entry)
   defp json_entry(entry), do: entry
 
-  defp filter_file_info_result(%{error: nil} = result, field, permissions) do
+  defp filter_file_info_result(%{error: nil} = result, field, backend, permissions, opts) do
     entries =
       result
       |> Map.get(field)
       |> Kernel.||([])
-      |> Enum.filter(&allowed?(permissions, :read, &1.path))
+      |> filter_allowed(backend, permissions, opts)
 
     Map.put(result, field, entries)
   end
 
-  defp filter_file_info_result(result, _field, _permissions), do: result
+  defp filter_file_info_result(result, _field, _backend, _permissions, _opts), do: result
+
+  # The entries of a listing or search that the model may read: those whose
+  # path, and the file it leads to, the rules allow.
+  defp filter_allowed(entries, backend, permissions, opts) do
+    allowed =
+      permissions
+      |> FilesystemPermission.filter_paths(:read, Enum.map(entries, & &1.path), backend, opts)
+      |> MapSet.new()
+
+    Enum.filter(entries, &MapSet.member?(allowed, &1.path))
+  end
 
   defp write_command(
          tool_name,
@@ -348,15 +409,13 @@ defmodule BeamWeaver.Tools.Filesystem do
   defp runtime_value(%{runtime: runtime}, :runtime), do: runtime
   defp runtime_value(_runtime, _key), do: nil
 
-  defp allowed?(permissions, operation, path) when operation in [:read, :write],
-    do: FilesystemPermission.allowed?(permissions, operation, path || "/")
+  # The rules must allow the path and the file it leads to on `backend`.
+  defp allowed?(backend, permissions, operation, path, opts) when operation in [:read, :write],
+    do: FilesystemPermission.allowed?(permissions, operation, path || "/", backend, opts)
 
   defp value(map, key, default \\ nil)
   defp value(nil, _key, default), do: default
   defp value(map, key, default), do: BeamWeaver.MapAccess.get(map, key, default)
-
-  def read_operation?(name), do: name in @read_ops
-  def write_operation?(name), do: name in @write_ops
 
   defp normalize_timeout(nil), do: {:ok, []}
 

@@ -103,6 +103,33 @@ defmodule BeamWeaver.Transport.URLPolicyTest do
     end
   end
 
+  test "IPv4-translated (SIIT) and 6to4 addresses are judged by the IPv4 address they embed" do
+    for url <- [
+          "https://[::ffff:0:a9fe:a9fe]",
+          "https://[::ffff:0:7f00:1]",
+          "https://[2002:a9fe:a9fe::]",
+          "https://[2002:7f00:1::1]",
+          "https://[2002:0:0::]"
+        ] do
+      assert {:error, %Error{type: :unsafe_url}} = URLPolicy.validate(url, allow_private?: true)
+    end
+
+    for url <- ["https://[::ffff:0:a00:1]", "https://[2002:c0a8:101::]"] do
+      assert {:error, %Error{type: :unsafe_url}} = URLPolicy.validate(url)
+      assert {:ok, ^url} = URLPolicy.validate(url, allow_private?: true)
+    end
+
+    for url <- ["https://[::ffff:0:808:808]", "https://[2002:808:808::1]"] do
+      assert {:ok, ^url} = URLPolicy.validate(url)
+    end
+  end
+
+  test "deprecated site-local fec0::/10 addresses are reserved" do
+    for url <- ["https://[fec0::1]", "https://[feff:ffff::1]"] do
+      assert {:error, %Error{type: :unsafe_url}} = URLPolicy.validate(url, allow_private?: true)
+    end
+  end
+
   test "private RFC1918 literals require opt-in and metadata remains separately guarded" do
     assert {:ok, "https://10.0.0.1"} =
              URLPolicy.validate("https://10.0.0.1", allow_private?: true)
@@ -179,6 +206,23 @@ defmodule BeamWeaver.Transport.URLPolicyTest do
 
     assert {:ok, "https://169.254.169.254/latest/meta-data/"} =
              URLPolicy.validate("https://169.254.169.254/latest/meta-data/", allow_metadata?: true)
+  end
+
+  test "IPv6 hosts with a zone id, and other bracketed hosts that aren't an IPv6 address, are refused" do
+    for url <- [
+          "http://[fe80::1%25en0]/",
+          "http://[fe80::1%en0]:8080/",
+          "https://[2606:4700:4700::1111%25eth0]/",
+          "https://[v1.fe80::a+en1]/",
+          "https://[example.com]/"
+        ] do
+      assert {:error, %Error{type: :unsafe_url}} =
+               URLPolicy.validate(url, schemes: ["http", "https"], allow_private?: true, allow_localhost?: true)
+
+      assert {:error, %Error{type: :unsafe_url}} = URLPolicy.resolve_targets(url, schemes: ["http", "https"])
+    end
+
+    assert {:ok, "https://[2606:4700:4700::1111]:8443/x"} = URLPolicy.validate("https://[2606:4700:4700::1111]:8443/x")
   end
 
   test "safe? exposes non-raising validation result" do

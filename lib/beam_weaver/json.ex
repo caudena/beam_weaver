@@ -35,12 +35,7 @@ defmodule BeamWeaver.JSON do
   end
 
   @spec decode!(binary() | iodata()) :: term()
-  def decode!(data) do
-    data
-    |> to_binary()
-    |> Elixir.JSON.decode!()
-    |> normalize_json()
-  end
+  def decode!(data), do: data |> to_binary() |> Elixir.JSON.decode!()
 
   @spec encode(term()) :: {:ok, binary()} | {:error, Exception.t()}
   def encode(value) do
@@ -179,16 +174,4 @@ defmodule BeamWeaver.JSON do
 
   defp spaces(0), do: ""
   defp spaces(count), do: String.duplicate(" ", count)
-
-  defp normalize_json(nil), do: nil
-
-  defp normalize_json(values) when is_list(values) do
-    Enum.map(values, &normalize_json/1)
-  end
-
-  defp normalize_json(value) when is_map(value) do
-    Map.new(value, fn {key, map_value} -> {key, normalize_json(map_value)} end)
-  end
-
-  defp normalize_json(value), do: value
 end

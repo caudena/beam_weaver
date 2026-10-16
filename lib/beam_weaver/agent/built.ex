@@ -1,19 +1,19 @@
 defmodule BeamWeaver.Agent.Built do
   @moduledoc """
-  Runtime-built BeamWeaver agent.
+  An agent built at runtime with `BeamWeaver.Agent.build/1`.
 
-  This is the Elixir-native counterpart to dynamic agent factories. It stores
-  the same `%BeamWeaver.Agent.Spec{}` used by the `use BeamWeaver.Agent` DSL and
-  a compiled graph, so dynamic agents do not bypass the normal graph runtime.
+  Run it with `BeamWeaver.Agent.invoke/3`, `stream_events/3`, `resume/3`,
+  `resume_review/3` and `get_state/2`. A call's `:checkpointer`, `:store` and
+  `:cache` replace the ones given to `build/1`. See
+  [Agents](agents.md#agents-built-at-runtime).
   """
 
-  alias BeamWeaver.Agent.Spec
   alias BeamWeaver.Graph.Compiled
 
   defstruct [:spec, :compiled]
 
   @type t :: %__MODULE__{
-          spec: Spec.t(),
+          spec: struct(),
           compiled: Compiled.t()
         }
 end

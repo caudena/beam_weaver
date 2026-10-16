@@ -4,7 +4,7 @@
 alias BeamWeaver.OpenAI.Client
 
 body =
-  BeamWeaver.JSON.encode!(%{
+  JSON.encode!(%{
     "error" => %{
       "message" => "Expected an ID that begins with 'fc'",
       "type" => "invalid_request_error",

@@ -93,8 +93,11 @@ defmodule BeamWeaver.Core.Messages.Trim do
               {:cont, {:ok, {[message | acc], count + token_count}}}
 
             allow_partial ->
-              partial = partial_message(message, max_tokens - count, direction)
-              {:halt, {:ok, {[partial | acc], max_tokens}}}
+              case partial_message(message, max_tokens - count, counter, direction) do
+                {:ok, nil} -> {:halt, {:ok, {acc, count}}}
+                {:ok, partial} -> {:halt, {:ok, {[partial | acc], max_tokens}}}
+                {:error, %Error{} = error} -> {:halt, {:error, error}}
+              end
 
             true ->
               {:halt, {:ok, {acc, count}}}
@@ -129,7 +132,7 @@ defmodule BeamWeaver.Core.Messages.Trim do
     do: Enum.any?(roles, &role_match?(%Message{role: message_role, content: ""}, &1))
 
   defp role_match?(%Message{role: message_role}, role),
-    do: normalize_role_alias(role_name(message_role)) == normalize_role_alias(role)
+    do: Atom.to_string(message_role) == to_string(role)
 
   defp token_count(counter, value) do
     case LanguageModel.count_tokens(counter, value) do
@@ -178,88 +181,86 @@ defmodule BeamWeaver.Core.Messages.Trim do
     end)
   end
 
-  defp partial_message(%Message{content: content} = message, remaining, :first)
+  # Keeps as many words (and, for content blocks, whole blocks) as fit in
+  # `remaining`, measured with the same counter as whole messages. Returns nil
+  # when not even one word fits.
+  defp partial_message(%Message{content: content} = message, remaining, counter, direction)
        when is_binary(content) do
-    %{message | content: content |> words() |> Enum.take(max(remaining, 0)) |> Enum.join(" ")}
+    words = words(content)
+    build = &%{message | content: join_words(words, &1, direction)}
+
+    with {:ok, fitting} <- largest_fitting(length(words), build, remaining, counter) do
+      {:ok, if(fitting == 0, do: nil, else: build.(fitting))}
+    end
   end
 
-  defp partial_message(%Message{content: content} = message, remaining, :last)
-       when is_binary(content) do
-    %{message | content: content |> words() |> Enum.take(-max(remaining, 0)) |> Enum.join(" ")}
-  end
-
-  defp partial_message(%Message{content: content} = message, remaining, direction)
+  defp partial_message(%Message{content: content} = message, remaining, counter, direction)
        when is_list(content) do
-    %{message | content: partial_content(content, max(remaining, 0), direction)}
+    blocks = if direction == :last, do: Enum.reverse(content), else: content
+
+    with {:ok, kept} <- partial_blocks(blocks, [], message, remaining, counter, direction) do
+      {:ok, if(kept == [], do: nil, else: with_blocks(message, kept, direction))}
+    end
   end
 
-  defp partial_message(message, _remaining, _direction), do: message
+  defp partial_message(_message, _remaining, _counter, _direction), do: {:ok, nil}
+
+  # `kept` and `blocks` run in trimming order: from the end for `:last`.
+  defp partial_blocks([], kept, _message, _remaining, _counter, _direction), do: {:ok, kept}
+
+  defp partial_blocks([block | rest], kept, message, remaining, counter, direction) do
+    with {:ok, count} <- token_count(counter, with_blocks(message, kept ++ [block], direction)) do
+      cond do
+        count <= remaining ->
+          partial_blocks(rest, kept ++ [block], message, remaining, counter, direction)
+
+        text_block?(block) ->
+          words = block |> block_text() |> words()
+          cut = &put_block_text(block, join_words(words, &1, direction))
+          build = &with_blocks(message, kept ++ [cut.(&1)], direction)
+
+          with {:ok, fitting} <- largest_fitting(length(words), build, remaining, counter) do
+            {:ok, if(fitting == 0, do: kept, else: kept ++ [cut.(fitting)])}
+          end
+
+        true ->
+          {:ok, kept}
+      end
+    end
+  end
+
+  defp with_blocks(message, kept, :first), do: %{message | content: kept}
+  defp with_blocks(message, kept, :last), do: %{message | content: Enum.reverse(kept)}
+
+  # The largest `n` in 0..total for which `build.(n)` fits in `remaining`.
+  defp largest_fitting(total, build, remaining, counter), do: search(0, total, build, remaining, counter)
+
+  defp search(low, high, _build, _remaining, _counter) when low >= high, do: {:ok, low}
+
+  defp search(low, high, build, remaining, counter) do
+    middle = div(low + high + 1, 2)
+
+    case token_count(counter, build.(middle)) do
+      {:ok, count} when count <= remaining -> search(middle, high, build, remaining, counter)
+      {:ok, _count} -> search(low, middle - 1, build, remaining, counter)
+      {:error, %Error{} = error} -> {:error, error}
+    end
+  end
 
   defp words(text), do: String.split(text, ~r/\s+/, trim: true)
 
-  defp partial_content(content, remaining, :first),
-    do: partial_content_forward(content, remaining, :first)
+  defp join_words(words, count, :first), do: words |> Enum.take(count) |> Enum.join(" ")
+  defp join_words(words, count, :last), do: words |> Enum.take(-count) |> Enum.join(" ")
 
-  defp partial_content(content, remaining, :last) do
-    content
-    |> Enum.reverse()
-    |> partial_content_forward(remaining, :last)
-    |> Enum.reverse()
-  end
+  defp block_text(text) when is_binary(text), do: text
+  defp block_text(block), do: to_string(Map.get(block, :text))
 
-  defp partial_content_forward(content, remaining, direction) do
-    content
-    |> Enum.reduce_while({[], remaining}, fn block, {acc, remaining} ->
-      count = content_block_token_count(block)
-
-      cond do
-        remaining <= 0 ->
-          {:halt, {acc, remaining}}
-
-        count <= remaining ->
-          {:cont, {[block | acc], remaining - count}}
-
-        text_block?(block) ->
-          {:halt, {[truncate_text_block(block, remaining, direction) | acc], 0}}
-
-        true ->
-          {:halt, {acc, remaining}}
-      end
-    end)
-    |> elem(0)
-    |> Enum.reverse()
-  end
-
-  defp content_block_token_count(text) when is_binary(text), do: length(words(text))
-  defp content_block_token_count(%ContentBlock.Text{text: text}), do: length(words(text || ""))
-  defp content_block_token_count(%ContentBlock.PlainText{text: text}), do: length(words(text || ""))
-
-  defp content_block_token_count(block) when is_map(block) do
-    if text_block?(block), do: length(words(Map.get(block, :text) || "")), else: 1
-  end
-
-  defp content_block_token_count(_block), do: 1
-
-  defp truncate_text_block(%ContentBlock.Text{} = block, remaining, direction) do
-    %{block | text: block.text |> to_string() |> take_words(remaining, direction) |> Enum.join(" ")}
-  end
-
-  defp truncate_text_block(%ContentBlock.PlainText{} = block, remaining, direction) do
-    %{block | text: block.text |> to_string() |> take_words(remaining, direction) |> Enum.join(" ")}
-  end
-
-  defp truncate_text_block(block, remaining, direction) when is_map(block) do
-    text = block |> Map.get(:text) |> to_string()
-    truncated = text |> take_words(remaining, direction) |> Enum.join(" ")
-
-    Map.put(block, :text, truncated)
-  end
-
-  defp take_words(text, remaining, :first), do: text |> words() |> Enum.take(remaining)
-  defp take_words(text, remaining, :last), do: text |> words() |> Enum.take(-remaining)
+  defp put_block_text(text, new_text) when is_binary(text), do: new_text
+  defp put_block_text(block, new_text), do: Map.put(block, :text, new_text)
 
   defp tool_call_id(call) when is_map(call), do: Map.get(call, :id)
 
+  defp text_block?(text) when is_binary(text), do: true
   defp text_block?(%ContentBlock.Text{text: text}) when is_binary(text), do: true
   defp text_block?(%ContentBlock.PlainText{text: text}) when is_binary(text), do: true
 
@@ -267,15 +268,4 @@ defmodule BeamWeaver.Core.Messages.Trim do
     do: true
 
   defp text_block?(_block), do: false
-
-  defp normalize_role_alias("human"), do: "user"
-  defp normalize_role_alias(:human), do: "user"
-  defp normalize_role_alias("ai"), do: "assistant"
-  defp normalize_role_alias(:ai), do: "assistant"
-  defp normalize_role_alias(value), do: to_string(value)
-
-  defp role_name(:user), do: "user"
-  defp role_name(:assistant), do: "assistant"
-  defp role_name(:system), do: "system"
-  defp role_name(:tool), do: "tool"
 end

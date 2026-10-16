@@ -211,11 +211,11 @@ defmodule BeamWeaver.Agent.TypeSafeModelRouterTest do
     refute_received {:typesafe_request, _}
   end
 
-  test "conflicting model selectors fail and matching selectors are removed" do
+  test "conflicting model selectors fail, and the chosen model gets only the options it takes" do
     router = router()
     state = TypeSafeModelRouter.before_agent(router, %{messages: [Message.user("task")]}, %{})
 
-    for opts <- [[model: "fast"], [extra_body: %{"model" => "fast"}], [model_kwargs: %{model: "fast"}]] do
+    for opts <- [[model: "fast"], [extra_body: %{"model" => "fast"}], [extra_body: %{model: "fast"}]] do
       request = ModelRequest.new(model: %Chat{}, state: state, model_opts: opts)
 
       assert {:error, %{type: :conflicting_model_route}} =
@@ -232,7 +232,42 @@ defmodule BeamWeaver.Agent.TypeSafeModelRouterTest do
     assert {:ok, updated} = TypeSafeModelRouter.wrap_model_call(router, request, &{:ok, &1})
     assert updated.model.model == "powerful"
     refute Keyword.has_key?(updated.model_opts, :model)
-    assert updated.model_opts[:extra_body] == %{"keep" => true}
+    refute Keyword.has_key?(updated.model_opts, :extra_body)
+  end
+
+  test "the chosen model keeps its own credentials and gets the options its profile takes" do
+    route =
+      TypeSafeModelRouter.new(
+        classifier: Fixture.model(),
+        choices: %{
+          "fast" => %{model: BeamWeaver.Models.init_chat_model!("openai:gpt-5.4-mini"), criteria: "simple"},
+          "powerful" => %{
+            model: BeamWeaver.Models.init_chat_model!("anthropic:claude-haiku-4-5", api_key: "sk-ant-route"),
+            criteria: "complex"
+          }
+        }
+      )
+
+    state = TypeSafeModelRouter.before_agent(route, %{messages: [Message.user("task")]}, %{})
+
+    request =
+      ModelRequest.new(
+        model: BeamWeaver.Models.init_chat_model!("openai:gpt-5.4-mini"),
+        state: state,
+        model_opts: [
+          api_key: "sk-openai-agent",
+          base_url: "https://openai.example",
+          transport: BeamWeaver.Transport.ReqFinch,
+          transport_opts: [retry: false],
+          reasoning_effort: :low,
+          temperature: 0.2,
+          context: %{tenant: "acme"}
+        ]
+      )
+
+    assert {:ok, updated} = TypeSafeModelRouter.wrap_model_call(route, request, &{:ok, &1})
+    assert %BeamWeaver.Anthropic.ChatModel{api_key: "sk-ant-route"} = updated.model
+    assert Enum.sort(updated.model_opts) == [context: %{tenant: "acme"}, temperature: 0.2]
   end
 
   test "routing changes the real OpenAI request model and preserves tool declarations" do

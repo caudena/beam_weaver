@@ -2,8 +2,11 @@ defmodule BeamWeaver.Core.Tool.Invocation do
   @moduledoc false
 
   alias BeamWeaver.Core.Error
+  alias BeamWeaver.Core.Message
   alias BeamWeaver.Core.Tool.Output
   alias BeamWeaver.Core.Tool.Schema
+  alias BeamWeaver.Core.ToolResult
+  alias BeamWeaver.Graph.Command
 
   @type api :: %{
           args: (term() -> map()),
@@ -228,12 +231,30 @@ defmodule BeamWeaver.Core.Tool.Invocation do
     )
   end
 
+  # A `:content_and_artifact` tool returns `{content, artifact}`; both travel on
+  # as a `ToolResult`, which an agent's tool node turns into a tool message
+  # with the artifact in `metadata.artifact`. A command, a message or a list of
+  # them passes through as it is, as from any tool.
   defp format_invocation_result(result, tool, %{wrap_output?: false}, api) do
-    if api.response_format.(tool) == :content_and_artifact do
-      {content, _artifact, _status} = Output.split_result(result, nil, :success)
-      content
+    if api.response_format.(tool) in [:content_and_artifact, "content_and_artifact"] and
+         not tool_output?(result) do
+      content_and_artifact(result)
     else
       result
     end
   end
+
+  defp content_and_artifact({:content_and_artifact, content, artifact}),
+    do: ToolResult.success(content, artifact: artifact)
+
+  defp content_and_artifact(result) do
+    {content, artifact, status} = Output.split_result(result, nil, :success)
+    ToolResult.success(content, artifact: artifact, status: status)
+  end
+
+  defp tool_output?(%ToolResult{}), do: true
+  defp tool_output?(%Command{}), do: true
+  defp tool_output?(%Message{}), do: true
+  defp tool_output?([_ | _] = outputs), do: Enum.all?(outputs, &(match?(%Command{}, &1) or match?(%Message{}, &1)))
+  defp tool_output?(_result), do: false
 end

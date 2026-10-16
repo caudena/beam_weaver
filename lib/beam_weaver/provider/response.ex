@@ -1,10 +1,16 @@
 defmodule BeamWeaver.Provider.Response do
   @moduledoc """
-  Normalized provider response envelope used internally for tracing metadata.
+  Normalized provider response envelope: a reply's usage, limits, model,
+  reasoning, tooling, safety, grounding and transport metadata.
 
-  Public chat model APIs still return `BeamWeaver.Core.Message`; the normalized
-  envelope is copied onto `usage_metadata` and `response_metadata` so traces and
-  stream events can consume one stable shape across providers.
+  Applications that persist provider replies themselves call
+  `normalize_execution_result/3`. It returns the normalized message, its
+  `BeamWeaver.Provider.Outcome`, and a provider-native replay projection to
+  store next to the message (see `BeamWeaver.Provider.Replay`).
+
+  Chat model APIs return `BeamWeaver.Core.Message`; the normalized envelope is
+  copied onto `usage_metadata` and `response_metadata` so traces and stream
+  events can consume one stable shape across providers.
 
   Provider clients own response-header decoding. Core preserves
   `response_metadata.headers` only when the client already supplied an

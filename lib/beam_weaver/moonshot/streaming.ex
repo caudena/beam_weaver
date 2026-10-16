@@ -1,7 +1,9 @@
 defmodule BeamWeaver.Moonshot.Streaming do
   @moduledoc false
 
-  alias BeamWeaver.Moonshot.Error
+  import BeamWeaver.MapShape, only: [put_optional: 3]
+
+  alias BeamWeaver.Core.Error
   alias BeamWeaver.Moonshot.Messages, as: MoonshotMessages
   alias BeamWeaver.Provider.OpenAICompatibleStreaming
 
@@ -10,6 +12,18 @@ defmodule BeamWeaver.Moonshot.Streaming do
 
   @spec typed_events(binary() | [map()] | term()) :: [BeamWeaver.Stream.Envelope.t()]
   def typed_events(body), do: OpenAICompatibleStreaming.typed_events(body, config())
+
+  # A live stream ends with the complete reply, the message
+  # `stream_body_to_message/2` builds, which carries the `reasoning_content`
+  # Kimi needs back with tool results, then the `Done` events.
+  def typed_events(events, state), do: OpenAICompatibleStreaming.typed_events(events, state, config())
+
+  def finish_typed_events(state, opts) do
+    OpenAICompatibleStreaming.finish_typed_events(state, :moonshot, fn events ->
+      with {:ok, message} <- OpenAICompatibleStreaming.events_to_message(events, config(), opts),
+           do: {:ok, MoonshotMessages.enrich_cache_write_ttl(message)}
+    end)
+  end
 
   @spec stream_body_to_message(binary(), keyword()) ::
           {:ok, BeamWeaver.Core.Message.t()} | {:error, Error.t()}
@@ -52,7 +66,7 @@ defmodule BeamWeaver.Moonshot.Streaming do
     metadata
     |> put_optional(:headers, header_metadata[:headers])
     |> put_optional(:request_id, header_metadata[:request_id])
-    |> put_optional(:transport, transport_metadata(header_metadata))
+    |> put_optional(:transport, BeamWeaver.Provider.ResponseDecoder.transport_metadata(header_metadata))
     |> maybe_put_raw_headers(
       Keyword.get(opts, :raw_response_headers, []),
       Keyword.get(opts, :include_response_headers, false)
@@ -68,12 +82,6 @@ defmodule BeamWeaver.Moonshot.Streaming do
       Map.new(BeamWeaver.Transport.Request.normalize_headers(headers))
     )
   end
-
-  defp transport_metadata(%{request_id: request_id}) when is_binary(request_id) and request_id != "" do
-    %{request_id: request_id}
-  end
-
-  defp transport_metadata(_metadata), do: nil
 
   defp first_choice(%{"choices" => [choice | _rest]}) when is_map(choice), do: choice
   defp first_choice(_data), do: nil
@@ -94,20 +102,15 @@ defmodule BeamWeaver.Moonshot.Streaming do
   defp empty_to_nil(""), do: nil
   defp empty_to_nil(value), do: value
 
-  defp put_optional(map, _key, nil), do: map
-  defp put_optional(map, _key, []), do: map
-  defp put_optional(map, key, value), do: Map.put(map, key, value)
-
   defp config do
     %{
       provider: :moonshot,
       provider_name: "Moonshot chat-completions",
-      error_module: Error,
       usage_metadata: &MoonshotMessages.usage_metadata/1,
       stream_metadata: &stream_metadata/3,
       choice_usage: true,
       include_chunk_id: false,
-      reasoning_index: nil,
+      reasoning_index: 0,
       unknown_delta_key: :moonshot_delta
     }
   end

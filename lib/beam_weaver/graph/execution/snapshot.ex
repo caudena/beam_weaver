@@ -3,9 +3,11 @@ defmodule BeamWeaver.Graph.Execution.Snapshot do
 
   alias BeamWeaver.Checkpoint
   alias BeamWeaver.Graph.Execution
-  alias BeamWeaver.Graph.Execution.ChannelState
+  alias BeamWeaver.Graph.Execution.ChannelLookup
+  alias BeamWeaver.Graph.Execution.ChannelMerge
   alias BeamWeaver.Graph.Execution.DeltaReplay
   alias BeamWeaver.Graph.Execution.Replay
+  alias BeamWeaver.Graph.Execution.TaskRequest
 
   @spec from_tuple(map()) :: map()
   def from_tuple(tuple) do
@@ -13,12 +15,15 @@ defmodule BeamWeaver.Graph.Execution.Snapshot do
     pending_writes = Map.get(tuple, :pending_writes, [])
 
     %{
-      values: Map.get(checkpoint, "channel_values", Map.get(checkpoint, :channel_values, %{})),
+      values: Execution.checkpoint_values(checkpoint),
       channel_versions: Map.get(checkpoint, "channel_versions", Map.get(checkpoint, :channel_versions, %{})),
       versions_seen: Map.get(checkpoint, "versions_seen", Map.get(checkpoint, :versions_seen, %{})),
       updated_channels: Map.get(checkpoint, "updated_channels", Map.get(checkpoint, :updated_channels, [])),
       next: Map.get(checkpoint, "next", Map.get(checkpoint, :next, [])),
-      next_tasks: Map.get(checkpoint, "next_tasks", Map.get(checkpoint, :next_tasks, [])),
+      next_tasks:
+        checkpoint
+        |> Map.get("next_tasks", Map.get(checkpoint, :next_tasks, []))
+        |> Enum.map(&TaskRequest.public_record/1),
       config: tuple.config,
       metadata: tuple.metadata,
       created_at: Map.get(checkpoint, "ts"),
@@ -37,8 +42,10 @@ defmodule BeamWeaver.Graph.Execution.Snapshot do
   def from_tuple(compiled, tuple, opts) do
     snapshot = from_tuple(tuple)
 
-    with {:ok, values} <- DeltaReplay.restore_channel_values(compiled, tuple, snapshot.values) do
-      snapshot = %{snapshot | values: ChannelState.public_state(compiled.graph, values)}
+    values = ChannelLookup.graph_keys(compiled.graph, snapshot.values)
+
+    with {:ok, values} <- DeltaReplay.restore_channel_values(compiled, tuple, values) do
+      snapshot = %{snapshot | values: ChannelLookup.public_state(compiled.graph, values)}
 
       if Keyword.get(opts, :apply_pending?, false) and snapshot.pending_writes != [] do
         restored = Execution.checkpoint_state(tuple)
@@ -52,7 +59,7 @@ defmodule BeamWeaver.Graph.Execution.Snapshot do
           )
 
         with {:ok, values} <-
-               ChannelState.apply_pending_writes(
+               ChannelMerge.apply_pending_writes(
                  snapshot.values,
                  snapshot.pending_writes,
                  compiled.graph
@@ -60,9 +67,12 @@ defmodule BeamWeaver.Graph.Execution.Snapshot do
           {:ok,
            %{
              snapshot
-             | values: ChannelState.public_state(compiled.graph, values),
+             | values: ChannelLookup.public_state(compiled.graph, values),
                next: Replay.ready_names(ready),
-               next_tasks: Replay.checkpoint_next_records(ready, compiled.graph)
+               next_tasks:
+                 ready
+                 |> Replay.checkpoint_next_records(compiled.graph)
+                 |> Enum.map(&TaskRequest.public_record/1)
            }}
         end
       else

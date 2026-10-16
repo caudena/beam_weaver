@@ -128,28 +128,27 @@ defmodule BeamWeaver.TextSplitter.HTMLHeaders do
   def split_text(%__MODULE__{}, text), do: [Shared.strip_markup(text)]
 
   def split_document(%__MODULE__{} = splitter, %Document{} = document) do
-    header_map = Map.new(splitter.headers)
+    header_map = Map.new(splitter.headers, fn {tag, name} -> {String.downcase(tag), name} end)
     regex = ~r/<(h[1-6])[^>]*>(.*?)<\/\1>/is
     content = promote_font_size_headers(document.content)
     pieces = Regex.split(regex, content, include_captures: true, trim: false)
 
     {metadata, buffer, docs} =
       Enum.reduce(pieces, {%{}, [], []}, fn piece, {metadata, buffer, docs} ->
-        case Regex.run(regex, piece) do
-          [_, tag, title] ->
-            docs = flush_html_section(document, splitter, metadata, buffer, docs)
+        with [_, tag, title] <- Regex.run(regex, piece),
+             tag = String.downcase(tag),
+             {:ok, name} <- Map.fetch(header_map, tag) do
+          docs = flush_html_section(document, splitter, metadata, buffer, docs)
 
-            tag = String.downcase(tag)
+          metadata =
+            metadata
+            |> drop_deeper_headers(tag, header_map)
+            |> Map.put(name, Shared.strip_markup(title))
 
-            metadata =
-              metadata
-              |> drop_deeper_headers(tag, header_map)
-              |> Map.put(header_map[tag], Shared.strip_markup(title))
-
-            {metadata, [], docs}
-
-          _other ->
-            {metadata, [piece | buffer], docs}
+          {metadata, [], docs}
+        else
+          # Text, and headings that aren't in `headers`, stay in the section.
+          _other -> {metadata, [piece | buffer], docs}
         end
       end)
 

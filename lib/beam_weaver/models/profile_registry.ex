@@ -96,4 +96,14 @@ defmodule BeamWeaver.Models.ProfileRegistry do
     do: {:ok, Fallbacks.profile(provider, model)}
 
   defp finalize_resolved_profile({:error, %Error{} = error}), do: {:error, error}
+
+  @doc false
+  # Looks a model up in a provider's profile table; unknown models fall back
+  # to the provider's family defaults.
+  def fetch_or_fallback(profiles, provider, model) do
+    case Map.fetch(profiles, {provider, model}) do
+      {:ok, profile} -> {:ok, profile}
+      :error -> {:fallback, provider, model}
+    end
+  end
 end

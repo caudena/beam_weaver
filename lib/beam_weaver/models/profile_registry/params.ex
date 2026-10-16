@@ -34,6 +34,7 @@ defmodule BeamWeaver.Models.ProfileRegistry.Params do
     :top_logprobs,
     :top_p,
     :truncation,
+    :use_previous_response_id,
     :user,
     :verbosity
   ]
@@ -196,11 +197,10 @@ defmodule BeamWeaver.Models.ProfileRegistry.Params do
 
   @zai_params [
     :do_sample,
+    :extra_body,
     :max_completion_tokens,
     :max_output_tokens,
     :max_tokens,
-    :metadata,
-    :model_kwargs,
     :reasoning_effort,
     :request_id,
     :response_format,
@@ -219,11 +219,11 @@ defmodule BeamWeaver.Models.ProfileRegistry.Params do
   ]
 
   @deepseek_chat_completions_params [
+    :extra_body,
     :logprobs,
     :max_completion_tokens,
     :max_output_tokens,
     :max_tokens,
-    :model_kwargs,
     :reasoning_effort,
     :response_format,
     :stop,
@@ -241,11 +241,11 @@ defmodule BeamWeaver.Models.ProfileRegistry.Params do
   ]
 
   @deepseek_responses_params [
+    :extra_body,
     :instructions,
     :max_completion_tokens,
     :max_output_tokens,
     :max_tokens,
-    :model_kwargs,
     :reasoning,
     :reasoning_effort,
     :response_format,
@@ -275,7 +275,6 @@ defmodule BeamWeaver.Models.ProfileRegistry.Params do
     :logprobs,
     :max_output_tokens,
     :media_resolution,
-    :model_kwargs,
     :presence_penalty,
     :response_format,
     :response_format_config,

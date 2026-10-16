@@ -1,7 +1,7 @@
 defmodule BeamWeaver.Agent.Middleware.ToolCallNormalization do
   @moduledoc "Normalizes provider tool calls into the shape BeamWeaver expects."
 
-  @behaviour BeamWeaver.Agent.Middleware
+  use BeamWeaver.Agent.Middleware
 
   alias BeamWeaver.Agent.ModelRequest
   alias BeamWeaver.Agent.ModelResponse
@@ -17,6 +17,7 @@ defmodule BeamWeaver.Agent.Middleware.ToolCallNormalization do
   def new(opts \\ []),
     do: %__MODULE__{max_argument_chars: Keyword.get(opts, :max_argument_chars, 20_000)}
 
+  @impl true
   def wrap_model_call(%__MODULE__{} = middleware, %ModelRequest{} = request, handler) do
     case handler.(request) do
       {:ok, %ModelResponse{} = response} ->

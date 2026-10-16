@@ -7,7 +7,7 @@ defmodule BeamWeaver.OpenAI.ChatCompletions.Messages do
   alias BeamWeaver.OpenAI.ChatCompletions.Messages.Request
   alias BeamWeaver.OpenAI.ChatCompletions.Messages.Response
   alias BeamWeaver.OpenAI.ChatCompletions.Messages.Stream
-  alias BeamWeaver.OpenAI.Error
+  alias BeamWeaver.Core.Error
 
   @doc "Converts BeamWeaver messages to OpenAI Chat Completions messages."
   @spec to_openai_messages([Message.t()]) :: {:ok, [map()]} | {:error, Error.t()}

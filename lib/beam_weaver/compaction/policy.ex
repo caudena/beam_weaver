@@ -12,6 +12,8 @@ defmodule BeamWeaver.Compaction.Policy do
   retry a provider callback on the application's behalf.
   """
 
+  import BeamWeaver.MapShape, only: [put_present: 3]
+
   alias BeamWeaver.Compaction.Fields
   alias BeamWeaver.Core.Error
 
@@ -100,8 +102,8 @@ defmodule BeamWeaver.Compaction.Policy do
          {:ok, model} <- normalize_model(Map.get(attrs, :model)) do
       {:ok,
        attrs
-       |> maybe_put(:mode, mode)
-       |> maybe_put(:model, model)}
+       |> put_present(:mode, mode)
+       |> put_present(:model, model)}
     end
   end
 
@@ -117,9 +119,6 @@ defmodule BeamWeaver.Compaction.Policy do
   defp normalize_model(model) when is_atom(model), do: {:ok, model}
   defp normalize_model(model) when is_binary(model) and byte_size(model) in 1..200, do: {:ok, model}
   defp normalize_model(_model), do: {:error, Error.new(:invalid_compaction_policy, "invalid model")}
-
-  defp maybe_put(attrs, _key, nil), do: attrs
-  defp maybe_put(attrs, key, value), do: Map.put(attrs, key, value)
 
   @doc "Validates ratios, ranges, modes, and positive work limits."
   @spec validate(t()) :: {:ok, t()} | {:error, Error.t()}

@@ -1,197 +1,69 @@
-# Overview
+# BeamWeaver
 
-BeamWeaver is an OTP-native Elixir system for building LLM applications,
-agents, and graph-orchestrated workflows. It combines the two layers that the
-Python ecosystem documents separately:
-
-- LangChain-style model, message, tool, middleware, retrieval, and agent
-  abstractions.
-- LangGraph-style durable graph execution, checkpoints, interrupts, streaming,
-  state, and memory.
-
-The Python projects are behavioral references. BeamWeaver's public API is
-Elixir: modules, structs, behaviours, protocols, supervised tasks, `Enumerable`
-streams, telemetry, explicit adapters, and tagged errors.
-
-BeamWeaver is not affiliated with LangChain.
-
-[WeaveScope](https://weavescope.com) is available for hosted tracing and
-monitoring. Use the [WeaveScope app](https://app.weavescope.com) to create
-projects, manage API keys, and inspect exported traces.
-
-{% hint style="info" %}
-**Unified System**
-
-LangChain agents are built on top of LangGraph in Python. BeamWeaver exposes
-that relationship as one native system: `use BeamWeaver.Agent` and
-`BeamWeaver.Agent.build/1` compile to graph-backed runtimes, while
-`BeamWeaver.Graph` remains available for deterministic or custom orchestration.
-Use an agent when you want the standard model/tool loop. Use a graph when you
-need explicit control over state transitions, branches, fan-out, retries,
-interrupts, or long-running workflows.
-{% endhint %}
-
-## Install
-
-Add BeamWeaver to your Mix project:
+BeamWeaver is an Elixir library for building applications on large language
+models (LLMs) such as GPT, Claude and Gemini. You write tools as Elixir
+modules, and an agent lets the model call them in a loop until it can answer.
+Graphs run workflows with steps you define; they survive restarts and can
+pause for a person's approval. Deep agents plan, keep files and hand work to
+subagents. Everything runs inside your own application, with streaming and
+tracing built in.
 
 ```elixir
-def deps do
-  [
-    {:beam_weaver, "~> 0.1.19"}
-  ]
-end
-```
-
-Then run:
-
-```bash
-mix deps.get
-mix compile
-```
-
-## Create An Agent
-
-Use `use BeamWeaver.Agent` for stable application modules and
-`BeamWeaver.Agent.build/1` for runtime-configured agents. Both compile to the
-same graph-backed runtime. Stable modules should use the semantic DSL so tools,
-middleware, subagents, graphs, prompts, and schemas stay visibly separate.
-
-The runnable weather-agent walkthrough is in
-[Quickstart](getting_started.md#build-a-basic-agent). The full module DSL is in
-[Semantic DSL](semantic_dsl.md).
-
-Agent features include model and tool calling, middleware, structured output,
-short-term memory through checkpoints, long-term memory through stores,
-Deep Agents-style composed capabilities, human-in-the-loop interrupts, typed
-streaming, retries, fallbacks, and runtime context injection.
-
-## Build A Graph
-
-Use `graph do` inside an agent module when the workflow is not just a
-model/tool loop, or when you want explicit orchestration:
-
-```elixir
-defmodule MyApp.HelloWorld do
+defmodule MyApp.SupportAgent do
   use BeamWeaver.Agent
 
-  graph do
-    state do
-      channel :messages, merge: fn existing, update -> existing ++ List.wrap(update) end
-    end
-
-    node :mock_llm, fn _state ->
-      %{messages: [BeamWeaver.Core.Message.assistant("hello world")]}
-    end
-
-    edge start(), :mock_llm
-    edge :mock_llm, finish()
-  end
+  model "openai:gpt-5.4-mini"
+  system_prompt "You are Acme's support agent. Look orders up before you answer."
+  tools [MyApp.Tools.LookupOrder]
 end
 
-{:ok, state} =
-  MyApp.HelloWorld.invoke(%{
-    messages: [BeamWeaver.Core.Message.user("hi")]
-  })
+{:ok, result} = MyApp.SupportAgent.invoke(%{messages: ["Where is my order A-1001?"]})
 ```
 
-Use `BeamWeaver.Graph` builder functions directly when graph shape is dynamic or
-generated from configuration. Graphs support reducer-based state, conditional
-routing, dynamic fan-out, joins, commands, checkpoints, interrupts, state
-history, and `stream_events/3`. Agents use the same graph runtime underneath.
+`MyApp.Tools.LookupOrder` is a tool: a module the model can call to look an
+order up. When the model asks for it, BeamWeaver runs it and hands the result
+back, until the model answers. New to BeamWeaver? The
+[Quickstart](quickstart.md) writes this tool and agent and runs them without
+an API key.
 
-## Core Benefits
+## Start here
 
-| Capability | BeamWeaver surface |
+- [Quickstart](quickstart.md) — build a support agent with a tool and run it
+  without an API key, then switch to a real model.
+- [Concepts](concepts.md) — agents, graphs, deep agents, threads, memory and
+  context on one page.
+- [Examples](examples.md) — runnable scripts for every feature.
+
+## Choose your path
+
+| You want to | Read |
 | --- | --- |
-| Standard model interface | `BeamWeaver.Core.ChatModel` plus provider adapters for OpenAI, Anthropic, Google, DeepSeek, xAI, Z.ai, fake, and replay-backed tests. |
-| Agent architecture | `use BeamWeaver.Agent` and `BeamWeaver.Agent.build/1` for graph-backed model/tool loops. |
-| Low-level orchestration | `BeamWeaver.Graph` for deterministic, agentic, or hybrid workflows. |
-| Durable execution | [Checkpoint-backed resumable graph execution](durable_execution.md). |
-| Fault tolerance | [Node retries, timeouts, error handlers, and failure policies](fault_tolerance.md). |
-| Human oversight | Graph interrupts and agent human-in-the-loop middleware. |
-| Memory | Short-term memory through checkpoints; long-term memory through `BeamWeaver.Memory` stores. |
-| Composed agent capabilities | Planning, virtual filesystems, permissions, subagents, context compaction, code execution, HITL, skills, and memory files through normal composable agent options and middleware. |
-| Deep Agents quickstart | Build a composed research agent with planning, filesystem tools, and a subagent. |
-| Customization | Configure tools, middleware, models, filesystem access, skills, subagents, tracing, and runtime context with module macros or `Agent.build/1` options. |
-| Prompt caching | Provider-specific cache keys, Anthropic system-prompt cache control, and normalized cache-read usage metadata. |
-| Streaming | Typed `%BeamWeaver.Stream.Envelope{}` values exposed as Elixir `Enumerable` streams. |
-| Observability | Telemetry and tracing/export boundaries under `BeamWeaver.Tracing`. |
-| Retrieval | Document loaders, splitters, embeddings, vector stores, retrievers, and indexing primitives. |
+| Answer questions with your own data and actions | [Agents](agents.md), [Tools](tools.md), [Models](models.md) |
+| Get typed results instead of text | [Structured Output](structured_output.md) |
+| Remember conversations and users | [Short-Term Memory](short_term_memory.md), [Long-Term Memory](long_term_memory.md) |
+| Approve risky actions before they happen | [Human-in-the-Loop](human_in_the_loop.md), [Guardrails](guardrails.md) |
+| Show progress while the agent works | [Streaming](streaming.md) |
+| Handle long, open-ended tasks | [Deep Agents](deep_agents.md), [Subagents](subagents.md), [Skills](skills.md) |
+| Run code the agent writes | [Sandboxes](sandboxes.md) |
+| Control every step of a workflow | [Graphs](graphs.md), [Workflow Patterns](workflow_patterns.md) |
+| Survive crashes and deploys mid-run | [Durable Execution](durable_execution.md), [Checkpoints](checkpoints.md) |
+| Search your documents | [Retrieval](retrieval.md) |
+| Ship it | [Going to Production](going_to_production.md), [Testing](testing.md), [Tracing](tracing.md) |
 
-## Core Surfaces
+## Providers
 
-| Surface | Use |
-| --- | --- |
-| `use BeamWeaver.Agent` | Stable application agents and graph modules. |
-| `BeamWeaver.Agent.build/1` | Runtime-configured agents. |
-| `BeamWeaver.Graph` | Explicit workflows, reducers, branches, subgraphs, checkpoints, and interrupts. |
-| `BeamWeaver.Core.Message` | System, user, assistant, and tool messages. |
-| `BeamWeaver.Core.Tool` and `use BeamWeaver.Tool` | Runtime and module-defined tools. |
-| `BeamWeaver.Agent.Middleware` | Lifecycle behavior around agent, model, and tool execution. |
-| `BeamWeaver.Checkpoint.Saver` | Short-term memory and resumable execution. |
-| `BeamWeaver.Memory.Store` | Long-term memory and application stores. |
-| `stream_events/3` | Typed event envelopes for UI, logs, and tracing pipelines. |
-| `BeamWeaver.Tracing` | Local traces and native WeaveScope export. |
+OpenAI, Anthropic, Google Gemini, xAI, DeepSeek, Moonshot (Kimi), Z.ai and
+TypeSafe. You pick a model with a string such as `"anthropic:claude-haiku-4-5"`,
+and fake models stand in for all of them in tests. See
+[Providers](providers.md).
 
-## Start Here
+## Tracing
 
-- [Getting Started](getting_started.md)
-- [Semantic DSL](semantic_dsl.md)
-- [Thinking In BeamWeaver](thinking_in_beamweaver.md)
-- [Workflows And Agents](workflows_and_agents.md)
-- [Persistence](persistence.md)
-- [Memory](memory.md)
-- [Composed Agent Capabilities](agent_harness.md)
-- [Deep Agents Quickstart](deep_agents_quickstart.md)
-- [Customization](customization.md)
-- [Profiles](profiles.md)
-- [Filesystem](filesystem.md)
-- [Filesystem Permissions](permissions.md)
-- [Skills](skills.md)
-- [Sandboxes](sandboxes.md)
-- [Subagents](subagents.md)
-- [Immutable Todos](todos.md)
-- [Async Subagents](async_subagents.md)
-- [Subgraphs](subgraphs.md)
-- [Time Travel](time_travel.md)
-- [Durable Execution](durable_execution.md)
-- [Fault Tolerance](fault_tolerance.md)
-- [Agents](agents.md)
-- [Graph](graph.md)
-- [Models](models.md)
-- [Prompt Caching](prompt_caching.md)
-- [Tools](tools.md)
-- [Messages](messages.md)
-- [Runtime](runtime.md)
-- [Context Engineering](context_engineering.md)
-- [Middleware](middleware.md)
-- [Prebuilt Middleware](prebuilt_middleware.md)
-- [Custom Middleware](custom_middleware.md)
-- [Guardrails](guardrails.md)
-- [Human-In-The-Loop](human_in_the_loop.md)
-- [Short-Term Memory](short_term_memory.md)
-- [Long-Term Memory](long_term_memory.md)
-- [Event Streaming](event_streaming.md)
-- [Structured Output](structured_output.md)
-- [Retrieval](retrieval.md)
-- [Prompts And Parsers](prompts_parsers.md)
-- [Adapters](adapters.md)
-- [Core](core.md)
-- [Partner Matrix](partners.md)
-- [OpenAI](partners/openai.md)
-- [Anthropic](partners/anthropic.md)
-- [Google](partners/google.md)
-- [DeepSeek](partners/deepseek.md)
-- [Moonshot/Kimi](partners/moonshot.md)
-- [xAI](partners/xai.md)
-- [Z.ai](partners/zai.md)
-- [Replay](replay.md)
-- [Going To Production](going_to_production.md)
-- [Rate Limiting](rate_limiting.md)
-- [Tracing](tracing.md)
+Every run records a trace: agents, graph steps, model and tool calls, tokens
+and costs. Send traces to [WeaveScope](https://weavescope.com) to inspect them
+with your team. See [Tracing](tracing.md).
 
-## API Reference
-
-Use [HexDocs](https://hexdocs.pm/beam_weaver/) for module and function
-reference. GitBook is focused on concepts, workflows, and implementation guides.
+{% hint style="info" %}
+Moving an existing project over? [Coming from LangChain](coming_from_langchain.md)
+shows where familiar concepts live in BeamWeaver.
+{% endhint %}

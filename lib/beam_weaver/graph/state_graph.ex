@@ -1,7 +1,5 @@
 defmodule BeamWeaver.Graph.StateGraph do
-  @moduledoc """
-  Immutable graph builder.
-  """
+  @moduledoc false
 
   alias BeamWeaver.Core.Error
   alias BeamWeaver.Graph
@@ -194,12 +192,22 @@ defmodule BeamWeaver.Graph.StateGraph do
       metadata: Keyword.get(opts, :metadata, %{})
     }
 
+    # The join's channel is internal: hidden from nodes and results, but saved
+    # with the thread so that a join survives a failed step that is retried.
     graph
-    |> add_channel(channel, NamedBarrierValue.new(upstream, key: channel),
-      visibility: :private,
-      subscribers: [target]
-    )
+    |> add_channel(channel, NamedBarrierValue.new(upstream, key: channel), subscribers: [target])
     |> then(&%{&1 | waiting_edges: &1.waiting_edges ++ [spec]})
+  end
+
+  @doc false
+  # The writes that record `node` finishing, for every join it is upstream of.
+  @spec join_writes(t(), Graph.node_name()) :: [map()]
+  def join_writes(%__MODULE__{waiting_edges: waiting_edges}, node) do
+    node = N.normalize_node(node)
+
+    for %WaitingEdgeSpec{channel: channel, upstream: upstream} <- waiting_edges,
+        node in upstream,
+        do: %{channel => node}
   end
 
   @doc false

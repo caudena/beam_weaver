@@ -3,7 +3,7 @@ defmodule BeamWeaver.Agent.Middleware.ContextEditing do
   Applies explicit message edits before model calls.
   """
 
-  @behaviour BeamWeaver.Agent.Middleware
+  use BeamWeaver.Agent.Middleware
 
   alias BeamWeaver.Agent.ModelRequest
   alias BeamWeaver.Agent.State
@@ -55,6 +55,7 @@ defmodule BeamWeaver.Agent.Middleware.ContextEditing do
   @impl true
   def name(_middleware), do: :context_editing
 
+  @impl true
   def wrap_model_call(%__MODULE__{edits: []}, %ModelRequest{} = request, handler),
     do: handler.(request)
 
@@ -72,6 +73,7 @@ defmodule BeamWeaver.Agent.Middleware.ContextEditing do
     |> handler.()
   end
 
+  @impl true
   def before_model(%__MODULE__{editor: nil}, _state, _runtime), do: %{}
 
   def before_model(%__MODULE__{editor: editor}, state, runtime) do
