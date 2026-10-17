@@ -25,6 +25,7 @@ defmodule BeamWeaver.Agent.Middleware.ToolCallLimit do
 
   use BeamWeaver.Agent.Middleware
 
+  alias BeamWeaver.Agent.Middleware.Helpers
   alias BeamWeaver.Agent.State
   alias BeamWeaver.Core.Error
   alias BeamWeaver.Core.Message
@@ -62,14 +63,9 @@ defmodule BeamWeaver.Agent.Middleware.ToolCallLimit do
 
   @impl true
   def after_model(%__MODULE__{} = middleware, state, _runtime) do
-    messages = State.messages(state)
-
-    case latest_assistant(messages) do
-      %Message{tool_calls: calls} when is_list(calls) and calls != [] ->
-        check_calls(middleware, state, calls)
-
-      _other ->
-        nil
+    case state |> State.messages() |> Helpers.last_message(:assistant) do
+      %Message{tool_calls: calls} when is_list(calls) and calls != [] -> check_calls(middleware, state, calls)
+      _other -> nil
     end
   end
 
@@ -83,19 +79,27 @@ defmodule BeamWeaver.Agent.Middleware.ToolCallLimit do
     {allowed, blocked, next_thread_count, next_run_count} =
       separate_calls(middleware, calls, thread_count, run_count)
 
+    counts = fn thread_count, run_count ->
+      %{
+        thread_tool_call_count: Map.put(thread_counts, key, thread_count),
+        run_tool_call_count: Map.put(run_counts, key, run_count)
+      }
+    end
+
+    final_message = fn ->
+      final_message(middleware, next_thread_count + length(blocked), next_run_count + length(blocked))
+    end
+
     cond do
       allowed == [] and blocked == [] ->
         nil
 
       blocked == [] ->
-        %{
-          thread_tool_call_count: Map.put(thread_counts, key, next_thread_count),
-          run_tool_call_count: Map.put(run_counts, key, next_run_count)
-        }
+        counts.(next_thread_count, next_run_count)
 
       middleware.exit_behavior == :error ->
         {:error,
-         Error.new(:tool_call_limit_exceeded, final_message(middleware, blocked, state), %{
+         Error.new(:tool_call_limit_exceeded, final_message.(), %{
            tool_name: middleware.tool_name,
            thread_count: next_thread_count + length(blocked),
            run_count: next_run_count + length(blocked),
@@ -103,15 +107,22 @@ defmodule BeamWeaver.Agent.Middleware.ToolCallLimit do
            run_limit: middleware.run_limit
          })}
 
+      # Ending the run skips the tools node, so every call of the batch gets a
+      # tool message and none runs: a refused call says it hit the limit, the
+      # others that they were stopped. The thread keeps its count from before
+      # the batch.
       middleware.exit_behavior == :end ->
-        end_update(middleware, state, thread_counts, run_counts, key, thread_count, next_run_count, blocked, calls)
+        answers =
+          Enum.map(calls, &if(&1 in blocked, do: limit_message(&1, middleware), else: stopped_message(&1)))
+
+        thread_count
+        |> counts.(next_run_count + length(blocked))
+        |> Map.merge(%{jump_to: :end, messages: answers ++ [Message.assistant(final_message.())]})
 
       true ->
-        %{
-          thread_tool_call_count: Map.put(thread_counts, key, next_thread_count),
-          run_tool_call_count: Map.put(run_counts, key, next_run_count + length(blocked)),
-          messages: Enum.map(blocked, &limit_message(&1, middleware))
-        }
+        next_thread_count
+        |> counts.(next_run_count + length(blocked))
+        |> Map.put(:messages, Enum.map(blocked, &limit_message(&1, middleware)))
     end
   end
 
@@ -130,37 +141,10 @@ defmodule BeamWeaver.Agent.Middleware.ToolCallLimit do
     end)
   end
 
-  # Ending the run skips the tools node, so every call of the batch gets a tool
-  # message and none runs: a refused call says it hit the limit, the others
-  # that they were stopped. The thread keeps its count from before the batch.
-  defp end_update(
-         %__MODULE__{} = middleware,
-         state,
-         thread_counts,
-         run_counts,
-         key,
-         thread_count,
-         run_count,
-         blocked,
-         calls
-       ) do
-    answers =
-      Enum.map(calls, fn call ->
-        if call in blocked, do: limit_message(call, middleware), else: stopped_message(call)
-      end)
-
-    %{
-      thread_tool_call_count: Map.put(thread_counts, key, thread_count),
-      run_tool_call_count: Map.put(run_counts, key, run_count + length(blocked)),
-      jump_to: :end,
-      messages: answers ++ [Message.assistant(final_message(middleware, blocked, state))]
-    }
-  end
-
   defp stopped_message(call) do
     Message.tool(
       "Execution stopped before this tool call could run because another tool call in the same batch exceeded the limit.",
-      tool_call_id: tool_call_id(call),
+      tool_call_id: Helpers.tool_call_id(call),
       name: tool_name(call),
       metadata: %{status: "error", error_type: :tool_call_stopped}
     )
@@ -168,7 +152,7 @@ defmodule BeamWeaver.Agent.Middleware.ToolCallLimit do
 
   defp limit_message(call, %__MODULE__{} = middleware) do
     Message.tool(tool_message_content(middleware),
-      tool_call_id: tool_call_id(call),
+      tool_call_id: Helpers.tool_call_id(call),
       name: tool_name(call),
       metadata: %{
         status: "error",
@@ -180,13 +164,7 @@ defmodule BeamWeaver.Agent.Middleware.ToolCallLimit do
     )
   end
 
-  defp final_message(%__MODULE__{} = middleware, blocked, state) do
-    key = count_key(middleware)
-    thread_counts = count_map(state, :thread_tool_call_count)
-    run_counts = count_map(state, :run_tool_call_count)
-    thread_count = Map.get(thread_counts, key, 0) + length(blocked)
-    run_count = Map.get(run_counts, key, 0) + length(blocked)
-
+  defp final_message(%__MODULE__{} = middleware, thread_count, run_count) do
     tool_desc = if middleware.tool_name, do: "'#{middleware.tool_name}' tool", else: "Tool"
 
     exceeded =
@@ -222,7 +200,7 @@ defmodule BeamWeaver.Agent.Middleware.ToolCallLimit do
   end
 
   defp validate!(%__MODULE__{thread_limit: thread_limit, run_limit: run_limit} = middleware) do
-    unless valid_limit?(thread_limit) and valid_limit?(run_limit) do
+    unless Enum.all?([thread_limit, run_limit], &(is_nil(&1) or (is_integer(&1) and &1 >= 0))) do
       raise ArgumentError, "tool call limits must be nil or non-negative integers"
     end
 
@@ -232,9 +210,6 @@ defmodule BeamWeaver.Agent.Middleware.ToolCallLimit do
 
     middleware
   end
-
-  defp valid_limit?(nil), do: true
-  defp valid_limit?(limit), do: is_integer(limit) and limit >= 0
 
   defp normalize_exit_behavior(value),
     do: Options.atom_enum!("exit_behavior", value, [:continue, :error, :end])
@@ -255,22 +230,10 @@ defmodule BeamWeaver.Agent.Middleware.ToolCallLimit do
 
   defp count_map(state, key) do
     case Map.get(state, key, %{}) do
-      value when is_map(value) -> stringify_keys(value)
+      value when is_map(value) -> value
       _other -> %{}
     end
   end
-
-  defp stringify_keys(map), do: Map.new(map, fn {key, value} -> {to_string(key), value} end)
-
-  defp latest_assistant(messages) do
-    Enum.find(Enum.reverse(messages), &match?(%Message{role: :assistant}, &1))
-  end
-
-  defp tool_call_id(call),
-    do:
-      Map.get(call, :id) ||
-        Map.get(call, :tool_call_id) ||
-        Map.get(call, :call_id)
 
   defp tool_name(call), do: Map.get(call, :name)
 end

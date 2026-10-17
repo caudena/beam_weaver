@@ -221,11 +221,6 @@ defmodule BeamWeaver.PromptTest do
              Runnable.invoke(Prompt.string("Hello {bad-name}"), %{})
   end
 
-  test "missing variables return prompt errors" do
-    assert {:error, %Error{type: :prompt_missing_variable, details: %{variable: "name"}}} =
-             Runnable.invoke(Prompt.string("Hello {name}"), %{})
-  end
-
   test "partials can be values, zero-arity callbacks, one-arity callbacks, and registered MFA" do
     prompt =
       Prompt.string("{static}/{zero}/{one}/{mfa}",

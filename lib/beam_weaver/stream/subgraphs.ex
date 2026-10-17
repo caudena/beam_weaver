@@ -104,9 +104,9 @@ defmodule BeamWeaver.Stream.Subgraphs do
       status: status,
       error: error,
       events: subtree_events,
-      values: values(own_events),
-      updates: updates(own_events),
-      tasks: tasks(own_events),
+      values: for(%Envelope{event: %Events.GraphValue{value: value}} <- own_events, do: value),
+      updates: for(%Envelope{event: %Events.GraphUpdate{update: update}} <- own_events, do: update),
+      tasks: for(%Envelope{event: %Events.Task{} = task} <- own_events, do: task),
       subgraphs: from_events(events, scope: path)
     }
   end
@@ -150,24 +150,17 @@ defmodule BeamWeaver.Stream.Subgraphs do
   # Without its node's task events (a stream without `Task` events, or events
   # built by hand), an `Error` event in the subgraph's namespace ends it.
   defp error_status(events) do
-    case Enum.find(events, &match?(%Envelope{event: %Events.Error{}}, &1)) do
+    Enum.find_value(events, fn
+      %Envelope{event: %Events.Error{error: %{type: type} = error}} when type in [:graph_interrupt, :interrupted] ->
+        {:interrupted, error_message(error)}
+
       %Envelope{event: %Events.Error{error: error}} ->
-        if interrupted_error?(error),
-          do: {:interrupted, error_message(error)},
-          else: {:failed, error_message(error)}
+        {:failed, error_message(error)}
 
-      nil ->
+      _other ->
         nil
-    end
+    end)
   end
-
-  defp interrupted_error?(%Error{type: type}) when type in [:graph_interrupt, :interrupted],
-    do: true
-
-  defp interrupted_error?(%{type: type}) when type in [:graph_interrupt, :interrupted],
-    do: true
-
-  defp interrupted_error?(_error), do: false
 
   defp error_message(%Error{message: message}), do: message
   defp error_message(%{message: message}) when is_binary(message), do: message
@@ -176,45 +169,15 @@ defmodule BeamWeaver.Stream.Subgraphs do
 
   defp graph_name([%Envelope{graph: graph} | _rest], _subtree), do: graph
   defp graph_name([], [%Envelope{graph: graph} | _rest]), do: graph
-  defp graph_name([], []), do: nil
 
-  defp path_graph_name([]), do: nil
-
-  defp path_graph_name(path) do
-    path
-    |> List.last()
-    |> to_string()
-    |> String.split(":", parts: 2)
-    |> hd()
-  end
-
-  defp path_segment_id([]), do: nil
+  defp path_graph_name(path), do: path |> last_segment() |> hd()
 
   defp path_segment_id(path) do
-    case path |> List.last() |> to_string() |> String.split(":", parts: 2) do
+    case last_segment(path) do
       [_name, id] -> id
       _other -> nil
     end
   end
 
-  defp values(events) do
-    Enum.flat_map(events, fn
-      %Envelope{event: %Events.GraphValue{value: value}} -> [value]
-      _other -> []
-    end)
-  end
-
-  defp updates(events) do
-    Enum.flat_map(events, fn
-      %Envelope{event: %Events.GraphUpdate{update: update}} -> [update]
-      _other -> []
-    end)
-  end
-
-  defp tasks(events) do
-    Enum.flat_map(events, fn
-      %Envelope{event: %Events.Task{} = event} -> [event]
-      _other -> []
-    end)
-  end
+  defp last_segment(path), do: path |> List.last() |> to_string() |> String.split(":", parts: 2)
 end

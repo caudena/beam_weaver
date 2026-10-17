@@ -22,7 +22,7 @@ defmodule BeamWeaver.Graph.ChannelSpec do
         }
 
   @spec new(term(), keyword()) :: t()
-  def new(channel, opts \\ []) do
+  def new(channel, opts) do
     %__MODULE__{
       channel: channel,
       opts:
@@ -41,13 +41,13 @@ defmodule BeamWeaver.Graph.ChannelSpec do
   end
 
   @spec private(term(), keyword()) :: t()
-  def private(channel, opts \\ []) do
+  def private(channel, opts) do
     visibility = if Keyword.get(opts, :checkpoint, false), do: :private_checkpointed, else: :private
     new(channel, Keyword.put(opts, :visibility, visibility))
   end
 
   @spec managed(term(), keyword()) :: t()
-  def managed(managed, opts \\ []) do
+  def managed(managed, opts) do
     new(managed, opts |> Keyword.put(:managed?, true) |> Keyword.put(:visibility, :private))
   end
 

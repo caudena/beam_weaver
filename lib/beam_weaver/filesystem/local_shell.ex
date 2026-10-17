@@ -45,7 +45,7 @@ defmodule BeamWeaver.Filesystem.LocalShell do
 
   @impl BeamWeaver.Filesystem.Executable
   def execute(%__MODULE__{} = backend, command, opts) do
-    with {:ok, timeout} <- opts |> Keyword.get(:timeout, backend.timeout) |> timeout_ms() do
+    with {:ok, timeout} <- opts |> Keyword.get(:timeout, backend.timeout) |> CommandRunner.timeout_ms() do
       case CommandRunner.run(command,
              shell: CommandRunner.shell(),
              cd: backend.root,
@@ -111,11 +111,6 @@ defmodule BeamWeaver.Filesystem.LocalShell do
     do: backend |> filesystem() |> Filesystem.canonical_paths(paths, opts)
 
   defp filesystem(%__MODULE__{root: root}), do: Local.new(root: root)
-
-  defp timeout_ms(timeout) when is_integer(timeout) and timeout in 1..3600,
-    do: {:ok, timeout * 1_000}
-
-  defp timeout_ms(_timeout), do: {:error, "timeout must be an integer between 1 and 3600 seconds"}
 
   defp truncate(output, :unlimited), do: {output, false}
 

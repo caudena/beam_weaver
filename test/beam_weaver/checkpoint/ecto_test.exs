@@ -112,12 +112,12 @@ defmodule BeamWeaver.Checkpoint.EctoTest do
                %{step: 2}
              )
 
-    assert [%{checkpoint: %{"id" => "cp-2"}, parent_config: nil}] =
+    assert [%{checkpoint: %{"id" => "cp-2"}, parent_config: nil, pending_writes: []}] =
              Checkpoint.list(saver, config)
 
     refute Checkpoint.get_tuple(saver, first_config)
 
-    assert %{checkpoint: %{"id" => "cp-2"}, pending_writes: []} =
+    assert %{checkpoint: %{"id" => "cp-2"}, parent_config: nil, pending_writes: []} =
              Checkpoint.get_tuple(saver, second_config)
   end
 

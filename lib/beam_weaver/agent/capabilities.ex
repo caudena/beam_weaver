@@ -29,11 +29,6 @@ defmodule BeamWeaver.Agent.Capabilities do
     Middleware.OverflowRecovery
   ]
 
-  @doc """
-  Resolves the model, applies the capability profile and turns the capability
-  declarations into middleware. Apply it once per spec: the result already
-  holds the capability middleware.
-  """
   @spec apply(Spec.t()) :: {:ok, Spec.t()} | {:error, Error.t()}
   def apply(%Spec{} = spec) do
     with {:ok, profile} <- capability_profile(spec),
@@ -50,8 +45,6 @@ defmodule BeamWeaver.Agent.Capabilities do
     # The middleware constructors raise for settings they can't take.
     error in [ArgumentError, KeyError] -> {:error, Error.new(:invalid_agent, Middleware.option_error(error))}
   end
-
-  defp resolve_model(%Spec{model_opts: opts}) when not is_list(opts), do: invalid_model_opts(opts)
 
   defp resolve_model(%Spec{model: model, model_opts: opts} = spec) do
     cond do
@@ -305,21 +298,14 @@ defmodule BeamWeaver.Agent.Capabilities do
   # `compact_conversation` also turns on automatic summarization, configured by
   # its `summarization:` option; the other options configure the tool.
   defp maybe_summarization(%Spec{} = spec) do
-    case spec.compact_conversation do
-      settings when is_list(settings) ->
-        model = Keyword.get(settings, :model, spec.model)
+    if settings = settings(spec.compact_conversation) do
+      model = Keyword.get(settings, :model, spec.model)
 
-        case Keyword.get(settings, :summarization, true) do
-          false -> nil
-          true -> summarization(spec, model, [])
-          summarization when is_list(summarization) -> summarization(spec, model, summarization)
-        end
-
-      value when value in [true, :auto] ->
-        summarization(spec, spec.model, [])
-
-      _other ->
-        nil
+      case Keyword.get(settings, :summarization, true) do
+        false -> nil
+        true -> summarization(spec, model, [])
+        summarization when is_list(summarization) -> summarization(spec, model, summarization)
+      end
     end
   end
 
@@ -332,40 +318,27 @@ defmodule BeamWeaver.Agent.Capabilities do
   end
 
   defp maybe_compact_conversation(%Spec{} = spec, filesystem) do
-    case spec.compact_conversation do
-      settings when is_list(settings) ->
-        settings
-        |> Keyword.delete(:summarization)
-        |> Keyword.put_new(:model, spec.model)
-        |> Keyword.put_new(:backend, filesystem || State.new())
-        |> Middleware.CompactConversation.new()
-
-      value when value in [true, :auto] ->
-        Middleware.CompactConversation.new(model: spec.model, backend: filesystem || State.new())
-
-      _other ->
-        nil
+    if settings = settings(spec.compact_conversation) do
+      settings
+      |> Keyword.delete(:summarization)
+      |> Keyword.put_new(:model, spec.model)
+      |> Keyword.put_new(:backend, filesystem || State.new())
+      |> Middleware.CompactConversation.new()
     end
   end
 
   defp maybe_overflow_recovery(%Spec{} = spec, filesystem) do
-    case spec.overflow_recovery do
-      settings when is_list(settings) ->
-        settings
-        |> Keyword.put_new(:backend, filesystem || State.new())
-        |> Keyword.put_new(:max_input_tokens, max_input_tokens(spec.model))
-        |> Middleware.OverflowRecovery.new()
-
-      value when value in [true, :auto] ->
-        Middleware.OverflowRecovery.new(
-          backend: filesystem || State.new(),
-          max_input_tokens: max_input_tokens(spec.model)
-        )
-
-      _other ->
-        nil
+    if settings = settings(spec.overflow_recovery) do
+      settings
+      |> Keyword.put_new(:backend, filesystem || State.new())
+      |> Keyword.put_new(:max_input_tokens, max_input_tokens(spec.model))
+      |> Middleware.OverflowRecovery.new()
     end
   end
+
+  defp settings(value) when value in [true, :auto], do: []
+  defp settings(settings) when is_list(settings), do: settings
+  defp settings(_value), do: nil
 
   defp maybe_prompt_caching(%Spec{prompt_caching: value}) when value in [nil, false], do: nil
 
@@ -458,10 +431,7 @@ defmodule BeamWeaver.Agent.Capabilities do
   defp middleware_key({module, _opts}) when is_atom(module), do: module
   defp middleware_key(other), do: other
 
-  defp max_input_tokens(%{profile: %{max_input_tokens: limit}}) when is_integer(limit), do: limit
-
-  defp max_input_tokens(%{profile: %{"max_input_tokens" => limit}}) when is_integer(limit),
-    do: limit
-
-  defp max_input_tokens(_model), do: nil
+  def max_input_tokens(%{profile: %{max_input_tokens: limit}}) when is_integer(limit), do: limit
+  def max_input_tokens(%{profile: %{"max_input_tokens" => limit}}) when is_integer(limit), do: limit
+  def max_input_tokens(_model), do: nil
 end

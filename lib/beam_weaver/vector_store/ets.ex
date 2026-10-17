@@ -66,13 +66,9 @@ defmodule BeamWeaver.VectorStore.ETS do
 
   def get_by_ids(%__MODULE__{} = store, ids, _opts) do
     documents =
-      ids
-      |> Enum.flat_map(fn id ->
-        case :ets.lookup(store.table, {store.namespace, to_string(id)}) do
-          [{_key, %{document: document}}] -> [document]
-          [] -> []
-        end
-      end)
+      for id <- ids,
+          {_key, %{document: document}} <- :ets.lookup(store.table, {store.namespace, to_string(id)}),
+          do: document
 
     {:ok, documents}
   end
@@ -151,11 +147,8 @@ defmodule BeamWeaver.VectorStore.ETS do
   end
 
   @impl true
-  def similarity_search(%__MODULE__{} = store, query, opts) do
-    with {:ok, scored} <- similarity_search_with_score(store, query, opts) do
-      {:ok, Enum.map(scored, &elem(&1, 0))}
-    end
-  end
+  def similarity_search(%__MODULE__{} = store, query, opts),
+    do: store |> similarity_search_with_score(query, opts) |> VectorStore.drop_scores()
 
   @impl true
   def similarity_search_with_score(%__MODULE__{} = store, query, opts) do
@@ -200,7 +193,7 @@ defmodule BeamWeaver.VectorStore.ETS do
       |> Enum.sort_by(fn {_doc, _vector, score} -> -score end)
       |> Enum.take(fetch_k)
 
-    {:ok, query_vector |> Scoring.mmr(candidates, k, lambda, []) |> Enum.map(&elem(&1, 0))}
+    {:ok, candidates |> Scoring.mmr(k, lambda) |> Enum.map(&elem(&1, 0))}
   end
 
   defp scored_documents(store, vector, opts) do

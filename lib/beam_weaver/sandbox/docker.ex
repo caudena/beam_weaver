@@ -20,7 +20,9 @@ defmodule BeamWeaver.Sandbox.Docker do
 
   use BeamWeaver.Sandbox
 
+  alias BeamWeaver.Filesystem.Path, as: FilesystemPath
   alias BeamWeaver.Sandbox
+  alias BeamWeaver.Tools.Shell.CommandRunner
 
   @not_started "container_not_started"
 
@@ -351,7 +353,7 @@ defmodule BeamWeaver.Sandbox.Docker do
     do: %Sandbox.ExecuteResult{exit_code: nil, output: "", error: @not_started, truncated: false}
 
   def execute(%__MODULE__{} = sandbox, command, opts) do
-    case opts |> Keyword.get(:timeout, 120) |> timeout_ms() do
+    case opts |> Keyword.get(:timeout, 120) |> CommandRunner.timeout_ms() do
       {:ok, timeout} ->
         workdir = Keyword.get(opts, :workdir, sandbox.root)
         pid_file = "/tmp/beam_weaver_execute_#{Base.encode16(:crypto.strong_rand_bytes(8), case: :lower)}.pid"
@@ -484,7 +486,7 @@ defmodule BeamWeaver.Sandbox.Docker do
           |> String.split("\n", trim: true)
           |> Enum.map(fn line ->
             [type, entry_path] = String.split(line, "|", parts: 2)
-            %{"path" => join_virtual(path, entry_path), "is_dir" => type == "d"}
+            %{"path" => FilesystemPath.join_virtual(path, entry_path), "is_dir" => type == "d"}
           end)
 
         %Sandbox.GlobResult{matches: matches}
@@ -757,14 +759,6 @@ defmodule BeamWeaver.Sandbox.Docker do
     end
   end
 
-  defp join_virtual("/", ""), do: "/"
-  defp join_virtual("/", relative), do: "/" <> String.trim_leading(relative, "/")
-  defp join_virtual(base, ""), do: base
-
-  defp join_virtual(base, relative) do
-    String.trim_trailing(base, "/") <> "/" <> String.trim_leading(relative, "/")
-  end
-
   defp truncate(output, :unlimited), do: {output, false}
 
   defp truncate(output, max_bytes) when is_integer(max_bytes) and byte_size(output) > max_bytes do
@@ -914,10 +908,4 @@ defmodule BeamWeaver.Sandbox.Docker do
       {:error, _reason} = error -> error
     end
   end
-
-  defp timeout_ms(timeout) when is_integer(timeout) and timeout in 1..3600,
-    do: {:ok, timeout * 1_000}
-
-  defp timeout_ms(_timeout),
-    do: {:error, "timeout must be an integer between 1 and 3600 seconds"}
 end

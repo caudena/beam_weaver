@@ -31,6 +31,7 @@ defmodule BeamWeaver.Agent.Middleware.HumanInTheLoop do
 
   use BeamWeaver.Agent.Middleware
 
+  alias BeamWeaver.Agent.Middleware.Helpers
   alias BeamWeaver.Agent.State
   alias BeamWeaver.Agent.ToolCallRequest
   alias BeamWeaver.Agent.ToolSet
@@ -40,6 +41,7 @@ defmodule BeamWeaver.Agent.Middleware.HumanInTheLoop do
   alias BeamWeaver.Core.Tool
   alias BeamWeaver.Graph
   alias BeamWeaver.Graph.Command
+  alias BeamWeaver.MapShape
 
   @decisions [:approve, :edit, :reject, :respond]
 
@@ -51,24 +53,9 @@ defmodule BeamWeaver.Agent.Middleware.HumanInTheLoop do
   # `wrap_tool_call`.
   @edits :hitl_edited_tool_calls
 
-  defmodule ActionRequest do
-    @moduledoc false
-    defstruct [:name, args: %{}, description: nil]
-  end
-
-  defmodule ReviewConfig do
-    @moduledoc false
-    defstruct [:action_name, allowed_decisions: [], args_schema: nil]
-  end
-
   defmodule Decision do
     @moduledoc "Typed HITL resume decision."
     defstruct [:type, :message, :edited_action]
-  end
-
-  defmodule ValidationError do
-    @moduledoc false
-    defstruct [:message, details: %{}]
   end
 
   defstruct interrupt_on: %{},
@@ -145,10 +132,7 @@ defmodule BeamWeaver.Agent.Middleware.HumanInTheLoop do
 
   def after_model(%__MODULE__{} = middleware, state, runtime) do
     with {:ok, messages} <- state_messages(state) do
-      case last_ai_message(messages) do
-        nil ->
-          nil
-
+      case Helpers.last_message(messages, :assistant) do
         %Message{tool_calls: calls} = ai_message when is_list(calls) and calls != [] ->
           review = review_requests(middleware, calls, state, runtime)
 
@@ -164,9 +148,6 @@ defmodule BeamWeaver.Agent.Middleware.HumanInTheLoop do
     end
   end
 
-  def after_model(_middleware, _state, _runtime),
-    do: {:error, Error.new(:invalid_agent_state, "HITL middleware expected map state")}
-
   # An earlier turn's edits must not apply to this turn's calls.
   defp clear_edits(state) do
     if (Map.get(state, @edits) || %{}) != %{}, do: %{@edits => %{}}
@@ -175,16 +156,11 @@ defmodule BeamWeaver.Agent.Middleware.HumanInTheLoop do
   @impl true
   def wrap_tool_call(%__MODULE__{interrupt_mode: :per_call} = middleware, %ToolCallRequest{} = request, handler) do
     call = request.tool_call
+    config = Map.get(middleware.interrupt_on, tool_call_name(call))
 
-    case Map.get(middleware.interrupt_on, tool_call_name(call)) do
-      nil ->
-        handler.(request)
-
-      config ->
-        if reviewable?(config, call, request.state, request.runtime),
-          do: review_call(middleware, request, config, handler),
-          else: handler.(request)
-    end
+    if config && reviewable?(config, call, request.state, request.runtime),
+      do: review_call(middleware, request, config, handler),
+      else: handler.(request)
   end
 
   def wrap_tool_call(%__MODULE__{} = middleware, %ToolCallRequest{} = request, handler) do
@@ -238,7 +214,7 @@ defmodule BeamWeaver.Agent.Middleware.HumanInTheLoop do
   defp approval_request(middleware, request, config) do
     call = request.tool_call
 
-    if is_nil(tool_call_id(call)) do
+    if is_nil(Helpers.tool_call_id(call)) do
       {:error,
        Error.new(:invalid_tool_call, "tool call has no id, so its result can't be matched to it", %{
          tool: tool_call_name(call)
@@ -248,7 +224,7 @@ defmodule BeamWeaver.Agent.Middleware.HumanInTheLoop do
 
       approval = %{
         type: "tool_approval",
-        tool_call_id: tool_call_id(call),
+        tool_call_id: Helpers.tool_call_id(call),
         name: action.name,
         args: action.args,
         description: action.description,
@@ -267,9 +243,9 @@ defmodule BeamWeaver.Agent.Middleware.HumanInTheLoop do
   # One decision for one call. An edit keeps the call's tool.
   defp call_decision(middleware, answer, call, config) when is_map(answer) do
     case process_decision(middleware, answer, call, config) do
-      {:ok, {:edit, %{name: name} = edit}} ->
+      {:ok, {:edit, %{name: name}}} = result ->
         if name == tool_call_name(call),
-          do: {:ok, {:edit, edit}},
+          do: result,
           else:
             {:error,
              Error.new(:invalid_human_decision, "an edit must keep the tool it reviews", %{
@@ -277,14 +253,8 @@ defmodule BeamWeaver.Agent.Middleware.HumanInTheLoop do
                edited_tool: name
              })}
 
-      {:ok, _call, nil} ->
-        {:ok, :approve}
-
-      {:ok, _call, %Message{} = message} ->
-        {:ok, message}
-
-      {:error, %Error{}} = error ->
-        error
+      result ->
+        result
     end
   end
 
@@ -292,7 +262,7 @@ defmodule BeamWeaver.Agent.Middleware.HumanInTheLoop do
     do: invalid_decision(answer, call, Map.fetch!(config, :allowed_decisions))
 
   defp reviewer_call(%ToolCallRequest{state: state, tool_call: call}) when is_map(state) do
-    (Map.get(state, @edits) || %{}) |> Map.get(tool_call_id(call))
+    (Map.get(state, @edits) || %{}) |> Map.get(Helpers.tool_call_id(call))
   end
 
   defp reviewer_call(_request), do: nil
@@ -300,7 +270,7 @@ defmodule BeamWeaver.Agent.Middleware.HumanInTheLoop do
   # The result answers the model's call, so it keeps that call's name, which
   # Gemini matches against the call, and says what ran instead.
   defp edited_result(%Message{role: :tool} = message, middleware, call, edit) do
-    if message.tool_call_id == tool_call_id(call),
+    if message.tool_call_id == Helpers.tool_call_id(call),
       do: %{message | name: tool_call_name(call), content: with_notice(message.content, middleware, edit)},
       else: message
   end
@@ -341,20 +311,8 @@ defmodule BeamWeaver.Agent.Middleware.HumanInTheLoop do
   end
 
   defp process_review(middleware, ai_message, calls, review) do
-    request = %{
-      action_requests: review.action_requests,
-      review_configs: review.review_configs
-    }
-
-    request
-    |> Graph.interrupt()
-    |> decisions()
-    |> case do
-      {:ok, decisions} ->
-        apply_decisions(middleware, ai_message, calls, review.interrupt_indices, decisions)
-
-      {:error, %Error{} = error} ->
-        {:error, error}
+    with {:ok, decisions} <- decisions(Graph.interrupt(Map.take(review, [:action_requests, :review_configs]))) do
+      apply_decisions(middleware, ai_message, calls, review.interrupt_indices, decisions)
     end
   end
 
@@ -421,17 +379,14 @@ defmodule BeamWeaver.Agent.Middleware.HumanInTheLoop do
     action_request = %{name: name, args: args, description: description}
 
     review_config =
-      %{
-        action_name: name,
-        allowed_decisions: Enum.map(Map.fetch!(config, :allowed_decisions), &Atom.to_string/1)
-      }
-      |> maybe_put_args_schema(Map.get(config, :args_schema))
+      MapShape.put_present(
+        %{action_name: name, allowed_decisions: Enum.map(Map.fetch!(config, :allowed_decisions), &Atom.to_string/1)},
+        :args_schema,
+        Map.get(config, :args_schema)
+      )
 
     {action_request, review_config}
   end
-
-  defp maybe_put_args_schema(config, nil), do: config
-  defp maybe_put_args_schema(config, schema), do: Map.put(config, :args_schema, schema)
 
   defp decisions(%{decisions: decisions}) when is_list(decisions), do: {:ok, decisions}
   defp decisions(%{"decisions" => decisions}) when is_list(decisions), do: {:ok, decisions}
@@ -461,34 +416,24 @@ defmodule BeamWeaver.Agent.Middleware.HumanInTheLoop do
 
     calls
     |> Enum.with_index()
-    |> Enum.reduce_while({:ok, [], [], %{}}, fn {call, idx}, {:ok, revised, synthetic, edits} ->
+    |> Enum.reduce_while({:ok, [], %{}}, fn {call, idx}, {:ok, synthetic, edits} ->
       case Map.fetch(decision_by_index, idx) do
         :error ->
-          {:cont, {:ok, revised ++ [call], synthetic, edits}}
+          {:cont, {:ok, synthetic, edits}}
 
         {:ok, {config, decision}} ->
           case process_decision(middleware, decision, call, config) do
-            {:ok, {:edit, edit}} ->
-              {:cont, {:ok, revised ++ [call], synthetic, Map.put(edits, tool_call_id(call), edit)}}
-
-            {:ok, revised_call, nil} ->
-              {:cont, {:ok, revised ++ [revised_call], synthetic, edits}}
-
-            {:ok, revised_call, %Message{} = message} ->
-              {:cont, {:ok, revised ++ [revised_call], synthetic ++ [message], edits}}
-
-            {:error, %Error{} = error} ->
-              {:halt, {:error, error}}
+            {:ok, {:edit, edit}} -> {:cont, {:ok, synthetic, Map.put(edits, Helpers.tool_call_id(call), edit)}}
+            {:ok, :approve} -> {:cont, {:ok, synthetic, edits}}
+            {:ok, %Message{} = message} -> {:cont, {:ok, synthetic ++ [message], edits}}
+            {:error, %Error{} = error} -> {:halt, {:error, error}}
           end
       end
     end)
     |> case do
-      {:ok, revised_calls, synthetic_messages, edits} ->
-        # Written every review, so an earlier review's edits don't linger.
-        %{@edits => edits, messages: [%{ai_message | tool_calls: revised_calls} | synthetic_messages]}
-
-      {:error, %Error{} = error} ->
-        {:error, error}
+      # Written every review, so an earlier review's edits don't linger.
+      {:ok, synthetic_messages, edits} -> %{@edits => edits, messages: [ai_message | synthetic_messages]}
+      {:error, %Error{} = error} -> {:error, error}
     end
   end
 
@@ -501,18 +446,18 @@ defmodule BeamWeaver.Agent.Middleware.HumanInTheLoop do
         invalid_decision(decision, call, allowed)
 
       type == :approve ->
-        {:ok, call, nil}
+        {:ok, :approve}
 
       type == :edit ->
         edit_decision(middleware, decision, call, config)
 
       type == :reject ->
-        {:ok, call, reject_message(decision, call)}
+        {:ok, reject_message(decision, call)}
 
       type == :respond ->
         case decision_message(decision) do
           nil -> invalid_decision(decision, call, allowed)
-          message -> {:ok, call, respond_message(message, call)}
+          message -> {:ok, respond_message(message, call)}
         end
     end
   end
@@ -541,7 +486,7 @@ defmodule BeamWeaver.Agent.Middleware.HumanInTheLoop do
     args = Map.get(action, :args, Map.get(action, "args", %{}))
 
     if is_binary(name) and is_map(args) do
-      {:ok, %{id: tool_call_id(call), name: name, args: args}}
+      {:ok, %{id: Helpers.tool_call_id(call), name: name, args: args}}
     else
       {:error,
        Error.new(:invalid_human_decision, "edited_action must include name and args", %{
@@ -571,7 +516,7 @@ defmodule BeamWeaver.Agent.Middleware.HumanInTheLoop do
     content =
       case decision_message(decision) do
         reason when reason in [nil, ""] ->
-          "User rejected the tool call for `#{tool_call_name(call)}` with id #{tool_call_id(call)}. " <>
+          "User rejected the tool call for `#{tool_call_name(call)}` with id #{Helpers.tool_call_id(call)}. " <>
             "The tool was not executed. Do not retry this tool call unless the user explicitly requests it."
 
         reason ->
@@ -580,7 +525,7 @@ defmodule BeamWeaver.Agent.Middleware.HumanInTheLoop do
 
     Message.tool(content,
       name: tool_call_name(call),
-      tool_call_id: tool_call_id(call),
+      tool_call_id: Helpers.tool_call_id(call),
       status: "error",
       metadata: %{status: "error"}
     )
@@ -589,7 +534,7 @@ defmodule BeamWeaver.Agent.Middleware.HumanInTheLoop do
   defp respond_message(content, call) do
     Message.tool(content,
       name: tool_call_name(call),
-      tool_call_id: tool_call_id(call),
+      tool_call_id: Helpers.tool_call_id(call),
       status: "success",
       metadata: %{status: "success"}
     )
@@ -609,10 +554,6 @@ defmodule BeamWeaver.Agent.Middleware.HumanInTheLoop do
       messages when is_list(messages) -> {:ok, messages}
       _other -> {:error, Error.new(:invalid_agent_state, "agent state messages must be a list")}
     end
-  end
-
-  defp last_ai_message(messages) do
-    Enum.find(Enum.reverse(messages), &match?(%Message{role: :assistant}, &1))
   end
 
   defp normalize_interrupt_on(interrupt_on) when is_map(interrupt_on) do
@@ -712,9 +653,6 @@ defmodule BeamWeaver.Agent.Middleware.HumanInTheLoop do
   defp decision_message(decision), do: Map.get(decision, :message, Map.get(decision, "message"))
 
   defp tool_call_name(call), do: Map.get(call, :name)
-
-  defp tool_call_id(call),
-    do: Map.get(call, :id) || Map.get(call, :tool_call_id)
 
   defp tool_call_args(call), do: Map.get(call, :args, %{})
 end

@@ -1,7 +1,6 @@
 defmodule BeamWeaver.Filesystem.Search do
   @moduledoc false
 
-  alias BeamWeaver.Filesystem
   alias BeamWeaver.Filesystem.FileDataUtils
   alias BeamWeaver.Filesystem.FileInfo
   alias BeamWeaver.Filesystem.GrepMatch
@@ -26,7 +25,7 @@ defmodule BeamWeaver.Filesystem.Search do
     end)
   end
 
-  def grep_files(files, pattern, opts \\ []) do
+  def grep_files(files, pattern, opts) do
     base = Keyword.get(opts, :path, "/")
     glob_match? = matcher(Keyword.get(opts, :glob))
 
@@ -38,10 +37,7 @@ defmodule BeamWeaver.Filesystem.Search do
         do: %GrepMatch{path: path, line: line_number, text: line}
   end
 
-  def grep_matches_from_files(files, pattern, opts \\ []),
-    do: %Filesystem.GrepResult{matches: grep_files(files, pattern, opts)}
-
-  def glob_files(files, pattern, opts \\ []) do
+  def glob_files(files, pattern, opts) do
     base = Keyword.get(opts, :path, "/")
     pattern_match? = matcher(pattern)
 
@@ -75,50 +71,6 @@ defmodule BeamWeaver.Filesystem.Search do
     |> String.replace("\\*", "[^/]*")
     |> String.replace("\\?", "[^/]")
     |> then(&Regex.compile!("^" <> &1 <> "$"))
-  end
-
-  def build_grep_results_dict(matches) do
-    Enum.reduce(matches || [], %{}, fn
-      %GrepMatch{path: path, line: line, text: text}, acc ->
-        Map.update(acc, path, [{line, text}], &(&1 ++ [{line, text}]))
-
-      %{path: path, line: line, text: text}, acc ->
-        Map.update(acc, path, [{line, text}], &(&1 ++ [{line, text}]))
-
-      %{"path" => path, "line" => line, "text" => text}, acc ->
-        Map.update(acc, path, [{line, text}], &(&1 ++ [{line, text}]))
-    end)
-  end
-
-  def format_grep_matches(matches, output_mode \\ :files_with_matches) do
-    matches
-    |> build_grep_results_dict()
-    |> format_grep_results(output_mode)
-  end
-
-  def format_grep_results(results, output_mode \\ :files_with_matches)
-
-  def format_grep_results(results, _output_mode) when map_size(results) == 0,
-    do: "No matches found"
-
-  def format_grep_results(results, output_mode)
-      when output_mode in [:files_with_matches, "files_with_matches"] do
-    results |> Map.keys() |> Enum.sort() |> Enum.join("\n")
-  end
-
-  def format_grep_results(results, output_mode) when output_mode in [:count, "count"] do
-    results
-    |> Enum.sort_by(fn {path, _matches} -> path end)
-    |> Enum.map_join("\n", fn {path, matches} -> "#{path}: #{length(matches)}" end)
-  end
-
-  def format_grep_results(results, _output_mode) do
-    results
-    |> Enum.sort_by(fn {path, _matches} -> path end)
-    |> Enum.flat_map(fn {path, matches} ->
-      [path <> ":" | Enum.map(matches, fn {line, text} -> "  #{line}: #{text}" end)]
-    end)
-    |> Enum.join("\n")
   end
 
   defp file_size(nil), do: nil

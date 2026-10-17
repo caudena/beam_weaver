@@ -18,40 +18,19 @@ defmodule BeamWeaver.OpenAI.Streaming do
   Converts OpenAI SSE payloads into content-block lifecycle events.
   """
   @spec lifecycle_events(binary() | [map()] | term()) :: [map()]
-  def lifecycle_events(body) when is_binary(body) do
-    Lifecycle.events(body)
-  end
-
-  def lifecycle_events(parsed_events) when is_list(parsed_events),
-    do: Lifecycle.events(parsed_events)
-
-  def lifecycle_events(_body), do: []
+  def lifecycle_events(body), do: Lifecycle.events(body)
 
   @doc """
   Converts OpenAI SSE payloads into typed BeamWeaver message chunks.
   """
   @spec message_chunks(binary() | [map()] | term()) :: [term()]
-  def message_chunks(body) when is_binary(body) do
-    StreamingMessages.message_chunks(body)
-  end
-
-  def message_chunks(parsed_events) when is_list(parsed_events),
-    do: StreamingMessages.message_chunks(parsed_events)
-
-  def message_chunks(_body), do: []
+  def message_chunks(body), do: StreamingMessages.message_chunks(body)
 
   @doc """
   Converts OpenAI SSE payloads into BeamWeaver typed stream envelopes.
   """
   @spec typed_events(binary() | [map()] | term()) :: [BeamWeaver.Stream.Envelope.t()]
-  def typed_events(body) when is_binary(body) do
-    StreamingMessages.typed_events(body)
-  end
-
-  def typed_events(parsed_events) when is_list(parsed_events),
-    do: StreamingMessages.typed_events(parsed_events)
-
-  def typed_events(_body), do: []
+  def typed_events(body), do: StreamingMessages.typed_events(body)
 
   @doc """
   Reconstructs Responses API output items from an SSE payload.
@@ -114,11 +93,7 @@ defmodule BeamWeaver.OpenAI.Streaming do
   Parses server-sent events into decoded event/data maps.
   """
   @spec events(binary() | term()) :: [map()]
-  def events(body) when is_binary(body) do
-    SSE.events(body)
-  end
-
-  def events(_body), do: []
+  def events(body), do: SSE.events(body)
 
   defp text_delta(%{"data" => %{"type" => "response.output_text.delta", "delta" => delta}})
        when is_binary(delta),

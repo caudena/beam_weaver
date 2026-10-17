@@ -42,6 +42,7 @@ defmodule BeamWeaver.Checkpoint.Ecto do
   alias BeamWeaver.Checkpoint.PendingWrite
   alias BeamWeaver.Checkpoint.Saver
   alias BeamWeaver.Core.Error
+  alias BeamWeaver.Result
 
   defstruct repo: nil,
             query_module: Ecto.Adapters.SQL,
@@ -88,7 +89,7 @@ defmodule BeamWeaver.Checkpoint.Ecto do
 
   @impl true
   def put(%__MODULE__{} = saver, config, checkpoint, metadata, new_versions) do
-    transaction(saver, fn ->
+    Query.transaction(saver, fn ->
       put_in_current_transaction(saver, config, checkpoint, metadata, new_versions)
     end)
   end
@@ -96,37 +97,23 @@ defmodule BeamWeaver.Checkpoint.Ecto do
   @impl true
   def put_many(%__MODULE__{} = saver, entries, _opts) do
     with :ok <- Batch.validate(entries) do
-      transaction(saver, fn ->
+      Query.transaction(saver, fn ->
         with :ok <- lock_batch_owners(saver, entries),
              :ok <- ensure_new_batch_ids(saver, entries) do
-          Enum.reduce_while(entries, {:ok, []}, fn entry, {:ok, configs} ->
-            with {:ok, config, checkpoint, metadata, versions, writes, write_opts} <-
-                   Batch.entry(entry),
-                 {:ok, next_config} <-
-                   put_in_current_transaction(saver, config, checkpoint, metadata, versions),
-                 :ok <- put_batch_writes(saver, next_config, writes, write_opts) do
-              {:cont, {:ok, [next_config | configs]}}
-            else
-              {:error, _reason} = error -> {:halt, error}
-            end
+          Result.traverse(entries, fn entry ->
+            {:ok, config, checkpoint, metadata, versions, writes, write_opts} = Batch.entry(entry)
+
+            with {:ok, next_config} <- put_in_current_transaction(saver, config, checkpoint, metadata, versions),
+                 :ok <- put_batch_writes(saver, next_config, writes, write_opts),
+                 do: {:ok, next_config}
           end)
-          |> case do
-            {:ok, configs} -> {:ok, Enum.reverse(configs)}
-            {:error, _reason} = error -> error
-          end
         end
       end)
     end
   end
 
   @impl true
-  def fork_at(%__MODULE__{} = saver, source_config, target_thread_id, opts) do
-    with {:ok, lineage} <- Lineage.collect(saver, source_config, opts),
-         entries <- Batch.fork_entries(lineage, target_thread_id),
-         {:ok, configs} <- put_many(saver, entries, []) do
-      {:ok, List.last(configs)}
-    end
-  end
+  defdelegate fork_at(saver, source_config, target_thread_id, opts), to: Lineage
 
   defp put_in_current_transaction(
          %__MODULE__{} = saver,
@@ -144,7 +131,7 @@ defmodule BeamWeaver.Checkpoint.Ecto do
         checkpoint_id =
           Map.get(checkpoint, "id") || Map.get(checkpoint, :id) || Config.generated_id()
 
-        with :ok <- lock_owner(saver, thread_id, namespace),
+        with :ok <- Query.lock_owner(saver, thread_id, namespace),
              {:ok, latest_id} <- latest_checkpoint_id(saver, thread_id, namespace),
              {:ok, commit_order} <- next_commit_order(saver, thread_id, namespace) do
           parent_id =
@@ -160,7 +147,7 @@ defmodule BeamWeaver.Checkpoint.Ecto do
             |> Map.put_new("ts", DateTime.utc_now() |> DateTime.to_iso8601())
             |> Map.put_new("channel_versions", Config.stringify_keys(new_versions || %{}))
             |> Map.put_new("checkpoint_map", checkpoint_map)
-            |> Config.put_checkpoint_target_namespace(configurable)
+            |> BeamWeaver.MapShape.put_present("checkpoint_target_ns", configurable["checkpoint_target_ns"])
 
           with {:ok, stored_checkpoint} <- dump_json_value(saver, checkpoint),
                {:ok, stored_metadata} <- dump_json_value(saver, Config.stringify_keys(metadata || %{})),
@@ -184,15 +171,13 @@ defmodule BeamWeaver.Checkpoint.Ecto do
                    conflict_target: [:thread_id, :checkpoint_ns, :checkpoint_id]
                  ) do
             {:ok,
-             %{
-               "configurable" => %{
-                 "thread_id" => thread_id,
-                 "checkpoint_ns" => namespace,
-                 "checkpoint_id" => checkpoint_id,
-                 "checkpoint_map" => checkpoint_map
-               }
-             }
-             |> Config.put_target_namespace(configurable)}
+             Config.stored_config(
+               thread_id,
+               namespace,
+               checkpoint_id,
+               checkpoint_map,
+               configurable["checkpoint_target_ns"]
+             )}
           end
         end
 
@@ -209,34 +194,28 @@ defmodule BeamWeaver.Checkpoint.Ecto do
          checkpoint_id when is_binary(checkpoint_id) <- configurable["checkpoint_id"] do
       namespace = Map.get(configurable, "checkpoint_ns", "")
 
-      writes
-      |> Enum.with_index()
-      |> Enum.reduce_while({:ok, []}, fn {write, index}, {:ok, rows} ->
-        {channel, value} = Config.normalize_write(write)
+      rows =
+        writes
+        |> Enum.with_index()
+        |> Result.traverse(fn {write, index} ->
+          {channel, value} = Config.normalize_write(write)
 
-        case dump_json_value(saver, value) do
-          {:ok, value} ->
-            row = %{
-              thread_id: thread_id,
-              checkpoint_ns: namespace,
-              checkpoint_id: checkpoint_id,
-              task_id: task_id,
-              write_index: index,
-              channel: channel,
-              value: Config.store_write_value(value),
-              task_path: task_path
-            }
+          with {:ok, value} <- dump_json_value(saver, value) do
+            {:ok,
+             %{
+               thread_id: thread_id,
+               checkpoint_ns: namespace,
+               checkpoint_id: checkpoint_id,
+               task_id: task_id,
+               write_index: index,
+               channel: channel,
+               value: Config.store_write_value(value),
+               task_path: task_path
+             }}
+          end
+        end)
 
-            {:cont, {:ok, [row | rows]}}
-
-          {:error, _reason} = error ->
-            {:halt, error}
-        end
-      end)
-      |> case do
-        {:ok, rows} -> insert_write_rows(saver, Enum.reverse(rows))
-        {:error, _reason} = error -> error
-      end
+      with {:ok, rows} <- rows, do: insert_write_rows(saver, rows)
     else
       _other -> {:error, {:missing_configurable, "thread_id/checkpoint_id"}}
     end
@@ -252,7 +231,7 @@ defmodule BeamWeaver.Checkpoint.Ecto do
         writes,
         opts
       ) do
-    transaction(saver, fn ->
+    Query.transaction(saver, fn ->
       with {:ok, next_config} <-
              put_in_current_transaction(saver, config, checkpoint, metadata, new_versions),
            :ok <-
@@ -269,9 +248,7 @@ defmodule BeamWeaver.Checkpoint.Ecto do
   end
 
   @impl true
-  def get_delta_channel_history(%__MODULE__{} = saver, config, channel_names, opts) do
-    DeltaHistory.get(saver, config, channel_names, opts)
-  end
+  defdelegate get_delta_channel_history(saver, config, channel_names, opts), to: DeltaHistory, as: :get
 
   @impl true
   def delete_thread(%__MODULE__{} = saver, thread_id),
@@ -322,48 +299,21 @@ defmodule BeamWeaver.Checkpoint.Ecto do
 
   defp lock_batch_owners(saver, entries) do
     entries
-    |> Enum.reduce_while({:ok, MapSet.new()}, fn entry, {:ok, owners} ->
-      case Batch.entry(entry) do
-        {:ok, config, _checkpoint, _metadata, _versions, _writes, _opts} ->
-          configurable = Checkpoint.configurable(config)
-          owner = {configurable["thread_id"], Map.get(configurable, "checkpoint_ns", "")}
-          {:cont, {:ok, MapSet.put(owners, owner)}}
-
-        {:error, _reason} = error ->
-          {:halt, error}
+    |> Enum.map(&(&1 |> Batch.identity() |> Tuple.delete_at(2)))
+    |> Enum.uniq()
+    |> Enum.sort()
+    |> Enum.reduce_while(:ok, fn {thread_id, namespace}, :ok ->
+      case Query.lock_owner(saver, thread_id, namespace) do
+        :ok -> {:cont, :ok}
+        {:error, _reason} = error -> {:halt, error}
       end
     end)
-    |> case do
-      {:ok, owners} ->
-        owners
-        |> Enum.sort()
-        |> Enum.reduce_while(:ok, fn {thread_id, namespace}, :ok ->
-          case lock_owner(saver, thread_id, namespace) do
-            :ok -> {:cont, :ok}
-            {:error, _reason} = error -> {:halt, error}
-          end
-        end)
-
-      {:error, _reason} = error ->
-        error
-    end
   end
 
   defp ensure_new_batch_ids(saver, entries) do
-    keys =
-      Enum.map(entries, fn entry ->
-        {:ok, config, checkpoint, _metadata, _versions, _writes, _opts} = Batch.entry(entry)
-        configurable = Checkpoint.configurable(config)
-
-        {
-          configurable["thread_id"],
-          Map.get(configurable, "checkpoint_ns", ""),
-          Map.get(checkpoint, :id) || Map.fetch!(checkpoint, "id")
-        }
-      end)
-
     requested =
-      Enum.map(keys, fn {thread_id, checkpoint_ns, checkpoint_id} ->
+      Enum.map(entries, fn entry ->
+        {thread_id, checkpoint_ns, checkpoint_id} = Batch.identity(entry)
         %{thread_id: thread_id, checkpoint_ns: checkpoint_ns, checkpoint_id: checkpoint_id}
       end)
 
@@ -399,31 +349,24 @@ defmodule BeamWeaver.Checkpoint.Ecto do
     if Enum.all?(writes, &match?(%PendingWrite{}, &1)) do
       configurable = Checkpoint.configurable(config)
 
-      writes
-      |> Enum.reduce_while({:ok, []}, fn write, {:ok, rows} ->
-        case dump_json_value(saver, write.value) do
-          {:ok, value} ->
-            row = %{
-              thread_id: configurable["thread_id"],
-              checkpoint_ns: Map.get(configurable, "checkpoint_ns", ""),
-              checkpoint_id: configurable["checkpoint_id"],
-              task_id: write.task_id,
-              write_index: write.index,
-              channel: to_string(write.channel),
-              value: Config.store_write_value(value),
-              task_path: write.path || ""
-            }
+      rows =
+        Result.traverse(writes, fn write ->
+          with {:ok, value} <- dump_json_value(saver, write.value) do
+            {:ok,
+             %{
+               thread_id: configurable["thread_id"],
+               checkpoint_ns: Map.get(configurable, "checkpoint_ns", ""),
+               checkpoint_id: configurable["checkpoint_id"],
+               task_id: write.task_id,
+               write_index: write.index,
+               channel: to_string(write.channel),
+               value: Config.store_write_value(value),
+               task_path: write.path || ""
+             }}
+          end
+        end)
 
-            {:cont, {:ok, [row | rows]}}
-
-          {:error, _reason} = error ->
-            {:halt, error}
-        end
-      end)
-      |> case do
-        {:ok, rows} -> insert_write_rows(saver, Enum.reverse(rows))
-        {:error, _reason} = error -> error
-      end
+      with {:ok, rows} <- rows, do: insert_write_rows(saver, rows)
     else
       put_writes(
         saver,
@@ -434,13 +377,6 @@ defmodule BeamWeaver.Checkpoint.Ecto do
       )
     end
   end
-
-  defp lock_owner(saver, thread_id, namespace) when is_binary(thread_id) do
-    Query.lock_owner(saver, thread_id, namespace)
-  end
-
-  defp lock_owner(_saver, _thread_id, _namespace),
-    do: {:error, Error.new(:invalid_checkpoint, "checkpoint config requires thread_id")}
 
   defp next_commit_order(saver, thread_id, namespace) do
     query =
@@ -456,23 +392,17 @@ defmodule BeamWeaver.Checkpoint.Ecto do
     end
   end
 
-  def dump_json_value(%__MODULE__{} = saver, value) do
-    BeamWeaver.Adapter.ValueCodec.dump_json_value(value, serialization: saver.serialization)
-  end
+  def dump_json_value(%__MODULE__{} = saver, value),
+    do: BeamWeaver.Serialization.dump_value(value, serialization: saver.serialization)
 
-  def load_json_value(%__MODULE__{} = saver, value) do
-    BeamWeaver.Adapter.ValueCodec.load_json_value(value, serialization: saver.serialization)
-  end
+  def load_json_value(%__MODULE__{} = saver, value),
+    do: BeamWeaver.Serialization.load_value(value, serialization: saver.serialization)
 
   def load_json_value!(%__MODULE__{} = saver, value) do
     case load_json_value(saver, value) do
       {:ok, decoded} -> decoded
       {:error, %Error{} = error} -> raise ArgumentError, error.message
     end
-  end
-
-  defp transaction(%__MODULE__{} = saver, fun) do
-    Query.transaction(saver, fun)
   end
 
   defp maybe_delete_shallow_history(%__MODULE__{shallow?: false}, _thread_id, _namespace), do: :ok

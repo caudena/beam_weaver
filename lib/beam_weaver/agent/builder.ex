@@ -9,42 +9,7 @@ defmodule BeamWeaver.Agent.Builder do
   alias BeamWeaver.Graph
 
   # The options `build/1` takes, named like the declarations of an agent module.
-  @options [
-    :name,
-    :description,
-    :model,
-    :model_opts,
-    :system_prompt,
-    :tools,
-    :validate_tools,
-    :middleware,
-    :response_format,
-    :context_schema,
-    :input_schema,
-    :output_schema,
-    :interrupt_on,
-    :interrupt_before,
-    :interrupt_after,
-    :checkpointer,
-    :store,
-    :cache,
-    :recursion_limit,
-    :tool_timeout,
-    :step_timeout,
-    :run_timeout,
-    :filesystem,
-    :filesystem_permissions,
-    :skills,
-    :memory,
-    :subagents,
-    :async_subagents,
-    :compact_conversation,
-    :overflow_recovery,
-    :prompt_caching,
-    :exclude_tools,
-    :tool_descriptions,
-    :capability_profile
-  ]
+  @options Map.keys(%Spec{}) -- [:__struct__, :module, :execution_mode]
 
   @option_names Map.new(@options, &{Atom.to_string(&1), &1})
 
@@ -56,7 +21,6 @@ defmodule BeamWeaver.Agent.Builder do
     end
   end
 
-  @doc false
   # Checks the options as `build/1` does and returns the spec it would
   # compile, without compiling the graph. A parent agent checks its subagents
   # this way when it is built; a `task` call builds the one it runs.

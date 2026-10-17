@@ -5,6 +5,7 @@ defmodule BeamWeaver.Indexing.RecordManager do
 
   alias BeamWeaver.Core.Error
   alias BeamWeaver.Indexing.Record
+  alias BeamWeaver.Result
 
   @callback get(term(), String.t(), keyword()) :: {:ok, Record.t() | nil} | {:error, Error.t()}
   @callback put(term(), Record.t(), keyword()) :: :ok | {:error, Error.t()}
@@ -53,11 +54,7 @@ defmodule BeamWeaver.Indexing.RecordManager do
       keys
       |> Enum.with_index()
       |> Enum.reduce_while(:ok, fn {key, index}, :ok ->
-        source_id =
-          case group_ids do
-            nil -> nil
-            values -> Enum.at(values, index)
-          end
+        source_id = group_ids && Enum.at(group_ids, index)
 
         record = %Record{
           id: to_string(key),
@@ -79,16 +76,12 @@ defmodule BeamWeaver.Indexing.RecordManager do
   @spec exists(term(), [String.t()], keyword()) :: [boolean()] | {:error, Error.t()}
   def exists(manager, keys, opts \\ []) when is_list(keys) do
     keys
-    |> Enum.reduce_while([], fn key, acc ->
-      case get(manager, to_string(key), opts) do
-        {:ok, nil} -> {:cont, [false | acc]}
-        {:ok, %Record{}} -> {:cont, [true | acc]}
-        {:error, error} -> {:halt, {:error, error}}
-      end
+    |> Result.traverse(fn key ->
+      with {:ok, record} <- get(manager, to_string(key), opts), do: {:ok, not is_nil(record)}
     end)
     |> case do
-      {:error, _error} = error -> error
-      values -> Enum.reverse(values)
+      {:ok, values} -> values
+      error -> error
     end
   end
 
@@ -111,6 +104,14 @@ defmodule BeamWeaver.Indexing.RecordManager do
 
   @spec delete_keys(term(), [String.t()], keyword()) :: :ok | {:error, Error.t()}
   def delete_keys(manager, keys, opts \\ []), do: delete(manager, keys, opts)
+
+  @doc false
+  def record_namespace(manager, namespace) when namespace in [nil, :default, "default"], do: manager.namespace
+  def record_namespace(_manager, namespace), do: namespace
+
+  @doc false
+  def normalize_source_ids(nil), do: nil
+  def normalize_source_ids(source_ids), do: source_ids |> List.wrap() |> Enum.map(&to_string/1)
 
   defp validate_group_ids(_keys, nil), do: :ok
 

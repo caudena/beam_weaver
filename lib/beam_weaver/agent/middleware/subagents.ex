@@ -38,6 +38,7 @@ defmodule BeamWeaver.Agent.Middleware.Subagents do
   alias BeamWeaver.Agent
   alias BeamWeaver.Agent.Builder
   alias BeamWeaver.Agent.Built
+  alias BeamWeaver.Agent.Capabilities
   alias BeamWeaver.Agent.Compiler
   alias BeamWeaver.Agent.GeneralPurposeSubagentProfile
   alias BeamWeaver.Agent.Middleware
@@ -45,6 +46,7 @@ defmodule BeamWeaver.Agent.Middleware.Subagents do
   alias BeamWeaver.Agent.Middleware.Filesystem
   alias BeamWeaver.Agent.Middleware.ModelCallLimit
   alias BeamWeaver.Agent.Middleware.Skills
+  alias BeamWeaver.Agent.Middleware.SubagentOutputs
   alias BeamWeaver.Agent.Middleware.Summarization
   alias BeamWeaver.Agent.Middleware.TodoList
   alias BeamWeaver.Agent.Middleware.ToolCallNormalization
@@ -67,18 +69,17 @@ defmodule BeamWeaver.Agent.Middleware.Subagents do
   alias BeamWeaver.Core.Tool
   alias BeamWeaver.Filesystem.State
   alias BeamWeaver.Graph
-  alias BeamWeaver.Graph.Channels.BinaryOperatorAggregate
   alias BeamWeaver.Graph.Command
   alias BeamWeaver.Graph.Execution.ChannelLookup
   alias BeamWeaver.Graph.Execution.Namespace
   alias BeamWeaver.Graph.Execution.Replay
+  alias BeamWeaver.Graph.Execution.SubgraphRouter
   alias BeamWeaver.Graph.StateGraph
+  alias BeamWeaver.MapShape
   alias BeamWeaver.Stream.Sink
 
-  require Logger
-
-  import BeamWeaver.Agent.Subagent.Helpers,
-    only: [append_prompt: 2, available_agents: 1, value: 2, value: 3]
+  import BeamWeaver.Agent.Middleware.Helpers, only: [append_prompt: 2]
+  import BeamWeaver.Agent.Subagent.Helpers, only: [available_agents: 1, value: 2, value: 3]
 
   @default_subagent_prompt """
   In order to complete the objective that the user asks of you, you have access to a number of standard tools.
@@ -237,15 +238,7 @@ defmodule BeamWeaver.Agent.Middleware.Subagents do
 
   # Keys of the parent's state that stay with the parent, both ways. An
   # agent's private keys don't reach its `task` tool at all.
-  @child_state_exclusions [
-    :messages,
-    :todos,
-    :structured_response,
-    :subagent_outputs,
-    :subagent_cache
-  ]
-
-  @child_state_exclusion_names MapSet.new(Enum.map(@child_state_exclusions, &Atom.to_string/1))
+  @child_state_exclusion_names MapSet.new(~w(messages todos structured_response subagent_outputs subagent_cache))
 
   # A failed resume with these errors means the person's decisions were wrong
   # for the paused subagent: the parent run fails with the error and stays
@@ -389,13 +382,7 @@ defmodule BeamWeaver.Agent.Middleware.Subagents do
 
   @impl true
   def state_schema(%__MODULE__{host: host}) when not is_nil(host), do: %{}
-
-  def state_schema(_middleware) do
-    %{
-      subagent_outputs: Graph.channel({BinaryOperatorAggregate, &merge_maps/2}, initial: %{}),
-      subagent_cache: Graph.channel({BinaryOperatorAggregate, &merge_maps/2}, initial: %{})
-    }
-  end
+  def state_schema(_middleware), do: SubagentOutputs.state_schema(%SubagentOutputs{})
 
   @impl true
   def tools(%__MODULE__{} = middleware) do
@@ -462,33 +449,29 @@ defmodule BeamWeaver.Agent.Middleware.Subagents do
   def requires_checkpointer?(%__MODULE__{subagents: subagents, interrupt_on: rules}),
     do: Enum.any?(subagents, &child_requires_checkpointer?(&1, rules, []))
 
-  # `visited` holds the agent modules on the way down, so modules that name
-  # each other as subagents are looked at once.
-  defp child_requires_checkpointer?(%Compiled{agent: %Spec{} = spec}, parent_rules, visited) do
-    rules = review_rules(spec.interrupt_on, parent_rules)
-
-    rules != nil or middleware_requires_checkpointer?(spec.middleware) or
-      Enum.any?(List.wrap(spec.subagents), &nested_requires_checkpointer?(&1, rules, visited))
-  end
+  defp child_requires_checkpointer?(%Compiled{agent: %Spec{} = spec}, parent_rules, visited),
+    do: spec_requires_checkpointer?(spec, parent_rules, visited)
 
   # A built agent's middleware includes the middleware of its own subagents,
   # which looks further down.
   defp child_requires_checkpointer?(%Compiled{agent: %Built{spec: spec}}, _parent_rules, _visited),
     do: middleware_requires_checkpointer?(spec.middleware)
 
+  # `visited` holds the agent modules on the way down, so modules that name
+  # each other as subagents are looked at once.
   defp child_requires_checkpointer?(%Compiled{agent: module}, _parent_rules, visited) when is_atom(module) do
-    if module not in visited and function_exported?(module, :__beam_weaver_agent_spec__, 0) do
-      spec = module.__beam_weaver_agent_spec__()
-      rules = review_rules(spec.interrupt_on, nil)
-
-      rules != nil or middleware_requires_checkpointer?(spec.middleware) or
-        Enum.any?(List.wrap(spec.subagents), &nested_requires_checkpointer?(&1, rules, [module | visited]))
-    else
-      false
-    end
+    module not in visited and function_exported?(module, :__beam_weaver_agent_spec__, 0) and
+      spec_requires_checkpointer?(module.__beam_weaver_agent_spec__(), nil, [module | visited])
   end
 
   defp child_requires_checkpointer?(_subagent, _parent_rules, _visited), do: false
+
+  defp spec_requires_checkpointer?(spec, parent_rules, visited) do
+    rules = review_rules(spec.interrupt_on, parent_rules)
+
+    rules != nil or middleware_requires_checkpointer?(spec.middleware) or
+      Enum.any?(List.wrap(spec.subagents), &nested_requires_checkpointer?(&1, rules, visited))
+  end
 
   # An entry of a subagent's own `subagents` list, which takes that
   # subagent's review rules unless it has its own. The general-purpose
@@ -532,17 +515,12 @@ defmodule BeamWeaver.Agent.Middleware.Subagents do
   end
 
   defp normalize_subagents(entries, host) do
-    entries
-    |> Enum.reduce_while({:ok, []}, fn entry, {:ok, subagents} ->
+    Enum.reduce_while(entries, {:ok, []}, fn entry, {:ok, subagents} ->
       case normalize_subagent(entry, host) do
-        {:ok, subagent} -> {:cont, {:ok, [subagent | subagents]}}
+        {:ok, subagent} -> {:cont, {:ok, subagents ++ [subagent]}}
         {:error, message} -> {:halt, {:error, invalid_subagent(subagent_name(entry), message)}}
       end
     end)
-    |> case do
-      {:ok, subagents} -> {:ok, Enum.reverse(subagents)}
-      error -> error
-    end
   end
 
   defp normalize_subagent(%Compiled{} = subagent, _host) do
@@ -578,8 +556,6 @@ defmodule BeamWeaver.Agent.Middleware.Subagents do
          name: subagent.name,
          description: subagent.description,
          agent: :host_managed,
-         inherit_messages: false,
-         capture_output: nil,
          execution_mode: execution_mode
        }}
     end
@@ -683,24 +659,17 @@ defmodule BeamWeaver.Agent.Middleware.Subagents do
     end)
   end
 
-  defp subagent_structured_output_strategy(%Spec{} = subagent, %{execution_mode: :research_then_generate} = context),
-    do: structured_output_strategy(subagent.response_format, context.model, [])
+  defp subagent_structured_output_strategy(%Spec{response_format: nil}, _context), do: nil
 
-  defp subagent_structured_output_strategy(%Spec{} = subagent, context),
-    do: structured_output_strategy(subagent.response_format, context.model, context.tools)
+  defp subagent_structured_output_strategy(%Spec{response_format: response_format}, context) do
+    tools = if context.execution_mode == :research_then_generate, do: [], else: context.tools
 
-  defp structured_output_strategy(nil, _model, _tools), do: nil
-
-  defp structured_output_strategy(response_format, model, tools) do
-    response_format
-    |> StructuredOutput.normalize()
-    |> StructuredOutput.effective_strategy(model, tools)
-    |> structured_output_strategy_name()
+    case response_format |> StructuredOutput.normalize() |> StructuredOutput.effective_strategy(context.model, tools) do
+      %ProviderStrategy{} -> :provider
+      %ToolStrategy{} -> :tool
+      _strategy -> nil
+    end
   end
-
-  defp structured_output_strategy_name(%ProviderStrategy{}), do: :provider
-  defp structured_output_strategy_name(%ToolStrategy{}), do: :tool
-  defp structured_output_strategy_name(_strategy), do: nil
 
   @research_prompt """
   ## Research Phase
@@ -742,13 +711,13 @@ defmodule BeamWeaver.Agent.Middleware.Subagents do
       response_format: context.response_format,
       interrupt_on: context.interrupt_on
     })
-    |> without_nil_values()
+    |> MapShape.reject_nil_values()
   end
 
   # The generate pass of `:research_then_generate` is one structured model
   # call: no tools, capabilities or review, only the subagent's middleware.
   defp generate_agent_options(%Spec{} = subagent, context) do
-    without_nil_values(%{
+    MapShape.reject_nil_values(%{
       name: "deepagents.subagent.#{subagent.name}.generate",
       model: context.model,
       model_opts: subagent.model_opts,
@@ -760,8 +729,6 @@ defmodule BeamWeaver.Agent.Middleware.Subagents do
       store: subagent.store
     })
   end
-
-  defp without_nil_values(options), do: Map.reject(options, fn {_key, value} -> is_nil(value) end)
 
   # A subagent's own review rules win, and `false` or an empty map turns
   # review off; without rules of its own it takes the parent's.
@@ -776,11 +743,7 @@ defmodule BeamWeaver.Agent.Middleware.Subagents do
   end
 
   defp check_subagents(subagents) do
-    duplicates =
-      subagents
-      |> Enum.frequencies_by(& &1.name)
-      |> Enum.filter(fn {_name, count} -> count > 1 end)
-      |> Enum.map(fn {name, _count} -> name end)
+    duplicates = for {name, count} <- Enum.frequencies_by(subagents, & &1.name), count > 1, do: name
 
     if duplicates == [] do
       Enum.find_value(subagents, :ok, &check_subagent_fields/1)
@@ -804,8 +767,8 @@ defmodule BeamWeaver.Agent.Middleware.Subagents do
   defp subagent_trace_tools(%__MODULE__{subagents: subagents}) do
     Enum.map(subagents, fn %Compiled{} = subagent ->
       %{
-        name: subagent_tool_name(subagent.name),
-        description: subagent_tool_description(subagent),
+        name: "run_#{subagent.name}",
+        description: "Run the #{subagent.name} subagent with verification. #{subagent.description}",
         input_schema: %{
           "type" => "object",
           "properties" => %{},
@@ -816,64 +779,36 @@ defmodule BeamWeaver.Agent.Middleware.Subagents do
     end)
   end
 
-  defp subagent_tool_name(name), do: "run_#{name}"
-
-  defp subagent_tool_description(%Compiled{name: name, description: description}) do
-    description = to_string(description || "")
-
-    if String.trim(description) == "" do
-      "Run the #{name} subagent with verification."
-    else
-      "Run the #{name} subagent with verification. #{description}"
-    end
-  end
-
-  defp run_task(%__MODULE__{host: host} = middleware, input) when not is_nil(host) do
-    name = value(input, :subagent_type) || value(input, :subagent_name) || value(input, :name)
-    description = value(input, :description, "")
-
-    case Enum.find(middleware.subagents, &(&1.name == name)) do
-      %Compiled{} -> run_host_task(middleware, name, description, input)
-      nil -> unknown_subagent(name, middleware.subagents)
-    end
-  end
-
   defp run_task(%__MODULE__{subagents: subagents} = middleware, input) do
     name = value(input, :subagent_type) || value(input, :subagent_name) || value(input, :name)
     description = value(input, :description, "")
-    parent_state = value(input, :state, %{}) || %{}
 
     case Enum.find(subagents, &(&1.name == name)) do
-      %Compiled{} = subagent ->
-        input_hash = input_hash(description)
+      nil -> unknown_subagent(name, subagents)
+      %Compiled{} when not is_nil(middleware.host) -> run_host_task(middleware, name, description, input)
+      %Compiled{} = subagent -> run_subagent_task(middleware, subagent, description, input)
+    end
+  end
 
-        case capture_cache(parent_state, subagent.capture_output, subagent.name, input_hash) do
-          {:hit, cache} ->
-            cached_task_output(input, cache, subagent, input_hash)
+  defp run_subagent_task(middleware, subagent, description, input) do
+    parent_state = value(input, :state, %{}) || %{}
+    input_hash = input_hash(description)
 
-          :miss ->
-            with {:ok, subagent} <- ready_subagent(subagent, middleware),
-                 {:ok, state} <- run_subagent(subagent, parent_state, description, input) do
-              task_output(input, parent_state, state, subagent_result(state), subagent,
-                input_hash: input_hash,
-                cached?: false
-              )
-            else
-              # The tools node pauses the parent run with the subagent's
-              # interrupt, or fails it when the decisions didn't fit.
-              {:interrupted, interrupt} ->
-                throw({:beam_weaver_graph_interrupt, interrupt})
+    case capture_cache(parent_state, subagent.capture_output, subagent.name, input_hash) do
+      {:hit, output} ->
+        cached_task_output(input, output, subagent, input_hash)
 
-              {:resume_error, %Error{} = error} ->
-                throw({:beam_weaver_graph_error, error})
-
-              {:error, %Error{} = error} ->
-                format_subagent_error(error)
-            end
+      :miss ->
+        with {:ok, subagent} <- ready_subagent(subagent, middleware),
+             {:ok, state} <- run_subagent(subagent, parent_state, description, input) do
+          task_output(input, parent_state, state, subagent, input_hash)
+        else
+          # The tools node pauses the parent run with the subagent's
+          # interrupt, or fails it when the decisions didn't fit.
+          {:interrupted, interrupt} -> throw({:beam_weaver_graph_interrupt, interrupt})
+          {:resume_error, %Error{} = error} -> throw({:beam_weaver_graph_error, error})
+          {:error, %Error{} = error} -> format_subagent_error(error)
         end
-
-      nil ->
-        unknown_subagent(name, subagents)
     end
   end
 
@@ -888,15 +823,10 @@ defmodule BeamWeaver.Agent.Middleware.Subagents do
     context = value(input, :runtime) || value(input, :tool_runtime)
 
     with :ok <- validate_proposal(proposal),
-         {:ok, handle} <- Host.admit(middleware.host, proposal, context),
-         response <- Host.result(middleware.host, handle, context) do
-      host_response(input, response)
+         {:ok, handle} <- Host.admit(middleware.host, proposal, context) do
+      host_response(input, Host.result(middleware.host, handle, context))
     else
-      {:error, %Error{} = error} ->
-        format_subagent_error(error)
-
-      {:error, reason} ->
-        format_subagent_error(Error.new(:subagent_host_error, "child host failed", %{reason: inspect(reason)}))
+      error -> host_response(input, error)
     end
   end
 
@@ -934,11 +864,10 @@ defmodule BeamWeaver.Agent.Middleware.Subagents do
   end
 
   defp validate_proposal(%Proposal{} = proposal) do
-    if Proposal.valid?(proposal), do: :ok, else: invalid_proposal()
+    if Proposal.valid?(proposal),
+      do: :ok,
+      else: {:error, Error.new(:invalid_subagent_proposal, "child proposal requires type, task, and correlation id")}
   end
-
-  defp invalid_proposal,
-    do: {:error, Error.new(:invalid_subagent_proposal, "child proposal requires type, task, and correlation id")}
 
   defp unknown_subagent(name, subagents) do
     allowed = Enum.map_join(subagents, ", ", &"`#{&1.name}`")
@@ -960,13 +889,9 @@ defmodule BeamWeaver.Agent.Middleware.Subagents do
          description,
          input
        ) do
-    Logger.debug("#{subagent.name} using agent loop with #{subagent.tool_count || 0} tools")
-
     with {:ok, research_state} <-
            run_child(subagent, research_agent, child_state(parent_state, description, subagent), input, "research") do
-      research_result = subagent_result(research_state)
-      log_research_result(subagent.name, research_result)
-      generate_description = research_then_generate_description(description, research_result)
+      generate_description = research_then_generate_description(description, subagent_result(research_state))
       generate_input = child_state(parent_state, generate_description, %{subagent | inherit_messages: false})
 
       with {:ok, generate_state} <- run_child(subagent, generate_agent, generate_input, input, "generate") do
@@ -1073,7 +998,7 @@ defmodule BeamWeaver.Agent.Middleware.Subagents do
   # subagent whose interrupt the parent paused with; other paused subagents
   # pause the parent again, one review at a time.
   defp resume_value(runtime, interrupt) do
-    with %{resume_values: [_ | _] = resumes} <- runtime_value(runtime, :scratchpad),
+    with %{resume_values: [_ | _] = resumes} <- value(runtime, :scratchpad),
          true <- value(interrupt, :id) in parent_interrupt_ids(runtime) do
       {:ok, List.last(resumes)}
     else
@@ -1082,13 +1007,13 @@ defmodule BeamWeaver.Agent.Middleware.Subagents do
   end
 
   defp parent_interrupt_ids(runtime) do
-    case runtime_value(runtime, :checkpointer) do
+    case value(runtime, :checkpointer) do
       nil ->
         []
 
       checkpointer ->
         %{checkpointer: checkpointer}
-        |> Replay.pending_interrupt_records(runtime_value(runtime, :config, %{}))
+        |> Replay.pending_interrupt_records(value(runtime, :config, %{}))
         |> Enum.map(&value(&1, :id))
     end
   end
@@ -1098,8 +1023,8 @@ defmodule BeamWeaver.Agent.Middleware.Subagents do
   defp with_parent_adapters(%Built{compiled: compiled} = agent, runtime) do
     compiled = %{
       compiled
-      | checkpointer: compiled.checkpointer || runtime_value(runtime, :checkpointer),
-        store: compiled.store || runtime_value(runtime, :store)
+      | checkpointer: compiled.checkpointer || value(runtime, :checkpointer),
+        store: compiled.store || value(runtime, :store)
     }
 
     %{agent | compiled: compiled}
@@ -1110,26 +1035,16 @@ defmodule BeamWeaver.Agent.Middleware.Subagents do
   # A streamed parent run, live or collected (both read the same sink), gets
   # the subagent's events in its stream as they happen.
   defp with_child_stream(runtime, metadata, run) do
-    case runtime_value(runtime, :stream_sink) do
+    case value(runtime, :stream_sink) do
       %Sink{} = sink -> run.(stream_sink: Sink.child(sink, metadata: metadata), stream_mode: :events)
       _none -> run.([])
     end
   end
 
-  defp log_research_result(subagent_name, research_result) do
-    text = to_string(research_result || "")
-
-    if String.downcase(text) =~ "no additional research needed" or String.trim(text) == "" do
-      Logger.debug("#{subagent_name} research phase: no additional data gathered")
-    else
-      Logger.debug("#{subagent_name} research phase returned #{String.length(text)} chars of additional context")
-    end
-  end
-
   defp research_then_generate_description(description, research_result) do
-    research_result = result_text(research_result)
+    text = String.trim(research_result)
 
-    if additional_research?(research_result) do
+    if text != "" and not String.contains?(String.downcase(text), "no additional research needed") do
       """
       #{description}
 
@@ -1139,11 +1054,6 @@ defmodule BeamWeaver.Agent.Middleware.Subagents do
     else
       description
     end
-  end
-
-  defp additional_research?(research_result) do
-    text = research_result |> result_text() |> String.trim()
-    text != "" and not String.contains?(String.downcase(text), "no additional research needed")
   end
 
   # Every subagent gets tool call normalization, and a `:structured_once` one
@@ -1176,7 +1086,7 @@ defmodule BeamWeaver.Agent.Middleware.Subagents do
 
   defp base_middleware_entry(:deepagents, context) do
     [
-      default_todo_list(),
+      TodoList.new(),
       maybe_skills(context.backend, context.skills),
       filesystem_middleware(context.backend, context.permissions),
       maybe_summarization(context, context.summarization),
@@ -1189,8 +1099,8 @@ defmodule BeamWeaver.Agent.Middleware.Subagents do
     ]
   end
 
-  defp base_middleware_entry({TodoList, opts}, _context), do: [todo_list(opts)]
-  defp base_middleware_entry(TodoList, _context), do: [default_todo_list()]
+  defp base_middleware_entry({TodoList, opts}, _context), do: [TodoList.new(opts)]
+  defp base_middleware_entry(TodoList, _context), do: [TodoList.new()]
 
   defp base_middleware_entry({Filesystem, opts}, context) do
     [
@@ -1230,16 +1140,6 @@ defmodule BeamWeaver.Agent.Middleware.Subagents do
   end
 
   defp base_middleware_entry(value, _context), do: [value]
-
-  defp todo_list(settings) when is_list(settings) do
-    settings
-    |> Keyword.put_new(:tool_name, "write_todos")
-    |> TodoList.new()
-  end
-
-  defp default_todo_list do
-    TodoList.new(tool_name: "write_todos")
-  end
 
   defp filesystem_middleware(nil, _permissions), do: nil
 
@@ -1294,22 +1194,8 @@ defmodule BeamWeaver.Agent.Middleware.Subagents do
     do: {:error, "invalid capture_output parent_result #{inspect(value)}; expected :ack or :full"}
 
   defp option_value(opts, key, default \\ nil)
-  defp option_value(opts, key, default) when is_list(opts) and is_atom(key), do: Keyword.get(opts, key, default)
-
-  defp option_value(opts, key, default) when is_list(opts) do
-    case Enum.find(opts, fn
-           {entry_key, _value} -> entry_key == key
-           _other -> false
-         end) do
-      {_key, value} -> value
-      nil -> default
-    end
-  end
-
-  defp option_value(opts, key, default) when is_map(opts), do: Map.get(opts, key, default)
-  defp option_value(_opts, _key, default), do: default
-
-  defp merge_maps(left, right), do: Map.merge(left || %{}, right || %{})
+  defp option_value(opts, key, default) when is_list(opts), do: Keyword.get(opts, key, default)
+  defp option_value(opts, key, default), do: Map.get(opts, key, default)
 
   defp maybe_skills(_backend, skills) when skills in [nil, []], do: nil
   defp maybe_skills(nil, _skills), do: nil
@@ -1334,17 +1220,13 @@ defmodule BeamWeaver.Agent.Middleware.Subagents do
     with true <- Keyword.keyword?(opts),
          opts = ProviderProfile.apply_provider_profile(to_string(model), opts, run_pre_init: false),
          {:ok, resolved} <- ModelResolver.resolve_agent_model(model, opts) do
-      profile_context_window(resolved)
+      Capabilities.max_input_tokens(resolved)
     else
       _unresolved -> nil
     end
   end
 
-  defp context_window(model, _opts), do: profile_context_window(model)
-
-  defp profile_context_window(%{profile: %{max_input_tokens: limit}}) when is_integer(limit), do: limit
-  defp profile_context_window(%{profile: %{"max_input_tokens" => limit}}) when is_integer(limit), do: limit
-  defp profile_context_window(_model), do: nil
+  defp context_window(model, _opts), do: Capabilities.max_input_tokens(model)
 
   defp maybe_compact_conversation(_model, _backend, summarization, _compact)
        when summarization in [nil, false],
@@ -1365,31 +1247,18 @@ defmodule BeamWeaver.Agent.Middleware.Subagents do
   defp maybe_compact_conversation(model, backend, _summarization, _enabled),
     do: CompactConversation.new(model: model, backend: backend)
 
-  defp child_state(parent_state, description, %Compiled{inherit_messages: true}) when is_map(parent_state) do
-    parent_messages =
-      parent_state
-      |> Map.get(:messages)
-      |> List.wrap()
-      |> stable_parent_messages()
+  defp child_state(parent_state, description, %Compiled{} = subagent) when is_map(parent_state) do
+    inherited =
+      if subagent.inherit_messages == true,
+        do: parent_state |> Map.get(:messages) |> List.wrap() |> Enum.filter(&stable_parent_message?/1),
+        else: []
 
     parent_state
-    |> Enum.reject(fn {key, _value} -> key != :messages and child_state_excluded_key?(key) end)
-    |> Map.new()
-    |> Map.put(:messages, parent_messages ++ [Message.user(description)])
-  end
-
-  defp child_state(parent_state, description, _subagent) when is_map(parent_state) do
-    parent_state
-    |> Enum.reject(fn {key, _value} -> child_state_excluded_key?(key) end)
-    |> Map.new()
-    |> Map.put(:messages, [Message.user(description)])
+    |> Map.reject(fn {key, _value} -> child_state_excluded_key?(key) end)
+    |> Map.put(:messages, inherited ++ [Message.user(description)])
   end
 
   defp child_state(_parent_state, description, _subagent), do: %{messages: [Message.user(description)]}
-
-  defp stable_parent_messages(messages) do
-    Enum.filter(messages, &stable_parent_message?/1)
-  end
 
   defp stable_parent_message?(%Message{role: :tool}), do: false
 
@@ -1419,59 +1288,31 @@ defmodule BeamWeaver.Agent.Middleware.Subagents do
 
   defp non_empty_list?(value), do: is_list(value) and value != []
 
-  defp task_output(input, parent_state, child_state, result, %Compiled{capture_output: nil} = subagent, _opts) do
+  defp task_output(input, parent_state, child_state, %Compiled{capture_output: nil} = subagent, _input_hash) do
     merge = child_state_update(parent_state, child_state)
-    emit_task_result(input, merge, result, subagent, cached?: false)
+    emit_task_result(input, merge, subagent_result(child_state), subagent, false, nil)
   end
 
-  defp task_output(
-         input,
-         parent_state,
-         child_state,
-         result,
-         %Compiled{capture_output: capture} = subagent,
-         opts
-       ) do
-    input_hash = Keyword.fetch!(opts, :input_hash)
-    captured = child_state |> captured_result(result) |> json_safe_value()
-    cache_key = cache_key(subagent.name, input_hash)
+  defp task_output(input, parent_state, child_state, %Compiled{capture_output: capture} = subagent, input_hash) do
+    captured = child_state |> captured_result(subagent_result(child_state)) |> json_safe_value()
 
     merge =
       parent_state
       |> child_state_update(child_state)
-      |> merge_maps(%{
+      |> Map.merge(%{
         subagent_outputs: %{capture.key => captured},
-        subagent_cache: capture_cache_update(capture, cache_key, captured)
+        subagent_cache: capture_cache_update(capture, cache_key(subagent.name, input_hash), captured)
       })
 
-    content =
-      case capture.parent_result do
-        :full -> captured_parent_result(captured)
-        :ack -> capture_ack(subagent, capture, input_hash, Keyword.get(opts, :cached?, false))
-      end
-
-    emit_task_result(input, merge, content, subagent,
-      cached?: Keyword.get(opts, :cached?, false),
-      capture_key: capture.key,
-      input_hash: input_hash
-    )
+    emit_task_result(input, merge, capture_content(capture, subagent, captured, false), subagent, false, input_hash)
   end
 
-  defp cached_task_output(input, cache, %Compiled{capture_output: capture} = subagent, input_hash) do
-    content =
-      case capture.parent_result do
-        :full -> captured_parent_result(cache.output)
-        :ack -> capture_ack(subagent, capture, input_hash, true)
-      end
-
-    emit_task_result(input, %{subagent_outputs: %{capture.key => cache.output}}, content, subagent,
-      cached?: true,
-      capture_key: capture.key,
-      input_hash: input_hash
-    )
+  defp cached_task_output(input, output, %Compiled{capture_output: capture} = subagent, input_hash) do
+    merge = %{subagent_outputs: %{capture.key => output}}
+    emit_task_result(input, merge, capture_content(capture, subagent, output, true), subagent, true, input_hash)
   end
 
-  defp emit_task_result(input, merge, result, %Compiled{} = subagent, metadata_opts) do
+  defp emit_task_result(input, merge, result, %Compiled{} = subagent, cached?, input_hash) do
     tool_call_id = value(input, :tool_call_id)
 
     if is_binary(tool_call_id) and tool_call_id != "" do
@@ -1479,7 +1320,7 @@ defmodule BeamWeaver.Agent.Middleware.Subagents do
         Message.tool(result,
           tool_call_id: tool_call_id,
           name: "task",
-          metadata: task_result_metadata(subagent, metadata_opts)
+          metadata: task_result_metadata(subagent, cached?, input_hash)
         )
 
       %Command{update: Map.put(merge, :messages, [message])}
@@ -1497,12 +1338,12 @@ defmodule BeamWeaver.Agent.Middleware.Subagents do
       |> maybe_put_child_thread(checkpointer, runtime)
 
     []
-    |> maybe_put_opt(:context, runtime_value(runtime, :context))
+    |> MapShape.put_present(:context, value(runtime, :context))
     |> Keyword.put(:config, config)
     |> Keyword.put(:trace, subagent_trace(subagent, phase))
-    |> maybe_put_opt(:checkpointer, checkpointer)
-    |> maybe_put_opt(:store, agent_store(agent, runtime))
-    |> maybe_put_opt(:recursion_limit, child_recursion_limit(subagent, agent, runtime))
+    |> MapShape.put_present(:checkpointer, checkpointer)
+    |> MapShape.put_present(:store, agent_store(agent, runtime))
+    |> MapShape.put_present(:recursion_limit, child_recursion_limit(subagent, agent, runtime))
   end
 
   # A subagent saves its checkpoints in the parent's thread. When the parent
@@ -1512,8 +1353,8 @@ defmodule BeamWeaver.Agent.Middleware.Subagents do
 
   defp maybe_put_child_thread(%{"configurable" => configurable} = config, _checkpointer, runtime) do
     if Map.get(configurable, "thread_id") in [nil, ""] do
-      execution = runtime_value(runtime, :execution, %{})
-      run_id = runtime_value(runtime, :run_id) || runtime_value(execution, :run_id) || ID.uuidv7()
+      execution = value(runtime, :execution, %{})
+      run_id = value(runtime, :run_id) || value(execution, :run_id) || ID.uuidv7()
       put_in(config, ["configurable", "thread_id"], to_string(run_id))
     else
       config
@@ -1521,10 +1362,10 @@ defmodule BeamWeaver.Agent.Middleware.Subagents do
   end
 
   defp agent_checkpointer(%Built{compiled: compiled}, _runtime), do: compiled.checkpointer
-  defp agent_checkpointer(module, runtime), do: module.checkpointer() || runtime_value(runtime, :checkpointer)
+  defp agent_checkpointer(module, runtime), do: module.checkpointer() || value(runtime, :checkpointer)
 
   defp agent_store(%Built{compiled: compiled}, _runtime), do: compiled.store
-  defp agent_store(module, runtime), do: module.store() || runtime_value(runtime, :store)
+  defp agent_store(module, runtime), do: module.store() || value(runtime, :store)
 
   defp child_recursion_limit(%Compiled{recursion_limit: limit}, _agent, _runtime) when is_integer(limit), do: limit
 
@@ -1537,13 +1378,13 @@ defmodule BeamWeaver.Agent.Middleware.Subagents do
   # A node sees the steps its run has left; the parent run's limit is those
   # plus the current step.
   defp parent_recursion_limit(runtime) do
-    case {runtime_value(runtime, :recursion_limit), runtime_value(runtime, :step)} do
+    case {value(runtime, :recursion_limit), value(runtime, :step)} do
       {left, step} when is_integer(left) and is_integer(step) -> left + step
       _other -> nil
     end
   end
 
-  defp task_result_metadata(%Compiled{} = subagent, opts) do
+  defp task_result_metadata(%Compiled{} = subagent, cached?, input_hash) do
     %{
       integration: :deepagents,
       kind: :subagent_result,
@@ -1551,14 +1392,11 @@ defmodule BeamWeaver.Agent.Middleware.Subagents do
       subagent_type: subagent.name,
       execution_mode: subagent.execution_mode,
       structured_output_strategy: subagent.structured_output_strategy,
-      cache_hit: Keyword.get(opts, :cached?, false)
+      cache_hit: cached?
     }
-    |> maybe_put_metadata(:capture_key, Keyword.get(opts, :capture_key))
-    |> maybe_put_metadata(:input_hash, Keyword.get(opts, :input_hash))
+    |> MapShape.put_present(:capture_key, subagent.capture_output && subagent.capture_output.key)
+    |> MapShape.put_present(:input_hash, input_hash)
   end
-
-  defp maybe_put_metadata(metadata, _key, nil), do: metadata
-  defp maybe_put_metadata(metadata, key, value), do: Map.put(metadata, key, value)
 
   defp subagent_trace(%Compiled{} = subagent, phase) do
     metadata =
@@ -1567,8 +1405,8 @@ defmodule BeamWeaver.Agent.Middleware.Subagents do
         subagent_type: subagent.name,
         structured_output_strategy: subagent.structured_output_strategy
       }
-      |> maybe_put_metadata(:subagent_phase, phase)
-      |> maybe_put_metadata(:capture_key, subagent.capture_output && subagent.capture_output.key)
+      |> MapShape.put_present(:subagent_phase, phase)
+      |> MapShape.put_present(:capture_key, subagent.capture_output && subagent.capture_output.key)
 
     [
       name: "deepagents.subagent.#{subagent.name}",
@@ -1577,20 +1415,21 @@ defmodule BeamWeaver.Agent.Middleware.Subagents do
     ]
   end
 
-  defp capture_cache(_parent_state, nil, _subagent_name, _input_hash), do: :miss
-  defp capture_cache(_parent_state, %{dedupe: false}, _subagent_name, _input_hash), do: :miss
-
-  defp capture_cache(parent_state, capture, subagent_name, input_hash) when is_map(parent_state) do
-    cache = state_map(parent_state, :subagent_cache)
-    outputs = state_map(parent_state, :subagent_outputs)
-    key = cache_key(subagent_name, input_hash)
-
-    case Map.get(cache, key) do
+  defp capture_cache(parent_state, %{dedupe: dedupe}, subagent_name, input_hash)
+       when dedupe != false and is_map(parent_state) do
+    case Map.get(state_map(parent_state, :subagent_cache), cache_key(subagent_name, input_hash)) do
       %{} = entry ->
-        cache_entry_hit(entry)
+        case Map.get(entry, "output", Map.get(entry, :output)) do
+          nil -> :miss
+          output -> {:hit, output}
+        end
 
+      # An older entry names the captured output instead of holding it.
       output_key when is_binary(output_key) ->
-        legacy_cache_hit(outputs, capture.key, output_key)
+        case Map.fetch(state_map(parent_state, :subagent_outputs), output_key) do
+          {:ok, output} -> {:hit, output}
+          :error -> :miss
+        end
 
       _other ->
         :miss
@@ -1608,33 +1447,6 @@ defmodule BeamWeaver.Agent.Middleware.Subagents do
         "output" => captured
       }
     }
-  end
-
-  defp cache_entry_hit(entry) do
-    case Map.get(entry, "output", Map.get(entry, :output)) do
-      nil ->
-        :miss
-
-      output ->
-        {:hit,
-         %{
-           output: output,
-           output_key: Map.get(entry, "capture_key", Map.get(entry, :capture_key))
-         }}
-    end
-  end
-
-  defp legacy_cache_hit(outputs, capture_key, output_key) do
-    cond do
-      Map.has_key?(outputs, output_key) ->
-        {:hit, %{output: Map.fetch!(outputs, output_key), output_key: output_key}}
-
-      output_key == capture_key and Map.has_key?(outputs, capture_key) ->
-        {:hit, %{output: Map.fetch!(outputs, capture_key), output_key: capture_key}}
-
-      true ->
-        :miss
-    end
   end
 
   defp captured_result(child_state, result) when is_map(child_state) do
@@ -1656,12 +1468,14 @@ defmodule BeamWeaver.Agent.Middleware.Subagents do
   defp captured_parent_result(value) when is_binary(value), do: value
   defp captured_parent_result(value), do: BeamWeaver.JSON.encode!(value)
 
+  defp capture_content(%{parent_result: :full}, _subagent, output, _cached?), do: captured_parent_result(output)
+
   # What the parent's model reads instead of a captured answer: the task is
   # done, so it shouldn't run it again or guess the answer.
-  defp capture_ack(%Compiled{name: name}, capture, _input_hash, false),
+  defp capture_content(%{parent_result: :ack} = capture, %Compiled{name: name}, _output, false),
     do: "The #{name} subagent finished the task. Its answer was saved as \"#{capture.key}\" and is not shown here."
 
-  defp capture_ack(%Compiled{name: name}, capture, _input_hash, true),
+  defp capture_content(%{parent_result: :ack} = capture, %Compiled{name: name}, _output, true),
     do:
       "The #{name} subagent already finished this task. Its saved answer \"#{capture.key}\" was reused and is not shown here."
 
@@ -1704,43 +1518,25 @@ defmodule BeamWeaver.Agent.Middleware.Subagents do
   defp json_safe_value(value), do: inspect(value)
 
   defp child_config(runtime, input, subagent_name, phase) do
-    parent_config =
-      runtime
-      |> runtime_value(:config, %{})
-      |> normalize_config()
-
-    execution = runtime_value(runtime, :execution) || runtime_value(runtime, :execution_info) || %{}
+    parent_config = Map.new(value(runtime, :config) || %{}, fn {key, value} -> {to_string(key), value} end)
+    execution = value(runtime, :execution) || %{}
+    configurable = Checkpoint.configurable(parent_config)
 
     configurable =
-      parent_config
-      |> Checkpoint.configurable()
-      |> put_configurable_from_execution("thread_id", execution, :thread_id)
-      |> put_configurable_from_execution("checkpoint_ns", execution, :checkpoint_ns)
-      |> put_configurable_from_execution("checkpoint_id", execution, :checkpoint_id)
+      for key <- [:thread_id, :checkpoint_ns, :checkpoint_id],
+          Map.get(configurable, Atom.to_string(key)) in [nil, ""],
+          reduce: configurable do
+        acc -> MapShape.put_present(acc, Atom.to_string(key), MapShape.empty_to_nil(value(execution, key)))
+      end
 
-    parent_config = Map.put(parent_config, "configurable", configurable)
     parent_ns = Map.get(configurable, "checkpoint_ns", "")
     child_ns = child_namespace(parent_ns, runtime, input, subagent_name, phase)
-
-    checkpoint_map =
-      configurable
-      |> Map.get("checkpoint_map", %{})
-      |> Namespace.recast_checkpoint_map()
-      |> maybe_put_namespace_checkpoint(parent_ns, Map.get(configurable, "checkpoint_id"))
-
-    child_configurable =
-      configurable
-      |> Map.put("checkpoint_ns", child_ns)
-      |> Map.put("checkpoint_map", checkpoint_map)
-      |> Map.delete("checkpoint_id")
-      |> maybe_put_checkpoint_id(Map.get(checkpoint_map, child_ns))
-
-    Map.put(parent_config, "configurable", child_configurable)
+    Map.put(parent_config, "configurable", SubgraphRouter.child_configurable(configurable, parent_ns, child_ns))
   end
 
   defp child_namespace(parent_ns, runtime, input, subagent_name, phase) do
     parent_ns
-    |> Namespace.child(runtime_value(runtime, :node, "task"), runtime_task_id(runtime, input))
+    |> Namespace.child(value(runtime, :node, "task"), runtime_task_id(runtime, input))
     |> Namespace.child(subagent_namespace(subagent_name, phase), value(input, :tool_call_id))
     |> Namespace.serialize()
   end
@@ -1749,53 +1545,16 @@ defmodule BeamWeaver.Agent.Middleware.Subagents do
   defp subagent_namespace(subagent_name, phase), do: "subagent.#{subagent_name}.#{phase}"
 
   defp runtime_task_id(runtime, input) do
-    runtime_value(runtime, :task_id) ||
-      runtime_value(runtime_value(runtime, :execution, %{}), :task_id) ||
+    value(runtime, :task_id) ||
+      value(value(runtime, :execution, %{}), :task_id) ||
       value(input, :tool_call_id)
   end
 
-  defp normalize_config(config) when is_list(config), do: normalize_config(Map.new(config))
-
-  defp normalize_config(config) when is_map(config) do
-    Map.new(config, fn {key, value} ->
-      key = to_string(key)
-
-      if key == "configurable" and is_map(value) do
-        {key, stringify_keys(value)}
-      else
-        {key, value}
-      end
-    end)
-  end
-
-  defp normalize_config(_config), do: %{}
-
-  defp stringify_keys(map) when is_map(map) do
-    Map.new(map, fn {key, value} -> {to_string(key), value} end)
-  end
-
-  defp maybe_put_namespace_checkpoint(map, _namespace, nil), do: map
-
-  defp maybe_put_namespace_checkpoint(map, namespace, checkpoint_id),
-    do: Map.put(map, Namespace.recast(namespace), checkpoint_id)
-
-  defp maybe_put_checkpoint_id(configurable, nil), do: configurable
-
-  defp maybe_put_checkpoint_id(configurable, checkpoint_id),
-    do: Map.put(configurable, "checkpoint_id", checkpoint_id)
-
   defp format_subagent_error(%Error{} = error) do
-    details = error.details
+    details =
+      if error.details == %{}, do: "", else: " details=#{inspect(error.details, limit: 20, printable_limit: 2_000)}"
 
-    ["Subagent error: #{error.message}", "type=#{inspect(error.type)}"]
-    |> maybe_append_error_details(details)
-    |> Enum.join(" ")
-  end
-
-  defp maybe_append_error_details(parts, details) when details == %{}, do: parts
-
-  defp maybe_append_error_details(parts, details) do
-    parts ++ ["details=#{inspect(details, limit: 20, printable_limit: 2_000)}"]
+    "Subagent error: #{error.message} type=#{inspect(error.type)}" <> details
   end
 
   defp child_state_update(parent_state, child_state)
@@ -1817,87 +1576,29 @@ defmodule BeamWeaver.Agent.Middleware.Subagents do
     |> AgentState.messages()
     |> Enum.reverse()
     |> Enum.find_value(fn
-      %Message{role: :assistant} = message ->
-        message
-        |> Message.text()
-        |> empty_to_nil()
-
-      _other ->
-        nil
+      %Message{role: :assistant} = message -> message |> Message.text() |> MapShape.empty_to_nil()
+      _other -> nil
     end) || ""
   end
-
-  defp result_text(result) when is_binary(result), do: result
-  defp result_text(%Message{} = message), do: Message.text(message)
-
-  defp result_text(result) when is_list(result) do
-    result
-    |> Message.assistant()
-    |> Message.text()
-  rescue
-    _exception -> inspect(result)
-  end
-
-  defp result_text(result), do: inspect(result)
-
-  defp empty_to_nil(""), do: nil
-  defp empty_to_nil(value), do: value
 
   defp blank?(value), do: is_nil(value) or String.trim(to_string(value)) == ""
 
   defp runtime_from_input(input) do
     tool_runtime = value(input, :tool_runtime)
+    runtime = value(input, :runtime) || value(tool_runtime, :runtime) || %{}
 
-    runtime =
-      value(input, :runtime) ||
-        runtime_value(tool_runtime, :runtime) ||
-        %{}
-
-    runtime
-    |> normalize_runtime()
-    |> maybe_put_runtime(:config, runtime_value(tool_runtime, :config))
-    |> maybe_put_runtime(:context, runtime_value(tool_runtime, :context))
-    |> maybe_put_runtime(:store, runtime_value(tool_runtime, :store))
-    |> maybe_put_runtime(:checkpointer, runtime_value(tool_runtime, :checkpointer))
-    |> maybe_put_runtime(
-      :execution,
-      runtime_value(tool_runtime, :execution) || runtime_value(tool_runtime, :execution_info)
-    )
-  end
-
-  defp runtime_value(runtime, key, default \\ nil)
-
-  defp runtime_value(runtime, key, default) when is_map(runtime),
-    do: BeamWeaver.MapAccess.get(runtime, key, default)
-
-  defp runtime_value(_runtime, _key, default), do: default
-
-  defp normalize_runtime(%{__struct__: _module} = runtime), do: Map.from_struct(runtime)
-  defp normalize_runtime(runtime) when is_map(runtime), do: runtime
-  defp normalize_runtime(_runtime), do: %{}
-
-  defp maybe_put_runtime(runtime, _key, nil), do: runtime
-
-  defp maybe_put_runtime(runtime, key, value) do
-    if runtime_value(runtime, key) in [nil, ""] do
-      Map.put(runtime, key, value)
-    else
-      runtime
-    end
-  end
-
-  defp put_configurable_from_execution(configurable, key, execution, execution_key) do
-    case {Map.get(configurable, key), runtime_value(execution, execution_key)} do
-      {missing, value} when missing in [nil, ""] and value not in [nil, ""] ->
-        Map.put(configurable, key, value)
-
-      _other ->
-        configurable
+    for {key, tool_key} <- [
+          config: :config,
+          context: :context,
+          store: :store,
+          checkpointer: :checkpointer,
+          execution: :execution_info
+        ],
+        value(runtime, key) in [nil, ""],
+        reduce: runtime do
+      acc -> MapShape.put_present(acc, key, value(tool_runtime, tool_key))
     end
   end
 
   defp child_state_excluded_key?(key), do: MapSet.member?(@child_state_exclusion_names, to_string(key))
-
-  defp maybe_put_opt(opts, _key, nil), do: opts
-  defp maybe_put_opt(opts, key, value), do: Keyword.put(opts, key, value)
 end

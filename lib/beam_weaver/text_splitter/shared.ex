@@ -58,30 +58,18 @@ defmodule BeamWeaver.TextSplitter.Shared do
          )}
 
       keep_separator not in [false, true, :start, :end] ->
+        hint = if keep_separator in ["start", "end"], do: "; use :#{keep_separator}", else: ""
+
         {:error,
          Error.new(
            :invalid_text_splitter,
-           keep_separator_error(keep_separator)
+           "keep_separator must be false, true, :start, or :end, got #{inspect(keep_separator)}#{hint}"
          )}
 
       true ->
         :ok
     end
   end
-
-  defp keep_separator_error(value) when is_binary(value) do
-    suffix =
-      case value do
-        "start" -> "; use :start"
-        "end" -> "; use :end"
-        _other -> ""
-      end
-
-    "keep_separator must be false, true, :start, or :end, got #{inspect(value)}#{suffix}"
-  end
-
-  defp keep_separator_error(value),
-    do: "keep_separator must be false, true, :start, or :end, got #{inspect(value)}"
 
   def split_text(splitter, text) when is_binary(text) do
     case validate(splitter) do
@@ -98,37 +86,24 @@ defmodule BeamWeaver.TextSplitter.Shared do
   def token_split_text(splitter, text) when is_binary(text) do
     tokenizer = Map.get(splitter, :tokenizer) || %BeamWeaver.Tokenizer.Approximate{}
 
-    case validate(splitter) do
-      :ok ->
-        case Tokenizer.split_tokens(tokenizer, text) do
-          {:ok, tokens} ->
-            chunk_tokens(tokens, splitter.chunk_size, splitter.chunk_overlap)
-            |> Enum.map(&Enum.join/1)
-            |> maybe_strip(splitter)
-            |> reject_empty()
-
-          {:error, error} ->
-            raise ArgumentError, error.message
-        end
-
-      {:error, error} ->
-        raise ArgumentError, error.message
+    with :ok <- validate(splitter),
+         {:ok, tokens} <- Tokenizer.split_tokens(tokenizer, text) do
+      chunk_tokens(tokens, splitter.chunk_size, splitter.chunk_overlap)
+      |> Enum.map(&Enum.join/1)
+      |> maybe_strip(splitter)
+      |> reject_empty()
+    else
+      {:error, error} -> raise ArgumentError, error.message
     end
   end
 
-  def split_document(splitter, %Document{} = document) do
+  def split_document(%module{} = splitter, %Document{} = document) do
     splitter
-    |> split_text(document.content)
+    |> module.split_text(document.content)
     |> chunks_to_documents(document, Map.get(splitter, :add_start_index, false))
   end
 
-  def token_split_document(splitter, %Document{} = document) do
-    splitter
-    |> token_split_text(document.content)
-    |> chunks_to_documents(document, Map.get(splitter, :add_start_index, false))
-  end
-
-  def chunks_to_documents(chunks, %Document{} = document, true) do
+  defp chunks_to_documents(chunks, %Document{} = document, true) do
     {_position, docs} =
       Enum.reduce(chunks, {{0, 0}, []}, fn chunk, {position, acc} ->
         {start, next_position} = start_index(document.content, chunk, position)
@@ -141,7 +116,7 @@ defmodule BeamWeaver.TextSplitter.Shared do
     Enum.reverse(docs)
   end
 
-  def chunks_to_documents(chunks, %Document{} = document, _add_start_index?) do
+  defp chunks_to_documents(chunks, %Document{} = document, _add_start_index?) do
     Enum.map(chunks, &Document.new!(&1, metadata: document.metadata))
   end
 

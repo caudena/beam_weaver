@@ -1058,7 +1058,6 @@ defmodule BeamWeaver.Agent.MiddlewareBuiltinTest do
   end
 
   test "model fallback returns the final fallback error when all models fail" do
-    # Upstream reference:
     assert {:error, %Error{type: :primary_failed}} =
              Agent.invoke(FallbackExhaustedAgent, %{messages: [Message.user("hello")]})
   end
@@ -1175,7 +1174,6 @@ defmodule BeamWeaver.Agent.MiddlewareBuiltinTest do
   end
 
   test "tool retry respects retry_on predicates and does not retry non-matching errors" do
-    # Upstream reference:
     table = :ets.new(:tool_retry_predicate_agent, [:set, :public])
 
     assert {:ok, %{messages: messages}} =
@@ -1776,6 +1774,20 @@ defmodule BeamWeaver.Agent.MiddlewareBuiltinTest do
     assert details.thread_limit == 0
   end
 
+  test "tool call limit names the limit when a batch is only partly allowed" do
+    calls = for n <- 1..3, do: %{id: "call-#{n}", name: "search", args: %{}}
+    state = %{messages: [Message.assistant("", tool_calls: calls)]}
+    message = "Tool call limit reached: thread limit exceeded (3/2 calls)."
+
+    assert %{messages: messages} =
+             ToolCallLimit.after_model(ToolCallLimit.new(thread_limit: 2, exit_behavior: :end), state, nil)
+
+    assert List.last(messages).content == message
+
+    assert {:error, %Error{message: ^message}} =
+             ToolCallLimit.after_model(ToolCallLimit.new(thread_limit: 2, exit_behavior: :error), state, nil)
+  end
+
   test "tool call limit direct behavior tracks blocked calls without counting them against thread limits" do
     middleware = ToolCallLimit.new(tool_name: "limited", thread_limit: 1, run_limit: 1)
 
@@ -2339,7 +2351,6 @@ defmodule BeamWeaver.Agent.MiddlewareBuiltinTest do
   end
 
   test "context editing keeps assistant/tool adjacency when trimming tool context" do
-    # Upstream reference:
     messages = [
       Message.user("start"),
       Message.assistant("", tool_calls: [%ToolCall{id: "call_old", name: "old_tool"}]),
@@ -2529,7 +2540,6 @@ defmodule BeamWeaver.Agent.MiddlewareBuiltinTest do
   end
 
   test "PII edit mode handles Luhn cards, IP range validation, MAC separators, and URL forms" do
-    # Upstream reference:
     parent = self()
 
     assert {:ok, _state} =

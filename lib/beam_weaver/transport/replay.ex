@@ -18,15 +18,8 @@ defmodule BeamWeaver.Transport.Replay do
   end
 
   @impl true
-  def stream(%Request{} = request, opts, on_chunk) when is_function(on_chunk, 1) do
-    case stream_reduce(request, opts, :ok, fn acc, chunk ->
-           on_chunk.(chunk)
-           acc
-         end) do
-      {:ok, response, _acc} -> {:ok, response}
-      {:error, error, _acc} -> {:error, error}
-    end
-  end
+  def stream(%Request{} = request, opts, on_chunk) when is_function(on_chunk, 1),
+    do: BeamWeaver.Transport.stream(__MODULE__, request, opts, on_chunk)
 
   @impl true
   def stream_reduce(%Request{} = request, opts, acc, reducer) when is_function(reducer, 2) do

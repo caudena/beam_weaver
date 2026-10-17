@@ -460,7 +460,7 @@ defmodule BeamWeaver.Core.ToolTest do
              Tool.invoke(tool, %{query: "cats", state: %{user: "ada"}, tool_call_id: "call-1"})
   end
 
-  test "exposes BaseTool-style args, single-input, invoke, and tool-call schema helpers" do
+  test "exposes args, single-input, invoke, and tool-call schema helpers" do
     tool =
       Tool.from_function!(
         name: "lookup",
@@ -496,7 +496,7 @@ defmodule BeamWeaver.Core.ToolTest do
     assert {:ok, {"async", "acme"}} = Tool.invoke(tool, %{"query" => "async"}, tenant: "acme")
   end
 
-  test "single-input tools accept scalar values without Python positional APIs" do
+  test "single-input tools accept scalar values" do
     tool =
       Tool.from_function!(
         name: "echo",
@@ -679,6 +679,19 @@ defmodule BeamWeaver.Core.ToolTest do
 
     assert Tool.return_direct(direct)
     refute Tool.return_direct(normal)
+  end
+
+  test "a null-typed input property accepts only nil" do
+    tool =
+      Tool.from_function!(
+        name: "nothing",
+        description: "Takes nothing",
+        input_schema: %{properties: %{none: %{type: "null"}}},
+        handler: fn input, _opts -> input end
+      )
+
+    assert {:error, %{details: %{key: :none, expected: "null"}}} = Tool.invoke(tool, %{none: "x"})
+    assert {:ok, %{none: nil}} = Tool.invoke(tool, %{none: nil})
   end
 
   test "rejects invalid schema property types before invoking the handler" do

@@ -1,7 +1,15 @@
 defmodule BeamWeaver.DeepSeek.Options do
   @moduledoc false
 
-  import BeamWeaver.Provider.Options, only: [normalize_option_map: 1, normalize_value: 1, option: 3]
+  import BeamWeaver.Provider.Options,
+    only: [
+      extra_body: 2,
+      merge_extra_body: 3,
+      normalize_option_map: 1,
+      normalize_value: 1,
+      option: 3,
+      put_optional: 3
+    ]
 
   alias BeamWeaver.Core.Error
   alias BeamWeaver.DeepSeek.Messages
@@ -9,7 +17,6 @@ defmodule BeamWeaver.DeepSeek.Options do
   alias BeamWeaver.Models.ParamPolicy
   alias BeamWeaver.Provider.ChatCompletionsWire
   alias BeamWeaver.Provider.JsonObjectFormat
-  alias BeamWeaver.Provider.Options, as: ProviderOptions
 
   @models BeamWeaver.Models.ProfileRegistry.DeepSeek.supported_models()
   @max_output_tokens 393_216
@@ -45,14 +52,14 @@ defmodule BeamWeaver.DeepSeek.Options do
 
   @spec to_body(term(), [BeamWeaver.Core.Message.t()], keyword()) ::
           {:ok, map()} | {:error, Error.t()}
-  def to_body(model, messages, opts \\ []) do
+  def to_body(model, messages, opts) do
     with :ok <- validate_profile_params(model, opts),
          :ok <- validate_extra_body(model, opts),
          {:ok, deepseek_messages} <- Messages.to_chat_messages(messages, option(model, opts, :model)),
          {:ok, response_format, instruction} <- response_format(model, opts),
-         deepseek_messages <- JsonObjectFormat.inject_instruction(deepseek_messages, instruction),
+         deepseek_messages = JsonObjectFormat.inject_instruction(deepseek_messages, instruction),
          {:ok, tools} <- render_tools(Keyword.get(opts, :tools, [])),
-         {:ok, body} <- build_body(model, deepseek_messages, tools, response_format, opts),
+         body = build_body(model, deepseek_messages, tools, response_format, opts),
          :ok <- validate_body(body),
          :ok <- BeamWeaver.DeepSeek.Vision.validate_request(body, :chat_completions) do
       {:ok, body}
@@ -83,41 +90,27 @@ defmodule BeamWeaver.DeepSeek.Options do
   end
 
   defp build_body(model, messages, tools, response_format, opts) do
-    model_name = option(model, opts, :model)
-
-    body =
-      %{
-        "model" => model_name,
-        "messages" => messages
-      }
-      |> ProviderOptions.put_optional("thinking", normalize_option_map(option(model, opts, :thinking)))
-      |> ProviderOptions.put_optional(
-        "reasoning_effort",
-        normalize_value(option(model, opts, :reasoning_effort))
-      )
-      |> ProviderOptions.put_optional("temperature", option(model, opts, :temperature))
-      |> ProviderOptions.put_optional("top_p", option(model, opts, :top_p))
-      |> ProviderOptions.put_optional("max_tokens", max_tokens(model, opts))
-      |> ProviderOptions.put_optional("stop", Keyword.get(opts, :stop, Map.get(model, :stop)))
-      |> ProviderOptions.put_optional("response_format", response_format)
-      |> ProviderOptions.put_optional("tools", tools)
-      |> ProviderOptions.put_optional(
-        "tool_choice",
-        ChatCompletionsWire.tool_choice(Keyword.get(opts, :tool_choice, Map.get(model, :tool_choice)))
-      )
-      |> ProviderOptions.put_optional("stream", Keyword.get(opts, :stream, false))
-      |> ProviderOptions.put_optional(
-        "stream_options",
-        normalize_option_map(Keyword.get(opts, :stream_options))
-      )
-      |> maybe_put_stream_usage(model, opts)
-      |> ProviderOptions.put_optional("logprobs", option(model, opts, :logprobs))
-      |> ProviderOptions.put_optional("top_logprobs", option(model, opts, :top_logprobs))
-      |> ProviderOptions.put_optional("user_id", option(model, opts, :user_id))
-      |> ProviderOptions.merge_extra_body(ProviderOptions.extra_body(model, opts), reserved: @reserved_body_fields)
-
-    {:ok, body}
+    %{"model" => option(model, opts, :model), "messages" => messages}
+    |> put_optional("thinking", normalize_option_map(option(model, opts, :thinking)))
+    |> put_optional("reasoning_effort", normalize_value(option(model, opts, :reasoning_effort)))
+    |> put_optional("temperature", option(model, opts, :temperature))
+    |> put_optional("top_p", option(model, opts, :top_p))
+    |> put_optional("max_tokens", max_tokens(model, opts))
+    |> put_optional("stop", option(model, opts, :stop))
+    |> put_optional("response_format", response_format)
+    |> put_optional("tools", tools)
+    |> put_optional("tool_choice", ChatCompletionsWire.tool_choice(option(model, opts, :tool_choice)))
+    |> put_optional("stream", Keyword.get(opts, :stream, false))
+    |> put_optional("stream_options", normalize_option_map(Keyword.get(opts, :stream_options)))
+    |> maybe_put_stream_usage(model, opts)
+    |> put_optional("logprobs", option(model, opts, :logprobs))
+    |> put_optional("top_logprobs", option(model, opts, :top_logprobs))
+    |> put_optional("user_id", option(model, opts, :user_id))
+    |> merge_extra_body(extra_body(model, opts), reserved: @reserved_body_fields)
   end
+
+  defp error(type, message, details),
+    do: {:error, Error.new(type, message, Enum.into(details, %{provider: :deepseek}))}
 
   defp validate_profile_params(model, opts) do
     params =
@@ -143,18 +136,11 @@ defmodule BeamWeaver.DeepSeek.Options do
       ])
       |> Map.merge(Map.new(opts))
 
-    ParamPolicy.validate(
-      Map.get(model, :profile),
-      params,
-      Keyword.get(opts, :param_policy, Map.get(model, :param_policy)),
-      api: :chat_completions
-    )
+    ParamPolicy.validate(Map.get(model, :profile), params, option(model, opts, :param_policy), api: :chat_completions)
   end
 
   defp response_format(model, opts) do
-    format = effective_response_format(model, opts)
-
-    case format do
+    case effective_response_format(model, opts) do
       %{"type" => type} when type in [:text, "text"] ->
         {:ok, nil, nil}
 
@@ -169,13 +155,9 @@ defmodule BeamWeaver.DeepSeek.Options do
     end
   end
 
-  defp render_tools([]), do: {:ok, []}
-
   defp render_tools(tools) when is_list(tools) do
-    case BeamWeaver.Result.traverse(tools, &Tools.render_chat_tool/1) do
-      {:ok, rendered} -> {:ok, rendered}
-      {:error, %Error{} = error} -> {:error, %{error | details: Map.put(error.details || %{}, :provider, :deepseek)}}
-    end
+    with {:error, %Error{} = error} <- BeamWeaver.Result.traverse(tools, &Tools.render_chat_tool/1),
+         do: {:error, %{error | details: Map.put(error.details || %{}, :provider, :deepseek)}}
   rescue
     exception in ArgumentError ->
       {:error, Error.new(:invalid_request, exception.message, %{provider: :deepseek})}
@@ -199,9 +181,7 @@ defmodule BeamWeaver.DeepSeek.Options do
          :ok <- validate_stream_options(body),
          :ok <- validate_logprobs(body),
          :ok <- validate_user_id(body["user_id"]),
-         :ok <- validate_tool_choice(body["tool_choice"], body["tools"], effective_thinking(body)) do
-      :ok
-    end
+         do: validate_tool_choice(body["tool_choice"], body["tools"], effective_thinking(body))
   end
 
   defp validate_extra_body(model, opts) do
@@ -210,28 +190,24 @@ defmodule BeamWeaver.DeepSeek.Options do
         :ok
 
       [value | _rest] ->
-        {:error,
-         Error.new(:invalid_request, "DeepSeek extra_body must be a map", %{
-           provider: :deepseek,
-           api: :chat_completions,
-           param: :extra_body,
-           value: inspect(value)
-         })}
+        error(:invalid_request, "DeepSeek extra_body must be a map",
+          api: :chat_completions,
+          param: :extra_body,
+          value: inspect(value)
+        )
     end
   end
 
   defp validate_tools(nil), do: :ok
   defp validate_tools(tools) when is_list(tools), do: Tools.validate_chat_tools(tools)
 
-  defp validate_tools(tools) do
-    {:error,
-     Error.new(:invalid_request, "DeepSeek tools must be a list", %{
-       provider: :deepseek,
-       api: :chat_completions,
-       param: :tools,
-       value: inspect(tools)
-     })}
-  end
+  defp validate_tools(tools),
+    do:
+      error(:invalid_request, "DeepSeek tools must be a list",
+        api: :chat_completions,
+        param: :tools,
+        value: inspect(tools)
+      )
 
   defp validate_response_format(nil), do: :ok
 
@@ -240,46 +216,34 @@ defmodule BeamWeaver.DeepSeek.Options do
        do: :ok
 
   defp validate_response_format(response_format) do
-    {:error,
-     Error.new(
-       :invalid_response_format,
-       "DeepSeek Chat Completions supports text or JSON object response_format only",
-       %{
-         provider: :deepseek,
-         api: :chat_completions,
-         response_format: inspect(response_format),
-         supported: [%{"type" => "text"}, %{"type" => "json_object"}]
-       }
-     )}
+    error(:invalid_response_format, "DeepSeek Chat Completions supports text or JSON object response_format only",
+      api: :chat_completions,
+      response_format: inspect(response_format),
+      supported: [%{"type" => "text"}, %{"type" => "json_object"}]
+    )
   end
 
   defp validate_model(model) when model in @models, do: :ok
 
   defp validate_model(model) do
-    {:error,
-     Error.new(:unsupported_model, "DeepSeek model is not supported", %{
-       provider: :deepseek,
-       model: model,
-       supported: @models,
-       expected: "deepseek:deepseek-flash"
-     })}
+    error(:unsupported_model, "DeepSeek model is not supported",
+      model: model,
+      supported: @models,
+      expected: "deepseek:deepseek-flash"
+    )
   end
 
   defp reject_unsupported_params(body) do
-    rejected = Enum.filter(@deprecated_params ++ @unsupported_params, &Map.has_key?(body, &1))
-
-    case rejected do
+    case Enum.filter(@deprecated_params ++ @unsupported_params, &Map.has_key?(body, &1)) do
       [] ->
         :ok
 
       keys ->
-        {:error,
-         Error.new(:unsupported_model_param, "DeepSeek Chat Completions parameter is not supported", %{
-           provider: :deepseek,
-           api: :chat_completions,
-           model: body["model"],
-           params: Enum.map(keys, &String.to_atom/1)
-         })}
+        error(:unsupported_model_param, "DeepSeek Chat Completions parameter is not supported",
+          api: :chat_completions,
+          model: body["model"],
+          params: Enum.map(keys, &String.to_atom/1)
+        )
     end
   end
 
@@ -287,73 +251,48 @@ defmodule BeamWeaver.DeepSeek.Options do
   defp validate_thinking(%{"type" => type}) when type in @thinking_modes, do: :ok
 
   defp validate_thinking(value) do
-    {:error,
-     Error.new(:unsupported_model_param, "DeepSeek thinking must select enabled or disabled", %{
-       provider: :deepseek,
-       param: :thinking,
-       value: value,
-       supported: Enum.map(@thinking_modes, &%{"type" => &1})
-     })}
+    error(:unsupported_model_param, "DeepSeek thinking must select enabled or disabled",
+      param: :thinking,
+      value: value,
+      supported: Enum.map(@thinking_modes, &%{"type" => &1})
+    )
   end
 
-  defp validate_reasoning_effort(nil), do: :ok
-  defp validate_reasoning_effort(effort) when effort in @reasoning_efforts, do: :ok
+  defp validate_reasoning_effort(effort) when is_nil(effort) or effort in @reasoning_efforts, do: :ok
 
   defp validate_reasoning_effort(effort) do
-    {:error,
-     Error.new(:unsupported_model_param, "DeepSeek reasoning_effort is not supported", %{
-       provider: :deepseek,
-       param: :reasoning_effort,
-       value: effort,
-       supported: @reasoning_efforts
-     })}
+    error(:unsupported_model_param, "DeepSeek reasoning_effort is not supported",
+      param: :reasoning_effort,
+      value: effort,
+      supported: @reasoning_efforts
+    )
   end
 
-  defp validate_stop(nil), do: :ok
-  defp validate_stop(stop) when is_binary(stop), do: :ok
+  defp validate_stop(stop) when is_nil(stop) or is_binary(stop), do: :ok
 
   defp validate_stop(stop) when is_list(stop) do
     cond do
-      length(stop) > 16 ->
-        stop_error(stop, "DeepSeek supports at most 16 stop sequences")
-
-      Enum.all?(stop, &is_binary/1) ->
-        :ok
-
-      true ->
-        stop_error(stop, "DeepSeek stop sequences must be strings")
+      length(stop) > 16 -> stop_error(stop, "DeepSeek supports at most 16 stop sequences")
+      Enum.all?(stop, &is_binary/1) -> :ok
+      true -> stop_error(stop, "DeepSeek stop sequences must be strings")
     end
   end
 
   defp validate_stop(stop), do: stop_error(stop, "DeepSeek stop must be a string or list")
 
-  defp stop_error(stop, message) do
-    {:error,
-     Error.new(:invalid_request, message, %{
-       provider: :deepseek,
-       param: :stop,
-       value: inspect(stop)
-     })}
-  end
+  defp stop_error(stop, message), do: error(:invalid_request, message, param: :stop, value: inspect(stop))
 
   defp validate_stream_options(%{"stream_options" => options}) when not is_map(options) do
-    {:error,
-     Error.new(:invalid_request, "DeepSeek stream_options must be a map", %{
-       provider: :deepseek,
-       param: :stream_options,
-       value: inspect(options)
-     })}
+    error(:invalid_request, "DeepSeek stream_options must be a map", param: :stream_options, value: inspect(options))
   end
 
   defp validate_stream_options(%{"stream_options" => _options, "stream" => true}), do: :ok
 
   defp validate_stream_options(%{"stream_options" => _options}) do
-    {:error,
-     Error.new(:unsupported_model_param, "DeepSeek stream_options requires stream: true", %{
-       provider: :deepseek,
-       param: :stream_options,
-       required: %{stream: true}
-     })}
+    error(:unsupported_model_param, "DeepSeek stream_options requires stream: true",
+      param: :stream_options,
+      required: %{stream: true}
+    )
   end
 
   defp validate_stream_options(_body), do: :ok
@@ -363,45 +302,29 @@ defmodule BeamWeaver.DeepSeek.Options do
        do: :ok
 
   defp validate_logprobs(%{"top_logprobs" => value}) do
-    {:error,
-     Error.new(:invalid_request, "DeepSeek top_logprobs requires logprobs: true and a value from 0 to 20", %{
-       provider: :deepseek,
-       top_logprobs: value
-     })}
+    error(:invalid_request, "DeepSeek top_logprobs requires logprobs: true and a value from 0 to 20",
+      top_logprobs: value
+    )
   end
 
   defp validate_logprobs(%{"logprobs" => value}) when is_boolean(value), do: :ok
 
-  defp validate_logprobs(%{"logprobs" => value}) do
-    {:error,
-     Error.new(:invalid_request, "DeepSeek logprobs must be a boolean", %{
-       provider: :deepseek,
-       param: :logprobs,
-       value: value
-     })}
-  end
+  defp validate_logprobs(%{"logprobs" => value}),
+    do: error(:invalid_request, "DeepSeek logprobs must be a boolean", param: :logprobs, value: value)
 
   defp validate_logprobs(_body), do: :ok
 
   defp validate_user_id(nil), do: :ok
 
-  defp validate_user_id(user_id) when is_binary(user_id) do
-    if byte_size(user_id) <= 512 and Regex.match?(~r/^[A-Za-z0-9_-]+$/, user_id) do
+  defp validate_user_id(user_id) do
+    if is_binary(user_id) and byte_size(user_id) <= 512 and Regex.match?(~r/^[A-Za-z0-9_-]+$/, user_id) do
       :ok
     else
-      user_id_error(user_id)
+      error(:invalid_request, "DeepSeek user_id must match [A-Za-z0-9_-]+ and be at most 512 bytes",
+        param: :user_id,
+        value: inspect(user_id)
+      )
     end
-  end
-
-  defp validate_user_id(user_id), do: user_id_error(user_id)
-
-  defp user_id_error(user_id) do
-    {:error,
-     Error.new(:invalid_request, "DeepSeek user_id must match [A-Za-z0-9_-]+ and be at most 512 bytes", %{
-       provider: :deepseek,
-       param: :user_id,
-       value: inspect(user_id)
-     })}
   end
 
   defp validate_tool_choice(nil, _tools, _thinking), do: :ok
@@ -409,57 +332,37 @@ defmodule BeamWeaver.DeepSeek.Options do
 
   defp validate_tool_choice(choice, _tools, thinking)
        when not is_nil(choice) and (is_nil(thinking) or thinking == %{"type" => "enabled"}) do
-    {:error,
-     Error.new(
-       :unsupported_model_param,
-       "DeepSeek thinking mode does not accept an explicit tool_choice",
-       %{
-         provider: :deepseek,
-         param: :tool_choice,
-         value: choice,
-         required: %{thinking: %{type: "disabled"}}
-       }
-     )}
+    error(:unsupported_model_param, "DeepSeek thinking mode does not accept an explicit tool_choice",
+      param: :tool_choice,
+      value: choice,
+      required: %{thinking: %{type: "disabled"}}
+    )
   end
 
   defp validate_tool_choice("required", [_tool | _rest], _thinking), do: :ok
 
   defp validate_tool_choice("required", _tools, _thinking) do
-    {:error,
-     Error.new(:invalid_request, "DeepSeek tool_choice required needs at least one tool", %{
-       provider: :deepseek,
-       param: :tool_choice,
-       value: "required"
-     })}
+    error(:invalid_request, "DeepSeek tool_choice required needs at least one tool",
+      param: :tool_choice,
+      value: "required"
+    )
   end
 
-  defp validate_tool_choice(
-         %{"type" => "function", "function" => %{"name" => name}},
-         tools,
-         thinking
-       )
+  defp validate_tool_choice(%{"type" => "function", "function" => %{"name" => name}}, tools, thinking)
        when is_binary(name) do
     cond do
       not Enum.any?(tools || [], &(get_in(&1, ["function", "name"]) == name)) ->
-        {:error,
-         Error.new(:invalid_request, "DeepSeek named tool_choice must reference a declared tool", %{
-           provider: :deepseek,
-           param: :tool_choice,
-           name: name
-         })}
+        error(:invalid_request, "DeepSeek named tool_choice must reference a declared tool",
+          param: :tool_choice,
+          name: name
+        )
 
       not thinking_disabled?(thinking) ->
-        {:error,
-         Error.new(
-           :unsupported_model_param,
-           "DeepSeek forced named tool_choice requires thinking to be explicitly disabled",
-           %{
-             provider: :deepseek,
-             param: :tool_choice,
-             name: name,
-             required: %{thinking: %{type: "disabled"}}
-           }
-         )}
+        error(:unsupported_model_param, "DeepSeek forced named tool_choice requires thinking to be explicitly disabled",
+          param: :tool_choice,
+          name: name,
+          required: %{thinking: %{type: "disabled"}}
+        )
 
       true ->
         :ok
@@ -467,13 +370,11 @@ defmodule BeamWeaver.DeepSeek.Options do
   end
 
   defp validate_tool_choice(value, _tools, _thinking) do
-    {:error,
-     Error.new(:unsupported_model_param, "DeepSeek tool_choice is not supported", %{
-       provider: :deepseek,
-       param: :tool_choice,
-       value: value,
-       supported: ["none", "auto", "required", %{type: "function", function: %{name: "..."}}]
-     })}
+    error(:unsupported_model_param, "DeepSeek tool_choice is not supported",
+      param: :tool_choice,
+      value: value,
+      supported: ["none", "auto", "required", %{type: "function", function: %{name: "..."}}]
+    )
   end
 
   defp thinking_disabled?(%{"type" => "disabled"}), do: true
@@ -504,16 +405,8 @@ defmodule BeamWeaver.DeepSeek.Options do
     range_error(param, value, "a number from #{min} to #{max}", min, max)
   end
 
-  defp range_error(param, value, expected, min, max) do
-    {:error,
-     Error.new(:invalid_request, "DeepSeek #{param} must be #{expected}", %{
-       provider: :deepseek,
-       param: param,
-       value: value,
-       min: min,
-       max: max
-     })}
-  end
+  defp range_error(param, value, expected, min, max),
+    do: error(:invalid_request, "DeepSeek #{param} must be #{expected}", param: param, value: value, min: min, max: max)
 
   defp maybe_put_stream_usage(body, model, opts) do
     stream? = body["stream"] == true

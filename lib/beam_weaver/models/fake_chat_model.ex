@@ -70,6 +70,8 @@ defmodule BeamWeaver.Models.FakeChatModel do
   alias BeamWeaver.Stream.Envelope
   alias BeamWeaver.Stream.Events
 
+  import BeamWeaver.Core.Messages.Serialization, only: [stringify_value: 1]
+
   defstruct responses: [],
             response: nil,
             parent: nil,
@@ -193,10 +195,9 @@ defmodule BeamWeaver.Models.FakeChatModel do
   def model_id(_model), do: "chat"
   def profile(%__MODULE__{profile: profile}), do: profile
 
-  def count_tokens(%__MODULE__{tokenizer: nil}, input, _opts),
-    do: {:ok, LanguageModel.count_tokens_approximately(input)}
+  def count_tokens(%{tokenizer: nil}, input, _opts), do: {:ok, LanguageModel.count_tokens_approximately(input)}
 
-  def count_tokens(%__MODULE__{tokenizer: tokenizer}, input, opts),
+  def count_tokens(%{tokenizer: tokenizer}, input, opts),
     do: LanguageModel.count_tokens({:tokenizer, tokenizer}, input, opts)
 
   defp validate_params(model, opts),
@@ -215,10 +216,10 @@ defmodule BeamWeaver.Models.FakeChatModel do
        when not is_nil(response) do
     if Keyword.has_key?(opts, :response_format) or Keyword.has_key?(opts, :structured_output) do
       Message.assistant(BeamWeaver.JSON.encode!(response),
-        metadata: %{parsed: stringify_keys(response)}
+        metadata: %{parsed: stringify_value(response)}
       )
     else
-      normalize_response(model.response || response_text(model), model.tool_calls)
+      normalize_response(model.response || BeamWeaver.JSON.encode!(stringify_value(response)), model.tool_calls)
     end
   end
 
@@ -253,7 +254,7 @@ defmodule BeamWeaver.Models.FakeChatModel do
       calls
       |> Enum.with_index()
       |> Enum.map(fn {{name, args}, index} ->
-        %ToolCall{id: "call_#{turn}_#{index}", name: name, args: stringify_keys(args)}
+        %ToolCall{id: "call_#{turn}_#{index}", name: name, args: stringify_value(args)}
       end)
 
     Message.assistant("", tool_calls: tool_calls)
@@ -262,32 +263,19 @@ defmodule BeamWeaver.Models.FakeChatModel do
   defp render_turn({:final, data}, turn, model, opts) do
     case Keyword.get(opts, :structured_output_tool_names) do
       [name | _rest] -> render_turn({:tool_calls, [{name, data}]}, turn, model, opts)
-      _other -> Message.assistant(BeamWeaver.JSON.encode!(data), metadata: %{parsed: stringify_keys(data)})
+      _other -> Message.assistant(BeamWeaver.JSON.encode!(data), metadata: %{parsed: stringify_value(data)})
     end
   end
-
-  defp normalize_response(response, tool_calls)
 
   defp normalize_response(%Message{} = message, _tool_calls), do: message
 
   defp normalize_response(text, tool_calls) when is_binary(text),
     do: Message.assistant(text, tool_calls: tool_calls)
 
-  defp response_text(%__MODULE__{structured_response: response}),
-    do: BeamWeaver.JSON.encode!(stringify_keys(response))
-
   defp maybe_put_usage(%Message{} = message, nil), do: message
 
   defp maybe_put_usage(%Message{} = message, usage) when is_map(usage),
     do: %{message | usage_metadata: usage}
-
-  defp stringify_keys(map) when is_map(map) do
-    Map.new(map, fn {key, value} -> {to_string(key), stringify_value(value)} end)
-  end
-
-  defp stringify_value(value) when is_map(value), do: stringify_keys(value)
-  defp stringify_value(value) when is_list(value), do: Enum.map(value, &stringify_value/1)
-  defp stringify_value(value), do: value
 
   defp with_invocation_metadata(events, model, opts) do
     metadata = invocation_metadata(model, opts)

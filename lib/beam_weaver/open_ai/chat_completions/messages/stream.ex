@@ -7,6 +7,7 @@ defmodule BeamWeaver.OpenAI.ChatCompletions.Messages.Stream do
   alias BeamWeaver.OpenAI.ChatCompletions.Messages.Response
   alias BeamWeaver.Core.Error
   alias BeamWeaver.OpenAI.MessageParts
+  alias BeamWeaver.Provider.ChatCompletionsWire
 
   def stream_body_to_message(body) when is_binary(body) do
     events = BeamWeaver.OpenAI.Streaming.events(body)
@@ -43,7 +44,7 @@ defmodule BeamWeaver.OpenAI.ChatCompletions.Messages.Stream do
     events
     |> Enum.reduce(%{}, fn
       %{"data" => data}, acc when is_map(data) ->
-        choice = first_choice(data)
+        choice = ChatCompletionsWire.first_choice(data)
 
         acc
         |> put_optional(:id, data["id"])
@@ -61,9 +62,6 @@ defmodule BeamWeaver.OpenAI.ChatCompletions.Messages.Stream do
         acc
     end)
   end
-
-  defp first_choice(%{"choices" => [choice | _rest]}) when is_map(choice), do: choice
-  defp first_choice(_data), do: nil
 
   defp stream_usage(events) do
     events

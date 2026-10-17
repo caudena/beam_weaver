@@ -31,28 +31,14 @@ defmodule BeamWeaver.Core.ToolCallParser do
     {:ok, Enum.map(raw_calls, &parse_raw_chunk/1)}
   end
 
-  @spec normalize_openai_call(term(), atom()) :: {:ok, map() | struct()} | {:error, map() | struct()}
-  def normalize_openai_call(%{"type" => "function", "function" => function} = call, :string_keys)
-      when is_map(function) do
-    openai_call(call["id"], function["name"], function["arguments"], :string_keys)
-  end
+  @spec normalize_openai_call(term()) :: {:ok, map() | struct()} | {:error, map() | struct()}
+  def normalize_openai_call(%{"type" => "function", "function" => function} = call) when is_map(function),
+    do: openai_call(call["id"], function["name"], function["arguments"])
 
-  def normalize_openai_call(%{"type" => "function", "function" => function} = call, :atom_keys)
-      when is_map(function) do
-    openai_call(call["id"], function["name"], function["arguments"], :atom_keys)
-  end
+  def normalize_openai_call(%{type: :function, function: function} = call) when is_map(function),
+    do: openai_call(Map.get(call, :id), Map.get(function, :name), Map.get(function, :arguments))
 
-  def normalize_openai_call(%{type: :function, function: function} = call, :atom_keys)
-      when is_map(function) do
-    openai_call(
-      Map.get(call, :id),
-      Map.get(function, :name),
-      Map.get(function, :arguments),
-      :atom_keys
-    )
-  end
-
-  def normalize_openai_call(%{} = call, :atom_keys) do
+  def normalize_openai_call(%{} = call) do
     case BeamWeaver.MapAccess.get(call, :type) do
       type when type in [:invalid_tool_call, "invalid_tool_call"] ->
         {:error,
@@ -87,7 +73,7 @@ defmodule BeamWeaver.Core.ToolCallParser do
     end
   end
 
-  def normalize_openai_call(call, _key_kind), do: {:ok, call}
+  def normalize_openai_call(call), do: {:ok, call}
 
   defp parse_raw_call(raw_call) when is_map(raw_call) do
     case BeamWeaver.MapAccess.get(raw_call, :function) do
@@ -134,67 +120,26 @@ defmodule BeamWeaver.Core.ToolCallParser do
 
   defp parse_raw_chunk(_raw_call), do: Messages.tool_call_chunk([])
 
-  defp openai_call(id, name, nil, key_kind), do: openai_call(id, name, "{}", key_kind)
-
-  defp openai_call(id, name, arguments, key_kind) when is_binary(arguments) do
+  defp openai_call(id, name, arguments) when is_binary(arguments) do
     case BeamWeaver.JSON.decode(arguments) do
       {:ok, decoded} when is_map(decoded) ->
-        {:ok, call_map(key_kind, :tool_call, id, name, decoded)}
+        {:ok, Messages.tool_call(id: id, provider_id: id, call_id: id, name: name, args: decoded)}
 
       {:ok, _decoded} ->
-        {:error,
-         call_map(
-           key_kind,
-           :invalid_tool_call,
-           id,
-           name,
-           arguments,
-           "tool call arguments must decode to an object"
-         )}
+        {:error, invalid_call(id, name, arguments, "tool call arguments must decode to an object")}
 
       {:error, error} ->
-        {:error, call_map(key_kind, :invalid_tool_call, id, name, arguments, Exception.message(error))}
+        {:error, invalid_call(id, name, arguments, Exception.message(error))}
     end
   end
 
-  defp openai_call(id, name, arguments, key_kind) do
-    {:ok, call_map(key_kind, :tool_call, id, name, arguments || %{})}
-  end
+  defp openai_call(id, name, arguments),
+    do: {:ok, Messages.tool_call(id: id, provider_id: id, call_id: id, name: name, args: arguments || %{})}
 
-  defp call_map(:string_keys, type, id, name, args) do
-    %{"type" => Atom.to_string(type), "id" => id, "name" => name, "args" => args}
-    |> BeamWeaver.MapShape.compact()
-  end
+  defp invalid_call(id, name, args, error),
+    do: Messages.invalid_tool_call(id: id, provider_id: id, call_id: id, name: name, args: args, error: error)
 
-  defp call_map(:atom_keys, :tool_call, id, name, args),
-    do: Messages.tool_call(id: id, provider_id: id, call_id: id, name: name, args: args)
-
-  defp call_map(:string_keys, type, id, name, args, error) do
-    %{
-      "type" => Atom.to_string(type),
-      "id" => id,
-      "name" => name,
-      "args" => args,
-      "error" => error
-    }
-    |> BeamWeaver.MapShape.compact()
-  end
-
-  defp call_map(:atom_keys, :invalid_tool_call, id, name, args, error) do
-    Messages.invalid_tool_call(
-      id: id,
-      provider_id: id,
-      call_id: id,
-      name: name,
-      args: args,
-      error: error
-    )
-  end
-
-  defp decode_tool_args(nil), do: {:ok, %{}}
-  defp decode_tool_args(args) when is_map(args), do: {:ok, args}
-
-  defp decode_tool_args(args) when is_binary(args) do
+  def decode_tool_args(args) when is_binary(args) do
     case BeamWeaver.JSON.decode(args) do
       {:ok, decoded} when is_map(decoded) ->
         {:ok, decoded}
@@ -207,5 +152,5 @@ defmodule BeamWeaver.Core.ToolCallParser do
     end
   end
 
-  defp decode_tool_args(args), do: {:ok, args || %{}}
+  def decode_tool_args(args), do: {:ok, args || %{}}
 end

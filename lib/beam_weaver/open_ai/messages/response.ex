@@ -4,12 +4,12 @@ defmodule BeamWeaver.OpenAI.Messages.Response do
   alias BeamWeaver.Core.Message
   alias BeamWeaver.Core.Messages
   alias BeamWeaver.Core.Error
-  alias BeamWeaver.OpenAI.Messages.Shared
+  alias BeamWeaver.OpenAI.MessageParts
 
   @spec to_message(map()) :: {:ok, Message.t()} | {:error, Error.t()}
   def to_message(%{"error" => %{"message" => message} = error})
       when is_binary(message) do
-    {:error, Error.new(:response_error, message, %{error: Shared.stringify_keys(error)})}
+    {:error, Error.new(:response_error, message, %{error: MessageParts.stringify_keys(error)})}
   end
 
   def to_message(response) when is_map(response) do
@@ -34,63 +34,8 @@ defmodule BeamWeaver.OpenAI.Messages.Response do
     {:error, Error.new(:invalid_response, "OpenAI response must be a JSON object")}
   end
 
-  defp usage_metadata(%{"usage" => usage}) when is_map(usage) do
-    input_tokens = usage["input_tokens"] || usage["prompt_tokens"]
-    output_tokens = usage["output_tokens"] || usage["completion_tokens"]
-
-    %{
-      input_tokens: input_tokens || 0,
-      output_tokens: output_tokens || 0,
-      total_tokens: total_tokens(usage["total_tokens"], input_tokens, output_tokens),
-      input_token_details: input_token_details(usage),
-      output_token_details: output_token_details(usage)
-    }
-    |> BeamWeaver.MapShape.reject_nil_or_empty()
-  end
-
+  defp usage_metadata(%{"usage" => usage}) when is_map(usage), do: MessageParts.usage_metadata(usage, :responses)
   defp usage_metadata(_response), do: nil
-
-  defp total_tokens(total, _input, _output) when is_integer(total), do: total
-  defp total_tokens(_total, input, output) when is_integer(input) and is_integer(output), do: input + output
-  defp total_tokens(_total, _input, _output), do: nil
-
-  defp input_token_details(usage) when is_map(usage) do
-    case usage["input_tokens_details"] || usage["prompt_tokens_details"] do
-      details when is_map(details) ->
-        %{
-          cache_read: details["cached_tokens"],
-          cache_write: details["cache_write_tokens"],
-          audio: details["audio_tokens"],
-          image: details["image_tokens"],
-          text: details["text_tokens"],
-          flex: details["flex"]
-        }
-        |> BeamWeaver.MapShape.reject_nil_or_empty()
-
-      _details ->
-        %{}
-    end
-  end
-
-  defp output_token_details(usage) when is_map(usage) do
-    case usage["output_tokens_details"] || usage["completion_tokens_details"] do
-      details when is_map(details) ->
-        %{
-          reasoning: details["reasoning_tokens"],
-          accepted_prediction: details["accepted_prediction_tokens"],
-          rejected_prediction: details["rejected_prediction_tokens"],
-          audio: details["audio_tokens"],
-          image: details["image_tokens"],
-          text: details["text_tokens"],
-          flex: details["flex"],
-          flex_reasoning: details["flex_reasoning"]
-        }
-        |> BeamWeaver.MapShape.reject_nil_or_empty()
-
-      _details ->
-        %{}
-    end
-  end
 
   defp put_invalid_tool_calls(metadata, []), do: metadata
 
@@ -102,17 +47,6 @@ defmodule BeamWeaver.OpenAI.Messages.Response do
   defp output_text(%{"output" => output}) when is_list(output) do
     output
     |> Enum.flat_map(&message_content_text/1)
-    |> Enum.join("")
-  end
-
-  defp output_text(%{"choices" => choices}) when is_list(choices) do
-    choices
-    |> Enum.flat_map(fn choice ->
-      case get_in(choice, ["message", "content"]) do
-        content when is_binary(content) -> [content]
-        _missing -> []
-      end
-    end)
     |> Enum.join("")
   end
 
@@ -168,7 +102,7 @@ defmodule BeamWeaver.OpenAI.Messages.Response do
         phase: part["phase"],
         annotations: part["annotations"]
       }
-      |> Shared.reject_nil_values()
+      |> MessageParts.reject_nil_values()
     ]
     |> put_part_item_id(item_id)
   end
@@ -185,7 +119,7 @@ defmodule BeamWeaver.OpenAI.Messages.Response do
         mime_type: part["mime_type"] || part["format"],
         raw_provider_block: part
       }
-      |> Shared.reject_nil_values()
+      |> MessageParts.reject_nil_values()
     ]
     |> put_part_item_id(item_id)
   end
@@ -197,7 +131,7 @@ defmodule BeamWeaver.OpenAI.Messages.Response do
         refusal: part["refusal"],
         raw_provider_block: part
       }
-      |> Shared.reject_nil_values()
+      |> MessageParts.reject_nil_values()
     ]
     |> put_part_item_id(item_id)
   end
@@ -214,7 +148,7 @@ defmodule BeamWeaver.OpenAI.Messages.Response do
       encrypted_content: item["encrypted_content"],
       raw_provider_block: item
     }
-    |> Shared.reject_nil_values()
+    |> MessageParts.reject_nil_values()
   end
 
   defp reasoning_text(%{"reasoning" => reasoning}) when is_binary(reasoning), do: reasoning
@@ -272,7 +206,7 @@ defmodule BeamWeaver.OpenAI.Messages.Response do
       status: item["status"],
       raw_provider_block: item
     }
-    |> Shared.reject_nil_values()
+    |> MessageParts.reject_nil_values()
   end
 
   defp provider_output_block(%{"type" => type} = item) do
@@ -301,7 +235,7 @@ defmodule BeamWeaver.OpenAI.Messages.Response do
       execution: item["execution"],
       raw_provider_block: item
     }
-    |> Shared.reject_nil_values()
+    |> MessageParts.reject_nil_values()
   end
 
   defp message_content_text(%{"type" => "message", "content" => content}) when is_list(content) do
@@ -323,82 +257,38 @@ defmodule BeamWeaver.OpenAI.Messages.Response do
   defp output_tool_calls(%{"output" => output}) when is_list(output) do
     output
     |> Enum.filter(&(Map.get(&1, "type") == "function_call"))
-    |> Enum.reduce({[], []}, fn item, {valid, invalid} ->
-      case output_tool_call(item) do
-        {:ok, tool_call} -> {[tool_call | valid], invalid}
-        {:error, invalid_call} -> {valid, [invalid_call | invalid]}
-      end
-    end)
-    |> then(fn {valid, invalid} -> {Enum.reverse(valid), Enum.reverse(invalid)} end)
+    |> split_tool_calls(&output_tool_call/1)
   end
 
   defp output_tool_calls(%{"choices" => choices}) when is_list(choices) do
     choices
-    |> Enum.flat_map(fn choice ->
-      get_in(choice, ["message", "tool_calls"]) || []
-    end)
-    |> Enum.reduce({[], []}, fn item, {valid, invalid} ->
-      case chat_tool_call(item) do
-        {:ok, tool_call} -> {[tool_call | valid], invalid}
-        {:error, invalid_call} -> {valid, [invalid_call | invalid]}
-      end
-    end)
-    |> then(fn {valid, invalid} -> {Enum.reverse(valid), Enum.reverse(invalid)} end)
+    |> Enum.flat_map(&(get_in(&1, ["message", "tool_calls"]) || []))
+    |> split_tool_calls(&chat_tool_call/1)
   end
 
   defp output_tool_calls(_response), do: {[], []}
 
-  defp output_tool_call(item) do
-    case decode_arguments(item["arguments"]) do
-      {:ok, arguments} ->
-        {:ok,
-         Messages.tool_call(
-           id: item["call_id"] || item["id"],
-           provider_id: item["id"],
-           call_id: item["call_id"],
-           name: item["name"],
-           args: arguments
-         )}
-
-      {:error, error} ->
-        {:error,
-         Messages.invalid_tool_call(
-           id: item["call_id"] || item["id"],
-           provider_id: item["id"],
-           call_id: item["call_id"],
-           name: item["name"],
-           args: item["arguments"],
-           error: error
-         )}
-    end
+  defp split_tool_calls(items, decode) do
+    {valid, invalid} = items |> Enum.map(decode) |> Enum.split_with(&match?({:ok, _call}, &1))
+    {Enum.map(valid, &elem(&1, 1)), Enum.map(invalid, &elem(&1, 1))}
   end
 
-  defp chat_tool_call(%{"function" => function} = item) when is_map(function) do
-    case decode_arguments(function["arguments"]) do
-      {:ok, arguments} ->
-        {:ok,
-         Messages.tool_call(
-           id: item["id"],
-           provider_id: item["id"],
-           call_id: item["id"],
-           name: function["name"],
-           args: arguments
-         )}
+  defp output_tool_call(item),
+    do: tool_call(item["call_id"] || item["id"], item["id"], item["call_id"], item["name"], item["arguments"])
 
-      {:error, error} ->
-        {:error,
-         Messages.invalid_tool_call(
-           id: item["id"],
-           provider_id: item["id"],
-           call_id: item["id"],
-           name: function["name"],
-           args: function["arguments"],
-           error: error
-         )}
-    end
-  end
+  defp chat_tool_call(%{"function" => function} = item) when is_map(function),
+    do: tool_call(item["id"], item["id"], item["id"], function["name"], function["arguments"])
 
   defp chat_tool_call(_item), do: {:error, Messages.invalid_tool_call(error: "invalid tool call")}
+
+  defp tool_call(id, provider_id, call_id, name, arguments) do
+    fields = [id: id, provider_id: provider_id, call_id: call_id, name: name]
+
+    case decode_arguments(arguments) do
+      {:ok, args} -> {:ok, Messages.tool_call(fields ++ [args: args])}
+      {:error, error} -> {:error, Messages.invalid_tool_call(fields ++ [args: arguments, error: error])}
+    end
+  end
 
   defp decode_arguments(arguments) when is_binary(arguments) do
     case BeamWeaver.JSON.decode(arguments) do
@@ -445,7 +335,7 @@ defmodule BeamWeaver.OpenAI.Messages.Response do
       service_tier: response["service_tier"],
       raw_provider_response: response
     }
-    |> Shared.reject_nil_values()
+    |> MessageParts.reject_nil_values()
   end
 
   defp normalize_output(output) when is_list(output),
@@ -460,18 +350,13 @@ defmodule BeamWeaver.OpenAI.Messages.Response do
   defp first_output_item(_response, _type), do: nil
 
   defp first_message_part(%{"output" => output}, types) when is_list(output) do
-    output
-    |> Enum.find_value(fn
+    Enum.find_value(output, fn
       %{"type" => "message", "content" => content} when is_list(content) ->
         Enum.find(content, &(Map.get(&1, "type") in types))
 
       _item ->
         nil
     end)
-    |> case do
-      nil -> nil
-      part -> part
-    end
   end
 
   defp first_message_part(_response, _types), do: nil

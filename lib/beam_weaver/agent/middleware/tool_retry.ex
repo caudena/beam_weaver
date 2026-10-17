@@ -22,7 +22,6 @@ defmodule BeamWeaver.Agent.Middleware.ToolRetry do
   alias BeamWeaver.Agent.Middleware.RetryRunner
   alias BeamWeaver.Core.Error
   alias BeamWeaver.Core.Message
-  alias BeamWeaver.Core.Tool
   alias BeamWeaver.Options
   alias BeamWeaver.RetryPolicy
 
@@ -77,7 +76,7 @@ defmodule BeamWeaver.Agent.Middleware.ToolRetry do
   defp retry_tool?(%__MODULE__{tools: nil}, _request), do: true
 
   defp retry_tool?(%__MODULE__{tools: tools}, request) do
-    MapSet.member?(tools, tool_name(request))
+    MapSet.member?(tools, Helpers.tool_name(request))
   end
 
   # The last attempt's tool message already reports the error to the model.
@@ -87,22 +86,12 @@ defmodule BeamWeaver.Agent.Middleware.ToolRetry do
   defp handle_failure(%__MODULE__{on_failure: :error}, _request, %Error{} = error, _attempts),
     do: {:error, error}
 
-  defp handle_failure(%__MODULE__{on_failure: :continue}, request, %Error{} = error, attempts) do
-    tool_name = tool_name(request)
+  defp handle_failure(%__MODULE__{on_failure: on_failure}, request, %Error{} = error, attempts) do
+    tool_name = Helpers.tool_name(request)
+    text = if on_failure == :continue, do: failure_message(tool_name, error, attempts), else: on_failure.(error)
 
-    Message.tool(failure_message(tool_name, error, attempts),
-      tool_call_id: tool_call_id(request),
-      name: tool_name,
-      metadata: %{status: "error", error_type: error.type, error_message: error.message}
-    )
-  end
-
-  defp handle_failure(%__MODULE__{on_failure: fun}, request, %Error{} = error, _attempts)
-       when is_function(fun, 1) do
-    tool_name = tool_name(request)
-
-    Message.tool(fun.(error),
-      tool_call_id: tool_call_id(request),
+    Message.tool(text,
+      tool_call_id: Helpers.tool_call_id(request.tool_call),
       name: tool_name,
       metadata: %{status: "error", error_type: error.type, error_message: error.message}
     )
@@ -127,16 +116,4 @@ defmodule BeamWeaver.Agent.Middleware.ToolRetry do
 
   defp normalize_on_failure(value),
     do: Options.atom_enum!("on_failure", value, [:error, :continue])
-
-  defp tool_name(%{tool: nil, tool_call: call}), do: call_name(call)
-  defp tool_name(%{tool: tool}), do: Tool.name(tool)
-
-  defp call_name(call) do
-    Map.get(call, :name)
-  end
-
-  defp tool_call_id(%{tool_call: call}) do
-    Map.get(call, :id) ||
-      Map.get(call, :tool_call_id)
-  end
 end

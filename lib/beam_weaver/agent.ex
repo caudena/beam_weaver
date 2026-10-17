@@ -111,14 +111,7 @@ defmodule BeamWeaver.Agent do
     end
   end
 
-  defmacro model(expr_ast) do
-    quote bind_quoted: [expr_ast: Macro.escape(expr_ast)] do
-      @beam_weaver_model expr_ast
-      @beam_weaver_model_options nil
-    end
-  end
-
-  defmacro model(expr_ast, opts_ast) do
+  defmacro model(expr_ast, opts_ast \\ nil) do
     quote bind_quoted: [expr_ast: Macro.escape(expr_ast), opts_ast: Macro.escape(opts_ast)] do
       @beam_weaver_model expr_ast
       @beam_weaver_model_options opts_ast
@@ -135,12 +128,7 @@ defmodule BeamWeaver.Agent do
     end
   end
 
-  for {macro_name, attr} <- [
-        tools: :beam_weaver_tools,
-        middleware: :beam_weaver_middleware,
-        subagents: :beam_weaver_subagents,
-        async_subagents: :beam_weaver_async_subagents
-      ] do
+  for macro_name <- [:tools, :middleware, :subagents, :async_subagents], attr = :"beam_weaver_#{macro_name}" do
     defmacro unquote(macro_name)(do: block) do
       ast = DSL.block_ast!(__CALLER__, unquote(macro_name), block)
       attr = unquote(attr)
@@ -160,49 +148,12 @@ defmodule BeamWeaver.Agent do
   end
 
   defmacro graph(do: block) do
-    entries = DSL.graph_block_entries!(__CALLER__, block)
-
-    node_quotes =
-      Enum.map(entries.nodes, fn {name, fun_ast, opts} ->
-        quote do
-          @beam_weaver_nodes {unquote(name), unquote(Macro.escape(fun_ast)), unquote(opts)}
-        end
-      end)
-
-    edge_quotes =
-      Enum.map(entries.edges, fn {start_node, end_node, opts} ->
-        quote do
-          @beam_weaver_edges {unquote(start_node), unquote(end_node), unquote(opts)}
-        end
-      end)
-
-    reducer_quotes =
-      Enum.map(entries.reducers, fn {key, reducer_ast} ->
-        quote do
-          @beam_weaver_reducers {unquote(key), unquote(Macro.escape(reducer_ast))}
-        end
-      end)
-
-    channel_quotes =
-      Enum.map(entries.channels, fn {key, merge, opts} ->
-        quote do
-          @beam_weaver_channels {unquote(key), unquote(Macro.escape(merge)), unquote(opts)}
-        end
-      end)
-
-    join_quotes =
-      Enum.map(entries.joins, fn {upstream_nodes, downstream_node, opts} ->
-        quote do
-          @beam_weaver_joins {unquote(upstream_nodes), unquote(downstream_node), unquote(opts)}
-        end
-      end)
+    attribute_quotes =
+      for {attr, entry} <- DSL.graph_block_entries!(__CALLER__, block),
+          do: quote(do: Module.put_attribute(__MODULE__, unquote(attr), unquote(entry)))
 
     quote do
-      unquote_splicing(channel_quotes)
-      unquote_splicing(reducer_quotes)
-      unquote_splicing(node_quotes)
-      unquote_splicing(edge_quotes)
-      unquote_splicing(join_quotes)
+      (unquote_splicing(attribute_quotes))
     end
   end
 
@@ -229,7 +180,7 @@ defmodule BeamWeaver.Agent do
   defmacro context_schema(do: block) do
     entry_quotes =
       __CALLER__
-      |> DSL.schema_block_entries!(:context, block)
+      |> DSL.schema_block_entries!(block)
       |> Enum.map(fn entry ->
         quote do
           @beam_weaver_context_schema_entries unquote(Macro.escape(entry))
@@ -257,21 +208,11 @@ defmodule BeamWeaver.Agent do
     end
   end
 
-  defmacro field(name, type, opts \\ []) do
-    target = Module.get_attribute(__CALLER__.module, :beam_weaver_schema_target)
-    attr = DSL.schema_attr!(target, :field, __CALLER__)
-
-    quote bind_quoted: [attr: attr, name: name, type: Macro.escape(type), opts: opts] do
-      Module.put_attribute(__MODULE__, attr, {name, {:field, type, opts}})
-    end
-  end
+  defmacro field(_name, _type, _opts \\ []),
+    do: DSL.compile_error!(__CALLER__, "field/2 can only be used inside context_schema blocks")
 
   defmacro __before_compile__(env) do
     BeamWeaver.Agent.BeforeCompile.compile(env)
-  end
-
-  def __schema_from_entries__(base, entries) do
-    DSL.schema_from_entries(base, entries)
   end
 
   def __response_schema__(schema, opts) do
@@ -283,16 +224,10 @@ defmodule BeamWeaver.Agent do
       |> maybe_put_schema_title(Keyword.get(opts, :name))
       |> maybe_put_schema_description(Keyword.get(opts, :description))
 
-    strategy = Keyword.get(opts, :strategy, :auto)
-
-    strategy_opts =
-      opts
-      |> Keyword.take([:name, :description, :strict, :tool_message_content, :handle_errors, :max_retries])
-
-    case strategy do
-      :auto -> BeamWeaver.Agent.StructuredOutput.auto(schema, strategy_opts)
-      :tool -> BeamWeaver.Agent.StructuredOutput.tool(schema, strategy_opts)
-      :provider -> BeamWeaver.Agent.StructuredOutput.provider(schema, strategy_opts)
+    case Keyword.get(opts, :strategy, :auto) do
+      :auto -> BeamWeaver.Agent.StructuredOutput.auto(schema, opts)
+      :tool -> BeamWeaver.Agent.StructuredOutput.tool(schema, opts)
+      :provider -> BeamWeaver.Agent.StructuredOutput.provider(schema, opts)
       other -> raise ArgumentError, "unknown response_schema strategy #{inspect(other)}"
     end
   end

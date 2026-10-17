@@ -4,43 +4,6 @@ defmodule BeamWeaver.Filesystem.Path do
   # The most symlinks one path may pass through, as on Linux.
   @max_links 40
 
-  def sanitize_tool_call_id(tool_call_id) do
-    tool_call_id
-    |> to_string()
-    |> String.replace([".", "/", "\\"], "_")
-  end
-
-  def to_posix_path(path), do: path |> to_string() |> String.replace("\\", "/")
-
-  def validate_path(path, opts \\ []) do
-    allowed_prefixes = Keyword.get(opts, :allowed_prefixes)
-    original = to_string(path)
-    path = to_posix_path(original)
-
-    cond do
-      original =~ ~r/^[A-Za-z]:/ ->
-        raise ArgumentError,
-              "Windows absolute paths are not supported: #{original}. Please use virtual paths starting with /"
-
-      String.starts_with?(path, "~") or Enum.member?(Elixir.Path.split(path), "..") ->
-        raise ArgumentError, "Path traversal not allowed: #{original}"
-
-      true ->
-        normalized =
-          path
-          |> Elixir.Path.expand("/")
-          |> ensure_leading_slash()
-
-        if allowed_prefixes &&
-             not Enum.any?(allowed_prefixes, &String.starts_with?(normalized, &1)) do
-          raise ArgumentError,
-                "Path must start with one of #{inspect(allowed_prefixes)}: #{original}"
-        end
-
-        normalized
-    end
-  end
-
   def clean_path(path) when is_binary(path) do
     cond do
       not String.starts_with?(path, "/") ->
@@ -121,6 +84,9 @@ defmodule BeamWeaver.Filesystem.Path do
 
   def relative(path, "/"), do: String.trim_leading(path, "/")
   def relative(path, base), do: String.trim_leading(String.replace_prefix(path, base, ""), "/")
+
+  def join_virtual(base, ""), do: base
+  def join_virtual(base, relative), do: String.trim_trailing(base, "/") <> "/" <> String.trim_leading(relative, "/")
 
   # Follows `segments` from `current`, a real directory under the real
   # `root`, resolving each symlink on the way. A symlink that points outside

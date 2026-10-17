@@ -519,30 +519,6 @@ defmodule BeamWeaver.XAI.ChatModelTest do
     assert [%{id: "call_weather", name: "weather", args: %{"city" => "Nicosia"}}] = response.tool_calls
   end
 
-  test "Chat Completions stream decoder reads atom-key message metadata" do
-    body = """
-    data: {"id":"chatcmpl_xai_decoder","model":"grok-4.3","service_tier":"default","system_fingerprint":"fp_xai","choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":null}]}
-
-    data: {"id":"chatcmpl_xai_decoder","model":"grok-4.3","service_tier":"default","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":2,"total_tokens":3}}
-
-    data: [DONE]
-    """
-
-    response = %BeamWeaver.Transport.Response{status: 200, body: body, headers: []}
-
-    assert {:ok, decoded} =
-             BeamWeaver.XAI.Client.ResponseDecoder.chat_completions_stream_response(
-               {:ok, response},
-               []
-             )
-
-    assert decoded["id"] == "chatcmpl_xai_decoder"
-    assert decoded["model"] == "grok-4.3"
-    assert decoded["system_fingerprint"] == "fp_xai"
-    assert decoded["service_tier"] == "default"
-    assert decoded["usage"]["completion_tokens"] == 2
-  end
-
   test "stream_events returns envelopes tagged with xAI invocation metadata" do
     body = """
     data: {"id":"chatcmpl_xai","model":"grok-4.3","choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":null}]}
@@ -733,28 +709,30 @@ defmodule BeamWeaver.XAI.ChatModelTest do
   end
 
   test "structured output leaves dynamic empty object maps open for xAI" do
-    format =
-      BeamWeaver.XAI.Messages.structured_output_format(
-        "crm_updates",
-        %{
-          "type" => "object",
-          "properties" => %{
-            "contacts_to_update" => %{
-              "type" => "array",
-              "items" => %{
-                "type" => "object",
-                "properties" => %{
-                  "contact_id" => %{"type" => "integer"},
-                  "properties" => %{"type" => "object"}
-                },
-                "required" => ["properties"]
-              }
-            }
-          },
-          "required" => ["contacts_to_update"]
-        },
-        strict: true
-      )
+    schema = %{
+      "type" => "object",
+      "properties" => %{
+        "contacts_to_update" => %{
+          "type" => "array",
+          "items" => %{
+            "type" => "object",
+            "properties" => %{
+              "contact_id" => %{"type" => "integer"},
+              "properties" => %{"type" => "object"}
+            },
+            "required" => ["properties"]
+          }
+        }
+      },
+      "required" => ["contacts_to_update"]
+    }
+
+    assert {:ok, body} =
+             ChatModel.request_body(ChatModel.new(model: "grok-4.3"), [Message.user("update crm")],
+               response_format: %{name: "crm_updates", schema: schema, strict: true}
+             )
+
+    format = body["text"]["format"]
 
     dynamic_properties =
       get_in(format, [

@@ -308,8 +308,6 @@ defmodule BeamWeaver.Models.InitializerTest do
   end
 
   test "OpenAI tokenizer adapter gives exact deterministic counts when explicitly supplied" do
-    # Upstream reference:
-    # - token counting can be driven by an explicit model tokenizer.
     tokenizer = %OpenAITokenizer{model: "gpt-4o"}
 
     assert {:ok, [24_912, 2375]} = BeamWeaver.Tokenizer.encode(tokenizer, "hello world")
@@ -346,8 +344,7 @@ defmodule BeamWeaver.Models.InitializerTest do
     assert error.type == :invalid_tokenizer
   end
 
-  test "OpenAI tokenizer matches upstream multilingual token-count fixtures" do
-    # Upstream reference:
+  test "OpenAI tokenizer matches multilingual token-count fixtures" do
     text = "表情符号是\n🦜🔗"
 
     expected = %{
@@ -414,8 +411,6 @@ defmodule BeamWeaver.Models.InitializerTest do
   end
 
   test "profile preserves unknown keys without creating runtime atoms" do
-    # Upstream reference:
-    # - extra profile keys are accepted and survive validation.
     unknown_key = "future_profile_key_#{System.unique_integer([:positive])}"
 
     assert_raise ArgumentError, fn ->

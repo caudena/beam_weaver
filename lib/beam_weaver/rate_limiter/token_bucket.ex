@@ -96,7 +96,7 @@ defmodule BeamWeaver.RateLimiter.TokenBucket do
 
   @impl true
   def handle_call({:acquire, amount, opts}, from, state) do
-    mode = mode(opts)
+    mode = Keyword.get(opts, :mode, :wait)
     timeout = Keyword.get(opts, :timeout, 5_000)
 
     cond do
@@ -193,20 +193,10 @@ defmodule BeamWeaver.RateLimiter.TokenBucket do
 
   defp timeout_timer(_id, :infinity), do: nil
 
-  defp timeout_timer(id, timeout) when is_integer(timeout) and timeout >= 0 do
-    Process.send_after(self(), {:acquire_timeout, id}, timeout)
-  end
-
-  defp timeout_timer(id, _timeout) do
-    Process.send_after(self(), {:acquire_timeout, id}, 5_000)
-  end
+  defp timeout_timer(id, timeout), do: Process.send_after(self(), {:acquire_timeout, id}, timeout)
 
   defp add_tokens(state) do
     %{state | tokens: min(state.capacity, state.tokens + state.refill_amount)}
-  end
-
-  defp mode(opts) do
-    Keyword.get(opts, :mode, :wait)
   end
 
   defp drain_queue(state) do

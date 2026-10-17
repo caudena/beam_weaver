@@ -13,9 +13,7 @@ defmodule BeamWeaver.Graph.Execution.Scratchpad do
     :first_state,
     resume_values: [],
     consumed_resume_values: [],
-    interrupt_counter: 0,
-    call_counter: 0,
-    subgraph_counter: 0
+    interrupt_counter: 0
   ]
 
   @type t :: %__MODULE__{
@@ -25,9 +23,7 @@ defmodule BeamWeaver.Graph.Execution.Scratchpad do
           first_state: term(),
           resume_values: list(),
           consumed_resume_values: list(),
-          interrupt_counter: non_neg_integer(),
-          call_counter: non_neg_integer(),
-          subgraph_counter: non_neg_integer()
+          interrupt_counter: non_neg_integer()
         }
 
   @spec new(keyword()) :: t()
@@ -40,41 +36,19 @@ defmodule BeamWeaver.Graph.Execution.Scratchpad do
     }
   end
 
-  @spec install(t()) :: :ok
-  def install(%__MODULE__{} = scratchpad) do
-    Process.put(@process_key, scratchpad)
-    :ok
-  end
-
   @doc "The scratchpad of the node this process runs, or `nil`."
   @spec current() :: t() | nil
   def current, do: Process.get(@process_key)
 
-  @spec clear() :: :ok
-  def clear do
-    Process.delete(@process_key)
-    :ok
-  end
-
   @spec with(t(), (-> term())) :: term()
   def with(%__MODULE__{} = scratchpad, fun) when is_function(fun, 0) do
-    install(scratchpad)
+    Process.put(@process_key, scratchpad)
 
     try do
       fun.()
     after
-      clear()
+      Process.delete(@process_key)
     end
-  end
-
-  @spec next_call() :: non_neg_integer()
-  def next_call do
-    next_counter(:call_counter)
-  end
-
-  @spec next_subgraph() :: non_neg_integer()
-  def next_subgraph do
-    next_counter(:subgraph_counter)
   end
 
   @spec interrupt(term()) :: term() | no_return()
@@ -93,10 +67,11 @@ defmodule BeamWeaver.Graph.Execution.Scratchpad do
         resume
 
       %__MODULE__{} = scratchpad ->
-        id = interrupt_id(scratchpad, scratchpad.interrupt_counter)
+        payload =
+          :erlang.term_to_binary({scratchpad.task_id, scratchpad.node, scratchpad.step, scratchpad.interrupt_counter})
 
         interrupt = %Interrupt{
-          id: id,
+          id: "interrupt_" <> Base.encode16(:crypto.hash(:sha256, payload), case: :lower),
           value: value,
           task_id: scratchpad.task_id,
           node: scratchpad.node,
@@ -113,27 +88,6 @@ defmodule BeamWeaver.Graph.Execution.Scratchpad do
 
       _missing ->
         raise RuntimeError, "BeamWeaver.Graph.interrupt/1 can only be called inside a graph node"
-    end
-  end
-
-  @spec interrupt_id(t(), non_neg_integer()) :: String.t()
-  def interrupt_id(%__MODULE__{} = scratchpad, counter) do
-    payload =
-      :erlang.term_to_binary({scratchpad.task_id, scratchpad.node, scratchpad.step, counter})
-
-    "interrupt_" <> Base.encode16(:crypto.hash(:sha256, payload), case: :lower)
-  end
-
-  defp next_counter(field) do
-    case Process.get(@process_key) do
-      %__MODULE__{} = scratchpad ->
-        value = Map.fetch!(scratchpad, field)
-        Process.put(@process_key, Map.put(scratchpad, field, value + 1))
-        value
-
-      _missing ->
-        raise RuntimeError,
-              "graph execution scratchpad counters can only be used inside a graph node"
     end
   end
 

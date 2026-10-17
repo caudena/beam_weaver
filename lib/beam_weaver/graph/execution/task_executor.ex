@@ -80,7 +80,7 @@ defmodule BeamWeaver.Graph.Execution.TaskExecutor do
   # same `:node_timeout` error.
   defp task_deadline(%{timeout: timeout, spec: spec, started_at: started_at})
        when is_integer(timeout) and timeout > 0 do
-    started_at + timeout * final_attempt(spec) + retry_delay_budget(spec) + 50
+    started_at + timeout * spec.retry_policy.max_attempts + retry_delay_budget(spec.retry_policy) + 50
   end
 
   defp task_deadline(_plan), do: :infinity
@@ -139,32 +139,12 @@ defmodule BeamWeaver.Graph.Execution.TaskExecutor do
       end
 
     case result do
-      {:ok, {:cached, %NodeOutput{projected: %Command{} = command} = output}} ->
-        finish_command_task(task_run, cache_key, command, output, [
-          started,
-          Stream.task_event(:cache_hit, spec.name, command, run.step, prepared.id, prepared.path)
-        ])
-
-      {:ok, {:cached, %Command{} = command}} ->
-        finish_command_task(task_run, cache_key, command, command, [
-          started,
-          Stream.task_event(:cache_hit, spec.name, command, run.step, prepared.id, prepared.path)
-        ])
-
       {:ok, {:cached, value}} ->
-        finish_successful_task(task_run, cache_key, value, [
-          started,
-          Stream.task_event(:cache_hit, spec.name, value, run.step, prepared.id, prepared.path)
-        ])
-
-      {:ok, %NodeOutput{projected: %Command{} = command} = output} ->
-        finish_command_task(task_run, cache_key, command, output, [started])
-
-      {:ok, %Command{} = command} ->
-        finish_command_task(task_run, cache_key, command, command, [started])
+        hit = Stream.task_event(:cache_hit, spec.name, command_of(value) || value, run.step, prepared.id, prepared.path)
+        finish_task(task_run, cache_key, value, [started, hit])
 
       {:ok, value} ->
-        finish_successful_task(task_run, cache_key, value, [started])
+        finish_task(task_run, cache_key, value, [started])
 
       {:error, %Error{} = error} ->
         emit_error_telemetry(error, task_run)
@@ -194,34 +174,23 @@ defmodule BeamWeaver.Graph.Execution.TaskExecutor do
          )}
 
       {:parent_command, command} ->
-        parent_command_event =
-          Stream.task_event(
-            :parent_command,
-            spec.name,
-            command,
-            run.step,
-            prepared.id,
-            prepared.path
-          )
-
-        {:ok,
-         TaskResult.parent_command(
-           prepared.id,
-           spec.name,
-           prepared.path,
-           run.step,
-           command,
-           [started, parent_command_event]
-         )}
+        parent_command_result(task_run, command, [started])
     end
   end
 
-  defp finish_command_task(%TaskRun{} = task_run, cache_key, %Command{} = command, value, events) do
-    run = task_run.run
-    spec = task_run.spec
-    prepared = task_run.prepared
+  defp finish_task(task_run, cache_key, value, events) do
+    case command_of(value) do
+      nil -> finish_successful_task(task_run, cache_key, value, events)
+      command -> finish_command_task(task_run, cache_key, command, value, events)
+    end
+  end
 
-    case CommandRouter.scope(command, run) do
+  defp command_of(%NodeOutput{projected: %Command{} = command}), do: command
+  defp command_of(%Command{} = command), do: command
+  defp command_of(_value), do: nil
+
+  defp finish_command_task(%TaskRun{} = task_run, cache_key, %Command{} = command, value, events) do
+    case CommandRouter.scope(command, task_run.run) do
       {:current, command} ->
         value =
           case value do
@@ -232,26 +201,13 @@ defmodule BeamWeaver.Graph.Execution.TaskExecutor do
         finish_successful_task(task_run, cache_key, value, events)
 
       {:parent, command} ->
-        parent_command_event =
-          Stream.task_event(
-            :parent_command,
-            spec.name,
-            command,
-            run.step,
-            prepared.id,
-            prepared.path
-          )
-
-        {:ok,
-         TaskResult.parent_command(
-           prepared.id,
-           spec.name,
-           prepared.path,
-           run.step,
-           command,
-           events ++ [parent_command_event]
-         )}
+        parent_command_result(task_run, command, events)
     end
+  end
+
+  defp parent_command_result(%TaskRun{run: run, spec: spec, prepared: prepared}, command, events) do
+    event = Stream.task_event(:parent_command, spec.name, command, run.step, prepared.id, prepared.path)
+    {:ok, TaskResult.parent_command(prepared.id, spec.name, prepared.path, run.step, command, events ++ [event])}
   end
 
   defp runtime_attempt(runtime, attempt, first_attempt_time) do
@@ -262,10 +218,6 @@ defmodule BeamWeaver.Graph.Execution.TaskExecutor do
       |> Map.put(:node_first_attempt_time, first_attempt_time)
 
     %{runtime | execution: execution}
-  end
-
-  defp invoke_attempt(%TaskRun{timeout: :infinity} = task_run, runtime) do
-    NodeInvoker.invoke(task_run.spec, task_run.state, runtime, task_run.run.compiled.graph)
   end
 
   defp invoke_attempt(%TaskRun{timeout: timeout} = task_run, runtime)
@@ -326,23 +278,8 @@ defmodule BeamWeaver.Graph.Execution.TaskExecutor do
     })
   end
 
-  defp run_error_handler_task(
-         %TaskRun{spec: %{error_handler: handler}, error: %Error{} = error} = task_run,
-         first_attempt_time
-       )
-       when not is_nil(handler) do
-    attempt = final_attempt(task_run.spec)
-    runtime = runtime_attempt(task_run.runtime, attempt, first_attempt_time)
-
-    normalize_error_handler_result(
-      call_error_handler(handler, error, task_run.state, runtime),
-      error,
-      task_run.spec.name
-    )
-  end
-
-  defp run_error_handler_task(%TaskRun{error: %Error{} = error}, _first_attempt_time),
-    do: {:error, error}
+  defp run_error_handler_task(%TaskRun{error: %Error{} = error} = task_run, first_attempt_time),
+    do: maybe_handle_node_error({:error, error}, task_run, first_attempt_time)
 
   defp run_error_handler_task(%TaskRun{} = task_run, _first_attempt_time) do
     {:error,
@@ -357,8 +294,7 @@ defmodule BeamWeaver.Graph.Execution.TaskExecutor do
          first_attempt_time
        )
        when not is_nil(handler) do
-    attempt = final_attempt(task_run.spec)
-    runtime = runtime_attempt(task_run.runtime, attempt, first_attempt_time)
+    runtime = runtime_attempt(task_run.runtime, task_run.spec.retry_policy.max_attempts, first_attempt_time)
 
     normalize_error_handler_result(
       call_error_handler(handler, error, task_run.state, runtime),
@@ -395,50 +331,35 @@ defmodule BeamWeaver.Graph.Execution.TaskExecutor do
     put_in(handler_error.details[:handled_error], original_error)
   end
 
-  defp final_attempt(%{retry_policy: %BeamWeaver.RetryPolicy{max_attempts: attempts}}),
-    do: attempts
-
-  defp final_attempt(%{retry: retries}) when is_integer(retries), do: retries + 1
-  defp final_attempt(_spec), do: 1
-
-  defp retry_delay_budget(%{retry_policy: %BeamWeaver.RetryPolicy{} = policy}) do
+  defp retry_delay_budget(%RetryPolicy{} = policy) do
     1..max(policy.max_attempts - 1, 0)//1
-    |> Enum.map(&BeamWeaver.RetryPolicy.delay(policy, &1))
+    |> Enum.map(&RetryPolicy.delay(policy, &1))
     |> Enum.sum()
   end
 
-  defp retry_delay_budget(_spec), do: 0
+  defp call_error_handler(handler, error, state, runtime) do
+    cond do
+      is_function(handler, 3) ->
+        {:ok, handler.(error, state, runtime)}
 
-  defp call_error_handler(handler, error, state, runtime) when is_function(handler, 3) do
-    {:ok, handler.(error, state, runtime)}
+      is_function(handler, 2) ->
+        {:ok, handler.(error, %{state: state, runtime: runtime})}
+
+      is_function(handler, 1) ->
+        {:ok, handler.(error)}
+
+      true ->
+        {:error,
+         Error.new(:node_error_handler_invalid, "node error handler must be a function", %{
+           handler: inspect(handler)
+         })}
+    end
   rescue
-    exception -> error_handler_exception(exception)
-  end
-
-  defp call_error_handler(handler, error, state, runtime) when is_function(handler, 2) do
-    {:ok, handler.(error, %{state: state, runtime: runtime})}
-  rescue
-    exception -> error_handler_exception(exception)
-  end
-
-  defp call_error_handler(handler, error, _state, _runtime) when is_function(handler, 1) do
-    {:ok, handler.(error)}
-  rescue
-    exception -> error_handler_exception(exception)
-  end
-
-  defp call_error_handler(handler, _error, _state, _runtime) do
-    {:error,
-     Error.new(:node_error_handler_invalid, "node error handler must be a function", %{
-       handler: inspect(handler)
-     })}
-  end
-
-  defp error_handler_exception(exception) do
-    {:error,
-     Error.new(:node_error_handler_failed, Exception.message(exception), %{
-       exception: inspect(exception.__struct__)
-     })}
+    exception ->
+      {:error,
+       Error.new(:node_error_handler_failed, Exception.message(exception), %{
+         exception: inspect(exception.__struct__)
+       })}
   end
 
   defp finish_successful_task(%TaskRun{} = task_run, cache_key, value, started_events) do
@@ -459,9 +380,7 @@ defmodule BeamWeaver.Graph.Execution.TaskExecutor do
       |> CommandRouter.normalize_node_result()
       |> capture_node_output(spec.name, raw_output)
 
-    updates = Map.get(normalized, :updates, update_list(normalized.update))
-
-    case managed_write_error(updates, run.compiled.graph.managed) do
+    case managed_write_error(normalized.updates, run.compiled.graph.managed) do
       nil ->
         case Cache.put(run.compiled.cache, cache_key, value) do
           :ok ->
@@ -517,23 +436,13 @@ defmodule BeamWeaver.Graph.Execution.TaskExecutor do
     end
   end
 
-  defp update_list(update) when update == %{}, do: []
-  defp update_list(update) when is_map(update), do: [update]
-  defp update_list(_update), do: []
-
   defp unwrap_node_output(%NodeOutput{projected: projected, raw: raw}), do: {projected, raw}
   defp unwrap_node_output(value), do: {value, :__beam_weaver_no_raw_output__}
 
   defp capture_node_output(normalized, _node, :__beam_weaver_no_raw_output__), do: normalized
 
   defp capture_node_output(normalized, node, raw_output) do
-    updates = Map.get(normalized, :updates, update_list(normalized.update))
-
-    Map.put(
-      normalized,
-      :updates,
-      updates ++ [%{__node_outputs__: %{node => routable_output(raw_output)}}]
-    )
+    %{normalized | updates: normalized.updates ++ [%{__node_outputs__: %{node => routable_output(raw_output)}}]}
   end
 
   defp routable_output(%Command{} = command), do: CommandRouter.command_update(command)

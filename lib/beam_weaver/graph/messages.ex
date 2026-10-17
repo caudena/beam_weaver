@@ -149,13 +149,10 @@ defmodule BeamWeaver.Graph.Messages do
   end
 
   defp merge_messages(left, right) do
-    {merged, by_id, removals} =
-      Enum.reduce(Enum.with_index(left), {left, %{}, MapSet.new()}, fn {message, index}, {messages, ids, removals} ->
-        {messages, Map.put(ids, message.id, index), removals}
-      end)
+    by_id = left |> Enum.with_index() |> Map.new(fn {message, index} -> {message.id, index} end)
 
     {merged, _by_id, removals} =
-      Enum.reduce(right, {merged, by_id, removals}, fn
+      Enum.reduce(right, {left, by_id, MapSet.new()}, fn
         %Remove{id: id}, {messages, by_id, removals} ->
           if Map.has_key?(by_id, id) do
             {messages, by_id, MapSet.put(removals, id)}
@@ -236,8 +233,11 @@ defmodule BeamWeaver.Graph.Messages do
   defp format_content_block(%{"type" => "text", "text" => _text} = block), do: block
 
   defp format_content_block(%{type: :text, text: text} = block) do
-    %{"type" => "text", "text" => text}
-    |> put_if_present("cache_control", Map.get(block, :cache_control))
+    BeamWeaver.MapShape.put_present(
+      %{"type" => "text", "text" => text},
+      "cache_control",
+      Map.get(block, :cache_control)
+    )
   end
 
   defp format_content_block(%{
@@ -257,7 +257,4 @@ defmodule BeamWeaver.Graph.Messages do
   end
 
   defp format_content_block(block), do: block
-
-  defp put_if_present(map, _key, nil), do: map
-  defp put_if_present(map, key, value), do: Map.put(map, key, value)
 end

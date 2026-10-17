@@ -131,38 +131,16 @@ defmodule BeamWeaver.Transport.URLPolicy do
 
   @doc false
   def resolve_target(url, policy) when is_binary(url) do
-    with {:ok, %{targets: [target | _targets]}} <- resolve_targets(url, policy) do
-      {:ok, target}
-    end
-  end
-
-  @doc false
-  @spec resolve_targets(String.t(), keyword() | t()) ::
-          {:ok, %{targets: [map()], address_set: [tuple()]}} | {:error, Error.t()}
-  def resolve_targets(url, policy) when is_binary(url) do
     policy = new(policy)
 
     with {:ok, canonical_url} <- validate(url, %{policy | resolve?: false}),
-         uri <- URI.parse(canonical_url),
-         host <- normalize_host(uri.host),
-         port <- uri.port || default_port(uri.scheme),
+         uri = URI.parse(canonical_url),
+         host = normalize_host(uri.host),
+         port = uri.port || default_port(uri.scheme),
          {:ok, [_address | _rest] = addresses} <- target_addresses(host, port, policy),
-         addresses <- addresses |> Enum.uniq() |> Enum.sort(),
+         [address | _rest] = addresses = addresses |> Enum.uniq() |> Enum.sort(),
          nil <- Enum.find(addresses, &blocked_ip?(&1, policy)) do
-      {:ok,
-       %{
-         address_set: addresses,
-         targets:
-           Enum.map(addresses, fn address ->
-             %{
-               url: canonical_url,
-               host: host,
-               port: port,
-               address: address,
-               address_set: addresses
-             }
-           end)
-       }}
+      {:ok, %{url: canonical_url, host: host, port: port, address: address, address_set: addresses}}
     else
       {:error, %Error{} = error} ->
         {:error, error}
@@ -358,16 +336,14 @@ defmodule BeamWeaver.Transport.URLPolicy do
   defp normalize_resolver_result(other), do: {:error, {:invalid_resolver_result, other}}
 
   defp normalize_addresses(addresses) do
-    addresses
-    |> Enum.reduce_while({:ok, []}, fn address, {:ok, acc} ->
-      case normalize_address(address) do
-        {:ok, normalized} -> {:cont, {:ok, [normalized | acc]}}
-        {:error, reason} -> {:halt, {:error, reason}}
-      end
-    end)
-    |> case do
-      {:ok, normalized} -> {:ok, Enum.reverse(normalized)}
-      {:error, reason} -> {:error, reason}
+    with {:ok, normalized} <-
+           Enum.reduce_while(addresses, {:ok, []}, fn address, {:ok, acc} ->
+             case normalize_address(address) do
+               {:ok, normalized} -> {:cont, {:ok, [normalized | acc]}}
+               {:error, reason} -> {:halt, {:error, reason}}
+             end
+           end) do
+      {:ok, Enum.reverse(normalized)}
     end
   end
 
@@ -378,12 +354,7 @@ defmodule BeamWeaver.Transport.URLPolicy do
     end
   end
 
-  defp normalize_address(address) when is_binary(address) do
-    case :inet.parse_address(String.to_charlist(address)) do
-      {:ok, parsed} -> {:ok, parsed}
-      {:error, reason} -> {:error, reason}
-    end
-  end
+  defp normalize_address(address) when is_binary(address), do: :inet.parse_address(String.to_charlist(address))
 
   defp normalize_address(address) when is_list(address) do
     address |> List.to_string() |> normalize_address()

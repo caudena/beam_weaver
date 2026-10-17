@@ -2,12 +2,13 @@ defmodule BeamWeaver.OpenAI.ChatCompletions.Messages.Request do
   @moduledoc false
 
   import BeamWeaver.MapShape, only: [put_optional: 3]
+  import BeamWeaver.OpenAI.MessageParts, only: [block_option: 2, provider_role: 1, put_prompt_cache_breakpoint: 2]
 
   alias BeamWeaver.Core.ContentBlock
   alias BeamWeaver.Core.Message
   alias BeamWeaver.Core.Error
   alias BeamWeaver.OpenAI.MessageParts
-  alias BeamWeaver.OpenAI.Messages.Shared
+  alias BeamWeaver.OpenAI.Messages.Request, as: Responses
   alias BeamWeaver.Result
   alias BeamWeaver.Tool.Renderer
 
@@ -27,14 +28,11 @@ defmodule BeamWeaver.OpenAI.ChatCompletions.Messages.Request do
       "type" => "json_schema",
       "json_schema" => %{
         "name" => name,
-        "schema" => response_schema(schema, strict),
+        "schema" => Responses.response_schema(schema, strict),
         "strict" => strict
       }
     }
   end
-
-  defp response_schema(schema, true), do: Renderer.strict_json_schema(schema, optional: :nullable)
-  defp response_schema(schema, _strict), do: MessageParts.stringify_keys(schema)
 
   def tools_to_openai(tools) when is_list(tools), do: Enum.map(tools, &tool_to_openai/1)
 
@@ -163,22 +161,12 @@ defmodule BeamWeaver.OpenAI.ChatCompletions.Messages.Request do
 
   defp reply_block?(block) do
     type = block_type(block)
-    ContentBlock.reasoning?(block) or type in @reply_block_types or Shared.output_block_type?(type)
+    ContentBlock.reasoning?(block) or type in @reply_block_types or MessageParts.output_block_type?(type)
   end
 
   defp block_type(%ContentBlock.Unknown{provider_type: type}), do: to_string(type)
   defp block_type(%{type: type}) when is_atom(type) or is_binary(type), do: to_string(type)
   defp block_type(_block), do: nil
-
-  defp provider_role(%Message{} = message) do
-    message.metadata
-    |> Map.get(:openai_role)
-    |> Kernel.||(Atom.to_string(message.role))
-    |> provider_role_value()
-  end
-
-  defp provider_role_value(role) when is_atom(role), do: Atom.to_string(role)
-  defp provider_role_value(role), do: to_string(role)
 
   defp content_to_openai(content) when is_binary(content), do: {:ok, content}
 
@@ -198,101 +186,23 @@ defmodule BeamWeaver.OpenAI.ChatCompletions.Messages.Request do
   defp content_part(text) when is_binary(text),
     do: %{"type" => "text", "text" => text}
 
-  defp content_part(%{type: :text, text: text} = block) when is_binary(text) do
+  defp content_part(%{type: type, text: text} = block) when type in [:text, :plain_text] and is_binary(text) do
     %{"type" => "text", "text" => text}
     |> put_prompt_cache_breakpoint(block)
   end
 
-  defp content_part(%{type: :plain_text, text: text} = block) when is_binary(text) do
-    %{"type" => "text", "text" => text}
-    |> put_prompt_cache_breakpoint(block)
-  end
-
-  defp content_part(%{type: :image, url: url} = block) when is_binary(url) do
-    image_url =
-      %{"url" => url}
-      |> put_optional("detail", image_detail(block))
-
-    %{"type" => "image_url", "image_url" => image_url}
-    |> put_prompt_cache_breakpoint(block)
-  end
+  defp content_part(%{type: :image, url: url} = block) when is_binary(url), do: image_part(url, block)
 
   defp content_part(%{type: :image_url, image_url: image_url} = block) do
     %{"type" => "image_url", "image_url" => MessageParts.stringify_value(image_url)}
     |> put_prompt_cache_breakpoint(block)
   end
 
-  defp content_part(%{type: :image, base64: data} = block) when is_binary(data) do
-    image_url =
-      %{"url" => MessageParts.data_url(Map.get(block, :mime_type) || "image/png", data)}
-      |> put_optional("detail", image_detail(block))
+  defp content_part(%{type: type, base64: data} = block) when type in [:image, :audio, :file] and is_binary(data),
+    do: inline_part(type, data, block)
 
-    %{
-      "type" => "image_url",
-      "image_url" => image_url
-    }
-    |> put_prompt_cache_breakpoint(block)
-  end
-
-  defp content_part(%{type: :image, data: data} = block) when is_binary(data) do
-    image_url =
-      %{"url" => MessageParts.data_url(Map.get(block, :mime_type) || "image/png", data)}
-      |> put_optional("detail", image_detail(block))
-
-    %{
-      "type" => "image_url",
-      "image_url" => image_url
-    }
-    |> put_prompt_cache_breakpoint(block)
-  end
-
-  defp content_part(%{type: :audio, base64: data} = block) when is_binary(data) do
-    %{
-      "type" => "input_audio",
-      "input_audio" => %{
-        "data" => data,
-        "format" => MessageParts.audio_format(Map.get(block, :mime_type) || Map.get(block, :format))
-      }
-    }
-    |> put_prompt_cache_breakpoint(block)
-  end
-
-  defp content_part(%{type: :audio, data: data} = block) when is_binary(data) do
-    %{
-      "type" => "input_audio",
-      "input_audio" => %{
-        "data" => data,
-        "format" => MessageParts.audio_format(Map.get(block, :mime_type) || Map.get(block, :format))
-      }
-    }
-    |> put_prompt_cache_breakpoint(block)
-  end
-
-  defp content_part(%{type: :file, base64: data} = block) when is_binary(data) do
-    %{
-      "type" => "file",
-      "file" =>
-        %{
-          "file_data" => MessageParts.data_url(Map.get(block, :mime_type) || "application/pdf", data),
-          "filename" => Map.get(block, :filename)
-        }
-        |> MessageParts.reject_nil_values()
-    }
-    |> put_prompt_cache_breakpoint(block)
-  end
-
-  defp content_part(%{type: :file, data: data} = block) when is_binary(data) do
-    %{
-      "type" => "file",
-      "file" =>
-        %{
-          "file_data" => MessageParts.data_url(Map.get(block, :mime_type) || "application/pdf", data),
-          "filename" => Map.get(block, :filename)
-        }
-        |> MessageParts.reject_nil_values()
-    }
-    |> put_prompt_cache_breakpoint(block)
-  end
+  defp content_part(%{type: type, data: data} = block) when type in [:image, :audio, :file] and is_binary(data),
+    do: inline_part(type, data, block)
 
   defp content_part(%{type: :file, url: url} = block) when is_binary(url) do
     %{"type" => "file", "file" => %{"file_url" => url}}
@@ -330,24 +240,34 @@ defmodule BeamWeaver.OpenAI.ChatCompletions.Messages.Request do
     MessageParts.stringify_keys(block)
   end
 
-  defp put_prompt_cache_breakpoint(part, block) do
-    case block_option(block, :prompt_cache_breakpoint) do
-      breakpoint when is_map(breakpoint) ->
-        Map.put(part, "prompt_cache_breakpoint", MessageParts.stringify_keys(breakpoint))
+  defp inline_part(:image, data, block),
+    do: image_part(MessageParts.data_url(Map.get(block, :mime_type) || "image/png", data), block)
 
-      _missing ->
-        part
-    end
+  defp inline_part(:audio, data, block) do
+    %{
+      "type" => "input_audio",
+      "input_audio" => %{
+        "data" => data,
+        "format" => MessageParts.audio_format(Map.get(block, :mime_type) || Map.get(block, :format))
+      }
+    }
+    |> put_prompt_cache_breakpoint(block)
   end
 
-  defp block_option(block, key) do
-    metadata = Map.get(block, :metadata, %{}) || %{}
+  defp inline_part(:file, data, block) do
+    file =
+      MessageParts.reject_nil_values(%{
+        "file_data" => MessageParts.data_url(Map.get(block, :mime_type) || "application/pdf", data),
+        "filename" => Map.get(block, :filename)
+      })
 
-    Map.get(block, key) || Map.get(metadata, key) || Map.get(metadata, Atom.to_string(key))
+    put_prompt_cache_breakpoint(%{"type" => "file", "file" => file}, block)
   end
 
-  defp image_detail(block),
-    do: block_option(block, :detail) |> MessageParts.stringify_value()
+  defp image_part(url, block) do
+    image_url = put_optional(%{"url" => url}, "detail", MessageParts.stringify_value(block_option(block, :detail)))
+    put_prompt_cache_breakpoint(%{"type" => "image_url", "image_url" => image_url}, block)
+  end
 
   defp assistant_tool_calls(%Message{} = message) do
     calls =

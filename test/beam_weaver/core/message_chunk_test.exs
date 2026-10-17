@@ -363,8 +363,6 @@ defmodule BeamWeaver.Core.MessageChunkTest do
   end
 
   test "tool call opener may stream nil args before later JSON chunks" do
-    # Upstream reference:
-    # - provider streams that open a tool block without args must still assemble.
     assert %Message{
              tool_calls: [
                %{id: "call_1", name: "search", args: %{"q" => "weather"}}
@@ -387,8 +385,6 @@ defmodule BeamWeaver.Core.MessageChunkTest do
   end
 
   test "finished invalid tool call wins over stale malformed chunks" do
-    # Upstream reference:
-    # - invalid_tool_call finish should not be revived as a valid stale chunk.
     message =
       [
         Messages.ai_chunk("",
@@ -415,8 +411,6 @@ defmodule BeamWeaver.Core.MessageChunkTest do
   end
 
   test "message chunks keep protocol content block shapes in final output" do
-    # Upstream reference:
-    # - output content uses protocol tool_call/server-tool/image shapes, not legacy tool_use.
     message =
       [
         Messages.ai_chunk([%{type: :text, text: "Let me search."}]),

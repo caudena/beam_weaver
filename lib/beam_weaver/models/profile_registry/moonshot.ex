@@ -1,7 +1,6 @@
 defmodule BeamWeaver.Models.ProfileRegistry.Moonshot do
   @moduledoc false
 
-  alias BeamWeaver.Core.Error
   alias BeamWeaver.Models.Profile
   alias BeamWeaver.Models.ProfileRegistry
   alias BeamWeaver.Models.ProfileRegistry.Params
@@ -205,24 +204,9 @@ defmodule BeamWeaver.Models.ProfileRegistry.Moonshot do
   def profiles, do: Map.values(@profiles)
 
   def resolve(model) do
-    if Map.has_key?(@moonshot_deprecated_models, model) do
-      deprecated_model_error(model)
-    else
-      ProfileRegistry.fetch_or_fallback(@profiles, :moonshot, model)
+    case @moonshot_deprecated_models[model] do
+      nil -> ProfileRegistry.fetch_or_fallback(@profiles, :moonshot, model)
+      metadata -> ProfileRegistry.deprecated_error(:moonshot, model, "Moonshot/Kimi model is discontinued", metadata)
     end
-  end
-
-  defp deprecated_model_error(model) do
-    metadata = Map.fetch!(@moonshot_deprecated_models, model)
-    replacement = metadata.replacement
-
-    {:error,
-     Error.new(:deprecated_model, "Moonshot/Kimi model is discontinued", %{
-       provider: :moonshot,
-       model: model,
-       replacement: replacement,
-       expected: "moonshot:#{replacement}",
-       discontinued_at: metadata.discontinued_at
-     })}
   end
 end

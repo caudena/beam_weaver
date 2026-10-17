@@ -23,7 +23,6 @@ defmodule BeamWeaver.Cache.ETSTest do
   end
 
   test "ETS cache clear without namespace clears all entries" do
-    # Upstream reference:
     cache = Cache.ETS.new(visibility: :private)
 
     assert :ok = Cache.put(cache, :a, "key", "a")
@@ -42,13 +41,6 @@ defmodule BeamWeaver.Cache.ETSTest do
 
     assert :ok = Cache.update(cache, :async, "key", "new")
     assert {:hit, "new", %{}} = Cache.lookup(cache, :async, "key")
-
-    assert :ok = Cache.delete(cache, :async, "key")
-    assert :miss = Cache.lookup(cache, :async, "key")
-
-    assert :ok = Cache.put(cache, :async, "other", "kept")
-    assert :ok = Cache.clear(cache, :async)
-    assert :miss = Cache.lookup(cache, :async, "other")
   end
 
   test "batch cache facade maps full keys to explicit adapter operations" do

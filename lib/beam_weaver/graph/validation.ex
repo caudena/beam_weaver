@@ -9,7 +9,7 @@ defmodule BeamWeaver.Graph.Validation do
   alias BeamWeaver.Graph.WaitingEdgeSpec
 
   @spec validate(StateGraph.t(), keyword()) :: :ok | {:error, BeamWeaver.Core.Error.t()}
-  def validate(%StateGraph{} = graph, opts \\ []) do
+  def validate(%StateGraph{} = graph, opts) do
     case report(graph, opts) do
       %Report{diagnostics: []} ->
         :ok
@@ -20,8 +20,8 @@ defmodule BeamWeaver.Graph.Validation do
   end
 
   @spec report(StateGraph.t(), keyword()) :: BeamWeaver.Graph.Validation.Report.t()
-  def report(%StateGraph{} = graph, opts \\ []) do
-    validate_static? = normalize_validate_static(opts)
+  def report(%StateGraph{} = graph, opts) do
+    validate_static? = Keyword.get(opts, :validate_static, false)
 
     []
     |> maybe_add_diagnostic(
@@ -98,12 +98,8 @@ defmodule BeamWeaver.Graph.Validation do
     |> Report.new()
   end
 
-  defp normalize_validate_static(value) when is_boolean(value), do: value
-  defp normalize_validate_static(opts), do: Keyword.get(opts, :validate_static, false)
-
-  defp maybe_add_diagnostic(diagnostics, nil, _message, _details), do: diagnostics
-  defp maybe_add_diagnostic(diagnostics, false, _message, _details), do: diagnostics
-  defp maybe_add_diagnostic(diagnostics, [], _message, _details), do: diagnostics
+  defp maybe_add_diagnostic(diagnostics, value, _message, _details) when value in [nil, false, []],
+    do: diagnostics
 
   defp maybe_add_diagnostic(diagnostics, true, message, details) when is_map(details) do
     add_diagnostic(diagnostics, message, details)
@@ -112,10 +108,6 @@ defmodule BeamWeaver.Graph.Validation do
   defp maybe_add_diagnostic(diagnostics, value, message, details_fun)
        when is_function(details_fun, 1) do
     add_diagnostic(diagnostics, message, details_fun.(value))
-  end
-
-  defp maybe_add_diagnostic(diagnostics, value, message, details) when is_map(details) do
-    add_diagnostic(diagnostics, message, Map.put(details, :value, value))
   end
 
   defp add_diagnostic(diagnostics, message, details) do
@@ -131,7 +123,6 @@ defmodule BeamWeaver.Graph.Validation do
         Enum.flat_map(graph.edges, fn {_node, targets} -> targets end) ++
         Map.keys(graph.conditional_edges) ++
         Enum.flat_map(graph.conditional_edges, fn {_node, spec} -> Map.values(spec.path_map) end) ++
-        Enum.flat_map(graph.conditional_edges, fn {_node, spec} -> List.wrap(spec.then) end) ++
         Map.keys(graph.guarded_edges) ++
         Enum.flat_map(graph.guarded_edges, fn {_node, specs} ->
           Enum.flat_map(specs, fn spec -> [spec.source, spec.target] end)
@@ -141,12 +132,9 @@ defmodule BeamWeaver.Graph.Validation do
         Enum.flat_map(graph.channel_subscriptions, fn {_channel, nodes} -> nodes end) ++
         MapSet.to_list(graph.finish_points)
 
-    missing =
-      referenced
-      |> Enum.reject(&(&1 in ["__start__", "__end__"] or MapSet.member?(known, &1)))
-      |> Enum.uniq()
-
-    if missing == [], do: nil, else: missing
+    referenced
+    |> Enum.reject(&(&1 in ["__start__", "__end__"] or MapSet.member?(known, &1)))
+    |> Enum.uniq()
   end
 
   defp duplicate_finish_without_node?(graph) do
@@ -157,16 +145,10 @@ defmodule BeamWeaver.Graph.Validation do
   # A node whose options were invalid is kept as an `:invalid` spec holding the
   # error, so the graph reports it here instead of running without them.
   defp invalid_nodes(graph) do
-    invalid =
-      graph.nodes
-      |> Enum.filter(fn {_name, spec} -> invalid_spec?(spec) or not valid_node_callable?(spec.fun) end)
-      |> Enum.map(fn {name, spec} -> invalid_node(name, spec) end)
-
-    if invalid == [], do: nil, else: invalid
+    graph.nodes
+    |> Enum.filter(fn {_name, spec} -> spec.kind == :invalid or not valid_node_callable?(spec.fun) end)
+    |> Enum.map(fn {name, spec} -> invalid_node(name, spec) end)
   end
-
-  defp invalid_spec?(%NodeSpec{kind: :invalid}), do: true
-  defp invalid_spec?(_spec), do: false
 
   defp invalid_node(name, %NodeSpec{kind: :invalid, metadata: %{error: %Error{message: message}}} = spec),
     do: %{node: name, callable: inspect_callable(spec.fun), error: message}
@@ -175,8 +157,6 @@ defmodule BeamWeaver.Graph.Validation do
 
   defp valid_node_callable?(fun) when is_function(fun, 1), do: true
   defp valid_node_callable?(fun) when is_function(fun, 2), do: true
-  defp valid_node_callable?(%NodeSpec{kind: kind}) when kind != :invalid, do: true
-  defp valid_node_callable?(%NodeSpec{}), do: false
 
   defp valid_node_callable?(module) when is_atom(module) do
     function_exported?(module, :invoke, 2)
@@ -192,51 +172,35 @@ defmodule BeamWeaver.Graph.Validation do
   defp valid_node_callable?(_fun), do: false
 
   defp invalid_routers(graph) do
-    invalid =
-      graph.conditional_edges
-      |> Enum.reject(fn {_source, spec} -> valid_router?(spec.router) end)
-      |> Enum.map(fn {source, spec} -> %{node: source, router: inspect_callable(spec.router)} end)
-
-    if invalid == [], do: nil, else: invalid
+    graph.conditional_edges
+    |> Enum.reject(fn {_source, spec} -> is_function(spec.router, 1) or is_function(spec.router, 2) end)
+    |> Enum.map(fn {source, spec} -> %{node: source, router: inspect_callable(spec.router)} end)
   end
 
-  defp valid_router?(router) when is_function(router, 1), do: true
-  defp valid_router?(router) when is_function(router, 2), do: true
-  defp valid_router?(_router), do: false
-
   defp invalid_reducers(graph) do
-    invalid =
-      graph.reducers
-      |> Enum.reject(fn {_key, reducer} -> is_function(reducer, 2) end)
-      |> Enum.map(fn {key, reducer} -> %{key: key, reducer: inspect_callable(reducer)} end)
-
-    if invalid == [], do: nil, else: invalid
+    graph.reducers
+    |> Enum.reject(fn {_key, reducer} -> is_function(reducer, 2) end)
+    |> Enum.map(fn {key, reducer} -> %{key: key, reducer: inspect_callable(reducer)} end)
   end
 
   defp invalid_channels(graph) do
-    invalid =
-      graph.channels
-      |> Enum.reject(fn {_key, channel} -> valid_channel?(channel) end)
-      |> Enum.map(fn {key, channel} -> %{key: key, channel: inspect(channel)} end)
-
-    if invalid == [], do: nil, else: invalid
+    graph.channels
+    |> Enum.reject(fn {_key, channel} -> valid_channel?(channel) end)
+    |> Enum.map(fn {key, channel} -> %{key: key, channel: inspect(channel)} end)
   end
 
   defp invalid_waiting_edges(graph) do
     known = MapSet.new(Map.keys(graph.nodes))
 
-    invalid =
-      graph.waiting_edges
-      |> Enum.reject(fn %WaitingEdgeSpec{upstream: upstream, target: target} ->
-        upstream != [] and
-          Enum.all?(upstream, &MapSet.member?(known, &1)) and
-          MapSet.member?(known, target)
-      end)
-      |> Enum.map(fn %WaitingEdgeSpec{} = spec ->
-        %{upstream: spec.upstream, target: spec.target, channel: spec.channel}
-      end)
-
-    if invalid == [], do: nil, else: invalid
+    graph.waiting_edges
+    |> Enum.reject(fn %WaitingEdgeSpec{upstream: upstream, target: target} ->
+      upstream != [] and
+        Enum.all?(upstream, &MapSet.member?(known, &1)) and
+        MapSet.member?(known, target)
+    end)
+    |> Enum.map(fn %WaitingEdgeSpec{} = spec ->
+      %{upstream: spec.upstream, target: spec.target, channel: spec.channel}
+    end)
   end
 
   defp invalid_reserved_names(graph) do
@@ -258,26 +222,18 @@ defmodule BeamWeaver.Graph.Validation do
         channel in ["__tasks__", "__interrupt__", "__error__"] or
           String.starts_with?(channel, "__branch__:")
       end)
-      |> Enum.reject(&String.starts_with?(&1, "__barrier__:"))
       |> Enum.map(&%{kind: :channel, name: &1})
 
-    invalid = node_errors ++ channel_errors
-    if invalid == [], do: nil, else: invalid
+    node_errors ++ channel_errors
   end
 
   defp unreachable_nodes(graph) do
-    reachable =
-      graph.entry_points
-      |> traverse(graph)
-      |> MapSet.new()
+    reachable = graph.entry_points |> traverse(adjacency(graph), []) |> MapSet.new()
 
-    unreachable =
-      graph.nodes
-      |> Map.keys()
-      |> Enum.reject(&(MapSet.member?(graph.finish_points, &1) or MapSet.member?(reachable, &1)))
-      |> Enum.sort()
-
-    if unreachable == [], do: nil, else: unreachable
+    graph.nodes
+    |> Map.keys()
+    |> Enum.reject(&(MapSet.member?(graph.finish_points, &1) or MapSet.member?(reachable, &1)))
+    |> Enum.sort()
   end
 
   defp static_unreachable_nodes(_graph, false), do: nil
@@ -308,37 +264,25 @@ defmodule BeamWeaver.Graph.Validation do
       graph.finish_points
       |> MapSet.to_list()
       |> Kernel.++(nodes_routing_to_end(graph))
-      |> traverse(reverse)
+      |> traverse(reverse, [])
       |> MapSet.new()
 
-    dead =
-      graph.nodes
-      |> Map.keys()
-      |> Enum.reject(
-        &(MapSet.member?(can_finish, &1) or Map.has_key?(graph.conditional_edges, &1) or
-            Map.has_key?(graph.guarded_edges, &1))
-      )
-      |> Enum.sort()
-
-    if dead == [], do: nil, else: dead
+    graph.nodes
+    |> Map.keys()
+    |> Enum.reject(
+      &(MapSet.member?(can_finish, &1) or Map.has_key?(graph.conditional_edges, &1) or
+          Map.has_key?(graph.guarded_edges, &1))
+    )
+    |> Enum.sort()
   end
 
-  defp traverse(starts, graph_or_adjacency) do
-    adjacency =
-      if is_map(graph_or_adjacency) and Map.has_key?(graph_or_adjacency, :nodes),
-        do: adjacency(graph_or_adjacency),
-        else: graph_or_adjacency
+  defp traverse([], _adjacency, seen), do: Enum.reverse(seen)
 
-    do_traverse(List.wrap(starts), adjacency, [])
-  end
-
-  defp do_traverse([], _adjacency, seen), do: Enum.reverse(seen)
-
-  defp do_traverse([node | rest], adjacency, seen) do
+  defp traverse([node | rest], adjacency, seen) do
     if node in seen do
-      do_traverse(rest, adjacency, seen)
+      traverse(rest, adjacency, seen)
     else
-      do_traverse(Map.get(adjacency, node, []) ++ rest, adjacency, [node | seen])
+      traverse(Map.get(adjacency, node, []) ++ rest, adjacency, [node | seen])
     end
   end
 
@@ -349,7 +293,6 @@ defmodule BeamWeaver.Graph.Validation do
         targets =
           spec.path_map
           |> Map.values()
-          |> Kernel.++(List.wrap(spec.then))
           |> Enum.reject(&(is_nil(&1) or &1 == "__end__"))
 
         {source, targets}
@@ -422,12 +365,9 @@ defmodule BeamWeaver.Graph.Validation do
   end
 
   defp invalid_managed(graph) do
-    invalid =
-      graph.managed
-      |> Enum.reject(fn {_key, managed} -> valid_managed?(managed) end)
-      |> Enum.map(fn {key, managed} -> %{key: key, managed: inspect(managed)} end)
-
-    if invalid == [], do: nil, else: invalid
+    graph.managed
+    |> Enum.reject(fn {_key, managed} -> valid_managed?(managed) end)
+    |> Enum.map(fn {key, managed} -> %{key: key, managed: inspect(managed)} end)
   end
 
   defp valid_managed?(%{__struct__: module}) do

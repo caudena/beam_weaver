@@ -147,8 +147,7 @@ defmodule BeamWeaver.Models.Profile do
   def tokenizer_family(%__MODULE__{tokenizer: tokenizer}), do: tokenizer
   def tokenizer_family(_profile), do: nil
 
-  @doc false
-  def known_keys do
+  defp known_keys do
     %__MODULE__{}
     |> Map.from_struct()
     |> Map.keys()

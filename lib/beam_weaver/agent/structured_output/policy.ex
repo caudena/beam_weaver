@@ -85,7 +85,7 @@ defmodule BeamWeaver.Agent.StructuredOutput.Policy do
       not provider_structured_output?(model) ->
         {:fallback, :provider_not_supported}
 
-      tools_active?(tools) and not provider_structured_output_with_tools?(model) ->
+      tools_active?(tools) and not structured_output_with_tools?(model) ->
         {:fallback, :tools_not_supported}
 
       over_limit?(schema_bytes(spec), schema_byte_limit(model)) ->
@@ -116,11 +116,8 @@ defmodule BeamWeaver.Agent.StructuredOutput.Policy do
       profile_value(profile, :structured_output) == true
   end
 
-  @doc "True when the model, or its profile, accepts a response schema alongside function tools in one call."
   @spec structured_output_with_tools?(term()) :: boolean()
-  def structured_output_with_tools?(model), do: provider_structured_output_with_tools?(model)
-
-  defp provider_structured_output_with_tools?(model) do
+  def structured_output_with_tools?(model) do
     profile = profile(model)
 
     model_value(model, :supports_structured_output_with_tools) == true or

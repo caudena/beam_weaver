@@ -1,12 +1,14 @@
 defmodule BeamWeaver.OutputParser.JSON do
   @moduledoc false
 
+  import BeamWeaver.OutputParser.Parser, only: [parser_error: 3]
+
   alias BeamWeaver.Core.Error
 
   @max_partial_json_bytes 256 * 1024
 
   @spec parse(String.t(), keyword()) :: {:ok, term()} | {:error, Error.t()}
-  def parse(text, opts \\ []) when is_binary(text) do
+  def parse(text, opts) when is_binary(text) do
     text = String.trim(text)
 
     case decode_first_json_candidate(text) do
@@ -81,25 +83,14 @@ defmodule BeamWeaver.OutputParser.JSON do
   defp decode_partial_json_candidate(candidate) when byte_size(candidate) > @max_partial_json_bytes,
     do: nil
 
-  defp decode_partial_json_candidate(candidate) do
-    candidate
-    |> partial_json_candidates()
-    |> Enum.find_value(fn candidate ->
-      case BeamWeaver.JSON.decode(candidate) do
-        {:ok, data} -> {:ok, data}
-        {:error, _error} -> nil
-      end
-    end)
-  end
+  defp decode_partial_json_candidate(candidate), do: candidate |> partial_json_candidates() |> decode_any()
 
-  defp decode_first_json_candidate(text) do
-    json_candidates(text)
-    |> Enum.find_value(fn candidate ->
-      case BeamWeaver.JSON.decode(candidate) do
-        {:ok, data} -> {:ok, data}
-        {:error, _error} -> nil
-      end
-    end) || BeamWeaver.JSON.decode(text)
+  defp decode_first_json_candidate(text), do: decode_any(json_candidates(text)) || BeamWeaver.JSON.decode(text)
+
+  defp decode_any(candidates) do
+    Enum.find_value(candidates, fn candidate ->
+      with {:error, _error} <- BeamWeaver.JSON.decode(candidate), do: nil
+    end)
   end
 
   defp json_candidates(text) do
@@ -304,8 +295,4 @@ defmodule BeamWeaver.OutputParser.JSON do
   end
 
   defp preview(text), do: String.slice(text, 0, 200)
-
-  defp parser_error(parser, message, details) do
-    {:error, Error.new(:output_parser_error, message, Map.put(details, :parser, parser))}
-  end
 end

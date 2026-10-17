@@ -234,7 +234,7 @@ defmodule BeamWeaver.VectorStoreStandardTest do
     assert MapSet.new(Enum.map(results, & &1.id)) == MapSet.new(["doc_1", "doc_3"])
   end
 
-  test "MMR supports Python lambda_mult naming through native options" do
+  test "MMR supports lambda_mult naming through native options" do
     store = new_store()
 
     assert {:ok, _ids} =

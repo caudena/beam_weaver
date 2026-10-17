@@ -215,69 +215,45 @@ defmodule BeamWeaver.Sandbox.Interpreter.Session do
 
     task = Task.async(fn -> safe_adapter_call(fun) end)
 
-    case Task.yield(task, timeout) || Task.shutdown(task, :brutal_kill) do
-      {:ok, {:ok, result}} ->
-        Telemetry.emit(
-          [:beam_weaver, :sandbox, :interpreter, operation, :stop],
-          %{duration: System.monotonic_time() - start},
-          metadata
-        )
+    {event, details, result} =
+      case Task.yield(task, timeout) || Task.shutdown(task, :brutal_kill) do
+        {:ok, {:ok, result}} ->
+          {:stop, %{}, {:ok, result}}
 
-        {:ok, result}
+        {:ok, {:exception, exception}} ->
+          message = Exception.message(exception)
+          {:exception, %{error: message}, failed(operation, %{reason: message})}
 
-      {:ok, {:exception, exception}} ->
-        Telemetry.emit(
-          [:beam_weaver, :sandbox, :interpreter, operation, :exception],
-          %{duration: System.monotonic_time() - start},
-          Map.put(metadata, :error, Exception.message(exception))
-        )
+        {:ok, {:throw, kind, reason}} ->
+          details = %{kind: kind, reason: inspect(reason)}
+          {:exception, details, failed(operation, details)}
 
-        {:error,
-         Error.new(:interpreter_execution_failed, "interpreter operation failed", %{
-           operation: operation,
-           reason: Exception.message(exception)
-         })}
+        nil ->
+          error =
+            Error.new(:interpreter_timeout, "interpreter operation timed out", %{
+              operation: operation,
+              timeout_ms: timeout
+            })
 
-      {:ok, {:throw, kind, reason}} ->
-        Telemetry.emit(
-          [:beam_weaver, :sandbox, :interpreter, operation, :exception],
-          %{duration: System.monotonic_time() - start},
-          metadata |> Map.put(:kind, kind) |> Map.put(:reason, inspect(reason))
-        )
+          {:timeout, %{}, {:error, error}}
 
-        {:error,
-         Error.new(:interpreter_execution_failed, "interpreter operation failed", %{
-           operation: operation,
-           kind: kind,
-           reason: inspect(reason)
-         })}
+        {:exit, reason} ->
+          details = %{reason: inspect(reason)}
+          {:exception, details, failed(operation, details)}
+      end
 
-      nil ->
-        Telemetry.emit(
-          [:beam_weaver, :sandbox, :interpreter, operation, :timeout],
-          %{duration: System.monotonic_time() - start},
-          metadata
-        )
+    Telemetry.emit(
+      [:beam_weaver, :sandbox, :interpreter, operation, event],
+      %{duration: System.monotonic_time() - start},
+      Map.merge(metadata, details)
+    )
 
-        {:error,
-         Error.new(:interpreter_timeout, "interpreter operation timed out", %{
-           operation: operation,
-           timeout_ms: timeout
-         })}
+    result
+  end
 
-      {:exit, reason} ->
-        Telemetry.emit(
-          [:beam_weaver, :sandbox, :interpreter, operation, :exception],
-          %{duration: System.monotonic_time() - start},
-          Map.put(metadata, :reason, inspect(reason))
-        )
-
-        {:error,
-         Error.new(:interpreter_execution_failed, "interpreter operation failed", %{
-           operation: operation,
-           reason: inspect(reason)
-         })}
-    end
+  defp failed(operation, details) do
+    details = Map.put(details, :operation, operation)
+    {:error, Error.new(:interpreter_execution_failed, "interpreter operation failed", details)}
   end
 
   defp safe_adapter_call(fun) do

@@ -16,6 +16,7 @@ defmodule BeamWeaver.Tracing.Exporters.WeaveScope do
 
   @default_endpoint "http://localhost:4000"
   @default_error_body_limit 8_192
+  @internal_response_keys ~w(_beamweaver_response_headers _beamweaver_response_header_metadata _beamweaver_provider_headers)
 
   @impl true
   def export(event, %Run{} = run, opts) do
@@ -39,22 +40,22 @@ defmodule BeamWeaver.Tracing.Exporters.WeaveScope do
       events =
         Enum.map(items, fn {event, %Run{} = run, item_opts} -> to_event(event, run, Keyword.merge(opts, item_opts)) end)
 
-      payload = %{"events" => events}
-
       case transport.post(
              url,
-             json: payload,
+             json: %{"events" => events},
              headers: headers(api_key),
-             finch_private: finch_private(:batch, url, payload),
+             finch_private: %{
+               beam_weaver_exporter: :weave_scope,
+               operation: :batch,
+               url: url,
+               event_count: length(events)
+             },
              retry: false
            ) do
         {:ok, %{status: status, body: body}} when status in 200..299 ->
-          rejected = rejected_results(body)
-
-          if rejected == [] do
-            :ok
-          else
-            {:rejected, rejected}
+          case rejected_results(body) do
+            [] -> :ok
+            rejected -> {:rejected, rejected}
           end
 
         {:ok, response} ->
@@ -85,6 +86,8 @@ defmodule BeamWeaver.Tracing.Exporters.WeaveScope do
     outputs = run.outputs |> ValueEncoder.encode() |> scrub_export_value()
     usage = (run.usage || %{}) |> ValueEncoder.encode() |> scrub_export_value()
     error = run.error |> ValueEncoder.encode() |> scrub_export_value()
+    response_metadata = metadata_value(metadata, "response_metadata") || %{}
+    response_usage = metadata_value(response_metadata, "usage") || %{}
 
     %{
       "operation" => operation(event),
@@ -106,18 +109,27 @@ defmodule BeamWeaver.Tracing.Exporters.WeaveScope do
       "usage" => usage,
       "error" => error,
       "environment" => environment(metadata, context_metadata),
-      "version" => version(metadata, context_metadata, opts)
+      "version" => version(metadata, context_metadata, opts),
+      "model_provider" =>
+        metadata_value(metadata, "provider") || metadata_value(metadata, "model_provider") ||
+          metadata_value(context_metadata, "provider") || metadata_value(context_metadata, "model_provider"),
+      "model_name" =>
+        metadata_value(metadata, "model") || metadata_value(metadata, "model_name") ||
+          metadata_value(context_metadata, "model"),
+      "request_id" => metadata_value(metadata, "request_id") || metadata_value(context_metadata, "request_id"),
+      "finish_reason" => metadata_value(metadata, "finish_reason") || metadata_value(context_metadata, "finish_reason"),
+      "service_tier" =>
+        metadata_value(usage, "service_tier") || metadata_value(metadata, "service_tier") ||
+          metadata_value(response_metadata, "service_tier") || metadata_value(response_usage, "service_tier") ||
+          metadata_value(context_metadata, "service_tier"),
+      "inference_geo" =>
+        metadata_value(usage, "inference_geo") || metadata_value(metadata, "inference_geo") ||
+          metadata_value(response_metadata, "inference_geo") || metadata_value(response_usage, "inference_geo") ||
+          metadata_value(context_metadata, "inference_geo"),
+      "custom_fields" => metadata_value(metadata, "custom_fields") || metadata_value(context_metadata, "custom_fields"),
+      "scores" => metadata_value(metadata, "scores") || metadata_value(context_metadata, "scores")
     }
-    |> maybe_put_model_fields(metadata, context_metadata, usage)
-    |> maybe_put(
-      "custom_fields",
-      metadata_value(metadata, "custom_fields") || metadata_value(context_metadata, "custom_fields")
-    )
-    |> maybe_put(
-      "scores",
-      metadata_value(metadata, "scores") || metadata_value(context_metadata, "scores")
-    )
-    |> reject_blank_values()
+    |> BeamWeaver.MapShape.reject_nil_or_empty()
   end
 
   defp operation(:started), do: "start"
@@ -131,20 +143,7 @@ defmodule BeamWeaver.Tracing.Exporters.WeaveScope do
     end)
   end
 
-  defp observation_kind(:graph), do: "agent"
-  defp observation_kind(:model), do: "generation"
-  defp observation_kind(:llm), do: "generation"
-  defp observation_kind(:agent), do: "agent"
-  defp observation_kind(:workflow), do: "chain"
-  defp observation_kind(:chain), do: "chain"
-  defp observation_kind(:tool), do: "tool"
-  defp observation_kind(:retriever), do: "retriever"
-  defp observation_kind(:evaluator), do: "evaluator"
-  defp observation_kind(:embedding), do: "embedding"
-  defp observation_kind(:guardrail), do: "guardrail"
-  defp observation_kind(:event), do: "event"
-  defp observation_kind(:span), do: "span"
-  defp observation_kind(kind) when is_atom(kind), do: "span"
+  defp observation_kind(kind) when is_atom(kind), do: observation_kind(Atom.to_string(kind))
 
   defp observation_kind(kind) when is_binary(kind) do
     case kind do
@@ -169,25 +168,16 @@ defmodule BeamWeaver.Tracing.Exporters.WeaveScope do
   defp event_status(_event, status) when status in ["running", "error", "pending"], do: status
   defp event_status(_event, _status), do: "pending"
 
-  defp event_version(:started, %Run{started_at: started_at}) do
-    lifecycle_version(started_at, 1)
+  defp event_version(event, %Run{} = run) do
+    timestamp = if event == :started, do: run.started_at, else: run.ended_at || run.started_at
+    DateTime.to_unix(timestamp, :microsecond) * 10 + lifecycle_rank(event)
   end
 
-  defp event_version(:ok, %Run{ended_at: ended_at, started_at: started_at}) do
-    lifecycle_version(ended_at || started_at, 2)
-  end
-
-  defp event_version(:error, %Run{ended_at: ended_at, started_at: started_at}) do
-    lifecycle_version(ended_at || started_at, 3)
-  end
-
-  defp event_version(_event, %Run{ended_at: ended_at, started_at: started_at}) do
-    lifecycle_version(ended_at || started_at, 0)
-  end
-
-  defp lifecycle_version(%DateTime{} = datetime, rank) do
-    DateTime.to_unix(datetime, :microsecond) * 10 + rank
-  end
+  @doc false
+  def lifecycle_rank(:started), do: 1
+  def lifecycle_rank(:ok), do: 2
+  def lifecycle_rank(:error), do: 3
+  def lifecycle_rank(_event), do: 0
 
   defp environment(metadata, context_metadata) do
     metadata_value(metadata, "environment") ||
@@ -203,19 +193,11 @@ defmodule BeamWeaver.Tracing.Exporters.WeaveScope do
   defp configured_version(opts) do
     case Config.option(opts, :version, [:weave_scope, :version]) do
       value when value in [nil, ""] ->
-        opts
-        |> Config.option(:otp_app, [:weave_scope, :otp_app], :beam_weaver)
-        |> application_version()
+        app = Config.option(opts, :otp_app, [:weave_scope, :otp_app], :beam_weaver)
+        if version = Application.spec(app, :vsn) || Application.spec(:beam_weaver, :vsn), do: to_string(version)
 
       value ->
         to_string(value)
-    end
-  end
-
-  defp application_version(app) do
-    case Application.spec(app, :vsn) || Application.spec(:beam_weaver, :vsn) do
-      nil -> nil
-      version -> to_string(version)
     end
   end
 
@@ -230,7 +212,7 @@ defmodule BeamWeaver.Tracing.Exporters.WeaveScope do
   defp scrub_export_value(value, path) when is_map(value) do
     value
     |> drop_duplicate_header_containers(path)
-    |> Enum.reject(fn {key, _value} -> internal_response_key?(key) end)
+    |> Enum.reject(fn {key, _value} -> to_string(key) in @internal_response_keys end)
     |> Map.new(fn {key, value} -> {key, scrub_export_value(value, [key | path])} end)
   end
 
@@ -240,17 +222,10 @@ defmodule BeamWeaver.Tracing.Exporters.WeaveScope do
 
   defp scrub_export_value(value, _path), do: value
 
-  defp drop_duplicate_header_containers(value, path) when is_map(value) do
-    cond do
-      path_key?(List.first(path), :transport) ->
-        Map.drop(value, [:headers, "headers"])
-
-      provider_metadata_raw_path?(path) ->
-        Map.drop(value, [:headers, "headers"])
-
-      true ->
-        value
-    end
+  defp drop_duplicate_header_containers(value, path) do
+    if path_key?(List.first(path), :transport) or provider_metadata_raw_path?(path),
+      do: Map.drop(value, [:headers, "headers"]),
+      else: value
   end
 
   defp provider_metadata_raw_path?([raw_key, provider_metadata_key | _path]) do
@@ -259,20 +234,7 @@ defmodule BeamWeaver.Tracing.Exporters.WeaveScope do
 
   defp provider_metadata_raw_path?(_path), do: false
 
-  defp path_key?(key, expected) when is_atom(key), do: key == expected
-  defp path_key?(key, expected) when is_binary(key), do: key == Atom.to_string(expected)
-  defp path_key?(_key, _expected), do: false
-
-  defp internal_response_key?(key) do
-    key in [
-      :_beamweaver_response_headers,
-      "_beamweaver_response_headers",
-      :_beamweaver_response_header_metadata,
-      "_beamweaver_response_header_metadata",
-      :_beamweaver_provider_headers,
-      "_beamweaver_provider_headers"
-    ]
-  end
+  defp path_key?(key, expected), do: key in [expected, Atom.to_string(expected)]
 
   defp library_tags(tags) do
     tags
@@ -282,51 +244,7 @@ defmodule BeamWeaver.Tracing.Exporters.WeaveScope do
     |> Enum.uniq()
   end
 
-  defp beam_weaver_version do
-    Application.spec(:beam_weaver, :vsn)
-    |> case do
-      nil -> "unknown"
-      version -> to_string(version)
-    end
-  end
-
-  defp maybe_put_model_fields(event, metadata, context_metadata, usage) do
-    metadata = metadata || %{}
-    context_metadata = context_metadata || %{}
-    response_metadata = metadata_value(metadata, "response_metadata") || %{}
-    response_usage = metadata_value(response_metadata, "usage") || %{}
-
-    event
-    |> maybe_put(
-      "model_provider",
-      metadata_value(metadata, "provider") || metadata_value(metadata, "model_provider") ||
-        metadata_value(context_metadata, "provider") || metadata_value(context_metadata, "model_provider")
-    )
-    |> maybe_put(
-      "model_name",
-      metadata_value(metadata, "model") || metadata_value(metadata, "model_name") ||
-        metadata_value(context_metadata, "model")
-    )
-    |> maybe_put("request_id", metadata_value(metadata, "request_id") || metadata_value(context_metadata, "request_id"))
-    |> maybe_put(
-      "finish_reason",
-      metadata_value(metadata, "finish_reason") || metadata_value(context_metadata, "finish_reason")
-    )
-    |> maybe_put(
-      "service_tier",
-      metadata_value(usage, "service_tier") || metadata_value(metadata, "service_tier") ||
-        metadata_value(response_metadata, "service_tier") ||
-        metadata_value(response_usage, "service_tier") ||
-        metadata_value(context_metadata, "service_tier")
-    )
-    |> maybe_put(
-      "inference_geo",
-      metadata_value(usage, "inference_geo") || metadata_value(metadata, "inference_geo") ||
-        metadata_value(response_metadata, "inference_geo") ||
-        metadata_value(response_usage, "inference_geo") ||
-        metadata_value(context_metadata, "inference_geo")
-    )
-  end
+  defp beam_weaver_version, do: to_string(Application.spec(:beam_weaver, :vsn) || "unknown")
 
   defp metadata_value(map, key) when is_map(map) do
     Map.get(map, key) || existing_atom_value(map, key)
@@ -341,9 +259,6 @@ defmodule BeamWeaver.Tracing.Exporters.WeaveScope do
     ArgumentError -> nil
   end
 
-  defp maybe_put(map, _key, value) when value in [nil, ""], do: map
-  defp maybe_put(map, key, value), do: Map.put(map, key, value)
-
   defp maybe_iso8601(nil), do: nil
   defp maybe_iso8601(%DateTime{} = datetime), do: DateTime.to_iso8601(datetime)
 
@@ -352,13 +267,8 @@ defmodule BeamWeaver.Tracing.Exporters.WeaveScope do
       {"authorization", "Bearer #{api_key}"},
       {"content-type", "application/json"},
       {"accept", "application/json"},
-      user_agent_header()
+      {"user-agent", "beam-weaver/#{beam_weaver_version()} weavescope-exporter"}
     ]
-  end
-
-  defp user_agent_header do
-    version = Application.spec(:beam_weaver, :vsn) || "unknown"
-    {"user-agent", "beam-weaver/#{version} weavescope-exporter"}
   end
 
   defp rejected_results(%{"results" => results}) when is_list(results) do
@@ -378,27 +288,6 @@ defmodule BeamWeaver.Tracing.Exporters.WeaveScope do
 
   defp body_preview(body, limit),
     do: body |> inspect(limit: :infinity, printable_limit: limit) |> String.slice(0, limit)
-
-  defp finch_private(operation, url, payload) do
-    %{
-      beam_weaver_exporter: :weave_scope,
-      operation: operation,
-      url: url,
-      event_count: length(Map.get(payload, "events", []))
-    }
-  end
-
-  defp reject_blank_values(map) do
-    map
-    |> Enum.reject(fn
-      {_key, nil} -> true
-      {_key, ""} -> true
-      {_key, []} -> true
-      {_key, value} when is_map(value) and map_size(value) == 0 -> true
-      _entry -> false
-    end)
-    |> Map.new()
-  end
 
   defp blank?(value), do: value in [nil, ""]
 end

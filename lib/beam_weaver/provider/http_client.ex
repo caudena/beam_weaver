@@ -23,7 +23,7 @@ defmodule BeamWeaver.Provider.HTTPClient do
   @type t :: %__MODULE__{}
 
   @spec new(keyword()) :: t()
-  def new(opts \\ []) do
+  def new(opts) do
     struct(__MODULE__,
       provider: Keyword.get(opts, :provider),
       endpoint: Keyword.get(opts, :endpoint),
@@ -51,10 +51,10 @@ defmodule BeamWeaver.Provider.HTTPClient do
   end
 
   @spec get(t(), keyword()) :: Transport.result() | {:error, Error.t()}
-  def get(%__MODULE__{} = client, opts \\ []) do
+  def get(%__MODULE__{} = client, opts) do
     with {:ok, client} <- authenticate(client, opts) do
       client
-      |> get_request(opts)
+      |> build_request(:get, nil, opts)
       |> do_request(client, opts)
     end
   end
@@ -128,34 +128,17 @@ defmodule BeamWeaver.Provider.HTTPClient do
   end
 
   @spec request(t(), json_body(), keyword()) :: Request.t()
-  def request(%__MODULE__{} = client, body, opts \\ []) when is_map(body) or is_binary(body) do
-    timeout = Keyword.get(opts, :timeout, client.timeout)
+  def request(%__MODULE__{} = client, body, opts) when is_map(body) or is_binary(body),
+    do: build_request(client, :post, body, opts)
 
-    request_options =
-      [
-        method: :post,
-        url: Keyword.get(opts, :endpoint, client.endpoint),
-        headers: headers(client, opts),
-        options: [timeout: timeout]
-      ]
-
+  defp build_request(client, method, body, opts) do
     Request.new(
-      if(is_binary(body),
-        do: Keyword.put(request_options, :body, body),
-        else: Keyword.put(request_options, :json, body)
-      )
-    )
-  end
-
-  @spec get_request(t(), keyword()) :: Request.t()
-  def get_request(%__MODULE__{} = client, opts \\ []) do
-    timeout = Keyword.get(opts, :timeout, client.timeout)
-
-    Request.new(
-      method: :get,
+      method: method,
       url: Keyword.get(opts, :endpoint, client.endpoint),
       headers: headers(client, opts),
-      options: [timeout: timeout]
+      options: [timeout: Keyword.get(opts, :timeout, client.timeout)],
+      body: if(is_binary(body), do: body),
+      json: if(is_map(body), do: body)
     )
   end
 

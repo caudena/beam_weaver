@@ -7,7 +7,6 @@ defmodule BeamWeaver.Retriever do
   alias BeamWeaver.Core.Error
   alias BeamWeaver.Core.Tool
   alias BeamWeaver.Prompt
-  alias BeamWeaver.Runnable
 
   @callback retrieve(term(), String.t(), keyword()) ::
               {:ok, [Document.t()]} | {:error, Error.t()}

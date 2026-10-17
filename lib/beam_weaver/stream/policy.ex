@@ -92,15 +92,11 @@ defmodule BeamWeaver.Stream.Policy do
 
   defp normalize_overflow(value) when value in @overflow, do: value
 
-  defp normalize_overflow("block"), do: :block
-  defp normalize_overflow("drop_newest"), do: :drop_newest
-  defp normalize_overflow("drop_oldest"), do: :drop_oldest
-  defp normalize_overflow("error"), do: :error
+  defp normalize_overflow(value) when is_binary(value),
+    do: Enum.find(@overflow, :block, &(Atom.to_string(&1) == value))
 
   defp normalize_overflow(_value), do: :block
 
-  defp normalize_timeout(:infinity), do: :infinity
-  defp normalize_timeout(nil), do: :infinity
   defp normalize_timeout(value) when is_integer(value) and value >= 0, do: value
   defp normalize_timeout(_value), do: :infinity
 end

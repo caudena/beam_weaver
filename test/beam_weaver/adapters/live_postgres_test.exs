@@ -1027,57 +1027,6 @@ defmodule BeamWeaver.Adapters.LivePostgresTest do
            end)
   end
 
-  test "checkpoint shallow postgres saver keeps only the latest checkpoint live" do
-    checkpoints = BeamWeaver.Test.LivePostgres.unique_table("bw_checkpoints_shallow")
-    writes = BeamWeaver.Test.LivePostgres.unique_table("bw_writes_shallow")
-
-    saver =
-      EctoCheckpoint.new(
-        repo: BeamWeaver.Test.PostgresRepo,
-        checkpoints_table: checkpoints,
-        writes_table: writes,
-        shallow?: true
-      )
-
-    migration = [adapters: [{:checkpoint, checkpoints_table: checkpoints, writes_table: writes}]]
-    version = BeamWeaver.Test.LivePostgres.migrate(migration)
-
-    on_exit(fn ->
-      BeamWeaver.Test.LivePostgres.drop_tables([writes, checkpoints])
-      BeamWeaver.Test.LivePostgres.clear_migration(version)
-    end)
-
-    config = %{"configurable" => %{"thread_id" => "thread-live-shallow"}}
-
-    {:ok, first_config} =
-      Checkpoint.put(
-        saver,
-        config,
-        %{"id" => "cp-shallow-1", "channel_values" => %{"step" => 1}},
-        %{source: "loop"},
-        %{"step" => 1}
-      )
-
-    assert :ok = Checkpoint.put_writes(saver, first_config, [{"step", 1}], "task-live")
-
-    {:ok, second_config} =
-      Checkpoint.put(
-        saver,
-        first_config,
-        %{"id" => "cp-shallow-2", "channel_values" => %{"step" => 2}},
-        %{source: "loop"},
-        %{"step" => 2}
-      )
-
-    assert [%{checkpoint: %{"id" => "cp-shallow-2"}, pending_writes: []}] =
-             Checkpoint.list(saver, config)
-
-    refute Checkpoint.get_tuple(saver, first_config)
-
-    assert %{checkpoint: %{"id" => "cp-shallow-2"}, parent_config: nil} =
-             Checkpoint.get_tuple(saver, second_config)
-  end
-
   test "cache stores safe serialized values, TTLs, sweep, and namespace clear" do
     table = BeamWeaver.Test.LivePostgres.unique_table("bw_cache")
 

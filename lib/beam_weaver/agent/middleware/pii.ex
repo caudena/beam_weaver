@@ -50,6 +50,7 @@ defmodule BeamWeaver.Agent.Middleware.PII do
   alias BeamWeaver.Core.Messages.ToolCall
   alias BeamWeaver.Core.Messages.ToolCallChunk
   alias BeamWeaver.Graph.Overwrite
+  alias BeamWeaver.MapAccess
   alias BeamWeaver.Options
   alias BeamWeaver.Stream.Envelope
   alias BeamWeaver.Stream.Events
@@ -97,7 +98,7 @@ defmodule BeamWeaver.Agent.Middleware.PII do
 
     strategy = Keyword.get(opts, :strategy, :redact) |> normalize_strategy!()
 
-    Detector.validate_detector_config!(pii_type, detector, detectors)
+    Detector.validate_detector_config!(pii_type, detector)
 
     %__MODULE__{
       pii_type: Detector.normalize_type(pii_type),
@@ -114,7 +115,7 @@ defmodule BeamWeaver.Agent.Middleware.PII do
 
   @impl true
   def name(%__MODULE__{pii_type: nil, detectors: detectors}),
-    do: "pii[#{Enum.map_join(detectors, ",", &Detector.detector_type/1)}]"
+    do: "pii[#{Enum.join(detectors, ",")}]"
 
   def name(%__MODULE__{pii_type: pii_type}), do: "pii[#{pii_type}]"
 
@@ -258,7 +259,7 @@ defmodule BeamWeaver.Agent.Middleware.PII do
   defp edit_block_text(text, middleware) when is_binary(text), do: edit_text(text, middleware)
 
   defp edit_block_text(%{} = block, middleware) do
-    case map_get(block, :text) do
+    case MapAccess.get(block, :text) do
       text when is_binary(text) ->
         with {:ok, edited} <- edit_text(text, middleware), do: {:ok, put_map_value(block, :text, edited)}
 
@@ -325,7 +326,7 @@ defmodule BeamWeaver.Agent.Middleware.PII do
   defp chunk_content_slots(envelope, %AIChunk{content: blocks}) when is_list(blocks) do
     for {%{} = block, position} <- Enum.with_index(blocks),
         field <- [:text, :reasoning],
-        text = map_get(block, field),
+        text = MapAccess.get(block, field),
         is_binary(text) do
       put = fn envelope, text ->
         update_chunk(envelope, fn chunk ->
@@ -337,7 +338,7 @@ defmodule BeamWeaver.Agent.Middleware.PII do
         update_chunk(envelope, &%{&1 | content: [put_map_value(block, field, text)], tool_call_chunks: []})
       end
 
-      {{{:chunk, field, map_get(block, :index)}, stream_source(envelope)}, text, put, alone}
+      {{{:chunk, field, MapAccess.get(block, :index)}, stream_source(envelope)}, text, put, alone}
     end
   end
 
@@ -529,14 +530,12 @@ defmodule BeamWeaver.Agent.Middleware.PII do
   defp stream_source(%Envelope{run_id: run_id, task_id: task_id, namespace: namespace}),
     do: {run_id, task_id, namespace || []}
 
-  defp protocol_source(params, metadata) do
-    run_id = if is_map(metadata), do: map_get(metadata, :run_id)
-    {run_id, nil, map_get(params, :namespace) || []}
-  end
+  defp protocol_source(params, metadata),
+    do: {MapAccess.get(metadata, :run_id), nil, MapAccess.get(params, :namespace) || []}
 
   defp protocol_payload_text(payload) do
-    with block when is_map(block) <- map_get(payload, :content_block),
-         text when is_binary(text) <- map_get(block, :text) do
+    with block when is_map(block) <- MapAccess.get(payload, :content_block),
+         text when is_binary(text) <- MapAccess.get(block, :text) do
       text
     else
       _other -> nil
@@ -544,7 +543,7 @@ defmodule BeamWeaver.Agent.Middleware.PII do
   end
 
   defp put_protocol_payload_text(payload, text) do
-    block = payload |> map_get(:content_block, %{}) |> put_map_value(:text, text)
+    block = payload |> MapAccess.get(:content_block, %{}) |> put_map_value(:text, text)
     put_map_value(payload, :content_block, block)
   end
 
@@ -552,7 +551,7 @@ defmodule BeamWeaver.Agent.Middleware.PII do
   defp protocol_message_finish?(%{params: %{data: {%{} = payload, _metadata}}}), do: message_finish?(payload)
   defp protocol_message_finish?(_event), do: false
 
-  defp message_finish?(payload), do: map_get(payload, :event) in ["message-finish", :message_finish]
+  defp message_finish?(payload), do: MapAccess.get(payload, :event) in ["message-finish", :message_finish]
 
   defp split_stream_text(text) do
     length = String.length(text)
@@ -588,8 +587,6 @@ defmodule BeamWeaver.Agent.Middleware.PII do
 
   defp replace_matches(text, matches, fun) do
     matches
-    |> Enum.map(&Detector.normalize_match(&1, nil))
-    |> Enum.reject(&is_nil/1)
     |> reject_overlaps()
     |> Enum.sort_by(& &1.start, :desc)
     |> Enum.reduce(text, fn match, acc ->
@@ -677,9 +674,6 @@ defmodule BeamWeaver.Agent.Middleware.PII do
       %{pii_type: first.type, matches: matches}
     )
   end
-
-  defp map_get(map, key, default \\ nil) when is_map(map),
-    do: Map.get(map, key, Map.get(map, Atom.to_string(key), default))
 
   defp put_map_value(map, key, value) when is_map(map) do
     string_key = Atom.to_string(key)

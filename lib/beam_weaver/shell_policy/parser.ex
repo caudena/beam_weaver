@@ -25,7 +25,7 @@ defmodule BeamWeaver.ShellPolicy.Parser do
     # an empty one is). Deny rules read both. `opaque` names a construct that
     # can run code the policy can't see, such as bash arithmetic on a
     # variable, which can run a command substitution stored in that variable.
-    defstruct [:raw, :value, :literal, :approx, :start, :stop, bare: "", quoted?: false, opaque: nil]
+    defstruct [:raw, :value, :literal, :approx, :start, :stop, bare: "", opaque: nil]
   end
 
   defmodule Command do
@@ -422,7 +422,6 @@ defmodule BeamWeaver.ShellPolicy.Parser do
       approx: [],
       bare: [],
       dynamic?: false,
-      quoted?: false,
       opaque: nil,
       nested: [],
       glob?: false,
@@ -446,17 +445,17 @@ defmodule BeamWeaver.ShellPolicy.Parser do
         case at(text, pos + 1, stop) do
           nil -> word_loop(text, pos + 1, stop, literal(acc, "\\"))
           ?\n -> word_loop(text, pos + 2, stop, acc)
-          byte -> word_loop(text, pos + 2, stop, %{literal(acc, <<byte>>) | quoted?: true})
+          byte -> word_loop(text, pos + 2, stop, literal(acc, <<byte>>))
         end
 
       ?' ->
         close = find_byte(text, ?', pos + 1, stop) || fail(:unterminated_single_quote)
         content = binary_part(text, pos + 1, close - pos - 1)
-        word_loop(text, close + 1, stop, %{literal(acc, content) | quoted?: true})
+        word_loop(text, close + 1, stop, literal(acc, content))
 
       ?" ->
         {after_quote, acc} = double_quoted(text, pos + 1, stop, acc)
-        word_loop(text, after_quote, stop, %{acc | quoted?: true})
+        word_loop(text, after_quote, stop, acc)
 
       byte when byte in [?$, ?`] ->
         part = expansion(text, pos, stop, :normal, acc.depth, acc.in_line?)
@@ -517,7 +516,6 @@ defmodule BeamWeaver.ShellPolicy.Parser do
       bare: IO.iodata_to_binary(acc.bare),
       start: acc.start,
       stop: pos,
-      quoted?: acc.quoted?,
       opaque: acc.opaque
     }
 

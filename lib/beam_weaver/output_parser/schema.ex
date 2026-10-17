@@ -1,6 +1,8 @@
 defmodule BeamWeaver.OutputParser.Schema do
   @moduledoc false
 
+  import BeamWeaver.OutputParser.Parser, only: [parser_error: 2, parser_error: 3]
+
   alias BeamWeaver.Core.Error
 
   @spec validate(map(), term()) :: :ok | {:error, Error.t()}
@@ -22,10 +24,7 @@ defmodule BeamWeaver.OutputParser.Schema do
       function_exported?(module, :new, 1) ->
         module.new(data)
 
-      function_exported?(module, :struct, 1) ->
-        {:ok, struct(module, atomize_existing_keys(data))}
-
-      function_exported?(module, :__struct__, 0) ->
+      function_exported?(module, :struct, 1) or function_exported?(module, :__struct__, 0) ->
         {:ok, struct(module, atomize_existing_keys(data))}
 
       true ->
@@ -144,9 +143,5 @@ defmodule BeamWeaver.OutputParser.Schema do
         ArgumentError -> {key, value}
       end
     end)
-  end
-
-  defp parser_error(parser, message, details \\ %{}) do
-    {:error, Error.new(:output_parser_error, message, Map.put(details, :parser, parser))}
   end
 end

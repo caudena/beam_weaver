@@ -62,7 +62,7 @@ defmodule BeamWeaver.Filesystem.Composite do
 
     inner
     |> Filesystem.ls(stripped, route_opts(opts, prefix))
-    |> prefix_ls_result(prefix)
+    |> prefix_entries(:entries, prefix)
   end
 
   @impl true
@@ -72,66 +72,12 @@ defmodule BeamWeaver.Filesystem.Composite do
   end
 
   @impl true
-  def glob(%__MODULE__{} = backend, pattern, opts) do
-    path = Keyword.get(opts, :path, "/")
-
-    if path == "/" do
-      default_matches =
-        backend.default
-        |> Filesystem.glob(pattern, Keyword.put(opts, :path, "/"))
-        |> glob_matches()
-        |> then(&reject_routed(backend, &1))
-
-      route_matches =
-        backend.routes
-        |> Enum.flat_map(fn {prefix, inner} ->
-          inner
-          |> Filesystem.glob(pattern, opts |> route_opts(prefix) |> Keyword.put(:path, "/"))
-          |> glob_matches()
-          |> Enum.map(&prefix_file_info(prefix, &1))
-        end)
-
-      %Filesystem.GlobResult{matches: Enum.sort_by(default_matches ++ route_matches, & &1.path)}
-    else
-      {prefix, inner, stripped} = route(backend, path)
-
-      inner
-      |> Filesystem.glob(pattern, opts |> route_opts(prefix) |> Keyword.put(:path, stripped))
-      |> prefix_glob_result(prefix)
-    end
-  end
+  def glob(%__MODULE__{} = backend, pattern, opts),
+    do: search(backend, &Filesystem.glob/3, pattern, opts, %Filesystem.GlobResult{}, & &1.path)
 
   @impl true
-  def grep(%__MODULE__{} = backend, pattern, opts) do
-    path = Keyword.get(opts, :path, "/")
-
-    if path == "/" do
-      default_matches =
-        backend.default
-        |> Filesystem.grep(pattern, Keyword.put(opts, :path, "/"))
-        |> grep_matches()
-        |> then(&reject_routed(backend, &1))
-
-      route_matches =
-        backend.routes
-        |> Enum.flat_map(fn {prefix, inner} ->
-          inner
-          |> Filesystem.grep(pattern, opts |> route_opts(prefix) |> Keyword.put(:path, "/"))
-          |> grep_matches()
-          |> Enum.map(&prefix_grep_match(prefix, &1))
-        end)
-
-      %Filesystem.GrepResult{
-        matches: Enum.sort_by(default_matches ++ route_matches, &{&1.path, &1.line})
-      }
-    else
-      {prefix, inner, stripped} = route(backend, path)
-
-      inner
-      |> Filesystem.grep(pattern, opts |> route_opts(prefix) |> Keyword.put(:path, stripped))
-      |> prefix_grep_result(prefix)
-    end
-  end
+  def grep(%__MODULE__{} = backend, pattern, opts),
+    do: search(backend, &Filesystem.grep/3, pattern, opts, %Filesystem.GrepResult{}, &{&1.path, &1.line})
 
   @impl true
   def write(%__MODULE__{} = backend, path, content, opts) do
@@ -139,7 +85,7 @@ defmodule BeamWeaver.Filesystem.Composite do
 
     inner
     |> Filesystem.write(stripped, content, route_opts(opts, prefix))
-    |> prefix_write_result(prefix)
+    |> prefix_result(prefix)
   end
 
   @impl true
@@ -148,7 +94,7 @@ defmodule BeamWeaver.Filesystem.Composite do
 
     inner
     |> Filesystem.edit(stripped, old, new, route_opts(opts, prefix))
-    |> prefix_edit_result(prefix)
+    |> prefix_result(prefix)
   end
 
   @impl true
@@ -158,7 +104,7 @@ defmodule BeamWeaver.Filesystem.Composite do
 
       inner
       |> Filesystem.upload_files([{stripped, content}], route_opts(opts, prefix))
-      |> Enum.map(&prefix_upload_result(prefix, &1))
+      |> Enum.map(&prefix_result(&1, prefix))
     end)
   end
 
@@ -169,7 +115,7 @@ defmodule BeamWeaver.Filesystem.Composite do
 
       inner
       |> Filesystem.download_files([stripped], route_opts(opts, prefix))
-      |> Enum.map(&prefix_download_result(prefix, &1))
+      |> Enum.map(&prefix_result(&1, prefix))
     end)
   end
 
@@ -273,50 +219,46 @@ defmodule BeamWeaver.Filesystem.Composite do
 
   defp normalize_artifacts_root(_root), do: "/"
 
-  defp prefix_ls_result(%Filesystem.LsResult{error: nil, entries: entries} = result, prefix),
-    do: %{result | entries: Enum.map(entries || [], &prefix_file_info(prefix, &1))}
+  defp search(backend, fun, pattern, opts, result, sort_key) do
+    case Keyword.get(opts, :path, "/") do
+      "/" ->
+        default_matches =
+          backend.default
+          |> fun.(pattern, Keyword.put(opts, :path, "/"))
+          |> matches()
+          |> then(&reject_routed(backend, &1))
 
-  defp prefix_ls_result(result, _prefix), do: result
+        route_matches =
+          Enum.flat_map(backend.routes, fn {prefix, inner} ->
+            inner
+            |> fun.(pattern, opts |> route_opts(prefix) |> Keyword.put(:path, "/"))
+            |> matches()
+            |> Enum.map(&prefix_entry(&1, prefix))
+          end)
 
-  defp prefix_glob_result(%Filesystem.GlobResult{error: nil, matches: matches} = result, prefix),
-    do: %{result | matches: Enum.map(matches || [], &prefix_file_info(prefix, &1))}
+        %{result | matches: Enum.sort_by(default_matches ++ route_matches, sort_key)}
 
-  defp prefix_glob_result(result, _prefix), do: result
+      path ->
+        {prefix, inner, stripped} = route(backend, path)
 
-  defp prefix_grep_result(%Filesystem.GrepResult{error: nil, matches: matches} = result, prefix),
-    do: %{result | matches: Enum.map(matches || [], &prefix_grep_match(prefix, &1))}
+        inner
+        |> fun.(pattern, opts |> route_opts(prefix) |> Keyword.put(:path, stripped))
+        |> prefix_entries(:matches, prefix)
+    end
+  end
 
-  defp prefix_grep_result(result, _prefix), do: result
+  defp matches(%{error: nil, matches: matches}), do: matches || []
+  defp matches(_result), do: []
 
-  defp prefix_write_result(%Filesystem.WriteResult{error: nil} = result, prefix),
-    do: %{result | path: prefix_path(prefix, result.path)}
+  defp prefix_entries(%{error: nil} = result, field, prefix) when is_map_key(result, field),
+    do: Map.update!(result, field, fn entries -> Enum.map(entries || [], &prefix_entry(&1, prefix)) end)
 
-  defp prefix_write_result(result, _prefix), do: result
+  defp prefix_entries(result, _field, _prefix), do: result
 
-  defp prefix_edit_result(%Filesystem.EditResult{error: nil} = result, prefix),
-    do: %{result | path: prefix_path(prefix, result.path)}
+  defp prefix_entry(entry, prefix), do: %{entry | path: prefix_path(prefix, entry.path)}
 
-  defp prefix_edit_result(result, _prefix), do: result
-
-  defp prefix_upload_result(prefix, %Filesystem.UploadResult{error: nil} = result),
-    do: %{result | path: prefix_path(prefix, result.path)}
-
-  defp prefix_upload_result(_prefix, result), do: result
-
-  defp prefix_download_result(prefix, %Filesystem.DownloadResult{error: nil} = result),
-    do: %{result | path: prefix_path(prefix, result.path)}
-
-  defp prefix_download_result(_prefix, result), do: result
-
-  defp prefix_file_info(nil, %Filesystem.FileInfo{} = info), do: info
-
-  defp prefix_file_info(prefix, %Filesystem.FileInfo{} = info),
-    do: %{info | path: prefix_path(prefix, info.path)}
-
-  defp prefix_grep_match(nil, %Filesystem.GrepMatch{} = match), do: match
-
-  defp prefix_grep_match(prefix, %Filesystem.GrepMatch{} = match),
-    do: %{match | path: prefix_path(prefix, match.path)}
+  defp prefix_result(%{error: nil} = result, prefix), do: %{result | path: prefix_path(prefix, result.path)}
+  defp prefix_result(result, _prefix), do: result
 
   defp prefix_canonical(prefix, {:ok, path}) when is_binary(path), do: {:ok, prefix_path(prefix, path)}
   defp prefix_canonical(_prefix, {:error, _reason} = error), do: error
@@ -334,10 +276,4 @@ defmodule BeamWeaver.Filesystem.Composite do
       prefix <> "/" <> String.trim_leading(path, "/")
     end
   end
-
-  defp glob_matches(%Filesystem.GlobResult{error: nil, matches: matches}), do: matches || []
-  defp glob_matches(_result), do: []
-
-  defp grep_matches(%Filesystem.GrepResult{error: nil, matches: matches}), do: matches || []
-  defp grep_matches(_result), do: []
 end

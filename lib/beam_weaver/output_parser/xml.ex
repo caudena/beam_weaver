@@ -1,13 +1,16 @@
 defmodule BeamWeaver.OutputParser.XML do
   @moduledoc false
 
+  import BeamWeaver.OutputParser.Parser, only: [parser_error: 3]
+
   alias BeamWeaver.Core.Error
 
   @spec parse(String.t()) :: {:ok, map()} | {:error, Error.t()}
   def parse(text) do
     text
     |> String.trim()
-    |> xml_candidate()
+    |> xml_fenced_candidate()
+    |> strip_xml_declaration()
     |> parse_element()
     |> case do
       {:ok, node, rest} ->
@@ -42,12 +45,6 @@ defmodule BeamWeaver.OutputParser.XML do
     end)
   end
 
-  defp xml_candidate(text) do
-    text
-    |> xml_fenced_candidate()
-    |> strip_xml_declaration()
-  end
-
   defp xml_fenced_candidate(text) do
     case Regex.run(~r/```(?:xml)?\s*(.*?)```/s, text) do
       [_match, candidate] -> String.trim(candidate)
@@ -71,13 +68,9 @@ defmodule BeamWeaver.OutputParser.XML do
         if self_closing? do
           {:ok, xml_node(name, "", [], attrs), after_start}
         else
-          case parse_children(name, after_start, [], []) do
-            {:ok, text_parts, children, rest} ->
-              text = text_parts |> Enum.reverse() |> Enum.join("") |> String.trim()
-              {:ok, xml_node(name, text, Enum.reverse(children), attrs), rest}
-
-            {:error, %Error{} = error} ->
-              {:error, error}
+          with {:ok, text_parts, children, rest} <- parse_children(name, after_start, [], []) do
+            text = text_parts |> Enum.reverse() |> Enum.join("") |> String.trim()
+            {:ok, xml_node(name, text, Enum.reverse(children), attrs), rest}
           end
         end
 
@@ -144,8 +137,4 @@ defmodule BeamWeaver.OutputParser.XML do
   defp xml_text_value(text, _children), do: text
 
   defp preview(text), do: String.slice(text, 0, 200)
-
-  defp parser_error(parser, message, details) do
-    {:error, Error.new(:output_parser_error, message, Map.put(details, :parser, parser))}
-  end
 end

@@ -118,7 +118,6 @@ defmodule BeamWeaver.Checkpoint.ConformanceTest do
 
       test "merges config metadata, strips null characters, and restores missing checkpoint defaults",
            %{saver: saver} do
-        # Upstream reference:
         config =
           config()
           |> Map.put("metadata", %{
@@ -248,7 +247,6 @@ defmodule BeamWeaver.Checkpoint.ConformanceTest do
       end
 
       test "lists across all threads and namespaces when no config is supplied", %{saver: saver} do
-        # Upstream reference:
         thread_a = unique("thread")
         thread_b = unique("thread")
 
@@ -397,7 +395,6 @@ defmodule BeamWeaver.Checkpoint.ConformanceTest do
       test "attaches parent __tasks__ pending sends to the next checkpoint only", %{
         saver: saver
       } do
-        # Upstream reference:
         thread_id = unique("thread")
 
         first =
@@ -533,7 +530,6 @@ defmodule BeamWeaver.Checkpoint.ConformanceTest do
 
       test "delta channel history handles empty channels, independent seeds, and plain migration seeds",
            %{saver: saver} do
-        # Upstream reference:
         thread_id = unique("thread")
 
         step0 = put_checkpoint!(saver, config(thread_id), %{}, metadata(step: 0))
@@ -778,7 +774,6 @@ defmodule BeamWeaver.Checkpoint.ConformanceTest do
 
       test "delete_thread and delete_for_runs are no-op safe and remove writes across namespaces",
            %{saver: saver} do
-        # Upstream reference:
         delete_thread = unique("thread")
         preserve_thread = unique("thread")
         delete_run = unique("run")
@@ -834,7 +829,6 @@ defmodule BeamWeaver.Checkpoint.ConformanceTest do
       test "copy_thread is a fork: nonexistent sources no-op and source ordering is unchanged", %{
         saver: saver
       } do
-        # Upstream reference:
         source_thread = unique("thread")
         target_thread = unique("thread")
 
@@ -931,7 +925,6 @@ defmodule BeamWeaver.Checkpoint.ConformanceTest do
 
       test "prune keep_latest is per namespace, preserves latest writes, and ignores missing threads",
            %{saver: saver} do
-        # Upstream reference:
         assert :ok = Checkpoint.prune(saver, [])
         assert :ok = Checkpoint.prune(saver, [unique("missing-thread")])
 

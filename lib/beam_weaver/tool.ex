@@ -105,7 +105,7 @@ defmodule BeamWeaver.Tool do
       def input_schema(_tool) do
         __beam_weaver_tool_definition__().fields
         |> BeamWeaver.Tool.Schema.from_fields()
-        |> BeamWeaver.Tool.Schema.string_property_names()
+        |> BeamWeaver.Tool.Schema.Fields.string_property_names()
       end
 
       @impl true

@@ -50,9 +50,6 @@ defmodule BeamWeaver.TestSupport.Conformance.EmbeddingModelCase do
         assert error.type == :invalid_query
       end
 
-      if Subject.capability?(@beamweaver_subject, :batch) do
-      end
-
       if Subject.capability?(@beamweaver_subject, :deterministic) do
         test "embedding model returns deterministic vectors for repeated inputs" do
           model = build_subject()

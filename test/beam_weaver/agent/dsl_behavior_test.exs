@@ -895,9 +895,6 @@ defmodule BeamWeaver.Agent.DSLBehaviorTest do
   end
 
   test "return_direct tools still respect the final-attempt step budget" do
-    # Upstream reference:
-    # - a final model attempt with tool calls returns the apology instead of
-    #   executing tools when no safe tool step remains, even for return_direct tools.
     assert {:ok, %{messages: messages}} =
              ReturnDirectAgent.invoke(%{messages: [Message.user("finish now")]},
                recursion_limit: 1
@@ -917,9 +914,6 @@ defmodule BeamWeaver.Agent.DSLBehaviorTest do
   end
 
   test "return_direct tools execute when exactly one tool step remains" do
-    # Upstream reference:
-    # - enough budget for a model step and a direct tool step should finish on
-    #   the tool result without another model call.
     assert {:ok, %{messages: messages}} =
              ReturnDirectAgent.invoke(%{messages: [Message.user("finish now")]},
                recursion_limit: 2

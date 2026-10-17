@@ -1,6 +1,7 @@
 defmodule BeamWeaver.Tools.Shell.CommandRunner do
   @moduledoc false
 
+  alias BeamWeaver.Core.Error
   alias BeamWeaver.Core.ID
   alias BeamWeaver.Tracing.Redactor
 
@@ -75,7 +76,6 @@ defmodule BeamWeaver.Tools.Shell.CommandRunner do
 
   # The most `run/2` can take beyond its `:timeout` to stop a command with the
   # default `:term_grace`.
-  @doc false
   def stop_budget, do: @term_grace_ms + @kill_wait_ms
 
   defp os_pid(port) do
@@ -327,19 +327,53 @@ defmodule BeamWeaver.Tools.Shell.CommandRunner do
     ArgumentError -> :ok
   end
 
-  defp shell_quote(value) do
+  def shell_quote(value) do
     "'" <> String.replace(value, "'", "'\"'\"'") <> "'"
   end
 
-  @doc false
   def shell, do: System.find_executable("sh") || "/bin/sh"
 
+  def timeout_ms(timeout) when is_integer(timeout) and timeout in 1..3600, do: {:ok, timeout * 1_000}
+  def timeout_ms(_timeout), do: {:error, "timeout must be an integer between 1 and 3600 seconds"}
+
+  def scratch_dir do
+    dir = Path.join(System.tmp_dir!(), "beam_weaver_shell_scratch_#{System.unique_integer([:positive])}")
+    File.mkdir_p!(dir)
+    dir
+  end
+
+  def stderr_option(path, %{stderr: :separate}), do: {:file, path}
+  def stderr_option(_path, %{stderr: :discard}), do: :discard
+  def stderr_option(_path, _policy), do: :merge
+
+  def read_stderr(path, %{stderr: :separate}) do
+    case File.read(path) do
+      {:ok, data} -> data
+      {:error, _reason} -> ""
+    end
+  end
+
+  def read_stderr(_path, _policy), do: nil
+
+  def failure(command, {:timeout, kill_attempted?}, metadata) do
+    Error.new(:shell_timeout, "shell command timed out", %{
+      command: command,
+      metadata: Map.merge(metadata, %{kill_attempted: kill_attempted?, error: "timeout"})
+    })
+  end
+
+  def failure(command, {:error, reason}, metadata) do
+    Error.new(:shell_execution_error, "shell command failed", %{
+      command: command,
+      reason: inspect(reason),
+      metadata: Map.put(metadata, :reason, inspect(reason))
+    })
+  end
+
   # A readable message for the `{:error, reason}` that `run/2` returns.
-  @doc false
   def error_message(%{__exception__: true} = exception), do: Exception.message(exception)
   def error_message(reason), do: inspect(reason)
 
-  @doc false
   def metadata(backend, command, timeout, opts) do
     Redactor.redact(%{
       backend: backend,
@@ -350,7 +384,6 @@ defmodule BeamWeaver.Tools.Shell.CommandRunner do
   end
 
   # The tool result for one command, with output redacted and truncated per policy.
-  @doc false
   def result(command, status, output, policy, metadata) do
     %{
       command: command,
@@ -360,7 +393,6 @@ defmodule BeamWeaver.Tools.Shell.CommandRunner do
     }
   end
 
-  @doc false
   def put_stderr(result, nil, _policy), do: result
   def put_stderr(result, stderr, policy), do: Map.put(result, :stderr, format_output(stderr, policy))
 

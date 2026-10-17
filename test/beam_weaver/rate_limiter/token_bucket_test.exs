@@ -34,24 +34,6 @@ defmodule BeamWeaver.RateLimiter.TokenBucketTest do
     assert :ok = RateLimiter.acquire(limiter, 1, timeout: 5_000)
   end
 
-  test "uses native token bucket timing options" do
-    limiter =
-      start_bucket!(
-        capacity: 2,
-        refill_amount: 1,
-        refill_interval: 50
-      )
-
-    assert %{
-             capacity: 2,
-             tokens: 0,
-             refill_amount: 1,
-             refill_interval: 50
-           } = RateLimiter.snapshot(limiter)
-
-    assert :ok = RateLimiter.acquire(limiter, 1, timeout: 5_000)
-  end
-
   test "waits for refill instead of forcing callers to sleep outside the limiter" do
     started_at = System.monotonic_time(:millisecond)
 

@@ -21,15 +21,11 @@ defmodule BeamWeaver.OpenAI.ToolCalling do
   Converts one tool declaration into the OpenAI request shape.
   """
   @spec to_openai_tool(term()) :: map()
-  def to_openai_tool(%Tool{} = tool), do: Messages.tool_to_openai(tool)
-
-  def to_openai_tool(tool) when is_atom(tool), do: Messages.tool_to_openai(tool)
-
-  def to_openai_tool(%{__struct__: _module} = tool), do: Messages.tool_to_openai(tool)
+  def to_openai_tool(tool) when is_atom(tool) or is_struct(tool), do: Messages.tool_to_openai(tool)
 
   def to_openai_tool(tool) when is_map(tool) do
     tool
-    |> stringify_keys()
+    |> BeamWeaver.MapShape.stringify_keys()
     |> normalize_tool_map()
   end
 
@@ -42,7 +38,7 @@ defmodule BeamWeaver.OpenAI.ToolCalling do
       {render_opts, merge_opts} = Keyword.split(opts, [:strict])
 
       tool
-      |> function_tool(render_opts)
+      |> Renderer.openai_tool!(render_opts)
       |> merge_options(merge_opts)
     else
       tool
@@ -172,12 +168,7 @@ defmodule BeamWeaver.OpenAI.ToolCalling do
   end
 
   @doc false
-  @spec stringify_keys(map()) :: map()
-  def stringify_keys(map) when is_map(map) do
-    BeamWeaver.MapShape.stringify_keys(map)
-  end
-
-  defp build(type, opts) do
+  def build(type, opts) do
     opts
     |> BeamWeaver.MapShape.stringify_entries()
     |> Map.put("type", type)
@@ -187,11 +178,6 @@ defmodule BeamWeaver.OpenAI.ToolCalling do
     Map.merge(tool, BeamWeaver.MapShape.stringify_entries(opts))
   end
 
-  defp function_tool(%Tool{} = tool, render_opts), do: Renderer.openai_tool!(tool, render_opts)
-
-  defp function_tool(%{__struct__: _module} = tool, render_opts),
-    do: Renderer.openai_tool!(tool, render_opts)
-
   defp beamweaver_tool?(%Tool{}), do: true
   defp beamweaver_tool?(%{__struct__: module}), do: Tool.implemented_by?(module)
   defp beamweaver_tool?(_tool), do: false
@@ -200,7 +186,7 @@ defmodule BeamWeaver.OpenAI.ToolCalling do
        when is_map(function) do
     tool
     |> Map.delete("function")
-    |> Map.merge(stringify_keys(function))
+    |> Map.merge(BeamWeaver.MapShape.stringify_keys(function))
   end
 
   defp normalize_tool_map(tool), do: tool
@@ -229,7 +215,7 @@ defmodule BeamWeaver.OpenAI.ToolCalling do
   end
 
   defp example_call_name_and_args(call) when is_map(call) do
-    call = stringify_keys(call)
+    call = BeamWeaver.MapShape.stringify_keys(call)
     name = call["name"] || call["tool"] || call["type"]
     args = call["args"] || call["arguments"] || call["input"] || call["parameters"] || %{}
 

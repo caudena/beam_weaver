@@ -5,10 +5,10 @@ defmodule BeamWeaver.OpenAI.ChatCompletionsModel do
 
   use BeamWeaver.Provider.RedactedInspect
 
-  alias BeamWeaver.Core.LanguageModel
   alias BeamWeaver.Models.InvocationMetadata
   alias BeamWeaver.OpenAI.ChatCompletions.Messages
-  alias BeamWeaver.OpenAI.ChatCompletions.Options
+  alias BeamWeaver.OpenAI.ChatCompletions.Options.Body
+  alias BeamWeaver.OpenAI.ChatModel.TokenCounter
   alias BeamWeaver.OpenAI.Client
   alias BeamWeaver.OpenAI.ModelPolicy
   alias BeamWeaver.OpenAI.RequestMetadata
@@ -90,21 +90,10 @@ defmodule BeamWeaver.OpenAI.ChatCompletionsModel do
     metadata = Keyword.get(opts, :metadata, model.metadata)
 
     with :ok <- RequestMetadata.validate(metadata, Keyword.get(opts, :model, model.model)),
-         do: Options.to_body(%Options{opts: opts}, model, messages)
+         do: Body.to_body(model, messages, opts)
   end
 
-  def count_tokens(%__MODULE__{} = model, input, opts) do
-    case model.tokenizer || BeamWeaver.Models.tokenizer_for(model) do
-      {:ok, tokenizer} ->
-        LanguageModel.count_tokens({:tokenizer, tokenizer}, input, opts)
-
-      tokenizer when not is_nil(tokenizer) ->
-        LanguageModel.count_tokens({:tokenizer, tokenizer}, input, opts)
-
-      _missing ->
-        {:ok, LanguageModel.count_tokens_approximately(input)}
-    end
-  end
+  def count_tokens(%__MODULE__{} = model, input, opts), do: TokenCounter.count_text(model, input, opts)
 
   defp client(%__MODULE__{} = model) do
     %Client{
@@ -119,13 +108,8 @@ defmodule BeamWeaver.OpenAI.ChatCompletionsModel do
   end
 
   @impl true
-  def stream_metadata(%__MODULE__{} = model, body, opts), do: stream_metadata(model, body, opts, :chat_completions)
-
-  defp stream_metadata(%__MODULE__{} = model, body, opts, api) do
-    model
-    |> InvocationMetadata.openai(body, opts, api)
-    |> InvocationMetadata.to_metadata_map()
-  end
+  def stream_metadata(%__MODULE__{} = model, body, opts),
+    do: model |> InvocationMetadata.openai(body, opts, :chat_completions) |> InvocationMetadata.to_metadata_map()
 
   @impl true
   def send_request(:invoke, model, body, opts), do: Client.chat_completions(client(model), body, opts)

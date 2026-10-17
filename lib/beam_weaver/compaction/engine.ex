@@ -16,19 +16,19 @@ defmodule BeamWeaver.Compaction.Engine do
 
   alias BeamWeaver.ContextBudget
   alias BeamWeaver.Core.Error
+  alias BeamWeaver.MapAccess
 
   @prompt_reserve_tokens 4_096
 
-  @spec compact(map(), Request.t()) :: {:ok, Result.t()} | {:error, Error.t()}
-  def compact(_agent_state, %Request{} = request) do
+  @spec compact(map(), Request.t() | map()) :: {:ok, Result.t()} | {:error, Error.t()}
+  def compact(_agent_state, request) do
     with {:ok, request} <- Request.new(request),
          :ok <- portable(request),
          {:ok, before} <- initial_budget(request),
          {:ok, request} <- rebase_anti_thrash(request, before),
          :ok <- eligible(request, before),
          {:ok, prefix, tail, projected, manifest, projected_budget} <- project(request, before),
-         {:continue, prefix} <-
-           maybe_pruned(request, before, projected_budget, prefix, tail, projected, manifest),
+         {:continue, prefix} <- maybe_pruned(request, before, projected_budget, prefix, projected, manifest),
          {:ok, semantic, usage} <- summarize(request, before, prefix),
          {:ok, final_bytes, final_categories} <- render(request, semantic, tail),
          {:ok, after_budget} <- budget(request, final_bytes, final_categories),
@@ -42,10 +42,6 @@ defmodule BeamWeaver.Compaction.Engine do
       {:error, %Error{}} = error -> error
       {:error, reason} -> {:error, Error.new(:compaction_failed, "compaction failed", %{reason: inspect(reason)})}
     end
-  end
-
-  def compact(_agent_state, request) do
-    with {:ok, request} <- Request.new(request), do: compact(%{}, request)
   end
 
   defp portable(%Request{policy: %{mode: :portable}}), do: :ok
@@ -88,7 +84,7 @@ defmodule BeamWeaver.Compaction.Engine do
     end
   end
 
-  defp maybe_pruned(request, before, after_budget, prefix, _tail, projected, manifest) do
+  defp maybe_pruned(request, before, after_budget, prefix, projected, manifest) do
     reclaimed = before.estimated_tokens - after_budget.estimated_tokens
 
     released? =
@@ -112,15 +108,14 @@ defmodule BeamWeaver.Compaction.Engine do
     with true <- input_budget > 0,
          {:ok, chunks} <- chunks(prefix, input_budget, request.policy.maximum_hierarchical_summary_calls) do
       Enum.reduce_while(chunks, {:ok, request.previous_semantic, [], [], request.policy.maximum_schema_repairs}, fn
-        chunk, {:ok, previous, processed_reversed, usages, repairs_left} ->
-          processed_reversed = Enum.reverse(chunk, processed_reversed)
-          processed = Enum.reverse(processed_reversed)
+        chunk, {:ok, previous, processed, usages, repairs_left} ->
+          processed = processed ++ chunk
           coverage = {List.first(processed).chat_seq, List.last(processed).chat_seq}
           payload = summary_payload(request, previous, chunk, coverage, output_tokens)
 
           case summarize_chunk(request, payload, processed, coverage, repairs_left) do
             {:ok, semantic, usage, repairs_left} ->
-              {:cont, {:ok, semantic, processed_reversed, [usage | usages], repairs_left}}
+              {:cont, {:ok, semantic, processed, [usage | usages], repairs_left}}
 
             {:error, %Error{}} = error ->
               {:halt, error}
@@ -143,28 +138,23 @@ defmodule BeamWeaver.Compaction.Engine do
   end
 
   defp summarize_chunk(request, payload, processed, coverage, repairs_left) do
-    case call_summarizer(request, payload) do
-      {:ok, output, usage} ->
-        case validate_output(request, output, processed, coverage) do
-          {:ok, semantic} ->
-            {:ok, semantic, usage, repairs_left}
+    with {:ok, output, usage} <- call_summarizer(request, payload) do
+      case validate_output(request, output, processed, coverage) do
+        {:ok, semantic} ->
+          {:ok, semantic, usage, repairs_left}
 
-          {:error, %Error{} = error} when repairs_left > 0 ->
-            repair_payload = Map.put(payload, :repair, %{invalid_output: output, error: error_map(error)})
+        {:error, %Error{} = error} when repairs_left > 0 ->
+          repair_payload = Map.put(payload, :repair, %{invalid_output: output, error: error_map(error)})
 
-            with {:ok, repaired, repair_usage} <- call_summarizer(request, repair_payload),
-                 {:ok, semantic} <-
-                   validate_output(request, repaired, processed, coverage) do
-              usage = [usage, repair_usage] |> Enum.reject(&is_nil/1)
-              {:ok, semantic, usage, repairs_left - 1}
-            end
+          with {:ok, repaired, repair_usage} <- call_summarizer(request, repair_payload),
+               {:ok, semantic} <- validate_output(request, repaired, processed, coverage) do
+            usage = [usage, repair_usage] |> Enum.reject(&is_nil/1)
+            {:ok, semantic, usage, repairs_left - 1}
+          end
 
-          {:error, %Error{}} = error ->
-            error
-        end
-
-      {:error, %Error{}} = error ->
-        error
+        {:error, %Error{}} = error ->
+          error
+      end
     end
   end
 
@@ -192,38 +182,24 @@ defmodule BeamWeaver.Compaction.Engine do
   end
 
   defp validate_output(request, output, events, coverage) do
-    lineage_event_ids =
-      case request.previous_semantic do
-        %Semantic{} = semantic -> Validator.source_event_ids(semantic)
-        nil -> []
-      end
+    previous = request.previous_semantic
 
     with {:ok, decoded} <- decode_output(output),
-         {:ok, semantic} <- Semantic.new(decoded),
-         {:ok, semantic} <-
-           Validator.validate(semantic, events,
-             coverage: coverage,
-             maximum_bytes: request.policy.semantic_max_bytes,
-             lineage_event_ids: lineage_event_ids,
-             lineage_artifact_refs:
-               case request.previous_semantic do
-                 %Semantic{} = previous -> previous.artifact_refs
-                 nil -> []
-               end
-           ) do
-      {:ok, semantic}
+         {:ok, semantic} <- Semantic.new(decoded) do
+      Validator.validate(semantic, events,
+        coverage: coverage,
+        maximum_bytes: request.policy.semantic_max_bytes,
+        lineage_event_ids: if(previous, do: Validator.source_event_ids(previous), else: []),
+        lineage_artifact_refs: if(previous, do: previous.artifact_refs, else: [])
+      )
     end
   end
 
   defp decode_output(%{} = output), do: {:ok, output}
 
   defp decode_output(output) when is_binary(output) do
-    case BeamWeaver.JSON.decode(output) do
-      {:ok, decoded} ->
-        {:ok, decoded}
-
-      {:error, reason} ->
-        {:error, Error.new(:invalid_compaction_semantic, "compaction output is not JSON", %{reason: inspect(reason)})}
+    with {:error, reason} <- BeamWeaver.JSON.decode(output) do
+      {:error, Error.new(:invalid_compaction_semantic, "compaction output is not JSON", %{reason: inspect(reason)})}
     end
   end
 
@@ -415,15 +391,8 @@ defmodule BeamWeaver.Compaction.Engine do
   end
 
   defp initial_budget(request) do
-    accounting = request.accounting
-
-    budget(
-      request,
-      request.rendered_request,
-      nil,
-      value(accounting, :reported_input_tokens, 0),
-      true
-    )
+    reported_input_tokens = MapAccess.get(request.accounting, :reported_input_tokens, 0)
+    budget(request, request.rendered_request, nil, reported_input_tokens, true)
   end
 
   defp budget(request, bytes, categories), do: budget(request, bytes, categories, 0, false)
@@ -434,12 +403,12 @@ defmodule BeamWeaver.Compaction.Engine do
     ContextBudget.new(request.model_profile, bytes,
       trigger_ratio: request.policy.trigger_ratio,
       requested_max_output_tokens: request.requested_max_output_tokens,
-      categories: categories || value(accounting, :category_bytes, %{}),
-      accounting_method: value(accounting, :method, :conservative_utf8),
+      categories: categories || MapAccess.get(accounting, :category_bytes, %{}),
+      accounting_method: MapAccess.get(accounting, :method, :conservative_utf8),
       reported_input_tokens: reported_input_tokens,
-      reported_usage_baseline: if(use_baseline?, do: value(accounting, :reported_usage_baseline), else: nil),
-      component_descriptors: if(use_baseline?, do: value(accounting, :component_descriptors), else: nil),
-      profile_hash: value(accounting, :profile_hash)
+      reported_usage_baseline: if(use_baseline?, do: MapAccess.get(accounting, :reported_usage_baseline), else: nil),
+      component_descriptors: if(use_baseline?, do: MapAccess.get(accounting, :component_descriptors), else: nil),
+      profile_hash: MapAccess.get(accounting, :profile_hash)
     )
   end
 
@@ -455,18 +424,12 @@ defmodule BeamWeaver.Compaction.Engine do
 
   defp summary_output_tokens(request, before) do
     requested = floor(before.effective_input_limit * request.policy.summary_output_ratio)
-    maximum = profile_value(request.model_profile, :max_output_tokens) || request.policy.summary_output_max_tokens
+    maximum = MapAccess.get(request.model_profile, :max_output_tokens) || request.policy.summary_output_max_tokens
 
     requested
     |> clamp(request.policy.summary_output_min_tokens, request.policy.summary_output_max_tokens)
     |> min(maximum)
   end
-
-  defp profile_value(%{} = profile, key), do: Map.get(profile, key, Map.get(profile, Atom.to_string(key)))
-  defp profile_value(_profile, _key), do: nil
-
-  defp value(map, key, default \\ nil),
-    do: Map.get(map, key, Map.get(map, Atom.to_string(key), default))
 
   defp clamp(value, minimum, maximum), do: value |> max(minimum) |> min(maximum)
   defp error_map(error), do: %{type: error.type, message: error.message, details: error.details}

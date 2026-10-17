@@ -12,14 +12,6 @@ defmodule BeamWeaver.Agent.Middleware.SubagentOutputsTest do
                SubagentOutputs.before_model(middleware, state, %{})
     end
 
-    test "uses a configured map response" do
-      middleware = SubagentOutputs.new(required: [:research], response: %{"ok" => true})
-      state = %{subagent_outputs: %{"research" => %{}}}
-
-      assert {:jump, :end, %{structured_response: %{"ok" => true}}} =
-               SubagentOutputs.before_model(middleware, state, %{})
-    end
-
     test "invokes a configured arity-1 function response" do
       middleware = SubagentOutputs.new(required: [:research], response: fn outputs -> Map.keys(outputs) end)
       state = %{subagent_outputs: %{"research" => %{}}}

@@ -121,20 +121,15 @@ defmodule BeamWeaver.ShellPolicy.Commands do
 
   # True for a program this module reads specially: given arguments the
   # policy can't see (from `xargs`, say), it could run anything.
-  @spec special?(binary()) :: boolean()
-  def special?(name) do
-    name = canonical(name)
-    name in @posix_shells or name in @other_shells or name in @runners or Map.has_key?(handlers(), name)
-  end
+  defp special?(name),
+    do: name in @posix_shells or name in @other_shells or name in @runners or Map.has_key?(handlers(), name)
 
   # `python3.12`, `perl5.36` and `lua5.4` behave like `python`, `perl` and
   # `lua`.
   defp canonical(name) do
-    known? = &(&1 in @posix_shells or &1 in @other_shells or &1 in @runners or Map.has_key?(handlers(), &1))
-
     cond do
-      known?.(name) -> name
-      (stripped = String.replace(name, ~r/[\d.]+\z/, "")) != "" and known?.(stripped) -> stripped
+      special?(name) -> name
+      (stripped = String.replace(name, ~r/[\d.]+\z/, "")) != "" and special?(stripped) -> stripped
       true -> name
     end
   end

@@ -7,7 +7,6 @@ defmodule BeamWeaver.Agent.Middleware.ToolCallNormalization do
   alias BeamWeaver.Agent.ModelResponse
   alias BeamWeaver.Core.Message
   alias BeamWeaver.Core.Messages
-  alias BeamWeaver.Core.Messages.ToolCall
 
   defstruct max_argument_chars: 20_000
 
@@ -34,10 +33,6 @@ defmodule BeamWeaver.Agent.Middleware.ToolCallNormalization do
   end
 
   defp patch_message(message, _middleware), do: message
-
-  defp patch_tool_call(%ToolCall{} = call, index, %__MODULE__{} = middleware) do
-    patch_atom_tool_call(Map.from_struct(call), index, middleware)
-  end
 
   defp patch_tool_call(%{__struct__: _module} = call, index, %__MODULE__{} = middleware) do
     call

@@ -3,39 +3,26 @@ defmodule BeamWeaver.TextSplitter.Language do
 
   alias BeamWeaver.TextSplitter.Shared
 
+  @c_separators [
+    "\nclass ",
+    "\nvoid ",
+    "\nint ",
+    "\nfloat ",
+    "\ndouble ",
+    "\nif ",
+    "\nfor ",
+    "\nwhile ",
+    "\nswitch ",
+    "\ncase ",
+    "\n\n",
+    "\n",
+    " ",
+    ""
+  ]
+
   @language_separators %{
-    "c" => [
-      "\nclass ",
-      "\nvoid ",
-      "\nint ",
-      "\nfloat ",
-      "\ndouble ",
-      "\nif ",
-      "\nfor ",
-      "\nwhile ",
-      "\nswitch ",
-      "\ncase ",
-      "\n\n",
-      "\n",
-      " ",
-      ""
-    ],
-    "cpp" => [
-      "\nclass ",
-      "\nvoid ",
-      "\nint ",
-      "\nfloat ",
-      "\ndouble ",
-      "\nif ",
-      "\nfor ",
-      "\nwhile ",
-      "\nswitch ",
-      "\ncase ",
-      "\n\n",
-      "\n",
-      " ",
-      ""
-    ],
+    "c" => @c_separators,
+    "cpp" => @c_separators,
     "go" => [
       "\nfunc ",
       "\nvar ",
@@ -472,10 +459,10 @@ defmodule BeamWeaver.TextSplitter.Language do
     Map.get(@language_separators, normalize(language), Shared.common_fields()[:separators])
   end
 
-  def normalize(language) when is_atom(language),
+  defp normalize(language) when is_atom(language),
     do: language |> Atom.to_string() |> normalize()
 
-  def normalize(language) when is_binary(language) do
+  defp normalize(language) when is_binary(language) do
     language
     |> String.downcase()
     |> String.replace(~r/[^a-z0-9]+/, "_")
@@ -488,7 +475,6 @@ defmodule BeamWeaver.TextSplitter.Language do
       "exs" -> "elixir"
       "golang" -> "go"
       "c_plus_plus" -> "cpp"
-      "csharp" -> "csharp"
       "c_sharp" -> "csharp"
       "solidity" -> "sol"
       "vb6" -> "visualbasic6"
@@ -499,5 +485,5 @@ defmodule BeamWeaver.TextSplitter.Language do
     end
   end
 
-  def normalize(_language), do: ""
+  defp normalize(_language), do: ""
 end

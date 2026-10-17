@@ -84,6 +84,7 @@ defmodule BeamWeaver.Core.ToolRuntime do
 
   def emit_output_delta(%__MODULE__{}, _delta), do: :ok
 
-  defp runtime_value(nil, _field), do: nil
-  defp runtime_value(runtime, field) when is_map(runtime), do: Map.get(runtime, field)
+  @doc false
+  def runtime_value(nil, _field), do: nil
+  def runtime_value(runtime, field) when is_map(runtime), do: Map.get(runtime, field)
 end

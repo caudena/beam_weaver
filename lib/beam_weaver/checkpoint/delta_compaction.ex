@@ -42,8 +42,6 @@ defmodule BeamWeaver.Checkpoint.DeltaCompaction do
       |> non_empty_map?()
   end
 
-  defp snapshot_checkpoint?(nil), do: false
-
   defp snapshot_checkpoint?(record) do
     record
     |> checkpoint()

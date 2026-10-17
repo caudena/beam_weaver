@@ -69,7 +69,7 @@ defmodule BeamWeaver.Core.MessageUtilsTest do
     assert {:ok, ^message} = Message.from(message)
 
     assert {:error, %{type: :invalid_message}} = Message.from(%{"role" => "user"})
-    assert {:error, %{type: :invalid_role}} = Message.from({"human", "python role names are not accepted"})
+    assert {:error, %{type: :invalid_role}} = Message.from({"human", "hello"})
     assert {:error, %{type: :invalid_message}} = Message.from(42)
   end
 

@@ -15,17 +15,8 @@ defmodule BeamWeaver.Prompt.Variables do
     Template
   }
 
-  def variables(%StringTemplate{} = prompt) do
-    prompt.template
-    |> Template.variables_from_template(prompt.template_format)
-    |> without_partials(prompt.partials)
-  end
-
-  def variables(%MessageTemplate{} = template) do
-    template.template
-    |> Template.variables_from_template(template.template_format)
-    |> without_partials(template.partials)
-  end
+  def variables(%type{} = prompt) when type in [StringTemplate, MessageTemplate],
+    do: template_variables(prompt.template, prompt)
 
   def variables(%ChatTemplate{} = prompt) do
     prompt.messages
@@ -39,21 +30,15 @@ defmodule BeamWeaver.Prompt.Variables do
   def variables(%StructuredChatTemplate{prompt: prompt}), do: variables(prompt)
 
   def variables(%FewShotTemplate{} = prompt) do
-    [
-      Template.variables_from_template(prompt.prefix, prompt.template_format),
-      Template.variables_from_template(prompt.suffix, prompt.template_format)
-    ]
-    |> List.flatten()
+    [prompt.prefix, prompt.suffix]
+    |> Enum.flat_map(&Template.variables_from_template(&1, prompt.template_format))
     |> Enum.uniq()
     |> without_partials(prompt.partials)
   end
 
   def variables(%FewShotChatTemplate{} = prompt) do
-    [
-      Enum.flat_map(prompt.prefix_messages, &variables_from_part(&1, prompt.template_format)),
-      Enum.flat_map(prompt.suffix_messages, &variables_from_part(&1, prompt.template_format))
-    ]
-    |> List.flatten()
+    (prompt.prefix_messages ++ prompt.suffix_messages)
+    |> Enum.flat_map(&variables_from_part(&1, prompt.template_format))
     |> Enum.uniq()
     |> without_partials(prompt.partials)
   end
@@ -69,17 +54,8 @@ defmodule BeamWeaver.Prompt.Variables do
 
   defp variables_from_part(%MessageTemplate{} = template, _format), do: variables(template)
 
-  defp variables_from_part(%ImageTemplate{} = template, _format) do
-    template.url
-    |> Template.variables_from_template(template.template_format)
-    |> without_partials(template.partials)
-  end
-
-  defp variables_from_part(%DictTemplate{} = template, _format) do
-    template.template
-    |> Template.variables_from_template(template.template_format)
-    |> without_partials(template.partials)
-  end
+  defp variables_from_part(%ImageTemplate{} = template, _format), do: template_variables(template.url, template)
+  defp variables_from_part(%DictTemplate{} = template, _format), do: template_variables(template.template, template)
 
   defp variables_from_part(%MessagesPlaceholder{optional: true}, _format), do: []
 
@@ -88,6 +64,12 @@ defmodule BeamWeaver.Prompt.Variables do
 
   defp variables_from_part({_, template}, format), do: Template.variables_from_template(template, format)
   defp variables_from_part(_part, _format), do: []
+
+  defp template_variables(template, prompt) do
+    template
+    |> Template.variables_from_template(prompt.template_format)
+    |> without_partials(prompt.partials)
+  end
 
   defp without_partials(variables, partials) do
     partial_keys = partials |> Map.keys() |> Enum.map(&Kernel.to_string/1) |> MapSet.new()

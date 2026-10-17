@@ -6,9 +6,6 @@ defmodule BeamWeaver.Graph.Execution.Namespace do
 
   @type t :: [String.t()]
 
-  @spec root() :: t()
-  def root, do: []
-
   @spec normalize(t() | String.t() | atom() | nil) :: t()
   def normalize(nil), do: []
   def normalize([]), do: []
@@ -27,14 +24,6 @@ defmodule BeamWeaver.Graph.Execution.Namespace do
 
   def child(namespace, node, task_id),
     do: normalize(namespace) ++ [to_string(node) <> @task_separator <> task_id]
-
-  @spec parent(t() | String.t() | nil) :: t()
-  def parent(namespace) do
-    namespace
-    |> normalize()
-    |> Enum.reject(&numeric_segment?/1)
-    |> Enum.drop(-1)
-  end
 
   @spec recast(t() | String.t() | atom() | nil) :: String.t()
   def recast(namespace) do

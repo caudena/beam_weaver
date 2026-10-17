@@ -18,8 +18,11 @@ defmodule BeamWeaver.Provider.Response do
   must stay in debug-only metadata and are not interpreted here.
   """
 
+  import BeamWeaver.Provider.ChatCompletionsWire, only: [metadata_value: 2]
+
   alias BeamWeaver.Core.Message
   alias BeamWeaver.Agent.ModelResolver
+  alias BeamWeaver.MapShape
   alias BeamWeaver.Models.Profile
   alias BeamWeaver.Provider.Outcome
   alias BeamWeaver.Provider.Replay
@@ -255,7 +258,6 @@ defmodule BeamWeaver.Provider.Response do
   defp normalize_usage(_usage, _response_metadata), do: %{}
 
   defp public_usage(nil, normalized), do: normalized
-  defp public_usage(%{} = usage, _normalized) when map_size(usage) == 0, do: usage
   defp public_usage(usage, _normalized), do: usage
 
   defp raw_usage(response_metadata) when is_map(response_metadata) do
@@ -277,10 +279,7 @@ defmodule BeamWeaver.Provider.Response do
           _other -> acc
         end
       end)
-      |> case do
-        counts when map_size(counts) > 0 -> counts
-        _empty -> nil
-      end
+      |> MapShape.empty_to_nil()
     end
   end
 
@@ -420,11 +419,7 @@ defmodule BeamWeaver.Provider.Response do
     |> reject_empty_values()
   end
 
-  defp provider_metadata(nil, metadata), do: %{raw: metadata}
-
-  defp provider_metadata(provider, metadata) do
-    %{provider: provider, raw: metadata}
-  end
+  defp provider_metadata(provider, metadata), do: MapShape.put_present(%{raw: metadata}, :provider, provider)
 
   defp provider(model, message, opts) do
     Keyword.get(opts, :provider) ||
@@ -439,38 +434,31 @@ defmodule BeamWeaver.Provider.Response do
       message.metadata[:reasoning_content]
     else
       message
-      |> Message.content_blocks()
-      |> case do
-        {:ok, blocks} ->
-          blocks
-          |> Enum.flat_map(fn
-            %{type: :reasoning, reasoning: text} when is_binary(text) -> [text]
-            _block -> []
-          end)
-          |> Enum.join("")
-          |> empty_to_nil()
-
-        _error ->
-          nil
-      end
+      |> content_blocks()
+      |> Enum.flat_map(fn
+        %{type: :reasoning, reasoning: text} when is_binary(text) -> [text]
+        _block -> []
+      end)
+      |> Enum.join("")
+      |> MapShape.empty_to_nil()
     end
   end
 
   defp thought_signatures(%Message{} = message) do
     message
-    |> Message.content_blocks()
-    |> case do
-      {:ok, blocks} ->
-        blocks
-        |> Enum.flat_map(fn
-          %{type: type} = block when type in [:reasoning, :text] -> thought_signature_values(block)
-          _block -> []
-        end)
-        |> Enum.reject(&(&1 in [nil, ""]))
-        |> Enum.uniq()
+    |> content_blocks()
+    |> Enum.flat_map(fn
+      %{type: type} = block when type in [:reasoning, :text] -> thought_signature_values(block)
+      _block -> []
+    end)
+    |> Enum.reject(&(&1 in [nil, ""]))
+    |> Enum.uniq()
+  end
 
-      _error ->
-        []
+  defp content_blocks(message) do
+    case Message.content_blocks(message) do
+      {:ok, blocks} -> blocks
+      _error -> []
     end
   end
 
@@ -506,33 +494,19 @@ defmodule BeamWeaver.Provider.Response do
 
   @hosted_summary_keys [:type, :id, :call_id, :tool_call_id, :container_id, :name, :status, :provider_type]
 
-  defp hosted_tool_calls(%Message{} = message) do
-    (message.server_tool_calls ++ hosted_content_blocks(message, @hosted_content_block_types))
+  defp hosted_tool_calls(%Message{} = message),
+    do: hosted_summaries(message.server_tool_calls, message, @hosted_content_block_types)
+
+  defp hosted_tool_results(%Message{} = message),
+    do: hosted_summaries(message.server_tool_results, message, @hosted_result_block_types)
+
+  defp hosted_summaries(items, message, types) do
+    blocks = message |> content_blocks() |> Enum.filter(&(is_map(&1) and Map.has_key?(types, Map.get(&1, :type))))
+
+    (items ++ blocks)
     |> Enum.map(&hosted_tool_summary/1)
     |> Enum.reject(&(&1 == %{}))
     |> Enum.uniq()
-  end
-
-  defp hosted_tool_results(%Message{} = message) do
-    (message.server_tool_results ++ hosted_content_blocks(message, @hosted_result_block_types))
-    |> Enum.map(&hosted_tool_summary/1)
-    |> Enum.reject(&(&1 == %{}))
-    |> Enum.uniq()
-  end
-
-  defp hosted_content_blocks(%Message{} = message, types) do
-    message
-    |> Message.content_blocks()
-    |> case do
-      {:ok, blocks} ->
-        Enum.filter(blocks, fn
-          %{type: type} -> Map.has_key?(types, type)
-          _block -> false
-        end)
-
-      _error ->
-        []
-    end
   end
 
   defp hosted_tool_summary(%{} = block) do
@@ -654,30 +628,8 @@ defmodule BeamWeaver.Provider.Response do
 
   defp static_tool_usage_details(_details), do: %{}
 
-  defp empty_to_nil(""), do: nil
-  defp empty_to_nil(value), do: value
-
-  defp metadata_value(map, key) when is_map(map) do
-    Map.get(map, key) || Map.get(map, to_string(key))
-  end
-
-  defp metadata_value(_map, _key), do: nil
-
-  defp normalize_headers(metadata) when is_map(metadata) do
-    metadata
-    |> Map.get(:headers, %{})
-    |> atom_keyed_map()
-  end
-
+  defp normalize_headers(%{headers: headers}) when is_map(headers), do: Map.filter(headers, &is_atom(elem(&1, 0)))
   defp normalize_headers(_metadata), do: %{}
-
-  defp atom_keyed_map(headers) when is_map(headers) do
-    headers
-    |> Enum.filter(fn {key, _value} -> is_atom(key) end)
-    |> Map.new()
-  end
-
-  defp atom_keyed_map(_headers), do: %{}
 
   defp existing_limits(metadata) when is_map(metadata) do
     case metadata[:limits] do
@@ -792,12 +744,5 @@ defmodule BeamWeaver.Provider.Response do
     end
   end
 
-  defp reject_empty_values(map) when is_map(map) do
-    Map.reject(map, fn
-      {_key, nil} -> true
-      {_key, []} -> true
-      {_key, value} when is_map(value) and map_size(value) == 0 -> true
-      _entry -> false
-    end)
-  end
+  defp reject_empty_values(map), do: MapShape.compact(map, [nil, :empty_list, :empty_map])
 end

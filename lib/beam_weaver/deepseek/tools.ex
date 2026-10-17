@@ -8,8 +8,7 @@ defmodule BeamWeaver.DeepSeek.Tools do
   alias BeamWeaver.OpenAI.ToolCalling
   alias BeamWeaver.Tool.Renderer
 
-  @chat_function_name ~r/^[A-Za-z0-9_-]{1,128}$/
-  @responses_function_name ~r/^[A-Za-z0-9_-]{1,128}$/
+  @function_name ~r/^[A-Za-z0-9_-]{1,128}$/
   @max_tools 128
   @responses_tool_types ["function", "web_search", "web_search_2025_08_26"]
 
@@ -83,9 +82,7 @@ defmodule BeamWeaver.DeepSeek.Tools do
   def validate_chat_tools(tools) when is_list(tools) do
     with :ok <- validate_count(tools),
          :ok <- validate_each(tools, :chat_completions),
-         :ok <- validate_strict_set(tools) do
-      :ok
-    end
+         do: validate_strict_set(tools)
   end
 
   @doc false
@@ -93,54 +90,41 @@ defmodule BeamWeaver.DeepSeek.Tools do
   def validate_responses_tools(tools) when is_list(tools) do
     with :ok <- validate_count(tools),
          :ok <- validate_each(tools, :responses),
-         :ok <- validate_unique_responses_names(tools) do
-      :ok
-    end
+         do: validate_unique_responses_names(tools)
   end
+
+  defp error(type, message, details),
+    do: {:error, Error.new(type, message, Enum.into(details, %{provider: :deepseek}))}
 
   defp validate_count(tools) do
-    if length(tools) <= @max_tools do
-      :ok
-    else
-      {:error,
-       Error.new(:invalid_request, "DeepSeek supports at most 128 tools", %{
-         provider: :deepseek,
-         feature: :tools,
-         count: length(tools),
-         max: @max_tools
-       })}
-    end
+    if length(tools) <= @max_tools,
+      do: :ok,
+      else:
+        error(:invalid_request, "DeepSeek supports at most 128 tools",
+          feature: :tools,
+          count: length(tools),
+          max: @max_tools
+        )
   end
 
-  defp validate_each(tools, api) do
-    Enum.reduce_while(tools, :ok, fn tool, :ok ->
-      case validate_tool(tool, api) do
-        :ok -> {:cont, :ok}
-        {:error, error} -> {:halt, {:error, error}}
-      end
-    end)
-  end
+  defp validate_each(tools, api),
+    do: Enum.find_value(tools, :ok, fn tool -> with :ok <- validate_tool(tool, api), do: nil end)
 
   defp validate_tool(%{"type" => "function", "function" => function}, :chat_completions)
        when is_map(function),
        do: validate_function(function, :chat_completions)
 
   defp validate_tool(%{"type" => type}, :chat_completions) do
-    {:error,
-     Error.new(:unsupported_feature, "DeepSeek Chat Completions supports function tools only", %{
-       provider: :deepseek,
-       api: :chat_completions,
-       feature: :tools,
-       unsupported: [type],
-       supported: ["function"]
-     })}
+    error(:unsupported_feature, "DeepSeek Chat Completions supports function tools only",
+      api: :chat_completions,
+      feature: :tools,
+      unsupported: [type],
+      supported: ["function"]
+    )
   end
 
   defp validate_tool(%{"type" => "function"} = function, :responses),
     do: validate_function(function, :responses)
-
-  defp validate_tool(%{"type" => type}, :responses) when type in @responses_tool_types,
-    do: :ok
 
   defp validate_tool(%{"type" => "custom", "name" => "apply_patch"}, :responses), do: :ok
 
@@ -148,57 +132,39 @@ defmodule BeamWeaver.DeepSeek.Tools do
     do: :ok
 
   defp validate_tool(%{"type" => type} = tool, :responses) do
-    {:error,
-     Error.new(:unsupported_feature, "DeepSeek Responses tool type is not supported", %{
-       provider: :deepseek,
-       api: :responses,
-       feature: :tools,
-       unsupported: [type],
-       tool: tool,
-       supported: @responses_tool_types ++ ["custom:apply_patch"]
-     })}
+    error(:unsupported_feature, "DeepSeek Responses tool type is not supported",
+      api: :responses,
+      feature: :tools,
+      unsupported: [type],
+      tool: tool,
+      supported: @responses_tool_types ++ ["custom:apply_patch"]
+    )
   end
 
-  defp validate_tool(tool, api) do
-    {:error,
-     Error.new(:invalid_request, "DeepSeek tool declaration is invalid", %{
-       provider: :deepseek,
-       api: api,
-       tool: inspect(tool)
-     })}
-  end
+  defp validate_tool(tool, api),
+    do: error(:invalid_request, "DeepSeek tool declaration is invalid", api: api, tool: inspect(tool))
 
   defp validate_function(function, api) do
     name = function["name"]
     parameters = function["parameters"]
-    name_pattern = function_name_pattern(api)
 
     cond do
-      not is_binary(name) or not Regex.match?(name_pattern, name) ->
-        {:error,
-         Error.new(:invalid_request, "DeepSeek function tool name is invalid", %{
-           provider: :deepseek,
-           api: api,
-           name: name,
-           pattern: Regex.source(name_pattern)
-         })}
+      not is_binary(name) or not Regex.match?(@function_name, name) ->
+        error(:invalid_request, "DeepSeek function tool name is invalid",
+          api: api,
+          name: name,
+          pattern: Regex.source(@function_name)
+        )
 
       not is_nil(parameters) and not is_map(parameters) ->
-        {:error,
-         Error.new(:invalid_request, "DeepSeek function parameters must be a JSON Schema object", %{
-           provider: :deepseek,
-           api: api,
-           name: name
-         })}
+        error(:invalid_request, "DeepSeek function parameters must be a JSON Schema object", api: api, name: name)
 
       function["strict"] not in [nil, true, false] ->
-        {:error,
-         Error.new(:invalid_request, "DeepSeek function strict must be a boolean", %{
-           provider: :deepseek,
-           api: api,
-           name: name,
-           strict: function["strict"]
-         })}
+        error(:invalid_request, "DeepSeek function strict must be a boolean",
+          api: api,
+          name: name,
+          strict: function["strict"]
+        )
 
       true ->
         :ok
@@ -212,12 +178,10 @@ defmodule BeamWeaver.DeepSeek.Tools do
 
     if Enum.any?(functions, &(&1["strict"] == true)) and
          Enum.any?(functions, &(&1["strict"] != true)) do
-      {:error,
-       Error.new(:invalid_request, "DeepSeek strict mode requires every function tool to be strict", %{
-         provider: :deepseek,
-         api: :chat_completions,
-         feature: :strict_tools
-       })}
+      error(:invalid_request, "DeepSeek strict mode requires every function tool to be strict",
+        api: :chat_completions,
+        feature: :strict_tools
+      )
     else
       :ok
     end
@@ -238,15 +202,7 @@ defmodule BeamWeaver.DeepSeek.Tools do
         :ok
 
       duplicate_names ->
-        {:error,
-         Error.new(:invalid_request, "DeepSeek Responses tool names must be unique", %{
-           provider: :deepseek,
-           api: :responses,
-           names: duplicate_names
-         })}
+        error(:invalid_request, "DeepSeek Responses tool names must be unique", api: :responses, names: duplicate_names)
     end
   end
-
-  defp function_name_pattern(:chat_completions), do: @chat_function_name
-  defp function_name_pattern(:responses), do: @responses_function_name
 end

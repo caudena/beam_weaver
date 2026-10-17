@@ -87,7 +87,7 @@ defmodule BeamWeaver.Anthropic.ChatModel do
       opts
       |> Keyword.put(:model, model)
       |> Keyword.put(:profile, profile)
-      |> ChatOptions.put_present(:max_tokens, max_tokens || profile.max_output_tokens || 4096)
+      |> Keyword.put(:max_tokens, max_tokens || profile.max_output_tokens || 4096)
     )
   end
 
@@ -102,26 +102,21 @@ defmodule BeamWeaver.Anthropic.ChatModel do
          {:ok, body} <- RequestBuilder.count_tokens_body(model, messages, opts),
          {body, opts} = thread_betas(body, opts),
          {:ok, response} <- Client.count_tokens(client(model), body, opts) do
-      {:ok, response["input_tokens"] || response[:input_tokens] || 0}
+      {:ok, response["input_tokens"] || 0}
     end
   end
 
   @impl true
-  def stream_events(%__MODULE__{} = model, messages, opts \\ []) do
-    with {:ok, model} <- resolve_invocation_model(model, opts),
-         {:ok, body} <- request_body(model, messages, Keyword.put(opts, :stream, true)) do
-      {body, opts} = thread_betas(body, opts)
-      Client.messages_stream_events(client(model), body, opts)
-    end
-  end
+  def stream_events(%__MODULE__{} = model, messages, opts \\ []), do: stream_call(:stream_events, model, messages, opts)
 
   @impl true
-  def stream_typed_events(%__MODULE__{} = model, messages, opts \\ []) do
+  def stream_typed_events(%__MODULE__{} = model, messages, opts \\ []),
+    do: stream_call(:exact_stream_events, model, messages, opts)
+
+  defp stream_call(call, model, messages, opts) do
     with {:ok, model} <- resolve_invocation_model(model, opts),
-         {:ok, body} <- request_body(model, messages, Keyword.put(opts, :stream, true)) do
-      {body, opts} = thread_betas(body, opts)
-      Client.messages_stream_typed_events(client(model), body, opts)
-    end
+         {:ok, body} <- request_body(model, messages, Keyword.put(opts, :stream, true)),
+         do: send_request(call, model, body, opts)
   end
 
   @spec request_body(t(), [BeamWeaver.Core.Message.t()], keyword()) ::
@@ -174,6 +169,7 @@ defmodule BeamWeaver.Anthropic.ChatModel do
       :invoke -> Client.messages(client, body, opts)
       :stream -> Client.messages_stream(client, body, opts)
       :stream_response -> Client.messages_stream_response(client, body, opts)
+      :stream_events -> Client.messages_stream_events(client, body, opts)
       :exact_stream_events -> Client.messages_stream_typed_events(client, body, opts)
     end
   end

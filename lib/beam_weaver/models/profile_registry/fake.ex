@@ -36,11 +36,5 @@ defmodule BeamWeaver.Models.ProfileRegistry.Fake do
   }
 
   def profiles, do: Map.values(@profiles)
-
-  def resolve(model) do
-    case Map.fetch(@profiles, {:fake, model}) do
-      {:ok, profile} -> {:ok, profile}
-      :error -> {:fallback, :fake, model}
-    end
-  end
+  def resolve(model), do: BeamWeaver.Models.ProfileRegistry.fetch_or_fallback(@profiles, :fake, model)
 end

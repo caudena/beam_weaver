@@ -124,14 +124,10 @@ defmodule BeamWeaver.Agent.Middleware do
     |> List.wrap()
     |> Enum.reduce_while({:ok, []}, fn entry, {:ok, acc} ->
       case normalize(entry) do
-        {:ok, middleware} -> {:cont, {:ok, [middleware | acc]}}
+        {:ok, middleware} -> {:cont, {:ok, acc ++ [middleware]}}
         {:error, _error} = error -> {:halt, error}
       end
     end)
-    |> case do
-      {:ok, middleware} -> {:ok, Enum.reverse(middleware)}
-      error -> error
-    end
   end
 
   @doc "Returns the stable middleware name."

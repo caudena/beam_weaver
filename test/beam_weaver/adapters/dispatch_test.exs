@@ -11,7 +11,7 @@ defmodule BeamWeaver.Adapter.DispatchTest do
     :code.purge(ETS)
     :code.delete(ETS)
 
-    assert {:ok, ETS} = Dispatch.module(adapter, :get_tuple, 2)
+    assert {:ok, ETS} = Dispatch.module(adapter, :get_tuple, 2, [])
   end
 
   test "the checkpoint facade loads the saver module before checking its callbacks" do

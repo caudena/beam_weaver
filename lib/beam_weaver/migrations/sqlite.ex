@@ -5,12 +5,12 @@ defmodule BeamWeaver.Migrations.SQLite do
 
   @current_version 2
 
-  def current_version(opts \\ []) do
+  def current_version(opts) do
     checkpoint_spec!(opts)
     @current_version
   end
 
-  def migrated_version(opts \\ []) do
+  def migrated_version(opts) do
     table = checkpoint_spec!(opts).checkpoints_table
 
     case table_columns(repo_for(opts), table) do
@@ -19,9 +19,9 @@ defmodule BeamWeaver.Migrations.SQLite do
     end
   end
 
-  def up(opts \\ []) do
+  def up(opts) do
     spec = checkpoint_spec!(opts)
-    current = migrated_version(Keyword.put(opts, :adapter, :checkpoint))
+    current = migrated_version(opts)
     target = Keyword.get(opts, :version, @current_version)
 
     if current == 0 and target >= 1, do: create_initial(spec)
@@ -29,9 +29,9 @@ defmodule BeamWeaver.Migrations.SQLite do
     :ok
   end
 
-  def down(opts \\ []) do
+  def down(opts) do
     spec = checkpoint_spec!(opts)
-    current = migrated_version(Keyword.put(opts, :adapter, :checkpoint))
+    current = migrated_version(opts)
     target = Keyword.get(opts, :version, 1)
 
     if current >= 2 and target <= 2, do: remove_ordering(spec)
@@ -39,7 +39,7 @@ defmodule BeamWeaver.Migrations.SQLite do
     :ok
   end
 
-  def verify_migrated!(opts \\ []) do
+  def verify_migrated!(opts) do
     case migrated_version(opts) do
       @current_version ->
         :ok
@@ -203,8 +203,6 @@ defmodule BeamWeaver.Migrations.SQLite do
 
   defp normalize_selector(:checkpoint), do: [{:checkpoint, []}]
   defp normalize_selector([:checkpoint]), do: [{:checkpoint, []}]
-  defp normalize_selector({:checkpoint, opts}), do: [{:checkpoint, opts}]
-  defp normalize_selector([{:checkpoint, opts}]), do: [{:checkpoint, opts}]
   defp normalize_selector(other), do: List.wrap(other)
 
   defp reject_prefix!(opts) do

@@ -9,11 +9,12 @@ defmodule BeamWeaver.TestSupport.Conformance.ChatHistoryCase do
 
       alias BeamWeaver.Core.ChatHistory
       alias BeamWeaver.Core.Message
+      alias BeamWeaver.TestSupport.Conformance.Subject
 
       @beamweaver_session Keyword.fetch!(opts, :session)
 
       test "chat history appends, reads, and clears messages" do
-        session = beamweaver_standard_value(@beamweaver_session)
+        session = Subject.standard_value(@beamweaver_session)
 
         assert {:ok, []} = ChatHistory.get_messages(session)
         assert :ok = ChatHistory.add_messages(session, [Message.user("hello")])
@@ -21,9 +22,6 @@ defmodule BeamWeaver.TestSupport.Conformance.ChatHistoryCase do
         assert :ok = ChatHistory.clear(session)
         assert {:ok, []} = ChatHistory.get_messages(session)
       end
-
-      defp beamweaver_standard_value(value),
-        do: BeamWeaver.TestSupport.Conformance.Subject.standard_value(value)
     end
   end
 end

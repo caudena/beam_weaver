@@ -56,4 +56,10 @@ defmodule BeamWeaver.Graph.ServerInfoTest do
       assert popped.metadata == %{}
     end
   end
+
+  test "new/1 keeps a user's is_authenticated: false" do
+    for user <- [%{identity: "u1", is_authenticated: false}, %{"identity" => "u1", "is_authenticated" => false}] do
+      assert BeamWeaver.Graph.ServerInfo.new(user: user).user.is_authenticated == false
+    end
+  end
 end

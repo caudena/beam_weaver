@@ -11,8 +11,8 @@ defmodule BeamWeaver.Agent.CapabilityProfile do
 
   alias BeamWeaver.Agent.CapabilityProfileConfig
   alias BeamWeaver.Agent.GeneralPurposeSubagentProfile
-  alias BeamWeaver.Agent.ModelResolver
   alias BeamWeaver.Agent.ProfileRegistry
+  alias BeamWeaver.MapShape
 
   @registry_key {__MODULE__, :registry}
 
@@ -81,9 +81,7 @@ defmodule BeamWeaver.Agent.CapabilityProfile do
   @doc "Registers or merges a harness profile under a provider or provider:model key."
   @spec register_capability_profile(String.t() | atom(), __MODULE__.t() | term()) :: :ok
   def register_capability_profile(key, profile) do
-    incoming = builtin(profile)
-
-    ProfileRegistry.register(@registry_key, key, incoming, exact_profiles(), &merge/2)
+    ProfileRegistry.register(@registry_key, builtin_profiles(), key, builtin(profile), &merge/2)
   end
 
   @doc """
@@ -96,49 +94,17 @@ defmodule BeamWeaver.Agent.CapabilityProfile do
   def get_capability_profile(nil), do: nil
 
   def get_capability_profile(spec) when is_atom(spec) or is_binary(spec) do
-    ProfileRegistry.lookup(spec, exact_profiles(), &merge/2)
+    ProfileRegistry.lookup(@registry_key, builtin_profiles(), spec, &merge/2)
   end
 
   @doc "Returns the harness profile that best matches a raw or resolved model."
   @spec for_model(term(), String.t() | nil) :: __MODULE__.t()
-  def for_model(model, spec \\ nil)
-
-  def for_model(_model, spec) when is_binary(spec) do
-    get_capability_profile(spec) || new(name: :default)
-  end
-
-  def for_model(spec, nil) when is_binary(spec),
-    do: get_capability_profile(spec) || new(name: :default)
-
-  def for_model(model, nil) do
-    identifier = ModelResolver.get_model_identifier(model)
-    provider = ModelResolver.get_model_provider(model)
-
-    cond do
-      provider && identifier && not String.contains?(identifier, ":") ->
-        get_capability_profile("#{provider}:#{identifier}") ||
-          get_capability_profile(provider) ||
-          new(name: :default)
-
-      identifier && String.contains?(identifier, ":") ->
-        get_capability_profile(identifier) || new(name: :default)
-
-      provider ->
-        get_capability_profile(provider) || new(name: :default)
-
-      true ->
-        new(name: :default)
-    end
-  end
+  def for_model(model, spec \\ nil),
+    do: ProfileRegistry.for_model(model, spec, &get_capability_profile/1) || new(name: :default)
 
   @doc "Materializes the profile middleware list, invoking a zero-arity factory if present."
   @spec materialize_extra_middleware(__MODULE__.t()) :: [term()]
-  def materialize_extra_middleware(%__MODULE__{middleware: middleware})
-      when is_function(middleware, 0),
-      do: middleware.() |> List.wrap()
-
-  def materialize_extra_middleware(%__MODULE__{middleware: middleware}),
-    do: List.wrap(middleware)
+  def materialize_extra_middleware(%__MODULE__{middleware: middleware}), do: resolve_middleware(middleware)
 
   @doc """
   Merges `override` into `base`.
@@ -166,8 +132,8 @@ defmodule BeamWeaver.Agent.CapabilityProfile do
 
   def to_map(%__MODULE__{} = profile) do
     %{}
-    |> ProfileRegistry.maybe_put(:base_system_prompt, profile.base_system_prompt)
-    |> ProfileRegistry.maybe_put(:system_prompt_suffix, profile.prompt_suffix)
+    |> MapShape.put_present(:base_system_prompt, profile.base_system_prompt)
+    |> MapShape.put_present(:system_prompt_suffix, profile.prompt_suffix)
     |> ProfileRegistry.maybe_put_map(:tool_description_overrides, profile.tool_descriptions)
     |> ProfileRegistry.maybe_put_list(:excluded_tools, profile.excluded_tools)
     |> ProfileRegistry.maybe_put_list(:excluded_middleware, profile.excluded_middleware)
@@ -246,24 +212,16 @@ defmodule BeamWeaver.Agent.CapabilityProfile do
     }
   end
 
-  defp exact_profiles do
-    ProfileRegistry.exact_profiles(builtin_profiles(), @registry_key)
-  end
-
   defp normalize_general_purpose(nil), do: %GeneralPurposeSubagentProfile{}
   defp normalize_general_purpose(%GeneralPurposeSubagentProfile{} = profile), do: profile
 
   defp normalize_general_purpose(profile) when is_map(profile) or is_list(profile),
     do: GeneralPurposeSubagentProfile.new(profile)
 
-  defp maybe_put_default_subagent(opts, %GeneralPurposeSubagentProfile{enabled: false}),
-    do: Map.put(opts, :default_subagent?, false)
+  defp maybe_put_default_subagent(opts, %GeneralPurposeSubagentProfile{enabled: enabled}) when is_boolean(enabled),
+    do: Map.put(opts, :default_subagent?, enabled)
 
-  defp maybe_put_default_subagent(opts, %GeneralPurposeSubagentProfile{enabled: true}),
-    do: Map.put(opts, :default_subagent?, true)
-
-  defp maybe_put_default_subagent(opts, _gp),
-    do: Map.put_new(opts, :default_subagent?, Map.get(opts, :default_subagent?, true))
+  defp maybe_put_default_subagent(opts, _gp), do: opts
 
   defp maybe_put_gp(map, %GeneralPurposeSubagentProfile{} = gp) do
     case GeneralPurposeSubagentProfile.to_map(gp) do
@@ -328,7 +286,6 @@ defmodule BeamWeaver.Agent.CapabilityProfile do
   defp resolve_middleware(middleware), do: List.wrap(middleware)
 
   defp middleware_key(%module{}), do: module
-  defp middleware_key(%{__struct__: module}), do: module
   defp middleware_key(other), do: other
 
   defp union_terms(left, right) do

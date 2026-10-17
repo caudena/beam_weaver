@@ -13,6 +13,7 @@ defmodule BeamWeaver.Moonshot.ChatModel do
   alias BeamWeaver.Moonshot.Messages
   alias BeamWeaver.Moonshot.Options
   alias BeamWeaver.Moonshot.Tools
+  alias BeamWeaver.Provider.ChatCompletionsWire
   alias BeamWeaver.Provider.ChatModel.Options, as: ChatOptions
   alias BeamWeaver.Provider.Options, as: ProviderOptions
   alias BeamWeaver.Provider.StructuredOutput
@@ -81,12 +82,10 @@ defmodule BeamWeaver.Moonshot.ChatModel do
           {:ok, map()} | {:error, Error.t()}
   @impl true
   def request_body(%__MODULE__{} = model, messages, opts \\ []) do
-    tools = Keyword.get(opts, :tools, [])
-    builder_opts = Keyword.delete(opts, :tools)
-
-    with {:ok, body} <- Options.to_body(model, messages, builder_opts),
-         {:ok, body} <- maybe_put_stream_usage(body, model, opts),
-         {:ok, body} <- maybe_put_tools(body, tools),
+    with {:ok, body} <- Options.to_body(model, messages, Keyword.delete(opts, :tools)),
+         {:ok, tools} <- render_tools(Keyword.get(opts, :tools, [])),
+         body =
+           body |> ChatCompletionsWire.put_stream_usage(model, opts) |> ProviderOptions.put_optional("tools", tools),
          :ok <- validate_dynamic_tools(body),
          :ok <- validate_required_tool_choice(body),
          :ok <- validate_web_search_thinking(body) do
@@ -148,39 +147,12 @@ defmodule BeamWeaver.Moonshot.ChatModel do
     }
   end
 
-  defp maybe_put_tools(body, []), do: {:ok, body}
-
-  defp maybe_put_tools(body, tools) when is_list(tools) do
-    with {:ok, tools} <- render_tools(tools) do
-      {:ok, Map.put(body, "tools", tools)}
-    end
-  end
-
   defp render_tools([]), do: {:ok, []}
 
   defp render_tools(tools) do
     with {:ok, rendered} <- Tools.render_chat_tools(tools),
          :ok <- Tools.validate_chat_tools(rendered),
          do: {:ok, rendered}
-  end
-
-  defp maybe_put_stream_usage(body, model, opts) do
-    stream? = Keyword.get(opts, :stream, false)
-    stream_usage? = Keyword.get(opts, :stream_usage, model.stream_usage)
-
-    cond do
-      not stream? ->
-        {:ok, body}
-
-      not stream_usage? ->
-        {:ok, body}
-
-      Map.has_key?(body, "stream_options") ->
-        {:ok, body}
-
-      true ->
-        {:ok, Map.put(body, "stream_options", %{"include_usage" => true})}
-    end
   end
 
   defp validate_web_search_thinking(%{"tools" => tools} = body) when is_list(tools) do
@@ -222,8 +194,6 @@ defmodule BeamWeaver.Moonshot.ChatModel do
       :ok
     end
   end
-
-  defp validate_dynamic_tools(_body), do: :ok
 
   defp validate_required_tool_choice(%{"tool_choice" => "required"} = body) do
     top_level_tools? = match?([_ | _], body["tools"])

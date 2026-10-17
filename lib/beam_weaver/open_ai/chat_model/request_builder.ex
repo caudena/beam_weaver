@@ -1,6 +1,8 @@
 defmodule BeamWeaver.OpenAI.ChatModel.RequestBuilder do
   @moduledoc false
 
+  import BeamWeaver.Provider.Options, only: [option: 3]
+
   alias BeamWeaver.Models.ParamPolicy
   alias BeamWeaver.OpenAI.ChatModel.StructuredOutput
   alias BeamWeaver.Core.Error
@@ -47,7 +49,7 @@ defmodule BeamWeaver.OpenAI.ChatModel.RequestBuilder do
         |> Options.put_optional("reasoning", reasoning)
         |> Options.put_optional(
           "temperature",
-          temperature_option(model_name, model, opts, reasoning)
+          ModelPolicy.request_temperature(model_name, option(model, opts, :temperature), reasoning)
         )
         |> Options.put_optional("max_output_tokens", max_output_tokens_option(model, opts))
         |> Options.put_optional("top_p", option(model, opts, :top_p))
@@ -172,64 +174,29 @@ defmodule BeamWeaver.OpenAI.ChatModel.RequestBuilder do
     # Every model parameter of the call is checked, including ones this API
     # has no field for, so a foreign option such as `stop` is an error rather
     # than dropped.
-    opts_params = Map.new(opts)
+    params = Map.merge(model_params, Map.new(opts))
 
-    params = Map.merge(model_params, opts_params)
-    policy = Keyword.get(opts, :param_policy, model.param_policy)
-
-    ParamPolicy.validate(model.profile, params, policy, api: :responses)
+    ParamPolicy.validate(model.profile, params, option(model, opts, :param_policy), api: :responses)
   end
 
   defp validate_gpt6_options(model, opts) do
     model_name = Keyword.get(opts, :model, model.model)
     reasoning = reasoning_option(model, opts)
+    sampling = Enum.reject([:temperature, :top_p, :top_logprobs], &is_nil(option(model, opts, &1)))
 
-    unsupported_sampling =
-      if ModelPolicy.gpt6_sol_or_luna?(model_name) and
-           not ModelPolicy.none_reasoning?(reasoning) do
-        Enum.filter([:temperature, :top_p, :top_logprobs], fn param ->
-          not is_nil(option(model, opts, param))
-        end)
-      else
-        []
-      end
-
-    cond do
-      not ModelPolicy.reasoning_effort_supported?(model_name, reasoning) ->
-        {:error,
-         Error.new(
-           :invalid_model_option,
-           "GPT-6 reasoning effort is not supported by this model",
-           %{
-             model: model_name,
-             reasoning_effort: reasoning_effort(reasoning),
-             supported:
-               if(ModelPolicy.responses_tools_only?(model_name),
-                 do: [:low, :medium, :high, :xhigh, :max],
-                 else: [:none, :low, :medium, :high, :xhigh, :max]
-               )
-           }
-         )}
-
-      unsupported_sampling != [] ->
-        {:error,
-         Error.new(:invalid_model_option, "GPT-6 sampling controls require reasoning effort none", %{
-           model: model_name,
-           params: unsupported_sampling,
-           expected_reasoning_effort: :none
-         })}
-
-      ModelPolicy.gpt6?(model_name) and not ModelPolicy.none_reasoning?(reasoning) and
-          "message.output_text.logprobs" in List.wrap(Keyword.get(opts, :include)) ->
+    with :ok <- ModelPolicy.validate_gpt6_effort(model_name, reasoning, reasoning_effort(reasoning)),
+         :ok <- ModelPolicy.validate_gpt6_sampling(model_name, reasoning, sampling) do
+      if ModelPolicy.gpt6?(model_name) and not ModelPolicy.none_reasoning?(reasoning) and
+           "message.output_text.logprobs" in List.wrap(Keyword.get(opts, :include)) do
         {:error,
          Error.new(
            :invalid_model_option,
            "GPT-6 reasoning does not support message.output_text.logprobs in include",
            %{model: model_name, include: "message.output_text.logprobs"}
          )}
-
-      true ->
+      else
         :ok
+      end
     end
   end
 
@@ -257,8 +224,6 @@ defmodule BeamWeaver.OpenAI.ChatModel.RequestBuilder do
   end
 
   defp streaming_tool(tool), do: tool
-
-  defp option(model, opts, key), do: Keyword.get(opts, key, Map.get(model, key))
 
   # `:auto`, `:none` and `:required` (or Anthropic's `:any`) pass through; a
   # bare tool name forces that function.
@@ -307,9 +272,5 @@ defmodule BeamWeaver.OpenAI.ChatModel.RequestBuilder do
     option(model, opts, :max_output_tokens) ||
       option(model, opts, :max_completion_tokens) ||
       option(model, opts, :max_tokens)
-  end
-
-  defp temperature_option(model_name, model, opts, reasoning) do
-    ModelPolicy.request_temperature(model_name, option(model, opts, :temperature), reasoning)
   end
 end

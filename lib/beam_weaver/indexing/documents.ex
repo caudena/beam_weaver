@@ -5,6 +5,7 @@ defmodule BeamWeaver.Indexing.Documents do
   alias BeamWeaver.Core.Error
 
   alias BeamWeaver.Indexing.Hash
+  alias BeamWeaver.MapAccess
   alias BeamWeaver.Result
 
   @spec normalize(Enumerable.t(), keyword()) :: {:ok, [Document.t()]} | {:error, Error.t()}
@@ -47,7 +48,7 @@ defmodule BeamWeaver.Indexing.Documents do
   defp keyed_source_id(%Document{metadata: metadata}, opts) do
     case Keyword.fetch(opts, :source_id_key) do
       {:ok, key} ->
-        case fetch_metadata(metadata, key) do
+        case MapAccess.fetch(metadata, key) do
           {:ok, nil} ->
             {:error,
              Error.new(:missing_source_id, "document source_id_key resolved to nil", %{
@@ -73,33 +74,11 @@ defmodule BeamWeaver.Indexing.Documents do
   # split from ("parent_id"), so a shorter version's cleanup reaches them all.
   defp metadata_source(%Document{metadata: metadata}) do
     Enum.find_value([:source_id, "source_id", :source, "source", "parent_id"], fn key ->
-      case fetch_metadata(metadata, key) do
+      case MapAccess.fetch(metadata, key) do
         {:ok, nil} -> nil
         {:ok, value} -> to_string(value)
         :error -> nil
       end
     end)
-  end
-
-  defp fetch_metadata(metadata, key) do
-    cond do
-      Map.has_key?(metadata, key) ->
-        {:ok, Map.fetch!(metadata, key)}
-
-      Map.has_key?(metadata, to_string(key)) ->
-        {:ok, Map.fetch!(metadata, to_string(key))}
-
-      is_binary(key) ->
-        atom_key = String.to_existing_atom(key)
-
-        if Map.has_key?(metadata, atom_key),
-          do: {:ok, Map.fetch!(metadata, atom_key)},
-          else: :error
-
-      true ->
-        :error
-    end
-  rescue
-    ArgumentError -> :error
   end
 end

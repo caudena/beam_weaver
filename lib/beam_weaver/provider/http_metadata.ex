@@ -1,24 +1,24 @@
 defmodule BeamWeaver.Provider.HTTPMetadata do
   @moduledoc false
 
+  import BeamWeaver.MapShape, only: [reject_nil_values: 1]
+
   alias BeamWeaver.Transport.Redactor
   alias BeamWeaver.Transport.Request
 
   @spec build(atom() | String.t() | nil, Request.t(), keyword()) :: map()
-  def build(provider, %Request{} = request, opts \\ []) do
-    %{
+  def build(provider, %Request{} = request, opts) do
+    reject_nil_values(%{
       provider: provider,
       method: request.method,
       url: redact_url(request.url),
       timeout_ms: Keyword.get(opts, :timeout),
       headers: Redactor.redact(request.headers),
       request_body_summary: body_summary(request.json || request.body)
-    }
-    |> Enum.reject(fn {_key, value} -> is_nil(value) end)
-    |> Map.new()
+    })
   end
 
-  def redact_url(url) when is_binary(url) do
+  defp redact_url(url) when is_binary(url) do
     uri = URI.parse(url)
 
     if uri.query do
@@ -42,7 +42,7 @@ defmodule BeamWeaver.Provider.HTTPMetadata do
     _error -> Redactor.redact(url)
   end
 
-  def redact_url(url), do: Redactor.redact(url)
+  defp redact_url(url), do: Redactor.redact(url)
 
   defp secret_query_key?(key) do
     normalized =
@@ -71,7 +71,7 @@ defmodule BeamWeaver.Provider.HTTPMetadata do
     input = Map.get(body, "input") || Map.get(body, :input)
     tools = Map.get(body, "tools") || Map.get(body, :tools) || []
 
-    %{
+    reject_nil_values(%{
       keys: body |> Map.keys() |> Enum.map(&to_string/1) |> Enum.sort(),
       model: Map.get(body, "model") || Map.get(body, :model),
       stream: Map.get(body, "stream") || Map.get(body, :stream),
@@ -81,9 +81,7 @@ defmodule BeamWeaver.Provider.HTTPMetadata do
       tool_names: tool_names(tools),
       response_format: response_format_summary(Map.get(body, "response_format") || Map.get(body, :response_format)),
       text_format: response_format_summary(get_in(body, ["text", "format"]) || get_in(body, [:text, :format]))
-    }
-    |> Enum.reject(fn {_key, value} -> is_nil(value) end)
-    |> Map.new()
+    })
   end
 
   defp body_summary(body) when is_list(body), do: %{items_count: length(body)}
@@ -109,14 +107,12 @@ defmodule BeamWeaver.Provider.HTTPMetadata do
   defp response_format_summary(nil), do: nil
 
   defp response_format_summary(format) when is_map(format) do
-    %{
+    reject_nil_values(%{
       type: Map.get(format, "type") || Map.get(format, :type),
       name:
         get_in(format, ["json_schema", "name"]) || get_in(format, [:json_schema, :name]) ||
           Map.get(format, "name") || Map.get(format, :name)
-    }
-    |> Enum.reject(fn {_key, value} -> is_nil(value) end)
-    |> Map.new()
+    })
   end
 
   defp response_format_summary(_format), do: nil

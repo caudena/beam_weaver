@@ -9,14 +9,15 @@ defmodule BeamWeaver.TestSupport.Conformance.IndexingCase do
 
       alias BeamWeaver.Core.Document
       alias BeamWeaver.Indexing
+      alias BeamWeaver.TestSupport.Conformance.Subject
       alias BeamWeaver.VectorStore
 
       @beamweaver_vector_store Keyword.fetch!(opts, :vector_store)
       @beamweaver_record_manager Keyword.fetch!(opts, :record_manager)
 
       test "indexing skips unchanged documents through the record manager" do
-        store = beamweaver_standard_value(@beamweaver_vector_store)
-        records = beamweaver_standard_value(@beamweaver_record_manager)
+        store = Subject.standard_value(@beamweaver_vector_store)
+        records = Subject.standard_value(@beamweaver_record_manager)
 
         docs = [
           Document.new!("standard indexing document", id: "std-1", metadata: %{source: "std"})
@@ -31,9 +32,6 @@ defmodule BeamWeaver.TestSupport.Conformance.IndexingCase do
 
         assert {:ok, [_doc]} = VectorStore.similarity_search(store, "standard", k: 1)
       end
-
-      defp beamweaver_standard_value(value),
-        do: BeamWeaver.TestSupport.Conformance.Subject.standard_value(value)
     end
   end
 end

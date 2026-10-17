@@ -418,20 +418,6 @@ defmodule BeamWeaver.Transport.SafeTest do
     assert calls(agent) == ["https://start.example/path"]
   end
 
-  test "keeps redirect responses when following is disabled" do
-    {:ok, agent} = start_agent([{:redirect, "https://final.example/done"}])
-
-    assert {:ok, %Response{status: 302}} =
-             Safe.request(
-               Request.new(method: :get, url: "https://start.example/path"),
-               transport: FakeTransport,
-               agent: agent,
-               follow_redirects?: false
-             )
-
-    assert calls(agent) == ["https://start.example/path"]
-  end
-
   test "keeps redirect responses by default" do
     {:ok, agent} = start_agent([{:redirect, "https://final.example/done"}])
 

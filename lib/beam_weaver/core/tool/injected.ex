@@ -3,8 +3,10 @@ defmodule BeamWeaver.Core.Tool.Injected do
 
   alias BeamWeaver.Core.Error
 
+  @sources [:state, :store, :runtime, :tool_runtime, :tool_call_id, :context, :config, :checkpointer]
+  @source_names Enum.map(@sources, &Atom.to_string/1)
+
   def normalize(nil), do: {:ok, %{}}
-  def normalize(injected) when injected == %{}, do: {:ok, %{}}
 
   def normalize(injected) when is_list(injected) do
     if Enum.all?(injected, &match?({_key, _source}, &1)) do
@@ -27,12 +29,7 @@ defmodule BeamWeaver.Core.Tool.Injected do
 
   def normalize(injected), do: invalid_injected(injected)
 
-  def normalize!(injected) do
-    case normalize(injected) do
-      {:ok, injected} -> injected
-      {:error, error} -> raise ArgumentError, error.message
-    end
-  end
+  def normalize!(injected), do: injected |> normalize() |> BeamWeaver.Policy.bang()
 
   defp invalid_injected(injected) do
     {:error,
@@ -50,27 +47,8 @@ defmodule BeamWeaver.Core.Tool.Injected do
      })}
   end
 
-  defp normalize_source(source)
-       when source in [
-              :state,
-              :store,
-              :runtime,
-              :tool_runtime,
-              :tool_call_id,
-              :context,
-              :config,
-              :checkpointer
-            ],
-       do: {:ok, source}
-
-  defp normalize_source("state"), do: {:ok, :state}
-  defp normalize_source("store"), do: {:ok, :store}
-  defp normalize_source("runtime"), do: {:ok, :runtime}
-  defp normalize_source("tool_runtime"), do: {:ok, :tool_runtime}
-  defp normalize_source("tool_call_id"), do: {:ok, :tool_call_id}
-  defp normalize_source("context"), do: {:ok, :context}
-  defp normalize_source("config"), do: {:ok, :config}
-  defp normalize_source("checkpointer"), do: {:ok, :checkpointer}
+  defp normalize_source(source) when source in @sources, do: {:ok, source}
+  defp normalize_source(source) when source in @source_names, do: {:ok, String.to_existing_atom(source)}
 
   defp normalize_source({state, field_or_path})
        when state in [:state, "state"] do
@@ -85,17 +63,7 @@ defmodule BeamWeaver.Core.Tool.Injected do
     {:error,
      Error.new(:invalid_tool, "tool injected arg source is not supported", %{
        source: inspect(source),
-       supported: [
-         :state,
-         :store,
-         :runtime,
-         :tool_runtime,
-         :tool_call_id,
-         :context,
-         :config,
-         :checkpointer,
-         "{:state, field_or_path}"
-       ]
+       supported: @sources ++ ["{:state, field_or_path}"]
      })}
   end
 

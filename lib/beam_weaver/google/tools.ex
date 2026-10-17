@@ -5,8 +5,6 @@ defmodule BeamWeaver.Google.Tools do
 
   import BeamWeaver.MapShape, only: [put_present: 3]
 
-  @behaviour BeamWeaver.Provider.ToolRenderer
-
   alias BeamWeaver.Core.Error
   alias BeamWeaver.Core.Tool
   alias BeamWeaver.Provider.Options
@@ -53,7 +51,7 @@ defmodule BeamWeaver.Google.Tools do
   def mcp_servers(servers),
     do: %{"mcpServers" => Options.normalize_option_list(List.wrap(servers))}
 
-  @impl true
+  @doc false
   def render_tools(nil, _opts), do: {:ok, []}
   def render_tools([], _opts), do: {:ok, []}
 
@@ -70,7 +68,7 @@ defmodule BeamWeaver.Google.Tools do
   defp function_declarations([]), do: []
   defp function_declarations(declarations), do: [%{"functionDeclarations" => declarations}]
 
-  @impl true
+  @doc false
   def render_tool_choice(nil, _tools, _opts), do: {:ok, nil}
   def render_tool_choice(false, _tools, _opts), do: {:ok, nil}
   def render_tool_choice(:validated, _tools, _opts), do: {:ok, function_calling_config("VALIDATED")}
@@ -191,16 +189,17 @@ defmodule BeamWeaver.Google.Tools do
   defp sanitize_schema_value(value) when is_list(value), do: Enum.map(value, &sanitize_schema_value/1)
   defp sanitize_schema_value(value), do: value
 
-  @builtin_tool_kinds %{
-    "googleSearch" => :google_search,
-    "googleSearchRetrieval" => :google_search_retrieval,
-    "googleMaps" => :google_maps,
-    "codeExecution" => :code_execution,
-    "fileSearch" => :file_search,
-    "urlContext" => :url_context,
-    "computerUse" => :computer_use,
-    "mcpServers" => :mcp_servers
+  @builtin_tool_keys %{
+    "google_search" => "googleSearch",
+    "google_search_retrieval" => "googleSearchRetrieval",
+    "google_maps" => "googleMaps",
+    "code_execution" => "codeExecution",
+    "file_search" => "fileSearch",
+    "url_context" => "urlContext",
+    "computer_use" => "computerUse",
+    "mcp_servers" => "mcpServers"
   }
+  @builtin_tool_kinds Map.new(@builtin_tool_keys, fn {key, wire_key} -> {wire_key, String.to_atom(key)} end)
 
   @doc false
   # The kinds of the built-in tools in a tool list, such as `:computer_use`.
@@ -238,13 +237,5 @@ defmodule BeamWeaver.Google.Tools do
     %{"functionCallingConfig" => config}
   end
 
-  defp builtin_tool_key("google_search"), do: "googleSearch"
-  defp builtin_tool_key("google_search_retrieval"), do: "googleSearchRetrieval"
-  defp builtin_tool_key("google_maps"), do: "googleMaps"
-  defp builtin_tool_key("code_execution"), do: "codeExecution"
-  defp builtin_tool_key("file_search"), do: "fileSearch"
-  defp builtin_tool_key("url_context"), do: "urlContext"
-  defp builtin_tool_key("computer_use"), do: "computerUse"
-  defp builtin_tool_key("mcp_servers"), do: "mcpServers"
-  defp builtin_tool_key(key), do: key
+  defp builtin_tool_key(key), do: Map.get(@builtin_tool_keys, key, key)
 end

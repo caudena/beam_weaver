@@ -9,8 +9,8 @@ defmodule BeamWeaver.Indexing.RecordManager.EctoPostgres do
   use BeamWeaver.Indexing.RecordManager
 
   alias BeamWeaver.Adapter.Error, as: AdapterError
-  alias BeamWeaver.Core.Error
   alias BeamWeaver.Indexing.Record
+  alias BeamWeaver.Indexing.RecordManager
 
   defstruct repo: nil,
             query_module: Ecto.Adapters.SQL,
@@ -39,21 +39,17 @@ defmodule BeamWeaver.Indexing.RecordManager.EctoPostgres do
     LIMIT 1
     """
 
-    case query(manager, sql, [namespace, to_string(id)]) do
-      {:ok, result} ->
-        case rows_from_result(result) do
-          [] -> {:ok, nil}
-          [row | _] -> {:ok, record_from_row(row, namespace)}
-        end
-
-      {:error, error} ->
-        {:error, normalize_error(error)}
+    with {:ok, result} <- query(manager, sql, [namespace, to_string(id)]) do
+      case rows_from_result(result) do
+        [] -> {:ok, nil}
+        [row | _] -> {:ok, record_from_row(row, namespace)}
+      end
     end
   end
 
   @impl true
   def put(%__MODULE__{} = manager, %Record{} = record, opts) do
-    namespace = namespace(manager, opts, record.namespace)
+    namespace = to_string(Keyword.get(opts, :namespace, RecordManager.record_namespace(manager, record.namespace)))
 
     sql = """
     INSERT INTO #{table(manager)} (namespace, id, source_id, hash, metadata, updated_at)
@@ -73,16 +69,13 @@ defmodule BeamWeaver.Indexing.RecordManager.EctoPostgres do
       record.metadata || %{}
     ]
 
-    case query(manager, sql, params) do
-      {:ok, _result} -> :ok
-      {:error, error} -> {:error, normalize_error(error)}
-    end
+    with {:ok, _result} <- query(manager, sql, params), do: :ok
   end
 
   @impl true
   def list(%__MODULE__{} = manager, opts) do
     namespace = namespace(manager, opts)
-    source_ids = opts |> Keyword.get(:source_ids) |> normalize_source_ids()
+    source_ids = opts |> Keyword.get(:source_ids) |> RecordManager.normalize_source_ids()
 
     {source_sql, params} =
       case source_ids do
@@ -97,72 +90,36 @@ defmodule BeamWeaver.Indexing.RecordManager.EctoPostgres do
     ORDER BY updated_at ASC, id ASC
     """
 
-    case query(manager, sql, params) do
-      {:ok, result} ->
-        {:ok, result |> rows_from_result() |> Enum.map(&record_from_row(&1, namespace))}
-
-      {:error, error} ->
-        {:error, normalize_error(error)}
-    end
+    with {:ok, result} <- query(manager, sql, params),
+         do: {:ok, result |> rows_from_result() |> Enum.map(&record_from_row(&1, namespace))}
   end
 
   @impl true
   def delete(%__MODULE__{} = manager, ids, opts) do
-    namespace = namespace(manager, opts)
+    params = [namespace(manager, opts), Enum.map(ids, &to_string/1)]
 
-    case query(manager, "DELETE FROM #{table(manager)} WHERE namespace = $1 AND id = ANY($2)", [
-           namespace,
-           Enum.map(ids, &to_string/1)
-         ]) do
-      {:ok, _result} -> :ok
-      {:error, error} -> {:error, normalize_error(error)}
-    end
+    with {:ok, _result} <- query(manager, "DELETE FROM #{table(manager)} WHERE namespace = $1 AND id = ANY($2)", params),
+         do: :ok
   end
 
   # The table, in the Postgres schema `prefix:` names, quoted as the migration quotes it.
   defp table(%__MODULE__{} = manager), do: BeamWeaver.Migrations.Postgres.Util.qualify(manager.prefix, manager.table)
 
-  defp query(%__MODULE__{} = manager, sql, params) do
-    AdapterError.query(manager, sql, params,
-      type: :record_manager_error,
-      message: "record manager adapter error"
-    )
-  end
+  defp query(%__MODULE__{} = manager, sql, params),
+    do: AdapterError.query(manager, sql, params, :record_manager_error, "record manager adapter error")
 
-  defp rows_from_result(%{columns: columns, rows: rows}) do
-    Enum.map(rows, fn row -> columns |> Enum.zip(row) |> Map.new() end)
-  end
-
-  defp rows_from_result(%{rows: rows}), do: Enum.map(rows, &row_map/1)
-  defp rows_from_result(rows) when is_list(rows), do: Enum.map(rows, &row_map/1)
-  defp rows_from_result(_result), do: []
-
-  defp row_map(%{} = row), do: row
-
-  defp row_map([id, source_id, hash, metadata, updated_at]) do
-    %{
-      "id" => id,
-      "source_id" => source_id,
-      "hash" => hash,
-      "metadata" => metadata,
-      "updated_at" => updated_at
-    }
-  end
-
-  defp row_map(row), do: %{"row" => row}
+  defp rows_from_result(%{columns: columns, rows: rows}), do: Enum.map(rows, &(columns |> Enum.zip(&1) |> Map.new()))
 
   defp record_from_row(row, namespace) do
     %Record{
-      id: fetch(row, ["id", :id]),
-      source_id: fetch(row, ["source_id", :source_id]),
-      hash: fetch(row, ["hash", :hash]),
-      metadata: fetch(row, ["metadata", :metadata]) || %{},
+      id: row["id"],
+      source_id: row["source_id"],
+      hash: row["hash"],
+      metadata: row["metadata"] || %{},
       namespace: namespace,
-      updated_at: normalize_datetime(fetch(row, ["updated_at", :updated_at]))
+      updated_at: normalize_datetime(row["updated_at"])
     }
   end
-
-  defp fetch(row, keys), do: Enum.find_value(keys, &Map.get(row, &1))
 
   defp normalize_datetime(%DateTime{} = datetime), do: datetime
 
@@ -171,18 +128,5 @@ defmodule BeamWeaver.Indexing.RecordManager.EctoPostgres do
 
   defp normalize_datetime(_value), do: nil
 
-  defp namespace(manager, opts, record_namespace \\ nil) do
-    Keyword.get(opts, :namespace, record_namespace(manager, record_namespace))
-    |> to_string()
-  end
-
-  defp record_namespace(manager, nil), do: manager.namespace
-  defp record_namespace(manager, :default), do: manager.namespace
-  defp record_namespace(manager, "default"), do: manager.namespace
-  defp record_namespace(_manager, namespace), do: namespace
-
-  defp normalize_source_ids(nil), do: nil
-  defp normalize_source_ids(source_ids), do: source_ids |> List.wrap() |> Enum.map(&to_string/1)
-
-  defp normalize_error(%Error{} = error), do: error
+  defp namespace(manager, opts), do: to_string(Keyword.get(opts, :namespace, manager.namespace))
 end

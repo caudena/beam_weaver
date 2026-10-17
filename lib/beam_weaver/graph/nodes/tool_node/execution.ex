@@ -73,8 +73,7 @@ defmodule BeamWeaver.Graph.Nodes.ToolNode.Execution do
         if tool_concurrent?(node, call) do
           {groups, [entry | concurrent]}
         else
-          groups = prepend_concurrent_group(groups, concurrent)
-          {[{:sequential, [entry]} | groups], []}
+          {[[entry] | prepend_concurrent_group(groups, concurrent)], []}
         end
       end)
 
@@ -85,10 +84,9 @@ defmodule BeamWeaver.Graph.Nodes.ToolNode.Execution do
 
   defp prepend_concurrent_group(groups, []), do: groups
 
-  defp prepend_concurrent_group(groups, concurrent),
-    do: [{:concurrent, Enum.reverse(concurrent)} | groups]
+  defp prepend_concurrent_group(groups, concurrent), do: [Enum.reverse(concurrent) | groups]
 
-  defp execute_group({:concurrent, indexed_calls}, node, request_state, runtime, scratchpad) do
+  defp execute_group(indexed_calls, node, request_state, runtime, scratchpad) do
     indexed_calls
     |> async_stream_tools(
       runtime,
@@ -106,10 +104,6 @@ defmodule BeamWeaver.Graph.Nodes.ToolNode.Execution do
       {{:ok, {index, call, value}}, _entry} -> {index, call, {:ok, value}}
       {{:exit, reason}, {call, index}} -> {index, call, {:exit, reason}}
     end)
-  end
-
-  defp execute_group({:sequential, indexed_calls}, node, request_state, runtime, scratchpad) do
-    execute_group({:concurrent, indexed_calls}, node, request_state, runtime, scratchpad)
   end
 
   defp async_stream_tools(indexed_calls, runtime, scratchpad, fun, opts) do
@@ -135,8 +129,8 @@ defmodule BeamWeaver.Graph.Nodes.ToolNode.Execution do
     do: supervisor
 
   defp task_supervisor(%{execution: execution}) do
-    case runtime_value(execution, :task_supervisor) do
-      nil -> runtime_value(execution, "task_supervisor")
+    case ToolRuntime.runtime_value(execution, :task_supervisor) do
+      nil -> ToolRuntime.runtime_value(execution, "task_supervisor")
       supervisor -> supervisor
     end
   end
@@ -171,7 +165,7 @@ defmodule BeamWeaver.Graph.Nodes.ToolNode.Execution do
         end
       end)
       |> then(fn handler -> handler.(request) end)
-      |> normalize_wrapped_tool_result(node, call)
+      |> normalize_wrapped_tool_result()
 
     emit_tool_terminal(runtime, call, result)
     result
@@ -244,12 +238,8 @@ defmodule BeamWeaver.Graph.Nodes.ToolNode.Execution do
     end
   end
 
-  defp normalize_wrapped_tool_result({:ok, result}, _node, _call), do: result
-
-  defp normalize_wrapped_tool_result({:error, %Error{} = error}, _node, _call),
-    do: {:error, error}
-
-  defp normalize_wrapped_tool_result(result, _node, _call), do: result
+  defp normalize_wrapped_tool_result({:ok, result}), do: result
+  defp normalize_wrapped_tool_result(result), do: result
 
   defp tool_call_trace_metadata(call) do
     %{}
@@ -337,7 +327,7 @@ defmodule BeamWeaver.Graph.Nodes.ToolNode.Execution do
   end
 
   defp normalize_task_result(node, call, {:exit, :timeout}) do
-    error = tool_timeout_error(node, call)
+    error = Error.new(:tool_timeout, "tool timed out", %{tool: call.name, tool_call_id: call.id, timeout: node.timeout})
     handle_tool_error(node, call, error)
   end
 
@@ -502,7 +492,7 @@ defmodule BeamWeaver.Graph.Nodes.ToolNode.Execution do
     do: {:ok, get_state_field(state, field_or_path)}
 
   defp injected_value(:store, _call, _state, runtime, _tool_runtime),
-    do: {:ok, runtime_value(runtime, :store)}
+    do: {:ok, ToolRuntime.runtime_value(runtime, :store)}
 
   defp injected_value(:runtime, _call, _state, runtime, _tool_runtime), do: {:ok, runtime}
 
@@ -513,13 +503,13 @@ defmodule BeamWeaver.Graph.Nodes.ToolNode.Execution do
     do: {:ok, call.id}
 
   defp injected_value(:context, _call, _state, runtime, _tool_runtime),
-    do: {:ok, runtime_value(runtime, :context)}
+    do: {:ok, ToolRuntime.runtime_value(runtime, :context)}
 
   defp injected_value(:config, _call, _state, runtime, _tool_runtime),
-    do: {:ok, runtime_value(runtime, :config)}
+    do: {:ok, ToolRuntime.runtime_value(runtime, :config)}
 
   defp injected_value(:checkpointer, _call, _state, runtime, _tool_runtime),
-    do: {:ok, runtime_value(runtime, :checkpointer)}
+    do: {:ok, ToolRuntime.runtime_value(runtime, :checkpointer)}
 
   defp injected_value(source, _call, _state, _runtime, _tool_runtime) do
     {:error,
@@ -527,9 +517,6 @@ defmodule BeamWeaver.Graph.Nodes.ToolNode.Execution do
        source: inspect(source)
      })}
   end
-
-  defp runtime_value(nil, _field), do: nil
-  defp runtime_value(runtime, field) when is_map(runtime), do: Map.get(runtime, field)
 
   defp get_state_field(state, path) when is_list(path) do
     Enum.reduce_while(path, state, fn field, acc ->
@@ -581,8 +568,9 @@ defmodule BeamWeaver.Graph.Nodes.ToolNode.Execution do
     |> join_sentences()
   end
 
-  defp maybe_append(parts, _label, value) when value in [%{}, [], nil], do: parts
-  defp maybe_append(parts, label, value), do: parts ++ ["#{label}: #{inspect(value)}"]
+  @doc false
+  def maybe_append(parts, _label, value) when value in [%{}, [], nil], do: parts
+  def maybe_append(parts, label, value), do: parts ++ ["#{label}: #{inspect(value)}"]
 
   # Joins the parts with ". ", without doubling the period of a part that
   # already ends a sentence, such as an error message that ends with one.
@@ -611,27 +599,20 @@ defmodule BeamWeaver.Graph.Nodes.ToolNode.Execution do
     end
   end
 
-  defp sanitize_value(%{__struct__: _module} = value, _hidden), do: inspect(value)
+  @doc false
+  def sanitize_value(%{__struct__: _module} = value, _hidden), do: inspect(value)
 
-  defp sanitize_value(value, hidden) when is_map(value) do
+  def sanitize_value(value, hidden) when is_map(value) do
     value
     |> Enum.reject(fn {key, _value} -> MapSet.member?(hidden, to_string(key)) end)
     |> Map.new(fn {key, value} -> {key, sanitize_value(value, hidden)} end)
   end
 
-  defp sanitize_value(values, hidden) when is_list(values) do
+  def sanitize_value(values, hidden) when is_list(values) do
     values
     |> Enum.reject(fn value -> is_binary(value) and MapSet.member?(hidden, value) end)
     |> Enum.map(&sanitize_value(&1, hidden))
   end
 
-  defp sanitize_value(value, _hidden), do: value
-
-  defp tool_timeout_error(node, call) do
-    Error.new(:tool_timeout, "tool timed out", %{
-      tool: call.name,
-      tool_call_id: call.id,
-      timeout: node.timeout
-    })
-  end
+  def sanitize_value(value, _hidden), do: value
 end

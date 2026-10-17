@@ -8,21 +8,17 @@ defmodule BeamWeaver.Moonshot.Tools do
   alias BeamWeaver.OpenAI.ChatCompletions
   alias BeamWeaver.OpenAI.ToolCalling
 
-  @allowed_types MapSet.new(["function", "builtin_function"])
+  @allowed_types ["builtin_function", "function"]
   @function_name ~r/^[a-zA-Z0-9_-]{1,64}$/
   @max_tools 128
 
   @doc "Builds Kimi's built-in web-search tool declaration."
   @spec web_search(keyword() | map()) :: map()
   def web_search(opts \\ []) do
-    opts = if is_map(opts), do: Map.to_list(opts), else: opts
-
-    function =
-      opts
-      |> BeamWeaver.MapShape.stringify_entries()
-      |> Map.put("name", "$web_search")
-
-    %{"type" => "builtin_function", "function" => function}
+    %{
+      "type" => "builtin_function",
+      "function" => opts |> BeamWeaver.MapShape.stringify_entries() |> Map.put("name", "$web_search")
+    }
   end
 
   @doc "Builds an OpenAI-compatible function tool declaration."
@@ -74,24 +70,18 @@ defmodule BeamWeaver.Moonshot.Tools do
   @doc false
   @spec validate_chat_tools([map()]) :: :ok | {:error, Error.t()}
   def validate_chat_tools(tools) when is_list(tools) do
-    if length(tools) > @max_tools do
-      {:error,
-       Error.new(:invalid_request, "Moonshot supports at most 128 tools", %{
-         provider: :moonshot,
-         feature: :tools,
-         count: length(tools),
-         max: @max_tools
-       })}
-    else
-      tools
-      |> Enum.reduce_while(:ok, fn tool, :ok ->
-        case validate_tool(tool) do
-          :ok -> {:cont, :ok}
-          {:error, error} -> {:halt, {:error, error}}
-        end
-      end)
-    end
+    if length(tools) > @max_tools,
+      do:
+        error(:invalid_request, "Moonshot supports at most 128 tools",
+          feature: :tools,
+          count: length(tools),
+          max: @max_tools
+        ),
+      else: Enum.find_value(tools, :ok, fn tool -> with :ok <- validate_tool(tool), do: nil end)
   end
+
+  defp error(type, message, details),
+    do: {:error, Error.new(type, message, Enum.into(details, %{provider: :moonshot}))}
 
   @doc false
   @spec web_search_tool?(map()) :: boolean()
@@ -107,15 +97,13 @@ defmodule BeamWeaver.Moonshot.Tools do
 
   defp validate_tool(%{"type" => type} = tool) when is_binary(type) do
     cond do
-      not MapSet.member?(@allowed_types, type) ->
-        {:error,
-         Error.new(:unsupported_feature, "Moonshot tool type is not supported", %{
-           provider: :moonshot,
-           api: :chat_completions,
-           feature: :tools,
-           unsupported: [type],
-           supported: MapSet.to_list(@allowed_types) |> Enum.sort()
-         })}
+      type not in @allowed_types ->
+        error(:unsupported_feature, "Moonshot tool type is not supported",
+          api: :chat_completions,
+          feature: :tools,
+          unsupported: [type],
+          supported: @allowed_types
+        )
 
       type == "builtin_function" ->
         validate_builtin_tool(tool)
@@ -125,13 +113,7 @@ defmodule BeamWeaver.Moonshot.Tools do
     end
   end
 
-  defp validate_tool(tool) do
-    {:error,
-     Error.new(:invalid_request, "Moonshot tool declaration is invalid", %{
-       provider: :moonshot,
-       tool: inspect(tool)
-     })}
-  end
+  defp validate_tool(tool), do: error(:invalid_request, "Moonshot tool declaration is invalid", tool: inspect(tool))
 
   defp validate_builtin_tool(tool) do
     case get_in(tool, ["function", "name"]) do
@@ -139,14 +121,12 @@ defmodule BeamWeaver.Moonshot.Tools do
         :ok
 
       name ->
-        {:error,
-         Error.new(:unsupported_feature, "Moonshot built-in tool is not supported", %{
-           provider: :moonshot,
-           api: :chat_completions,
-           feature: :tools,
-           unsupported: [name],
-           supported: ["$web_search"]
-         })}
+        error(:unsupported_feature, "Moonshot built-in tool is not supported",
+          api: :chat_completions,
+          feature: :tools,
+          unsupported: [name],
+          supported: ["$web_search"]
+        )
     end
   end
 
@@ -156,22 +136,16 @@ defmodule BeamWeaver.Moonshot.Tools do
 
     cond do
       not is_binary(name) or not Regex.match?(@function_name, name) ->
-        {:error,
-         Error.new(:invalid_request, "Moonshot function tool name is invalid", %{
-           provider: :moonshot,
-           name: name,
-           pattern: Regex.source(@function_name)
-         })}
+        error(:invalid_request, "Moonshot function tool name is invalid",
+          name: name,
+          pattern: Regex.source(@function_name)
+        )
 
       is_map(function["parameters"]) ->
         :ok
 
       true ->
-        {:error,
-         Error.new(:invalid_request, "Moonshot function tools require an input schema", %{
-           provider: :moonshot,
-           name: name
-         })}
+        error(:invalid_request, "Moonshot function tools require an input schema", name: name)
     end
   end
 end

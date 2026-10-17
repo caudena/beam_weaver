@@ -230,6 +230,10 @@ defmodule BeamWeaver.DeepSeek.V41Test do
     assert_in_delta UsageCost.calculate(pro, usage, at: ~U[2026-09-14 04:00:00Z]).total_cost, 0.0043648, 1.0e-12
   end
 
+  test "a nil model id is reported as unsupported" do
+    assert {:error, %BeamWeaver.Core.Error{type: :unsupported_model}} = ProfileRegistry.fetch(:deepseek, nil)
+  end
+
   for api <- [:chat_completions, :responses] do
     @api api
     test "#{api} agent streams, executes a local tool, and replays full reasoning to its next request" do

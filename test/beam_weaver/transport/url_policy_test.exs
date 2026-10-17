@@ -33,7 +33,7 @@ defmodule BeamWeaver.Transport.URLPolicyTest do
     end
 
     assert {:error, %Error{type: :unsafe_url, message: "DNS resolution failed"}} =
-             URLPolicy.resolve_targets("https://public.example/path",
+             URLPolicy.resolve_target("https://public.example/path",
                resolver: fn _, _ -> {:ok, [{999, 1, 1, 1}]} end
              )
   end
@@ -219,7 +219,7 @@ defmodule BeamWeaver.Transport.URLPolicyTest do
       assert {:error, %Error{type: :unsafe_url}} =
                URLPolicy.validate(url, schemes: ["http", "https"], allow_private?: true, allow_localhost?: true)
 
-      assert {:error, %Error{type: :unsafe_url}} = URLPolicy.resolve_targets(url, schemes: ["http", "https"])
+      assert {:error, %Error{type: :unsafe_url}} = URLPolicy.resolve_target(url, schemes: ["http", "https"])
     end
 
     assert {:ok, "https://[2606:4700:4700::1111]:8443/x"} = URLPolicy.validate("https://[2606:4700:4700::1111]:8443/x")

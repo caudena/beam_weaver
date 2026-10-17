@@ -92,10 +92,7 @@ defimpl BeamWeaver.Graph.IntoNode, for: Any do
 
   defp runnable_node(runnable) do
     fn state, _runtime ->
-      case Runnable.invoke(runnable, state) do
-        {:ok, value} -> value
-        {:error, error} -> {:error, error}
-      end
+      with {:ok, value} <- Runnable.invoke(runnable, state), do: value
     end
   end
 
@@ -103,10 +100,7 @@ defimpl BeamWeaver.Graph.IntoNode, for: Any do
     fn state, _runtime ->
       messages = Map.get(state, :messages, Map.get(state, "messages", []))
 
-      case ChatModel.invoke(model, messages) do
-        {:ok, message} -> %{messages: [message]}
-        {:error, error} -> {:error, error}
-      end
+      with {:ok, message} <- ChatModel.invoke(model, messages), do: %{messages: [message]}
     end
   end
 
@@ -114,10 +108,7 @@ defimpl BeamWeaver.Graph.IntoNode, for: Any do
     fn state, runtime ->
       input = Map.get(state, :input, Map.get(state, "input", state))
 
-      case Tool.invoke(tool, input, runtime: runtime) do
-        {:ok, value} -> %{tool_result: value}
-        {:error, error} -> {:error, error}
-      end
+      with {:ok, value} <- Tool.invoke(tool, input, runtime: runtime), do: %{tool_result: value}
     end
   end
 end

@@ -52,7 +52,7 @@ defmodule BeamWeaver.Moonshot.Options do
 
   @spec to_body(term(), [BeamWeaver.Core.Message.t()], keyword()) ::
           {:ok, map()} | {:error, Error.t()}
-  def to_body(model, messages, opts \\ []) do
+  def to_body(model, messages, opts) do
     with :ok <- validate_profile_params(model, opts),
          {:ok, moonshot_messages} <- Messages.to_chat_messages(messages),
          {:ok, response_format, instruction} <- response_format(model, opts),
@@ -110,22 +110,16 @@ defmodule BeamWeaver.Moonshot.Options do
       |> put_optional("safety_identifier", option(model, opts, :safety_identifier))
       |> merge_extra_body(extra_body, reserved: @reserved_body_fields)
 
-    case rejected_extra_body_keys(extra_body) do
-      [] ->
-        {:ok, body}
+    # Deprecated OpenAI params these APIs reject even through `extra_body`.
+    rejected = for key <- Map.keys(extra_body), key in ["functions", "function_call"], do: String.to_atom(key)
 
-      keys ->
-        {:error,
-         Error.new(
-           :unsupported_model_param,
-           "Moonshot does not support deprecated OpenAI params",
-           %{
-             provider: :moonshot,
-             model: model_name,
-             params: keys
-           }
-         )}
-    end
+    if rejected == [],
+      do: {:ok, body},
+      else:
+        error(:unsupported_model_param, "Moonshot does not support deprecated OpenAI params",
+          model: model_name,
+          params: rejected
+        )
   end
 
   # Returns the wire format and, for a model that ignores JSON Schema
@@ -204,28 +198,16 @@ defmodule BeamWeaver.Moonshot.Options do
       ])
       |> Map.merge(Map.new(opts))
 
-    ParamPolicy.validate(
-      Map.get(model, :profile),
-      params,
-      Keyword.get(opts, :param_policy, Map.get(model, :param_policy)),
-      api: :chat_completions
-    )
+    ParamPolicy.validate(Map.get(model, :profile), params, option(model, opts, :param_policy), api: :chat_completions)
   end
 
+  defp error(type, message, details),
+    do: {:error, Error.new(type, message, Enum.into(details, %{provider: :moonshot}))}
+
   defp validate_partial_response_format(messages, %{"type" => "json_object"}) do
-    if Enum.any?(messages, &(&1["role"] == "assistant" and &1["partial"] == true)) do
-      {:error,
-       Error.new(
-         :invalid_request,
-         "Moonshot partial mode cannot be combined with JSON object mode",
-         %{
-           provider: :moonshot,
-           feature: :partial
-         }
-       )}
-    else
-      :ok
-    end
+    if Enum.any?(messages, &(&1["role"] == "assistant" and &1["partial"] == true)),
+      do: error(:invalid_request, "Moonshot partial mode cannot be combined with JSON object mode", feature: :partial),
+      else: :ok
   end
 
   defp validate_partial_response_format(_messages, _response_format), do: :ok
@@ -244,218 +226,132 @@ defmodule BeamWeaver.Moonshot.Options do
     end
   end
 
-  defp validate_kimi_policy(_body), do: :ok
-
   defp validate_kimi_thinking(%{"model" => model_name} = body, %{thinking: :unsupported}) do
     case Map.get(body, "thinking") do
       nil ->
         :ok
 
       value ->
-        {:error,
-         Error.new(:unsupported_model_param, "Moonshot Kimi model does not accept thinking", %{
-           provider: :moonshot,
-           model: model_name,
-           param: :thinking,
-           value: value,
-           supported: []
-         })}
+        error(:unsupported_model_param, "Moonshot Kimi model does not accept thinking",
+          model: model_name,
+          param: :thinking,
+          value: value,
+          supported: []
+        )
     end
   end
 
   defp validate_kimi_thinking(%{"model" => model_name} = body, %{thinking: :enabled_only}) do
     case get_in(body, ["thinking", "type"]) do
-      nil ->
-        :ok
-
-      "enabled" ->
+      type when type in [nil, "enabled"] ->
         :ok
 
       value ->
-        {:error,
-         Error.new(:unsupported_model_param, "Moonshot Kimi model requires thinking mode", %{
-           provider: :moonshot,
-           model: model_name,
-           param: :thinking,
-           value: %{"type" => value},
-           supported: [%{"type" => "enabled"}]
-         })}
+        error(:unsupported_model_param, "Moonshot Kimi model requires thinking mode",
+          model: model_name,
+          param: :thinking,
+          value: %{"type" => value},
+          supported: [%{"type" => "enabled"}]
+        )
     end
   end
 
   defp validate_kimi_thinking(%{"model" => model_name} = body, %{thinking: :toggle}) do
     case get_in(body, ["thinking", "type"]) do
-      nil ->
-        :ok
-
-      value when value in ["enabled", "disabled"] ->
+      type when type in [nil, "enabled", "disabled"] ->
         :ok
 
       value ->
-        {:error,
-         Error.new(:unsupported_model_param, "Moonshot Kimi model received unsupported thinking mode", %{
-           provider: :moonshot,
-           model: model_name,
-           param: :thinking,
-           value: %{"type" => value},
-           supported: [%{"type" => "enabled"}, %{"type" => "disabled"}]
-         })}
+        error(:unsupported_model_param, "Moonshot Kimi model received unsupported thinking mode",
+          model: model_name,
+          param: :thinking,
+          value: %{"type" => value},
+          supported: [%{"type" => "enabled"}, %{"type" => "disabled"}]
+        )
     end
   end
 
   defp validate_kimi_reasoning_effort(%{"model" => model_name} = body, policy) do
     effort = Map.get(body, "reasoning_effort")
-    supported = Map.fetch!(policy, :reasoning_efforts)
 
-    if is_nil(effort) or effort in supported do
+    if is_nil(effort) or effort in policy.reasoning_efforts do
       :ok
     else
-      {:error,
-       Error.new(
-         :unsupported_model_param,
-         "Moonshot Kimi model received unsupported reasoning_effort",
-         %{
-           provider: :moonshot,
-           model: model_name,
-           param: :reasoning_effort,
-           value: effort,
-           supported: supported
-         }
-       )}
+      error(:unsupported_model_param, "Moonshot Kimi model received unsupported reasoning_effort",
+        model: model_name,
+        param: :reasoning_effort,
+        value: effort,
+        supported: policy.reasoning_efforts
+      )
     end
   end
 
   defp validate_kimi_tool_choice(%{"model" => model_name} = body, policy) do
     thinking_type = get_in(body, ["thinking", "type"]) || "enabled"
     tool_choice = Map.get(body, "tool_choice")
-    supported = Map.fetch!(policy, :tool_choice_when_thinking)
+    supported = policy.tool_choice_when_thinking
 
     # With thinking disabled, every tool choice is accepted.
     if thinking_type == "disabled" or is_nil(tool_choice) or tool_choice in supported do
       :ok
     else
-      tool_choice_error(model_name, tool_choice, supported)
+      error(:unsupported_model_param, "Moonshot Kimi model supports only the documented tool choices",
+        model: model_name,
+        param: :tool_choice,
+        value: tool_choice,
+        supported: supported
+      )
     end
   end
 
-  defp tool_choice_error(model_name, tool_choice, supported) do
-    {:error,
-     Error.new(
-       :unsupported_model_param,
-       "Moonshot Kimi model supports only the documented tool choices",
-       %{
-         provider: :moonshot,
-         model: model_name,
-         param: :tool_choice,
-         value: tool_choice,
-         supported: supported
-       }
-     )}
+  defp validate_kimi_sampling(body, policy) do
+    temperature =
+      if policy.thinking == :toggle and get_in(body, ["thinking", "type"]) == "disabled", do: 0.6, else: 1.0
+
+    Enum.find_value(
+      [{"temperature", temperature}, {"top_p", 0.95}, {"n", 1}, {"presence_penalty", 0}, {"frequency_penalty", 0}],
+      :ok,
+      fn {key, expected} -> with :ok <- validate_fixed_number(body, key, expected), do: nil end
+    )
   end
 
-  defp validate_kimi_sampling(%{"model" => model_name} = body, policy) do
-    thinking_type = get_in(body, ["thinking", "type"]) || "enabled"
-
-    expected_temperature =
-      if policy.thinking == :toggle and thinking_type == "disabled" do
-        0.6
-      else
-        1.0
-      end
-
-    with :ok <- validate_fixed_number(body, "temperature", expected_temperature, model_name),
-         :ok <- validate_fixed_number(body, "top_p", 0.95, model_name),
-         :ok <- validate_fixed_number(body, "n", 1, model_name),
-         :ok <- validate_fixed_number(body, "presence_penalty", 0, model_name) do
-      validate_fixed_number(body, "frequency_penalty", 0, model_name)
-    end
-  end
-
-  defp validate_fixed_number(body, key, expected, model_name) do
+  defp validate_fixed_number(body, key, expected) do
     case Map.get(body, key) do
       nil ->
         :ok
 
-      value when is_number(value) ->
-        if abs(value * 1.0 - expected * 1.0) < 1.0e-9 do
-          :ok
-        else
-          fixed_number_error(key, value, expected, model_name)
-        end
+      value when is_number(value) and abs(value * 1.0 - expected * 1.0) < 1.0e-9 ->
+        :ok
 
       value ->
-        fixed_number_error(key, value, expected, model_name)
+        error(:unsupported_model_param, "Moonshot Kimi model uses fixed sampling params",
+          model: body["model"],
+          param: fixed_param(key),
+          value: value,
+          supported: expected
+        )
     end
-  end
-
-  defp fixed_number_error(key, value, expected, model_name) do
-    {:error,
-     Error.new(:unsupported_model_param, "Moonshot Kimi model uses fixed sampling params", %{
-       provider: :moonshot,
-       model: model_name,
-       param: fixed_param(key),
-       value: value,
-       supported: expected
-     })}
   end
 
   defp fixed_param("temperature"), do: :temperature
   defp fixed_param("top_p"), do: :top_p
-  defp fixed_param("top_k"), do: :top_k
   defp fixed_param(key), do: key
 
   defp validate_stop(nil), do: :ok
+  defp validate_stop(stop) when is_binary(stop) and byte_size(stop) <= 32, do: :ok
 
-  defp validate_stop(stop) when is_binary(stop) do
-    if byte_size(stop) <= 32 do
-      :ok
-    else
-      stop_error(stop)
-    end
-  end
+  defp validate_stop(stop) when is_list(stop) and length(stop) > 5,
+    do: error(:invalid_request, "Moonshot stop supports at most 5 sequences", count: length(stop), max: 5)
 
-  defp validate_stop(stop) when is_list(stop) do
-    if length(stop) > 5 do
-      {:error,
-       Error.new(:invalid_request, "Moonshot stop supports at most 5 sequences", %{
-         provider: :moonshot,
-         count: length(stop),
-         max: 5
-       })}
-    else
-      Enum.reduce_while(stop, :ok, fn sequence, :ok ->
-        case validate_stop(sequence) do
-          :ok -> {:cont, :ok}
-          {:error, error} -> {:halt, {:error, error}}
-        end
-      end)
-    end
-  end
+  defp validate_stop(stop) when is_list(stop),
+    do: Enum.find_value(stop, :ok, fn sequence -> with :ok <- validate_stop(sequence), do: nil end)
 
-  defp validate_stop(stop), do: stop_error(stop)
-
-  defp stop_error(stop) do
-    {:error,
-     Error.new(:invalid_request, "Moonshot stop sequences must be strings of at most 32 bytes", %{
-       provider: :moonshot,
-       stop: inspect(stop)
-     })}
-  end
+  defp validate_stop(stop),
+    do: error(:invalid_request, "Moonshot stop sequences must be strings of at most 32 bytes", stop: inspect(stop))
 
   defp max_completion_tokens(model, opts) do
     option(model, opts, :max_completion_tokens) ||
       option(model, opts, :max_output_tokens) ||
       option(model, opts, :max_tokens)
-  end
-
-  # Deprecated OpenAI params these APIs reject even through `extra_body`.
-  defp rejected_extra_body_keys(extra_body) do
-    extra_body
-    |> Map.keys()
-    |> Enum.filter(&(&1 in ["functions", "function_call"]))
-    |> Enum.map(fn
-      "functions" -> :functions
-      "function_call" -> :function_call
-    end)
   end
 end

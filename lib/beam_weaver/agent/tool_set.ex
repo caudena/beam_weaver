@@ -14,7 +14,7 @@ defmodule BeamWeaver.Agent.ToolSet do
         }
 
   @spec new([term()], keyword()) :: t()
-  def new(tools \\ [], opts \\ []) do
+  def new(tools, opts \\ []) do
     entries = tool_entries(tools)
 
     %__MODULE__{
@@ -26,7 +26,7 @@ defmodule BeamWeaver.Agent.ToolSet do
   end
 
   @spec add(t(), [term()], keyword()) :: t()
-  def add(%__MODULE__{} = tool_set, tools, opts \\ []) do
+  def add(%__MODULE__{} = tool_set, tools, opts) do
     entries = tool_entries(tools)
     incoming = Map.new(entries)
     merged = Map.merge(tool_set.tools, incoming)

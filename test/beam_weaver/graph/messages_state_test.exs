@@ -145,7 +145,7 @@ defmodule BeamWeaver.Graph.MessagesStateTest do
                %Message{
                  role: :assistant,
                  content: "",
-                 tool_calls: [%{"name" => "foo", "args" => %{"bar" => "baz"}}]
+                 tool_calls: [%{"name" => "foo", "type" => "tool_call", "args" => %{"bar" => "baz"}}]
                },
                %Message{
                  role: :tool,

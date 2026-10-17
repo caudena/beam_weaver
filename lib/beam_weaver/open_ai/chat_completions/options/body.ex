@@ -1,6 +1,8 @@
 defmodule BeamWeaver.OpenAI.ChatCompletions.Options.Body do
   @moduledoc false
 
+  import BeamWeaver.Provider.Options, only: [option: 3]
+
   alias BeamWeaver.OpenAI.ChatCompletions.Messages
   alias BeamWeaver.OpenAI.ChatCompletions.Options.Validation
   alias BeamWeaver.Core.Error
@@ -9,11 +11,8 @@ defmodule BeamWeaver.OpenAI.ChatCompletions.Options.Body do
   alias BeamWeaver.Provider.ChatCompletionsWire
   alias BeamWeaver.Provider.Options
 
-  @spec to_body(BeamWeaver.OpenAI.ChatCompletions.Options.t(), term(), [
-          BeamWeaver.Core.Message.t()
-        ]) ::
-          {:ok, map()} | {:error, Error.t()}
-  def to_body(%BeamWeaver.OpenAI.ChatCompletions.Options{opts: opts}, model, messages) do
+  @spec to_body(term(), [BeamWeaver.Core.Message.t()], keyword()) :: {:ok, map()} | {:error, Error.t()}
+  def to_body(model, messages, opts) do
     with :ok <- Validation.validate(model, opts),
          {:ok, openai_messages} <- Messages.to_openai_messages(messages),
          {:ok, tools} <- tools(opts),
@@ -151,8 +150,6 @@ defmodule BeamWeaver.OpenAI.ChatCompletions.Options.Body do
          })}
     end
   end
-
-  defp option(model, opts, key), do: Keyword.get(opts, key, Map.get(model, key))
 
   # A request carries one output cap: the call's, else the model's. GPT-5,
   # GPT-6 and o-series models take it as `max_completion_tokens`; other

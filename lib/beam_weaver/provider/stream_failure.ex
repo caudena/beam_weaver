@@ -152,13 +152,6 @@ defmodule BeamWeaver.Provider.StreamFailure do
 
   def response_failure(_response), do: nil
 
-  @doc """
-  The HTTP status a provider gives an error without streaming, or 500 for an
-  error no provider documents.
-  """
-  @spec status(term()) :: 100..599
-  def status(error), do: documented(error) || @undocumented_status
-
   @doc false
   # Creates the table of the errors warned about. The transport supervisor
   # calls it when it starts, so the table lasts as long as the application.

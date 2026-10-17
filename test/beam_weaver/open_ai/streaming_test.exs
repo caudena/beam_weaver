@@ -356,7 +356,6 @@ defmodule BeamWeaver.OpenAI.StreamingTest do
   end
 
   test "typed events tolerate in-memory prompt cache retention literal drift" do
-    # Upstream reference:
     body = """
     event: response.created
     data: {"type":"response.created","response":{"id":"resp_123","prompt_cache_retention":"in_memory","output":[]}}
@@ -405,8 +404,6 @@ defmodule BeamWeaver.OpenAI.StreamingTest do
   end
 
   test "typed events preserve Responses reasoning deltas as message chunks" do
-    # Upstream reference:
-    # - reasoning deltas are streamed as typed content, not dropped.
     body = """
     event: response.reasoning_summary_text.delta
     data: {"type":"response.reasoning_summary_text.delta","item_id":"rs_1","delta":"thinking"}
@@ -478,8 +475,6 @@ defmodule BeamWeaver.OpenAI.StreamingTest do
   end
 
   test "chat-completions usage chunks emit typed done usage metadata" do
-    # Upstream reference:
-    # - streamed usage chunks are emitted separately from token deltas.
     body =
       [
         %{"choices" => [%{"delta" => %{"content" => "hi"}}]},
@@ -516,8 +511,6 @@ defmodule BeamWeaver.OpenAI.StreamingTest do
   end
 
   test "Responses usage-only completion preserves nested and unknown usage metadata" do
-    # Upstream reference:
-    # - usage-only terminal events and provider-specific token details are preserved.
     body = """
     event: response.completed
     data: {"type":"response.completed","response":{"id":"resp_usage","usage":{"input_tokens":7,"output_tokens":3,"total_tokens":10,"input_tokens_details":{"cached_tokens":2},"output_tokens_details":{"reasoning_tokens":1},"provider_new_usage":{"kept":true}}}}
@@ -540,8 +533,6 @@ defmodule BeamWeaver.OpenAI.StreamingTest do
   end
 
   test "chat-completions usage-only chunks preserve unknown usage fields for tracing" do
-    # Upstream reference:
-    # - usage chunks can arrive without choices and should not be dropped.
     body =
       [
         %{
@@ -570,8 +561,6 @@ defmodule BeamWeaver.OpenAI.StreamingTest do
   end
 
   test "chat-completions unknown streamed delta fields are preserved on message chunks" do
-    # Upstream reference:
-    # - provider-specific streamed blocks are preserved instead of dropped.
     body =
       [
         %{
@@ -874,8 +863,6 @@ defmodule BeamWeaver.OpenAI.StreamingTest do
   end
 
   test "malformed streamed function-call arguments finish as raw args instead of crashing" do
-    # Upstream reference:
-    # - malformed streamed tool args become invalid/raw records at the boundary.
     body = """
     event: response.created
     data: {"type":"response.created","response":{"id":"resp_bad_tool","model":"gpt-5.4-mini","output":[]}}
@@ -1003,8 +990,6 @@ defmodule BeamWeaver.OpenAI.StreamingTest do
   end
 
   test "keeps separate streamed text blocks isolated and reconciles authoritative finishes" do
-    # Upstream reference:
-    # - TestPerBlockAccumulation text cases.
     body = """
     event: response.created
     data: {"type":"response.created","response":{"id":"resp_blocks","model":"gpt-5.4","output":[]}}
@@ -1054,8 +1039,6 @@ defmodule BeamWeaver.OpenAI.StreamingTest do
   end
 
   test "keeps separate streamed reasoning blocks isolated" do
-    # Upstream reference:
-    # - TestPerBlockAccumulation reasoning cases.
     body = """
     event: response.created
     data: {"type":"response.created","response":{"id":"resp_reasoning","model":"gpt-5.4","output":[]}}
@@ -1108,8 +1091,6 @@ defmodule BeamWeaver.OpenAI.StreamingTest do
   end
 
   test "preserves interleaved text function-call text lifecycle order" do
-    # Upstream reference:
-    # - interleaved text blocks around a tool call.
     body = """
     event: response.created
     data: {"type":"response.created","response":{"id":"resp_interleaved","model":"gpt-5.4","output":[]}}

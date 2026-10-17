@@ -5,6 +5,8 @@ defmodule BeamWeaver.Google.ChatModel do
 
   use BeamWeaver.Provider.RedactedInspect
 
+  import BeamWeaver.Provider.Options, only: [option: 3]
+
   alias BeamWeaver.Config
   alias BeamWeaver.Core.Error
   alias BeamWeaver.Core.LanguageModel
@@ -115,10 +117,11 @@ defmodule BeamWeaver.Google.ChatModel do
   @impl true
   def request_body(%__MODULE__{} = model, messages, opts \\ []) do
     params = request_params(model, opts)
+    policy = model.param_policy || ParamPolicy.default_for(model.profile)
     requested_tools = option(model, opts, :tools) || []
     requested_tool_choice = option(model, opts, :tool_choice)
 
-    with :ok <- ParamPolicy.validate(model.profile, params, param_policy(model), api: :generate_content),
+    with :ok <- ParamPolicy.validate(model.profile, params, policy, api: :generate_content),
          :ok <- validate_thinking_level(model, opts),
          :ok <- validate_builtin_tools(model, requested_tools),
          {:ok, {system, contents}} <- Messages.encode_messages(messages, opts),
@@ -126,7 +129,7 @@ defmodule BeamWeaver.Google.ChatModel do
          {:ok, tools} <- Tools.render_tools(requested_tools, opts),
          {:ok, tool_config} <-
            Tools.render_tool_choice(
-             effective_tool_choice(model, opts, requested_tools, requested_tool_choice),
+             effective_tool_choice(opts, requested_tools, requested_tool_choice),
              requested_tools,
              opts
            ) do
@@ -152,8 +155,8 @@ defmodule BeamWeaver.Google.ChatModel do
     with {:ok, {system, contents}} <- Messages.encode_messages(messages, opts) do
       request =
         %{"contents" => contents}
-        |> Options.put_optional("systemInstruction", empty_map_to_nil(system))
-        |> Options.put_optional("generationConfig", empty_map_to_nil(generation_config(model, opts)))
+        |> Options.put_optional("systemInstruction", Options.empty_to_nil(system))
+        |> Options.put_optional("generationConfig", Options.empty_to_nil(generation_config(model, opts)))
 
       body =
         if map_size(request) > 1 do
@@ -165,9 +168,6 @@ defmodule BeamWeaver.Google.ChatModel do
       {:ok, body}
     end
   end
-
-  defp empty_map_to_nil(value) when is_map(value) and map_size(value) == 0, do: nil
-  defp empty_map_to_nil(value), do: value
 
   # Profiles list the thinking levels a model takes and the built-in tools it
   # lacks; both are checked before the request.
@@ -285,21 +285,18 @@ defmodule BeamWeaver.Google.ChatModel do
     |> Options.empty_to_nil()
   end
 
-  defp effective_tool_choice(model, opts, tools, nil) do
+  defp effective_tool_choice(opts, tools, nil) do
     cond do
-      explicit_tool_choice?(model, opts) or List.wrap(tools) == [] -> nil
+      Keyword.has_key?(opts, :tool_choice) or List.wrap(tools) == [] -> nil
       Tools.mixed_execution?(tools) -> :validated
       true -> :auto
     end
   end
 
-  defp effective_tool_choice(_model, _opts, _tools, choice), do: choice
-
-  defp explicit_tool_choice?(_model, opts), do: Keyword.has_key?(opts, :tool_choice)
+  defp effective_tool_choice(_opts, _tools, choice), do: choice
 
   defp tool_config(model, opts, rendered_choice) do
-    rendered_choice
-    |> maybe_map()
+    (rendered_choice || %{})
     |> Options.merge_extra_body(option(model, opts, :tool_config))
     |> Options.put_optional(
       "includeServerSideToolInvocations",
@@ -314,11 +311,7 @@ defmodule BeamWeaver.Google.ChatModel do
 
   defp response_mime_type(model, opts) do
     option(model, opts, :response_mime_type) ||
-      if(
-        response_format(opts) != nil or option(model, opts, :response_schema) != nil or
-          option(model, opts, :response_json_schema) != nil,
-        do: "application/json"
-      )
+      if(structured_output_request?(model, opts), do: "application/json")
   end
 
   defp response_json_schema(model, opts) do
@@ -380,17 +373,6 @@ defmodule BeamWeaver.Google.ChatModel do
     end
   end
 
-  defp maybe_parse_structured_output(message, opts) do
-    if response_format(opts) != nil do
-      StructuredOutput.parse(message, StructuredOutput.parser(opts),
-        provider_name: "Google",
-        on_decode_error: :ok
-      )
-    else
-      {:ok, message}
-    end
-  end
-
   defp request_params(model, opts) do
     model
     |> Map.from_struct()
@@ -427,13 +409,7 @@ defmodule BeamWeaver.Google.ChatModel do
       :store
     ])
     |> Map.merge(Map.new(opts))
-    |> Map.drop(internal_call_opts())
-  end
-
-  defp internal_call_opts do
-    [
-      :metadata
-    ]
+    |> Map.delete(:metadata)
   end
 
   defp client(%__MODULE__{} = model) do
@@ -447,14 +423,6 @@ defmodule BeamWeaver.Google.ChatModel do
     )
   end
 
-  defp option(model, opts, key), do: Keyword.get(opts, key, Map.get(model, key))
-
-  defp maybe_map(nil), do: %{}
-  defp maybe_map(map) when is_map(map), do: map
-
-  defp param_policy(%__MODULE__{} = model),
-    do: model.param_policy || ParamPolicy.default_for(model.profile)
-
   @impl true
   def send_request(:invoke, model, body, opts), do: Client.generate_content(client(model), model.model, body, opts)
   def send_request(:stream, model, body, opts), do: Client.stream_text(client(model), model.model, body, opts)
@@ -466,5 +434,9 @@ defmodule BeamWeaver.Google.ChatModel do
   def decode_response(response, opts), do: Messages.response_to_message(response, opts)
 
   @impl true
-  def parse_response(_model, message, opts), do: maybe_parse_structured_output(message, opts)
+  def parse_response(_model, message, opts) do
+    if response_format(opts) != nil,
+      do: StructuredOutput.parse(message, StructuredOutput.parser(opts), provider_name: "Google", on_decode_error: :ok),
+      else: {:ok, message}
+  end
 end

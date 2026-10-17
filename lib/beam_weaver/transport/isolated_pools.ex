@@ -54,13 +54,6 @@ defmodule BeamWeaver.Transport.IsolatedPools do
     }
   end
 
-  @doc """
-  Runs `fun` on the pool for the origin of `url` and `pool_options`.
-
-  `fun` receives the `:finch` options that select the pool, and what is left
-  of `timeout` after waiting for it. The pool is released when `fun` returns
-  or raises, or when the calling process exits.
-  """
   @spec run(String.t(), keyword(), timeout(), (keyword(), timeout() -> result)) ::
           result | {:error, Error.t()}
         when result: term()
@@ -77,10 +70,6 @@ defmodule BeamWeaver.Transport.IsolatedPools do
     end
   end
 
-  @doc """
-  Leases the pool for `key`, starting it if needed, and waits up to `timeout`
-  when every pool is leased.
-  """
   @spec checkout(GenServer.server(), key(), timeout()) ::
           {:ok, keyword(), reference()} | {:error, Error.t()}
   def checkout(server, {_scheme, _host, _port, pool_options} = key, timeout)
@@ -88,26 +77,14 @@ defmodule BeamWeaver.Transport.IsolatedPools do
     GenServer.call(server, {:checkout, key, timeout}, :infinity)
   end
 
-  @doc "Returns a lease from `checkout/3`."
   @spec checkin(GenServer.server(), reference()) :: :ok
   def checkin(server, lease), do: GenServer.cast(server, {:checkin, lease})
 
-  @doc "Returns the running pools and the number of waiting requests."
   @spec snapshot(GenServer.server()) :: map()
   def snapshot(server \\ __MODULE__), do: GenServer.call(server, :snapshot)
 
   @impl true
-  def init(settings) do
-    {:ok,
-     %{
-       finch: Keyword.fetch!(settings, :finch),
-       max_pools: Keyword.fetch!(settings, :max_pools),
-       idle_timeout: Keyword.fetch!(settings, :idle_timeout),
-       pools: %{},
-       leases: %{},
-       waiting: []
-     }}
-  end
+  def init(settings), do: {:ok, settings |> Map.new() |> Map.merge(%{pools: %{}, leases: %{}, waiting: []})}
 
   @impl true
   def handle_call({:checkout, key, timeout}, {pid, _tag} = from, state) do

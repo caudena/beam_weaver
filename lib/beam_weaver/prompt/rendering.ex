@@ -13,11 +13,11 @@ defmodule BeamWeaver.Prompt.Rendering do
     Template
   }
 
-  def render_message_part(part, vars, opts \\ [])
+  defp render_message_part(part, vars, opts \\ [])
 
-  def render_message_part(%Message{} = message, _vars, _opts), do: {:ok, message}
+  defp render_message_part(%Message{} = message, _vars, _opts), do: {:ok, message}
 
-  def render_message_part(%ImageTemplate{} = template, vars, opts) do
+  defp render_message_part(%ImageTemplate{} = template, vars, opts) do
     vars = Partials.merge(template.partials, vars)
 
     with {:ok, url} <-
@@ -37,7 +37,7 @@ defmodule BeamWeaver.Prompt.Rendering do
     end
   end
 
-  def render_message_part(%DictTemplate{} = template, vars, opts) do
+  defp render_message_part(%DictTemplate{} = template, vars, opts) do
     vars = Partials.merge(template.partials, vars)
 
     Template.render_dict(
@@ -49,7 +49,7 @@ defmodule BeamWeaver.Prompt.Rendering do
 
   # The role reads as in `Message.from/1`: "developer" becomes a system message,
   # and a role it doesn't know is an `:invalid_role` error.
-  def render_message_part(%MessageTemplate{} = template, vars, opts) do
+  defp render_message_part(%MessageTemplate{} = template, vars, opts) do
     vars = Partials.merge(template.partials, vars)
 
     with {:ok, content} <-
@@ -62,7 +62,7 @@ defmodule BeamWeaver.Prompt.Rendering do
     end
   end
 
-  def render_message_part(%MessagesPlaceholder{} = placeholder, vars, _opts) do
+  defp render_message_part(%MessagesPlaceholder{} = placeholder, vars, _opts) do
     case Partials.fetch_var(vars, placeholder.variable_name) do
       {:ok, messages} when is_list(messages) ->
         with {:ok, messages} <- coerce_messages(messages) do
@@ -80,7 +80,7 @@ defmodule BeamWeaver.Prompt.Rendering do
     end
   end
 
-  def render_message_part({role, template}, vars, opts) do
+  defp render_message_part({role, template}, vars, opts) do
     template = %MessageTemplate{
       role: role,
       template: template,
@@ -91,10 +91,12 @@ defmodule BeamWeaver.Prompt.Rendering do
     render_message_part(template, vars, opts)
   end
 
-  def render_message_part(part, _vars, _opts) do
-    case Message.from(part) do
-      {:ok, %Message{} = message} -> {:ok, message}
-      {:error, %Error{} = error} -> {:error, error}
+  defp render_message_part(part, _vars, _opts), do: Message.from(part)
+
+  def invoke_part(template, input) do
+    with {:ok, vars} <- Partials.merge_vars(template.partials, input),
+         {:ok, message} <- render_message_part(template, vars) do
+      {:ok, %BeamWeaver.Prompt.Value{messages: [message]}}
     end
   end
 
@@ -127,8 +129,6 @@ defmodule BeamWeaver.Prompt.Rendering do
       end
     end)
   end
-
-  defp maybe_take_tail(messages, nil), do: messages
 
   defp maybe_take_tail(messages, max_length) when is_integer(max_length) and max_length >= 0,
     do: Enum.take(messages, -max_length)

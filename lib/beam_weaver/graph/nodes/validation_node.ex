@@ -6,6 +6,7 @@ defmodule BeamWeaver.Graph.Nodes.ValidationNode do
   list. It returns tool messages with validated arguments or validation errors.
   """
 
+  alias BeamWeaver.Graph.Nodes.ToolNode.Execution
   alias BeamWeaver.Graph.Nodes.ToolNode.Input
   alias BeamWeaver.Agent.ToolSet
   alias BeamWeaver.Core.Error
@@ -196,36 +197,11 @@ defmodule BeamWeaver.Graph.Nodes.ValidationNode do
   end
 
   defp format_error(%__MODULE__{format_error: nil}, %Error{} = error, call) do
-    hidden = hidden_arg_names(error.details)
-    args = sanitize_value(call.args, hidden)
-    details = sanitize_value(error.details, hidden)
+    hidden = MapSet.new(~w(state store runtime tool_runtime context config checkpointer tool_message))
 
     ["Tool validation error: #{error.message}"]
-    |> maybe_append("Args", args)
-    |> maybe_append("Details", details)
+    |> Execution.maybe_append("Args", Execution.sanitize_value(call.args, hidden))
+    |> Execution.maybe_append("Details", Execution.sanitize_value(error.details, hidden))
     |> Enum.join(". ")
   end
-
-  defp maybe_append(parts, _label, value) when value in [%{}, [], nil], do: parts
-  defp maybe_append(parts, label, value), do: parts ++ ["#{label}: #{inspect(value)}"]
-
-  defp hidden_arg_names(_details) do
-    ~w(state store runtime tool_runtime context config checkpointer tool_message)
-  end
-
-  defp sanitize_value(%{__struct__: _module} = value, _hidden), do: inspect(value)
-
-  defp sanitize_value(value, hidden) when is_map(value) do
-    value
-    |> Enum.reject(fn {key, _value} -> to_string(key) in hidden end)
-    |> Map.new(fn {key, value} -> {key, sanitize_value(value, hidden)} end)
-  end
-
-  defp sanitize_value(values, hidden) when is_list(values) do
-    values
-    |> Enum.reject(fn value -> is_binary(value) and value in hidden end)
-    |> Enum.map(&sanitize_value(&1, hidden))
-  end
-
-  defp sanitize_value(value, _hidden), do: value
 end

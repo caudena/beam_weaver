@@ -231,7 +231,7 @@ defmodule BeamWeaver.Graph.Renderer do
   alias BeamWeaver.Graph.Introspection
 
   @spec to_mermaid(Introspection.t(), keyword()) :: String.t()
-  def to_mermaid(%Introspection{} = graph, _opts \\ []) do
+  def to_mermaid(%Introspection{} = graph, _opts) do
     node_lines =
       graph.nodes
       |> Enum.sort_by(fn {name, _node} -> name end)
@@ -261,7 +261,7 @@ defmodule BeamWeaver.Graph.Renderer do
   end
 
   @spec to_ascii(Introspection.t(), keyword()) :: String.t()
-  def to_ascii(%Introspection{} = graph, _opts \\ []) do
+  def to_ascii(%Introspection{} = graph, _opts) do
     edge_lines = Enum.map(graph.edges, &"#{&1.source} -> #{&1.target}")
 
     branch_lines =
@@ -283,7 +283,7 @@ defmodule BeamWeaver.Graph.Renderer do
   end
 
   @spec to_png(Introspection.t(), keyword()) :: {:ok, binary()} | {:error, Error.t()}
-  def to_png(%Introspection{} = graph, opts \\ []) do
+  def to_png(%Introspection{} = graph, opts) do
     case Keyword.get(opts, :renderer) do
       renderer when is_function(renderer, 1) -> {:ok, renderer.(to_mermaid(graph, opts))}
       nil -> {:error, Error.new(:png_renderer_not_configured, "PNG renderer is not configured")}

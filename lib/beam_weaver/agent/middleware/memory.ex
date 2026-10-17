@@ -84,20 +84,12 @@ defmodule BeamWeaver.Agent.Middleware.Memory do
       limit: 10_000
     ]
 
-    Map.new(middleware.paths, fn path ->
-      content =
-        case Filesystem.read(middleware.backend, path, opts) do
-          %Filesystem.ReadResult{error: nil, file_data: %Filesystem.FileData{content: content}} ->
-            content || ""
-
-          _missing ->
-            nil
-        end
-
-      {path, content}
-    end)
-    |> Enum.reject(fn {_path, content} -> content in [nil, ""] end)
-    |> Map.new()
+    for path <- middleware.paths,
+        %Filesystem.ReadResult{error: nil, file_data: %Filesystem.FileData{content: content}} <-
+          [Filesystem.read(middleware.backend, path, opts)],
+        content not in [nil, ""],
+        into: %{},
+        do: {path, content}
   end
 
   defp format_memory(%__MODULE__{} = middleware, contents) do

@@ -36,10 +36,7 @@ defmodule BeamWeaver.Tools.Shell.Sessions do
   """
   @spec fetch_or_start(term(), keyword()) :: {:ok, pid()} | {:error, term()}
   def fetch_or_start(key, start_opts) do
-    case fetch(key) do
-      {:ok, pid} -> {:ok, pid}
-      :error -> start_child(Keyword.put(start_opts, :name, via(key)))
-    end
+    with :error <- fetch(key), do: start_child(Keyword.put(start_opts, :name, via(key)))
   end
 
   @doc "Starts an unregistered supervised session (for a run with no thread id)."
@@ -76,11 +73,9 @@ defmodule BeamWeaver.Tools.Shell.Sessions do
 
   defp start_child(start_opts) do
     case DynamicSupervisor.start_child(@supervisor, {Session, start_opts}) do
-      {:ok, pid} -> {:ok, pid}
-      {:ok, pid, _info} -> {:ok, pid}
       # A concurrent caller won the registration race; use its session.
       {:error, {:already_started, pid}} -> {:ok, pid}
-      {:error, _reason} = error -> error
+      result -> result
     end
   end
 

@@ -48,13 +48,8 @@ defmodule BeamWeaver.Cache do
   end
 
   @spec put(term(), namespace(), key(), term(), keyword()) :: :ok | {:error, Error.t()}
-  def put(cache, namespace, key, value, opts \\ []) do
-    with {:ok, module} <- adapter(cache, :put),
-         :ok <- module.put(cache, namespace, key, value, opts) do
-      emit(cache, :put, %{count: 1}, %{namespace: namespace, key: key, result: :ok})
-      :ok
-    end
-  end
+  def put(cache, namespace, key, value, opts \\ []),
+    do: write(cache, :put, [namespace, key, value, opts], %{namespace: namespace, key: key})
 
   @doc """
   Alias for `put/5` matching cache update terminology.
@@ -64,22 +59,11 @@ defmodule BeamWeaver.Cache do
     do: put(cache, namespace, key, value, opts)
 
   @spec delete(term(), namespace(), key(), keyword()) :: :ok | {:error, Error.t()}
-  def delete(cache, namespace, key, opts \\ []) do
-    with {:ok, module} <- adapter(cache, :delete),
-         :ok <- module.delete(cache, namespace, key, opts) do
-      emit(cache, :delete, %{count: 1}, %{namespace: namespace, key: key, result: :ok})
-      :ok
-    end
-  end
+  def delete(cache, namespace, key, opts \\ []),
+    do: write(cache, :delete, [namespace, key, opts], %{namespace: namespace, key: key})
 
   @spec clear(term(), namespace() | nil, keyword()) :: :ok | {:error, Error.t()}
-  def clear(cache, namespace \\ nil, opts \\ []) do
-    with {:ok, module} <- adapter(cache, :clear),
-         :ok <- module.clear(cache, namespace, opts) do
-      emit(cache, :clear, %{count: 1}, %{namespace: namespace, result: :ok})
-      :ok
-    end
-  end
+  def clear(cache, namespace \\ nil, opts \\ []), do: write(cache, :clear, [namespace, opts], %{namespace: namespace})
 
   @doc """
   Looks up multiple `{namespace, key}` entries and returns a map of cache hits
@@ -186,15 +170,20 @@ defmodule BeamWeaver.Cache do
     |> then(&:crypto.hash(:sha256, &1))
   end
 
-  defp adapter(nil, _callback), do: {:error, explicit_required_error()}
-  defp adapter(false, _callback), do: {:error, explicit_required_error()}
-  defp adapter(true, _callback), do: {:error, explicit_required_error()}
+  defp write(cache, operation, args, metadata) do
+    with {:ok, module} <- adapter(cache, operation),
+         :ok <- apply(module, operation, [cache | args]) do
+      emit(cache, operation, %{count: 1}, Map.put(metadata, :result, :ok))
+      :ok
+    end
+  end
+
+  defp adapter(cache, _callback) when cache in [nil, false, true], do: {:error, explicit_required_error()}
 
   defp adapter(%{__struct__: _module} = cache, callback) do
     Dispatch.module(cache, callback, callback_arity(callback),
       error_type: :invalid_cache,
-      missing_message: "cache adapter does not implement BeamWeaver.Cache",
-      invalid_message: "cache must be an explicit BeamWeaver.Cache adapter"
+      missing_message: "cache adapter does not implement BeamWeaver.Cache"
     )
   end
 
@@ -212,8 +201,6 @@ defmodule BeamWeaver.Cache do
 
   defp split_value_ttl({value, ttl}) when is_integer(ttl) or is_nil(ttl), do: {value, ttl}
   defp split_value_ttl(value), do: {value, nil}
-
-  defp maybe_put_ttl(opts, nil), do: opts
 
   defp maybe_put_ttl(opts, ttl_seconds) when is_integer(ttl_seconds) and ttl_seconds > 0,
     do: Keyword.put(opts, :ttl, ttl_seconds * 1_000)

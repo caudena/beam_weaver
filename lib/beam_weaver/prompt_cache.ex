@@ -23,7 +23,7 @@ defmodule BeamWeaver.PromptCache do
   @spec key(term(), term(), String.t() | nil, keyword()) :: String.t()
   def key(scope, provider_model, static_prompt, opts \\ []) do
     version = sanitize(Keyword.get(opts, :version, @default_version), "v1")
-    digest = digest(static_prompt || "")
+    digest = hash(static_prompt || "", @digest_length)
     prefix = "bwpc:" <> version <> ":"
     body = Enum.join([sanitize(scope, "default"), sanitize(provider_model, "unknown"), digest], ":")
 
@@ -50,10 +50,10 @@ defmodule BeamWeaver.PromptCache do
   @spec key(keyword() | map()) :: String.t()
   def key(opts) when is_list(opts) or is_map(opts) do
     key(
-      option(opts, :scope, "default"),
-      option(opts, :provider_model, "unknown"),
-      option(opts, :static_prompt, ""),
-      version: option(opts, :version, @default_version)
+      Access.get(opts, :scope, "default"),
+      Access.get(opts, :provider_model, "unknown"),
+      Access.get(opts, :static_prompt, ""),
+      version: Access.get(opts, :version, @default_version)
     )
   end
 
@@ -81,17 +81,12 @@ defmodule BeamWeaver.PromptCache do
     end
   end
 
-  defp digest(static_prompt), do: hash(static_prompt, @digest_length)
-
   defp hash(value, length) do
     value
     |> then(&:crypto.hash(:sha256, &1))
     |> Base.url_encode64(padding: false)
     |> String.slice(0, length)
   end
-
-  defp option(opts, key, default) when is_list(opts), do: Keyword.get(opts, key, default)
-  defp option(opts, key, default) when is_map(opts), do: Map.get(opts, key, default)
 
   defp sanitize(value, fallback) do
     value

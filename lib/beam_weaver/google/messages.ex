@@ -1,23 +1,22 @@
 defmodule BeamWeaver.Google.Messages do
   @moduledoc false
 
-  @behaviour BeamWeaver.Provider.MessageTranslator
-
   alias BeamWeaver.Core.ContentBlock
   alias BeamWeaver.Core.Error
   alias BeamWeaver.Core.Message
   alias BeamWeaver.Core.Messages
+  alias BeamWeaver.MapAccess
+  alias BeamWeaver.Provider.ChatCompletionsWire
   alias BeamWeaver.Provider.Options
 
-  @impl true
-  def encode_message(%Message{} = message, opts \\ []) do
+  @default_mime_types %{"image" => "image/png", "audio" => "audio/mpeg", "video" => "video/mp4"}
+
+  def encode_message(%Message{} = message, opts) do
     with {:ok, {_system, [encoded]}} <- encode_messages([message], opts), do: {:ok, encoded}
   end
 
-  @impl true
-  def decode_message(payload, opts \\ []), do: response_to_message(payload, opts)
+  def decode_message(payload, opts), do: response_to_message(payload, opts)
 
-  @impl true
   def encode_messages(messages, opts \\ [])
 
   def encode_messages(messages, _opts) when is_list(messages) do
@@ -67,7 +66,7 @@ defmodule BeamWeaver.Google.Messages do
 
   defp conversation_summary_message?(%Message{content: content, metadata: metadata}) do
     (is_binary(content) and String.starts_with?(content, "Conversation summary:")) or
-      value(metadata, :conversation_history_path) != nil
+      MapAccess.get(metadata, :conversation_history_path) != nil
   end
 
   defp demote_system_message(%Message{metadata: metadata} = message) do
@@ -85,21 +84,17 @@ defmodule BeamWeaver.Google.Messages do
   def response_to_message(response, _opts) when is_map(response) do
     candidate = first_candidate(response)
     blocks = response_blocks(candidate)
-    tool_calls = tool_calls(blocks)
-    server_tool_calls = server_tool_calls(blocks)
-    server_tool_results = server_tool_results(blocks)
-    content = message_content(blocks)
     metadata = response_metadata(response, candidate)
 
-    Message.new(:assistant, content,
+    Message.new(:assistant, message_content(blocks),
       id: response["responseId"] || response["id"],
       metadata: metadata,
       response_metadata: metadata,
       usage_metadata: usage_metadata(response["usageMetadata"]),
       status: metadata[:finish_reason],
-      server_tool_calls: server_tool_calls,
-      server_tool_results: server_tool_results,
-      tool_calls: tool_calls
+      server_tool_calls: Enum.filter(blocks, &(&1.type == :server_tool_call)),
+      server_tool_results: Enum.filter(blocks, &(&1.type == :server_tool_result)),
+      tool_calls: tool_calls(blocks)
     )
   end
 
@@ -209,7 +204,7 @@ defmodule BeamWeaver.Google.Messages do
     BeamWeaver.MapShape.assert_atom_keys!(block)
     provider_block = Options.stringify_keys(block)
 
-    case provider_type(Map.get(block, :type)) do
+    case ChatCompletionsWire.provider_type(Map.get(block, :type)) do
       # Gemini can sign the last text part of a reply; the signature goes
       # back on the same part.
       "text" ->
@@ -218,25 +213,11 @@ defmodule BeamWeaver.Google.Messages do
           |> put_thought_signature(thought_signature(block))
         ]
 
-      "image" ->
+      type when type in ["image", "audio", "video"] ->
         media_part(
           Map.get(block, :url),
           Map.get(block, :data) || Map.get(block, :base64),
-          Map.get(block, :mime_type) || "image/png"
-        )
-
-      "audio" ->
-        media_part(
-          Map.get(block, :url),
-          Map.get(block, :data) || Map.get(block, :base64),
-          Map.get(block, :mime_type) || "audio/mpeg"
-        )
-
-      "video" ->
-        media_part(
-          Map.get(block, :url),
-          Map.get(block, :data) || Map.get(block, :base64),
-          Map.get(block, :mime_type) || "video/mp4"
+          Map.get(block, :mime_type) || @default_mime_types[type]
         )
 
       "file" ->
@@ -276,20 +257,13 @@ defmodule BeamWeaver.Google.Messages do
   end
 
   defp function_call_name(call) when is_map(call),
-    do: value(call, :name) || "tool"
+    do: MapAccess.get(call, :name) || "tool"
 
-  defp function_call_args(call) do
-    call
-    |> function_call_argument_value()
-    |> normalize_function_call_args()
+  defp function_call_args(call) when is_map(call) do
+    normalize_function_call_args(
+      MapAccess.get(call, :args) || MapAccess.get(call, :arguments) || MapAccess.get(call, :input) || %{}
+    )
   end
-
-  defp function_call_argument_value(call) when is_map(call) do
-    value(call, :args) || value(call, :arguments) || value(call, :input) || %{}
-  end
-
-  defp value(map, key) when is_map(map), do: BeamWeaver.MapAccess.get(map, key)
-  defp value(_map, _key), do: nil
 
   defp normalize_function_call_args(args) when is_map(args), do: Options.stringify_keys(args)
 
@@ -313,20 +287,8 @@ defmodule BeamWeaver.Google.Messages do
   defp media_part(_uri, _data, _mime_type), do: []
 
   defp message_tool_call_parts(content, %Message{} = message) do
-    if content_has_tool_call?(content), do: [], else: tool_call_parts(message)
+    if ChatCompletionsWire.content_has_tool_call?(content), do: [], else: tool_call_parts(message)
   end
-
-  defp content_has_tool_call?(content) when is_list(content) do
-    Enum.any?(content, fn
-      %{type: type} when type in [:function_call, "function_call", :tool_call, "tool_call", :tool_use, "tool_use"] ->
-        true
-
-      _block ->
-        false
-    end)
-  end
-
-  defp content_has_tool_call?(_content), do: false
 
   # Invalid calls, whose arguments came back malformed, go back too, with the
   # arguments when they parse to an object: the agent answers each with an
@@ -338,14 +300,14 @@ defmodule BeamWeaver.Google.Messages do
   defp tool_call_parts(_message), do: []
 
   defp invalid_tool_calls(%Message{metadata: %{invalid_tool_calls: calls}}) when is_list(calls) do
-    for call <- calls, is_map(call), is_binary(value(call, :name)) do
+    for call <- calls, is_map(call), is_binary(MapAccess.get(call, :name)) do
       args =
-        case BeamWeaver.JSON.decode(value(call, :args) || "") do
+        case BeamWeaver.JSON.decode(MapAccess.get(call, :args) || "") do
           {:ok, %{} = args} -> args
           _other -> %{}
         end
 
-      %{name: value(call, :name), args: args}
+      %{name: MapAccess.get(call, :name), args: args}
     end
   end
 
@@ -418,9 +380,6 @@ defmodule BeamWeaver.Google.Messages do
 
   defp empty_user_message?(%Message{role: :user, content: ""}), do: true
   defp empty_user_message?(_message), do: false
-
-  defp provider_type(type) when is_atom(type), do: Atom.to_string(type)
-  defp provider_type(type), do: type
 
   defp first_candidate(%{"candidates" => [candidate | _rest]}) when is_map(candidate),
     do: candidate
@@ -502,7 +461,7 @@ defmodule BeamWeaver.Google.Messages do
   defp media_type(_mime_type), do: :file
 
   defp tool_calls(blocks) do
-    calls = Enum.filter(blocks, &(Map.get(&1, :type) == :tool_call))
+    calls = Enum.filter(blocks, &(&1.type == :tool_call))
     reserved_ids = MapSet.new(calls, & &1[:id])
 
     {calls, _ids} =
@@ -533,17 +492,17 @@ defmodule BeamWeaver.Google.Messages do
   end
 
   defp thought_signature(map) when is_map(map) do
-    value(map, :thought_signature) ||
+    MapAccess.get(map, :thought_signature) ||
       Map.get(map, "thoughtSignature") ||
       Map.get(map, :thoughtSignature) ||
-      metadata_thought_signature(value(map, :metadata))
+      metadata_thought_signature(MapAccess.get(map, :metadata))
   end
 
   defp thought_signature(_map), do: nil
 
   defp metadata_thought_signature(metadata) when is_map(metadata) do
-    value(metadata, :thought_signature) ||
-      value(metadata, :thoughtSignature)
+    MapAccess.get(metadata, :thought_signature) ||
+      MapAccess.get(metadata, :thoughtSignature)
   end
 
   defp metadata_thought_signature(_metadata), do: nil
@@ -554,23 +513,11 @@ defmodule BeamWeaver.Google.Messages do
 
   defp put_thought_signature(part, _signature), do: part
 
-  defp server_tool_calls(blocks),
-    do: Enum.filter(blocks, &(Map.get(&1, :type) == :server_tool_call))
-
-  defp server_tool_results(blocks),
-    do: Enum.filter(blocks, &(Map.get(&1, :type) == :server_tool_result))
-
   defp message_content(blocks) do
     blocks
-    |> Enum.reject(&out_of_band_content_block?/1)
+    |> Enum.reject(&(&1.type in [:tool_call, :server_tool_call, :server_tool_result]))
     |> visible_message_content()
   end
-
-  defp out_of_band_content_block?(%{type: type})
-       when type in [:tool_call, :server_tool_call, :server_tool_result],
-       do: true
-
-  defp out_of_band_content_block?(_block), do: false
 
   defp visible_message_content([%{type: :text, text: text}]) when is_binary(text), do: text
   defp visible_message_content([]), do: ""
@@ -607,31 +554,10 @@ defmodule BeamWeaver.Google.Messages do
         }),
       service_tier: usage["serviceTier"] || usage["service_tier"]
     }
-    |> reject_empty_details()
+    |> BeamWeaver.MapShape.compact([nil, :empty_list, :empty_map])
   end
 
-  defp token_details(details) do
-    details
-    |> Enum.reject(fn
-      {_key, nil} -> true
-      {_key, 0} -> true
-      {_key, []} -> true
-      {_key, value} when is_map(value) and map_size(value) == 0 -> true
-      _entry -> false
-    end)
-    |> Map.new()
-  end
-
-  defp reject_empty_details(usage) do
-    usage
-    |> Enum.reject(fn
-      {_key, nil} -> true
-      {_key, []} -> true
-      {_key, value} when is_map(value) and map_size(value) == 0 -> true
-      _entry -> false
-    end)
-    |> Map.new()
-  end
+  defp token_details(details), do: Map.reject(details, fn {_key, value} -> value in [nil, 0, [], %{}] end)
 
   defp response_metadata(response, candidate) do
     header_metadata = response["_beamweaver_response_header_metadata"] || %{}

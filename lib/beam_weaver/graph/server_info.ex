@@ -64,6 +64,8 @@ defmodule BeamWeaver.Graph.ServerInfo do
     end
   end
 
+  import BeamWeaver.MapAccess, only: [get: 2]
+
   defstruct [:assistant_id, :graph_id, :user, metadata: %{}]
 
   @type t :: %__MODULE__{
@@ -126,8 +128,6 @@ defmodule BeamWeaver.Graph.ServerInfo do
   defp normalize_map(%{__struct__: _module} = struct), do: Map.from_struct(struct)
   defp normalize_map(opts) when is_list(opts), do: Map.new(opts)
   defp normalize_map(map) when is_map(map), do: map
-
-  defp get(map, key) when is_map(map), do: Map.get(map, key) || Map.get(map, to_string(key))
 
   defp maybe_to_string(nil), do: nil
   defp maybe_to_string(value), do: to_string(value)

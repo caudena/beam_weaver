@@ -7,6 +7,8 @@ defmodule BeamWeaver.Provider.Outcome do
   needed by callers before any tool is dispatched.
   """
 
+  import BeamWeaver.Provider.ChatCompletionsWire, only: [metadata_value: 2]
+
   alias BeamWeaver.Core.Message
 
   @remote_statuses ~w(not_applicable queued in_progress requires_action paused completed incomplete failed cancelled expired unknown)a
@@ -139,10 +141,8 @@ defmodule BeamWeaver.Provider.Outcome do
   defp remote_status("expired"), do: :expired
   defp remote_status(_status), do: :unknown
 
-  defp refusal?(%Message{} = message) do
-    blocks(message)
-    |> Enum.any?(fn block -> block_type(block) in [:refusal, "refusal"] end)
-  end
+  defp refusal?(%Message{} = message),
+    do: message |> blocks() |> Enum.any?(&(metadata_value(&1, :type) in [:refusal, "refusal"]))
 
   # The finish reasons of a reply a content filter stopped: Chat Completions'
   # `content_filter`, and Gemini's safety, recitation, blocklist,
@@ -192,14 +192,6 @@ defmodule BeamWeaver.Provider.Outcome do
   defp blocks(%Message{content: content}) when is_list(content), do: content
   defp blocks(_message), do: []
 
-  defp block_type(block) when is_map(block), do: Map.get(block, :type) || Map.get(block, "type")
-  defp block_type(_block), do: nil
-
-  defp metadata_value(map, key) when is_map(map), do: Map.get(map, key) || Map.get(map, to_string(key))
-  defp metadata_value(_map, _key), do: nil
-
   defp normalize_status(nil), do: nil
-  defp normalize_status(value) when is_atom(value), do: value |> Atom.to_string() |> String.downcase()
-  defp normalize_status(value) when is_binary(value), do: String.downcase(value)
   defp normalize_status(value), do: value |> to_string() |> String.downcase()
 end

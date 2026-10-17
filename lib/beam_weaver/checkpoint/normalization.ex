@@ -33,11 +33,7 @@ defmodule BeamWeaver.Checkpoint.Normalization do
 
   defp stringify_config(config) when is_list(config), do: stringify_config(Map.new(config))
 
-  defp stringify_config(config) when is_map(config) do
-    Enum.reduce(config, %{}, fn {key, value}, acc ->
-      Map.put(acc, to_string(key), value)
-    end)
-  end
+  defp stringify_config(config) when is_map(config), do: Map.new(config, fn {key, value} -> {to_string(key), value} end)
 
   defp stringify_config(_other), do: %{}
 
@@ -54,13 +50,7 @@ defmodule BeamWeaver.Checkpoint.Normalization do
        when is_map(parent_config) do
     {tuple, parent} = parent_pending_writes(tuple, saver, parent_config)
 
-    task_values =
-      parent
-      |> Enum.filter(fn
-        {_task_id, "__tasks__", _value} -> true
-        _other -> false
-      end)
-      |> Enum.map(fn {_task_id, "__tasks__", value} -> value end)
+    task_values = for {_task_id, "__tasks__", value} <- parent, do: value
 
     if task_values == [] do
       tuple

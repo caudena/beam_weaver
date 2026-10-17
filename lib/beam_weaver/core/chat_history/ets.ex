@@ -17,13 +17,8 @@ defmodule BeamWeaver.Core.ChatHistory.ETS.Session do
   end
 
   @impl true
-  def add_messages(%__MODULE__{table: table, session_id: session_id}, messages) when is_list(messages) do
-    if :ets.insert_new(table, {session_id, messages}) do
-      :ok
-    else
-      append(table, session_id, messages)
-    end
-  end
+  def add_messages(%__MODULE__{table: table, session_id: session_id}, messages) when is_list(messages),
+    do: append(table, session_id, messages)
 
   defp append(table, session_id, messages) do
     case :ets.lookup(table, session_id) do

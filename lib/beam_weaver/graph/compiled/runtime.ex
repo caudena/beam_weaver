@@ -65,7 +65,7 @@ defmodule BeamWeaver.Graph.Compiled.Runtime do
 
   def graph_output(_compiled, output), do: output
 
-  def rebase_time_travel_opts(opts, compiled) do
+  defp rebase_time_travel_opts(opts, compiled) do
     case Keyword.fetch(opts, :config) do
       {:ok, config} when is_map(config) ->
         rebased = SubgraphRouter.rebase_time_travel_config(compiled, config)
@@ -95,10 +95,8 @@ defmodule BeamWeaver.Graph.Compiled.Runtime do
   defp run_input(_compiled, _input, _opts),
     do: {:error, Error.new(:invalid_input, "graph input must be a map")}
 
-  defp run_result({:ok, result}), do: {:ok, result}
-  defp run_result({:interrupted, interrupt}), do: {:interrupted, interrupt}
   defp run_result({:parent_command, command}), do: CommandRouter.parent_command_error(command)
-  defp run_result({:error, error}), do: {:error, error}
+  defp run_result(result), do: result
 
   # Without `live: true` the run streams exactly as a live one does and is read
   # to the end here, so both return the same events in the same order. The run

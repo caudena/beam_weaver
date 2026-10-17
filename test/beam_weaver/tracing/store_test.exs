@@ -98,17 +98,8 @@ defmodule BeamWeaver.Tracing.StoreTest do
   test "runs inside a node killed at its timeout leave the store like finished runs" do
     merge_config(:tracing, max_runs: 0)
 
-    graph =
-      Graph.new()
-      |> Graph.add_node(:slow, fn _state -> Tracing.with_run("stuck call", fn -> Process.sleep(:infinity) end) end,
-        timeout: 20
-      )
-      |> Graph.add_edge(Graph.start(), :slow)
-      |> Graph.add_edge(:slow, Graph.end_node())
-      |> Graph.compile!()
-
     for _call <- 1..3 do
-      assert {:error, %{type: :node_timeout}} = Compiled.invoke(graph, %{})
+      assert {:error, %{type: :node_timeout}} = Compiled.invoke(stuck_graph(), %{})
     end
 
     assert eventually(fn -> Store.list() == [] end)
@@ -229,21 +220,22 @@ defmodule BeamWeaver.Tracing.StoreTest do
     test "the configured exporter gets the :error event of a run in a node killed at its timeout" do
       merge_config(:tracing, exporter: StoreExporter, exporter_opts: [test_pid: self()])
 
-      graph =
-        Graph.new()
-        |> Graph.add_node(:slow, fn _state -> Tracing.with_run("stuck call", fn -> Process.sleep(:infinity) end) end,
-          timeout: 20
-        )
-        |> Graph.add_edge(Graph.start(), :slow)
-        |> Graph.add_edge(:slow, Graph.end_node())
-        |> Graph.compile!()
-
-      assert {:error, %{type: :node_timeout}} = Compiled.invoke(graph, %{})
+      assert {:error, %{type: :node_timeout}} = Compiled.invoke(stuck_graph(), %{})
 
       assert_receive {:exported, :started, %Run{name: "stuck call", id: id}}
       assert_receive {:exported, :error, %Run{id: ^id, error: %{kind: :exit}}}, 1_000
       refute_receive {:exported, _event, %Run{id: ^id}}, 100
     end
+  end
+
+  defp stuck_graph do
+    Graph.new()
+    |> Graph.add_node(:slow, fn _state -> Tracing.with_run("stuck call", fn -> Process.sleep(:infinity) end) end,
+      timeout: 20
+    )
+    |> Graph.add_edge(Graph.start(), :slow)
+    |> Graph.add_edge(:slow, Graph.end_node())
+    |> Graph.compile!()
   end
 
   # Runs `fun` in a new process that then waits until it is killed, and

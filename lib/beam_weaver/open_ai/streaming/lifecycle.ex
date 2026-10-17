@@ -33,8 +33,6 @@ defmodule BeamWeaver.OpenAI.Streaming.Lifecycle do
     "shell_call_output"
   ]
 
-  @output_item_type_set Map.new(@output_item_types, &{&1, true})
-
   @doc false
   @spec typed_custom_event?(map()) :: boolean()
   def typed_custom_event?(%{
@@ -56,9 +54,7 @@ defmodule BeamWeaver.OpenAI.Streaming.Lifecycle do
   def typed_custom_event?(%{"type" => "response." <> event_name}) do
     case :binary.match(event_name, ".") do
       {separator, 1} ->
-        event_name
-        |> binary_part(0, separator)
-        |> then(&Map.has_key?(@output_item_type_set, &1))
+        binary_part(event_name, 0, separator) in @output_item_types
 
       :nomatch ->
         false

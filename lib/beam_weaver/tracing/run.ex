@@ -50,7 +50,7 @@ defmodule BeamWeaver.Tracing.Run do
   """
   @spec new(String.t() | atom(), keyword()) :: t()
   def new(name, opts \\ []) do
-    id = Keyword.get_lazy(opts, :id, &new_id/0)
+    id = Keyword.get_lazy(opts, :id, &ID.uuidv7/0)
     trace_id = Keyword.get(opts, :trace_id) || id
     raw_metadata = Keyword.get(opts, :metadata, %{})
     metadata = BeamWeaver.Tracing.Redactor.redact(raw_metadata)
@@ -78,10 +78,6 @@ defmodule BeamWeaver.Tracing.Run do
       {:ok, context_metadata} -> BeamWeaver.Tracing.Redactor.redact(context_metadata)
       :error -> BeamWeaver.Tracing.Redactor.redact(metadata)
     end
-  end
-
-  defp new_id do
-    ID.uuidv7()
   end
 
   defp normalize_tags(tags) do

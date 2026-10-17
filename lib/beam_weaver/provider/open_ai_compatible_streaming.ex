@@ -3,6 +3,7 @@ defmodule BeamWeaver.Provider.OpenAICompatibleStreaming do
 
   import BeamWeaver.MapShape, only: [put_present: 3]
 
+  alias BeamWeaver.Core.Error
   alias BeamWeaver.Core.Messages
   alias BeamWeaver.Core.Messages.MessageChunk
   alias BeamWeaver.OpenAI.MessageParts
@@ -12,9 +13,10 @@ defmodule BeamWeaver.Provider.OpenAICompatibleStreaming do
 
   @type config :: %{
           required(:provider) => atom(),
-          required(:provider_name) => String.t(),
-          required(:usage_metadata) => (map() -> map() | nil),
-          required(:stream_metadata) => ([map()], BeamWeaver.Core.Message.t(), keyword() -> map()),
+          optional(:provider_name) => String.t(),
+          optional(:usage_metadata) => (map() -> map() | nil),
+          optional(:stream_metadata) => ([map()], BeamWeaver.Core.Message.t(), keyword() -> map()),
+          optional(:finish_message) => (BeamWeaver.Core.Message.t() -> BeamWeaver.Core.Message.t()),
           optional(:choice_usage) => boolean(),
           optional(:include_chunk_id) => boolean(),
           optional(:reasoning_index) => non_neg_integer() | nil,
@@ -51,9 +53,12 @@ defmodule BeamWeaver.Provider.OpenAICompatibleStreaming do
       |> message_chunks(config)
       |> Enum.flat_map(&chunk_to_events(&1, config))
 
-    done_events = Enum.flat_map(events, &done_event(&1, config))
+    done_events =
+      events
+      |> Enum.flat_map(&done_event(&1, config))
+      |> Enum.map(&Stream.envelope(&1, metadata: %{provider: config.provider}))
 
-    Enum.map(chunk_events ++ done_events, &ensure_envelope(&1, config))
+    chunk_events ++ done_events
   end
 
   def typed_events(_body, _config), do: []
@@ -106,13 +111,12 @@ defmodule BeamWeaver.Provider.OpenAICompatibleStreaming do
   def stream_body_to_message(body, config, opts) when is_binary(body) do
     case body |> SSE.events() |> events_to_message(config, opts) do
       {:ok, message} -> {:ok, message}
-      :none -> {:error, error(config, :invalid_response, "#{config.provider_name} stream had no chunks")}
+      :none -> {:error, Error.new(:invalid_response, "#{config.provider_name} stream had no chunks")}
     end
   end
 
-  def stream_body_to_message(_body, config, _opts) do
-    {:error, error(config, :invalid_response, "#{config.provider_name} stream body must be binary")}
-  end
+  def stream_body_to_message(_body, config, _opts),
+    do: {:error, Error.new(:invalid_response, "#{config.provider_name} stream body must be binary")}
 
   @spec events_to_message([map()], config(), keyword()) :: {:ok, BeamWeaver.Core.Message.t()} | :none
   def events_to_message(events, config, opts) do
@@ -127,18 +131,19 @@ defmodule BeamWeaver.Provider.OpenAICompatibleStreaming do
         metadata = config.stream_metadata.(events, message, opts)
         message = maybe_put_message_id(message, metadata, config)
 
-        {:ok,
-         %{
-           message
-           | usage_metadata: usage,
-             status: finish_reason,
-             metadata: Map.merge(message.metadata, metadata),
-             response_metadata:
-               message.response_metadata
-               |> Map.merge(metadata)
-               |> Map.merge(%{usage: usage, finish_reason: finish_reason})
-               |> MessageParts.reject_nil_values()
-         }}
+        message = %{
+          message
+          | usage_metadata: usage,
+            status: finish_reason,
+            metadata: Map.merge(message.metadata, metadata),
+            response_metadata:
+              message.response_metadata
+              |> Map.merge(metadata)
+              |> Map.merge(%{usage: usage, finish_reason: finish_reason})
+              |> MessageParts.reject_nil_values()
+        }
+
+        {:ok, Map.get(config, :finish_message, & &1).(message)}
     end
   end
 
@@ -384,12 +389,6 @@ defmodule BeamWeaver.Provider.OpenAICompatibleStreaming do
   defp choice_usage(choice, %{choice_usage: true}), do: choice["usage"]
   defp choice_usage(_choice, _config), do: nil
 
-  defp ensure_envelope(%Stream.Envelope{} = envelope, _config), do: envelope
-
-  defp ensure_envelope(event, config) do
-    Stream.envelope(event, metadata: %{provider: config.provider})
-  end
-
   defp stream_usage(events, config) do
     Enum.reduce(events, nil, fn
       %{"data" => %{"usage" => usage}}, _acc when is_map(usage) ->
@@ -425,6 +424,4 @@ defmodule BeamWeaver.Provider.OpenAICompatibleStreaming do
 
   defp chunk_id(id, %{include_chunk_id: true}), do: id
   defp chunk_id(_id, _config), do: nil
-
-  defp error(_config, type, message), do: BeamWeaver.Core.Error.new(type, message)
 end

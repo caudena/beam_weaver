@@ -53,18 +53,15 @@ defmodule BeamWeaver.OpenAI.Decisions.Decoder do
   defp answer(_answer), do: invalid()
 
   defp distribution(entries, value?) when is_list(entries) do
-    entries
-    |> Result.traverse(fn
-      %{"value" => value, "probability" => probability} when probability?(probability) ->
-        if value?.(value), do: {:ok, {value, probability}}, else: invalid()
+    with {:ok, probabilities} <-
+           Result.traverse(entries, fn
+             %{"value" => value, "probability" => probability} when probability?(probability) ->
+               if value?.(value), do: {:ok, {value, probability}}, else: invalid()
 
-      _entry ->
-        invalid()
-    end)
-    |> case do
-      {:ok, probabilities} -> {:ok, Map.new(probabilities)}
-      {:error, _error} = error -> error
-    end
+             _entry ->
+               invalid()
+           end),
+         do: {:ok, Map.new(probabilities)}
   end
 
   defp distribution(_entries, _value?), do: invalid()

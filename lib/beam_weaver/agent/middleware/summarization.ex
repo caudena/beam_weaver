@@ -47,7 +47,6 @@ defmodule BeamWeaver.Agent.Middleware.Summarization do
   alias BeamWeaver.Core.Message
   alias BeamWeaver.Core.Messages.Utils
   alias BeamWeaver.Graph.Overwrite
-  alias BeamWeaver.Models
   alias BeamWeaver.RetryPolicy
 
   @summary_retry RetryPolicy.new!(max_attempts: 3, initial_delay: 1_000, max_delay: 10_000, jitter: true)
@@ -64,7 +63,7 @@ defmodule BeamWeaver.Agent.Middleware.Summarization do
 
   def new(opts \\ []) do
     %__MODULE__{
-      model: opts |> Keyword.get(:model) |> normalize_model(),
+      model: opts |> Keyword.get(:model) |> Helpers.chat_model!(),
       summarizer: Keyword.get(opts, :summarizer),
       summary_prefix: Keyword.get(opts, :summary_prefix, "Conversation summary:"),
       trigger: Keyword.get(opts, :trigger, {:messages, 20}),
@@ -76,9 +75,6 @@ defmodule BeamWeaver.Agent.Middleware.Summarization do
     }
     |> validate!()
   end
-
-  defp normalize_model(model) when is_binary(model), do: Models.init_chat_model!(model)
-  defp normalize_model(model), do: model
 
   @impl true
   def name(_middleware), do: :summarization
@@ -96,17 +92,9 @@ defmodule BeamWeaver.Agent.Middleware.Summarization do
   defp maybe_summarize(%__MODULE__{trigger: nil}, _messages, _token_count), do: %{}
 
   defp maybe_summarize(%__MODULE__{} = middleware, messages, token_count) do
-    if should_summarize?(middleware, messages, token_count) do
-      cutoff = retention_cutoff(middleware, messages)
-
-      if cutoff <= 0 do
-        %{}
-      else
-        summarize_partition(cutoff, middleware, messages)
-      end
-    else
-      %{}
-    end
+    if should_summarize?(middleware, messages, token_count),
+      do: summarize_partition(retention_cutoff(middleware, messages), middleware, messages),
+      else: %{}
   end
 
   defp summarize_partition(cutoff, _middleware, _messages) when cutoff <= 0, do: %{}
@@ -345,10 +333,7 @@ defmodule BeamWeaver.Agent.Middleware.Summarization do
 
   defp normalize_provider(provider), do: provider |> to_string() |> String.downcase()
 
-  defp metadata_value(map, key) when is_map(map),
-    do: Map.get(map, key) || Map.get(map, to_string(key))
-
-  defp metadata_value(_map, _key), do: nil
+  defp metadata_value(map, key), do: Map.get(map, key) || Map.get(map, to_string(key))
 
   defp validate!(%__MODULE__{} = middleware) do
     cond do

@@ -58,13 +58,9 @@ defmodule BeamWeaver.TypeSafe.Client do
   defp valid_model?(_), do: false
 
   defp decode(result) do
-    case ResponseDecoder.json(result, provider: :typesafe, request_id_header: "x-typesafe-request-id") do
-      {:ok, body} ->
-        {:ok, %Response{headers: headers}} = result
-        {:ok, body, Map.new(headers)["x-typesafe-request-id"]}
-
-      {:error, error} ->
-        {:error, error}
+    with {:ok, body} <- ResponseDecoder.json(result, provider: :typesafe, request_id_header: "x-typesafe-request-id") do
+      {:ok, %Response{headers: headers}} = result
+      {:ok, body, Map.new(headers)["x-typesafe-request-id"]}
     end
   end
 end

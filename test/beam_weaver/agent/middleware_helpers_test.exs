@@ -24,10 +24,10 @@ defmodule BeamWeaver.Agent.MiddlewareHelpersTest do
     preview =
       1..12
       |> Enum.map_join("\n", &"line #{&1}")
-      |> Offload.content_preview(2, 2)
+      |> Offload.content_preview()
 
     assert preview =~ "     1\tline 1"
-    assert preview =~ "... [8 lines truncated] ..."
+    assert preview =~ "... [2 lines truncated] ..."
     assert preview =~ "    12\tline 12"
 
     message =

@@ -2,6 +2,7 @@ defmodule BeamWeaver.Core.Tool.Schema do
   @moduledoc false
 
   alias BeamWeaver.Core.Error
+  alias BeamWeaver.Result
 
   @spec public_input(map(), [atom() | String.t()]) :: map()
   def public_input(schema, []), do: schema
@@ -26,10 +27,7 @@ defmodule BeamWeaver.Core.Tool.Schema do
 
   @spec validate(map(), map()) :: :ok | {:error, Error.t()}
   def validate(schema, input) when is_map(schema) and is_map(input) do
-    case normalize(schema, input) do
-      {:ok, _normalized} -> :ok
-      {:error, %Error{} = error} -> {:error, error}
-    end
+    with {:ok, _normalized} <- normalize(schema, input), do: :ok
   end
 
   @doc false
@@ -37,9 +35,8 @@ defmodule BeamWeaver.Core.Tool.Schema do
   def normalize(schema, input) when is_map(schema) and is_map(input) do
     with {:ok, normalized} <- normalize_keys(input),
          :ok <- validate_required(schema, normalized),
-         :ok <- validate_additional_properties(schema, normalized),
-         {:ok, normalized} <- normalize_properties(schema, normalized) do
-      {:ok, normalized}
+         :ok <- validate_additional_properties(schema, normalized) do
+      normalize_properties(schema, normalized)
     end
   end
 
@@ -55,40 +52,13 @@ defmodule BeamWeaver.Core.Tool.Schema do
     end)
   end
 
-  @spec has_key?(map(), term()) :: boolean()
-  def has_key?(input, key) when is_atom(key),
+  defp has_key?(input, key) when is_atom(key),
     do: Map.has_key?(input, key) or Map.has_key?(input, Atom.to_string(key))
 
-  def has_key?(input, key) when is_binary(key),
+  defp has_key?(input, key) when is_binary(key),
     do: Map.has_key?(input, key) or Enum.any?(Map.keys(input), &(to_string(&1) == key))
 
-  def has_key?(input, key), do: Map.has_key?(input, key)
-
-  @spec fetch_key(map(), term()) :: {:ok, term()} | :error
-  def fetch_key(input, key) when is_atom(key) do
-    cond do
-      Map.has_key?(input, key) -> {:ok, Map.fetch!(input, key)}
-      Map.has_key?(input, Atom.to_string(key)) -> {:ok, Map.fetch!(input, Atom.to_string(key))}
-      true -> :error
-    end
-  end
-
-  def fetch_key(input, key) when is_binary(key) do
-    cond do
-      Map.has_key?(input, key) ->
-        {:ok, Map.fetch!(input, key)}
-
-      matching_key = Enum.find(Map.keys(input), &(to_string(&1) == key)) ->
-        {:ok, Map.fetch!(input, matching_key)}
-
-      true ->
-        :error
-    end
-  end
-
-  def fetch_key(input, key) do
-    if Map.has_key?(input, key), do: {:ok, Map.fetch!(input, key)}, else: :error
-  end
+  defp has_key?(input, key), do: Map.has_key?(input, key)
 
   defp validate_required(schema, input) do
     required = BeamWeaver.MapAccess.get(schema, :required, [])
@@ -105,7 +75,7 @@ defmodule BeamWeaver.Core.Tool.Schema do
 
   defp normalize_properties(schema, input) do
     schema
-    |> schema_value(:properties, %{})
+    |> schema_value(:properties)
     |> case do
       {_key, properties} when is_map(properties) ->
         Enum.reduce_while(properties, {:ok, input}, fn {schema_key, spec}, {:ok, normalized} ->
@@ -138,8 +108,6 @@ defmodule BeamWeaver.Core.Tool.Schema do
 
   defp normalize_property(_key, value, _spec), do: {:ok, value}
 
-  defp validate_enum(_key, _value, nil), do: :ok
-
   defp validate_enum(key, value, {_enum_key, values}) when is_list(values) do
     if Enum.any?(values, &(&1 == value)) do
       :ok
@@ -158,40 +126,15 @@ defmodule BeamWeaver.Core.Tool.Schema do
   end
 
   defp normalize_nested_schema(key, value, spec) do
-    cond do
-      object_schema?(spec) and is_map(value) ->
-        normalize_nested_object(key, value, spec)
+    case schema_value(spec, :type) do
+      {_type_key, type} when type in [:object, "object"] and is_map(value) ->
+        with {:error, %Error{} = error} <- normalize(spec, value), do: {:error, put_nested_path(error, key)}
 
-      array_schema?(spec) and is_list(value) ->
+      {_type_key, type} when type in [:array, "array"] and is_list(value) ->
         normalize_nested_array(key, value, spec)
 
-      true ->
+      _other ->
         {:ok, value}
-    end
-  end
-
-  defp object_schema?(spec) do
-    case schema_value(spec, :type) do
-      {_key, type} when type in [:object, "object"] -> true
-      _other -> false
-    end
-  end
-
-  defp array_schema?(spec) do
-    case schema_value(spec, :type) do
-      {_key, type} when type in [:array, "array"] -> true
-      _other -> false
-    end
-  end
-
-  defp normalize_nested_object(parent_key, value, spec) do
-    with {:ok, normalized} <- normalize_keys(value),
-         :ok <- validate_required(spec, normalized),
-         :ok <- validate_additional_properties(spec, normalized),
-         {:ok, normalized} <- normalize_properties(spec, normalized) do
-      {:ok, normalized}
-    else
-      {:error, %Error{} = error} -> {:error, put_nested_path(error, parent_key)}
     end
   end
 
@@ -200,16 +143,7 @@ defmodule BeamWeaver.Core.Tool.Schema do
       {_items_key, item_schema} when is_map(item_schema) ->
         value
         |> Enum.with_index()
-        |> Enum.reduce_while({:ok, []}, fn {item, index}, {:ok, normalized} ->
-          case normalize_property("#{parent_key}[#{index}]", item, item_schema) do
-            {:ok, item} -> {:cont, {:ok, [item | normalized]}}
-            {:error, %Error{} = error} -> {:halt, {:error, error}}
-          end
-        end)
-        |> case do
-          {:ok, normalized} -> {:ok, Enum.reverse(normalized)}
-          {:error, %Error{} = error} -> {:error, error}
-        end
+        |> Result.traverse(fn {item, index} -> normalize_property("#{parent_key}[#{index}]", item, item_schema) end)
 
       _other ->
         {:ok, value}
@@ -244,9 +178,8 @@ defmodule BeamWeaver.Core.Tool.Schema do
     if String.valid?(value) do
       length = String.length(value)
 
-      with :ok <- minimum_bound(key, length, schema_value(spec, :minLength), "string is too short"),
-           :ok <- maximum_bound(key, length, schema_value(spec, :maxLength), "string is too long") do
-        :ok
+      with :ok <- minimum_bound(key, length, schema_value(spec, :minLength), "string is too short") do
+        maximum_bound(key, length, schema_value(spec, :maxLength), "string is too long")
       end
     else
       {:error, Error.new(:invalid_input, "tool input string is not valid UTF-8", %{key: key})}
@@ -271,8 +204,6 @@ defmodule BeamWeaver.Core.Tool.Schema do
 
   defp validate_collection_bounds(_key, _value, _spec), do: :ok
 
-  defp minimum_bound(_key, _value, nil, _message), do: :ok
-
   defp minimum_bound(key, value, {_schema_key, minimum}, message) when is_number(minimum) do
     if value >= minimum,
       do: :ok,
@@ -280,8 +211,6 @@ defmodule BeamWeaver.Core.Tool.Schema do
   end
 
   defp minimum_bound(_key, _value, _bound, _message), do: :ok
-
-  defp maximum_bound(_key, _value, nil, _message), do: :ok
 
   defp maximum_bound(key, value, {_schema_key, maximum}, message) when is_number(maximum) do
     if value <= maximum,
@@ -316,35 +245,20 @@ defmodule BeamWeaver.Core.Tool.Schema do
     %{error | details: details}
   end
 
-  defp validate_type(_key, _value, nil), do: :ok
-
-  defp validate_type(key, value, types) when is_list(types) do
-    if Enum.any?(types, &(validate_type(key, value, &1) == :ok)) do
-      :ok
-    else
-      {:error, type_error(key, value, types)}
-    end
-  end
-
   defp validate_type(key, value, type) do
     if valid_json_type?(value, type), do: :ok, else: {:error, type_error(key, value, type)}
   end
 
-  defp valid_json_type?(value, "string"), do: is_binary(value)
-  defp valid_json_type?(value, :string), do: is_binary(value)
-  defp valid_json_type?(value, "integer"), do: is_integer(value)
-  defp valid_json_type?(value, :integer), do: is_integer(value)
-  defp valid_json_type?(value, "number"), do: is_number(value)
-  defp valid_json_type?(value, :number), do: is_number(value)
-  defp valid_json_type?(value, "boolean"), do: is_boolean(value)
-  defp valid_json_type?(value, :boolean), do: is_boolean(value)
-  defp valid_json_type?(value, "object"), do: is_map(value)
-  defp valid_json_type?(value, :object), do: is_map(value)
-  defp valid_json_type?(value, "array"), do: is_list(value)
-  defp valid_json_type?(value, :array), do: is_list(value)
-  defp valid_json_type?(nil, "null"), do: true
-  defp valid_json_type?(nil, :null), do: true
-  defp valid_json_type?(_value, _unknown), do: true
+  def valid_json_type?(value, type) when is_atom(type), do: valid_json_type?(value, Atom.to_string(type))
+  def valid_json_type?(value, "string"), do: is_binary(value)
+  def valid_json_type?(value, "integer"), do: is_integer(value)
+  def valid_json_type?(value, "number"), do: is_number(value)
+  def valid_json_type?(value, "boolean"), do: is_boolean(value)
+  def valid_json_type?(value, "object"), do: is_map(value)
+  def valid_json_type?(value, "array"), do: is_list(value)
+  def valid_json_type?(value, "null"), do: is_nil(value)
+  def valid_json_type?(value, types) when is_list(types), do: Enum.any?(types, &valid_json_type?(value, &1))
+  def valid_json_type?(_value, _other), do: true
 
   defp type_error(key, value, expected) do
     Error.new(:invalid_input, "tool input has invalid type", %{
@@ -354,16 +268,8 @@ defmodule BeamWeaver.Core.Tool.Schema do
     })
   end
 
-  defp put_default(input, key, default) when is_atom(key) do
-    if has_key?(input, key), do: input, else: Map.put(input, key, default)
-  end
-
-  defp put_default(input, key, default) when is_binary(key) do
-    if has_key?(input, key), do: input, else: Map.put(input, key, default)
-  end
-
   defp put_default(input, key, default) do
-    if Map.has_key?(input, key), do: input, else: Map.put(input, key, default)
+    if has_key?(input, key), do: input, else: Map.put(input, key, default)
   end
 
   defp remove_injected_properties(schema, injected_names) do
@@ -396,15 +302,13 @@ defmodule BeamWeaver.Core.Tool.Schema do
     end
   end
 
-  defp schema_value(schema, key, default \\ nil)
-
-  defp schema_value(schema, key, default) when is_map(schema) do
+  defp schema_value(schema, key) when is_map(schema) do
     cond do
       Map.has_key?(schema, key) -> {key, Map.fetch!(schema, key)}
       Map.has_key?(schema, to_string(key)) -> {to_string(key), Map.fetch!(schema, to_string(key))}
-      true -> default
+      true -> nil
     end
   end
 
-  defp schema_value(_schema, _key, default), do: default
+  defp schema_value(_schema, _key), do: nil
 end

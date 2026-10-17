@@ -1,153 +1,33 @@
-defmodule BeamWeaver.TextSplitter.Character do
-  @moduledoc false
-  defstruct BeamWeaver.TextSplitter.Shared.common_fields()
+for {name, defaults} <- [
+      Character: [],
+      RecursiveCharacter: [],
+      Markdown: [separators: ["\n## ", "\n### ", "\n#### ", "\n\n", "\n", " ", ""]],
+      HTML: [separators: ["</p>", "</div>", "<br", "\n\n", "\n", " ", ""]],
+      LaTeX: [separators: ["\n\\section", "\n\\subsection", "\n\\begin", "\n\n", "\n", " ", ""]],
+      Code: [separators: ["\n\n", "\ndef ", "\nclass ", "\nfunction ", "\nconst ", "\nlet ", "\n", " ", ""]],
+      Python: [separators: ["\nclass ", "\ndef ", "\n\tdef ", "\n\n", "\n", " ", ""]],
+      JSX: [separators: ["\nfunction ", "\nconst ", "\nexport ", "\nreturn ", "\n\n", "\n", " ", ""]]
+    ] do
+  defmodule Module.concat(BeamWeaver.TextSplitter, name) do
+    @moduledoc false
+    alias BeamWeaver.TextSplitter.Shared
 
-  def new(opts \\ []), do: struct(__MODULE__, BeamWeaver.TextSplitter.Shared.normalize_opts(opts))
+    @defaults defaults
+    defstruct Shared.common_fields()
 
-  def split_text(%__MODULE__{} = splitter, text),
-    do: BeamWeaver.TextSplitter.Shared.split_text(splitter, text)
-
-  def split_document(splitter, document),
-    do: BeamWeaver.TextSplitter.Shared.split_document(splitter, document)
-end
-
-defmodule BeamWeaver.TextSplitter.RecursiveCharacter do
-  @moduledoc false
-  defstruct BeamWeaver.TextSplitter.Shared.common_fields()
-
-  def new(opts \\ []), do: struct(__MODULE__, BeamWeaver.TextSplitter.Shared.normalize_opts(opts))
-
-  def split_text(%__MODULE__{} = splitter, text),
-    do: BeamWeaver.TextSplitter.Shared.split_text(splitter, text)
-
-  def split_document(splitter, document),
-    do: BeamWeaver.TextSplitter.Shared.split_document(splitter, document)
-end
-
-defmodule BeamWeaver.TextSplitter.Markdown do
-  @moduledoc false
-  defstruct BeamWeaver.TextSplitter.Shared.common_fields()
-
-  @separators ["\n## ", "\n### ", "\n#### ", "\n\n", "\n", " ", ""]
-  def new(opts \\ []),
-    do:
-      struct(
-        __MODULE__,
-        BeamWeaver.TextSplitter.Shared.normalize_opts(opts, separators: @separators)
-      )
-
-  def split_text(%__MODULE__{} = splitter, text),
-    do: BeamWeaver.TextSplitter.Shared.split_text(splitter, text)
-
-  def split_document(splitter, document),
-    do: BeamWeaver.TextSplitter.Shared.split_document(splitter, document)
-end
-
-defmodule BeamWeaver.TextSplitter.HTML do
-  @moduledoc false
-  defstruct BeamWeaver.TextSplitter.Shared.common_fields()
-
-  @separators ["</p>", "</div>", "<br", "\n\n", "\n", " ", ""]
-  def new(opts \\ []),
-    do:
-      struct(
-        __MODULE__,
-        BeamWeaver.TextSplitter.Shared.normalize_opts(opts, separators: @separators)
-      )
-
-  def split_text(%__MODULE__{} = splitter, text),
-    do: BeamWeaver.TextSplitter.Shared.split_text(splitter, text)
-
-  def split_document(splitter, document),
-    do: BeamWeaver.TextSplitter.Shared.split_document(splitter, document)
-end
-
-defmodule BeamWeaver.TextSplitter.LaTeX do
-  @moduledoc false
-  defstruct BeamWeaver.TextSplitter.Shared.common_fields()
-
-  @separators ["\n\\section", "\n\\subsection", "\n\\begin", "\n\n", "\n", " ", ""]
-  def new(opts \\ []),
-    do:
-      struct(
-        __MODULE__,
-        BeamWeaver.TextSplitter.Shared.normalize_opts(opts, separators: @separators)
-      )
-
-  def split_text(%__MODULE__{} = splitter, text),
-    do: BeamWeaver.TextSplitter.Shared.split_text(splitter, text)
-
-  def split_document(splitter, document),
-    do: BeamWeaver.TextSplitter.Shared.split_document(splitter, document)
-end
-
-defmodule BeamWeaver.TextSplitter.Code do
-  @moduledoc false
-  defstruct BeamWeaver.TextSplitter.Shared.common_fields()
-
-  @separators ["\n\n", "\ndef ", "\nclass ", "\nfunction ", "\nconst ", "\nlet ", "\n", " ", ""]
-  def new(opts \\ []),
-    do:
-      struct(
-        __MODULE__,
-        BeamWeaver.TextSplitter.Shared.normalize_opts(opts, separators: @separators)
-      )
-
-  def split_text(%__MODULE__{} = splitter, text),
-    do: BeamWeaver.TextSplitter.Shared.split_text(splitter, text)
-
-  def split_document(splitter, document),
-    do: BeamWeaver.TextSplitter.Shared.split_document(splitter, document)
-end
-
-defmodule BeamWeaver.TextSplitter.Python do
-  @moduledoc false
-  defstruct BeamWeaver.TextSplitter.Shared.common_fields()
-
-  @separators ["\nclass ", "\ndef ", "\n\tdef ", "\n\n", "\n", " ", ""]
-  def new(opts \\ []),
-    do:
-      struct(
-        __MODULE__,
-        BeamWeaver.TextSplitter.Shared.normalize_opts(opts, separators: @separators)
-      )
-
-  def split_text(%__MODULE__{} = splitter, text),
-    do: BeamWeaver.TextSplitter.Shared.split_text(splitter, text)
-
-  def split_document(splitter, document),
-    do: BeamWeaver.TextSplitter.Shared.split_document(splitter, document)
-end
-
-defmodule BeamWeaver.TextSplitter.JSX do
-  @moduledoc false
-  defstruct BeamWeaver.TextSplitter.Shared.common_fields()
-
-  @separators ["\nfunction ", "\nconst ", "\nexport ", "\nreturn ", "\n\n", "\n", " ", ""]
-  def new(opts \\ []),
-    do:
-      struct(
-        __MODULE__,
-        BeamWeaver.TextSplitter.Shared.normalize_opts(opts, separators: @separators)
-      )
-
-  def split_text(%__MODULE__{} = splitter, text),
-    do: BeamWeaver.TextSplitter.Shared.split_text(splitter, text)
-
-  def split_document(splitter, document),
-    do: BeamWeaver.TextSplitter.Shared.split_document(splitter, document)
+    def new(opts), do: struct(__MODULE__, Shared.normalize_opts(opts, @defaults))
+    def split_text(%__MODULE__{} = splitter, text), do: Shared.split_text(splitter, text)
+    def split_document(splitter, document), do: Shared.split_document(splitter, document)
+  end
 end
 
 defmodule BeamWeaver.TextSplitter.Token do
   @moduledoc false
-  defstruct BeamWeaver.TextSplitter.Shared.common_fields() ++
-              [tokenizer: %BeamWeaver.Tokenizer.Approximate{}]
+  alias BeamWeaver.TextSplitter.Shared
 
-  def new(opts \\ []), do: struct(__MODULE__, BeamWeaver.TextSplitter.Shared.normalize_opts(opts))
+  defstruct Shared.common_fields() ++ [tokenizer: %BeamWeaver.Tokenizer.Approximate{}]
 
-  def split_text(%__MODULE__{} = splitter, text),
-    do: BeamWeaver.TextSplitter.Shared.token_split_text(splitter, text)
-
-  def split_document(splitter, document),
-    do: BeamWeaver.TextSplitter.Shared.token_split_document(splitter, document)
+  def new(opts), do: struct(__MODULE__, Shared.normalize_opts(opts))
+  def split_text(%__MODULE__{} = splitter, text), do: Shared.token_split_text(splitter, text)
+  def split_document(splitter, document), do: Shared.split_document(splitter, document)
 end

@@ -1,110 +1,16 @@
 defmodule BeamWeaver.Agent.DSL do
   @moduledoc false
 
-  @graph_attributes [
-    beam_weaver_nodes: true,
-    beam_weaver_edges: true,
-    beam_weaver_reducers: true,
-    beam_weaver_channels: true,
-    beam_weaver_joins: true
-  ]
+  @graph_fields [:nodes, :edges, :reducers, :channels, :joins]
 
-  @dsl_fields [
-    name: [attr: :beam_weaver_name],
-    description: [attr: :beam_weaver_description],
-    checkpointer: [attr: :beam_weaver_checkpointer],
-    store: [attr: :beam_weaver_store],
-    cache: [attr: :beam_weaver_cache],
-    model: [attr: :beam_weaver_model],
-    model_options: [attr: :beam_weaver_model_options],
-    model_opts: [attr: :beam_weaver_model_opts],
-    tools: [attr: :beam_weaver_tools],
-    validate_tools: [attr: :beam_weaver_validate_tools],
-    system_prompt: [attr: :beam_weaver_system_prompt],
-    middleware: [attr: :beam_weaver_middleware],
-    filesystem: [attr: :beam_weaver_filesystem],
-    filesystem_permissions: [attr: :beam_weaver_filesystem_permissions],
-    skills: [attr: :beam_weaver_skills],
-    memory: [attr: :beam_weaver_memory],
-    subagents: [attr: :beam_weaver_subagents],
-    async_subagents: [attr: :beam_weaver_async_subagents],
-    compact_conversation: [attr: :beam_weaver_compact_conversation],
-    overflow_recovery: [attr: :beam_weaver_overflow_recovery],
-    prompt_caching: [attr: :beam_weaver_prompt_caching],
-    exclude_tools: [attr: :beam_weaver_exclude_tools],
-    tool_descriptions: [attr: :beam_weaver_tool_descriptions],
-    interrupt_on: [attr: :beam_weaver_interrupt_on],
-    response_format: [attr: :beam_weaver_response_format],
-    context_schema: [attr: :beam_weaver_context_schema],
-    input_schema: [attr: :beam_weaver_input_schema],
-    output_schema: [attr: :beam_weaver_output_schema],
-    context_schema_entries: [
-      attr: :beam_weaver_context_schema_entries,
-      accumulate: true,
-      reverse: true,
-      default: []
-    ],
-    schema_target: [attr: :beam_weaver_schema_target],
-    interrupt_before: [attr: :beam_weaver_interrupt_before],
-    interrupt_after: [attr: :beam_weaver_interrupt_after],
-    recursion_limit: [attr: :beam_weaver_recursion_limit],
-    execution_mode: [attr: :beam_weaver_execution_mode],
-    capability_profile: [attr: :beam_weaver_capability_profile],
-    tool_timeout: [attr: :beam_weaver_tool_timeout],
-    step_timeout: [attr: :beam_weaver_step_timeout],
-    run_timeout: [attr: :beam_weaver_run_timeout]
-  ]
+  @dsl_fields ~w(name description model model_options model_opts tools validate_tools middleware filesystem
+                 filesystem_permissions skills memory subagents async_subagents compact_conversation
+                 overflow_recovery prompt_caching exclude_tools tool_descriptions interrupt_on system_prompt
+                 response_format checkpointer store cache context_schema input_schema output_schema
+                 interrupt_before interrupt_after recursion_limit execution_mode capability_profile tool_timeout
+                 step_timeout run_timeout)a
 
-  @special_macros [
-    :model,
-    :model_options,
-    :context_schema,
-    :context_schema_entries,
-    :schema_target,
-    :tools,
-    :middleware,
-    :subagents,
-    :async_subagents,
-    :response_format
-  ]
-
-  @spec_quote_fields [
-    {:name, nil, :ast},
-    {:description, nil, :ast},
-    {:model, nil, :ast},
-    {:model_opts, [], :ast},
-    {:tools, [], :ast},
-    {:validate_tools, false, :ast},
-    {:middleware, [], :ast},
-    {:filesystem, nil, :ast},
-    {:filesystem_permissions, nil, :ast},
-    {:skills, nil, :ast},
-    {:memory, nil, :ast},
-    {:subagents, nil, :ast},
-    {:async_subagents, nil, :ast},
-    {:compact_conversation, nil, :ast},
-    {:overflow_recovery, nil, :ast},
-    {:prompt_caching, nil, :ast},
-    {:exclude_tools, nil, :ast},
-    {:tool_descriptions, nil, :ast},
-    {:interrupt_on, nil, :ast},
-    {:system_prompt, nil, :ast},
-    {:response_format, nil, :ast},
-    {:checkpointer, nil, :ast},
-    {:store, nil, :ast},
-    {:cache, nil, :ast},
-    {:context_schema, nil, :ast},
-    {:input_schema, nil, :ast},
-    {:output_schema, nil, :ast},
-    {:interrupt_before, [], :ast},
-    {:interrupt_after, [], :ast},
-    {:recursion_limit, nil, :ast},
-    {:execution_mode, nil, :ast},
-    {:capability_profile, nil, :ast},
-    {:tool_timeout, nil, :ast},
-    {:step_timeout, nil, :ast},
-    {:run_timeout, nil, :ast}
-  ]
+  @special_macros ~w(model model_options context_schema tools middleware subagents async_subagents response_format)a
 
   # In-memory adapters whose `new` creates ETS tables, with the declaration
   # that takes each and its database-backed counterpart.
@@ -153,43 +59,27 @@ defmodule BeamWeaver.Agent.DSL do
     ] ++ Enum.map(simple_macro_fields(), fn {name, _attr} -> {name, 1} end)
   end
 
-  def simple_macro_fields do
-    @dsl_fields
-    |> Keyword.drop(@special_macros)
-    |> Enum.map(fn {name, opts} -> {name, Keyword.fetch!(opts, :attr)} end)
-  end
+  def simple_macro_fields, do: for(name <- @dsl_fields -- @special_macros, do: {name, attr(name)})
 
   def register_attribute_quotes do
-    graph_attribute_quotes() ++ dsl_attribute_quotes()
+    for name <- @dsl_fields ++ [:context_schema_entries | @graph_fields] do
+      quote do
+        Module.register_attribute(__MODULE__, unquote(attr(name)), accumulate: unquote(name not in @dsl_fields))
+      end
+    end
   end
 
   def collect_attrs(module) do
-    Map.new(@dsl_fields, fn {name, opts} ->
-      attr = Keyword.fetch!(opts, :attr)
-      value = Module.get_attribute(module, attr)
-      value = if Keyword.get(opts, :reverse, false), do: Enum.reverse(value || []), else: value
-      {name, value || Keyword.get(opts, :default)}
-    end)
+    @dsl_fields
+    |> Map.new(&{&1, Module.get_attribute(module, attr(&1))})
+    |> Map.put(:context_schema_entries, collect(module, :context_schema_entries))
   end
 
-  defp graph_attribute_quotes do
-    Enum.map(@graph_attributes, fn {attr, accumulate?} ->
-      quote do
-        Module.register_attribute(__MODULE__, unquote(attr), accumulate: unquote(accumulate?))
-      end
-    end)
-  end
+  def collect_graph(module), do: Map.new(@graph_fields, &{&1, collect(module, &1)})
 
-  defp dsl_attribute_quotes do
-    Enum.map(@dsl_fields, fn {_name, opts} ->
-      attr = Keyword.fetch!(opts, :attr)
-      accumulate? = Keyword.get(opts, :accumulate, false)
+  defp collect(module, name), do: module |> Module.get_attribute(attr(name)) |> Enum.reverse()
 
-      quote do
-        Module.register_attribute(__MODULE__, unquote(attr), accumulate: unquote(accumulate?))
-      end
-    end)
-  end
+  defp attr(name), do: :"beam_weaver_#{name}"
 
   def schema_from_entries(base, entries) do
     Enum.reduce(entries, base || %{}, fn {key, declaration}, acc ->
@@ -197,20 +87,8 @@ defmodule BeamWeaver.Agent.DSL do
     end)
   end
 
-  def schema_attr!(:context, :field, _caller), do: :beam_weaver_context_schema_entries
-
-  def schema_attr!(_target, type, caller) do
-    raise CompileError,
-      file: caller.file,
-      line: caller.line,
-      description: "#{type}/2 can only be used inside context_schema blocks"
-  end
-
-  def schema_block_entries!(caller, target, block) do
-    block
-    |> block_expressions()
-    |> Enum.map(&schema_block_entry!(caller, target, &1))
-  end
+  def schema_block_entries!(caller, block),
+    do: block |> block_expressions() |> Enum.map(&schema_block_entry!(caller, &1))
 
   def schema_quote(nil, []), do: nil
 
@@ -219,12 +97,12 @@ defmodule BeamWeaver.Agent.DSL do
     entries_ast = Enum.map(entries, &schema_entry_quote/1)
 
     quote do
-      BeamWeaver.Agent.__schema_from_entries__(unquote(base), [unquote_splicing(entries_ast)])
+      BeamWeaver.Agent.DSL.schema_from_entries(unquote(base), [unquote_splicing(entries_ast)])
     end
   end
 
-  def spec_quote(_module, attrs) when is_map(attrs) do
-    attrs_ast = spec_attrs_ast(attrs)
+  def spec_quote(attrs) do
+    attrs_ast = {:%{}, [], for(name <- @dsl_fields, name != :model_options, do: {name, Map.fetch!(attrs, name)})}
 
     quote do
       @impl BeamWeaver.Agent
@@ -234,18 +112,6 @@ defmodule BeamWeaver.Agent.DSL do
     end
   end
 
-  defp spec_attrs_ast(attrs) do
-    {:%{}, [], Enum.map(@spec_quote_fields, &spec_attr_entry(attrs, &1))}
-  end
-
-  defp spec_attr_entry(attrs, {field, default, mode}) do
-    {field, spec_attr_value_ast(Map.get(attrs, field), default, mode)}
-  end
-
-  defp spec_attr_value_ast(nil, default, :ast), do: default
-  defp spec_attr_value_ast(value, _default, :ast), do: value
-
-  @doc false
   # The options written after `model "..."` and the ones from `model_opts`,
   # merged when the agent runs; `model_opts` wins on a shared key.
   def model_opts_quote(nil, nil), do: nil
@@ -258,76 +124,29 @@ defmodule BeamWeaver.Agent.DSL do
     end
   end
 
-  def graph_builder_quote(
-        module,
-        nodes,
-        edges,
-        reducers,
-        channels,
-        joins
-      ) do
-    channel_quotes =
-      Enum.map(channels, fn {key, merge, opts} ->
-        quote do
-          graph =
-            BeamWeaver.Agent.__add_graph_channel__(
-              graph,
-              unquote(key),
-              unquote(merge),
-              unquote(Macro.escape(opts))
-            )
-        end
-      end)
+  def graph_builder_quote(module, graph) do
+    calls =
+      Enum.map(graph.channels, fn {key, merge, opts} ->
+        {BeamWeaver.Agent, :__add_graph_channel__, [key, merge, Macro.escape(opts)]}
+      end) ++
+        Enum.map(graph.reducers, fn {key, reducer_ast} -> {BeamWeaver.Graph, :add_reducer, [key, reducer_ast]} end) ++
+        Enum.map(graph.nodes, fn {name, fun_ast, opts} ->
+          {BeamWeaver.Graph, :add_node, [name, fun_ast, Macro.escape(opts)]}
+        end) ++
+        Enum.map(graph.edges, fn {from, to, opts} -> {BeamWeaver.Graph, :add_edge, [from, to, Macro.escape(opts)]} end) ++
+        Enum.map(graph.joins, fn {from_nodes, to_node, opts} ->
+          {BeamWeaver.Graph, :add_join, [from_nodes, to_node, Macro.escape(opts)]}
+        end)
 
-    node_quotes =
-      Enum.map(nodes, fn {name, fun_ast, opts} ->
-        quote do
-          graph = BeamWeaver.Graph.add_node(graph, unquote(name), unquote(fun_ast), unquote(Macro.escape(opts)))
-        end
-      end)
-
-    reducer_quotes =
-      Enum.map(reducers, fn {key, reducer_ast} ->
-        quote do
-          graph = BeamWeaver.Graph.add_reducer(graph, unquote(key), unquote(reducer_ast))
-        end
-      end)
-
-    edge_quotes =
-      Enum.map(edges, fn {start_node, end_node, opts} ->
-        quote do
-          graph =
-            BeamWeaver.Graph.add_edge(
-              graph,
-              unquote(start_node),
-              unquote(end_node),
-              unquote(Macro.escape(opts))
-            )
-        end
-      end)
-
-    join_quotes =
-      Enum.map(joins, fn {upstream_nodes, downstream_node, opts} ->
-        quote do
-          graph =
-            BeamWeaver.Graph.add_join(
-              graph,
-              unquote(upstream_nodes),
-              unquote(downstream_node),
-              unquote(Macro.escape(opts))
-            )
-        end
-      end)
+    steps =
+      for {builder, fun, args} <- calls,
+          do: quote(do: graph = unquote(builder).unquote(fun)(graph, unquote_splicing(args)))
 
     quote do
       @impl BeamWeaver.Agent
       def graph do
         graph = BeamWeaver.Graph.new(name: inspect(unquote(module)))
-        unquote_splicing(channel_quotes)
-        unquote_splicing(reducer_quotes)
-        unquote_splicing(node_quotes)
-        unquote_splicing(edge_quotes)
-        unquote_splicing(join_quotes)
+        unquote_splicing(steps)
         graph
       end
     end
@@ -342,70 +161,42 @@ defmodule BeamWeaver.Agent.DSL do
     end
   end
 
-  def validate_static_agent!(
+  def validate_static_agent!(env, graph, graph_defined?, attrs) do
+    duplicate_names =
+      for {name, count} <- Enum.frequencies_by(graph.nodes, &to_string(elem(&1, 0))), count > 1, do: name
+
+    if duplicate_names != [] do
+      compile_error!(env, "duplicate BeamWeaver agent node names: #{Enum.join(duplicate_names, ", ")}")
+    end
+
+    if graph.nodes != [] and not Enum.any?(graph.edges, &match?({:__start__, _end_node, _opts}, &1)) do
+      compile_error!(env, "BeamWeaver agent DSL must define an edge from Graph.start()")
+    end
+
+    if graph_defined? and
+         (attrs.model || attrs.tools || attrs.validate_tools || attrs.system_prompt || attrs.middleware ||
+            attrs.response_format) do
+      compile_error!(env, "BeamWeaver agent model/tools DSL cannot be combined with a custom graph/0")
+    end
+
+    if attrs.model && (graph.nodes != [] or graph.edges != []) do
+      compile_error!(
         env,
-        nodes,
-        edges,
-        graph_defined?,
-        model_ast,
-        tools_ast,
-        validate_tools_ast,
-        system_prompt_ast,
-        middleware_ast,
-        response_format_ast
-      ) do
-    node_names = Enum.map(nodes, fn {name, _fun, _opts} -> to_string(name) end)
-
-    case duplicates(node_names) do
-      [] ->
-        :ok
-
-      duplicate_names ->
-        raise CompileError,
-          file: env.file,
-          line: env.line,
-          description: "duplicate BeamWeaver agent node names: #{Enum.join(duplicate_names, ", ")}"
+        "BeamWeaver agent model/tools DSL builds its own graph; use graph/0 for custom graph composition"
+      )
     end
 
-    if nodes != [] and
-         not Enum.any?(edges, fn {start_node, _end_node, _opts} ->
-           start_node == :__start__
-         end) do
-      raise CompileError,
-        file: env.file,
-        line: env.line,
-        description: "BeamWeaver agent DSL must define an edge from Graph.start()"
-    end
-
-    loop_declarations? =
-      model_ast || tools_ast || validate_tools_ast || system_prompt_ast || middleware_ast ||
-        response_format_ast
-
-    if graph_defined? and loop_declarations? do
-      raise CompileError,
-        file: env.file,
-        line: env.line,
-        description: "BeamWeaver agent model/tools DSL cannot be combined with a custom graph/0"
-    end
-
-    if model_ast &&
-         (nodes != [] or edges != []) do
-      raise CompileError,
-        file: env.file,
-        line: env.line,
-        description: "BeamWeaver agent model/tools DSL builds its own graph; use graph/0 for custom graph composition"
-    end
-
-    if is_nil(model_ast) and
-         (tools_ast || validate_tools_ast || system_prompt_ast || response_format_ast) do
-      raise CompileError,
-        file: env.file,
-        line: env.line,
-        description: "BeamWeaver agent tools/validate_tools/system_prompt/response_format declarations require model/1"
+    if is_nil(attrs.model) and (attrs.tools || attrs.validate_tools || attrs.system_prompt || attrs.response_format) do
+      compile_error!(
+        env,
+        "BeamWeaver agent tools/validate_tools/system_prompt/response_format declarations require model/1"
+      )
     end
   end
 
-  @doc false
+  def compile_error!(env, description),
+    do: raise(CompileError, file: env.file, line: env.line, description: description)
+
   # Declarations are evaluated on every call, so one that builds an in-memory
   # saver, store or cache gives every call a new, empty one, and leaves its
   # ETS tables behind. Raises a `CompileError` for the first such call in a
@@ -482,8 +273,8 @@ defmodule BeamWeaver.Agent.DSL do
 
   defp schema_entry({:field, type, opts}), do: BeamWeaver.Agent.Schema.field(nil, type, opts)
 
-  def block_expressions({:__block__, _meta, expressions}), do: expressions
-  def block_expressions(expression), do: [expression]
+  defp block_expressions({:__block__, _meta, expressions}), do: expressions
+  defp block_expressions(expression), do: [expression]
 
   @block_hints %{
     tools: {"tools", ""},
@@ -492,7 +283,6 @@ defmodule BeamWeaver.Agent.DSL do
     async_subagents: {"async subagent", ". Use `async_subagent \"name\", opts` or `include async_specs`."}
   }
 
-  @doc false
   # Expands a `tools do`, `middleware do`, `subagents do`, or `async_subagents do`
   # block into one flattened list expression.
   def block_ast!(caller, kind, block) do
@@ -503,13 +293,8 @@ defmodule BeamWeaver.Agent.DSL do
     end
   end
 
-  def graph_block_entries!(caller, block) do
-    block
-    |> block_expressions()
-    |> Enum.reduce(%{nodes: [], edges: [], reducers: [], channels: [], joins: []}, fn expression, acc ->
-      graph_block_entry!(caller, expression, acc)
-    end)
-  end
+  def graph_block_entries!(caller, block),
+    do: block |> block_expressions() |> Enum.flat_map(&graph_block_entry!(caller, &1))
 
   defp block_entry!(_caller, _kind, {:include, _meta, [list_ast]}), do: list_ast
 
@@ -542,56 +327,41 @@ defmodule BeamWeaver.Agent.DSL do
 
   defp block_entry!(caller, kind, other) do
     {label, hint} = Map.fetch!(@block_hints, kind)
-
-    raise CompileError,
-      file: caller.file,
-      line: caller.line,
-      description: "unsupported #{label} declaration: #{Macro.to_string(other)}#{hint}"
+    compile_error!(caller, "unsupported #{label} declaration: #{Macro.to_string(other)}#{hint}")
   end
 
-  defp graph_block_entry!(caller, {:state, _meta, [[do: state_block]]}, acc) do
-    channels =
-      state_block
-      |> block_expressions()
-      |> Enum.map(&state_channel_entry!(caller, &1))
-
-    %{acc | channels: acc.channels ++ channels}
+  defp graph_block_entry!(caller, {:state, _meta, [[do: state_block]]}) do
+    for expression <- block_expressions(state_block) do
+      {key, merge, opts} = state_channel_entry!(caller, expression)
+      {:beam_weaver_channels, quote(do: {unquote(key), unquote(Macro.escape(merge)), unquote(opts)})}
+    end
   end
 
-  defp graph_block_entry!(_caller, {:node, _meta, [name, fun_ast]}, acc) do
-    %{acc | nodes: acc.nodes ++ [{name, fun_ast, []}]}
+  defp graph_block_entry!(caller, {kind, meta, [first, second]}) when kind in [:node, :edge, :join],
+    do: graph_block_entry!(caller, {kind, meta, [first, second, []]})
+
+  defp graph_block_entry!(_caller, {:node, _meta, [name, fun_ast, opts]}),
+    do: [{:beam_weaver_nodes, quote(do: {unquote(name), unquote(Macro.escape(fun_ast)), unquote(opts)})}]
+
+  defp graph_block_entry!(_caller, {:edge, _meta, [start_node, end_node, opts]}) do
+    [
+      {:beam_weaver_edges,
+       quote(do: {unquote(graph_node_ast(start_node)), unquote(graph_node_ast(end_node)), unquote(opts)})}
+    ]
   end
 
-  defp graph_block_entry!(_caller, {:node, _meta, [name, fun_ast, opts]}, acc) do
-    %{acc | nodes: acc.nodes ++ [{name, fun_ast, opts}]}
+  defp graph_block_entry!(_caller, {:join, _meta, [upstream_nodes, downstream_node, opts]}) do
+    [
+      {:beam_weaver_joins,
+       quote(do: {unquote(upstream_nodes), unquote(graph_node_ast(downstream_node)), unquote(opts)})}
+    ]
   end
 
-  defp graph_block_entry!(_caller, {:edge, _meta, [start_node, end_node]}, acc) do
-    %{acc | edges: acc.edges ++ [{graph_node_ast(start_node), graph_node_ast(end_node), []}]}
-  end
+  defp graph_block_entry!(_caller, {:reducer, _meta, [key, reducer_ast]}),
+    do: [{:beam_weaver_reducers, quote(do: {unquote(key), unquote(Macro.escape(reducer_ast))})}]
 
-  defp graph_block_entry!(_caller, {:edge, _meta, [start_node, end_node, opts]}, acc) do
-    %{acc | edges: acc.edges ++ [{graph_node_ast(start_node), graph_node_ast(end_node), opts}]}
-  end
-
-  defp graph_block_entry!(_caller, {:join, _meta, [upstream_nodes, downstream_node]}, acc) do
-    %{acc | joins: acc.joins ++ [{upstream_nodes, graph_node_ast(downstream_node), []}]}
-  end
-
-  defp graph_block_entry!(_caller, {:join, _meta, [upstream_nodes, downstream_node, opts]}, acc) do
-    %{acc | joins: acc.joins ++ [{upstream_nodes, graph_node_ast(downstream_node), opts}]}
-  end
-
-  defp graph_block_entry!(_caller, {:reducer, _meta, [key, reducer_ast]}, acc) do
-    %{acc | reducers: acc.reducers ++ [{key, reducer_ast}]}
-  end
-
-  defp graph_block_entry!(caller, other, _acc) do
-    raise CompileError,
-      file: caller.file,
-      line: caller.line,
-      description: "unsupported graph declaration: #{Macro.to_string(other)}"
-  end
+  defp graph_block_entry!(caller, other),
+    do: compile_error!(caller, "unsupported graph declaration: #{Macro.to_string(other)}")
 
   defp state_channel_entry!(_caller, {:channel, _meta, [key]}), do: {key, :last, []}
 
@@ -599,65 +369,37 @@ defmodule BeamWeaver.Agent.DSL do
     {key, Keyword.get(opts, :merge, :last), Keyword.delete(opts, :merge)}
   end
 
-  defp state_channel_entry!(caller, other) do
-    raise CompileError,
-      file: caller.file,
-      line: caller.line,
-      description: "unsupported graph state declaration: #{Macro.to_string(other)}"
-  end
+  defp state_channel_entry!(caller, other),
+    do: compile_error!(caller, "unsupported graph state declaration: #{Macro.to_string(other)}")
 
   defp graph_node_ast({:start, _meta, []}), do: quote(do: BeamWeaver.Graph.start())
   defp graph_node_ast({:finish, _meta, []}), do: quote(do: BeamWeaver.Graph.end_node())
   defp graph_node_ast(other), do: other
 
-  defp schema_block_entry!(caller, _target, {:field, _meta, [name_ast, type_ast]}) do
-    schema_block_entry!(caller, :context, {:field, [], [name_ast, type_ast, []]})
-  end
+  defp schema_block_entry!(caller, {:field, meta, [name_ast, type_ast]}),
+    do: schema_block_entry!(caller, {:field, meta, [name_ast, type_ast, []]})
 
-  defp schema_block_entry!(caller, _target, {:field, _meta, [name_ast, type_ast, opts]}) do
+  defp schema_block_entry!(caller, {:field, _meta, [name_ast, type_ast, opts]}) do
     {literal_schema_key!(caller, name_ast), {:field, type_ast, opts}}
   end
 
-  defp schema_block_entry!(caller, :context, {name, _meta, _args})
-       when name in [:channel, :private_channel, :managed] do
-    raise CompileError,
-      file: caller.file,
-      line: caller.line,
-      description: "context_schema blocks only support field/2 and field/3 declarations"
-  end
+  defp schema_block_entry!(caller, {name, _meta, _args}) when name in [:channel, :private_channel, :managed],
+    do: compile_error!(caller, "context_schema blocks only support field/2 and field/3 declarations")
 
-  defp schema_block_entry!(caller, _target, other) do
-    raise CompileError,
-      file: caller.file,
-      line: caller.line,
-      description: "unsupported agent schema declaration: #{Macro.to_string(other)}"
-  end
+  defp schema_block_entry!(caller, other),
+    do: compile_error!(caller, "unsupported agent schema declaration: #{Macro.to_string(other)}")
 
   defp literal_schema_key!(_caller, key) when is_atom(key), do: key
 
   defp literal_schema_key!(caller, other) do
     expanded = Macro.expand(other, caller)
 
-    if is_atom(expanded) do
-      expanded
-    else
-      raise CompileError,
-        file: caller.file,
-        line: caller.line,
-        description: "agent schema keys must be literal atoms"
-    end
+    if is_atom(expanded), do: expanded, else: compile_error!(caller, "agent schema keys must be literal atoms")
   end
 
   defp schema_entry_quote({key, {:field, type_ast, opts_ast}}) do
     quote do
       {unquote(Macro.escape(key)), {:field, unquote(type_ast), unquote(opts_ast)}}
     end
-  end
-
-  defp duplicates(values) do
-    values
-    |> Enum.frequencies()
-    |> Enum.filter(fn {_value, count} -> count > 1 end)
-    |> Enum.map(fn {value, _count} -> value end)
   end
 end

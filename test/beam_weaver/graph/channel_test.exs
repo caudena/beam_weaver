@@ -9,32 +9,10 @@ defmodule BeamWeaver.Graph.ChannelTest do
   alias BeamWeaver.Graph.Channels.DeltaChannel
   alias BeamWeaver.Graph.Channels.EphemeralValue
   alias BeamWeaver.Graph.Channels.LastValue
-  alias BeamWeaver.Graph.Channels.LastValueAfterFinish
   alias BeamWeaver.Graph.Channels.NamedBarrierValue
-  alias BeamWeaver.Graph.Channels.NamedBarrierValueAfterFinish
   alias BeamWeaver.Graph.Channels.Topic
   alias BeamWeaver.Graph.Channels.UntrackedValue
-  alias BeamWeaver.Graph.Execution.ChannelVersion
   alias BeamWeaver.Graph.Overwrite
-
-  defmodule VersionedChannel do
-    use BeamWeaver.Graph.Channel
-
-    defstruct [:key, value: nil]
-
-    def new(opts \\ []), do: %__MODULE__{key: Keyword.get(opts, :key)}
-    def update(channel, [value]), do: {:ok, %{channel | value: value}, true}
-    def update(channel, []), do: {:ok, channel, false}
-    def get(%{value: nil, key: key}), do: {:error, BeamWeaver.Graph.Channel.empty_error(key)}
-    def get(%{value: value}), do: {:ok, value}
-    def checkpoint(%{value: nil}), do: BeamWeaver.Graph.Channel.missing()
-    def checkpoint(%{value: value}), do: value
-    def from_checkpoint(channel, checkpoint), do: %{channel | value: checkpoint}
-    def copy(channel), do: struct(__MODULE__, Map.from_struct(channel))
-    def available?(%{value: value}), do: not is_nil(value)
-    def null_version(_channel), do: "zero"
-    def version_equal?(_channel, left, right), do: to_string(left) == to_string(right)
-  end
 
   defmodule DefaultedChannel do
     use BeamWeaver.Graph.Channel
@@ -80,14 +58,6 @@ defmodule BeamWeaver.Graph.ChannelTest do
 
     empty = Channel.from_checkpoint(LastValue.new(key: "input"), Channel.missing())
     assert {:error, %{type: :empty_channel}} = Channel.get(empty)
-  end
-
-  test "channel version comparison uses channel-specific null and equality policy" do
-    graph =
-      BeamWeaver.Graph.new(state_schema: %{custom: BeamWeaver.Graph.channel(VersionedChannel)})
-
-    refute ChannelVersion.changed?(%{}, %{"custom" => :zero}, "custom", graph)
-    assert ChannelVersion.changed?(%{}, %{"custom" => "one"}, "custom", graph)
   end
 
   test "use BeamWeaver.Graph.Channel supplies default optional callbacks" do
@@ -176,37 +146,6 @@ defmodule BeamWeaver.Graph.ChannelTest do
     assert {:error, %{type: :empty_channel}} = Channel.get(restored)
   end
 
-  test "last value after finish becomes readable only after finish and clears on consume" do
-    channel = LastValueAfterFinish.new(key: "done", type: :string)
-    assert Channel.value_type(channel) == :string
-    assert Channel.update_type(channel) == :string
-    assert Channel.checkpoint(channel) == Channel.missing()
-    assert {:ok, ^channel, false} = Channel.update(channel, [])
-    assert {:ok, ^channel, false} = Channel.finish(channel)
-
-    assert {:ok, channel, true} = Channel.update(channel, ["answer"])
-    assert {:error, %{type: :empty_channel}} = Channel.get(channel)
-    refute Channel.available?(channel)
-
-    assert {:ok, channel, true} = Channel.finish(channel)
-    assert Channel.get(channel) == {:ok, "answer"}
-    assert Channel.available?(channel)
-    assert {:ok, ^channel, false} = Channel.finish(channel)
-
-    checkpoint = Channel.checkpoint(channel)
-    restored = Channel.from_checkpoint(LastValueAfterFinish.new(key: "done"), checkpoint)
-    assert Channel.get(restored) == {:ok, "answer"}
-
-    assert {:ok, reset, true} = Channel.update(restored, ["next"])
-    assert {:error, %{type: :empty_channel}} = Channel.get(reset)
-    assert Channel.checkpoint(reset) == {"next", false}
-
-    assert {:ok, channel, true} = Channel.consume(channel)
-    assert {:error, %{type: :empty_channel}} = Channel.get(channel)
-    assert Channel.checkpoint(channel) == Channel.missing()
-    assert {:ok, ^channel, false} = Channel.consume(channel)
-  end
-
   test "named barriers become available only after all names are seen" do
     channel = NamedBarrierValue.new(["a", "b"], key: "join")
 
@@ -233,30 +172,6 @@ defmodule BeamWeaver.Graph.ChannelTest do
     assert {:error, %{type: :empty_channel}} = Channel.get(channel)
     assert {:ok, ^channel, false} = Channel.consume(channel)
     assert {:error, %{type: :invalid_update}} = Channel.update(channel, ["c"])
-  end
-
-  test "named barriers after finish wait for all names and finish" do
-    channel = NamedBarrierValueAfterFinish.new(["a", "b"])
-
-    assert {:ok, channel, true} = Channel.update(channel, ["a", "b"])
-    assert {:error, %{type: :empty_channel}} = Channel.get(channel)
-
-    assert {:ok, channel, true} = Channel.finish(channel)
-    assert Channel.get(channel) == {:ok, nil}
-    assert {:ok, ^channel, false} = Channel.finish(channel)
-
-    checkpoint = Channel.checkpoint(channel)
-
-    restored =
-      NamedBarrierValueAfterFinish.new(["a", "b"])
-      |> Channel.from_checkpoint(checkpoint)
-
-    assert Channel.get(restored) == {:ok, nil}
-
-    copied = Channel.copy(restored)
-    assert {:ok, copied, true} = Channel.consume(copied)
-    assert {:error, %{type: :empty_channel}} = Channel.get(copied)
-    assert Channel.get(restored) == {:ok, nil}
   end
 
   test "delta channel applies reducer batches, overwrite, replay, and missing checkpoints" do

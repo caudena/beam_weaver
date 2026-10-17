@@ -25,6 +25,7 @@ defmodule BeamWeaver.Agent.Compiler do
   alias BeamWeaver.Graph.Nodes.ToolNode
   alias BeamWeaver.Graph.Nodes.ValidationNode
   alias BeamWeaver.Graph.StateGraph
+  alias BeamWeaver.MapShape
 
   @model_node :model
   @structured_response_node :structured_response
@@ -32,7 +33,6 @@ defmodule BeamWeaver.Agent.Compiler do
   @tools_node :tools
   @structured_response_instruction "Give your final answer now, in the required format."
 
-  @doc false
   # The graph of an agent module's `graph/0`: applies the capabilities to the
   # module's declarations, then compiles them.
   @spec module_graph(Spec.t()) :: BeamWeaver.Graph.StateGraph.t()
@@ -45,7 +45,6 @@ defmodule BeamWeaver.Agent.Compiler do
     end
   end
 
-  @doc false
   # Builds the agent loop from a spec that `Capabilities.apply/1` returned.
   @spec compile_graph(Spec.t()) :: BeamWeaver.Graph.StateGraph.t()
   def compile_graph(%Spec{} = spec) do
@@ -65,26 +64,11 @@ defmodule BeamWeaver.Agent.Compiler do
     registered_tools = registered_tools(tools, middleware)
     middleware = HumanInTheLoop.bind_tools(middleware, registered_tools)
     step_costs = step_costs(middleware, spec, separate_structured_response?)
-
-    final_response_strategy =
-      if separate_structured_response?,
-        do: StructuredOutput.effective_strategy(response_format, spec.model, []),
-        else: nil
-
-    state_schema =
-      (response_strategy || final_response_strategy)
-      |> is_nil()
-      |> Kernel.not()
-      |> Schema.default_state_schema()
-      |> merge_middleware_state_schema(middleware)
+    structured_output? = not is_nil(response_format)
+    state_schema = merge_middleware_state_schema(Schema.default_state_schema(structured_output?), middleware)
 
     context_schema =
-      middleware
-      |> Enum.reduce(%{}, fn middleware, acc ->
-        Schema.merge_schema(acc, Middleware.context_schema(middleware))
-      end)
-      |> Schema.merge_schema(spec.context_schema)
-      |> empty_to_nil()
+      middleware |> middleware_context_schema() |> Schema.merge_schema(spec.context_schema) |> MapShape.empty_to_nil()
 
     graph =
       Graph.new(
@@ -105,7 +89,7 @@ defmodule BeamWeaver.Agent.Compiler do
           middleware: middleware,
           assistant_name: spec.name,
           response_format: if(separate_structured_response?, do: nil, else: response_strategy),
-          structured_output: not is_nil(response_strategy || final_response_strategy),
+          structured_output: structured_output?,
           step_costs: step_costs
         ),
         model_node_opts(spec)
@@ -114,7 +98,7 @@ defmodule BeamWeaver.Agent.Compiler do
         spec,
         middleware,
         separate_structured_response?,
-        final_response_strategy,
+        response_format,
         step_costs
       )
       |> add_middleware_nodes(middleware, :after_model)
@@ -136,7 +120,6 @@ defmodule BeamWeaver.Agent.Compiler do
   # Call options that change the compiled graph rather than the run.
   @graph_opts [:checkpointer, :store, :cache, :interrupt_before, :interrupt_after]
 
-  @doc false
   @spec graph_opts?(keyword()) :: boolean()
   def graph_opts?(opts), do: Enum.any?(@graph_opts, &Keyword.has_key?(opts, &1))
 
@@ -154,14 +137,13 @@ defmodule BeamWeaver.Agent.Compiler do
     ]
   end
 
-  @doc false
   # Checks the declarations that can only be checked once they are evaluated:
   # the middleware, the tools, the response format and every subagent, as
   # each `task` call would build it, without compiling the subagents' graphs.
   # `opts[:visited]` lists the agent modules being checked, so agents that
   # name each other as subagents are checked once.
   @spec validate(Spec.t(), keyword()) :: :ok | {:error, Error.t()}
-  def validate(%Spec{} = spec, opts \\ []) do
+  def validate(%Spec{} = spec, opts) do
     with {:ok, middleware} <- Middleware.normalize_all(spec.middleware || []),
          {:ok, tools} <- declared_tools(spec.tools),
          :ok <- validate_tools(tools),
@@ -170,7 +152,6 @@ defmodule BeamWeaver.Agent.Compiler do
     end
   end
 
-  @doc false
   # `validate/2` for an agent module, whose declarations are evaluated on
   # every call: the check passes once per version of the module, and later
   # calls skip it. Takes the module, or its spec after `Capabilities.apply/1`.
@@ -253,14 +234,8 @@ defmodule BeamWeaver.Agent.Compiler do
     )
   end
 
-  defp validate_schema_variants(variants) do
-    Enum.find_value(variants, :ok, fn variant ->
-      case validate_response_schema(variant) do
-        :ok -> nil
-        error -> error
-      end
-    end)
-  end
+  defp validate_schema_variants(variants),
+    do: Enum.find_value(variants, :ok, fn variant -> with :ok <- validate_response_schema(variant), do: nil end)
 
   defp invalid_response_format(value, message),
     do: {:error, Error.new(:invalid_agent, message, %{response_format: inspect(value)})}
@@ -275,13 +250,12 @@ defmodule BeamWeaver.Agent.Compiler do
         unchecked = Enum.reject(subagents, &(subagent_source(&1) in visited))
         sources = for subagent <- unchecked, source = subagent_source(subagent), do: source
 
-        case Subagents.validate(
-               %{subagents_middleware | subagents: unchecked},
-               Keyword.put(opts, :visited, sources ++ visited)
-             ) do
-          :ok -> nil
-          error -> error
-        end
+        with :ok <-
+               Subagents.validate(
+                 %{subagents_middleware | subagents: unchecked},
+                 Keyword.put(opts, :visited, sources ++ visited)
+               ),
+             do: nil
 
       _middleware ->
         nil
@@ -291,7 +265,6 @@ defmodule BeamWeaver.Agent.Compiler do
   defp subagent_source(%Compiled{agent: %SubagentSpec{source: source}}), do: source
   defp subagent_source(_subagent), do: nil
 
-  @doc false
   # Checks a call against the agent and returns the options to run it with:
   # the agent's recursion limit unless the call sets one, and the context with
   # its declared fields under their atom keys.
@@ -319,58 +292,23 @@ defmodule BeamWeaver.Agent.Compiler do
   defp maybe_put_recursion_limit(opts, limit), do: Keyword.put_new(opts, :recursion_limit, limit)
 
   defp validate_required_checkpointer(middleware, %Spec{} = spec, opts) do
-    checkpointer = Keyword.get(opts, :checkpointer, spec.checkpointer)
+    requiring = Enum.filter(middleware, &Middleware.requires_checkpointer?/1)
 
-    if Enum.any?(middleware, &Middleware.requires_checkpointer?/1) and is_nil(checkpointer) do
+    if requiring != [] and is_nil(Keyword.get(opts, :checkpointer, spec.checkpointer)) do
       {:error,
        Error.new(:missing_checkpointer, "agent middleware requires a checkpointer", %{
-         middleware:
-           middleware
-           |> Enum.filter(&Middleware.requires_checkpointer?/1)
-           |> Enum.map(&Middleware.name/1)
+         middleware: Enum.map(requiring, &Middleware.name/1)
        })}
     else
       :ok
     end
   end
 
-  def model_router(state) do
-    Routing.model_router(state)
-  end
+  defp final_response_model_router(state),
+    do: with(:end <- Routing.model_router(state), do: structured_response_router(state))
 
-  def tools_router(state) do
-    Routing.tools_router(state)
-  end
-
-  def validation_router(state) do
-    Routing.validation_router(state)
-  end
-
-  def final_response_model_router(state) do
-    case State.jump_to(state) do
-      :end ->
-        :end
-
-      _other ->
-        case Routing.model_router(state) do
-          :end ->
-            if State.structured_response?(state), do: :end, else: :structured_response
-
-          route ->
-            route
-        end
-    end
-  end
-
-  def structured_response_router(state) do
-    case State.jump_to(state) do
-      :end -> :end
-      _other -> if State.structured_response?(state), do: :end, else: :structured_response
-    end
-  end
-
-  def middleware_router(state, default) do
-    Routing.middleware_router(state, default)
+  defp structured_response_router(state) do
+    if State.jump_to(state) == :end or State.structured_response?(state), do: :end, else: :structured_response
   end
 
   defp add_middleware_nodes(graph, middleware, hook, node_opts \\ []) do
@@ -386,21 +324,13 @@ defmodule BeamWeaver.Agent.Compiler do
     end)
   end
 
-  defp model_node_opts(%Spec{model_opts: model_opts} = spec) do
+  defp model_node_opts(%Spec{model_opts: model_opts, model: model}) do
     case Keyword.fetch(model_opts, :timeout) do
-      {:ok, timeout} ->
-        [timeout: timeout]
-
-      :error ->
-        case fetch_model_timeout(spec.model) do
-          {:ok, timeout} -> [timeout: timeout]
-          :error -> []
-        end
+      {:ok, timeout} -> [timeout: timeout]
+      :error when is_map_key(model, :timeout) -> [timeout: model.timeout]
+      :error -> []
     end
   end
-
-  defp fetch_model_timeout(%{timeout: timeout}), do: {:ok, timeout}
-  defp fetch_model_timeout(_model), do: :error
 
   # The tools node is always there: a model that asks for a tool the agent
   # doesn't have gets an error message back, as for any unknown tool.
@@ -445,14 +375,7 @@ defmodule BeamWeaver.Agent.Compiler do
 
   defp add_validation_node(graph, _tools, _spec), do: graph
 
-  defp maybe_add_structured_response_node(
-         graph,
-         %Spec{} = spec,
-         middleware,
-         true,
-         final_response_strategy,
-         step_costs
-       ) do
+  defp maybe_add_structured_response_node(graph, %Spec{} = spec, middleware, true, response_format, step_costs) do
     Graph.add_node(
       graph,
       @structured_response_node,
@@ -462,7 +385,7 @@ defmodule BeamWeaver.Agent.Compiler do
         system_prompt: spec.system_prompt,
         middleware: final_response_middleware(middleware),
         assistant_name: spec.name,
-        response_format: final_response_strategy,
+        response_format: StructuredOutput.effective_strategy(response_format, spec.model, []),
         final_instruction: @structured_response_instruction,
         step_costs: step_costs,
         save_tool_set: false,
@@ -495,23 +418,11 @@ defmodule BeamWeaver.Agent.Compiler do
     }
   end
 
-  defp connect_entry(graph, middleware) do
-    Graph.add_edge(
-      graph,
-      Graph.start(),
-      first_node(middleware, :before_agent) || first_node(middleware, :before_model) ||
-        @model_node
-    )
-  end
+  defp connect_entry(graph, middleware),
+    do: Graph.add_edge(graph, Graph.start(), first_node(middleware, :before_agent) || model_entry(middleware))
 
-  defp connect_before_agent(graph, middleware) do
-    chain_hooks(
-      graph,
-      middleware,
-      :before_agent,
-      first_node(middleware, :before_model) || @model_node
-    )
-  end
+  defp connect_before_agent(graph, middleware),
+    do: chain_hooks(graph, middleware, :before_agent, model_entry(middleware))
 
   defp connect_before_model(graph, middleware) do
     chain_hooks(graph, middleware, :before_model, @model_node)
@@ -524,35 +435,25 @@ defmodule BeamWeaver.Agent.Compiler do
   defp connect_after_model(graph, middleware, structured_response_node?) do
     after_model = hook_nodes(middleware, :after_model)
     router_source = List.first(after_model) || @model_node
-    exit = first_node(Enum.reverse(middleware), :after_agent) || Graph.end_node()
-
-    jumps = %{
-      model: first_node(middleware, :before_model) || @model_node,
-      tools: tools_entry_node(graph),
-      end: exit
-    }
+    jumps = %{model: model_entry(middleware), tools: tools_entry_node(graph), end: exit_node(middleware)}
 
     graph =
       case Enum.reverse(after_model) do
         [] ->
           graph
 
-        [first | rest] ->
-          graph = Graph.add_edge(graph, @model_node, first)
-
-          rest
-          |> Enum.reduce({graph, first}, fn node, {graph, previous} ->
-            {add_after_model_edge(graph, previous, node, jumps), node}
+        [first | _rest] = chain ->
+          chain
+          |> Enum.chunk_every(2, 1, :discard)
+          |> Enum.reduce(Graph.add_edge(graph, @model_node, first), fn [previous, node], graph ->
+            add_after_model_edge(graph, previous, node, jumps)
           end)
-          |> elem(0)
       end
 
-    path_map = maybe_put_structured_response_route(jumps, structured_response_node?)
-
-    router =
+    {router, path_map} =
       if structured_response_node?,
-        do: &__MODULE__.final_response_model_router/1,
-        else: &__MODULE__.model_router/1
+        do: {&final_response_model_router/1, Map.put(jumps, :structured_response, @structured_response_node)},
+        else: {&Routing.model_router/1, jumps}
 
     BeamWeaver.Graph.StateGraph.put_branch_routes(
       graph,
@@ -568,14 +469,10 @@ defmodule BeamWeaver.Agent.Compiler do
         graph,
         @validation_node,
         if(per_call_review?(middleware),
-          do: Routing.sending_tool_calls(&__MODULE__.validation_router/1),
-          else: &__MODULE__.validation_router/1
+          do: Routing.sending_tool_calls(&Routing.validation_router/1),
+          else: &Routing.validation_router/1
         ),
-        %{
-          model: first_node(middleware, :before_model) || @model_node,
-          tools: @tools_node,
-          end: first_node(Enum.reverse(middleware), :after_agent) || Graph.end_node()
-        }
+        %{model: model_entry(middleware), tools: @tools_node, end: exit_node(middleware)}
       )
     else
       graph
@@ -586,68 +483,32 @@ defmodule BeamWeaver.Agent.Compiler do
     BeamWeaver.Graph.StateGraph.put_branch_routes(
       graph,
       @tools_node,
-      &__MODULE__.tools_router/1,
-      %{
-        model: first_node(middleware, :before_model) || @model_node,
-        end: first_node(Enum.reverse(middleware), :after_agent) || Graph.end_node()
-      }
+      &Routing.tools_router/1,
+      %{model: model_entry(middleware), end: exit_node(middleware)}
     )
   end
 
   defp connect_structured_response(graph, _middleware, false), do: graph
 
   defp connect_structured_response(graph, middleware, true) do
-    exit = first_node(Enum.reverse(middleware), :after_agent) || Graph.end_node()
-
     BeamWeaver.Graph.StateGraph.put_branch_routes(
       graph,
       @structured_response_node,
-      &__MODULE__.structured_response_router/1,
-      %{
-        structured_response: @structured_response_node,
-        end: exit
-      }
+      &structured_response_router/1,
+      %{structured_response: @structured_response_node, end: exit_node(middleware)}
     )
   end
 
   defp connect_after_agent(graph, middleware) do
-    nodes = hook_nodes(middleware, :after_agent)
-
-    case Enum.reverse(nodes) do
-      [] ->
-        graph
-
-      [last] ->
-        Graph.add_edge(graph, last, Graph.end_node())
-
-      [last | rest] ->
-        {graph, _previous} =
-          Enum.reduce(rest, {graph, last}, fn node, {graph, previous} ->
-            {Graph.add_edge(graph, previous, node), node}
-          end)
-
-        Graph.add_edge(graph, List.last(rest), Graph.end_node())
-    end
+    (Enum.reverse(hook_nodes(middleware, :after_agent)) ++ [Graph.end_node()])
+    |> Enum.chunk_every(2, 1, :discard)
+    |> Enum.reduce(graph, fn [source, next], graph -> Graph.add_edge(graph, source, next) end)
   end
 
   defp chain_hooks(graph, middleware, hook, destination) do
-    nodes = hook_nodes(middleware, hook)
-
-    case nodes do
-      [] ->
-        graph
-
-      [only] ->
-        add_middleware_edge(graph, only, destination, middleware)
-
-      [first | rest] ->
-        {graph, previous} =
-          Enum.reduce(rest, {graph, first}, fn node, {graph, previous} ->
-            {add_middleware_edge(graph, previous, node, middleware), node}
-          end)
-
-        add_middleware_edge(graph, previous, destination, middleware)
-    end
+    (hook_nodes(middleware, hook) ++ [destination])
+    |> Enum.chunk_every(2, 1, :discard)
+    |> Enum.reduce(graph, fn [source, next], graph -> add_middleware_edge(graph, source, next, middleware) end)
   end
 
   defp add_after_model_edge(graph, source, next, jumps) do
@@ -667,7 +528,7 @@ defmodule BeamWeaver.Agent.Compiler do
     BeamWeaver.Graph.StateGraph.put_branch_routes(
       graph,
       source,
-      to_tools(graph, fn state -> middleware_router(state, destination) end, middleware),
+      to_tools(graph, &Routing.middleware_router(&1, destination), middleware),
       path_map
     )
   end
@@ -684,11 +545,6 @@ defmodule BeamWeaver.Agent.Compiler do
   defp per_call_review?(middleware),
     do: Enum.any?(middleware, &match?(%HumanInTheLoop{interrupt_mode: :per_call}, &1))
 
-  defp maybe_put_structured_response_route(path_map, true),
-    do: Map.put(path_map, :structured_response, @structured_response_node)
-
-  defp maybe_put_structured_response_route(path_map, false), do: path_map
-
   defp tools_entry_node(graph) do
     if Map.has_key?(graph.nodes, to_string(@validation_node)) do
       @validation_node
@@ -698,6 +554,8 @@ defmodule BeamWeaver.Agent.Compiler do
   end
 
   defp first_node(middleware, hook), do: middleware |> hook_nodes(hook) |> List.first()
+  defp model_entry(middleware), do: first_node(middleware, :before_model) || @model_node
+  defp exit_node(middleware), do: first_node(Enum.reverse(middleware), :after_agent) || Graph.end_node()
 
   defp hook_nodes(middleware, hook) do
     middleware
@@ -719,15 +577,11 @@ defmodule BeamWeaver.Agent.Compiler do
     end)
   end
 
-  defp empty_to_nil(map) when map in [%{}, nil], do: nil
-  defp empty_to_nil(map), do: map
-
-  @doc false
   # The declared tools with every toolkit replaced by the tools it returns.
   # Only a toolkit takes options, as `{toolkit, opts}`; they go to its
   # `tools/1`.
   @spec declared_tools(term()) :: {:ok, [term()]} | {:error, Error.t()}
-  def declared_tools(tools) do
+  defp declared_tools(tools) do
     tools
     |> List.wrap()
     |> Enum.reject(&is_nil/1)

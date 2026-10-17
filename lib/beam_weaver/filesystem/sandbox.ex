@@ -7,6 +7,7 @@ defmodule BeamWeaver.Filesystem.Sandbox do
   alias BeamWeaver.Filesystem
   alias BeamWeaver.Filesystem.Executable
   alias BeamWeaver.Filesystem.FileDataUtils
+  alias BeamWeaver.MapAccess
 
   @max_binary_bytes 500 * 1024
   @max_output_bytes 500 * 1024
@@ -79,9 +80,7 @@ defmodule BeamWeaver.Filesystem.Sandbox do
     do: BeamWeaver.Sandbox.canonical_paths(sandbox, paths, opts)
 
   defp list_result(%{entries: entries, error: nil}),
-    do: %Filesystem.LsResult{
-      entries: Enum.map(entries || [], &struct(Filesystem.FileInfo, atomize(&1)))
-    }
+    do: %Filesystem.LsResult{entries: to_structs(entries, Filesystem.FileInfo)}
 
   defp list_result(%{error: error}), do: %Filesystem.LsResult{error: error}
 
@@ -97,29 +96,17 @@ defmodule BeamWeaver.Filesystem.Sandbox do
     do: %Filesystem.EditResult{path: path, occurrences: occurrences, error: error}
 
   defp glob_result(%{matches: matches, error: nil}),
-    do: %Filesystem.GlobResult{
-      matches: Enum.map(matches || [], &struct(Filesystem.FileInfo, atomize(&1)))
-    }
+    do: %Filesystem.GlobResult{matches: to_structs(matches, Filesystem.FileInfo)}
 
   defp glob_result(%{error: error}), do: %Filesystem.GlobResult{error: error}
 
   defp grep_result(%{matches: matches, error: nil}),
-    do: %Filesystem.GrepResult{
-      matches: Enum.map(matches || [], &struct(Filesystem.GrepMatch, atomize(&1)))
-    }
+    do: %Filesystem.GrepResult{matches: to_structs(matches, Filesystem.GrepMatch)}
 
   defp grep_result(%{error: error}), do: %Filesystem.GrepResult{error: error}
 
-  defp atomize(map) when is_map(map),
-    do: Map.new(map, fn {key, value} -> {existing_atom_key(key), value} end)
-
-  defp existing_atom_key(key) when is_atom(key), do: key
-
-  defp existing_atom_key(key) do
-    key
-    |> to_string()
-    |> String.to_existing_atom()
-  rescue
-    ArgumentError -> key
+  defp to_structs(entries, module) do
+    fields = module |> struct() |> Map.keys()
+    Enum.map(entries || [], &struct(module, MapAccess.normalize_keys(&1, fields)))
   end
 end

@@ -50,15 +50,8 @@ defmodule BeamWeaver.Transport.Safe do
   end
 
   @impl true
-  def stream(%Request{} = request, opts, on_chunk) when is_function(on_chunk, 1) do
-    case stream_reduce(request, opts, :ok, fn acc, chunk ->
-           on_chunk.(chunk)
-           acc
-         end) do
-      {:ok, response, _acc} -> {:ok, response}
-      {:error, %Error{} = error, _acc} -> {:error, error}
-    end
-  end
+  def stream(%Request{} = request, opts, on_chunk) when is_function(on_chunk, 1),
+    do: Transport.stream(__MODULE__, request, opts, on_chunk)
 
   @impl true
   def stream_reduce(%Request{} = request, opts, acc, reducer) when is_function(reducer, 2) do
@@ -75,8 +68,11 @@ defmodule BeamWeaver.Transport.Safe do
       case Transport.request(transport, wire_request, transport_wire_options(wire_opts)) do
         {:ok, %Response{} = response} ->
           with :ok <- validate_response_headers(response, opts) do
-            response = annotate_target(response, target)
-            maybe_follow_redirect(transport, request, response, opts, policy, redirect_count)
+            case redirect(request, response, policy, redirect_count) do
+              :none -> {:ok, annotate_target(response, target)}
+              {:follow, redirect} -> do_request(transport, redirect, opts, policy, redirect_count + 1)
+              error -> error
+            end
           end
 
         {:error, %Error{} = error} ->
@@ -85,15 +81,34 @@ defmodule BeamWeaver.Transport.Safe do
     end
   end
 
-  defp maybe_follow_redirect(transport, request, response, opts, policy, redirect_count) do
+  defp do_stream_reduce(transport, %Request{} = request, opts, acc, reducer, policy, redirect_count) do
+    with {:ok, wire_request, wire_opts, target} <- prepare_request(request, opts, policy),
+         :ok <- before_dispatch(wire_opts),
+         {:ok, %Response{} = response, result_acc} <-
+           Transport.stream_reduce(transport, wire_request, transport_wire_options(wire_opts), acc, reducer) do
+      case validate_response_headers(response, opts) do
+        :ok ->
+          case redirect(request, response, policy, redirect_count) do
+            :none -> {:ok, annotate_target(response, target), result_acc}
+            {:follow, redirect} -> do_stream_reduce(transport, redirect, opts, acc, reducer, policy, redirect_count + 1)
+            {:error, error} -> {:error, error, acc}
+          end
+
+        {:error, error} ->
+          {:error, error, result_acc}
+      end
+    else
+      {:error, %Error{} = error, error_acc} -> {:error, post_dispatch_error(error), error_acc}
+      {:error, %Error{} = error} -> {:error, error, acc}
+    end
+  end
+
+  defp redirect(request, response, policy, redirect_count) do
     location = response.headers |> header("location") |> absolute_redirect_url(request.url)
 
     cond do
-      response.status not in @redirect_statuses or is_nil(location) ->
-        {:ok, response}
-
-      not policy.follow_redirects? ->
-        {:ok, response}
+      response.status not in @redirect_statuses or is_nil(location) or not policy.follow_redirects? ->
+        :none
 
       redirect_count >= policy.max_redirects ->
         {:error,
@@ -103,53 +118,7 @@ defmodule BeamWeaver.Transport.Safe do
          })}
 
       true ->
-        do_request(transport, redirect_request(request, location), opts, policy, redirect_count + 1)
-    end
-  end
-
-  defp do_stream_reduce(transport, %Request{} = request, opts, acc, reducer, policy, redirect_count) do
-    case prepare_request(request, opts, policy) do
-      {:ok, wire_request, wire_opts, target} ->
-        with :ok <- before_dispatch(wire_opts) do
-          Transport.stream_reduce(
-            transport,
-            wire_request,
-            transport_wire_options(wire_opts),
-            acc,
-            reducer
-          )
-        end
-        |> case do
-          {:ok, %Response{} = response, result_acc} ->
-            case validate_response_headers(response, opts) do
-              :ok ->
-                response = annotate_target(response, target)
-
-                maybe_follow_redirect_stream(
-                  transport,
-                  request,
-                  response,
-                  opts,
-                  acc,
-                  result_acc,
-                  reducer,
-                  policy,
-                  redirect_count
-                )
-
-              {:error, %Error{} = error} ->
-                {:error, error, result_acc}
-            end
-
-          {:error, %Error{} = error, error_acc} ->
-            {:error, post_dispatch_error(error), error_acc}
-
-          {:error, %Error{} = error} ->
-            {:error, error, acc}
-        end
-
-      {:error, %Error{} = error} ->
-        {:error, error, acc}
+        {:follow, redirect_request(request, location)}
     end
   end
 
@@ -177,9 +146,6 @@ defmodule BeamWeaver.Transport.Safe do
       _other ->
         {:error, pre_dispatch_error(:invalid_dispatch_callback, "transport dispatch callback is invalid")}
     end
-  rescue
-    _exception ->
-      {:error, pre_dispatch_error(:dispatch_evidence_failed, "transport dispatch evidence failed")}
   catch
     _kind, _reason ->
       {:error, pre_dispatch_error(:dispatch_evidence_failed, "transport dispatch evidence failed")}
@@ -187,58 +153,8 @@ defmodule BeamWeaver.Transport.Safe do
 
   defp transport_wire_options(opts), do: Keyword.delete(opts, :before_dispatch)
 
-  defp maybe_follow_redirect_stream(
-         transport,
-         request,
-         response,
-         opts,
-         original_acc,
-         result_acc,
-         reducer,
-         policy,
-         redirect_count
-       ) do
-    location = response.headers |> header("location") |> absolute_redirect_url(request.url)
-
-    cond do
-      response.status not in @redirect_statuses or is_nil(location) ->
-        {:ok, response, result_acc}
-
-      not policy.follow_redirects? ->
-        {:ok, response, result_acc}
-
-      redirect_count >= policy.max_redirects ->
-        {:error,
-         Error.new(:too_many_redirects, "transport exceeded the configured redirect limit", %{
-           url: request.url,
-           max_redirects: policy.max_redirects
-         }), original_acc}
-
-      true ->
-        do_stream_reduce(
-          transport,
-          redirect_request(request, location),
-          opts,
-          original_acc,
-          reducer,
-          policy,
-          redirect_count + 1
-        )
-    end
-  end
-
-  defp validate_url(url, policy) do
-    case URLPolicy.validate(url, policy) do
-      {:ok, canonical_url} ->
-        {:ok, canonical_url}
-
-      {:error, %CoreError{} = error} ->
-        {:error, pre_dispatch_error(error.type, error.message, error.details)}
-    end
-  end
-
   defp prepare_request(request, opts, %{pin_resolved?: false} = policy) do
-    with {:ok, canonical_url} <- validate_url(request.url, policy),
+    with {:ok, canonical_url} <- policy_result(URLPolicy.validate(request.url, policy)),
          :ok <- validate_request_headers(request.headers, opts) do
       {:ok, %{request | url: canonical_url}, put_mint_connect_options(opts), nil}
     end
@@ -246,7 +162,7 @@ defmodule BeamWeaver.Transport.Safe do
 
   defp prepare_request(%Request{} = request, opts, policy) do
     with :ok <- validate_request_headers(request.headers, opts),
-         {:ok, target} <- URLPolicy.resolve_target(request.url, policy) do
+         {:ok, target} <- policy_result(URLPolicy.resolve_target(request.url, policy)) do
       uri = URI.parse(target.url)
       address = target.address |> :inet.ntoa() |> List.to_string()
       pinned_url = uri |> Map.put(:host, address) |> Map.put(:authority, nil) |> URI.to_string()
@@ -272,14 +188,13 @@ defmodule BeamWeaver.Transport.Safe do
         |> Keyword.drop([:unix_socket, :inet6])
 
       {:ok, %{request | url: pinned_url, headers: headers}, wire_opts, target}
-    else
-      {:error, %CoreError{} = error} ->
-        {:error, pre_dispatch_error(error.type, error.message, error.details)}
-
-      {:error, %Error{} = error} ->
-        {:error, error}
     end
   end
+
+  defp policy_result({:error, %CoreError{} = error}),
+    do: {:error, pre_dispatch_error(error.type, error.message, error.details)}
+
+  defp policy_result(result), do: result
 
   # Mint enforces the response header limit while it reads the headers. HTTP
   # connection options also keep the request off the pool provider calls
@@ -294,16 +209,14 @@ defmodule BeamWeaver.Transport.Safe do
   defp annotate_target(response, nil), do: response
 
   defp annotate_target(%Response{} = response, target) do
-    address_set = Map.get(target, :address_set, [target.address])
-
     metadata =
       Map.merge(response.metadata, %{
         requested_url: target.url,
         requested_host: target.host,
         connected_address: target.address,
         connected_port: target.port,
-        resolved_addresses: address_set,
-        dial_plan_hash: dial_plan_hash(target, address_set),
+        resolved_addresses: target.address_set,
+        dial_plan_hash: dial_plan_hash(target),
         tls_hostname: target.host,
         host_authority: authority(target, URI.parse(target.url).scheme),
         peer_evidence: :response_from_pinned_literal,
@@ -346,7 +259,7 @@ defmodule BeamWeaver.Transport.Safe do
     |> Keyword.put_new(:max_response_bytes, policy.max_bytes)
   end
 
-  defp validate_request_headers(headers, opts) when is_list(headers) do
+  defp validate_request_headers(headers, opts) do
     maximum = Keyword.get(opts, :max_request_header_bytes, @default_maximum_header_bytes)
 
     case header_bytes(headers, maximum) do
@@ -365,10 +278,7 @@ defmodule BeamWeaver.Transport.Safe do
     end
   end
 
-  defp validate_request_headers(_headers, _opts),
-    do: {:error, pre_dispatch_error(:invalid_request_headers, "transport request headers are malformed")}
-
-  defp validate_response_headers(%Response{headers: headers}, opts) when is_list(headers) do
+  defp validate_response_headers(%Response{headers: headers}, opts) do
     maximum = Keyword.get(opts, :max_response_header_bytes, @default_maximum_header_bytes)
 
     case header_bytes(headers, maximum) do
@@ -384,18 +294,15 @@ defmodule BeamWeaver.Transport.Safe do
     end
   end
 
-  defp validate_response_headers(%Response{}, _opts),
-    do: {:error, Error.new(:invalid_response_headers, "transport returned malformed response headers")}
-
-  defp dial_plan_hash(target, address_set) do
+  defp dial_plan_hash(target) do
     :crypto.hash(
       :sha256,
-      :erlang.term_to_binary({target.url, target.host, target.port, address_set}, [:deterministic])
+      :erlang.term_to_binary({target.url, target.host, target.port, target.address_set}, [:deterministic])
     )
     |> Base.encode16(case: :lower)
   end
 
-  defp header_bytes(headers, maximum) when is_integer(maximum) and maximum > 0 do
+  defp header_bytes(headers, maximum) when is_list(headers) and is_integer(maximum) and maximum > 0 do
     Enum.reduce_while(headers, {:ok, 0}, fn
       {name, value}, {:ok, acc} when is_binary(name) and is_binary(value) ->
         if valid_header_name?(name) and valid_header_value?(value) do

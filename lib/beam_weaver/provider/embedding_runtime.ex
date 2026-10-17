@@ -1,18 +1,19 @@
 defmodule BeamWeaver.Provider.EmbeddingRuntime do
   @moduledoc false
 
+  alias BeamWeaver.Core.Error
   alias BeamWeaver.Result
   alias BeamWeaver.Tokenizer
 
   @doc false
-  def embed_documents(model, documents, opts, embed_fun, error_opts) when is_list(documents) do
+  def embed_documents(model, documents, opts, embed_fun) when is_list(documents) do
     chunk_size = Keyword.get(opts, :chunk_size, Map.get(model, :chunk_size))
 
     documents =
       maybe_skip_empty(documents, Keyword.get(opts, :skip_empty, Map.get(model, :skip_empty)))
 
     if check_embedding_ctx_length?(model, opts) do
-      embed_documents_by_token_budget(model, documents, chunk_size, opts, embed_fun, error_opts)
+      embed_documents_by_token_budget(model, documents, chunk_size, opts, embed_fun)
     else
       embed_document_batches(documents, chunk_size, opts, embed_fun)
     end
@@ -26,14 +27,9 @@ defmodule BeamWeaver.Provider.EmbeddingRuntime do
 
       {:ok, vectors} ->
         {:error,
-         error(
-           error_opts,
-           :invalid_response,
-           "#{provider_name(error_opts)} returned an unexpected query embedding count",
-           %{
-             count: length(vectors)
-           }
-         )}
+         Error.new(:invalid_response, "#{provider_name(error_opts)} returned an unexpected query embedding count", %{
+           count: length(vectors)
+         })}
 
       {:error, error} ->
         {:error, error}
@@ -47,26 +43,15 @@ defmodule BeamWeaver.Provider.EmbeddingRuntime do
       |> Enum.sort_by(&Map.get(&1, "index", 0))
       |> Enum.map(&Map.get(&1, "embedding"))
 
-    if Enum.all?(embeddings, &valid_vector?/1) do
-      {:ok, embeddings}
-    else
-      {:error,
-       error(
-         error_opts,
-         :invalid_response,
-         "#{provider_name(error_opts)} embedding response contained invalid vectors"
-       )}
-    end
+    if Enum.all?(embeddings, &valid_vector?/1),
+      do: {:ok, embeddings},
+      else:
+        {:error,
+         Error.new(:invalid_response, "#{provider_name(error_opts)} embedding response contained invalid vectors")}
   end
 
-  def embeddings_from_response(_response, error_opts) do
-    {:error,
-     error(
-       error_opts,
-       :invalid_response,
-       "#{provider_name(error_opts)} embedding response missing data"
-     )}
-  end
+  def embeddings_from_response(_response, error_opts),
+    do: {:error, Error.new(:invalid_response, "#{provider_name(error_opts)} embedding response missing data")}
 
   defp embed_document_batches(documents, chunk_size, opts, embed_fun) do
     documents
@@ -74,22 +59,19 @@ defmodule BeamWeaver.Provider.EmbeddingRuntime do
     |> Result.flat_traverse(&embed_fun.(&1, opts))
   end
 
-  defp embed_documents_by_token_budget(model, documents, chunk_size, opts, embed_fun, error_opts) do
-    with {:ok, tokenizer} <- tokenizer(model, opts, error_opts),
-         :ok <- validate_special_tokens(documents, model, opts, error_opts),
+  defp embed_documents_by_token_budget(model, documents, chunk_size, opts, embed_fun) do
+    with {:ok, tokenizer} <- tokenizer(model, opts),
+         :ok <- validate_special_tokens(documents, model, opts),
          {:ok, records} <- token_chunk_records(documents, tokenizer, model, opts),
          {:ok, vectors} <- embed_token_records(records, chunk_size, opts, embed_fun) do
       {:ok, aggregate_token_records(records, vectors, length(documents))}
     end
   end
 
-  defp tokenizer(model, opts, error_opts) do
+  defp tokenizer(model, opts) do
     case Keyword.get(opts, :tokenizer, Map.get(model, :tokenizer)) do
-      nil ->
-        {:error, error(error_opts, :invalid_tokenizer, "token-aware embeddings require a tokenizer")}
-
-      tokenizer ->
-        {:ok, tokenizer}
+      nil -> {:error, Error.new(:invalid_tokenizer, "token-aware embeddings require a tokenizer")}
+      tokenizer -> {:ok, tokenizer}
     end
   end
 
@@ -122,8 +104,6 @@ defmodule BeamWeaver.Provider.EmbeddingRuntime do
     end)
   end
 
-  defp embed_token_records([], _chunk_size, _opts, _embed_fun), do: {:ok, []}
-
   defp embed_token_records(records, chunk_size, opts, embed_fun) do
     records
     |> Enum.chunk_every(chunk_size)
@@ -134,14 +114,6 @@ defmodule BeamWeaver.Provider.EmbeddingRuntime do
   end
 
   defp aggregate_token_records(records, vectors, document_count) do
-    if document_count == 0 do
-      []
-    else
-      do_aggregate_token_records(records, vectors, document_count)
-    end
-  end
-
-  defp do_aggregate_token_records(records, vectors, document_count) do
     grouped =
       records
       |> Enum.zip(vectors)
@@ -195,7 +167,7 @@ defmodule BeamWeaver.Provider.EmbeddingRuntime do
     ]
   end
 
-  defp validate_special_tokens(documents, model, opts, error_opts) do
+  defp validate_special_tokens(documents, model, opts) do
     allowed =
       opts
       |> Keyword.get(:allowed_special, Map.get(model, :allowed_special))
@@ -213,12 +185,7 @@ defmodule BeamWeaver.Provider.EmbeddingRuntime do
 
       token ->
         {:error,
-         error(
-           error_opts,
-           :disallowed_special_token,
-           "embedding input contains a disallowed special token",
-           %{token: token}
-         )}
+         Error.new(:disallowed_special_token, "embedding input contains a disallowed special token", %{token: token})}
     end
   end
 
@@ -241,8 +208,6 @@ defmodule BeamWeaver.Provider.EmbeddingRuntime do
   end
 
   defp maybe_skip_empty(documents, _skip_empty?), do: documents
-
-  defp error(_opts, type, message, details \\ %{}), do: BeamWeaver.Core.Error.new(type, message, details)
 
   defp provider_name(opts), do: Keyword.fetch!(opts, :provider_name)
 end

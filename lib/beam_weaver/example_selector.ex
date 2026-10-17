@@ -67,11 +67,9 @@ defmodule BeamWeaver.ExampleSelector do
         |> Keyword.drop([:vector_store, :vector_store_opts])
         |> Keyword.put(:input_keys, input_keys)
 
-      case Keyword.get(opts, :search_type, :similarity) do
-        :mmr -> {:ok, mmr_vectorstore(store, selector_opts)}
-        "mmr" -> {:ok, mmr_vectorstore(store, selector_opts)}
-        _other -> {:ok, vectorstore(store, selector_opts)}
-      end
+      if Keyword.get(opts, :search_type) in [:mmr, "mmr"],
+        do: {:ok, mmr_vectorstore(store, selector_opts)},
+        else: {:ok, vectorstore(store, selector_opts)}
     end
   end
 
@@ -100,20 +98,7 @@ defmodule BeamWeaver.ExampleSelector do
 
   def example_to_text(input, _input_keys), do: to_string(input)
 
-  def normalize_examples(examples) do
-    examples
-    |> List.wrap()
-    |> Enum.reduce_while({:ok, []}, fn example, {:ok, acc} ->
-      case to_example(example) do
-        {:ok, normalized} -> {:cont, {:ok, [normalized | acc]}}
-        {:error, error} -> {:halt, {:error, error}}
-      end
-    end)
-    |> case do
-      {:ok, normalized} -> {:ok, Enum.reverse(normalized)}
-      other -> other
-    end
-  end
+  def normalize_examples(examples), do: examples |> List.wrap() |> BeamWeaver.Result.traverse(&to_example/1)
 
   defp to_example(%Document{} = document), do: {:ok, Map.put(document.metadata, :content, document.content)}
   defp to_example(example) when is_map(example) and not is_struct(example), do: {:ok, example}
@@ -132,10 +117,9 @@ defmodule BeamWeaver.ExampleSelector do
           Enum.reduce_while(examples, {[], selector.max_length - input_length}, fn example, {acc, remaining} ->
             length = example_length(example)
 
-            cond do
-              length > remaining -> {:halt, {acc, remaining}}
-              length <= remaining -> {:cont, {[example | acc], remaining - length}}
-            end
+            if length > remaining,
+              do: {:halt, {acc, remaining}},
+              else: {:cont, {[example | acc], remaining - length}}
           end)
 
         {:ok, selected |> Enum.reverse() |> Enum.take(k)}

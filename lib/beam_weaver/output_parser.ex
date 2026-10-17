@@ -101,14 +101,6 @@ defmodule BeamWeaver.OutputParser do
   defp json_schema!(other),
     do: raise(ArgumentError, "expected a JSON Schema map or a schema module, got: #{inspect(other)}")
 
-  @doc false
-  def put_opts(%Parser{} = parser, opts),
-    do: %{parser | opts: Map.merge(parser.opts || %{}, Map.new(opts))}
-
-  @doc false
-  def option(%Parser{} = parser, key, default \\ nil),
-    do: Map.get(parser.opts || %{}, key, default)
-
   def parse(parser, input, opts \\ []), do: BeamWeaver.Runnable.invoke(parser, input, opts)
 
   def parse_result(parser, generations, opts \\ []) do
@@ -178,9 +170,6 @@ defmodule BeamWeaver.OutputParser do
     do: JSON.parse_and_check_markdown(text, expected_keys)
 
   @spec parse_list(String.t(), String.t() | nil) :: [String.t()]
-  def parse_list(text, separator)
-
-  def parse_list(text, separator) when is_binary(separator), do: Delimited.list(text, separator)
   def parse_list(text, separator), do: Delimited.list(text, separator)
 
   def parse_markdown_list(text), do: Delimited.markdown_list(text)
@@ -190,25 +179,7 @@ defmodule BeamWeaver.OutputParser do
   def parse_comma_separated_list(text, separator \\ ","),
     do: Delimited.comma_separated_list(text, separator)
 
-  def parse_list_with_parser(%Parser{kind: :list, opts: %{style: :numbered}}, text),
-    do: parse_numbered_list(text)
-
-  def parse_list_with_parser(%Parser{kind: :list, opts: %{style: :markdown}}, text),
-    do: parse_markdown_list(text)
-
-  def parse_list_with_parser(%Parser{kind: :list, opts: %{style: :comma} = opts}, text) do
-    separator = Map.get(opts, :separator)
-    parse_comma_separated_list(text, separator || ",")
-  end
-
-  def parse_list_with_parser(%Parser{kind: :list, opts: %{markdown: true}}, text),
-    do: parse_markdown_list(text)
-
-  def parse_list_with_parser(%Parser{kind: :list, opts: opts}, text) do
-    separator = Map.get(opts, :separator)
-    parse_list(text, separator)
-  end
-
+  def parse_list_with_parser(%Parser{kind: :list, opts: opts}, text), do: parse_list_with_parser(opts, text)
   def parse_list_with_parser(%{style: :numbered}, text), do: parse_numbered_list(text)
   def parse_list_with_parser(%{style: :markdown}, text), do: parse_markdown_list(text)
 
@@ -250,13 +221,7 @@ defmodule BeamWeaver.OutputParser do
   @spec transform_xml(Enumerable.t()) :: {:ok, Enumerable.t()} | {:error, Error.t()}
   def transform_xml(input) do
     if Enumerable.impl_for(input) do
-      text =
-        Enum.reduce(input, nil, fn item, acc ->
-          item = text(item)
-          if is_nil(acc), do: item, else: BeamWeaver.Runnable.Addable.add(acc, item)
-        end) || ""
-
-      with {:ok, node} <- parse_xml(text) do
+      with {:ok, node} <- parse_xml(Enum.map_join(input, &text/1)) do
         {:ok, XML.transform_chunks(node)}
       end
     else
@@ -314,12 +279,14 @@ defmodule BeamWeaver.OutputParser do
 
       {:ok, stream}
     else
-      case Parser.invoke(parser, input, []) do
-        {:ok, value} -> {:ok, [value]}
-        {:error, error} -> {:error, error}
-      end
+      with {:ok, value} <- Parser.invoke(parser, input, []), do: {:ok, [value]}
     end
   end
+
+  defp put_opts(%Parser{} = parser, opts),
+    do: %{parser | opts: Map.merge(parser.opts || %{}, Map.new(opts))}
+
+  defp option(%Parser{} = parser, key, default), do: Map.get(parser.opts || %{}, key, default)
 
   defp cumulative_parse_input(_chunk_text, appended, nil), do: {appended, appended}
 

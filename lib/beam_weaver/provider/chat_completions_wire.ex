@@ -33,6 +33,12 @@ defmodule BeamWeaver.Provider.ChatCompletionsWire do
 
   defp function_tool_choice(name), do: %{"type" => "function", "function" => %{"name" => name}}
 
+  def put_stream_usage(body, model, opts) do
+    if Keyword.get(opts, :stream, false) and Keyword.get(opts, :stream_usage, model.stream_usage),
+      do: Map.put_new(body, "stream_options", %{"include_usage" => true}),
+      else: body
+  end
+
   # Invalid calls, whose arguments came back malformed, go back too: the agent
   # answers each with an error tool message, which needs its call.
   def assistant_tool_calls(%Message{} = message) do
@@ -44,6 +50,13 @@ defmodule BeamWeaver.Provider.ChatCompletionsWire do
 
   defp invalid_tool_calls(%Message{metadata: %{invalid_tool_calls: calls}}) when is_list(calls), do: calls
   defp invalid_tool_calls(_message), do: []
+
+  @tool_call_types [:function_call, "function_call", :tool_call, "tool_call", :tool_use, "tool_use"]
+
+  def content_has_tool_call?(content) when is_list(content),
+    do: Enum.any?(content, &match?(%{type: type} when type in @tool_call_types, &1))
+
+  def content_has_tool_call?(_content), do: false
 
   def assistant_reasoning_content(%Message{} = message) do
     metadata_value(message.metadata, :reasoning_content) ||
@@ -94,6 +107,25 @@ defmodule BeamWeaver.Provider.ChatCompletionsWire do
 
   def tool_calls(_message), do: []
 
+  def first_choice(%{"choices" => [choice | _rest]}) when is_map(choice), do: choice
+  def first_choice(_data), do: nil
+
+  def tool_message(%Message{} = message) do
+    call_id = message.tool_call_id || message.id
+
+    if is_binary(call_id) and call_id != "" do
+      {:ok,
+       %{
+         "role" => "tool",
+         "tool_call_id" => call_id,
+         "content" => tool_output(message.content)
+       }
+       |> BeamWeaver.MapShape.put_optional("name", message.name)}
+    else
+      {:error, BeamWeaver.Core.Error.new(:invalid_tool_message, "tool messages require a tool_call_id or id")}
+    end
+  end
+
   def tool_output(content) when is_binary(content), do: content
 
   def tool_output(content) when is_map(content) or is_list(content) do
@@ -128,7 +160,7 @@ defmodule BeamWeaver.Provider.ChatCompletionsWire do
     |> MessageParts.reject_nil_values()
   end
 
-  defp content_reasoning(content) when is_list(content) do
+  def content_reasoning(content) when is_list(content) do
     content
     |> Enum.flat_map(fn
       %ContentBlock.Reasoning{reasoning: text} when is_binary(text) -> [text]
@@ -139,10 +171,10 @@ defmodule BeamWeaver.Provider.ChatCompletionsWire do
       _block -> []
     end)
     |> Enum.join("")
-    |> empty_to_nil()
+    |> BeamWeaver.MapShape.empty_to_nil()
   end
 
-  defp content_reasoning(_content), do: nil
+  def content_reasoning(_content), do: nil
 
   defp response_content_block(%{"type" => type, "text" => text}) when type in ["text", "output_text"] do
     %{type: :text, text: text}
@@ -176,8 +208,4 @@ defmodule BeamWeaver.Provider.ChatCompletionsWire do
   end
 
   def decode_arguments(arguments), do: arguments
-
-  defp empty_to_nil(""), do: nil
-
-  defp empty_to_nil(value), do: value
 end

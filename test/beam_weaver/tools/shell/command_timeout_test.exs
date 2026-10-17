@@ -83,7 +83,7 @@ defmodule BeamWeaver.Tools.Shell.CommandTimeoutTest do
 
   test "session timeouts kill the command and its background jobs, even past SIGTERM",
        %{tmp_dir: dir} do
-    {:ok, session} = Session.start(policy: [allow: [~r/.*/], allow_compound: true, timeout: 500])
+    {:ok, session} = GenServer.start(Session, policy: [allow: [~r/.*/], allow_compound: true, timeout: 500])
 
     assert {:error, %{type: :shell_timeout, details: %{metadata: %{kill_attempted: true}}}} =
              Session.execute(session, "trap '' TERM; " <> process_tree(dir))

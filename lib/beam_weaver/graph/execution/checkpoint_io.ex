@@ -7,22 +7,9 @@ defmodule BeamWeaver.Graph.Execution.CheckpointIO do
   alias BeamWeaver.Graph.Execution
   alias BeamWeaver.Graph.Execution.ChannelCheckpoint
   alias BeamWeaver.Graph.Execution.ChannelLookup
-  alias BeamWeaver.Graph.Execution.Replay
   alias BeamWeaver.Graph.Execution.Route
-  alias BeamWeaver.Graph.Execution.TaskWrite
 
-  @spec get_tuple(struct() | nil, map()) :: map() | nil
-  def get_tuple(nil, _config), do: nil
-  def get_tuple(checkpointer, config), do: Checkpoint.get_tuple(checkpointer, config)
-
-  @spec list(struct() | nil, map(), keyword()) :: [map()]
-  def list(nil, _config, _opts), do: []
-  def list(checkpointer, config, opts), do: Checkpoint.list(checkpointer, config, opts)
-
-  @spec put(struct() | nil, map(), map(), map(), map()) :: {:ok, map()} | {:error, Error.t()}
-  def put(nil, config, _checkpoint, _metadata, _channel_versions), do: {:ok, config}
-
-  def put(checkpointer, config, checkpoint, metadata, channel_versions) do
+  defp put(checkpointer, config, checkpoint, metadata, channel_versions) do
     case Checkpoint.put(checkpointer, config, checkpoint, metadata, channel_versions) do
       {:ok, config} ->
         {:ok, config}
@@ -32,11 +19,7 @@ defmodule BeamWeaver.Graph.Execution.CheckpointIO do
     end
   end
 
-  @spec put_writes(struct() | nil, map(), list(), String.t(), String.t()) ::
-          :ok | {:error, Error.t()}
-  def put_writes(nil, _config, _writes, _task_id, _path), do: :ok
-
-  def put_writes(checkpointer, config, writes, task_id, path) do
+  defp put_writes(checkpointer, config, writes, task_id, path) do
     case Checkpoint.put_writes(checkpointer, config, writes, task_id, path) do
       :ok ->
         :ok
@@ -71,7 +54,7 @@ defmodule BeamWeaver.Graph.Execution.CheckpointIO do
         _metadata,
         _parent
       ) do
-    case get_tuple(checkpointer, config) do
+    case Checkpoint.get_tuple(checkpointer, config) do
       %{config: checkpoint_config} = tuple ->
         config = merge_checkpoint_map(checkpoint_config, config)
         {:ok, config, known_checkpoint(config, tuple)}
@@ -83,15 +66,6 @@ defmodule BeamWeaver.Graph.Execution.CheckpointIO do
 
   def maybe_write_input_checkpoint(compiled, config, state, false, metadata, parent) do
     metadata = %{metadata | next: metadata.next || compiled.graph.entry_points}
-    maybe_write_checkpoint(compiled, config, state, metadata, parent)
-  end
-
-  @spec maybe_write_checkpoint(map(), map(), map(), map(), known_checkpoint()) ::
-          {:ok, map(), known_checkpoint()} | {:error, Error.t()}
-  def maybe_write_checkpoint(%{checkpointer: nil}, config, _state, _metadata, _parent),
-    do: {:ok, config, nil}
-
-  def maybe_write_checkpoint(%{} = compiled, config, state, metadata, parent) do
     write_checkpoint(compiled, config, state, metadata, parent)
   end
 
@@ -110,19 +84,16 @@ defmodule BeamWeaver.Graph.Execution.CheckpointIO do
   def write_checkpoint(%{checkpointer: nil}, config, _state, _metadata, _parent), do: {:ok, config, nil}
 
   def write_checkpoint(%{checkpointer: checkpointer} = compiled, config, state, metadata, parent) do
-    updated_channels = metadata_value(metadata, :updated_channels, Map.keys(state))
-    channel_versions = metadata_value(metadata, :channel_versions, %{})
-    versions_seen = metadata_value(metadata, :versions_seen, %{})
+    updated_channels = Map.get(metadata, :updated_channels, Map.keys(state))
+    channel_versions = Map.get(metadata, :channel_versions, %{})
+    versions_seen = Map.get(metadata, :versions_seen, %{})
     parent_counters = parent_counters(checkpointer, config, parent)
-    step_update = metadata_value(metadata, :step_update, %{})
+    step_update = Map.get(metadata, :step_update, %{})
     persisted_step_update = ChannelLookup.persisted_update(compiled.graph, step_update)
     persisted_updated_channels = persisted_updated_channels(compiled.graph, updated_channels)
     {step_start, metadata} = Map.pop(metadata, :step_start)
 
-    metadata =
-      metadata
-      |> put_metadata_value(:step_update, persisted_step_update)
-      |> put_metadata_value(:updated_channels, persisted_updated_channels)
+    metadata = Map.merge(metadata, %{step_update: persisted_step_update, updated_channels: persisted_updated_channels})
 
     {counters, snapshot_channels} = delta_snapshot_state(compiled.graph, parent_counters, metadata)
 
@@ -141,10 +112,10 @@ defmodule BeamWeaver.Graph.Execution.CheckpointIO do
       "channel_versions" => channel_versions,
       "versions_seen" => versions_seen,
       "updated_channels" => Execution.normalize_channels(persisted_updated_channels),
-      "next" => metadata_value(metadata, :next, []),
-      "next_tasks" => metadata_value(metadata, :next_tasks, []),
-      "tasks" => metadata_value(metadata, :tasks, []),
-      "interrupts" => metadata_value(metadata, :interrupts, [])
+      "next" => Map.get(metadata, :next, []),
+      "next_tasks" => Map.get(metadata, :next_tasks, []),
+      "tasks" => Map.get(metadata, :tasks, []),
+      "interrupts" => Map.get(metadata, :interrupts, [])
     }
 
     checkpoint = if step_start, do: Map.put(checkpoint, "step_start", step_start), else: checkpoint
@@ -155,7 +126,9 @@ defmodule BeamWeaver.Graph.Execution.CheckpointIO do
   end
 
   defp parent_counters(_checkpointer, config, {config, counters}), do: counters
-  defp parent_counters(checkpointer, config, _parent), do: checkpointer |> get_tuple(config) |> tuple_counters()
+
+  defp parent_counters(checkpointer, config, _parent),
+    do: checkpointer |> Checkpoint.get_tuple(config) |> tuple_counters()
 
   defp tuple_counters(%{metadata: metadata}) do
     Map.get(
@@ -205,12 +178,8 @@ defmodule BeamWeaver.Graph.Execution.CheckpointIO do
     graph = run.compiled.graph
 
     pending_writes
-    |> Enum.map(&write_parts/1)
-    |> Enum.filter(fn {_task_id, channel, value, _path} -> persisted_pending_write?(graph, channel, value) end)
-    |> Enum.group_by(
-      fn {task_id, _channel, _value, path} -> {task_id, path || ""} end,
-      fn {_task_id, channel, value, _path} -> {channel, persisted_value(graph, value)} end
-    )
+    |> Enum.filter(&persisted_pending_write?(graph, &1.channel))
+    |> Enum.group_by(&{&1.task_id, &1.path || ""}, &{&1.channel, persisted_value(graph, &1.value)})
     |> Enum.reduce_while(:ok, fn {{task_id, path}, writes}, :ok ->
       writes = keep_pending_interrupt(writes, task_id, run.replay_pending_writes)
 
@@ -259,10 +228,6 @@ defmodule BeamWeaver.Graph.Execution.CheckpointIO do
 
   defp with_path(write, _paths), do: write
 
-  defp write_parts(%TaskWrite{} = write), do: {write.task_id, write.channel, write.value, write.path}
-  defp write_parts({task_id, channel, value, path}), do: {task_id, channel, value, path}
-  defp write_parts({task_id, channel, value}), do: {task_id, channel, value, ""}
-
   defp persisted_value(graph, %Route{} = route), do: Route.encode(route, graph)
   defp persisted_value(_graph, value), do: value
 
@@ -294,39 +259,12 @@ defmodule BeamWeaver.Graph.Execution.CheckpointIO do
 
   # Errors, interrupts and routes are always saved; other writes when their
   # channel is saved in checkpoints.
-  defp persisted_pending_write?(_graph, channel, _value)
+  defp persisted_pending_write?(_graph, channel)
        when channel in ["__interrupt__", "__error__", "__route__"],
        do: true
 
-  defp persisted_pending_write?(graph, channel, _value),
+  defp persisted_pending_write?(graph, channel),
     do: ChannelLookup.persisted_update(graph, %{channel => true}) != %{}
-
-  @doc false
-  @spec checkpoint_task_records(list()) :: [map()]
-  defdelegate checkpoint_task_records(task_events), to: Replay
-
-  @spec checkpoint_next_records([term()], map() | nil) :: [map()]
-  def checkpoint_next_records(next_ready, graph \\ nil),
-    do: Replay.checkpoint_next_records(next_ready, graph)
-
-  @doc false
-  @spec ready_names([term()]) :: [String.t()]
-  defdelegate ready_names(ready), to: Replay
-
-  @doc false
-  @spec ready_task_paths(term()) :: [term()]
-  defdelegate ready_task_paths(ready), to: Replay
-
-  defp metadata_value(metadata, key, default) do
-    Map.get(metadata, key, Map.get(metadata, to_string(key), default))
-  end
-
-  defp put_metadata_value(metadata, key, value) do
-    metadata
-    |> Map.delete(key)
-    |> Map.delete(to_string(key))
-    |> Map.put(key, value)
-  end
 
   defp persisted_updated_channels(graph, updated_channels) do
     updated_channels
@@ -358,7 +296,7 @@ defmodule BeamWeaver.Graph.Execution.CheckpointIO do
   end
 
   defp delta_snapshot_state(graph, previous, metadata) do
-    step_update = metadata_value(metadata, :step_update, %{})
+    step_update = Map.get(metadata, :step_update, %{})
 
     max_supersteps = Config.get([:execution, :delta_max_supersteps_since_snapshot], 5_000)
 

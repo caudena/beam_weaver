@@ -6,7 +6,6 @@ defmodule BeamWeaver.Agent.ModelResolver do
 
   @type resolve_result :: {:ok, term()} | {:error, Error.t()}
 
-  @doc "Resolves a model spec into a BeamWeaver chat model."
   @spec resolve_model(term(), keyword()) :: resolve_result()
   def resolve_model(model, opts \\ [])
 
@@ -17,14 +16,7 @@ defmodule BeamWeaver.Agent.ModelResolver do
 
   def resolve_model(model, _opts), do: {:ok, model}
 
-  @doc """
-  Resolves the `model` of an agent: a `"provider:model"` string, initialized
-  with `opts`, or a chat model struct, used as it is. Any other value is an
-  `:invalid_agent_model` error.
-  """
   @spec resolve_agent_model(term(), keyword()) :: resolve_result()
-  def resolve_agent_model(model, opts \\ [])
-
   def resolve_agent_model(model, opts) when is_binary(model) or (is_atom(model) and not is_nil(model)),
     do: resolve_model(model, opts)
 
@@ -48,7 +40,6 @@ defmodule BeamWeaver.Agent.ModelResolver do
      )}
   end
 
-  @doc false
   # How an error shows a model or model options it rejects: the kind of value,
   # and the keys of a map or keyword list, never the values. Errors reach logs
   # and traces, and the values can hold an API key.
@@ -69,13 +60,11 @@ defmodule BeamWeaver.Agent.ModelResolver do
   def describe([]), do: "an empty list"
   def describe(_value), do: "a value of another type"
 
-  @doc "Returns the provider-native model identifier when it can be inspected."
   @spec get_model_identifier(term()) :: String.t() | nil
   def get_model_identifier(model) do
     inspect_model(model, &direct_model_identifier/1)
   end
 
-  @doc "Returns a best-effort provider identifier for a BeamWeaver model."
   @spec get_model_provider(term()) :: String.t() | nil
   def get_model_provider(model) do
     inspect_model(model, &direct_model_provider/1)
@@ -110,38 +99,10 @@ defmodule BeamWeaver.Agent.ModelResolver do
   defp nested_model(model) when is_map(model), do: Map.get(model, :model, Map.get(model, "model"))
   defp nested_model(_model), do: nil
 
-  @doc "Checks whether a resolved model matches a provider-prefixed or bare spec."
-  @spec model_matches_spec(term(), String.t()) :: boolean()
-  def model_matches_spec(model, spec) when is_binary(spec) do
-    case get_model_identifier(model) do
-      nil ->
-        false
-
-      identifier ->
-        spec == identifier or provider_prefixed_match?(identifier, spec)
-    end
-  end
-
-  def model_matches_spec(_model, _spec), do: false
-
-  defp provider_prefixed_match?(identifier, spec) do
-    case String.split(spec, ":", parts: 2) do
-      [_provider, model_name] when model_name != "" -> model_name == identifier
-      _other -> false
-    end
-  end
-
   defp normalize_init_opts(opts) do
-    opts
-    |> Keyword.delete(:use_responses_api)
-    |> maybe_put_openai_api(opts)
-  end
-
-  defp maybe_put_openai_api(opts, original) do
-    if Keyword.get(original, :use_responses_api) == false do
-      Keyword.put_new(opts, :api, :chat_completions)
-    else
-      opts
+    case Keyword.pop(opts, :use_responses_api) do
+      {false, opts} -> Keyword.put_new(opts, :api, :chat_completions)
+      {_use_responses_api, opts} -> opts
     end
   end
 

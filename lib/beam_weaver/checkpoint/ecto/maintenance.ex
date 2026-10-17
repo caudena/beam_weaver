@@ -7,6 +7,7 @@ defmodule BeamWeaver.Checkpoint.Ecto.Maintenance do
   alias BeamWeaver.Checkpoint.Ecto, as: EctoSaver
   alias BeamWeaver.Checkpoint.Ecto.Listing
   alias BeamWeaver.Checkpoint.Ecto.Query
+  alias BeamWeaver.Result
 
   def delete_thread(saver, thread_id) do
     Query.transaction(saver, fn -> do_delete_thread(saver, thread_id) end)
@@ -86,7 +87,7 @@ defmodule BeamWeaver.Checkpoint.Ecto.Maintenance do
       )
 
     with {:ok, rows} <- Query.all(saver, query),
-         {:ok, keys} <- run_checkpoint_keys(saver, rows, run_ids) do
+         {:ok, keys} <- Result.flat_traverse(rows, &run_checkpoint_key(saver, &1, run_ids)) do
       keys
       |> Enum.group_by(&elem(&1, 0), &Tuple.delete_at(&1, 0))
       |> Enum.reduce_while(:ok, fn {thread_id, checkpoints}, :ok ->
@@ -98,21 +99,17 @@ defmodule BeamWeaver.Checkpoint.Ecto.Maintenance do
     end
   end
 
-  defp run_checkpoint_keys(saver, rows, run_ids) do
-    Enum.reduce_while(rows, {:ok, []}, fn {thread_id, namespace, checkpoint_id, metadata}, {:ok, keys} ->
-      case EctoSaver.load_json_value(saver, metadata || %{}) do
-        {:ok, %{"run_id" => run_id}} ->
-          if MapSet.member?(run_ids, run_id),
-            do: {:cont, {:ok, [{thread_id, namespace, checkpoint_id} | keys]}},
-            else: {:cont, {:ok, keys}}
+  defp run_checkpoint_key(saver, {thread_id, namespace, checkpoint_id, metadata}, run_ids) do
+    case EctoSaver.load_json_value(saver, metadata || %{}) do
+      {:ok, %{"run_id" => run_id}} ->
+        {:ok, if(MapSet.member?(run_ids, run_id), do: {thread_id, namespace, checkpoint_id})}
 
-        {:ok, _metadata} ->
-          {:cont, {:ok, keys}}
+      {:ok, _metadata} ->
+        {:ok, nil}
 
-        {:error, _reason} = error ->
-          {:halt, error}
-      end
-    end)
+      {:error, _reason} = error ->
+        error
+    end
   end
 
   defp do_copy_thread(saver, source_thread_id, target_thread_id) do
@@ -188,20 +185,16 @@ defmodule BeamWeaver.Checkpoint.Ecto.Maintenance do
       removals =
         records
         |> Enum.group_by(& &1.config["configurable"]["checkpoint_ns"])
-        |> Enum.flat_map(fn {_namespace, records} ->
+        |> Enum.flat_map(fn {namespace, records} ->
           keep = records |> DeltaCompaction.keep_ids() |> MapSet.new()
-          Enum.reject(records, &MapSet.member?(keep, &1.checkpoint["id"]))
+
+          for record <- records,
+              not MapSet.member?(keep, record.checkpoint["id"]),
+              do: {namespace, record.config["configurable"]["checkpoint_id"]}
         end)
 
-      delete_records(saver, thread_id, removals)
+      delete_checkpoints(saver, thread_id, removals)
     end
-  end
-
-  defp delete_records(saver, thread_id, records) do
-    checkpoints =
-      Enum.map(records, &{&1.config["configurable"]["checkpoint_ns"], &1.config["configurable"]["checkpoint_id"]})
-
-    delete_checkpoints(saver, thread_id, checkpoints)
   end
 
   # Deletes the given `{checkpoint_ns, checkpoint_id}` checkpoints of one

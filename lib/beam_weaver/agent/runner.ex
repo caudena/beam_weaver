@@ -21,7 +21,7 @@ defmodule BeamWeaver.Agent.Runner do
 
   @spec invoke(agent_module() | built_agent(), input(), keyword()) ::
           {:ok, map()} | {:interrupted, map()} | {:error, Error.t()}
-  def invoke(agent, input, opts \\ []) when is_map(input) do
+  def invoke(agent, input, opts) when is_map(input) do
     with {:ok, spec, compiled, opts} <- prepare(agent, opts),
          :ok <- validate_input(spec, input, compiled, opts) do
       compiled
@@ -32,7 +32,7 @@ defmodule BeamWeaver.Agent.Runner do
 
   @spec stream_events(agent_module() | built_agent(), input(), keyword()) ::
           {:ok, Enumerable.t()} | {:interrupted, map()} | {:error, Error.t()}
-  def stream_events(agent, input, opts \\ []) when is_map(input) do
+  def stream_events(agent, input, opts) when is_map(input) do
     with {:ok, spec, compiled, opts} <- prepare(agent, opts),
          :ok <- validate_input(spec, input, compiled, opts) do
       Compiled.stream_events(compiled, project_input(input, compiled), opts)
@@ -41,7 +41,7 @@ defmodule BeamWeaver.Agent.Runner do
 
   @spec resume(agent_module() | built_agent(), term(), keyword()) ::
           {:ok, map()} | {:interrupted, map()} | {:error, Error.t()}
-  def resume(agent, resume, opts \\ []) do
+  def resume(agent, resume, opts) do
     with {:ok, spec, compiled, opts} <- prepare(agent, opts) do
       compiled
       |> Compiled.resume(resume, opts)
@@ -51,13 +51,12 @@ defmodule BeamWeaver.Agent.Runner do
 
   @spec resume_review(agent_module() | built_agent(), term(), keyword()) ::
           {:ok, map()} | {:interrupted, map()} | {:error, Error.t()}
-  def resume_review(agent, review_or_decisions, opts \\ []) do
+  def resume_review(agent, review_or_decisions, opts) do
     resume(agent, BeamWeaver.Agent.HITL.resume_value(review_or_decisions), opts)
   end
 
-  @doc "Reads the checkpointed state for `opts[:config]`."
   @spec get_state(agent_module() | built_agent(), keyword()) :: {:ok, map()} | :error | {:error, Error.t()}
-  def get_state(agent, opts \\ []) when is_list(opts) do
+  def get_state(agent, opts) when is_list(opts) do
     with {:ok, spec} <- applied_spec(agent),
          {:ok, compiled} <- compiled(agent, spec, opts) do
       Compiled.get_state(compiled, Keyword.get(opts, :config, %{}))
@@ -65,7 +64,7 @@ defmodule BeamWeaver.Agent.Runner do
   end
 
   @spec compiled_graph(agent_module(), keyword()) :: {:ok, Compiled.t()} | {:error, Error.t()}
-  def compiled_graph(agent_module, opts \\ []) when is_atom(agent_module) do
+  def compiled_graph(agent_module, opts) when is_atom(agent_module) do
     with {:ok, spec} <- applied_spec(agent_module),
          :ok <- validate(agent_module, spec),
          do: compiled(agent_module, spec, opts)

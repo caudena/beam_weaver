@@ -1,6 +1,7 @@
 defmodule BeamWeaver.Provider.ResponseDecoder do
   @moduledoc false
 
+  alias BeamWeaver.Core.Error
   alias BeamWeaver.MapShape
   alias BeamWeaver.Provider.StreamFailure
   alias BeamWeaver.Transport.Response
@@ -12,7 +13,7 @@ defmodule BeamWeaver.Provider.ResponseDecoder do
   failures become an error (see `http_error/2` and `transport_error/2`).
   """
   @spec decode({:ok, Response.t()} | {:error, term()}, keyword(), (Response.t() -> result)) ::
-          result | {:error, BeamWeaver.Core.Error.t()}
+          result | {:error, Error.t()}
         when result: term()
   def decode({:ok, %Response{status: status} = response}, _opts, on_success) when status in 200..299,
     do: on_success.(response)
@@ -20,15 +21,13 @@ defmodule BeamWeaver.Provider.ResponseDecoder do
   def decode({:ok, %Response{} = response}, opts, _on_success), do: {:error, http_error(response, opts)}
   def decode({:error, error}, opts, _on_success), do: {:error, transport_error(error, opts)}
 
-  def json(result, opts \\ [])
-
   # A reply that the provider ends with a finish reason that reports a
   # failure fails as it does in a stream (see `StreamFailure`).
   def json({:ok, %Response{status: status, body: body} = response}, opts)
       when status in 200..299 do
     with {:ok, decoded} <- decode_json_body(body, opts) do
       case StreamFailure.response_failure(decoded) do
-        nil -> {:ok, maybe_attach_response_headers(decoded, response, opts)}
+        nil -> {:ok, attach_headers(decoded, response, opts)}
         {status, failed} -> {:error, http_error(%{response | status: status, body: failed}, opts)}
       end
     end
@@ -37,51 +36,33 @@ defmodule BeamWeaver.Provider.ResponseDecoder do
   def json({:ok, %Response{} = response}, opts), do: {:error, http_error(response, opts)}
   def json({:error, error}, opts), do: {:error, transport_error(error, opts)}
 
-  def decode_json_body(body, opts \\ [])
-  def decode_json_body(body, _opts) when is_map(body), do: {:ok, body}
+  defp decode_json_body(body, _opts) when is_map(body), do: {:ok, body}
 
-  def decode_json_body(body, opts) when is_binary(body) do
+  defp decode_json_body(body, opts) when is_binary(body) do
     case BeamWeaver.JSON.decode(body) do
       {:ok, decoded} when is_map(decoded) ->
         {:ok, decoded}
 
       {:ok, decoded} ->
         {:error,
-         new_error(
-           opts,
-           :invalid_response,
-           "#{provider_name(opts)} JSON response must be an object",
-           %{
-             decoded: inspect(decoded)
-           }
-         )}
+         Error.new(:invalid_response, "#{provider_name(opts)} JSON response must be an object", %{
+           decoded: inspect(decoded)
+         })}
 
       {:error, error} ->
         {:error,
-         new_error(
-           opts,
-           :invalid_response,
-           "#{provider_name(opts)} response body was not valid JSON",
-           %{
-             reason: Exception.message(error)
-           }
-         )}
+         Error.new(:invalid_response, "#{provider_name(opts)} response body was not valid JSON", %{
+           reason: Exception.message(error)
+         })}
     end
   end
 
-  def decode_json_body(body, opts) do
+  defp decode_json_body(body, opts) do
     {:error,
-     new_error(
-       opts,
-       :invalid_response,
-       "#{provider_name(opts)} response body was not JSON-compatible",
-       %{
-         body: inspect(body)
-       }
-     )}
+     Error.new(:invalid_response, "#{provider_name(opts)} response body was not JSON-compatible", %{body: inspect(body)})}
   end
 
-  def http_error(%Response{} = response, opts \\ []) do
+  def http_error(%Response{} = response, opts) do
     provider_error = response.body |> decode_error_body() |> provider_error()
 
     message =
@@ -90,7 +71,7 @@ defmodule BeamWeaver.Provider.ResponseDecoder do
 
     type = error_type(response.status, provider_error, message, opts)
 
-    new_error(opts, type, message, %{
+    Error.new(type, message, %{
       status: response.status,
       body: BeamWeaver.Transport.Redactor.redact(response.body),
       error: provider_error,
@@ -113,9 +94,7 @@ defmodule BeamWeaver.Provider.ResponseDecoder do
   A `BeamWeaver.Core.Error`, such as a missing API key found before the
   request was sent, is returned unchanged.
   """
-  def transport_error(error, opts \\ [])
-
-  def transport_error(%BeamWeaver.Core.Error{} = error, _opts), do: error
+  def transport_error(%Error{} = error, _opts), do: error
 
   def transport_error(%BeamWeaver.Transport.Error{} = error, opts) do
     type = transport_type(error.type)
@@ -130,14 +109,11 @@ defmodule BeamWeaver.Provider.ResponseDecoder do
         retryable: type in [:timeout, :connection] or BeamWeaver.RetryPredicates.transient?(error)
       })
 
-    new_error(opts, type, "#{provider_name(opts)} transport request failed: #{error.message}", details)
+    Error.new(type, "#{provider_name(opts)} transport request failed: #{error.message}", details)
   end
 
-  def transport_error(error, opts) do
-    new_error(opts, :transport_error, "#{provider_name(opts)} transport request failed", %{
-      reason: inspect(error)
-    })
-  end
+  def transport_error(error, opts),
+    do: Error.new(:transport_error, "#{provider_name(opts)} transport request failed", %{reason: inspect(error)})
 
   defp rename_key(map, from, to) do
     case Map.pop(map, from) do
@@ -216,18 +192,22 @@ defmodule BeamWeaver.Provider.ResponseDecoder do
   defp default_context_overflow?(_status, _provider_error, _message), do: false
 
   defp context_overflow_message?(message) when is_binary(message) do
-    normalized = String.downcase(message)
-
-    String.contains?(normalized, "context window") or
-      String.contains?(normalized, "context length") or
-      String.contains?(normalized, "prompt is too long") or
-      String.contains?(normalized, "input tokens exceed") or
-      String.contains?(normalized, "too many tokens")
+    String.contains?(String.downcase(message), [
+      "context window",
+      "context length",
+      "prompt is too long",
+      "input tokens exceed",
+      "too many tokens"
+    ])
   end
 
   defp context_overflow_message?(_message), do: false
 
-  defp maybe_attach_response_headers(decoded, %Response{} = response, opts) do
+  def attach_headers(decoded, %Response{} = response, opts) do
+    fields = Keyword.get(opts, :header_fields, [])
+    summary = Keyword.get(opts, :header_summary, request_id: :request_id)
+    decoded = attach_header_metadata(decoded, header_metadata(response.headers, fields, summary))
+
     if Keyword.get(opts, :include_response_headers, false) do
       Map.put(decoded, "_beamweaver_response_headers", Map.new(response.headers))
     else
@@ -298,8 +278,6 @@ defmodule BeamWeaver.Provider.ResponseDecoder do
       :error -> opts |> Keyword.get(:provider, "Provider") |> to_string() |> String.capitalize()
     end
   end
-
-  defp new_error(_opts, type, message, details), do: BeamWeaver.Core.Error.new(type, message, details)
 
   @doc false
   # The `transport` metadata a message carries: the provider request id.

@@ -2,8 +2,6 @@ defmodule BeamWeaver.OutputParser.Delimited do
   @moduledoc false
 
   @spec list(String.t(), String.t() | nil) :: [String.t()]
-  def list(text, separator)
-
   def list(text, separator) when is_binary(separator) do
     text |> String.split(separator, trim: true) |> Enum.map(&String.trim/1)
   end
@@ -42,13 +40,13 @@ defmodule BeamWeaver.OutputParser.Delimited do
     |> Enum.map(&String.replace(&1, ~r/^\d+\.\s+/, ""))
   end
 
-  def comma_separated_list(text, separator \\ ",") do
+  def comma_separated_list(text, separator) do
     text
     |> csv(separator)
     |> List.flatten()
   end
 
-  def csv(text, separator \\ ",") do
+  def csv(text, separator) do
     text
     |> String.split(~r/\r?\n/, trim: true)
     |> Enum.map(fn line -> split_csv_line(line, separator) end)

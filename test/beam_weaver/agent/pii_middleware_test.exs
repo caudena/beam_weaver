@@ -204,8 +204,6 @@ defmodule BeamWeaver.Agent.PIIMiddlewareTest do
     assert is_nil(PII.before_model(both, %{messages: []}, nil))
   end
 
-  # Like LangChain's PII middleware, a rule edits the text of a message and
-  # leaves the rest as it is.
   test "an output rule edits only the text of a reply" do
     middleware = PII.new(type: :email, apply_to_input: false, apply_to_output: true)
     email = "ada@example.com"

@@ -112,58 +112,25 @@ defmodule BeamWeaver.Provider.Registry do
 
   @doc "Returns the chat model module for a provider."
   @spec chat_provider(atom() | String.t(), keyword()) :: {:ok, module()} | {:error, Error.t()}
-  def chat_provider(provider, opts \\ []) do
-    with {:ok, entry} <- fetch(provider) do
-      cond do
-        entry.adapter && function_exported?(entry.adapter, :chat_model, 1) ->
-          entry.adapter.chat_model(opts)
-
-        entry.chat_model ->
-          {:ok, entry.chat_model}
-
-        true ->
-          {:error,
-           Error.new(:unsupported_provider, "unsupported chat model provider", %{
-             provider: entry.provider
-           })}
-      end
-    end
-  end
+  def chat_provider(provider, opts \\ []),
+    do: model_module(provider, opts, :chat_model, :unsupported_provider, "unsupported chat model provider")
 
   @doc "Returns the embedding model module for a provider."
   @spec embedding_provider(atom() | String.t(), keyword()) ::
           {:ok, module()} | {:error, Error.t()}
-  def embedding_provider(provider, opts \\ []) do
-    with {:ok, entry} <- fetch(provider) do
-      cond do
-        entry.adapter && function_exported?(entry.adapter, :embedding_model, 1) ->
-          entry.adapter.embedding_model(opts)
-
-        entry.embedding_model ->
-          {:ok, entry.embedding_model}
-
-        true ->
-          {:error,
-           Error.new(:unsupported_provider, "unsupported embedding model provider", %{
-             provider: entry.provider
-           })}
-      end
-    end
-  end
+  def embedding_provider(provider, opts \\ []),
+    do: model_module(provider, opts, :embedding_model, :unsupported_provider, "unsupported embedding model provider")
 
   @doc "Returns the decision model module for a provider."
-  def decision_provider(provider, opts \\ []) do
+  def decision_provider(provider, opts \\ []),
+    do: model_module(provider, opts, :decision_model, :unsupported_feature, "provider does not offer decision models")
+
+  defp model_module(provider, opts, kind, error_type, message) do
     with {:ok, entry} <- fetch(provider) do
       cond do
-        entry.adapter && function_exported?(entry.adapter, :decision_model, 1) ->
-          entry.adapter.decision_model(opts)
-
-        entry.decision_model ->
-          {:ok, entry.decision_model}
-
-        true ->
-          {:error,
-           Error.new(:unsupported_feature, "provider does not offer decision models", %{provider: entry.provider})}
+        entry.adapter && function_exported?(entry.adapter, kind, 1) -> apply(entry.adapter, kind, [opts])
+        module = Map.fetch!(entry, kind) -> {:ok, module}
+        true -> {:error, Error.new(error_type, message, %{provider: entry.provider})}
       end
     end
   end
@@ -268,17 +235,9 @@ defmodule BeamWeaver.Provider.Registry do
   defp normalize_provider(provider) when is_atom(provider), do: {:ok, provider}
 
   defp normalize_provider(provider) when is_binary(provider) do
-    original = provider
-
-    provider =
-      entries()
-      |> Map.keys()
-      |> Enum.find(&(Atom.to_string(&1) == provider))
-
-    if provider do
-      {:ok, provider}
-    else
-      {:error, Error.new(:unsupported_provider, "unsupported provider", %{provider: original})}
+    case Enum.find(Map.keys(entries()), &(Atom.to_string(&1) == provider)) do
+      nil -> {:error, Error.new(:unsupported_provider, "unsupported provider", %{provider: provider})}
+      atom -> {:ok, atom}
     end
   end
 end

@@ -39,8 +39,8 @@ defmodule BeamWeaver.Provider.ChatModel do
       @spec should_stream?(t(), keyword()) :: boolean()
       def should_stream?(%__MODULE__{} = model, opts \\ []), do: ChatOptions.should_stream?(model, opts)
 
-      def model_id(%__MODULE__{} = model), do: ChatOptions.model_id(model)
-      def profile(%__MODULE__{} = model), do: ChatOptions.profile(model)
+      def model_id(%__MODULE__{model: model}), do: model
+      def profile(%__MODULE__{profile: profile}), do: profile
 
       @impl BeamWeaver.Core.ChatModel
       def resolve_invocation_model(%__MODULE__{} = model, _opts), do: {:ok, model}

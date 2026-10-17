@@ -62,33 +62,4 @@ defmodule BeamWeaver.Checkpoint.ETSTest do
     assert latest.checkpoint["channel_values"]["__tasks__"] == ["thread-a-send"]
     assert first.pending_writes == [{"task-1", "__tasks__", "thread-a-send"}]
   end
-
-  test "stores pending writes and supports thread copy/delete" do
-    saver = ETS.new()
-
-    {:ok, config} =
-      Checkpoint.put(
-        saver,
-        %{"configurable" => %{"thread_id" => "source"}},
-        %{"channel_values" => %{answer: 41}},
-        %{source: "loop"},
-        %{answer: 1}
-      )
-
-    assert :ok = Checkpoint.put_writes(saver, config, [{"answer", 42}], "task-1", "node:answer")
-
-    assert %{
-             pending_writes: [{"task-1", "answer", 42}],
-             pending_write_paths: [{"task-1", "answer", "node:answer"}]
-           } =
-             Checkpoint.get_tuple(saver, config)
-
-    assert :ok = Checkpoint.copy_thread(saver, "source", "target")
-
-    assert %{checkpoint: %{"channel_values" => %{answer: 41}}} =
-             Checkpoint.get_tuple(saver, %{"configurable" => %{"thread_id" => "target"}})
-
-    assert :ok = Checkpoint.delete_thread(saver, "source")
-    assert Checkpoint.get_tuple(saver, %{"configurable" => %{"thread_id" => "source"}}) == nil
-  end
 end

@@ -9,15 +9,24 @@ defmodule BeamWeaver.OpenAI.ChatModel.TokenCounter do
 
   @spec count(term(), term(), keyword()) :: {:ok, non_neg_integer()} | {:error, term()}
   def count(model, input, opts) do
+    case tokenizer(model) do
+      nil -> count_openai_tokens_approximately(input, opts)
+      tokenizer -> count_openai_tokens(tokenizer, input, opts)
+    end
+  end
+
+  @spec count_text(term(), term(), keyword()) :: {:ok, non_neg_integer()} | {:error, term()}
+  def count_text(model, input, opts) do
+    case tokenizer(model) do
+      nil -> {:ok, LanguageModel.count_tokens_approximately(input)}
+      tokenizer -> LanguageModel.count_tokens({:tokenizer, tokenizer}, input, opts)
+    end
+  end
+
+  defp tokenizer(model) do
     case model.tokenizer || BeamWeaver.Models.tokenizer_for(model) do
-      {:ok, tokenizer} ->
-        count_openai_tokens(tokenizer, input, opts)
-
-      tokenizer when not is_nil(tokenizer) ->
-        count_openai_tokens(tokenizer, input, opts)
-
-      _missing ->
-        count_openai_tokens_approximately(input, opts)
+      {:ok, tokenizer} -> tokenizer
+      tokenizer -> tokenizer
     end
   end
 
@@ -44,14 +53,8 @@ defmodule BeamWeaver.OpenAI.ChatModel.TokenCounter do
   defp count_openai_tokens_approximately(input, _opts),
     do: {:ok, LanguageModel.count_tokens_approximately(input)}
 
-  defp count_tokenized_messages(tokenizer, messages, opts) do
-    Enum.reduce_while(messages, {:ok, 0}, fn message, {:ok, acc} ->
-      case count_tokenized_message(tokenizer, message, opts) do
-        {:ok, count} -> {:cont, {:ok, acc + count}}
-        {:error, %BeamWeaver.Core.Error{} = error} -> {:halt, {:error, error}}
-      end
-    end)
-  end
+  defp count_tokenized_messages(tokenizer, messages, opts),
+    do: sum(messages, &count_tokenized_message(tokenizer, &1, opts))
 
   defp count_tokenized_message(tokenizer, %Message{} = message, opts) do
     with {:ok, role_count} <-
@@ -73,44 +76,23 @@ defmodule BeamWeaver.OpenAI.ChatModel.TokenCounter do
   defp count_tokenized_content(tokenizer, content, opts) when is_binary(content),
     do: Tokenizer.count_tokens(tokenizer, content, opts)
 
-  defp count_tokenized_content(tokenizer, content, opts) when is_list(content) do
-    Enum.reduce_while(content, {:ok, 0}, fn block, {:ok, acc} ->
-      case count_content_block(tokenizer, block, opts) do
-        {:ok, count} -> {:cont, {:ok, acc + count}}
+  defp count_tokenized_content(tokenizer, content, opts) when is_list(content),
+    do: sum(content, &count_content_block(tokenizer, &1, opts))
+
+  defp sum(values, count) do
+    Enum.reduce_while(values, {:ok, 0}, fn value, {:ok, acc} ->
+      case count.(value) do
+        {:ok, tokens} -> {:cont, {:ok, acc + tokens}}
         {:error, %BeamWeaver.Core.Error{} = error} -> {:halt, {:error, error}}
       end
     end)
   end
 
-  defp count_content_block(tokenizer, %ContentBlock.Text{text: text}, opts),
-    do: Tokenizer.count_tokens(tokenizer, text || "", opts)
-
-  defp count_content_block(tokenizer, %ContentBlock.PlainText{text: text}, opts),
-    do: Tokenizer.count_tokens(tokenizer, text || "", opts)
-
-  defp count_content_block(_tokenizer, %ContentBlock.Image{}, opts),
-    do: {:ok, Keyword.get(opts, :tokens_per_image, 85)}
-
-  defp count_content_block(_tokenizer, %ContentBlock.Audio{}, opts),
-    do: {:ok, Keyword.get(opts, :tokens_per_audio, 120)}
-
   defp count_content_block(_tokenizer, %ContentBlock.Video{}, opts),
     do: {:ok, Keyword.get(opts, :tokens_per_video, Keyword.get(opts, :tokens_per_image, 85))}
 
-  defp count_content_block(tokenizer, %ContentBlock.File{} = block, opts),
-    do: count_tokenized_term(tokenizer, block, opts)
-
   defp count_content_block(tokenizer, %ContentBlock.Reasoning{reasoning: text}, opts),
     do: Tokenizer.count_tokens(tokenizer, text || "", opts)
-
-  defp count_content_block(tokenizer, %ContentBlock.Citation{} = block, opts),
-    do: count_tokenized_term(tokenizer, block, opts)
-
-  defp count_content_block(tokenizer, %ContentBlock.ToolResult{} = block, opts),
-    do: count_tokenized_term(tokenizer, block, opts)
-
-  defp count_content_block(tokenizer, %ContentBlock.Unknown{} = block, opts),
-    do: count_tokenized_term(tokenizer, block, opts)
 
   defp count_content_block(tokenizer, %{type: type, text: text}, opts)
        when type in [:text, :plain_text, :input_text, :output_text],
@@ -127,9 +109,6 @@ defmodule BeamWeaver.OpenAI.ChatModel.TokenCounter do
   defp count_content_block(_tokenizer, %{type: type}, opts)
        when type in [:audio, :input_audio],
        do: {:ok, Keyword.get(opts, :tokens_per_audio, 120)}
-
-  defp count_content_block(tokenizer, block, opts) when is_map(block),
-    do: count_tokenized_term(tokenizer, block, opts)
 
   defp count_content_block(tokenizer, block, opts),
     do: count_tokenized_term(tokenizer, block, opts)

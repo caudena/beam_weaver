@@ -93,12 +93,8 @@ defmodule BeamWeaver.Core.LanguageModel do
     do: Tokenizer.count_tokens(tokenizer, Message.text(message), opts)
 
   defp count_with_tokenizer(tokenizer, values, opts) when is_list(values) do
-    Enum.reduce_while(values, {:ok, 0}, fn value, {:ok, acc} ->
-      case count_with_tokenizer(tokenizer, value, opts) do
-        {:ok, count} -> {:cont, {:ok, acc + count}}
-        {:error, %Error{} = error} -> {:halt, {:error, error}}
-      end
-    end)
+    with {:ok, counts} <- BeamWeaver.Result.traverse(values, &count_with_tokenizer(tokenizer, &1, opts)),
+         do: {:ok, Enum.sum(counts)}
   end
 
   defp count_with_tokenizer(tokenizer, input, opts),

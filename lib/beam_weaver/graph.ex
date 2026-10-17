@@ -9,6 +9,7 @@ defmodule BeamWeaver.Graph do
   ```elixir
   alias BeamWeaver.Graph
   alias BeamWeaver.Graph.Compiled
+  alias BeamWeaver.Graph.Compiler
 
   triage =
     Graph.new()
@@ -36,6 +37,7 @@ defmodule BeamWeaver.Graph do
 
   alias BeamWeaver.Graph.ChannelSpec
   alias BeamWeaver.Graph.Compiled
+  alias BeamWeaver.Graph.Compiler
   alias BeamWeaver.Graph.Execution.Scratchpad
   alias BeamWeaver.Graph.StateGraph
 
@@ -192,11 +194,16 @@ defmodule BeamWeaver.Graph do
     * `:name` - the compiled graph's name.
   """
   @spec compile(t(), keyword()) :: {:ok, Compiled.t()} | {:error, term()}
-  defdelegate compile(graph, opts \\ []), to: StateGraph
+  defdelegate compile(graph, opts \\ []), to: Compiler
 
   @doc "Like `compile/2`, but raises when the graph is invalid."
   @spec compile!(t(), keyword()) :: Compiled.t()
-  defdelegate compile!(graph, opts \\ []), to: StateGraph
+  def compile!(graph, opts \\ []) do
+    case compile(graph, opts) do
+      {:ok, compiled} -> compiled
+      {:error, error} -> raise ArgumentError, error.message
+    end
+  end
 
   @doc "Lists the problems `compile/2` would report, without compiling."
   @spec validation_report(t(), keyword()) :: BeamWeaver.Graph.Validation.Report.t()

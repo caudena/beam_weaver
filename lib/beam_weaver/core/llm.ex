@@ -60,10 +60,7 @@ defmodule BeamWeaver.Core.LLM do
       if BeamWeaver.Behaviour.exported?(model.__struct__, :stream, 3) do
         model.__struct__.stream(model, prompt, opts)
       else
-        case complete(model, prompt, opts) do
-          {:ok, completion} -> {:ok, [completion]}
-          {:error, _error} = error -> error
-        end
+        with {:ok, completion} <- complete(model, prompt, opts), do: {:ok, [completion]}
       end
 
     case result do
@@ -94,28 +91,23 @@ defmodule BeamWeaver.Core.LLM do
     Enum.map(prompts, &complete(model, &1, opts))
   end
 
-  defp validate_chunks(chunks) do
-    cond do
-      is_list(chunks) ->
-        validate_chunk_list(chunks)
-
-      Enumerable.impl_for(chunks) ->
-        {:ok, chunks}
-
-      true ->
-        {:error,
-         Error.new(:invalid_response, "LLM stream response must be enumerable", %{
-           response: inspect(chunks)
-         })}
-    end
-  end
-
-  defp validate_chunk_list(chunks) do
+  defp validate_chunks(chunks) when is_list(chunks) do
     if Enum.all?(chunks, &is_binary/1) do
       {:ok, chunks}
     else
       {:error,
        Error.new(:invalid_response, "LLM stream chunks must be strings", %{
+         response: inspect(chunks)
+       })}
+    end
+  end
+
+  defp validate_chunks(chunks) do
+    if Enumerable.impl_for(chunks) do
+      {:ok, chunks}
+    else
+      {:error,
+       Error.new(:invalid_response, "LLM stream response must be enumerable", %{
          response: inspect(chunks)
        })}
     end

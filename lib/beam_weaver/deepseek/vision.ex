@@ -26,12 +26,7 @@ defmodule BeamWeaver.DeepSeek.Vision do
         invalid("DeepSeek image requests must fit within 48 MiB", api)
 
       true ->
-        Enum.reduce_while(images, :ok, fn {part, role}, :ok ->
-          case validate_image(part, role, api) do
-            :ok -> {:cont, :ok}
-            error -> {:halt, error}
-          end
-        end)
+        Enum.find_value(images, :ok, fn {part, role} -> with :ok <- validate_image(part, role, api), do: nil end)
     end
   end
 

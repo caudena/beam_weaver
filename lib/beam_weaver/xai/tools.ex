@@ -106,57 +106,51 @@ defmodule BeamWeaver.XAI.Tools do
 
   @doc "Builds an xAI web search server tool declaration."
   @spec web_search(keyword()) :: map()
-  def web_search(opts \\ []), do: build("web_search", opts)
+  def web_search(opts \\ []), do: ToolCalling.build("web_search", opts)
 
   @doc "Builds an xAI X search server tool declaration."
   @spec x_search(keyword()) :: map()
-  def x_search(opts \\ []), do: build("x_search", opts)
+  def x_search(opts \\ []), do: ToolCalling.build("x_search", opts)
 
   @doc "Builds an xAI code interpreter server tool declaration."
   @spec code_interpreter(keyword()) :: map()
-  def code_interpreter(opts \\ []), do: build("code_interpreter", opts)
+  def code_interpreter(opts \\ []), do: ToolCalling.build("code_interpreter", opts)
 
   @doc "Builds an xAI code execution server tool declaration."
   @spec code_execution(keyword()) :: map()
-  def code_execution(opts \\ []), do: build("code_execution", opts)
+  def code_execution(opts \\ []), do: ToolCalling.build("code_execution", opts)
 
   @doc "Builds an xAI collections search server tool declaration."
   @spec collections_search(keyword()) :: map()
-  def collections_search(opts \\ []), do: build("collections_search", opts)
+  def collections_search(opts \\ []), do: ToolCalling.build("collections_search", opts)
 
   @doc "Builds an xAI file search server tool declaration."
   @spec file_search(keyword()) :: map()
-  def file_search(opts \\ []), do: build("file_search", opts)
+  def file_search(opts \\ []), do: ToolCalling.build("file_search", opts)
 
   @doc "Builds an xAI file attachment search server tool declaration."
   @spec attachment_search(keyword()) :: map()
-  def attachment_search(opts \\ []), do: build("attachment_search", opts)
+  def attachment_search(opts \\ []), do: ToolCalling.build("attachment_search", opts)
 
   @doc "Builds an xAI shell server tool declaration."
   @spec shell(keyword()) :: map()
-  def shell(opts \\ []), do: build("shell", opts)
+  def shell(opts \\ []), do: ToolCalling.build("shell", opts)
 
   @doc "Builds an xAI image understanding server tool declaration."
   @spec view_image(keyword()) :: map()
-  def view_image(opts \\ []), do: build("view_image", opts)
+  def view_image(opts \\ []), do: ToolCalling.build("view_image", opts)
 
   @doc "Builds an xAI X video understanding server tool declaration."
   @spec view_x_video(keyword()) :: map()
-  def view_x_video(opts \\ []), do: build("view_x_video", opts)
+  def view_x_video(opts \\ []), do: ToolCalling.build("view_x_video", opts)
 
   @doc "Builds an xAI Chat Completions live search server tool declaration."
   @spec live_search(keyword()) :: map()
-  def live_search(opts \\ []), do: build("live_search", opts)
+  def live_search(opts \\ []), do: ToolCalling.build("live_search", opts)
 
   @doc "Builds an xAI MCP server tool declaration."
   @spec mcp(String.t(), String.t(), keyword()) :: map()
-  def mcp(server_label, server_url, opts \\ [])
-      when is_binary(server_label) and is_binary(server_url) do
-    "mcp"
-    |> build(opts)
-    |> Map.put("server_label", server_label)
-    |> Map.put("server_url", server_url)
-  end
+  def mcp(server_label, server_url, opts \\ []), do: ToolCalling.mcp(server_label, server_url, opts)
 
   @doc "Builds an OpenAI-compatible function tool declaration."
   @spec function(term(), keyword()) :: map()
@@ -188,11 +182,5 @@ defmodule BeamWeaver.XAI.Tools do
            supported: Enum.sort(allowed)
          })}
     end
-  end
-
-  defp build(type, opts) do
-    opts
-    |> BeamWeaver.MapShape.stringify_entries()
-    |> Map.put("type", type)
   end
 end

@@ -17,7 +17,7 @@ defmodule BeamWeaver.Tracing.Options do
 
   @spec metadata(map(), term()) :: map()
   def metadata(base, trace) do
-    trace_map = trace_map(trace)
+    trace_map = map_value(trace)
 
     base
     |> map_value()
@@ -131,21 +131,14 @@ defmodule BeamWeaver.Tracing.Options do
     ArgumentError -> Map.has_key?(configurable, key)
   end
 
-  defp trace_value(trace, key), do: map_get(trace_map(trace), key)
-
-  defp trace_map(trace) when is_list(trace), do: Map.new(trace)
-  defp trace_map(trace) when is_map(trace), do: trace
-  defp trace_map(_trace), do: %{}
+  defp trace_value(trace, key), do: map_get(map_value(trace), key)
 
   defp map_value(value) when is_map(value), do: value
   defp map_value(value) when is_list(value), do: Map.new(value)
   defp map_value(_value), do: %{}
 
-  defp scrub_removed_metadata_keys(metadata) when is_map(metadata) do
-    metadata
-    |> Enum.reject(fn {key, _value} -> to_string(key) in @removed_metadata_keys end)
-    |> Map.new()
-  end
+  defp scrub_removed_metadata_keys(metadata) when is_map(metadata),
+    do: Map.reject(metadata, fn {key, _value} -> to_string(key) in @removed_metadata_keys end)
 
   defp map_get(map, key) when is_map(map) do
     Map.get(map, key) || Map.get(map, to_string(key))

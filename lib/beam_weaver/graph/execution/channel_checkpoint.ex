@@ -8,11 +8,11 @@ defmodule BeamWeaver.Graph.Execution.ChannelCheckpoint do
   alias BeamWeaver.Graph.StateGraph
 
   @spec checkpoint_channel_values(StateGraph.t(), map()) :: map()
-  def checkpoint_channel_values(%StateGraph{channels: channels} = graph, state) do
+  def checkpoint_channel_values(%StateGraph{} = graph, state) do
     state
     |> Enum.filter(fn {key, _value} -> ChannelLookup.checkpointed_channel?(graph, key) end)
     |> Enum.reduce(%{}, fn {key, value}, values ->
-      case ChannelLookup.channel_for(%StateGraph{channels: channels}, key) do
+      case ChannelLookup.channel_for(graph, key) do
         nil ->
           Map.put(values, key, value)
 

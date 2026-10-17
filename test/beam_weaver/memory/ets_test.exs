@@ -34,6 +34,12 @@ defmodule BeamWeaver.Memory.ETSTest do
     assert Memory.get(store, [:users, "u1"], :preference) == :error
   end
 
+  test "get_many returns a stored {:error, _} value instead of reporting a failed read" do
+    store = ETS.new()
+    assert {:ok, _item} = Memory.put(store, ["kv"], "odd", {:error, :stored})
+    assert [{:error, :stored}, nil] = Memory.get_many(store, ["kv"], ["odd", "missing"])
+  end
+
   test "list_namespaces batch op ignores unknown match-condition types instead of crashing" do
     store = ETS.new()
 

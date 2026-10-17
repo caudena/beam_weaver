@@ -11,7 +11,6 @@ defmodule BeamWeaver.Graph.PregelBehaviorTest do
   alias BeamWeaver.Graph.Channels.Topic
   alias BeamWeaver.Graph.Command
   alias BeamWeaver.Graph.Compiled
-  alias BeamWeaver.Graph.Execution.Scratchpad
   alias BeamWeaver.Graph.Send
   alias BeamWeaver.Stream.Envelope
   alias BeamWeaver.Stream.Events
@@ -1360,36 +1359,6 @@ defmodule BeamWeaver.Graph.PregelBehaviorTest do
 
     [latest | _history] = Compiled.get_state_history(graph, config)
     assert latest.values.items == ["a"]
-  end
-
-  test "scratchpad call and subgraph counters are task-local monotonic counters" do
-    graph =
-      Graph.new()
-      |> Graph.add_node(:first, fn _state ->
-        %{
-          first_calls: [Scratchpad.next_call(), Scratchpad.next_call()],
-          first_subgraphs: [Scratchpad.next_subgraph(), Scratchpad.next_subgraph()]
-        }
-      end)
-      |> Graph.add_node(:second, fn _state ->
-        %{
-          second_calls: [Scratchpad.next_call(), Scratchpad.next_call()],
-          second_subgraphs: [Scratchpad.next_subgraph(), Scratchpad.next_subgraph()]
-        }
-      end)
-      |> Graph.add_edge(Graph.start(), :first)
-      |> Graph.add_edge(Graph.start(), :second)
-      |> Graph.add_edge(:first, Graph.end_node())
-      |> Graph.add_edge(:second, Graph.end_node())
-      |> Graph.compile!()
-
-    assert {:ok,
-            %{
-              first_calls: [0, 1],
-              first_subgraphs: [0, 1],
-              second_calls: [0, 1],
-              second_subgraphs: [0, 1]
-            }} = Compiled.invoke(graph, %{})
   end
 
   test "proceed policy persists every sibling failure and successful writes" do

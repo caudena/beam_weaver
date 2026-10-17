@@ -8,6 +8,8 @@ defmodule BeamWeaver.Compaction.InputEvent do
   `truncated` with `BeamWeaver.Compaction.Canonical.hash/1`.
   """
 
+  import BeamWeaver.Compaction.Canonical, only: [hash?: 1]
+
   alias BeamWeaver.Compaction.{Canonical, Fields}
   alias BeamWeaver.Core.Error
 
@@ -92,8 +94,7 @@ defmodule BeamWeaver.Compaction.InputEvent do
     event
     |> Map.from_struct()
     |> Map.update!(:role, &Atom.to_string/1)
-    |> Map.delete(:token_count)
-    |> Map.delete(:protected)
+    |> Map.drop([:token_count, :protected])
   end
 
   defp validate(%__MODULE__{} = event) do
@@ -117,8 +118,8 @@ defmodule BeamWeaver.Compaction.InputEvent do
   end
 
   defp invalid(message), do: {:error, Error.new(:invalid_compaction_event, message)}
-  defp id?(value), do: is_binary(value) and byte_size(value) in 1..200
-  defp hash?(value), do: is_binary(value) and byte_size(value) == 64 and value =~ ~r/\A[0-9a-f]{64}\z/
+  @doc false
+  def id?(value), do: is_binary(value) and byte_size(value) in 1..200
   defp namespace?(value), do: is_binary(value) and byte_size(value) in 1..200 and String.valid?(value)
   defp content?(nil), do: true
   defp content?(value), do: is_binary(value) and byte_size(value) <= 1_048_576 and String.valid?(value)
@@ -127,13 +128,5 @@ defmodule BeamWeaver.Compaction.InputEvent do
   defp ids?(values), do: is_list(values) and length(values) <= 128 and Enum.all?(values, &id?/1)
   defp token_count?(nil), do: true
   defp token_count?(value), do: is_integer(value) and value >= 0
-
-  defp payload(event) do
-    %{
-      content: event.content,
-      tool: event.tool,
-      artifact_ids: event.artifact_ids,
-      truncated: event.truncated
-    }
-  end
+  defp payload(event), do: Map.take(event, [:content, :tool, :artifact_ids, :truncated])
 end

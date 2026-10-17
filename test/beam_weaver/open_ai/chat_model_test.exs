@@ -11,7 +11,6 @@ defmodule BeamWeaver.OpenAI.ChatModelTest do
   alias BeamWeaver.Models.UsageCost
   alias BeamWeaver.OpenAI.ChatModel
   alias BeamWeaver.OpenAI.Messages
-  alias BeamWeaver.OpenAI.ModelPolicy
   alias BeamWeaver.OpenAI.Responses
   alias BeamWeaver.OpenAI.ToolCalling
   alias BeamWeaver.Tokenizer.Approximate
@@ -130,24 +129,6 @@ defmodule BeamWeaver.OpenAI.ChatModelTest do
 
     assert {:ok, %ChatModel{reasoning_effort: "minimal"}} =
              Models.init_chat_model("openai:gpt-5", reasoning_effort: "minimal")
-  end
-
-  test "model policy records OpenAI Responses-preferred families" do
-    for model <- [
-          "gpt-6-astra",
-          "gpt-5.6",
-          "gpt-5.6-sol",
-          "gpt-5.6-terra",
-          "gpt-5.6-luna",
-          "gpt-5.4-pro",
-          "gpt-5.5-pro"
-        ] do
-      assert ModelPolicy.prefers_responses_api?(model)
-    end
-
-    for model <- ["gpt-5", "gpt-5.5", "gpt-5.4", "o3-pro", "gpt-4.1", nil] do
-      refute ModelPolicy.prefers_responses_api?(model)
-    end
   end
 
   test "invokes the Responses API through a replay cassette and decodes assistant text" do

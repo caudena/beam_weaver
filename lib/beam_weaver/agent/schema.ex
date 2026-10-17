@@ -38,15 +38,8 @@ defmodule BeamWeaver.Agent.Schema do
   def validate_context(nil, _context), do: :ok
   def validate_context(schema, nil), do: validate_context(schema, %{})
 
-  def validate_context(schema, context) when is_map(schema) and is_map(context) do
-    schema
-    |> Enum.reduce_while(:ok, fn {key, spec}, :ok ->
-      case validate_field(context, key, spec) do
-        :ok -> {:cont, :ok}
-        {:error, %Error{} = error} -> {:halt, {:error, error}}
-      end
-    end)
-  end
+  def validate_context(schema, context) when is_map(schema) and is_map(context),
+    do: validate_value_schema(schema, context, :invalid_context, "agent context")
 
   def validate_context(_schema, context) do
     {:error,
@@ -122,14 +115,9 @@ defmodule BeamWeaver.Agent.Schema do
 
   defp validate_value_schema(nil, _value, _error_type, _label), do: :ok
 
-  defp validate_value_schema(schema, value, error_type, label)
-       when is_map(schema) and is_map(value) do
-    schema
-    |> Enum.reduce_while(:ok, fn {key, spec}, :ok ->
-      case validate_field(value, key, spec, error_type, label) do
-        :ok -> {:cont, :ok}
-        {:error, %Error{} = error} -> {:halt, {:error, error}}
-      end
+  defp validate_value_schema(schema, value, error_type, label) when is_map(schema) and is_map(value) do
+    Enum.find_value(schema, :ok, fn {key, spec} ->
+      with :ok <- validate_field(value, key, spec, error_type, label), do: nil
     end)
   end
 
@@ -140,12 +128,8 @@ defmodule BeamWeaver.Agent.Schema do
      })}
   end
 
-  defp validate_field(context, key, spec) do
-    validate_field(context, key, spec, :invalid_context, "agent context")
-  end
-
   defp validate_field(context, key, %{type: type, required: required}, error_type, label) do
-    case fetch_value(context, key) do
+    case BeamWeaver.MapAccess.fetch(context, key) do
       {:ok, value} ->
         case check_type(value, type) do
           true ->
@@ -177,27 +161,6 @@ defmodule BeamWeaver.Agent.Schema do
   end
 
   defp validate_field(_context, _key, _spec, _error_type, _label), do: :ok
-
-  defp fetch_value(map, key) when is_atom(key) do
-    cond do
-      Map.has_key?(map, key) -> {:ok, Map.fetch!(map, key)}
-      Map.has_key?(map, Atom.to_string(key)) -> {:ok, Map.fetch!(map, Atom.to_string(key))}
-      true -> :error
-    end
-  end
-
-  defp fetch_value(map, key) when is_binary(key) do
-    cond do
-      Map.has_key?(map, key) ->
-        {:ok, Map.fetch!(map, key)}
-
-      Enum.any?(Map.keys(map), &(to_string(&1) == key)) ->
-        {:ok, map[Enum.find(Map.keys(map), &(to_string(&1) == key))]}
-
-      true ->
-        :error
-    end
-  end
 
   # true or false for a known type, :unknown_type for a type no value can be
   # checked against, such as a misspelled atom.

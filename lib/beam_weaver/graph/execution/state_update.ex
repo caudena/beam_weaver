@@ -1,6 +1,7 @@
 defmodule BeamWeaver.Graph.Execution.StateUpdate do
   @moduledoc false
 
+  alias BeamWeaver.Checkpoint
   alias BeamWeaver.Core.Error
   alias BeamWeaver.Graph.Execution
   alias BeamWeaver.Graph.Execution.ChannelMerge
@@ -28,7 +29,7 @@ defmodule BeamWeaver.Graph.Execution.StateUpdate do
       nil ->
         config = SubgraphRouter.checkpoint_config(compiled, config)
 
-        case CheckpointIO.get_tuple(checkpointer, config) do
+        case Checkpoint.get_tuple(checkpointer, config) do
           nil ->
             :error
 
@@ -50,7 +51,7 @@ defmodule BeamWeaver.Graph.Execution.StateUpdate do
         config = SubgraphRouter.checkpoint_config(compiled, config)
 
         case checkpointer
-             |> CheckpointIO.list(config, opts)
+             |> Checkpoint.list(config, opts)
              |> BeamWeaver.Result.traverse(&Snapshot.from_tuple(compiled, &1, apply_pending?: false)) do
           {:ok, snapshots} -> snapshots
           {:error, %Error{}} = error -> error
@@ -97,7 +98,7 @@ defmodule BeamWeaver.Graph.Execution.StateUpdate do
   # edges and private keys saved with the thread carry over.
   defp do_update_state(%{} = compiled, config, values, opts) do
     with :ok <- validate_update(compiled.graph, values) do
-      case CheckpointIO.get_tuple(compiled.checkpointer, config) do
+      case Checkpoint.get_tuple(compiled.checkpointer, config) do
         nil ->
           base = %{values: %{}, channel_versions: %{}, versions_seen: %{}, next: [], tasks: []}
           update_checkpoint(compiled, config, values, opts, base)
@@ -215,10 +216,10 @@ defmodule BeamWeaver.Graph.Execution.StateUpdate do
   # of them, and the update's checkpoint is the one the step ends with.
   defp complete_halted_step(compiled, tuple, restored, updated, values, writes, opts) do
     graph = compiled.graph
-    plan = compiled.plan || graph
     routes = Route.from_writes(writes)
 
-    with {:ok, schedule} <- Scheduler.prepare_next_tasks(plan, routes, Route.put_outputs(updated, routes, graph)),
+    with {:ok, schedule} <-
+           Scheduler.prepare_next_tasks(compiled.plan, routes, Route.put_outputs(updated, routes, graph)),
          {:ok, schedule_step_update, scheduled} <-
            ChannelMerge.merge_step_updates(updated, schedule.updates, graph) do
       {joins, scheduled} = ChannelMerge.fire_joins(%{}, scheduled, graph)
@@ -234,7 +235,7 @@ defmodule BeamWeaver.Graph.Execution.StateUpdate do
         |> Execution.normalize_channels()
         |> Enum.reject(&Scheduler.node_outputs_channel?/1)
 
-      next = Scheduler.add_channel_tasks(plan, schedule.ready, updated_channels)
+      next = Scheduler.add_channel_tasks(compiled.plan, schedule.ready, updated_channels)
 
       metadata = %{
         source: "update",
@@ -338,10 +339,8 @@ defmodule BeamWeaver.Graph.Execution.StateUpdate do
         node -> {[%Route{node: to_string(node)}], StateGraph.join_writes(compiled.graph, node)}
       end
 
-    plan = compiled.plan || compiled.graph
-
     with {:ok, routing_state} <- routing_state_for_update(compiled, updated, as_node, values),
-         {:ok, schedule} <- Scheduler.prepare_next_tasks(plan, routes, routing_state),
+         {:ok, schedule} <- Scheduler.prepare_next_tasks(compiled.plan, routes, routing_state),
          {:ok, schedule_step_update, scheduled} <-
            ChannelMerge.merge_step_updates(updated, schedule.updates ++ arrivals, compiled.graph) do
       {joins, scheduled} = ChannelMerge.fire_joins(%{}, scheduled, compiled.graph)
@@ -358,7 +357,7 @@ defmodule BeamWeaver.Graph.Execution.StateUpdate do
 
       ready =
         Scheduler.add_channel_tasks(
-          plan,
+          compiled.plan,
           Scheduler.add_tasks(schedule.ready, still_next(compiled.graph, base, as_node)),
           Map.keys(joins)
         )
@@ -478,10 +477,8 @@ defmodule BeamWeaver.Graph.Execution.StateUpdate do
   defp maybe_resume_after_update(compiled, updated_config, opts) do
     if Keyword.has_key?(opts, :resume) do
       case Runner.execute(compiled, %{}, Keyword.put(opts, :config, updated_config)) do
-        {:ok, result} -> {:ok, result}
-        {:interrupted, interrupt} -> {:interrupted, interrupt}
-        {:error, error} -> {:error, error}
         {:parent_command, command} -> CommandRouter.parent_command_error(command)
+        result -> result
       end
     else
       {:ok, updated_config}
@@ -503,7 +500,7 @@ defmodule BeamWeaver.Graph.Execution.StateUpdate do
 
   defp reduce_bulk_update_state(%{} = compiled, config, supersteps, opts) do
     initial_state =
-      case CheckpointIO.get_tuple(compiled.checkpointer, config) do
+      case Checkpoint.get_tuple(compiled.checkpointer, config) do
         nil ->
           {:ok, {config, %{}, %{}, %{}}}
 
@@ -514,34 +511,21 @@ defmodule BeamWeaver.Graph.Execution.StateUpdate do
           end
       end
 
-    with {:ok, {initial_config, initial_values, initial_versions, initial_seen}} <- initial_state do
-      start_step = Keyword.get(opts, :step, 0)
-
+    with {:ok, {config, values, versions, versions_seen}} <- initial_state do
       supersteps
-      |> Enum.with_index(start_step)
-      |> Enum.reduce_while(
-        {:ok, initial_config, initial_values, initial_versions, initial_seen},
-        fn {updates, step}, {:ok, current_config, current_values, current_versions, versions_seen} ->
-          case bulk_update_superstep(
-                 compiled,
-                 current_config,
-                 current_values,
-                 current_versions,
-                 versions_seen,
-                 updates,
-                 step,
-                 opts
-               ) do
-            {:ok, next_config, next_values, next_versions} ->
-              {:cont, {:ok, next_config, next_values, next_versions, versions_seen}}
-
-            {:error, %Error{}} = error ->
-              {:halt, error}
+      |> Enum.with_index(Keyword.get(opts, :step, 0))
+      |> Enum.reduce_while({:ok, config, values, versions}, fn
+        {updates, step}, {:ok, config, values, versions} when is_list(updates) ->
+          case bulk_update_superstep(compiled, config, values, versions, versions_seen, updates, step, opts) do
+            {:ok, _config, _values, _versions} = next -> {:cont, next}
+            {:error, %Error{}} = error -> {:halt, error}
           end
-        end
-      )
+
+        _superstep, _acc ->
+          {:halt, {:error, Error.new(:invalid_update, "bulk update supersteps must contain update maps")}}
+      end)
       |> case do
-        {:ok, final_config, _values, _versions, _seen} -> {:ok, final_config}
+        {:ok, config, _values, _versions} -> {:ok, config}
         {:error, %Error{}} = error -> error
       end
     end
@@ -556,17 +540,7 @@ defmodule BeamWeaver.Graph.Execution.StateUpdate do
       else: {:ok, restored.values}
   end
 
-  defp bulk_update_superstep(
-         compiled,
-         config,
-         values,
-         current_versions,
-         versions_seen,
-         updates,
-         step,
-         opts
-       )
-       when is_list(updates) do
+  defp bulk_update_superstep(compiled, config, values, current_versions, versions_seen, updates, step, opts) do
     updated_channels =
       updates
       |> Enum.flat_map(&Execution.updated_channels/1)
@@ -597,18 +571,5 @@ defmodule BeamWeaver.Graph.Execution.StateUpdate do
            }) do
       {:ok, next_config, next_values, channel_versions}
     end
-  end
-
-  defp bulk_update_superstep(
-         _compiled,
-         _config,
-         _values,
-         _versions,
-         _seen,
-         _updates,
-         _step,
-         _opts
-       ) do
-    {:error, Error.new(:invalid_update, "bulk update supersteps must contain update maps")}
   end
 end

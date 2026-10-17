@@ -29,7 +29,3 @@ Path.wildcard(Path.expand("../support/conformance/*.exs", __DIR__))
 Code.require_file("../support/live_postgres.exs", __DIR__)
 Code.require_file("../support/live_sqlite.exs", __DIR__)
 Code.require_file("../support/doc_snippets.exs", __DIR__)
-
-Path.wildcard(Path.expand("../support/deep_agents/*.exs", __DIR__))
-|> Enum.sort()
-|> Enum.each(&Code.require_file/1)

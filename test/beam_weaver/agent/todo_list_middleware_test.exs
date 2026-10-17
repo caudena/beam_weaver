@@ -1,8 +1,6 @@
 defmodule BeamWeaver.Agent.TodoListMiddlewareTest do
   use ExUnit.Case, async: true
 
-  # Upstream reference:
-
   alias BeamWeaver.Agent
   alias BeamWeaver.Agent.Middleware.TodoList
   alias BeamWeaver.Agent.ModelRequest

@@ -4,23 +4,13 @@ defmodule BeamWeaver.Prompt.Loader.Files do
   alias BeamWeaver.Core.Error
   alias BeamWeaver.Result
 
-  def reject_hub_path("lc://" <> _rest) do
-    {:error, Error.new(:unsupported_prompt_source, "LangChain Hub prompt paths are not supported")}
-  end
-
-  def reject_hub_path(_path), do: :ok
-
   def read_file(path) do
-    case File.read(path) do
-      {:ok, contents} ->
-        {:ok, contents}
-
-      {:error, reason} ->
-        {:error,
-         Error.new(:prompt_load_error, "prompt file could not be read", %{
-           path: path,
-           reason: reason
-         })}
+    with {:error, reason} <- File.read(path) do
+      {:error,
+       Error.new(:prompt_load_error, "prompt file could not be read", %{
+         path: path,
+         reason: reason
+       })}
     end
   end
 
@@ -103,11 +93,8 @@ defmodule BeamWeaver.Prompt.Loader.Files do
       end
     end)
     |> case do
-      {:ok, codepoints} ->
-        {:ok, List.to_string(codepoints)}
-
-      {:error, %Error{} = error} ->
-        {:error, error}
+      {:ok, codepoints} -> {:ok, List.to_string(codepoints)}
+      error -> error
     end
   end
 end

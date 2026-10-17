@@ -45,7 +45,7 @@ defmodule BeamWeaver.Graph.Execution.TaskPlanner do
              resume_values: Resume.values_for_task(run.resume, prepared.id)
            ),
          first_state: first_state(run, ready_entry),
-         error: TaskRequest.error(ready_entry),
+         error: ready_entry.error,
          timeout: timeout,
          started_at: System.monotonic_time(:millisecond)
        }}
@@ -66,7 +66,7 @@ defmodule BeamWeaver.Graph.Execution.TaskPlanner do
 
   # A `Send`'s own `timeout` takes the forms that a node's `timeout:` takes.
   defp task_timeout(ready_entry, spec) do
-    case TaskRequest.timeout(ready_entry) do
+    case ready_entry.timeout do
       nil ->
         {:ok, spec.timeout || :infinity}
 

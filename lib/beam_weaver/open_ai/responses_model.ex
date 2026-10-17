@@ -12,7 +12,6 @@ defmodule BeamWeaver.OpenAI.ResponsesModel do
   @behaviour BeamWeaver.Core.ChatModel
 
   alias BeamWeaver.OpenAI.ChatModel
-  alias BeamWeaver.Provider.ChatModel.Options, as: ChatOptions
 
   defstruct %ChatModel{} |> Map.from_struct() |> Map.to_list()
 
@@ -45,8 +44,8 @@ defmodule BeamWeaver.OpenAI.ResponsesModel do
   def request_body(%__MODULE__{} = model, messages, opts \\ []),
     do: ChatModel.request_body(to_chat_model(model), messages, opts)
 
-  def model_id(%__MODULE__{} = model), do: ChatOptions.model_id(model)
-  def profile(%__MODULE__{} = model), do: ChatOptions.profile(model)
+  def model_id(%__MODULE__{model: model}), do: model
+  def profile(%__MODULE__{profile: profile}), do: profile
 
   def count_tokens(%__MODULE__{} = model, input, opts),
     do: ChatModel.count_tokens(to_chat_model(model), input, opts)

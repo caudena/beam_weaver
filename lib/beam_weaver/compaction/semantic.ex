@@ -84,8 +84,6 @@ defmodule BeamWeaver.Compaction.Semantic do
   @doc "Returns the provider-neutral JSON Schema for the semantic contract."
   @spec json_schema() :: map()
   def json_schema do
-    sourced = array_schema(sourced_schema(), @bounds.critical_context)
-
     %{
       "$schema" => "https://json-schema.org/draft/2020-12/schema",
       "type" => "object",
@@ -98,7 +96,7 @@ defmodule BeamWeaver.Compaction.Semantic do
         "constraints" => array_schema(sourced_schema(), @bounds.constraints),
         "decisions" => array_schema(decision_schema(), @bounds.decisions),
         "progress" => progress_schema(),
-        "critical_context" => sourced,
+        "critical_context" => array_schema(sourced_schema(), @bounds.critical_context),
         "errors" => array_schema(error_schema(), @bounds.errors),
         "artifact_refs" => array_schema(artifact_schema(), @bounds.artifact_refs),
         "coverage" =>

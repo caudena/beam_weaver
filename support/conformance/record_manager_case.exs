@@ -9,11 +9,12 @@ defmodule BeamWeaver.TestSupport.Conformance.RecordManagerCase do
 
       alias BeamWeaver.Indexing.Record
       alias BeamWeaver.Indexing.RecordManager
+      alias BeamWeaver.TestSupport.Conformance.Subject
 
       @beamweaver_record_manager Keyword.fetch!(opts, :record_manager)
 
       test "record manager stores, lists, filters, and deletes records" do
-        manager = beamweaver_standard_value(@beamweaver_record_manager)
+        manager = Subject.standard_value(@beamweaver_record_manager)
 
         record = %Record{
           id: "doc-1",
@@ -36,9 +37,6 @@ defmodule BeamWeaver.TestSupport.Conformance.RecordManagerCase do
         assert :ok = RecordManager.delete(manager, ["doc-1"], namespace: :case)
         assert {:ok, nil} = RecordManager.get(manager, "doc-1", namespace: :case)
       end
-
-      defp beamweaver_standard_value(value),
-        do: BeamWeaver.TestSupport.Conformance.Subject.standard_value(value)
     end
   end
 end

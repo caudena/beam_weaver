@@ -14,13 +14,13 @@ defmodule BeamWeaver.Agent.Middleware.ToolSelection do
 
   use BeamWeaver.Agent.Middleware
 
+  alias BeamWeaver.Agent.Middleware.Helpers
   alias BeamWeaver.Agent.ModelRequest
   alias BeamWeaver.Agent.ToolSet
   alias BeamWeaver.Core.ChatModel
   alias BeamWeaver.Core.Error
   alias BeamWeaver.Core.Message
   alias BeamWeaver.Core.Tool
-  alias BeamWeaver.Models
   alias BeamWeaver.Options
 
   @default_system_prompt "Your goal is to select the most relevant tools for answering the user's query."
@@ -49,7 +49,7 @@ defmodule BeamWeaver.Agent.Middleware.ToolSelection do
       predicate: Keyword.get(opts, :predicate),
       tools: Keyword.get(opts, :tools, []),
       selector?: selector_opts?(opts),
-      selector_model: normalize_model(Keyword.get(opts, :model)),
+      selector_model: opts |> Keyword.get(:model) |> Helpers.chat_model!(),
       system_prompt: Keyword.get(opts, :system_prompt, @default_system_prompt),
       max_tools: Keyword.get(opts, :max_tools),
       always_include: opts |> Keyword.get(:always_include, []) |> normalize_names(),
@@ -313,14 +313,8 @@ defmodule BeamWeaver.Agent.Middleware.ToolSelection do
     end
   end
 
-  defp cap_and_dedupe(names, max_tools) do
-    names
-    |> Enum.uniq()
-    |> maybe_take(max_tools)
-  end
-
-  defp maybe_take(names, nil), do: names
-  defp maybe_take(names, max_tools), do: Enum.take(names, max_tools)
+  defp cap_and_dedupe(names, nil), do: Enum.uniq(names)
+  defp cap_and_dedupe(names, max_tools), do: names |> Enum.uniq() |> Enum.take(max_tools)
 
   defp tools_by_selection(tools, names) do
     Enum.flat_map(names, fn name ->
@@ -353,10 +347,7 @@ defmodule BeamWeaver.Agent.Middleware.ToolSelection do
   end
 
   defp last_user_message!(messages) do
-    case Enum.find(Enum.reverse(messages || []), &match?(%Message{role: :user}, &1)) do
-      %Message{} = message -> message
-      nil -> raise ArgumentError, "no user message found in model request"
-    end
+    Helpers.last_message(messages || [], :user) || raise(ArgumentError, "no user message found in model request")
   end
 
   defp system_prompt(%__MODULE__{system_prompt: prompt, max_tools: nil}), do: prompt
@@ -377,10 +368,6 @@ defmodule BeamWeaver.Agent.Middleware.ToolSelection do
   defp normalize_parsing_failure(names) when is_list(names), do: normalize_names(names)
   defp normalize_parsing_failure(fun) when is_function(fun, 1), do: fun
   defp normalize_parsing_failure(value), do: Options.atom_enum!("on_parsing_failure", value, [:error, :none, :all])
-
-  defp normalize_model(nil), do: nil
-  defp normalize_model(model) when is_binary(model), do: Models.init_chat_model!(model)
-  defp normalize_model(model), do: model
 
   defp normalize_names(names), do: names |> List.wrap() |> Enum.map(&to_string/1)
 

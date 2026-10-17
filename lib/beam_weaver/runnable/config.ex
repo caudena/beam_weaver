@@ -73,7 +73,7 @@ defmodule BeamWeaver.Runnable.Config do
         metadata: metadata,
         trace: trace,
         run_name: Keyword.get(opts, :run_name, base.run_name),
-        run_id: Keyword.get(opts, :run_id, base.run_id || new_run_id()),
+        run_id: Keyword.get(opts, :run_id, base.run_id || ID.uuidv7()),
         max_concurrency: positive_int(Keyword.get(opts, :max_concurrency, base.max_concurrency)),
         recursion_limit: non_negative_int(Keyword.get(opts, :recursion_limit, base.recursion_limit)),
         configurable: configurable,
@@ -109,8 +109,9 @@ defmodule BeamWeaver.Runnable.Config do
     config = normalize(config_or_opts)
 
     config.opts
-    |> safe_provider_opts()
-    |> Map.merge(safe_configurable(config.configurable))
+    |> Keyword.drop(@known_opt_keys ++ @metadata_copy_keys)
+    |> safe_trace_metadata()
+    |> Map.merge(safe_trace_metadata(config.configurable))
     |> Map.merge(config.metadata)
     |> TraceOptions.metadata(config.trace)
   end
@@ -167,10 +168,9 @@ defmodule BeamWeaver.Runnable.Config do
 
   defp copy_top_level_configurable(configurable, opts) do
     Enum.reduce(@metadata_copy_keys, configurable, fn key, acc ->
-      case Keyword.fetch(opts, key) do
-        {:ok, nil} -> acc
-        {:ok, value} -> put_new_configurable(acc, key, value)
-        :error -> acc
+      case Keyword.get(opts, key) do
+        nil -> acc
+        value -> put_new_key(acc, key, value)
       end
     end)
   end
@@ -178,7 +178,7 @@ defmodule BeamWeaver.Runnable.Config do
   defp copy_map_top_level_configurable(configurable, map) do
     Enum.reduce(@metadata_copy_keys, configurable, fn key, acc ->
       value = Map.get(map, key) || Map.get(map, to_string(key))
-      if is_nil(value), do: acc, else: put_new_configurable(acc, key, value)
+      if is_nil(value), do: acc, else: put_new_key(acc, key, value)
     end)
   end
 
@@ -186,7 +186,7 @@ defmodule BeamWeaver.Runnable.Config do
     Enum.reduce(@metadata_copy_keys, metadata, fn key, acc ->
       case fetch_configurable(configurable, key) do
         nil -> acc
-        value -> put_new_metadata(acc, key, value)
+        value -> put_new_key(acc, key, value)
       end
     end)
   end
@@ -201,42 +201,16 @@ defmodule BeamWeaver.Runnable.Config do
     Map.get(configurable, key) || Map.get(configurable, to_string(key))
   end
 
-  defp put_new_configurable(configurable, key, value) do
-    cond do
-      Map.has_key?(configurable, key) -> configurable
-      Map.has_key?(configurable, to_string(key)) -> configurable
-      true -> Map.put(configurable, key, value)
-    end
+  defp put_new_key(map, key, value) do
+    if Map.has_key?(map, key) or Map.has_key?(map, to_string(key)), do: map, else: Map.put(map, key, value)
   end
 
-  defp put_new_metadata(metadata, key, value) do
-    cond do
-      Map.has_key?(metadata, key) -> metadata
-      Map.has_key?(metadata, to_string(key)) -> metadata
-      true -> Map.put(metadata, key, value)
-    end
-  end
-
-  defp safe_provider_opts(opts) when is_list(opts) do
-    opts
-    |> Keyword.drop(@known_opt_keys ++ @metadata_copy_keys)
-    |> Enum.reduce(%{}, fn {key, value}, acc ->
-      if trace_metadata_key?(key) and trace_metadata_value?(value) do
-        Map.put(acc, key, value)
-      else
-        acc
-      end
-    end)
-  end
-
-  defp safe_configurable(configurable) do
-    Enum.reduce(configurable, %{}, fn {key, value}, acc ->
-      if trace_metadata_key?(key) and trace_metadata_value?(value) do
-        Map.put(acc, key, value)
-      else
-        acc
-      end
-    end)
+  defp safe_trace_metadata(entries) do
+    for {key, value} <- entries,
+        trace_metadata_key?(key),
+        not is_nil(value) and (is_binary(value) or is_number(value) or is_atom(value)),
+        into: %{},
+        do: {key, value}
   end
 
   defp trace_metadata_key?(key) do
@@ -244,19 +218,8 @@ defmodule BeamWeaver.Runnable.Config do
     not String.contains?(key, "api_key") and not String.starts_with?(key, "__")
   end
 
-  defp trace_metadata_value?(nil), do: false
-  defp trace_metadata_value?(value) when is_binary(value), do: true
-  defp trace_metadata_value?(value) when is_number(value), do: true
-  defp trace_metadata_value?(value) when is_boolean(value), do: true
-  defp trace_metadata_value?(value) when is_atom(value), do: true
-  defp trace_metadata_value?(_value), do: false
-
   defp positive_int(value) when is_integer(value) and value > 0, do: value
   defp positive_int(_value), do: 1
   defp non_negative_int(value) when is_integer(value) and value >= 0, do: value
   defp non_negative_int(_value), do: 25
-
-  defp new_run_id do
-    ID.uuidv7()
-  end
 end

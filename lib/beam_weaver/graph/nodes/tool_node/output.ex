@@ -8,6 +8,7 @@ defmodule BeamWeaver.Graph.Nodes.ToolNode.Output do
   alias BeamWeaver.Core.ToolResult
   alias BeamWeaver.Graph.Command
   alias BeamWeaver.Graph.Messages.Remove
+  alias BeamWeaver.Result
 
   @spec normalize(term(), map()) :: {:ok, term()} | {:error, Error.t()}
   def normalize(%Command{} = command, call),
@@ -47,12 +48,9 @@ defmodule BeamWeaver.Graph.Nodes.ToolNode.Output do
       |> command_outputs()
       |> put_usage(usage)
     else
-      if match?({:state, _key}, output_shape) do
-        {:state, key} = output_shape
-        output = %{key => results}
-        if usage == Usage.new(), do: output, else: Map.put(output, :usage, usage)
-      else
-        results
+      case output_shape do
+        {:state, key} -> if usage == Usage.new(), do: %{key => results}, else: %{key => results, usage: usage}
+        :list -> results
       end
     end
   end
@@ -77,22 +75,10 @@ defmodule BeamWeaver.Graph.Nodes.ToolNode.Output do
   end
 
   defp normalize_tool_output_items(outputs, call) do
-    Enum.reduce_while(outputs, {:ok, []}, fn output, {:ok, acc} ->
-      normalized =
-        case output do
-          %Command{} = command -> validate_tool_command(command, call, false)
-          %Message{} = message -> normalize_tool_message(message, call)
-        end
-
-      case normalized do
-        {:ok, output} -> {:cont, {:ok, [output | acc]}}
-        {:error, %Error{} = error} -> {:halt, {:error, error}}
-      end
+    Result.traverse(outputs, fn
+      %Command{} = command -> validate_tool_command(command, call, false)
+      %Message{} = message -> normalize_tool_message(message, call)
     end)
-    |> case do
-      {:ok, outputs} -> {:ok, Enum.reverse(outputs)}
-      {:error, %Error{} = error} -> {:error, error}
-    end
   end
 
   defp validate_tool_command(%Command{} = command, call, require_terminator \\ true) do
@@ -147,29 +133,21 @@ defmodule BeamWeaver.Graph.Nodes.ToolNode.Output do
   end
 
   defp normalize_command_message_list(messages, call) do
-    Enum.reduce_while(messages, {:ok, []}, fn
-      %Message{} = message, {:ok, acc} ->
-        case normalize_tool_message(message, call) do
-          {:ok, message} -> {:cont, {:ok, [message | acc]}}
-          {:error, %Error{} = error} -> {:halt, {:error, error}}
-        end
+    Result.traverse(messages, fn
+      %Message{} = message ->
+        normalize_tool_message(message, call)
 
-      %Remove{} = remove, {:ok, acc} ->
-        {:cont, {:ok, [remove | acc]}}
+      %Remove{} = remove ->
+        {:ok, remove}
 
-      message, {:ok, _acc} ->
-        {:halt,
-         {:error,
-          Error.new(:invalid_tool_command, "tool command messages must be tool messages", %{
-            tool: call.name,
-            tool_call_id: call.id,
-            message: inspect(message)
-          })}}
+      message ->
+        {:error,
+         Error.new(:invalid_tool_command, "tool command messages must be tool messages", %{
+           tool: call.name,
+           tool_call_id: call.id,
+           message: inspect(message)
+         })}
     end)
-    |> case do
-      {:ok, messages} -> {:ok, Enum.reverse(messages)}
-      {:error, %Error{} = error} -> {:error, error}
-    end
   end
 
   defp validate_single_terminating_message(outputs, call) do
@@ -229,7 +207,7 @@ defmodule BeamWeaver.Graph.Nodes.ToolNode.Output do
     metadata =
       result.metadata
       |> Map.put(:status, tool_status(result.status))
-      |> maybe_put_artifact(result.artifact)
+      |> BeamWeaver.MapShape.put_present(:artifact, result.artifact)
 
     Message.tool(format(result.content),
       tool_call_id: call.id,
@@ -239,11 +217,7 @@ defmodule BeamWeaver.Graph.Nodes.ToolNode.Output do
   end
 
   defp tool_status(status) when is_atom(status), do: Atom.to_string(status)
-  defp tool_status(status) when is_binary(status), do: status
   defp tool_status(status), do: to_string(status)
-
-  defp maybe_put_artifact(metadata, nil), do: metadata
-  defp maybe_put_artifact(metadata, artifact), do: Map.put(metadata, :artifact, artifact)
 
   defp mark_return_direct(%Message{metadata: %{status: "error"}} = message), do: message
 

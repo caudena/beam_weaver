@@ -8,6 +8,7 @@ defmodule BeamWeaver.Transport.Cassette do
   """
 
   alias BeamWeaver.Transport.Error
+  alias BeamWeaver.Transport.Redactor
   alias BeamWeaver.Transport.Request
   alias BeamWeaver.Transport.Response
 
@@ -95,7 +96,7 @@ defmodule BeamWeaver.Transport.Cassette do
 
     case documents do
       [document] ->
-        {:ok, normalize_yaml(document)}
+        {:ok, BeamWeaver.Prompt.Loader.Codec.normalize_yaml(document)}
 
       _other ->
         {:error, Error.new(:invalid_cassette, "cassette must contain exactly one YAML document")}
@@ -151,11 +152,8 @@ defmodule BeamWeaver.Transport.Cassette do
   end
 
   defp matches?(cassette_request, request) do
-    method_matches? = cassette_request.method == request.method
-    url_matches? = is_nil(cassette_request.url) or cassette_request.url == request.url
-    body_matches? = body_matches?(cassette_request, request)
-
-    method_matches? and url_matches? and body_matches?
+    cassette_request.method == request.method and (is_nil(cassette_request.url) or cassette_request.url == request.url) and
+      body_matches?(cassette_request, request)
   end
 
   defp body_matches?(%{json_body: nil, body: nil}, %{body: nil}), do: true
@@ -167,25 +165,11 @@ defmodule BeamWeaver.Transport.Cassette do
   defp body_matches?(_cassette_request, _request), do: false
 
   defp mismatch_error(cassette, request) do
-    expected =
-      cassette.interactions
-      |> Enum.map(& &1.request)
-      |> Enum.map(&redacted_request/1)
-
     Error.new(:cassette_mismatch, "no matching cassette interaction", %{
       cassette: cassette.path,
-      request: redacted_request(request),
-      expected: expected
+      request: Redactor.redact(request),
+      expected: Enum.map(cassette.interactions, &Redactor.redact(&1.request))
     })
-  end
-
-  defp redacted_request(request) do
-    %{
-      method: request.method,
-      url: BeamWeaver.Transport.Redactor.redact(request.url),
-      json_body: BeamWeaver.Transport.Redactor.redact(request.json_body),
-      body: BeamWeaver.Transport.Redactor.redact(request.body)
-    }
   end
 
   defp canonical_json(nil), do: nil
@@ -199,18 +183,4 @@ defmodule BeamWeaver.Transport.Cassette do
 
   defp wildcard_redacted("**REDACTED**"), do: nil
   defp wildcard_redacted(value), do: value
-
-  # Strings come back as binaries and mappings as maps, so an empty string, an
-  # empty list and a list of integers each keep their type.
-  defp normalize_yaml(value) when is_map(value),
-    do: Map.new(value, fn {key, map_value} -> {to_string(key), normalize_yaml(map_value)} end)
-
-  defp normalize_yaml(value) when is_list(value), do: Enum.map(value, &normalize_yaml/1)
-  defp normalize_yaml(value) when is_binary(value), do: value
-  defp normalize_yaml(value) when is_integer(value), do: value
-  defp normalize_yaml(value) when is_float(value), do: value
-  defp normalize_yaml(true), do: true
-  defp normalize_yaml(false), do: false
-  defp normalize_yaml(:null), do: nil
-  defp normalize_yaml(value) when is_atom(value), do: to_string(value)
 end

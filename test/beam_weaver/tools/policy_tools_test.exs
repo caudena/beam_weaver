@@ -11,8 +11,6 @@ end
 defmodule BeamWeaver.Tools.PolicyToolsTest do
   use ExUnit.Case, async: true
 
-  # Upstream reference:
-
   alias BeamWeaver.Agent.Middleware.ShellTool
   alias BeamWeaver.Core.Document
   alias BeamWeaver.Core.Message
@@ -44,7 +42,6 @@ defmodule BeamWeaver.Tools.PolicyToolsTest do
   end
 
   test "shell policy validates execution controls" do
-    # Upstream reference:
     assert {:error,
             %{
               type: :invalid_shell_policy,
@@ -266,11 +263,8 @@ defmodule BeamWeaver.Tools.PolicyToolsTest do
     assert msg.content =~ "ok"
   end
 
-  test "shell host executor applies cwd env timeout and output truncation" do
-    tmp = Path.join(System.tmp_dir!(), "beam_weaver_shell_#{System.unique_integer([:positive])}")
-    File.mkdir_p!(tmp)
-    on_exit(fn -> File.rm_rf(tmp) end)
-
+  @tag :tmp_dir
+  test "shell host executor applies cwd env timeout and output truncation", %{tmp_dir: tmp} do
     File.write!(Path.join(tmp, "marker.txt"), "from-cwd")
 
     shell =
@@ -374,12 +368,8 @@ defmodule BeamWeaver.Tools.PolicyToolsTest do
     assert output == "abcdefghijklmnopqrstuvwxyzabcdefghijklmn\n[truncated]"
   end
 
-  test "shell middleware owns a persistent session with startup restart and shutdown" do
-    tmp =
-      Path.join(System.tmp_dir!(), "beam_weaver_shell_mw_#{System.unique_integer([:positive])}")
-
-    File.mkdir_p!(tmp)
-    on_exit(fn -> File.rm_rf(tmp) end)
+  @tag :tmp_dir
+  test "shell middleware owns a persistent session with startup restart and shutdown", %{tmp_dir: tmp} do
     expected_suffix = Path.join(Path.basename(tmp), "nested")
 
     middleware =
@@ -538,16 +528,10 @@ defmodule BeamWeaver.Tools.PolicyToolsTest do
     assert result.metadata == %{path: "a.md"}
   end
 
-  test "filesystem file search applies path policy include exclude hidden and snippets" do
-    root =
-      Path.join(
-        System.tmp_dir!(),
-        "beam_weaver_file_search_#{System.unique_integer([:positive])}"
-      )
-
+  @tag :tmp_dir
+  test "filesystem file search applies path policy include exclude hidden and snippets", %{tmp_dir: root} do
     File.mkdir_p!(Path.join(root, "docs"))
     File.mkdir_p!(Path.join(root, ".hidden"))
-    on_exit(fn -> File.rm_rf(root) end)
 
     File.write!(
       Path.join(root, "docs/a.md"),
@@ -573,15 +557,9 @@ defmodule BeamWeaver.Tools.PolicyToolsTest do
     assert result.metadata.source == "filesystem"
   end
 
-  test "filesystem file search supports hidden files and per-call result limits" do
-    root =
-      Path.join(
-        System.tmp_dir!(),
-        "beam_weaver_hidden_search_#{System.unique_integer([:positive])}"
-      )
-
+  @tag :tmp_dir
+  test "filesystem file search supports hidden files and per-call result limits", %{tmp_dir: root} do
     File.mkdir_p!(Path.join(root, ".notes"))
-    on_exit(fn -> File.rm_rf(root) end)
 
     File.write!(Path.join(root, "a.md"), "needle one")
     File.write!(Path.join(root, "b.md"), "needle two")
@@ -598,16 +576,8 @@ defmodule BeamWeaver.Tools.PolicyToolsTest do
     assert one.metadata.relative_path == ".notes/c.md"
   end
 
-  test "filesystem file search returns tagged errors for invalid policy and input" do
-    root =
-      Path.join(
-        System.tmp_dir!(),
-        "beam_weaver_invalid_search_#{System.unique_integer([:positive])}"
-      )
-
-    File.mkdir_p!(root)
-    on_exit(fn -> File.rm_rf(root) end)
-
+  @tag :tmp_dir
+  test "filesystem file search returns tagged errors for invalid policy and input", %{tmp_dir: root} do
     tool = FileSearch.new(roots: [root], include: ["../*.md"])
 
     assert {:error, %{type: :invalid_file_search_pattern}} =
@@ -627,23 +597,12 @@ defmodule BeamWeaver.Tools.PolicyToolsTest do
              Tool.invoke(missing, %{"query" => "needle"})
   end
 
-  test "filesystem file search is literal case-insensitive and does not follow symlinks" do
-    root =
-      Path.join(
-        System.tmp_dir!(),
-        "beam_weaver_literal_search_#{System.unique_integer([:positive])}"
-      )
-
-    outside =
-      Path.join(
-        System.tmp_dir!(),
-        "beam_weaver_literal_outside_#{System.unique_integer([:positive])}"
-      )
-
+  @tag :tmp_dir
+  test "filesystem file search is literal case-insensitive and does not follow symlinks", %{tmp_dir: tmp_dir} do
+    root = Path.join(tmp_dir, "root")
+    outside = Path.join(tmp_dir, "outside")
     File.mkdir_p!(root)
     File.mkdir_p!(outside)
-    on_exit(fn -> File.rm_rf(root) end)
-    on_exit(fn -> File.rm_rf(outside) end)
 
     File.write!(Path.join(root, "notes.md"), "Needle .* [literal] content")
     File.write!(Path.join(outside, "secret.md"), "Needle outside")
@@ -662,16 +621,8 @@ defmodule BeamWeaver.Tools.PolicyToolsTest do
              Tool.invoke(tilde, %{"query" => "needle"})
   end
 
-  test "filesystem file search expands brace include patterns" do
-    root =
-      Path.join(
-        System.tmp_dir!(),
-        "beam_weaver_brace_search_#{System.unique_integer([:positive])}"
-      )
-
-    File.mkdir_p!(root)
-    on_exit(fn -> File.rm_rf(root) end)
-
+  @tag :tmp_dir
+  test "filesystem file search expands brace include patterns", %{tmp_dir: root} do
     File.write!(Path.join(root, "test.py"), "needle")
     File.write!(Path.join(root, "test.txt"), "needle")
     File.write!(Path.join(root, "test.md"), "needle")
@@ -691,16 +642,8 @@ defmodule BeamWeaver.Tools.PolicyToolsTest do
              Tool.invoke(invalid, %{"query" => "needle"})
   end
 
-  test "filesystem file search can order results by mtime descending" do
-    root =
-      Path.join(
-        System.tmp_dir!(),
-        "beam_weaver_mtime_search_#{System.unique_integer([:positive])}"
-      )
-
-    File.mkdir_p!(root)
-    on_exit(fn -> File.rm_rf(root) end)
-
+  @tag :tmp_dir
+  test "filesystem file search can order results by mtime descending", %{tmp_dir: root} do
     oldest = Path.join(root, "a_oldest.txt")
     middle = Path.join(root, "b_middle.txt")
     newest = Path.join(root, "c_newest.txt")
@@ -721,16 +664,8 @@ defmodule BeamWeaver.Tools.PolicyToolsTest do
            ]
   end
 
-  test "filesystem file search supports regex count mode and invalid regex errors" do
-    root =
-      Path.join(
-        System.tmp_dir!(),
-        "beam_weaver_regex_search_#{System.unique_integer([:positive])}"
-      )
-
-    File.mkdir_p!(root)
-    on_exit(fn -> File.rm_rf(root) end)
-
+  @tag :tmp_dir
+  test "filesystem file search supports regex count mode and invalid regex errors", %{tmp_dir: root} do
     File.write!(Path.join(root, "test.py"), "hello\nhello\nworld\n")
 
     tool = FileSearch.new(roots: [root], include: ["*.py"], query_mode: :regex)
@@ -748,16 +683,8 @@ defmodule BeamWeaver.Tools.PolicyToolsTest do
              Tool.invoke(tool, %{"query" => "[invalid"})
   end
 
-  test "filesystem file search skips files larger than the configured limit" do
-    root =
-      Path.join(
-        System.tmp_dir!(),
-        "beam_weaver_large_search_#{System.unique_integer([:positive])}"
-      )
-
-    File.mkdir_p!(root)
-    on_exit(fn -> File.rm_rf(root) end)
-
+  @tag :tmp_dir
+  test "filesystem file search skips files larger than the configured limit", %{tmp_dir: root} do
     File.write!(Path.join(root, "large.txt"), String.duplicate("x", 2 * 1024 * 1024))
     File.write!(Path.join(root, "small.txt"), "x")
 

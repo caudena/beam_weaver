@@ -10,16 +10,12 @@ defmodule BeamWeaver.Prompt.Loader.Codec do
   def decode(path, contents) do
     cond do
       Path.extname(path) in @json_exts ->
-        case BeamWeaver.JSON.decode(contents) do
-          {:ok, value} ->
-            {:ok, value}
-
-          {:error, error} ->
-            {:error,
-             Error.new(:invalid_prompt_spec, "prompt JSON could not be parsed", %{
-               path: path,
-               reason: Exception.message(error)
-             })}
+        with {:error, error} <- BeamWeaver.JSON.decode(contents) do
+          {:error,
+           Error.new(:invalid_prompt_spec, "prompt JSON could not be parsed", %{
+             path: path,
+             reason: Exception.message(error)
+           })}
         end
 
       Path.extname(path) in @yaml_exts ->
@@ -30,7 +26,7 @@ defmodule BeamWeaver.Prompt.Loader.Codec do
     end
   end
 
-  def encode(path, value, _opts) do
+  def encode(path, value) do
     cond do
       Path.extname(path) in @json_exts and Path.extname(resolve_existing_path(path)) in @json_exts ->
         {:ok, BeamWeaver.JSON.encode!(value, pretty: true)}
@@ -77,7 +73,7 @@ defmodule BeamWeaver.Prompt.Loader.Codec do
      })}
   end
 
-  def resolve_existing_path(path) do
+  defp resolve_existing_path(path) do
     case File.lstat(path) do
       {:ok, %File.Stat{type: :symlink}} ->
         case File.read_link(path) do
@@ -174,19 +170,18 @@ defmodule BeamWeaver.Prompt.Loader.Codec do
     if Regex.match?(~r/\A[A-Za-z_][A-Za-z0-9_]*\z/, key), do: key, else: yaml_scalar(key)
   end
 
-  defp normalize_yaml(value) when is_map(value) do
+  def normalize_yaml(value) when is_map(value) do
     Map.new(value, fn {key, map_value} -> {Kernel.to_string(key), normalize_yaml(map_value)} end)
   end
 
-  defp normalize_yaml(value) when is_list(value), do: Enum.map(value, &normalize_yaml/1)
-  defp normalize_yaml(value) when is_binary(value), do: value
-  defp normalize_yaml(value) when is_integer(value), do: value
-  defp normalize_yaml(value) when is_float(value), do: value
-  defp normalize_yaml(true), do: true
-  defp normalize_yaml(false), do: false
-  defp normalize_yaml(:null), do: nil
-  defp normalize_yaml(value) when is_atom(value), do: Kernel.to_string(value)
+  def normalize_yaml(value) when is_list(value), do: Enum.map(value, &normalize_yaml/1)
+  def normalize_yaml(value) when is_binary(value), do: value
+  def normalize_yaml(value) when is_integer(value), do: value
+  def normalize_yaml(value) when is_float(value), do: value
+  def normalize_yaml(true), do: true
+  def normalize_yaml(false), do: false
+  def normalize_yaml(:null), do: nil
+  def normalize_yaml(value) when is_atom(value), do: Kernel.to_string(value)
 
-  defp spaces(0), do: ""
   defp spaces(count), do: String.duplicate(" ", count)
 end

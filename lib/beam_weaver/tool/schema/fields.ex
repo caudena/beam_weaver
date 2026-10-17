@@ -5,6 +5,8 @@ defmodule BeamWeaver.Tool.Schema.Fields do
 
   alias BeamWeaver.Core.Error
 
+  @ecto_types ~w(integer id binary_id float decimal boolean map binary utc_datetime naive_datetime date time)a
+
   def from_fields(fields) when is_list(fields) do
     {properties, required} =
       fields
@@ -13,8 +15,8 @@ defmodule BeamWeaver.Tool.Schema.Fields do
         schema =
           type
           |> type_schema()
-          |> put_description(opts)
-          |> put_enum(opts)
+          |> put_present(:description, Keyword.get(opts, :description))
+          |> put_present(:enum, Keyword.get(opts, :enum))
           |> put_default(opts)
           |> put_nullable(opts)
           |> put_nested(opts)
@@ -93,47 +95,26 @@ defmodule BeamWeaver.Tool.Schema.Fields do
   def type_schema(type) when is_binary(type), do: %{type: type}
   def type_schema(_type), do: %{}
 
-  def normalize_key(key) when is_atom(key), do: key
-  def normalize_key(key) when is_binary(key), do: key
-
-  def stringify_schema(map) when is_map(map) do
-    BeamWeaver.MapShape.stringify_keys(map)
-  end
+  defp normalize_key(key) when is_atom(key) or is_binary(key), do: key
 
   def from_nimble_options(opts) when is_list(opts) do
     fields =
-      Enum.map(opts, fn
-        {name, spec} when is_list(spec) ->
-          type = Keyword.get(spec, :type, :any)
+      Enum.map(opts, fn {name, spec} ->
+        field_opts =
+          []
+          |> put_present(:description, Keyword.get(spec, :doc) || Keyword.get(spec, :description))
+          |> put_present(:required, Keyword.get(spec, :required, false))
+          |> put_present(:default, Keyword.get(spec, :default))
+          |> put_present(:enum, Keyword.get(spec, :values) || Keyword.get(spec, :enum))
 
-          field_opts =
-            []
-            |> maybe_keyword(
-              :description,
-              Keyword.get(spec, :doc) || Keyword.get(spec, :description)
-            )
-            |> maybe_keyword(:required, Keyword.get(spec, :required, false))
-            |> maybe_keyword(:default, Keyword.get(spec, :default))
-            |> maybe_keyword(:enum, Keyword.get(spec, :values) || Keyword.get(spec, :enum))
-
-          {name, type, field_opts}
-
-        other ->
-          throw({:invalid_nimble_option, other})
+        {name, Keyword.get(spec, :type, :any), field_opts}
       end)
 
     {:ok, from_fields(fields)}
-  catch
-    {:invalid_nimble_option, invalid} ->
-      {:error,
-       Error.new(:invalid_tool_schema, "NimbleOptions schema entries must be {name, opts}", %{
-         entry: inspect(invalid)
-       })}
   end
 
   def from_ecto_schema(module) when is_atom(module) do
-    with true <- Code.ensure_loaded?(module),
-         true <- function_exported?(module, :__schema__, 1),
+    with true <- BeamWeaver.Behaviour.exported?(module, :__schema__, 1),
          fields when is_list(fields) <- module.__schema__(:fields) do
       fields =
         Enum.map(fields, fn field ->
@@ -151,36 +132,10 @@ defmodule BeamWeaver.Tool.Schema.Fields do
   end
 
   defp ecto_type({:array, type}), do: {:array, ecto_type(type)}
-  defp ecto_type(:integer), do: :integer
-  defp ecto_type(:id), do: :id
-  defp ecto_type(:binary_id), do: :binary_id
-  defp ecto_type(:float), do: :float
-  defp ecto_type(:decimal), do: :decimal
-  defp ecto_type(:boolean), do: :boolean
-  defp ecto_type(:map), do: :map
-  defp ecto_type(:binary), do: :binary
-  defp ecto_type(:utc_datetime), do: :utc_datetime
-  defp ecto_type(:naive_datetime), do: :naive_datetime
-  defp ecto_type(:date), do: :date
-  defp ecto_type(:time), do: :time
+
+  defp ecto_type(type) when type in @ecto_types, do: type
+
   defp ecto_type(_type), do: :string
-
-  defp maybe_keyword(opts, _key, nil), do: opts
-  defp maybe_keyword(opts, key, value), do: Keyword.put(opts, key, value)
-
-  defp put_description(schema, opts) do
-    case Keyword.get(opts, :description) do
-      nil -> schema
-      description -> Map.put(schema, :description, description)
-    end
-  end
-
-  defp put_enum(schema, opts) do
-    case Keyword.get(opts, :enum) do
-      nil -> schema
-      values -> Map.put(schema, :enum, values)
-    end
-  end
 
   defp put_default(schema, opts) do
     if Keyword.has_key?(opts, :default),

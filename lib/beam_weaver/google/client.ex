@@ -12,9 +12,12 @@ defmodule BeamWeaver.Google.Client do
   alias BeamWeaver.Provider.Options, as: ProviderOptions
   alias BeamWeaver.Provider.ResponseDecoder
   alias BeamWeaver.Transport.Request
-  alias BeamWeaver.Transport.Response
 
   @default_base_url "https://generativelanguage.googleapis.com/v1beta"
+  @header_opts [
+    header_fields: [x_gemini_service_tier: "x-gemini-service-tier"],
+    header_summary: [service_tier: :x_gemini_service_tier]
+  ]
 
   defstruct base_url: @default_base_url,
             api_key: nil,
@@ -52,7 +55,7 @@ defmodule BeamWeaver.Google.Client do
     client
     |> http(model, :count_tokens, opts)
     |> HTTPClient.post_json(body, opts)
-    |> decode_result(Keyword.put(opts, :decode_response_headers, false))
+    |> ResponseDecoder.json(decoder_opts(opts))
   end
 
   @spec stream_text(t(), String.t(), map(), keyword()) :: {:ok, Enumerable.t()} | {:error, Error.t()}
@@ -119,22 +122,12 @@ defmodule BeamWeaver.Google.Client do
     }
   end
 
-  defp decode_result(result, opts) do
-    with {:ok, decoded} <- ResponseDecoder.json(result, decoder_opts(opts)) do
-      case {result, Keyword.get(opts, :decode_response_headers, true)} do
-        {{:ok, %Response{headers: headers}}, true} -> {:ok, attach_header_metadata(decoded, headers)}
-        _other -> {:ok, decoded}
-      end
-    end
-  end
+  defp decode_result(result, opts), do: ResponseDecoder.json(result, @header_opts ++ decoder_opts(opts))
 
   defp decode_sse_result(result, opts) do
     ResponseDecoder.decode(result, decoder_opts(opts), fn response ->
-      decoded = response.body |> Streaming.response_from_sse_body() |> attach_header_metadata(response.headers)
-
-      if Keyword.get(opts, :include_response_headers, false),
-        do: {:ok, Map.put(decoded, "_beamweaver_response_headers", Map.new(response.headers))},
-        else: {:ok, decoded}
+      decoded = Streaming.response_from_sse_body(response.body)
+      {:ok, ResponseDecoder.attach_headers(decoded, response, @header_opts ++ decoder_opts(opts))}
     end)
   end
 
@@ -153,15 +146,6 @@ defmodule BeamWeaver.Google.Client do
   defp error_type(_status, provider_error, _message) do
     reasons = for %{"reason" => reason} <- List.wrap(ResponseDecoder.error_field(provider_error, "details")), do: reason
     if Enum.any?(reasons, &(&1 in ["API_KEY_INVALID", "API_KEY_EXPIRED"])), do: :authentication
-  end
-
-  defp attach_header_metadata(decoded, headers) do
-    metadata =
-      ResponseDecoder.header_metadata(headers, [x_gemini_service_tier: "x-gemini-service-tier"],
-        service_tier: :x_gemini_service_tier
-      )
-
-    ResponseDecoder.attach_header_metadata(decoded, metadata)
   end
 
   # Gemini says a prompt is too long with a 400 (`INVALID_ARGUMENT`); a 429

@@ -1,8 +1,6 @@
 defmodule BeamWeaver.Agent.HumanInTheLoopTest do
   use ExUnit.Case, async: true
 
-  # Upstream reference:
-
   alias BeamWeaver.Agent.HITL
   alias BeamWeaver.Agent.Middleware.HumanInTheLoop
   alias BeamWeaver.Agent.Middleware.HumanInTheLoop.Decision

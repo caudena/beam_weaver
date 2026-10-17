@@ -1,30 +1,27 @@
 defmodule BeamWeaver.OutputParser.OpenAI do
   @moduledoc false
 
+  import BeamWeaver.OutputParser.Parser, only: [parser_error: 2, parser_error: 3]
+
   alias BeamWeaver.Core.Error
   alias BeamWeaver.Core.Message
   alias BeamWeaver.Core.Messages
+  alias BeamWeaver.MapAccess
   alias BeamWeaver.OutputParser.JSON
   alias BeamWeaver.OutputParser.Schema
   alias BeamWeaver.Result
 
   @spec parse_tools(term(), keyword() | map()) ::
           {:ok, [map()] | map() | nil} | {:error, Error.t()}
-  def parse_tools(input, opts \\ []) do
-    opts = if is_map(opts), do: opts, else: Map.new(opts)
+  def parse_tools(input, opts) do
+    opts = Map.new(opts)
 
-    input
-    |> extract_tool_calls()
-    |> case do
-      {:ok, calls} ->
-        calls
-        |> Enum.map(&normalize_tool_call(&1, opts))
-        |> Enum.reject(&is_nil/1)
-        |> filter_tool_calls(opts)
-        |> project_tool_calls(opts)
-
-      {:error, %Error{} = error} ->
-        {:error, error}
+    with {:ok, calls} <- extract_tool_calls(input) do
+      calls
+      |> Enum.map(&normalize_tool_call(&1, opts))
+      |> Enum.reject(&is_nil/1)
+      |> filter_tool_calls(opts)
+      |> project_tool_calls(opts)
     end
   end
 
@@ -38,55 +35,29 @@ defmodule BeamWeaver.OutputParser.OpenAI do
         |> Stream.transform({nil, nil}, fn chunk, {acc, last_key} ->
           acc = Messages.MessageChunk.merge(acc, chunk)
 
-          emitted =
+          parsed =
             case parse_tools(acc, parser) do
-              {:ok, parsed} ->
-                key = :erlang.term_to_binary(parsed)
-
-                if key == last_key do
-                  []
-                else
-                  [parsed]
-                end
-
-              {:error, %Error{details: %{parser: :openai_tools_parser}}} ->
-                key = :erlang.term_to_binary([])
-
-                if key == last_key do
-                  []
-                else
-                  [[]]
-                end
-
-              {:error, _error} ->
-                []
+              {:ok, parsed} -> [parsed]
+              {:error, %Error{details: %{parser: :openai_tools_parser}}} -> [[]]
+              {:error, _error} -> []
             end
 
-          next_key =
-            case emitted do
-              [] -> last_key
-              [value] -> :erlang.term_to_binary(value)
-            end
-
-          {emitted, {acc, next_key}}
+          case Enum.map(parsed, &{&1, :erlang.term_to_binary(&1)}) do
+            [{value, key}] when key != last_key -> {[value], {acc, key}}
+            _unchanged -> {[], {acc, last_key}}
+          end
         end)
 
       {:ok, stream}
     else
-      case parse_tools(input, parser) do
-        {:ok, value} -> {:ok, [value]}
-        {:error, error} -> {:error, error}
-      end
+      with {:ok, value} <- parse_tools(input, parser), do: {:ok, [value]}
     end
   end
 
   @spec parse_functions(term(), keyword() | map()) ::
           {:ok, map() | [map()] | nil} | {:error, Error.t()}
-  def parse_functions(input, opts \\ []) do
-    opts =
-      opts
-      |> then(fn opts -> if is_map(opts), do: opts, else: Map.new(opts) end)
-      |> Map.put_new(:error_on_invalid_args, true)
+  def parse_functions(input, opts) do
+    opts = opts |> Map.new() |> Map.put_new(:error_on_invalid_args, true)
 
     with {:ok, calls} <- extract_function_calls(input) do
       calls =
@@ -94,12 +65,15 @@ defmodule BeamWeaver.OutputParser.OpenAI do
         |> Enum.map(&normalize_tool_call(&1, opts))
         |> Enum.reject(&is_nil/1)
 
-      if calls == [] and Map.get(opts, :required, true) do
-        parser_error(:openai_functions_parser, "input did not contain OpenAI function calls")
-      else
-        calls
-        |> project_function_calls(opts)
-        |> project_first_function_call(opts)
+      cond do
+        calls == [] and Map.get(opts, :required, true) ->
+          parser_error(:openai_functions_parser, "input did not contain OpenAI function calls")
+
+        Map.get(opts, :first_only, true) ->
+          with {:ok, calls} <- project_function_calls(calls, opts), do: {:ok, List.first(calls)}
+
+        true ->
+          project_function_calls(calls, opts)
       end
     end
   end
@@ -149,18 +123,8 @@ defmodule BeamWeaver.OutputParser.OpenAI do
   end
 
   defp normalize_tool_call(call, opts) when is_map(call) do
-    function = BeamWeaver.MapAccess.get(call, :function, %{})
-
-    args =
-      first_present(call, [:args, "args", :arguments, "arguments"])
-      |> case do
-        :__beam_weaver_missing__ -> first_present(function, [:arguments, "arguments"])
-        value -> value
-      end
-      |> case do
-        :__beam_weaver_missing__ -> %{}
-        value -> value
-      end
+    function = MapAccess.get(call, :function, %{})
+    args = MapAccess.first(call, [:args, :arguments], MapAccess.first(function, [:arguments], %{}))
 
     if Map.get(opts, :partial, false) and is_nil(args) do
       nil
@@ -173,27 +137,13 @@ defmodule BeamWeaver.OutputParser.OpenAI do
         end
 
       base = %{
-        id:
-          BeamWeaver.MapAccess.get(call, :call_id) ||
-            BeamWeaver.MapAccess.get(call, :id),
-        name:
-          BeamWeaver.MapAccess.get(call, :name) ||
-            BeamWeaver.MapAccess.get(function, :name),
+        id: MapAccess.get(call, :call_id) || MapAccess.get(call, :id),
+        name: MapAccess.get(call, :name) || MapAccess.get(function, :name),
         args: decoded
       }
 
       if Map.get(opts, :return_id, false), do: base, else: Map.delete(base, :id)
     end
-  end
-
-  defp first_present(map, keys) do
-    Enum.reduce_while(keys, :__beam_weaver_missing__, fn key, :__beam_weaver_missing__ ->
-      if Map.has_key?(map, key) do
-        {:halt, Map.get(map, key)}
-      else
-        {:cont, :__beam_weaver_missing__}
-      end
-    end)
   end
 
   defp mark_legacy_function_call(call) when is_map(call),
@@ -212,7 +162,6 @@ defmodule BeamWeaver.OutputParser.OpenAI do
     end
   end
 
-  defp decode_args(nil, _partial, _strict), do: %{}
   defp decode_args(_args, _partial, _strict), do: %{}
 
   defp decode_repaired_function_args(args, partial) do
@@ -297,9 +246,7 @@ defmodule BeamWeaver.OutputParser.OpenAI do
     {:ok, calls}
   end
 
-  defp project_function_calls(calls, opts) do
-    Result.traverse(calls, &project_function_call(&1, opts))
-  end
+  defp project_function_calls(calls, opts), do: Result.traverse(calls, &project_function_call(&1, opts))
 
   defp project_function_call(%{args: %Messages.InvalidToolCall{} = invalid}, opts) do
     if Map.get(opts, :error_on_invalid_args, false) do
@@ -404,18 +351,4 @@ defmodule BeamWeaver.OutputParser.OpenAI do
   end
 
   defp project_function_key(call, _key_name, _opts), do: {:ok, call.args}
-
-  defp project_first_function_call({:error, %Error{} = error}, _opts), do: {:error, error}
-
-  defp project_first_function_call({:ok, calls}, opts) do
-    if Map.get(opts, :first_only, true) do
-      {:ok, List.first(calls)}
-    else
-      {:ok, calls}
-    end
-  end
-
-  defp parser_error(parser, message, details \\ %{}) do
-    {:error, Error.new(:output_parser_error, message, Map.put(details, :parser, parser))}
-  end
 end

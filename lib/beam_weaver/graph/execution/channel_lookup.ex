@@ -69,9 +69,6 @@ defmodule BeamWeaver.Graph.Execution.ChannelLookup do
       channel
   end
 
-  @spec reducer_for(map(), term()) :: function() | nil
-  def reducer_for(reducers, key), do: Map.get(reducers, key) || Map.get(reducers, to_string(key))
-
   # Private keys stay out of the output; only those declared with
   # `checkpoint: true` (`:private_checkpointed`) are saved in checkpoints.
   @spec private_channel?(StateGraph.t(), term()) :: boolean()

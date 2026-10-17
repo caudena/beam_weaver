@@ -6,6 +6,7 @@ defmodule BeamWeaver.Indexing.RecordManager.ETS do
   use BeamWeaver.Indexing.RecordManager
 
   alias BeamWeaver.Indexing.Record
+  alias BeamWeaver.Indexing.RecordManager
 
   defstruct [:table, namespace: :default]
 
@@ -30,7 +31,7 @@ defmodule BeamWeaver.Indexing.RecordManager.ETS do
 
   @impl true
   def put(%__MODULE__{} = manager, %Record{} = record, opts) do
-    namespace = Keyword.get(opts, :namespace, record_namespace(manager, record.namespace))
+    namespace = Keyword.get(opts, :namespace, RecordManager.record_namespace(manager, record.namespace))
     record = %{record | namespace: namespace, updated_at: record.updated_at || DateTime.utc_now()}
     :ets.insert(manager.table, {{namespace, record.id}, record})
     :ok
@@ -39,7 +40,7 @@ defmodule BeamWeaver.Indexing.RecordManager.ETS do
   @impl true
   def list(%__MODULE__{} = manager, opts) do
     namespace = Keyword.get(opts, :namespace, manager.namespace)
-    source_ids = opts |> Keyword.get(:source_ids) |> normalize_source_ids()
+    source_ids = opts |> Keyword.get(:source_ids) |> RecordManager.normalize_source_ids()
 
     records =
       for {{^namespace, _id}, %Record{} = record} <- :ets.tab2list(manager.table),
@@ -55,12 +56,4 @@ defmodule BeamWeaver.Indexing.RecordManager.ETS do
     Enum.each(ids, &:ets.delete(manager.table, {namespace, &1}))
     :ok
   end
-
-  defp normalize_source_ids(nil), do: nil
-  defp normalize_source_ids(source_ids), do: source_ids |> List.wrap() |> Enum.map(&to_string/1)
-
-  defp record_namespace(manager, nil), do: manager.namespace
-  defp record_namespace(manager, :default), do: manager.namespace
-  defp record_namespace(manager, "default"), do: manager.namespace
-  defp record_namespace(_manager, namespace), do: namespace
 end

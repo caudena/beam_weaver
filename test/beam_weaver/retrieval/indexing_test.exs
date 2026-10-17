@@ -166,7 +166,6 @@ defmodule BeamWeaver.IndexingTest do
   end
 
   test "documents can be copied with deterministic hash ids" do
-    # Upstream reference:
     document = Document.new!("Lorem ipsum dolor sit amet", metadata: %{"key" => "value"})
 
     assert {:ok, hashed} = Indexing.with_hashed_id(document, key_encoder: :sha1)
@@ -185,7 +184,6 @@ defmodule BeamWeaver.IndexingTest do
   end
 
   test "document hash ids accept custom encoders and report bad algorithms" do
-    # Upstream reference:
     document = Document.new!("Lorem ipsum dolor sit amet", metadata: %{"key" => "like a duck"})
 
     assert {:ok, %{id: "quack-like a duck"}} =
@@ -341,7 +339,6 @@ defmodule BeamWeaver.IndexingTest do
   end
 
   test "full cleanup with force removes stale records across the namespace" do
-    # Adapts upstream full cleanup behavior to BeamWeaver's explicit force requirement.
     store = VectorETS.new(embedding: %FakeEmbeddingModel{})
     records = RecordETS.new()
 
@@ -437,7 +434,6 @@ defmodule BeamWeaver.IndexingTest do
   end
 
   test "empty full cleanup is safe and reports zero work" do
-    # Translates upstream test_indexing_with_no_docs.
     store = VectorETS.new(embedding: %FakeEmbeddingModel{})
     records = RecordETS.new()
 
@@ -450,7 +446,6 @@ defmodule BeamWeaver.IndexingTest do
   end
 
   test "within-batch duplicate documents are counted as skipped" do
-    # Translates upstream test_deduplication and test_within_batch_deduplication_counting.
     store = VectorETS.new(embedding: %FakeEmbeddingModel{})
     records = RecordETS.new()
 
@@ -522,7 +517,6 @@ defmodule BeamWeaver.IndexingTest do
   end
 
   test "record manager facade covers standard update exists list and delete" do
-    # Upstream reference:
     records = RecordETS.new(namespace: :records)
 
     assert :ok = RecordManager.update(records, ["a"], group_ids: ["s1"])

@@ -18,15 +18,7 @@ defmodule BeamWeaver.RetryPolicy do
             retry_on: :error,
             timeout: nil
 
-  @fields MapSet.new([
-            :max_attempts,
-            :initial_delay,
-            :max_delay,
-            :backoff,
-            :jitter,
-            :retry_on,
-            :timeout
-          ])
+  @fields [:max_attempts, :initial_delay, :max_delay, :backoff, :jitter, :retry_on, :timeout]
 
   @type retry_on ::
           :error
@@ -186,31 +178,20 @@ defmodule BeamWeaver.RetryPolicy do
   """
   @spec checkpoint_parent_namespace(String.t() | nil) :: String.t()
   def checkpoint_parent_namespace(nil), do: ""
-  def checkpoint_parent_namespace(""), do: ""
 
   def checkpoint_parent_namespace(namespace) when is_binary(namespace) do
     namespace
     |> String.split("|", trim: true)
     |> drop_trailing_attempt()
-    |> drop_last_segment()
+    |> Enum.drop(-1)
     |> drop_trailing_attempt()
     |> Enum.join("|")
   end
 
   defp valid_jitter?(value), do: value in [false, true] or (is_integer(value) and value >= 0)
-  defp drop_last_segment([]), do: []
-  defp drop_last_segment(segments), do: Enum.drop(segments, -1)
-
-  defp drop_trailing_attempt([]), do: []
 
   defp drop_trailing_attempt(segments) do
-    case List.last(segments) do
-      segment when is_binary(segment) ->
-        if Regex.match?(~r/^\d+$/, segment), do: Enum.drop(segments, -1), else: segments
-
-      _segment ->
-        segments
-    end
+    if Regex.match?(~r/^\d+$/, List.last(segments, "")), do: Enum.drop(segments, -1), else: segments
   end
 
   defp normalize_value(key, value) when key in [:initial_delay, :max_delay],

@@ -2,11 +2,21 @@ defmodule BeamWeaver.Graph.Execution do
   @moduledoc false
 
   alias BeamWeaver.Checkpoint
+  alias BeamWeaver.Graph.Channel
   alias BeamWeaver.Graph.Execution.ChannelLookup
-  alias BeamWeaver.Graph.Execution.ChannelVersion
-  alias BeamWeaver.Graph.Execution.Step
   alias BeamWeaver.Graph.Execution.Task, as: ExecutionTask
   alias BeamWeaver.Graph.Execution.TaskRequest
+
+  @reserved_channels [
+    "__error__",
+    "__error_source_node__",
+    "__interrupt__",
+    "__no_writes__",
+    "__push__",
+    "__resume__",
+    "__return__",
+    "__route__"
+  ]
 
   # `step_start` is the id of the checkpoint whose state the tasks of a stopped
   # step started from, when that isn't this checkpoint's own state: after
@@ -62,42 +72,32 @@ defmodule BeamWeaver.Graph.Execution do
   # own, the step merge does once every upstream node has arrived.
   @spec pending_channels(list()) :: [String.t()]
   def pending_channels(pending_writes) when is_list(pending_writes) do
-    pending_writes
-    |> Enum.flat_map(fn
-      {_task_id, channel, _value} -> triggering_channel(channel)
-      {_task_id, channel, _value, _path} -> triggering_channel(channel)
-      _other -> []
-    end)
+    for(
+      write when tuple_size(write) in [3, 4] <- pending_writes,
+      channel = to_string(elem(write, 1)),
+      not (reserved_channel?(channel) or String.starts_with?(channel, "__barrier__:")),
+      do: channel
+    )
     |> normalize_channels()
   end
 
   def pending_channels(_pending_writes), do: []
 
-  defp triggering_channel(channel) do
-    channel = to_string(channel)
-
-    if Step.reserved_channel?(channel) or String.starts_with?(channel, "__barrier__:"),
-      do: [],
-      else: [channel]
-  end
+  @spec reserved_channel?(term()) :: boolean()
+  def reserved_channel?(channel), do: to_string(channel) in @reserved_channels
 
   # The tasks that finished in a step that stopped partway: those with a write
   # other than an error or an interrupt. A finished task always has its route.
   @spec finished_task_ids(list()) :: [String.t()]
   def finished_task_ids(pending_writes) when is_list(pending_writes) do
-    pending_writes
-    |> Enum.flat_map(fn
-      {task_id, channel, _value} -> finished_task(task_id, channel)
-      {task_id, channel, _value, _path} -> finished_task(task_id, channel)
-      _other -> []
-    end)
+    for(
+      write when tuple_size(write) in [3, 4] and elem(write, 1) not in ["__error__", "__interrupt__"] <- pending_writes,
+      do: elem(write, 0)
+    )
     |> Enum.uniq()
   end
 
   def finished_task_ids(_pending_writes), do: []
-
-  defp finished_task(_task_id, channel) when channel in ["__error__", "__interrupt__"], do: []
-  defp finished_task(task_id, _channel), do: [task_id]
 
   @spec updated_channels(map() | nil) :: [String.t()]
   def updated_channels(update) when is_map(update) do
@@ -116,13 +116,19 @@ defmodule BeamWeaver.Graph.Execution do
     |> Enum.sort()
   end
 
-  @spec next_channel_versions(struct() | nil, map(), Enumerable.t()) :: map()
-  def next_channel_versions(checkpointer, previous_versions, updated_channels),
-    do: ChannelVersion.bump(checkpointer, previous_versions, updated_channels)
-
   @spec next_channel_versions(struct() | nil, map(), Enumerable.t(), map()) :: map()
-  def next_channel_versions(checkpointer, previous_versions, updated_channels, graph),
-    do: ChannelVersion.bump(checkpointer, previous_versions, updated_channels, graph)
+  def next_channel_versions(nil, previous_versions, _updated_channels, _graph),
+    do: normalize_versions(previous_versions)
+
+  def next_channel_versions(checkpointer, previous_versions, updated_channels, graph) do
+    updated_channels
+    |> normalize_channels()
+    |> Enum.reduce(normalize_versions(previous_versions), fn channel, versions ->
+      channel_struct = ChannelLookup.channel_for(graph, channel)
+      current = Map.get(versions, channel, if(channel_struct, do: Channel.null_version(channel_struct)))
+      Map.put(versions, channel, Checkpoint.next_version(checkpointer, current, channel_struct || channel))
+    end)
+  end
 
   @spec mark_versions_seen(map(), Enumerable.t(), map()) :: map()
   def mark_versions_seen(versions_seen, nodes, channel_versions) do

@@ -6,25 +6,23 @@ defmodule BeamWeaver.Prompt.Loader do
   alias BeamWeaver.Prompt.Loader.Codec
   alias BeamWeaver.Prompt.Loader.Files
 
-  def load(path, opts \\ []) do
-    path = Kernel.to_string(path)
+  def load(path) do
+    path = path |> Kernel.to_string() |> Path.expand()
 
-    with :ok <- Files.reject_hub_path(path),
-         path <- Path.expand(path),
-         {:ok, contents} <- Files.read_file(path),
+    with {:ok, contents} <- Files.read_file(path),
          {:ok, config} <- Codec.decode(path, contents) do
-      from_config(config, Keyword.put_new(opts, :base_dir, Path.dirname(path)))
+      from_config(config)
     end
   end
 
-  def load!(path, opts \\ []) do
-    case load(path, opts) do
+  def load!(path) do
+    case load(path) do
       {:ok, prompt} -> prompt
       {:error, %Error{} = error} -> raise ArgumentError, error.message
     end
   end
 
-  def from_file(path, opts \\ []) do
+  def from_file(path, opts) do
     with {:ok, template} <- Files.read_text_file(Path.expand(Kernel.to_string(path)), opts) do
       {:ok,
        Prompt.string(template,
@@ -35,12 +33,12 @@ defmodule BeamWeaver.Prompt.Loader do
     end
   end
 
-  def save(prompt, path, opts \\ []) do
+  def save(prompt, path) do
     path = Path.expand(Kernel.to_string(path))
 
     with {:ok, spec} <- Prompt.Spec.to_spec(prompt),
          {:ok, value} <- Codec.json_value(spec),
-         {:ok, encoded} <- Codec.encode(path, value, opts) do
+         {:ok, encoded} <- Codec.encode(path, value) do
       path
       |> Path.dirname()
       |> File.mkdir_p!()
@@ -59,24 +57,7 @@ defmodule BeamWeaver.Prompt.Loader do
     end
   end
 
-  def from_config(config), do: from_config(config, [])
-
-  def from_config(%{"type" => _type} = spec, _opts) do
-    build_native_spec(spec)
-  end
-
-  def from_config(config, _opts) when is_map(config) do
-    {:error,
-     Error.new(:invalid_prompt_spec, "prompt specs must include a native type field", %{
-       config: config
-     })}
-  end
-
-  def from_config(config, _opts) do
-    {:error, Error.new(:invalid_prompt_spec, "prompt config must be a map", %{config: config})}
-  end
-
-  defp build_native_spec(spec) do
+  def from_config(%{"type" => _type} = spec) do
     Prompt.Spec.from_spec(spec)
   rescue
     error ->
@@ -84,5 +65,16 @@ defmodule BeamWeaver.Prompt.Loader do
        Error.new(:invalid_prompt_spec, "native prompt spec could not be loaded", %{
          reason: Exception.message(error)
        })}
+  end
+
+  def from_config(config) when is_map(config) do
+    {:error,
+     Error.new(:invalid_prompt_spec, "prompt specs must include a native type field", %{
+       config: config
+     })}
+  end
+
+  def from_config(config) do
+    {:error, Error.new(:invalid_prompt_spec, "prompt config must be a map", %{config: config})}
   end
 end

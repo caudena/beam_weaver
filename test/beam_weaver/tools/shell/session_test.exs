@@ -15,14 +15,14 @@ defmodule BeamWeaver.Tools.Shell.SessionTest do
 
   test "a session refuses to start with a custom executor" do
     assert {:error, %{type: :shell_session_executor_unsupported, details: %{executor: executor}}} =
-             Session.start(policy: [allow: ["ls"], executor: __MODULE__.TrustingExecutor])
+             GenServer.start(Session, policy: [allow: ["ls"], executor: __MODULE__.TrustingExecutor])
 
     assert executor =~ "TrustingExecutor"
   end
 
   test "a session keeps its environment out of inspected and reported state" do
     secret = "hunter2-#{System.unique_integer([:positive])}"
-    {:ok, session} = Session.start(policy: [allow: ["true"], env: %{"DB_PASSWORD" => secret}])
+    {:ok, session} = GenServer.start(Session, policy: [allow: ["true"], env: %{"DB_PASSWORD" => secret}])
 
     refute inspect(:sys.get_state(session)) =~ secret
     refute inspect(:sys.get_status(session)) =~ secret
@@ -31,7 +31,7 @@ defmodule BeamWeaver.Tools.Shell.SessionTest do
   end
 
   test "a session stops itself after its idle timeout so an abandoned run doesn't leak it" do
-    {:ok, session} = Session.start(policy: [allow: ["true"]], idle_timeout: 50)
+    {:ok, session} = GenServer.start(Session, policy: [allow: ["true"]], idle_timeout: 50)
     ref = Process.monitor(session)
 
     assert_receive {:DOWN, ^ref, :process, ^session, :normal}, 1_000
@@ -43,7 +43,7 @@ defmodule BeamWeaver.Tools.Shell.SessionTest do
     isolate_tmp_dir(tmp_dir)
 
     {:ok, pid} =
-      Session.start(policy: [allow: [~r/.*/], stderr: :separate, timeout: 0])
+      GenServer.start(Session, policy: [allow: [~r/.*/], stderr: :separate, timeout: 0])
 
     before = scratch_dirs()
 
@@ -66,7 +66,7 @@ defmodule BeamWeaver.Tools.Shell.SessionTest do
 
   test "session command results include native metadata" do
     {:ok, pid} =
-      Session.start(policy: [allow: ["printf"], timeout: 5_000])
+      GenServer.start(Session, policy: [allow: ["printf"], timeout: 5_000])
 
     assert {:ok, %{status: 0, output: "ok", metadata: metadata}} =
              Session.execute(pid, "printf ok", command_id: "cmd-ok")

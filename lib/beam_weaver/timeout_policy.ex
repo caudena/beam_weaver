@@ -7,7 +7,9 @@ defmodule BeamWeaver.TimeoutPolicy do
   """
 
   alias BeamWeaver.Core.Error
+  alias BeamWeaver.MapAccess
   alias BeamWeaver.Options
+  alias BeamWeaver.Policy
 
   defstruct run_timeout: nil,
             idle_timeout: nil,
@@ -25,12 +27,7 @@ defmodule BeamWeaver.TimeoutPolicy do
   def new(value), do: coerce(value)
 
   @spec new!(keyword() | map() | t()) :: t() | nil
-  def new!(value) do
-    case new(value) do
-      {:ok, policy} -> policy
-      {:error, error} -> raise ArgumentError, error.message
-    end
-  end
+  def new!(value), do: value |> new() |> Policy.bang()
 
   @spec coerce(float() | non_neg_integer() | keyword() | map() | t() | nil) ::
           {:ok, t() | nil} | {:error, Error.t()}
@@ -39,7 +36,7 @@ defmodule BeamWeaver.TimeoutPolicy do
   def coerce(%__MODULE__{} = policy) do
     cond do
       match?({:invalid, _message}, policy.refresh_on) ->
-        invalid(policy.refresh_on, %{refresh_on: policy.refresh_on})
+        invalid(elem(policy.refresh_on, 1), %{refresh_on: policy.refresh_on})
 
       policy.refresh_on not in [:auto, :heartbeat] ->
         invalid("refresh_on must be :auto or :heartbeat", %{refresh_on: policy.refresh_on})
@@ -68,9 +65,9 @@ defmodule BeamWeaver.TimeoutPolicy do
 
   def coerce(map) when is_map(map) do
     policy = %__MODULE__{
-      run_timeout: map |> get(:run_timeout) |> duration_to_ms(),
-      idle_timeout: map |> get(:idle_timeout) |> duration_to_ms(),
-      refresh_on: map |> get(:refresh_on, :auto) |> normalize_refresh_on()
+      run_timeout: map |> MapAccess.get(:run_timeout) |> duration_to_ms(),
+      idle_timeout: map |> MapAccess.get(:idle_timeout) |> duration_to_ms(),
+      refresh_on: map |> MapAccess.get(:refresh_on, :auto) |> normalize_refresh_on()
     }
 
     coerce(policy)
@@ -99,12 +96,7 @@ defmodule BeamWeaver.TimeoutPolicy do
   end
 
   @spec effective_timeout!(t() | keyword() | map() | number() | nil) :: pos_integer() | nil
-  def effective_timeout!(value) do
-    case effective_timeout(value) do
-      {:ok, timeout} -> timeout
-      {:error, error} -> raise ArgumentError, error.message
-    end
-  end
+  def effective_timeout!(value), do: value |> effective_timeout() |> Policy.bang()
 
   defp effective_timeout_from_policy(nil), do: nil
 
@@ -116,9 +108,6 @@ defmodule BeamWeaver.TimeoutPolicy do
 
   defp effective_timeout_from_policy(%__MODULE__{run_timeout: run, idle_timeout: idle}),
     do: min(run, idle)
-
-  defp get(map, key, default \\ nil),
-    do: Map.get(map, key, Map.get(map, to_string(key), default))
 
   defp duration_to_ms(nil), do: nil
   defp duration_to_ms(value) when is_float(value), do: round(value * 1_000)
@@ -134,9 +123,6 @@ defmodule BeamWeaver.TimeoutPolicy do
 
   defp positive_timeout_or_nil?(nil), do: true
   defp positive_timeout_or_nil?(value), do: is_integer(value) and value > 0
-
-  defp invalid({:invalid, message}, details),
-    do: {:error, Error.new(:invalid_timeout_policy, message, details)}
 
   defp invalid(message, details),
     do: {:error, Error.new(:invalid_timeout_policy, message, details)}

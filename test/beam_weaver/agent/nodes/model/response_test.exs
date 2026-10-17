@@ -8,41 +8,23 @@ defmodule BeamWeaver.Agent.Nodes.Model.ResponseTest do
 
   describe "attach_diagnostics/5 content clipping" do
     test "truncated multibyte content stays valid UTF-8 and serializable" do
-      long_content = "x" <> String.duplicate("é", 8_000)
-      message = Message.assistant(long_content)
-      request = ModelRequest.new(model: "test-model", messages: [message])
-      error = Error.new(:model_error, "boom")
-
-      %Error{details: details} = Response.attach_diagnostics(error, request, [message], [])
-
-      content =
-        details
-        |> Map.fetch!(:model_request)
-        |> Map.fetch!(:messages)
-        |> hd()
-        |> Map.fetch!(:content)
+      {details, content} = diagnosed("x" <> String.duplicate("é", 8_000))
 
       assert String.valid?(content)
       assert String.starts_with?(content, "xé")
       assert content =~ "truncated"
-      assert {:ok, _encoded} = BeamWeaver.Serialization.dump_json_value(details)
+      assert {:ok, _encoded} = BeamWeaver.Serialization.dump_value(details)
     end
 
     test "ascii content under the limit is preserved unchanged" do
-      message = Message.assistant("hello world")
-      request = ModelRequest.new(model: "test-model", messages: [message])
-      error = Error.new(:model_error, "boom")
-
-      %Error{details: details} = Response.attach_diagnostics(error, request, [message], [])
-
-      content =
-        details
-        |> Map.fetch!(:model_request)
-        |> Map.fetch!(:messages)
-        |> hd()
-        |> Map.fetch!(:content)
-
-      assert content == "hello world"
+      assert {_details, "hello world"} = diagnosed("hello world")
     end
+  end
+
+  defp diagnosed(text) do
+    message = Message.assistant(text)
+    request = ModelRequest.new(model: "test-model", messages: [message])
+    %Error{details: details} = Response.attach_diagnostics(Error.new(:model_error, "boom"), request, [message], [])
+    {details, details.model_request.messages |> hd() |> Map.fetch!(:content)}
   end
 end

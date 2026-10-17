@@ -101,7 +101,7 @@ defmodule BeamWeaver.ShellPolicy do
   """
 
   alias BeamWeaver.Core.Error
-  alias BeamWeaver.MapAccess
+  alias BeamWeaver.Policy
   alias BeamWeaver.ShellPolicy.Commands
   alias BeamWeaver.ShellPolicy.Parser
   alias BeamWeaver.ShellPolicy.Parser.Command
@@ -178,19 +178,10 @@ defmodule BeamWeaver.ShellPolicy do
   def new(opts) when is_list(opts), do: opts |> Map.new() |> new()
 
   def new(opts) when is_map(opts) do
-    with :ok <- validate_keys(opts) do
-      %__MODULE__{}
-      |> struct(normalize_keys(opts))
-      |> validate()
-    end
+    with :ok <- validate_keys(opts), do: Policy.build(__MODULE__, opts, @fields, &validate/1)
   end
 
-  def new!(opts \\ []) do
-    case new(opts) do
-      {:ok, policy} -> policy
-      {:error, error} -> raise ArgumentError, error.message
-    end
-  end
+  def new!(opts \\ []), do: opts |> new() |> Policy.bang()
 
   def validate(%__MODULE__{} = policy) do
     cond do
@@ -215,7 +206,7 @@ defmodule BeamWeaver.ShellPolicy do
       not is_boolean(policy.inherit_env) ->
         invalid("inherit_env must be a boolean")
 
-      not valid_timeout?(policy.timeout) ->
+      not Policy.valid_timeout?(policy.timeout) ->
         invalid("timeout must be nil, :infinity, or a non-negative integer")
 
       not is_integer(policy.max_output_bytes) or policy.max_output_bytes < 1 ->
@@ -224,10 +215,10 @@ defmodule BeamWeaver.ShellPolicy do
       policy.stderr not in [:merge, :separate, :discard] ->
         invalid("stderr must be :merge, :separate, or :discard")
 
-      not valid_empty_output?(policy.empty_output) ->
+      not (is_nil(policy.empty_output) or is_binary(policy.empty_output)) ->
         invalid("empty_output must be nil or a string")
 
-      not valid_truncation_indicator?(policy.truncation_indicator) ->
+      not (policy.truncation_indicator in [nil, true] or is_binary(policy.truncation_indicator)) ->
         invalid("truncation_indicator must be nil, true, or a string")
 
       not valid_redactions?(policy.redactions) ->
@@ -238,7 +229,7 @@ defmodule BeamWeaver.ShellPolicy do
          %{
            policy
            | env: Map.new(policy.env, fn {name, value} -> {to_string(name), value} end),
-             executor: policy.executor || default_executor(),
+             executor: policy.executor || Module.concat([BeamWeaver, Tools, Shell, HostExecutor]),
              redactions: normalize_redactions(policy.redactions)
          }}
     end
@@ -497,16 +488,6 @@ defmodule BeamWeaver.ShellPolicy do
 
   defp valid_env?(_env), do: false
 
-  defp valid_timeout?(nil), do: true
-  defp valid_timeout?(:infinity), do: true
-  defp valid_timeout?(timeout), do: is_integer(timeout) and timeout >= 0
-
-  defp valid_empty_output?(nil), do: true
-  defp valid_empty_output?(value), do: is_binary(value)
-
-  defp valid_truncation_indicator?(value) when value in [nil, true], do: true
-  defp valid_truncation_indicator?(value), do: is_binary(value)
-
   defp valid_redactions?(redactions) when is_list(redactions) do
     Enum.all?(redactions, fn
       {%Regex{}, replacement} when is_binary(replacement) -> true
@@ -530,22 +511,12 @@ defmodule BeamWeaver.ShellPolicy do
     unknown =
       opts
       |> Map.keys()
-      |> Enum.map(&canonical_key/1)
+      |> Enum.map(&BeamWeaver.MapAccess.existing_atom_key/1)
       |> Enum.reject(&(&1 in @fields))
       |> Enum.uniq()
 
     if unknown == [], do: :ok, else: invalid(unknown_message(unknown))
   end
-
-  defp canonical_key(key) when is_atom(key), do: key
-
-  defp canonical_key(key) when is_binary(key) do
-    String.to_existing_atom(key)
-  rescue
-    ArgumentError -> key
-  end
-
-  defp canonical_key(key), do: key
 
   defp unknown_message(unknown) do
     details =
@@ -557,14 +528,6 @@ defmodule BeamWeaver.ShellPolicy do
       end)
 
     "invalid shell policy options: #{details}"
-  end
-
-  defp normalize_keys(map) do
-    MapAccess.normalize_keys(map, @fields)
-  end
-
-  defp default_executor do
-    Module.concat([BeamWeaver, Tools, Shell, HostExecutor])
   end
 
   defp invalid(message), do: {:error, Error.new(:invalid_shell_policy, message)}

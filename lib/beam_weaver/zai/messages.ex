@@ -16,8 +16,6 @@ defmodule BeamWeaver.ZAI.Messages do
   # and PDFs, by URL or as base64 data, and files uploaded to Z.ai by their id;
   # the other models take text only. A `nil` profile allows media.
   @spec to_chat_messages([Message.t()], Profile.t() | nil) :: {:ok, [map()]} | {:error, Error.t()}
-  def to_chat_messages(messages, profile \\ nil)
-
   def to_chat_messages(messages, profile) when is_list(messages) do
     Result.traverse(messages, &to_chat_message(&1, profile))
   end
@@ -49,11 +47,6 @@ defmodule BeamWeaver.ZAI.Messages do
 
   def chat_response_to_message(_response) do
     {:error, Error.new(:invalid_response, "Z.ai chat-completions response is invalid")}
-  end
-
-  @spec metadata(map(), map()) :: map()
-  def metadata(response, choice) do
-    metadata(response, choice, usage_metadata(response))
   end
 
   defp metadata(response, choice, usage) do
@@ -105,24 +98,10 @@ defmodule BeamWeaver.ZAI.Messages do
 
   def usage_metadata(_response), do: nil
 
-  defp to_chat_message(%Message{role: :tool} = message, _profile) do
-    call_id = message.tool_call_id || message.id
-
-    if is_binary(call_id) and call_id != "" do
-      {:ok,
-       %{
-         "role" => "tool",
-         "tool_call_id" => call_id,
-         "content" => ChatCompletionsWire.tool_output(message.content)
-       }
-       |> MapShape.put_optional("name", message.name)}
-    else
-      {:error, Error.new(:invalid_tool_message, "tool messages require a tool_call_id or id")}
-    end
-  end
+  defp to_chat_message(%Message{role: :tool} = message, _profile), do: ChatCompletionsWire.tool_message(message)
 
   defp to_chat_message(%Message{role: :assistant} = message, profile) do
-    with {:ok, content} <- assistant_content(message, profile) do
+    with {:ok, content} <- content_to_zai(message.content, %{profile: profile, skip_reasoning?: true}) do
       {:ok,
        %{
          "role" => "assistant",
@@ -135,7 +114,7 @@ defmodule BeamWeaver.ZAI.Messages do
   end
 
   defp to_chat_message(%Message{} = message, profile) when message.role in [:system, :user] do
-    with {:ok, content} <- content_to_zai(message.content, profile) do
+    with {:ok, content} <- content_to_zai(message.content, %{profile: profile, skip_reasoning?: false}) do
       {:ok,
        %{
          "role" => Atom.to_string(message.role),
@@ -148,22 +127,9 @@ defmodule BeamWeaver.ZAI.Messages do
   defp to_chat_message(_message, _profile),
     do: {:error, Error.new(:invalid_message, "expected a BeamWeaver message")}
 
-  defp assistant_content(%Message{content: content}, _profile) when is_binary(content), do: {:ok, content}
+  defp content_to_zai(content, _context) when is_binary(content), do: {:ok, content}
 
-  defp assistant_content(%Message{content: content}, profile) when is_list(content) do
-    content_to_parts(content, %{profile: profile, skip_reasoning?: true})
-  end
-
-  defp assistant_content(%Message{content: content}, _profile), do: {:ok, to_string(content)}
-
-  defp content_to_zai(content, _profile) when is_binary(content), do: {:ok, content}
-
-  defp content_to_zai(content, profile) when is_list(content),
-    do: content_to_parts(content, %{profile: profile, skip_reasoning?: false})
-
-  defp content_to_zai(content, _profile), do: {:ok, to_string(content)}
-
-  defp content_to_parts(content, context) when is_list(content) do
+  defp content_to_zai(content, context) when is_list(content) do
     content
     |> BeamWeaver.MapShape.assert_atom_keys_in!()
     |> Result.traverse(&content_part(&1, context))
@@ -178,6 +144,8 @@ defmodule BeamWeaver.ZAI.Messages do
         error
     end
   end
+
+  defp content_to_zai(content, _context), do: {:ok, to_string(content)}
 
   defp content_part(%ContentBlock.Text{text: text}, _context),
     do: {:ok, %{"type" => "text", "text" => text}}

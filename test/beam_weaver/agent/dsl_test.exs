@@ -1,7 +1,6 @@
 defmodule BeamWeaver.Agent.DSLTest do
   use ExUnit.Case, async: true
 
-  alias BeamWeaver.Agent
   alias BeamWeaver.Core.ChatModel
   alias BeamWeaver.Core.Message
   alias BeamWeaver.Core.Tool
@@ -78,16 +77,6 @@ defmodule BeamWeaver.Agent.DSLTest do
 
     model(__MODULE__.model(), timeout: 30_000)
     tools([])
-
-    def model, do: %ToolCallingModel{timeout: 1_000}
-  end
-
-  defmodule ExplicitToolTimeoutAgent do
-    use BeamWeaver.Agent
-
-    model(__MODULE__.model(), timeout: 30_000)
-    tool_timeout(120_000)
-    tools(CalculatorAgent.tools())
 
     def model, do: %ToolCallingModel{timeout: 1_000}
   end
@@ -202,13 +191,6 @@ defmodule BeamWeaver.Agent.DSLTest do
     assert tools_node.fun.timeout == :infinity
   end
 
-  test "model/tools DSL supports an explicit tool timeout" do
-    tools_node = ExplicitToolTimeoutAgent.graph().nodes["tools"]
-
-    assert tools_node.timeout == :infinity
-    assert tools_node.fun.timeout == 120_000
-  end
-
   test "model/tools DSL timeout option overrides the generated model node timeout" do
     assert ExplicitTimeoutAgent.graph().nodes["model"].timeout == 30_000
   end
@@ -222,27 +204,6 @@ defmodule BeamWeaver.Agent.DSLTest do
              %{messages: [Message.assistant("{}")], structured_response: %{"ok" => true}},
              :model
            ) == :end
-  end
-
-  test "runtime agent build uses model timeout for the generated model node" do
-    assert {:ok, agent} =
-             Agent.build(
-               model: %ToolCallingModel{timeout: 22_000},
-               tools: []
-             )
-
-    assert agent.compiled.graph.nodes["model"].timeout == 22_000
-  end
-
-  test "runtime agent build model_opts timeout overrides the model node timeout" do
-    assert {:ok, agent} =
-             Agent.build(
-               model: %ToolCallingModel{timeout: 1_000},
-               model_opts: [timeout: 45_000],
-               tools: []
-             )
-
-    assert agent.compiled.graph.nodes["model"].timeout == 45_000
   end
 
   test "agent invocation forwards explicit runtime model opts without leaking internal overrides" do

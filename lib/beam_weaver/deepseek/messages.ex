@@ -4,6 +4,7 @@ defmodule BeamWeaver.DeepSeek.Messages do
   alias BeamWeaver.Core.ContentBlock
   alias BeamWeaver.Core.Message
   alias BeamWeaver.Core.Error
+  alias BeamWeaver.MapAccess
   alias BeamWeaver.Models.ProfileRegistry
   alias BeamWeaver.Models.UsageCost
   alias BeamWeaver.OpenAI.ChatCompletions
@@ -24,8 +25,6 @@ defmodule BeamWeaver.DeepSeek.Messages do
   ]
 
   @spec to_chat_messages([Message.t()], String.t()) :: {:ok, [map()]} | {:error, Error.t()}
-  def to_chat_messages(messages, model \\ "deepseek-flash")
-
   def to_chat_messages([], _model) do
     {:error,
      Error.new(:invalid_messages, "DeepSeek Chat Completions requires at least one message", %{
@@ -50,26 +49,18 @@ defmodule BeamWeaver.DeepSeek.Messages do
     {:error, Error.new(:invalid_messages, "DeepSeek messages must be a list")}
   end
 
-  @spec validate_text_messages([Message.t()], :chat_completions | :responses) ::
-          :ok | {:error, Error.t()}
-  def validate_text_messages(messages, api), do: validate_messages(messages, api, nil)
-
-  def validate_messages(messages, api, model) when is_list(messages) do
-    Enum.reduce_while(messages, :ok, fn message, :ok ->
-      case validate_message(message, api, model) do
-        :ok -> {:cont, :ok}
-        {:error, error} -> {:halt, {:error, error}}
-      end
-    end)
-  end
+  def validate_messages(messages, api, model) when is_list(messages),
+    do: Enum.find_value(messages, :ok, fn message -> with :ok <- validate_message(message, api, model), do: nil end)
 
   @spec chat_response_to_message(map()) :: {:ok, Message.t()} | {:error, Error.t()}
   def chat_response_to_message(response) when is_map(response) do
-    response
-    |> ChatCompletions.Messages.response_to_message()
-    |> put_provider_metadata(response, :chat_completions)
-    |> put_reasoning_metadata(response)
-    |> put_usage_cost(response)
+    with {:ok, message} <- ChatCompletions.Messages.response_to_message(response) do
+      {:ok,
+       message
+       |> put_provider_metadata(response, :chat_completions)
+       |> put_reasoning_metadata(response)
+       |> put_usage_cost(response)}
+    end
   end
 
   def chat_response_to_message(_response) do
@@ -78,20 +69,21 @@ defmodule BeamWeaver.DeepSeek.Messages do
 
   @spec responses_to_message(map()) :: {:ok, Message.t()} | {:error, Error.t()}
   def responses_to_message(response) when is_map(response) do
-    response
-    |> OpenAIMessages.response_to_message()
-    |> hydrate_responses_replay_blocks()
-    |> put_provider_metadata(response, :responses)
-    |> put_usage_cost(response)
+    with {:ok, message} <- OpenAIMessages.response_to_message(response) do
+      {:ok,
+       message
+       |> hydrate_responses_replay_blocks()
+       |> put_provider_metadata(response, :responses)
+       |> put_usage_cost(response)}
+    end
   end
 
   def responses_to_message(_response) do
     {:error, Error.new(:invalid_response, "DeepSeek Responses response is invalid")}
   end
 
-  @doc false
   @spec usage_metadata(map()) :: map() | nil
-  def usage_metadata(%{"usage" => usage}) when is_map(usage) do
+  defp usage_metadata(%{"usage" => usage}) when is_map(usage) do
     input_tokens = usage["prompt_tokens"] || usage["input_tokens"] || 0
     output_tokens = usage["completion_tokens"] || usage["output_tokens"] || 0
     cache_hit = usage["prompt_cache_hit_tokens"] || cached_input_tokens(usage)
@@ -114,16 +106,11 @@ defmodule BeamWeaver.DeepSeek.Messages do
     |> BeamWeaver.MapShape.reject_nil_or_empty()
   end
 
-  def usage_metadata(_response), do: nil
+  defp usage_metadata(_response), do: nil
 
-  defp validate_message(%Message{content: content, role: role}, api, model) when is_list(content) do
-    Enum.reduce_while(content, :ok, fn block, :ok ->
-      case validate_content_block(block, role, api, model) do
-        :ok -> {:cont, :ok}
-        {:error, error} -> {:halt, {:error, error}}
-      end
-    end)
-  end
+  defp validate_message(%Message{content: content, role: role}, api, model) when is_list(content),
+    do:
+      Enum.find_value(content, :ok, fn block -> with :ok <- validate_content_block(block, role, api, model), do: nil end)
 
   defp validate_message(%Message{content: content}, _api, _model) when is_binary(content), do: :ok
 
@@ -145,7 +132,7 @@ defmodule BeamWeaver.DeepSeek.Messages do
         :ok
 
       ContentBlock.data?(block) ->
-        unsupported_media(content_feature(type), api)
+        unsupported_media(type, api)
 
       type == :reasoning and role != :assistant ->
         {:error,
@@ -163,7 +150,7 @@ defmodule BeamWeaver.DeepSeek.Messages do
          Error.new(:unsupported_feature, "DeepSeek does not support this message content", %{
            provider: :deepseek,
            api: api,
-           feature: content_feature(type)
+           feature: type
          })}
     end
   end
@@ -195,34 +182,28 @@ defmodule BeamWeaver.DeepSeek.Messages do
 
   defp content_type(_block), do: :unknown
 
+  @content_types %{
+    "text" => :text,
+    "plain_text" => :plain_text,
+    "output_text" => :output_text,
+    "reasoning" => :reasoning,
+    "function_call" => :function_call,
+    "tool_call" => :tool_call,
+    "tool_use" => :tool_use,
+    "web_search_call" => :web_search_call,
+    "image" => :image,
+    "image_url" => :image,
+    "input_image" => :image,
+    "audio" => :audio,
+    "input_audio" => :audio,
+    "file" => :file,
+    "input_file" => :file,
+    "video" => :video
+  }
+
   defp normalize_content_type(type) when is_atom(type), do: normalize_content_type(Atom.to_string(type))
-
-  defp normalize_content_type(type) when is_binary(type) do
-    case type do
-      "text" -> :text
-      "plain_text" -> :plain_text
-      "output_text" -> :output_text
-      "reasoning" -> :reasoning
-      "function_call" -> :function_call
-      "tool_call" -> :tool_call
-      "tool_use" -> :tool_use
-      "web_search_call" -> :web_search_call
-      "image" -> :image
-      "image_url" -> :image
-      "input_image" -> :image
-      "audio" -> :audio
-      "input_audio" -> :audio
-      "file" -> :file
-      "input_file" -> :file
-      "video" -> :video
-      _other -> :unknown
-    end
-  end
-
+  defp normalize_content_type(type) when is_binary(type), do: Map.get(@content_types, type, :unknown)
   defp normalize_content_type(_type), do: :unknown
-
-  defp content_feature(nil), do: :unknown_content
-  defp content_feature(type), do: type
 
   defp text_only_message(%Message{} = message), do: %{message | content: Message.text(message)}
 
@@ -261,8 +242,8 @@ defmodule BeamWeaver.DeepSeek.Messages do
   defp chat_image_part(part), do: part
 
   defp assistant_reasoning(%Message{} = message) do
-    metadata_value(message.metadata, :reasoning_content) ||
-      metadata_value(message.response_metadata, :reasoning_content) ||
+    MapAccess.get(message.metadata, :reasoning_content) ||
+      MapAccess.get(message.response_metadata, :reasoning_content) ||
       reasoning_blocks(message.content)
   end
 
@@ -275,26 +256,17 @@ defmodule BeamWeaver.DeepSeek.Messages do
       _block -> []
     end)
     |> Enum.join("")
-    |> case do
-      "" -> nil
-      reasoning -> reasoning
-    end
+    |> BeamWeaver.MapShape.empty_to_nil()
   end
 
   defp reasoning_blocks(_content), do: nil
 
   defp prefix?(%Message{} = message) do
-    metadata_value(message.metadata, :prefix) || metadata_value(message.response_metadata, :prefix)
+    MapAccess.get(message.metadata, :prefix) || MapAccess.get(message.response_metadata, :prefix)
   end
 
   defp validate_prefix_messages(messages) do
-    prefix_indexes =
-      messages
-      |> Enum.with_index()
-      |> Enum.flat_map(fn
-        {%{"prefix" => true}, index} -> [index]
-        _entry -> []
-      end)
+    prefix_indexes = for {%{"prefix" => true}, index} <- Enum.with_index(messages), do: index
 
     case prefix_indexes do
       [] ->
@@ -313,7 +285,7 @@ defmodule BeamWeaver.DeepSeek.Messages do
     end
   end
 
-  defp put_provider_metadata({:ok, %Message{} = message}, response, api) do
+  defp put_provider_metadata(%Message{} = message, response, api) do
     extras = %{
       model_provider: "deepseek",
       provider: :deepseek,
@@ -322,47 +294,29 @@ defmodule BeamWeaver.DeepSeek.Messages do
       model_name: response["model"]
     }
 
-    metadata = message.metadata |> Map.merge(extras) |> MessageParts.reject_nil_values()
-    response_metadata = message.response_metadata |> Map.merge(extras) |> MessageParts.reject_nil_values()
-    usage = merge_usage_details(message.usage_metadata, response)
-
-    {:ok,
-     %{
-       message
-       | metadata: metadata,
-         response_metadata: response_metadata,
-         usage_metadata: usage
-     }}
+    %{
+      message
+      | metadata: message.metadata |> Map.merge(extras) |> MessageParts.reject_nil_values(),
+        response_metadata: message.response_metadata |> Map.merge(extras) |> MessageParts.reject_nil_values(),
+        usage_metadata: merge_usage_details(message.usage_metadata, response)
+    }
   end
 
-  defp put_provider_metadata(other, _response, _api), do: other
+  defp put_reasoning_metadata(%Message{} = message, response) do
+    reasoning = get_in(response, ["choices", Access.at(0), "message", "reasoning_content"])
 
-  defp put_reasoning_metadata({:ok, %Message{} = message}, response) do
-    reasoning =
-      get_in(response, ["choices", Access.at(0), "message", "reasoning_content"])
-
-    metadata = put_optional(message.metadata, :reasoning_content, reasoning)
-    response_metadata = put_optional(message.response_metadata, :reasoning_content, reasoning)
-    content = prepend_reasoning_block(message.content, reasoning)
-
-    {:ok,
-     %{
-       message
-       | content: content,
-         metadata: metadata,
-         response_metadata: response_metadata
-     }}
+    %{
+      message
+      | content: prepend_reasoning_block(message.content, reasoning),
+        metadata: put_optional(message.metadata, :reasoning_content, reasoning),
+        response_metadata: put_optional(message.response_metadata, :reasoning_content, reasoning)
+    }
   end
 
-  defp put_reasoning_metadata(other, _response), do: other
+  defp hydrate_responses_replay_blocks(%Message{content: content} = message) when is_list(content),
+    do: %{message | content: Enum.map(content, &hydrate_responses_replay_block/1)}
 
-  defp hydrate_responses_replay_blocks({:ok, %Message{content: content} = message})
-       when is_list(content) do
-    content = Enum.map(content, &hydrate_responses_replay_block/1)
-    {:ok, %{message | content: content}}
-  end
-
-  defp hydrate_responses_replay_blocks(other), do: other
+  defp hydrate_responses_replay_blocks(message), do: message
 
   defp hydrate_responses_replay_block(%{
          raw_provider_block: %{"type" => type} = raw_provider_block
@@ -386,34 +340,25 @@ defmodule BeamWeaver.DeepSeek.Messages do
     [ContentBlock.reasoning(reasoning) | content]
   end
 
-  defp put_usage_cost({:ok, %Message{usage_metadata: usage} = message}, response)
-       when is_map(usage) do
+  defp put_usage_cost(%Message{usage_metadata: usage} = message, response) when is_map(usage) do
     with model when is_binary(model) <- response["model"],
          {:ok, profile} <- ProfileRegistry.fetch(:deepseek, model),
          cost when is_map(cost) <-
            UsageCost.calculate(profile, response["usage"] || usage, at: response_created_at(response)) do
-      usage = Map.merge(usage, cost)
-      metadata = Map.merge(message.metadata, %{estimated_cost: cost.total_cost, cost_currency: "USD"})
+      cost_metadata = %{estimated_cost: cost.total_cost, cost_currency: "USD"}
 
-      response_metadata =
-        Map.merge(message.response_metadata, %{
-          estimated_cost: cost.total_cost,
-          cost_currency: "USD"
-        })
-
-      {:ok,
-       %{
-         message
-         | usage_metadata: usage,
-           metadata: metadata,
-           response_metadata: response_metadata
-       }}
+      %{
+        message
+        | usage_metadata: Map.merge(usage, cost),
+          metadata: Map.merge(message.metadata, cost_metadata),
+          response_metadata: Map.merge(message.response_metadata, cost_metadata)
+      }
     else
-      _missing -> {:ok, message}
+      _missing -> message
     end
   end
 
-  defp put_usage_cost(other, _response), do: other
+  defp put_usage_cost(message, _response), do: message
 
   defp response_created_at(response) do
     case response["created_at"] || response["created"] do
@@ -423,12 +368,10 @@ defmodule BeamWeaver.DeepSeek.Messages do
     end
   end
 
-  defp merge_usage_details(nil, response), do: usage_metadata(response)
-
-  defp merge_usage_details(usage, response) when is_map(usage) do
+  defp merge_usage_details(usage, response) do
     case usage_metadata(response) do
       nil -> usage
-      detailed -> Map.merge(usage, detailed)
+      detailed -> Map.merge(usage || %{}, detailed)
     end
   end
 
@@ -436,11 +379,6 @@ defmodule BeamWeaver.DeepSeek.Messages do
     get_in(usage, ["prompt_tokens_details", "cached_tokens"]) ||
       get_in(usage, ["input_tokens_details", "cached_tokens"]) || 0
   end
-
-  defp metadata_value(metadata, key) when is_map(metadata),
-    do: BeamWeaver.MapAccess.get(metadata, key)
-
-  defp metadata_value(_metadata, _key), do: nil
 
   defp put_optional(map, _key, value) when value in [nil, false, "", []], do: map
   defp put_optional(map, key, value), do: Map.put(map, key, value)

@@ -70,13 +70,7 @@ defmodule BeamWeaver.Transport.Request do
   Normalizes supported header formats into lowercase binary pairs.
   """
   @spec normalize_headers(map() | list()) :: [{String.t(), String.t()}]
-  def normalize_headers(headers) when is_map(headers) do
-    headers
-    |> Enum.flat_map(fn {key, value} -> normalize_header(key, value) end)
-    |> Enum.sort()
-  end
-
-  def normalize_headers(headers) when is_list(headers) do
+  def normalize_headers(headers) when is_map(headers) or is_list(headers) do
     headers
     |> Enum.flat_map(fn
       {key, value} -> normalize_header(key, value)

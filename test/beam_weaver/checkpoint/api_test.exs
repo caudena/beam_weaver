@@ -135,13 +135,6 @@ defmodule BeamWeaver.Checkpoint.APITest do
 
     assert {:ok, tuples} = Checkpoint.list_result(saver, config())
     assert Enum.map(tuples, & &1.checkpoint["id"]) == ["a", "z"]
-  end
-
-  test "list_records returns typed records in commit order" do
-    saver = ETS.new()
-
-    assert {:ok, _} = Checkpoint.put_many(saver, [entry("z", nil, 1, [])])
-    assert {:ok, _} = Checkpoint.put_many(saver, [entry("a", "z", 2, [])])
 
     assert [%Checkpoint.Record{checkpoint: %{"id" => "a"}}, %Checkpoint.Record{checkpoint: %{"id" => "z"}}] =
              Checkpoint.list_records(saver, config())
@@ -180,15 +173,8 @@ defmodule BeamWeaver.Checkpoint.APITest do
   end
 
   defp entry(id, parent_id, value, writes) do
-    config =
-      if parent_id do
-        exact_config(parent_id)
-      else
-        config()
-      end
-
     %{
-      config: config,
+      config: if(parent_id, do: exact_config(parent_id), else: config()),
       checkpoint: %{
         "id" => id,
         "channel_values" => %{"value" => value},

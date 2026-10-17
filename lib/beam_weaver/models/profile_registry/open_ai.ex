@@ -34,79 +34,84 @@ defmodule BeamWeaver.Models.ProfileRegistry.OpenAI do
                                      :web_search_options
                                    ]
 
-  @openai_astra_profile Profile.new(%{
-                          provider: :openai,
-                          id: "gpt-6-astra",
-                          name: "GPT-6 Astra",
-                          status: :active,
-                          release_date: "2026-09-04",
-                          last_updated: "2026-09-04",
-                          responses_api: true,
-                          chat_completions_api: true,
-                          tool_calling: true,
-                          tool_call_streaming: true,
-                          tool_choice: true,
-                          parallel_tool_calls: true,
-                          structured_output: true,
-                          structured_output_with_tools: true,
-                          streaming: true,
-                          usage_metadata: true,
-                          supported_params: @astra_responses_params,
-                          supported_params_by_api: %{
-                            responses: @astra_responses_params,
-                            chat_completions: @astra_chat_completions_params
-                          },
-                          max_input_tokens: 1_050_000,
-                          max_output_tokens: 128_000,
-                          image_inputs: true,
-                          image_url_inputs: true,
-                          image_tool_message: true,
-                          audio_inputs: false,
-                          video_inputs: false,
-                          reasoning_output: true,
-                          temperature: false,
-                          tokenizer: :o200k_base,
-                          reasoning_effort_levels: [:low, :medium, :high, :xhigh, :max],
-                          extra: %{
-                            frontier: true,
-                            availability: :trusted_access_rollout,
-                            knowledge_cutoff: "2026-04-30",
-                            input_price_per_mtok: 10.00,
-                            cached_input_price_per_mtok: 1.00,
-                            cache_write_30m_price_per_mtok: 12.50,
-                            output_price_per_mtok: 50.00,
-                            cost_currency: "USD",
-                            pricing_source_url: @astra_source_url,
-                            higher_context_pricing_threshold_tokens: 272_000,
-                            higher_context_input_multiplier: 2.0,
-                            higher_context_output_multiplier: 1.5,
-                            pricing_modes: [:standard, :batch, :flex, :fast, :priority],
-                            batch_price_multiplier: 0.5,
-                            flex_price_multiplier: 0.5,
-                            fast_mode_price_multiplier: 2.0,
-                            fast_mode_service_tiers: [:fast, :priority],
-                            fast_mode_eu_data_residency: false,
-                            unsupported_reasoning_efforts: [:none, :minimal],
-                            reasoning_modes: [:standard, :pro],
-                            persisted_reasoning_contexts: [:auto, :current_turn, :all_turns],
-                            prompt_cache_modes: [:implicit, :explicit],
-                            prompt_cache_ttl: "30m",
-                            prompt_cache_write_multiplier: 1.25,
-                            prompt_cache_read_discount_rate: 0.90,
-                            chat_completions_tool_calling: false,
-                            provider_capabilities: [
-                              :async_tool_calling,
-                              :computer_use,
-                              :configuration_updates,
-                              :explicit_prompt_caching,
-                              :mid_turn_steering,
-                              :multi_agent_beta,
-                              :persisted_reasoning,
-                              :pro_reasoning_mode,
-                              :programmatic_tool_calling
-                            ]
-                          }
-                        })
+  @openai_profile %{
+    provider: :openai,
+    status: :active,
+    responses_api: true,
+    chat_completions_api: true,
+    tool_calling: true,
+    tool_call_streaming: true,
+    tool_choice: true,
+    parallel_tool_calls: true,
+    structured_output: true,
+    structured_output_with_tools: true,
+    streaming: true,
+    usage_metadata: true,
+    max_output_tokens: 128_000,
+    image_inputs: true,
+    image_url_inputs: true,
+    image_tool_message: true,
+    audio_inputs: false,
+    reasoning_output: true,
+    tokenizer: :o200k_base
+  }
+
+  @openai_astra_profile Profile.new(
+                          Map.merge(@openai_profile, %{
+                            id: "gpt-6-astra",
+                            name: "GPT-6 Astra",
+                            release_date: "2026-09-04",
+                            last_updated: "2026-09-04",
+                            supported_params: @astra_responses_params,
+                            supported_params_by_api: %{
+                              responses: @astra_responses_params,
+                              chat_completions: @astra_chat_completions_params
+                            },
+                            max_input_tokens: 1_050_000,
+                            video_inputs: false,
+                            temperature: false,
+                            reasoning_effort_levels: [:low, :medium, :high, :xhigh, :max],
+                            extra: %{
+                              frontier: true,
+                              availability: :trusted_access_rollout,
+                              knowledge_cutoff: "2026-04-30",
+                              input_price_per_mtok: 10.00,
+                              cached_input_price_per_mtok: 1.00,
+                              cache_write_30m_price_per_mtok: 12.50,
+                              output_price_per_mtok: 50.00,
+                              cost_currency: "USD",
+                              pricing_source_url: @astra_source_url,
+                              higher_context_pricing_threshold_tokens: 272_000,
+                              higher_context_input_multiplier: 2.0,
+                              higher_context_output_multiplier: 1.5,
+                              pricing_modes: [:standard, :batch, :flex, :fast, :priority],
+                              batch_price_multiplier: 0.5,
+                              flex_price_multiplier: 0.5,
+                              fast_mode_price_multiplier: 2.0,
+                              fast_mode_service_tiers: [:fast, :priority],
+                              fast_mode_eu_data_residency: false,
+                              unsupported_reasoning_efforts: [:none, :minimal],
+                              reasoning_modes: [:standard, :pro],
+                              persisted_reasoning_contexts: [:auto, :current_turn, :all_turns],
+                              prompt_cache_modes: [:implicit, :explicit],
+                              prompt_cache_ttl: "30m",
+                              prompt_cache_write_multiplier: 1.25,
+                              prompt_cache_read_discount_rate: 0.90,
+                              chat_completions_tool_calling: false,
+                              provider_capabilities: [
+                                :async_tool_calling,
+                                :computer_use,
+                                :configuration_updates,
+                                :explicit_prompt_caching,
+                                :mid_turn_steering,
+                                :multi_agent_beta,
+                                :persisted_reasoning,
+                                :pro_reasoning_mode,
+                                :programmatic_tool_calling
+                              ]
+                            }
+                          })
+                        )
 
   @gpt_6_specs [
     %{
@@ -139,101 +144,82 @@ defmodule BeamWeaver.Models.ProfileRegistry.OpenAI do
   @gpt_6_profiles Map.new(@gpt_6_specs, fn spec ->
                     reasoning_required? = Map.get(spec, :reasoning_required, false)
 
+                    responses_params =
+                      if reasoning_required?,
+                        do: @astra_responses_params,
+                        else: Params.responses() -- [:prompt_cache_retention]
+
                     {{:openai, spec.id},
-                     Profile.new(%{
-                       provider: :openai,
-                       id: spec.id,
-                       name: spec.name,
-                       status: :active,
-                       release_date: Map.get(spec, :release_date, "2026-09-22"),
-                       last_updated: Map.get(spec, :last_updated, "2026-09-23"),
-                       responses_api: true,
-                       chat_completions_api: true,
-                       tool_calling: true,
-                       tool_call_streaming: true,
-                       tool_choice: true,
-                       parallel_tool_calls: true,
-                       structured_output: true,
-                       structured_output_with_tools: true,
-                       streaming: true,
-                       usage_metadata: true,
-                       supported_params:
-                         if(reasoning_required?,
-                           do: @astra_responses_params,
-                           else: Params.responses() -- [:prompt_cache_retention]
-                         ),
-                       supported_params_by_api: %{
-                         responses:
+                     Profile.new(
+                       Map.merge(@openai_profile, %{
+                         id: spec.id,
+                         name: spec.name,
+                         release_date: Map.get(spec, :release_date, "2026-09-22"),
+                         last_updated: Map.get(spec, :last_updated, "2026-09-23"),
+                         supported_params: responses_params,
+                         supported_params_by_api: %{
+                           responses: responses_params,
+                           chat_completions:
+                             if(reasoning_required?,
+                               do: @astra_chat_completions_params,
+                               else: Params.chat_completions() -- [:audio, :modalities, :prompt_cache_retention]
+                             )
+                         },
+                         max_context_tokens: Map.get(spec, :max_context_tokens),
+                         max_input_tokens: Map.get(spec, :max_input_tokens, 1_050_000),
+                         video_inputs: false,
+                         decision_outputs: Map.get(spec, :decision_outputs, false),
+                         temperature: not reasoning_required?,
+                         reasoning_effort_default: :medium,
+                         reasoning_effort_levels:
                            if(reasoning_required?,
-                             do: @astra_responses_params,
-                             else: Params.responses() -- [:prompt_cache_retention]
+                             do: [:low, :medium, :high, :xhigh, :max],
+                             else: [:none, :low, :medium, :high, :xhigh, :max]
                            ),
-                         chat_completions:
-                           if(reasoning_required?,
-                             do: @astra_chat_completions_params,
-                             else: Params.chat_completions() -- [:audio, :modalities, :prompt_cache_retention]
-                           )
-                       },
-                       max_context_tokens: Map.get(spec, :max_context_tokens),
-                       max_input_tokens: Map.get(spec, :max_input_tokens, 1_050_000),
-                       max_output_tokens: 128_000,
-                       image_inputs: true,
-                       image_url_inputs: true,
-                       image_tool_message: true,
-                       audio_inputs: false,
-                       video_inputs: false,
-                       reasoning_output: true,
-                       decision_outputs: Map.get(spec, :decision_outputs, false),
-                       temperature: not reasoning_required?,
-                       tokenizer: :o200k_base,
-                       reasoning_effort_default: :medium,
-                       reasoning_effort_levels:
-                         if(reasoning_required?,
-                           do: [:low, :medium, :high, :xhigh, :max],
-                           else: [:none, :low, :medium, :high, :xhigh, :max]
-                         ),
-                       extra: %{
-                         frontier: true,
-                         knowledge_cutoff: spec.cutoff,
-                         input_price_per_mtok: spec.input,
-                         cached_input_price_per_mtok: spec.cached,
-                         cache_write_30m_price_per_mtok: spec.input * 1.25,
-                         output_price_per_mtok: spec.output,
-                         cost_currency: "USD",
-                         pricing_source_url: @pricing_source_url,
-                         pricing_last_checked: Map.get(spec, :last_updated, "2026-09-23"),
-                         higher_context_pricing_threshold_tokens: 272_000,
-                         higher_context_input_multiplier: 2.0,
-                         higher_context_output_multiplier: 1.5,
-                         regional_processing_multiplier: 1.1,
-                         pricing_modes: [:standard, :batch, :flex, :fast, :priority],
-                         batch_price_multiplier: 0.5,
-                         flex_price_multiplier: 0.5,
-                         fast_mode_price_multiplier: 2.0,
-                         fast_mode_service_tiers: [:fast, :priority],
-                         fast_mode_eu_data_residency: false,
-                         unsupported_reasoning_efforts:
-                           if(reasoning_required?, do: [:none, :minimal], else: [:minimal]),
-                         reasoning_modes: [:standard, :pro],
-                         persisted_reasoning_contexts: [:auto, :current_turn, :all_turns],
-                         prompt_cache_modes: [:implicit, :explicit],
-                         prompt_cache_ttl: "30m",
-                         prompt_cache_write_multiplier: 1.25,
-                         prompt_cache_read_discount_rate: Map.get(spec, :cache_read_discount_rate, 0.90),
-                         chat_completions_tool_calling: if(reasoning_required?, do: false, else: :none_reasoning_only),
-                         provider_capabilities: [
-                           :async_tool_calling,
-                           :computer_use,
-                           :configuration_updates,
-                           :explicit_prompt_caching,
-                           :mid_turn_steering,
-                           :multi_agent_beta,
-                           :persisted_reasoning,
-                           :pro_reasoning_mode,
-                           :programmatic_tool_calling
-                         ]
-                       }
-                     })}
+                         extra: %{
+                           frontier: true,
+                           knowledge_cutoff: spec.cutoff,
+                           input_price_per_mtok: spec.input,
+                           cached_input_price_per_mtok: spec.cached,
+                           cache_write_30m_price_per_mtok: spec.input * 1.25,
+                           output_price_per_mtok: spec.output,
+                           cost_currency: "USD",
+                           pricing_source_url: @pricing_source_url,
+                           pricing_last_checked: Map.get(spec, :last_updated, "2026-09-23"),
+                           higher_context_pricing_threshold_tokens: 272_000,
+                           higher_context_input_multiplier: 2.0,
+                           higher_context_output_multiplier: 1.5,
+                           regional_processing_multiplier: 1.1,
+                           pricing_modes: [:standard, :batch, :flex, :fast, :priority],
+                           batch_price_multiplier: 0.5,
+                           flex_price_multiplier: 0.5,
+                           fast_mode_price_multiplier: 2.0,
+                           fast_mode_service_tiers: [:fast, :priority],
+                           fast_mode_eu_data_residency: false,
+                           unsupported_reasoning_efforts:
+                             if(reasoning_required?, do: [:none, :minimal], else: [:minimal]),
+                           reasoning_modes: [:standard, :pro],
+                           persisted_reasoning_contexts: [:auto, :current_turn, :all_turns],
+                           prompt_cache_modes: [:implicit, :explicit],
+                           prompt_cache_ttl: "30m",
+                           prompt_cache_write_multiplier: 1.25,
+                           prompt_cache_read_discount_rate: Map.get(spec, :cache_read_discount_rate, 0.90),
+                           chat_completions_tool_calling:
+                             if(reasoning_required?, do: false, else: :none_reasoning_only),
+                           provider_capabilities: [
+                             :async_tool_calling,
+                             :computer_use,
+                             :configuration_updates,
+                             :explicit_prompt_caching,
+                             :mid_turn_steering,
+                             :multi_agent_beta,
+                             :persisted_reasoning,
+                             :pro_reasoning_mode,
+                             :programmatic_tool_calling
+                           ]
+                         }
+                       })
+                     )}
                   end)
 
   @openai_5_6_specs [
@@ -378,66 +364,49 @@ defmodule BeamWeaver.Models.ProfileRegistry.OpenAI do
                            }
 
                            {{:openai, spec.id},
-                            Profile.new(%{
-                              provider: :openai,
-                              id: spec.id,
-                              name: spec.name,
-                              status: :active,
-                              release_date: "2026-07-09",
-                              last_updated: "2026-08-27",
-                              responses_api: true,
-                              chat_completions_api: true,
-                              tool_calling: true,
-                              tool_call_streaming: true,
-                              tool_choice: true,
-                              parallel_tool_calls: true,
-                              structured_output: true,
-                              structured_output_with_tools: true,
-                              streaming: true,
-                              usage_metadata: true,
-                              supported_params: Params.responses(),
-                              supported_params_by_api: %{
-                                responses: Params.responses(),
-                                chat_completions: Params.chat_completions()
-                              },
-                              max_input_tokens: 1_050_000,
-                              max_output_tokens: 128_000,
-                              image_inputs: true,
-                              image_url_inputs: true,
-                              image_tool_message: true,
-                              audio_inputs: false,
-                              reasoning_output: true,
-                              tokenizer: :o200k_base,
-                              reasoning_effort_default: :medium,
-                              reasoning_effort_levels: [:none, :low, :medium, :high, :xhigh, :max],
-                              extra:
-                                Map.merge(
-                                  %{
-                                    frontier: true,
-                                    pricing_modes: [:standard, :batch, :flex, :fast, :priority],
-                                    batch_price_multiplier: 0.5,
-                                    flex_price_multiplier: 0.5,
-                                    fast_mode_price_multiplier: 2.0,
-                                    fast_mode_service_tiers: [:fast, :priority],
-                                    reasoning_modes: [:standard, :pro],
-                                    persisted_reasoning_contexts: [:auto, :current_turn, :all_turns],
-                                    prompt_cache_modes: [:implicit, :explicit],
-                                    prompt_cache_ttl: "30m",
-                                    prompt_cache_write_multiplier: 1.25,
-                                    prompt_cache_read_discount_rate: 0.90,
-                                    provider_capabilities: [
-                                      :programmatic_tool_calling,
-                                      :multi_agent_beta,
-                                      :explicit_prompt_caching,
-                                      :persisted_reasoning,
-                                      :pro_reasoning_mode,
-                                      :original_image_detail
-                                    ]
-                                  }
-                                  |> Map.merge(pricing),
-                                  Map.get(spec, :extra, %{})
-                                )
-                            })}
+                            Profile.new(
+                              Map.merge(@openai_profile, %{
+                                id: spec.id,
+                                name: spec.name,
+                                release_date: "2026-07-09",
+                                last_updated: "2026-08-27",
+                                supported_params: Params.responses(),
+                                supported_params_by_api: %{
+                                  responses: Params.responses(),
+                                  chat_completions: Params.chat_completions()
+                                },
+                                max_input_tokens: 1_050_000,
+                                reasoning_effort_default: :medium,
+                                reasoning_effort_levels: [:none, :low, :medium, :high, :xhigh, :max],
+                                extra:
+                                  Map.merge(
+                                    %{
+                                      frontier: true,
+                                      pricing_modes: [:standard, :batch, :flex, :fast, :priority],
+                                      batch_price_multiplier: 0.5,
+                                      flex_price_multiplier: 0.5,
+                                      fast_mode_price_multiplier: 2.0,
+                                      fast_mode_service_tiers: [:fast, :priority],
+                                      reasoning_modes: [:standard, :pro],
+                                      persisted_reasoning_contexts: [:auto, :current_turn, :all_turns],
+                                      prompt_cache_modes: [:implicit, :explicit],
+                                      prompt_cache_ttl: "30m",
+                                      prompt_cache_write_multiplier: 1.25,
+                                      prompt_cache_read_discount_rate: 0.90,
+                                      provider_capabilities: [
+                                        :programmatic_tool_calling,
+                                        :multi_agent_beta,
+                                        :explicit_prompt_caching,
+                                        :persisted_reasoning,
+                                        :pro_reasoning_mode,
+                                        :original_image_detail
+                                      ]
+                                    }
+                                    |> Map.merge(pricing),
+                                    Map.get(spec, :extra, %{})
+                                  )
+                              })
+                            )}
                          end
                        )
 
@@ -473,45 +442,29 @@ defmodule BeamWeaver.Models.ProfileRegistry.OpenAI do
                                   end
 
                                 params_by_api =
-                                  if chat? do
-                                    %{
-                                      responses: Params.responses(),
-                                      chat_completions: Params.chat_completions()
-                                    }
-                                  else
-                                    %{responses: Params.responses()}
-                                  end
+                                  if chat?,
+                                    do: %{responses: Params.responses(), chat_completions: Params.chat_completions()},
+                                    else: %{responses: Params.responses()}
 
                                 {{:openai, spec.id},
-                                 Profile.new(%{
-                                   provider: :openai,
-                                   id: spec.id,
-                                   name: spec.name,
-                                   status: :active,
-                                   last_updated: "2026-08-27",
-                                   responses_api: true,
-                                   chat_completions_api: chat?,
-                                   tool_calling: true,
-                                   tool_call_streaming: true,
-                                   tool_choice: true,
-                                   parallel_tool_calls: true,
-                                   structured_output: Map.get(spec, :structured_output, true),
-                                   structured_output_with_tools: Map.get(spec, :structured_output_with_tools, true),
-                                   streaming: Map.get(spec, :streaming, true),
-                                   usage_metadata: true,
-                                   supported_params: Params.responses(),
-                                   supported_params_by_api: params_by_api,
-                                   max_input_tokens: spec.max_input,
-                                   max_output_tokens: Map.get(spec, :max_output, 128_000),
-                                   image_inputs: true,
-                                   image_url_inputs: true,
-                                   image_tool_message: true,
-                                   audio_inputs: false,
-                                   reasoning_output: Map.get(spec, :reasoning, true),
-                                   tokenizer: :o200k_base,
-                                   reasoning_effort_levels: spec.efforts,
-                                   extra: Map.put(pricing, :frontier, true)
-                                 })}
+                                 Profile.new(
+                                   Map.merge(@openai_profile, %{
+                                     id: spec.id,
+                                     name: spec.name,
+                                     last_updated: "2026-08-27",
+                                     chat_completions_api: chat?,
+                                     structured_output: Map.get(spec, :structured_output, true),
+                                     structured_output_with_tools: Map.get(spec, :structured_output_with_tools, true),
+                                     streaming: Map.get(spec, :streaming, true),
+                                     supported_params: Params.responses(),
+                                     supported_params_by_api: params_by_api,
+                                     max_input_tokens: spec.max_input,
+                                     max_output_tokens: Map.get(spec, :max_output, 128_000),
+                                     reasoning_output: Map.get(spec, :reasoning, true),
+                                     reasoning_effort_levels: spec.efforts,
+                                     extra: Map.put(pricing, :frontier, true)
+                                   })
+                                 )}
                               end
                             )
 
@@ -595,15 +548,14 @@ defmodule BeamWeaver.Models.ProfileRegistry.OpenAI do
                 })
             })
   def profiles, do: Map.values(@profiles)
-  def frontier_ids, do: @openai_frontier_ids
 
   def resolve(model) do
     cond do
-      Map.has_key?(@openai_deprecated_models, model) ->
-        deprecated_model_error(model)
+      replacement = @openai_deprecated_models[model] ->
+        ProfileRegistry.deprecated_error(:openai, model, "OpenAI model is deprecated", %{replacement: replacement})
 
-      Map.has_key?(@openai_chat_aliases, model) ->
-        alias_profile(model, Map.fetch!(@openai_chat_aliases, model))
+      canonical_id = @openai_chat_aliases[model] ->
+        ProfileRegistry.fetch_alias(@profiles, :openai, model, canonical_id)
 
       restricted_chat_model?(model) and not MapSet.member?(@openai_frontier_ids, model) ->
         non_frontier_model_error(model)
@@ -611,18 +563,6 @@ defmodule BeamWeaver.Models.ProfileRegistry.OpenAI do
       true ->
         ProfileRegistry.fetch_or_fallback(@profiles, :openai, model)
     end
-  end
-
-  defp deprecated_model_error(model) do
-    replacement = Map.fetch!(@openai_deprecated_models, model)
-
-    {:error,
-     Error.new(:deprecated_model, "OpenAI model is deprecated", %{
-       provider: :openai,
-       model: model,
-       replacement: replacement,
-       expected: "openai:#{replacement}"
-     })}
   end
 
   defp non_frontier_model_error(model) do
@@ -638,26 +578,5 @@ defmodule BeamWeaver.Models.ProfileRegistry.OpenAI do
      })}
   end
 
-  defp alias_profile(alias_id, canonical_id) do
-    case Map.fetch(@profiles, {:openai, canonical_id}) do
-      {:ok, profile} ->
-        extra =
-          profile.extra
-          |> Map.put(:canonical_model, canonical_id)
-          |> Map.put(:alias_model, alias_id)
-
-        {:ok, %{profile | id: alias_id, name: "#{profile.name} (alias)", extra: extra}}
-
-      :error ->
-        {:fallback, :openai, alias_id}
-    end
-  end
-
-  defp restricted_chat_model?("gpt-" <> _rest), do: true
-
-  defp restricted_chat_model?(model) when is_binary(model) do
-    String.match?(model, ~r/^o\d/)
-  end
-
-  defp restricted_chat_model?(_model), do: false
+  defp restricted_chat_model?(model), do: is_binary(model) and String.match?(model, ~r/^(gpt-|o\d)/)
 end

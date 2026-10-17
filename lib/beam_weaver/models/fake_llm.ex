@@ -3,7 +3,6 @@ defmodule BeamWeaver.Models.FakeLLM do
 
   @behaviour BeamWeaver.Core.LLM
 
-  alias BeamWeaver.Core.LanguageModel
   alias BeamWeaver.Models.ParamPolicy
 
   defstruct id: nil,
@@ -55,11 +54,7 @@ defmodule BeamWeaver.Models.FakeLLM do
     with {:ok, response} <- complete(model, prompt, opts), do: {:ok, [response]}
   end
 
-  def count_tokens(%__MODULE__{tokenizer: nil}, input, _opts),
-    do: {:ok, LanguageModel.count_tokens_approximately(input)}
-
-  def count_tokens(%__MODULE__{tokenizer: tokenizer}, input, opts),
-    do: LanguageModel.count_tokens({:tokenizer, tokenizer}, input, opts)
+  defdelegate count_tokens(model, input, opts), to: BeamWeaver.Models.FakeChatModel
 
   defp next_response(%__MODULE__{responses: responses} = model)
        when is_list(responses) and responses != [] do

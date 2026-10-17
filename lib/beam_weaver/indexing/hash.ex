@@ -14,7 +14,7 @@ defmodule BeamWeaver.Indexing.Hash do
   end
 
   @spec with_hashed_id(Document.t(), keyword()) :: {:ok, Document.t()} | {:error, Error.t()}
-  def with_hashed_id(%Document{} = document, opts \\ []) do
+  def with_hashed_id(%Document{} = document, opts) do
     encoder = Keyword.get(opts, :key_encoder, :sha256)
 
     with {:ok, id} <- document_hash_id(document, encoder) do
@@ -28,22 +28,14 @@ defmodule BeamWeaver.Indexing.Hash do
   @spec hash_string(String.t(), atom() | String.t()) :: {:ok, String.t()} | {:error, Error.t()}
   def hash_string(text, algorithm) when is_binary(text) do
     case normalize_hash_algorithm(algorithm) do
-      {:ok, :sha1} ->
-        {:ok, uuid5(hash_digest(text, :sha1))}
-
-      {:ok, algorithm} ->
-        {:ok, hash_digest(text, algorithm)}
-
-      {:error, %Error{} = error} ->
-        {:error, error}
+      {:ok, :sha1} -> {:ok, uuid5(digest(:sha, text))}
+      {:ok, algorithm} -> {:ok, digest(algorithm, text)}
+      error -> error
     end
   end
 
-  defp document_hash_id(%Document{} = document, encoder) when is_function(encoder, 1) do
-    {:ok, encoder.(document) |> to_string()}
-  rescue
-    exception -> {:error, Error.new(:document_hash_error, Exception.message(exception))}
-  end
+  defp document_hash_id(%Document{} = document, encoder) when is_function(encoder, 1),
+    do: {:ok, encoder.(document) |> to_string()}
 
   defp document_hash_id(%Document{} = document, encoder) do
     with {:ok, algorithm} <- normalize_hash_algorithm(encoder),
@@ -72,11 +64,6 @@ defmodule BeamWeaver.Indexing.Hash do
      })}
   end
 
-  defp hash_digest(text, :sha1), do: digest(:sha, text)
-  defp hash_digest(text, :sha256), do: digest(:sha256, text)
-  defp hash_digest(text, :sha512), do: digest(:sha512, text)
-  defp hash_digest(text, :blake2b), do: digest(:blake2b, text)
-
   defp digest(algorithm, text) do
     algorithm
     |> :crypto.hash(text)
@@ -89,14 +76,7 @@ defmodule BeamWeaver.Indexing.Hash do
     c = (c &&& 0x0FFF) ||| 0x5000
     d = (d &&& 0x3FFF) ||| 0x8000
 
-    [
-      Base.encode16(<<a::32>>, case: :lower),
-      Base.encode16(<<b::16>>, case: :lower),
-      Base.encode16(<<c::16>>, case: :lower),
-      Base.encode16(<<d::16>>, case: :lower),
-      Base.encode16(<<e::48>>, case: :lower)
-    ]
-    |> Enum.join("-")
+    BeamWeaver.Core.ID.format_uuid(<<a::32, b::16, c::16, d::16, e::48>>)
   end
 
   defp canonical_json(value) do

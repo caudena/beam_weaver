@@ -22,13 +22,9 @@ defmodule BeamWeaver.Prompt.Examples do
   end
 
   def validate_few_shot_sources(%{example_selector: nil}), do: :ok
+  def validate_few_shot_sources(%{examples: examples}) when examples in [nil, []], do: :ok
 
-  def validate_few_shot_sources(%{examples: examples, example_selector: selector})
-      when not is_nil(selector) and examples in [nil, []],
-      do: :ok
-
-  def validate_few_shot_sources(%{examples: examples, example_selector: selector})
-      when not is_nil(selector) do
+  def validate_few_shot_sources(%{examples: examples}) do
     {:error,
      Error.new(
        :invalid_prompt,

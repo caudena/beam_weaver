@@ -17,7 +17,7 @@ defmodule BeamWeaver.Tool.Schema do
   """
   @spec from(term()) :: {:ok, map()} | {:error, Error.t()}
   def from(%module{}), do: from(module)
-  def from(map) when is_map(map), do: {:ok, Fields.stringify_schema(map)}
+  def from(map) when is_map(map), do: {:ok, BeamWeaver.MapShape.stringify_keys(map)}
   def from([]), do: {:ok, Fields.from_fields([])}
 
   def from(list) when is_list(list) do
@@ -26,7 +26,7 @@ defmodule BeamWeaver.Tool.Schema do
         Fields.from_nimble_options(list)
 
       Enum.all?(list, &field_decl?/1) ->
-        {:ok, list |> Enum.map(&field_decl/1) |> Fields.from_fields()}
+        {:ok, Fields.from_fields(list)}
 
       true ->
         {:error, Error.new(:invalid_tool_schema, "list schema must be field declarations or NimbleOptions specs")}
@@ -34,7 +34,7 @@ defmodule BeamWeaver.Tool.Schema do
   end
 
   def from(module) when is_atom(module) do
-    if Code.ensure_loaded?(module) and function_exported?(module, :__beam_weaver_schema__, 0),
+    if BeamWeaver.Behaviour.exported?(module, :__beam_weaver_schema__, 0),
       do: from(module.__beam_weaver_schema__()),
       else: Fields.from_ecto_schema(module)
   end
@@ -46,9 +46,6 @@ defmodule BeamWeaver.Tool.Schema do
   defp field_decl?({name, _type}) when is_atom(name) or is_binary(name), do: true
   defp field_decl?({name, _type, opts}) when (is_atom(name) or is_binary(name)) and is_list(opts), do: true
   defp field_decl?(_entry), do: false
-
-  defp field_decl({name, type}), do: {name, type, []}
-  defp field_decl({name, type, opts}), do: {name, type, opts}
 
   defp nimble_option?({name, opts}) when (is_atom(name) or is_binary(name)) and is_list(opts),
     do: Keyword.keyword?(opts) and Keyword.has_key?(opts, :type)
@@ -82,19 +79,4 @@ defmodule BeamWeaver.Tool.Schema do
   """
   @spec remove_titles(term()) :: term()
   defdelegate remove_titles(schema), to: Refs
-
-  @doc false
-  defdelegate normalize_key(key), to: Fields
-
-  @doc false
-  defdelegate string_property_names(schema), to: Fields
-
-  @doc false
-  defdelegate stringify_schema(map), to: Fields
-
-  @doc false
-  defdelegate from_nimble_options(opts), to: Fields
-
-  @doc false
-  defdelegate from_ecto_schema(module), to: Fields
 end

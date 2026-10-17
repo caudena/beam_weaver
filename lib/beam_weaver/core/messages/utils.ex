@@ -174,14 +174,10 @@ defmodule BeamWeaver.Core.Messages.Utils do
   defp excluded_name?(message, opts), do: in_opt?(message.name, opts, :exclude_names)
 
   defp included_role?(message, opts),
-    do:
-      in_role_opt?(Atom.to_string(message.role), opts, :include_roles) or
-        in_role_opt?(Atom.to_string(message.role), opts, :include_types)
+    do: in_opt?(message.role, opts, :include_roles) or in_opt?(message.role, opts, :include_types)
 
   defp excluded_role?(message, opts),
-    do:
-      in_role_opt?(Atom.to_string(message.role), opts, :exclude_roles) or
-        in_role_opt?(Atom.to_string(message.role), opts, :exclude_types)
+    do: in_opt?(message.role, opts, :exclude_roles) or in_opt?(message.role, opts, :exclude_types)
 
   defp included_id?(message, opts), do: in_opt?(message.id, opts, :include_ids)
   defp excluded_id?(message, opts), do: in_opt?(message.id, opts, :exclude_ids)
@@ -191,32 +187,23 @@ defmodule BeamWeaver.Core.Messages.Utils do
   defp in_opt?(value, opts, key),
     do: to_string(value) in Enum.map(List.wrap(Keyword.get(opts, key)), &to_string/1)
 
-  defp in_role_opt?(value, opts, key),
-    do:
-      to_string(value) in Enum.map(
-        List.wrap(Keyword.get(opts, key)),
-        &to_string/1
-      )
-
   defp filter_tool_call_ids(%Message{role: :tool, tool_call_id: id} = message, excluded) do
     if id in excluded, do: [], else: [message]
   end
 
   defp filter_tool_call_ids(%Message{role: :assistant, tool_calls: calls} = message, excluded)
        when calls != [] do
-    calls = Enum.reject(calls, &(tool_call_id(&1) in excluded))
+    calls = Enum.reject(calls, &(Map.get(&1, :id) in excluded))
     content = reject_tool_use_blocks(message.content, excluded)
     if calls == [], do: [], else: [%{message | tool_calls: calls, content: content}]
   end
 
   defp filter_tool_call_ids(message, _excluded), do: [message]
 
-  defp tool_call_id(call) when is_map(call), do: Map.get(call, :id)
-
   defp reject_tool_use_blocks(content, excluded) when is_list(content) do
     Enum.reject(content, fn
       block when is_map(block) ->
-        Map.get(block, :type) == :tool_use and tool_call_id(block) in excluded
+        Map.get(block, :type) == :tool_use and Map.get(block, :id) in excluded
 
       _block ->
         false
@@ -248,7 +235,6 @@ defmodule BeamWeaver.Core.Messages.Utils do
 
   defp merge_content(left, right, _separator), do: List.wrap(left) ++ List.wrap(right)
 
-  defp merge_usage_metadata(nil, nil), do: nil
   defp merge_usage_metadata(nil, right), do: right
   defp merge_usage_metadata(left, nil), do: left
 

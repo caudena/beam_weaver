@@ -27,14 +27,12 @@ defmodule BeamWeaver.Models.StructuredOutput do
         |> Strategy.normalize()
         |> Strategy.effective_strategy(model, Keyword.get(call_opts, :tools, []))
 
+      setup_tools = Strategy.setup_tools(strategy)
+
       call_opts =
         call_opts
         |> Keyword.merge(provider_opts(strategy))
-        |> Keyword.update(
-          :tools,
-          Strategy.setup_tools(strategy),
-          &(List.wrap(&1) ++ Strategy.setup_tools(strategy))
-        )
+        |> Keyword.update(:tools, setup_tools, &(List.wrap(&1) ++ setup_tools))
 
       with {:ok, message} <- ChatModel.invoke(model, messages, call_opts),
            {:ok, response} <- Strategy.handle_model_output(message, strategy) do

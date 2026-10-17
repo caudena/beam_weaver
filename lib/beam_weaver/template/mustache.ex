@@ -2,9 +2,8 @@ defmodule BeamWeaver.Template.Mustache do
   @moduledoc false
 
   alias BeamWeaver.Core.Error
+  alias BeamWeaver.Result
   alias BeamWeaver.Template.Simple
-
-  def render(template, vars, opts \\ [])
 
   def render(template, vars, _opts) when is_binary(template) and is_map(vars) do
     with {:ok, nodes} <- parse(template) do
@@ -25,17 +24,13 @@ defmodule BeamWeaver.Template.Mustache do
   def variables(_template), do: []
 
   defp parse(template) do
-    with {:ok, nodes, position} <- parse_until(template, 0, nil) do
+    with {:ok, nodes, position} <- do_parse_until(template, 0, nil, []) do
       if position == byte_size(template) do
         {:ok, nodes}
       else
         {:error, Error.new(:invalid_prompt_template, "mustache template is invalid")}
       end
     end
-  end
-
-  defp parse_until(template, position, closing_name) do
-    do_parse_until(template, position, closing_name, [])
   end
 
   defp do_parse_until(template, position, closing_name, acc) do
@@ -84,18 +79,9 @@ defmodule BeamWeaver.Template.Mustache do
                 {:ok, Enum.reverse(acc), after_tag}
             end
 
-          {:ok, {:section, name}} ->
-            with {:ok, children, after_section} <- parse_until(template, after_tag, name) do
-              do_parse_until(template, after_section, closing_name, [
-                {:section, name, children} | acc
-              ])
-            end
-
-          {:ok, {:inverted, name}} ->
-            with {:ok, children, after_section} <- parse_until(template, after_tag, name) do
-              do_parse_until(template, after_section, closing_name, [
-                {:inverted, name, children} | acc
-              ])
+          {:ok, {kind, name}} when kind in [:section, :inverted] ->
+            with {:ok, children, after_section} <- do_parse_until(template, after_tag, name, []) do
+              do_parse_until(template, after_section, closing_name, [{kind, name, children} | acc])
             end
 
           {:ok, {:var, name}} ->
@@ -134,46 +120,25 @@ defmodule BeamWeaver.Template.Mustache do
   end
 
   defp parse_tag(tag) do
-    tag = String.trim(tag)
-
-    cond do
-      tag == "" ->
-        {:error, Error.new(:invalid_prompt_template, "mustache tag cannot be empty")}
-
-      String.starts_with?(tag, "!") ->
-        {:ok, :comment}
-
-      String.starts_with?(tag, "#") ->
-        with {:ok, name} <- variable_name(String.trim_leading(tag, "#")) do
-          {:ok, {:section, name}}
-        end
-
-      String.starts_with?(tag, "^") ->
-        with {:ok, name} <- variable_name(String.trim_leading(tag, "^")) do
-          {:ok, {:inverted, name}}
-        end
-
-      String.starts_with?(tag, "/") ->
-        with {:ok, name} <- variable_name(String.trim_leading(tag, "/")) do
-          {:ok, {:close, name}}
-        end
-
-      String.starts_with?(tag, "&") ->
-        with {:ok, name} <- variable_name(String.trim_leading(tag, "&")) do
-          {:ok, {:var, name}}
-        end
-
-      true ->
-        with {:ok, name} <- variable_name(tag) do
-          {:ok, {:var, name}}
-        end
+    case String.trim(tag) do
+      "" -> {:error, Error.new(:invalid_prompt_template, "mustache tag cannot be empty")}
+      "!" <> _comment -> {:ok, :comment}
+      "#" <> _name = tag -> tagged(:section, String.trim_leading(tag, "#"))
+      "^" <> _name = tag -> tagged(:inverted, String.trim_leading(tag, "^"))
+      "/" <> _name = tag -> tagged(:close, String.trim_leading(tag, "/"))
+      "&" <> _name = tag -> tagged(:var, String.trim_leading(tag, "&"))
+      tag -> tagged(:var, tag)
     end
+  end
+
+  defp tagged(kind, tag) do
+    with {:ok, name} <- variable_name(tag), do: {:ok, {kind, name}}
   end
 
   defp variable_name(tag) do
     name = String.trim(tag)
 
-    if valid_variable?(name) do
+    if name == "." or Simple.valid_variable?(name) do
       {:ok, name}
     else
       {:error,
@@ -183,25 +148,11 @@ defmodule BeamWeaver.Template.Mustache do
     end
   end
 
-  defp valid_variable?("."), do: true
-
-  defp valid_variable?(name) do
-    Regex.match?(~r/^[a-zA-Z_][a-zA-Z0-9_]*(?:\.[a-zA-Z_][a-zA-Z0-9_]*)*$/, name) and
-      name
-      |> String.split(".")
-      |> Enum.all?(&(not String.starts_with?(&1, "__")))
-  end
-
   defp add_text(acc, ""), do: acc
   defp add_text(acc, text), do: [{:text, text} | acc]
 
   defp render_nodes(nodes, stack) do
-    Enum.reduce_while(nodes, {:ok, ""}, fn node, {:ok, acc} ->
-      case render_node(node, stack) do
-        {:ok, rendered} -> {:cont, {:ok, acc <> rendered}}
-        {:error, %Error{} = error} -> {:halt, {:error, error}}
-      end
-    end)
+    with {:ok, rendered} <- Result.traverse(nodes, &render_node(&1, stack)), do: {:ok, Enum.join(rendered)}
   end
 
   defp render_node({:text, text}, _stack), do: {:ok, text}
@@ -231,13 +182,9 @@ defmodule BeamWeaver.Template.Mustache do
   end
 
   defp render_section(values, children, stack) when is_list(values) do
-    values
-    |> Enum.reduce_while({:ok, ""}, fn value, {:ok, acc} ->
-      case render_nodes(children, [value | stack]) do
-        {:ok, rendered} -> {:cont, {:ok, acc <> rendered}}
-        {:error, %Error{} = error} -> {:halt, {:error, error}}
-      end
-    end)
+    with {:ok, rendered} <- Result.traverse(values, &render_nodes(children, [&1 | stack])) do
+      {:ok, Enum.join(rendered)}
+    end
   end
 
   defp render_section(value, children, stack) do
@@ -264,10 +211,7 @@ defmodule BeamWeaver.Template.Mustache do
   defp truthy?(map) when is_map(map), do: map_size(map) > 0
   defp truthy?(_value), do: true
 
-  defp stringify(nil), do: ""
-  defp stringify([]), do: ""
-  defp stringify(map) when is_map(map) and map_size(map) == 0, do: ""
-  defp stringify(value) when is_binary(value), do: value
+  defp stringify(map) when map == %{}, do: ""
   defp stringify(value), do: to_string(value)
 
   defp collect_variables(nodes, inside_section?) do
@@ -281,10 +225,7 @@ defmodule BeamWeaver.Template.Mustache do
       {:var, _name} ->
         []
 
-      {:section, name, children} ->
-        [top_level(name) | collect_variables(children, true)]
-
-      {:inverted, name, children} ->
+      {_section, name, children} ->
         [top_level(name) | collect_variables(children, true)]
 
       {:text, _text} ->

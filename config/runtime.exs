@@ -18,13 +18,6 @@ if config_env() != :test do
     |> Enum.find_value(non_blank)
   end
 
-  bool_env = fn name ->
-    case non_blank.(name) do
-      nil -> nil
-      value -> String.downcase(value) in ["1", "true", "yes", "on"]
-    end
-  end
-
   compact = fn values ->
     values
     |> Enum.reject(fn {_key, value} -> is_nil(value) end)
@@ -110,39 +103,6 @@ if config_env() != :test do
              beta_base_url: first_env.(["DEEPSEEK_BETA_BASE_URL", "DEEPSEEK_BETA_API_URL"]),
              anthropic_base_url: first_env.(["DEEPSEEK_ANTHROPIC_BASE_URL", "DEEPSEEK_ANTHROPIC_API_URL"])
            )
-         )
-
-  provider_api_keys =
-    compact.(
-      openai: non_blank.("OPENAI_API_KEY"),
-      anthropic: non_blank.("ANTHROPIC_API_KEY"),
-      google: google_api_key,
-      xai: non_blank.("XAI_API_KEY"),
-      moonshot: non_blank.("MOONSHOT_API_KEY"),
-      zai: non_blank.("ZAI_API_KEY"),
-      deepseek: non_blank.("DEEPSEEK_API_KEY")
-    )
-
-  sandbox_env = non_blank.("BEAM_WEAVER_DEEPAGENTS_SANDBOX")
-
-  eval_overrides =
-    compact.(
-      deep_agents_harbor?: bool_env.("BEAM_WEAVER_DEEPAGENTS_HARBOR"),
-      external_sandbox?: if(sandbox_env, do: sandbox_env in ["1", "true", "TRUE", "docker"], else: nil)
-    )
-
-  eval_overrides =
-    if provider_api_keys == [] do
-      eval_overrides
-    else
-      Keyword.put(eval_overrides, :provider_api_keys, provider_api_keys)
-    end
-
-  config :beam_weaver,
-         :evals,
-         Keyword.merge(
-           Application.get_env(:beam_weaver, :evals, []),
-           eval_overrides
          )
 end
 

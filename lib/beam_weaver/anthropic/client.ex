@@ -10,8 +10,10 @@ defmodule BeamWeaver.Anthropic.Client do
   alias BeamWeaver.Anthropic.Streaming
   alias BeamWeaver.Config
   alias BeamWeaver.Provider.HTTPClient
+  alias BeamWeaver.Provider.OpenAICompatibleClient, as: Compat
   alias BeamWeaver.Provider.Options, as: ProviderOptions
   alias BeamWeaver.Provider.ResponseDecoder
+  alias BeamWeaver.Transport.Request
   alias BeamWeaver.Transport.Response
 
   @default_base_url "https://api.anthropic.com"
@@ -70,11 +72,8 @@ defmodule BeamWeaver.Anthropic.Client do
   end
 
   @spec messages(t(), map(), keyword()) :: {:ok, map()} | {:error, Error.t()}
-  def messages(%__MODULE__{} = client, body, opts \\ []) when is_map(body) do
-    client
-    |> do_request(body, opts)
-    |> decode_result(opts)
-  end
+  def messages(%__MODULE__{} = client, body, opts \\ []) when is_map(body),
+    do: client |> do_request(body, opts) |> ResponseDecoder.json([header_fields: @header_fields] ++ decoder_opts(opts))
 
   @spec messages_stream(t(), map(), keyword()) ::
           {:ok, Enumerable.t()} | {:error, Error.t()}
@@ -84,7 +83,7 @@ defmodule BeamWeaver.Anthropic.Client do
   @spec messages_stream_response(t(), map(), keyword()) ::
           {:ok, map()} | {:error, Error.t()}
   def messages_stream_response(%__MODULE__{} = client, body, opts \\ []) when is_map(body),
-    do: do_stream_collect(client, body, opts, &Streaming.response/1)
+    do: client |> http_client(opts) |> HTTPClient.collect_sse(body, opts, &decode_stream(&1, opts))
 
   @spec messages_stream_events(t(), map(), keyword()) ::
           {:ok, Enumerable.t()} | {:error, Error.t()}
@@ -102,15 +101,13 @@ defmodule BeamWeaver.Anthropic.Client do
       end)
     end
 
-    parser = &Streaming.reply_typed_events/2
-
     client
     |> http_client(opts)
     |> HTTPClient.stream_typed_sse(
       body,
       Keyword.put(opts, :parser_finalizer, finish),
-      parser,
-      &decode_stream(&1, parser, opts)
+      &Streaming.reply_typed_events/2,
+      &decode_stream(&1, opts)
     )
   end
 
@@ -127,9 +124,7 @@ defmodule BeamWeaver.Anthropic.Client do
   end
 
   @spec endpoint(String.t(), String.t()) :: String.t()
-  def endpoint(base_url, path) do
-    String.trim_trailing(to_string(base_url), "/") <> "/" <> String.trim_leading(path, "/")
-  end
+  def endpoint(base_url, path), do: Compat.endpoint(base_url, path)
 
   defp do_request(%__MODULE__{} = client, body, opts) do
     client |> http_client(opts) |> HTTPClient.post_json(body, opts)
@@ -138,22 +133,7 @@ defmodule BeamWeaver.Anthropic.Client do
   defp do_stream(%__MODULE__{} = client, body, opts, parser) do
     client
     |> http_client(opts)
-    |> HTTPClient.stream_sse(body, opts, parser, &decode_stream(&1, parser, opts))
-  end
-
-  defp do_stream_collect(%__MODULE__{} = client, body, opts, parser) do
-    client
-    |> http_client(opts)
-    |> HTTPClient.collect_sse(body, opts, &decode_stream(&1, parser, opts))
-  end
-
-  defp decode_result(result, opts) do
-    with {:ok, decoded} <- ResponseDecoder.json(result, decoder_opts(opts)) do
-      case {result, Keyword.get(opts, :decode_response_headers, true)} do
-        {{:ok, %Response{headers: headers}}, true} -> {:ok, attach_header_metadata(decoded, headers)}
-        _other -> {:ok, decoded}
-      end
-    end
+    |> HTTPClient.stream_sse(body, opts, parser, &decode_stream(&1, opts))
   end
 
   defp http_client(%__MODULE__{} = client, opts) do
@@ -172,51 +152,28 @@ defmodule BeamWeaver.Anthropic.Client do
   defp headers(%__MODULE__{} = client, opts) do
     betas = Keyword.get(opts, :betas, client.betas) |> List.wrap() |> Enum.reject(&is_nil/1)
 
-    [
-      {"anthropic-version", Keyword.get(opts, :anthropic_version, client.anthropic_version)}
-    ]
-    |> maybe_put_user_profile_header(Keyword.get(opts, :user_profile_id, client.user_profile_id))
-    |> maybe_put_workspace_header(Keyword.get(opts, :workspace_id, client.workspace_id))
-    |> maybe_put_beta_header(betas)
-    |> Kernel.++(BeamWeaver.Transport.Request.normalize_headers(client.default_headers))
+    optional =
+      for {name, value} <- [
+            {"anthropic-beta", if(betas != [], do: Enum.join(betas, ","))},
+            {"anthropic-workspace-id", Keyword.get(opts, :workspace_id, client.workspace_id)},
+            {"anthropic-user-profile-id", Keyword.get(opts, :user_profile_id, client.user_profile_id)}
+          ],
+          not is_nil(value),
+          do: {name, to_string(value)}
+
+    optional ++
+      [{"anthropic-version", Keyword.get(opts, :anthropic_version, client.anthropic_version)}] ++
+      Request.normalize_headers(client.default_headers)
   end
 
-  defp maybe_put_beta_header(headers, []), do: headers
-
-  defp maybe_put_beta_header(headers, betas),
-    do: [{"anthropic-beta", Enum.join(betas, ",")} | headers]
-
-  defp maybe_put_user_profile_header(headers, nil), do: headers
-
-  defp maybe_put_user_profile_header(headers, user_profile_id),
-    do: [{"anthropic-user-profile-id", to_string(user_profile_id)} | headers]
-
-  defp maybe_put_workspace_header(headers, nil), do: headers
-
-  defp maybe_put_workspace_header(headers, workspace_id),
-    do: [{"anthropic-workspace-id", to_string(workspace_id)} | headers]
-
-  defp decode_stream(result, parser, opts) do
+  defp decode_stream(result, opts) do
     ResponseDecoder.decode(result, decoder_opts(), fn response ->
-      {:ok, response.body |> parse_stream_body(parser) |> maybe_attach_stream_headers(response, opts)}
+      {:ok, response.body |> Streaming.response() |> maybe_attach_stream_headers(response, opts)}
     end)
   end
 
-  defp parse_stream_body(body, parser) when is_function(parser, 1), do: parser.(body)
-  defp parse_stream_body(body, parser) when is_function(parser, 2), do: body |> parser.(nil) |> elem(0)
-
-  defp maybe_attach_stream_headers(decoded, %Response{} = response, opts) when is_map(decoded) do
-    decoded = attach_header_metadata(decoded, response.headers)
-
-    if Keyword.get(opts, :include_response_headers, false),
-      do: Map.put(decoded, "_beamweaver_response_headers", Map.new(response.headers)),
-      else: decoded
-  end
-
-  defp maybe_attach_stream_headers(decoded, _response, _opts), do: decoded
-
-  defp attach_header_metadata(decoded, headers),
-    do: ResponseDecoder.attach_header_metadata(decoded, ResponseDecoder.header_metadata(headers, @header_fields))
+  defp maybe_attach_stream_headers(decoded, %Response{} = response, opts),
+    do: ResponseDecoder.attach_headers(decoded, response, [header_fields: @header_fields] ++ decoder_opts(opts))
 
   defp decoder_opts(opts \\ []) do
     [

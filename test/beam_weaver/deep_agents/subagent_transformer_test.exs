@@ -1,8 +1,6 @@
 defmodule BeamWeaver.Agent.Subagent.StreamTransformerTest do
   use ExUnit.Case, async: true
 
-  # Upstream reference:
-
   alias BeamWeaver.Agent.Subagent.RunStream
   alias BeamWeaver.Agent.Subagent.StreamTransformer
   alias BeamWeaver.Core.Error

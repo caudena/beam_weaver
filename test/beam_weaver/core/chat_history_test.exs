@@ -1,8 +1,6 @@
 defmodule BeamWeaver.Core.ChatHistoryTest do
   use ExUnit.Case, async: true
 
-  # Upstream reference:
-
   alias BeamWeaver.Core.ChatHistory
   alias BeamWeaver.Core.Error
   alias BeamWeaver.Core.Message

@@ -10,28 +10,14 @@ defmodule BeamWeaver.Prompt.Spec do
   alias BeamWeaver.Result
 
   def to_spec(%Prompt.StringTemplate{} = prompt) do
-    with :ok <- exportable_partials(prompt.partials) do
-      {:ok,
-       %{
-         "type" => "prompt_string",
-         "template" => prompt.template,
-         "partials" => prompt.partials,
-         "template_format" => to_string(prompt.template_format)
-       }}
-    end
+    with :ok <- exportable_partials(prompt.partials),
+         do: {:ok, templated(prompt, %{"type" => "prompt_string", "template" => prompt.template})}
   end
 
   def to_spec(%Prompt.ChatTemplate{} = prompt) do
     with :ok <- exportable_partials(prompt.partials),
-         {:ok, messages} <- message_specs(prompt.messages, prompt.template_format) do
-      {:ok,
-       %{
-         "type" => "prompt_chat",
-         "messages" => messages,
-         "partials" => prompt.partials,
-         "template_format" => to_string(prompt.template_format)
-       }}
-    end
+         {:ok, messages} <- message_specs(prompt.messages, prompt.template_format),
+         do: {:ok, templated(prompt, %{"type" => "prompt_chat", "messages" => messages})}
   end
 
   def to_spec(%Prompt.FewShotTemplate{} = prompt) do
@@ -39,16 +25,14 @@ defmodule BeamWeaver.Prompt.Spec do
          :ok <- exportable_selector(prompt.example_selector),
          {:ok, example_prompt} <- maybe_to_spec(prompt.example_prompt) do
       {:ok,
-       %{
+       templated(prompt, %{
          "type" => "prompt_few_shot",
          "examples" => prompt.examples || [],
          "example_prompt" => example_prompt,
          "prefix" => prompt.prefix,
          "suffix" => prompt.suffix,
-         "example_separator" => prompt.example_separator,
-         "partials" => prompt.partials,
-         "template_format" => to_string(prompt.template_format)
-       }}
+         "example_separator" => prompt.example_separator
+       })}
     end
   end
 
@@ -59,29 +43,21 @@ defmodule BeamWeaver.Prompt.Spec do
          {:ok, prefix_messages} <- message_specs(prompt.prefix_messages, prompt.template_format),
          {:ok, suffix_messages} <- message_specs(prompt.suffix_messages, prompt.template_format) do
       {:ok,
-       %{
+       templated(prompt, %{
          "type" => "prompt_few_shot_chat",
          "examples" => prompt.examples || [],
          "example_prompt" => example_prompt,
          "prefix_messages" => prefix_messages,
-         "suffix_messages" => suffix_messages,
-         "partials" => prompt.partials,
-         "template_format" => to_string(prompt.template_format)
-       }}
+         "suffix_messages" => suffix_messages
+       })}
     end
   end
 
   def to_spec(%Prompt.MessageTemplate{} = template) do
     with :ok <- exportable_partials(template.partials),
          {:ok, _role} <- role(template.role) do
-      {:ok,
-       %{
-         "kind" => "message_template",
-         "role" => to_string(template.role),
-         "template" => template.template,
-         "partials" => template.partials,
-         "template_format" => to_string(template.template_format)
-       }}
+      spec = %{"kind" => "message_template", "role" => to_string(template.role), "template" => template.template}
+      {:ok, templated(template, spec)}
     end
   end
 
@@ -97,27 +73,13 @@ defmodule BeamWeaver.Prompt.Spec do
 
   def to_spec(%Prompt.ImageTemplate{} = template) do
     with :ok <- exportable_partials(template.partials) do
-      {:ok,
-       %{
-         "kind" => "image_template",
-         "url" => template.url,
-         "detail" => template.detail,
-         "partials" => template.partials,
-         "template_format" => to_string(template.template_format)
-       }}
+      {:ok, templated(template, %{"kind" => "image_template", "url" => template.url, "detail" => template.detail})}
     end
   end
 
   def to_spec(%Prompt.DictTemplate{} = template) do
-    with :ok <- exportable_partials(template.partials) do
-      {:ok,
-       %{
-         "kind" => "dict_template",
-         "template" => template.template,
-         "partials" => template.partials,
-         "template_format" => to_string(template.template_format)
-       }}
-    end
+    with :ok <- exportable_partials(template.partials),
+         do: {:ok, templated(template, %{"kind" => "dict_template", "template" => template.template})}
   end
 
   def to_spec(%Prompt.StructuredTemplate{} = prompt) do
@@ -145,22 +107,11 @@ defmodule BeamWeaver.Prompt.Spec do
     {:error, Error.new(:unsupported_runnable_spec, "prompt part cannot be saved", %{part: inspect(other)})}
   end
 
-  def from_spec(%{"type" => "prompt_string"} = spec) do
-    {:ok,
-     Prompt.string(Map.fetch!(spec, "template"),
-       partials: Map.get(spec, "partials", %{}),
-       template_format: format(Map.get(spec, "template_format", "simple"))
-     )}
-  end
+  def from_spec(%{"type" => "prompt_string"} = spec),
+    do: {:ok, Prompt.string(Map.fetch!(spec, "template"), template_opts(spec))}
 
   def from_spec(%{"type" => "prompt_chat", "messages" => messages} = spec) do
-    with {:ok, messages} <- from_message_specs(messages) do
-      {:ok,
-       Prompt.chat(messages,
-         partials: Map.get(spec, "partials", %{}),
-         template_format: format(Map.get(spec, "template_format", "simple"))
-       )}
-    end
+    with {:ok, messages} <- from_message_specs(messages), do: {:ok, Prompt.chat(messages, template_opts(spec))}
   end
 
   def from_spec(%{"type" => "prompt_few_shot"} = spec) do
@@ -170,10 +121,9 @@ defmodule BeamWeaver.Prompt.Spec do
           examples: Map.get(spec, "examples", []),
           prefix: Map.get(spec, "prefix"),
           suffix: Map.get(spec, "suffix"),
-          example_separator: Map.get(spec, "example_separator", "\n\n"),
-          partials: Map.get(spec, "partials", %{}),
-          template_format: format(Map.get(spec, "template_format", "simple"))
+          example_separator: Map.get(spec, "example_separator", "\n\n")
         ]
+        |> Kernel.++(template_opts(spec))
         |> put_present(:example_prompt, example_prompt)
 
       {:ok, Prompt.few_shot(opts)}
@@ -188,10 +138,9 @@ defmodule BeamWeaver.Prompt.Spec do
         [
           examples: Map.get(spec, "examples", []),
           prefix_messages: prefix_messages,
-          suffix_messages: suffix_messages,
-          partials: Map.get(spec, "partials", %{}),
-          template_format: format(Map.get(spec, "template_format", "simple"))
+          suffix_messages: suffix_messages
         ]
+        |> Kernel.++(template_opts(spec))
         |> put_present(:example_prompt, example_prompt)
 
       {:ok, Prompt.few_shot_chat(opts)}
@@ -206,29 +155,20 @@ defmodule BeamWeaver.Prompt.Spec do
 
   def from_spec(%{"type" => "prompt_structured_chat", "messages" => messages} = spec) do
     with {:ok, messages} <- from_message_specs(messages) do
-      {:ok,
-       Prompt.structured_chat(messages, Map.fetch!(spec, "schema"),
-         partials: Map.get(spec, "partials", %{}),
-         template_format: format(Map.get(spec, "template_format", "simple")),
-         structured_output_opts: Map.get(spec, "structured_output_opts", %{})
-       )}
+      opts = [structured_output_opts: Map.get(spec, "structured_output_opts", %{})] ++ template_opts(spec)
+      {:ok, Prompt.structured_chat(messages, Map.fetch!(spec, "schema"), opts)}
     end
   end
 
   def from_spec(spec),
     do: {:error, Error.new(:invalid_runnable_spec, "invalid prompt spec", %{spec: spec})}
 
-  def from_message_spec(%{"kind" => "message_template"} = spec) do
-    with {:ok, role} <- role(Map.fetch!(spec, "role")) do
-      {:ok,
-       Prompt.message(role, Map.fetch!(spec, "template"),
-         partials: Map.get(spec, "partials", %{}),
-         template_format: format(Map.get(spec, "template_format", "simple"))
-       )}
-    end
+  defp from_message_spec(%{"kind" => "message_template"} = spec) do
+    with {:ok, role} <- role(Map.fetch!(spec, "role")),
+         do: {:ok, Prompt.message(role, Map.fetch!(spec, "template"), template_opts(spec))}
   end
 
-  def from_message_spec(%{"kind" => "messages_placeholder"} = spec) do
+  defp from_message_spec(%{"kind" => "messages_placeholder"} = spec) do
     {:ok,
      Prompt.placeholder(Map.fetch!(spec, "variable_name"),
        optional: Map.get(spec, "optional", false),
@@ -236,26 +176,15 @@ defmodule BeamWeaver.Prompt.Spec do
      )}
   end
 
-  def from_message_spec(%{"kind" => "image_template"} = spec) do
-    {:ok,
-     Prompt.image(Map.fetch!(spec, "url"),
-       detail: Map.get(spec, "detail"),
-       partials: Map.get(spec, "partials", %{}),
-       template_format: format(Map.get(spec, "template_format", "simple"))
-     )}
-  end
+  defp from_message_spec(%{"kind" => "image_template"} = spec),
+    do: {:ok, Prompt.image(Map.fetch!(spec, "url"), [detail: Map.get(spec, "detail")] ++ template_opts(spec))}
 
-  def from_message_spec(%{"kind" => "dict_template"} = spec) do
-    {:ok,
-     Prompt.dict(Map.fetch!(spec, "template"),
-       partials: Map.get(spec, "partials", %{}),
-       template_format: format(Map.get(spec, "template_format", "simple"))
-     )}
-  end
+  defp from_message_spec(%{"kind" => "dict_template"} = spec),
+    do: {:ok, Prompt.dict(Map.fetch!(spec, "template"), template_opts(spec))}
 
-  def from_message_spec(%{"kind" => "message"} = spec), do: spec |> Map.delete("kind") |> Message.from()
+  defp from_message_spec(%{"kind" => "message"} = spec), do: spec |> Map.delete("kind") |> Message.from()
 
-  def from_message_spec(spec),
+  defp from_message_spec(spec),
     do: {:error, Error.new(:invalid_runnable_spec, "invalid prompt message spec", %{spec: spec})}
 
   defp message_specs(messages, template_format) do
@@ -315,8 +244,13 @@ defmodule BeamWeaver.Prompt.Spec do
   defp maybe_from_spec(nil), do: {:ok, nil}
   defp maybe_from_spec(spec), do: from_spec(spec)
 
+  defp templated(template, spec),
+    do: Map.merge(spec, %{"partials" => template.partials, "template_format" => to_string(template.template_format)})
+
+  defp template_opts(spec),
+    do: [partials: Map.get(spec, "partials", %{}), template_format: format(Map.get(spec, "template_format", "simple"))]
+
   defp format("simple"), do: :simple
-  defp format(:simple), do: :simple
   defp format(other), do: other
 
   # A template takes the roles `Message.from/1` reads, so a file can't hold a

@@ -180,7 +180,6 @@ defmodule BeamWeaver.OpenAI.ResponsesTest do
   end
 
   test "explicit Responses model preserves ChatModel behavior and request options" do
-    # Upstream reference:
     assert %ResponsesModel{} = explicit = OpenAI.responses_model(model: "gpt-5.4-mini")
     assert %ChatModel{} = OpenAI.chat_model(model: "gpt-5.4-mini")
 

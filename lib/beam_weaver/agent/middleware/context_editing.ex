@@ -19,6 +19,8 @@ defmodule BeamWeaver.Agent.Middleware.ContextEditing do
   alias BeamWeaver.Graph.Overwrite
   alias BeamWeaver.Options
 
+  import BeamWeaver.Agent.Nodes.Model.Prompt, only: [prompt_messages: 1]
+
   defmodule ClearToolUses do
     @moduledoc """
     Native context edit that clears older tool outputs before model calls.
@@ -141,7 +143,7 @@ defmodule BeamWeaver.Agent.Middleware.ContextEditing do
       kept_calls != [] ->
         [%{message | tool_calls: kept_calls}]
 
-      empty_assistant_content?(message.content) ->
+      message.content in [nil, "", []] ->
         []
 
       true ->
@@ -157,8 +159,6 @@ defmodule BeamWeaver.Agent.Middleware.ContextEditing do
         Map.get(call, :call_id)
 
   defp tool_call_id(_call), do: nil
-
-  defp empty_assistant_content?(content), do: content in [nil, "", []]
 
   defp apply_edit(%ClearToolUses{} = edit, messages, %ModelRequest{} = request, middleware) do
     apply_clear_tool_uses(edit, messages, fn value ->
@@ -233,11 +233,8 @@ defmodule BeamWeaver.Agent.Middleware.ContextEditing do
     end
   end
 
-  defp cleared?(%Message{response_metadata: metadata}) do
-    metadata = metadata || %{}
-    context = Map.get(metadata, :context_editing) || %{}
-    Map.get(context, :cleared) == true
-  end
+  defp cleared?(%Message{response_metadata: metadata}),
+    do: get_in(metadata || %{}, [:context_editing, :cleared]) == true
 
   defp matching_tool_call(messages, index, %Message{tool_call_id: id}) do
     messages
@@ -254,10 +251,6 @@ defmodule BeamWeaver.Agent.Middleware.ContextEditing do
       _other ->
         nil
     end)
-    |> case do
-      nil -> :error
-      result -> result
-    end
   end
 
   defp excluded_tool?(%ClearToolUses{exclude_tools: excluded}, %Message{name: name}, tool_call) do
@@ -291,11 +284,7 @@ defmodule BeamWeaver.Agent.Middleware.ContextEditing do
        ) do
     calls =
       Enum.map(assistant.tool_calls || [], fn call ->
-        if tool_call_id(call) == tool_call_id do
-          clear_call_args(call)
-        else
-          call
-        end
+        if tool_call_id(call) == tool_call_id, do: Map.put(call, :args, %{}), else: call
       end)
 
     response_metadata = assistant.response_metadata || %{}
@@ -311,10 +300,6 @@ defmodule BeamWeaver.Agent.Middleware.ContextEditing do
       | tool_calls: calls,
         response_metadata: metadata
     })
-  end
-
-  defp clear_call_args(call) do
-    Map.put(call, :args, %{})
   end
 
   defp count_tokens(messages, _request, %__MODULE__{token_counter: counter}) when is_function(counter, 1) do
@@ -333,10 +318,6 @@ defmodule BeamWeaver.Agent.Middleware.ContextEditing do
 
   defp count_tokens(messages, _request, _middleware),
     do: LanguageModel.count_tokens(:approximate, messages)
-
-  defp prompt_messages(nil), do: []
-  defp prompt_messages(messages) when is_list(messages), do: messages
-  defp prompt_messages(%Message{} = message), do: [message]
 
   defp normalize_counter(value),
     do: Options.atom_enum!("token_count_method", value, [:approximate, :model])

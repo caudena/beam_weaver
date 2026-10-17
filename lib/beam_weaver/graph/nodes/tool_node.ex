@@ -76,7 +76,5 @@ defmodule BeamWeaver.Graph.Nodes.ToolNode do
     Execution.invoke(node, input, runtime)
   end
 
-  def tools_condition(input, messages_key \\ :messages)
-
-  def tools_condition(input, messages_key), do: Input.condition(input, messages_key)
+  def tools_condition(input, messages_key \\ :messages), do: Input.condition(input, messages_key)
 end

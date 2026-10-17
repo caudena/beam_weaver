@@ -197,8 +197,6 @@ defmodule BeamWeaver.Models.UsageCost do
 
   defp round_half_up(numerator, denominator), do: div(numerator * 2 + denominator, denominator * 2)
 
-  defp pricing(%Profile{extra: extra}) when is_map(extra), do: extra
-
   defp pricing(profile) when is_map(profile) do
     case Map.get(profile, :extra) do
       extra when is_map(extra) -> extra
@@ -275,22 +273,16 @@ defmodule BeamWeaver.Models.UsageCost do
   end
 
   defp merge_rates(pricing, rates) do
-    Enum.reduce(
-      [
+    Map.merge(
+      pricing,
+      Map.take(rates, [
         :input_price_per_mtok,
         :cached_input_price_per_mtok,
         :output_price_per_mtok,
         :cache_write_5m_price_per_mtok,
         :cache_write_1h_price_per_mtok,
         :cache_write_30m_price_per_mtok
-      ],
-      pricing,
-      fn key, merged ->
-        case Map.fetch(rates, key) do
-          {:ok, value} -> Map.put(merged, key, value)
-          :error -> merged
-        end
-      end
+      ])
     )
   end
 

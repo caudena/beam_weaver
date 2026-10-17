@@ -17,20 +17,13 @@ defimpl BeamWeaver.Adapter.Sweepable, for: BeamWeaver.Cache.ETS do
   def sweep_expired(cache, _opts) do
     now = System.system_time(:millisecond)
 
-    count =
-      cache.table
-      |> :ets.tab2list()
-      |> Enum.reduce(0, fn
-        {{namespace, key}, %{expires_at: expires_at}}, acc
-        when is_integer(expires_at) and expires_at <= now ->
-          :ets.delete(cache.table, {namespace, key})
-          acc + 1
+    expired =
+      for {key, %{expires_at: expires_at}} <- :ets.tab2list(cache.table),
+          is_integer(expires_at) and expires_at <= now,
+          do: key
 
-        _entry, acc ->
-          acc
-      end)
-
-    {:ok, count}
+    Enum.each(expired, &:ets.delete(cache.table, &1))
+    {:ok, length(expired)}
   end
 end
 
@@ -39,23 +32,10 @@ defimpl BeamWeaver.Adapter.Sweepable, for: BeamWeaver.Cache.Ecto do
 end
 
 defimpl BeamWeaver.Adapter.Sweepable, for: BeamWeaver.Memory.ETS do
-  alias BeamWeaver.Memory.Query
-
   def sweep_expired(store, _opts) do
-    count =
-      store.items
-      |> :ets.tab2list()
-      |> Enum.reduce(0, fn
-        {{namespace, key}, item}, acc ->
-          if Query.expired?(item) do
-            BeamWeaver.Memory.ETS.delete(store, namespace, key)
-            acc + 1
-          else
-            acc
-          end
-      end)
-
-    {:ok, count}
+    expired = for {key, item} <- :ets.tab2list(store.items), BeamWeaver.Memory.Query.expired?(item), do: key
+    Enum.each(expired, fn {namespace, key} -> BeamWeaver.Memory.ETS.delete(store, namespace, key) end)
+    {:ok, length(expired)}
   end
 end
 

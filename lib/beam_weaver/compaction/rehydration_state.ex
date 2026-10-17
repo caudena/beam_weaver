@@ -21,10 +21,7 @@ defmodule BeamWeaver.Compaction.RehydrationState do
   @spec new(map() | t()) :: {:ok, t()} | {:error, Error.t()}
   def new(%__MODULE__{} = state), do: validate(state)
 
-  def new(%{} = data) do
-    state = %__MODULE__{data: data, hash: Canonical.hash(data)}
-    validate(state)
-  end
+  def new(%{} = data), do: validate(%__MODULE__{data: data, hash: Canonical.hash(data)})
 
   def new(_data), do: {:error, Error.new(:invalid_rehydration_state, "rehydration state must be a map")}
 

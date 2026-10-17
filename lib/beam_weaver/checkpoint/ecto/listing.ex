@@ -52,15 +52,12 @@ defmodule BeamWeaver.Checkpoint.Ecto.Listing do
             [checkpoint],
             checkpoint.checkpoint_ns == ^Map.get(configurable, "checkpoint_ns", "")
           )
-          |> maybe_checkpoint_id(configurable["checkpoint_id"])
+          |> maybe_equal(:checkpoint_id, configurable["checkpoint_id"])
           |> order_by([checkpoint], desc: checkpoint.commit_order)
           |> limit(1)
           |> with_pending_writes(saver)
 
-        case Query.all(saver, query) do
-          {:ok, rows} -> {:ok, Rows.tuple_from_rows(saver, rows)}
-          {:error, _reason} = error -> error
-        end
+        with {:ok, rows} <- Query.all(saver, query), do: {:ok, Rows.tuple_from_rows(saver, rows)}
 
       _other ->
         {:ok, nil}
@@ -97,10 +94,8 @@ defmodule BeamWeaver.Checkpoint.Ecto.Listing do
         |> maybe_limit(filter, limit)
         |> with_pending_writes(saver)
 
-      case Query.all(saver, query) do
-        {:ok, rows} -> {:ok, saver |> Rows.tuples_from_rows(rows) |> filter_decoded(saver, filter, limit)}
-        {:error, _reason} = error -> error
-      end
+      with {:ok, rows} <- Query.all(saver, query),
+           do: {:ok, saver |> Rows.tuples_from_rows(rows) |> filter_decoded(saver, filter, limit)}
     end
   end
 
@@ -110,7 +105,7 @@ defmodule BeamWeaver.Checkpoint.Ecto.Listing do
   def queryable_metadata?(saver), do: saver.serialization.codec == BeamWeaver.Serialization.JSON
 
   # Decoded metadata as the JSON codec stores it.
-  def plain_metadata(saver, metadata) do
+  defp plain_metadata(saver, metadata) do
     Serialization.dump_value(metadata, serialization: [registry: saver.serialization.registry])
   end
 
@@ -160,24 +155,6 @@ defmodule BeamWeaver.Checkpoint.Ecto.Listing do
   defp take(tuples, limit) when is_integer(limit) and limit >= 0, do: Enum.take(tuples, limit)
   defp take(tuples, _limit), do: tuples
 
-  def resolve_checkpoint_id(_saver, _thread_id, _namespace, checkpoint_id)
-      when is_binary(checkpoint_id),
-      do: {:ok, checkpoint_id}
-
-  def resolve_checkpoint_id(saver, thread_id, namespace, _checkpoint_id) do
-    case latest_checkpoint_id(saver, thread_id, namespace) do
-      nil -> :error
-      checkpoint_id -> {:ok, checkpoint_id}
-    end
-  end
-
-  def latest_checkpoint_id(saver, thread_id, namespace) do
-    case latest_checkpoint_id_result(saver, thread_id, namespace) do
-      {:ok, checkpoint_id} -> checkpoint_id
-      {:error, error} -> raise_read_error!(error)
-    end
-  end
-
   def latest_checkpoint_id_result(saver, thread_id, namespace) do
     query =
       from(checkpoint in Query.checkpoints(saver),
@@ -213,12 +190,6 @@ defmodule BeamWeaver.Checkpoint.Ecto.Listing do
       ],
       select: {checkpoint, map(write, ^@write_fields)}
     )
-  end
-
-  defp maybe_checkpoint_id(query, nil), do: query
-
-  defp maybe_checkpoint_id(query, checkpoint_id) do
-    where(query, [checkpoint], checkpoint.checkpoint_id == ^checkpoint_id)
   end
 
   defp maybe_equal(query, _field, nil), do: query

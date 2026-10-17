@@ -158,7 +158,7 @@ defmodule BeamWeaver.Models.ProfileRegistry.DeepSeek do
   def vision_model?(model), do: model in @vision_models
   def profiles, do: Map.values(@profiles)
 
-  def resolve(model) when is_binary(model) do
+  def resolve(model) do
     cond do
       model in @retired_models -> retired_model_error(model)
       profile = Map.get(@profiles, {:deepseek, model}) -> {:ok, profile}

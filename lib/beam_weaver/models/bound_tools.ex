@@ -17,10 +17,7 @@ defmodule BeamWeaver.Models.BoundTools do
     if BeamWeaver.Behaviour.exported?(wrapper.model.__struct__, :stream, 3) do
       wrapper.model.__struct__.stream(wrapper.model, messages, merge_opts(wrapper, opts))
     else
-      case invoke(wrapper, messages, opts) do
-        {:ok, message} -> {:ok, [message]}
-        {:error, error} -> {:error, error}
-      end
+      with {:ok, message} <- invoke(wrapper, messages, opts), do: {:ok, [message]}
     end
   end
 

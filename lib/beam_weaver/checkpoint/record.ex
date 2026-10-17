@@ -3,6 +3,8 @@ defmodule BeamWeaver.Checkpoint.Metadata do
   Typed checkpoint metadata used at adapter/runtime boundaries.
   """
 
+  alias BeamWeaver.MapAccess
+
   defstruct source: nil,
             step: nil,
             writes: %{},
@@ -16,12 +18,12 @@ defmodule BeamWeaver.Checkpoint.Metadata do
   @spec from_map(map()) :: t()
   def from_map(metadata) when is_map(metadata) do
     %__MODULE__{
-      source: get(metadata, :source),
-      step: get(metadata, :step),
-      writes: get(metadata, :writes, %{}),
-      parents: get(metadata, :parents, %{}),
-      thread: get(metadata, :thread, %{}),
-      run_id: get(metadata, :run_id),
+      source: MapAccess.get(metadata, :source),
+      step: MapAccess.get(metadata, :step),
+      writes: MapAccess.get(metadata, :writes, %{}),
+      parents: MapAccess.get(metadata, :parents, %{}),
+      thread: MapAccess.get(metadata, :thread, %{}),
+      run_id: MapAccess.get(metadata, :run_id),
       extra:
         Map.drop(metadata, [
           :source,
@@ -39,8 +41,6 @@ defmodule BeamWeaver.Checkpoint.Metadata do
         ])
     }
   end
-
-  defp get(map, key, default \\ nil), do: Map.get(map, key, Map.get(map, to_string(key), default))
 end
 
 defmodule BeamWeaver.Checkpoint.Record do
@@ -52,6 +52,7 @@ defmodule BeamWeaver.Checkpoint.Record do
   """
 
   alias BeamWeaver.Checkpoint.Metadata
+  alias BeamWeaver.MapAccess
 
   defstruct [
     :config,
@@ -86,23 +87,21 @@ defmodule BeamWeaver.Checkpoint.Record do
       checkpoint: checkpoint,
       metadata: metadata,
       parent_config: Map.get(tuple, :parent_config),
-      version: get(checkpoint, :v),
-      id: get(checkpoint, :id),
-      timestamp: get(checkpoint, :ts),
+      version: MapAccess.get(checkpoint, :v),
+      id: MapAccess.get(checkpoint, :id),
+      timestamp: MapAccess.get(checkpoint, :ts),
       source: metadata.source,
       step: metadata.step,
       writes: metadata.writes,
       parents: metadata.parents,
-      pending_sends: get(checkpoint, :pending_sends, []),
-      tasks: get(checkpoint, :tasks, []),
+      pending_sends: MapAccess.get(checkpoint, :pending_sends, []),
+      tasks: MapAccess.get(checkpoint, :tasks, []),
       pending_writes: Map.get(tuple, :pending_writes, []),
       pending_write_records: Map.get(tuple, :pending_write_records, []),
       pending_write_paths: Map.get(tuple, :pending_write_paths, []),
       namespace: namespace(config)
     }
   end
-
-  defp get(map, key, default \\ nil), do: Map.get(map, key, Map.get(map, to_string(key), default))
 
   defp namespace(config) do
     config

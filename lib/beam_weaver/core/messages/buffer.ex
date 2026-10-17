@@ -5,7 +5,7 @@ defmodule BeamWeaver.Core.Messages.Buffer do
   alias BeamWeaver.Core.Error
   alias BeamWeaver.Core.Message
 
-  def render(messages, opts \\ []) do
+  def render(messages, opts) do
     separator = Keyword.get(opts, :message_separator, "\n")
 
     case Keyword.get(opts, :format, :prefix) |> normalize_format() do
@@ -20,15 +20,8 @@ defmodule BeamWeaver.Core.Messages.Buffer do
     end
   end
 
-  defp buffer_line(%Message{} = message, opts) do
-    prefix = buffer_prefix(message, opts)
-    tool_info = assistant_tool_info(message)
-    "#{prefix}: #{Message.text(message)}#{tool_info}"
-  end
-
-  defp buffer_prefix(%Message{} = message, opts) do
-    buffer_prefix(message.role, opts)
-  end
+  defp buffer_line(%Message{} = message, opts),
+    do: "#{buffer_prefix(message.role, opts)}: #{Message.text(message)}#{assistant_tool_info(message)}"
 
   defp buffer_prefix(:user, opts), do: Keyword.get(opts, :human_prefix, "Human")
   defp buffer_prefix(:assistant, opts), do: Keyword.get(opts, :ai_prefix, "AI")
@@ -65,7 +58,7 @@ defmodule BeamWeaver.Core.Messages.Buffer do
   defp assistant_tool_info(_message), do: ""
 
   defp xml_message(%Message{} = message, opts) do
-    type = message |> xml_message_type(opts) |> xml_attr()
+    type = message.role |> buffer_prefix(opts) |> to_string() |> String.downcase() |> xml_attr()
     content_parts = xml_content_parts(message.content) ++ xml_server_tool_parts(message)
 
     if message.role == :assistant and message.tool_calls != [] do
@@ -78,9 +71,9 @@ defmodule BeamWeaver.Core.Messages.Buffer do
 
       tool_parts =
         Enum.map(message.tool_calls, fn call ->
-          id = call |> tool_call_id() |> Kernel.||("") |> to_string() |> xml_attr()
-          name = call |> tool_call_name() |> Kernel.||("") |> to_string() |> xml_attr()
-          args = call |> tool_call_args() |> json_string() |> xml_escape()
+          id = call |> Map.get(:id) |> Kernel.||("") |> to_string() |> xml_attr()
+          name = call |> Map.get(:name, "") |> Kernel.||("") |> to_string() |> xml_attr()
+          args = call |> Map.get(:args, %{}) |> json_string() |> xml_escape()
           "  <tool_call id=#{id} name=#{name}>#{args}</tool_call>"
         end)
 
@@ -90,22 +83,6 @@ defmodule BeamWeaver.Core.Messages.Buffer do
       "<message type=#{type}>#{Enum.join(content_parts, " ")}</message>"
     end
   end
-
-  defp xml_message_type(%Message{} = message, opts) do
-    xml_role_type(message, opts)
-  end
-
-  defp xml_role_type(%Message{role: :user}, opts),
-    do: opts |> Keyword.get(:human_prefix, "Human") |> to_string() |> String.downcase()
-
-  defp xml_role_type(%Message{role: :assistant}, opts),
-    do: opts |> Keyword.get(:ai_prefix, "AI") |> to_string() |> String.downcase()
-
-  defp xml_role_type(%Message{role: :system}, opts),
-    do: opts |> Keyword.get(:system_prefix, "System") |> to_string() |> String.downcase()
-
-  defp xml_role_type(%Message{role: :tool}, opts),
-    do: opts |> Keyword.get(:tool_prefix, "Tool") |> to_string() |> String.downcase()
 
   defp xml_content_parts(""), do: []
   defp xml_content_parts(content) when is_binary(content), do: [xml_escape(content)]
@@ -120,10 +97,7 @@ defmodule BeamWeaver.Core.Messages.Buffer do
         [xml_escape(text)]
 
       block when is_map(block) ->
-        case xml_content_block(block) do
-          nil -> []
-          value -> [value]
-        end
+        List.wrap(xml_content_block(block))
 
       _other ->
         []
@@ -132,31 +106,8 @@ defmodule BeamWeaver.Core.Messages.Buffer do
 
   defp xml_content_parts(_content), do: []
 
-  defp xml_content_block(%ContentBlock.Text{text: text}), do: text |> empty_to_nil() |> maybe_xml_escape()
-
   defp xml_content_block(%ContentBlock.PlainText{text: text}),
     do: text |> truncate_xml_text() |> maybe_xml_escape()
-
-  defp xml_content_block(%ContentBlock.Reasoning{reasoning: reasoning}) do
-    reasoning
-    |> empty_to_nil()
-    |> then(fn
-      nil -> nil
-      value -> "<reasoning>#{xml_escape(to_string(value))}</reasoning>"
-    end)
-  end
-
-  defp xml_content_block(%ContentBlock.Image{} = block) do
-    if base64_block?(block), do: nil, else: xml_media_block("image", block)
-  end
-
-  defp xml_content_block(%ContentBlock.Audio{} = block) do
-    if base64_block?(block), do: nil, else: xml_media_block("audio", block)
-  end
-
-  defp xml_content_block(%ContentBlock.Video{} = block) do
-    if base64_block?(block), do: nil, else: xml_media_block("video", block)
-  end
 
   defp xml_content_block(block) do
     cond do
@@ -164,11 +115,11 @@ defmodule BeamWeaver.Core.Messages.Buffer do
         nil
 
       block_type(block) == :text ->
-        block |> map_value(:text) |> empty_to_nil() |> maybe_xml_escape()
+        block |> Map.get(:text) |> empty_to_nil() |> maybe_xml_escape()
 
       block_type(block) == :reasoning ->
         block
-        |> map_value(:reasoning)
+        |> Map.get(:reasoning)
         |> empty_to_nil()
         |> then(fn
           nil -> nil
@@ -185,7 +136,7 @@ defmodule BeamWeaver.Core.Messages.Buffer do
         xml_media_block("video", block)
 
       block_type(block) == :"text-plain" ->
-        block |> map_value(:text) |> truncate_xml_text() |> maybe_xml_escape()
+        block |> Map.get(:text) |> truncate_xml_text() |> maybe_xml_escape()
 
       block_type(block) == :server_tool_call ->
         xml_server_tool_call(block)
@@ -205,12 +156,12 @@ defmodule BeamWeaver.Core.Messages.Buffer do
   end
 
   defp xml_server_tool_call(call) when is_map(call) do
-    id = call |> map_value(:id) |> Kernel.||("") |> to_string() |> xml_attr()
-    name = call |> map_value(:name) |> Kernel.||("") |> to_string() |> xml_attr()
+    id = call |> Map.get(:id) |> Kernel.||("") |> to_string() |> xml_attr()
+    name = call |> Map.get(:name) |> Kernel.||("") |> to_string() |> xml_attr()
 
     args =
       call
-      |> map_value(:args)
+      |> Map.get(:args)
       |> Kernel.||(%{})
       |> json_string()
       |> truncate_xml_text()
@@ -223,12 +174,12 @@ defmodule BeamWeaver.Core.Messages.Buffer do
 
   defp xml_server_tool_result(result) when is_map(result) do
     tool_call_id =
-      result |> map_value(:tool_call_id) |> Kernel.||("") |> to_string() |> xml_attr()
+      result |> Map.get(:tool_call_id) |> Kernel.||("") |> to_string() |> xml_attr()
 
-    status = result |> map_value(:status) |> Kernel.||("") |> to_string() |> xml_attr()
+    status = result |> Map.get(:status) |> Kernel.||("") |> to_string() |> xml_attr()
 
     output =
-      case map_value(result, :output) do
+      case Map.get(result, :output) do
         nil -> ""
         value -> value |> json_string() |> truncate_xml_text() |> xml_escape()
       end
@@ -239,13 +190,8 @@ defmodule BeamWeaver.Core.Messages.Buffer do
   defp xml_server_tool_result(_result), do: nil
 
   defp xml_media_block(tag, block) do
-    image_url = map_value(block, :image_url)
-
-    url =
-      map_value(block, :url) ||
-        nested_map_value(image_url, :url)
-
-    file_id = map_value(block, :file_id)
+    url = Map.get(block, :url) || image_url(block)
+    file_id = Map.get(block, :file_id)
 
     cond do
       is_binary(url) and url != "" ->
@@ -260,32 +206,16 @@ defmodule BeamWeaver.Core.Messages.Buffer do
   end
 
   defp base64_block?(block) do
-    image_url = map_value(block, :image_url)
-
-    truthy?(map_value(block, :base64)) or data_url?(map_value(block, :url)) or
-      truthy?(map_value(block, :data)) or data_url?(nested_map_value(image_url, :url))
+    Map.get(block, :base64) not in [nil, false] or data_url?(Map.get(block, :url)) or
+      Map.get(block, :data) not in [nil, false] or data_url?(image_url(block))
   end
 
-  defp tool_call_id(call) when is_map(call), do: Map.get(call, :id)
+  defp image_url(%{image_url: %{url: url}}), do: url
+  defp image_url(_block), do: nil
 
-  defp tool_call_name(call) when is_map(call),
-    do: Map.get(call, :name, "")
-
-  defp tool_call_args(call) when is_map(call),
-    do: Map.get(call, :args, %{})
-
-  defp map_value(map, key) when is_map(map), do: Map.get(map, key)
-
-  defp nested_map_value(map, key) when is_map(map), do: Map.get(map, key)
-  defp nested_map_value(_map, _key), do: nil
   defp empty_to_nil(""), do: nil
-  defp empty_to_nil(nil), do: nil
   defp empty_to_nil(value), do: value
-  defp truthy?(nil), do: false
-  defp truthy?(false), do: false
-  defp truthy?(_value), do: true
-  defp data_url?(value) when is_binary(value), do: String.starts_with?(value, "data:")
-  defp data_url?(_value), do: false
+  defp data_url?(value), do: match?("data:" <> _rest, value)
 
   defp maybe_xml_escape(nil), do: nil
   defp maybe_xml_escape(value), do: xml_escape(to_string(value))
@@ -321,5 +251,5 @@ defmodule BeamWeaver.Core.Messages.Buffer do
     ~s("#{escaped}")
   end
 
-  defp block_type(block), do: map_value(block, :type)
+  defp block_type(block), do: Map.get(block, :type)
 end

@@ -55,7 +55,7 @@ defmodule BeamWeaver.Provider.ChatRuntime do
   # events for that producer's start and stop are not part of the model call,
   # so the typed stream leaves them out, as Anthropic's and Gemini's, which
   # have no mux, do; a run streaming the call has its own.
-  def mux_typed_events(events, source, metadata, opts) do
+  defp mux_typed_events(events, source, metadata, opts) do
     stream =
       [
         {:sink, source,
@@ -86,11 +86,8 @@ defmodule BeamWeaver.Provider.ChatRuntime do
 
   defp producer_event?(_envelope), do: false
 
-  def put_stream_metadata(%Envelope{} = envelope, metadata) do
-    %{envelope | metadata: Map.merge(envelope.metadata || %{}, metadata)}
-  end
+  defp put_stream_metadata(%Envelope{} = envelope, metadata),
+    do: %{envelope | metadata: Map.merge(envelope.metadata || %{}, metadata)}
 
-  def put_stream_metadata(event, metadata) do
-    BWStream.envelope(event, metadata: metadata)
-  end
+  defp put_stream_metadata(event, metadata), do: BWStream.envelope(event, metadata: metadata)
 end

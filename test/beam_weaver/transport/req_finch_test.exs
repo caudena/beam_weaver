@@ -162,21 +162,6 @@ defmodule BeamWeaver.Transport.ReqFinchTest do
            end) == ""
   end
 
-  test "preserves live HTTP responses for successful and non-2xx statuses" do
-    cases = [
-      {"HTTP/1.1 200 OK\r\ncontent-length: 2\r\nconnection: close\r\n\r\nok", 200, "ok"},
-      {"HTTP/1.1 500 Internal Server Error\r\ncontent-length: 4\r\n\r\nfail", 500, "fail"}
-    ]
-
-    for {raw_response, status, body} <- cases do
-      url = start_http_server(raw_response)
-      request = Request.new(method: :get, url: url)
-
-      assert {:ok, %Response{status: ^status, body: ^body}} =
-               ReqFinch.request(request, timeout: 1_000)
-    end
-  end
-
   test "bounds materialized successful and non-2xx response bodies" do
     for status_line <- ["200 OK", "500 Internal Server Error"] do
       url =

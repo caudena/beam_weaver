@@ -23,8 +23,6 @@ defmodule BeamWeaver.Agent.Protocol.ReqClient do
     request(:post, subagent, "/runs/#{path_segment(task_id)}/cancel", opts)
   end
 
-  defp request(method, subagent, path, opts)
-
   defp request(method, %{url: url, headers: headers}, path, opts)
        when is_binary(url) do
     {request_fun, opts} = Keyword.pop(opts, :request_fun, &Req.request/1)

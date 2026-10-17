@@ -7,23 +7,20 @@ defmodule BeamWeaver.DeepSeek.Client.ResponseDecoder do
   alias BeamWeaver.Provider.ResponseDecoder, as: ProviderResponseDecoder
   alias BeamWeaver.Transport.Response
 
-  @header_fields [x_ds_trace_id: "x-ds-trace-id"]
+  @header_opts [header_fields: [x_ds_trace_id: "x-ds-trace-id"], header_summary: [request_id: :x_ds_trace_id]]
 
-  @doc false
   def json(result, opts) do
-    with {:ok, decoded} <- ProviderResponseDecoder.json(result, decoder_opts(opts)) do
-      {:ok, attach_result_headers(decoded, result, opts)}
-    end
+    with {:ok, decoded} <- ProviderResponseDecoder.json(result, decoder_opts(opts)),
+         {:ok, %Response{} = response} <- result,
+         do: {:ok, attach_headers(decoded, response, opts)}
   end
 
-  @doc false
   def stream_error({:ok, %Response{} = response}, opts),
     do: {:error, ProviderResponseDecoder.http_error(response, decoder_opts(opts))}
 
   def stream_error({:error, error}, opts),
     do: {:error, ProviderResponseDecoder.transport_error(error, decoder_opts(opts))}
 
-  @doc false
   def chat_completions_stream_response(result, opts) do
     ProviderResponseDecoder.decode(result, decoder_opts(opts), fn response ->
       with {:ok, decoded} <- chat_completion_response(response.body) do
@@ -32,21 +29,18 @@ defmodule BeamWeaver.DeepSeek.Client.ResponseDecoder do
     end)
   end
 
-  @doc false
   def responses_stream_response(result, opts) do
     ProviderResponseDecoder.decode(result, decoder_opts(opts), fn response ->
       {:ok, response.body |> BeamWeaver.OpenAI.Streaming.response() |> attach_headers(response, opts)}
     end)
   end
 
-  @doc false
   def completions_stream_response(result, opts) do
     ProviderResponseDecoder.decode(result, decoder_opts(opts), fn response ->
       {:ok, response.body |> completion_response() |> attach_headers(response, opts)}
     end)
   end
 
-  @doc false
   def anthropic_stream_response(result, opts) do
     ProviderResponseDecoder.decode(result, decoder_opts(opts), fn response ->
       {:ok, response.body |> BeamWeaver.Anthropic.Streaming.response() |> attach_headers(response, opts)}
@@ -60,12 +54,10 @@ defmodule BeamWeaver.DeepSeek.Client.ResponseDecoder do
     |> chat_stream_response()
   end
 
-  @doc false
   def reduce_chat_events(events, state) do
     Enum.reduce(events, state || %{response: %{}, choices: %{}}, &apply_chat_event/2)
   end
 
-  @doc false
   def chat_stream_response(state) do
     if map_size(state.choices) == 0 do
       {:error, Error.new(:invalid_response, "DeepSeek chat-completions stream had no choices")}
@@ -262,30 +254,18 @@ defmodule BeamWeaver.DeepSeek.Client.ResponseDecoder do
 
   defp merge_logprob_value(_left, right), do: right
 
-  defp append_string(map, _key, nil), do: map
-
   defp append_string(map, key, value) when is_binary(value) do
     Map.update(map, key, value, &(&1 <> value))
   end
 
   defp append_string(map, _key, _value), do: map
 
-  defp attach_result_headers(decoded, {:ok, %Response{} = response}, opts), do: attach_headers(decoded, response, opts)
+  defp attach_headers(decoded, %Response{} = response, opts) when is_map(decoded) do
+    decoded = ProviderResponseDecoder.attach_headers(decoded, response, @header_opts ++ decoder_opts(opts))
 
-  defp attach_headers(decoded, %Response{headers: headers}, opts) when is_map(decoded) do
-    decoded =
-      ProviderResponseDecoder.attach_header_metadata(
-        decoded,
-        ProviderResponseDecoder.header_metadata(headers, @header_fields, request_id: :x_ds_trace_id)
-      )
-
-    if Keyword.get(opts, :include_response_headers, false) do
-      decoded
-      |> Map.put("_beamweaver_response_headers", Map.new(headers))
-      |> Map.put("_beamweaver_response_header_list", Enum.map(headers, fn {name, value} -> [name, value] end))
-    else
-      decoded
-    end
+    if Keyword.get(opts, :include_response_headers, false),
+      do: Map.put(decoded, "_beamweaver_response_header_list", Enum.map(response.headers, &Tuple.to_list/1)),
+      else: decoded
   end
 
   defp decoder_opts(opts) do

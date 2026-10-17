@@ -174,7 +174,7 @@ defmodule BeamWeaver.Provider.StreamingTest do
     end
   end
 
-  describe "StreamFailure.status/1" do
+  describe "StreamFailure.split/2" do
     # The status each provider documents for the error, which its decoder then
     # classifies as it would the same error without streaming.
     for {name, error, status} <- [
@@ -203,7 +203,8 @@ defmodule BeamWeaver.Provider.StreamingTest do
           {"an error without a name", %{"message" => "Boom"}, 500}
         ] do
       test "#{name} has status #{status}" do
-        assert BeamWeaver.Provider.StreamFailure.status(unquote(Macro.escape(error))) == unquote(status)
+        event = %{"data" => %{"error" => unquote(Macro.escape(error))}}
+        assert {[], {unquote(status), _body}} = BeamWeaver.Provider.StreamFailure.split([event], nil)
       end
     end
   end

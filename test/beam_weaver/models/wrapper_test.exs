@@ -134,17 +134,6 @@ defmodule BeamWeaver.Models.WrapperTest do
     refute_received {:model_call, _messages, _opts}
   end
 
-  test "unwrapped chat models do not use cache state" do
-    parent = self()
-    model = %RecordingModel{parent: parent, reply: "uncached"}
-
-    assert {:ok, %Message{content: "uncached"}} = ChatModel.invoke(model, [Message.user("hello")])
-    assert {:ok, %Message{content: "uncached"}} = ChatModel.invoke(model, [Message.user("hello")])
-
-    assert_received {:model_call, [%Message{role: :user}], _opts}
-    assert_received {:model_call, [%Message{role: :user}], _opts}
-  end
-
   test "cached models include provider options in the cache key" do
     cache = BeamWeaver.Cache.ETS.new(visibility: :private)
     parent = self()
@@ -280,8 +269,6 @@ defmodule BeamWeaver.Models.WrapperTest do
   end
 
   test "cached model event streams replay semantic events on warm cache hits" do
-    # Upstream reference:
-    # - cache-hit stream replay emits lifecycle-equivalent events.
     cache = BeamWeaver.Cache.ETS.new(visibility: :private)
     parent = self()
 
@@ -367,9 +354,6 @@ defmodule BeamWeaver.Models.WrapperTest do
 
   test "fake LLM and embedding models are deterministic test doubles" do
     llm = %BeamWeaver.Models.FakeLLM{response: "completion", parent: self()}
-
-    assert {:ok, "completion"} = LLM.complete(llm, "prompt", temperature: 0.1)
-    assert_received {:fake_llm_call, "prompt", [temperature: 0.1]}
 
     assert {:ok, "completion"} = LLM.complete(llm, "prompt", temperature: 0.1)
     assert_received {:fake_llm_call, "prompt", [temperature: 0.1]}

@@ -25,36 +25,26 @@ defmodule BeamWeaver.Agent.Middleware.Hooks do
   defp middleware_module(%{__struct__: module}), do: module
 
   defp trace_middleware(middleware, hook, inputs, fun) when is_function(fun, 0) do
-    if trace_middleware?() do
-      {:ok, run} =
-        Tracing.start_run(trace_name(middleware, hook),
+    if BeamWeaver.Core.ChatModel.trace?([]) do
+      Tracing.Runner.run(
+        trace_name(middleware, hook),
+        [
           kind: :chain,
           inputs: inputs,
           tags: [:middleware, hook],
           metadata: trace_metadata(middleware, hook),
           context_metadata: %{}
-        )
-
-      try do
-        result = fun.()
-        finish_middleware_run(run, result)
-        result
-      rescue
-        exception ->
-          Tracing.fail_run(run, exception)
-          reraise exception, __STACKTRACE__
-      catch
-        kind, reason ->
-          Tracing.fail_run(run, %{kind: kind, reason: reason})
-          :erlang.raise(kind, reason, __STACKTRACE__)
-      end
+        ],
+        [],
+        fun,
+        fn run, result ->
+          finish_middleware_run(run, result)
+          result
+        end
+      )
     else
       fun.()
     end
-  end
-
-  defp trace_middleware? do
-    not is_nil(Tracing.capture_context()) or Tracing.exporter_configured?()
   end
 
   defp finish_middleware_run(run, {:error, error}) do
@@ -95,7 +85,7 @@ defmodule BeamWeaver.Agent.Middleware.Hooks do
   defp hook_inputs(state) when is_map(state) do
     %{
       state_keys: state_keys(state),
-      messages_count: state |> state_messages() |> length()
+      messages_count: length(Map.get(state, :messages) || [])
     }
   end
 
@@ -158,10 +148,6 @@ defmodule BeamWeaver.Agent.Middleware.Hooks do
   defp trace_output(nil), do: nil
   defp trace_output(value) when is_binary(value), do: String.slice(value, 0, 500)
   defp trace_output(value), do: inspect(value)
-
-  defp state_messages(state) when is_map(state) do
-    Map.get(state, :messages) || []
-  end
 
   defp state_keys(state) when is_map(state) do
     state

@@ -61,16 +61,10 @@ defmodule BeamWeaver.Core.ChatHistory do
     end
   end
 
-  defp call(%{__struct__: module}, function, args) do
-    if Code.ensure_loaded?(module) and function_exported?(module, function, length(args)) do
-      apply(module, function, args)
-    else
-      unsupported(history_module: module, function: function)
-    end
-  end
+  defp call(%{__struct__: module}, function, args), do: call(module, function, args)
 
   defp call(module, function, args) when is_atom(module) do
-    if Code.ensure_loaded?(module) and function_exported?(module, function, length(args)) do
+    if BeamWeaver.Behaviour.exported?(module, function, length(args)) do
       apply(module, function, args)
     else
       unsupported(history_module: module, function: function)

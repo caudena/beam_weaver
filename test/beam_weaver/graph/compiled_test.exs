@@ -1614,8 +1614,6 @@ defmodule BeamWeaver.Graph.CompiledTest do
   end
 
   test "live graph streams emit typed interrupt debug events" do
-    # Upstream reference:
-    # translated to BeamWeaver's typed event envelopes.
     graph =
       Graph.new(name: "LiveInterruptGraph")
       |> Graph.add_node(:approval, fn _state -> %{approved: true} end)

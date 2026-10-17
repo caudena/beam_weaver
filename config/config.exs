@@ -9,11 +9,6 @@ config :beam_weaver,
   xai: [],
   zai: [],
   tracing: [],
-  evals: [
-    provider_api_keys: [],
-    deep_agents_harbor?: false,
-    external_sandbox?: false
-  ],
   execution: [
     delta_max_supersteps_since_snapshot: 5_000
   ],

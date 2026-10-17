@@ -284,8 +284,6 @@ defmodule BeamWeaver.AgentCapabilitiesTest do
     assert DeepAgentModels.get_model_identifier(%{model: "fallback"}) == "fallback"
     assert DeepAgentModels.get_model_identifier(resolved) == "chat"
     assert DeepAgentModels.get_model_provider(resolved) == "fake"
-    assert DeepAgentModels.model_matches_spec(resolved, "fake:chat")
-    refute DeepAgentModels.model_matches_spec(resolved, "openai:gpt-5")
   end
 
   test "built-in deep agent capabilities are composable toolkits" do
@@ -361,57 +359,6 @@ defmodule BeamWeaver.AgentCapabilitiesTest do
              Filesystem.ls(backend, "/", state: state)
 
     assert Filesystem.grep_raw(backend, "needle", state: state) == "/notes/a.txt:2:needle"
-  end
-
-  test "backend utility helpers expose DeepAgents-compatible formatting and data helpers" do
-    assert BeamWeaver.Filesystem.FileDataUtils.empty_content_warning() =~ "empty contents"
-    assert BeamWeaver.Filesystem.FileDataUtils.check_empty_content("  ") =~ "empty contents"
-    assert BeamWeaver.Filesystem.Path.sanitize_tool_call_id("a.b/c\\d") == "a_b_c_d"
-    assert BeamWeaver.Filesystem.Path.to_posix_path("a\\b") == "a/b"
-    assert BeamWeaver.Filesystem.Path.validate_path("notes/./a.txt") == "/notes/a.txt"
-
-    assert_raise ArgumentError, ~r/Path traversal not allowed/, fn ->
-      BeamWeaver.Filesystem.Path.validate_path("../secret")
-    end
-
-    data = BeamWeaver.Filesystem.FileDataUtils.create_file_data("hello")
-    assert %Filesystem.FileData{content: "hello", encoding: "utf-8"} = data
-
-    updated = BeamWeaver.Filesystem.FileDataUtils.update_file_data(data, "updated")
-    assert updated.content == "updated"
-    assert updated.created_at == data.created_at
-    assert updated.modified_at != nil
-
-    assert BeamWeaver.Filesystem.FileDataUtils.slice_read_response(updated, 0, 1) == "updated"
-
-    assert BeamWeaver.Filesystem.FileDataUtils.file_data_to_string(%{"content" => ["a", "b"]}) ==
-             "a\nb"
-
-    formatted =
-      BeamWeaver.Filesystem.Format.format_content_with_line_numbers("abcdef",
-        max_line_length: 3
-      )
-
-    assert formatted == "     1\tabc\n   1.1\tdef"
-
-    matches = [
-      %Filesystem.GrepMatch{path: "/a.txt", line: 1, text: "needle"},
-      %Filesystem.GrepMatch{path: "/a.txt", line: 2, text: "needle again"}
-    ]
-
-    assert BeamWeaver.Filesystem.Search.format_grep_matches(matches, :count) ==
-             "/a.txt: 2"
-
-    assert %Filesystem.GrepResult{matches: [%Filesystem.GrepMatch{text: "hello"}]} =
-             BeamWeaver.Filesystem.Search.grep_matches_from_files(
-               %{"/a.txt" => data},
-               "hello"
-             )
-
-    assert BeamWeaver.Filesystem.Format.truncate_if_too_long(["abcdef", "gh"], 4) == [
-             "abcdef",
-             BeamWeaver.Filesystem.Format.truncation_guidance()
-           ]
   end
 
   test "store backend persists uploads and supports runtime namespace factories" do

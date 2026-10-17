@@ -16,7 +16,7 @@ defmodule BeamWeaver.TextSplitter.MarkdownSyntax do
             chunk_size: 1_000,
             chunk_overlap: 0
 
-  def new(opts \\ []), do: struct(__MODULE__, opts)
+  def new(opts), do: struct(__MODULE__, opts)
 
   def split_text(%__MODULE__{} = splitter, text) when is_binary(text) do
     splitter
@@ -28,7 +28,7 @@ defmodule BeamWeaver.TextSplitter.MarkdownSyntax do
     {chunks, current, headers} =
       document.content
       |> markdown_lines()
-      |> consume_markdown_lines(splitter, {[], "", []})
+      |> consume_markdown_lines(splitter, {[], "", []}, Map.new(splitter.headers))
 
     # Every chunk keeps the document's metadata, under its own header keys.
     chunks
@@ -36,10 +36,6 @@ defmodule BeamWeaver.TextSplitter.MarkdownSyntax do
     |> Enum.reverse()
     |> Enum.map(&%{&1 | metadata: Map.merge(document.metadata, &1.metadata)})
     |> maybe_lines(splitter)
-  end
-
-  defp consume_markdown_lines(lines, splitter, state) do
-    consume_markdown_lines(lines, splitter, state, Map.new(splitter.headers))
   end
 
   defp consume_markdown_lines([], _splitter, state, _header_names), do: state
@@ -111,8 +107,6 @@ defmodule BeamWeaver.TextSplitter.MarkdownSyntax do
     |> Enum.reject(fn {existing_depth, _title} -> existing_depth >= depth end)
     |> Kernel.++([{depth, title}])
   end
-
-  defp complete_markdown_chunk(chunks, _splitter, "", _headers), do: chunks
 
   defp complete_markdown_chunk(chunks, splitter, content, headers) do
     if String.trim(content) == "" do

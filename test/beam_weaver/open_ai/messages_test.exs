@@ -138,8 +138,6 @@ defmodule BeamWeaver.OpenAI.MessagesTest do
   end
 
   test "converts Responses API image, audio, and file data blocks" do
-    # Upstream reference:
-    # - test_convert_to_openai_data_block
     assert {:ok, input} =
              Messages.to_responses_input([
                Message.user([
@@ -914,8 +912,6 @@ defmodule BeamWeaver.OpenAI.MessagesTest do
   end
 
   test "preserves Responses reasoning summaries and text annotations" do
-    # Upstream reference:
-    # - test_convert_to_v1_from_responses
     response = %{
       "id" => "resp_annotations",
       "output" => [
@@ -969,8 +965,6 @@ defmodule BeamWeaver.OpenAI.MessagesTest do
   end
 
   test "preserves mixed Responses output items and unknown provider blocks" do
-    # Upstream reference:
-    # - test_convert_to_v1_from_responses, adjusted for BeamWeaver's raw provider block retention.
     response = %{
       "id" => "resp_mixed",
       "model" => "gpt-5.4",
@@ -1117,8 +1111,6 @@ defmodule BeamWeaver.OpenAI.MessagesTest do
   end
 
   test "Chat Completions translator handles OpenAI input data blocks" do
-    # Upstream reference:
-    # - test_convert_to_v1_from_openai_input and test_convert_to_openai_data_block.
     alias BeamWeaver.OpenAI.ChatCompletions.Messages, as: ChatMessages
 
     assert {:ok, [openai_message]} =

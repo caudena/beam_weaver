@@ -87,4 +87,8 @@ defmodule BeamWeaver.OutputParser.Parser do
     do: BeamWeaver.OutputParser.transform_xml(input)
 
   def transform(%__MODULE__{} = parser, input, opts), do: invoke(parser, input, opts)
+
+  def parser_error(parser, message, details \\ %{}) do
+    {:error, BeamWeaver.Core.Error.new(:output_parser_error, message, Map.put(details, :parser, parser))}
+  end
 end

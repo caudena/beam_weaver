@@ -54,7 +54,7 @@ defmodule BeamWeaver.Core.Messages.TokenCounter do
         {chars, images + tokens_per_image}
 
       block, {chars, images} when is_map(block) ->
-        case block_type(block) do
+        case Map.get(block, :type) do
           type when type in [:image, :image_url, :input_image] ->
             {chars, images + tokens_per_image}
 
@@ -71,8 +71,6 @@ defmodule BeamWeaver.Core.Messages.TokenCounter do
   end
 
   defp content_token_parts(content, _tokens_per_image), do: {String.length(inspect(content)), 0}
-
-  defp block_type(block), do: Map.get(block, :type)
 
   defp add_role_chars(chars, %Message{role: role}), do: chars + String.length(Atom.to_string(role))
 
@@ -92,9 +90,6 @@ defmodule BeamWeaver.Core.Messages.TokenCounter do
     do: chars + String.length(id)
 
   defp add_tool_call_id_chars(chars, _message), do: chars
-
-  defp tool_token_count(nil, _chars_per_token), do: 0.0
-  defp tool_token_count([], _chars_per_token), do: 0.0
 
   defp tool_token_count(tools, chars_per_token) do
     tools
@@ -127,7 +122,7 @@ defmodule BeamWeaver.Core.Messages.TokenCounter do
   end
 
   defp update_scaling(scaling, %Message{role: :assistant} = message, token_count) do
-    provider = metadata_value(message.response_metadata, :model_provider)
+    provider = Map.get(message.response_metadata || %{}, :model_provider)
 
     scaling =
       cond do
@@ -141,8 +136,8 @@ defmodule BeamWeaver.Core.Messages.TokenCounter do
           scaling
       end
 
-    case metadata_value(message.usage_metadata || %{}, :total_tokens) do
-      total_tokens when is_integer(total_tokens) ->
+    case message.usage_metadata do
+      %{total_tokens: total_tokens} when is_integer(total_tokens) ->
         %{scaling | last_ai_total_tokens: total_tokens, approx_at_last_ai: token_count}
 
       _other ->
@@ -151,10 +146,6 @@ defmodule BeamWeaver.Core.Messages.TokenCounter do
   end
 
   defp update_scaling(scaling, _message, _token_count), do: scaling
-
-  defp metadata_value(map, key) when is_map(map), do: Map.get(map, key)
-
-  defp metadata_value(_map, _key), do: nil
 
   defp maybe_scale_token_count(token_count, scaling, opts, messages) do
     scaled? = Keyword.get(opts, :use_usage_metadata_scaling, false)

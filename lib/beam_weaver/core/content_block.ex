@@ -3,9 +3,10 @@ defmodule BeamWeaver.Core.ContentBlock do
   Typed content blocks used by messages and streaming chunks.
   """
 
+  import BeamWeaver.MapAccess, only: [get: 2]
+
   alias BeamWeaver.Core.ContentBlock.Normalizer
   alias BeamWeaver.Core.Error
-  alias BeamWeaver.MapAccess
   alias BeamWeaver.Result
 
   defmodule Text do
@@ -78,29 +79,10 @@ defmodule BeamWeaver.Core.ContentBlock do
     :unknown
   ]
 
-  @reasoning_types [
-    :reasoning,
-    "reasoning",
-    :thinking,
-    "thinking",
-    :thinking_delta,
-    "thinking_delta",
-    :signature_delta,
-    "signature_delta",
-    :redacted_thinking,
-    "redacted_thinking"
-  ]
-
-  @replayable_reasoning_types [
-    :thinking,
-    "thinking",
-    :thinking_delta,
-    "thinking_delta",
-    :signature_delta,
-    "signature_delta",
-    :redacted_thinking,
-    "redacted_thinking"
-  ]
+  @replayable_reasoning_names ~w(thinking thinking_delta signature_delta redacted_thinking)
+  @replayable_reasoning_types @replayable_reasoning_names ++ Enum.map(@replayable_reasoning_names, &String.to_atom/1)
+  @reasoning_types [:reasoning, "reasoning" | @replayable_reasoning_types]
+  @data_types Enum.flat_map(~w(image image_url audio file video)a, &[&1, Atom.to_string(&1)])
 
   @doc """
   Returns the stable set of content block types BeamWeaver understands natively.
@@ -131,21 +113,8 @@ defmodule BeamWeaver.Core.ContentBlock do
   def data?(%Video{}), do: true
 
   def data?(block) when is_map(block) do
-    type = get(block, :type)
-
-    type in [
-      :image,
-      "image",
-      :image_url,
-      "image_url",
-      :audio,
-      "audio",
-      :file,
-      "file",
-      :video,
-      "video"
-    ] or
-      data_uri?(get(block, :url)) or data_uri?(get(block, :data_uri)) or
+    get(block, :type) in @data_types or
+      match?("data:" <> _rest, get(block, :url)) or match?("data:" <> _rest, get(block, :data_uri)) or
       not is_nil(get(block, :base64)) or not is_nil(get(block, :data))
   end
 
@@ -229,13 +198,13 @@ defmodule BeamWeaver.Core.ContentBlock do
   expect base64 strings at the boundary. Percent-encoded payloads are decoded.
   """
   @spec parse_data_uri(String.t()) :: {:ok, map()} | {:error, Error.t()}
-  def parse_data_uri("data:" <> rest = uri) do
+  def parse_data_uri("data:" <> rest) do
     case String.split(rest, ",", parts: 2) do
       [header, payload] ->
         media_type = media_type(header)
-        encoding = data_uri_encoding(header)
+        encoding = if "base64" in String.split(header, ";"), do: :base64, else: :url_encoded
 
-        with {:ok, data} <- decode_data_payload(payload, encoding, uri) do
+        with {:ok, data} <- decode_data_payload(payload, encoding) do
           {:ok,
            %{
              media_type: media_type,
@@ -259,51 +228,27 @@ defmodule BeamWeaver.Core.ContentBlock do
   def from_data_uri(uri, metadata \\ %{}) do
     with {:ok, parsed} <- parse_data_uri(uri) do
       metadata = Map.merge(%{source: :data_uri, encoding: parsed.encoding}, metadata)
+      fields = %{data: parsed.data, mime_type: parsed.media_type, metadata: metadata}
 
       case content_kind(parsed.media_type) do
-        :image ->
-          {:ok, image(%{data: parsed.data, mime_type: parsed.media_type, metadata: metadata})}
-
-        :audio ->
-          {:ok, audio(%{data: parsed.data, mime_type: parsed.media_type, metadata: metadata})}
-
-        :video ->
-          {:ok, video(%{data: parsed.data, mime_type: parsed.media_type, metadata: metadata})}
-
-        :file ->
-          {:ok, file(%{data: parsed.data, mime_type: parsed.media_type, metadata: metadata})}
-
-        :text ->
-          {:ok, text(parsed.data, metadata)}
-
-        :unknown ->
-          {:ok, unknown("data_uri", parsed, metadata)}
+        :image -> {:ok, image(fields)}
+        :audio -> {:ok, audio(fields)}
+        :video -> {:ok, video(fields)}
+        :file -> {:ok, file(fields)}
+        :text -> {:ok, text(parsed.data, metadata)}
+        :unknown -> {:ok, unknown("data_uri", parsed, metadata)}
       end
     end
   end
 
-  defp media_type(""), do: "text/plain"
-
   defp media_type(header) do
-    header
-    |> String.split(";")
-    |> List.first()
-    |> case do
+    case header |> String.split(";") |> hd() do
       "" -> "text/plain"
-      nil -> "text/plain"
       type -> type
     end
   end
 
-  defp data_uri_encoding(header) do
-    if header |> String.split(";") |> Enum.any?(&(&1 == "base64")) do
-      :base64
-    else
-      :url_encoded
-    end
-  end
-
-  defp decode_data_payload(payload, :base64, _uri) do
+  defp decode_data_payload(payload, :base64) do
     case Base.decode64(payload, ignore: :whitespace) do
       {:ok, _decoded} ->
         {:ok, payload}
@@ -313,7 +258,7 @@ defmodule BeamWeaver.Core.ContentBlock do
     end
   end
 
-  defp decode_data_payload(payload, :url_encoded, _uri), do: {:ok, URI.decode(payload)}
+  defp decode_data_payload(payload, :url_encoded), do: {:ok, URI.decode(payload)}
 
   defp content_kind("image/" <> _rest), do: :image
   defp content_kind("audio/" <> _rest), do: :audio
@@ -321,9 +266,6 @@ defmodule BeamWeaver.Core.ContentBlock do
   defp content_kind("text/" <> _rest), do: :text
   defp content_kind("application/" <> _rest), do: :file
   defp content_kind(_media_type), do: :unknown
-
-  @doc false
-  def get(map, key) when is_map(map), do: MapAccess.get(map, key)
 
   defp reasoning_type?(type), do: type in @reasoning_types
   defp replayable_reasoning_type?(type), do: type in @replayable_reasoning_types
@@ -342,7 +284,4 @@ defmodule BeamWeaver.Core.ContentBlock do
     do: not is_nil(get(value, :signature)) or not is_nil(get(value, :encrypted_content))
 
   defp signed?(_value), do: false
-
-  defp data_uri?("data:" <> _rest), do: true
-  defp data_uri?(_value), do: false
 end

@@ -56,8 +56,7 @@ defmodule BeamWeaver.Tools.Filesystem do
         if allowed?(backend, permissions, :read, path, opts) do
           backend
           |> Filesystem.ls(path, opts)
-          |> filter_file_info_result(:entries, backend, permissions, opts)
-          |> render_entries(:entries)
+          |> render_allowed(:entries, backend, permissions, opts)
         else
           "Error: Permission denied reading #{path}"
         end
@@ -196,8 +195,7 @@ defmodule BeamWeaver.Tools.Filesystem do
         if allowed?(backend, permissions, :read, path, opts) do
           backend
           |> Filesystem.glob(value(input, :pattern), Keyword.put(opts, :path, path))
-          |> filter_file_info_result(:matches, backend, permissions, opts)
-          |> render_entries(:matches)
+          |> render_allowed(:matches, backend, permissions, opts)
         else
           "Error: Permission denied reading #{path}"
         end
@@ -223,21 +221,9 @@ defmodule BeamWeaver.Tools.Filesystem do
         opts = runtime_opts(input)
 
         if allowed?(backend, permissions, :read, path, opts) do
-          case Filesystem.grep(
-                 backend,
-                 value(input, :pattern),
-                 runtime_opts(input, path: path, glob: value(input, :glob))
-               ) do
-            %Filesystem.GrepResult{error: nil, matches: matches} ->
-              matches
-              |> Kernel.||([])
-              |> filter_allowed(backend, permissions, opts)
-              |> Enum.map(&json_entry/1)
-              |> BeamWeaver.JSON.encode!()
-
-            %Filesystem.GrepResult{error: error} ->
-              "Error: #{error}"
-          end
+          backend
+          |> Filesystem.grep(value(input, :pattern), runtime_opts(input, path: path, glob: value(input, :glob)))
+          |> render_allowed(:matches, backend, permissions, opts)
         else
           "Error: Permission denied reading #{path}"
         end
@@ -333,41 +319,26 @@ defmodule BeamWeaver.Tools.Filesystem do
     )
   end
 
-  defp render_entries(%{error: nil} = result, field) do
-    result
-    |> Map.fetch!(field)
-    |> Kernel.||([])
-    |> Enum.map(&json_entry/1)
-    |> BeamWeaver.JSON.encode!()
-  end
-
-  defp render_entries(%{error: error}, _field), do: "Error: #{error}"
-
-  defp json_entry(%{__struct__: _struct} = entry), do: Map.from_struct(entry)
-  defp json_entry(entry), do: entry
-
-  defp filter_file_info_result(%{error: nil} = result, field, backend, permissions, opts) do
-    entries =
-      result
-      |> Map.get(field)
-      |> Kernel.||([])
-      |> filter_allowed(backend, permissions, opts)
-
-    Map.put(result, field, entries)
-  end
-
-  defp filter_file_info_result(result, _field, _backend, _permissions, _opts), do: result
-
   # The entries of a listing or search that the model may read: those whose
   # path, and the file it leads to, the rules allow.
-  defp filter_allowed(entries, backend, permissions, opts) do
+  defp render_allowed(%{error: nil} = result, field, backend, permissions, opts) do
+    entries = Map.get(result, field) || []
+
     allowed =
       permissions
       |> FilesystemPermission.filter_paths(:read, Enum.map(entries, & &1.path), backend, opts)
       |> MapSet.new()
 
-    Enum.filter(entries, &MapSet.member?(allowed, &1.path))
+    entries
+    |> Enum.filter(&MapSet.member?(allowed, &1.path))
+    |> Enum.map(&json_entry/1)
+    |> BeamWeaver.JSON.encode!()
   end
+
+  defp render_allowed(%{error: error}, _field, _backend, _permissions, _opts), do: "Error: #{error}"
+
+  defp json_entry(%{__struct__: _struct} = entry), do: Map.from_struct(entry)
+  defp json_entry(entry), do: entry
 
   defp write_command(
          tool_name,
@@ -404,18 +375,14 @@ defmodule BeamWeaver.Tools.Filesystem do
     Keyword.merge(base, Enum.reject(extra, fn {_key, value} -> is_nil(value) end))
   end
 
-  defp runtime_value(nil, _key), do: nil
-  defp runtime_value(%{store: store}, :store), do: store
-  defp runtime_value(%{runtime: runtime}, :runtime), do: runtime
+  defp runtime_value(runtime, key) when is_map(runtime), do: Map.get(runtime, key)
   defp runtime_value(_runtime, _key), do: nil
 
   # The rules must allow the path and the file it leads to on `backend`.
   defp allowed?(backend, permissions, operation, path, opts) when operation in [:read, :write],
     do: FilesystemPermission.allowed?(permissions, operation, path || "/", backend, opts)
 
-  defp value(map, key, default \\ nil)
-  defp value(nil, _key, default), do: default
-  defp value(map, key, default), do: BeamWeaver.MapAccess.get(map, key, default)
+  defp value(map, key, default \\ nil), do: BeamWeaver.MapAccess.get(map, key, default)
 
   defp normalize_timeout(nil), do: {:ok, []}
 

@@ -225,7 +225,6 @@ defmodule BeamWeaver.Graph.StateGraphTest do
   end
 
   test "node defer metadata is inspectable without changing the public scheduler contract" do
-    # Upstream reference:
     graph =
       Graph.new(name: "DeferredMetadataGraph")
       |> Graph.add_node(:start, fn _state -> %{started: true} end)

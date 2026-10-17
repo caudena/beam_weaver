@@ -13,14 +13,7 @@ defmodule BeamWeaver.TextSplitter do
 
   @callback split_text(term(), String.t()) :: [String.t()]
 
-  defstruct chunk_size: 1_000,
-            chunk_overlap: 200,
-            separators: ["\n\n", "\n", " ", ""],
-            keep_separator: false,
-            strip_whitespace: true,
-            add_start_index: false,
-            length_function: nil,
-            separator_regex?: false
+  defstruct Shared.common_fields()
 
   def character(opts \\ []), do: BeamWeaver.TextSplitter.Character.new(opts)
   def recursive_character(opts \\ []), do: BeamWeaver.TextSplitter.RecursiveCharacter.new(opts)
@@ -107,7 +100,7 @@ defmodule BeamWeaver.TextSplitter do
   defdelegate split_documents(splitter, documents), to: Documents
 
   @doc "Transforms a document collection into split documents."
-  defdelegate transform_documents(splitter, documents, opts \\ []), to: Documents
+  def transform_documents(splitter, documents, _opts \\ []), do: split_documents(splitter, documents)
 
   @doc """
   Reads one file and lazily splits it as a single document.

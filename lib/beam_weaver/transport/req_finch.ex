@@ -63,15 +63,8 @@ defmodule BeamWeaver.Transport.ReqFinch do
   end
 
   @impl true
-  def stream(%Request{} = request, opts, on_chunk) when is_function(on_chunk, 1) do
-    case stream_reduce(request, opts, :ok, fn acc, chunk ->
-           on_chunk.(chunk)
-           acc
-         end) do
-      {:ok, response, _acc} -> {:ok, response}
-      {:error, error, _acc} -> {:error, error}
-    end
-  end
+  def stream(%Request{} = request, opts, on_chunk) when is_function(on_chunk, 1),
+    do: BeamWeaver.Transport.stream(__MODULE__, request, opts, on_chunk)
 
   @impl true
   def stream_reduce(%Request{} = request, opts, acc, reducer) when is_function(reducer, 2) do
@@ -167,7 +160,6 @@ defmodule BeamWeaver.Transport.ReqFinch do
 
   defp normalize_finch_options(nil), do: nil
   defp normalize_finch_options(name) when is_atom(name), do: [name: name]
-  defp normalize_finch_options(options) when is_list(options), do: options
   defp normalize_finch_options(options), do: options
 
   # The shared pool opens IPv4 sockets with Finch's default settings. HTTP
@@ -213,7 +205,7 @@ defmodule BeamWeaver.Transport.ReqFinch do
     transport_options =
       connect_options
       |> Keyword.take([:timeout])
-      |> Kernel.++(inet6_options(ipv6?))
+      |> Kernel.++(if(ipv6?, do: [inet6: true], else: []))
       |> Keyword.merge(Keyword.get(connect_options, :transport_opts, []))
 
     connection_options =
@@ -226,9 +218,6 @@ defmodule BeamWeaver.Transport.ReqFinch do
     |> maybe_put_protocols(Keyword.get(connect_options, :protocols))
     |> Keyword.put(:conn_opts, connection_options)
   end
-
-  defp inet6_options(true), do: [inet6: true]
-  defp inet6_options(false), do: []
 
   # `URI` drops the brackets around an IPv6 address, and a host name has no `:`.
   defp ipv6_address?(%URI{host: host}), do: is_binary(host) and String.contains?(host, ":")
@@ -257,13 +246,7 @@ defmodule BeamWeaver.Transport.ReqFinch do
   defp maybe_put_protocols(options, protocols), do: Keyword.put(options, :protocols, protocols)
 
   defp maybe_put_raw_response(options, opts) do
-    if Keyword.get(opts, :raw_response?, false) do
-      options
-      |> Keyword.put(:raw, true)
-      |> Keyword.put(:decode_body, false)
-    else
-      options
-    end
+    if Keyword.get(opts, :raw_response?, false), do: Keyword.put(options, :raw, true), else: options
   end
 
   defp maybe_put_finch_private(options, opts) do
@@ -306,38 +289,22 @@ defmodule BeamWeaver.Transport.ReqFinch do
   defp maybe_put_body(options, _request), do: options
 
   defp stream_handler(acc, reducer, maximum) do
-    fn
-      {:data, data}, {request, response} when response.status in 200..299 ->
-        bytes = Map.get(response.private, :beam_weaver_response_bytes, 0) + byte_size(data)
+    fn {:data, data}, {request, response} ->
+      bytes = Map.get(response.private, :beam_weaver_response_bytes, 0) + byte_size(data)
 
-        if bytes <= maximum do
+      cond do
+        bytes > maximum ->
+          {:halt, {request, put_in(response.private[:beam_weaver_response_too_large], true)}}
+
+        response.status in 200..299 ->
           acc = reducer.(Map.get(response.private, :beam_weaver_stream_acc, acc), data)
+          private = Map.merge(response.private, %{beam_weaver_stream_acc: acc, beam_weaver_response_bytes: bytes})
+          {:cont, {request, %{response | private: private}}}
 
-          response =
-            response
-            |> put_in([Access.key(:private), :beam_weaver_stream_acc], acc)
-            |> put_in([Access.key(:private), :beam_weaver_response_bytes], bytes)
-
-          {:cont, {request, response}}
-        else
-          response = put_in(response.private[:beam_weaver_response_too_large], true)
-          {:halt, {request, response}}
-        end
-
-      {:data, data}, {request, response} ->
-        bytes = Map.get(response.private, :beam_weaver_response_bytes, 0) + byte_size(data)
-
-        if bytes <= maximum do
-          response =
-            response
-            |> append_body(data)
-            |> put_in([Access.key(:private), :beam_weaver_response_bytes], bytes)
-
-          {:cont, {request, response}}
-        else
-          response = put_in(response.private[:beam_weaver_response_too_large], true)
-          {:halt, {request, response}}
-        end
+        true ->
+          response = append_body(response, data)
+          {:cont, {request, put_in(response.private[:beam_weaver_response_bytes], bytes)}}
+      end
     end
   end
 
@@ -358,15 +325,10 @@ defmodule BeamWeaver.Transport.ReqFinch do
 
   defp normalize_stream_reduce_result({:ok, %Req.Response{status: status} = response}, acc)
        when status in 200..299 do
-    stream_acc = Map.get(response.private, :beam_weaver_stream_acc, acc)
     response_bytes = Map.get(response.private, :beam_weaver_response_bytes, 0)
 
-    response =
-      response
-      |> Map.update!(:private, &Map.drop(&1, [:beam_weaver_stream_acc, :beam_weaver_response_bytes]))
-      |> Map.put(:body, "")
-
-    {:ok, transport_response(response, response_bytes), stream_acc}
+    {:ok, transport_response(%{response | body: ""}, response_bytes),
+     Map.get(response.private, :beam_weaver_stream_acc, acc)}
   end
 
   defp normalize_stream_reduce_result({:ok, %Req.Response{} = response}, acc) do

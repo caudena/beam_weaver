@@ -6,7 +6,6 @@ defmodule BeamWeaver.Anthropic.ChatModelTest do
   alias BeamWeaver.Anthropic.Client
   alias BeamWeaver.Core.Error
   alias BeamWeaver.Anthropic.Messages
-  alias BeamWeaver.Anthropic.OutputParsers
   alias BeamWeaver.Anthropic.Tools
   alias BeamWeaver.Core.ChatModel, as: CoreChatModel
   alias BeamWeaver.Core.Message
@@ -1489,23 +1488,6 @@ defmodule BeamWeaver.Anthropic.ChatModelTest do
 
       assert {:ok, %{"metadata" => %{"user_id" => ^user_id}}} = ChatModel.request_body(model, [Message.user("ping")])
     end
-  end
-
-  test "output parser extracts Anthropic tool_use blocks" do
-    content = [
-      %{"type" => "text", "text" => "checking"},
-      %{"type" => "tool_use", "id" => "toolu_1", "name" => "lookup", "input" => %{"q" => "beam"}}
-    ]
-
-    assert OutputParsers.extract_tool_calls(content) == [
-             %ToolCall{
-               id: "toolu_1",
-               provider_id: "toolu_1",
-               call_id: "toolu_1",
-               name: "lookup",
-               args: %{"q" => "beam"}
-             }
-           ]
   end
 
   defp with_config(group, values, fun) do

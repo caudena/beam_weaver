@@ -1,92 +1,61 @@
 defmodule BeamWeaver.Agent.ProfileRegistry do
   @moduledoc false
 
-  @spec register(term(), String.t() | atom(), struct(), map(), (struct(), struct() -> struct())) ::
-          :ok
-  def register(registry_key, key, incoming, exact_profiles, merge) when is_function(merge, 2) do
-    canonical = validate_profile_key!(key)
-    existing = Map.get(exact_profiles, canonical)
-    profile = if existing, do: merge.(existing, incoming), else: incoming
+  alias BeamWeaver.Agent.ModelResolver
 
-    registry =
-      registry_key
-      |> persistent_get(%{})
-      |> Map.put(canonical, %{profile | name: canonical})
-
-    :persistent_term.put(registry_key, registry)
-    :ok
-  end
-
-  @spec lookup(String.t() | atom() | nil, map(), (struct(), struct() -> struct())) ::
-          struct() | nil
-  def lookup(nil, _profiles, _merge), do: nil
-
-  def lookup(spec, profiles, merge)
-      when (is_atom(spec) or is_binary(spec)) and is_function(merge, 2) do
-    with {:ok, canonical} <- profile_key(spec),
-         false <- malformed_profile_key?(canonical) do
-      {provider, model?} = split_profile_key(canonical)
-      exact = Map.get(profiles, canonical)
-      base = if model?, do: Map.get(profiles, provider)
-
-      cond do
-        exact && base -> merge.(base, exact)
-        exact -> exact
-        base -> base
-        true -> nil
+  @spec register(term(), map(), String.t() | atom(), struct(), (struct(), struct() -> struct())) :: :ok
+  def register(registry_key, builtin_profiles, key, incoming, merge) when is_function(merge, 2) do
+    canonical =
+      case profile_key(key) do
+        {:ok, canonical, _parts} -> canonical
+        :error -> raise ArgumentError, "profile key must be a non-empty provider or provider:model string"
       end
-    else
-      _other -> nil
+
+    existing = Map.get(exact_profiles(registry_key, builtin_profiles), canonical)
+    profile = if existing, do: merge.(existing, incoming), else: incoming
+    registry = registry_key |> :persistent_term.get(%{}) |> Map.put(canonical, %{profile | name: canonical})
+    :persistent_term.put(registry_key, registry)
+  end
+
+  @spec lookup(term(), map(), String.t() | atom() | nil, (struct(), struct() -> struct())) :: struct() | nil
+  def lookup(registry_key, builtin_profiles, spec, merge) when is_function(merge, 2) do
+    profiles = exact_profiles(registry_key, builtin_profiles)
+
+    case profile_key(spec) do
+      {:ok, canonical, [_provider]} ->
+        Map.get(profiles, canonical)
+
+      {:ok, canonical, [provider, _model]} ->
+        exact = Map.get(profiles, canonical)
+        base = Map.get(profiles, provider)
+        if exact && base, do: merge.(base, exact), else: exact || base
+
+      :error ->
+        nil
     end
   end
 
-  @spec exact_profiles(map(), term()) :: map()
-  def exact_profiles(builtin_profiles, registry_key),
-    do: Map.merge(builtin_profiles, persistent_get(registry_key, %{}))
+  def for_model(_model, spec, get) when is_binary(spec), do: get.(spec)
+  def for_model(spec, nil, get) when is_binary(spec), do: get.(spec)
 
-  @spec validate_profile_key!(String.t() | atom()) :: String.t()
-  def validate_profile_key!(key) do
-    case profile_key(key) do
-      {:ok, canonical} ->
-        if malformed_profile_key?(canonical) do
-          raise ArgumentError, "profile key must be a non-empty provider or provider:model string"
-        else
-          canonical
-        end
+  def for_model(model, nil, get) do
+    identifier = ModelResolver.get_model_identifier(model)
+    provider = ModelResolver.get_model_provider(model)
 
-      _other ->
-        raise ArgumentError, "profile key must be a non-empty provider or provider:model string"
+    cond do
+      provider && identifier && not String.contains?(identifier, ":") ->
+        get.("#{provider}:#{identifier}") || get.(provider)
+
+      identifier && String.contains?(identifier, ":") ->
+        get.(identifier)
+
+      provider ->
+        get.(provider)
+
+      true ->
+        nil
     end
   end
-
-  @spec profile_key(String.t() | atom()) :: {:ok, String.t()} | :error
-  def profile_key(key) when is_atom(key), do: {:ok, Atom.to_string(key)}
-  def profile_key(key) when is_binary(key), do: {:ok, key}
-  def profile_key(_key), do: :error
-
-  @spec malformed_profile_key?(String.t()) :: boolean()
-  def malformed_profile_key?(key) do
-    key == "" or key != String.trim(key) or String.split(key, ":") |> malformed_profile_parts?()
-  end
-
-  @spec split_profile_key(String.t()) :: {String.t(), boolean()}
-  def split_profile_key(key) do
-    case String.split(key, ":", parts: 2) do
-      [provider, model] when provider != "" and model != "" -> {provider, true}
-      [provider] -> {provider, false}
-    end
-  end
-
-  @spec persistent_get(term(), term()) :: term()
-  def persistent_get(key, default) do
-    :persistent_term.get(key)
-  rescue
-    ArgumentError -> default
-  end
-
-  @spec maybe_put(map(), atom(), term()) :: map()
-  def maybe_put(map, _key, nil), do: map
-  def maybe_put(map, key, value), do: Map.put(map, key, value)
 
   @spec maybe_put_map(map(), atom(), term()) :: map()
   def maybe_put_map(map, _key, value) when value in [nil, %{}], do: map
@@ -98,7 +67,17 @@ defmodule BeamWeaver.Agent.ProfileRegistry do
   def maybe_put_list(map, key, value),
     do: Map.put(map, key, value |> List.wrap() |> Enum.map(&to_string/1) |> Enum.sort())
 
-  defp malformed_profile_parts?([provider]), do: provider == ""
-  defp malformed_profile_parts?([provider, model]), do: provider == "" or model == ""
-  defp malformed_profile_parts?(_parts), do: true
+  defp exact_profiles(registry_key, builtin_profiles),
+    do: Map.merge(builtin_profiles, :persistent_term.get(registry_key, %{}))
+
+  defp profile_key(key) when is_atom(key) or is_binary(key) do
+    key = to_string(key)
+    parts = String.split(key, ":")
+
+    if key == String.trim(key) and length(parts) <= 2 and "" not in parts,
+      do: {:ok, key, parts},
+      else: :error
+  end
+
+  defp profile_key(_key), do: :error
 end

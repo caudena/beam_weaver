@@ -9,39 +9,30 @@ defmodule BeamWeaver.Template.Simple do
   @open_brace "\0BEAM_WEAVER_OPEN_BRACE\0"
   @close_brace "\0BEAM_WEAVER_CLOSE_BRACE\0"
 
-  def render(template, vars, opts \\ [])
-
   def render(template, vars, opts) when is_binary(template) and is_map(vars) do
     with :ok <- validate_format(Keyword.get(opts, :template_format, :simple)),
          :ok <- reject_nested_replacement_fields(template),
          protected <- protect_escaped_braces(template),
          :ok <- validate_placeholders(protected) do
-      placeholders =
-        @placeholder_pattern
-        |> Regex.scan(protected)
-        |> Enum.map(fn [_match, placeholder] -> placeholder end)
-
       missing =
-        Enum.find(placeholders, fn placeholder ->
+        @placeholder_pattern
+        |> Regex.scan(protected, capture: :all_but_first)
+        |> Enum.find_value(fn [placeholder] ->
           {variable, _format_spec} = split_placeholder(placeholder)
-          match?(:error, fetch_path(vars, String.split(variable, ".")))
+          if fetch_path(vars, String.split(variable, ".")) == :error, do: variable
         end)
 
-      case missing do
-        nil ->
-          rendered =
-            Regex.replace(@placeholder_pattern, protected, fn _full, placeholder ->
-              {variable, format_spec} = split_placeholder(placeholder)
-              {:ok, value} = fetch_path(vars, String.split(variable, "."))
-              format_value(value, format_spec)
-            end)
+      if missing do
+        {:error, Error.new(:prompt_missing_variable, "prompt variable is missing", %{variable: missing})}
+      else
+        rendered =
+          Regex.replace(@placeholder_pattern, protected, fn _full, placeholder ->
+            {variable, format_spec} = split_placeholder(placeholder)
+            {:ok, value} = fetch_path(vars, String.split(variable, "."))
+            format_value(value, format_spec)
+          end)
 
-          {:ok, restore_escaped_braces(rendered)}
-
-        placeholder ->
-          {variable, _format_spec} = split_placeholder(placeholder)
-
-          {:error, Error.new(:prompt_missing_variable, "prompt variable is missing", %{variable: variable})}
+        {:ok, restore_escaped_braces(rendered)}
       end
     end
   end
@@ -69,11 +60,11 @@ defmodule BeamWeaver.Template.Simple do
   def validate_template(_template),
     do: {:error, Error.new(:invalid_prompt, "prompt template must be a string")}
 
-  def validate_format(format)
-      when format in [nil, :simple, "simple"],
-      do: :ok
+  defp validate_format(format)
+       when format in [nil, :simple, "simple"],
+       do: :ok
 
-  def validate_format(format) do
+  defp validate_format(format) do
     {:error,
      Error.new(:unsupported_template_format, "unsupported prompt template format", %{
        template_format: format,
@@ -113,7 +104,7 @@ defmodule BeamWeaver.Template.Simple do
     end
   end
 
-  defp valid_variable?(variable) do
+  def valid_variable?(variable) do
     valid_shape? =
       Regex.match?(~r/^[a-zA-Z_][a-zA-Z0-9_]*(?:\.[a-zA-Z_][a-zA-Z0-9_]*)*$/, variable)
 
@@ -148,10 +139,6 @@ defmodule BeamWeaver.Template.Simple do
 
   defp fetch_segment(_value, _segment), do: :error
 
-  defp stringify(nil), do: ""
-  defp stringify(value) when is_binary(value), do: value
-  defp stringify(value), do: to_string(value)
-
   defp split_placeholder(placeholder) do
     {variable_with_conversion, format_spec} =
       case String.split(placeholder, ":", parts: 2) do
@@ -172,12 +159,12 @@ defmodule BeamWeaver.Template.Simple do
   end
 
   defp apply_conversion(value, nil), do: value
-  defp apply_conversion(value, "s"), do: stringify(value)
+  defp apply_conversion(value, "s"), do: to_string(value)
   defp apply_conversion(value, "r") when is_binary(value), do: "'" <> value <> "'"
   defp apply_conversion(value, "r"), do: inspect(value)
   defp apply_conversion(value, _conversion), do: value
 
-  defp apply_format_spec(value, nil), do: stringify(value)
+  defp apply_format_spec(value, nil), do: to_string(value)
 
   defp apply_format_spec(value, "." <> rest) when is_number(value) do
     case Integer.parse(String.trim_trailing(rest, "f")) do
@@ -187,18 +174,18 @@ defmodule BeamWeaver.Template.Simple do
         |> :erlang.float_to_binary(decimals: decimals)
 
       _other ->
-        stringify(value)
+        to_string(value)
     end
   end
 
   defp apply_format_spec(value, ">" <> width) do
     value
-    |> stringify()
+    |> to_string()
     |> String.pad_leading(parse_width(width))
   end
 
   defp apply_format_spec(value, <<fill::binary-size(1), "^", width::binary>>) do
-    text = stringify(value)
+    text = to_string(value)
     width = parse_width(width)
     padding = max(width - String.length(text), 0)
     left = div(padding, 2)
@@ -216,7 +203,7 @@ defmodule BeamWeaver.Template.Simple do
     |> Kernel.<>("%")
   end
 
-  defp apply_format_spec(value, _format_spec), do: stringify(value)
+  defp apply_format_spec(value, _format_spec), do: to_string(value)
 
   defp parse_width(width) do
     case Integer.parse(width) do

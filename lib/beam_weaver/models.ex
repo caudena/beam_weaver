@@ -84,13 +84,7 @@ defmodule BeamWeaver.Models do
   Returns a copy of a model configured with an explicit tokenizer adapter.
   """
   @spec with_tokenizer(term(), term()) :: term()
-  def with_tokenizer(%module{} = model, tokenizer) do
-    if :tokenizer in struct_keys(module) do
-      struct(model, tokenizer: tokenizer)
-    else
-      model
-    end
-  end
+  def with_tokenizer(%_{} = model, tokenizer), do: struct(model, tokenizer: tokenizer)
 
   @doc """
   Initializes a chat model from a provider-prefixed or inferred model identifier.
@@ -124,12 +118,8 @@ defmodule BeamWeaver.Models do
   @doc """
   Initializes a chat model and raises on failure.
   """
-  def init_chat_model!(model_or_opts \\ [], opts \\ []) do
-    case init_chat_model(model_or_opts, opts) do
-      {:ok, model} -> model
-      {:error, error} -> raise ArgumentError, error.message
-    end
-  end
+  def init_chat_model!(model_or_opts \\ [], opts \\ []),
+    do: model_or_opts |> init_chat_model(opts) |> BeamWeaver.Policy.bang()
 
   @doc """
   Initializes an embedding model from a provider-prefixed or inferred model identifier.
@@ -160,12 +150,8 @@ defmodule BeamWeaver.Models do
   @doc """
   Initializes an embedding model and raises on failure.
   """
-  def init_embeddings!(model_or_opts \\ [], opts \\ []) do
-    case init_embeddings(model_or_opts, opts) do
-      {:ok, model} -> model
-      {:error, error} -> raise ArgumentError, error.message
-    end
-  end
+  def init_embeddings!(model_or_opts \\ [], opts \\ []),
+    do: model_or_opts |> init_embeddings(opts) |> BeamWeaver.Policy.bang()
 
   @doc "Initializes a typed decision model using an explicit provider:model identifier."
   def init_decision_model(model_or_opts \\ [], opts \\ [])
@@ -182,9 +168,8 @@ defmodule BeamWeaver.Models do
     with [provider, id] when provider != "" and id != "" <- String.split(model, ":", parts: 2),
          provider = ProviderRegistry.provider_atom(provider),
          {:ok, module} <- ProviderRegistry.decision_provider(provider, opts),
-         {:ok, profile} <- fetch_profile(provider, id, opts),
-         {:ok, model} <- build_model(provider, module, id, opts, profile) do
-      {:ok, model}
+         {:ok, profile} <- fetch_profile(provider, id, opts) do
+      build_model(provider, module, id, opts, profile)
     else
       {:error, _} = error -> error
       _ -> {:error, Error.new(:invalid_model, "decision models require a provider: prefix", %{model: model})}
@@ -192,12 +177,8 @@ defmodule BeamWeaver.Models do
   end
 
   @doc "Initializes a decision model and raises on invalid configuration."
-  def init_decision_model!(model_or_opts \\ [], opts \\ []) do
-    case init_decision_model(model_or_opts, opts) do
-      {:ok, model} -> model
-      {:error, error} -> raise ArgumentError, error.message
-    end
-  end
+  def init_decision_model!(model_or_opts \\ [], opts \\ []),
+    do: model_or_opts |> init_decision_model(opts) |> BeamWeaver.Policy.bang()
 
   defp parse_model_id(model, kind) do
     case String.split(model, ":", parts: 2) do

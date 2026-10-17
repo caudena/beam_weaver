@@ -61,6 +61,19 @@ defmodule BeamWeaver.Migrations.SQLiteTest do
     refute LiveSQLite.table_exists?(writes)
   end
 
+  test "the singular adapter: form checks and drops its own tables" do
+    {opts, checkpoints, writes} = migration_options()
+    opts = [repo: SQLiteRepo, adapter: hd(opts[:adapters])]
+    version = LiveSQLite.migrate(opts)
+
+    on_exit(fn -> cleanup(version, checkpoints, writes) end)
+
+    assert BeamWeaver.Migrations.migrated_version(opts) == 2
+    assert :ok = LiveSQLite.rollback(version, opts)
+    refute LiveSQLite.table_exists?(checkpoints)
+    refute LiveSQLite.table_exists?(writes)
+  end
+
   defp migration_options do
     checkpoints = LiveSQLite.unique_table("bw_sqlite_mig_checkpoints")
     writes = LiveSQLite.unique_table("bw_sqlite_mig_writes")

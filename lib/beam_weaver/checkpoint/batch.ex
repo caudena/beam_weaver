@@ -78,18 +78,16 @@ defmodule BeamWeaver.Checkpoint.Batch do
     end)
   end
 
-  defp unique_identities(entries) do
-    identities =
-      Enum.map(entries, fn entry ->
-        {:ok, config, checkpoint, _metadata, _versions, _writes, _opts} = entry(entry)
-        configurable = BeamWeaver.Checkpoint.configurable(config)
+  def identity(entry) do
+    {:ok, config, checkpoint, _metadata, _versions, _writes, _opts} = entry(entry)
+    configurable = BeamWeaver.Checkpoint.configurable(config)
 
-        {
-          configurable["thread_id"],
-          Map.get(configurable, "checkpoint_ns", ""),
-          Map.get(checkpoint, :id) || Map.get(checkpoint, "id")
-        }
-      end)
+    {configurable["thread_id"], Map.get(configurable, "checkpoint_ns", ""),
+     Map.get(checkpoint, :id) || Map.get(checkpoint, "id")}
+  end
+
+  defp unique_identities(entries) do
+    identities = Enum.map(entries, &identity/1)
 
     if length(identities) == length(Enum.uniq(identities)),
       do: :ok,

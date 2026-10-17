@@ -4,7 +4,9 @@ defmodule BeamWeaver.Core.Tool.Output do
   alias BeamWeaver.Core.Message
   alias BeamWeaver.Core.ToolResult
 
-  def format(content, opts \\ []) do
+  @content_block_types ~w(text image_url image json search_result custom_tool_call_output document file)
+
+  def format(content, opts) do
     tool_call_id = Keyword.get(opts, :tool_call_id)
     name = Keyword.get(opts, :name)
     artifact = Keyword.get(opts, :artifact)
@@ -57,26 +59,10 @@ defmodule BeamWeaver.Core.Tool.Output do
   defp message_content_block?(text) when is_binary(text), do: true
 
   defp message_content_block?(block) when is_map(block) do
-    type = Map.get(block, :type) || Map.get(block, "type")
-
-    type in [
-      :text,
-      "text",
-      :image_url,
-      "image_url",
-      :image,
-      "image",
-      :json,
-      "json",
-      :search_result,
-      "search_result",
-      :custom_tool_call_output,
-      "custom_tool_call_output",
-      :document,
-      "document",
-      :file,
-      "file"
-    ]
+    case Map.get(block, :type) || Map.get(block, "type") do
+      type when is_atom(type) -> Atom.to_string(type) in @content_block_types
+      type -> type in @content_block_types
+    end
   end
 
   defp message_content_block?(_block), do: false

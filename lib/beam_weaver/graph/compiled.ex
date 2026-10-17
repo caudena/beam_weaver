@@ -12,14 +12,14 @@ defmodule BeamWeaver.Graph.Compiled do
   and `stream_events/3` continue that run.
   """
 
+  alias BeamWeaver.Cache
   alias BeamWeaver.Core.Error
   alias BeamWeaver.Graph.Command
-  alias BeamWeaver.Graph.Compiled.Batch
-  alias BeamWeaver.Graph.Compiled.CacheControl
   alias BeamWeaver.Graph.Compiled.Runtime
-  alias BeamWeaver.Graph.Compiled.View
   alias BeamWeaver.Graph.Execution.StateUpdate
   alias BeamWeaver.Graph.Introspection
+  alias BeamWeaver.Graph.Renderer
+  alias BeamWeaver.Schema
 
   defstruct [
     :name,
@@ -56,13 +56,43 @@ defmodule BeamWeaver.Graph.Compiled do
 
   @spec batch(t(), [map()], keyword()) :: [term()]
   def batch(%__MODULE__{} = compiled, inputs, opts \\ []) when is_list(inputs) do
-    Batch.batch(compiled, inputs, opts)
+    Enum.map(inputs, &Runtime.invoke(compiled, &1, opts))
   end
 
   @spec batch_as_completed(t(), [map()], keyword()) ::
           {:ok, Enumerable.t()} | {:error, Error.t()}
   def batch_as_completed(%__MODULE__{} = compiled, inputs, opts \\ []) when is_list(inputs) do
-    Batch.batch_as_completed(compiled, inputs, opts)
+    max_concurrency =
+      case Keyword.get(opts, :max_concurrency, System.schedulers_online()) do
+        value when is_integer(value) and value > 0 -> value
+        _value -> System.schedulers_online()
+      end
+
+    stream =
+      inputs
+      |> Enum.with_index()
+      |> Task.async_stream(
+        fn {input, index} -> {index, Runtime.invoke(compiled, input, opts)} end,
+        ordered: false,
+        max_concurrency: max_concurrency,
+        timeout: Keyword.get(opts, :timeout, :infinity),
+        on_timeout: :kill_task
+      )
+      |> Elixir.Stream.map(fn
+        {:ok, {index, result}} ->
+          {index, result}
+
+        {:exit, reason} ->
+          {:unknown, {:error, Error.new(:graph_batch_exit, "graph batch task exited", %{reason: inspect(reason)})}}
+      end)
+
+    {:ok, stream}
+  rescue
+    exception ->
+      {:error,
+       Error.new(:graph_batch_exception, Exception.message(exception), %{
+         exception: inspect(exception.__struct__)
+       })}
   end
 
   @doc """
@@ -134,41 +164,55 @@ defmodule BeamWeaver.Graph.Compiled do
   """
   @spec clear_cache(t(), keyword()) :: :ok | {:error, Error.t()}
   def clear_cache(%__MODULE__{} = compiled, opts \\ []) do
-    CacheControl.clear_cache(compiled, opts)
+    cache = Keyword.get(opts, :cache, compiled.cache)
+
+    cond do
+      Cache.adapter?(cache) ->
+        Cache.clear(cache, Keyword.get(opts, :namespace))
+
+      cache in [nil, false, %{}] ->
+        :ok
+
+      true ->
+        {:error,
+         Error.new(:invalid_cache, "graph cache must be a BeamWeaver.Cache adapter", %{
+           cache: inspect(cache)
+         })}
+    end
   end
 
   @spec get_graph(t(), keyword()) :: Introspection.t()
   def get_graph(%__MODULE__{} = compiled, opts \\ []) do
-    View.get_graph(compiled, opts)
+    Introspection.from_compiled(compiled, opts)
   end
 
   @spec get_context_json_schema(t()) :: map()
   def get_context_json_schema(%__MODULE__{graph: %{context_schema: context_schema}}) do
-    View.get_context_json_schema(%{graph: %{context_schema: context_schema}})
+    Schema.to_json_schema(context_schema)
   end
 
   @spec get_input_json_schema(t()) :: map()
   def get_input_json_schema(%__MODULE__{graph: %{input_schema: input_schema}}) do
-    View.get_input_json_schema(%{graph: %{input_schema: input_schema}})
+    Schema.to_json_schema(input_schema)
   end
 
   @spec get_output_json_schema(t()) :: map()
   def get_output_json_schema(%__MODULE__{graph: %{output_schema: output_schema}}) do
-    View.get_output_json_schema(%{graph: %{output_schema: output_schema}})
+    Schema.to_json_schema(output_schema)
   end
 
   @spec draw_mermaid(t(), keyword()) :: String.t()
   def draw_mermaid(%__MODULE__{} = compiled, opts \\ []) do
-    View.draw_mermaid(compiled, opts)
+    compiled |> get_graph(opts) |> Renderer.to_mermaid(opts)
   end
 
   @spec draw_ascii(t(), keyword()) :: String.t()
   def draw_ascii(%__MODULE__{} = compiled, opts \\ []) do
-    View.draw_ascii(compiled, opts)
+    compiled |> get_graph(opts) |> Renderer.to_ascii(opts)
   end
 
   @spec draw_png(t(), keyword()) :: {:ok, binary()} | {:error, Error.t()}
   def draw_png(%__MODULE__{} = compiled, opts \\ []) do
-    View.draw_png(compiled, opts)
+    compiled |> get_graph(opts) |> Renderer.to_png(opts)
   end
 end

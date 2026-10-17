@@ -484,7 +484,6 @@ defmodule BeamWeaver.Graph.ToolNodeTest do
   end
 
   test "wrap_tool_call can handle unregistered tools without executing the static registry" do
-    # Upstream reference:
     registered =
       Tool.from_function!(
         name: "registered",
@@ -644,7 +643,6 @@ defmodule BeamWeaver.Graph.ToolNodeTest do
   end
 
   test "validation error messages include model args but filter injected runtime values" do
-    # Upstream reference:
     parent = self()
 
     private_search =

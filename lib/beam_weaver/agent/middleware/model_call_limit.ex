@@ -89,15 +89,12 @@ defmodule BeamWeaver.Agent.Middleware.ModelCallLimit do
   end
 
   defp validate!(%__MODULE__{thread_limit: thread_limit, run_limit: run_limit} = middleware) do
-    unless valid_limit?(thread_limit) and valid_limit?(run_limit) do
+    unless Enum.all?([thread_limit, run_limit], &(is_nil(&1) or (is_integer(&1) and &1 >= 0))) do
       raise ArgumentError, "model call limits must be nil or non-negative integers"
     end
 
     middleware
   end
-
-  defp valid_limit?(nil), do: true
-  defp valid_limit?(limit), do: is_integer(limit) and limit >= 0
 
   defp normalize_exit_behavior(value),
     do: Options.atom_enum!("exit_behavior", value, [:end, :error])

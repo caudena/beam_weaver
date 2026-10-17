@@ -61,7 +61,7 @@ defmodule BeamWeaver.Moonshot.Messages do
   end
 
   @spec metadata(map(), map()) :: map()
-  def metadata(response, choice) do
+  defp metadata(response, choice) do
     message = choice["message"] || %{}
     header_metadata = response["_beamweaver_response_header_metadata"] || %{}
 
@@ -141,24 +141,10 @@ defmodule BeamWeaver.Moonshot.Messages do
 
   defp header_count(_value), do: nil
 
-  defp to_chat_message(%Message{role: :tool} = message) do
-    call_id = message.tool_call_id || message.id
-
-    if is_binary(call_id) and call_id != "" do
-      {:ok,
-       %{
-         "role" => "tool",
-         "tool_call_id" => call_id,
-         "content" => ChatCompletionsWire.tool_output(message.content)
-       }
-       |> MapShape.put_optional("name", message.name)}
-    else
-      {:error, Error.new(:invalid_tool_message, "tool messages require a tool_call_id or id")}
-    end
-  end
+  defp to_chat_message(%Message{role: :tool} = message), do: ChatCompletionsWire.tool_message(message)
 
   defp to_chat_message(%Message{role: :assistant} = message) do
-    with {:ok, content} <- assistant_content(message) do
+    with {:ok, content} <- content_to_moonshot(message.content, skip_reasoning?: true) do
       {:ok,
        %{
          "role" => "assistant",
@@ -219,19 +205,10 @@ defmodule BeamWeaver.Moonshot.Messages do
      )}
   end
 
-  defp assistant_content(%Message{content: content}) when is_binary(content), do: {:ok, content}
+  defp content_to_moonshot(content, opts \\ [])
+  defp content_to_moonshot(content, _opts) when is_binary(content), do: {:ok, content}
 
-  defp assistant_content(%Message{content: content}) when is_list(content) do
-    content_to_parts(content, skip_reasoning?: true)
-  end
-
-  defp assistant_content(%Message{content: content}), do: {:ok, to_string(content)}
-
-  defp content_to_moonshot(content) when is_binary(content), do: {:ok, content}
-  defp content_to_moonshot(content) when is_list(content), do: content_to_parts(content)
-  defp content_to_moonshot(content), do: {:ok, to_string(content)}
-
-  defp content_to_parts(content, opts \\ []) when is_list(content) do
+  defp content_to_moonshot(content, opts) when is_list(content) do
     skip_reasoning? = Keyword.get(opts, :skip_reasoning?, false)
 
     content
@@ -248,6 +225,8 @@ defmodule BeamWeaver.Moonshot.Messages do
         error
     end
   end
+
+  defp content_to_moonshot(content, _opts), do: {:ok, to_string(content)}
 
   defp content_part(%ContentBlock.Text{text: text}, _skip_reasoning?),
     do: {:ok, %{"type" => "text", "text" => text}}
@@ -371,7 +350,7 @@ defmodule BeamWeaver.Moonshot.Messages do
     {:error,
      Error.new(:unsupported_feature, "Moonshot Kimi media input requires data: or ms:// URLs", %{
        provider: :moonshot,
-       feature: media_feature(kind),
+       feature: String.to_atom(kind),
        url: url,
        supported: ["data:", "ms://"]
      })}
@@ -384,12 +363,6 @@ defmodule BeamWeaver.Moonshot.Messages do
        type: kind
      })}
   end
-
-  defp media_feature("image"), do: :image
-  defp media_feature("image_url"), do: :image_url
-  defp media_feature("video"), do: :video
-  defp media_feature("video_url"), do: :video_url
-  defp media_feature(kind), do: kind
 
   defp unsupported_content_block(:audio) do
     {:error,

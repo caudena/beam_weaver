@@ -255,16 +255,10 @@ defmodule BeamWeaver.Filesystem.Executable do
   def id(%module{} = backend), do: module.id(backend)
   def execute(%module{} = backend, command, opts \\ []), do: module.execute(backend, command, opts)
 
-  def executable?(%module{} = backend),
-    do: BeamWeaver.Behaviour.implemented_by?(module, __MODULE__) and executable_enabled?(backend)
+  def executable?(%module{} = backend) do
+    BeamWeaver.Behaviour.implemented_by?(module, __MODULE__) and
+      (not function_exported?(module, :executable?, 1) or module.executable?(backend) == true)
+  end
 
   def executable?(_backend), do: false
-
-  defp executable_enabled?(%{__struct__: module} = backend) do
-    if function_exported?(module, :executable?, 1) do
-      module.executable?(backend) == true
-    else
-      true
-    end
-  end
 end

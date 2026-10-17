@@ -2,6 +2,7 @@ defmodule BeamWeaver.Serialization.JSON.Encoder do
   @moduledoc false
 
   alias BeamWeaver.Core.Error
+  alias BeamWeaver.Result
   alias BeamWeaver.Serialization.Registry
 
   @type_tag "__beam_weaver_type__"
@@ -65,17 +66,7 @@ defmodule BeamWeaver.Serialization.JSON.Encoder do
     end
   end
 
-  def encode(list, registry) when is_list(list) do
-    case Enum.reduce_while(list, {:ok, []}, fn value, {:ok, acc} ->
-           case encode(value, registry) do
-             {:ok, encoded} -> {:cont, {:ok, [encoded | acc]}}
-             {:error, %Error{} = error} -> {:halt, {:error, error}}
-           end
-         end) do
-      {:ok, encoded} -> {:ok, Enum.reverse(encoded)}
-      {:error, %Error{} = error} -> {:error, error}
-    end
-  end
+  def encode(list, registry) when is_list(list), do: Result.traverse(list, &encode(&1, registry))
 
   def encode(value, _registry) when is_binary(value) do
     if String.valid?(value) do
@@ -116,12 +107,11 @@ defmodule BeamWeaver.Serialization.JSON.Encoder do
   defp object_key?(_key), do: false
 
   defp encode_object(map, registry) do
-    Enum.reduce_while(map, {:ok, %{}}, fn {key, value}, {:ok, acc} ->
-      case encode(value, registry) do
-        {:ok, encoded} -> {:cont, {:ok, Map.put(acc, key_name(key), encoded)}}
-        {:error, %Error{}} = error -> {:halt, error}
-      end
-    end)
+    with {:ok, fields} <- Result.traverse(map, &encode_field(&1, registry)), do: {:ok, Map.new(fields)}
+  end
+
+  defp encode_field({key, value}, registry) do
+    with {:ok, encoded} <- encode(value, registry), do: {:ok, {key_name(key), encoded}}
   end
 
   defp key_name(key) when is_atom(key), do: Atom.to_string(key)
@@ -136,18 +126,13 @@ defmodule BeamWeaver.Serialization.JSON.Encoder do
   end
 
   defp encode_entries(map, registry) do
-    map
-    |> Enum.reduce_while({:ok, []}, fn {key, value}, {:ok, acc} ->
-      with {:ok, encoded_key} <- encode(key, registry),
-           {:ok, encoded_value} <- encode(value, registry) do
-        {:cont, {:ok, [%{"key" => encoded_key, "value" => encoded_value} | acc]}}
-      else
-        {:error, %Error{}} = error -> {:halt, error}
-      end
-    end)
-    |> case do
-      {:ok, entries} -> {:ok, %{@type_tag => @plain_map_tag, "entries" => Enum.reverse(entries)}}
-      {:error, %Error{}} = error -> error
-    end
+    with {:ok, entries} <- Result.traverse(map, &encode_entry(&1, registry)),
+         do: {:ok, %{@type_tag => @plain_map_tag, "entries" => entries}}
+  end
+
+  defp encode_entry({key, value}, registry) do
+    with {:ok, encoded_key} <- encode(key, registry),
+         {:ok, encoded_value} <- encode(value, registry),
+         do: {:ok, %{"key" => encoded_key, "value" => encoded_value}}
   end
 end

@@ -74,6 +74,8 @@ defmodule BeamWeaver.Agent.Subagent.StreamTransformer do
   alias BeamWeaver.Stream.Events
   alias BeamWeaver.Stream.Namespace
 
+  import BeamWeaver.Agent.Subagent.Helpers, only: [value: 2, value: 3]
+
   defstruct scope: [],
             subagent_names: MapSet.new(),
             pending: %{},
@@ -156,24 +158,19 @@ defmodule BeamWeaver.Agent.Subagent.StreamTransformer do
   end
 
   @spec finalize(t()) :: t()
-  def finalize(%__MODULE__{} = transformer) do
-    transformer.handles
-    |> Enum.filter(fn {_key, handle} -> handle.status == :started end)
-    |> Enum.reduce(transformer, fn {key, _handle}, acc ->
-      update_handle(acc, key, &%{&1 | status: :completed})
-    end)
-  end
+  def finalize(%__MODULE__{} = transformer), do: update_started(transformer, &%{&1 | status: :completed})
 
   @spec fail(t(), term()) :: t()
   def fail(%__MODULE__{} = transformer, reason) do
     status = if interrupted?(reason), do: :interrupted, else: :failed
     message = if status == :failed, do: error_message(reason), else: nil
+    update_started(transformer, &%{&1 | status: status, error: message || &1.error})
+  end
 
+  defp update_started(transformer, fun) do
     transformer.handles
     |> Enum.filter(fn {_key, handle} -> handle.status == :started end)
-    |> Enum.reduce(transformer, fn {key, _handle}, acc ->
-      update_handle(acc, key, &%{&1 | status: status, error: message || &1.error})
-    end)
+    |> Enum.reduce(transformer, fn {key, _handle}, acc -> update_handle(acc, key, fun) end)
   end
 
   defp emit_result(%__MODULE__{} = next, %__MODULE__{} = previous) do
@@ -190,7 +187,7 @@ defmodule BeamWeaver.Agent.Subagent.StreamTransformer do
 
   defp start_task_call(transformer, %Envelope{event: %Events.ToolStart{tool_name: "task"} = start} = envelope) do
     input = start.input || %{}
-    subagent_type = data_value(input, :subagent_type) || data_value(input, :subagent_name)
+    subagent_type = value(input, :subagent_type) || value(input, :subagent_name)
     parent = Map.get(transformer.calls, envelope_call_id(envelope))
 
     cond do
@@ -203,7 +200,7 @@ defmodule BeamWeaver.Agent.Subagent.StreamTransformer do
       true ->
         info = %{
           subagent_type: to_string(subagent_type),
-          task_input: data_value(input, :description),
+          task_input: value(input, :description),
           parent: parent
         }
 
@@ -238,22 +235,15 @@ defmodule BeamWeaver.Agent.Subagent.StreamTransformer do
   end
 
   defp observe_call_event(transformer, key, %Envelope{event: event, namespace: namespace} = envelope) do
-    own_events? = Namespace.normalize(namespace, stringify: true) == elem(key, 0)
+    {data, method} =
+      case {Namespace.normalize(namespace, stringify: true) == elem(key, 0), event} do
+        {true, %Events.GraphValue{value: value}} -> {value, "values"}
+        {true, %Events.GraphUpdate{update: update}} -> {update, "updates"}
+        _other -> {nil, nil}
+      end
 
-    update_handle(transformer, key, fn handle ->
-      handle
-      |> Map.update!(:events, &(&1 ++ [envelope]))
-      |> maybe_append_own(own_events?, event)
-    end)
+    update_handle(transformer, key, &observe_event(&1, envelope, data, method))
   end
-
-  defp maybe_append_own(handle, true, %Events.GraphValue{value: value}),
-    do: Map.update!(handle, :values, &(&1 ++ [value]))
-
-  defp maybe_append_own(handle, true, %Events.GraphUpdate{update: update}),
-    do: Map.update!(handle, :updates, &(&1 ++ [update]))
-
-  defp maybe_append_own(handle, _own?, _event), do: handle
 
   defp finish_task_call(transformer, %Envelope{event: %Events.ToolFinish{tool_call_id: call_id}}),
     do: finish_call(transformer, call_id, :completed, nil)
@@ -288,8 +278,8 @@ defmodule BeamWeaver.Agent.Subagent.StreamTransformer do
 
   defp capture_pending(%__MODULE__{} = transformer, namespace, data) do
     if parent_scope?(transformer, namespace) and task_start?(data) and task_name(data) == "tools" do
-      parent_task_id = data_value(data, :id) || data_value(data, :task_id)
-      tool_calls = data_value(data, :input)
+      parent_task_id = value(data, :id) || value(data, :task_id)
+      tool_calls = value(data, :input)
 
       case pending_info(tool_calls) do
         nil ->
@@ -330,7 +320,7 @@ defmodule BeamWeaver.Agent.Subagent.StreamTransformer do
 
   defp maybe_finish_handle(%__MODULE__{} = transformer, namespace, data, raw_event) do
     if task_terminal?(data) and task_name(data) == "tools" do
-      parent_task_id = data_value(data, :id) || data_value(data, :task_id)
+      parent_task_id = value(data, :id) || value(data, :task_id)
 
       case Map.get(transformer.task_paths, {namespace, parent_task_id}) do
         nil ->
@@ -340,7 +330,7 @@ defmodule BeamWeaver.Agent.Subagent.StreamTransformer do
           {status, error} = terminal_status(data)
 
           update_handle(transformer, key, fn handle ->
-            observed = observe_event(handle, raw_event, namespace, data, "tasks")
+            observed = observe_event(handle, raw_event, data, "tasks")
             %{observed | status: status, error: error || handle.error}
           end)
       end
@@ -353,7 +343,7 @@ defmodule BeamWeaver.Agent.Subagent.StreamTransformer do
     transformer
     |> matching_keys(namespace)
     |> Enum.reduce(transformer, fn key, acc ->
-      update_handle(acc, key, &observe_event(&1, raw_event, namespace, data, method))
+      update_handle(acc, key, &observe_event(&1, raw_event, data, method))
     end)
   end
 
@@ -362,41 +352,34 @@ defmodule BeamWeaver.Agent.Subagent.StreamTransformer do
     |> matching_keys(namespace)
     |> Enum.reduce(transformer, fn key, acc ->
       update_handle(acc, key, fn handle ->
-        observed = observe_event(handle, raw_event, namespace, error, "error")
+        observed = observe_event(handle, raw_event, error, "error")
         %{observed | status: status, error: error || handle.error}
       end)
     end)
   end
 
-  defp observe_event(%RunStream{} = handle, raw_event, _namespace, data, method) do
-    handle
-    |> Map.update!(:events, &(&1 ++ [raw_event]))
-    |> maybe_append_value(method, data)
-    |> maybe_append_update(method, data)
+  defp observe_event(%RunStream{} = handle, raw_event, data, method) do
+    handle = Map.update!(handle, :events, &(&1 ++ [raw_event]))
+
+    case method do
+      "values" -> Map.update!(handle, :values, &(&1 ++ [data]))
+      "updates" -> Map.update!(handle, :updates, &(&1 ++ [data]))
+      _other -> handle
+    end
   end
-
-  defp maybe_append_value(handle, "values", data),
-    do: Map.update!(handle, :values, &(&1 ++ [data]))
-
-  defp maybe_append_value(handle, _method, _data), do: handle
-
-  defp maybe_append_update(handle, "updates", data),
-    do: Map.update!(handle, :updates, &(&1 ++ [data]))
-
-  defp maybe_append_update(handle, _method, _data), do: handle
 
   defp pending_info(tool_calls) when is_list(tool_calls) do
     Enum.find_value(tool_calls, fn
       tool_call when is_map(tool_call) ->
-        if data_value(tool_call, :name) == "task" do
-          args = data_value(tool_call, :args) || %{}
-          subagent_type = data_value(args, :subagent_type) || data_value(args, :subagent_name)
+        if value(tool_call, :name) == "task" do
+          args = value(tool_call, :args) || %{}
+          subagent_type = value(args, :subagent_type) || value(args, :subagent_name)
 
           if is_binary(subagent_type) do
             %{
               subagent_type: subagent_type,
-              tool_call_id: data_value(tool_call, :id),
-              task_input: data_value(args, :description)
+              tool_call_id: value(tool_call, :id),
+              task_input: value(args, :description)
             }
           end
         end
@@ -488,18 +471,18 @@ defmodule BeamWeaver.Agent.Subagent.StreamTransformer do
 
   defp task_terminal?(data) do
     Map.has_key?(data, :result) or Map.has_key?(data, "result") or
-      not is_nil(data_value(data, :error)) or nonempty_list?(data_value(data, :interrupts))
+      not is_nil(value(data, :error)) or nonempty_list?(value(data, :interrupts))
   end
 
-  defp task_name(data), do: data_value(data, :name) || data_value(data, :node)
+  defp task_name(data), do: value(data, :name) || value(data, :node)
 
   defp terminal_status(data) do
     cond do
-      nonempty_list?(data_value(data, :interrupts)) ->
+      nonempty_list?(value(data, :interrupts)) ->
         {:interrupted, nil}
 
-      not is_nil(data_value(data, :error)) ->
-        {:failed, error_message(data_value(data, :error))}
+      not is_nil(value(data, :error)) ->
+        {:failed, error_message(value(data, :error))}
 
       true ->
         {:completed, nil}
@@ -513,42 +496,18 @@ defmodule BeamWeaver.Agent.Subagent.StreamTransformer do
       |> Map.put_new(:id, event.task_id)
       |> Map.put_new(:name, to_string(event.node || ""))
 
-    if event.kind in [:finish, :error],
-      do: %{
-        method: "tasks",
-        namespace: Namespace.normalize(namespace, stringify: true),
-        data: Map.put_new(data, :result, event.payload || %{})
-      },
-      else: %{
-        method: "tasks",
-        namespace: Namespace.normalize(namespace, stringify: true),
-        data: data
-      }
+    data = if event.kind in [:finish, :error], do: Map.put_new(data, :result, event.payload || %{}), else: data
+    envelope_event("tasks", namespace, data)
   end
 
   defp normalize_event(%Envelope{event: %Events.GraphValue{value: value}, namespace: namespace}),
-    do: %{
-      method: "values",
-      namespace: Namespace.normalize(namespace, stringify: true),
-      data: value
-    }
+    do: envelope_event("values", namespace, value)
 
-  defp normalize_event(%Envelope{
-         event: %Events.GraphUpdate{update: update},
-         namespace: namespace
-       }),
-       do: %{
-         method: "updates",
-         namespace: Namespace.normalize(namespace, stringify: true),
-         data: update
-       }
+  defp normalize_event(%Envelope{event: %Events.GraphUpdate{update: update}, namespace: namespace}),
+    do: envelope_event("updates", namespace, update)
 
   defp normalize_event(%Envelope{event: %Events.Error{error: error}, namespace: namespace}),
-    do: %{
-      method: "error",
-      namespace: Namespace.normalize(namespace, stringify: true),
-      data: error
-    }
+    do: envelope_event("error", namespace, error)
 
   defp normalize_event(%{"method" => method, "params" => params}),
     do: normalize_protocol(method, params)
@@ -556,20 +515,18 @@ defmodule BeamWeaver.Agent.Subagent.StreamTransformer do
   defp normalize_event(%{method: method, params: params}),
     do: normalize_protocol(method, params)
 
-  defp normalize_event(%{method: method} = event),
-    do: %{
-      method: to_string(method),
-      namespace: Namespace.normalize(data_value(event, :namespace, []), stringify: true),
-      data: data_value(event, :data, %{})
-    }
+  defp normalize_event(%{method: method} = event), do: normalize_protocol(method, event)
 
   defp normalize_event(_event), do: nil
+
+  defp envelope_event(method, namespace, data),
+    do: %{method: method, namespace: Namespace.normalize(namespace, stringify: true), data: data}
 
   defp normalize_protocol(method, params) when is_map(params) do
     %{
       method: to_string(method),
-      namespace: Namespace.normalize(data_value(params, :namespace, []), stringify: true),
-      data: data_value(params, :data, %{})
+      namespace: Namespace.normalize(value(params, :namespace, []), stringify: true),
+      data: value(params, :data, %{})
     }
   end
 
@@ -588,13 +545,6 @@ defmodule BeamWeaver.Agent.Subagent.StreamTransformer do
     |> MapSet.new()
   end
 
-  defp data_value(map, key, default \\ nil)
-
-  defp data_value(map, key, default) when is_map(map),
-    do: Map.get(map, key, Map.get(map, to_string(key), default))
-
-  defp data_value(_map, _key, default), do: default
-
   defp prefix?(prefix, list), do: Enum.take(list, length(prefix)) == prefix
 
   defp nonempty_list?(value), do: is_list(value) and value != []
@@ -602,7 +552,6 @@ defmodule BeamWeaver.Agent.Subagent.StreamTransformer do
   defp blank_to_nil(value) when value in [nil, ""], do: nil
   defp blank_to_nil(value), do: value
 
-  defp interrupted?(%Error{type: type}) when type in [:graph_interrupt, :interrupted], do: true
   defp interrupted?(%{type: type}) when type in [:graph_interrupt, :interrupted], do: true
 
   defp interrupted?(%{"type" => type})

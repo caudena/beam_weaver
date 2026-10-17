@@ -10,6 +10,7 @@ defmodule BeamWeaver.ZAI.ChatModelTest do
   alias BeamWeaver.ZAI.ChatModel
   alias BeamWeaver.ZAI.Client
   alias BeamWeaver.Core.Error
+  alias BeamWeaver.Provider.OpenAICompatibleStreaming
   alias BeamWeaver.ZAI.Messages
   alias BeamWeaver.ZAI.Streaming
 
@@ -391,10 +392,10 @@ defmodule BeamWeaver.ZAI.ChatModelTest do
     data: [DONE]
     """
 
-    assert Streaming.text_deltas(body) == ["po", "ng"]
+    assert OpenAICompatibleStreaming.text_deltas(body) == ["po", "ng"]
 
     assert {:ok, message} =
-             Streaming.stream_body_to_message(body,
+             OpenAICompatibleStreaming.stream_body_to_message(body, Streaming.config(),
                header_metadata: %{
                  headers: %{x_log_id: "chatcmpl_zai_stream"},
                  request_id: "chatcmpl_zai_stream"
@@ -424,7 +425,7 @@ defmodule BeamWeaver.ZAI.ChatModelTest do
     data: [DONE]
     """
 
-    assert {:ok, message} = Streaming.stream_body_to_message(body)
+    assert {:ok, message} = OpenAICompatibleStreaming.stream_body_to_message(body, Streaming.config())
     assert message.id == "chatcmpl_zai_no_id"
     assert Message.text(message) == "pong"
     assert message.usage_metadata.total_tokens == 5

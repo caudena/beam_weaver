@@ -77,35 +77,26 @@ defmodule BeamWeaver.Tracing.Store do
   end
 
   def handle_call(:clear, _from, state) do
-    Enum.each(state.owners, fn {_owner, {ref, _run_ids}} -> Process.demonitor(ref, [:flush]) end)
+    Enum.each(state.owners, fn {_owner, {ref, _count}} -> Process.demonitor(ref, [:flush]) end)
     {:reply, :ok, new_state()}
   end
 
   # The process that started these runs exited before finishing them.
   @impl true
   def handle_info({:DOWN, _ref, :process, owner, reason}, state) do
-    {{_ref, run_ids}, owners} = Map.pop(state.owners, owner, {nil, MapSet.new()})
-    run_ids = MapSet.to_list(run_ids)
+    {orphans, watched} = Map.split_with(state.watched, fn {_run_id, {pid, _exporter}} -> pid == owner end)
     error = BeamWeaver.Tracing.Redactor.redact(%{kind: :exit, reason: inspect(reason)})
-    {exporters, kept_exporters} = Map.split(state.exporters, run_ids)
-
-    state = %{
-      state
-      | owners: owners,
-        owned: Map.drop(state.owned, run_ids),
-        exporters: kept_exporters
-    }
+    state = %{state | owners: Map.delete(state.owners, owner), watched: watched}
 
     {failed, state} =
-      run_ids
-      |> Enum.flat_map(&running(state, &1))
+      for({run_id, _watch} <- orphans, {:ok, %Run{status: :running} = run} <- [Map.fetch(state.runs, run_id)], do: run)
       |> Enum.sort_by(&timestamp_key/1)
       |> Enum.map_reduce(state, fn run, state ->
         failed = %{run | status: :error, ended_at: DateTime.utc_now(), error: error}
         {failed, put_run(state, run, failed)}
       end)
 
-    export_failed(failed, exporters)
+    export_failed(failed, orphans)
     {:noreply, trim(state, max_runs())}
   end
 
@@ -114,22 +105,22 @@ defmodule BeamWeaver.Tracing.Store do
   # Keep the exporters' options, which may hold an API key, out of the state a
   # crash or `:sys.get_status/1` would print.
   @impl true
-  def format_status(%{state: %{exporters: _exporters} = state} = status),
-    do: %{status | state: %{state | exporters: :redacted}}
+  def format_status(%{state: %{watched: _watched} = state} = status),
+    do: %{status | state: %{state | watched: :redacted}}
 
   def format_status(status), do: status
 
-  # `owners` maps each watched process to its monitor and the ids of its
-  # running runs; `owned` maps those ids back to the process, and `exporters`
-  # to the exporter each run started with.
-  defp new_state, do: %{runs: %{}, finished: :queue.new(), owners: %{}, owned: %{}, exporters: %{}}
+  # `owners` maps each watched process to its monitor and its number of
+  # running runs; `watched` maps those runs' ids to the process and to the
+  # exporter each run started with.
+  defp new_state, do: %{runs: %{}, finished: :queue.new(), owners: %{}, watched: %{}}
 
   # The exporters get the `:error` events from a separate process, in the
   # order the runs started: an exporter may make its caller wait, as the
   # WeaveScope queue does while it is full, and every run's calls go through
   # the store.
-  defp export_failed(failed, exporters) do
-    events = for %Run{id: run_id} = run <- failed, exporter = Map.get(exporters, run_id), do: {run, exporter}
+  defp export_failed(failed, orphans) do
+    events = for %Run{id: run_id} = run <- failed, {_owner, exporter} = orphans[run_id], exporter, do: {run, exporter}
 
     if events != [] do
       Task.start(fn -> Enum.each(events, fn {run, exporter} -> Tracing.export_event(:error, run, exporter) end) end)
@@ -145,27 +136,14 @@ defmodule BeamWeaver.Tracing.Store do
     |> track_finished(previous, run)
   end
 
-  defp running(state, run_id) do
-    case Map.fetch(state.runs, run_id) do
-      {:ok, %Run{status: :running} = run} -> [run]
-      _other -> []
-    end
-  end
-
   defp watch(state, %Run{status: :running, id: run_id}, owner, exporter) do
     state = unwatch(state, run_id)
-
-    {ref, run_ids} =
-      case Map.fetch(state.owners, owner) do
-        {:ok, {ref, run_ids}} -> {ref, run_ids}
-        :error -> {Process.monitor(owner), MapSet.new()}
-      end
+    {ref, count} = Map.get_lazy(state.owners, owner, fn -> {Process.monitor(owner), 0} end)
 
     %{
       state
-      | owners: Map.put(state.owners, owner, {ref, MapSet.put(run_ids, run_id)}),
-        owned: Map.put(state.owned, run_id, owner),
-        exporters: if(exporter, do: Map.put(state.exporters, run_id, exporter), else: state.exporters)
+      | owners: Map.put(state.owners, owner, {ref, count + 1}),
+        watched: Map.put(state.watched, run_id, {owner, exporter})
     }
   end
 
@@ -174,23 +152,22 @@ defmodule BeamWeaver.Tracing.Store do
   # Stops watching the process of a run that finished; a process with no
   # running run left isn't watched.
   defp unwatch(state, run_id) do
-    state = %{state | exporters: Map.delete(state.exporters, run_id)}
+    case Map.pop(state.watched, run_id) do
+      {{owner, _exporter}, watched} ->
+        owners =
+          case Map.fetch!(state.owners, owner) do
+            {ref, 1} ->
+              Process.demonitor(ref, [:flush])
+              Map.delete(state.owners, owner)
 
-    with {owner, owned} when is_pid(owner) <- Map.pop(state.owned, run_id),
-         {:ok, {ref, run_ids}} <- Map.fetch(state.owners, owner) do
-      run_ids = MapSet.delete(run_ids, run_id)
+            {ref, count} ->
+              Map.put(state.owners, owner, {ref, count - 1})
+          end
 
-      owners =
-        if MapSet.size(run_ids) == 0 do
-          Process.demonitor(ref, [:flush])
-          Map.delete(state.owners, owner)
-        else
-          Map.put(state.owners, owner, {ref, run_ids})
-        end
+        %{state | owners: owners, watched: watched}
 
-      %{state | owners: owners, owned: owned}
-    else
-      _other -> state
+      {nil, _watched} ->
+        state
     end
   end
 

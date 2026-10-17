@@ -355,14 +355,12 @@ defmodule BeamWeaver.TestSupport.Conformance.ChatModelCase do
       if Subject.capability?(@beamweaver_subject, :model_override) do
         test "chat model receives model override as explicit runtime config" do
           model = build_subject()
-          parent = fixture(:parent, self())
 
           assert {:ok, %Message{}} =
                    ChatModel.invoke(model, fixture(:messages), model: "override-model")
 
           assert_received {:fake_chat_model_call, _messages, opts}
           assert Keyword.fetch!(opts, :model) == "override-model"
-          assert parent == self()
         end
       end
 

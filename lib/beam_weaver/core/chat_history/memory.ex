@@ -11,9 +11,8 @@ defmodule BeamWeaver.Core.ChatHistory.Memory.Session do
   def get_messages(%__MODULE__{} = session) do
     case Memory.get(session.store, session.namespace, session.session_id) do
       {:ok, %{value: messages}} when is_list(messages) -> {:ok, messages}
-      :error -> {:ok, []}
       {:error, error} -> {:error, error}
-      _other -> {:ok, []}
+      _missing -> {:ok, []}
     end
   end
 

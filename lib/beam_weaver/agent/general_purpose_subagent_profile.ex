@@ -21,10 +21,7 @@ defmodule BeamWeaver.Agent.GeneralPurposeSubagentProfile do
 
   defstruct enabled: nil, description: nil, system_prompt: nil
 
-  def new(opts \\ []) when is_list(opts) or is_map(opts) do
-    opts = if is_map(opts), do: opts, else: Map.new(opts)
-    struct(__MODULE__, normalize_keys(opts))
-  end
+  def new(opts \\ []) when is_list(opts) or is_map(opts), do: struct(__MODULE__, normalize_keys(opts))
 
   def to_map(%__MODULE__{} = profile) do
     %{}

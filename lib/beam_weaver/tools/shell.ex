@@ -157,27 +157,13 @@ defmodule BeamWeaver.Tools.Shell do
          })}
 
       truthy?(Map.get(input, "restart") || Map.get(input, :restart)) ->
-        case BeamWeaver.Tools.Shell.Session.restart(session, opts) do
-          :ok -> {:ok, %{status: 0, output: "Shell session restarted."}}
-          {:error, %Error{} = error} -> {:error, error}
-        end
+        with :ok <- BeamWeaver.Tools.Shell.Session.restart(session, opts),
+             do: {:ok, %{status: 0, output: "Shell session restarted."}}
 
       true ->
         command = Map.get(input, "command") || Map.get(input, :command)
-        do_session_command(session, command, opts)
+        BeamWeaver.Tools.Shell.Session.execute(session, command, opts)
     end
-  end
-
-  defp do_session_command(_session, command, _opts) when not is_binary(command) do
-    {:error, Error.new(:invalid_shell_command, "shell tool expects a command string")}
-  end
-
-  defp do_session_command(_session, command, _opts) when command == "" do
-    {:error, Error.new(:invalid_shell_command, "shell command cannot be empty")}
-  end
-
-  defp do_session_command(session, command, opts) do
-    BeamWeaver.Tools.Shell.Session.execute(session, command, opts)
   end
 
   # The session from state, if still alive; otherwise, when the run has a

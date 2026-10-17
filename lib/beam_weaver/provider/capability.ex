@@ -88,15 +88,11 @@ defmodule BeamWeaver.Provider.Capability do
     end
   end
 
-  @doc """
-  Returns supported feature names for a profile.
-  """
-  @spec supported_features(Profile.t() | nil) :: [atom()]
-  def supported_features(%Profile{} = profile) do
+  defp supported_features(%Profile{} = profile) do
     Enum.sort(for {feature, field} <- @feature_fields, Map.get(profile, field) == true, uniq: true, do: feature)
   end
 
-  def supported_features(_profile), do: []
+  defp supported_features(_profile), do: []
 
   defp requested_features(model, opts) do
     params = model_params(model) |> Keyword.merge(opts)

@@ -6,8 +6,9 @@ defmodule BeamWeaver.Config do
   reaching into application config directly.
   """
 
+  alias BeamWeaver.MapAccess
+
   @app :beam_weaver
-  @missing :__beam_weaver_config_missing__
 
   @type path :: atom() | [atom() | String.t()]
 
@@ -62,17 +63,13 @@ defmodule BeamWeaver.Config do
     end
   end
 
-  defp application_env(key, default), do: Application.get_env(@app, key, default)
-
   defp do_get(group) when is_atom(group) do
-    group
-    |> application_env(@missing)
-    |> present()
+    with {:ok, value} <- Application.fetch_env(@app, group), do: present(value)
   end
 
   defp do_get([group | keys]) when is_atom(group) do
-    group
-    |> application_env([])
+    @app
+    |> Application.get_env(group, [])
     |> fetch_path(keys)
   end
 
@@ -104,30 +101,11 @@ defmodule BeamWeaver.Config do
   end
 
   defp fetch_key(data, key) when is_map(data) do
-    cond do
-      Map.has_key?(data, key) ->
-        present(Map.fetch!(data, key))
-
-      is_atom(key) and Map.has_key?(data, Atom.to_string(key)) ->
-        present(Map.fetch!(data, Atom.to_string(key)))
-
-      is_binary(key) ->
-        atom_key = existing_atom(key)
-
-        if atom_key && Map.has_key?(data, atom_key) do
-          present(Map.fetch!(data, atom_key))
-        else
-          :error
-        end
-
-      true ->
-        :error
-    end
+    with {:ok, value} <- MapAccess.fetch(data, key), do: present(value)
   end
 
   defp fetch_key(_data, _key), do: :error
 
-  defp present(@missing), do: :error
   defp present(value) when value in [nil, ""], do: :error
 
   defp present(value) when is_binary(value) do

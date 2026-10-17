@@ -41,25 +41,6 @@ defmodule BeamWeaver.OpenAI.ModelPolicy do
 
   def completion_tokens_field_model?(_model), do: false
 
-  @doc """
-  Returns whether a model should prefer the Responses API when callers have not
-  explicitly selected an API.
-  """
-  @spec prefers_responses_api?(String.t() | nil) :: boolean()
-  def prefers_responses_api?(model) when is_binary(model) do
-    normalized = String.downcase(model)
-
-    gpt6?(normalized) or String.starts_with?(normalized, "gpt-5.6") or
-      normalized in ["gpt-5.5-pro", "gpt-5.4-pro"]
-  end
-
-  def prefers_responses_api?(_model), do: false
-
-  @doc false
-  @spec astra?(String.t() | nil) :: boolean()
-  def astra?(model) when is_binary(model), do: String.downcase(model) == "gpt-6-astra"
-  def astra?(_model), do: false
-
   @doc false
   def responses_tools_only?(model) when is_binary(model),
     do: String.downcase(model) in ["gpt-6-astra", "gpt-6.1-sol"]
@@ -82,17 +63,37 @@ defmodule BeamWeaver.OpenAI.ModelPolicy do
   def none_reasoning?(reasoning), do: reasoning_effort(reasoning) == "none"
 
   @doc false
-  @spec reasoning_effort_supported?(String.t() | nil, term()) :: boolean()
-  def reasoning_effort_supported?(model, reasoning) do
-    cond do
-      responses_tools_only?(model) ->
-        reasoning_effort(reasoning) in [nil, "low", "medium", "high", "xhigh", "max"]
+  def validate_gpt6_effort(model, reasoning, requested_effort) do
+    supported =
+      cond do
+        responses_tools_only?(model) -> [:low, :medium, :high, :xhigh, :max]
+        gpt6_sol_or_luna?(model) -> [:none, :low, :medium, :high, :xhigh, :max]
+        true -> nil
+      end
 
-      gpt6_sol_or_luna?(model) ->
-        reasoning_effort(reasoning) in [nil, "none", "low", "medium", "high", "xhigh", "max"]
+    if is_nil(supported) or reasoning_effort(reasoning) in [nil | Enum.map(supported, &Atom.to_string/1)] do
+      :ok
+    else
+      {:error,
+       BeamWeaver.Core.Error.new(:invalid_model_option, "GPT-6 reasoning effort is not supported by this model", %{
+         model: model,
+         reasoning_effort: requested_effort,
+         supported: supported
+       })}
+    end
+  end
 
-      true ->
-        true
+  @doc false
+  def validate_gpt6_sampling(model, reasoning, params) do
+    if params != [] and gpt6_sol_or_luna?(model) and not none_reasoning?(reasoning) do
+      {:error,
+       BeamWeaver.Core.Error.new(:invalid_model_option, "GPT-6 sampling controls require reasoning effort none", %{
+         model: model,
+         params: params,
+         expected_reasoning_effort: :none
+       })}
+    else
+      :ok
     end
   end
 

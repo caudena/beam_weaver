@@ -16,8 +16,8 @@ defmodule BeamWeaver.Agent.DecisionTest do
   end
 
   test "a Jump with a valid destination is accepted" do
-    assert {:ok, %Jump{destination: :model}} = Decision.normalize(%Jump{destination: :model})
-    assert {:ok, %Jump{destination: :tools}} = Decision.normalize(%Jump{destination: :tools})
-    assert {:ok, %Jump{destination: :end}} = Decision.normalize(%Jump{destination: :end})
+    assert {:ok, %{jump_to: :model}} = Decision.normalize(%Jump{destination: :model})
+    assert {:ok, %{jump_to: :tools}} = Decision.normalize(%Jump{destination: :tools})
+    assert {:ok, %{jump_to: :end}} = Decision.normalize(%Jump{destination: :end})
   end
 end

@@ -34,7 +34,7 @@ defmodule BeamWeaver.Core.Messages.Serialization do
   def decode(%{"version" => @version, "type" => "message"} = map) do
     Message.from(%{
       role: map["role"],
-      content: decode_content(map["content"]),
+      content: map["content"],
       id: map["id"],
       name: map["name"],
       metadata: map["metadata"] || %{},
@@ -61,10 +61,6 @@ defmodule BeamWeaver.Core.Messages.Serialization do
   def decode(_value),
     do: {:error, Error.new(:invalid_message, "serialized message must be a map")}
 
-  defp decode_content(content), do: content
-
-  defp stringify_keys(nil), do: nil
-
   defp stringify_keys(%{__struct__: module} = struct) do
     struct
     |> Map.from_struct()
@@ -77,9 +73,9 @@ defmodule BeamWeaver.Core.Messages.Serialization do
 
   defp stringify_keys(value), do: value
 
-  defp stringify_value(value) when is_map(value), do: stringify_keys(value)
-  defp stringify_value(value) when is_list(value), do: Enum.map(value, &stringify_value/1)
-  defp stringify_value(value), do: value
+  def stringify_value(value) when is_map(value), do: stringify_keys(value)
+  def stringify_value(value) when is_list(value), do: Enum.map(value, &stringify_value/1)
+  def stringify_value(value), do: value
 
   defp struct_type(_module, type) when not is_nil(type), do: type
 

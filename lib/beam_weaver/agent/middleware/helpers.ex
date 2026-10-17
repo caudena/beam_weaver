@@ -45,11 +45,6 @@ defmodule BeamWeaver.Agent.Middleware.Helpers do
   def runtime_store(%{store: store}), do: store
   def runtime_store(_runtime), do: nil
 
-  def maybe_put_files_update(update, _state_key, nil), do: update
-
-  def maybe_put_files_update(update, state_key, files_update),
-    do: Map.put(update, state_key, files_update)
-
   def artifact_prefix(%{artifacts_root: root}, name) when is_binary(root) do
     root = String.trim_trailing(root, "/")
     if(root == "", do: "", else: root) <> "/" <> name
@@ -80,6 +75,9 @@ defmodule BeamWeaver.Agent.Middleware.Helpers do
   def tool_call_id(%{"call_id" => id}) when is_binary(id), do: id
   def tool_call_id(%{"provider_id" => id}) when is_binary(id), do: id
   def tool_call_id(_call), do: nil
+
+  def tool_name(%{tool: nil, tool_call: call}), do: Map.get(call, :name)
+  def tool_name(%{tool: tool}), do: Tool.name(tool)
 
   # The names of a `tools:` option: names as given, and the names of tool
   # modules and structs.
@@ -137,6 +135,8 @@ defmodule BeamWeaver.Agent.Middleware.Helpers do
     |> Kernel.+(index)
   end
 
+  def last_message(messages, role), do: Enum.find(Enum.reverse(messages), &match?(%Message{role: ^role}, &1))
+
   # Index of the last message with `role`, or nil.
   def last_role_index(messages, role) do
     messages
@@ -173,6 +173,9 @@ defmodule BeamWeaver.Agent.Middleware.Helpers do
 
   defp param_apis(%Profile{supported_params_by_api: by_api}) when is_map(by_api), do: [nil | Map.keys(by_api)]
   defp param_apis(_profile), do: [nil]
+
+  def chat_model!(spec) when is_binary(spec), do: BeamWeaver.Models.init_chat_model!(spec)
+  def chat_model!(model), do: model
 
   # A decision model given as one or as a "provider:model" string, such as a
   # middleware's classifier.

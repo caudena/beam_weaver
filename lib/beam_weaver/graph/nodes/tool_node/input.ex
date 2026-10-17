@@ -3,10 +3,9 @@ defmodule BeamWeaver.Graph.Nodes.ToolNode.Input do
 
   alias BeamWeaver.Core.Error
   alias BeamWeaver.Core.Message
+  alias BeamWeaver.Core.ToolRuntime
 
   @spec condition(term(), atom() | String.t()) :: :tools | :end
-  def condition(input, messages_key \\ :messages)
-
   def condition(input, messages_key) when is_map(input) do
     case fetch_messages(input, messages_key) do
       {:ok, _key, messages} -> condition(messages, messages_key)
@@ -59,10 +58,10 @@ defmodule BeamWeaver.Graph.Nodes.ToolNode.Input do
   def request_state(input, runtime) do
     cond do
       sent_call?(input) ->
-        Map.get(input, :state) || Map.get(input, "state") || runtime_value(runtime, :previous_state)
+        Map.get(input, :state) || Map.get(input, "state") || ToolRuntime.runtime_value(runtime, :previous_state)
 
-      raw_tool_call_list?(input) and runtime_value(runtime, :previous_state) != nil ->
-        runtime_value(runtime, :previous_state)
+      raw_tool_call_list?(input) and ToolRuntime.runtime_value(runtime, :previous_state) != nil ->
+        ToolRuntime.runtime_value(runtime, :previous_state)
 
       true ->
         input
@@ -142,9 +141,6 @@ defmodule BeamWeaver.Graph.Nodes.ToolNode.Input do
     end
   end
 
-  defp runtime_value(nil, _field), do: nil
-  defp runtime_value(runtime, field) when is_map(runtime), do: Map.get(runtime, field)
-
   defp tool_call?(call) do
     is_map(call) and not is_nil(tool_call_name(call))
   end
@@ -199,14 +195,13 @@ defmodule BeamWeaver.Graph.Nodes.ToolNode.Input do
     end
   end
 
-  @doc false
-  def decode_args(args) when is_binary(args) do
+  defp decode_args(args) when is_binary(args) do
     case BeamWeaver.JSON.decode(args) do
       {:ok, decoded} when is_map(decoded) -> decoded
       _other -> %{"input" => args}
     end
   end
 
-  def decode_args(args) when is_map(args), do: args
-  def decode_args(_args), do: %{}
+  defp decode_args(args) when is_map(args), do: args
+  defp decode_args(_args), do: %{}
 end

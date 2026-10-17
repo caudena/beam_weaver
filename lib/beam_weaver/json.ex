@@ -27,13 +27,6 @@ defmodule BeamWeaver.JSON do
     end
   end
 
-  @spec read!(Path.t()) :: term()
-  def read!(path) do
-    path
-    |> File.read!()
-    |> decode!()
-  end
-
   @spec decode!(binary() | iodata()) :: term()
   def decode!(data), do: data |> to_binary() |> Elixir.JSON.decode!()
 
@@ -44,52 +37,22 @@ defmodule BeamWeaver.JSON do
     exception -> {:error, exception}
   end
 
-  @spec encode(term(), keyword() | function()) :: {:ok, binary()} | {:error, Exception.t()}
-  def encode(value, opts_or_encoder) do
-    {:ok, encode!(value, opts_or_encoder)}
-  rescue
-    exception -> {:error, exception}
-  end
-
   @spec encode!(term()) :: binary()
   def encode!(value), do: Elixir.JSON.encode!(value)
 
-  @spec encode!(term(), keyword() | function()) :: binary()
+  @spec encode!(term(), keyword()) :: binary()
   def encode!(value, opts) when is_list(opts) do
     if Keyword.get(opts, :pretty, false) do
       value
-      |> encode_pretty()
+      |> encode_pretty(0)
       |> IO.iodata_to_binary()
     else
       Elixir.JSON.encode!(value)
     end
   end
 
-  def encode!(value, encoder) when is_function(encoder, 2),
-    do: Elixir.JSON.encode!(value, encoder)
-
-  @spec write!(Path.t(), term()) :: :ok
-  def write!(path, value) do
-    path
-    |> Path.dirname()
-    |> File.mkdir_p!()
-
-    File.write!(path, [encode_pretty(value), ?\n])
-  end
-
-  @spec encode_to_iodata!(term()) :: iodata()
-  def encode_to_iodata!(value), do: Elixir.JSON.encode_to_iodata!(value)
-
-  @spec encode_to_iodata!(term(), keyword() | function()) :: iodata()
-  def encode_to_iodata!(value, opts) when is_list(opts), do: encode!(value, opts)
-
-  def encode_to_iodata!(value, encoder) when is_function(encoder, 2),
-    do: Elixir.JSON.encode_to_iodata!(value, encoder)
-
   defp to_binary(data) when is_binary(data), do: data
   defp to_binary(data), do: IO.iodata_to_binary(data)
-
-  defp encode_pretty(value), do: encode_pretty(value, 0)
 
   defp encode_pretty(nil, _indent), do: "null"
   defp encode_pretty(true, _indent), do: "true"
@@ -121,6 +84,8 @@ defmodule BeamWeaver.JSON do
     end
   end
 
+  defp encode_pretty(%_{} = struct, _indent), do: Elixir.JSON.encode!(struct)
+
   defp encode_pretty(value, indent) when is_map(value) do
     entries =
       value
@@ -151,16 +116,13 @@ defmodule BeamWeaver.JSON do
     end
   end
 
-  defp escape(value) do
-    value
-    |> String.replace("\\", "\\\\")
-    |> String.replace("\"", "\\\"")
-    |> escape_control_chars()
-  end
+  defp encode_pretty(value, _indent), do: Elixir.JSON.encode!(value)
 
-  defp escape_control_chars(value) do
+  defp escape(value) do
     for <<codepoint::utf8 <- value>>, into: "" do
       case codepoint do
+        ?\\ -> "\\\\"
+        ?" -> "\\\""
         ?\n -> "\\n"
         ?\r -> "\\r"
         ?\t -> "\\t"
@@ -172,6 +134,5 @@ defmodule BeamWeaver.JSON do
     end
   end
 
-  defp spaces(0), do: ""
   defp spaces(count), do: String.duplicate(" ", count)
 end

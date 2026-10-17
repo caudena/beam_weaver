@@ -3,8 +3,6 @@ defmodule BeamWeaver.Agent.Middleware.PII.Detector do
 
   @builtin_types ["email", "credit_card", "ip", "mac_address", "url"]
 
-  def builtin_types, do: @builtin_types
-
   def detect(text, middleware) do
     built_in =
       middleware.detectors
@@ -18,7 +16,7 @@ defmodule BeamWeaver.Agent.Middleware.PII.Detector do
         detector ->
           detect_custom_detector(
             detector,
-            middleware.pii_type || detector_type(List.first(middleware.detectors)),
+            middleware.pii_type || to_string(List.first(middleware.detectors)),
             text
           )
       end
@@ -78,14 +76,14 @@ defmodule BeamWeaver.Agent.Middleware.PII.Detector do
     scheme_matches ++ bare_matches
   end
 
-  def normalize_matches(matches, pii_type) do
+  defp normalize_matches(matches, pii_type) do
     matches
     |> List.wrap()
     |> Enum.map(&normalize_match(&1, pii_type))
     |> Enum.reject(&is_nil/1)
   end
 
-  def normalize_match(%{} = match, pii_type) do
+  defp normalize_match(%{} = match, pii_type) do
     start = Map.get(match, :start, Map.get(match, "start"))
     end_offset = Map.get(match, :end, Map.get(match, "end"))
 
@@ -103,11 +101,9 @@ defmodule BeamWeaver.Agent.Middleware.PII.Detector do
     end
   end
 
-  def normalize_match(_match, _pii_type), do: nil
+  defp normalize_match(_match, _pii_type), do: nil
 
   def normalize_detector(:mac), do: :mac_address
-  def normalize_detector("mac"), do: :mac_address
-  def normalize_detector("mac_address"), do: :mac_address
 
   def normalize_detector(detector)
       when detector in [:email, :credit_card, :ip, :mac_address, :url],
@@ -123,25 +119,21 @@ defmodule BeamWeaver.Agent.Middleware.PII.Detector do
 
   def normalize_detector(_detector), do: :custom
 
-  def detector_type(:mac_address), do: "mac_address"
-  def detector_type(:custom), do: "custom"
-  def detector_type(type), do: to_string(type)
-
   def normalize_type(nil), do: nil
   def normalize_type(:mac), do: "mac_address"
   def normalize_type("mac"), do: "mac_address"
   def normalize_type(type), do: to_string(type)
 
-  def validate_detector_config!(nil, _detector, _detectors), do: :ok
+  def validate_detector_config!(nil, _detector), do: :ok
 
-  def validate_detector_config!(pii_type, nil, _detectors) do
+  def validate_detector_config!(pii_type, nil) do
     unless normalize_type(pii_type) in @builtin_types do
       raise ArgumentError,
             "Unknown PII type: #{pii_type}. Must be one of #{inspect(@builtin_types)} or provide a custom detector."
     end
   end
 
-  def validate_detector_config!(_pii_type, _detector, _detectors), do: :ok
+  def validate_detector_config!(_pii_type, _detector), do: :ok
 
   defp detect_builtin(:email, text), do: detect_email(text)
   defp detect_builtin(:credit_card, text), do: detect_credit_card(text)

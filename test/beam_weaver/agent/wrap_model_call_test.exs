@@ -1,8 +1,6 @@
 defmodule BeamWeaver.Agent.WrapModelCallTest do
   use ExUnit.Case, async: true
 
-  # Upstream behavioral evidence:
-
   alias BeamWeaver.Agent
   alias BeamWeaver.Agent.ExtendedModelResponse
   alias BeamWeaver.Agent.ModelRequest

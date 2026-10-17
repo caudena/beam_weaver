@@ -7,6 +7,7 @@ defmodule BeamWeaver.Core.Messages.OpenAI do
   alias BeamWeaver.Core.Error
   alias BeamWeaver.Core.Message
   alias BeamWeaver.MapShape
+  alias BeamWeaver.OpenAI.MessageParts
   alias BeamWeaver.Provider.MessageCodec
   alias BeamWeaver.Result
 
@@ -16,7 +17,7 @@ defmodule BeamWeaver.Core.Messages.OpenAI do
     if Keyword.get(opts, :api) == :responses do
       convert_responses_input(messages, opts, normalizer)
     else
-      single? = single_message_input?(messages)
+      single? = not is_list(messages)
 
       with {:ok, messages} <- normalizer.(messages),
            {:ok, format} <- normalize_text_format(Keyword.get(opts, :text_format, :string)) do
@@ -32,9 +33,6 @@ defmodule BeamWeaver.Core.Messages.OpenAI do
       Result.flat_traverse(messages, &MessageCodec.encode(&1, Keyword.put(opts, :provider, :openai)))
     end
   end
-
-  defp single_message_input?(messages) when is_list(messages), do: false
-  defp single_message_input?(_messages), do: true
 
   defp normalize_text_format(format) when format in [:string, "string"], do: {:ok, :string}
   defp normalize_text_format(format) when format in [:block, "block"], do: {:ok, :block}
@@ -73,17 +71,11 @@ defmodule BeamWeaver.Core.Messages.OpenAI do
     end
   end
 
-  defp chat_completion_role(%Message{role: :system, metadata: metadata}) do
-    case metadata_value(metadata, :openai_role) do
-      "developer" -> "developer"
-      :developer -> "developer"
-      _other -> "system"
-    end
-  end
+  defp chat_completion_role(%Message{role: :system, metadata: %{openai_role: role}})
+       when role in [:developer, "developer"],
+       do: "developer"
 
-  defp chat_completion_role(%Message{role: :user}), do: "user"
-  defp chat_completion_role(%Message{role: :assistant}), do: "assistant"
-  defp chat_completion_role(%Message{role: :tool}), do: "tool"
+  defp chat_completion_role(%Message{role: role}), do: Atom.to_string(role)
 
   defp chat_completion_content(%Message{role: :assistant, content: content}, text_format, opts)
        when is_list(content) do
@@ -132,174 +124,59 @@ defmodule BeamWeaver.Core.Messages.OpenAI do
   defp content_block_to_chat_completion(%{type: :image_url} = block, _opts),
     do: MapShape.stringify_keys(block)
 
-  defp content_block_to_chat_completion(%ContentBlock.Image{url: url, metadata: metadata}, _opts)
-       when is_binary(url) do
-    image_url =
-      %{"url" => url}
-      |> put_if_present("detail", Map.get(metadata || %{}, :detail))
-
-    %{"type" => "image_url", "image_url" => image_url}
-  end
-
-  defp content_block_to_chat_completion(%ContentBlock.Image{data: data, mime_type: mime_type}, _opts)
-       when is_binary(data),
-       do: %{
-         "type" => "image_url",
-         "image_url" => %{
-           "url" => data_url(mime_type || "image/png", data)
-         }
-       }
-
   defp content_block_to_chat_completion(
          %{type: :image, source: %{type: :base64, media_type: mime_type, data: data}},
          _opts
        )
        when is_binary(mime_type) and is_binary(data),
-       do: %{
-         "type" => "image_url",
-         "image_url" => %{"url" => data_url(mime_type, data)}
-       }
+       do: image_data_part(mime_type, data)
 
-  defp content_block_to_chat_completion(
-         %{type: :image, source_type: :base64, data: data} = block,
-         _opts
-       )
-       when is_binary(data),
-       do: %{
-         "type" => "image_url",
-         "image_url" => %{"url" => data_url(Map.get(block, :mime_type) || "image/png", data)}
-       }
+  defp content_block_to_chat_completion(%{type: :image, source_type: source_type, data: data} = block, _opts)
+       when source_type in [:base64, "base64"] and is_binary(data),
+       do: image_data_part(Map.get(block, :mime_type), data)
 
-  defp content_block_to_chat_completion(%{type: :image, source_type: "base64", data: data} = block, _opts)
-       when is_binary(data),
-       do: %{
-         "type" => "image_url",
-         "image_url" => %{"url" => data_url(Map.get(block, :mime_type) || "image/png", data)}
-       }
-
-  defp content_block_to_chat_completion(%{type: :image, url: url} = block, _opts)
-       when is_binary(url) do
-    image_url =
-      %{"url" => url}
-      |> put_if_present("detail", Map.get(Map.get(block, :metadata, %{}) || %{}, :detail))
-
+  defp content_block_to_chat_completion(%{type: :image, url: url} = block, _opts) when is_binary(url) do
+    image_url = put_if_present(%{"url" => url}, "detail", Map.get(Map.get(block, :metadata) || %{}, :detail))
     %{"type" => "image_url", "image_url" => image_url}
   end
 
-  defp content_block_to_chat_completion(%{type: :image, data: data} = block, _opts)
-       when is_binary(data),
-       do: %{
-         "type" => "image_url",
-         "image_url" => %{
-           "url" => data_url(Map.get(block, :mime_type) || "image/png", data)
-         }
-       }
+  defp content_block_to_chat_completion(%{type: :image, data: data} = block, _opts) when is_binary(data),
+    do: image_data_part(Map.get(block, :mime_type), data)
 
-  defp content_block_to_chat_completion(%{type: :image, base64: data} = block, _opts)
-       when is_binary(data),
-       do: %{
-         "type" => "image_url",
-         "image_url" => %{
-           "url" => data_url(Map.get(block, :mime_type) || "image/png", data)
-         }
-       }
+  defp content_block_to_chat_completion(%{type: :image, base64: data} = block, _opts) when is_binary(data),
+    do: image_data_part(Map.get(block, :mime_type), data)
 
   defp content_block_to_chat_completion(%{type: :media, mime_type: mime_type, data: data}, _opts)
        when is_binary(mime_type) and is_binary(data) do
-    if String.starts_with?(mime_type, "image/") do
-      %{
-        "type" => "image_url",
-        "image_url" => %{"url" => data_url(mime_type, Base.encode64(data))}
-      }
-    else
-      %{"type" => "text", "text" => ""}
-    end
+    if String.starts_with?(mime_type, "image/"),
+      do: image_data_part(mime_type, Base.encode64(data)),
+      else: %{"type" => "text", "text" => ""}
   end
 
-  defp content_block_to_chat_completion(%ContentBlock.File{file_id: id}, _opts)
-       when is_binary(id),
+  defp content_block_to_chat_completion(%{type: :file, file: file}, _opts) when is_map(file),
+    do: %{"type" => "file", "file" => MapShape.stringify_keys(file)}
+
+  defp content_block_to_chat_completion(%{type: :file, file_id: id}, _opts) when is_binary(id),
+    do: %{"type" => "file", "file" => %{"file_id" => id}}
+
+  defp content_block_to_chat_completion(%{type: :file, source_type: source_type, id: id}, _opts)
+       when source_type in [:id, "id"] and is_binary(id),
        do: %{"type" => "file", "file" => %{"file_id" => id}}
 
-  defp content_block_to_chat_completion(%ContentBlock.File{data: data} = block, _opts)
-       when is_binary(data),
-       do: %{
-         "type" => "file",
-         "file" => %{
-           "file_data" => data_url(block.mime_type || "application/octet-stream", data),
-           "filename" => block.filename || "LC_AUTOGENERATED"
-         }
-       }
+  defp content_block_to_chat_completion(%{type: :file, data: data} = block, _opts) when is_binary(data),
+    do: file_data_part(block, data)
 
-  defp content_block_to_chat_completion(%ContentBlock.File{url: url}, _opts)
-       when is_binary(url),
-       do: %{"type" => "file", "file" => %{"file_url" => url}}
+  defp content_block_to_chat_completion(%{type: :file, base64: data} = block, _opts) when is_binary(data),
+    do: file_data_part(block, data)
 
-  defp content_block_to_chat_completion(%{type: :file, file: file}, _opts)
-       when is_map(file),
-       do: %{"type" => "file", "file" => MapShape.stringify_keys(file)}
+  defp content_block_to_chat_completion(%{type: :file, url: url}, _opts) when is_binary(url),
+    do: %{"type" => "file", "file" => %{"file_url" => url}}
 
-  defp content_block_to_chat_completion(%{type: :file, file_id: id}, _opts)
-       when is_binary(id),
-       do: %{"type" => "file", "file" => %{"file_id" => id}}
+  defp content_block_to_chat_completion(%{type: :audio, data: data} = block, _opts) when is_binary(data),
+    do: input_audio_part(block, data)
 
-  defp content_block_to_chat_completion(%{type: :file, source_type: :id, id: id}, _opts)
-       when is_binary(id),
-       do: %{"type" => "file", "file" => %{"file_id" => id}}
-
-  defp content_block_to_chat_completion(%{type: :file, source_type: "id", id: id}, _opts)
-       when is_binary(id),
-       do: %{"type" => "file", "file" => %{"file_id" => id}}
-
-  defp content_block_to_chat_completion(%{type: :file, data: data} = block, _opts)
-       when is_binary(data),
-       do: %{
-         "type" => "file",
-         "file" => %{
-           "file_data" => data_url(Map.get(block, :mime_type) || "application/octet-stream", data),
-           "filename" => Map.get(block, :filename) || "LC_AUTOGENERATED"
-         }
-       }
-
-  defp content_block_to_chat_completion(%{type: :file, base64: data} = block, _opts)
-       when is_binary(data),
-       do: %{
-         "type" => "file",
-         "file" => %{
-           "file_data" => data_url(Map.get(block, :mime_type) || "application/octet-stream", data),
-           "filename" => Map.get(block, :filename) || "LC_AUTOGENERATED"
-         }
-       }
-
-  defp content_block_to_chat_completion(%{type: :file, url: url}, _opts)
-       when is_binary(url),
-       do: %{"type" => "file", "file" => %{"file_url" => url}}
-
-  defp content_block_to_chat_completion(%ContentBlock.Audio{data: data, mime_type: mime_type}, _opts)
-       when is_binary(data),
-       do: %{
-         "type" => "input_audio",
-         "input_audio" => %{"data" => data, "format" => audio_format(mime_type)}
-       }
-
-  defp content_block_to_chat_completion(%{type: :audio, data: data} = block, _opts)
-       when is_binary(data),
-       do: %{
-         "type" => "input_audio",
-         "input_audio" => %{
-           "data" => data,
-           "format" => audio_format(Map.get(block, :mime_type) || Map.get(block, :format))
-         }
-       }
-
-  defp content_block_to_chat_completion(%{type: :audio, base64: data} = block, _opts)
-       when is_binary(data),
-       do: %{
-         "type" => "input_audio",
-         "input_audio" => %{
-           "data" => data,
-           "format" => audio_format(Map.get(block, :mime_type) || Map.get(block, :format))
-         }
-       }
+  defp content_block_to_chat_completion(%{type: :audio, base64: data} = block, _opts) when is_binary(data),
+    do: input_audio_part(block, data)
 
   defp content_block_to_chat_completion(%{type: :input_audio} = block, _opts),
     do: MapShape.stringify_keys(block)
@@ -334,6 +211,23 @@ defmodule BeamWeaver.Core.Messages.OpenAI do
   defp content_block_to_chat_completion(value, _opts),
     do: %{"type" => "text", "text" => inspect(value)}
 
+  defp image_data_part(mime_type, data),
+    do: %{"type" => "image_url", "image_url" => %{"url" => MessageParts.data_url(mime_type || "image/png", data)}}
+
+  defp file_data_part(block, data) do
+    file_data = MessageParts.data_url(Map.get(block, :mime_type) || "application/octet-stream", data)
+
+    %{
+      "type" => "file",
+      "file" => %{"file_data" => file_data, "filename" => Map.get(block, :filename) || "LC_AUTOGENERATED"}
+    }
+  end
+
+  defp input_audio_part(block, data) do
+    format = audio_format(Map.get(block, :mime_type) || Map.get(block, :format))
+    %{"type" => "input_audio", "input_audio" => %{"data" => data, "format" => format}}
+  end
+
   defp pass_through_unknown_block(block, opts) do
     if Keyword.get(opts, :pass_through_unknown_blocks, true) do
       MapShape.stringify_keys(block)
@@ -343,7 +237,6 @@ defmodule BeamWeaver.Core.Messages.OpenAI do
   end
 
   defp text_content_block?(text) when is_binary(text), do: true
-  defp text_content_block?(%ContentBlock.Text{text: text}) when is_binary(text), do: true
   defp text_content_block?(%ContentBlock.PlainText{text: text}) when is_binary(text), do: true
 
   defp text_content_block?(%{type: :text, text: text}) when is_binary(text),
@@ -355,7 +248,7 @@ defmodule BeamWeaver.Core.Messages.OpenAI do
   defp text_content_block_text(%{text: text}), do: text
 
   defp tool_call_content_block?(block) when is_map(block) do
-    block_type(block) in [:tool_use, :tool_call, :function_call]
+    Map.get(block, :type) in [:tool_use, :tool_call, :function_call]
   end
 
   defp tool_call_content_block?(_block), do: false
@@ -444,14 +337,13 @@ defmodule BeamWeaver.Core.Messages.OpenAI do
   defp function_arguments(%{args: args}), do: BeamWeaver.JSON.encode!(args)
   defp function_arguments(_call), do: "{}"
 
-  defp put_refusal(map, %Message{role: :assistant, metadata: metadata}) do
-    put_if_present(map, "refusal", metadata_value(metadata, :refusal))
-  end
+  defp put_refusal(map, %Message{role: :assistant, metadata: %{refusal: refusal}}),
+    do: put_if_present(map, "refusal", refusal)
 
   defp put_refusal(map, _message), do: map
 
   defp user_tool_result(%Message{role: :user, content: [block]}) when is_map(block) do
-    if block_type(block) == :tool_result, do: block, else: nil
+    if Map.get(block, :type) == :tool_result, do: block, else: nil
   end
 
   defp user_tool_result(_message), do: nil
@@ -463,14 +355,6 @@ defmodule BeamWeaver.Core.Messages.OpenAI do
   defp put_if_present(map, _key, ""), do: map
   defp put_if_present(map, key, value), do: Map.put(map, key, value)
 
-  defp data_url(mime_type, data), do: "data:#{mime_type};base64,#{data}"
-
   defp audio_format("audio/" <> subtype), do: subtype
   defp audio_format(_mime_type), do: "wav"
-
-  defp block_type(block), do: Map.get(block, :type)
-
-  defp metadata_value(map, key) when is_map(map), do: Map.get(map, key)
-
-  defp metadata_value(_map, _key), do: nil
 end

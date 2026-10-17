@@ -113,8 +113,6 @@ defmodule BeamWeaver.Compaction.Policy do
   defp normalize_mode("native"), do: {:ok, :native}
   defp normalize_mode(_mode), do: {:error, Error.new(:invalid_compaction_policy, "invalid mode")}
 
-  defp normalize_model(nil), do: {:ok, nil}
-  defp normalize_model(:current_task_model), do: {:ok, :current_task_model}
   defp normalize_model("current_task_model"), do: {:ok, :current_task_model}
   defp normalize_model(model) when is_atom(model), do: {:ok, model}
   defp normalize_model(model) when is_binary(model) and byte_size(model) in 1..200, do: {:ok, model}

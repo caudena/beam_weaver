@@ -6,7 +6,7 @@ defmodule BeamWeaver.TextSplitterTest do
   alias BeamWeaver.TextSplitter
   alias BeamWeaver.Tokenizer.Approximate
 
-  test "character splitter matches upstream word-boundary overlap behavior" do
+  test "character splitter matches word-boundary overlap behavior" do
     splitter = TextSplitter.character(separator: " ", chunk_size: 7, chunk_overlap: 3)
 
     assert TextSplitter.split_text(splitter, "foo bar baz 123") == [
@@ -17,7 +17,6 @@ defmodule BeamWeaver.TextSplitterTest do
   end
 
   test "character splitter drops empty chunks and handles edge inputs" do
-    # Translates upstream empty-doc, separator-empty-doc, empty-input, and whitespace-only cases.
     assert TextSplitter.split_text(
              TextSplitter.character(separator: " ", chunk_size: 2, chunk_overlap: 0),
              "foo  bar"
@@ -62,7 +61,6 @@ defmodule BeamWeaver.TextSplitterTest do
   end
 
   test "character splitter supports regex separators and start/end separator retention" do
-    # Translates upstream keep_separator regex start/end/discard tests.
     text = "foo.bar.baz.123"
 
     assert TextSplitter.split_text(
@@ -107,7 +105,6 @@ defmodule BeamWeaver.TextSplitterTest do
   end
 
   test "chunk overlap equal to chunk size is accepted for already-small text" do
-    # Translates upstream test_character_text_splitter_handle_chunksize_equal_to_chunkoverlap.
     splitter = TextSplitter.character(separator: " ", chunk_size: 5, chunk_overlap: 5)
 
     assert TextSplitter.split_text(splitter, "hello") == ["hello"]
@@ -212,7 +209,6 @@ defmodule BeamWeaver.TextSplitterTest do
   end
 
   test "create_documents accepts per-input metadata and does not share metadata maps" do
-    # Translates upstream create_documents/create_documents_with_metadata/metadata_not_shallow.
     splitter = TextSplitter.character(separator: " ", chunk_size: 3, chunk_overlap: 0)
 
     assert {:ok, stream} =
@@ -233,7 +229,6 @@ defmodule BeamWeaver.TextSplitterTest do
   end
 
   test "create_documents with start index points back into the source text" do
-    # Translates upstream test_create_documents_with_start_index.
     splitter =
       TextSplitter.character(
         separator: " ",
@@ -281,7 +276,6 @@ defmodule BeamWeaver.TextSplitterTest do
   end
 
   test "markdown header splitter handles indented headers and deeper metadata scopes" do
-    # Adapts upstream MarkdownHeaderTextSplitter cases 1-3 to BeamWeaver documents.
     markdown = """
     # Foo
 
@@ -418,7 +412,7 @@ defmodule BeamWeaver.TextSplitterTest do
            end)
   end
 
-  test "markdown syntax splitter supports custom header maps without Python class identity" do
+  test "markdown syntax splitter supports custom header maps" do
     markdown = "# Mi titulo\nintro\n## Kept as text\nbody"
 
     {:ok, stream} =
@@ -708,8 +702,6 @@ defmodule BeamWeaver.TextSplitterTest do
   end
 
   test "latex and code-aware splitters prefer structural separators" do
-    # Translates language-aware splitter separator behavior where it maps to
-    # BeamWeaver's explicit splitter structs.
     latex = "\\section{Intro}\nHello world\n\\subsection{Setup}\nSteps"
 
     assert TextSplitter.split_text(
@@ -737,7 +729,7 @@ defmodule BeamWeaver.TextSplitterTest do
     assert Enum.any?(jsx_chunks, &String.contains?(&1, "export default"))
   end
 
-  test "language separator factory builds recursive splitters without Python class aliases" do
+  test "language separator factory builds recursive splitters" do
     assert ["\nclass ", "\ndef " | _] = TextSplitter.get_separators_for_language(:python)
     assert "\ndefmodule " in TextSplitter.get_separators_for_language("exs")
     assert "\ndef " in TextSplitter.get_separators_for_language("exs")
@@ -764,7 +756,7 @@ defmodule BeamWeaver.TextSplitterTest do
              BeamWeaver.TextSplitter.RecursiveCharacter
   end
 
-  test "language splitters cover upstream code language families" do
+  test "language splitters cover code language families" do
     cases = [
       {:cpp, "class User {};\n\nvoid run() {}\n\nint value = 1;"},
       {:csharp, "interface IUser {}\n\npublic class User {}\n\nprivate int value;"},
@@ -800,7 +792,6 @@ defmodule BeamWeaver.TextSplitterTest do
   end
 
   test "invalid splitter options return tagged errors before enumeration" do
-    # Translates upstream invalid size/overlap tests, with BeamWeaver's tagged-error boundary.
     splitter = TextSplitter.character(chunk_size: 4, chunk_overlap: 5)
 
     assert {:error, %{type: :invalid_text_splitter}} =

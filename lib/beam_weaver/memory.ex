@@ -18,43 +18,13 @@ defmodule BeamWeaver.Memory do
   @type key :: String.t() | atom()
 
   @spec put(store(), namespace(), key(), term(), keyword()) :: {:ok, map()} | {:error, term()}
-  def put(store, namespace, key, value, opts \\ []) do
-    namespace = normalize_namespace(namespace)
-
-    result =
-      with :ok <- Query.validate_namespace(namespace) do
-        store_call(store, :put, [namespace, to_string(key), value, opts])
-      end
-
-    emit(store, :put, %{count: 1}, namespace: namespace, key: key, result: result)
-    result
-  end
+  def put(store, namespace, key, value, opts \\ []), do: item_call(store, :put, namespace, key, [value, opts])
 
   @spec get(store(), namespace(), key()) :: {:ok, map()} | :error | {:error, term()}
-  def get(store, namespace, key) do
-    namespace = normalize_namespace(namespace)
-
-    result =
-      with :ok <- Query.validate_namespace(namespace) do
-        store_call(store, :get, [namespace, to_string(key)])
-      end
-
-    emit(store, :get, %{count: 1}, namespace: namespace, key: key, result: result)
-    result
-  end
+  def get(store, namespace, key), do: item_call(store, :get, namespace, key, [])
 
   @spec delete(store(), namespace(), key()) :: :ok | {:error, term()}
-  def delete(store, namespace, key) do
-    namespace = normalize_namespace(namespace)
-
-    result =
-      with :ok <- Query.validate_namespace(namespace) do
-        store_call(store, :delete, [namespace, to_string(key)])
-      end
-
-    emit(store, :delete, %{count: 1}, namespace: namespace, key: key, result: result)
-    result
-  end
+  def delete(store, namespace, key), do: item_call(store, :delete, namespace, key, [])
 
   @doc """
   Retrieves the values of multiple keys from one namespace in the input order.
@@ -67,14 +37,18 @@ defmodule BeamWeaver.Memory do
     namespace = normalize_namespace(namespace)
 
     with :ok <- Query.validate_namespace(namespace) do
-      Enum.map(keys, fn key ->
-        case store_call(store, :get, [namespace, to_string(key)]) do
-          {:ok, item} -> item.value
-          :error -> nil
-          {:error, error} -> {:error, error}
-        end
-      end)
-      |> unwrap_many()
+      results = Enum.map(keys, &store_call(store, :get, [namespace, to_string(&1)]))
+
+      case Enum.find(results, &match?({:error, _error}, &1)) do
+        nil ->
+          Enum.map(results, fn
+            {:ok, item} -> item.value
+            :error -> nil
+          end)
+
+        error ->
+          error
+      end
     end
   end
 
@@ -220,19 +194,23 @@ defmodule BeamWeaver.Memory do
   @spec normalize_namespace(namespace()) :: [String.t()]
   def normalize_namespace(namespace), do: Query.normalize_namespace(namespace)
 
+  defp item_call(store, operation, namespace, key, args) do
+    namespace = normalize_namespace(namespace)
+
+    result =
+      with :ok <- Query.validate_namespace(namespace),
+           do: store_call(store, operation, [namespace, to_string(key) | args])
+
+    emit(store, operation, %{count: 1}, namespace: namespace, key: key, result: result)
+    result
+  end
+
   defp store_call(store, callback, args) do
     Dispatch.call(store, callback, args,
       error_type: :invalid_memory_store,
       missing_message: "memory store does not implement BeamWeaver.Memory.Store",
       invalid_message: "memory store must be an explicit BeamWeaver.Memory.Store adapter"
     )
-  end
-
-  defp unwrap_many(values) do
-    case Enum.find(values, &match?({:error, _error}, &1)) do
-      nil -> values
-      {:error, error} -> {:error, error}
-    end
   end
 
   defp emit(store, operation, measurements, metadata) do

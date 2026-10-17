@@ -1,10 +1,11 @@
 defmodule BeamWeaver.Compaction.Validator do
   @moduledoc false
 
+  import BeamWeaver.Compaction.Canonical, only: [hash?: 1]
+
   alias BeamWeaver.Compaction.{Canonical, InputEvent, Semantic}
   alias BeamWeaver.Core.Error
 
-  @hash ~r/\A[0-9a-f]{64}\z/
   @uuid ~r/\A[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\z/
   @bounds Semantic.bounds()
 
@@ -26,8 +27,6 @@ defmodule BeamWeaver.Compaction.Validator do
 
   @spec validate(Semantic.t(), [InputEvent.t()], keyword()) ::
           {:ok, Semantic.t()} | {:error, Error.t()}
-  def validate(semantic, events, opts \\ [])
-
   def validate(%Semantic{} = semantic, events, opts) when is_list(events) do
     allowed_ids =
       events
@@ -68,9 +67,7 @@ defmodule BeamWeaver.Compaction.Validator do
     list(values, maximum, fn value ->
       closed(value, ["text", "source_event_ids"], fn value ->
         with :ok <- text(fetch(value, "text"), @bounds.text_bytes),
-             :ok <- event_ids(fetch(value, "source_event_ids"), 1) do
-          :ok
-        end
+             do: event_ids(fetch(value, "source_event_ids"), 1)
       end)
     end)
   end
@@ -83,9 +80,7 @@ defmodule BeamWeaver.Compaction.Validator do
 
         with :ok <- uuid(fetch(value, "source_event_id")),
              :ok <- enum(fetch(value, "status"), ["active", "completed", "superseded"]),
-             :ok <- excerpt_or_omission(excerpt, omission) do
-          :ok
-        end
+             do: excerpt_or_omission(excerpt, omission)
       end)
     end)
   end
@@ -95,9 +90,7 @@ defmodule BeamWeaver.Compaction.Validator do
       closed(value, ["text", "rationale", "source_event_ids"], fn value ->
         with :ok <- text(fetch(value, "text"), @bounds.text_bytes),
              :ok <- nullable_text(fetch(value, "rationale"), @bounds.text_bytes),
-             :ok <- event_ids(fetch(value, "source_event_ids"), 1) do
-          :ok
-        end
+             do: event_ids(fetch(value, "source_event_ids"), 1)
       end)
     end)
   end
@@ -107,9 +100,7 @@ defmodule BeamWeaver.Compaction.Validator do
       with :ok <- progress_list(fetch(value, "completed"), @bounds.progress_completed),
            :ok <- progress_list(fetch(value, "active"), @bounds.progress_active),
            :ok <- progress_list(fetch(value, "blocked"), @bounds.progress_blocked),
-           :ok <- progress_list(fetch(value, "pending"), @bounds.progress_pending) do
-        :ok
-      end
+           do: progress_list(fetch(value, "pending"), @bounds.progress_pending)
     end)
   end
 
@@ -118,9 +109,7 @@ defmodule BeamWeaver.Compaction.Validator do
       closed(value, ["text", "source_event_ids", "verification_event_ids"], fn value ->
         with :ok <- text(fetch(value, "text"), @bounds.text_bytes),
              :ok <- event_ids(fetch(value, "source_event_ids"), 1),
-             :ok <- event_ids(fetch(value, "verification_event_ids"), 0) do
-          :ok
-        end
+             do: event_ids(fetch(value, "verification_event_ids"), 0)
       end)
     end)
   end
@@ -130,9 +119,7 @@ defmodule BeamWeaver.Compaction.Validator do
       closed(value, ["message", "status", "source_event_ids"], fn value ->
         with :ok <- text(fetch(value, "message"), @bounds.text_bytes),
              :ok <- enum(fetch(value, "status"), ["open", "resolved"]),
-             :ok <- event_ids(fetch(value, "source_event_ids"), 1) do
-          :ok
-        end
+             do: event_ids(fetch(value, "source_event_ids"), 1)
       end)
     end)
   end
@@ -142,9 +129,7 @@ defmodule BeamWeaver.Compaction.Validator do
       closed(value, ["artifact_id", "purpose", "source_event_ids"], fn value ->
         with :ok <- uuid(fetch(value, "artifact_id")),
              :ok <- text(fetch(value, "purpose"), @bounds.text_bytes),
-             :ok <- event_ids(fetch(value, "source_event_ids"), 1) do
-          :ok
-        end
+             do: event_ids(fetch(value, "source_event_ids"), 1)
       end)
     end)
   end
@@ -229,19 +214,16 @@ defmodule BeamWeaver.Compaction.Validator do
   defp add_lineage_artifact_sources(sources, _refs), do: sources
 
   defp exact_excerpts(requests, direct_user) do
-    Enum.reduce_while(requests, :ok, fn request, :ok ->
-      id = fetch(request, "source_event_id")
-      excerpt = fetch(request, "exact_excerpt")
-
-      valid? =
-        case {Map.fetch(direct_user, id), excerpt} do
+    backed? =
+      Enum.all?(requests, fn request ->
+        case {Map.fetch(direct_user, fetch(request, "source_event_id")), fetch(request, "exact_excerpt")} do
           {{:ok, content}, excerpt} when is_binary(excerpt) -> String.contains?(content, excerpt)
           {{:ok, _content}, nil} -> true
           _other -> false
         end
+      end)
 
-      if valid?, do: {:cont, :ok}, else: {:halt, invalid("user request excerpt is not source-backed")}
-    end)
+    if backed?, do: :ok, else: invalid("user request excerpt is not source-backed")
   end
 
   defp unique_entries(semantic) do
@@ -291,12 +273,7 @@ defmodule BeamWeaver.Compaction.Validator do
   defp collect_source_ids(_value, acc), do: acc
 
   defp list(values, maximum, validator) when is_list(values) and length(values) <= maximum do
-    Enum.reduce_while(values, :ok, fn value, :ok ->
-      case validator.(value) do
-        :ok -> {:cont, :ok}
-        {:error, %Error{}} = error -> {:halt, error}
-      end
-    end)
+    Enum.find_value(values, :ok, fn value -> with :ok <- validator.(value), do: nil end)
   end
 
   defp list(_values, _maximum, _validator), do: invalid("semantic collection is invalid or oversized")
@@ -320,7 +297,6 @@ defmodule BeamWeaver.Compaction.Validator do
   defp event_ids(_values, _minimum), do: invalid("semantic source event IDs are invalid")
   defp uuid(value), do: if(uuid?(value), do: :ok, else: invalid("semantic UUID is invalid"))
   defp uuid?(value), do: is_binary(value) and value =~ @uuid
-  defp hash?(value), do: is_binary(value) and value =~ @hash
 
   defp text(value, maximum) when is_binary(value) do
     if byte_size(value) >= 1 and byte_size(value) <= maximum and String.valid?(value),

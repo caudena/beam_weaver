@@ -92,6 +92,12 @@ defmodule BeamWeaver.Memory.ConformanceTest do
                |> Enum.map(& &1.key) == ["two"]
       end
 
+      test "a filtered search skips records whose value is not a map", %{store: store} do
+        assert {:ok, _item} = Memory.put(store, ["mixed"], "plain", "just text")
+        assert {:ok, _item} = Memory.put(store, ["mixed"], "doc", %{"kind" => "note"})
+        assert [%{key: "doc"}] = Memory.search(store, ["mixed"], filter: %{"kind" => "note"})
+      end
+
       test "search with an empty namespace prefix finds the records of every namespace", %{store: store} do
         put!(store, ["docs", "a"], "one", %{"kind" => "report"})
         put!(store, ["other"], "two", %{"kind" => "note"})

@@ -35,10 +35,8 @@ defmodule BeamWeaver.Core.DecisionModel do
   @optional_callbacks choice_question: 3, yes_no_question: 2
 
   @spec model?(term()) :: boolean()
-  def model?(%module{} = model) do
-    Code.ensure_loaded?(module) and function_exported?(module, :decision_model?, 1) and
-      module.decision_model?(model)
-  end
+  def model?(%module{} = model),
+    do: BeamWeaver.Behaviour.exported?(module, :decision_model?, 1) and module.decision_model?(model)
 
   def model?(_model), do: false
 
@@ -145,8 +143,7 @@ defmodule BeamWeaver.Core.DecisionModel do
   # run when tracing is on.
   @doc false
   def traced(provider, run_name, body, opts, request) do
-    if Keyword.get(opts, :trace?, Keyword.get(opts, :trace, true)) != false and
-         (Tracing.capture_context() != nil or Tracing.exporter_configured?() or Keyword.has_key?(opts, :exporter)) do
+    if BeamWeaver.Core.ChatModel.trace?(opts) do
       exporter = Keyword.take(opts, [:exporter, :exporter_opts])
 
       metadata =

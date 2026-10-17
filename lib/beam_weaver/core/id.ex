@@ -131,16 +131,12 @@ defmodule BeamWeaver.Core.ID do
     rand_a = tail >>> @uuidv7_rand_b_bits &&& @uuidv7_rand_a_mask
     rand_b = tail &&& @uuidv7_rand_b_mask
 
-    <<a::32, b::16, c::16, d::16, e::48>> =
-      <<timestamp::48, 0x7::4, rand_a::@uuidv7_rand_a_bits, 0b10::2, rand_b::@uuidv7_rand_b_bits>>
+    format_uuid(<<timestamp::48, 0x7::4, rand_a::@uuidv7_rand_a_bits, 0b10::2, rand_b::@uuidv7_rand_b_bits>>)
+  end
 
-    [
-      Base.encode16(<<a::32>>, case: :lower),
-      Base.encode16(<<b::16>>, case: :lower),
-      Base.encode16(<<c::16>>, case: :lower),
-      Base.encode16(<<d::16>>, case: :lower),
-      Base.encode16(<<e::48>>, case: :lower)
-    ]
-    |> Enum.join("-")
+  @doc false
+  def format_uuid(<<_::128>> = bytes) do
+    <<a::binary-8, b::binary-4, c::binary-4, d::binary-4, e::binary-12>> = Base.encode16(bytes, case: :lower)
+    "#{a}-#{b}-#{c}-#{d}-#{e}"
   end
 end

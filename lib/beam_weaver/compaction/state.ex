@@ -12,8 +12,11 @@ defmodule BeamWeaver.Compaction.State do
   turn (`root_turn_id`): a new root turn starts with neither used.
   """
 
+  import BeamWeaver.Compaction.Canonical, only: [hash?: 1]
+
   alias BeamWeaver.Compaction.{Checkpoint, Fields, Policy}
   alias BeamWeaver.Core.Error
+  alias BeamWeaver.MapAccess
 
   @fields [
     :root_turn_id,
@@ -122,9 +125,9 @@ defmodule BeamWeaver.Compaction.State do
   @doc "Rebases only unit-dependent anti-thrash fields when accounting identity changes."
   @spec rebase_accounting(t(), map()) :: {:ok, t()} | {:error, Error.t()}
   def rebase_accounting(%__MODULE__{} = state, identity) when is_map(identity) do
-    method = identity |> value(:method) |> normalize_accounting_identity_method()
-    version = value(identity, :version)
-    profile_hash = value(identity, :profile_hash)
+    method = identity |> MapAccess.get(:method) |> normalize_accounting_identity_method()
+    version = MapAccess.get(identity, :version)
+    profile_hash = MapAccess.get(identity, :profile_hash)
 
     if valid_accounting?(method, version, profile_hash) do
       same? =
@@ -254,7 +257,4 @@ defmodule BeamWeaver.Compaction.State do
        do: String.to_existing_atom(method)
 
   defp normalize_accounting_identity_method(method), do: method
-
-  defp hash?(value), do: is_binary(value) and value =~ ~r/\A[0-9a-f]{64}\z/
-  defp value(map, key), do: Map.get(map, key, Map.get(map, Atom.to_string(key)))
 end

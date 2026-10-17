@@ -38,12 +38,7 @@ defmodule BeamWeaver.Core.Document do
   Builds a document and raises on invalid input.
   """
   @spec new!(String.t(), keyword()) :: t()
-  def new!(content, opts \\ []) do
-    case new(content, opts) do
-      {:ok, document} -> document
-      {:error, error} -> raise ArgumentError, error.message
-    end
-  end
+  def new!(content, opts \\ []), do: content |> new(opts) |> BeamWeaver.Policy.bang()
 
   @doc """
   Builds a document from a document, a string, or a map with `:content` and

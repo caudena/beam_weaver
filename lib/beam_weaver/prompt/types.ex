@@ -7,10 +7,6 @@ defmodule BeamWeaver.Prompt.Value do
 
   def to_string(%__MODULE__{text: text}) when is_binary(text), do: text
 
-  def to_string(%__MODULE__{messages: [%Message{content: [%ContentBlock.Image{url: url}]}]})
-      when is_binary(url),
-      do: url
-
   def to_string(%__MODULE__{messages: [%Message{content: [%{"image_url" => %{"url" => url}}]}]})
       when is_binary(url),
       do: url
@@ -63,16 +59,14 @@ defmodule BeamWeaver.Prompt.StringTemplate do
   def invoke(%__MODULE__{} = prompt, input, _opts) do
     with {:ok, vars} <- BeamWeaver.Prompt.Partials.merge_vars(prompt.partials, input),
          :ok <- BeamWeaver.Prompt.Partials.validate_input(prompt, vars),
-         {:ok, text} <- BeamWeaver.Prompt.Template.render(prompt.template, vars, prompt_opts(prompt)) do
+         {:ok, text} <-
+           BeamWeaver.Prompt.Template.render(prompt.template, vars, template_format: prompt.template_format) do
       {:ok, %BeamWeaver.Prompt.Value{text: text}}
     end
   end
 
   def batch(prompt, inputs, opts), do: BeamWeaver.Prompt.Runtime.batch(prompt, inputs, opts)
-  def stream(prompt, input, opts), do: BeamWeaver.Prompt.Runtime.stream(prompt, input, opts)
   def transform(prompt, input, opts), do: BeamWeaver.Prompt.Runtime.transform(prompt, input, opts)
-
-  defp prompt_opts(prompt), do: [template_format: prompt.template_format]
 end
 
 defmodule BeamWeaver.Prompt.MessageTemplate do
@@ -91,12 +85,7 @@ defmodule BeamWeaver.Prompt.ImageTemplate do
 
   defstruct [:url, :detail, partials: %{}, template_format: :simple]
 
-  def invoke(%__MODULE__{} = template, input, _opts) do
-    with {:ok, vars} <- BeamWeaver.Prompt.Partials.merge_vars(template.partials, input),
-         {:ok, message} <- BeamWeaver.Prompt.Rendering.render_message_part(template, vars) do
-      {:ok, %BeamWeaver.Prompt.Value{messages: [message]}}
-    end
-  end
+  def invoke(%__MODULE__{} = template, input, _opts), do: BeamWeaver.Prompt.Rendering.invoke_part(template, input)
 end
 
 defmodule BeamWeaver.Prompt.DictTemplate do
@@ -105,12 +94,7 @@ defmodule BeamWeaver.Prompt.DictTemplate do
 
   defstruct [:template, partials: %{}, template_format: :simple]
 
-  def invoke(%__MODULE__{} = template, input, _opts) do
-    with {:ok, vars} <- BeamWeaver.Prompt.Partials.merge_vars(template.partials, input),
-         {:ok, message} <- BeamWeaver.Prompt.Rendering.render_message_part(template, vars) do
-      {:ok, %BeamWeaver.Prompt.Value{messages: [message]}}
-    end
-  end
+  def invoke(%__MODULE__{} = template, input, _opts), do: BeamWeaver.Prompt.Rendering.invoke_part(template, input)
 end
 
 defmodule BeamWeaver.Prompt.StructuredTemplate do
@@ -138,7 +122,6 @@ defmodule BeamWeaver.Prompt.StructuredChatTemplate do
     do: BeamWeaver.Runnable.invoke(prompt, input, opts)
 
   def batch(prompt, inputs, opts), do: BeamWeaver.Prompt.Runtime.batch(prompt, inputs, opts)
-  def stream(prompt, input, opts), do: BeamWeaver.Prompt.Runtime.stream(prompt, input, opts)
   def transform(prompt, input, opts), do: BeamWeaver.Prompt.Runtime.transform(prompt, input, opts)
 end
 
@@ -146,26 +129,16 @@ defmodule BeamWeaver.Prompt.ChatTemplate do
   @moduledoc false
   @behaviour BeamWeaver.Runnable
 
-  alias BeamWeaver.Core.Error
-  alias BeamWeaver.Result
-
   defstruct messages: [], partials: %{}, template_format: :simple
 
   def invoke(%__MODULE__{} = prompt, input, _opts) do
-    with {:ok, vars} <- BeamWeaver.Prompt.Partials.merge_vars(prompt.partials, input) do
-      prompt.messages
-      |> Result.flat_traverse(
-        &BeamWeaver.Prompt.Rendering.render_message_part(&1, vars, template_format: prompt.template_format)
-      )
-      |> case do
-        {:ok, messages} -> {:ok, %BeamWeaver.Prompt.Value{messages: messages}}
-        error -> error
-      end
+    with {:ok, vars} <- BeamWeaver.Prompt.Partials.merge_vars(prompt.partials, input),
+         {:ok, messages} <- BeamWeaver.Prompt.Rendering.render_message_parts(prompt.messages, vars, prompt) do
+      {:ok, %BeamWeaver.Prompt.Value{messages: messages}}
     end
   end
 
   def batch(prompt, inputs, opts), do: BeamWeaver.Prompt.Runtime.batch(prompt, inputs, opts)
-  def stream(prompt, input, opts), do: BeamWeaver.Prompt.Runtime.stream(prompt, input, opts)
   def transform(prompt, input, opts), do: BeamWeaver.Prompt.Runtime.transform(prompt, input, opts)
 end
 

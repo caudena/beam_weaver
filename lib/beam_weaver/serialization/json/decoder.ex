@@ -2,6 +2,7 @@ defmodule BeamWeaver.Serialization.JSON.Decoder do
   @moduledoc false
 
   alias BeamWeaver.Core.Error
+  alias BeamWeaver.Result
   alias BeamWeaver.Serialization.Registry
 
   @type_tag "__beam_weaver_type__"
@@ -10,19 +11,7 @@ defmodule BeamWeaver.Serialization.JSON.Decoder do
 
   def decode(%{@type_tag => @plain_map_tag, "entries" => entries}, registry)
       when is_list(entries) do
-    entries
-    |> Enum.reduce_while({:ok, %{}}, fn
-      %{"key" => key, "value" => value}, {:ok, acc} ->
-        with {:ok, key} <- decode_key(key, registry),
-             {:ok, decoded} <- decode(value, registry) do
-          {:cont, {:ok, Map.put(acc, key, decoded)}}
-        else
-          {:error, %Error{}} = error -> {:halt, error}
-        end
-
-      _entry, _acc ->
-        {:halt, {:error, Error.new(:serialization_error, "encoded map entry is invalid")}}
-    end)
+    with {:ok, pairs} <- Result.traverse(entries, &decode_entry(&1, registry)), do: {:ok, Map.new(pairs)}
   end
 
   def decode(%{@type_tag => @plain_map_tag}, _registry),
@@ -130,30 +119,28 @@ defmodule BeamWeaver.Serialization.JSON.Decoder do
   def decode(map, registry) when is_map(map) do
     {atom_keys, map} = pop_atom_keys(map)
 
-    map
-    |> Enum.reduce_while({:ok, %{}}, fn {key, value}, {:ok, acc} ->
-      with {:ok, key} <- restore_key(key, atom_keys),
-           {:ok, decoded} <- decode(value, registry) do
-        {:cont, {:ok, Map.put(acc, key, decoded)}}
-      else
-        {:error, %Error{}} = error -> {:halt, error}
-      end
-    end)
+    decoded =
+      Result.traverse(map, fn {key, value} ->
+        with {:ok, key} <- restore_key(key, atom_keys),
+             {:ok, decoded} <- decode(value, registry),
+             do: {:ok, {key, decoded}}
+      end)
+
+    with {:ok, pairs} <- decoded, do: {:ok, Map.new(pairs)}
   end
 
-  def decode(list, registry) when is_list(list) do
-    case Enum.reduce_while(list, {:ok, []}, fn value, {:ok, acc} ->
-           case decode(value, registry) do
-             {:ok, decoded} -> {:cont, {:ok, [decoded | acc]}}
-             {:error, %Error{} = error} -> {:halt, {:error, error}}
-           end
-         end) do
-      {:ok, decoded} -> {:ok, Enum.reverse(decoded)}
-      {:error, %Error{} = error} -> {:error, error}
-    end
-  end
+  def decode(list, registry) when is_list(list), do: Result.traverse(list, &decode(&1, registry))
 
   def decode(value, _registry), do: {:ok, value}
+
+  defp decode_entry(%{"key" => key, "value" => value}, registry) do
+    with {:ok, key} <- decode_key(key, registry),
+         {:ok, decoded} <- decode(value, registry),
+         do: {:ok, {key, decoded}}
+  end
+
+  defp decode_entry(_entry, _registry),
+    do: {:error, Error.new(:serialization_error, "encoded map entry is invalid")}
 
   defp pop_atom_keys(%{@atom_keys_tag => true} = map), do: {:all, Map.delete(map, @atom_keys_tag)}
 
@@ -218,10 +205,6 @@ defmodule BeamWeaver.Serialization.JSON.Decoder do
 
   defp existing_field(key, allowed) when is_binary(key) do
     Enum.find(allowed, &(Atom.to_string(&1) == key))
-  end
-
-  defp existing_field(key, allowed) when is_atom(key) do
-    if MapSet.member?(allowed, key), do: key
   end
 
   defp decode_struct(BeamWeaver.Core.Message, fields) do

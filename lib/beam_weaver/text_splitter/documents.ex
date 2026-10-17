@@ -19,7 +19,7 @@ defmodule BeamWeaver.TextSplitter.Documents do
        texts
        |> text_stream()
        |> Stream.flat_map(fn
-         text when is_binary(text) -> split_text(splitter, text)
+         text when is_binary(text) -> BeamWeaver.TextSplitter.split_text(splitter, text)
          value -> raise ArgumentError, "expected text, got: #{inspect(value)}"
        end)}
     end
@@ -43,11 +43,8 @@ defmodule BeamWeaver.TextSplitter.Documents do
     exception -> {:error, Error.new(:text_splitter_error, Exception.message(exception))}
   end
 
-  def transform_documents(splitter, documents, _opts \\ []),
-    do: split_documents(splitter, documents)
-
   @spec split_file(term(), Path.t(), keyword()) :: {:ok, Enumerable.t()} | {:error, Error.t()}
-  def split_file(splitter, path, opts \\ []) do
+  def split_file(splitter, path, opts) do
     case File.read(path) do
       {:ok, content} ->
         metadata =
@@ -67,7 +64,7 @@ defmodule BeamWeaver.TextSplitter.Documents do
   end
 
   @spec split_url(term(), String.t(), keyword()) :: {:ok, Enumerable.t()} | {:error, Error.t()}
-  def split_url(splitter, url, opts \\ []) do
+  def split_url(splitter, url, opts) do
     policy = url_policy(Keyword.get(opts, :url_policy))
 
     # The checks that need no DNS run first, so a refused URL never reaches a
@@ -83,7 +80,7 @@ defmodule BeamWeaver.TextSplitter.Documents do
     end
   end
 
-  def create_documents(splitter, texts, opts \\ []) do
+  def create_documents(splitter, texts, opts) do
     metadata = Keyword.get(opts, :metadata, %{})
 
     texts
@@ -114,14 +111,8 @@ defmodule BeamWeaver.TextSplitter.Documents do
   def validate(_splitter),
     do: {:error, Error.new(:invalid_text_splitter, "expected a BeamWeaver text splitter")}
 
-  defp split_document(%{__struct__: BeamWeaver.TextSplitter} = splitter, %Document{} = document),
-    do: Shared.split_document(splitter, document)
-
-  defp split_document(%module{} = splitter, %Document{} = document) do
-    if function_exported?(module, :split_document, 2),
-      do: module.split_document(splitter, document),
-      else: raise(ArgumentError, "expected a BeamWeaver text splitter")
-  end
+  defp split_document(%BeamWeaver.TextSplitter{} = splitter, document), do: Shared.split_document(splitter, document)
+  defp split_document(%module{} = splitter, document), do: module.split_document(splitter, document)
 
   # The chunks of a document with an id get ids derived from it ("refunds:0",
   # "refunds:1", ...), so storing them keeps every chunk, and the document's id
@@ -137,18 +128,11 @@ defmodule BeamWeaver.TextSplitter.Documents do
     end)
   end
 
-  defp split_text(%{__struct__: BeamWeaver.TextSplitter} = splitter, text),
-    do: Shared.split_text(splitter, text)
-
-  defp split_text(%module{} = splitter, text), do: module.split_text(splitter, text)
-
   defp text_stream(text) when is_binary(text), do: [text]
   defp text_stream(texts), do: texts
 
-  defp metadata_for_index(metadata, index) when is_list(metadata),
-    do: Enum.at(metadata, index, %{})
-
-  defp metadata_for_index(metadata, _index), do: metadata
+  def metadata_for_index(metadata, index) when is_list(metadata), do: Enum.at(metadata, index, %{})
+  def metadata_for_index(metadata, _index), do: metadata
 
   defp url_policy(nil), do: url_policy([])
 

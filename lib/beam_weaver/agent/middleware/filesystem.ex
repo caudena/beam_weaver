@@ -23,9 +23,11 @@ defmodule BeamWeaver.Agent.Middleware.Filesystem do
   alias BeamWeaver.Graph.Channels.BinaryOperatorAggregate
   alias BeamWeaver.Graph.Command
   alias BeamWeaver.Graph.Overwrite
+  alias BeamWeaver.MapShape
   alias BeamWeaver.Tools.Filesystem, as: FilesystemTools
 
-  import BeamWeaver.Agent.Middleware.Helpers, only: [append_prompt: 2, artifact_prefix: 2, maybe_put_files_update: 3]
+  import BeamWeaver.Agent.Middleware.Helpers,
+    only: [append_prompt: 2, artifact_prefix: 2, last_role_index: 2, runtime_store: 1, tool_call_id: 1]
 
   @chars_per_token 4
   @tool_token_limit_before_evict 20_000
@@ -63,18 +65,6 @@ defmodule BeamWeaver.Agent.Middleware.Filesystem do
 
   - execute: run a shell command in the sandbox. It returns the command's output followed by a line with its exit code, such as `[Command failed with exit code 1]`.
   - A command that runs longer than its `timeout` (in seconds, at most 3600) is stopped and returns an error instead; pass a larger `timeout` for long builds or tests.
-  """
-
-  @too_large_tool_msg """
-  Tool result too large, the result of this tool call %{tool_call_id} was saved in the filesystem at this path: %{file_path}
-
-  You can read the result from the filesystem by using the read_file tool, but make sure to only read part of the result at a time.
-
-  You can do this by specifying an offset and limit in the read_file tool call. For example, to read the first 100 lines, you can use the read_file tool with offset=0 and limit=100.
-
-  Here is a preview showing the head and tail of the result (lines of the form `... [N lines truncated] ...` indicate omitted lines in the middle of the content):
-
-  %{content_sample}
   """
 
   @too_large_human_msg """
@@ -219,7 +209,7 @@ defmodule BeamWeaver.Agent.Middleware.Filesystem do
       update =
         update
         |> Map.put(messages_key, Enum.reverse(processed))
-        |> maybe_put_files_update(middleware.state_key, files_update)
+        |> MapShape.put_present(middleware.state_key, files_update)
 
       %{command | update: update}
     end
@@ -239,7 +229,7 @@ defmodule BeamWeaver.Agent.Middleware.Filesystem do
   end
 
   defp offload_tool_message(middleware, message, content, request, state_files_override) do
-    tool_call_id = message.tool_call_id || tool_call_id(request) || "unknown"
+    tool_call_id = message.tool_call_id || tool_call_id(request.tool_call) || "unknown"
 
     file_path =
       middleware.large_tool_results_prefix <> "/" <> Offload.sanitize_tool_call_id(tool_call_id)
@@ -251,13 +241,7 @@ defmodule BeamWeaver.Agent.Middleware.Filesystem do
 
     case Filesystem.write(middleware.backend, file_path, content, opts) do
       %Filesystem.WriteResult{error: nil, files_update: files_update} ->
-        replacement =
-          Offload.format_notice(@too_large_tool_msg,
-            tool_call_id: tool_call_id,
-            file_path: file_path,
-            content_sample: Offload.content_preview(content)
-          )
-
+        replacement = Offload.tool_result_notice(tool_call_id, file_path, content)
         {:ok, %{message | content: Offload.evicted_content(message, replacement)}, files_update}
 
       _error ->
@@ -274,14 +258,12 @@ defmodule BeamWeaver.Agent.Middleware.Filesystem do
   defp evict_and_truncate_human_messages(%__MODULE__{} = middleware, %ModelRequest{} = request) do
     messages = request.messages || []
     threshold = @chars_per_token * middleware.human_message_token_limit_before_evict
-    last_index = last_human_message_index(messages)
+    last_index = last_role_index(messages, :user)
 
     newly_evicted =
       if is_integer(last_index) do
         message = Enum.at(messages, last_index)
-
-        user_message?(message) and evicted_to(message) in [nil, ""] and
-          String.length(Message.text(message)) > threshold
+        evicted_to(message) in [nil, ""] and String.length(Message.text(message)) > threshold
       else
         false
       end
@@ -290,7 +272,7 @@ defmodule BeamWeaver.Agent.Middleware.Filesystem do
       newly_evicted ->
         evict_latest_human_message(middleware, request, messages, last_index)
 
-      Enum.any?(messages, &(user_message?(&1) and evicted_to(&1) not in [nil, ""])) ->
+      Enum.any?(messages, &(match?(%Message{role: :user}, &1) and evicted_to(&1) not in [nil, ""])) ->
         {Enum.map(messages, &truncate_evicted_human_message/1), nil}
 
       true ->
@@ -303,20 +285,14 @@ defmodule BeamWeaver.Agent.Middleware.Filesystem do
     file_path = middleware.conversation_history_prefix <> "/" <> ID.uuidv7() <> ".md"
     content = Message.text(message)
 
-    case Filesystem.write(
-           middleware.backend,
-           file_path,
-           content,
-           backend_opts_from_model_request(request)
-         ) do
+    case Filesystem.write(middleware.backend, file_path, content, backend_opts(request)) do
       %Filesystem.WriteResult{error: nil, files_update: files_update} ->
         tagged = tag_evicted_human_message(message, file_path)
         tagged_messages = List.replace_at(messages, index, tagged)
         model_messages = Enum.map(tagged_messages, &truncate_evicted_human_message/1)
 
         update =
-          %{messages: Overwrite.new(tagged_messages)}
-          |> maybe_put_files_update(middleware.state_key, files_update)
+          MapShape.put_present(%{messages: Overwrite.new(tagged_messages)}, middleware.state_key, files_update)
 
         {model_messages, %Command{update: update}}
 
@@ -350,19 +326,6 @@ defmodule BeamWeaver.Agent.Middleware.Filesystem do
 
     %{message | id: message.id || ID.uuidv7(), metadata: metadata}
   end
-
-  defp last_human_message_index(messages) do
-    messages
-    |> Enum.with_index()
-    |> Enum.reverse()
-    |> Enum.find_value(fn
-      {%Message{role: :user}, index} -> index
-      _other -> nil
-    end)
-  end
-
-  defp user_message?(%Message{role: :user}), do: true
-  defp user_message?(_message), do: false
 
   defp evicted_to(%Message{metadata: metadata}) when is_map(metadata),
     do: Map.get(metadata, :offloaded_to)
@@ -423,32 +386,13 @@ defmodule BeamWeaver.Agent.Middleware.Filesystem do
     end
   end
 
-  defp backend_opts(%ToolCallRequest{} = request) do
-    [
-      state: request.state || %{},
-      store: runtime_value(request.runtime, :store),
-      runtime: request.runtime
-    ]
-    |> Enum.reject(fn {_key, value} -> is_nil(value) end)
+  defp backend_opts(request) do
+    Enum.reject([state: request.state || %{}, store: runtime_store(request.runtime), runtime: request.runtime], fn
+      {_key, value} -> is_nil(value)
+    end)
   end
-
-  defp backend_opts_from_model_request(%ModelRequest{} = request) do
-    [
-      state: request.state || %{},
-      store: runtime_value(request.runtime, :store),
-      runtime: request.runtime
-    ]
-    |> Enum.reject(fn {_key, value} -> is_nil(value) end)
-  end
-
-  defp runtime_value(%{store: store}, :store), do: store
-  defp runtime_value(_runtime, _key), do: nil
 
   defp tool_name(%ToolCallRequest{tool_call: %{name: name}}), do: to_string(name)
   defp tool_name(%ToolCallRequest{tool_call: %{"name" => name}}), do: to_string(name)
   defp tool_name(_request), do: ""
-
-  defp tool_call_id(%ToolCallRequest{tool_call: %{id: id}}), do: id
-  defp tool_call_id(%ToolCallRequest{tool_call: %{"id" => id}}), do: id
-  defp tool_call_id(_request), do: nil
 end

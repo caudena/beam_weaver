@@ -13,6 +13,7 @@ defmodule BeamWeaver.Graph.Execution.NodeInvoker do
   alias BeamWeaver.Graph.NodeSpec
   alias BeamWeaver.Graph.Overwrite
   alias BeamWeaver.Graph.StateGraph
+  alias BeamWeaver.MapAccess
 
   @compiled BeamWeaver.Graph.Compiled
 
@@ -23,17 +24,11 @@ defmodule BeamWeaver.Graph.Execution.NodeInvoker do
     defstruct [:input, :output]
   end
 
-  @doc """
-  Runs a node. `graph` is the graph the node belongs to; a subgraph node needs
-  it to turn the subgraph's result into an update for that graph's keys.
-  """
-  @spec invoke(term(), map(), map(), StateGraph.t() | nil) ::
+  @spec invoke(NodeSpec.t(), map(), map(), StateGraph.t()) ::
           {:ok, term()}
           | {:error, Error.t()}
           | {:interrupted, term()}
           | {:parent_command, Command.t()}
-  def invoke(spec_or_fun, state, runtime, graph \\ nil)
-
   def invoke(%NodeSpec{} = spec, state, runtime, graph) do
     safe_call(fn ->
       with {:ok, input} <- project_input(spec, subgraph_state(spec, state, graph), runtime),
@@ -41,7 +36,7 @@ defmodule BeamWeaver.Graph.Execution.NodeInvoker do
            {:ok, output} <- call_node(spec.fun, input, runtime) do
         case output do
           %Command{graph: target} = command when target in [:parent, "parent", "__parent__"] ->
-            command
+            {:parent_command, command}
 
           {:error, %Error{}} = error ->
             error
@@ -51,24 +46,14 @@ defmodule BeamWeaver.Graph.Execution.NodeInvoker do
 
           %SubgraphResult{} = result ->
             with {:ok, projected} <- project_subgraph_output(spec, result, state, runtime, graph) do
-              %NodeOutput{raw: result.output, projected: projected}
+              {:ok, %NodeOutput{raw: result.output, projected: projected}}
             end
 
           output ->
             with {:ok, projected} <- project_output(spec, output, state, runtime) do
-              %NodeOutput{raw: output, projected: projected}
+              {:ok, %NodeOutput{raw: output, projected: projected}}
             end
         end
-      end
-    end)
-  end
-
-  def invoke(fun, state, runtime, _graph) do
-    safe_call(fn ->
-      case call_node(fun, state, runtime) do
-        {:ok, %SubgraphResult{output: output}} -> output
-        {:ok, value} -> value
-        other -> other
       end
     end)
   end
@@ -86,11 +71,6 @@ defmodule BeamWeaver.Graph.Execution.NodeInvoker do
   defp subgraph_node?(module) when is_atom(module), do: BeamWeaver.Behaviour.implemented_by?(module, BeamWeaver.Agent)
   defp subgraph_node?(_fun), do: false
 
-  @doc """
-  The error for a node, or a node's error handler, that returned
-  `{:error, reason}` with a reason that is not a `BeamWeaver.Core.Error`: a
-  string reason is the error's message.
-  """
   @spec node_error(String.t() | nil, term()) :: Error.t()
   def node_error(node, reason) when is_binary(reason),
     do: Error.new(:node_error, reason, %{node: node})
@@ -162,10 +142,6 @@ defmodule BeamWeaver.Graph.Execution.NodeInvoker do
            module: module
          })}
     end
-  end
-
-  defp call_node(_fun, _state, _runtime) do
-    {:error, Error.new(:invalid_node, "node must be a function with arity 1 or 2 or a module")}
   end
 
   # The state a subgraph received (its `input_schema` keys of the node's
@@ -305,12 +281,12 @@ defmodule BeamWeaver.Graph.Execution.NodeInvoker do
   defp subgraph_update(%SubgraphResult{input: received, output: output}, graph)
        when is_map(output) do
     Enum.reduce(output, %{}, fn {key, value}, update ->
-      case fetch_received(received, key) do
+      case MapAccess.fetch(received, key) do
         {:ok, ^value} ->
           update
 
         {:ok, before} ->
-          Map.put(update, key, changed_value(channel_for(graph, key), before, value))
+          Map.put(update, key, changed_value(ChannelLookup.channel_for(graph, key), before, value))
 
         :error ->
           Map.put(update, key, value)
@@ -337,27 +313,6 @@ defmodule BeamWeaver.Graph.Execution.NodeInvoker do
   defp changed_value(%BinaryOperatorAggregate{}, _before, value), do: Overwrite.new(value)
   defp changed_value(%DeltaChannel{}, _before, value), do: Overwrite.new(value)
   defp changed_value(_channel, _before, value), do: value
-
-  defp channel_for(%StateGraph{} = graph, key), do: ChannelLookup.channel_for(graph, key)
-  defp channel_for(_graph, _key), do: nil
-
-  defp fetch_received(received, key) when is_map(received) do
-    case Map.fetch(received, key) do
-      {:ok, value} ->
-        {:ok, value}
-
-      :error when is_atom(key) ->
-        Map.fetch(received, Atom.to_string(key))
-
-      :error ->
-        case ChannelLookup.existing_atom(key) do
-          nil -> :error
-          atom -> Map.fetch(received, atom)
-        end
-    end
-  end
-
-  defp fetch_received(_received, _key), do: :error
 
   # What a subgraph run does with what its namespace already holds (see
   # `RunInit`). A resumed subgraph, or one replayed from a checkpoint, takes
@@ -442,25 +397,7 @@ defmodule BeamWeaver.Graph.Execution.NodeInvoker do
   defp maybe_put_subgraph_recursion_limit(opts, _runtime), do: opts
 
   defp safe_call(fun) do
-    case fun.() do
-      {:ok, %Command{graph: graph} = command} when graph in [:parent, "parent", "__parent__"] ->
-        {:parent_command, command}
-
-      {:ok, {:error, %Error{} = error}} ->
-        {:error, error}
-
-      {:ok, value} ->
-        {:ok, value}
-
-      %Command{graph: graph} = command when graph in [:parent, "parent", "__parent__"] ->
-        {:parent_command, command}
-
-      {:error, %Error{} = error} ->
-        {:error, error}
-
-      value ->
-        {:ok, value}
-    end
+    fun.()
   rescue
     exception ->
       {:error,

@@ -218,12 +218,7 @@ defmodule BeamWeaver.Core.Tool do
   Builds a tool and raises on invalid input.
   """
   @spec from_function!(keyword()) :: t()
-  def from_function!(opts) do
-    case from_function(opts) do
-      {:ok, tool} -> tool
-      {:error, error} -> raise ArgumentError, error.message
-    end
-  end
+  def from_function!(opts), do: opts |> from_function() |> BeamWeaver.Policy.bang()
 
   @doc """
   Returns a tool name for structs implementing this behaviour or `%Tool{}`.
@@ -243,16 +238,6 @@ defmodule BeamWeaver.Core.Tool do
   Returns a tool input schema.
   """
   @spec input_schema(term()) :: map()
-  def input_schema(module) when is_atom(module) do
-    module
-    |> raw_input_schema()
-    |> Schema.public_input(Map.keys(injected(module)))
-  end
-
-  def input_schema(%__MODULE__{input_schema: input_schema, injected: injected}) do
-    Schema.public_input(input_schema, Map.keys(injected))
-  end
-
   def input_schema(tool) do
     tool
     |> raw_input_schema()
@@ -360,8 +345,7 @@ defmodule BeamWeaver.Core.Tool do
   def max_result_chars(tool) do
     case callback(tool, :max_result_chars) do
       value when is_integer(value) and value > 0 -> value
-      :unlimited -> :unlimited
-      _invalid -> :unlimited
+      _unlimited -> :unlimited
     end
   end
 
@@ -435,12 +419,8 @@ defmodule BeamWeaver.Core.Tool do
   Invokes a tool after validating required input keys.
   """
   @spec invoke(term(), map(), keyword()) :: {:ok, term()} | {:error, Error.t()}
-  def invoke(tool, input, opts \\ [])
-
-  def invoke(tool, input, opts) do
-    trace_tool_call(tool, input, opts, fn call_opts ->
-      Invocation.invoke(tool, input, call_opts, invocation_api())
-    end)
+  def invoke(tool, input, opts \\ []) do
+    trace_tool_call(tool, input, opts, &Invocation.invoke(tool, input, &1))
   end
 
   @doc """
@@ -468,29 +448,11 @@ defmodule BeamWeaver.Core.Tool do
   @spec normalize_input(map(), map()) :: {:ok, map()} | {:error, Error.t()}
   def normalize_input(schema, input), do: Schema.normalize(schema, input)
 
-  defp do_invoke(%__MODULE__{handler: handler}, input, opts) do
-    normalize_result(handler.(input, opts))
-  rescue
-    exception -> {:error, Error.new(:tool_exception, Exception.message(exception))}
-  end
-
-  defp do_invoke(tool, input, opts), do: normalize_result(callback(tool, :invoke, [input, opts]))
-
-  defp normalize_result({:ok, _value} = result), do: result
-  defp normalize_result({:error, %Error{}} = result), do: result
-
-  defp normalize_result({:error, reason}) when is_binary(reason), do: {:error, Error.new(:tool_error, reason)}
-
-  defp normalize_result({:error, reason}),
-    do: {:error, Error.new(:tool_error, "tool returned an error", %{reason: inspect(reason)})}
-
-  defp normalize_result(value), do: {:ok, value}
-
   defp trace_tool_call(tool, input, opts, fun) when is_function(fun, 1) do
     call_opts = Keyword.drop(opts, @internal_trace_opt_keys)
 
-    if trace_tool_call?(opts) do
-      exporter_opts = tracing_exporter_opts(opts)
+    if BeamWeaver.Core.ChatModel.trace?(opts) do
+      exporter_opts = Keyword.take(opts, [:exporter, :exporter_opts])
 
       TraceRunner.run(
         name(tool),
@@ -532,16 +494,6 @@ defmodule BeamWeaver.Core.Tool do
     end
   end
 
-  defp trace_tool_call?(opts) do
-    trace? = Keyword.get(opts, :trace?, Keyword.get(opts, :trace, true))
-
-    trace? != false and
-      (not is_nil(Tracing.capture_context()) or Keyword.has_key?(opts, :exporter) or
-         Tracing.exporter_configured?())
-  end
-
-  defp tracing_exporter_opts(opts), do: Keyword.take(opts, [:exporter, :exporter_opts])
-
   defp tool_trace_metadata(tool, input, opts) do
     tool
     |> metadata()
@@ -560,7 +512,7 @@ defmodule BeamWeaver.Core.Tool do
   end
 
   defp default_trace_input(_tool, input) when is_map(input) do
-    if tool_call_input?(input) do
+    if Invocation.tool_call_input?(input) do
       args = BeamWeaver.MapAccess.get(input, :args)
       if is_map(args), do: args, else: %{"input" => args}
     else
@@ -577,19 +529,9 @@ defmodule BeamWeaver.Core.Tool do
     end
   end
 
-  defp public_trace_input(tool, input) when is_map(input) do
-    hidden = tool |> injected() |> Map.keys() |> MapSet.new(&to_string/1)
-
-    input
-    |> Enum.reject(fn {key, _value} -> MapSet.member?(hidden, to_string(key)) end)
-    |> Map.new()
-  end
+  defp public_trace_input(tool, input) when is_map(input), do: Invocation.without_injected(input, injected(tool))
 
   defp public_trace_input(_tool, input), do: %{"input" => input}
-
-  defp tool_call_input?(input) do
-    BeamWeaver.MapAccess.get(input, :type) in [:tool_call, "tool_call"]
-  end
 
   defp tool_call_id(input, opts) when is_map(input) do
     Keyword.get(opts, :tool_call_id) || BeamWeaver.MapAccess.get(input, :id)
@@ -600,20 +542,6 @@ defmodule BeamWeaver.Core.Tool do
   defp valid_name?(name), do: is_binary(name) and name != ""
   defp valid_max_result_chars?(:unlimited), do: true
   defp valid_max_result_chars?(value), do: is_integer(value) and value > 0
-
-  defp invocation_api do
-    %{
-      args: &args/1,
-      do_invoke: &do_invoke/3,
-      handle_tool_error: &handle_tool_error/1,
-      handle_validation_error: &handle_validation_error/1,
-      injected: &injected/1,
-      input_schema: &input_schema/1,
-      name: &name/1,
-      parse_args: &parse_args/2,
-      response_format: &response_format/1
-    }
-  end
 
   defp callback(tool, callback, extra_args \\ []) do
     {module, first_arg} = callback_target(tool)

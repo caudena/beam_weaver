@@ -174,6 +174,29 @@ defmodule BeamWeaver.Sandbox.LocalTest do
              Sandbox.grep(sandbox, "needle", path: base, glob: "*.py")
   end
 
+  test "binary reads return the whole file, whatever the line window", %{sandbox: sandbox, root: root} do
+    path = Path.join(root, "image.bin")
+    content = :binary.copy(<<0, 1, 2, 255>>, 1_000)
+    assert [%Sandbox.UploadResult{error: nil}] = Sandbox.upload_files(sandbox, [{path, content}])
+
+    assert %Sandbox.ReadResult{file_data: %{"encoding" => "base64", "content" => encoded}} =
+             Sandbox.read(sandbox, path, offset: 0, limit: 2_000)
+
+    assert Base.decode64!(encoded) == content
+  end
+
+  test "reading or editing a directory reports is_directory", %{sandbox: sandbox} do
+    assert %Sandbox.ExecuteResult{exit_code: 0} = Sandbox.execute(sandbox, "mkdir -p a_dir")
+    assert %Sandbox.ReadResult{error: "is_directory"} = Sandbox.read(sandbox, "/a_dir")
+    assert %Sandbox.EditResult{error: "is_directory"} = Sandbox.edit(sandbox, "/a_dir", "a", "b")
+  end
+
+  test "an empty old string is not found, even in an empty file", %{sandbox: sandbox} do
+    assert %Sandbox.WriteResult{error: nil} = Sandbox.write(sandbox, "/empty.txt", "")
+    assert %Sandbox.EditResult{error: "string not found"} = Sandbox.edit(sandbox, "/empty.txt", "", "text")
+    assert {:ok, ""} = File.read(Path.join(sandbox.root, "empty.txt"))
+  end
+
   test "edit handles multiple matches, literals, multiline content, and missing files", %{
     sandbox: sandbox,
     root: root

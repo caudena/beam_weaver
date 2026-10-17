@@ -221,12 +221,6 @@ defmodule BeamWeaver.Serialization do
     end
   end
 
-  @doc false
-  def dump_json_value(value, opts \\ []), do: dump_value(value, opts)
-
-  @doc false
-  def load_json_value(value, opts \\ []), do: load_value(value, opts)
-
   defp config(opts) do
     opts
     |> Keyword.get(:serialization, opts)

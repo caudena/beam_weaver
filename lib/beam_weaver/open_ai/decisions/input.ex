@@ -6,6 +6,8 @@ defmodule BeamWeaver.OpenAI.Decisions.Input do
   # conversation or a map, goes as JSON text in one user message, with the
   # images of its messages as image parts where they appear in the text.
 
+  import BeamWeaver.MapShape, only: [put_optional: 3]
+
   alias BeamWeaver.Core.{Error, Message}
   alias BeamWeaver.Core.Messages.ToolCall
   alias BeamWeaver.MapAccess
@@ -87,7 +89,7 @@ defmodule BeamWeaver.OpenAI.Decisions.Input do
   defp choice({value, description}) when is_nil(description) or is_binary(description) do
     case choice_value(value) do
       nil -> {:error, :invalid_choice}
-      value -> {:ok, put_present(%{"value" => value}, "description", description)}
+      value -> {:ok, put_optional(%{"value" => value}, "description", description)}
     end
   end
 
@@ -103,7 +105,7 @@ defmodule BeamWeaver.OpenAI.Decisions.Input do
   defp level(%{} = level) do
     case {MapAccess.get(level, :label), MapAccess.get(level, :description)} do
       {label, description} when is_binary(label) and label != "" and (is_nil(description) or is_binary(description)) ->
-        {:ok, put_present(%{"label" => label}, "description", description)}
+        {:ok, put_optional(%{"label" => label}, "description", description)}
 
       _invalid ->
         {:error, :invalid_level}
@@ -194,9 +196,9 @@ defmodule BeamWeaver.OpenAI.Decisions.Input do
          {:ok, calls, images} <- json(message.tool_calls, marker, images) do
       message =
         %{"role" => Atom.to_string(message.role), "content" => content}
-        |> put_present("name", message.name)
-        |> put_present("tool_call_id", message.tool_call_id)
-        |> put_present("tool_calls", calls)
+        |> put_optional("name", message.name)
+        |> put_optional("tool_call_id", message.tool_call_id)
+        |> put_optional("tool_calls", calls)
 
       {:ok, message, images}
     end
@@ -280,9 +282,6 @@ defmodule BeamWeaver.OpenAI.Decisions.Input do
   end
 
   defp check_images(_text), do: :ok
-
-  defp put_present(map, _key, value) when value in [nil, []], do: map
-  defp put_present(map, key, value), do: Map.put(map, key, value)
 
   defp invalid(message, details \\ %{}), do: {:error, Error.new(:invalid_decision_input, message, details)}
 end

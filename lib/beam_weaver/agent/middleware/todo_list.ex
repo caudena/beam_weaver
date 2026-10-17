@@ -90,7 +90,7 @@ defmodule BeamWeaver.Agent.Middleware.TodoList do
   def after_model(%__MODULE__{} = middleware, state, _runtime) do
     state
     |> State.messages()
-    |> latest_assistant()
+    |> Helpers.last_message(:assistant)
     |> parallel_todo_error(middleware)
   end
 
@@ -113,20 +113,11 @@ defmodule BeamWeaver.Agent.Middleware.TodoList do
         "Please call it only once per model invocation to update the todo list."
 
     Message.tool(error,
-      tool_call_id: tool_call_id(call),
+      tool_call_id: Helpers.tool_call_id(call),
       name: tool_name(call),
       metadata: %{status: "error", error_type: :parallel_todo_writes}
     )
   end
 
-  defp latest_assistant(messages) do
-    Enum.find(Enum.reverse(messages), &match?(%Message{role: :assistant}, &1))
-  end
-
   defp tool_name(call), do: Map.get(call, :name)
-
-  defp tool_call_id(call) do
-    Map.get(call, :id) ||
-      Map.get(call, :tool_call_id)
-  end
 end

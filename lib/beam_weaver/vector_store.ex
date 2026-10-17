@@ -86,17 +86,8 @@ defmodule BeamWeaver.VectorStore do
     result
   end
 
-  def get_by_ids(store, ids, opts \\ []) do
-    case optional_store_call(
-           store,
-           :get_by_ids,
-           [List.wrap(ids), opts],
-           "vector store cannot fetch by ids"
-         ) do
-      {:called, result} -> result
-      {:missing, {:error, _error} = error} -> error
-    end
-  end
+  def get_by_ids(store, ids, opts \\ []),
+    do: Dispatch.call(store, :get_by_ids, [List.wrap(ids), opts], dispatch_opts("vector store cannot fetch by ids"))
 
   def search(store, query, search_type, opts \\ []) do
     case normalize_search_type(search_type) do
@@ -104,16 +95,7 @@ defmodule BeamWeaver.VectorStore do
         similarity_search(store, query, opts)
 
       {:ok, :similarity_score} ->
-        with {:ok, scored} <- similarity_search_with_score(store, query, opts) do
-          threshold = Keyword.get(opts, :score_threshold)
-
-          docs =
-            scored
-            |> Enum.filter(fn {_doc, score} -> is_nil(threshold) or score >= threshold end)
-            |> Enum.map(&elem(&1, 0))
-
-          {:ok, docs}
-        end
+        store |> similarity_search_with_relevance_scores(query, opts) |> drop_scores()
 
       {:ok, :mmr} ->
         max_marginal_relevance_search(store, query, opts)
@@ -123,73 +105,42 @@ defmodule BeamWeaver.VectorStore do
     end
   end
 
-  def similarity_search(store, query, opts \\ []) do
-    result = store_call(store, :similarity_search, [query, opts])
-    emit_search(store, :similarity_search, query, opts, result)
-    result
-  end
+  def similarity_search(store, query, opts \\ []), do: run_search(store, :similarity_search, query, query, opts)
 
-  def similarity_search_with_score(store, query, opts \\ []) do
-    result = store_call(store, :similarity_search_with_score, [query, opts])
-    emit_search(store, :similarity_search_with_score, query, opts, result)
-    result
-  end
+  def similarity_search_with_score(store, query, opts \\ []),
+    do: run_search(store, :similarity_search_with_score, query, query, opts)
 
   def similarity_search_with_relevance_scores(store, query, opts \\ []) do
-    with {:ok, scored} <- similarity_search_with_score(store, query, opts) do
-      threshold = Keyword.get(opts, :score_threshold)
+    threshold = Keyword.get(opts, :score_threshold)
 
-      scored =
-        Enum.filter(scored, fn {_doc, score} ->
-          is_nil(threshold) or score >= threshold
-        end)
-
-      {:ok, scored}
-    end
+    with {:ok, scored} <- similarity_search_with_score(store, query, opts),
+         do: {:ok, Enum.filter(scored, fn {_doc, score} -> is_nil(threshold) or score >= threshold end)}
   end
 
-  def similarity_search_by_vector(store, vector, opts \\ []) do
-    result = store_call(store, :similarity_search_by_vector, [vector, opts])
-    emit_search(store, :similarity_search_by_vector, nil, opts, result)
-    result
-  end
+  def similarity_search_by_vector(store, vector, opts \\ []),
+    do: run_search(store, :similarity_search_by_vector, vector, nil, opts)
 
   def similarity_search_with_score_by_vector(store, vector, opts \\ []) do
-    case optional_store_call(
-           store,
-           :similarity_search_with_score_by_vector,
-           [vector, opts],
-           "vector store cannot perform scored search by vector"
-         ) do
-      {:called, result} ->
-        emit_search(store, :similarity_search_with_score_by_vector, nil, opts, result)
-        result
-
-      {:missing, {:error, _error} = error} ->
-        error
-    end
+    optional_search(
+      store,
+      :similarity_search_with_score_by_vector,
+      vector,
+      opts,
+      "vector store cannot perform scored search by vector"
+    )
   end
 
-  def max_marginal_relevance_search(store, query, opts \\ []) do
-    result = store_call(store, :max_marginal_relevance_search, [query, opts])
-    emit_search(store, :max_marginal_relevance_search, query, opts, result)
-    result
-  end
+  def max_marginal_relevance_search(store, query, opts \\ []),
+    do: run_search(store, :max_marginal_relevance_search, query, query, opts)
 
   def max_marginal_relevance_search_by_vector(store, vector, opts \\ []) do
-    case optional_store_call(
-           store,
-           :max_marginal_relevance_search_by_vector,
-           [vector, opts],
-           "vector store cannot perform MMR search by vector"
-         ) do
-      {:called, result} ->
-        emit_search(store, :max_marginal_relevance_search_by_vector, nil, opts, result)
-        result
-
-      {:missing, {:error, _error} = error} ->
-        error
-    end
+    optional_search(
+      store,
+      :max_marginal_relevance_search_by_vector,
+      vector,
+      opts,
+      "vector store cannot perform MMR search by vector"
+    )
   end
 
   def as_retriever(store, opts \\ []) do
@@ -211,6 +162,10 @@ defmodule BeamWeaver.VectorStore do
   @doc false
   def embed_documents(embedding, documents, opts),
     do: EmbeddingModel.embed_documents(embedding, Enum.map(documents, & &1.content), opts)
+
+  @doc false
+  def drop_scores({:ok, scored}), do: {:ok, Enum.map(scored, &elem(&1, 0))}
+  def drop_scores(error), do: error
 
   # The explicit id at `index`, else the document's own id, else a content hash.
   @doc false
@@ -281,6 +236,12 @@ defmodule BeamWeaver.VectorStore do
          search_type: inspect(search_type)
        })}
 
+  defp run_search(store, operation, input, query, opts) do
+    result = store_call(store, operation, [input, opts])
+    emit_search(store, operation, query, opts, result)
+    result
+  end
+
   defp emit_search(store, operation, query, opts, result) do
     emit(store, operation, %{count: AdapterHelpers.result_count(result)}, %{
       query: query,
@@ -310,31 +271,32 @@ defmodule BeamWeaver.VectorStore do
     )
   end
 
-  defp store_metadata(store) do
-    BeamWeaver.Adapter.Introspect.metadata(store)
-  rescue
-    _exception -> %{}
+  defp store_metadata(%{__struct__: module} = store) do
+    store
+    |> Map.from_struct()
+    |> Map.take([:table, :checkpoints_table, :writes_table, :namespace, :dimensions, :index])
+    |> Map.put(:adapter, module)
   end
 
-  defp store_call(store, callback, args) do
-    Dispatch.call(store, callback, args,
-      error_type: :unsupported_vector_store_operation,
-      missing_message: "vector store does not implement required callback",
-      invalid_message: "expected vector store struct"
-    )
+  defp store_metadata(store), do: %{adapter: inspect(store)}
+
+  defp store_call(store, callback, args),
+    do: Dispatch.call(store, callback, args, dispatch_opts("vector store does not implement required callback"))
+
+  defp optional_search(store, callback, vector, opts, missing_message) do
+    with {:ok, module} <- Dispatch.module(store, callback, 3, dispatch_opts(missing_message)) do
+      result = apply(module, callback, [store, vector, opts])
+      emit_search(store, callback, nil, opts, result)
+      result
+    end
   end
 
-  defp optional_store_call(store, callback, args, missing_message) do
-    dispatch_opts = [
+  defp dispatch_opts(missing_message) do
+    [
       error_type: :unsupported_vector_store_operation,
       missing_message: missing_message,
       invalid_message: "expected vector store struct"
     ]
-
-    case Dispatch.module(store, callback, length(args) + 1, dispatch_opts) do
-      {:ok, _module} -> {:called, Dispatch.call(store, callback, args, dispatch_opts)}
-      {:error, _error} = error -> {:missing, error}
-    end
   end
 
   defmodule Retriever do

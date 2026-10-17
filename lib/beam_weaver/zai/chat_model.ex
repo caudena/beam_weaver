@@ -7,7 +7,9 @@ defmodule BeamWeaver.ZAI.ChatModel do
 
   alias BeamWeaver.Provider.OpenAICompatibleClient, as: Compat
   alias BeamWeaver.Core.LanguageModel
+  alias BeamWeaver.MapShape
   alias BeamWeaver.Models.InvocationMetadata
+  alias BeamWeaver.Provider.ChatCompletionsWire
   alias BeamWeaver.Provider.ChatModel.Options, as: ChatOptions
   alias BeamWeaver.Provider.StructuredOutput
   alias BeamWeaver.ZAI.Client
@@ -72,13 +74,10 @@ defmodule BeamWeaver.ZAI.ChatModel do
           {:ok, map()} | {:error, Error.t()}
   @impl true
   def request_body(%__MODULE__{} = model, messages, opts \\ []) do
-    tools = Keyword.get(opts, :tools, [])
-    builder_opts = Keyword.delete(opts, :tools)
-
-    with {:ok, body} <- Options.to_body(model, messages, builder_opts),
-         {:ok, body} <- maybe_put_stream_usage(body, model, opts) do
-      maybe_put_tools(body, tools)
-    end
+    with {:ok, body} <- Options.to_body(model, messages, Keyword.delete(opts, :tools)),
+         tools = opts |> Keyword.get(:tools, []) |> Tools.to_chat_tools(),
+         :ok <- Tools.validate_chat_tools(tools),
+         do: {:ok, body |> ChatCompletionsWire.put_stream_usage(model, opts) |> MapShape.put_optional("tools", tools)}
   end
 
   def count_tokens(%__MODULE__{}, input, _opts \\ []),
@@ -94,42 +93,6 @@ defmodule BeamWeaver.ZAI.ChatModel do
       transport_opts: model.transport_opts,
       timeout: model.timeout
     }
-  end
-
-  defp maybe_put_tools(body, []), do: {:ok, body}
-
-  defp maybe_put_tools(body, tools) when is_list(tools) do
-    with {:ok, tools} <- render_tools(tools) do
-      {:ok, Map.put(body, "tools", tools)}
-    end
-  end
-
-  defp render_tools(tools) do
-    rendered = Tools.to_chat_tools(tools)
-
-    case Tools.validate_chat_tools(rendered) do
-      :ok -> {:ok, rendered}
-      {:error, _error} = error -> error
-    end
-  end
-
-  defp maybe_put_stream_usage(body, model, opts) do
-    stream? = Keyword.get(opts, :stream, false)
-    stream_usage? = Keyword.get(opts, :stream_usage, model.stream_usage)
-
-    cond do
-      not stream? ->
-        {:ok, body}
-
-      not stream_usage? ->
-        {:ok, body}
-
-      Map.has_key?(body, "stream_options") ->
-        {:ok, body}
-
-      true ->
-        {:ok, Map.put(body, "stream_options", %{"include_usage" => true})}
-    end
   end
 
   @impl true

@@ -19,13 +19,8 @@ defmodule BeamWeaver.Memory.Ecto do
   @behaviour BeamWeaver.Memory.Store
 
   alias BeamWeaver.Adapter.Error, as: AdapterError
-  alias BeamWeaver.Memory.GetOp
   alias BeamWeaver.Memory.Item
-  alias BeamWeaver.Memory.ListNamespacesOp
-  alias BeamWeaver.Memory.MatchCondition
-  alias BeamWeaver.Memory.PutOp
   alias BeamWeaver.Memory.Query
-  alias BeamWeaver.Memory.SearchOp
   alias BeamWeaver.Migrations.Postgres.Util
 
   @columns "namespace, key, value, metadata, created_at, updated_at, expires_at, ttl_minutes"
@@ -59,12 +54,7 @@ defmodule BeamWeaver.Memory.Ecto do
   @impl true
   def put(%__MODULE__{} = store, namespace, key, value, opts) do
     metadata = Keyword.get(opts, :metadata, %{})
-
-    ttl =
-      case Keyword.get(opts, :ttl, :not_provided) do
-        :not_provided -> store.default_ttl
-        ttl -> ttl
-      end
+    ttl = with :not_provided <- Keyword.get(opts, :ttl, :not_provided), do: store.default_ttl
 
     sql = """
     INSERT INTO #{table(store)} (namespace, key, value, metadata, expires_at, ttl_minutes)
@@ -78,10 +68,8 @@ defmodule BeamWeaver.Memory.Ecto do
     RETURNING #{@columns}
     """
 
-    case query(store, sql, [namespace, key, value, metadata, Query.expires_at(ttl), ttl]) do
-      {:ok, %{rows: [row]}} -> {:ok, item_from_row(row)}
-      error -> error
-    end
+    with {:ok, %{rows: [row]}} <- query(store, sql, [namespace, key, value, metadata, Query.expires_at(ttl), ttl]),
+         do: {:ok, item_from_row(row)}
   end
 
   @impl true
@@ -116,10 +104,9 @@ defmodule BeamWeaver.Memory.Ecto do
 
   @impl true
   def delete(%__MODULE__{} = store, namespace, key) do
-    case query(store, "DELETE FROM #{table(store)} WHERE namespace = $1 AND key = $2", [namespace, key]) do
-      {:ok, _result} -> :ok
-      error -> error
-    end
+    with {:ok, _result} <-
+           query(store, "DELETE FROM #{table(store)} WHERE namespace = $1 AND key = $2", [namespace, key]),
+         do: :ok
   end
 
   @impl true
@@ -131,73 +118,27 @@ defmodule BeamWeaver.Memory.Ecto do
     ORDER BY updated_at DESC
     """
 
-    case query(store, sql, [namespace]) do
-      {:ok, %{rows: rows}} ->
-        rows
-        |> Enum.map(&item_from_row/1)
-        |> Enum.reject(&Query.expired?/1)
-        |> Query.search_items(namespace, opts)
-        |> maybe_refresh_items(store, refresh_ttl?(store, Keyword.get(opts, :refresh_ttl)))
-
-      error ->
-        error
+    with {:ok, %{rows: rows}} <- query(store, sql, [namespace]) do
+      rows
+      |> Enum.map(&item_from_row/1)
+      |> Enum.reject(&Query.expired?/1)
+      |> Query.search_items(namespace, opts)
+      |> maybe_refresh_items(store, Query.refresh_ttl?(store, Keyword.get(opts, :refresh_ttl)))
     end
   end
 
   @impl true
   def list_namespaces(%__MODULE__{} = store, opts) do
-    case query(store, "SELECT DISTINCT namespace FROM #{table(store)} ORDER BY namespace ASC", []) do
-      {:ok, %{rows: rows}} ->
-        rows
-        |> Enum.map(fn [namespace] -> namespace end)
-        |> Query.list_namespaces(opts)
-
-      error ->
-        error
-    end
+    with {:ok, %{rows: rows}} <-
+           query(store, "SELECT DISTINCT namespace FROM #{table(store)} ORDER BY namespace ASC", []),
+         do: rows |> Enum.map(fn [namespace] -> namespace end) |> Query.list_namespaces(opts)
   end
 
   @impl true
-  def batch(%__MODULE__{} = store, ops) when is_list(ops) do
-    Enum.map(ops, fn
-      %GetOp{namespace: namespace, key: key} = op ->
-        case get_item(store, namespace, key, refresh_ttl?(store, op.refresh_ttl)) do
-          {:ok, item} -> item
-          :error -> nil
-          {:error, error} -> {:error, error}
-        end
-
-      %SearchOp{} = op ->
-        search(store, op.namespace,
-          filter: op.filter,
-          limit: op.limit,
-          offset: op.offset,
-          query: op.query,
-          refresh_ttl: op.refresh_ttl
-        )
-
-      %PutOp{namespace: namespace, key: key, value: nil} ->
-        delete(store, namespace, key)
-        nil
-
-      %PutOp{} = op ->
-        put(store, op.namespace, op.key, op.value,
-          metadata: op.metadata,
-          ttl: op.ttl
-        )
-
-        nil
-
-      %ListNamespacesOp{} = op ->
-        list_namespaces(store, list_namespace_opts(op))
-    end)
-  end
+  def batch(%__MODULE__{} = store, ops) when is_list(ops), do: Query.batch(store, ops, &get_item(store, &1, &2, &3))
 
   def sweep_expired(%__MODULE__{} = store, _opts \\ []) do
-    case query(store, "DELETE FROM #{table(store)} WHERE expires_at IS NOT NULL AND expires_at <= now()", []) do
-      {:ok, result} -> {:ok, Map.get(result, :num_rows, 0)}
-      error -> error
-    end
+    deleted_rows(query(store, "DELETE FROM #{table(store)} WHERE expires_at IS NOT NULL AND expires_at <= now()", []))
   end
 
   @doc """
@@ -212,7 +153,7 @@ defmodule BeamWeaver.Memory.Ecto do
   def prune(%__MODULE__{} = store, opts \\ []) do
     namespace = Keyword.get(opts, :namespace)
 
-    with {:ok, aged} <- prune_older_than(store, namespace, cutoff(opts)),
+    with {:ok, aged} <- prune_older_than(store, namespace, Query.prune_cutoff(opts)),
          {:ok, excess} <- prune_to_limit(store, namespace, Keyword.get(opts, :max_entries)) do
       {:ok, aged + excess}
     end
@@ -265,19 +206,6 @@ defmodule BeamWeaver.Memory.Ecto do
   defp deleted_rows({:ok, result}), do: {:ok, Map.get(result, :num_rows, 0)}
   defp deleted_rows(error), do: error
 
-  defp cutoff(opts) do
-    case Keyword.get(opts, :older_than) do
-      %DateTime{} = cutoff ->
-        cutoff
-
-      _other ->
-        case Keyword.get(opts, :max_age_ms) do
-          max_age_ms when is_integer(max_age_ms) -> DateTime.add(DateTime.utc_now(), -max_age_ms, :millisecond)
-          _other -> nil
-        end
-    end
-  end
-
   defp item_from_row([namespace, key, value, metadata, created_at, updated_at, expires_at, ttl]) do
     %Item{
       namespace: namespace,
@@ -291,35 +219,10 @@ defmodule BeamWeaver.Memory.Ecto do
     }
   end
 
-  defp list_namespace_opts(%ListNamespacesOp{} = op) do
-    {prefix, suffix} =
-      Enum.reduce(op.match_conditions || [], {[], []}, fn
-        %MatchCondition{type: :prefix, path: path}, {_prefix, suffix} -> {path, suffix}
-        %MatchCondition{type: "prefix", path: path}, {_prefix, suffix} -> {path, suffix}
-        %MatchCondition{type: :suffix, path: path}, {prefix, _suffix} -> {prefix, path}
-        %MatchCondition{type: "suffix", path: path}, {prefix, _suffix} -> {prefix, path}
-      end)
-
-    [
-      prefix: prefix,
-      suffix: suffix,
-      max_depth: op.max_depth,
-      limit: op.limit,
-      offset: op.offset
-    ]
-  end
-
   defp table(%__MODULE__{} = store), do: Util.qualify(store.prefix, store.table)
 
-  defp query(%__MODULE__{} = store, sql, params) do
-    AdapterError.query(store, sql, params,
-      type: :memory_error,
-      message: "memory adapter error"
-    )
-  end
-
-  defp refresh_ttl?(_store, refresh_ttl) when is_boolean(refresh_ttl), do: refresh_ttl
-  defp refresh_ttl?(store, _default), do: store.refresh_ttl
+  defp query(%__MODULE__{} = store, sql, params),
+    do: AdapterError.query(store, sql, params, :memory_error, "memory adapter error")
 
   # Starts a record's lifetime again from now; records without one keep none.
   # The lifetime is the one the row has when it is updated, so a record put

@@ -10,6 +10,7 @@ defmodule BeamWeaver.DeepSeek.ChatModel do
   alias BeamWeaver.Core.Error
   alias BeamWeaver.DeepSeek.Messages
   alias BeamWeaver.DeepSeek.Options
+  alias BeamWeaver.MapShape
   alias BeamWeaver.Models.InvocationMetadata
   alias BeamWeaver.Provider.ChatModel.Options, as: ChatOptions
   alias BeamWeaver.Provider.StructuredOutput
@@ -56,18 +57,14 @@ defmodule BeamWeaver.DeepSeek.ChatModel do
   use BeamWeaver.Provider.ChatModel, stream_source: :deepseek_chat_completions
 
   @spec new(keyword() | map()) :: t()
-  def new(opts \\ []) do
-    opts = ChatOptions.keyword_options(opts)
-    opts = normalize_endpoint_opts(opts)
-    model = Keyword.get(opts, :model, @default_model)
-    profile = ChatOptions.profile_option(opts, :deepseek, model)
+  def new(opts \\ []), do: build(__MODULE__, opts, &normalize_endpoint_opts/1)
 
-    struct!(
-      __MODULE__,
-      opts
-      |> Keyword.put(:model, model)
-      |> Keyword.put(:profile, profile)
-    )
+  @doc false
+  def build(module, opts, normalize_endpoint_opts) do
+    opts = opts |> ChatOptions.keyword_options() |> normalize_endpoint_opts.()
+    model = Keyword.get(opts, :model, @default_model)
+
+    struct!(module, Keyword.merge(opts, model: model, profile: ChatOptions.profile_option(opts, :deepseek, model)))
   end
 
   @spec request_body(t(), [BeamWeaver.Core.Message.t()], keyword()) ::
@@ -87,24 +84,17 @@ defmodule BeamWeaver.DeepSeek.ChatModel do
   defp normalize_endpoint_opts(opts) do
     base_url = Keyword.get(opts, :base_url, @default_base_url) || @default_base_url
 
-    client_opts =
+    client =
       [base_url: base_url]
-      |> maybe_put_client_endpoint(:endpoint, Keyword.get(opts, :endpoint))
-      |> maybe_put_client_endpoint(
-        :beta_chat_completions_endpoint,
-        Keyword.get(opts, :beta_endpoint)
-      )
-
-    client = Client.new(client_opts)
+      |> MapShape.put_present(:endpoint, Keyword.get(opts, :endpoint))
+      |> MapShape.put_present(:beta_chat_completions_endpoint, Keyword.get(opts, :beta_endpoint))
+      |> Client.new()
 
     opts
     |> Keyword.put(:base_url, base_url)
     |> Keyword.put_new(:endpoint, client.chat_completions_endpoint)
     |> Keyword.put_new(:beta_endpoint, client.beta_chat_completions_endpoint)
   end
-
-  defp maybe_put_client_endpoint(opts, _key, nil), do: opts
-  defp maybe_put_client_endpoint(opts, key, value), do: Keyword.put(opts, key, value)
 
   defp client(%__MODULE__{} = model) do
     Client.new(
@@ -141,7 +131,6 @@ defmodule BeamWeaver.DeepSeek.ChatModel do
   def forced_tool_choice?(%__MODULE__{} = model, opts), do: Options.forced_tool_choice?(model, opts)
 
   @impl true
-  def decode_response(%BeamWeaver.Core.Message{} = message, _opts), do: {:ok, message}
   def decode_response(response, _opts), do: Messages.chat_response_to_message(response)
 
   @impl true

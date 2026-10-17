@@ -2,123 +2,1344 @@
 
 ## Unreleased
 
-This release removes Python/LangChain parity surfaces that nothing inside
-BeamWeaver used, and replaces them with plain Elixir. It also fixes the
-problems the documentation rewrite found and marks the fixes that change
-behavior **Breaking**, with what to do instead (everything under Removed is
-breaking too). Read Security first.
+This release removes compatibility surfaces that nothing inside BeamWeaver
+used, replaces them with plain Elixir, and fixes the problems the
+documentation rewrite found. New features come first, each with a link to its
+guide. Breaking changes follow, grouped by area with security first, each with
+what to do instead. Then come the other security fixes, the other changes, bug
+fixes and documentation.
 
-### Security
+### New features
 
-- **Breaking:** Host commands start from a minimal environment.
-  `Sandbox.Local`, `Filesystem.LocalShell`, `Tools.Shell` and the `ShellTool`
-  middleware no longer pass your application's environment, API keys
-  included, to the commands they run: commands get `PATH`, `HOME`, `LANG`,
-  the `LC_*` variables, `TMPDIR`, `USER` and `SHELL`, plus the variables in
-  `env:`. Pass `inherit_env: true` (to `Sandbox.local/1`, `LocalShell.new/1`
-  or the shell policy) to give commands the whole environment again.
-  `ShellPolicy` and `Sandbox.local/1` take the new `inherit_env:` option, and
-  `Sandbox.local/1` also takes `env:`; a `nil` value in `env:` removes that
-  variable. A shell `Session` applies this environment, `nil` removals
-  included, to every command it runs, not only the first. `LocalShell`'s
-  `inherit_env:` now defaults to `false`, and `false` keeps those base
-  variables instead of starting from an empty environment. `ShellPolicy`'s
-  `env_allowlist:` is gone: it only filtered the policy's own `env:`, so put
-  just the variables commands need in `env:`. `ShellPolicy.new/1` now returns
-  an `:invalid_shell_policy` error for an option it doesn't know,
+#### Agents
+
+**Capability profiles.** The `capability_profile` declaration (and
+`BeamWeaver.Agent.build/1` option) applies a
+`BeamWeaver.Agent.CapabilityProfile`: `capability_profile :auto` uses the
+profile of the agent's model, and a profile or `CapabilityProfileConfig`
+struct is used as given. Its `prompt_suffix` goes after the system prompt,
+also after the prompt a `DynamicPrompt` builds, `base_system_prompt` is used
+when the agent declares none, its excluded tools and tool descriptions join
+`exclude_tools` and `tool_descriptions` (the agent's own descriptions win),
+and its middleware runs after the agent's. See [Capability
+Profiles](docs/profiles.md#apply-a-profile).
+
+**Timeouts on agent and graph modules.** Agent and graph modules declare
+`step_timeout`, `run_timeout` and `tool_timeout`, and
+`BeamWeaver.Agent.build/1` takes the same options. `tool_timeout` limits each
+tool call; a slow call returns a tool error message to the model. See [Durable
+Execution](docs/durable_execution.md#timeouts) and [Going to
+Production](docs/going_to_production.md#bound-every-run).
+
+**Structured output that corrects itself.** With the tool strategy, an answer
+that fails the schema stays in the conversation with an error tool message
+that says what is wrong (missing keys, wrong types), and the model answers
+again. `response_schema ..., max_retries: n` (and `StructuredOutput.tool/2`'s
+`:max_retries`, default 2) bounds how often, up to `max_retries` times; then
+the run fails with the last error, with `attempts` in its details.
+`handle_errors: false` fails the run on the first failing answer. See
+[Structured Output](docs/structured_output.md#validation-errors-and-retries).
+
+**More context types.** `context_schema` fields accept `:float`, `:decimal`,
+`:date`, `:time`, `:utc_datetime`, `:naive_datetime`, `{:list, type}` and
+`{:union, types}`. `:float` and `:date` fields used to reject every value. See
+[Runtime Context](docs/runtime_context.md#declare-the-context-an-agent-needs).
+
+#### Middleware
+
+**ToolError.** The new `ToolError` middleware decides what the model reads
+when a tool fails, or stops the run instead: its `on_error:` function takes
+the error and the tool call request, and returns the text or `nil`. `tools:`
+limits it to some tools. See
+[ToolError](docs/builtin_middleware.md#toolerror).
+
+**AutoMode.** The new `AutoMode` middleware runs low-risk calls of the tools
+you name and blocks risky ones. Before each call it asks a decision model
+(`classifier:`, TypeSafe's `"typesafe:jev-latest"` unless you pass another)
+how likely the call is to be risky or not clearly authorized by the user,
+giving it the call, the tool's description and the last 30 messages. A call at
+or above 0.5 gets an error tool message instead of running. It fails closed: a
+call the classifier declines is blocked, and a classifier error fails the run
+without running the tool. `instructions:` replaces the question. See [Block
+risky tool calls](docs/guardrails.md#block-risky-tool-calls).
+
+**Summarization that recovers and fits the model.** `Summarization` tries a
+failed summary call up to 3 times, a second or more apart, unless its error
+says retrying can't help, and sends a summary prompt that is over the model's
+context window once more with the middle of the old messages cut out; when the
+call still fails, the run returns its error and the thread stays as it was.
+`summarizer:` writes the summary instead of `model:`: a function that takes
+the messages to summarize and returns the text, `{:ok, text}` or
+`{:error, error}`. `max_input_tokens:` is the context window of the agent's
+model, which `{:fraction, f}` triggers and `keep:` settings are taken of:
+`compact_conversation` sets it from the agent's model, and the general-purpose
+subagent, and a subagent with `base_middleware: [:deepagents]` or
+`Summarization` in its `base_middleware`, from the subagent's own model.
+`compact_conversation` takes `summarization:`, the `Summarization` options for
+the automatic summarization it turns on, or `false` to keep only the tool. See
+[Summarization](docs/builtin_middleware.md#summarization) and [Context
+Management](docs/context_management.md#summarize-old-messages).
+
+**ToolSelection retries.** `ToolSelection` asks again, up to `max_retries:`
+times (1 by default), for a selection reply without a list of tools; then
+`on_parsing_failure:` decides: `:error` (the default), `:none`, `:all`, a list
+of tool names, or a function of the reply. See
+[ToolSelection](docs/builtin_middleware.md#toolselection).
+
+**Your own token counter for ContextEditing.** `ContextEditing` takes
+`token_counter:`, a function of a message list that returns its token count,
+in place of `token_count_method:`. See
+[ContextEditing](docs/builtin_middleware.md#contextediting).
+
+**Redacted streams.** `PII.stream_transform/1` also edits the reasoning and
+tool-call arguments a model streams (the reasoning blocks of a `MessageChunk`,
+`ToolCallChunk` events and a `MessageChunk`'s tool-call chunks), holding back
+their last characters like text; the reasoning of a whole `Message`; tool
+events (the input of `ToolStart`, the output a tool streams in `ToolDelta`,
+held back until the tool finishes, the output of `ToolFinish` and the message
+of `ToolError`); and state snapshots (`GraphValue`). It edits the events only,
+never the saved thread. See [Redact a
+stream](docs/streaming.md#redact-a-stream).
+
+#### Human review and durable runs
+
+**One review per tool call.** `HumanInTheLoop` takes
+`interrupt_mode: :per_call`, which reviews each call on its own as it starts.
+Every call of the turn runs as a task of its own, calls that need no review
+run straight away and don't run again, and each call that does pauses with a
+`"tool_approval"` interrupt: the call, its description, the decisions it
+allows and the arguments schema an edit must match. `resume_review/3` answers
+them with a map from interrupt id to decision, all at once or one at a time,
+or with one decision when one call waits. An edit keeps the tool, and an
+answer that doesn't fit fails the resume with `:invalid_human_decision` while
+the call waits for another. Tools marked `concurrent false` don't wait for
+each other in this mode. See [One pause per
+call](docs/human_in_the_loop.md#one-pause-per-call).
+
+**Every pause of a step.** A paused run lists every interrupt of its step in
+`interrupts`, so pauses in parallel branches or tasks can be answered without
+`get_state/1`. `BeamWeaver.Agent.resume_review/3` takes a built agent too. See
+[Several pauses at once](docs/human_in_the_loop.md#several-pauses-at-once).
+
+**Review inside subagents.** A subagent that pauses for human review pauses
+the parent: `invoke/2` returns `{:interrupted, interrupt}` with the subagent's
+review (`review.metadata.subagent_name` names it), and `resume/3` or
+`resume_review/3` on the parent resumes the subagent. Before, the `task` tool
+returned `"Subagent interrupted: ..."` and the tool never ran. Subagents that
+pause in the same turn are reviewed one at a time; when the parent resumes,
+subagents that already finished return their saved answer instead of running
+again. Decisions that don't fit the review fail the parent's resume with
+`:invalid_human_decision`. See [Subagents](docs/subagents.md#human-review).
+
+**Continue a run where it stopped.** `invoke/2` and `stream_events/2` with an
+empty input continue the thread's latest checkpoint when its last run stopped
+before the end (a crash, a deploy or a breakpoint): they run the steps in
+`next` instead of starting over from the first node. On a finished thread an
+empty input still starts a new run, and passing `snapshot.config` keeps
+working. `resume/2` continues the thread's latest checkpoint too, and on a
+thread with nothing left to run it returns the state instead of starting a new
+run. Continuing a thread runs past the breakpoint (`interrupt_before`) it
+stopped at, also with `invoke(%{}, config: snapshot.config)`; the breakpoint
+pauses again when the run reaches its node later. See [Durable
+Execution](docs/durable_execution.md#what-survives-a-crash) and [Deploys and
+resuming runs](docs/going_to_production.md#deploys-and-resuming-runs).
+
+#### Subagents and deep agents
+
+**The general-purpose subagent, configured.** A
+`BeamWeaver.Agent.GeneralPurposeSubagentProfile` in a `subagents` list
+configures the built-in `general-purpose` subagent: `description:` and
+`system_prompt:` replace its texts, and `enabled: false` leaves it out.
+Before, `enabled` was never read. See [The general-purpose
+subagent](docs/subagents.md#the-general-purpose-subagent).
+
+**Subagent streams.** Subagent runs stream into the parent's stream, live or
+collected: their events carry the namespace `["tools", "subagent.<name>"]` and
+`subagent_name` and `tool_call_id` in the envelope metadata.
+`Agent.Subagent.StreamTransformer` builds one `RunStream` per `task` call from
+them (status, values, updates, nested runs). See
+[Subagents](docs/subagents.md#streaming).
+
+**Subagents take every agent option.** `Agent.Subagent.Spec` takes every
+`BeamWeaver.Agent.build/1` option (`model_opts`, `recursion_limit`,
+`context_schema`, `memory`, `subagents`, `checkpointer`, `store`,
+`compact_conversation`, `tool_timeout`, `step_timeout`, `run_timeout`,
+`capability_profile`, ...), and so does a `subagent MyAgent, opts` line.
+`Agent.Subagent.Compiled` takes `recursion_limit`. See [Declare
+subagents](docs/subagents.md#declare-subagents).
+
+#### Graphs and streaming
+
+**Choose the events you stream.** `stream_events/3` on agents and graphs
+honors `stream_mode:`, live or not: one of the modes
+`BeamWeaver.Stream.event_mode/1` returns, or a list of them, such as
+`[:messages, :tools]`. The other events are never sent, and an `Error` event
+always arrives. `:events`, the default, keeps every event; an unknown mode
+returns `{:error, %Error{type: :invalid_stream_mode}}`. See
+[Streaming](docs/streaming.md#events).
+
+**Your own run ids.** `invoke/3` and `stream_events/3` take `run_id:`, the id
+of the run on its events, `runtime.run_id`, checkpoint metadata, traces and
+telemetry. Without it the run gets a new UUIDv7; a subgraph run always gets
+its own. See [Streaming](docs/streaming.md#events).
+
+**Private keys saved with the thread.** `Graph.private_channel/2` takes
+`checkpoint: true`: the key stays out of the run's output, like any private
+key, but is saved in checkpoints, so the next run on the thread starts from
+its value. See [Private keys](docs/graph_state.md#private-keys).
+
+#### Models and providers
+
+**One set of error types for every provider.** A failed model call's error
+type no longer depends on the provider. It follows the HTTP status:
+`:invalid_request`, `:authentication`, `:billing_exhausted`,
+`:permission_denied`, `:not_found`, `:rate_limit` and `:server_error`, plus
+`:connection` for a request that gets no response and `:timeout` for one that
+runs past its timeout. `retry_on: :error`, the default of `ToolRetry` and of a
+graph node's `retry:`, leaves out an error that says retrying can't help
+(`details.retryable: false`), such as an invalid API key. The old types, and
+what to match instead, are under Breaking changes. See
+[Errors](docs/models.md#errors).
+
+**Decision models, and OpenAI's Decisions API.** OpenAI's Decisions API, in
+public beta, is a decision model:
+`Models.init_decision_model("openai:gpt-6-luna")` or
+`BeamWeaver.OpenAI.decision_model/1` asks predicate, choice and score
+questions (`BeamWeaver.OpenAI.Decisions.Question`) about a string, user
+messages with text and images, or other data, which goes as JSON text with its
+messages' images in place. Answers keep their probabilities, a declined
+question gets a `RefusalAnswer`, and `metadata.cost` counts input tokens only,
+as the API bills. Questions are checked before the request. `Models.cached/3`
+caches these decisions, and GPT-6 Luna's profile has `decision_outputs: true`.
+`DecisionModel.choice_question/3` and `yes_no_question/2` build a decision
+model's own question, checked as the model would check it, and `choose/4` and
+`probability/4` ask it, so code can work with any decision model; TypeSafe's
+and OpenAI's models implement them, and `TypeSafeModelRouter` takes any
+decision model as its `classifier:` (see Breaking changes). See [Decision
+models](docs/models.md#decision-models) and [OpenAI
+Decisions](docs/providers/openai.md#decisions).
+
+**Reasoning effort on every provider.** `Models.Profile` has
+`reasoning_effort_levels`, the reasoning efforts a model takes, and
+`reasoning_effort_default`, the one it uses when a call names none, on every
+provider. Claude Opus 4.5 to 4.8, Sonnet 4.6 and Sonnet 5, and Fable 5 and
+Mythos 5 got the levels and defaults Anthropic documents. Anthropic models
+take `reasoning_effort:`, the standard name of `effort:` (which wins when both
+are set), on the model or a call. It sets `output_config.effort`, and on a
+model that takes only adaptive thinking, from Claude Opus 4.7 and Sonnet 5 on,
+it turns on adaptive thinking with its summary unless `thinking:` is set. An
+effort the model's profile doesn't list fails with `:unsupported_model_param`
+before the request. See [Reasoning](docs/models.md#reasoning) and [Anthropic
+thinking and effort](docs/providers/anthropic.md#thinking-and-effort).
+
+**Changing settings partway through an OpenAI conversation.** OpenAI's
+Responses API takes a `configuration_update` block in a message, such as a new
+reasoning effort from that message on, and an `additional_tools` block, tools
+added partway through, in a system message. They go as input items of their
+own, just before the rest of their message, as `mcp_approval_response`,
+`tool_search_output` and `apply_patch_call_output` blocks now do too (they
+used to go inside the message, which the API refused). `additional_tools` on
+another message, or on Chat Completions, is an error. See [OpenAI
+reasoning](docs/providers/openai.md#reasoning).
+
+**Built-in provider tools in agents.** An agent offers a provider's built-in
+tools next to its own when they are in its model options, as in
+`model "openai:gpt-5.4-mini", tools: [BeamWeaver.OpenAI.ToolCalling.web_search()]`.
+See [OpenAI built-in tools](docs/providers/openai.md#built-in-tools).
+
+**The same options on every provider.** `init_chat_model/2` takes
+`stream: true` on every chat provider, and an agent whose model was created
+with it streams that model's replies. Every chat provider takes both
+`max_tokens:` and `max_output_tokens:` for the output cap, and Anthropic and
+Google take `stop:` for `stop_sequences:`; on OpenAI and xAI Chat Completions
+models, `max_output_tokens:`, set on the model or on a call, is sent as
+`max_completion_tokens`. OpenAI and Anthropic models take `base_url:`, the API
+root, on the model or in `config :beam_weaver, :openai` / `:anthropic`, like
+the other providers; the OpenAI default is `https://api.openai.com/v1`, the
+Anthropic default `https://api.anthropic.com`. See [Common
+options](docs/models.md#common-options) and [Options for every
+provider](docs/providers.md#options-for-every-provider).
+
+**New models.** Grok 4.7, `xai:grok-4.7`: a 500,000-token context and
+reasoning efforts from `:low` to `:xhigh`. Z.ai models `zai:glm-5.3-flashx`
+(images, video and PDFs like GLM-5.3-Flash, efforts `:low`, `:high` and
+`:max`), `zai:glm-5.1`, `zai:glm-5`, `zai:glm-4.7` and `zai:glm-4.6` (200K
+context, thinking can be turned off with `thinking: %{type: :disabled}`).
+GLM-5.1 and the older models return `:unsupported_model_param` for
+`reasoning_effort:`, which Z.ai accepts and ignores on them. Each was checked
+against the live API. See [xAI models](docs/providers/xai.md#models) and [Z.ai
+models](docs/providers/zai.md#models).
+
+**Images, video and PDFs on GLM-5.3.** GLM-5.3-Flash takes image, video and
+PDF blocks, by URL or as base64 data (`ContentBlock.video(data: ...)`,
+`ContentBlock.file(data: ...)`), also mixed in one message. GLM-5.3-Flash and
+GLM-5.3-FlashX take files uploaded with Z.ai's file API by id:
+`ContentBlock.file(file_id: id)` (or Z.ai's own
+`%{"type" => "file", "file" => %{"file_id" => id}}` part) is sent as Z.ai's
+`file` part; it used to return an `:invalid_content_block` error. Both were
+checked against the live API. See [Z.ai images, video and
+PDFs](docs/providers/zai.md#images-video-and-pdfs).
+
+**Unknown stream errors reported.** A model stream that the provider breaks
+off with an error whose code no provider documents still fails as a retryable
+server error (status 500), and BeamWeaver now logs a warning the first time
+each provider sends each such code: it names the provider and the code (or
+says the error had none) and says the error was treated as a retryable server
+error, so the code can be reported and classified. The warning never includes
+the error's message or body, and a code that looks like a secret is redacted.
+It is logged once per provider and code until the application restarts, for up
+to 256 codes. See [Errors](docs/models.md#errors).
+
+#### Memory, storage and retrieval
+
+**Tables in a Postgres schema.** `prefix:` on `Checkpoint.Ecto`,
+`Memory.Ecto`, `Cache.Ecto`, `VectorStore.EctoPostgres` and
+`Indexing.RecordManager.EctoPostgres` reads and writes the tables that
+`BeamWeaver.Migrations.up(prefix: ...)` creates in a Postgres schema. Before,
+the migration put the tables in the schema but every adapter looked for them
+in `public`. `prefix: ""` or `prefix: false` uses no schema, as with the
+migration. See [Create the tables](docs/storage.md#create-the-tables).
+
+**Vector stores of any size.** `index: false` on the `:vector_store` migration
+creates the table without a vector index, so stores with more than 2,000
+dimensions, such as `text-embedding-3-large` at its full 3,072, can be
+created. Searches then compare the query with every row. See [The vector store
+and pgvector](docs/storage.md#the-vector-store-and-pgvector).
+
+**Memory lifetimes and pruning.** `BeamWeaver.Memory.prune/2` works on
+`Memory.Ecto`, with the same `namespace:`, `max_entries:`, `older_than:` and
+`max_age_ms:` options as on `Memory.ETS`; it returned
+`:unsupported_operation`. `BeamWeaver.Memory.Item` and `SearchItem` have a
+`ttl` field: the record's lifetime in minutes, or `nil`. See [Expiry and
+cleanup](docs/long_term_memory.md#expiry-and-cleanup).
+
+**Failed documents in indexing results.** `Indexing.Result` has `failed_ids`,
+the ids of the documents the vector store or the record manager rejected. See
+[Incremental indexing](docs/retrieval.md#incremental-indexing).
+
+#### Tracing and telemetry
+
+**A bounded local trace store.** `config :beam_weaver, :tracing, max_runs:`
+bounds the local trace store. It keeps every run in progress and, by default,
+the 10,000 runs that finished last; `max_runs: 0` keeps only the runs in
+progress, for nodes that only export. `BeamWeaver.Tracing.clear/0` drops every
+run from the store; it replaces the undocumented `Tracing.reset/0`. See [Read
+a trace](docs/tracing.md#read-a-trace).
+
+**Trace data kept out of requests.** `ChatModel.invoke/3` takes
+`trace_metadata:`, a map added to the call's trace run and never sent to the
+provider. See [Name and tag a run](docs/tracing.md#name-and-tag-a-run).
+
+**Uploads finish on shutdown.** The WeaveScope export queue takes `shutdown:`,
+the milliseconds it keeps uploading when the application stops (default
+`120_000`). See [Export to WeaveScope](docs/tracing.md#export-to-weavescope).
+
+**Durations in graph telemetry.** `[:beam_weaver, :graph, :stop]`,
+`:interrupt`, `:parent_command`, `:exception` and `:node_stop` carry
+`duration` (native time units) and `monotonic_time`; `:start` and
+`:node_start` carry `monotonic_time`. `:exception`, `:interrupt` and
+`:parent_command` carry `graph` and `run_id` in their metadata. See [Metrics
+with telemetry](docs/tracing.md#metrics-with-telemetry).
+
+#### Tools, filesystem and sandboxes
+
+**The tool's own error text.** Tool error messages from the tool node carry
+the tool's own error text in `metadata.error_message`, next to the
+model-facing "Tool error: …" content. See [Results and
+errors](docs/tools.md#results-and-errors).
+
+**Where a path leads, and a check for your backend.**
+`BeamWeaver.Filesystem.canonical_paths/3` and
+`BeamWeaver.Sandbox.canonical_paths/3` return, for each path, the path of the
+file it reaches with the backend's symlinks followed, as `{:ok, path}` or
+`{:error, reason}`. `Filesystem.Permission.allowed?/5` and
+`Filesystem.Permission.filter_paths/5` check paths of a backend the way the
+file tools do: the path and the file it leads to.
+`BeamWeaver.Filesystem.Conformance.check_symlinks/3` checks, from the tests of
+a backend you write, that permission rules see through its symlinks. Give it a
+new, empty backend and a function that makes a link in the backend's storage:
+it writes a secret under `/secrets`, links to it from `/notes`, and, with a
+rule that denies `/secrets/**`, returns `:ok`, or `{:error, problems}` with a
+sentence for each way the file tools still read, list, search, write or edit
+the secret through the links (or for files no rule denies that they refuse). A
+wrapper around another backend passes only when it hands `canonical_paths/3`
+on. `:dir` checks under a folder, such as a `Composite` route. See [Check that
+permissions see your
+links](docs/filesystem.md#check-that-permissions-see-your-links).
+
+#### Compaction engine
+
+**Anti-thrash state.** `BeamWeaver.Compaction.Result` has `anti_thrash`: the
+request's lane state, rebased to the request's accounting identity and root
+turn, to save and to record the activated checkpoint on.
+`Compaction.State.for_root_turn/2` starts a new root turn's counters, and
+`Compaction.State.record_ineffective/1` records a compaction attempt that
+didn't reclaim enough context. See
+[Results](docs/compaction_engine.md#results) and [Automatic
+compaction](docs/compaction_engine.md#automatic-compaction).
+
+#### Testing
+
+**Whole agent runs without an API key.** `FakeChatModel.tool_call/2`,
+`tool_calls/1`, and `final/1` script tool calls and structured answers, so an
+agent runs its whole tool loop on `"fake:chat"`. Agents with `stream: true` on
+the fake model stream its reply word by word as `Token` and `MessageChunk`
+events. A `FakeChatModel` with a multi-entry `responses:` list plays it in
+turn order, one entry per model call, and repeats the last entry once the list
+runs out; the turn is read from the conversation (each reply carries
+`metadata.fake_turn`), so the script also continues across resumed threads.
+Before, it always returned the first entry. `responses:` now takes precedence
+over `structured_response:`. `FakeEmbeddingModel` (`"fake:embedding"`) is
+documented. See [Script the model](docs/testing.md#script-the-model) and [Fake
+embeddings](docs/testing.md#fake-embeddings).
+
+### Breaking changes
+
+#### Security
+
+- Host commands start from a minimal environment. `Sandbox.Local`,
+  `Filesystem.LocalShell`, `Tools.Shell` and the `ShellTool` middleware no
+  longer pass your application's environment, API keys included, to the
+  commands they run: commands get `PATH`, `HOME`, `LANG`, the `LC_*`
+  variables, `TMPDIR`, `USER` and `SHELL`, plus the variables in `env:`. Pass
+  `inherit_env: true` (to `Sandbox.local/1`, `LocalShell.new/1` or the shell
+  policy) to give commands the whole environment again. `ShellPolicy` and
+  `Sandbox.local/1` take the new `inherit_env:` option, and `Sandbox.local/1`
+  also takes `env:`; a `nil` value in `env:` removes that variable. A shell
+  `Session` applies this environment, `nil` removals included, to every
+  command it runs, not only the first. `LocalShell`'s `inherit_env:` now
+  defaults to `false`, and `false` keeps those base variables instead of
+  starting from an empty environment. `ShellPolicy`'s `env_allowlist:` is
+  gone: it only filtered the policy's own `env:`, so put just the variables
+  commands need in `env:`. `ShellPolicy.new/1` now returns an
+  `:invalid_shell_policy` error for an option it doesn't know,
   `env_allowlist:` included, instead of dropping it.
-- **Breaking:** `ShellPolicy` reads a command line the way the shell does and
-  checks every command in it that would run, so a rule can no longer be
-  walked around with chaining, quoting or a wrapper. Regex allow rules allow a
-  single command only, like string rules: a line that chains commands with
-  `;`, `&&`, `||`, `|`, `&`, a newline, `(...)`, `$(...)` or backticks is
-  refused unless the policy sets the new `allow_compound: true`. Policies
-  whose regexes match chained command lines, such as `allow: [~r/.*/]` for a
-  session that runs `cd x && make`, need `allow_compound: true`. A command
-  that only changes how another runs (`timeout`, `env`, `FOO=1 …`,
-  `sh -c '…'`, `bash -c`, `dash -c` and the other POSIX shells, `eval`,
-  `trap`, `command`, `builtin`, `exec`, `nohup`, `time`, `nice`, `stdbuf`,
-  `flock`, `chrt`, `ionice`, `taskset`, `busybox`) is looked through: the
-  _wrapped_ command must be allowed, and the wrapper needs no rule of its own.
-  A command that runs another as a different user, on another host, or once
-  per input (`sudo`, `doas`, `setsid`, `ssh`, `xargs`,
-  `find -exec`/`-execdir`/`-ok`, `parallel`, `watch`, `script`, and project
-  runners such as `poetry run`, `bundle exec`, `npm exec`) needs a rule _and_
-  the command it runs must be allowed. Policies that relied on allowing a
-  wrapper (for example `allow: ["sh"]` or `allow: ["env"]` to run anything)
-  must now allow the specific commands instead. Deny rules see every command
-  at every level, not only the line's start, also with its leading variable
-  assignments stripped and its words unquoted, so a `"rm "` rule catches
-  `sh -c 'rm x'`, `env rm x`, `FOO=1 rm x`, `\rm x`, `'rm' x` and
+- `ShellPolicy` reads a command line the way the shell does and checks every
+  command in it that would run, so a rule can no longer be walked around with
+  chaining, quoting or a wrapper. Regex allow rules allow a single command
+  only, like string rules: a line that chains commands with `;`, `&&`, `||`,
+  `|`, `&`, a newline, `(...)`, `$(...)` or backticks is refused unless the
+  policy sets the new `allow_compound: true`. Policies whose regexes match
+  chained command lines, such as `allow: [~r/.*/]` for a session that runs
+  `cd x && make`, need `allow_compound: true`. A command that only changes how
+  another runs (`timeout`, `env`, `FOO=1 …`, `sh -c '…'`, `bash -c`, `dash -c`
+  and the other POSIX shells, `eval`, `trap`, `command`, `builtin`, `exec`,
+  `nohup`, `time`, `nice`, `stdbuf`, `flock`, `chrt`, `ionice`, `taskset`,
+  `busybox`) is looked through: the _wrapped_ command must be allowed, and the
+  wrapper needs no rule of its own. A command that runs another as a different
+  user, on another host, or once per input (`sudo`, `doas`, `setsid`, `ssh`,
+  `xargs`, `find -exec`/`-execdir`/`-ok`, `parallel`, `watch`, `script`, and
+  project runners such as `poetry run`, `bundle exec`, `npm exec`) needs a
+  rule _and_ the command it runs must be allowed. Policies that relied on
+  allowing a wrapper (for example `allow: ["sh"]` or `allow: ["env"]` to run
+  anything) must now allow the specific commands instead. Deny rules see every
+  command at every level, not only the line's start, also with its leading
+  variable assignments stripped and its words unquoted, so a `"rm "` rule
+  catches `sh -c 'rm x'`, `env rm x`, `FOO=1 rm x`, `\rm x`, `'rm' x` and
   `/bin/rm x`. Prefix matching treats a rule's trailing whitespace as a word
   boundary (so a `"rm "` rule matches `rm\tx`), and a NUL byte counts as a
   command boundary, which a prefix allow rule refuses, so it can't hide a
   second command. The policy reads a line by the POSIX shell grammar, as bash
-  and dash do, so a second command can't hide behind a quote inside a
-  comment, `$'\''` (one quote to bash, more to dash), a command substitution
-  inside double quotes, a here-document body, bash `$'…'` byte escapes or
-  parentheses that open a subshell or arithmetic. A line that bash and dash
-  would read differently, or that only a full shell parser could read
-  exactly, is refused rather than guessed at. Wrappers and scripts are
-  followed up to eight levels deep. The new `ShellPolicy.check/2` returns
-  `:ok` or a `:shell_command_rejected` error whose message says why a command
-  is refused (no allow rule, a deny rule, code the policy can't read, or a
-  line it can't read the same way in every shell); `allowed?/2` is
-  `check/2 == :ok`.
-- **Breaking:** `ShellPolicy` refuses a command that runs code it can't read
-  from the command line, even when a rule for the program matches it: inline
+  and dash do, so a second command can't hide behind a quote inside a comment,
+  `$'\''` (one quote to bash, more to dash), a command substitution inside
+  double quotes, a here-document body, bash `$'…'` byte escapes or parentheses
+  that open a subshell or arithmetic. A line that bash and dash would read
+  differently, or that only a full shell parser could read exactly, is refused
+  rather than guessed at. Wrappers and scripts are followed up to eight levels
+  deep. The new `ShellPolicy.check/2` returns `:ok` or a
+  `:shell_command_rejected` error whose message says why a command is refused
+  (no allow rule, a deny rule, code the policy can't read, or a line it can't
+  read the same way in every shell); `allowed?/2` is `check/2 == :ok`.
+- `ShellPolicy` refuses a command that runs code it can't read from the
+  command line, even when a rule for the program matches it: inline
   interpreter code (`python -c`, `perl -e`, `ruby -e`, `node -e`, `php -r`,
   `lua -e`, an `awk` program that calls `system()` or pipes, a `sed` script
-  with the `e` command or flag, `vim -c`, `emacs --eval`, `make --eval`,
-  git's `-c`, and the `git`, `tar`, `rsync`, `scp` and `zip` options that run
-  a command); a script read from a file or standard input (`bash script.sh`,
-  `source`, a shell or interpreter with no inline script, `… | sh`); a
-  command built at run time (`$TOOL args`, `sh -c "$SCRIPT"`, `eval "$(…)"`,
-  a command name with a glob or brace expansion, `xargs` or `parallel`
-  handing input to a wrapper or interpreter); shells with their own syntax
-  (`zsh`, `fish`, `csh`, `pwsh`) and runners the policy can't read into
-  (`strace`, `gdb`, `su`, `chroot`, `tmux`, `at`, …); setting a variable that
-  makes programs load or run other code (`PATH`, `LD_PRELOAD`, `BASH_ENV`,
-  `PAGER`, `EDITOR`, `GIT_*`, …), or any variable to a value with spaces or
-  shell syntax in it (glob characters are fine in an assignment before a
-  command, such as `DEBUG=* npm test`, which no shell expands, but not
-  unquoted in an argument of `env`, `export`, `sudo` or a wrapper, which
-  shells can expand to file names); and bash arithmetic that reads a
-  variable (`$((x))`, `let`, `[[ $x -eq 1 ]]`), which runs any command
-  substitution stored in it. To allow one, add a rule that spells out the
-  part the policy can't read
+  with the `e` command or flag, `vim -c`, `emacs --eval`, `make --eval`, git's
+  `-c`, and the `git`, `tar`, `rsync`, `scp` and `zip` options that run a
+  command); a script read from a file or standard input (`bash script.sh`,
+  `source`, a shell or interpreter with no inline script, `… | sh`); a command
+  built at run time (`$TOOL args`, `sh -c "$SCRIPT"`, `eval "$(…)"`, a command
+  name with a glob or brace expansion, `xargs` or `parallel` handing input to
+  a wrapper or interpreter); shells with their own syntax (`zsh`, `fish`,
+  `csh`, `pwsh`) and runners the policy can't read into (`strace`, `gdb`,
+  `su`, `chroot`, `tmux`, `at`, …); setting a variable that makes programs
+  load or run other code (`PATH`, `LD_PRELOAD`, `BASH_ENV`, `PAGER`, `EDITOR`,
+  `GIT_*`, …), or any variable to a value with spaces or shell syntax in it
+  (glob characters are fine in an assignment before a command, such as
+  `DEBUG=* npm test`, which no shell expands, but not unquoted in an argument
+  of `env`, `export`, `sudo` or a wrapper, which shells can expand to file
+  names); and bash arithmetic that reads a variable (`$((x))`, `let`,
+  `[[ $x -eq 1 ]]`), which runs any command substitution stored in it. To
+  allow one, add a rule that spells out the part the policy can't read
   (`"python3 -c"`, `"bash scripts/ci.sh"`), or set the new
   `allow_opaque: true` (default `false`) so that ordinary rules allow such
   commands; deny rules can't see inside them either way. A rule that only
   names the program (`allow: ["python3"]`) no longer allows
   `python3 -c '<anything>'`.
-- **Breaking:** `Agent.Middleware.ShellTool.new/1` requires a `:policy` and
-  raises `ArgumentError` without one; it used to allow every command.
+- `Agent.Middleware.ShellTool.new/1` requires a `:policy` and raises
+  `ArgumentError` without one; it used to allow every command.
   `Tools.Shell.new/1` raises `ArgumentError` instead of `KeyError` without
-  one, and `BeamWeaver.Tools.Shell` checks the policy itself before it hands
-  a command to any executor, so a custom `:executor` that trusts what it is
+  one, and `BeamWeaver.Tools.Shell` checks the policy itself before it hands a
+  command to any executor, so a custom `:executor` that trusts what it is
   given can no longer run a command the policy rejects. A shell `Session`
   refuses to start with a custom `:executor`
   (`:shell_session_executor_unsupported`) instead of ignoring it and running
-  commands on the host. A session is a persistent host shell: use the
-  one-shot `BeamWeaver.Tools.Shell` for a custom executor, or a
-  `BeamWeaver.Sandbox` for container execution.
-- **Breaking:** `TextSplitter.split_url/3` could fetch any URL, so a URL from a
-  user or a model could reach internal services or a cloud metadata endpoint
+  commands on the host. A session is a persistent host shell: use the one-shot
+  `BeamWeaver.Tools.Shell` for a custom executor, or a `BeamWeaver.Sandbox`
+  for container execution.
+- `TextSplitter.split_url/3` could fetch any URL, so a URL from a user or a
+  model could reach internal services or a cloud metadata endpoint
   (server-side request forgery). It now fetches through `Transport.Safe` with
-  a `BeamWeaver.Transport.URLPolicy` instead of `:httpc` with none. By
-  default it accepts only `https` URLs to public addresses, and refuses
-  private, loopback, link-local and cloud metadata addresses, also when a
-  host name resolves to one or a redirect points to one, with
+  a `BeamWeaver.Transport.URLPolicy` instead of `:httpc` with none. By default
+  it accepts only `https` URLs to public addresses, and refuses private,
+  loopback, link-local and cloud metadata addresses, also when a host name
+  resolves to one or a redirect points to one, with
   `{:error, %Core.Error{type: :unsafe_url}}`. It connects to the address it
-  checked, follows only redirects that pass the same policy, and stops at
-  5 MB and 15 seconds. The new `url_policy:` option takes `URLPolicy` options
-  as a keyword list (such as `allowed_hosts:` or `follow_redirects?: false`)
-  or a policy struct; to fetch an `http` or internal URL, pass the policy that
-  allows it, such as `url_policy: [schemes: ["http", "https"],
-  allowed_hosts: ["wiki.internal"], allow_private?: true]`. A custom
-  `fetcher:` only gets URLs that pass the policy's checks that need no DNS
-  lookup.
+  checked, follows only redirects that pass the same policy, and stops at 5 MB
+  and 15 seconds. The new `url_policy:` option takes `URLPolicy` options as a
+  keyword list (such as `allowed_hosts:` or `follow_redirects?: false`) or a
+  policy struct; to fetch an `http` or internal URL, pass the policy that
+  allows it, such as
+  `url_policy: [schemes: ["http", "https"], allowed_hosts: ["wiki.internal"], allow_private?: true]`.
+  A custom `fetcher:` only gets URLs that pass the policy's checks that need
+  no DNS lookup.
+- An `interrupt_on` rule map always turns human review on for its tool, and
+  `allowed_decisions` defaults to all four decisions. Before, a rule map
+  without `allowed_decisions` turned review off, so the tool ran without
+  approval. To skip review for a tool, map it to `false`. A rule that can't be
+  read (an empty `allowed_decisions`, an unknown decision, a value that isn't
+  `true`, `false` or a map of rules, or an `interrupt_on` that isn't a map) is
+  an `:invalid_agent` error from `BeamWeaver.Agent.build/1` and agent modules
+  instead of being ignored; `HumanInTheLoop.new/1` called directly raises
+  `ArgumentError`.
+- `Filesystem.Permission` rules see a path as the backends read it. They
+  matched the path as the model wrote it, while the backends read it after
+  removing `.` segments and repeated slashes, so `/./secrets/key.txt` passed a
+  `deny` rule for `/secrets/**` and was read; on a disk that ignores case,
+  such as macOS's, so was `/SECRETS/key.txt`. Patterns ending in `/**` with a
+  wildcard or braces before it, such as `/**/secrets/**`, `/*/secrets/**` or
+  `/{secrets,keys}/**`, denied nothing, and `**/` needed at least one
+  directory, so a rule for `/**/*.env` missed a top-level `/prod.env`. Now any
+  pattern ending in `/**` covers its folder and everything in it, `**/`
+  matches zero or more directories, and deny rules ignore case and Unicode
+  normalization (allow rules still match exactly). With rules for an
+  operation, a path that isn't a plain absolute path (relative, or with `..`,
+  `~` or `\`) is denied; pass absolute paths. A deny rule now also denies
+  other spellings of its paths on backends that tell case apart, such as
+  `Filesystem.State`; to let one through, put an allow rule for it before the
+  deny rule.
+- `Filesystem.Permission` rules see through symlinks. They matched only the
+  path the model wrote, so a symlink inside a `Filesystem.Local`,
+  `Filesystem.LocalShell` or `Sandbox.local/1` directory gave a denied file a
+  second, allowed path: with a `deny` rule for `/secrets/**` and a link
+  `/notes/key.txt` to `/secrets/key.txt`, `read_file("/notes/key.txt")`
+  returned the secret, `ls`, `glob` and `grep` listed and searched it from an
+  allowed folder, and `write_file` and `edit_file` reached a denied folder
+  through a linked one. The file tools now check a path both as written and as
+  the file it leads to, and both must be allowed: for `ls`, `read_file`,
+  `write_file`, `edit_file`, `glob` and `grep`, and for every entry that `ls`,
+  `glob` and `grep` return, which they leave out when its file is denied. A
+  new file is checked as the file it would become, so new files in allowed
+  folders work as before. With rules for an operation, a path the backend
+  can't resolve, such as a broken link, or on `Sandbox.Docker` a link that
+  leads out of the workspace, is denied. `Sandbox.Docker` paths written as
+  container paths, such as `/workspace/secrets/key.txt`, are also checked as
+  the sandbox path they reach (`/secrets/key.txt`), which a rule for
+  `/secrets/**` missed. Backends report where a path leads with the new
+  optional callback `canonical_paths/3` of `BeamWeaver.Filesystem` and
+  `BeamWeaver.Sandbox`. `Local`, `LocalShell`, `Composite` (in the route's
+  backend, keeping the route's prefix), `Filesystem.Sandbox`, `Sandbox.Local`
+  and `Sandbox.Docker` implement it; `State`, `Store` and backends without it
+  are taken to have no links. A backend or sandbox adapter that wraps another
+  one must pass `canonical_paths/3` on to it, as the wrappers in the
+  Filesystem and Sandboxes guides do, or the rules won't see the inner
+  backend's links. Hard links, and links that another process changes between
+  the check and the call, are not covered.
+- `glob` and `grep` on `Filesystem.Local` and `Filesystem.LocalShell` search
+  only inside their directory. A pattern, or a `grep` `glob:`, with `..`, such
+  as `"../*.txt"`, matched the files next to the directory, and a symlink
+  inside it that points outside was followed, so the `grep` tool returned the
+  lines of those files and `glob` their host paths. A pattern with `..`, also
+  one spelled with `\` escapes such as `.\./*`, or with `~` now returns the
+  error `"invalid_pattern"`, even when it would stay inside; write the pattern
+  from the folder you search, or pass that folder as `path:`. `ls`, `glob` and
+  `grep` list only paths the file tools can open, so they leave out symlinks
+  that point outside the directory, paths through them (even ones that lead
+  back in, which `read_file` now refuses with `"invalid_path"` too), and names
+  with `~`. `Sandbox.local/1` directories refuse paths through such symlinks
+  the same way; their `read`, `grep` and `download_files` returned the outside
+  file, and `edit` and `upload_files` changed it. All three backends follow
+  symlinks the way the OS does, also through a `..` after a link:
+  `notes/k -> ../x/up/../outside.txt`, with `x/up -> ..`, leads out of the
+  directory, though read as text its target names `x/outside.txt`, and is
+  refused with `"invalid_path"`. `Filesystem.Local` and
+  `Filesystem.LocalShell` read the file the OS opens for such a link, not the
+  file its target names as text.
+- `Sandbox.Local` no longer reads a file through a full host path that points
+  inside its root (`<root>/secrets/key.txt`), which slipped past a
+  `Filesystem.Permission` deny rule for `/secrets/**`. Such a path is taken
+  literally as the sandbox path `/<root>/secrets/...`, which resolves under
+  the root and does not exist, so the path the sandbox reads is the one the
+  rules check. Pass sandbox-absolute paths (`/secrets/key.txt`).
+- `PII` checks the text blocks of multimodal messages and every message a
+  model call adds. It read only plain-string content and tool-call arguments,
+  so it left personal data in the text blocks of messages with list content,
+  in user input, tool results and model output alike. With
+  `apply_to_output: true` it edited only the last assistant message, after the
+  model's reply was saved: the checkpoint written after the model call held
+  the raw reply, and the failed answer that `StructuredOutputRetry` keeps
+  stayed in the thread unredacted. Output rules now edit every message a model
+  call adds, and the failed answer, before they are saved, and
+  `PII.stream_transform/1` also redacts the text blocks and tool-call
+  arguments of a whole `Message` event. `PII` has no `after_model/3` hook:
+  output rules run in its `wrap_model_call/3`, so they edit the reply before
+  any `after_model/3` hook sees it, and a `:block` rule listed after
+  `ModelFallback` makes it try the next model. Call `wrap_model_call/3` to
+  test an output rule.
+- `ModelFallback` calls a fallback with the fallback's own key and connection
+  settings. It called it with the agent model's call options, `api_key:`,
+  `base_url:`, `endpoint:` and `transport:` included, and those override a
+  model's own: the Claude fallback of an agent on an OpenAI model was sent the
+  OpenAI key, to `api.anthropic.com`. A fallback now gets only the agent's
+  model options that its profile takes (one it doesn't take, such as
+  `reasoning_effort:` for Claude, would fail the call with
+  `:unsupported_model_param`), and a provider's built-in tools in `tools:`
+  reach only a model of the same kind. `TypeSafeModelRouter` passes options to
+  the model it chooses the same way, and no longer passes it the agent's
+  `extra_body:`. A fallback or chosen model that relied on the key in the
+  agent's model options needs its own: configure the provider's key, or pass a
+  model value with
+  `init_chat_model!("anthropic:claude-haiku-4-5", api_key: ...)`.
+- The warnings a model call emits through telemetry no longer carry the call's
+  `metadata:`, which can hold a user id.
+  `[:beam_weaver, :models, :param_warning]` (a call with `param_policy: :warn`
+  that sends a parameter the model's profile doesn't list) carries the
+  provider, the model and the parameter names, and
+  `[:beam_weaver, :provider, :unsupported_feature]` (a call with
+  `unsupported: :warn` that asks for a feature the model lacks) the provider,
+  the model and the feature names. Both used to add the call's `metadata` map
+  under a `metadata` key; a handler that read it gets no such key now.
+  `BeamWeaver.Models.ParamPolicy.validate/4` no longer takes a `:metadata`
+  option.
+
+#### Agents
+
+- `BeamWeaver.Agent.build/1` returns an `:invalid_agent` error that names any
+  option it doesn't know, such as `response_schema:` (use `response_format:`),
+  instead of ignoring it. The undocumented aliases `backend:`, `permissions:`
+  and `overflow_clip:` are gone: use `filesystem:`, `filesystem_permissions:`
+  and `overflow_recovery:`. An invalid tool or middleware is an error from
+  `build/1` instead of an exception, and so is an option that a middleware or
+  capability constructor rejects, also from an agent module's call:
+  `:invalid_middleware` for a `middleware` entry, such as
+  `middleware: [ShellTool]` without a `:policy` or `DynamicPrompt` without
+  `:prompt`, and `:invalid_agent` for capability settings, such as
+  `compact_conversation: [trigger: ...]` or an `interrupt_on` rule that can't
+  be read. They used to raise the constructor's `ArgumentError` or `KeyError`;
+  match on the error instead of rescuing.
+- A `model` that is neither a `"provider:model"` string nor a chat model
+  struct, such as `{"fake:chat", opts}` or a function, returns an
+  `:invalid_agent_model` error, and model options that aren't a keyword list,
+  such as `model_opts: %{api_key: key}`, an `:invalid_agent` error; neither
+  shows the value (see Security). A model string that can't be initialized
+  returns its error instead of failing later.
+- With the tool strategy, an answer that calls no tool at all (from a model
+  that ignores the forced tool call, or can't be forced, such as Kimi with
+  thinking on) counts as a failing answer, with the new error type
+  `:missing_structured_output`. The model gets the error as a user message and
+  answers again, up to `max_retries` times; then the run fails with the error.
+  Before, an agent without other tools returned `{:ok, state}` without
+  `structured_response`, and the structured-response call after a tool loop
+  called the model again on every step until `:recursion_limit`.
+  `StructuredOutputRetry` retries `:missing_structured_output` by default.
+- An agent or graph module that creates an in-memory saver, store or cache in
+  a declaration doesn't compile, such as
+  `checkpointer BeamWeaver.Checkpoint.ETS.new()`, `store Memory.ETS.new()`
+  through an alias, `cache BeamWeaver.Cache.ETS.new()`, or one inside another
+  declaration, as in
+  `filesystem BeamWeaver.Filesystem.Store.new(store: BeamWeaver.Memory.ETS.new())`.
+  Declarations are evaluated on every call, so every call got a new, empty
+  table: a second `invoke/2` on a thread started over, `get_state/1` returned
+  `:error`, and every call left ETS tables behind in the calling process. The
+  `CompileError` says what to do instead: create the saver, store or cache
+  once, in your supervision tree or a test's `setup`, and pass it per call
+  with `checkpointer:`, `store:` or `cache:`; or declare a function that
+  returns one created once, such as
+  `checkpointer MyApp.Storage.checkpointer()`; or use `Checkpoint.Ecto`,
+  `Memory.Ecto` or `Cache.Ecto`. Code inside an anonymous function in a
+  declaration, which runs only when it is called, is not affected.
+- `BeamWeaver.Agent.build/1` returns an `:invalid_tool` error for a `tools`
+  entry that isn't a tool, such as a tool's name; it raised
+  `FunctionClauseError`. It returns an `:invalid_agent` error for a
+  `response_format` that isn't a schema module, a JSON schema map or a
+  `StructuredOutput` strategy, or a module that declares no schema; it raised,
+  or asked the model for an empty object. Agent modules check the same on
+  their first call. Declare the schema with `use BeamWeaver.Schema` or
+  `json_schema/0`.
+- `response_schema` raises `ArgumentError` for a module that declares no
+  schema or doesn't exist, instead of asking the model for an empty object.
+- A run ends on its tools' results only when every call of the batch ran a
+  tool with `return_direct true`. When the model also called a tool that
+  doesn't return directly, it gets all the results and goes on; one
+  return-direct result used to end the run.
+- Removed all `async_*` twins (`ChatModel.async_invoke/3`,
+  `Compiled.async_invoke/3`, `Memory.async_put/5`, `VectorStore.async_*`,
+  `Checkpoint.async_*`, and the rest — 164 functions) and
+  `BeamWeaver.Core.Async`. Run calls concurrently with `Task`, or with
+  `BeamWeaver.Tracing.async/2` to keep the trace context.
+  `MessagesTransformer.process_many/3` and its no-op `:async?` option went
+  with them; call `MessagesTransformer.process_many(transformer, events)`.
+- Removed `BeamWeaver.Runtime.Agent`, `BeamWeaver.DispatchHook`,
+  `BeamWeaver.ProcessRegistry`, `BeamWeaver.Agent.Server`, and the generated
+  `start_link/1`/`child_spec/1` on agent modules. Call `MyAgent.invoke/2`
+  directly, and run agents in the background under your own `Task.Supervisor`,
+  as Going to Production shows.
+- Removed `Core.AgentSchema` and `Core.ChatSession`.
+- `BeamWeaver.Agent.get_state/2` no longer takes a bare config map; pass
+  `config: config`.
+- Removed the `debug` declaration and `BeamWeaver.Agent.build/1` option, which
+  only marked introspection data; watch a run with streaming or tracing.
+- Removed the `tool_timeout` model option; declare `tool_timeout` instead.
+  Passing it as a model option returns an `:invalid_agent` error.
+
+#### Middleware
+
+- A middleware hook's update is written as returned, through each key's
+  reducer, even when a value equals the current one. Return only the keys you
+  change: returning the whole state now fails with `:invalid_update`, because
+  `remaining_steps` is read-only.
+- `Agent.ModelRequest.new/1`, `ModelRequest.override/2`, and
+  `ToolCallRequest.override/2` take keyword lists and raise `KeyError` for
+  unknown fields instead of ignoring them; string field names are no longer
+  accepted. `ModelRequest` defaults `state` to `%{}` and `messages` to `[]`.
+- `ModelCallLimit` and `ToolCallLimit` have no default `thread_limit` (it was
+  10, so every agent with them stopped after 10 calls): set `run_limit`,
+  `thread_limit`, or both, and add `run_limit: 10` to keep the old cap.
+  `ToolCallLimit.new(run_limit: 20)` no longer raises.
+- The `compact_conversation` settings configure only the tool (`model`,
+  `minimum_messages`, `keep_messages`, …), and `CompactConversation.new/1`
+  raises `ArgumentError` for other options. Before, `trigger:` and `keep:` in
+  the same list configured the automatic summarization; move them into
+  `summarization: [trigger: …, keep: …]`.
+- `Summarization` takes `{:fraction, f}` of `max_input_tokens:` instead of the
+  summary model's context window. A fraction without `max_input_tokens:`
+  raises `ArgumentError`; pass the agent model's window.
+- `OverflowRecovery`'s `keep:` defaults to `{:tokens, 5_000}`, the threshold
+  the old default `{:messages, 8}` stood for, and takes only `{:tokens, n}` or
+  `{:fraction, f}`; `{:messages, n}` raises `ArgumentError`.
+- `PII.stream_transform/1` returns a `{fun, state}` pair, and
+  `MessagesTransformer`'s `pre_projection:` accepts such pairs alongside unary
+  functions. The PII stream buffer no longer lives in the process dictionary.
+- `PII` rules edit only the text of messages (string content, or the `text` of
+  each content block). An output rule no longer edits the arguments of the
+  reply's tool calls, so a tool gets the values the model gave it;
+  `PII.stream_transform/1` still edits them in what a stream shows. To keep
+  personal data out of a tool, check its arguments in the tool or in a
+  `wrap_tool_call/3` middleware.
+- `ModelRetry` and `ToolRetry` apply `on_failure` only when the retries run
+  out. An error their `retry_on` doesn't cover, such as a bad API key, comes
+  back as it is: from `ModelRetry` as `{:error, error}`, so a `ModelFallback`
+  listed before it still gets it, and from `ToolRetry` as the tool returned
+  it. With `on_failure: :continue` or a function, such an error used to become
+  the answer ("Model call failed after 1 attempt ...").
+- `retry_on: :error`, the default of `ToolRetry` and of a graph node's
+  `retry:`, leaves out an error that says retrying can't help
+  (`details.retryable: false`), such as a provider's invalid API key; it used
+  to retry every `%Error{}`. To retry such an error anyway, name its type
+  (`retry_on: [:authentication]`) or use `retry_on: :all`.
+- `TypeSafeModelRouter` takes any decision model as `classifier:`, also as a
+  `"provider:model"` string such as `"openai:gpt-6-luna"`, and checks its
+  question when it's built. A refusal or a missing answer keeps the agent's
+  model with the reason `"refused"`, and an invalid response is a
+  `"classifier_error"`: match those instead of
+  `"invalid_classifier_response"`, which is gone. Its default `instructions`
+  are one string rather than a map, since OpenAI's questions take only
+  strings, and the struct keeps the built question in `question` instead of an
+  `instructions` field. The classifier gets the message's text, a placeholder
+  such as `[image omitted]` for other content, and the images too when its
+  profile takes images; when the provider refuses a request with images (HTTP
+  400 or 413), the router asks again as text only.
+- Removed two-argument middleware hooks. Every hook takes the middleware
+  first: `before_model(middleware, state, runtime)`,
+  `wrap_model_call(middleware, request, handler)`, and so on; module
+  middleware receives its module and ignores it.
+- `@behaviour BeamWeaver.Agent.Middleware` on its own no longer makes a
+  middleware. Middleware modules call `use BeamWeaver.Agent.Middleware`, which
+  supplies overridable `name/1`, `state_schema/1`, `tools/1`, and the other
+  defaults; agents reject modules that do not (`:invalid_middleware`).
+- Removed the `can_jump_to/2` and `tool_node_required?/1` middleware
+  callbacks, and the functions of the same names in
+  `BeamWeaver.Agent.Middleware`. Nothing consulted `can_jump_to/2`: a hook
+  jumps by returning `{:jump, target, update}`. Every agent now has a tools
+  node, so middleware no longer asks for one. Delete both callbacks from your
+  middleware; with `@impl true` they no longer compile without a warning.
+- Removed string kinds in `Summarization` `trigger:`/`keep:`
+  (`{"messages", 10}`); use atoms.
+- Removed the `Agent.Middleware.Exclusion` helpers, which nothing called.
+  `CapabilityProfile.excluded_middleware` stays data that your own code reads.
+
+#### Subagents and deep agents
+
+- `subagent MyApp.Module` runs the module as it declares itself: the options
+  after `model`, `filesystem`, `skills`, `memory`, its own `subagents`,
+  `recursion_limit`, `checkpointer`, `tool_timeout`, `step_timeout`,
+  `run_timeout`, `capability_profile` and every other declaration. Before,
+  only a few fields were read, so a child with
+  `model "fake:chat", responses: [...]` answered `""`, and its skills, files
+  and memory needed `base_middleware:`. Pass `skills: nil` (or another option)
+  on the `subagent` line to leave a declaration out.
+- Subagents use the run's checkpointer and store, including a per-call
+  `checkpointer:`, and save their checkpoints in the parent's thread under a
+  namespace of their own; a subagent with a checkpointer of its own saves in a
+  thread named after the parent run's `run_id` when the parent runs without a
+  thread. `Agent.Middleware.Subagents.new/1` no longer takes `checkpointer:`;
+  pass the checkpointer to the parent run. A parent whose subagents, at any
+  depth, review tool calls now fails with `:missing_checkpointer` before it
+  starts, instead of every `task` call failing. Pass `checkpointer:` and a
+  thread id, or turn that subagent's review off with `interrupt_on: false`.
+- `Agent.Subagent.Spec.new/1` and `subagent` lines raise `ArgumentError` for
+  unknown options instead of ignoring them, and the unused `todo_list` field
+  is gone. `Spec.from_agent_module/2` raises for a module without a model; run
+  a graph module as a `%BeamWeaver.Agent.Subagent.Compiled{}`.
+- The async subagent tools write only the tasks they change, and the
+  middleware merges those writes, so parallel task tool calls no longer fail
+  on the second write or undo each other (cancelling one task and updating
+  another in the same turn keeps both). Each tool writes only the task it
+  changed, and `list_async_tasks` only the tasks it refreshed, so a tool
+  called directly returns
+  `%Command{update: %{async_tasks: %{task_id => task}}}`; read the whole map
+  from the agent's state.
+- Subagents are checked when the agent is built: `BeamWeaver.Agent.build/1`
+  checks each one as a `task` call would build it, without building its graph,
+  and returns `{:error, %Core.Error{type: :invalid_subagent}}` naming the
+  subagent and the problem, such as an unknown option, a `middleware` entry
+  that isn't middleware, a tool that isn't one, a model that can't be
+  resolved, a response format without a schema, two middleware of the same
+  name that hook into the same step
+  (`subagent "worker": graph contains duplicate declarations: model_call_limit.before_model, ...`),
+  or a problem of its own subagents
+  (`subagent "researcher": subagent "fact_checker": ...`). An agent module
+  checks its subagents the same way on its first call, once per version of the
+  module: `invoke/2`, `stream_events/2`, `resume/2` and
+  `BeamWeaver.Agent.compiled_graph/2` return the error, and `graph/0` raises
+  it. Before, such a subagent failed each `task` call with a `Subagent error:`
+  tool message. Subagents are still built only when a `task` call runs them.
+  The problems `Agent.Middleware.Subagents.new/1` raises `ArgumentError` for,
+  such as a duplicate name or an invalid `capture_output`, are returned the
+  same way by `build/1` and module calls, and every message names the subagent
+  (`subagent "worker": invalid capture_output "worker_output"`).
+- Removed the standalone `BeamWeaver.Todo` model.
+- Removed the `debug` field of `Agent.Subagent.Spec`. `build/1` no longer
+  takes `debug:`, so a subagent spec with it failed every `task` call;
+  `Spec.new/1` now raises for it like any unknown option. Remove it.
+
+#### Human review, checkpoints and resuming
+
+- An `:edit` decision leaves the model's call in its message and runs the
+  reviewer's call in its place, which may name another tool. The result starts
+  with a note that a reviewer replaced the call, followed by the call that
+  ran; `HumanInTheLoop`'s `edit_notice:` words the note, and `nil` leaves it
+  out. The message used to carry the edited call: read the call that ran from
+  the decision or the result.
+- A `:reject` decision's tool result says the user rejected the call: "User
+  rejected the tool call for `issue_refund` with reason: …", or, without a
+  `message`, that the tool was not executed and the model should not retry it
+  unless the user asks. It used to be the `message` alone, or the rejection
+  without the advice.
+- Removed strict-resume checkpoints: `Checkpoint.stage_resume/3`,
+  `continue_staged/2`, `verify_resume_receipt/2`, and
+  `Checkpoint.ResumeDelivery`.
+- Removed `Checkpoint.Utils`.
+
+#### Graphs
+
+- A step in which one task fails and another pauses returns the error,
+  whichever finishes first; the paused task stays pending, as `get_state/1`'s
+  `interrupts` shows. It used to return the pause when the paused task came
+  first in the step. Resume the thread once you have dealt with the error.
+- `ToolNode` answers a `tool_call_with_context` input with
+  `%{messages: [...]}`, as it does a state, instead of a list of messages, and
+  runs such a call in the step's state when the input has no `state`. It takes
+  the tool set it may run from that state, for a raw list of calls too. Read
+  the messages from the map's messages key.
+- Graph nodes, `ToolNode` tools and the runs of
+  `Compiled.batch_as_completed/3` no longer stop after 5 seconds by default:
+  they run until they finish unless you set `timeout:`. The old default cut
+  off most nodes that call a model or an agent. `BeamWeaver.ExecutionPolicy`'s
+  `timeout` defaults to `:infinity` too, so a node given
+  `timeout: [max_concurrency: 2]`, or an `ExecutionPolicy` without a
+  `timeout`, no longer stops after 5 seconds either. Pass `timeout: 5_000` to
+  keep the old limit (in an agent, declare `tool_timeout` for its tools);
+  `step_timeout:` and `run_timeout:` still bound a whole step or run.
+- `Graph.add_node/4` rejects options it doesn't take: a typo such as
+  `retry_policy:` for `retry:` makes `Graph.compile/2` return an
+  `:invalid_graph` error naming the node and the option, instead of building
+  the node without it. A node whose options are invalid in any way (an invalid
+  `retry:` or `timeout:`, a module that isn't a node) fails `compile/2` the
+  same way; such nodes used to compile and fail only when they ran. The
+  error's message is "graph contains invalid nodes" (it was "graph contains
+  invalid node callables"), and each entry in `details.invalid` has the node,
+  its callable and the error.
+- A node that returns `{:error, reason}` fails: its `retry:` and
+  `error_handler:` apply, and the run returns
+  `{:error, %BeamWeaver.Core.Error{type: :node_error}}` with a string reason
+  as the message (any other reason is in `details.reason`, inspected; a
+  `%BeamWeaver.Core.Error{}` reason is returned as it is). Before, the tuple
+  was stored in the state under `:value`. An error handler that returns
+  `{:error, reason}` fails the node the same way.
+- `EphemeralValue` keys, and `Topic` keys without `accumulate: true`, last one
+  step: the next step's nodes read them, then they are cleared unless written
+  again. Before, they kept their value for the rest of the run. At the end of
+  each step, every channel that holds a value but got no write now receives
+  `update(channel, [])`.
+- The message reducers (`Graph.Messages.add_messages/2`, `delta_reducer/2`,
+  `normalize/1`) accept what `BeamWeaver.Core.Message.from/1` accepts and
+  reject the roles `"human"` and `"ai"`; use `"user"` and `"assistant"`. A
+  `"developer"` message becomes a system message, as with `Message.from/1`.
+- `max_runs:` on a guarded edge counts the times one run takes the edge. A new
+  run on a thread counts from zero, and a run that continues where the thread
+  stopped (`resume/3`, `invoke/3` with an empty input after a failure, or a
+  continue after `update_state/4`) keeps its count. Before, the counts were
+  saved with the thread, so a loop limit used up in one turn stayed used up
+  for every later `invoke/3` on the thread. To limit a loop across a whole
+  thread, count the rounds in the state with a reducer and check the count in
+  the edge's `when:` function, such as
+  `when: fn _update, state -> state.revisions < 3 end`.
+- Removed the `failure_policy:` graph option. It was never implemented: failed
+  super-steps always let siblings finish and persist their writes, which is
+  now documented as the behavior.
+- Removed the node option aliases `retries:` and `on_error:`; use `retry:` and
+  `error_handler:`.
+- Removed `Graph.Errors`, `Graph.MessagesReducer`, and `Graph.Schema` (use
+  `BeamWeaver.Schema`).
+
+#### Streaming
+
+- `stream_events/3` without `live: true` reads the same stream a live call
+  returns, to its end, so both give the same events in the same order. The
+  collected list therefore starts and ends with the run's
+  `Debug %{type: :producer_start}` and `%{type: :producer_stop}` events
+  instead of `Debug %{type: :start, status: :running}` and
+  `Done %{result: %{status: ...}}`, and a paused run's `interrupt.events`
+  include the `Debug %{type: :interrupt}` event. `Done` now only marks the end
+  of a streamed model call: use the
+  `{:ok, _}`/`{:interrupted, _}`/`{:error, _}` result for how the run ended.
+  `metadata:` is added to every event's envelope, and the `namespace:` option
+  is gone.
+- In an agent's stream (`stream_events/3`), a model call that fails sends a
+  `Debug` event whose payload is `%{type: :model_call_failed, error: error}`
+  instead of passing on the provider's `Error` event, so an `Error` event only
+  ends a run that fails. A run whose failed model call `ModelRetry` retried or
+  `ModelFallback` replaced had an `Error` event in the middle and then
+  succeeded, and a run that failed had two `Error` events, the model's and
+  then the run's. The tokens a failed call sent stay in the stream: drop them
+  when the `Debug` event arrives, as the LiveView example in the Streaming
+  guide does (a `stream_mode:` list needs `:debug` to get it). For the same
+  reason `Stream.Subgraphs`, `Stream.Lifecycle` and
+  `Agent.Subagent.StreamTransformer` no longer mark a subgraph or subagent
+  failed when one of its model calls failed and was retried; a subgraph whose
+  run fails is `:failed` (see Fixed). `PII.stream_transform/1` emits the text
+  it holds back for a failed call before that event.
+- `BeamWeaver.Graph.Runtime` no longer has a `collect_stream?` field; check
+  `stream_sink` to know whether the run is streamed.
+
+#### Memory, storage and caching
+
+- Both memory stores take the same TTL options: `default_ttl:` (minutes) and
+  `refresh_ttl:` (`true` or `false`; the default, `false`, is also what `nil`
+  means). `Memory.ETS.new(ttl: %{default_ttl: ..., refresh_on_read: ...})` and
+  `ttl_config:` become `Memory.ETS.new(default_ttl: ..., refresh_ttl: ...)`,
+  and `Memory.Ecto.new(refresh_on_read?: true)` becomes `refresh_ttl: true`.
+  `Memory.ETS` no longer refreshes by default. A refresh starts the record's
+  own lifetime again; before, it used the store's `default_ttl` and skipped
+  records when the store had none. `Memory.ETS.new/1` and `Memory.Ecto.new/1`
+  raise `ArgumentError` for an unknown option, which they used to ignore, and
+  for a `refresh_ttl:` that isn't a boolean.
+- `Memory.Ecto` needs memory schema version 2, which keeps each record's
+  lifetime in a new `ttl_minutes` column (filled in for existing records). Add
+  a migration that calls `BeamWeaver.Migrations.up(adapters: [:memory])`;
+  `verify_migrated!/1` raises until you do. Version 2 gives each record
+  already stored the time from its last write to its expiry as its lifetime,
+  which is too long for the records a store with `refresh_on_read?: true`
+  read, because reading moved their expiry and not their write time. For such
+  a store, pass its `default_ttl:` (minutes) to the `:memory` entry, as in
+  `BeamWeaver.Migrations.up(adapters: [{:memory, default_ttl: 60 * 24}])`, so
+  no record gets a longer lifetime; a non-positive value raises
+  `ArgumentError`.
+- `Serialization.Config` keeps the codec's own options, such as
+  `:encryption_key`, in `opts`. `Serialization.dump/2` and `load/2` give the
+  codec those options and the registry, and no longer the caller's other
+  options, so put codec options in `serialization: [...]`.
+  `Serialization.Encrypted` reads its options from the options it is given, no
+  longer from a nested `serialization:` list.
+- Map keys keep their type at any depth when `BeamWeaver.Serialization` saves
+  a value, so `Checkpoint.Ecto` gives back what `Checkpoint.ETS` gives: state
+  values, pending writes, interrupt values, `Send` updates and metadata, and
+  `Cache.Ecto` entries, come back as `%{order: %{id: "A-1001"}}` instead of
+  `%{"order" => %{"id" => "A-1001"}}`; so do `Serialization.load/2` and
+  `load_value/2`. A JSON object names its atom keys under
+  `"__beam_weaver_atom_keys__"` (`true` when every key is an atom), and a map
+  with other keys, such as integers or tuples, is saved as a list of entries:
+  `%{1 => "a"}` no longer loads as `%{"1" => "a"}`, and a tuple key no longer
+  raises `Protocol.UndefinedError`. Loading creates no atoms: a key whose atom
+  doesn't exist in the running system comes back as a string. Nor does it
+  build a struct the serialization registry doesn't list: data that names
+  `__struct__` as a key, among a JSON object's atom keys or as an atom key of
+  a map saved as entries, is a `{:error, %Error{type: :serialization_error}}`
+  from `Serialization.load/2` and `load_value/2`, and `Checkpoint.Ecto` and
+  `Cache.Ecto` fail to read such a row, so an edited checkpoint or cache row
+  can't become a `File.Stream` or any other struct (BeamWeaver never saves
+  that key). A registered exception struct takes `__exception__` from its
+  module, not from the saved data. Checkpoints and cache entries saved by
+  earlier versions load as before, with string keys in nested maps. Code that
+  read string keys from loaded values, such as
+  `tuple.checkpoint["channel_values"]["order"]["id"]`, reads the keys that
+  were saved: `tuple.checkpoint["channel_values"][:order][:id]`.
+
+#### Tracing and telemetry
+
+- Removed the supervisor-first `Tracing.async(supervisor, fun)` form; use
+  `Tracing.async(fun, supervisor: supervisor)`.
+
+#### Retrieval, prompts and parsers
+
+- Chunks no longer copy their document's `id`. The chunks of a document with
+  an id get ids made from it, `"refunds:0"`, `"refunds:1"` and so on, in
+  `TextSplitter.split_documents/2`, `transform_documents/3`,
+  `create_documents/3`, `split_file/3` and `split_url/3`, and carry the
+  document's id as `"parent_id"` in their metadata (a chunk split again keeps
+  the one it has); chunks of a document without an id still have none.
+  `Indexing.index/3` uses `"parent_id"` as a chunk's source when its metadata
+  has no `source_id` or `source`, so `cleanup: :incremental` deletes the
+  chunks a shorter version of a document no longer has. Code that looked
+  chunks up by their document's id should use the derived ids.
+- Chat prompts read a message role as `BeamWeaver.Core.Message.from/1` does:
+  `"developer"` (or `:developer`) renders a system message with
+  `metadata.openai_role: :developer`, and a role other than `system`, `user`,
+  `assistant` and `tool` (atoms or strings), such as `"human"`, `"ai"` or
+  `"critic"`, is an `:invalid_role` error from `Prompt.format/3`,
+  `format_prompt/3`, `Prompt.to_spec/1` and `Prompt.save/3`, and from
+  `Prompt.load/2` and `Prompt.from_spec/2` for a saved template with that
+  role. Before, `"human"` and `"ai"` were read as `user` and `assistant`, and
+  any other role, `"developer"` included, rendered a user message. Use `:user`
+  and `:assistant`.
+- `Prompt.few_shot/1` and `Prompt.few_shot_chat/1` raise `ArgumentError` for
+  an option they don't take instead of dropping it. `few_shot_chat/1` takes
+  `prefix_messages:` and `suffix_messages:`, not `prefix:` and `suffix:`.
+- Document prompts receive the document text as `{content}` only.
+- Removed the runnable composition functions `Runnable.parallel/1`, `map/1`,
+  `each/1`, `generator/2`, `passthrough/0`, `assign/2`, `pick/1`, `branch/1`,
+  `router/1`, `with_retry/2`, `with_fallbacks/3`, `bind/2`, `with_config/2`,
+  `with_types/2`, `configure/2`, `alternatives/4`, `with_history/2`,
+  `with_listeners/2`, `as_tool/2`, `pipe/3`, `get_name/1`,
+  `batch_as_completed/3`, `stream_events/3`, `stream_log/3`, runnable
+  specs/registry, and runnable graph drawing. `Runnable.invoke/3`, `batch/3`,
+  `stream/3`, `transform/3`, `lambda/2`, and `sequence/2` remain. Use Elixir
+  functions, `with`, and `Task.async_stream/3` for composition.
+- Removed document loaders and blobs (`DocumentLoader`, `DocumentTransformer`,
+  `DocumentIndex`, `Blob`, `BlobLoader`, `BlobParser`, `BlobLike`,
+  `DocumentLike`), `Indexing.DocumentIndex`, `StructuredQuery`,
+  `DocumentCompressor`, `CrossEncoder`, `Core.HTML`, and `Core.Strings`. Load
+  sources with plain Elixir into `%Core.Document{}` and pass them to
+  `TextSplitter` and `Indexing.index/3`; `Core.Document.from/1` builds
+  documents from strings and `:content` maps.
+- Removed `Core.Document.lc_namespace/0`, `serializable?/0`,
+  `langchain_string/1`, the `type` field, and its `page_content=`
+  `String.Chars` impl.
+- Removed the text splitter option aliases `is_separator_regex`,
+  `max_chunk_size`, `headers_to_split_on`, and `strip_headers`.
+- Removed `OutputParser.Spec` (parser serialization to spec maps) and
+  `OutputParser.output_schema_for/1`.
+- Removed the unused `%BeamWeaver.Indexing{}` struct. `Indexing.index/3`
+  returns an `Indexing.Result`.
+
+#### Tools
+
+- `Core.Tool.invoke/3` with plain arguments returns a `%Core.ToolResult{}`
+  with `content` and `artifact` for a `response_format :content_and_artifact`
+  tool, instead of the content alone, also when the tool returns
+  `{:content_and_artifact, content, artifact}`. Read `result.content` for the
+  text. A `%Graph.Command{}`, a message, or a list of them comes back as it
+  is, so such a tool's command still updates the agent's state.
+- When several tool calls of one step return a `%BeamWeaver.Graph.Command{}`,
+  `ToolNode` returns a list: one command with all the tool messages, the
+  routing and `jump_to`, then each tool's other updates, so every update goes
+  through the key's reducer. Two tools that write the same key without a
+  reducer now fail the step with `:invalid_update` instead of the last write
+  winning; declare a reducer for keys that parallel tools write. Commands for
+  the parent graph are still combined into one.
+- In an agent, a tool that injects `:state` gets the state as the run returns
+  it, and so does its `ToolRuntime.state`: the agent's private keys (such as
+  `usage`, `tool_set` and the call-limit counts, and keys that middleware
+  declares with `Graph.private_channel/2`) and managed keys (such as
+  `remaining_steps`) are left out. A tool that needs one names it with
+  `injected :name, {:state, :key}`, which reads any key; the `shell` tool of
+  `Agent.Middleware.ShellTool` now reads its session that way.
+  `Graph.Nodes.ToolNode.new/2` takes `private_keys:` to leave keys out in a
+  graph of your own.
+- `@behaviour BeamWeaver.Core.Tool` on its own no longer makes a tool.
+  Hand-written tools call `use BeamWeaver.Core.Tool`, which defaults every
+  optional callback the module does not define. Tool conversion recognizes
+  tools and toolkits by the behaviour they declare instead of probing for
+  `name/1` or `tools/1`.
+- Removed `Core.Tool.run/3`; use `invoke/3`.
+- Removed `Tools.Helpers`.
+
+#### Filesystem and sandboxes
+
+- `Sandbox.Docker` operations on a sandbox that isn't started return
+  `error: "container_not_started"` instead of starting a new container for
+  each operation and never removing it. Call `Docker.start!/1` and use the
+  sandbox it returns. `remove: true` (the default) now removes the container
+  when the process that called `start!/1` exits, and starts it with `--rm`;
+  pass `remove: false` to keep it until `Docker.stop/1`.
+- `Filesystem.State.upload_files/3` returns an error for every file instead of
+  reporting success while storing nothing. Pass State files in the agent's
+  input as `files:`, or set them with `Graph.Compiled.update_state/4`.
+- Removed the forwarding protocols `Graph.Channel.Dispatch`,
+  `Filesystem.Backend`, `Filesystem.ExecutableBackend`, `Sandbox.Backend`, and
+  `Indexing.RecordManager.Backend`. `use BeamWeaver.Graph.Channel` (and
+  `Filesystem`, `Filesystem.Executable`, `Sandbox`, `Indexing.RecordManager`)
+  declares the behaviour, and the facade functions call the struct's module.
+  Check an implementation with `Channel.implemented_by?/1`,
+  `Filesystem.backend?/1`, `Filesystem.Executable.executable?/1`,
+  `Sandbox.sandbox?/1`, or `RecordManager.record_manager?/1`.
+- Removed `Filesystem.Utils`, the deprecated `Filesystem.is_directory/0` (use
+  `directory_error/0`), and `Filesystem.ls_info/3` and `glob_info/3` (use
+  `ls/3` and `glob/3`).
+
+#### Models and providers
+
+- A failed model call's error type is the same for every provider and follows
+  the HTTP status: `:invalid_request` (400 and 422), `:authentication` (401,
+  and the 400 with which Gemini and xAI refuse a wrong API key),
+  `:billing_exhausted` (402), `:permission_denied` (403), `:not_found` (404),
+  `:rate_limit` (429) and `:server_error` (every 5xx, which is retryable now,
+  not only 500, 502, 503, 504 and 529). A request that gets no response is a
+  `:connection` error, and one that runs past its timeout a `:timeout`. They
+  were `:http_error` and `:transport_error`, and from DeepSeek, Kimi and Z.ai
+  `:authentication_error`, `:rate_limit_error`, `:overloaded_error`,
+  `:invalid_request_error` and `:quota_error`: match the new types instead,
+  and `:billing_exhausted` for `:quota_error`. A context overflow, an
+  exhausted quota and Z.ai's and Kimi's content filters keep their types; any
+  other status is still an `:http_error`, and a request the transport refuses,
+  such as a cassette mismatch, a `:transport_error`. `Transport.ReqFinch`
+  reports a timeout as a `:timeout` `Transport.Error`, no longer
+  `:transport_failure`.
+- A profile's reasoning efforts are fields, no longer in `extra`: read
+  `reasoning_effort_levels` for `extra.reasoning_efforts` and
+  `extra.effort_levels`, and `reasoning_effort_default` for
+  `extra.default_reasoning_effort` and `extra.default_effort`.
+- `init_chat_model/2`, `init_embeddings/2` and `init_decision_model/2` return
+  `{:error, %Error{type: :unsupported_model_param}}` for an option the model
+  doesn't take, such as a misspelled one or `reasoning_effort:` on Anthropic;
+  they used to drop it. Their errors carry the provider in `details.provider`
+  for every model. Call options, such as `tools:` or `tool_choice:`, go with
+  each call (`ChatModel.invoke/3`) or through `Models.bind_tools/3`; an
+  agent's model options may still carry them.
+- Every provider checks a call's model parameters against the model profile,
+  as Google and the OpenAI-compatible providers did: OpenAI and xAI Responses
+  and Anthropic now return `:unsupported_model_param` for a parameter the
+  model doesn't list, such as `top_k:` or `stop:`, instead of dropping it.
+  `stop:` on xAI reasoning models over Chat Completions returns it too; it
+  used to be dropped.
+- The `api:` option of OpenAI and xAI returns `:invalid_provider_option` for a
+  value other than `:responses` or `:chat_completions`; it used to fall back
+  to Responses.
+- A missing API key fails before any request with
+  `{:error, %Error{type: :missing_api_key, details: %{provider: ..., retryable: false}}}`
+  on every provider. It used to send the request without credentials.
+  TypeSafe's `:model_authentication` error is now `:missing_api_key`.
+  Credentials in an `authorization` (or the provider's key) header in
+  `default_headers:` count as a key.
+- A failed transport call keeps its cause: the `:transport_error` has the
+  transport's error type in `details.reason` (such as `:cassette_mismatch`,
+  `:timeout` or `:transport_failure`), with the transport's details, such as
+  `details.request` and `details.expected` for a cassette mismatch;
+  `details.reason` used to be an inspected string. A `BeamWeaver.Core.Error`
+  from a transport is returned unchanged.
+- `Core.Messages.Utils`: `messages_to_dict/1` is now `encode/1`,
+  `messages_from_dict/1` is `decode/1`, `get_buffer_string/2` is
+  `buffer_string/2`, and `convert_to_openai_messages/2` is
+  `to_openai_messages/2`, which with `api: :responses` returns one flat list
+  of items, an assistant message with tool calls giving its message item and
+  one `function_call` item per call. `message_to_dict/1` and
+  `convert_to_messages/1` are removed (use `encode/1` and `normalize/1`).
+- The `:approximate` token counter and
+  `LanguageModel.count_tokens_approximately/1` estimate about four characters
+  per token, plus three per message, the same way as
+  `Messages.Utils.count_tokens_approximately/2`, instead of counting words.
+  This changes `Messages.Utils.trim/2` by default, the `:approximate`
+  `ContextEditing` counter, and `count_tokens` of models without a tokenizer,
+  such as the fake models; raise budgets that were set in words. `trim/2` with
+  `allow_partial: true` also measures the partial message with the counter,
+  overhead included, instead of counting words, and leaves the message out
+  when not even one word fits.
+- `Models.UsageCost` reads pricing maps with atom keys only (as profiles
+  define them). Raw provider usage maps may still use string keys.
+- `Transport.Safe` no longer uses a `:finch` option you pass: every request
+  runs on the isolated pools (see Security). Pass connection settings, such as
+  a proxy or `transport_opts` with CA certificates, as `connect_options:`
+  instead; a pinned request ignores both, as before, and connects straight to
+  the address it checked.
+- xAI Responses requests to a reasoning model carry
+  `"include": ["reasoning.encrypted_content"]`, added to an `include:` list
+  you pass; `extra_body: %{include: [...]}` replaces the list. Replay
+  cassettes and fakes that match xAI request bodies exactly need the new
+  field; re-record them or add it.
+- `use_previous_response_id: true` on OpenAI continues only from a reply
+  OpenAI made (`response_metadata.model_provider == "openai"`, as every
+  decoded OpenAI reply has), so a DeepSeek Responses reply (after a fallback,
+  say), whose id also starts with `resp_`, is no longer sent to OpenAI as
+  `previous_response_id`. A reply built by hand with only
+  `response_metadata: %{id: "resp_..."}` is sent as a message; add
+  `model_provider: "openai"` to it, or pass `previous_response_id:`.
+- `OpenAI.ModerationMiddleware` (and `moderate/2`) return the client's error
+  when the moderation request fails, such as `:missing_api_key`, `:http_error`
+  (with `details.status`) or `:transport_error`, instead of wrapping every
+  failure in `:openai_moderation_request_failed` with an inspected reason.
+  Match on those types instead.
+- Typed streams are made of `BeamWeaver.Stream.Envelope` structs to the end.
+  Anthropic's and Gemini's `stream_typed_events/3`, and every client's typed
+  stream function (such as `Anthropic.Client.messages_stream_typed_events/3`,
+  `OpenAI.Client.responses_stream_typed_events/3` and
+  `Google.Client.stream_events/4`), ended a failed stream with a bare
+  `%Events.Error{}`. A wrapped model (`Models.bind_tools/3`,
+  `with_rate_limiter/2`, `cached/3`) ends its typed stream with an `Error`
+  envelope and no `Done` after it; it sent the error as a `Custom` event
+  followed by `Done`. Match `%Envelope{event: %Events.Error{}}`.
+- A model stream that reports an error partway through fails with the
+  provider's HTTP error, the one the same failure gets without streaming (see
+  Fixed), such as `:http_error` with `status: 503`; match on those error types
+  and on `details.status` or `details.code` instead. A Chat Completions
+  (OpenAI, xAI) or Gemini stream with an `error` chunk failed with
+  `:response_error`. A Responses API stream (OpenAI, xAI, DeepSeek) that ends
+  with `response.failed` fails like one with an `error` event, with the HTTP
+  error for the failed response's error code: `server_error` is a retryable
+  `:http_error` with `status: 500`, `rate_limit_exceeded` a retryable 429 and
+  `invalid_prompt` a 400 that isn't retried, with the failed response in
+  `details.body["response"]`. Before, its typed stream ended with a
+  `:response_failed` error, and `stream_response/3` returned
+  `:response_error`, which `ModelRetry` didn't retry even for a server error.
+  A stream that ends with `response.incomplete` still ends with the reply,
+  with `status: "incomplete"`, as without streaming. Text streams (`stream/3`)
+  and raw lifecycle streams (such as
+  `Anthropic.Client.messages_stream_events/3` and
+  `OpenAI.Client.responses_stream_events/3`) end with an `Error` event after
+  such an error, as they do after a failed HTTP response, instead of ending
+  early, ending as if the reply were complete, or passing the provider's error
+  event through.
+- A Z.ai or DeepSeek reply that the provider ends with a finish reason
+  reporting that it couldn't finish it fails the call, with or without
+  streaming, with the error the provider gives the same failure. Z.ai's
+  `sensitive` (its safety review blocked the reply; Z.ai sends it instead of
+  its error 1301) is a `:content_filter` error with `status: 400`, which
+  `ModelRetry` doesn't retry. Z.ai's `network_error` (its inference failed)
+  and DeepSeek's `insufficient_system_resource` and `aborted` are server
+  errors with `status` 500, 503 and 500, which it retries. `details.code` is
+  the finish reason. `invoke/3`, `stream_response/3`, `stream_typed_events/3`,
+  `stream/3` and streaming agents returned such a reply, cut short or blocked,
+  as a complete one with the finish reason as its `status`: handle the error
+  instead. Every other finish reason still ends a reply, the way each API
+  documents it, including `length`, Z.ai's `model_context_window_exceeded` and
+  OpenAI's and DeepSeek's `content_filter` (the reply holds what the filter
+  left); check the reply's `status`.
+- Anthropic models check `metadata:`, Anthropic's request field, before the
+  request. Anthropic's API reference gives it one key, `user_id`, a string of
+  at most 512 characters. Another key, a `user_id` that isn't a string of at
+  most 512 characters (or `nil`), or a value that isn't a map returns
+  `{:error, %Error{type: :unsupported_model_param}}` whose message names the
+  key: from `init_chat_model/2` for the model's own `metadata:` (so an agent
+  with it fails before its first model call) and from every call. Lengths
+  count characters, not bytes. Such metadata used to be sent to Anthropic as
+  it was. Send only `user_id`, and put trace data in `trace_metadata:`.
+- OpenAI models check `metadata:` against the limits in OpenAI's API
+  reference, on Responses and Chat Completions: a map of at most 16 key-value
+  pairs, with keys of at most 64 characters and values that are strings of at
+  most 512 characters (atom keys and values are sent as strings, and lengths
+  count characters, not bytes). Other metadata returns
+  `{:error, %Error{type: :unsupported_model_param}}` whose message names the
+  key at fault, never a value: from `init_chat_model/2` for the model's own
+  `metadata:`, and from every call. Such metadata used to be sent as it was (a
+  keyword list failed to encode).
+- Moonshot, DeepSeek and Z.ai models refuse `metadata:`, which none of their
+  APIs has. A call with it returns
+  `{:error, %Error{type: :unsupported_model_param}}`, checked against the
+  model's profile and `param_policy:` like any other parameter; it used to be
+  dropped without a word. Z.ai's model profiles no longer list `:metadata`, so
+  creating a Z.ai model with it no longer suggests passing it on the call, and
+  a DeepSeek Responses model created with an option every call refuses, such
+  as `metadata:` or `store:`, fails when it is created, with that call's
+  error. Put trace data in `trace_metadata:`; for an end-user id, DeepSeek and
+  Z.ai take `user_id:` and Moonshot `safety_identifier:`.
+- xAI models check `metadata:` when they are created. xAI's Chat Completions
+  API has no request metadata, and its Responses API keeps the field only for
+  compatibility, so every call with a model's `metadata` failed;
+  `init_chat_model/2` now returns that call's error,
+  `{:error, %Error{type: :unsupported_model_param}}` with
+  `params: [:metadata]`, checked against the model's profile and
+  `param_policy:` as calls are. An agent whose xAI model declares `metadata:`
+  fails before its first model call. Put trace data in `trace_metadata:`.
+- Removed `ChatModel.generate/3`, `generate_prompt/3`, `LLM.generate/3`, and
+  `LLM.generate_prompt/3`; use `batch/3`.
+- Removed `Provider.ReasoningControl`, which nothing in BeamWeaver used. Pass
+  `reasoning_effort:` to the model instead.
+- Removed `Core.Error.create_message/2`, `error_codes/0`, `output_parser/2`,
+  `context_overflow/2` and `tracer/2`, and the decoding of `lc`/`kwargs`
+  message envelopes.
+- Removed the `Core.MessageLike`, `Core.ContentBlockLike`, `Tool.SchemaLike`,
+  and `ExampleLike` protocols. Use `Core.Message.from/1`,
+  `Core.ContentBlock.from/1`, and `Tool.Schema.from/1`.
+- Removed the typed message structs `Core.Messages.System`, `User`,
+  `Assistant`, `Tool`, `Function`, `Chat`, `ToolChunk`, and `FunctionChunk`,
+  and the `Core.Messages.system/2`, `user/2`, `assistant/2`, `tool/2`,
+  `function/2`, `chat/3`, and `to_message/1` constructors. Use
+  `Core.Message.system/2` and friends.
+- Removed the role aliases. Message tuples, maps, prompt templates, prompt
+  specs, `Utils.filter/2`, and `trim/2` accept only `"user"`, `"assistant"`,
+  `"system"`, `"tool"`, and `"developer"` (or the matching atoms); `"human"`,
+  `"ai"`, and `"function"`, the `type` alias for `role`, and
+  `additional_kwargs` are no longer read.
+- Removed the `"langchain-openai"` message format name; pass
+  `format: :openai`.
+- Removed the `Provider.EncodeMessage` and `Provider.DecodeMessage` protocols;
+  use `Provider.MessageCodec.encode/2` and `decode/2`. With
+  `provider: :openai`, `encode/2` returns a list for an assistant message with
+  tool calls: its message item and one `function_call` item per call, as the
+  Responses API takes them.
+- Removed the provider error structs `OpenAI.Error`, `Anthropic.Error`,
+  `Google.Error`, `XAI.Error`, `DeepSeek.Error`, `Moonshot.Error`, and
+  `ZAI.Error`. Every provider returns `%BeamWeaver.Core.Error{}`, with the
+  provider in `details.provider`.
+- Removed `Provider.ChatRuntime.Adapter`. Provider chat models implement the
+  `Provider.ChatModel` callbacks (`request_body/3`, `send_request/4`,
+  `decode_response/2`, `parse_response/3`, `stream_metadata/3`) instead of
+  returning a struct of closures.
+- Provider client functions no longer accept a keyword list in place of a
+  client (`Client.chat_completions([api_key: ...], body)`); build one with
+  `Client.new/1`. Per-call options still override `:endpoint`, `:api_key`,
+  `:transport`, `:transport_opts`, `:timeout`, and `:headers`, but no longer
+  other client fields such as `:default_headers` or `:base_url`. `new/1` takes
+  keyword lists only.
+- Removed `:model_kwargs`, the model field and option. Use `:extra_body`,
+  which every chat model now accepts both as a model field and per call
+  (per-call keys win). It is merged into the request body after BeamWeaver's
+  own fields, so it overrides them; DeepSeek, Moonshot, and Z.ai keep `model`,
+  `messages`, and `stream`, and Anthropic its reserved fields. Before,
+  `model_kwargs` was merged first and typed options overrode it.
+- Removed `Provider.GenericMessages`, `Provider.HostedTools`, and
+  `Models.FunctionEmbeddingModel`.
+
+#### Compaction engine
+
+- `Compaction.State.record_success/2` takes the activated
+  `%Compaction.Checkpoint{}` and records its trigger, high-water mark, tokens,
+  accounting identity and root turn. It replaces
+  `record_success(state, trigger, lane_ordinal, tokens_after)`; you no longer
+  need `State.rebase_accounting/2` before it.
+
+### Security
+
 - `Transport.URLPolicy`, which `TextSplitter.split_url/3` and
   `Transport.Safe` use, let through addresses it refuses when they were
   written in some IPv6 forms. IPv4-translated (`::ffff:0:a.b.c.d`) and 6to4
@@ -150,15 +1371,6 @@ breaking too). Read Security first.
   sets `:mint_connect_options` uses the same pools. Safe requests that aren't
   pinned now also stop reading a response as soon as its headers pass
   `:max_response_header_bytes`.
-- **Breaking:** An `interrupt_on` rule map always turns human review on for
-  its tool, and `allowed_decisions` defaults to all four decisions. Before, a
-  rule map without `allowed_decisions` turned review off, so the tool ran
-  without approval. To skip review for a tool, map it to `false`. A rule that
-  can't be read (an empty `allowed_decisions`, an unknown decision, a value
-  that isn't `true`, `false` or a map of rules, or an `interrupt_on` that
-  isn't a map) is an `:invalid_agent` error from `BeamWeaver.Agent.build/1`
-  and agent modules instead of being ignored; `HumanInTheLoop.new/1` called
-  directly raises `ArgumentError`.
 - The tools an agent hides from its model stayed hidden only until the run
   paused. After a human review (`interrupt_on`), an
   `interrupt_before: [:tools]` breakpoint, a pause inside a tool or a crash,
@@ -172,77 +1384,6 @@ breaking too). Read Security first.
   they failed with "tool is not registered". A tool that a function or other
   middleware creates on each call isn't saved: after a pause, a call to it
   gets that error, and the model's next call offers it again.
-- **Breaking:** `Filesystem.Permission` rules see a path as the backends read
-  it. They matched the path as the model wrote it, while the backends read it
-  after removing `.` segments and repeated slashes, so `/./secrets/key.txt`
-  passed a `deny` rule for `/secrets/**` and was read; on a disk that ignores
-  case, such as macOS's, so was `/SECRETS/key.txt`. Patterns ending in `/**`
-  with a wildcard or braces before it, such as `/**/secrets/**`,
-  `/*/secrets/**` or `/{secrets,keys}/**`, denied nothing, and `**/` needed
-  at least one directory, so a rule for `/**/*.env` missed a top-level
-  `/prod.env`. Now any pattern ending in `/**` covers its folder and
-  everything in it, `**/` matches zero or more directories, and deny rules
-  ignore case and Unicode normalization (allow rules still match exactly).
-  With rules for an operation, a path that isn't a plain absolute path
-  (relative, or with `..`, `~` or `\`) is denied; pass absolute paths. A deny
-  rule now also denies other spellings of its paths on backends that tell
-  case apart, such as `Filesystem.State`; to let one through, put an allow
-  rule for it before the deny rule.
-- **Breaking:** `Filesystem.Permission` rules see through symlinks. They
-  matched only the path the model wrote, so a symlink inside a
-  `Filesystem.Local`, `Filesystem.LocalShell` or `Sandbox.local/1` directory
-  gave a denied file a second, allowed path: with a `deny` rule for
-  `/secrets/**` and a link `/notes/key.txt` to `/secrets/key.txt`,
-  `read_file("/notes/key.txt")` returned the secret, `ls`, `glob` and `grep`
-  listed and searched it from an allowed folder, and `write_file` and
-  `edit_file` reached a denied folder through a linked one. The file tools
-  now check a path both as written and as the file it leads to, and both must
-  be allowed: for `ls`, `read_file`, `write_file`, `edit_file`, `glob` and
-  `grep`, and for every entry that `ls`, `glob` and `grep` return, which they
-  leave out when its file is denied. A new file is checked as the file it
-  would become, so new files in allowed folders work as before. With rules
-  for an operation, a path the backend can't resolve, such as a broken link,
-  or on `Sandbox.Docker` a link that leads out of the workspace, is denied.
-  `Sandbox.Docker` paths written as container paths, such as
-  `/workspace/secrets/key.txt`, are also checked as the sandbox path they
-  reach (`/secrets/key.txt`), which a rule for `/secrets/**` missed.
-  Backends report where a path leads with the new optional callback
-  `canonical_paths/3` of `BeamWeaver.Filesystem` and `BeamWeaver.Sandbox`.
-  `Local`, `LocalShell`, `Composite` (in the route's backend, keeping the
-  route's prefix), `Filesystem.Sandbox`, `Sandbox.Local` and `Sandbox.Docker`
-  implement it; `State`, `Store` and backends without it are taken to have no
-  links. A backend or sandbox adapter that wraps another one must pass
-  `canonical_paths/3` on to it, as the wrappers in the Filesystem and
-  Sandboxes guides do, or the rules won't see the inner backend's links.
-  Hard links, and links that another process changes between the check and
-  the call, are not covered.
-- **Breaking:** `glob` and `grep` on `Filesystem.Local` and
-  `Filesystem.LocalShell` search only inside their directory. A pattern, or a
-  `grep` `glob:`, with `..`, such as `"../*.txt"`, matched the files next to
-  the directory, and a symlink inside it that points outside was followed, so
-  the `grep` tool returned the lines of those files and `glob` their host
-  paths. A pattern with `..`, also one spelled with `\` escapes such as
-  `.\./*`, or with `~` now returns the error `"invalid_pattern"`, even when it
-  would stay inside; write the pattern from the folder you search, or pass
-  that folder as `path:`. `ls`, `glob` and `grep` list only paths the file
-  tools can open, so they leave out symlinks that point outside the
-  directory, paths through them (even ones that lead back in, which
-  `read_file` now refuses with `"invalid_path"` too), and names with `~`.
-  `Sandbox.local/1` directories refuse paths through such symlinks the same
-  way; their `read`, `grep` and `download_files` returned the outside file,
-  and `edit` and `upload_files` changed it. All three backends follow
-  symlinks the way the OS does, also through a `..` after a link:
-  `notes/k -> ../x/up/../outside.txt`, with `x/up -> ..`, leads out of the
-  directory, though read as text its target names `x/outside.txt`, and is
-  refused with `"invalid_path"`. `Filesystem.Local` and
-  `Filesystem.LocalShell` read the file the OS opens for such a link, not the
-  file its target names as text.
-- **Breaking:** `Sandbox.Local` no longer reads a file through a full host
-  path that points inside its root (`<root>/secrets/key.txt`), which slipped
-  past a `Filesystem.Permission` deny rule for `/secrets/**`. Such a path is
-  taken literally as the sandbox path `/<root>/secrets/...`, which resolves
-  under the root and does not exist, so the path the sandbox reads is the one
-  the rules check. Pass sandbox-absolute paths (`/secrets/key.txt`).
 - `Sandbox.Docker.download_files/3` could return files of the host. It copied
   a file out of the container with `docker cp`, which copies a symlink as a
   symlink, and then read the copy on the host, so a symlink made in the
@@ -251,38 +1392,9 @@ breaking too). Read Security first.
   now copies the file the symlink leads to inside the container. A directory
   returns the error `"is_directory"` instead of raising, and its temporary
   copy is removed.
-- **Breaking:** `PII` checks the text blocks of multimodal messages and every
-  message a model call adds. It read only plain-string content and tool-call
-  arguments, so it left personal data in the text blocks of messages with
-  list content, in user input, tool results and model output alike. With
-  `apply_to_output: true` it edited only the last assistant message, after
-  the model's reply was saved: the checkpoint written after the model call
-  held the raw reply, and the failed answer that `StructuredOutputRetry`
-  keeps stayed in the thread unredacted. Output rules now edit every message
-  a model call adds, and the failed answer, before they are saved, and
-  `PII.stream_transform/1` also redacts the text blocks and tool-call
-  arguments of a whole `Message` event. `PII` has no `after_model/3` hook:
-  output rules run in its `wrap_model_call/3`, so they edit the reply before
-  any `after_model/3` hook sees it, and a `:block` rule listed after
-  `ModelFallback` makes it try the next model. Call `wrap_model_call/3` to
-  test an output rule.
 - A `PII` output rule (`apply_to_output: true`) edits the text of the
   structured answer of an agent with tools, the extra model call after the
   tool loop, which was saved unedited.
-- **Breaking:** `ModelFallback` calls a fallback with the fallback's own key
-  and connection settings. It called it with the agent model's call options,
-  `api_key:`, `base_url:`, `endpoint:` and `transport:` included, and those
-  override a model's own: the Claude fallback of an agent on an OpenAI model
-  was sent the OpenAI key, to `api.anthropic.com`. A fallback now gets only
-  the agent's model options that its profile takes (one it doesn't take,
-  such as `reasoning_effort:` for Claude, would fail the call with
-  `:unsupported_model_param`), and a provider's built-in tools in `tools:`
-  reach only a model of the same kind. `TypeSafeModelRouter` passes options
-  to the model it chooses the same way, and no longer passes it the agent's
-  `extra_body:`. A fallback or chosen model that relied on the key in the
-  agent's model options needs its own: configure the provider's key, or pass
-  a model value with
-  `init_chat_model!("anthropic:claude-haiku-4-5", api_key: ...)`.
 - `inspect/1` no longer prints credentials: the API keys and auth headers of
   Anthropic, Google, Moonshot, Z.ai and xAI models and clients,
   `Provider.HTTPClient`, the WeaveScope exporter config, `Transport.Request`
@@ -297,510 +1409,6 @@ breaking too). Read Security first.
   `model_opts: %{api_key: key}`, names the kind of value and its keys
   (`"a map with keys [:api_key]"`), and an error for a middleware's missing
   or unknown option names that option without showing the others.
-- **Breaking:** The warnings a model call emits through telemetry no longer
-  carry the call's `metadata:`, which can hold a user id.
-  `[:beam_weaver, :models, :param_warning]` (a call with `param_policy: :warn`
-  that sends a parameter the model's profile doesn't list) carries the
-  provider, the model and the parameter names, and
-  `[:beam_weaver, :provider, :unsupported_feature]` (a call with
-  `unsupported: :warn` that asks for a feature the model lacks) the provider,
-  the model and the feature names. Both used to add the call's `metadata` map
-  under a `metadata` key; a handler that read it gets no such key now.
-  `BeamWeaver.Models.ParamPolicy.validate/4` no longer takes a `:metadata`
-  option.
-
-### Documentation
-
-- The guides are rewritten and reorganized. A Quickstart builds a first agent
-  without an API key, Concepts explains how agents, graphs and deep agents fit
-  together, and each feature has one page. New pages cover testing, caching,
-  storage, graph state, memory files and coming from LangChain, and each
-  provider page has a model table generated from the model profiles.
-- Every Elixir example in the README, the guides and the main module docs runs
-  or compiles in the test suite.
-- Old page names redirect to their new pages on GitBook and HexDocs.
-- The examples call their tools and check that they did.
-- The deep agent examples that failed on some providers say which tool does
-  the work and why: `better_harness.exs` (the evals read `/prompt.txt` from
-  disk), `downloading_agents.exs` (drafts are collected from `/drafts`),
-  `llm_wiki.exs` (people read the pages), `ralph_mode.exs` (one save ends a
-  run) and `deep_agent_composition.exs` (only the writer subagent knows the
-  facts).
-- When an example's tool check fails, it prints the conversation, one line per
-  message, before raising.
-- New `examples/zai_media.exs` sends an image, a PDF and a video to
-  GLM-5.3-Flash; `mix examples.live --provider zai` runs it.
-- `examples/support.exs` sets `reasoning_effort: "low"` only on Z.ai models
-  whose profile takes it, so `mix examples.live --model zai:glm-5.1` (and
-  GLM-5, GLM-4.7, GLM-4.6) runs the examples; every script used to fail with
-  `:unsupported_model_param`.
-- `mix examples.live` runs a script once more, after 15 seconds, when it
-  failed on a provider's temporary capacity error (an HTTP 429 or 5xx error
-  marked retryable); failures of the example itself are never retried.
-  `content_builder_agent.exs` says that only posts saved under `/posts` are
-  published and that the agent calls `generate_cover` itself.
-- Examples that summarize their conversation check tool use through a
-  recording middleware (`Support.tool_log/0` in `examples/support.exs`), so a
-  summary can't hide the calls, and the live examples allow a model call 120
-  seconds.
-- Guardrails has a recipe for a reply a content filter stopped, which
-  OpenAI's APIs end early as a normal completion: an `after_model/3` hook
-  checks `Outcome.classify(reply).turn_disposition == :filtered`, asks the
-  model once more, and then fails the call with a `:content_filter` error.
-- The Anthropic, OpenAI and xAI provider pages describe `metadata`, the
-  provider's request field, with its limits, and point to `trace_metadata:`
-  for trace data; the xAI page says xAI takes no request metadata. Models
-  says which stream errors count as server errors and when BeamWeaver logs a
-  warning about one.
-- Subgraphs shows how to edit what a paused subgraph sees: pass its namespace
-  from the thread's history as `checkpoint_ns` to `Compiled.update_state/4`
-  on the parent graph.
-- Tracing lists the `[:beam_weaver, :provider, :unsupported_feature]`
-  telemetry event.
-
-### Removed
-
-#### Agents
-
-- All `async_*` twins (`ChatModel.async_invoke/3`, `Compiled.async_invoke/3`,
-  `Memory.async_put/5`, `VectorStore.async_*`, `Checkpoint.async_*`, and the
-  rest — 164 functions) and `BeamWeaver.Core.Async`. Run calls concurrently
-  with `Task`, or with `BeamWeaver.Tracing.async/2` to keep the trace context.
-  `MessagesTransformer.process_many/3` and its no-op `:async?` option went
-  with them; call `MessagesTransformer.process_many(transformer, events)`.
-- `BeamWeaver.Runtime.Agent`, `BeamWeaver.DispatchHook`,
-  `BeamWeaver.ProcessRegistry`, `BeamWeaver.Agent.Server`, and the generated
-  `start_link/1`/`child_spec/1` on agent modules. Call `MyAgent.invoke/2`
-  directly, and run agents in the background under your own
-  `Task.Supervisor`, as Going to Production shows.
-- `Core.AgentSchema` and `Core.ChatSession`.
-- `BeamWeaver.Agent.get_state/2` with a bare config map; pass `config: config`.
-- The `debug` declaration and `BeamWeaver.Agent.build/1` option, which only marked
-  introspection data; watch a run with streaming or tracing.
-- The `tool_timeout` model option; declare `tool_timeout` instead. Passing it
-  as a model option returns an `:invalid_agent` error.
-
-#### Middleware
-
-- Two-argument middleware hooks. Every hook takes the middleware first:
-  `before_model(middleware, state, runtime)`,
-  `wrap_model_call(middleware, request, handler)`, and so on; module
-  middleware receives its module and ignores it.
-- `@behaviour BeamWeaver.Agent.Middleware` on its own. Middleware modules call
-  `use BeamWeaver.Agent.Middleware`, which supplies overridable `name/1`,
-  `state_schema/1`, `tools/1`, and the other defaults; agents
-  reject modules that do not (`:invalid_middleware`).
-- The `can_jump_to/2` and `tool_node_required?/1` middleware callbacks, and
-  the functions of the same names in `BeamWeaver.Agent.Middleware`.
-  Nothing consulted `can_jump_to/2`: a hook jumps by returning
-  `{:jump, target, update}`. Every agent now has a tools node, so middleware
-  no longer asks for one. Delete both callbacks from your middleware; with
-  `@impl true` they no longer compile without a warning.
-- String kinds in `Summarization` `trigger:`/`keep:` (`{"messages", 10}`); use
-  atoms.
-- The `Agent.Middleware.Exclusion` helpers, which nothing called.
-  `CapabilityProfile.excluded_middleware` stays data that your own code
-  reads.
-
-#### Subagents and deep agents
-
-- The standalone `BeamWeaver.Todo` model.
-- **Breaking:** The `debug` field of `Agent.Subagent.Spec`. `build/1` no
-  longer takes `debug:`, so a subagent spec with it failed every `task` call;
-  `Spec.new/1` now raises for it like any unknown option. Remove it.
-
-#### Human review, checkpoints and resuming
-
-- Strict-resume checkpoints: `Checkpoint.stage_resume/3`,
-  `continue_staged/2`, `verify_resume_receipt/2`, and
-  `Checkpoint.ResumeDelivery`.
-- `Checkpoint.Utils`.
-
-#### Graphs
-
-- The `failure_policy:` graph option. It was never implemented: failed
-  super-steps always let siblings finish and persist their writes, which is
-  now documented as the behavior.
-- The Python option aliases `retries:` and `on_error:` on nodes; use `retry:`
-  and `error_handler:`.
-- `Graph.Errors`, `Graph.MessagesReducer`, and `Graph.Schema` (use
-  `BeamWeaver.Schema`).
-
-#### Tracing and telemetry
-
-- The supervisor-first `Tracing.async(supervisor, fun)` form; use
-  `Tracing.async(fun, supervisor: supervisor)`.
-
-#### Retrieval, prompts and parsers
-
-- LCEL composition: `Runnable.parallel/1`, `map/1`, `each/1`, `generator/2`,
-  `passthrough/0`, `assign/2`, `pick/1`, `branch/1`, `router/1`,
-  `with_retry/2`, `with_fallbacks/3`, `bind/2`, `with_config/2`,
-  `with_types/2`, `configure/2`, `alternatives/4`, `with_history/2`,
-  `with_listeners/2`, `as_tool/2`, `pipe/3`, `get_name/1`, `batch_as_completed/3`,
-  `stream_events/3`, `stream_log/3`, runnable specs/registry, and runnable graph
-  drawing. `Runnable.invoke/3`, `batch/3`, `stream/3`, `transform/3`,
-  `lambda/2`, and `sequence/2` remain. Use Elixir functions, `with`, and
-  `Task.async_stream/3` for composition.
-- Document loaders and blobs (`DocumentLoader`, `DocumentTransformer`,
-  `DocumentIndex`, `Blob`, `BlobLoader`, `BlobParser`, `BlobLike`,
-  `DocumentLike`), `Indexing.DocumentIndex`, `StructuredQuery`,
-  `DocumentCompressor`, `CrossEncoder`, `Core.HTML`, and `Core.Strings`. Load
-  sources with plain Elixir into `%Core.Document{}` and pass them to
-  `TextSplitter` and `Indexing.index/3`; `Core.Document.from/1` builds
-  documents from strings and `:content` maps.
-- LangChain helpers: `Core.Document.lc_namespace/0`, `serializable?/0`,
-  `langchain_string/1`, the `type` field, and its `page_content=`
-  `String.Chars` impl.
-- The Python option aliases of the text splitters: `is_separator_regex`,
-  `max_chunk_size`, `headers_to_split_on`, and `strip_headers`.
-- `OutputParser.Spec` (parser serialization to spec maps) and
-  `OutputParser.output_schema_for/1`.
-- The unused `%BeamWeaver.Indexing{}` struct. `Indexing.index/3` returns an
-  `Indexing.Result`.
-
-#### Tools
-
-- `@behaviour BeamWeaver.Core.Tool` on its own. Hand-written tools call
-  `use BeamWeaver.Core.Tool`, which defaults every optional callback the module
-  does not define. Tool conversion recognizes tools and toolkits by the
-  behaviour they declare instead of probing for `name/1` or `tools/1`.
-- `Core.Tool.run/3`; use `invoke/3`.
-- `Tools.Helpers`.
-
-#### Filesystem and sandboxes
-
-- The forwarding protocols `Graph.Channel.Dispatch`, `Filesystem.Backend`,
-  `Filesystem.ExecutableBackend`, `Sandbox.Backend`, and
-  `Indexing.RecordManager.Backend`. `use BeamWeaver.Graph.Channel` (and
-  `Filesystem`, `Filesystem.Executable`, `Sandbox`, `Indexing.RecordManager`)
-  declares the behaviour, and the facade functions call the struct's module.
-  Check an implementation with `Channel.implemented_by?/1`,
-  `Filesystem.backend?/1`, `Filesystem.Executable.executable?/1`,
-  `Sandbox.sandbox?/1`, or `RecordManager.record_manager?/1`.
-- `Filesystem.Utils` (use `Filesystem.Path`, `FileDataUtils`, `Format`, and
-  `Search`), the deprecated `Filesystem.is_directory/0` (use
-  `directory_error/0`), and `Filesystem.ls_info/3` and `glob_info/3` (use
-  `ls/3` and `glob/3`).
-
-#### Models and providers
-
-- `ChatModel.generate/3`, `generate_prompt/3`, `LLM.generate/3`, and
-  `LLM.generate_prompt/3`; use `batch/3`.
-- `Provider.ReasoningControl`, which nothing in BeamWeaver used. Pass
-  `reasoning_effort:` to the model instead.
-- LangChain helpers: `Core.Error.create_message/2`, `error_codes/0`,
-  `output_parser/2`, `context_overflow/2`, `tracer/2`; LangChain
-  `lc`/`kwargs` message envelope decoding.
-- The `Core.MessageLike`, `Core.ContentBlockLike`, `Tool.SchemaLike`, and
-  `ExampleLike` protocols. Use `Core.Message.from/1`, `Core.ContentBlock.from/1`,
-  and `Tool.Schema.from/1`.
-- The LangChain-style typed message structs `Core.Messages.System`, `User`,
-  `Assistant`, `Tool`, `Function`, `Chat`, `ToolChunk`, and `FunctionChunk`,
-  and the `Core.Messages.system/2`, `user/2`, `assistant/2`, `tool/2`,
-  `function/2`, `chat/3`, and `to_message/1` constructors. Use
-  `Core.Message.system/2` and friends.
-- LangChain role names. Message tuples, maps, prompt templates, prompt specs,
-  `Utils.filter/2`, and `trim/2` accept only `"user"`, `"assistant"`,
-  `"system"`, `"tool"`, and `"developer"` (or the matching atoms); `"human"`,
-  `"ai"`, and `"function"`, the `type` alias for `role`, and
-  `additional_kwargs` are no longer read.
-- The `"langchain-openai"` message format name; pass `format: :openai`.
-- The `Provider.EncodeMessage` and `Provider.DecodeMessage` protocols; use
-  `Provider.MessageCodec.encode/2` and `decode/2`. With `provider: :openai`,
-  `encode/2` returns a list for an assistant message with tool calls: its
-  message item and one `function_call` item per call, as the Responses API
-  takes them.
-- Provider error structs `OpenAI.Error`, `Anthropic.Error`, `Google.Error`,
-  `XAI.Error`, `DeepSeek.Error`, `Moonshot.Error`, and `ZAI.Error`. Every
-  provider returns `%BeamWeaver.Core.Error{}`, with the provider in
-  `details.provider`.
-- `Provider.ChatRuntime.Adapter`. Provider chat models implement the
-  `Provider.ChatModel` callbacks (`request_body/3`, `send_request/4`,
-  `decode_response/2`, `parse_response/3`, `stream_metadata/3`) instead of
-  returning a struct of closures.
-- Provider client functions no longer accept a keyword list in place of a
-  client (`Client.chat_completions([api_key: ...], body)`); build one with
-  `Client.new/1`. Per-call options still override `:endpoint`, `:api_key`,
-  `:transport`, `:transport_opts`, `:timeout`, and `:headers`, but no longer
-  other client fields such as `:default_headers` or `:base_url`. `new/1` takes
-  keyword lists only.
-- `:model_kwargs`, the model field and option. Use `:extra_body`, which every
-  chat model now accepts both as a model field and per call (per-call keys win).
-  It is merged into the request body after BeamWeaver's own fields, so it
-  overrides them; DeepSeek, Moonshot, and Z.ai keep `model`, `messages`, and
-  `stream`, and Anthropic its reserved fields. Before, `model_kwargs` was
-  merged first and typed options overrode it.
-- `Provider.GenericMessages`, `Provider.HostedTools`, and
-  `Models.FunctionEmbeddingModel`.
-
-### Added
-
-#### Agents
-
-- The `capability_profile` declaration (and `BeamWeaver.Agent.build/1` option) applies a
-  `BeamWeaver.Agent.CapabilityProfile`: `capability_profile :auto` uses the
-  profile of the agent's model, and a profile or `CapabilityProfileConfig`
-  struct is used as given. Its `prompt_suffix` goes after the system prompt,
-  also after the prompt a `DynamicPrompt` builds, `base_system_prompt` is
-  used when the agent declares none, its excluded tools and tool
-  descriptions join `exclude_tools` and `tool_descriptions` (the agent's own
-  descriptions win), and its middleware runs after the agent's.
-- `step_timeout`, `run_timeout` and `tool_timeout` declarations for agent and
-  graph modules, and the same `BeamWeaver.Agent.build/1` options. `tool_timeout` limits
-  each tool call; a slow call returns a tool error message to the model.
-- `response_schema ..., max_retries: n` (and `StructuredOutput.tool/2`
-  `:max_retries`, default 2) bounds how often the tool strategy asks the model
-  again after an answer that fails the schema.
-- `context_schema` fields accept `:float`, `:decimal`, `:date`, `:time`,
-  `:utc_datetime`, `:naive_datetime`, `{:list, type}` and `{:union, types}`.
-  `:float` and `:date` fields used to reject every value.
-
-#### Middleware
-
-- `Summarization` takes `summarizer:`, a function that writes the summary
-  instead of `model:`: it takes the messages to summarize and returns the
-  text, `{:ok, text}` or `{:error, error}`.
-- `ToolError` decides what the model reads when a tool fails, or stops the
-  run instead: its `on_error:` function takes the error and the tool call
-  request, and returns the text or `nil`. `tools:` limits it to some tools.
-- `ToolSelection` asks again, up to `max_retries:` times (1 by default), for
-  a selection reply without a list of tools; then `on_parsing_failure:`
-  decides: `:error` (the default), `:none`, `:all`, a list of tool names, or a
-  function of the reply.
-- `ContextEditing` takes `token_counter:`, a function of a message list that
-  returns its token count, in place of `token_count_method:`.
-- `Summarization` takes `max_input_tokens:`, the context window of the
-  agent's model, which `{:fraction, f}` triggers and `keep:` settings are
-  taken of. `compact_conversation` sets it from the agent's model, and the
-  general-purpose subagent, and a subagent with `base_middleware: [:deepagents]`
-  or `Summarization` in its `base_middleware`, from the subagent's own model.
-- `compact_conversation` takes `summarization:`, the `Summarization` options
-  for the automatic summarization it turns on, or `false` to keep only the
-  tool.
-- `PII.stream_transform/1` also edits the reasoning and tool-call arguments a
-  model streams (the reasoning blocks of a `MessageChunk`, `ToolCallChunk`
-  events and a `MessageChunk`'s tool-call chunks), holding back their last
-  characters like text; the reasoning of a whole `Message`; tool events (the
-  input of `ToolStart`, the output a tool streams in `ToolDelta`, held back
-  until the tool finishes, the output of `ToolFinish` and the message of
-  `ToolError`); and state snapshots (`GraphValue`). It edits the events only,
-  never the saved thread.
-- `AutoMode` runs low-risk calls of the tools you name and blocks risky ones.
-  Before each call it asks a decision model (`classifier:`, TypeSafe's
-  `"typesafe:jev-latest"` unless you pass another) how likely the call is to
-  be risky or not clearly authorized by the user, giving it the call, the
-  tool's description and the last 30 messages. A call at or above 0.5 gets an
-  error tool message instead of running. It fails closed: a call the
-  classifier declines is blocked, and a classifier error fails the run
-  without running the tool. `instructions:` replaces the question.
-
-#### Subagents and deep agents
-
-- A `BeamWeaver.Agent.GeneralPurposeSubagentProfile` in a `subagents` list
-  configures the built-in `general-purpose` subagent: `description:` and
-  `system_prompt:` replace its texts, and `enabled: false` leaves it out.
-  Before, `enabled` was never read.
-- Subagent runs stream into the parent's stream, live or collected: their
-  events carry the namespace `["tools", "subagent.<name>"]` and
-  `subagent_name` and `tool_call_id` in the envelope metadata.
-  `Agent.Subagent.StreamTransformer` builds one `RunStream` per `task` call
-  from them (status, values, updates, nested runs).
-- `Agent.Subagent.Spec` takes every `BeamWeaver.Agent.build/1` option (`model_opts`,
-  `recursion_limit`, `context_schema`, `memory`, `subagents`, `checkpointer`,
-  `store`, `compact_conversation`, `tool_timeout`, `step_timeout`,
-  `run_timeout`, `capability_profile`, ...), and so does a
-  `subagent MyAgent, opts` line. `Agent.Subagent.Compiled` takes
-  `recursion_limit`.
-
-#### Human review, checkpoints and resuming
-
-- `BeamWeaver.Agent.resume_review/3` takes a built agent too.
-- `HumanInTheLoop` takes `interrupt_mode: :per_call`, which reviews each call
-  on its own as it starts. Every call of the turn runs as a task of its own,
-  calls that need no review run straight away and don't run again, and each
-  call that does pauses with a `"tool_approval"` interrupt: the call, its
-  description, the decisions it allows and the arguments schema an edit must
-  match. `resume_review/3` answers them with a map from interrupt id to
-  decision, all at once or one at a time, or with one decision when one call
-  waits. An edit keeps the tool, and an answer that doesn't fit fails the
-  resume with `:invalid_human_decision` while the call waits for another.
-  Tools marked `concurrent false` don't wait for each other in this mode.
-- A paused run lists every interrupt of its step in `interrupts`, so pauses
-  in parallel branches or tasks can be answered without `get_state/1`.
-
-#### Graphs
-
-- `invoke/3` and `stream_events/3` take `run_id:`, the id of the run on its
-  events, `runtime.run_id`, checkpoint metadata, traces and telemetry.
-  Without it the run gets a new UUIDv7; a subgraph run always gets its own.
-- `Graph.private_channel/2` takes `checkpoint: true`: the key stays out of the
-  run's output, like any private key, but is saved in checkpoints, so the next
-  run on the thread starts from its value.
-
-#### Streaming
-
-- `stream_events/3` on agents and graphs honors `stream_mode:`, live or not:
-  one of the modes `BeamWeaver.Stream.event_mode/1` returns, or a list of
-  them, such as `[:messages, :tools]`. The other events are never sent, and
-  an `Error` event always arrives. `:events`, the default, keeps every event;
-  an unknown mode returns `{:error, %Error{type: :invalid_stream_mode}}`.
-
-#### Memory, storage and caching
-
-- `prefix:` on `Checkpoint.Ecto`, `Memory.Ecto`, `Cache.Ecto`,
-  `VectorStore.EctoPostgres` and `Indexing.RecordManager.EctoPostgres` reads
-  and writes the tables that `BeamWeaver.Migrations.up(prefix: ...)` creates
-  in a Postgres schema. Before, the migration put the tables in the schema
-  but every adapter looked for them in `public`. `prefix: ""` or
-  `prefix: false` uses no schema, as with the migration.
-- `index: false` on the `:vector_store` migration creates the table without a
-  vector index, so stores with more than 2,000 dimensions, such as
-  `text-embedding-3-large` at its full 3,072, can be created. Searches then
-  compare the query with every row.
-- `BeamWeaver.Memory.prune/2` works on `Memory.Ecto`, with the same
-  `namespace:`, `max_entries:`, `older_than:` and `max_age_ms:` options as on
-  `Memory.ETS`. Before, it returned `:unsupported_operation`.
-- `BeamWeaver.Memory.Item` and `SearchItem` have a `ttl` field: the record's
-  lifetime in minutes, or `nil`.
-
-#### Tracing and telemetry
-
-- `BeamWeaver.Tracing.clear/0` drops every run from the local trace store.
-  It replaces the undocumented `Tracing.reset/0`.
-- `config :beam_weaver, :tracing, max_runs:` bounds the local trace store.
-  It keeps every run in progress and, by default, the 10,000 runs that
-  finished last; `max_runs: 0` keeps only the runs in progress, for nodes that
-  only export.
-- The WeaveScope export queue takes `shutdown:`, the milliseconds it keeps
-  uploading when the application stops (default `120_000`).
-- `ChatModel.invoke/3` takes `trace_metadata:`, a map added to the call's
-  trace run and never sent to the provider.
-- Graph telemetry reports durations: `[:beam_weaver, :graph, :stop]`,
-  `:interrupt`, `:parent_command`, `:exception` and `:node_stop` carry
-  `duration` (native time units) and `monotonic_time`; `:start` and
-  `:node_start` carry `monotonic_time`. `:exception`, `:interrupt` and
-  `:parent_command` carry `graph` and `run_id` in their metadata.
-
-#### Retrieval, prompts and parsers
-
-- `Indexing.Result` has `failed_ids`, the ids of the documents the vector
-  store or the record manager rejected.
-
-#### Tools
-
-- Tool error messages from the tool node carry the tool's own error text in
-  `metadata.error_message`, next to the model-facing "Tool error: …" content.
-
-#### Filesystem and sandboxes
-
-- `BeamWeaver.Filesystem.canonical_paths/3` and
-  `BeamWeaver.Sandbox.canonical_paths/3` return, for each path, the path of
-  the file it reaches with the backend's symlinks followed, as `{:ok, path}`
-  or `{:error, reason}`. `Filesystem.Permission.allowed?/5` and
-  `Filesystem.Permission.filter_paths/5` check paths of a backend the way the
-  file tools do: the path and the file it leads to (see Security).
-- `BeamWeaver.Filesystem.Conformance.check_symlinks/3` checks, from the tests of
-  a backend you write, that permission rules see through its symlinks. Give
-  it a new, empty backend and a function that makes a link in the backend's
-  storage: it writes a secret under `/secrets`, links to it from `/notes`,
-  and, with a rule that denies `/secrets/**`, returns `:ok`, or
-  `{:error, problems}` with a sentence for each way the file tools still
-  read, list, search, write or edit the secret through the links (or for
-  files no rule denies that they refuse). A wrapper around another backend
-  passes only when it hands `canonical_paths/3` on. `:dir` checks under a
-  folder, such as a `Composite` route. The Filesystem guide's "Write a
-  backend" section shows how to run it.
-
-#### Models and providers
-
-- `Models.Profile` has `reasoning_effort_levels`, the reasoning efforts a
-  model takes, and `reasoning_effort_default`, the one it uses when a call
-  names none, on every provider. Claude Opus 4.5 to 4.8, Sonnet 4.6 and
-  Sonnet 5, and Fable 5 and Mythos 5 got the levels and defaults Anthropic
-  documents.
-- Grok 4.7, `xai:grok-4.7`: a 500,000-token context and reasoning efforts
-  from `:low` to `:xhigh`.
-- OpenAI's Decisions API, in public beta, as a decision model:
-  `Models.init_decision_model("openai:gpt-6-luna")` or
-  `BeamWeaver.OpenAI.decision_model/1` asks predicate, choice and score
-  questions (`BeamWeaver.OpenAI.Decisions.Question`) about a string, user
-  messages with text and images, or other data, which goes as JSON text with
-  its messages' images in place. Answers keep their probabilities, a declined
-  question gets a `RefusalAnswer`, and `metadata.cost` counts input tokens
-  only, as the API bills. Questions are checked before the request.
-  `Models.cached/3` caches these decisions, and GPT-6 Luna's profile has
-  `decision_outputs: true`.
-- `DecisionModel.choice_question/3` and `yes_no_question/2` build a decision
-  model's own question, checked as the model would check it, and `choose/4`
-  and `probability/4` ask it, so code can work with any decision model.
-  TypeSafe's and OpenAI's models implement them.
-- OpenAI's Responses API takes a `configuration_update` block in a message,
-  such as a new reasoning effort from that message on, and an
-  `additional_tools` block, tools added partway through, in a system message.
-  They go as input items of their own, just before the rest of their
-  message, as `mcp_approval_response`, `tool_search_output` and
-  `apply_patch_call_output` blocks now do too (they used to go inside the
-  message, which the API refused). `additional_tools` on another message, or
-  on Chat Completions, is an error.
-- Anthropic models take `reasoning_effort:`, the standard name of `effort:`
-  (which wins when both are set), on the model or a call. It sets
-  `output_config.effort`, and on a model that takes only adaptive thinking,
-  from Claude Opus 4.7 and Sonnet 5 on, it turns on adaptive thinking with its
-  summary unless `thinking:` is set. An effort the model's profile doesn't
-  list fails with `:unsupported_model_param` before the request.
-- OpenAI and Anthropic models take `base_url:`, the API root, on the model or
-  in `config :beam_weaver, :openai` / `:anthropic`, like the other providers.
-  The OpenAI default is `https://api.openai.com/v1`, the Anthropic default
-  `https://api.anthropic.com`.
-- An agent offers a provider's built-in tools next to its own when they are
-  in its model options, as in
-  `model "openai:gpt-5.4-mini", tools: [BeamWeaver.OpenAI.ToolCalling.web_search()]`.
-- `init_chat_model/2` takes `stream: true` on every chat provider, and an
-  agent whose model was created with it streams that model's replies.
-- Every chat provider takes both `max_tokens:` and `max_output_tokens:` for
-  the output cap, and Anthropic and Google take `stop:` for `stop_sequences:`.
-  On OpenAI and xAI Chat Completions models, `max_output_tokens:`, set on the
-  model or on a call, is sent as `max_completion_tokens`.
-- GLM-5.3-Flash takes image, video and PDF blocks, by URL or as base64 data
-  (`ContentBlock.video(data: ...)`, `ContentBlock.file(data: ...)`), also
-  mixed in one message; checked against the live API.
-- Z.ai models `zai:glm-5.3-flashx` (images, video and PDFs like GLM-5.3-Flash,
-  efforts `:low`, `:high` and `:max`), `zai:glm-5.1`, `zai:glm-5`,
-  `zai:glm-4.7` and `zai:glm-4.6` (200K context, thinking can be turned off
-  with `thinking: %{type: :disabled}`). GLM-5.1 and the older models return
-  `:unsupported_model_param` for `reasoning_effort:`, which Z.ai accepts and
-  ignores on them. Each was checked against the live API.
-- GLM-5.3-Flash and GLM-5.3-FlashX take files uploaded with Z.ai's file API
-  by id: `ContentBlock.file(file_id: id)` (or Z.ai's own
-  `%{"type" => "file", "file" => %{"file_id" => id}}` part) is sent as
-  Z.ai's `file` part. It used to return an `:invalid_content_block` error.
-  Checked against the live API.
-- A model stream that the provider breaks off with an error whose code no
-  provider documents still fails as a retryable server error (status 500),
-  and BeamWeaver now logs a warning the first time each provider sends each
-  such code: it names the provider and the code (or says the error had none)
-  and says the error was treated as a retryable server error, so the code can
-  be reported and classified. The warning never includes the error's message
-  or body, and a code that looks like a secret is redacted. It is logged once
-  per provider and code until the application restarts, for up to 256 codes.
-
-#### Compaction engine
-
-- `BeamWeaver.Compaction.Result` has `anti_thrash`: the request's lane state,
-  rebased to the request's accounting identity and root turn, to save and to
-  record the activated checkpoint on. `Compaction.State.for_root_turn/2`
-  starts a new root turn's counters.
-- `Compaction.State.record_ineffective/1` records a compaction attempt that
-  didn't reclaim enough context.
-
-#### Testing
-
-- `FakeChatModel.tool_call/2`, `tool_calls/1`, and `final/1` script tool
-  calls and structured answers, so an agent runs its whole tool loop on
-  `"fake:chat"` without an API key. Agents with `stream: true` on the fake
-  model stream its reply word by word as `Token` and `MessageChunk` events.
-- `FakeEmbeddingModel` (`"fake:embedding"`) is documented.
 
 ### Changed
 
@@ -812,45 +1420,10 @@ breaking too). Read Security first.
   configuration and call functions such as `self()`. Before, `model_opts`
   with non-literal values stored their syntax tree. `model_opts` is merged
   over the options after `model`, whatever the order of the two lines.
-- **Breaking:** `BeamWeaver.Agent.build/1` returns an `:invalid_agent` error
-  that names any option it doesn't know, such as `response_schema:` (use
-  `response_format:`), instead of ignoring it. The undocumented aliases
-  `backend:`, `permissions:` and `overflow_clip:` are gone: use
-  `filesystem:`, `filesystem_permissions:` and `overflow_recovery:`. An
-  invalid tool or middleware is an error from `build/1` instead of an
-  exception, and so is an option that a middleware or capability constructor
-  rejects, also from an agent module's call: `:invalid_middleware` for a
-  `middleware` entry, such as `middleware: [ShellTool]` without a `:policy`
-  or `DynamicPrompt` without `:prompt`, and `:invalid_agent` for capability
-  settings, such as `compact_conversation: [trigger: ...]` or an
-  `interrupt_on` rule that can't be read. They used to raise the
-  constructor's `ArgumentError` or `KeyError`; match on the error instead of
-  rescuing.
-- **Breaking:** A `model` that is neither a `"provider:model"` string nor a
-  chat model struct, such as `{"fake:chat", opts}` or a function, returns an
-  `:invalid_agent_model` error, and model options that aren't a keyword list,
-  such as `model_opts: %{api_key: key}`, an `:invalid_agent` error; neither
-  shows the value (see Security). A model string that can't be initialized
-  returns its error instead of failing later.
 - `context_schema` moves a declared field given under a string key to its
   atom key before tools and middleware see the context. A type that is
   neither built in nor a struct module (such as a misspelled atom) is an
   `:invalid_agent` error instead of a check that every value fails.
-- With the tool strategy, an answer that fails the schema stays in the
-  conversation with an error tool message that says what is wrong (missing
-  keys, wrong types), and the model answers again, up to `max_retries` times;
-  then the run fails with the last error, with `attempts` in its details.
-  `handle_errors: false` fails the run on the first failing answer.
-- **Breaking:** With the tool strategy, an answer that calls no tool at all
-  (from a model that ignores the forced tool call, or can't be forced, such
-  as Kimi with thinking on) counts as a failing answer, with the new error
-  type `:missing_structured_output`. The model gets the error as a user
-  message and answers again, up to `max_retries` times; then the run fails
-  with the error. Before, an agent without other tools returned
-  `{:ok, state}` without `structured_response`, and the structured-response
-  call after a tool loop called the model again on every step until
-  `:recursion_limit`. `StructuredOutputRetry` retries
-  `:missing_structured_output` by default.
 - The "Sorry, need more steps to process this request." answer replaces a
   tool call whenever the steps left can't fit the tool round, the next model
   call and the middleware hooks on the way to the end, so a run with
@@ -860,48 +1433,12 @@ breaking too). Read Security first.
 - Every agent has a tools node, so a model that calls a tool the agent
   doesn't have gets "Tool error: tool is not registered" back instead of the
   run raising `KeyError`.
-- **Breaking:** An agent or graph module that creates an in-memory saver,
-  store or cache in a declaration doesn't compile, such as
-  `checkpointer BeamWeaver.Checkpoint.ETS.new()`, `store Memory.ETS.new()`
-  through an alias, `cache BeamWeaver.Cache.ETS.new()`, or one inside another
-  declaration, as in
-  `filesystem BeamWeaver.Filesystem.Store.new(store: BeamWeaver.Memory.ETS.new())`.
-  Declarations are evaluated on every call, so every call got a new, empty
-  table: a second `invoke/2` on a thread started over, `get_state/1` returned
-  `:error`, and every call left ETS tables behind in the calling process. The
-  `CompileError` says what to do instead: create the saver, store or cache
-  once, in your supervision tree or a test's `setup`, and pass it per call
-  with `checkpointer:`, `store:` or `cache:`; or declare a function that
-  returns one created once, such as `checkpointer MyApp.Storage.checkpointer()`;
-  or use `Checkpoint.Ecto`, `Memory.Ecto` or `Cache.Ecto`. Code inside an
-  anonymous function in a declaration, which runs only when it is called, is
-  not affected.
 - A declared `checkpointer` or `store` whose function returns a new
   `Checkpoint.ETS` saver or `Memory.ETS` store each time logs a warning on the
   agent's first call, naming the module and the declaration.
-- **Breaking:** `BeamWeaver.Agent.build/1` returns an `:invalid_tool` error
-  for a `tools` entry that isn't a tool, such as a tool's name; it raised
-  `FunctionClauseError`. It returns an `:invalid_agent` error for a
-  `response_format` that isn't a schema module, a JSON schema map or a
-  `StructuredOutput` strategy, or a module that declares no schema; it raised,
-  or asked the model for an empty object. Agent modules check the same on
-  their first call. Declare the schema with `use BeamWeaver.Schema` or
-  `json_schema/0`.
-- **Breaking:** `response_schema` raises `ArgumentError` for a module that
-  declares no schema or doesn't exist, instead of asking the model for an
-  empty object.
-- **Breaking:** A run ends on its tools' results only when every call of the
-  batch ran a tool with `return_direct true`. When the model also called a
-  tool that doesn't return directly, it gets all the results and goes on; one
-  return-direct result used to end the run.
 
 #### Middleware
 
-- `Summarization` tries a failed summary call up to 3 times, a second or more
-  apart, unless its error says retrying can't help, and a summary prompt over
-  the model's context window once more with the middle of the old messages
-  cut out. When the call still fails, the run returns its error and the
-  thread stays as it was.
 - A struct middleware listed as a bare module, `middleware [MyApp.Limit]`, is
   built like `{MyApp.Limit, []}`, so its hooks get the default struct instead
   of the module. Its default `name/1` becomes the last part of the module
@@ -916,30 +1453,6 @@ breaking too). Read Security first.
   declared `system_prompt`, and the sections that `filesystem`, `memory`,
   `skills`, `subagents` and middleware such as `TodoList` add follow it. The
   structured-response call after a tool loop uses its prompt too.
-- **Breaking:** A middleware hook's update is written as returned, through
-  each key's reducer, even when a value equals the current one. Return only
-  the keys you change: returning the whole state now fails with
-  `:invalid_update`, because `remaining_steps` is read-only.
-- **Breaking:** `Agent.ModelRequest.new/1`, `ModelRequest.override/2`, and
-  `ToolCallRequest.override/2` take keyword lists and raise `KeyError` for
-  unknown fields instead of ignoring them; string field names are no longer
-  accepted. `ModelRequest` defaults `state` to `%{}` and `messages` to `[]`.
-- **Breaking:** `ModelCallLimit` and `ToolCallLimit` have no default
-  `thread_limit` (it was 10, so every agent with them stopped after 10
-  calls): set `run_limit`, `thread_limit`, or both, and add `run_limit: 10`
-  to keep the old cap. `ToolCallLimit.new(run_limit: 20)` no longer raises.
-- **Breaking:** The `compact_conversation` settings configure only the tool
-  (`model`, `minimum_messages`, `keep_messages`, …), and
-  `CompactConversation.new/1` raises `ArgumentError` for other options.
-  Before, `trigger:` and `keep:` in the same list configured the automatic
-  summarization; move them into `summarization: [trigger: …, keep: …]`.
-- **Breaking:** `Summarization` takes `{:fraction, f}` of `max_input_tokens:`
-  instead of the summary model's context window. A fraction without
-  `max_input_tokens:` raises `ArgumentError`; pass the agent model's window.
-- **Breaking:** `OverflowRecovery`'s `keep:` defaults to `{:tokens, 5_000}`,
-  the threshold the old default `{:messages, 8}` stood for, and takes only
-  `{:tokens, n}` or `{:fraction, f}`; `{:messages, n}` raises
-  `ArgumentError`.
 - `StructuredOutputRetry` puts the failed answer in the retry request,
   followed by the error as a tool message for each of its tool calls (tool
   strategy) or as a user message, and the saved thread keeps both. The model
@@ -948,70 +1461,9 @@ breaking too). Read Security first.
 - `ToolRetry` with the default `on_failure: :error` gives the model the tool's
   last error as the tool node wrote it, instead of wrapping it in a second
   "Tool error: …".
-- **Breaking:** `PII.stream_transform/1` returns a `{fun, state}` pair, and
-  `MessagesTransformer`'s `pre_projection:` accepts such pairs alongside
-  unary functions. The PII stream buffer no longer lives in the process
-  dictionary.
-- **Breaking:** `PII` rules edit only the text of messages (string content,
-  or the `text` of each content block), as LangChain's `PIIMiddleware` does.
-  An output rule no longer edits the arguments of the reply's tool calls, so
-  a tool gets the values the model gave it; `PII.stream_transform/1` still
-  edits them in what a stream shows. To keep personal data out of a tool,
-  check its arguments in the tool or in a `wrap_tool_call/3` middleware.
-- **Breaking:** `ModelRetry` and `ToolRetry` apply `on_failure` only when the
-  retries run out. An error their `retry_on` doesn't cover, such as a bad API
-  key, comes back as it is: from `ModelRetry` as `{:error, error}`, so a
-  `ModelFallback` listed before it still gets it, and from `ToolRetry` as the
-  tool returned it. With `on_failure: :continue` or a function, such an error
-  used to become the answer ("Model call failed after 1 attempt ...").
-- **Breaking:** `retry_on: :error`, the default of `ToolRetry` and of a graph
-  node's `retry:`, leaves out an error that says retrying can't help
-  (`details.retryable: false`), such as a provider's invalid API key; it
-  used to retry every `%Error{}`. To retry such an error anyway, name its
-  type (`retry_on: [:authentication]`) or use `retry_on: :all`.
-- **Breaking:** `TypeSafeModelRouter` takes any decision model as
-  `classifier:`, also as a `"provider:model"` string such as
-  `"openai:gpt-6-luna"`, and checks its question when it's built. A refusal or
-  a missing answer keeps the agent's model with the reason `"refused"`, and an
-  invalid response is a `"classifier_error"`: match those instead of
-  `"invalid_classifier_response"`, which is gone. Its default
-  `instructions` are one string rather than a map, since OpenAI's questions
-  take only strings, and the struct keeps the built question in `question`
-  instead of an `instructions` field. The classifier gets the message's text,
-  a placeholder such as `[image omitted]` for other content, and the images
-  too when its profile takes images; when the provider refuses a request
-  with images (HTTP 400 or 413), the router asks again as text only.
 
 #### Subagents and deep agents
 
-- **Breaking:** `subagent MyApp.Module` runs the module as it declares itself:
-  the options after `model`, `filesystem`, `skills`, `memory`, its own
-  `subagents`, `recursion_limit`, `checkpointer`, `tool_timeout`,
-  `step_timeout`, `run_timeout`, `capability_profile` and every other
-  declaration.
-  Before, only a few fields were read, so a child with
-  `model "fake:chat", responses: [...]` answered `""`, and its skills, files
-  and memory needed `base_middleware:`. Pass `skills: nil` (or another
-  option) on the `subagent` line to leave a declaration out.
-- A subagent that pauses for human review pauses the parent: `invoke/2`
-  returns `{:interrupted, interrupt}` with the subagent's review
-  (`review.metadata.subagent_name` names it), and `resume/3` or
-  `resume_review/3` on the parent resumes the subagent. Before, the `task`
-  tool returned `"Subagent interrupted: ..."` and the tool never ran.
-  Subagents that pause in the same turn are reviewed one at a time; when the
-  parent resumes, subagents that already finished return their saved answer
-  instead of running again. Decisions that don't fit the review fail the
-  parent's resume with `:invalid_human_decision`.
-- **Breaking:** Subagents use the run's checkpointer and store, including a
-  per-call `checkpointer:`, and save their checkpoints in the parent's thread
-  under a namespace of their own; a subagent with a checkpointer of its own
-  saves in a thread named after the parent run's `run_id` when the parent
-  runs without a thread. `Agent.Middleware.Subagents.new/1` no longer takes
-  `checkpointer:`; pass the checkpointer to the parent run. A parent whose
-  subagents, at any depth, review tool calls now fails with
-  `:missing_checkpointer` before it starts, instead of every `task` call
-  failing. Pass `checkpointer:` and a thread id, or turn that subagent's
-  review off with `interrupt_on: false`.
 - `interrupt_on: false` (or `%{}`) on a `subagent` line or spec turns review
   off for that subagent; before, it still took the parent's rules. A subagent
   without `interrupt_on` still takes the parent's.
@@ -1023,65 +1475,11 @@ breaking too). Read Security first.
 - With `capture_output:`, the parent's model reads `The <name> subagent
   finished the task. Its answer was saved as "<key>" and is not shown here.`
   (or that the saved answer was reused) instead of `"{}"`.
-- **Breaking:** `Agent.Subagent.Spec.new/1` and `subagent` lines raise
-  `ArgumentError` for unknown options instead of ignoring them, and the unused
-  `todo_list` field is gone. `Spec.from_agent_module/2` raises for a module
-  without a model; run a graph module as a
-  `%BeamWeaver.Agent.Subagent.Compiled{}`.
 - A `subagents` list whose only entry turns the general-purpose subagent off
   raises `ArgumentError`.
-- **Breaking:** The async subagent tools write only the tasks they change, and
-  the middleware merges those writes, so parallel task tool calls no longer
-  fail on the second write or undo each other (cancelling one task and
-  updating another in the same turn keeps both). Each tool writes only the
-  task it changed, and `list_async_tasks` only the tasks it refreshed, so a
-  tool called directly returns
-  `%Command{update: %{async_tasks: %{task_id => task}}}`; read the whole map
-  from the agent's state.
-- **Breaking:** Subagents are checked when the agent is built:
-  `BeamWeaver.Agent.build/1` checks each one as a `task` call would build it,
-  without building its graph, and returns
-  `{:error, %Core.Error{type: :invalid_subagent}}` naming the subagent and the
-  problem, such as an unknown option, a `middleware` entry that isn't
-  middleware, a tool that isn't one, a model that can't be resolved, a
-  response format without a schema, two middleware of the same name that
-  hook into the same step (`subagent "worker": graph contains duplicate
-  declarations: model_call_limit.before_model, ...`), or a problem of its own
-  subagents (`subagent "researcher": subagent "fact_checker": ...`). An agent
-  module checks its subagents the same way on its first call, once per
-  version of the module: `invoke/2`, `stream_events/2`, `resume/2` and
-  `BeamWeaver.Agent.compiled_graph/2` return the error, and `graph/0` raises
-  it. Before, such a subagent failed each `task` call with a
-  `Subagent error:` tool message. Subagents are still built only when a
-  `task` call runs them. The problems `Agent.Middleware.Subagents.new/1`
-  raises `ArgumentError` for, such as a duplicate name or an invalid
-  `capture_output`, are returned the same way by `build/1` and module calls,
-  and every message names the subagent (`subagent "worker": invalid
-  capture_output "worker_output"`).
 
 #### Human review, checkpoints and resuming
 
-- **Breaking:** An `:edit` decision leaves the model's call in its message
-  and runs the reviewer's call in its place, which may name another tool.
-  The result starts with a note that a reviewer replaced the call, followed
-  by the call that ran; `HumanInTheLoop`'s `edit_notice:` words the note,
-  and `nil` leaves it out. The message used to carry the edited call: read
-  the call that ran from the decision or the result.
-- **Breaking:** A `:reject` decision's tool result says the user rejected the
-  call: "User rejected the tool call for `issue_refund` with reason: …", or,
-  without a `message`, that the tool was not executed and the model should
-  not retry it unless the user asks. It used to be the `message` alone, or
-  the rejection without the advice.
-- `invoke/2` and `stream_events/2` with an empty input continue the thread's
-  latest checkpoint when its last run stopped before the end (a crash, a
-  deploy or a breakpoint): they run the steps in `next` instead of starting
-  over from the first node. On a finished thread an empty input still starts
-  a new run. Passing `snapshot.config` keeps working.
-- `resume/2` continues the thread's latest checkpoint, and on a thread with
-  nothing left to run it returns the state instead of starting a new run.
-- Continuing a thread runs past the breakpoint (`interrupt_before`) it
-  stopped at, also with `invoke(%{}, config: snapshot.config)`. The
-  breakpoint pauses again when the run reaches its node later.
 - When a thread continues, a resume value that no pending interrupt claims
   goes only to the steps that run first. A `Graph.interrupt/1` reached later
   in the run pauses instead of receiving that value.
@@ -1095,47 +1493,12 @@ breaking too). Read Security first.
 
 #### Graphs
 
-- **Breaking:** A step in which one task fails and another pauses returns the
-  error, whichever finishes first; the paused task stays pending, as
-  `get_state/1`'s `interrupts` shows. It used to return the pause when the
-  paused task came first in the step. Resume the thread once you have dealt
-  with the error.
-- **Breaking:** `ToolNode` answers a `tool_call_with_context` input with
-  `%{messages: [...]}`, as it does a state, instead of a list of messages,
-  and runs such a call in the step's state when the input has no `state`.
-  It takes the tool set it may run from that state, for a raw list of calls
-  too. Read the messages from the map's messages key.
-- **Breaking:** Graph nodes, `ToolNode` tools and the runs of
-  `Compiled.batch_as_completed/3` no longer stop after 5 seconds by default:
-  they run until they finish unless you set `timeout:`. The old default cut
-  off most nodes that call a model or an agent. `BeamWeaver.ExecutionPolicy`'s
-  `timeout` defaults to `:infinity` too, so a node given
-  `timeout: [max_concurrency: 2]`, or an `ExecutionPolicy` without a
-  `timeout`, no longer stops after 5 seconds either. Pass `timeout: 5_000` to
-  keep the old limit (in an agent, declare `tool_timeout` for its tools);
-  `step_timeout:` and `run_timeout:` still bound a whole step or run.
 - A `Send`'s `timeout` takes the forms a node's `timeout:` takes:
   milliseconds, a float of seconds, `ExecutionPolicy` or `TimeoutPolicy`
   options or structs. Before, an `ExecutionPolicy`, or options without
   `run_timeout` or `idle_timeout` (such as `[timeout: 100]`), became a
   5-second limit. An invalid `timeout` fails the `Send`'s task with an
   `:invalid_graph` error instead of becoming 5 seconds.
-- **Breaking:** `Graph.add_node/4` rejects options it doesn't take: a typo
-  such as `retry_policy:` for `retry:` makes `Graph.compile/2` return an
-  `:invalid_graph` error naming the node and the option, instead of building
-  the node without it. A node whose options are invalid in any way (an
-  invalid `retry:` or `timeout:`, a module that isn't a node) fails
-  `compile/2` the same way; such nodes used to compile and fail only when
-  they ran. The error's message is "graph contains invalid nodes" (it was
-  "graph contains invalid node callables"), and each entry in
-  `details.invalid` has the node, its callable and the error.
-- **Breaking:** A node that returns `{:error, reason}` fails: its `retry:` and
-  `error_handler:` apply, and the run returns
-  `{:error, %BeamWeaver.Core.Error{type: :node_error}}` with a string reason
-  as the message (any other reason is in `details.reason`, inspected; a
-  `%BeamWeaver.Core.Error{}` reason is returned as it is). Before, the tuple
-  was stored in the state under `:value`. An error handler that returns
-  `{:error, reason}` fails the node the same way.
 - A subgraph node's update holds only the keys the subgraph changed since it
   started, not its whole final state, and the subgraph's `input_schema:` and
   `output_schema:` apply. For a key with a reducer in the parent, the update
@@ -1150,18 +1513,8 @@ breaking too). Read Security first.
   edit, and the `update` of the `Command` that resumed the run. A subgraph
   without checkpoints of its own (`checkpointer: false`) runs again, when
   resumed, on the state it started with.
-- **Breaking:** `EphemeralValue` keys, and `Topic` keys without
-  `accumulate: true`, last one step: the next step's nodes read them, then
-  they are cleared unless written again. Before, they kept their value for
-  the rest of the run. At the end of each step, every channel that holds a
-  value but got no write now receives `update(channel, [])`.
 - `AnyValue` keeps its value through steps that don't write it, as the Graph
   State guide describes; `update(any_value, [])` no longer clears it.
-- **Breaking:** The message reducers (`Graph.Messages.add_messages/2`,
-  `delta_reducer/2`, `normalize/1`) accept what
-  `BeamWeaver.Core.Message.from/1` accepts and reject the roles `"human"` and
-  `"ai"`; use `"user"` and `"assistant"`. A `"developer"` message becomes a
-  system message, as with `Message.from/1`.
 - A step's update (`GraphUpdate` events and checkpoint metadata) shows a
   reducer key's writes folded from the first write, without the channel's
   starting value, so a message removal appears as the
@@ -1186,44 +1539,9 @@ breaking too). Read Security first.
   from that task (its node, a `Command`'s `goto` and the `Send`s it returned).
   Code that reads the raw entries should skip it, as it skips `"__error__"`
   and `"__interrupt__"`.
-- **Breaking:** `max_runs:` on a guarded edge counts the times one run takes
-  the edge. A new run on a thread counts from zero, and a run that continues
-  where the thread stopped (`resume/3`, `invoke/3` with an empty input after a
-  failure, or a continue after `update_state/4`) keeps its count. Before, the
-  counts were saved with the thread, so a loop limit used up in one turn stayed
-  used up for every later `invoke/3` on the thread. To limit a loop across a
-  whole thread, count the rounds in the state with a reducer and check the
-  count in the edge's `when:` function, such as
-  `when: fn _update, state -> state.revisions < 3 end`.
 
 #### Streaming
 
-- **Breaking:** `stream_events/3` without `live: true` reads the same stream a
-  live call returns, to its end, so both give the same events in the same
-  order. The collected list therefore starts and ends with the run's
-  `Debug %{type: :producer_start}` and `%{type: :producer_stop}` events
-  instead of `Debug %{type: :start, status: :running}` and
-  `Done %{result: %{status: ...}}`, and a paused run's `interrupt.events`
-  include the `Debug %{type: :interrupt}` event. `Done` now only marks the
-  end of a streamed model call: use the
-  `{:ok, _}`/`{:interrupted, _}`/`{:error, _}` result for how the run ended.
-  `metadata:` is added to every event's envelope, and the `namespace:` option
-  is gone.
-- **Breaking:** In an agent's stream (`stream_events/3`), a model call that
-  fails sends a `Debug` event whose payload is
-  `%{type: :model_call_failed, error: error}` instead of passing on the
-  provider's `Error` event, so an `Error` event only ends a run that fails.
-  A run whose failed model call `ModelRetry` retried or `ModelFallback`
-  replaced had an `Error` event in the middle and then succeeded, and a run
-  that failed had two `Error` events, the model's and then the run's. The
-  tokens a failed call sent stay in the stream: drop them when the `Debug`
-  event arrives, as the LiveView example in the Streaming guide does (a
-  `stream_mode:` list needs `:debug` to get it). For the same reason
-  `Stream.Subgraphs`, `Stream.Lifecycle` and
-  `Agent.Subagent.StreamTransformer` no longer mark a subgraph or subagent
-  failed when one of its model calls failed and was retried; a subgraph whose
-  run fails is `:failed` (see Fixed). `PII.stream_transform/1` emits the text
-  it holds back for a failed call before that event.
 - Events a node writes (its `runtime.stream_writer`, tool events, a streamed
   model's `Token`, `MessageChunk` and `Done`) carry that node in
   `envelope.node`, and inside a subgraph or subagent the same namespace of
@@ -1233,44 +1551,13 @@ breaking too). Read Security first.
   `Checkpoint`, `Message`) have `node: nil`, live too.
 - `runtime.stream_writer` does nothing during `invoke/3` and `resume/3`;
   before, each value was mailed to the run's process and thrown away.
-- **Breaking:** `BeamWeaver.Graph.Runtime` no longer has a `collect_stream?`
-  field; check `stream_sink` to know whether the run is streamed.
 
 #### Memory, storage and caching
 
-- **Breaking:** Both memory stores take the same TTL options: `default_ttl:`
-  (minutes) and `refresh_ttl:` (`true` or `false`; the default, `false`, is
-  also what `nil` means).
-  `Memory.ETS.new(ttl: %{default_ttl: ..., refresh_on_read: ...})` and
-  `ttl_config:` become `Memory.ETS.new(default_ttl: ..., refresh_ttl: ...)`,
-  and `Memory.Ecto.new(refresh_on_read?: true)` becomes `refresh_ttl: true`.
-  `Memory.ETS` no longer refreshes by default. A refresh starts the record's
-  own lifetime again; before, it used the store's `default_ttl` and skipped
-  records when the store had none. `Memory.ETS.new/1` and
-  `Memory.Ecto.new/1` raise `ArgumentError` for an unknown option, which they
-  used to ignore, and for a `refresh_ttl:` that isn't a boolean.
 - `refresh_ttl` on `Memory.GetOp` and `Memory.SearchOp` defaults to `nil`,
   which follows the store's setting, and `true` or `false` overrides it for
   that read; before, both stores ignored it. `Memory.search/3` takes
   `refresh_ttl:` too.
-- **Breaking:** `Memory.Ecto` needs memory schema version 2, which keeps each
-  record's lifetime in a new `ttl_minutes` column (filled in for existing
-  records). Add a migration that calls
-  `BeamWeaver.Migrations.up(adapters: [:memory])`; `verify_migrated!/1`
-  raises until you do. Version 2 gives each record already stored the time
-  from its last write to its expiry as its lifetime, which is too long for
-  the records a store with `refresh_on_read?: true` read, because reading
-  moved their expiry and not their write time. For such a store, pass its
-  `default_ttl:` (minutes) to the `:memory` entry, as in
-  `BeamWeaver.Migrations.up(adapters: [{:memory, default_ttl: 60 * 24}])`, so
-  no record gets a longer lifetime; a non-positive value raises
-  `ArgumentError`.
-- **Breaking:** `Serialization.Config` keeps the codec's own options, such as
-  `:encryption_key`, in `opts`. `Serialization.dump/2` and `load/2` give the
-  codec those options and the registry, and no longer the caller's other
-  options, so put codec options in `serialization: [...]`.
-  `Serialization.Encrypted` reads its options from the options it is given,
-  no longer from a nested `serialization:` list.
 - The `:vector_store` migration raises `ArgumentError` for an `index:` other
   than `:ivfflat`, `:hnsw` or `false`, and for more than 2,000 dimensions
   with an index, instead of failing in Postgres or creating an `:ivfflat`
@@ -1278,64 +1565,14 @@ breaking too). Read Security first.
 - `Memory.Ecto`, `Cache.Ecto`, `VectorStore.EctoPostgres` and
   `RecordManager.EctoPostgres` quote their table names the way the migration
   does, so names with capitals match the tables it created.
-- **Breaking:** Map keys keep their type at any depth when
-  `BeamWeaver.Serialization` saves a value, so `Checkpoint.Ecto` gives back
-  what `Checkpoint.ETS` gives: state values, pending writes, interrupt values,
-  `Send` updates and metadata, and `Cache.Ecto` entries, come back as
-  `%{order: %{id: "A-1001"}}` instead of `%{"order" => %{"id" => "A-1001"}}`;
-  so do `Serialization.load/2` and `load_value/2`. A JSON object names its atom
-  keys under `"__beam_weaver_atom_keys__"` (`true` when every key is an atom),
-  and a map with other keys, such as integers or tuples, is saved as a list of
-  entries: `%{1 => "a"}` no longer loads as `%{"1" => "a"}`, and a tuple key no
-  longer raises `Protocol.UndefinedError`. Loading creates no atoms: a key
-  whose atom doesn't exist in the running system comes back as a string.
-  Nor does it build a struct the serialization registry doesn't list: data
-  that names `__struct__` as a key, among a JSON object's atom keys or as an
-  atom key of a map saved as entries, is a
-  `{:error, %Error{type: :serialization_error}}` from `Serialization.load/2`
-  and `load_value/2`, and `Checkpoint.Ecto` and `Cache.Ecto` fail to read
-  such a row, so an edited checkpoint or cache row can't become a
-  `File.Stream` or any other struct (BeamWeaver never saves that key). A
-  registered exception struct takes `__exception__` from its module, not
-  from the saved data. Checkpoints and cache entries saved by earlier
-  versions load as before, with string keys in nested maps. Code that read
-  string keys from loaded values, such as
-  `tuple.checkpoint["channel_values"]["order"]["id"]`, reads the keys that
-  were saved: `tuple.checkpoint["channel_values"][:order][:id]`.
 
 #### Tracing and telemetry
 
-- Middleware trace spans are named after the middleware module
-  (`TodoList.wrap_model_call`) instead of Python DeepAgents class names.
+- Middleware trace spans are named after the middleware module, such as
+  `TodoList.wrap_model_call`.
 
 #### Retrieval, prompts and parsers
 
-- **Breaking:** Chunks no longer copy their document's `id`. The chunks of a
-  document with an id get ids made from it, `"refunds:0"`, `"refunds:1"` and
-  so on, in `TextSplitter.split_documents/2`, `transform_documents/3`,
-  `create_documents/3`, `split_file/3` and `split_url/3`, and carry the
-  document's id as `"parent_id"` in their metadata (a chunk split again keeps
-  the one it has); chunks of a document without an id still have none.
-  `Indexing.index/3` uses `"parent_id"` as a chunk's source when its metadata
-  has no `source_id` or `source`, so `cleanup: :incremental` deletes the
-  chunks a shorter version of a document no longer has. Code that looked
-  chunks up by their document's id should use the derived ids.
-- **Breaking:** Chat prompts read a message role as
-  `BeamWeaver.Core.Message.from/1` does: `"developer"` (or `:developer`)
-  renders a system message with `metadata.openai_role: :developer`, and a
-  role other than `system`, `user`, `assistant` and `tool` (atoms or
-  strings), such as `"human"`, `"ai"` or `"critic"`, is an `:invalid_role`
-  error from `Prompt.format/3`, `format_prompt/3`, `Prompt.to_spec/1` and
-  `Prompt.save/3`, and from `Prompt.load/2` and `Prompt.from_spec/2` for a
-  saved template with that role. Before, `"human"` and `"ai"` were read as
-  `user` and `assistant`, and any other role, `"developer"` included,
-  rendered a user message. Use `:user` and `:assistant`.
-- **Breaking:** `Prompt.few_shot/1` and `Prompt.few_shot_chat/1` raise
-  `ArgumentError` for an option they don't take instead of dropping it.
-  `few_shot_chat/1` takes `prefix_messages:` and `suffix_messages:`, not
-  `prefix:` and `suffix:`.
-- **Breaking:** Document prompts receive the document text as `{content}`
-  only.
 - `Runnable.invoke/3` and `Runnable.stream/3` call a chat model without the
   run's own `tags:`, `metadata:`, `run_id:`, `configurable:` and other run
   settings; its other options, such as `temperature:`, still reach it.
@@ -1346,74 +1583,17 @@ breaking too). Read Security first.
   output-parser and structured-output schemas now also accept
   `use BeamWeaver.Schema` modules.
 
-#### Tools
-
-- **Breaking:** `Core.Tool.invoke/3` with plain arguments returns a
-  `%Core.ToolResult{}` with `content` and `artifact` for a
-  `response_format :content_and_artifact` tool, instead of the content alone,
-  also when the tool returns `{:content_and_artifact, content, artifact}`.
-  Read `result.content` for the text. A `%Graph.Command{}`, a message, or a
-  list of them comes back as it is, so such a tool's command still updates
-  the agent's state.
-- **Breaking:** When several tool calls of one step return a
-  `%BeamWeaver.Graph.Command{}`, `ToolNode` returns a list: one command with
-  all the tool messages, the routing and `jump_to`, then each tool's other
-  updates, so every update goes through the key's reducer. Two tools that
-  write the same key without a reducer now fail the step with
-  `:invalid_update` instead of the last write winning; declare a reducer for
-  keys that parallel tools write. Commands for the parent graph are still
-  combined into one.
-- **Breaking:** In an agent, a tool that injects `:state` gets the state as
-  the run returns it, and so does its `ToolRuntime.state`: the agent's private
-  keys (such as `usage`, `tool_set` and the call-limit counts, and keys that
-  middleware declares with `Graph.private_channel/2`) and managed keys (such
-  as `remaining_steps`) are left out. A tool that needs one names it with
-  `injected :name, {:state, :key}`, which reads any key; the `shell` tool of
-  `Agent.Middleware.ShellTool` now reads its session that way.
-  `Graph.Nodes.ToolNode.new/2` takes `private_keys:` to leave keys out in a
-  graph of your own.
-
 #### Filesystem and sandboxes
 
 - The `execute` file tool returns the command's output followed by its exit
   code, such as `[Command failed with exit code 1]`, and after a timeout an
   error that says the command was stopped, instead of only the output (and an
   empty string after a timeout). The filesystem system prompt says so.
-- **Breaking:** `Sandbox.Docker` operations on a sandbox that isn't started
-  return `error: "container_not_started"` instead of starting a new container
-  for each operation and never removing it. Call `Docker.start!/1` and use
-  the sandbox it returns. `remove: true` (the default) now removes the
-  container when the process that called `start!/1` exits, and starts it
-  with `--rm`; pass `remove: false` to keep it until `Docker.stop/1`.
-- **Breaking:** `Filesystem.State.upload_files/3` returns an error for every
-  file instead of reporting success while storing nothing. Pass State files
-  in the agent's input as `files:`, or set them with
-  `Graph.Compiled.update_state/4`.
 - `Filesystem.Store` without a store returns the error `"missing_store"` from
   reads and writes, instead of reporting a write as done and dropping it.
 
 #### Models and providers
 
-- **Breaking:** A failed model call's error type is the same for every
-  provider and follows the HTTP status: `:invalid_request` (400 and 422),
-  `:authentication` (401, and the 400 with which Gemini and xAI refuse a
-  wrong API key), `:billing_exhausted` (402), `:permission_denied`
-  (403), `:not_found` (404), `:rate_limit` (429) and `:server_error` (every
-  5xx, which is retryable now, not only 500, 502, 503, 504 and 529). A request
-  that gets no response is a `:connection` error, and one that runs past its
-  timeout a `:timeout`. They were `:http_error` and `:transport_error`, and
-  from DeepSeek, Kimi and Z.ai `:authentication_error`, `:rate_limit_error`,
-  `:overloaded_error`, `:invalid_request_error` and `:quota_error`: match the
-  new types instead, and `:billing_exhausted` for `:quota_error`. A context
-  overflow, an exhausted quota and Z.ai's and Kimi's content filters keep
-  their types; any other status is still an `:http_error`, and a request the
-  transport refuses, such as a cassette mismatch, a `:transport_error`.
-  `Transport.ReqFinch` reports a timeout as a `:timeout`
-  `Transport.Error`, no longer `:transport_failure`.
-- **Breaking:** A profile's reasoning efforts are fields, no longer in
-  `extra`: read `reasoning_effort_levels` for `extra.reasoning_efforts` and
-  `extra.effort_levels`, and `reasoning_effort_default` for
-  `extra.default_reasoning_effort` and `extra.default_effort`.
 - Anthropic's `effort:` turns on adaptive thinking with its summary, as
   `reasoning_effort:` does, on a model that takes only adaptive thinking;
   set `thinking:` to send something else. A call's `output_config` is merged
@@ -1421,41 +1601,12 @@ breaking too). Read Security first.
   the three options, wins over the model's. Claude Haiku 4.5 and Sonnet 4.5,
   which take no effort, reject `effort:` before the request instead of
   sending it.
-- **Breaking:** `init_chat_model/2`, `init_embeddings/2` and
-  `init_decision_model/2` return
-  `{:error, %Error{type: :unsupported_model_param}}` for an option the model
-  doesn't take, such as a misspelled one or `reasoning_effort:` on
-  Anthropic; they used to drop it. Their errors carry the provider in
-  `details.provider` for every model. Call options, such as `tools:` or
-  `tool_choice:`, go with each call (`ChatModel.invoke/3`) or through
-  `Models.bind_tools/3`; an agent's model options may still carry them.
-- **Breaking:** Every provider checks a call's model parameters against the
-  model profile, as Google and the OpenAI-compatible providers did: OpenAI
-  and xAI Responses and Anthropic now return `:unsupported_model_param` for a
-  parameter the model doesn't list, such as `top_k:` or `stop:`, instead of
-  dropping it. `stop:` on xAI reasoning models over Chat Completions returns
-  it too; it used to be dropped.
 - Requests check more of the model profile before they are sent: OpenAI and
   xAI reasoning efforts, Gemini thinking levels, and built-in tools a Gemini
   model lacks (computer use on Gemini 3.1).
-- **Breaking:** The `api:` option of OpenAI and xAI returns
-  `:invalid_provider_option` for a value other than `:responses` or
-  `:chat_completions`; it used to fall back to Responses.
 - `base_url: nil` passed to a provider client's `new/1` means "not set" for
   every provider: the client falls back to application config, then the
   default URL. Moonshot, Z.ai, xAI, DeepSeek, and Google used to skip config.
-- **Breaking:** A missing API key fails before any request with
-  `{:error, %Error{type: :missing_api_key,
-  details: %{provider: ..., retryable: false}}}` on every provider. It used
-  to send the request without credentials. TypeSafe's `:model_authentication`
-  error is now `:missing_api_key`. Credentials in an `authorization` (or the
-  provider's key) header in `default_headers:` count as a key.
-- **Breaking:** A failed transport call keeps its cause: the
-  `:transport_error` has the transport's error type in `details.reason` (such
-  as `:cassette_mismatch`, `:timeout` or `:transport_failure`), with the
-  transport's details, such as `details.request` and `details.expected` for
-  a cassette mismatch; `details.reason` used to be an inspected string. A
-  `BeamWeaver.Core.Error` from a transport is returned unchanged.
 - Anthropic and Google message and tool conversion return
   `{:error, %Core.Error{}}` only for invalid input (`ArgumentError`); other
   exceptions are no longer turned into errors and propagate as crashes.
@@ -1471,161 +1622,21 @@ breaking too). Read Security first.
 - Kimi K2.6 and K2.5 get a response schema as JSON mode with the schema in a
   system message, since they ignore a JSON Schema response format; an
   agent's `response_schema` now works on them.
-- **Breaking:** `Core.Messages.Utils`: `messages_to_dict/1` is now `encode/1`,
-  `messages_from_dict/1` is `decode/1`, `get_buffer_string/2` is
-  `buffer_string/2`, and `convert_to_openai_messages/2` is
-  `to_openai_messages/2`, which with `api: :responses` returns one flat list
-  of items, an assistant message with tool calls giving its message item and
-  one `function_call` item per call. `message_to_dict/1` and
-  `convert_to_messages/1` are removed (use `encode/1` and `normalize/1`).
-- **Breaking:** The `:approximate` token counter and
-  `LanguageModel.count_tokens_approximately/1` estimate about four characters
-  per token, plus three per message, the same way as
-  `Messages.Utils.count_tokens_approximately/2`, instead of counting words.
-  This changes `Messages.Utils.trim/2` by default, the `:approximate`
-  `ContextEditing` counter, and `count_tokens` of models without a tokenizer,
-  such as the fake models; raise budgets that were set in words. `trim/2`
-  with `allow_partial: true` also measures the partial message with the
-  counter, overhead included, instead of counting words, and leaves the
-  message out when not even one word fits.
-- **Breaking:** `Models.UsageCost` reads pricing maps with atom keys only (as
-  profiles define them). Raw provider usage maps may still use string keys.
 - `RateLimiter.TokenBucket` children use their `:name` as child id (or
   `:id`), so several named buckets fit in one supervisor without
   `Supervisor.child_spec/2`.
-- **Breaking:** `Transport.Safe` no longer uses a `:finch` option you pass:
-  every request runs on the isolated pools (see Security). Pass connection
-  settings, such as a proxy or `transport_opts` with CA certificates, as
-  `connect_options:` instead; a pinned request ignores both, as before, and
-  connects straight to the address it checked.
 - Z.ai PDF blocks are sent as Z.ai's documented `file` part
   (`%{"type" => "file", "file" => %{"file_url" => url}}`, or `"file_data"`
   with a data URL and the block's `filename`) instead of a `file_url` part.
-- **Breaking:** xAI Responses requests to a reasoning model carry
-  `"include": ["reasoning.encrypted_content"]`, added to an `include:` list
-  you pass; `extra_body: %{include: [...]}` replaces the list. Replay
-  cassettes and fakes that match xAI request bodies exactly need the new
-  field; re-record them or add it.
-- **Breaking:** `use_previous_response_id: true` on OpenAI continues only
-  from a reply OpenAI made (`response_metadata.model_provider == "openai"`,
-  as every decoded OpenAI reply has), so a DeepSeek Responses reply (after a
-  fallback, say), whose id also starts with `resp_`, is no longer sent to
-  OpenAI as `previous_response_id`. A reply built by hand with only
-  `response_metadata: %{id: "resp_..."}` is sent as a message; add
-  `model_provider: "openai"` to it, or pass `previous_response_id:`.
-- **Breaking:** `OpenAI.ModerationMiddleware` (and `moderate/2`) return the
-  client's error when the moderation request fails, such as
-  `:missing_api_key`, `:http_error` (with `details.status`) or
-  `:transport_error`, instead of wrapping every failure in
-  `:openai_moderation_request_failed` with an inspected reason. Match on
-  those types instead.
-- **Breaking:** Typed streams are made of `BeamWeaver.Stream.Envelope`
-  structs to the end. Anthropic's and Gemini's `stream_typed_events/3`, and
-  every client's typed stream function (such as
-  `Anthropic.Client.messages_stream_typed_events/3`,
-  `OpenAI.Client.responses_stream_typed_events/3` and
-  `Google.Client.stream_events/4`), ended a failed stream with a bare
-  `%Events.Error{}`. A wrapped model (`Models.bind_tools/3`,
-  `with_rate_limiter/2`, `cached/3`) ends its typed stream with an `Error`
-  envelope and no `Done` after it; it sent the error as a `Custom` event
-  followed by `Done`. Match `%Envelope{event: %Events.Error{}}`.
-- **Breaking:** A model stream that reports an error partway through fails
-  with the provider's HTTP error, the one the same failure gets without
-  streaming (see Fixed), such as `:http_error` with `status: 503`; match on
-  those error types and on `details.status` or `details.code` instead. A Chat
-  Completions (OpenAI, xAI) or Gemini stream with an `error` chunk failed with
-  `:response_error`. A Responses API stream (OpenAI, xAI, DeepSeek) that ends
-  with `response.failed` fails like one with an `error` event, with the HTTP
-  error for the failed response's error code: `server_error` is a retryable
-  `:http_error` with `status: 500`, `rate_limit_exceeded` a retryable 429 and
-  `invalid_prompt` a 400 that isn't retried, with the failed response in
-  `details.body["response"]`. Before, its typed stream ended with a
-  `:response_failed` error, and `stream_response/3` returned
-  `:response_error`, which `ModelRetry` didn't retry even for a server error.
-  A stream that ends with `response.incomplete` still ends with the reply,
-  with `status: "incomplete"`, as without streaming. Text streams (`stream/3`)
-  and raw lifecycle streams (such as
-  `Anthropic.Client.messages_stream_events/3` and
-  `OpenAI.Client.responses_stream_events/3`) end with an `Error` event after
-  such an error, as they do after a failed HTTP response, instead of ending
-  early, ending as if the reply were complete, or passing the provider's
-  error event through.
-- **Breaking:** A Z.ai or DeepSeek reply that the provider ends with a finish
-  reason reporting that it couldn't finish it fails the call, with or without
-  streaming, with the error the provider gives the same failure. Z.ai's
-  `sensitive` (its safety review blocked the reply; Z.ai sends it instead of
-  its error 1301) is a `:content_filter` error with `status: 400`, which
-  `ModelRetry` doesn't retry. Z.ai's `network_error` (its inference failed)
-  and DeepSeek's `insufficient_system_resource` and `aborted` are server
-  errors with `status` 500, 503 and 500, which it retries. `details.code` is
-  the finish reason. `invoke/3`, `stream_response/3`, `stream_typed_events/3`,
-  `stream/3` and streaming agents returned such a reply, cut short or
-  blocked, as a complete one with the finish reason as its `status`: handle
-  the error instead. Every other finish reason still ends a reply, the way
-  each API documents it, including `length`, Z.ai's
-  `model_context_window_exceeded` and OpenAI's and DeepSeek's
-  `content_filter` (the reply holds what the filter left); check the reply's
-  `status`.
-- **Breaking:** Anthropic models check `metadata:`, Anthropic's request
-  field, before the request. Anthropic's API reference gives it one key,
-  `user_id`, a string of at most 512 characters. Another key, a `user_id`
-  that isn't a string of at most 512 characters (or `nil`), or a value that
-  isn't a map returns `{:error, %Error{type: :unsupported_model_param}}`
-  whose message names the key: from `init_chat_model/2` for the model's own
-  `metadata:` (so an agent with it fails before its first model call) and
-  from every call. Lengths count characters, not bytes. Such metadata used to
-  be sent to Anthropic as it was. Send only `user_id`, and put trace data in
-  `trace_metadata:`.
-- **Breaking:** OpenAI models check `metadata:` against the limits in OpenAI's
-  API reference, on Responses and Chat Completions: a map of at most 16
-  key-value pairs, with keys of at most 64 characters and values that are
-  strings of at most 512 characters (atom keys and values are sent as
-  strings, and lengths count characters, not bytes). Other metadata returns
-  `{:error, %Error{type: :unsupported_model_param}}` whose message names the
-  key at fault, never a value: from `init_chat_model/2` for the model's own
-  `metadata:`, and from every call. Such metadata used to be sent as it was
-  (a keyword list failed to encode).
-- **Breaking:** Moonshot, DeepSeek and Z.ai models refuse `metadata:`, which
-  none of their APIs has. A call with it returns
-  `{:error, %Error{type: :unsupported_model_param}}`, checked against the
-  model's profile and `param_policy:` like any other parameter; it used to be
-  dropped without a word. Z.ai's model profiles no longer list `:metadata`,
-  so creating a Z.ai model with it no longer suggests passing it on the call,
-  and a DeepSeek Responses model created with an option every call refuses,
-  such as `metadata:` or `store:`, fails when it is created, with that call's
-  error. Put trace data in `trace_metadata:`; for an end-user id, DeepSeek and
-  Z.ai take `user_id:` and Moonshot `safety_identifier:`.
-- **Breaking:** xAI models check `metadata:` when they are created. xAI's
-  Chat Completions API has no request metadata, and its Responses API keeps
-  the field only for compatibility, so every call with a model's `metadata`
-  failed; `init_chat_model/2` now returns that call's error,
-  `{:error, %Error{type: :unsupported_model_param}}` with
-  `params: [:metadata]`, checked against the model's profile and
-  `param_policy:` as calls are. An agent whose xAI model declares `metadata:`
-  fails before its first model call. Put trace data in `trace_metadata:`.
 
 #### Compaction engine
 
-- **Breaking:** `Compaction.State.record_success/2` takes the activated
-  `%Compaction.Checkpoint{}` and records its trigger, high-water mark,
-  tokens, accounting identity and root turn. It replaces
-  `record_success(state, trigger, lane_ordinal, tokens_after)`; you no longer
-  need `State.rebase_accounting/2` before it.
 - The automatic-compaction limit (`maximum_auto_compactions_per_root_turn`)
   and the overflow retry count are per root turn: a request or checkpoint
   with a new `root_turn_id` starts them again. `Compaction.State` has a
   `root_turn_id` field.
 - The compaction constructors no longer swallow arbitrary exceptions; only
   missing required compaction fields turn into `{:error, ...}`.
-
-#### Testing
-
-- `FakeChatModel` plays a multi-entry `responses:` list in turn order, one
-  entry per model call, and repeats the last entry once the list runs out.
-  The turn is read from the conversation (each reply carries
-  `metadata.fake_turn`), so the script also continues across resumed threads.
-  Before, it always returned the first entry. `responses:` now takes
-  precedence over `structured_response:`.
 
 ### Fixed
 
@@ -1743,6 +1754,10 @@ breaking too). Read Security first.
   turn failed with `:invalid_chat_history`, and a limit on one tool failed
   with `:tool_call_limit_parallel_end_unsupported` when the batch also called
   other tools. The batch no longer counts against the thread.
+- `ToolCallLimit`'s final message names the exceeded limit when a batch has
+  both allowed and refused calls (`exit_behavior: :end` or `:error`). It
+  left out the calls the batch allowed, so the message read "Tool call limit
+  reached: ." with no limit named.
 
 #### Subagents and deep agents
 
@@ -1816,10 +1831,10 @@ breaking too). Read Security first.
   back with string keys: `get_state/2`, `get_state_history/3`, a resumed or
   continued run and `update_state/4` saw `%{"messages" => ...}` where
   `Checkpoint.ETS` gave `%{messages: ...}`, for agents (`messages`,
-  `structured_response`, extra keys) and graphs alike. A thread now reads
-  back as it does from `Checkpoint.ETS`, maps nested in its values included
-  (see the serialization change under Changed), and declared channels always
-  come back under the key the graph declares.
+  `structured_response`, extra keys) and graphs alike. A thread now reads back
+  as it does from `Checkpoint.ETS`, maps nested in its values included (see
+  the serialization change under Breaking changes), and declared channels
+  always come back under the key the graph declares.
 - On `Checkpoint.Ecto`, a `Send` task that paused or failed could not be
   continued: resuming it paused again forever, and continuing the thread ran
   `Send` tasks that had finished a second time, because the task's id
@@ -1927,6 +1942,8 @@ breaking too). Read Security first.
   next write needs from the checkpoint it last wrote or read; the
   checkpoints written are the same. A ten-node graph on `Checkpoint.ETS`
   runs about 12% faster.
+- `Graph.ServerInfo.new/1` keeps a user's `is_authenticated: false`; it
+  became `nil`.
 
 #### Streaming
 
@@ -1996,6 +2013,14 @@ breaking too). Read Security first.
 - `Serialization.load/2` returns a `:serialization_error` for an encoded atom
   whose value isn't a string and for an encoded tuple whose items aren't a
   list, instead of raising.
+- SQLite checkpoint migrations given the singular
+  `adapter: {:checkpoint, checkpoints_table: ..., writes_table: ...}` check
+  the version of those tables. They checked the default table, so a rollback
+  left the named tables in place.
+- `Memory.search/3` with `filter:` skips records whose value isn't a map
+  instead of raising `FunctionClauseError` in the ETS store.
+- `Memory.get_many/3` returns a stored `{:error, _}` value as that value
+  instead of reporting a failed read.
 
 #### Tracing and telemetry
 
@@ -2044,6 +2069,8 @@ breaking too). Read Security first.
   or in a call's `exporter:` option gets events even when nothing has loaded
   its module yet. In development and tests, where modules load on first use,
   it got none until something else called the module.
+- The WeaveScope exporter maps a run kind given as an atom the way it maps
+  the string, so `:generation` exports as `"generation"`, not `"span"`.
 
 #### Retrieval, prompts and parsers
 
@@ -2091,6 +2118,9 @@ breaking too). Read Security first.
 - A `schema` output parser parses partial JSON with
   `OutputParser.parse_partial/2`, and returns `nil` until the value matches
   the schema; it failed on incomplete JSON.
+- Pretty-printed JSON (`Prompt.save/3` to a `.json` file, the schema in the
+  JSON-object mode instruction, recorded cassettes) handles atom values and
+  structs such as `DateTime` the way compact JSON does, instead of raising.
 
 #### Tools
 
@@ -2107,6 +2137,11 @@ breaking too). Read Security first.
   `metadata.artifact`; it dropped them.
 - A tool module without `description` is described by its `@moduledoc`; it
   got an empty description.
+- A property typed `"null"` in a tool's input schema or a structured-output
+  schema accepts only `nil`; it accepted any value.
+- A `$ref` to an integer-keyed entry, such as `#/$defs/400`, resolves even
+  when the segment also names an existing atom. It failed with
+  `:json_schema_ref_not_found` depending on which atoms the VM had created.
 
 #### Filesystem and sandboxes
 
@@ -2149,6 +2184,13 @@ breaking too). Read Security first.
   `UnicodeConversionError` until the session restarted. Command environment
   values now pass their bytes through unchanged (`:binary.bin_to_list/1`),
   which also stops a UTF-8 value being re-encoded as Latin-1.
+- `Sandbox.Local.read/3` returns a binary file whole, as `Sandbox.Docker` and
+  `Filesystem.Local` do. It applied `offset:` and `limit:` as a byte range, so
+  the `read_file` tool's default line limit cut binary files to 2000 bytes.
+- `Sandbox.Local` reports reading or editing a directory as `"is_directory"`,
+  like `Filesystem.Local`, instead of `":eisdir"`.
+- `Sandbox.Local.edit/5` with an empty old string reports `"string not found"`
+  as the other backends do; on an empty file it wrote the new text.
 
 #### Models and providers
 
@@ -2407,6 +2449,17 @@ breaking too). Read Security first.
   given as a module or `%Tool{}` struct by its name, description and
   parameters, as a provider gets it. A struct counted as its `inspect` text
   and a module as its name.
+- `Models.ProfileRegistry.fetch(:deepseek, nil)` returns an
+  `:unsupported_model` error, as the other providers do, instead of raising
+  `FunctionClauseError`.
+- `DeepSeek.Client.new/1` derives the beta and Anthropic endpoints from a base
+  URL with non-ASCII characters correctly; with two or more it kept part of
+  the `/v1` suffix (`https://düüp.test/v/beta`).
+- Structured-output parsing reports a truncated answer when only the
+  response metadata says so (`finish_reason`, `incomplete_details` or
+  `status`). A missing finish reason in the message metadata was read as the
+  reason `"nil"`, which stopped the search, so the answer failed as invalid
+  JSON instead.
 
 #### Compaction engine
 
@@ -2427,6 +2480,55 @@ breaking too). Read Security first.
   as they are written (an empty string used to become an empty map), and a
   cassette that isn't valid YAML returns `:invalid_cassette` instead of
   raising.
+
+### Documentation
+
+- The guides are rewritten and reorganized. A Quickstart builds a first agent
+  without an API key, Concepts explains how agents, graphs and deep agents fit
+  together, and each feature has one page. New pages cover testing, caching,
+  storage, graph state, memory files and coming from LangChain, and each
+  provider page has a model table generated from the model profiles.
+- Every Elixir example in the README, the guides and the main module docs runs
+  or compiles in the test suite.
+- Old page names redirect to their new pages on GitBook and HexDocs.
+- The examples call their tools and check that they did.
+- The deep agent examples that failed on some providers say which tool does
+  the work and why: `better_harness.exs` (the evals read `/prompt.txt` from
+  disk), `downloading_agents.exs` (drafts are collected from `/drafts`),
+  `llm_wiki.exs` (people read the pages), `ralph_mode.exs` (one save ends a
+  run) and `deep_agent_composition.exs` (only the writer subagent knows the
+  facts).
+- When an example's tool check fails, it prints the conversation, one line per
+  message, before raising.
+- New `examples/zai_media.exs` sends an image, a PDF and a video to
+  GLM-5.3-Flash; `mix examples.live --provider zai` runs it.
+- `examples/support.exs` sets `reasoning_effort: "low"` only on Z.ai models
+  whose profile takes it, so `mix examples.live --model zai:glm-5.1` (and
+  GLM-5, GLM-4.7, GLM-4.6) runs the examples; every script used to fail with
+  `:unsupported_model_param`.
+- `mix examples.live` runs a script once more, after 15 seconds, when it
+  failed on a provider's temporary capacity error (an HTTP 429 or 5xx error
+  marked retryable); failures of the example itself are never retried.
+  `content_builder_agent.exs` says that only posts saved under `/posts` are
+  published and that the agent calls `generate_cover` itself.
+- Examples that summarize their conversation check tool use through a
+  recording middleware (`Support.tool_log/0` in `examples/support.exs`), so a
+  summary can't hide the calls, and the live examples allow a model call 120
+  seconds.
+- Guardrails has a recipe for a reply a content filter stopped, which
+  OpenAI's APIs end early as a normal completion: an `after_model/3` hook
+  checks `Outcome.classify(reply).turn_disposition == :filtered`, asks the
+  model once more, and then fails the call with a `:content_filter` error.
+- The Anthropic, OpenAI and xAI provider pages describe `metadata`, the
+  provider's request field, with its limits, and point to `trace_metadata:`
+  for trace data; the xAI page says xAI takes no request metadata. Models
+  says which stream errors count as server errors and when BeamWeaver logs a
+  warning about one.
+- Subgraphs shows how to edit what a paused subgraph sees: pass its namespace
+  from the thread's history as `checkpoint_ns` to `Compiled.update_state/4`
+  on the parent graph.
+- Tracing lists the `[:beam_weaver, :provider, :unsupported_feature]`
+  telemetry event.
 
 ## 0.1.32 - 2026-10-08
 

@@ -1,7 +1,6 @@
 defmodule BeamWeaver.SerializationTest do
   use ExUnit.Case, async: true
 
-  alias BeamWeaver.Adapter.ValueCodec
   alias BeamWeaver.Agent.Subagent.AsyncTask
   alias BeamWeaver.Agent.Usage
   alias BeamWeaver.Core.ContentBlock
@@ -439,28 +438,6 @@ defmodule BeamWeaver.SerializationTest do
              Serialization.load(encoded_document, registry: message_registry)
   end
 
-  test "adapter value codec shares the safe durable serialization boundary" do
-    value = %{
-      "message" => %Message{id: "m-codec", role: :tool, content: "done"},
-      "tuple" => {:ok, [:known, 1]}
-    }
-
-    assert {:ok, encoded} = ValueCodec.dump(value)
-    refute match?(<<131, _::binary>>, encoded)
-    assert {:ok, decoded} = ValueCodec.load(encoded)
-
-    assert decoded["message"].id == "m-codec"
-    assert decoded["tuple"] == {:ok, [:known, 1]}
-  end
-
-  test "adapter value codec loads plain JSON rows and rejects corrupt tagged payloads" do
-    assert {:ok, %{"plain" => [%{"value" => 1}]}} =
-             ValueCodec.load_json_value(%{"plain" => [%{"value" => 1}]})
-
-    corrupt = %{"__beam_weaver_type__" => "binary", "base64" => "%%%"}
-    assert {:error, %Error{type: :serialization_error}} = ValueCodec.load_json_value(corrupt)
-  end
-
   test "checkpoint-shaped payloads allow only registered BeamWeaver tags and keep foreign constructors inert" do
     foreign_constructor = %{
       "lc" => 2,
@@ -482,7 +459,7 @@ defmodule BeamWeaver.SerializationTest do
       ]
     }
 
-    assert {:ok, decoded} = ValueCodec.load_json_value(checkpoint_value)
+    assert {:ok, decoded} = Serialization.load_value(checkpoint_value)
     assert decoded["channel_values"]["messages"] == [foreign_constructor]
     assert [["task-1", "messages", %Remove{id: "m-1"}]] = decoded["pending_writes"]
 
@@ -494,7 +471,7 @@ defmodule BeamWeaver.SerializationTest do
       )
 
     assert {:error, %Error{type: :unsupported_serialization_type}} =
-             ValueCodec.load_json_value(unsafe)
+             Serialization.load_value(unsafe)
   end
 
   test "adapters keep the encryption key of their serialization config without showing it" do
@@ -503,15 +480,15 @@ defmodule BeamWeaver.SerializationTest do
     checkpointer = BeamWeaver.Checkpoint.Ecto.new(repo: NoRepo, serialization: serialization)
     cache = BeamWeaver.Cache.Ecto.new(repo: NoRepo, serialization: serialization)
 
-    assert {:ok, sealed} = ValueCodec.dump(%{"card" => "4111"}, serialization: cache.serialization)
+    assert {:ok, sealed} = Serialization.dump(%{"card" => "4111"}, serialization: cache.serialization)
     refute sealed =~ "4111"
-    assert {:ok, %{"card" => "4111"}} = ValueCodec.load(sealed, serialization: cache.serialization)
+    assert {:ok, %{"card" => "4111"}} = Serialization.load(sealed, serialization: cache.serialization)
 
-    assert {:ok, sealed} = ValueCodec.dump_json_value(%{"card" => "4111"}, serialization: checkpointer.serialization)
+    assert {:ok, sealed} = Serialization.dump_value(%{"card" => "4111"}, serialization: checkpointer.serialization)
     assert %{"ciphertext" => _ciphertext} = sealed
 
     assert {:ok, %{"card" => "4111"}} =
-             ValueCodec.load_json_value(sealed, serialization: checkpointer.serialization)
+             Serialization.load_value(sealed, serialization: checkpointer.serialization)
 
     refute inspect(checkpointer, limit: :infinity) =~ "encryption_key"
     refute inspect(cache, limit: :infinity) =~ "encryption_key"

@@ -58,9 +58,7 @@ defmodule BeamWeaver.Agent.Middleware.Skills do
 
   @impl true
   def wrap_model_call(%__MODULE__{} = middleware, %ModelRequest{} = request, handler) do
-    {skills, errors} =
-      request |> cached_skills(middleware) |> load_skills_if_missing(middleware, request)
-
+    {skills, errors} = request_skills(request, middleware)
     prompt = skills_prompt(middleware, skills, errors)
 
     request =
@@ -81,33 +79,19 @@ defmodule BeamWeaver.Agent.Middleware.Skills do
     paths
     |> Enum.reduce({%{}, []}, fn path, {skills, errors} ->
       {source_skills, source_errors} = load_skill_source(middleware.backend, path, opts)
-
-      skills =
-        Enum.reduce(source_skills, skills, fn skill, acc ->
-          Map.put(acc, skill.name, skill)
-        end)
-
-      {skills, errors ++ source_errors}
+      {Map.merge(skills, Map.new(source_skills, &{&1.name, &1})), errors ++ source_errors}
     end)
     |> then(fn {skills, errors} ->
       {skills |> Map.values() |> Enum.sort_by(& &1.name), errors}
     end)
   end
 
-  defp cached_skills(%ModelRequest{state: state}, %__MODULE__{state_key: state_key}) do
-    case Map.get(state, state_key) do
-      skills when is_list(skills) ->
-        {:ok, skills, Map.get(state, :skills_load_errors) || []}
-
-      _other ->
-        :missing
+  defp request_skills(%ModelRequest{state: state} = request, %__MODULE__{} = middleware) do
+    case Map.get(state, middleware.state_key) do
+      skills when is_list(skills) -> {skills, Map.get(state, :skills_load_errors) || []}
+      _other -> load_skills(middleware, state, request.runtime)
     end
   end
-
-  defp load_skills_if_missing({:ok, skills, errors}, _middleware, _request), do: {skills, errors}
-
-  defp load_skills_if_missing(:missing, middleware, %ModelRequest{} = request),
-    do: load_skills(middleware, request.state || %{}, request.runtime)
 
   defp load_skill_source(backend, source_path, opts) do
     direct_path = skill_file(source_path)
@@ -145,9 +129,7 @@ defmodule BeamWeaver.Agent.Middleware.Skills do
     |> Filesystem.download_files(paths, opts)
     |> Enum.reduce({[], []}, fn
       %Filesystem.DownloadResult{error: nil, path: path, content: content}, {skills, errors} ->
-        content = normalize_download_content(content)
-
-        case parse_skill(path, content) do
+        case parse_skill(path, IO.iodata_to_binary(content)) do
           {:ok, skill} -> {skills ++ [skill], errors}
           {:error, error} -> {skills, errors ++ [skill_error(path, error)]}
         end
@@ -346,7 +328,4 @@ defmodule BeamWeaver.Agent.Middleware.Skills do
         |> String.split()
         |> Enum.map_join(" ", &String.capitalize/1)
   end
-
-  defp normalize_download_content(content) when is_binary(content), do: content
-  defp normalize_download_content(content), do: IO.iodata_to_binary(content)
 end

@@ -103,6 +103,15 @@ defmodule BeamWeaver.Provider.StructuredOutputTest do
     assert byte_size(error.details.response.content_preview) < 5_000
   end
 
+  test "truncated structured output is found in response metadata when the message has no finish reason" do
+    message = Message.assistant("{", response_metadata: %{"incomplete_details" => %{"reason" => "max_output_tokens"}})
+
+    assert {:error, %BeamWeaver.Core.Error{type: :structured_output_parse_error} = error} =
+             StructuredOutput.parse(message, nil, provider_name: "OpenAI")
+
+    assert error.details.finish_reason == "max_output_tokens"
+  end
+
   test "truncated structured output detects OpenAI incomplete details with string keys" do
     message =
       Message.assistant("",

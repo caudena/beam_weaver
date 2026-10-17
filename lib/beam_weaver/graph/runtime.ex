@@ -4,6 +4,7 @@ defmodule BeamWeaver.Graph.Runtime do
   """
 
   alias BeamWeaver.Graph.ExecutionInfo
+  alias BeamWeaver.MapAccess
   alias BeamWeaver.Stream.Events
 
   @fields [
@@ -143,14 +144,14 @@ defmodule BeamWeaver.Graph.Runtime do
     do: runtime
 
   def ensure_execution_info(%__MODULE__{} = runtime, config, task) when is_map(config) do
-    configurable = get(config, :configurable, %{})
+    configurable = MapAccess.get(config, :configurable, %{})
 
     execution = %ExecutionInfo{
-      checkpoint_id: get(configurable, :checkpoint_id, ""),
-      checkpoint_ns: get(configurable, :checkpoint_ns, ""),
-      task_id: get(configurable, :task_id, task_id(task)),
-      thread_id: get(configurable, :thread_id),
-      run_id: maybe_to_string(get(config, :run_id))
+      checkpoint_id: MapAccess.get(configurable, :checkpoint_id, ""),
+      checkpoint_ns: MapAccess.get(configurable, :checkpoint_ns, ""),
+      task_id: MapAccess.get(configurable, :task_id, task_id(task)),
+      thread_id: MapAccess.get(configurable, :thread_id),
+      run_id: maybe_to_string(MapAccess.get(config, :run_id))
     }
 
     %{runtime | execution: execution}
@@ -159,13 +160,6 @@ defmodule BeamWeaver.Graph.Runtime do
   defp task_id(%{id: id}) when not is_nil(id), do: to_string(id)
   defp task_id(%{"id" => id}) when not is_nil(id), do: to_string(id)
   defp task_id(_task), do: ""
-
-  defp get(map, key, default \\ nil)
-
-  defp get(map, key, default) when is_map(map),
-    do: Map.get(map, key, Map.get(map, to_string(key), default))
-
-  defp get(_map, _key, default), do: default
 
   defp maybe_to_string(nil), do: nil
   defp maybe_to_string(value), do: to_string(value)

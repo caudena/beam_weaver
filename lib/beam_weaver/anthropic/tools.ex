@@ -65,83 +65,45 @@ defmodule BeamWeaver.Anthropic.Tools do
   end
 
   @doc "Builds a text editor server tool."
-  def text_editor(opts \\ []),
-    do: build(Keyword.get(opts, :type, "text_editor_20250728"), Keyword.delete(opts, :type))
+  def text_editor(opts \\ []), do: server_tool(opts, "text_editor_20250728")
 
   @doc "Builds a computer-use server tool."
-  def computer(opts \\ []),
-    do: build(Keyword.get(opts, :type, "computer_20250124"), Keyword.delete(opts, :type))
+  def computer(opts \\ []), do: server_tool(opts, "computer_20250124")
 
   @doc "Builds a bash server tool."
-  def bash(opts \\ []),
-    do: build(Keyword.get(opts, :type, "bash_20250124"), Keyword.delete(opts, :type))
+  def bash(opts \\ []), do: server_tool(opts, "bash_20250124")
 
   @doc "Builds a web search server tool."
-  def web_search(opts \\ []),
-    do:
-      build(
-        Keyword.get(opts, :type, "web_search_20260318"),
-        opts |> Keyword.delete(:type) |> Keyword.put_new(:name, "web_search")
-      )
+  def web_search(opts \\ []), do: server_tool(opts, "web_search_20260318", name: "web_search")
 
   @doc "Builds a web fetch server tool."
-  def web_fetch(opts \\ []),
-    do:
-      build(
-        Keyword.get(opts, :type, "web_fetch_20260318"),
-        opts |> Keyword.delete(:type) |> Keyword.put_new(:name, "web_fetch")
-      )
+  def web_fetch(opts \\ []), do: server_tool(opts, "web_fetch_20260318", name: "web_fetch")
 
   @doc "Builds a code execution server tool."
-  def code_execution(opts \\ []),
-    do:
-      build(
-        Keyword.get(opts, :type, "code_execution_20260521"),
-        opts |> Keyword.delete(:type) |> Keyword.put_new(:name, "code_execution")
-      )
+  def code_execution(opts \\ []), do: server_tool(opts, "code_execution_20260521", name: "code_execution")
 
   @doc "Builds an advisor server tool."
-  def advisor(opts \\ []),
-    do: build(Keyword.get(opts, :type, "advisor_20260301"), Keyword.delete(opts, :type))
+  def advisor(opts \\ []), do: server_tool(opts, "advisor_20260301")
 
   @doc "Builds an Anthropic browser toolset."
-  def browser_toolset(opts \\ []),
-    do: build(Keyword.get(opts, :type, "browser_toolset_20260801"), Keyword.delete(opts, :type))
+  def browser_toolset(opts \\ []), do: server_tool(opts, "browser_toolset_20260801")
 
   @doc "Builds an Anthropic computer toolset."
-  def computer_toolset(opts \\ []),
-    do: build(Keyword.get(opts, :type, "computer_toolset_20260801"), Keyword.delete(opts, :type))
+  def computer_toolset(opts \\ []), do: server_tool(opts, "computer_toolset_20260801")
 
   @doc "Builds an MCP toolset declaration."
   def mcp_toolset(opts \\ []), do: build("mcp_toolset", opts)
 
   @doc "Builds a memory server tool."
-  def memory(opts \\ []),
-    do: build(Keyword.get(opts, :type, "memory_20250818"), Keyword.delete(opts, :type))
+  def memory(opts \\ []), do: server_tool(opts, "memory_20250818")
 
   @doc "Builds a tool-search server tool."
-  def tool_search(opts \\ []),
-    do:
-      build(
-        Keyword.get(opts, :type, "tool_search_tool_bm25_20251119"),
-        Keyword.delete(opts, :type)
-      )
+  def tool_search(opts \\ []), do: server_tool(opts, "tool_search_tool_bm25_20251119")
 
   @doc false
-  def required_betas(tools, existing \\ []) when is_list(tools) do
-    inferred =
-      tools
-      |> Enum.flat_map(fn
-        %{"type" => type} when is_binary(type) ->
-          [Map.get(@tool_type_to_beta, type)]
-
-        _tool ->
-          []
-      end)
-      |> Enum.reject(&is_nil/1)
-
-    (List.wrap(existing) ++ inferred)
-    |> Enum.uniq()
+  def required_betas(tools, existing) when is_list(tools) do
+    inferred = for %{"type" => type} when is_map_key(@tool_type_to_beta, type) <- tools, do: @tool_type_to_beta[type]
+    Enum.uniq(List.wrap(existing) ++ inferred)
   end
 
   @doc false
@@ -171,11 +133,9 @@ defmodule BeamWeaver.Anthropic.Tools do
           raise ArgumentError, "Anthropic tool_choice must be a map, atom, string, or nil"
       end
 
-    case Keyword.fetch(opts, :parallel_tool_calls) do
-      {:ok, false} -> Map.put(rendered, "disable_parallel_tool_use", true)
-      {:ok, true} -> Map.put(rendered, "disable_parallel_tool_use", false)
-      {:ok, nil} -> rendered
-      :error -> rendered
+    case Keyword.get(opts, :parallel_tool_calls) do
+      nil -> rendered
+      parallel when is_boolean(parallel) -> Map.put(rendered, "disable_parallel_tool_use", not parallel)
     end
   end
 
@@ -214,6 +174,11 @@ defmodule BeamWeaver.Anthropic.Tools do
   end
 
   defp builtin_tool?(_tool), do: false
+
+  defp server_tool(opts, type, defaults \\ []) do
+    {type, opts} = Keyword.pop(opts, :type, type)
+    build(type, Keyword.merge(defaults, opts))
+  end
 
   defp build(type, opts) do
     opts

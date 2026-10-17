@@ -49,31 +49,16 @@ defmodule BeamWeaver.Agent.Nodes.Model do
         }
 
   @spec new(term(), keyword()) :: t()
-  def new(model, opts \\ []) do
-    %__MODULE__{
-      model: model,
-      tools: Keyword.get(opts, :tools, []),
-      system_prompt: Keyword.get(opts, :system_prompt),
-      model_opts: Keyword.get(opts, :model_opts, []),
-      middleware: Keyword.get(opts, :middleware, []),
-      assistant_name: Keyword.get(opts, :assistant_name),
-      response_format: Keyword.get(opts, :response_format),
-      final_instruction: Keyword.get(opts, :final_instruction),
-      step_costs: Keyword.get(opts, :step_costs),
-      save_tool_set: Keyword.get(opts, :save_tool_set, true),
-      structured_output: Keyword.get(opts, :structured_output, false)
-    }
-  end
+  def new(model, opts), do: struct(__MODULE__, Keyword.put(opts, :model, model))
 
   @spec invoke(t(), map(), term()) :: map() | {:error, Error.t()}
   def invoke(%__MODULE__{} = node, state, runtime) when is_map(state) do
     with {:ok, history} <- Prompt.state_messages(state),
          messages = Prompt.answer_invalid_tool_calls(history),
          :ok <- Prompt.validate_chat_history(messages),
-         {:ok, system_message} <- Prompt.system_message(node.system_prompt, state, runtime),
-         {:ok, model} <- resolve_model(node.model, state, runtime),
+         {:ok, system_message} <- Prompt.system_message(node.system_prompt),
          request <- %ModelRequest{
-           model: model,
+           model: node.model,
            messages: with_final_instruction(messages, node.final_instruction),
            system_message: system_message,
            tools: node.tools,
@@ -91,10 +76,6 @@ defmodule BeamWeaver.Agent.Nodes.Model do
         history: if(messages != history, do: messages)
       )
     end
-  end
-
-  def invoke(%__MODULE__{}, _state, _runtime) do
-    {:error, Error.new(:invalid_agent_state, "agent model node expected map state")}
   end
 
   # The tools node runs the tools of the agent loop's latest model call. The
@@ -128,16 +109,6 @@ defmodule BeamWeaver.Agent.Nodes.Model do
       _other -> messages
     end
   end
-
-  defp resolve_model(model_fun, _state, _runtime) when is_function(model_fun) do
-    {:error,
-     Error.new(
-       :invalid_agent_model,
-       "agent model must be a model value; use wrap_model_call middleware for dynamic model selection"
-     )}
-  end
-
-  defp resolve_model(model, _state, _runtime), do: {:ok, model}
 
   defp call_model_with_middleware(%__MODULE__{} = node, %ModelRequest{} = request) do
     wrappers = Enum.filter(node.middleware, &Middleware.hook?(&1, :wrap_model_call))
@@ -196,25 +167,19 @@ defmodule BeamWeaver.Agent.Nodes.Model do
            {:ok, response} <- call_model(request.model, messages, opts, request.runtime) do
         case StructuredOutput.handle_model_output(response, strategy, request.messages) do
           {:ok, model_response} ->
-            model_response = Response.maybe_limit_steps_response(request, model_response, step_costs)
-
-            model_response =
-              model_response
-              |> Response.put_assistant_name(request)
-              |> Response.attach_runtime_metadata(tool_set)
-
-            {:ok, model_response}
+            {:ok,
+             request
+             |> Response.maybe_limit_steps_response(model_response, step_costs)
+             |> Response.put_assistant_name(request)
+             |> Response.attach_runtime_metadata(tool_set)}
 
           {:error, %Error{} = error} ->
             error = Response.attach_diagnostics(error, request, messages, opts, response)
             {:error, put_failed_reply(error, response)}
         end
       else
-        {:error, %Error{} = error} ->
-          {:error, Response.attach_diagnostics(error, request, messages, opts)}
-
-        {:error, reason} ->
-          {:error, error} = Response.normalize_model_result({:error, reason})
+        {:error, _reason} = result ->
+          {:error, error} = Response.normalize_model_result(result)
           {:error, Response.attach_diagnostics(error, request, messages, opts)}
       end
     end)
@@ -351,11 +316,7 @@ defmodule BeamWeaver.Agent.Nodes.Model do
   defp stream_result(%{message: %Message{} = message}), do: {:ok, message}
 
   defp stream_result(%{chunks: [_ | _] = chunks, tokens: tokens}) do
-    chunks =
-      chunks
-      |> Enum.reverse()
-
-    case MessageChunk.merge_many(chunks) do
+    case MessageChunk.merge_many(Enum.reverse(chunks)) do
       nil ->
         stream_text_result([])
 
@@ -377,14 +338,7 @@ defmodule BeamWeaver.Agent.Nodes.Model do
 
   defp stream_result(%{tokens: tokens}), do: stream_text_result(tokens)
 
-  defp stream_text_result(tokens) do
-    text =
-      tokens
-      |> Enum.reverse()
-      |> Enum.join()
-
-    {:ok, Message.assistant(text)}
-  end
+  defp stream_text_result(tokens), do: {:ok, Message.assistant(tokens |> Enum.reverse() |> Enum.join())}
 
   defp visible_chunk(%{content: content, tool_call_chunks: tool_call_chunks} = chunk)
        when content in [nil, ""] do
@@ -487,36 +441,26 @@ defmodule BeamWeaver.Agent.Nodes.Model do
   defp trace_structured_output(nil, _structured_policy, _request, _messages, _opts, fun), do: fun.()
 
   defp trace_structured_output(strategy, structured_policy, request, messages, opts, fun) when is_function(fun, 0) do
-    if trace_structured_output?() do
-      {:ok, run} =
-        Tracing.start_run("RunnableSequence",
+    if Tracing.capture_context() do
+      Tracing.Runner.run(
+        "RunnableSequence",
+        [
           kind: :chain,
           inputs: %{messages: messages},
           tags: [:structured_output],
           metadata: structured_trace_metadata(strategy, structured_policy, request, opts),
           context_metadata: %{}
-        )
-
-      try do
-        result = fun.()
-        finish_structured_run(run, result)
-        result
-      rescue
-        exception ->
-          Tracing.fail_run(run, exception)
-          reraise exception, __STACKTRACE__
-      catch
-        kind, reason ->
-          Tracing.fail_run(run, %{kind: kind, reason: reason})
-          :erlang.raise(kind, reason, __STACKTRACE__)
-      end
+        ],
+        [],
+        fun,
+        fn run, result ->
+          finish_structured_run(run, result)
+          result
+        end
+      )
     else
       fun.()
     end
-  end
-
-  defp trace_structured_output? do
-    not is_nil(Tracing.capture_context())
   end
 
   defp finish_structured_run(run, {:ok, %ModelResponse{} = response}) do

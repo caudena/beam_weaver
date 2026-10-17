@@ -41,8 +41,10 @@ defmodule BeamWeaver.Agent.Middleware.CompactConversation do
   alias BeamWeaver.Graph
   alias BeamWeaver.Graph.Command
   alias BeamWeaver.Graph.Overwrite
+  alias BeamWeaver.MapAccess
+  alias BeamWeaver.MapShape
 
-  import BeamWeaver.Agent.Middleware.Helpers, only: [append_prompt: 2, artifact_prefix: 2, maybe_put_files_update: 3]
+  import BeamWeaver.Agent.Middleware.Helpers, only: [append_prompt: 2, artifact_prefix: 2]
 
   @system_prompt """
   ## Compact conversation Tool `compact_conversation`
@@ -151,28 +153,17 @@ defmodule BeamWeaver.Agent.Middleware.CompactConversation do
   end
 
   defp run_compact(%__MODULE__{} = middleware, input) do
-    state = value(input, :state, %{}) || %{}
+    state = MapAccess.get(input, :state, %{}) || %{}
     messages = Map.get(state, :messages, []) || []
-    tool_call_id = value(input, :tool_call_id)
+    tool_call_id = MapAccess.get(input, :tool_call_id)
 
-    if eligible?(middleware, messages) do
-      compact_messages(middleware, input, messages, tool_call_id)
-    else
-      tool_command(
-        "Nothing to compact yet - conversation is within the token budget.",
-        tool_call_id
-      )
-    end
-  end
-
-  defp compact_messages(%__MODULE__{} = middleware, input, messages, tool_call_id) do
-    cutoff = Helpers.safe_cut_index(messages, max(length(messages) - middleware.keep_messages, 0))
+    cutoff =
+      if eligible?(middleware, messages),
+        do: Helpers.safe_cut_index(messages, max(length(messages) - middleware.keep_messages, 0)),
+        else: 0
 
     if cutoff <= 0 do
-      tool_command(
-        "Nothing to compact yet - conversation is within the token budget.",
-        tool_call_id
-      )
+      tool_command("Nothing to compact yet - conversation is within the token budget.", tool_call_id)
     else
       {to_summarize, _recent} = Enum.split(messages, cutoff)
 
@@ -203,7 +194,7 @@ defmodule BeamWeaver.Agent.Middleware.CompactConversation do
               )
             ]
           }
-          |> maybe_put_files_update(middleware.state_key, files_update)
+          |> MapShape.put_present(middleware.state_key, files_update)
 
         %Command{update: update}
       else
@@ -262,8 +253,8 @@ defmodule BeamWeaver.Agent.Middleware.CompactConversation do
 
     opts =
       input
-      |> value(:tool_runtime)
-      |> backend_opts(value(input, :state, %{}))
+      |> MapAccess.get(:tool_runtime)
+      |> backend_opts(MapAccess.get(input, :state, %{}))
 
     case Filesystem.write(middleware.backend, file_path, rendered, opts) do
       %Filesystem.WriteResult{error: nil, files_update: files_update} -> {file_path, files_update}
@@ -303,8 +294,4 @@ defmodule BeamWeaver.Agent.Middleware.CompactConversation do
   defp backend_opts(_runtime, state), do: [state: state]
 
   defp event_value(event, key), do: Map.get(event, key) || Map.get(event, to_string(key))
-
-  defp value(map, key, default \\ nil)
-  defp value(nil, _key, default), do: default
-  defp value(map, key, default), do: Map.get(map, key, Map.get(map, to_string(key), default))
 end

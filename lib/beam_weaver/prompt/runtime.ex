@@ -11,7 +11,7 @@ defmodule BeamWeaver.Prompt.Runtime do
   alias BeamWeaver.Result
   alias BeamWeaver.Runnable
 
-  def structured_chain(%StructuredChatTemplate{} = prompt, model, opts \\ []) do
+  def structured_chain(%StructuredChatTemplate{} = prompt, model, opts) do
     {sequence_opts, model_opts} = Keyword.split(opts, [:name])
 
     structured_model =
@@ -24,7 +24,7 @@ defmodule BeamWeaver.Prompt.Runtime do
     Runnable.sequence([prompt, structured_model], name: Keyword.get(sequence_opts, :name))
   end
 
-  def format(prompt, input, opts \\ []) do
+  def format(prompt, input, opts) do
     with {:ok, value} <- format_prompt(prompt, input, opts) do
       {:ok, Value.to_string(value)}
     end
@@ -49,13 +49,6 @@ defmodule BeamWeaver.Prompt.Runtime do
 
   def batch(prompt, inputs, opts) when is_list(inputs) do
     Result.traverse(inputs, &Runnable.invoke(prompt, &1, opts))
-  end
-
-  def stream(prompt, input, opts) do
-    case Runnable.invoke(prompt, input, opts) do
-      {:ok, value} -> {:ok, [value]}
-      {:error, %Error{} = error} -> {:error, error}
-    end
   end
 
   def transform(prompt, input, opts) do

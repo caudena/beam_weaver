@@ -35,11 +35,6 @@ defmodule BeamWeaver.Tools.Shell.Session do
     end
   end
 
-  @spec start(keyword()) :: GenServer.on_start()
-  def start(opts) do
-    GenServer.start(__MODULE__, opts)
-  end
-
   @spec execute(t(), String.t(), keyword()) :: {:ok, map()} | {:error, Error.t()}
   def execute(pid, command, opts \\ []) when is_pid(pid) do
     GenServer.call(pid, {:execute, command, opts}, call_timeout(pid, opts))
@@ -125,8 +120,6 @@ defmodule BeamWeaver.Tools.Shell.Session do
     cleanup_temp_root(state)
     {:stop, :normal, state}
   end
-
-  def handle_info({:EXIT, _pid, :normal}, state), do: {:noreply, state, state.idle_timeout}
 
   def handle_info({:EXIT, _pid, _reason}, state), do: {:noreply, state, state.idle_timeout}
 
@@ -257,7 +250,7 @@ defmodule BeamWeaver.Tools.Shell.Session do
   defp run_allowed(state, command, opts) do
     timeout = Keyword.get(opts, :timeout, state.policy.timeout)
     command_metadata = CommandRunner.metadata(:session, command, timeout, opts)
-    scratch = scratch_dir()
+    scratch = CommandRunner.scratch_dir()
     metadata_path = Path.join(scratch, "metadata")
     env_path = Path.join(scratch, "env")
     stderr_path = Path.join(scratch, "stderr")
@@ -268,13 +261,13 @@ defmodule BeamWeaver.Tools.Shell.Session do
              cd: state.cwd,
              env: run_env(state),
              inherit_env: state.policy.inherit_env,
-             stderr: stderr_option(stderr_path, state.policy),
+             stderr: CommandRunner.stderr_option(stderr_path, state.policy),
              timeout: timeout
            ) do
         {:ok, output, status} ->
           metadata = read_metadata(metadata_path)
           env = read_env(env_path, state.env)
-          stderr = read_stderr(stderr_path, state.policy)
+          stderr = CommandRunner.read_stderr(stderr_path, state.policy)
 
           {:ok, {output, status, metadata, env, stderr}}
 
@@ -298,20 +291,8 @@ defmodule BeamWeaver.Tools.Shell.Session do
          |> CommandRunner.result(status, output, state.policy, Map.put(command_metadata, :exit_code, status))
          |> CommandRunner.put_stderr(stderr, state.policy), state}
 
-      {:timeout, kill_attempted?} ->
-        {:error,
-         Error.new(:shell_timeout, "shell command timed out", %{
-           command: command,
-           metadata: Map.merge(command_metadata, %{kill_attempted: kill_attempted?, error: "timeout"})
-         }), state}
-
-      {:error, reason} ->
-        {:error,
-         Error.new(:shell_execution_error, "shell command failed", %{
-           command: command,
-           reason: inspect(reason),
-           metadata: Map.put(command_metadata, :reason, inspect(reason))
-         }), state}
+      failure ->
+        {:error, CommandRunner.failure(command, failure, command_metadata), state}
     end
   end
 
@@ -320,22 +301,18 @@ defmodule BeamWeaver.Tools.Shell.Session do
       command,
       "\n__beam_weaver_status=$?\n",
       "printf '%s\\n' \"$__beam_weaver_status\" > ",
-      shell_quote(metadata),
+      CommandRunner.shell_quote(metadata),
       "\n",
       "pwd >> ",
-      shell_quote(metadata),
+      CommandRunner.shell_quote(metadata),
       "\n",
       "env -0 > ",
-      shell_quote(env_path),
+      CommandRunner.shell_quote(env_path),
       "\n",
       "exit $__beam_weaver_status\n"
     ]
     |> IO.iodata_to_binary()
   end
-
-  defp stderr_option(path, %ShellPolicy{stderr: :separate}), do: {:file, path}
-  defp stderr_option(_path, %ShellPolicy{stderr: :discard}), do: :discard
-  defp stderr_option(_path, _policy), do: :merge
 
   defp read_metadata(path) do
     case File.read(path) do
@@ -365,15 +342,6 @@ defmodule BeamWeaver.Tools.Shell.Session do
     end
   end
 
-  defp read_stderr(path, %ShellPolicy{stderr: :separate}) do
-    case File.read(path) do
-      {:ok, data} -> data
-      {:error, _reason} -> ""
-    end
-  end
-
-  defp read_stderr(_path, _policy), do: nil
-
   defp maybe_update_cwd(state, nil), do: state
 
   defp maybe_update_cwd(state, cwd) do
@@ -400,17 +368,6 @@ defmodule BeamWeaver.Tools.Shell.Session do
     :exit, _reason -> :infinity
   end
 
-  defp scratch_dir do
-    dir =
-      Path.join(
-        System.tmp_dir!(),
-        "beam_weaver_shell_scratch_#{System.unique_integer([:positive])}"
-      )
-
-    File.mkdir_p!(dir)
-    dir
-  end
-
   defp safe_int(value) do
     case Integer.parse(String.trim(to_string(value))) do
       {int, ""} -> int
@@ -421,8 +378,4 @@ defmodule BeamWeaver.Tools.Shell.Session do
   defp blank_to_nil(nil), do: nil
   defp blank_to_nil(""), do: nil
   defp blank_to_nil(value), do: String.trim(value)
-
-  defp shell_quote(value) do
-    "'" <> String.replace(value, "'", "'\"'\"'") <> "'"
-  end
 end

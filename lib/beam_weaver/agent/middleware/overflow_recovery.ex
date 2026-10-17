@@ -38,23 +38,13 @@ defmodule BeamWeaver.Agent.Middleware.OverflowRecovery do
   alias BeamWeaver.Filesystem
   alias BeamWeaver.Filesystem.State
   alias BeamWeaver.Graph.Command
+  alias BeamWeaver.MapAccess
+  alias BeamWeaver.MapShape
   alias BeamWeaver.Options
 
   @chars_per_token 4
   @default_keep {:tokens, 5_000}
   @default_threshold_tokens 5_000
-
-  @too_large_tool_msg """
-  Tool result too large, the result of this tool call %{tool_call_id} was saved in the filesystem at this path: %{file_path}
-
-  You can read the result from the filesystem by using the read_file tool, but make sure to only read part of the result at a time.
-
-  You can do this by specifying an offset and limit in the read_file tool call. For example, to read the first 100 lines, you can use the read_file tool with offset=0 and limit=100.
-
-  Here is a preview showing the head and tail of the result (lines of the form `... [N lines truncated] ...` indicate omitted lines in the middle of the content):
-
-  %{content_sample}
-  """
 
   @read_file_truncation_notice """
 
@@ -194,7 +184,7 @@ defmodule BeamWeaver.Agent.Middleware.OverflowRecovery do
       request
       |> ModelRequest.override(
         messages: result.messages,
-        state: retry_state(request.state, middleware.state_key, result.files_update)
+        state: MapShape.put_present(request.state || %{}, middleware.state_key, result.files_update)
       )
       |> handler.()
       |> save_clip(middleware, request, result)
@@ -214,19 +204,12 @@ defmodule BeamWeaver.Agent.Middleware.OverflowRecovery do
         {:ok, response}
 
       replacements ->
-        update = Helpers.maybe_put_files_update(%{messages: replacements}, middleware.state_key, result.files_update)
+        update = MapShape.put_present(%{messages: replacements}, middleware.state_key, result.files_update)
         %ExtendedModelResponse{model_response: response, command: %Command{update: update}}
     end
   end
 
   defp save_clip(other, _middleware, _request, _result), do: other
-
-  defp retry_state(state, _state_key, nil), do: state || %{}
-
-  defp retry_state(state, state_key, files_update) when is_map(files_update) do
-    state = state || %{}
-    Map.put(state, state_key, files_update)
-  end
 
   defp context_overflow?(%Error{type: :context_overflow}), do: true
 
@@ -307,15 +290,12 @@ defmodule BeamWeaver.Agent.Middleware.OverflowRecovery do
   end
 
   defp read_file_original_path(%Message{tool_call_id: id}, tool_call_index) when is_binary(id) do
-    case Map.get(tool_call_index, id) do
-      %{} = call ->
-        if tool_name(call) == "read_file" do
-          path = call |> tool_args() |> arg_value(:file_path)
-          if is_binary(path), do: path
-        end
-
-      _missing ->
-        nil
+    with %{} = call <- Map.get(tool_call_index, id),
+         "read_file" <- to_string(Map.get(call, :name)),
+         path when is_binary(path) <- MapAccess.get(Map.get(call, :args, %{}), :file_path) do
+      path
+    else
+      _other -> nil
     end
   end
 
@@ -352,12 +332,7 @@ defmodule BeamWeaver.Agent.Middleware.OverflowRecovery do
 
     case Filesystem.write(backend, file_path, content, write_opts) do
       %Filesystem.WriteResult{error: nil, files_update: files_update} ->
-        replacement =
-          Offload.format_notice(@too_large_tool_msg,
-            tool_call_id: tool_call_id,
-            file_path: file_path,
-            content_sample: Offload.content_preview(content)
-          )
+        replacement = Offload.tool_result_notice(tool_call_id, file_path, content)
 
         {%{message | content: Offload.evicted_content(message, replacement)},
          Offload.merge_files_update(files_acc, files_update)}
@@ -397,7 +372,7 @@ defmodule BeamWeaver.Agent.Middleware.OverflowRecovery do
     Enum.reduce(messages, %{}, fn
       %Message{role: :assistant, tool_calls: calls}, acc when is_list(calls) ->
         Enum.reduce(calls, acc, fn call, acc ->
-          case call_id(call) do
+          case Map.get(call, :id) do
             id when is_binary(id) and id != "" -> Map.put(acc, id, call)
             _missing -> acc
           end
@@ -407,19 +382,6 @@ defmodule BeamWeaver.Agent.Middleware.OverflowRecovery do
         acc
     end)
   end
-
-  defp call_id(call) when is_map(call), do: Map.get(call, :id)
-  defp call_id(_call), do: nil
-
-  defp tool_name(call) when is_map(call),
-    do: to_string(Map.get(call, :name))
-
-  defp tool_args(call) when is_map(call), do: Map.get(call, :args, %{})
-
-  defp arg_value(args, key) when is_map(args),
-    do: BeamWeaver.MapAccess.get(args, key)
-
-  defp arg_value(_args, _key), do: nil
 
   defp ensure_id(%Message{id: nil} = message), do: %{message | id: ID.uuidv7()}
   defp ensure_id(message), do: message

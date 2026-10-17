@@ -31,7 +31,7 @@ defmodule BeamWeaver.Runnable.Runtime do
   def name(fun) when is_function(fun), do: "function"
   def name(other), do: inspect(other)
 
-  def invoke(runnable, input, opts \\ []) do
+  def invoke(runnable, input, opts) do
     config = Config.normalize(opts)
     emit(:start, %{system_time: System.system_time()}, metadata(runnable, config))
 
@@ -61,8 +61,6 @@ defmodule BeamWeaver.Runnable.Runtime do
     end
   end
 
-  def batch(runnable, inputs, opts \\ [])
-
   def batch(runnable, inputs, opts) when is_list(inputs) do
     runnable = coerce(runnable)
     config = Config.normalize(opts)
@@ -82,7 +80,7 @@ defmodule BeamWeaver.Runnable.Runtime do
   def batch(_runnable, _inputs, _opts),
     do: {:error, Error.new(:invalid_runnable_input, "batch input must be a list")}
 
-  def stream(runnable, input, opts \\ []) do
+  def stream(runnable, input, opts) do
     runnable = coerce(runnable)
     config = Config.normalize(opts)
 
@@ -103,10 +101,7 @@ defmodule BeamWeaver.Runnable.Runtime do
           runnable.__struct__.stream(runnable, input, Config.to_opts(config))
 
         true ->
-          case invoke(runnable, input, Config.to_opts(config)) do
-            {:ok, output} -> {:ok, [output]}
-            {:error, %Error{} = error} -> {:error, error}
-          end
+          with {:ok, output} <- invoke(runnable, input, Config.to_opts(config)), do: {:ok, [output]}
       end
 
     case normalize_stream_result(result) do
@@ -129,7 +124,7 @@ defmodule BeamWeaver.Runnable.Runtime do
     exception -> {:error, exception_error(:runnable_stream_exception, exception)}
   end
 
-  def transform(runnable, input, opts \\ []) do
+  def transform(runnable, input, opts) do
     runnable = coerce(runnable)
     config = Config.normalize(opts)
 
@@ -154,11 +149,11 @@ defmodule BeamWeaver.Runnable.Runtime do
     exception -> {:error, exception_error(:runnable_transform_exception, exception)}
   end
 
-  def coerce(%{__struct__: _module} = runnable), do: runnable
-  def coerce(fun) when is_function(fun), do: %BeamWeaver.Runnable.Lambda{fun: fun}
-  def coerce(module) when is_atom(module), do: module
+  defp coerce(%{__struct__: _module} = runnable), do: runnable
+  defp coerce(fun) when is_function(fun), do: %BeamWeaver.Runnable.Lambda{fun: fun}
+  defp coerce(module) when is_atom(module), do: module
 
-  def coerce(other) do
+  defp coerce(other) do
     %BeamWeaver.Runnable.Lambda{
       fun: fn _input ->
         {:error,

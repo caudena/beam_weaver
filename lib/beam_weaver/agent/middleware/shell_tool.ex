@@ -55,8 +55,8 @@ defmodule BeamWeaver.Agent.Middleware.ShellTool do
     %__MODULE__{
       workspace_root: Keyword.get(opts, :workspace_root),
       policy: policy,
-      startup_commands: normalize_commands(Keyword.get(opts, :startup_commands, [])),
-      shutdown_commands: normalize_commands(Keyword.get(opts, :shutdown_commands, [])),
+      startup_commands: Keyword.get(opts, :startup_commands, []),
+      shutdown_commands: Keyword.get(opts, :shutdown_commands, []),
       tool_name: Keyword.get(opts, :tool_name, "shell"),
       tool_description: Keyword.get(opts, :tool_description, "Run an explicitly allowed shell command."),
       state_key: Keyword.get(opts, :state_key, :shell_session),
@@ -126,7 +126,7 @@ defmodule BeamWeaver.Agent.Middleware.ShellTool do
   # the shared supervisor, so it is cleaned up when the VM stops and reused on
   # a resume rather than leaked.
   defp start_session(%__MODULE__{} = middleware, runtime) do
-    opts = Shell.session_opts(Shell.new(tool_opts(middleware)))
+    opts = middleware |> tools() |> hd() |> Shell.session_opts()
 
     case session_key(runtime, middleware) do
       nil -> Sessions.start(opts)
@@ -138,18 +138,6 @@ defmodule BeamWeaver.Agent.Middleware.ShellTool do
        Error.new(:shell_session_start_failed, "shell session could not be started", %{
          reason: Exception.message(exception)
        })}
-  end
-
-  defp tool_opts(%__MODULE__{} = middleware) do
-    [
-      policy: middleware.policy,
-      name: middleware.tool_name,
-      session_key: middleware.state_key,
-      workspace_root: middleware.workspace_root,
-      startup_commands: middleware.startup_commands,
-      shutdown_commands: middleware.shutdown_commands,
-      idle_timeout: middleware.idle_timeout
-    ]
   end
 
   defp session_key(runtime, %__MODULE__{} = middleware) do
@@ -164,8 +152,4 @@ defmodule BeamWeaver.Agent.Middleware.ShellTool do
 
   defp existing_session(state, key) when is_map(state), do: Map.get(state, key)
   defp existing_session(_state, _key), do: nil
-
-  defp normalize_commands(nil), do: []
-  defp normalize_commands(command) when is_binary(command), do: [command]
-  defp normalize_commands(commands) when is_list(commands), do: Enum.map(commands, &to_string/1)
 end

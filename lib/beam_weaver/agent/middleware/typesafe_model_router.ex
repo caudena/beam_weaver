@@ -66,12 +66,7 @@ defmodule BeamWeaver.Agent.Middleware.TypeSafeModelRouter do
 
   @impl true
   def before_agent(%__MODULE__{} = router, state, runtime) do
-    latest =
-      Enum.reduce(State.messages(state), nil, fn
-        %Message{role: :user} = message, _acc -> message
-        _, acc -> acc
-      end)
-
+    latest = state |> State.messages() |> Helpers.last_message(:user)
     images? = Helpers.decision_images?(router.classifier)
 
     cond do

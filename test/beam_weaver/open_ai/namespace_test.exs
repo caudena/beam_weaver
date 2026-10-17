@@ -43,23 +43,6 @@ defmodule BeamWeaver.OpenAI.NamespaceTest do
              "https://gateway.example/openai/embeddings"
   end
 
-  test "client resolves lazy api keys at the transport request boundary" do
-    parent = self()
-
-    client = %Client{
-      endpoint: "https://api.openai.test/v1/responses",
-      api_key: fn ->
-        send(parent, :api_key_resolved)
-        "sk-lazy"
-      end
-    }
-
-    request = Client.request(client, %{"model" => "gpt-5.4-mini", "input" => []})
-
-    assert {"authorization", "Bearer sk-lazy"} in request.headers
-    assert_received :api_key_resolved
-  end
-
   describe "custom endpoints reach the transport" do
     @transport BeamWeaver.TestSupport.Conformance.Fakes.Transport
     @chat_completion %{

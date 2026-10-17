@@ -3,10 +3,10 @@ defmodule BeamWeaver.Graph.Execution.TaskCollector do
 
   alias BeamWeaver.Core.Error
   alias BeamWeaver.Graph.Execution.ChannelLookup
-  alias BeamWeaver.Graph.Execution.CheckpointIO
   alias BeamWeaver.Graph.Execution.Collection
   alias BeamWeaver.Graph.Execution.CommandRouter
   alias BeamWeaver.Graph.Execution.Halt
+  alias BeamWeaver.Graph.Execution.Replay
   alias BeamWeaver.Graph.Execution.StepOutcome
   alias BeamWeaver.Graph.Execution.TaskAwaiter
   alias BeamWeaver.Graph.Execution.TaskResult
@@ -26,27 +26,15 @@ defmodule BeamWeaver.Graph.Execution.TaskCollector do
     end
   end
 
-  @doc false
-  @spec cancel_pending_tasks([map()]) :: :ok
-  defdelegate cancel_pending_tasks(entries), to: TaskAwaiter
-
-  @spec step_deadline(:infinity | non_neg_integer()) :: :infinity | integer()
-  def step_deadline(:infinity), do: :infinity
-  def step_deadline(timeout), do: System.monotonic_time(:millisecond) + timeout
-
-  @spec run_deadline(:infinity | non_neg_integer()) :: :infinity | integer()
-  def run_deadline(:infinity), do: :infinity
-  def run_deadline(timeout), do: System.monotonic_time(:millisecond) + timeout
-
-  @spec run_timeout_expired?(:infinity | integer()) :: boolean()
-  def run_timeout_expired?(:infinity), do: false
-  def run_timeout_expired?(deadline), do: deadline <= System.monotonic_time(:millisecond)
+  @spec deadline(:infinity | non_neg_integer()) :: :infinity | integer()
+  def deadline(:infinity), do: :infinity
+  def deadline(timeout), do: System.monotonic_time(:millisecond) + timeout
 
   @spec interrupt_for(:all | MapSet.t(), [term()], map(), atom()) :: map() | nil
   def interrupt_for(:all, ready, run, timing), do: interrupt_payload(ready, run, timing)
 
   def interrupt_for(nodes, ready, run, timing) do
-    if Enum.any?(CheckpointIO.ready_names(ready), &MapSet.member?(nodes, &1)),
+    if Enum.any?(Replay.ready_names(ready), &MapSet.member?(nodes, &1)),
       do: interrupt_payload(ready, run, timing),
       else: nil
   end
@@ -133,19 +121,6 @@ defmodule BeamWeaver.Graph.Execution.TaskCollector do
   end
 
   defp collect_results(
-         [
-           {entry, {:ok, %TaskResult{status: :error, error: %Error{} = error} = result}}
-           | rest
-         ],
-         run,
-         collection,
-         mode
-       ) do
-    collection = Collection.add_task_error(collection, entry, error, result.events)
-    handle_task_failure(error, rest, run, collection, mode)
-  end
-
-  defp collect_results(
          [{entry, {:error, %Error{} = error, events}} | rest],
          run,
          collection,
@@ -214,7 +189,7 @@ defmodule BeamWeaver.Graph.Execution.TaskCollector do
   defp interrupt_payload(nodes, run, timing) do
     %{
       timing: timing,
-      nodes: CheckpointIO.ready_names(nodes),
+      nodes: Replay.ready_names(nodes),
       state: interrupt_state(run),
       config: run.config,
       step: run.step

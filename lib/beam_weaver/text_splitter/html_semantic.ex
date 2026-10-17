@@ -28,7 +28,7 @@ defmodule BeamWeaver.TextSplitter.HTMLSemantic do
             add_start_index: false,
             length_function: nil
 
-  def new(opts \\ []), do: struct(__MODULE__, opts)
+  def new(opts), do: struct(__MODULE__, opts)
 
   def split_text(%__MODULE__{} = splitter, text) when is_binary(text) do
     splitter
@@ -46,15 +46,13 @@ defmodule BeamWeaver.TextSplitter.HTMLSemantic do
   end
 
   defp split_html(%__MODULE__{} = splitter, html, parent_metadata) do
-    html =
-      html
-      |> strip_unsafe()
-      |> replace_custom_handlers(splitter)
-      |> replace_media(splitter)
-      |> replace_links(splitter)
-      |> filter_tags(splitter)
-
     html
+    |> strip_unsafe()
+    |> replace_custom_handlers(splitter)
+    |> replace_media(splitter)
+    |> replace_links(splitter)
+    |> filter_allowlist(splitter)
+    |> filter_denylist(splitter)
     |> sections(splitter)
     |> Enum.flat_map(fn {metadata, content} ->
       content = html_text(content, splitter)
@@ -87,7 +85,7 @@ defmodule BeamWeaver.TextSplitter.HTMLSemantic do
           |> binary_part(inner_start, inner_length)
           |> html_text(%{splitter | normalize_text: false})
 
-        headers = resolve_html_headers(headers, tag, title, header_names)
+        headers = resolve_html_headers(headers, tag, title)
         {start + length, headers, docs}
       end)
 
@@ -98,10 +96,6 @@ defmodule BeamWeaver.TextSplitter.HTMLSemantic do
     |> Enum.reverse()
   end
 
-  defp maybe_add_section(docs, _headers, content, _header_names)
-       when content == "" or is_nil(content),
-       do: docs
-
   defp maybe_add_section(docs, headers, content, header_names) do
     if String.trim(html_text(content, %__MODULE__{})) == "" do
       docs
@@ -110,13 +104,12 @@ defmodule BeamWeaver.TextSplitter.HTMLSemantic do
     end
   end
 
-  defp resolve_html_headers(headers, tag, title, header_names) do
+  defp resolve_html_headers(headers, tag, title) do
     level = html_level(tag)
 
     headers
     |> Enum.reject(fn {existing_tag, _title} -> html_level(existing_tag) >= level end)
     |> Kernel.++([{tag, title}])
-    |> Enum.filter(fn {header_tag, _title} -> Map.has_key?(header_names, header_tag) end)
   end
 
   defp html_header_metadata(headers, header_names) do
@@ -189,12 +182,6 @@ defmodule BeamWeaver.TextSplitter.HTMLSemantic do
       text = html_text(inner, %__MODULE__{})
       "[#{text}](#{attrs["href"] || ""})"
     end)
-  end
-
-  defp filter_tags(html, splitter) do
-    html
-    |> filter_allowlist(splitter)
-    |> filter_denylist(splitter)
   end
 
   defp filter_allowlist(html, %{allowlist_tags: nil}), do: html

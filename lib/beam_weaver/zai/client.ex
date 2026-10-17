@@ -7,11 +7,13 @@ defmodule BeamWeaver.ZAI.Client do
 
   alias BeamWeaver.Config
   alias BeamWeaver.Core.Error
+  alias BeamWeaver.OpenAI.Client, as: OpenAIClient
   alias BeamWeaver.Provider.HTTPClient
   alias BeamWeaver.Provider.OpenAICompatibleClient, as: Compat
+  alias BeamWeaver.Provider.OpenAICompatibleStreaming
   alias BeamWeaver.Provider.Options, as: ProviderOptions
+  alias BeamWeaver.Provider.ResponseDecoder
   alias BeamWeaver.Transport.Request
-  alias BeamWeaver.ZAI.Client.ResponseDecoder
   alias BeamWeaver.ZAI.Streaming
 
   @default_base_url "https://api.z.ai/api/paas/v4"
@@ -46,18 +48,14 @@ defmodule BeamWeaver.ZAI.Client do
   end
 
   @spec chat_completions(t(), map(), keyword()) :: {:ok, map()} | {:error, Error.t()}
-  def chat_completions(%__MODULE__{} = client, body, opts \\ []) when is_map(body) do
-    client
-    |> http(client.chat_completions_endpoint, opts)
-    |> HTTPClient.post_json(body, opts)
-    |> ResponseDecoder.json(opts)
-  end
+  def chat_completions(%__MODULE__{} = client, body, opts \\ []) when is_map(body),
+    do: client |> http(client.chat_completions_endpoint, opts) |> OpenAIClient.post(body, opts, decoder())
 
   @spec chat_completions_stream(t(), map(), keyword()) :: {:ok, Enumerable.t()} | {:error, Error.t()}
   def chat_completions_stream(%__MODULE__{} = client, body, opts \\ []) when is_map(body) do
     client
     |> http(client.chat_completions_endpoint, opts)
-    |> HTTPClient.stream_sse(body, opts, &Streaming.text_deltas/1, &ResponseDecoder.text_stream/1)
+    |> OpenAIClient.stream_text(body, opts, decoder(), &OpenAICompatibleStreaming.text_deltas/1)
   end
 
   @spec chat_completions_stream_response(t(), map(), keyword()) ::
@@ -65,22 +63,15 @@ defmodule BeamWeaver.ZAI.Client do
   def chat_completions_stream_response(%__MODULE__{} = client, body, opts \\ []) when is_map(body) do
     client
     |> http(client.chat_completions_endpoint, opts)
-    |> HTTPClient.collect_sse(body, opts, &ResponseDecoder.stream_message(&1, opts))
+    |> OpenAIClient.collect_chat_message(body, opts, decoder())
   end
 
   @spec chat_completions_stream_typed_events(t(), map(), keyword()) ::
           {:ok, Enumerable.t()} | {:error, Error.t()}
   def chat_completions_stream_typed_events(%__MODULE__{} = client, body, opts \\ []) when is_map(body) do
-    finish = &ResponseDecoder.finish_typed_events(&1, &2, opts)
-
     client
     |> http(client.chat_completions_endpoint, opts)
-    |> HTTPClient.stream_typed_sse(
-      body,
-      Keyword.put(opts, :parser_finalizer, finish),
-      &Streaming.typed_events/2,
-      &ResponseDecoder.typed_events/1
-    )
+    |> OpenAIClient.stream_chat_message(body, opts, decoder())
   end
 
   @spec request(t(), map(), keyword()) :: Request.t()
@@ -93,4 +84,69 @@ defmodule BeamWeaver.ZAI.Client do
 
   defp http(client, endpoint, opts),
     do: Compat.http(:zai, client, endpoint, opts, [Compat.user_agent(opts, "beam_weaver-zai/0.1")])
+
+  defp decoder do
+    %{
+      provider: :zai,
+      provider_name: "Z.ai",
+      request_id_header: "x-log-id",
+      header_fields: [x_log_id: "x-log-id"],
+      header_summary: [request_id: :x_log_id],
+      context_overflow?: &context_overflow?/3,
+      error_type: &error_type/3,
+      stream: Streaming.config()
+    }
+  end
+
+  # Z.ai names each error by a business code (`"1301"`): 1301 is its content
+  # filter. 1113 (no balance) and the plan and usage limits, 1308 to 1321,
+  # last until the account is recharged or the limit resets hours or days
+  # later, so retrying can't fix them. A reply its content filter stops
+  # partway ends with the finish reason `sensitive` instead of 1301 (see
+  # `StreamFailure`). Its other errors follow their HTTP status, such as
+  # 1302 (a rate limit) and 1305 (an overload), both 429s.
+  @quota_codes ~w(1113 1308 1309 1310 1311 1313 1314 1315 1316 1317 1318 1319 1320 1321)
+
+  defp error_type(status, provider_error, message) do
+    code = error_code(provider_error)
+    error_type = ResponseDecoder.error_field(provider_error, "type")
+
+    cond do
+      quota_exhausted?(status, code, error_type, message) -> :billing_exhausted
+      "content_filter" in [code, error_type] or code in ["1301", "sensitive"] -> :content_filter
+      true -> nil
+    end
+  end
+
+  defp quota_exhausted?(429, code, error_type, message) do
+    code in ["insufficient_quota", "quota_exceeded" | @quota_codes] or
+      error_type in ["insufficient_quota", "quota_exceeded"] or
+      String.contains?(String.downcase(message), [
+        "insufficient balance",
+        "no resource package",
+        "please recharge",
+        "quota exceeded"
+      ])
+  end
+
+  defp quota_exhausted?(_status, _code, _error_type, _message), do: false
+
+  # 1261 is "Prompt too long".
+  defp context_overflow?(400, provider_error, message) when is_binary(message) do
+    normalized = String.downcase(message)
+
+    error_code(provider_error) in ["1261", "context_length_exceeded", "prompt_too_long"] or
+      String.contains?(normalized, ["context length", "token limit", "too many tokens"])
+  end
+
+  defp context_overflow?(_status, _provider_error, _message), do: false
+
+  # Z.ai's error reference gives its codes as numbers, its responses as
+  # strings.
+  defp error_code(error) do
+    case ResponseDecoder.error_field(error, "code") do
+      code when is_integer(code) -> Integer.to_string(code)
+      code -> code
+    end
+  end
 end

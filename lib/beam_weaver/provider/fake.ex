@@ -3,7 +3,6 @@ defmodule BeamWeaver.Provider.Fake do
 
   @behaviour BeamWeaver.Provider.Adapter
 
-  alias BeamWeaver.Core.Error
   alias BeamWeaver.Models.ProfileRegistry
 
   @impl true
@@ -33,7 +32,4 @@ defmodule BeamWeaver.Provider.Fake do
 
   @impl true
   def capabilities, do: %{}
-
-  def unsupported(kind),
-    do: {:error, Error.new(:unsupported_provider, "unsupported fake provider model kind", %{kind: kind})}
 end

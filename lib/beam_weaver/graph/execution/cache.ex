@@ -39,12 +39,7 @@ defmodule BeamWeaver.Graph.Execution.Cache do
   @spec put(term(), term(), term()) :: :ok | {:error, BeamWeaver.Core.Error.t()}
   def put(_cache, nil, _value), do: :ok
 
-  def put(_compiled_cache, {cache, namespace, key, opts}, value) do
-    case Cache.put(cache, namespace, key, value, opts) do
-      :ok -> :ok
-      {:error, error} -> {:error, error}
-    end
-  end
+  def put(_compiled_cache, {cache, namespace, key, opts}, value), do: Cache.put(cache, namespace, key, value, opts)
 
   defp cache_for(%{cache: true}, %{compiled: %{cache: cache}}), do: cache
 

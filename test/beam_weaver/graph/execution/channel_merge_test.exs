@@ -13,7 +13,7 @@ defmodule BeamWeaver.Graph.Execution.ChannelMergeTest do
              ChannelMerge.merge_step_updates(
                %{"messages" => [original]},
                [%{messages: [retry]}],
-               %{messages: &Messages.add_messages/2}
+               BeamWeaver.Graph.new(state_schema: Messages.state_schema())
              )
 
     assert step_update == %{messages: [retry]}

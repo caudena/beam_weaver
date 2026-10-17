@@ -235,24 +235,23 @@ defmodule BeamWeaver.Agent.Nodes.Model.Response do
   end
 
   defp serializable?(value) do
-    match?({:ok, _encoded}, BeamWeaver.Serialization.dump_json_value(value))
+    match?({:ok, _encoded}, BeamWeaver.Serialization.dump_value(value))
   end
-
-  def to_update(response, opts \\ [])
 
   def to_update(%ModelResponse{commands: commands} = response, opts) when commands != [] do
     base_update = base_response_update(response, opts)
-    {pre_response_commands, post_response_commands} = Enum.split_with(commands, &message_overwrite_command?/1)
 
-    {pre_response_commands, base_update} =
-      prepare_message_overwrite_commands(pre_response_commands, base_update, response.messages)
+    case Enum.split_with(commands, &message_overwrite_command?/1) do
+      {[], commands} ->
+        [base_update | commands]
 
-    pre_response_commands ++ [base_update] ++ post_response_commands
+      {overwrites, commands} ->
+        Enum.map(overwrites, &append_messages_to_overwrite(&1, response.messages)) ++
+          [Map.delete(base_update, :messages) | commands]
+    end
   end
 
   def to_update(%ModelResponse{} = response, opts), do: base_response_update(response, opts)
-
-  def to_update({:ok, response}, opts), do: to_update(response, opts)
 
   def attach_runtime_metadata(%ModelResponse{} = response, %ToolSet{} = tool_set) do
     %{response | tool_set: tool_set, usage: Usage.from_messages(response.messages)}
@@ -272,8 +271,6 @@ defmodule BeamWeaver.Agent.Nodes.Model.Response do
   # limit error halfway through a tool round. The model's reply becomes an
   # answer that says so instead, while the run can still finish.
   @default_step_costs %{tool_round: 2, return_direct: 1}
-
-  def maybe_limit_steps_response(request, response, step_costs \\ nil)
 
   def maybe_limit_steps_response(
         %ModelRequest{} = request,
@@ -334,31 +331,13 @@ defmodule BeamWeaver.Agent.Nodes.Model.Response do
 
   defp message_overwrite_command?(_command), do: false
 
-  defp prepare_message_overwrite_commands([], base_update, _messages), do: {[], base_update}
+  defp append_messages_to_overwrite(command, []), do: command
 
-  defp prepare_message_overwrite_commands(commands, base_update, messages) when is_list(messages) do
-    commands = Enum.map(commands, &append_messages_to_overwrite(&1, messages))
-    {commands, Map.delete(base_update, :messages)}
+  defp append_messages_to_overwrite(%Command{update: update} = command, messages) do
+    {:ok, key, value} = fetch_update_value(update, :messages)
+    {:ok, overwritten} = Overwrite.get(value)
+    %{command | update: Map.put(update, key, Overwrite.new(List.wrap(overwritten) ++ messages))}
   end
-
-  defp append_messages_to_overwrite(%Command{update: update} = command, messages)
-       when is_map(update) and messages != [] do
-    case fetch_update_value(update, :messages) do
-      {:ok, key, value} ->
-        case Overwrite.get(value) do
-          {:ok, overwritten} ->
-            %{command | update: Map.put(update, key, Overwrite.new(List.wrap(overwritten) ++ messages))}
-
-          :error ->
-            command
-        end
-
-      :error ->
-        command
-    end
-  end
-
-  defp append_messages_to_overwrite(command, _messages), do: command
 
   defp fetch_update_value(update, key) do
     case Map.fetch(update, key) do
@@ -391,8 +370,7 @@ defmodule BeamWeaver.Agent.Nodes.Model.Response do
          answers,
          step_costs
        ) do
-    remaining_steps =
-      Map.get(state, :remaining_steps) || runtime_value(runtime, :recursion_limit)
+    remaining_steps = Map.get(state, :remaining_steps) || Map.get(runtime || %{}, :recursion_limit)
 
     pending_calls = pending_tool_calls(tool_calls || [], answers)
 
@@ -419,7 +397,7 @@ defmodule BeamWeaver.Agent.Nodes.Model.Response do
     Enum.reject(tool_calls, &MapSet.member?(answered, tool_call_id(&1)))
   end
 
-  defp tool_call_id(call),
+  def tool_call_id(call),
     do: Map.get(call, :call_id) || Map.get(call, :tool_call_id) || Map.get(call, :id) || Map.get(call, :provider_id)
 
   defp step_limit_message(%Message{} = response) do
@@ -433,9 +411,6 @@ defmodule BeamWeaver.Agent.Nodes.Model.Response do
       Tool.name(tool) == name and Tool.return_direct(tool)
     end)
   end
-
-  defp runtime_value(runtime, key) when is_map(runtime), do: Map.get(runtime, key)
-  defp runtime_value(_runtime, _key), do: nil
 
   defp normalize_command_update(update) when is_map(update), do: update
   defp normalize_command_update(_update), do: %{}

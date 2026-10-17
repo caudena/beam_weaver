@@ -4,7 +4,6 @@ defmodule BeamWeaver.OpenAI.ChatModel.StructuredOutput do
   alias BeamWeaver.Core.Error
   alias BeamWeaver.OpenAI.Messages
   alias BeamWeaver.Provider.Options
-  alias BeamWeaver.Provider.StructuredOutput, as: Parser
 
   def format(opts) do
     case Keyword.get(opts, :response_format) || Keyword.get(opts, :structured_output) do
@@ -38,12 +37,5 @@ defmodule BeamWeaver.OpenAI.ChatModel.StructuredOutput do
            response_format: inspect(other)
          })}
     end
-  end
-
-  def maybe_parse(message, opts) do
-    Parser.maybe_parse(message, opts,
-      provider_name: "OpenAI",
-      refusal?: true
-    )
   end
 end

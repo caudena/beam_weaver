@@ -51,11 +51,13 @@ defmodule BeamWeaver.OpenAI.SecretsTest do
       api_key: fn ->
         send(parent, :resolved_api_key)
         "sk-lazy-secret"
-      end
+      end,
+      transport: BeamWeaver.TestSupport.Conformance.Fakes.Transport,
+      transport_opts: [parent: parent]
     }
 
-    request = Client.request(client, %{"model" => "gpt-5.4-mini", "input" => []})
-
+    assert {:ok, _body} = Client.responses(client, %{"model" => "gpt-5.4-mini", "input" => []})
+    assert_received {:fake_transport_request, request}
     assert {"authorization", "Bearer sk-lazy-secret"} in request.headers
     assert_received :resolved_api_key
 

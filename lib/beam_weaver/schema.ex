@@ -19,7 +19,7 @@ defmodule BeamWeaver.Schema do
   legacy `__beam_weaver_schema__/0` callback.
   """
 
-  import BeamWeaver.MapShape, only: [put_present: 3]
+  import BeamWeaver.MapShape, only: [put_present: 3, stringify_keys: 1]
 
   @primitive_types [
     :string,
@@ -92,7 +92,7 @@ defmodule BeamWeaver.Schema do
   def to_json_schema(type) when type in @primitive_types do
     type
     |> BeamWeaver.Tool.Schema.type_schema()
-    |> stringify_schema()
+    |> stringify_keys()
   end
 
   def to_json_schema(module) when is_atom(module),
@@ -110,7 +110,7 @@ defmodule BeamWeaver.Schema do
     %{"anyOf" => Enum.map(types, &to_json_schema/1)}
   end
 
-  def to_json_schema(type), do: BeamWeaver.Tool.Schema.type_schema(type) |> stringify_schema()
+  def to_json_schema(type), do: BeamWeaver.Tool.Schema.type_schema(type) |> stringify_keys()
 
   @doc """
   Returns the JSON schema a module declares through `json_schema/0`,
@@ -135,9 +135,9 @@ defmodule BeamWeaver.Schema do
 
         property =
           type
-          |> field_type_schema()
+          |> to_json_schema()
           |> merge_field_opts(opts)
-          |> stringify_schema()
+          |> stringify_keys()
 
         required =
           if Keyword.get(opts, :required, true),
@@ -156,14 +156,6 @@ defmodule BeamWeaver.Schema do
     |> put_present("description", description)
     |> maybe_put("additionalProperties", false, strict?)
   end
-
-  defp field_type_schema({:array, item_type}) do
-    %{"type" => "array", "items" => to_json_schema(item_type)}
-  end
-
-  defp field_type_schema({:object, fields}) when is_list(fields), do: object_schema(fields, nil, nil, false)
-  defp field_type_schema({:union, types}) when is_list(types), do: %{"anyOf" => Enum.map(types, &to_json_schema/1)}
-  defp field_type_schema(type), do: to_json_schema(type)
 
   defp merge_field_opts(schema, opts) do
     schema
@@ -189,8 +181,6 @@ defmodule BeamWeaver.Schema do
 
   defp maybe_put(schema, key, value, true), do: put_present(schema, key, value)
   defp maybe_put(schema, _key, _value, false), do: schema
-
-  defp stringify_schema(schema), do: BeamWeaver.MapShape.stringify_keys(schema)
 
   defp schema_default_title(module), do: module |> Module.split() |> List.last() |> Macro.underscore()
 

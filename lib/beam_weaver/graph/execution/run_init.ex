@@ -55,7 +55,7 @@ defmodule BeamWeaver.Graph.Execution.RunInit do
     options = %{options | config: merge_pending_checkpoint_maps(options.config, restored)}
 
     explicit_checkpoint_continue? =
-      Replay.continue_from_checkpoint?(options.config, input, restored)
+      Replay.continue_from_checkpoint?(options.config, input)
 
     continue? =
       options.continue_from_checkpoint? or explicit_checkpoint_continue? or
@@ -95,8 +95,7 @@ defmodule BeamWeaver.Graph.Execution.RunInit do
 
       initial_step = Replay.initial_step(restored, replay?)
 
-      task_trigger_versions =
-        Replay.task_trigger_versions(restored, input_channel_versions, replay?)
+      task_trigger_versions = if replay?, do: restored.channel_versions, else: input_channel_versions
 
       fork_from_checkpoint? =
         (explicit_checkpoint_continue? or options.continue_from_checkpoint?) and
@@ -105,14 +104,9 @@ defmodule BeamWeaver.Graph.Execution.RunInit do
       with {:ok, continued_from} <-
              continued_from(compiled, options.config, restored, replay? and not fork_from_checkpoint?),
            {:ok, run_config} <-
-             maybe_write_fork_checkpoint(
-               compiled,
-               options.config,
-               restored,
-               initial_state,
-               initial_ready,
-               fork_from_checkpoint?,
-               options
+             if(fork_from_checkpoint?,
+               do: write_fork_checkpoint(compiled, options.config, restored, initial_state, initial_ready, options),
+               else: {:ok, options.config}
              ),
            {:ok, config, known_checkpoint} <-
              CheckpointIO.maybe_write_input_checkpoint(
@@ -167,7 +161,7 @@ defmodule BeamWeaver.Graph.Execution.RunInit do
            replay_input_updated_channels: if(replay?, do: input_updated_channels, else: []),
            step_timeout: options.step_timeout,
            run_timeout: options.run_timeout,
-           run_deadline: TaskCollector.run_deadline(options.run_timeout),
+           run_deadline: TaskCollector.deadline(options.run_timeout),
            trace_context: BeamWeaver.Tracing.capture_context(),
            task_supervisor: options.task_supervisor,
            stream_sink: options.stream_sink,
@@ -210,15 +204,7 @@ defmodule BeamWeaver.Graph.Execution.RunInit do
   # along, so the step still routes from those tasks when it completes, also
   # when it stops again first. The step keeps its number, so its tasks keep
   # their ids.
-  defp maybe_write_fork_checkpoint(
-         compiled,
-         config,
-         restored,
-         state,
-         initial_ready,
-         true,
-         %RunOptions{} = options
-       ) do
+  defp write_fork_checkpoint(compiled, config, restored, state, initial_ready, %RunOptions{} = options) do
     metadata = %{
       source: "fork",
       step: restored.step,
@@ -244,17 +230,6 @@ defmodule BeamWeaver.Graph.Execution.RunInit do
       {:ok, config}
     end
   end
-
-  defp maybe_write_fork_checkpoint(
-         _compiled,
-         config,
-         _restored,
-         _state,
-         _ready,
-         _continue?,
-         _opts
-       ),
-       do: {:ok, config}
 
   defp maybe_clear_pending_writes(restored, %RunOptions{clear_pending_writes?: true}) do
     restored

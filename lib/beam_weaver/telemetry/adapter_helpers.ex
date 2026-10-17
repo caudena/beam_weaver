@@ -15,8 +15,6 @@ defmodule BeamWeaver.Telemetry.AdapterHelpers do
   @spec result_count(term()) :: non_neg_integer()
   def result_count(result) when is_list(result), do: length(result)
   def result_count({:ok, list}) when is_list(list), do: length(list)
-  def result_count({:ok, _value}), do: 1
-  def result_count(:ok), do: 1
   def result_count(:error), do: 0
   def result_count({:error, _error}), do: 0
   def result_count(_result), do: 1

@@ -45,23 +45,11 @@ defmodule BeamWeaver.Graph.Execution.Collection do
     |> add_pending_writes([TaskWrite.interrupt(entry.prepared, result.interrupt)])
   end
 
-  def add_result(
-        %__MODULE__{} = collection,
-        _entry,
-        %TaskResult{status: :parent_command} = result
-      ) do
-    add_events(collection, result.events)
-  end
-
-  def add_result(%__MODULE__{} = collection, entry, %TaskResult{status: :error} = result) do
-    add_task_error(collection, entry, result.error, result.events)
-  end
-
   # A finished task's writes and route. Its pending writes, saved only if the
   # step stops partway, include the route.
   @spec add_normalized_result(t(), map(), map(), list()) :: t()
   def add_normalized_result(%__MODULE__{} = collection, entry, normalized, events) do
-    updates = normalized_updates(normalized)
+    updates = normalized.updates
     route = Route.new(entry.prepared.node, normalized)
 
     %{
@@ -87,8 +75,7 @@ defmodule BeamWeaver.Graph.Execution.Collection do
     %{collection | events: collection.events ++ events}
   end
 
-  @spec add_pending_writes(t(), list()) :: t()
-  def add_pending_writes(%__MODULE__{} = collection, writes) do
+  defp add_pending_writes(%__MODULE__{} = collection, writes) do
     %{collection | pending_writes: collection.pending_writes ++ writes}
   end
 
@@ -120,11 +107,6 @@ defmodule BeamWeaver.Graph.Execution.Collection do
         {:halt, halt(collection, :error, error)}
     end
   end
-
-  defp normalized_updates(%{updates: updates}) when is_list(updates), do: updates
-  defp normalized_updates(%{update: update}) when update == %{}, do: []
-  defp normalized_updates(%{update: update}) when is_map(update), do: [update]
-  defp normalized_updates(_normalized), do: []
 
   defp task_pending_writes(entry, updates) when is_list(updates) do
     Enum.flat_map(updates, &TaskWrite.from_update(entry.prepared, &1))

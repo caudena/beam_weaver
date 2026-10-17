@@ -28,9 +28,6 @@ defmodule BeamWeaver.TestSupport.Conformance.LLMCase do
         assert error.type == :invalid_prompt
       end
 
-      if Subject.capability?(@beamweaver_subject, :batch) do
-      end
-
       if Subject.capability?(@beamweaver_subject, :streaming) do
         test "LLM stream returns an enumerable of text chunks" do
           model = build_subject()

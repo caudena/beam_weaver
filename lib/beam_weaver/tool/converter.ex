@@ -4,7 +4,9 @@ defmodule BeamWeaver.Tool.Converter do
   """
 
   alias BeamWeaver.Core.Error
+  alias BeamWeaver.Core.Messages.Serialization
   alias BeamWeaver.Core.Tool
+  alias BeamWeaver.Result
   alias BeamWeaver.Runnable
   alias BeamWeaver.ToolKit
 
@@ -18,7 +20,7 @@ defmodule BeamWeaver.Tool.Converter do
 
   def to_tool(module, opts) when is_atom(module) do
     cond do
-      Code.ensure_loaded?(module) and function_exported?(module, :__beam_weaver_tool__, 0) ->
+      BeamWeaver.Behaviour.exported?(module, :__beam_weaver_tool__, 0) ->
         to_tool(struct(module), opts)
 
       Tool.implemented_by?(module) ->
@@ -37,7 +39,7 @@ defmodule BeamWeaver.Tool.Converter do
       Tool.implemented_by?(module) ->
         to_tool_from_behaviour(tool, opts)
 
-      runnable?(tool) ->
+      BeamWeaver.Behaviour.exported?(module, :invoke, 3) ->
         runnable_to_tool(tool, opts)
 
       true ->
@@ -52,10 +54,6 @@ defmodule BeamWeaver.Tool.Converter do
   end
 
   def to_tool(%{"type" => "function", "function" => %{"name" => _name}} = schema, _opts) do
-    provider_schema_tool(schema)
-  end
-
-  def to_tool(%{"type" => "function", "name" => _name} = schema, _opts) do
     provider_schema_tool(schema)
   end
 
@@ -75,30 +73,8 @@ defmodule BeamWeaver.Tool.Converter do
   """
   @spec to_tools([term()] | term(), keyword()) :: {:ok, [Tool.t()]} | {:error, Error.t()}
   def to_tools(tools, opts \\ []) do
-    tools
-    |> List.wrap()
-    |> Enum.reduce_while({:ok, []}, fn tool, {:ok, acc} ->
-      case convert_one_or_many(tool, opts) do
-        {:ok, converted} -> {:cont, {:ok, acc ++ converted}}
-        {:error, %Error{} = error} -> {:halt, {:error, error}}
-      end
-    end)
-    |> case do
-      {:ok, tools} -> reject_duplicate_names(tools)
-      error -> error
-    end
-  end
-
-  defp convert_one_or_many(module, opts) when is_atom(module) do
-    if ToolKit.implemented_by?(module) do
-      with {:ok, tools} <- ToolKit.tools(module, opts) do
-        to_tools(tools, opts)
-      end
-    else
-      case to_tool(module, opts) do
-        {:ok, tool} -> {:ok, [tool]}
-        {:error, %Error{} = error} -> {:error, error}
-      end
+    with {:ok, tools} <- tools |> List.wrap() |> Result.flat_traverse(&convert_one_or_many(&1, opts)) do
+      reject_duplicate_names(tools)
     end
   end
 
@@ -107,9 +83,10 @@ defmodule BeamWeaver.Tool.Converter do
   end
 
   defp convert_one_or_many(tool, opts) do
-    case to_tool(tool, opts) do
-      {:ok, tool} -> {:ok, [tool]}
-      {:error, %Error{} = error} -> {:error, error}
+    if is_atom(tool) and ToolKit.implemented_by?(tool) do
+      with {:ok, tools} <- ToolKit.tools(tool, opts), do: to_tools(tools, opts)
+    else
+      with {:ok, tool} <- to_tool(tool, opts), do: {:ok, [tool]}
     end
   end
 
@@ -155,7 +132,7 @@ defmodule BeamWeaver.Tool.Converter do
   end
 
   defp provider_schema_tool(schema) when is_map(schema) do
-    schema = stringify_keys(schema)
+    schema = Serialization.stringify_value(schema)
     name = schema["name"]
     description = schema["description"] || ""
     input_schema = schema["parameters"] || %{"type" => "object", "properties" => %{}}
@@ -172,14 +149,7 @@ defmodule BeamWeaver.Tool.Converter do
   end
 
   defp required_opt(opts, key) do
-    case Keyword.fetch(opts, key) do
-      {:ok, value} -> {:ok, value}
-      :error -> {:error, Error.new(:invalid_tool, "runnable tool requires #{key}")}
-    end
-  end
-
-  defp runnable?(%module{}) do
-    Code.ensure_loaded?(module) and function_exported?(module, :invoke, 3)
+    with :error <- Keyword.fetch(opts, key), do: {:error, Error.new(:invalid_tool, "runnable tool requires #{key}")}
   end
 
   defp reject_duplicate_names(tools) do
@@ -194,12 +164,4 @@ defmodule BeamWeaver.Tool.Converter do
         {:error, Error.new(:duplicate_tool, "duplicate tool names", %{names: duplicates})}
     end
   end
-
-  defp stringify_keys(map) when is_map(map) do
-    Map.new(map, fn {key, value} -> {to_string(key), stringify_value(value)} end)
-  end
-
-  defp stringify_value(value) when is_map(value), do: stringify_keys(value)
-  defp stringify_value(value) when is_list(value), do: Enum.map(value, &stringify_value/1)
-  defp stringify_value(value), do: value
 end

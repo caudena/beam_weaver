@@ -7,7 +7,7 @@ defmodule BeamWeaver.Sandbox do
   claiming to be a hardened remote sandbox.
   """
 
-  import BeamWeaver.MapShape, only: [put_present: 3]
+  import BeamWeaver.MapShape, only: [compact: 2, put_present: 3]
 
   alias BeamWeaver.Core.Error
   alias BeamWeaver.Core.ID
@@ -133,7 +133,7 @@ defmodule BeamWeaver.Sandbox do
       result =
         sandbox
         |> module.execute(command, opts)
-        |> put_execute_metadata(metadata, opts)
+        |> put_execute_metadata(metadata)
 
       event = if timeout_result?(result), do: :timeout, else: :stop
 
@@ -196,21 +196,18 @@ defmodule BeamWeaver.Sandbox do
   def error(type, message, details \\ %{}), do: Error.new(type, message, details)
 
   defp execute_metadata(sandbox, command, opts) do
-    base =
-      %{
-        sandbox: sandbox_module(sandbox),
-        command: command,
-        command_id: Keyword.get_lazy(opts, :command_id, fn -> ID.uuidv7() end),
-        timeout_ms: timeout_option_ms(Keyword.get(opts, :timeout))
-      }
-      |> clean_metadata()
-
-    base
+    %{
+      sandbox: BeamWeaver.Telemetry.AdapterHelpers.adapter_name(sandbox),
+      command: command,
+      command_id: Keyword.get_lazy(opts, :command_id, fn -> ID.uuidv7() end),
+      timeout_ms: timeout_option_ms(Keyword.get(opts, :timeout))
+    }
+    |> clean_metadata()
     |> Map.merge(Keyword.get(opts, :metadata, %{}) || %{})
     |> Redactor.redact()
   end
 
-  defp put_execute_metadata(%ExecuteResult{} = result, metadata, _opts) do
+  defp put_execute_metadata(%ExecuteResult{} = result, metadata) do
     result_metadata =
       metadata
       |> Map.merge(result.metadata || %{})
@@ -223,7 +220,7 @@ defmodule BeamWeaver.Sandbox do
     %{result | metadata: result_metadata}
   end
 
-  defp put_execute_metadata(other, _metadata, _opts), do: other
+  defp put_execute_metadata(other, _metadata), do: other
 
   defp result_metadata(%ExecuteResult{} = result) do
     %{
@@ -237,18 +234,11 @@ defmodule BeamWeaver.Sandbox do
     |> Redactor.redact()
   end
 
-  defp result_metadata(result) do
-    %{result: :invalid, value: inspect(result)}
-    |> clean_metadata()
-    |> Redactor.redact()
-  end
+  defp result_metadata(result), do: Redactor.redact(%{result: :invalid, value: inspect(result)})
 
   defp timeout_result?(%ExecuteResult{error: "timeout"}), do: true
   defp timeout_result?(%ExecuteResult{exit_code: 124, error: error}), do: error in ["timeout", :timeout]
   defp timeout_result?(_result), do: false
-
-  defp sandbox_module(%{__struct__: module}), do: module
-  defp sandbox_module(other), do: inspect(other)
 
   defp timeout_option_ms(nil), do: nil
   defp timeout_option_ms(:infinity), do: :infinity
@@ -256,26 +246,13 @@ defmodule BeamWeaver.Sandbox do
   defp timeout_option_ms(timeout) when is_integer(timeout), do: timeout * 1_000
   defp timeout_option_ms(timeout), do: timeout
 
-  defp clean_metadata(map) do
-    map
-    |> Enum.reject(fn
-      {_key, nil} -> true
-      {_key, ""} -> true
-      {_key, value} when is_map(value) and map_size(value) == 0 -> true
-      _entry -> false
-    end)
-    |> Map.new()
-  end
+  defp clean_metadata(map), do: compact(map, [nil, :empty_string, :empty_map])
 end
 
 defmodule BeamWeaver.Sandbox.OutputBuffer do
   @moduledoc false
 
   defstruct chunks: [], bytes: 0, max_bytes: 0, truncated?: false
-
-  def collect(%__MODULE__{max_bytes: max_bytes} = buffer, chunk) when max_bytes <= 0 do
-    %{buffer | truncated?: buffer.truncated? or byte_size(IO.iodata_to_binary(chunk)) > 0}
-  end
 
   def collect(%__MODULE__{} = buffer, chunk) do
     chunk = IO.iodata_to_binary(chunk)
@@ -329,6 +306,7 @@ defmodule BeamWeaver.Sandbox.Local do
 
   use BeamWeaver.Sandbox
 
+  alias BeamWeaver.Filesystem.FileDataUtils
   alias BeamWeaver.Filesystem.Path, as: FilesystemPath
   alias BeamWeaver.Sandbox
   alias BeamWeaver.Tools.Shell.CommandRunner
@@ -369,7 +347,7 @@ defmodule BeamWeaver.Sandbox.Local do
       %Sandbox.WriteResult{path: path, error: nil}
     else
       {:exists, true} -> %Sandbox.WriteResult{path: path, error: "file already exists"}
-      {:error, reason} -> %Sandbox.WriteResult{path: path, error: error_string(reason)}
+      {:error, reason} -> %Sandbox.WriteResult{path: path, error: FileDataUtils.error_string(reason)}
     end
   end
 
@@ -379,13 +357,13 @@ defmodule BeamWeaver.Sandbox.Local do
          {:ok, bytes} <- File.read(resolved) do
       read_bytes(path, bytes, sandbox, opts)
     else
-      {:error, reason} -> %Sandbox.ReadResult{error: error_string(reason)}
+      {:error, reason} -> %Sandbox.ReadResult{error: FileDataUtils.error_string(reason)}
     end
   end
 
   @impl true
   def execute(%__MODULE__{} = sandbox, command, opts) do
-    with {:ok, timeout} <- opts |> Keyword.get(:timeout, 120) |> timeout_ms() do
+    with {:ok, timeout} <- opts |> Keyword.get(:timeout, 120) |> CommandRunner.timeout_ms() do
       case CommandRunner.run(command,
              shell: CommandRunner.shell(),
              cd: sandbox.root,
@@ -440,7 +418,7 @@ defmodule BeamWeaver.Sandbox.Local do
       end
     else
       {:error, reason} ->
-        %Sandbox.EditResult{path: path, occurrences: 0, error: error_string(reason)}
+        %Sandbox.EditResult{path: path, occurrences: 0, error: FileDataUtils.error_string(reason)}
     end
   end
 
@@ -457,7 +435,7 @@ defmodule BeamWeaver.Sandbox.Local do
           entry_path =
             if host_path?(sandbox, path),
               do: Path.join(path, name),
-              else: join_virtual(path, name)
+              else: FilesystemPath.join_virtual(path, name)
 
           %{
             "path" => entry_path,
@@ -469,7 +447,7 @@ defmodule BeamWeaver.Sandbox.Local do
 
       %Sandbox.ListResult{entries: entries}
     else
-      {:error, reason} -> %Sandbox.ListResult{error: error_string(reason)}
+      {:error, reason} -> %Sandbox.ListResult{error: FileDataUtils.error_string(reason)}
     end
   end
 
@@ -490,7 +468,7 @@ defmodule BeamWeaver.Sandbox.Local do
 
       %Sandbox.GlobResult{matches: matches}
     else
-      {:error, reason} -> %Sandbox.GlobResult{error: error_string(reason)}
+      {:error, reason} -> %Sandbox.GlobResult{error: FileDataUtils.error_string(reason)}
     end
   end
 
@@ -511,7 +489,7 @@ defmodule BeamWeaver.Sandbox.Local do
 
       %Sandbox.GrepResult{matches: matches}
     else
-      {:error, reason} -> %Sandbox.GrepResult{error: error_string(reason)}
+      {:error, reason} -> %Sandbox.GrepResult{error: FileDataUtils.error_string(reason)}
     end
   end
 
@@ -531,7 +509,7 @@ defmodule BeamWeaver.Sandbox.Local do
            :ok <- File.write(resolved, IO.iodata_to_binary(content)) do
         %Sandbox.UploadResult{path: path, error: nil}
       else
-        {:error, reason} -> %Sandbox.UploadResult{path: path, error: error_string(reason)}
+        {:error, reason} -> %Sandbox.UploadResult{path: path, error: FileDataUtils.error_string(reason)}
       end
     end)
   end
@@ -548,7 +526,7 @@ defmodule BeamWeaver.Sandbox.Local do
           %Sandbox.DownloadResult{path: path, content: nil, error: "is_directory"}
 
         {:error, reason} ->
-          %Sandbox.DownloadResult{path: path, content: nil, error: error_string(reason)}
+          %Sandbox.DownloadResult{path: path, content: nil, error: FileDataUtils.error_string(reason)}
       end
     end)
   end
@@ -618,16 +596,12 @@ defmodule BeamWeaver.Sandbox.Local do
           }
         }
 
-      binary_content?(bytes) and byte_size(bytes) > sandbox.max_binary_preview ->
+      FileDataUtils.binary_content?(bytes) and byte_size(bytes) > sandbox.max_binary_preview ->
         %Sandbox.ReadResult{
           error: "File '#{path}': Binary file exceeds maximum preview size of #{sandbox.max_binary_preview} bytes"
         }
 
-      binary_content?(bytes) ->
-        offset = Keyword.get(opts, :offset, 0)
-        limit = Keyword.get(opts, :limit)
-        bytes = slice_bytes(bytes, offset, limit)
-
+      FileDataUtils.binary_content?(bytes) ->
         %Sandbox.ReadResult{
           file_data: %{"content" => Base.encode64(bytes), "encoding" => "base64"}
         }
@@ -639,33 +613,10 @@ defmodule BeamWeaver.Sandbox.Local do
     end
   end
 
-  defp slice_bytes(bytes, offset, nil),
-    do: binary_part(bytes, min(offset, byte_size(bytes)), max(byte_size(bytes) - offset, 0))
-
-  defp slice_bytes(bytes, offset, limit),
-    do:
-      binary_part(
-        bytes,
-        min(offset, byte_size(bytes)),
-        min(limit, max(byte_size(bytes) - offset, 0))
-      )
-
   defp slice_lines(bytes, opts) do
-    offset = Keyword.get(opts, :offset, 0)
-    limit = Keyword.get(opts, :limit)
-
-    bytes
-    |> String.split("\n")
-    |> Enum.drop(offset)
-    |> maybe_take(limit)
-    |> Enum.join("\n")
+    lines = bytes |> String.split("\n") |> Enum.drop(Keyword.get(opts, :offset, 0))
+    lines |> Enum.take(Keyword.get(opts, :limit) || length(lines)) |> Enum.join("\n")
   end
-
-  defp maybe_take(lines, nil), do: lines
-  defp maybe_take(lines, limit), do: Enum.take(lines, limit)
-
-  defp binary_content?(bytes),
-    do: not String.valid?(bytes) or :binary.match(bytes, <<0>>) != :nomatch
 
   defp grep_file(path, pattern, resolved_base, requested_base, host_path?) do
     case File.read(path) do
@@ -700,24 +651,13 @@ defmodule BeamWeaver.Sandbox.Local do
     end
   end
 
-  defp count_occurrences(content, ""), do: if(content == "", do: 1, else: 0)
+  defp count_occurrences(_content, ""), do: 0
 
   defp count_occurrences(content, needle) do
     content
     |> :binary.matches(needle)
     |> length()
   end
-
-  defp error_string(:enoent), do: "file_not_found"
-  defp error_string(:eacces), do: "permission_denied"
-  defp error_string(reason) when is_binary(reason), do: reason
-  defp error_string(reason), do: inspect(reason)
-
-  defp timeout_ms(timeout) when is_integer(timeout) and timeout in 1..3600,
-    do: {:ok, timeout * 1_000}
-
-  defp timeout_ms(_timeout),
-    do: {:error, "timeout must be an integer between 1 and 3600 seconds"}
 
   defp host_path?(%__MODULE__{root: root}, path) when is_binary(path) do
     expanded = Path.expand(path)
@@ -727,13 +667,13 @@ defmodule BeamWeaver.Sandbox.Local do
   defp glob_path(sandbox, base, path, resolved_base) do
     if host_path?(sandbox, base),
       do: Path.relative_to(path, resolved_base),
-      else: join_virtual(base, Path.relative_to(path, resolved_base))
+      else: FilesystemPath.join_virtual(base, Path.relative_to(path, resolved_base))
   end
 
   defp grep_path(path, _requested_base, _resolved_base, true), do: path
 
   defp grep_path(path, requested_base, resolved_base, false),
-    do: join_virtual(requested_base, Path.relative_to(path, resolved_base))
+    do: FilesystemPath.join_virtual(requested_base, Path.relative_to(path, resolved_base))
 
   defp maybe_put_size(entry, sandbox, base, path) do
     if host_path?(sandbox, base) do
@@ -741,13 +681,5 @@ defmodule BeamWeaver.Sandbox.Local do
     else
       Map.put(entry, "size", if(File.regular?(path), do: File.stat!(path).size))
     end
-  end
-
-  defp join_virtual("/", ""), do: "/"
-  defp join_virtual("/", relative), do: "/" <> String.trim_leading(relative, "/")
-  defp join_virtual(base, ""), do: base
-
-  defp join_virtual(base, relative) do
-    String.trim_trailing(base, "/") <> "/" <> String.trim_leading(relative, "/")
   end
 end

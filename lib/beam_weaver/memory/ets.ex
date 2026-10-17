@@ -18,13 +18,8 @@ defmodule BeamWeaver.Memory.ETS do
   @behaviour BeamWeaver.Memory.Store
 
   alias BeamWeaver.Core.EmbeddingModel
-  alias BeamWeaver.Memory.GetOp
   alias BeamWeaver.Memory.Item
-  alias BeamWeaver.Memory.ListNamespacesOp
-  alias BeamWeaver.Memory.MatchCondition
-  alias BeamWeaver.Memory.PutOp
   alias BeamWeaver.Memory.Query
-  alias BeamWeaver.Memory.SearchOp
 
   defstruct [:items, :vectors, default_ttl: nil, refresh_ttl: false, index_config: nil]
 
@@ -55,12 +50,7 @@ defmodule BeamWeaver.Memory.ETS do
     now = DateTime.utc_now()
     metadata = Keyword.get(opts, :metadata, %{})
 
-    ttl =
-      case Keyword.get(opts, :ttl, :not_provided) do
-        :not_provided -> store.default_ttl
-        ttl -> ttl
-      end
-
+    ttl = with :not_provided <- Keyword.get(opts, :ttl, :not_provided), do: store.default_ttl
     item_key = {namespace, key}
 
     created_at =
@@ -117,7 +107,7 @@ defmodule BeamWeaver.Memory.ETS do
 
   @impl true
   def search(%__MODULE__{} = store, namespace, opts) do
-    sweep_expired(store)
+    BeamWeaver.Adapter.Sweepable.sweep_expired(store, [])
 
     items =
       store.items
@@ -133,7 +123,7 @@ defmodule BeamWeaver.Memory.ETS do
 
   @impl true
   def list_namespaces(%__MODULE__{} = store, opts) do
-    sweep_expired(store)
+    BeamWeaver.Adapter.Sweepable.sweep_expired(store, [])
 
     namespaces =
       store.items
@@ -144,65 +134,10 @@ defmodule BeamWeaver.Memory.ETS do
   end
 
   @impl true
-  def batch(%__MODULE__{} = store, ops) when is_list(ops) do
-    Enum.map(ops, fn
-      %GetOp{namespace: namespace, key: key} = op ->
-        case get_item(store, namespace, key, refresh_ttl?(store, op.refresh_ttl)) do
-          {:ok, item} -> item
-          :error -> nil
-        end
-
-      %SearchOp{} = op ->
-        search(store, op.namespace,
-          filter: op.filter,
-          limit: op.limit,
-          offset: op.offset,
-          query: op.query,
-          refresh_ttl: op.refresh_ttl
-        )
-
-      %PutOp{namespace: namespace, key: key, value: nil} ->
-        delete(store, namespace, key)
-        nil
-
-      %PutOp{} = op ->
-        put(store, op.namespace, op.key, op.value,
-          metadata: op.metadata,
-          index: op.index,
-          ttl: op.ttl
-        )
-
-        nil
-
-      %ListNamespacesOp{} = op ->
-        list_namespaces(store, list_namespace_opts(op))
-    end)
-  end
-
-  defp list_namespace_opts(%ListNamespacesOp{} = op) do
-    {prefix, suffix} =
-      Enum.reduce(op.match_conditions || [], {[], []}, fn
-        %MatchCondition{type: :prefix, path: path}, {_prefix, suffix} -> {path, suffix}
-        %MatchCondition{type: "prefix", path: path}, {_prefix, suffix} -> {path, suffix}
-        %MatchCondition{type: :suffix, path: path}, {prefix, _suffix} -> {prefix, path}
-        %MatchCondition{type: "suffix", path: path}, {prefix, _suffix} -> {prefix, path}
-        _other, acc -> acc
-      end)
-
-    [
-      prefix: prefix,
-      suffix: suffix,
-      max_depth: op.max_depth,
-      limit: op.limit,
-      offset: op.offset
-    ]
-  end
-
-  defp refresh_ttl?(_store, refresh_ttl) when is_boolean(refresh_ttl), do: refresh_ttl
-  defp refresh_ttl?(store, _default), do: store.refresh_ttl
+  def batch(%__MODULE__{} = store, ops) when is_list(ops), do: Query.batch(store, ops, &get_item(store, &1, &2, &3))
 
   defp maybe_refresh(results, store, opts) do
-    if refresh_ttl?(store, Keyword.get(opts, :refresh_ttl)),
+    if Query.refresh_ttl?(store, Keyword.get(opts, :refresh_ttl)),
       do: Enum.map(results, &refresh_item(store, &1)),
       else: results
   end
@@ -256,17 +191,11 @@ defmodule BeamWeaver.Memory.ETS do
 
       case embed_documents(store.index_config, texts) do
         {:ok, vectors} ->
-          entries =
-            texts
-            |> Enum.zip(vectors)
-            |> Enum.map(fn {text, vector} -> %{text: text, vector: vector} end)
-
+          entries = Enum.zip_with(texts, vectors, &%{text: &1, vector: &2})
           :ets.insert(store.vectors, {{item.namespace, item.key}, entries})
-          :ok
 
         {:error, _error} ->
           :ets.delete(store.vectors, {item.namespace, item.key})
-          :ok
       end
     end
   end
@@ -282,16 +211,8 @@ defmodule BeamWeaver.Memory.ETS do
   end
 
   defp embed_documents(_config, []), do: {:ok, []}
-
-  defp embed_documents(%{embed: nil}, texts), do: {:ok, Enum.map(texts, &fallback_vector/1)}
-
-  defp embed_documents(%{embed: embed}, texts) do
-    if is_struct(embed) do
-      EmbeddingModel.embed_documents(embed, texts)
-    else
-      {:ok, Enum.map(texts, &fallback_vector/1)}
-    end
-  end
+  defp embed_documents(%{embed: embed}, texts) when is_struct(embed), do: EmbeddingModel.embed_documents(embed, texts)
+  defp embed_documents(_config, texts), do: {:ok, Enum.map(texts, &fallback_vector/1)}
 
   defp vector_scores(%__MODULE__{index_config: nil}, _namespace, _items, _opts), do: :skip
 
@@ -321,17 +242,8 @@ defmodule BeamWeaver.Memory.ETS do
     end
   end
 
-  defp embed_query(%{embed: nil}, query), do: {:ok, fallback_vector(query)}
-
-  defp embed_query(%{embed: embed}, query) do
-    if is_struct(embed) do
-      EmbeddingModel.embed_query(embed, query)
-    else
-      {:ok, fallback_vector(query)}
-    end
-  end
-
-  defp best_score(_query_vector, []), do: nil
+  defp embed_query(%{embed: embed}, query) when is_struct(embed), do: EmbeddingModel.embed_query(embed, query)
+  defp embed_query(_config, query), do: {:ok, fallback_vector(query)}
 
   defp best_score(query_vector, entries) do
     entries
@@ -362,12 +274,4 @@ defmodule BeamWeaver.Memory.ETS do
   end
 
   defp cosine(_left, _right), do: 0.0
-
-  defp sweep_expired(store) do
-    for {{namespace, key}, item} <- :ets.tab2list(store.items), Query.expired?(item) do
-      delete(store, namespace, key)
-    end
-
-    :ok
-  end
 end

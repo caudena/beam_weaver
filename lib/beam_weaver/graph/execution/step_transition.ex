@@ -6,6 +6,7 @@ defmodule BeamWeaver.Graph.Execution.StepTransition do
   alias BeamWeaver.Graph.Execution.ChannelMerge
   alias BeamWeaver.Graph.Execution.CheckpointIO
   alias BeamWeaver.Graph.Execution.Halt
+  alias BeamWeaver.Graph.Execution.Replay
   alias BeamWeaver.Graph.Execution.Route
   alias BeamWeaver.Graph.Execution.Run
   alias BeamWeaver.Graph.Execution.Scheduler
@@ -20,7 +21,7 @@ defmodule BeamWeaver.Graph.Execution.StepTransition do
   def advance(%Run{ready: ready, compiled: compiled} = run) do
     case interrupted_before(run, ready) do
       nil ->
-        run = Map.put(run, :step_deadline, TaskCollector.step_deadline(run.step_timeout))
+        run = Map.put(run, :step_deadline, TaskCollector.deadline(run.step_timeout))
         tasks = TaskExecutor.run_step_tasks(run)
 
         case TaskCollector.collect_tasks(tasks, run, compiled.graph) do
@@ -42,10 +43,10 @@ defmodule BeamWeaver.Graph.Execution.StepTransition do
     # A step that continues one that stopped partway also routes from the
     # tasks that had finished then.
     routes = run.replay_routes ++ outcome.routes
-    completed = Enum.map(run.replay_routes, & &1.node) ++ CheckpointIO.ready_names(ready)
+    completed = Enum.map(run.replay_routes, & &1.node) ++ Replay.ready_names(ready)
     routing_state = Route.put_outputs(outcome.state, run.replay_routes, compiled.graph)
 
-    case Scheduler.prepare_next_tasks(compiled.plan || compiled.graph, routes, routing_state) do
+    case Scheduler.prepare_next_tasks(compiled.plan, routes, routing_state) do
       {:ok, schedule} -> schedule_next_step(run, ready, outcome, completed, routing_state, schedule)
       {:error, %Error{} = error} -> {:halt, {:error, error}}
     end
@@ -71,7 +72,7 @@ defmodule BeamWeaver.Graph.Execution.StepTransition do
 
         next_ready =
           Scheduler.add_channel_tasks(
-            compiled.plan || compiled.graph,
+            compiled.plan,
             schedule.ready,
             updated_channels
           )
@@ -94,9 +95,9 @@ defmodule BeamWeaver.Graph.Execution.StepTransition do
           step: run.step,
           run_id: run.run_id,
           nodes: completed,
-          next: CheckpointIO.ready_names(next_ready),
-          next_tasks: CheckpointIO.checkpoint_next_records(next_ready, compiled.graph),
-          tasks: CheckpointIO.checkpoint_task_records(outcome.events),
+          next: Replay.ready_names(next_ready),
+          next_tasks: Replay.checkpoint_next_records(next_ready, compiled.graph),
+          tasks: Replay.checkpoint_task_records(outcome.events),
           interrupts: [],
           channel_versions: channel_versions,
           versions_seen: versions_seen,
@@ -104,7 +105,7 @@ defmodule BeamWeaver.Graph.Execution.StepTransition do
           step_update: public_step_update
         }
 
-        case CheckpointIO.maybe_write_checkpoint(compiled, run.config, scheduled_state, metadata, run.known_checkpoint) do
+        case CheckpointIO.write_checkpoint(compiled, run.config, scheduled_state, metadata, run.known_checkpoint) do
           {:ok, config, known_checkpoint} ->
             Stream.emit_checkpoint(run, config, scheduled_state)
 

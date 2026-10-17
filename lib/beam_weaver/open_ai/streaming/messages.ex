@@ -95,13 +95,7 @@ defmodule BeamWeaver.OpenAI.Streaming.Messages do
     state
     |> put_in([:item_call_ids, item_id], call_id)
     |> put_in([:item_names, item_id], name)
-    |> emit_message_chunk(
-      Messages.ai_chunk("",
-        tool_call_chunks: [
-          Messages.tool_call_chunk(id: call_id, index: data["output_index"], name: name, args: "")
-        ]
-      )
-    )
+    |> emit_tool_call_chunk(call_id, data["output_index"], name, "")
   end
 
   defp apply_message_chunk_event(
@@ -124,19 +118,7 @@ defmodule BeamWeaver.OpenAI.Streaming.Messages do
     call_id = Map.get(state.item_call_ids, item_id)
     name = Map.get(state.item_names, item_id, data["name"])
 
-    emit_message_chunk(
-      state,
-      Messages.ai_chunk("",
-        tool_call_chunks: [
-          Messages.tool_call_chunk(
-            id: call_id,
-            index: data["output_index"],
-            name: name,
-            args: delta
-          )
-        ]
-      )
-    )
+    emit_tool_call_chunk(state, call_id, data["output_index"], name, delta)
   end
 
   defp apply_message_chunk_event(
@@ -153,36 +135,10 @@ defmodule BeamWeaver.OpenAI.Streaming.Messages do
     emit_message_chunk(state, Messages.ai_chunk(delta, id: item_id))
   end
 
-  defp apply_message_chunk_event(
-         %{
-           "data" => %{
-             "type" => type,
-             "item_id" => item_id,
-             "delta" => delta
-           }
-         },
-         state
-       )
+  defp apply_message_chunk_event(%{"data" => %{"type" => type, "delta" => delta} = data}, state)
        when type in ["response.reasoning_summary_text.delta", "response.reasoning_text.delta"] and
               is_binary(delta) do
-    emit_message_chunk(
-      state,
-      Messages.ai_chunk([ContentBlock.reasoning(delta)], id: item_id)
-    )
-  end
-
-  defp apply_message_chunk_event(
-         %{
-           "data" => %{
-             "type" => type,
-             "delta" => delta
-           }
-         },
-         state
-       )
-       when type in ["response.reasoning_summary_text.delta", "response.reasoning_text.delta"] and
-              is_binary(delta) do
-    emit_message_chunk(state, Messages.ai_chunk([ContentBlock.reasoning(delta)]))
+    emit_message_chunk(state, Messages.ai_chunk([ContentBlock.reasoning(delta)], id: data["item_id"]))
   end
 
   defp apply_message_chunk_event(%{"data" => %{"choices" => choices}}, state)
@@ -201,20 +157,7 @@ defmodule BeamWeaver.OpenAI.Streaming.Messages do
       |> Map.get("tool_calls", [])
       |> Enum.reduce(acc, fn call, acc ->
         function = call["function"] || %{}
-
-        emit_message_chunk(
-          acc,
-          Messages.ai_chunk("",
-            tool_call_chunks: [
-              Messages.tool_call_chunk(
-                id: call["id"],
-                index: call["index"],
-                name: function["name"],
-                args: function["arguments"] || ""
-              )
-            ]
-          )
-        )
+        emit_tool_call_chunk(acc, call["id"], call["index"], function["name"], function["arguments"] || "")
       end)
       |> maybe_emit_unknown_chat_delta(delta)
     end)
@@ -224,6 +167,11 @@ defmodule BeamWeaver.OpenAI.Streaming.Messages do
 
   defp emit_message_chunk(state, chunk) do
     Map.update!(state, :chunks, &[{state.event_index, chunk} | &1])
+  end
+
+  defp emit_tool_call_chunk(state, id, index, name, args) do
+    chunk = Messages.tool_call_chunk(id: id, index: index, name: name, args: args)
+    emit_message_chunk(state, Messages.ai_chunk("", tool_call_chunks: [chunk]))
   end
 
   defp maybe_emit_unknown_chat_delta(state, delta) when is_map(delta) do

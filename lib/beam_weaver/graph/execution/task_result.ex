@@ -1,8 +1,6 @@
 defmodule BeamWeaver.Graph.Execution.TaskResult do
   @moduledoc false
 
-  alias BeamWeaver.Core.Error
-
   defstruct [
     :task_id,
     :node,
@@ -15,7 +13,6 @@ defmodule BeamWeaver.Graph.Execution.TaskResult do
     :next,
     :interrupt,
     :command,
-    :error,
     events: []
   ]
 
@@ -24,14 +21,13 @@ defmodule BeamWeaver.Graph.Execution.TaskResult do
           node: String.t(),
           path: String.t(),
           step: non_neg_integer(),
-          status: :ok | :error | :interrupted | :parent_command,
+          status: :ok | :interrupted | :parent_command,
           update: map(),
           updates: [map()],
           sends: list(),
           next: list(),
           interrupt: term(),
           command: term(),
-          error: Error.t() | nil,
           events: list()
         }
 
@@ -44,26 +40,9 @@ defmodule BeamWeaver.Graph.Execution.TaskResult do
       step: step,
       status: :ok,
       update: normalized.update,
-      updates: Map.get(normalized, :updates, update_list(normalized.update)),
+      updates: normalized.updates,
       sends: normalized.sends,
       next: normalized.next,
-      events: events
-    }
-  end
-
-  @spec error(String.t(), String.t(), String.t(), non_neg_integer(), Error.t(), list()) :: t()
-  def error(task_id, node, path, step, %Error{} = error, events) do
-    %__MODULE__{
-      task_id: task_id,
-      node: node,
-      path: path,
-      step: step,
-      status: :error,
-      update: %{},
-      updates: [],
-      sends: [],
-      next: [],
-      error: error,
       events: events
     }
   end
@@ -102,8 +81,4 @@ defmodule BeamWeaver.Graph.Execution.TaskResult do
       events: events
     }
   end
-
-  defp update_list(update) when update == %{}, do: []
-  defp update_list(update) when is_map(update), do: [update]
-  defp update_list(_update), do: []
 end

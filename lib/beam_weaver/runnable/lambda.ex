@@ -8,14 +8,8 @@ defmodule BeamWeaver.Runnable.Lambda do
   defstruct [:fun, :name]
 
   @impl true
-  def invoke(%__MODULE__{fun: fun}, input, _opts) when is_function(fun, 1) do
-    fun.(input)
-  rescue
-    exception -> {:error, Error.new(:runnable_exception, Exception.message(exception))}
-  end
-
-  def invoke(%__MODULE__{fun: fun}, input, opts) when is_function(fun, 2) do
-    fun.(input, opts)
+  def invoke(%__MODULE__{fun: fun}, input, opts) when is_function(fun, 1) or is_function(fun, 2) do
+    if is_function(fun, 1), do: fun.(input), else: fun.(input, opts)
   rescue
     exception -> {:error, Error.new(:runnable_exception, Exception.message(exception))}
   end

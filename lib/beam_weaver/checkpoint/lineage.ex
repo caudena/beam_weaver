@@ -2,12 +2,20 @@ defmodule BeamWeaver.Checkpoint.Lineage do
   @moduledoc false
 
   alias BeamWeaver.Checkpoint
+  alias BeamWeaver.Checkpoint.Batch
   alias BeamWeaver.Core.Error
 
   @max_count 10_000
   @max_bytes 64 * 1024 * 1024
 
-  def collect(saver, config, opts) do
+  def fork_at(%module{} = saver, source_config, target_thread_id, opts) do
+    with {:ok, lineage} <- collect(saver, source_config, opts),
+         {:ok, configs} <- module.put_many(saver, Batch.fork_entries(lineage, target_thread_id), []) do
+      {:ok, List.last(configs)}
+    end
+  end
+
+  defp collect(saver, config, opts) do
     count = Keyword.get(opts, :max_checkpoints, 1_000)
     bytes = Keyword.get(opts, :max_bytes, @max_bytes)
 

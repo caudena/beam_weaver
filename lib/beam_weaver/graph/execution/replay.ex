@@ -7,7 +7,6 @@ defmodule BeamWeaver.Graph.Execution.Replay do
   alias BeamWeaver.Graph.Execution.ChannelLookup
   alias BeamWeaver.Graph.Execution.CheckpointIO
   alias BeamWeaver.Graph.Execution.DeltaReplay
-  alias BeamWeaver.Graph.Execution.Scheduler
   alias BeamWeaver.Graph.Execution.SubgraphRouter
   alias BeamWeaver.Graph.Execution.TaskRequest
 
@@ -19,7 +18,7 @@ defmodule BeamWeaver.Graph.Execution.Replay do
 
   def restore_checkpoint_state(%{checkpointer: checkpointer} = compiled, config) do
     config = SubgraphRouter.checkpoint_config(compiled, config)
-    tuple = CheckpointIO.get_tuple(checkpointer, config)
+    tuple = Checkpoint.get_tuple(checkpointer, config)
 
     with {:ok, restored} <- restore_found_tuple(compiled, tuple) do
       {:ok, Map.put(restored, :known_checkpoint, CheckpointIO.known_checkpoint(config, tuple))}
@@ -51,11 +50,8 @@ defmodule BeamWeaver.Graph.Execution.Replay do
 
   # Continues the checkpoint that the config names, as when replaying an
   # earlier step: the input is empty and the config has a `checkpoint_id`.
-  @spec continue_from_checkpoint?(map(), map(), map()) :: boolean()
-  def continue_from_checkpoint?(config, input, _restored) when input == %{},
-    do: checkpoint_id?(config)
-
-  def continue_from_checkpoint?(_config, _input, _restored), do: false
+  @spec continue_from_checkpoint?(map(), map()) :: boolean()
+  def continue_from_checkpoint?(config, input), do: input == %{} and checkpoint_id?(config)
 
   # Continues the thread's latest checkpoint instead of starting from the
   # entry points:
@@ -83,19 +79,7 @@ defmodule BeamWeaver.Graph.Execution.Replay do
   end
 
   @spec initial_ready(map(), map(), map(), boolean()) :: [TaskRequest.t()]
-  def initial_ready(
-        %{plan: %{entry_requests: [_first | _rest] = entries}},
-        _config,
-        _restored,
-        false
-      ),
-      do: entries
-
-  def initial_ready(compiled, _config, _restored, false) do
-    Enum.map(compiled.graph.entry_points, fn node ->
-      TaskRequest.pull(node, [Scheduler.branch_channel("__start__", node)])
-    end)
-  end
+  def initial_ready(compiled, _config, _restored, false), do: compiled.plan.entry_requests
 
   def initial_ready(compiled, config, restored, true) do
     {error_ready, handled_error_task_ids} = pending_error_replay(compiled, restored)
@@ -109,12 +93,11 @@ defmodule BeamWeaver.Graph.Execution.Replay do
     step = initial_step(restored, true)
 
     replay_ready =
-      restored.next
-      |> Enum.map(&TaskRequest.from_checkpoint/1)
-      |> Enum.reject(fn ready_entry ->
+      Enum.reject(restored.next, fn ready_entry ->
         node = TaskRequest.name(ready_entry)
 
-        ready_task_paths(ready_entry)
+        ready_entry
+        |> TaskRequest.task_paths()
         |> Enum.map(fn path ->
           Execution.task_id(
             compiled.name,
@@ -152,17 +135,11 @@ defmodule BeamWeaver.Graph.Execution.Replay do
     end)
   end
 
-  @spec task_trigger_versions(map(), map(), boolean()) :: map()
-  def task_trigger_versions(restored, _input_channel_versions, true),
-    do: restored.channel_versions
-
-  def task_trigger_versions(_restored, input_channel_versions, false), do: input_channel_versions
-
   @spec pending_interrupt_records(map(), map()) :: [map()]
   def pending_interrupt_records(%{checkpointer: nil}, _config), do: []
 
   def pending_interrupt_records(%{checkpointer: checkpointer}, config) do
-    case CheckpointIO.get_tuple(checkpointer, config) do
+    case Checkpoint.get_tuple(checkpointer, config) do
       nil ->
         []
 
@@ -199,61 +176,27 @@ defmodule BeamWeaver.Graph.Execution.Replay do
     end)
   end
 
-  @spec checkpoint_next_records([term()], map() | nil) :: [map()]
-  def checkpoint_next_records(next_ready, graph \\ nil)
-
-  def checkpoint_next_records(next_ready, nil) do
-    Enum.map(next_ready, &TaskRequest.checkpoint_record/1)
-  end
-
-  def checkpoint_next_records(next_ready, graph) do
-    Enum.map(next_ready, &TaskRequest.checkpoint_record(&1, graph))
-  end
+  @spec checkpoint_next_records([term()], map()) :: [map()]
+  def checkpoint_next_records(next_ready, graph), do: Enum.map(next_ready, &TaskRequest.checkpoint_record(&1, graph))
 
   @spec ready_names([term()]) :: [String.t()]
   def ready_names(ready), do: Enum.map(ready, &TaskRequest.name/1)
 
-  @spec ready_task_paths(term()) :: [term()]
-  def ready_task_paths(ready), do: TaskRequest.task_paths(ready)
-
-  defp pending_error_writes?(pending_writes) do
-    Enum.any?(pending_writes, fn
-      {_task_id, "__error__", _error} -> true
-      {_task_id, "__error__", _error, _path} -> true
-      _other -> false
-    end)
-  end
+  defp pending_error_writes?(pending_writes),
+    do: Enum.any?(pending_writes, &(is_tuple(&1) and tuple_size(&1) in [3, 4] and elem(&1, 1) == "__error__"))
 
   defp pending_error_replay(compiled, %{pending_writes: writes, pending_write_paths: paths}) do
-    path_by_task =
-      Map.new(paths || [], fn
-        {task_id, "__error__", path} -> {{task_id, "__error__"}, path}
-        {task_id, channel, path} -> {{task_id, channel}, path}
-      end)
+    path_by_task = Map.new(paths || [], fn {task_id, channel, path} -> {{task_id, channel}, path} end)
 
-    writes
-    |> List.wrap()
-    |> Enum.reduce({[], MapSet.new()}, fn
-      {task_id, "__error__", error}, {requests, task_ids} ->
-        replay_error = replay_error(error)
-
-        node =
-          node_from_path(path_by_task[{task_id, "__error__"}]) || node_from_error(replay_error)
-
+    for write when tuple_size(write) in [3, 4] and elem(write, 1) == "__error__" <- List.wrap(writes),
+        reduce: {[], MapSet.new()} do
+      {requests, task_ids} ->
+        task_id = elem(write, 0)
+        replay_error = replay_error(elem(write, 2))
+        path = if tuple_size(write) == 4, do: elem(write, 3)
+        node = node_from_path(path || path_by_task[{task_id, "__error__"}]) || node_from_error(replay_error)
         maybe_add_error_request(compiled, node, replay_error, task_id, requests, task_ids)
-
-      {task_id, "__error__", error, path}, {requests, task_ids} ->
-        replay_error = replay_error(error)
-
-        node =
-          node_from_path(path || path_by_task[{task_id, "__error__"}]) ||
-            node_from_error(replay_error)
-
-        maybe_add_error_request(compiled, node, replay_error, task_id, requests, task_ids)
-
-      _other, acc ->
-        acc
-    end)
+    end
   end
 
   defp pending_error_replay(_compiled, _restored), do: {[], MapSet.new()}

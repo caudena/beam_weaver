@@ -1,7 +1,12 @@
 defmodule BeamWeaver.Memory.Query do
   @moduledoc false
 
+  alias BeamWeaver.Memory.GetOp
+  alias BeamWeaver.Memory.ListNamespacesOp
+  alias BeamWeaver.Memory.MatchCondition
+  alias BeamWeaver.Memory.PutOp
   alias BeamWeaver.Memory.SearchItem
+  alias BeamWeaver.Memory.SearchOp
 
   @reserved_root "beam_weaver"
 
@@ -84,22 +89,18 @@ defmodule BeamWeaver.Memory.Query do
     |> Enum.take(limit)
   end
 
-  def namespace_prefix?(_namespace, []), do: true
+  def namespace_prefix?(namespace, prefix), do: List.starts_with?(namespace, prefix)
 
-  def namespace_prefix?(namespace, prefix) do
-    length(namespace) >= length(prefix) and Enum.take(namespace, length(prefix)) == prefix
-  end
+  defp namespace_path_match?(_namespace, [], _type), do: true
 
-  def namespace_path_match?(_namespace, [], _type), do: true
-
-  def namespace_path_match?(namespace, path, :prefix) do
+  defp namespace_path_match?(namespace, path, :prefix) do
     length(namespace) >= length(path) and
       namespace
       |> Enum.take(length(path))
       |> wildcard_match?(path)
   end
 
-  def namespace_path_match?(namespace, path, :suffix) do
+  defp namespace_path_match?(namespace, path, :suffix) do
     length(namespace) >= length(path) and
       namespace
       |> Enum.take(-length(path))
@@ -159,8 +160,6 @@ defmodule BeamWeaver.Memory.Query do
   def expired?(%{expires_at: expires_at}),
     do: DateTime.compare(DateTime.utc_now(), expires_at) != :lt
 
-  def expired?(_item), do: false
-
   # The stores' `:refresh_ttl` option. `nil` is the default, `false`.
   def refresh_ttl_option!(refresh_ttl) when is_boolean(refresh_ttl), do: refresh_ttl
   def refresh_ttl_option!(nil), do: false
@@ -169,11 +168,66 @@ defmodule BeamWeaver.Memory.Query do
     do: raise(ArgumentError, "expected :refresh_ttl to be a boolean, got: #{inspect(other)}")
 
   def expires_at(nil), do: nil
-  def expires_at(:not_provided), do: nil
 
   def expires_at(ttl_minutes) when is_number(ttl_minutes) do
     milliseconds = max(round(ttl_minutes * 60_000), 1)
     DateTime.add(DateTime.utc_now(), milliseconds, :millisecond)
+  end
+
+  def refresh_ttl?(_store, refresh_ttl) when is_boolean(refresh_ttl), do: refresh_ttl
+  def refresh_ttl?(store, _default), do: store.refresh_ttl
+
+  def prune_cutoff(opts) do
+    case Keyword.get(opts, :older_than) do
+      %DateTime{} = cutoff ->
+        cutoff
+
+      _other ->
+        if is_integer(Keyword.get(opts, :max_age_ms)),
+          do: DateTime.add(DateTime.utc_now(), -Keyword.fetch!(opts, :max_age_ms), :millisecond)
+    end
+  end
+
+  def batch(%module{} = store, ops, get_item) do
+    Enum.map(ops, fn
+      %GetOp{} = op ->
+        case get_item.(op.namespace, op.key, refresh_ttl?(store, op.refresh_ttl)) do
+          {:ok, item} -> item
+          :error -> nil
+          {:error, error} -> {:error, error}
+        end
+
+      %SearchOp{} = op ->
+        module.search(store, op.namespace,
+          filter: op.filter,
+          limit: op.limit,
+          offset: op.offset,
+          query: op.query,
+          refresh_ttl: op.refresh_ttl
+        )
+
+      %PutOp{namespace: namespace, key: key, value: nil} ->
+        module.delete(store, namespace, key)
+        nil
+
+      %PutOp{} = op ->
+        module.put(store, op.namespace, op.key, op.value, metadata: op.metadata, index: op.index, ttl: op.ttl)
+        nil
+
+      %ListNamespacesOp{} = op ->
+        module.list_namespaces(store, list_namespace_opts(op))
+    end)
+  end
+
+  defp list_namespace_opts(%ListNamespacesOp{} = op) do
+    {prefix, suffix} =
+      Enum.reduce(op.match_conditions || [], {[], []}, fn
+        %MatchCondition{type: type, path: path}, {_prefix, suffix} when type in [:prefix, "prefix"] -> {path, suffix}
+        %MatchCondition{type: type, path: path}, {prefix, _suffix} when type in [:suffix, "suffix"] -> {prefix, path}
+        _other, acc -> acc
+      end)
+
+    [prefix: prefix, suffix: suffix, max_depth: op.max_depth, limit: op.limit, offset: op.offset]
   end
 
   defp wildcard_match?(values, pattern) do
@@ -188,23 +242,7 @@ defmodule BeamWeaver.Memory.Query do
   defp truncate_namespace(namespace, nil), do: namespace
   defp truncate_namespace(namespace, max_depth), do: Enum.take(namespace, max_depth)
 
-  defp value_at(map, key) when is_map(map) do
-    key = to_string(key)
-
-    cond do
-      String.contains?(key, ".") ->
-        nested_value_at(map, String.split(key, "."))
-
-      Map.has_key?(map, key) ->
-        Map.fetch!(map, key)
-
-      Enum.any?(Map.keys(map), &(to_string(&1) == key)) ->
-        map[Enum.find(Map.keys(map), &(to_string(&1) == key))]
-
-      true ->
-        :missing
-    end
-  end
+  defp value_at(value, key), do: nested_value_at(value, String.split(to_string(key), "."))
 
   defp nested_value_at(value, []), do: value
 
@@ -308,9 +346,7 @@ defmodule BeamWeaver.Memory.Query do
     end
   end
 
-  defp normalize_path(path) when path in ["", "$"], do: {:ok, []}
-  defp normalize_path(path) when is_binary(path), do: tokenize_path(path)
-  defp normalize_path(tokens) when is_list(tokens), do: tokenize_path(tokens)
+  defp normalize_path(path) when is_binary(path) or is_list(path), do: tokenize_path(path)
   defp normalize_path(_path), do: :error
 
   defp normalize_token_list(tokens) do
@@ -429,8 +465,6 @@ defmodule BeamWeaver.Memory.Query do
   defp string_values(value) when is_integer(value), do: [Integer.to_string(value)]
   defp string_values(value) when is_float(value), do: [Float.to_string(value)]
   defp string_values(value) when is_boolean(value), do: [to_string(value)]
-  defp string_values(value) when is_map(value) and map_size(value) == 0, do: [json_text(value)]
-  defp string_values(value) when is_list(value) and value == [], do: [json_text(value)]
   defp string_values(value) when is_map(value) or is_list(value), do: [json_text(value)]
 
   defp string_values(value) do

@@ -64,8 +64,6 @@ defmodule BeamWeaver.StreamTest do
   end
 
   test "Mux cancels a live producer when the consumer halts early" do
-    # Upstream reference:
-    # - async stream close cancels the producer task.
     parent = self()
 
     stream =

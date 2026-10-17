@@ -62,9 +62,6 @@ defmodule BeamWeaver.Provider.Options do
   end
 
   @doc false
-  def stringify_value(value), do: BeamWeaver.MapShape.normalize_value(value)
-
-  @doc false
   def normalize_option_map(nil), do: nil
   def normalize_option_map(value) when is_map(value), do: stringify_keys(value)
   def normalize_option_map(value), do: value

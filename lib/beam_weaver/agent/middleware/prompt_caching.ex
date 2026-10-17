@@ -32,11 +32,8 @@ defmodule BeamWeaver.Agent.Middleware.PromptCaching do
     |> handler.()
   end
 
-  defp anthropic_model?(%BeamWeaver.Anthropic.ChatModel{}), do: true
-  defp anthropic_model?(_model), do: false
-
   defp maybe_cache_anthropic_system_message(%ModelRequest{} = request, %__MODULE__{} = middleware) do
-    if anthropic_model?(request.model) do
+    if match?(%BeamWeaver.Anthropic.ChatModel{}, request.model) do
       ModelRequest.override(request,
         system_message: cache_system_message(request.system_message, middleware.helper.cache_control)
       )

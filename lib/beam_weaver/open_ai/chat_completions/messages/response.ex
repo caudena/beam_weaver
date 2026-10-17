@@ -2,9 +2,9 @@ defmodule BeamWeaver.OpenAI.ChatCompletions.Messages.Response do
   @moduledoc false
 
   alias BeamWeaver.Core.Message
-  alias BeamWeaver.Core.Messages
   alias BeamWeaver.Core.Error
   alias BeamWeaver.OpenAI.MessageParts
+  alias BeamWeaver.Provider.ChatCompletionsWire
 
   def response_to_message(%{"error" => %{"message" => message} = error})
       when is_binary(message) do
@@ -20,7 +20,7 @@ defmodule BeamWeaver.OpenAI.ChatCompletions.Messages.Response do
       response_metadata: metadata(response, choice),
       usage_metadata: usage_metadata(response),
       status: choice["finish_reason"],
-      tool_calls: tool_calls(message)
+      tool_calls: ChatCompletionsWire.tool_calls(message)
     )
   end
 
@@ -28,7 +28,7 @@ defmodule BeamWeaver.OpenAI.ChatCompletions.Messages.Response do
     {:error, Error.new(:invalid_response, "OpenAI chat-completions response is invalid")}
   end
 
-  def metadata(response, choice) do
+  defp metadata(response, choice) do
     message = choice["message"] || %{}
     header_metadata = response["_beamweaver_response_header_metadata"] || %{}
 
@@ -55,25 +55,8 @@ defmodule BeamWeaver.OpenAI.ChatCompletions.Messages.Response do
     |> MessageParts.reject_nil_values()
   end
 
-  def usage_metadata(%{"usage" => usage}) when is_map(usage) do
-    input_tokens = usage["prompt_tokens"] || usage["input_tokens"]
-    output_tokens = usage["completion_tokens"] || usage["output_tokens"]
-
-    %{
-      input_tokens: input_tokens || 0,
-      output_tokens: output_tokens || 0,
-      total_tokens: total_tokens(usage["total_tokens"], input_tokens, output_tokens),
-      input_token_details: input_token_details(usage),
-      output_token_details: output_token_details(usage)
-    }
-    |> BeamWeaver.MapShape.reject_nil_or_empty()
-  end
-
+  def usage_metadata(%{"usage" => usage}) when is_map(usage), do: MessageParts.usage_metadata(usage, :chat_completions)
   def usage_metadata(_response), do: nil
-
-  defp total_tokens(total, _input, _output) when is_integer(total), do: total
-  defp total_tokens(_total, input, output) when is_integer(input) and is_integer(output), do: input + output
-  defp total_tokens(_total, _input, _output), do: nil
 
   defp content(%{"content" => content}) when is_binary(content), do: content
   defp content(%{"content" => content}) when is_list(content), do: Enum.map(content, &content_block/1)
@@ -99,59 +82,5 @@ defmodule BeamWeaver.OpenAI.ChatCompletions.Messages.Response do
       raw_provider_block: block
     }
     |> MessageParts.reject_nil_values()
-  end
-
-  defp tool_calls(%{"tool_calls" => tool_calls}) when is_list(tool_calls) do
-    Enum.map(tool_calls, fn call ->
-      function = call["function"] || %{}
-
-      Messages.tool_call(
-        id: call["id"],
-        provider_id: call["id"],
-        call_id: call["id"],
-        name: function["name"],
-        args: BeamWeaver.Provider.ChatCompletionsWire.decode_arguments(function["arguments"])
-      )
-    end)
-  end
-
-  defp tool_calls(_message), do: []
-
-  defp input_token_details(usage) when is_map(usage) do
-    case usage["prompt_tokens_details"] || usage["input_tokens_details"] do
-      details when is_map(details) ->
-        %{
-          cache_read: details["cached_tokens"],
-          cache_write: details["cache_write_tokens"],
-          audio: details["audio_tokens"],
-          image: details["image_tokens"],
-          text: details["text_tokens"],
-          flex: details["flex"]
-        }
-        |> BeamWeaver.MapShape.reject_nil_or_empty()
-
-      _details ->
-        %{}
-    end
-  end
-
-  defp output_token_details(usage) when is_map(usage) do
-    case usage["completion_tokens_details"] || usage["output_tokens_details"] do
-      details when is_map(details) ->
-        %{
-          reasoning: details["reasoning_tokens"],
-          accepted_prediction: details["accepted_prediction_tokens"],
-          rejected_prediction: details["rejected_prediction_tokens"],
-          audio: details["audio_tokens"],
-          image: details["image_tokens"],
-          text: details["text_tokens"],
-          flex: details["flex"],
-          flex_reasoning: details["flex_reasoning"]
-        }
-        |> BeamWeaver.MapShape.reject_nil_or_empty()
-
-      _details ->
-        %{}
-    end
   end
 end

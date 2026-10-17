@@ -160,17 +160,9 @@ defmodule BeamWeaver.Transport.Redactor do
   ]
   @patterns_key {__MODULE__, :erlang.phash2({@pattern_fields, @pattern_sources, @common_atom_keys})}
 
-  @doc """
-  Redacts known secret shapes inside a term.
-
-  The parts of `term` with nothing to redact come back as they are.
-  """
   @spec redact(term()) :: term()
   def redact(term), do: redact(term, compiled_patterns())
 
-  @doc """
-  Returns the redaction marker.
-  """
   @spec redacted() :: String.t()
   def redacted, do: @redacted
 

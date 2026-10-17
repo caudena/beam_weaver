@@ -17,9 +17,10 @@ defmodule BeamWeaver.Agent.Middleware.AsyncSubagents do
   alias BeamWeaver.Core.Tool
   alias BeamWeaver.Graph
   alias BeamWeaver.Graph.Command
+  alias BeamWeaver.MapShape
 
-  import BeamWeaver.Agent.Subagent.Helpers,
-    only: [append_prompt: 2, available_agents: 1, value: 2, value: 3]
+  import BeamWeaver.Agent.Middleware.Helpers, only: [append_prompt: 2]
+  import BeamWeaver.Agent.Subagent.Helpers, only: [available_agents: 1, value: 2, value: 3]
 
   @async_task_system_prompt """
   ## Async subagents
@@ -107,8 +108,7 @@ defmodule BeamWeaver.Agent.Middleware.AsyncSubagents do
   end
 
   defp normalize(%AsyncSpec{} = subagent), do: subagent
-  defp normalize(map) when is_map(map), do: AsyncSpec.new(map)
-  defp normalize(opts) when is_list(opts), do: AsyncSpec.new(opts)
+  defp normalize(opts), do: AsyncSpec.new(opts)
 
   defp validate_unique_names!(subagents) do
     names = Enum.map(subagents, & &1.name)
@@ -177,10 +177,8 @@ defmodule BeamWeaver.Agent.Middleware.AsyncSubagents do
               subagent_name: name,
               graph_id: subagent.graph_id,
               url: subagent.url,
-              thread_id: BeamWeaver.MapAccess.get(remote, :thread_id) || task_id,
-              run_id:
-                BeamWeaver.MapAccess.get(remote, :run_id) ||
-                  BeamWeaver.MapAccess.get(remote, :id) || task_id,
+              thread_id: value(remote, :thread_id) || task_id,
+              run_id: value(remote, :run_id) || value(remote, :id) || task_id,
               status: remote_status(remote, "running"),
               created_at: now,
               last_checked_at: now,
@@ -200,20 +198,13 @@ defmodule BeamWeaver.Agent.Middleware.AsyncSubagents do
 
   defp check_task(%__MODULE__{} = middleware, input) do
     task_id = value(input, :task_id)
-    now = timestamp()
 
     case Map.fetch(tasks(input), task_id) do
       {:ok, task} ->
         with {:ok, subagent} <- task_subagent(middleware, task),
              {:ok, remote} <-
                Client.check_task(subagent.client, subagent, task_id, []) do
-          task =
-            task
-            |> merge_remote(remote)
-            |> Map.put(:last_checked_at, now)
-            |> maybe_touch_updated_at(task, now)
-
-          maybe_task_command(input, "check_async_task", task_id, task)
+          maybe_task_command(input, "check_async_task", task_id, refresh(task, remote, timestamp()))
         else
           :no_remote_client -> encode_task(task)
           {:error, :unknown_subagent} -> encode_task(task)
@@ -227,47 +218,25 @@ defmodule BeamWeaver.Agent.Middleware.AsyncSubagents do
 
   defp update_task(%__MODULE__{} = middleware, input) do
     task_id = value(input, :task_id)
-    tasks = tasks(input)
     now = timestamp()
 
-    case Map.fetch(tasks, task_id) do
+    case Map.fetch(tasks(input), task_id) do
       {:ok, task} ->
-        update = %{
-          message: value(input, :message, ""),
-          created_at: now
-        }
+        update = %{message: value(input, :message, ""), created_at: now}
+        updated = task |> Map.update(:updates, [update], &(&1 ++ [update])) |> Map.put(:last_updated_at, now)
 
         with {:ok, subagent} <- task_subagent(middleware, task),
-             {:ok, remote} <-
-               Client.update_task(
-                 subagent.client,
-                 subagent,
-                 task_id,
-                 update.message,
-                 []
-               ) do
-          task =
-            task
-            |> Map.update(:updates, [update], &(&1 ++ [update]))
-            |> Map.put(:status, "running")
-            |> Map.put(:last_updated_at, now)
-            |> merge_remote(remote)
-
-          task_command(input, "update_async_task", task_id, task)
+             {:ok, remote} <- Client.update_task(subagent.client, subagent, task_id, update.message, []) do
+          task_command(
+            input,
+            "update_async_task",
+            task_id,
+            updated |> Map.put(:status, "running") |> merge_remote(remote)
+          )
         else
-          :no_remote_client ->
-            task =
-              task
-              |> Map.update(:updates, [update], &(&1 ++ [update]))
-              |> Map.put(:last_updated_at, now)
-
-            task_command(input, "update_async_task", task_id, task)
-
-          {:error, :unknown_subagent} ->
-            "Unknown async subagent: #{task_value(task, :subagent_name)}"
-
-          {:error, reason} ->
-            "Async subagent error: #{format_error(reason)}"
+          :no_remote_client -> task_command(input, "update_async_task", task_id, updated)
+          {:error, :unknown_subagent} -> "Unknown async subagent: #{value(task, :subagent_name)}"
+          {:error, reason} -> "Async subagent error: #{format_error(reason)}"
         end
 
       :error ->
@@ -277,37 +246,20 @@ defmodule BeamWeaver.Agent.Middleware.AsyncSubagents do
 
   defp cancel_task(%__MODULE__{} = middleware, input) do
     task_id = value(input, :task_id)
-    tasks = tasks(input)
     now = timestamp()
 
-    case Map.fetch(tasks, task_id) do
+    case Map.fetch(tasks(input), task_id) do
       {:ok, task} ->
+        checked = task |> Map.put(:last_checked_at, now) |> Map.put(:last_updated_at, now)
+
         with {:ok, subagent} <- task_subagent(middleware, task),
-             {:ok, remote} <-
-               Client.cancel_task(subagent.client, subagent, task_id, []) do
-          task =
-            task
-            |> Map.put(:status, remote_status(remote, "cancelled"))
-            |> Map.put(:last_checked_at, now)
-            |> Map.put(:last_updated_at, now)
-            |> merge_remote(remote)
-
-          task_command(input, "cancel_async_task", task_id, task)
+             {:ok, remote} <- Client.cancel_task(subagent.client, subagent, task_id, []) do
+          cancelled = checked |> Map.put(:status, remote_status(remote, "cancelled")) |> merge_remote(remote)
+          task_command(input, "cancel_async_task", task_id, cancelled)
         else
-          :no_remote_client ->
-            task =
-              task
-              |> Map.put(:status, "cancelled")
-              |> Map.put(:last_checked_at, now)
-              |> Map.put(:last_updated_at, now)
-
-            task_command(input, "cancel_async_task", task_id, task)
-
-          {:error, :unknown_subagent} ->
-            "Unknown async subagent: #{task_value(task, :subagent_name)}"
-
-          {:error, reason} ->
-            "Async subagent error: #{format_error(reason)}"
+          :no_remote_client -> task_command(input, "cancel_async_task", task_id, Map.put(checked, :status, "cancelled"))
+          {:error, :unknown_subagent} -> "Unknown async subagent: #{value(task, :subagent_name)}"
+          {:error, reason} -> "Async subagent error: #{format_error(reason)}"
         end
 
       :error ->
@@ -327,22 +279,14 @@ defmodule BeamWeaver.Agent.Middleware.AsyncSubagents do
     if filtered == [] do
       "No async subagent tasks tracked."
     else
-      {updated, entries} =
-        Enum.reduce(filtered, {%{}, []}, fn task, {tasks_acc, entries} ->
-          task_id = task_value(task, :task_id) || task_value(task, :id)
+      updated = Map.new(filtered, &{value(&1, :task_id) || value(&1, :id), &1})
 
-          {
-            Map.put(tasks_acc, task_id, task),
-            [
-              "- task_id: #{task_id}  subagent: #{task_value(task, :subagent_name)}  status: #{task_value(task, :status)}"
-              | entries
-            ]
-          }
+      entries =
+        Enum.map_join(filtered, "\n", fn task ->
+          "- task_id: #{value(task, :task_id) || value(task, :id)}  subagent: #{value(task, :subagent_name)}  status: #{value(task, :status)}"
         end)
 
-      message =
-        "#{map_size(updated)} tracked task(s):\n" <>
-          (entries |> Enum.reverse() |> Enum.join("\n"))
+      message = "#{map_size(updated)} tracked task(s):\n" <> entries
 
       case value(input, :tool_call_id) do
         id when is_binary(id) and id != "" ->
@@ -364,7 +308,7 @@ defmodule BeamWeaver.Agent.Middleware.AsyncSubagents do
         _other ->
           updated
           |> Map.values()
-          |> Enum.map(&AsyncTask.to_map/1)
+          |> Enum.map(&Map.from_struct/1)
           |> BeamWeaver.JSON.encode!()
       end
     end
@@ -405,7 +349,7 @@ defmodule BeamWeaver.Agent.Middleware.AsyncSubagents do
   end
 
   defp task_subagent(%__MODULE__{subagents: subagents}, task) do
-    name = task_value(task, :subagent_name)
+    name = value(task, :subagent_name)
 
     case Enum.find(subagents, &(&1.name == name)) do
       %AsyncSpec{client: nil} -> :no_remote_client
@@ -419,61 +363,27 @@ defmodule BeamWeaver.Agent.Middleware.AsyncSubagents do
   defp merge_remote(task, remote) when is_map(remote) do
     task
     |> Map.put(:remote, remote)
-    |> Map.put(:status, remote_status(remote, task_value(task, :status) || "running"))
-    |> maybe_put_remote_result(remote)
-    |> maybe_put_remote(:run_id, remote)
-    |> maybe_put_remote(:thread_id, remote)
+    |> Map.put(:status, remote_status(remote, value(task, :status) || "running"))
+    |> MapShape.put_present(:result, remote_result(remote))
+    |> MapShape.put_present(:run_id, value(remote, :run_id))
+    |> MapShape.put_present(:thread_id, value(remote, :thread_id))
   end
 
-  defp maybe_put_remote_result(task, remote) do
-    case remote_result(remote) do
-      nil -> task
-      result -> Map.put(task, :result, result)
-    end
-  end
+  defp refresh(task, remote, now) do
+    checked = task |> merge_remote(remote) |> Map.put(:last_checked_at, now)
 
-  defp maybe_put_remote(task, key, remote) do
-    case BeamWeaver.MapAccess.get(remote, key) do
-      nil -> task
-      value -> Map.put(task, key, value)
-    end
-  end
-
-  defp maybe_touch_updated_at(task, previous, now) do
-    if task_value(task, :status) != task_value(previous, :status) do
-      Map.put(task, :last_updated_at, now)
-    else
-      task
-    end
+    if value(checked, :status) != value(task, :status),
+      do: Map.put(checked, :last_updated_at, now),
+      else: checked
   end
 
   defp live_task(%__MODULE__{} = middleware, task, now) do
-    status = task_value(task, :status)
-
-    if status in @terminal_statuses do
-      task
+    with false <- value(task, :status) in @terminal_statuses,
+         {:ok, subagent} <- task_subagent(middleware, task),
+         {:ok, remote} <- Client.check_task(subagent.client, subagent, value(task, :task_id) || value(task, :id), []) do
+      refresh(task, remote, now)
     else
-      case task_subagent(middleware, task) do
-        {:ok, subagent} ->
-          case Client.check_task(
-                 subagent.client,
-                 subagent,
-                 task_value(task, :task_id) || task_value(task, :id),
-                 []
-               ) do
-            {:ok, remote} ->
-              task
-              |> merge_remote(remote)
-              |> Map.put(:last_checked_at, now)
-              |> maybe_touch_updated_at(task, now)
-
-            _error ->
-              task
-          end
-
-        _missing ->
-          task
-      end
+      _other -> task
     end
   end
 
@@ -483,30 +393,21 @@ defmodule BeamWeaver.Agent.Middleware.AsyncSubagents do
   defp filter_tasks(tasks, status_filter) do
     tasks
     |> Map.values()
-    |> Enum.filter(&(task_value(&1, :status) == status_filter))
+    |> Enum.filter(&(value(&1, :status) == status_filter))
   end
 
-  defp remote_id(remote) when is_map(remote),
-    do:
-      BeamWeaver.MapAccess.get(remote, :thread_id) ||
-        BeamWeaver.MapAccess.get(remote, :task_id) ||
-        BeamWeaver.MapAccess.get(remote, :id) ||
-        BeamWeaver.MapAccess.get(remote, :run_id)
+  defp remote_id(remote),
+    do: value(remote, :thread_id) || value(remote, :task_id) || value(remote, :id) || value(remote, :run_id)
 
-  defp remote_id(_remote), do: nil
-
-  defp remote_status(remote, default) when is_map(remote),
-    do: BeamWeaver.MapAccess.get(remote, :status) || default
-
-  defp remote_status(_remote, default), do: default
+  defp remote_status(remote, default), do: value(remote, :status) || default
 
   defp remote_result(remote) do
-    BeamWeaver.MapAccess.get(remote, :result) || remote_messages_result(remote)
+    value(remote, :result) || remote_messages_result(remote)
   end
 
   defp remote_messages_result(remote) do
-    values = BeamWeaver.MapAccess.get(remote, :values) || remote
-    messages = BeamWeaver.MapAccess.get(values, :messages) || []
+    values = value(remote, :values) || remote
+    messages = value(values, :messages) || []
 
     messages
     |> List.wrap()
@@ -515,7 +416,7 @@ defmodule BeamWeaver.Agent.Middleware.AsyncSubagents do
   end
 
   defp message_content(message) when is_map(message) do
-    case BeamWeaver.MapAccess.get(message, :content) || BeamWeaver.MapAccess.get(message, :text) do
+    case value(message, :content) || value(message, :text) do
       content when is_binary(content) and content != "" -> content
       content when is_list(content) -> Enum.map_join(content, "", &message_content/1)
       _empty -> nil
@@ -525,17 +426,13 @@ defmodule BeamWeaver.Agent.Middleware.AsyncSubagents do
   defp message_content(content) when is_binary(content) and content != "", do: content
   defp message_content(_message), do: nil
 
-  defp task_value(task, key) when is_map(task), do: BeamWeaver.MapAccess.get(task, key)
-  defp task_value(_task, _key), do: nil
-
   defp format_error(reason) when is_binary(reason), do: reason
   defp format_error(reason), do: inspect(reason)
 
   defp task_metadata(task) do
     task
-    |> AsyncTask.to_map()
     |> Map.take([:id, :task_id, :subagent_name, :graph_id, :thread_id, :run_id, :status])
-    |> Map.reject(fn {_key, value} -> is_nil(value) end)
+    |> MapShape.reject_nil_values()
   end
 
   defp start_description(subagents) do
@@ -553,5 +450,5 @@ defmodule BeamWeaver.Agent.Middleware.AsyncSubagents do
   defp timestamp,
     do: DateTime.utc_now() |> DateTime.truncate(:second) |> DateTime.to_iso8601()
 
-  defp encode_task(task), do: task |> AsyncTask.to_map() |> BeamWeaver.JSON.encode!()
+  defp encode_task(task), do: task |> Map.from_struct() |> BeamWeaver.JSON.encode!()
 end

@@ -4,6 +4,7 @@ defmodule BeamWeaver.Agent.CapabilityProfileConfig do
   alias BeamWeaver.Agent.CapabilityProfile
   alias BeamWeaver.Agent.GeneralPurposeSubagentProfile
   alias BeamWeaver.Agent.ProfileRegistry
+  alias BeamWeaver.MapShape
 
   @type t :: %__MODULE__{}
 
@@ -14,10 +15,7 @@ defmodule BeamWeaver.Agent.CapabilityProfileConfig do
             excluded_middleware: [],
             general_purpose_subagent: nil
 
-  def new(opts \\ []) when is_list(opts) or is_map(opts) do
-    opts = if is_map(opts), do: opts, else: Map.new(opts)
-    struct(__MODULE__, normalize_keys(opts))
-  end
+  def new(opts \\ []) when is_list(opts) or is_map(opts), do: struct(__MODULE__, normalize_keys(opts))
 
   def from_map(map) when is_map(map), do: new(map)
 
@@ -34,8 +32,8 @@ defmodule BeamWeaver.Agent.CapabilityProfileConfig do
 
   def to_map(%__MODULE__{} = config) do
     %{}
-    |> ProfileRegistry.maybe_put(:base_system_prompt, config.base_system_prompt)
-    |> ProfileRegistry.maybe_put(:system_prompt_suffix, config.system_prompt_suffix)
+    |> MapShape.put_present(:base_system_prompt, config.base_system_prompt)
+    |> MapShape.put_present(:system_prompt_suffix, config.system_prompt_suffix)
     |> ProfileRegistry.maybe_put_map(
       :tool_description_overrides,
       config.tool_description_overrides

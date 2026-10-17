@@ -9,8 +9,7 @@ defmodule BeamWeaver.Graph.Execution.Snapshot do
   alias BeamWeaver.Graph.Execution.Replay
   alias BeamWeaver.Graph.Execution.TaskRequest
 
-  @spec from_tuple(map()) :: map()
-  def from_tuple(tuple) do
+  defp from_tuple(tuple) do
     checkpoint = tuple.checkpoint
     pending_writes = Map.get(tuple, :pending_writes, [])
 

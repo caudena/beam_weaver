@@ -10,10 +10,7 @@ defmodule BeamWeaver.Agent.Nodes.Model.Prompt do
     messages = State.messages(state)
 
     if is_list(messages) do
-      case ChatModel.validate_messages(messages) do
-        :ok -> {:ok, messages}
-        {:error, %Error{} = error} -> {:error, error}
-      end
+      with :ok <- ChatModel.validate_messages(messages), do: {:ok, messages}
     else
       {:error,
        Error.new(:invalid_agent_state, "agent state messages must be a list", %{
@@ -47,7 +44,7 @@ defmodule BeamWeaver.Agent.Nodes.Model.Prompt do
     calls = if is_map(metadata), do: Map.get(metadata, :invalid_tool_calls) || [], else: []
 
     Enum.reduce(calls, {[], answered}, fn call, {answers, answered} ->
-      id = if is_map(call), do: tool_call_id(call) || Map.get(call, :provider_id)
+      id = if is_map(call), do: BeamWeaver.Agent.Nodes.Model.Response.tool_call_id(call)
 
       if is_nil(id) or MapSet.member?(answered, id) do
         {answers, answered}
@@ -96,17 +93,11 @@ defmodule BeamWeaver.Agent.Nodes.Model.Prompt do
     end
   end
 
-  def system_message(nil, _state, _runtime), do: {:ok, nil}
+  def system_message(nil), do: {:ok, nil}
+  def system_message(%Message{role: :system} = prompt), do: {:ok, prompt}
+  def system_message(prompt) when is_binary(prompt), do: {:ok, Message.system(prompt)}
 
-  def system_message(%Message{role: :system} = prompt, _state, _runtime) do
-    {:ok, prompt}
-  end
-
-  def system_message(prompt, _state, _runtime) when is_binary(prompt) do
-    {:ok, Message.system(prompt)}
-  end
-
-  def system_message(prompts, _state, _runtime) when is_list(prompts) do
+  def system_message(prompts) when is_list(prompts) do
     if Enum.all?(prompts, &match?(%Message{}, &1)) do
       {:ok, prompts}
     else
@@ -117,7 +108,7 @@ defmodule BeamWeaver.Agent.Nodes.Model.Prompt do
     end
   end
 
-  def system_message(prompt, _state, _runtime) do
+  def system_message(prompt) do
     {:error,
      Error.new(
        :invalid_system_prompt,
@@ -162,9 +153,5 @@ defmodule BeamWeaver.Agent.Nodes.Model.Prompt do
   def prompt_messages(messages) when is_list(messages), do: messages
   def prompt_messages(%Message{} = message), do: [message]
 
-  defp tool_call_id(call) do
-    Map.get(call, :call_id) ||
-      Map.get(call, :tool_call_id) ||
-      Map.get(call, :id)
-  end
+  def tool_call_id(call), do: Map.get(call, :call_id) || Map.get(call, :tool_call_id) || Map.get(call, :id)
 end

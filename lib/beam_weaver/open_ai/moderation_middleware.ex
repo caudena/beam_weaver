@@ -130,9 +130,6 @@ defmodule BeamWeaver.OpenAI.ModerationMiddleware do
          {:ok, messages, input_changed?} <-
            maybe_moderate_last_role(middleware, messages, :user, :input, middleware.check_input) do
       if tool_changed? or input_changed?, do: %{messages: messages}, else: nil
-    else
-      {:jump, :end, update} -> {:jump, :end, update}
-      {:error, %Error{} = error} -> {:error, error}
     end
   end
 
@@ -140,8 +137,7 @@ defmodule BeamWeaver.OpenAI.ModerationMiddleware do
     case maybe_moderate_last_role(middleware, messages, :assistant, :output, true) do
       {:ok, ^messages, false} -> nil
       {:ok, updated, true} -> %{messages: updated}
-      {:jump, :end, update} -> {:jump, :end, update}
-      {:error, %Error{} = error} -> {:error, error}
+      other -> other
     end
   end
 
@@ -203,49 +199,19 @@ defmodule BeamWeaver.OpenAI.ModerationMiddleware do
     end
   end
 
-  defp apply_violation(
-         %__MODULE__{exit_behavior: :error} = middleware,
-         _messages,
-         _index,
-         stage,
-         content,
-         result
-       ) do
-    {:error,
-     Error.new(
-       :openai_moderation_violation,
-       format_violation_message(middleware, content, result),
-       %{
-         content: content,
-         stage: stage,
-         result: result
-       }
-     )}
-  end
+  defp apply_violation(%__MODULE__{} = middleware, messages, index, stage, content, result) do
+    violation = format_violation_message(middleware, content, result)
 
-  defp apply_violation(
-         %__MODULE__{exit_behavior: :end} = middleware,
-         _messages,
-         _index,
-         _stage,
-         content,
-         result
-       ) do
-    message = Message.assistant(format_violation_message(middleware, content, result))
-    {:jump, :end, %{messages: [message]}}
-  end
+    case middleware.exit_behavior do
+      :error ->
+        {:error, Error.new(:openai_moderation_violation, violation, %{content: content, stage: stage, result: result})}
 
-  defp apply_violation(
-         %__MODULE__{exit_behavior: :replace} = middleware,
-         messages,
-         index,
-         _stage,
-         content,
-         result
-       ) do
-    original = Enum.at(messages, index)
-    replacement = %{original | content: format_violation_message(middleware, content, result)}
-    {:ok, List.replace_at(messages, index, replacement), true}
+      :end ->
+        {:jump, :end, %{messages: [Message.assistant(violation)]}}
+
+      :replace ->
+        {:ok, List.update_at(messages, index, &%{&1 | content: violation}), true}
+    end
   end
 
   defp format_violation_message(middleware, content, result) do

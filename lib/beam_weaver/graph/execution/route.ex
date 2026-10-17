@@ -73,11 +73,8 @@ defmodule BeamWeaver.Graph.Execution.Route do
   # The routes saved in a checkpoint's pending writes.
   @spec from_writes(list()) :: [t()]
   def from_writes(pending_writes) do
-    Enum.flat_map(pending_writes, fn
-      {_task_id, @channel, value} -> [decode(value)]
-      {_task_id, @channel, value, _path} -> [decode(value)]
-      _other -> []
-    end)
+    for write when tuple_size(write) in [3, 4] and elem(write, 1) == @channel <- pending_writes,
+        do: decode(elem(write, 2))
   end
 
   defp decode(%__MODULE__{} = route), do: route

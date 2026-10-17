@@ -68,16 +68,11 @@ defmodule BeamWeaver.Filesystem.Local do
 
   @impl true
   def edit(%__MODULE__{} = backend, path, old, new, opts) do
-    replace_all? = Keyword.get(opts, :replace_all, false)
-
     with {:ok, real, virtual} <- FsPath.virtual_to_real(backend.root, path),
          {:ok, content} <- File.read(real),
-         {:ok, occurrences, updated} <- Edit.replacement(content, old, new, replace_all?),
+         {:ok, occurrences, updated} <- Edit.replacement(content, old, new, Keyword.get(opts, :replace_all, false)),
          :ok <- File.write(real, updated) do
-      %Filesystem.EditResult{
-        path: virtual,
-        occurrences: if(replace_all?, do: occurrences, else: 1)
-      }
+      %Filesystem.EditResult{path: virtual, occurrences: occurrences}
     else
       {:error, :not_found} ->
         %Filesystem.EditResult{path: path, occurrences: 0, error: "string not found"}

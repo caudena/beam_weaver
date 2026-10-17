@@ -187,12 +187,7 @@ defmodule BeamWeaver.Sandbox.Registry do
   end
 
   @spec new!(keyword()) :: t()
-  def new!(opts \\ []) do
-    case new(opts) do
-      {:ok, registry} -> registry
-      {:error, error} -> raise ArgumentError, error.message
-    end
-  end
+  def new!(opts \\ []), do: opts |> new() |> BeamWeaver.Policy.bang()
 
   @spec builtin_specs() :: [ProviderSpec.t()]
   def builtin_specs do

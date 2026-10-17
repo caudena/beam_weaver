@@ -52,7 +52,7 @@ defmodule BeamWeaver.Graph.NodeSpec do
   ]
 
   @spec new(String.t(), term(), keyword()) :: {:ok, t()} | {:error, Error.t()}
-  def new(name, callable, opts \\ []) do
+  def new(name, callable, opts) do
     with :ok <- validate_options(name, opts),
          {:ok, node} <- BeamWeaver.Graph.IntoNode.to_node(callable, name, opts),
          {:ok, retry, retry_policy} <-
@@ -100,18 +100,6 @@ defmodule BeamWeaver.Graph.NodeSpec do
     end
   end
 
-  @spec new!(String.t(), term(), keyword()) :: t()
-  def new!(name, callable, opts \\ []) do
-    case new(name, callable, opts) do
-      {:ok, spec} -> spec
-      {:error, error} -> raise ArgumentError, error.message
-    end
-  end
-
-  defp normalize_retry(%RetryPolicy{} = policy) do
-    with {:ok, policy} <- RetryPolicy.new(policy), do: {:ok, policy.max_attempts - 1, policy}
-  end
-
   defp normalize_retry(opts) when is_list(opts) or is_map(opts) do
     with {:ok, policy} <- RetryPolicy.new(opts), do: {:ok, policy.max_attempts - 1, policy}
   end
@@ -136,11 +124,7 @@ defmodule BeamWeaver.Graph.NodeSpec do
     with {:ok, policy} <- ExecutionPolicy.new(policy), do: {:ok, policy.timeout, policy}
   end
 
-  def normalize_timeout(%TimeoutPolicy{} = policy) do
-    with {:ok, timeout} <- TimeoutPolicy.effective_timeout(policy) do
-      {:ok, timeout || :infinity, ExecutionPolicy.new!(timeout: timeout || :infinity)}
-    end
-  end
+  def normalize_timeout(%TimeoutPolicy{} = policy), do: normalize_timeout_policy(policy)
 
   def normalize_timeout(timeout) when timeout in [nil, :infinity] do
     {:ok, :infinity, ExecutionPolicy.new!(timeout: :infinity)}
@@ -154,15 +138,7 @@ defmodule BeamWeaver.Graph.NodeSpec do
     {:ok, timeout, ExecutionPolicy.new!(timeout: timeout)}
   end
 
-  def normalize_timeout(opts) when is_list(opts) do
-    if timeout_policy_options?(opts) do
-      normalize_timeout_policy(opts)
-    else
-      with {:ok, policy} <- ExecutionPolicy.new(opts), do: {:ok, policy.timeout, policy}
-    end
-  end
-
-  def normalize_timeout(opts) when is_map(opts) do
+  def normalize_timeout(opts) when is_list(opts) or is_map(opts) do
     if timeout_policy_options?(opts) do
       normalize_timeout_policy(opts)
     else
@@ -183,34 +159,14 @@ defmodule BeamWeaver.Graph.NodeSpec do
     end
   end
 
-  defp timeout_policy_options?(opts) when is_list(opts) do
-    Enum.any?(opts, fn
-      {key, _value} -> timeout_policy_key?(key)
-      _other -> false
-    end)
+  defp timeout_policy_options?(opts) do
+    keys = if is_map(opts), do: Map.keys(opts), else: for({key, _value} <- opts, do: key)
+    Enum.any?(keys, &(&1 in [:run_timeout, :idle_timeout, :refresh_on, "run_timeout", "idle_timeout", "refresh_on"]))
   end
-
-  defp timeout_policy_options?(opts) when is_map(opts) do
-    opts
-    |> Map.keys()
-    |> Enum.any?(&timeout_policy_key?/1)
-  end
-
-  defp timeout_policy_key?(key) when key in [:run_timeout, :idle_timeout, :refresh_on],
-    do: true
-
-  defp timeout_policy_key?(key) when key in ["run_timeout", "idle_timeout", "refresh_on"],
-    do: true
-
-  defp timeout_policy_key?(_key), do: false
 
   defp normalize_cache(false), do: {:ok, false, nil}
   defp normalize_cache(nil), do: {:ok, false, nil}
   defp normalize_cache(true), do: {:ok, true, CachePolicy.new!()}
-
-  defp normalize_cache(%CachePolicy{} = policy) do
-    with {:ok, policy} <- CachePolicy.new(policy), do: {:ok, policy, policy}
-  end
 
   defp normalize_cache(opts) when is_list(opts) or is_map(opts) do
     with {:ok, policy} <- CachePolicy.new(opts), do: {:ok, policy, policy}

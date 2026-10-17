@@ -18,8 +18,12 @@ defmodule BeamWeaver.Google.Streaming do
     end)
   end
 
-  @spec typed_events([map()]) :: [Stream.Envelope.t()]
-  def typed_events(events) when is_list(events) do
+  def typed_events(events, state) do
+    responses = for %{"data" => %{} = response} <- events, do: response
+    {typed_parts(events), Enum.reverse(responses, state || [])}
+  end
+
+  defp typed_parts(events) do
     events
     |> Enum.flat_map(&event_parts/1)
     |> Enum.flat_map(fn
@@ -62,14 +66,7 @@ defmodule BeamWeaver.Google.Streaming do
     end)
   end
 
-  @doc false
-  def typed_events(events, state) do
-    responses = for %{"data" => %{} = response} <- events, do: response
-    {typed_events(events), Enum.reverse(responses, state || [])}
-  end
-
-  @doc false
-  def finish_typed_events(state, decode_response \\ &{:ok, &1}) do
+  def finish_typed_events(state, decode_response) do
     with {:ok, response} <- decode_response.(merge_responses(Enum.reverse(state || []))),
          {:ok, message} <- Messages.response_to_message(response),
          :ok <- validate_complete_response(response) do
@@ -93,15 +90,13 @@ defmodule BeamWeaver.Google.Streaming do
     end
   end
 
-  @spec response_from_sse_body(binary() | map()) :: map()
+  @spec response_from_sse_body(binary()) :: map()
   def response_from_sse_body(body) when is_binary(body) do
     body
     |> SSE.events()
     |> Enum.map(& &1["data"])
     |> merge_responses()
   end
-
-  def response_from_sse_body(%{} = body), do: body
 
   defp merge_responses([]), do: %{}
 
@@ -142,9 +137,6 @@ defmodule BeamWeaver.Google.Streaming do
     |> Enum.reduce({[], nil}, fn
       %{"text" => ""} = part, acc when map_size(part) == 1 ->
         acc
-
-      %{"text" => text} = part, acc when is_binary(text) ->
-        append_response_part(acc, part)
 
       part, acc when is_map(part) ->
         append_response_part(acc, part)
@@ -199,10 +191,4 @@ defmodule BeamWeaver.Google.Streaming do
   end
 
   defp event_parts(_event), do: []
-
-  def final_message_from_sse(body, opts \\ []) do
-    body
-    |> response_from_sse_body()
-    |> Messages.response_to_message(opts)
-  end
 end

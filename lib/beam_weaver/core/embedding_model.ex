@@ -39,7 +39,7 @@ defmodule BeamWeaver.Core.EmbeddingModel do
 
   def embed_query(model, query, opts) when is_binary(query) do
     with {:ok, vector} <- model.__struct__.embed_query(model, query, opts),
-         :ok <- validate_vector(vector) do
+         :ok <- validate_vectors([vector], 1) do
       {:ok, vector}
     end
   end
@@ -53,10 +53,7 @@ defmodule BeamWeaver.Core.EmbeddingModel do
   @spec validate_vectors(term(), non_neg_integer()) :: :ok | {:error, Error.t()}
   def validate_vectors(vectors, expected_count)
       when is_list(vectors) and length(vectors) == expected_count do
-    case Enum.find_value(vectors, &vector_error/1) do
-      nil -> :ok
-      error -> {:error, error}
-    end
+    Enum.find_value(vectors, :ok, &vector_error/1)
   end
 
   def validate_vectors(_vectors, expected_count) do
@@ -80,19 +77,12 @@ defmodule BeamWeaver.Core.EmbeddingModel do
     end
   end
 
-  defp validate_vector(vector) do
-    case vector_error(vector) do
-      nil -> :ok
-      error -> {:error, error}
-    end
-  end
-
   defp vector_error(vector) when is_list(vector) and vector != [] do
     if Enum.all?(vector, &is_number/1),
       do: nil,
-      else: Error.new(:invalid_embedding, "embedding vectors must contain only numbers")
+      else: {:error, Error.new(:invalid_embedding, "embedding vectors must contain only numbers")}
   end
 
   defp vector_error(_vector),
-    do: Error.new(:invalid_embedding, "embedding vector must be a non-empty list")
+    do: {:error, Error.new(:invalid_embedding, "embedding vector must be a non-empty list")}
 end

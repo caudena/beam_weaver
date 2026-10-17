@@ -1,8 +1,9 @@
 defmodule BeamWeaver.OpenAI.Streaming.Lifecycle.State do
   @moduledoc false
 
+  import BeamWeaver.MapShape, only: [reject_nil_values: 1]
+
   alias BeamWeaver.OpenAI.Streaming.Lifecycle.Content
-  alias BeamWeaver.OpenAI.Streaming.Shared
 
   def initial(parsed_events) do
     %{
@@ -30,7 +31,7 @@ defmodule BeamWeaver.OpenAI.Streaming.Lifecycle.State do
 
       nil ->
         index = state.next_index
-        block = %{index: index, content: Shared.reject_nil_values(content), finished?: false}
+        block = %{index: index, content: reject_nil_values(content), finished?: false}
 
         state
         |> Map.put(:next_index, index + 1)
@@ -66,7 +67,7 @@ defmodule BeamWeaver.OpenAI.Streaming.Lifecycle.State do
         state
 
       %{index: index} = block ->
-        content = content |> Shared.reject_nil_values() |> merge_content(block.content)
+        content = content |> reject_nil_values() |> merge_content(block.content)
 
         state
         |> put_in([:blocks, key, :finished?], true)

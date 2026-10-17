@@ -56,10 +56,6 @@ defmodule BeamWeaver.Tracing.ValueEncoder do
     |> Enum.map(&do_encode/1)
   end
 
-  defp do_encode(value) when is_function(value), do: inspect(value)
-  defp do_encode(value) when is_pid(value), do: inspect(value)
-  defp do_encode(value) when is_port(value), do: inspect(value)
-  defp do_encode(value) when is_reference(value), do: inspect(value)
   defp do_encode(value), do: inspect(value, limit: :infinity, printable_limit: :infinity)
 
   defp encode_binary(value) do

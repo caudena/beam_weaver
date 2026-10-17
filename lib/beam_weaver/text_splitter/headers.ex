@@ -2,7 +2,6 @@ defmodule BeamWeaver.TextSplitter.MarkdownHeaders do
   @moduledoc false
 
   alias BeamWeaver.Core.Document
-  alias BeamWeaver.TextSplitter.Shared
 
   defstruct headers: [
               {"#", "Header 1"},
@@ -16,7 +15,7 @@ defmodule BeamWeaver.TextSplitter.MarkdownHeaders do
             strip_whitespace: true,
             strip_headers?: true
 
-  def new(opts \\ []), do: struct(__MODULE__, opts)
+  def new(opts), do: struct(__MODULE__, opts)
 
   def split_text(%__MODULE__{}, text), do: String.split(text, "\n", trim: true)
 
@@ -123,7 +122,7 @@ defmodule BeamWeaver.TextSplitter.HTMLHeaders do
             ],
             strip_whitespace: true
 
-  def new(opts \\ []), do: struct(__MODULE__, opts)
+  def new(opts), do: struct(__MODULE__, opts)
 
   def split_text(%__MODULE__{}, text), do: [Shared.strip_markup(text)]
 
@@ -138,7 +137,7 @@ defmodule BeamWeaver.TextSplitter.HTMLHeaders do
         with [_, tag, title] <- Regex.run(regex, piece),
              tag = String.downcase(tag),
              {:ok, name} <- Map.fetch(header_map, tag) do
-          docs = flush_html_section(document, splitter, metadata, buffer, docs)
+          docs = flush_html_section(document, metadata, buffer, docs)
 
           metadata =
             metadata
@@ -152,19 +151,18 @@ defmodule BeamWeaver.TextSplitter.HTMLHeaders do
         end
       end)
 
-    flush_html_section(document, splitter, metadata, buffer, docs)
+    flush_html_section(document, metadata, buffer, docs)
     |> Enum.reverse()
   end
 
-  defp flush_html_section(_document, _splitter, _metadata, [], docs), do: docs
+  defp flush_html_section(_document, _metadata, [], docs), do: docs
 
-  defp flush_html_section(document, splitter, metadata, buffer, docs) do
+  defp flush_html_section(document, metadata, buffer, docs) do
     content =
       buffer
       |> Enum.reverse()
       |> Enum.join("")
       |> Shared.strip_markup()
-      |> maybe_trim(splitter)
 
     if content == "" do
       docs
@@ -172,9 +170,6 @@ defmodule BeamWeaver.TextSplitter.HTMLHeaders do
       [Document.new!(content, metadata: Map.merge(document.metadata, metadata)) | docs]
     end
   end
-
-  defp maybe_trim(text, %{strip_whitespace: true}), do: String.trim(text)
-  defp maybe_trim(text, _splitter), do: text
 
   defp drop_deeper_headers(metadata, tag, header_map) do
     current_level = header_level(tag)

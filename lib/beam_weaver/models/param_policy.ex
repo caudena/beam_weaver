@@ -109,13 +109,6 @@ defmodule BeamWeaver.Models.ParamPolicy do
                      :x_grok_conv_id
                    ])
 
-  @escape_hatches MapSet.new([:extra_body, :provider_opts])
-
-  @aliases %{
-    structured_output: :response_format,
-    stream: :streaming
-  }
-
   # The output cap has a different name on each API, and every model takes
   # all three, so a profile that lists one of them supports the others.
   @output_cap_params [:max_tokens, :max_completion_tokens, :max_output_tokens]
@@ -126,9 +119,7 @@ defmodule BeamWeaver.Models.ParamPolicy do
   def new(mode) when mode in [:strict, :warn, :permissive], do: %__MODULE__{mode: mode}
   def new(opts) when is_list(opts), do: opts |> Map.new() |> new()
   def new(%{mode: mode}) when mode in [:strict, :warn, :permissive], do: %__MODULE__{mode: mode}
-  def new(%{"mode" => "strict"}), do: %__MODULE__{mode: :strict}
-  def new(%{"mode" => "warn"}), do: %__MODULE__{mode: :warn}
-  def new(%{"mode" => "permissive"}), do: %__MODULE__{mode: :permissive}
+  def new(%{"mode" => mode}) when mode in ["strict", "warn", "permissive"], do: new(String.to_existing_atom(mode))
 
   def new(_other), do: %__MODULE__{}
 
@@ -156,18 +147,16 @@ defmodule BeamWeaver.Models.ParamPolicy do
   @spec validate(Profile.t() | nil, keyword() | map(), t() | mode() | nil, keyword()) ::
           :ok | {:error, Error.t()}
   def validate(profile, params, policy, opts \\ []) do
-    policy = policy || default_for(profile)
-    policy = new(policy)
+    policy = new(policy || default_for(profile))
     api = Keyword.get(opts, :api)
 
     unsupported =
-      params
-      |> normalize_params()
-      |> Enum.reject(fn {key, value} -> ignored_param?(key, value) end)
-      |> Enum.filter(fn {key, _value} -> standard_param?(key) end)
-      |> Enum.reject(fn {key, _value} -> supported?(profile, key, api) end)
-      |> Enum.map(fn {key, _value} -> key end)
-      |> Enum.uniq()
+      for {key, value} <- normalize_params(params),
+          value != nil and {key, value} != {:stream, false},
+          standard_param?(key),
+          not supported?(profile, key, api),
+          uniq: true,
+          do: key
 
     case {policy.mode, unsupported} do
       {_mode, []} ->
@@ -183,8 +172,8 @@ defmodule BeamWeaver.Models.ParamPolicy do
       {:strict, unsupported} ->
         {:error,
          Error.new(:unsupported_model_param, "model parameter is not supported by profile", %{
-           provider: profile_value(profile, :provider),
-           model: profile_value(profile, :id),
+           provider: profile.provider,
+           model: profile.id,
            params: unsupported
          })}
     end
@@ -193,52 +182,27 @@ defmodule BeamWeaver.Models.ParamPolicy do
   defp normalize_params(params) when is_list(params), do: params
 
   defp normalize_params(params) when is_map(params) do
-    Enum.map(params, fn {key, value} -> {normalize_key(key), value} end)
+    Enum.map(params, fn {key, value} -> {BeamWeaver.MapAccess.existing_atom_key(key), value} end)
   end
 
   defp normalize_params(_params), do: []
 
-  defp normalize_key(key) when is_binary(key) do
-    String.to_existing_atom(key)
-  rescue
-    ArgumentError -> key
-  end
-
-  defp normalize_key(key), do: key
-
-  defp ignored_param?(_key, nil), do: true
-  defp ignored_param?(:stream, false), do: true
-
-  defp ignored_param?(key, _value) when key in [:api, :model, :api_key, :endpoint, :transport],
-    do: true
-
-  defp ignored_param?(key, _value), do: MapSet.member?(@escape_hatches, key)
-
-  defp supported?(profile, key, api)
-
   defp supported?(%Profile{} = profile, :stream, _api), do: profile.streaming == true
-
-  defp supported?(%Profile{} = profile, key, nil),
-    do: Enum.any?(names(key), &Profile.supports_param?(profile, &1))
 
   defp supported?(%Profile{} = profile, key, api),
     do: Enum.any?(names(key), &Profile.supports_param?(profile, api, &1))
 
-  defp supported?(profile, key, _api), do: supported?(profile, key)
-
-  defp supported?(_profile, _key), do: true
+  defp supported?(_profile, _key, _api), do: true
 
   defp names(key) when key in @output_cap_params, do: @output_cap_params
-  defp names(key), do: Enum.uniq([key, Map.get(@aliases, key, key)])
+  defp names(:structured_output), do: [:structured_output, :response_format]
+  defp names(key), do: [key]
 
   defp emit_warning(profile, unsupported) do
     :telemetry.execute(
       [:beam_weaver, :models, :param_warning],
       %{count: length(unsupported)},
-      %{provider: profile_value(profile, :provider), model: profile_value(profile, :id), params: unsupported}
+      %{provider: profile.provider, model: profile.id, params: unsupported}
     )
   end
-
-  defp profile_value(%Profile{} = profile, key), do: Map.get(profile, key)
-  defp profile_value(_profile, _key), do: nil
 end

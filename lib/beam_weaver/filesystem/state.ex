@@ -189,10 +189,7 @@ defmodule BeamWeaver.Filesystem.State do
   end
 
   defp fetch_file(files, path) do
-    case Map.fetch(files, path) do
-      {:ok, data} -> {:ok, data}
-      :error -> {:error, "file_not_found"}
-    end
+    with :error <- Map.fetch(files, path), do: {:error, "file_not_found"}
   end
 
   defp decode_download(%Filesystem.FileData{encoding: "base64", content: content}),

@@ -1,7 +1,6 @@
 defmodule BeamWeaver.Core.Messages.Trim do
   @moduledoc false
 
-  alias BeamWeaver.Core.ContentBlock
   alias BeamWeaver.Core.Error
   alias BeamWeaver.Core.LanguageModel
   alias BeamWeaver.Core.Message
@@ -11,17 +10,10 @@ defmodule BeamWeaver.Core.Messages.Trim do
     counter = Keyword.get(opts, :token_counter, :approximate)
     strategy = Keyword.get(opts, :strategy, :last)
 
-    with :ok <- validate_trim_opts(strategy, opts) do
-      messages = apply_end_on(messages, Keyword.get(opts, :end_on), strategy)
-
-      with {:ok, kept} <- keep_by_strategy(messages, max_tokens, counter, strategy, opts) do
-        kept =
-          kept
-          |> apply_start_on(Keyword.get(opts, :start_on), opts)
-          |> preserve_tool_adjacency()
-
-        {:ok, kept}
-      end
+    with :ok <- validate_trim_opts(strategy, opts),
+         messages = apply_end_on(messages, Keyword.get(opts, :end_on)),
+         {:ok, kept} <- keep_by_strategy(messages, max_tokens, counter, strategy, opts) do
+      {:ok, kept |> apply_start_on(Keyword.get(opts, :start_on), opts) |> preserve_tool_adjacency()}
     end
   end
 
@@ -43,9 +35,9 @@ defmodule BeamWeaver.Core.Messages.Trim do
   defp validate_trim_opts(strategy, _opts),
     do: {:error, Error.new(:invalid_trim_options, "unknown trim strategy", %{strategy: strategy})}
 
-  defp apply_end_on(messages, nil, _strategy), do: messages
+  defp apply_end_on(messages, nil), do: messages
 
-  defp apply_end_on(messages, role, _strategy) do
+  defp apply_end_on(messages, role) do
     case Enum.find_index(Enum.reverse(messages), &role_match?(&1, role)) do
       nil -> messages
       reverse_index -> Enum.take(messages, length(messages) - reverse_index)
@@ -160,7 +152,7 @@ defmodule BeamWeaver.Core.Messages.Trim do
     messages
     |> Enum.map(fn
       %Message{role: :assistant, tool_calls: calls} = message when calls != [] ->
-        %{message | tool_calls: Enum.filter(calls, &(tool_call_id(&1) in tool_result_ids))}
+        %{message | tool_calls: Enum.filter(calls, &(Map.get(&1, :id) in tool_result_ids))}
 
       message ->
         message
@@ -169,7 +161,7 @@ defmodule BeamWeaver.Core.Messages.Trim do
       assistant_call_ids =
         messages
         |> Enum.flat_map(fn
-          %Message{role: :assistant, tool_calls: calls} -> Enum.map(calls, &tool_call_id/1)
+          %Message{role: :assistant, tool_calls: calls} -> Enum.map(calls, &Map.get(&1, :id))
           _message -> []
         end)
         |> MapSet.new()
@@ -258,11 +250,7 @@ defmodule BeamWeaver.Core.Messages.Trim do
   defp put_block_text(text, new_text) when is_binary(text), do: new_text
   defp put_block_text(block, new_text), do: Map.put(block, :text, new_text)
 
-  defp tool_call_id(call) when is_map(call), do: Map.get(call, :id)
-
   defp text_block?(text) when is_binary(text), do: true
-  defp text_block?(%ContentBlock.Text{text: text}) when is_binary(text), do: true
-  defp text_block?(%ContentBlock.PlainText{text: text}) when is_binary(text), do: true
 
   defp text_block?(%{type: type, text: text}) when type in [:text, :plain_text] and is_binary(text),
     do: true

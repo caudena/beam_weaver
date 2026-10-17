@@ -45,7 +45,7 @@ defmodule BeamWeaver.Tools.Shell.CommandEnvTest do
 
   test "shell sessions keep the application's environment out and carry exports over", %{tmp_dir: dir} do
     {:ok, session} =
-      Session.start(
+      GenServer.start(Session,
         policy: [allow: ["printf", "export"], env: %{"BW_TEST_CONFIGURED" => "ok"}],
         workspace_root: dir
       )
@@ -56,7 +56,7 @@ defmodule BeamWeaver.Tools.Shell.CommandEnvTest do
     assert {:ok, %{status: 0}} = Session.execute(session, "export BW_TEST_SECRET=from-session")
     assert {:ok, %{output: "from-session|ok|pathhome"}} = Session.execute(session, @probe)
 
-    {:ok, inheriting} = Session.start(policy: [allow: ["printf"], inherit_env: true], workspace_root: dir)
+    {:ok, inheriting} = GenServer.start(Session, policy: [allow: ["printf"], inherit_env: true], workspace_root: dir)
     on_exit(fn -> Session.shutdown(inheriting) end)
 
     assert {:ok, %{output: "sk-live-123|unset|pathhome"}} = Session.execute(inheriting, @probe)
@@ -69,7 +69,7 @@ defmodule BeamWeaver.Tools.Shell.CommandEnvTest do
 
   test "a session re-applies the policy's nil removals on every command", %{tmp_dir: dir} do
     {:ok, session} =
-      Session.start(
+      GenServer.start(Session,
         policy: [allow: ["printenv"], inherit_env: true, env: %{"BW_TEST_SECRET" => nil}],
         workspace_root: dir
       )
@@ -87,7 +87,7 @@ defmodule BeamWeaver.Tools.Shell.CommandEnvTest do
     # `$'...'` is only known at run time (bash and dash read it differently),
     # so the policy refuses the export unless a rule spells it out.
     {:ok, session} =
-      Session.start(
+      GenServer.start(Session,
         policy: [allow: [~r/\Aexport BW_LEGACY=\$'caf\\351'\z/, "printf", "true"]],
         workspace_root: dir
       )

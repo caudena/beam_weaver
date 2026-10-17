@@ -46,7 +46,7 @@ defmodule BeamWeaver.Provider.OpenAICompatibleClient do
   # Per-call `:api_key`, `:transport`, `:transport_opts` and `:timeout` override
   # the client's own; a per-call `:endpoint` overrides `endpoint`.
   @doc false
-  def http(provider, client, endpoint, opts, headers \\ []) do
+  def http(provider, client, endpoint, opts, headers) do
     %HTTPClient{
       provider: provider,
       endpoint: endpoint,

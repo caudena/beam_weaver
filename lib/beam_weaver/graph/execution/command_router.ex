@@ -19,10 +19,12 @@ defmodule BeamWeaver.Graph.Execution.CommandRouter do
 
   @spec command_update(Command.t()) :: map()
   def command_update(%Command{update: update}), do: normalize_update(update)
-  def command_update(_command), do: %{}
 
   @spec normalize_update(term()) :: map()
-  def normalize_update(update), do: update_map(update)
+  def normalize_update(nil), do: %{}
+  def normalize_update(%{__struct__: _module} = update), do: Map.from_struct(update)
+  def normalize_update(update) when is_map(update), do: update
+  def normalize_update(_update), do: %{}
 
   @spec parent_command_error(Command.t()) :: {:error, Error.t()}
   def parent_command_error(%Command{} = command) do
@@ -36,8 +38,8 @@ defmodule BeamWeaver.Graph.Execution.CommandRouter do
   @spec normalize_node_result(term()) :: map()
   def normalize_node_result(%Command{} = command) do
     {sends, next} = command_goto(command.goto)
-    update = update_map(command.update)
-    %{update: update, updates: update_list(update), sends: sends, next: next}
+    update = normalize_update(command.update)
+    %{update: update, updates: if(update == %{}, do: [], else: [update]), sends: sends, next: next}
   end
 
   def normalize_node_result(%Send{} = send),
@@ -67,11 +69,10 @@ defmodule BeamWeaver.Graph.Execution.CommandRouter do
     %{update: update, updates: [update], sends: [], next: []}
   end
 
-  @spec command_goto(term()) :: {[Send.t()], [term()]}
-  def command_goto(nil), do: {[], []}
-  def command_goto(%Send{} = send), do: {[send], []}
+  defp command_goto(nil), do: {[], []}
+  defp command_goto(%Send{} = send), do: {[send], []}
 
-  def command_goto(gotos) when is_list(gotos) do
+  defp command_goto(gotos) when is_list(gotos) do
     {sends, next} =
       Enum.reduce(gotos, {[], []}, fn
         %Send{} = send, {sends, next} -> {[send | sends], next}
@@ -82,7 +83,7 @@ defmodule BeamWeaver.Graph.Execution.CommandRouter do
     {Enum.reverse(sends), Enum.reverse(next)}
   end
 
-  def command_goto(node), do: {[], [node]}
+  defp command_goto(node), do: {[], [node]}
 
   @spec add_command_goto_tasks(list(), term()) :: list()
   def add_command_goto_tasks(ready, nil), do: ready
@@ -97,21 +98,12 @@ defmodule BeamWeaver.Graph.Execution.CommandRouter do
     Scheduler.add_tasks(ready, command_ready)
   end
 
-  defp mixed_graph_results?(list) do
-    Enum.any?(list, fn
-      %Command{} -> true
-      %Send{} -> true
-      value when is_map(value) -> not is_struct(value)
-      _other -> false
-    end) and
-      Enum.all?(list, fn
-        %Command{} -> true
-        %Send{} -> true
-        value when is_map(value) -> not is_struct(value)
-        nil -> true
-        _other -> false
-      end)
-  end
+  defp mixed_graph_results?(list),
+    do: Enum.any?(list, &graph_result?/1) and Enum.all?(list, &(is_nil(&1) or graph_result?(&1)))
+
+  defp graph_result?(%Command{}), do: true
+  defp graph_result?(%Send{}), do: true
+  defp graph_result?(value), do: is_map(value) and not is_struct(value)
 
   defp normalize_mixed_results(list) do
     Enum.reduce(list, %{update: %{}, updates: [], sends: [], next: []}, fn
@@ -133,20 +125,11 @@ defmodule BeamWeaver.Graph.Execution.CommandRouter do
   defp merge_normalized(left, right) do
     %{
       update: Map.merge(left.update, right.update),
-      updates: left.updates ++ Map.get(right, :updates, update_list(right.update)),
+      updates: left.updates ++ right.updates,
       sends: left.sends ++ right.sends,
       next: left.next ++ right.next
     }
   end
-
-  defp update_list(update) when update == %{}, do: []
-  defp update_list(update) when is_map(update), do: [update]
-  defp update_list(_update), do: []
-
-  defp update_map(nil), do: %{}
-  defp update_map(%{__struct__: _module} = update), do: Map.from_struct(update)
-  defp update_map(update) when is_map(update), do: update
-  defp update_map(_update), do: %{}
 
   @spec scope(Command.t(), map()) :: {:current, Command.t()} | {:parent, Command.t()}
   def scope(%Command{graph: graph} = command, _run)
@@ -182,7 +165,8 @@ defmodule BeamWeaver.Graph.Execution.CommandRouter do
   defp maybe_put_command_goto(opts, nil), do: opts
   defp maybe_put_command_goto(opts, goto), do: Keyword.put(opts, :command_goto, goto)
 
-  defp command_target?(target, identifiers) do
+  @spec command_target?(term(), [term()]) :: boolean()
+  def command_target?(target, identifiers) do
     target = to_string(target)
     target in Enum.reject(identifiers, &(&1 in [nil, ""]))
   end

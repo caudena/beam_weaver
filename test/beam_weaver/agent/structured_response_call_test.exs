@@ -13,14 +13,6 @@ defmodule BeamWeaver.Agent.StructuredResponseCallTest do
   end
 
   test "the structured answer after a tool loop is asked for in a user turn, not appended to the state" do
-    lookup =
-      Tool.from_function!(
-        name: "lookup_order",
-        description: "Look up an order",
-        input_schema: %{"type" => "object", "properties" => %{"order_id" => %{"type" => "string"}}},
-        handler: fn _args, _opts -> "shipped" end
-      )
-
     model =
       Models.init_chat_model!("fake:chat",
         parent: self(),
@@ -31,7 +23,7 @@ defmodule BeamWeaver.Agent.StructuredResponseCallTest do
         ]
       )
 
-    {:ok, agent} = BeamWeaver.Agent.build(model: model, tools: [lookup], response_format: Answer)
+    {:ok, agent} = BeamWeaver.Agent.build(model: model, tools: [lookup_tool()], response_format: Answer)
 
     assert {:ok, %{structured_response: %{"status" => "shipped"}, messages: messages}} =
              BeamWeaver.Agent.invoke(agent, %{messages: ["Where is A-1001?"]})

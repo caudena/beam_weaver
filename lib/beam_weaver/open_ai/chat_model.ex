@@ -6,7 +6,6 @@ defmodule BeamWeaver.OpenAI.ChatModel do
   use BeamWeaver.Provider.RedactedInspect
 
   alias BeamWeaver.OpenAI.ChatModel.RequestBuilder
-  alias BeamWeaver.OpenAI.ChatModel.StructuredOutput
   alias BeamWeaver.OpenAI.ChatModel.TokenCounter
   alias BeamWeaver.OpenAI.Client
   alias BeamWeaver.Core.Error
@@ -16,6 +15,7 @@ defmodule BeamWeaver.OpenAI.ChatModel do
   alias BeamWeaver.Models.InvocationMetadata
   alias BeamWeaver.Provider.ChatModel.Options, as: ChatOptions
   alias BeamWeaver.Provider.OpenAICompatibleClient, as: Compat
+  alias BeamWeaver.Provider.StructuredOutput
 
   @default_model "gpt-5.5"
   @default_endpoint "https://api.openai.com/v1/responses"
@@ -126,10 +126,7 @@ defmodule BeamWeaver.OpenAI.ChatModel do
       |> Keyword.put(:model, model)
       |> Keyword.put(:profile, profile)
       |> Keyword.put(:temperature, temperature)
-      |> ChatOptions.put_present(
-        :max_tokens,
-        Keyword.get(opts, :max_tokens, max_completion_tokens)
-      )
+      |> BeamWeaver.MapShape.put_present(:max_tokens, Keyword.get(opts, :max_tokens, max_completion_tokens))
     )
   end
 
@@ -174,13 +171,8 @@ defmodule BeamWeaver.OpenAI.ChatModel do
   end
 
   @impl true
-  def stream_metadata(%__MODULE__{} = model, body, opts), do: stream_metadata(model, body, opts, :responses)
-
-  defp stream_metadata(%__MODULE__{} = model, body, opts, api) do
-    model
-    |> InvocationMetadata.openai(body, opts, api)
-    |> InvocationMetadata.to_metadata_map()
-  end
+  def stream_metadata(%__MODULE__{} = model, body, opts),
+    do: model |> InvocationMetadata.openai(body, opts, :responses) |> InvocationMetadata.to_metadata_map()
 
   @impl true
   def send_request(:invoke, model, body, opts), do: Client.responses(client(model), body, opts)
@@ -197,5 +189,6 @@ defmodule BeamWeaver.OpenAI.ChatModel do
   def decode_response(response, _opts), do: Messages.response_to_message(response)
 
   @impl true
-  def parse_response(_model, message, opts), do: StructuredOutput.maybe_parse(message, opts)
+  def parse_response(_model, message, opts),
+    do: StructuredOutput.maybe_parse(message, opts, provider_name: "OpenAI", refusal?: true)
 end

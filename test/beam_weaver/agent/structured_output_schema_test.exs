@@ -17,4 +17,19 @@ defmodule BeamWeaver.Agent.StructuredOutput.SchemaTest do
 
     assert ["Cat", "Dog"] = schema |> Schema.schema_specs() |> Enum.map(& &1.name)
   end
+
+  test "a null-typed property accepts only null" do
+    spec =
+      BeamWeaver.Agent.StructuredOutput.schema_spec(%{
+        "title" => "Gone",
+        "type" => "object",
+        "properties" => %{"gone" => %{"type" => "null"}},
+        "required" => ["gone"]
+      })
+
+    assert {:error, %{type: :structured_output_validation_error}} =
+             BeamWeaver.Agent.StructuredOutput.validate_data(spec, %{"gone" => "x"})
+
+    assert :ok = BeamWeaver.Agent.StructuredOutput.validate_data(spec, %{"gone" => nil})
+  end
 end

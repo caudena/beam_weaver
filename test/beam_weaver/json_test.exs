@@ -19,4 +19,10 @@ defmodule BeamWeaver.JSONTest do
 
     assert {:ok, ^value} = JSON.decode(pretty)
   end
+
+  test "pretty encoder handles atoms and structs the way plain encoding does" do
+    value = %{"status" => :ok, "at" => ~U[2026-01-01 00:00:00Z], "list" => [:a, nil]}
+
+    assert JSON.decode!(JSON.encode!(value, pretty: true)) == JSON.decode!(JSON.encode!(value))
+  end
 end

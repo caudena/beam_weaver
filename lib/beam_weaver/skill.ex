@@ -154,7 +154,9 @@ defmodule BeamWeaver.Skill do
   def render(_skill, _arguments), do: invalid("skill and arguments are invalid")
 
   defp validate_options(opts) do
-    if Keyword.keyword?(opts), do: validate_keyword_options(opts), else: invalid_options()
+    if Keyword.keyword?(opts),
+      do: validate_keyword_options(opts),
+      else: invalid("skill parser options must be a keyword list")
   end
 
   defp validate_keyword_options(opts) do
@@ -174,8 +176,6 @@ defmodule BeamWeaver.Skill do
         :ok
     end
   end
-
-  defp invalid_options, do: invalid("skill parser options must be a keyword list")
 
   defp invalid_expected_name?(nil), do: false
   defp invalid_expected_name?(value), do: not (is_binary(value) and valid_name?(value))
@@ -235,27 +235,19 @@ defmodule BeamWeaver.Skill do
       yaml
       |> String.split(~r/\r?\n/u)
       |> Enum.reject(&(String.trim(&1) == "" or String.starts_with?(String.trim(&1), "#")))
-      |> Enum.reject(&starts_with_whitespace?/1)
+      |> Enum.reject(&String.starts_with?(&1, [" ", "\t"]))
 
     cond do
       Enum.any?(top_level_fields, &(not Regex.match?(~r/^[a-z][a-z0-9-]*:(?:\s|$)/, &1))) ->
         invalid("skill frontmatter contains unsupported YAML syntax")
 
-      Regex.match?(~r/(?:^|[\s\[\{,])(?:[&*][A-Za-z0-9_-]+|![^\s]+)/m, yaml) ->
-        invalid("skill frontmatter contains unsupported YAML features")
-
-      Regex.match?(~r/^\s*<<\s*:/m, yaml) ->
+      Regex.match?(~r/(?:^|[\s\[\{,])(?:[&*][A-Za-z0-9_-]+|![^\s]+)/m, yaml) or Regex.match?(~r/^\s*<<\s*:/m, yaml) ->
         invalid("skill frontmatter contains unsupported YAML features")
 
       true ->
         :ok
     end
   end
-
-  defp starts_with_whitespace?(<<character, _rest::binary>>) when character in [32, 9],
-    do: true
-
-  defp starts_with_whitespace?(_line), do: false
 
   defp decode_frontmatter(yaml) do
     documents =
@@ -290,17 +282,9 @@ defmodule BeamWeaver.Skill do
   end
 
   defp required_string(frontmatter, field, maximum) do
-    case Map.get(frontmatter, field) do
-      value when is_binary(value) ->
-        value = String.trim(value)
-
-        if byte_size(value) in 1..maximum and String.valid?(value),
-          do: {:ok, value},
-          else: invalid("skill #{field} is invalid", field)
-
-      _other ->
-        invalid("skill #{field} is required", field)
-    end
+    if is_binary(Map.get(frontmatter, field)),
+      do: optional_string(frontmatter, field, maximum),
+      else: invalid("skill #{field} is required", field)
   end
 
   defp optional_string(frontmatter, field, maximum) do
@@ -412,12 +396,8 @@ defmodule BeamWeaver.Skill do
     |> length()
   end
 
-  defp replace_arguments(body, arguments) do
-    Regex.replace(~r/\$ARGUMENTS(?![A-Za-z0-9_\[\{])/u, body, fn _match -> arguments end)
-  end
-
   defp render_body(body, arguments, occurrences) when occurrences > 0,
-    do: replace_arguments(body, arguments)
+    do: Regex.replace(~r/\$ARGUMENTS(?![A-Za-z0-9_\[\{])/u, body, fn _match -> arguments end)
 
   defp render_body(body, "", 0), do: body
   defp render_body("", arguments, 0), do: "ARGUMENTS:\n" <> arguments
@@ -436,48 +416,25 @@ defmodule BeamWeaver.Skill do
   # kept as a list to find duplicate keys) or a sequence, and "" stays "".
   defp normalize_yaml(value) when is_list(value) do
     if yaml_mapping?(value) do
-      Map.new(value, fn {key, map_value} -> {normalize_yaml_key(key), normalize_yaml(map_value)} end)
+      Map.new(value, fn {key, map_value} -> {key, normalize_yaml(map_value)} end)
     else
       Enum.map(value, &normalize_yaml/1)
     end
   end
 
-  defp normalize_yaml(value) when is_binary(value), do: value
-  defp normalize_yaml(value) when is_integer(value), do: value
-  defp normalize_yaml(value) when is_float(value), do: value
-  defp normalize_yaml(true), do: true
-  defp normalize_yaml(false), do: false
   defp normalize_yaml(:null), do: nil
-  defp normalize_yaml(value) when is_atom(value), do: to_string(value)
+  defp normalize_yaml(value) when is_atom(value) and not is_boolean(value), do: to_string(value)
   defp normalize_yaml(value), do: value
 
   defp yaml_mapping?(value), do: value != [] and Enum.all?(value, &match?({_key, _value}, &1))
 
-  defp normalize_yaml_key(value) when is_binary(value), do: value
-
-  defp normalize_yaml_key(value), do: value
-
   defp validate_yaml_unique_keys(value) when is_list(value) do
-    if yaml_mapping?(value) do
-      keys = Enum.map(value, fn {key, _map_value} -> normalize_yaml_key(key) end)
+    {keys, children} = if yaml_mapping?(value), do: Enum.unzip(value), else: {[], value}
 
-      if length(keys) == MapSet.size(MapSet.new(keys)) do
-        Enum.reduce_while(value, :ok, fn {_key, map_value}, :ok ->
-          case validate_yaml_unique_keys(map_value) do
-            :ok -> {:cont, :ok}
-            {:error, %Error{}} = error -> {:halt, error}
-          end
-        end)
-      else
-        invalid("skill frontmatter contains duplicate fields")
-      end
+    if length(keys) == MapSet.size(MapSet.new(keys)) do
+      Enum.find_value(children, :ok, fn child -> with :ok <- validate_yaml_unique_keys(child), do: nil end)
     else
-      Enum.reduce_while(value, :ok, fn item, :ok ->
-        case validate_yaml_unique_keys(item) do
-          :ok -> {:cont, :ok}
-          {:error, %Error{}} = error -> {:halt, error}
-        end
-      end)
+      invalid("skill frontmatter contains duplicate fields")
     end
   end
 

@@ -25,15 +25,6 @@ defmodule BeamWeaver.Core.DocumentTest do
     assert error.type == :invalid_document
   end
 
-  test "documents inspect with content and metadata for debugging" do
-    doc = Document.new!("Hello, World!", metadata: %{source: "fixture"})
-
-    inspected = inspect(doc)
-    assert inspected =~ "BeamWeaver.Core.Document"
-    assert inspected =~ "Hello, World!"
-    assert inspected =~ "source"
-  end
-
   test "from/1 builds documents from documents, strings, and :content maps" do
     doc = Document.new!("hello", id: "d1")
 

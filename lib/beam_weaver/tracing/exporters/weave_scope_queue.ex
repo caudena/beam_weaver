@@ -3,16 +3,13 @@ defmodule BeamWeaver.Tracing.Exporters.WeaveScope.Config do
 
   use BeamWeaver.Provider.RedactedInspect
 
-  @default_flush_interval 250
-  @default_shutdown 120_000
-
   defstruct api_key: nil,
             endpoint: nil,
             version: nil,
             otp_app: :beam_weaver,
             transport: Req,
             batch_size: 200,
-            flush_interval: @default_flush_interval,
+            flush_interval: 250,
             max_items: 100_000,
             max_batch_bytes: 6_000_000,
             max_inflight: 2,
@@ -21,40 +18,12 @@ defmodule BeamWeaver.Tracing.Exporters.WeaveScope.Config do
             backoff: 2.0,
             jitter: 0.0,
             max_attempts: 5,
-            shutdown: @default_shutdown,
+            shutdown: 120_000,
             redactor: &BeamWeaver.Tracing.Redactor.redact/1
 
-  def new(opts \\ []) do
-    %__MODULE__{
-      api_key: Keyword.get(opts, :api_key),
-      endpoint: Keyword.get(opts, :endpoint),
-      version: Keyword.get(opts, :version),
-      otp_app: Keyword.get(opts, :otp_app, :beam_weaver),
-      transport: Keyword.get(opts, :transport, Req),
-      batch_size: Keyword.get(opts, :batch_size, 200),
-      flush_interval: Keyword.get(opts, :flush_interval, @default_flush_interval),
-      max_items: Keyword.get(opts, :max_items, 100_000),
-      max_batch_bytes: Keyword.get(opts, :max_batch_bytes, 6_000_000),
-      max_inflight: Keyword.get(opts, :max_inflight, 2),
-      overflow: Keyword.get(opts, :overflow, :block),
-      retry_delay: Keyword.get(opts, :retry_delay, 100),
-      backoff: Keyword.get(opts, :backoff, 2.0),
-      jitter: Keyword.get(opts, :jitter, 0.0),
-      max_attempts: Keyword.get(opts, :max_attempts, 5),
-      shutdown: Keyword.get(opts, :shutdown, @default_shutdown),
-      redactor: Keyword.get(opts, :redactor, &BeamWeaver.Tracing.Redactor.redact/1)
-    }
-  end
-
-  def exporter_opts(%__MODULE__{} = config) do
-    [
-      api_key: config.api_key,
-      endpoint: config.endpoint,
-      version: config.version,
-      otp_app: config.otp_app,
-      transport: config.transport
-    ]
-    |> Enum.reject(fn {_key, value} -> is_nil(value) end)
+  def new(opts) do
+    fields = for {key, default} <- Map.from_struct(%__MODULE__{}), do: {key, Keyword.get(opts, key, default)}
+    struct!(__MODULE__, fields)
   end
 end
 
@@ -80,7 +49,6 @@ defmodule BeamWeaver.Tracing.Exporters.WeaveScope.Queue do
 
   require Logger
 
-  alias BeamWeaver.Telemetry.WeaveScopeEvent
   alias BeamWeaver.Tracing.Exporters.WeaveScope
   alias BeamWeaver.Tracing.Exporters.WeaveScope.Config
   alias BeamWeaver.Tracing.Run
@@ -105,9 +73,7 @@ defmodule BeamWeaver.Tracing.Exporters.WeaveScope.Queue do
     %{
       id: Keyword.get(opts, :id, Keyword.get(opts, :name, __MODULE__)),
       start: {__MODULE__, :start_link, [opts]},
-      restart: :permanent,
-      shutdown: Config.new(opts).shutdown,
-      type: :worker
+      shutdown: Config.new(opts).shutdown
     }
   end
 
@@ -135,23 +101,19 @@ defmodule BeamWeaver.Tracing.Exporters.WeaveScope.Queue do
   def stop(server \\ __MODULE__, opts \\ []) do
     timeout = Keyword.get(opts, :timeout, 5_000)
 
-    case flush_for_stop(server, timeout) do
-      :ok -> stop_server(server, Keyword.get(opts, :reason, :normal), timeout)
-      {:error, reason} -> {:error, reason}
+    with :ok <- GenServer.call(server, :flush, timeout) do
+      GenServer.stop(server, Keyword.get(opts, :reason, :normal), timeout)
     end
+  catch
+    :exit, _reason -> {:error, :weavescope_flush_incomplete}
   end
 
   @impl true
   def init(opts) do
     Process.flag(:trap_exit, true)
     config = Config.new(opts)
-    state = %__MODULE__{config: config}
-
-    if is_integer(config.flush_interval) and config.flush_interval > 0 do
-      Process.send_after(self(), :flush_interval, config.flush_interval)
-    end
-
-    {:ok, state}
+    schedule_flush(config)
+    {:ok, %__MODULE__{config: config}}
   end
 
   @impl true
@@ -203,13 +165,10 @@ defmodule BeamWeaver.Tracing.Exporters.WeaveScope.Queue do
 
   @impl true
   def handle_info(:retry, state),
-    do: {:noreply, state |> clear_retry_timer() |> dispatch_due() |> finish_flush_if_drained()}
+    do: {:noreply, %{state | retry_timer: nil} |> dispatch_due() |> finish_flush_if_drained()}
 
   def handle_info(:flush_interval, state) do
-    if is_integer(state.config.flush_interval) and state.config.flush_interval > 0 do
-      Process.send_after(self(), :flush_interval, state.config.flush_interval)
-    end
-
+    schedule_flush(state.config)
     {:noreply, state |> dispatch_due() |> finish_flush_if_drained()}
   end
 
@@ -276,6 +235,11 @@ defmodule BeamWeaver.Tracing.Exporters.WeaveScope.Queue do
     drain(state, deadline)
   end
 
+  defp schedule_flush(%Config{flush_interval: interval}) when is_integer(interval) and interval > 0,
+    do: Process.send_after(self(), :flush_interval, interval)
+
+  defp schedule_flush(_config), do: nil
+
   defp drained?(state) do
     :queue.is_empty(state.queue) and :queue.is_empty(state.waiting) and map_size(state.inflight) == 0
   end
@@ -335,63 +299,34 @@ defmodule BeamWeaver.Tracing.Exporters.WeaveScope.Queue do
       Enum.reduce(state.inflight, 0, fn {_token, batch}, total -> total + length(batch.items) end)
   end
 
-  defp apply_overflow(%{config: %{overflow: :drop_newest}} = state) do
+  defp apply_overflow(%{config: %{overflow: overflow}} = state) when overflow in [:drop_newest, :error] do
     {{:value, newest}, queue} = :queue.out_r(state.queue)
-    emit(:drop, state, newest, %{reason: :dropped_newest})
-
-    %{
-      state
-      | queue: queue,
-        dead_letters: [Map.put(newest, :reason, :dropped_newest) | state.dead_letters]
-    }
-  end
-
-  defp apply_overflow(%{config: %{overflow: :error}} = state) do
-    {{:value, newest}, queue} = :queue.out_r(state.queue)
-    emit(:drop, state, newest, %{reason: :queue_full})
-
-    %{
-      state
-      | queue: queue,
-        dead_letters: [Map.put(newest, :reason, :queue_full) | state.dead_letters]
-    }
+    drop(%{state | queue: queue}, newest, if(overflow == :error, do: :queue_full, else: :dropped_newest))
   end
 
   defp apply_overflow(state) do
     {{:value, oldest}, queue} = :queue.out(state.queue)
-    emit(:drop, state, oldest, %{reason: :dropped_oldest})
+    drop(%{state | queue: queue}, oldest, :dropped_oldest)
+  end
 
-    %{
-      state
-      | queue: queue,
-        dead_letters: [Map.put(oldest, :reason, :dropped_oldest) | state.dead_letters]
-    }
+  defp drop(state, item, reason) do
+    emit(:drop, state, item, %{reason: reason})
+    %{state | dead_letters: [Map.put(item, :reason, reason) | state.dead_letters]}
   end
 
   defp dispatch_due(%__MODULE__{} = state) do
     if map_size(state.inflight) >= state.config.max_inflight do
       state
     else
-      {items, queue} =
-        if state.flush_waiters == [] and not state.draining? do
-          take_due(
-            state.queue,
-            state.config.batch_size,
-            System.monotonic_time(:millisecond),
-            state.config.max_batch_bytes
-          )
-        else
-          take_any(state.queue, state.config.batch_size, state.config.max_batch_bytes)
-        end
+      due_by =
+        if state.flush_waiters == [] and not state.draining?, do: System.monotonic_time(:millisecond), else: :infinity
 
-      case items do
-        [] ->
+      case take(state.queue, state.config.batch_size, due_by, state.config.max_batch_bytes) do
+        {[], _queue} ->
           schedule_retry(state)
 
-        [_ | _] ->
-          items = coalesce_items(items)
-          state = %{state | queue: queue} |> start_upload(items) |> admit_waiting()
-          dispatch_due(state)
+        {items, queue} ->
+          %{state | queue: queue} |> start_upload(coalesce_items(items)) |> admit_waiting() |> dispatch_due()
       end
     end
   end
@@ -425,7 +360,13 @@ defmodule BeamWeaver.Tracing.Exporters.WeaveScope.Queue do
 
   defp upload_batch(items, config) do
     exportable = Enum.map(items, fn item -> {item.event, item.run, item.opts} end)
-    WeaveScope.export_batch(exportable, Config.exporter_opts(config))
+
+    opts =
+      config
+      |> Map.take([:api_key, :endpoint, :version, :otp_app, :transport])
+      |> Enum.reject(fn {_key, value} -> is_nil(value) end)
+
+    WeaveScope.export_batch(exportable, opts)
   end
 
   defp handle_upload_result(state, items, :ok) do
@@ -450,12 +391,10 @@ defmodule BeamWeaver.Tracing.Exporters.WeaveScope.Queue do
     end
   end
 
-  defp clear_retry_timer(state), do: %{state | retry_timer: nil}
-
   defp finish_flush_if_drained(%{flush_waiters: []} = state), do: state
 
   defp finish_flush_if_drained(state) do
-    if :queue.is_empty(state.queue) and :queue.is_empty(state.waiting) and map_size(state.inflight) == 0 do
+    if drained?(state) do
       Enum.each(state.flush_waiters, &GenServer.reply(&1, :ok))
       emit(:flush_stop, state, nil, %{result: :ok})
       %{state | flush_waiters: []}
@@ -465,30 +404,17 @@ defmodule BeamWeaver.Tracing.Exporters.WeaveScope.Queue do
   end
 
   defp coalesce_items(items) do
-    {order, by_run_id} =
-      Enum.reduce(items, {[], %{}}, fn item, {order, by_run_id} ->
-        run_id = item.run.id
-
-        order =
-          if Map.has_key?(by_run_id, run_id), do: order, else: [run_id | order]
-
-        by_run_id =
-          Map.update(by_run_id, run_id, item, fn existing ->
-            if lifecycle_rank(item.event) >= lifecycle_rank(existing.event), do: item, else: existing
-          end)
-
-        {order, by_run_id}
+    latest =
+      Enum.reduce(items, %{}, fn item, latest ->
+        Map.update(latest, item.run.id, item, fn existing ->
+          if WeaveScope.lifecycle_rank(item.event) >= WeaveScope.lifecycle_rank(existing.event),
+            do: item,
+            else: existing
+        end)
       end)
 
-    order
-    |> Enum.reverse()
-    |> Enum.map(&Map.fetch!(by_run_id, &1))
+    items |> Enum.uniq_by(& &1.run.id) |> Enum.map(&Map.fetch!(latest, &1.run.id))
   end
-
-  defp lifecycle_rank(:started), do: 1
-  defp lifecycle_rank(:ok), do: 2
-  defp lifecycle_rank(:error), do: 3
-  defp lifecycle_rank(_event), do: 0
 
   defp dead_letter_rejections(state, items, rejected) do
     rejected_by_id =
@@ -512,7 +438,7 @@ defmodule BeamWeaver.Tracing.Exporters.WeaveScope.Queue do
 
     dead_letters =
       Enum.map(dead, fn {item, index} ->
-        rejection = Map.get(rejected_by_id, item.run.id) || Map.get(rejected_indexes, index) || %{}
+        rejection = Map.get(rejected_by_id, item.run.id) || Map.get(rejected_indexes, index)
         emit(:upload_rejected, state, item, %{reason: Map.get(rejection, "code"), error: Map.get(rejection, "reason")})
         Map.merge(item, %{reason: :rejected, rejection: rejection})
       end)
@@ -562,46 +488,16 @@ defmodule BeamWeaver.Tracing.Exporters.WeaveScope.Queue do
     base + jitter
   end
 
-  defp take_due(queue, limit, now, max_bytes),
-    do: take_due(queue, limit, now, max_bytes, 0, [])
+  defp take(queue, count, due_by, max_bytes, bytes \\ 0, items \\ [])
+  defp take(queue, 0, _due_by, _max_bytes, _bytes, items), do: {Enum.reverse(items), queue}
 
-  defp take_due(queue, 0, _now, _max_bytes, _bytes, items), do: {Enum.reverse(items), queue}
-
-  defp take_due(queue, count, now, max_bytes, bytes, items) do
-    case :queue.out(queue) do
-      {{:value, %{retry_at: retry_at} = item}, queue} when retry_at <= now ->
-        size = :erlang.external_size(item)
-
-        if items != [] and bytes + size > max_bytes do
-          {Enum.reverse(items), :queue.in_r(item, queue)}
-        else
-          take_due(queue, count - 1, now, max_bytes, bytes + size, [item | items])
-        end
-
-      {{:value, item}, queue} ->
-        {Enum.reverse(items), :queue.in_r(item, queue)}
-
-      {:empty, queue} ->
-        {Enum.reverse(items), queue}
-    end
-  end
-
-  defp take_any(queue, limit, max_bytes), do: take_any(queue, limit, max_bytes, 0, [])
-  defp take_any(queue, 0, _max_bytes, _bytes, items), do: {Enum.reverse(items), queue}
-
-  defp take_any(queue, count, max_bytes, bytes, items) do
-    case :queue.out(queue) do
-      {{:value, item}, queue} ->
-        size = :erlang.external_size(item)
-
-        if items != [] and bytes + size > max_bytes do
-          {Enum.reverse(items), :queue.in_r(item, queue)}
-        else
-          take_any(queue, count - 1, max_bytes, bytes + size, [item | items])
-        end
-
-      {:empty, queue} ->
-        {Enum.reverse(items), queue}
+  defp take(queue, count, due_by, max_bytes, bytes, items) do
+    with {{:value, %{retry_at: retry_at} = item}, rest} when retry_at <= due_by <- :queue.out(queue),
+         size = :erlang.external_size(item),
+         true <- items == [] or bytes + size <= max_bytes do
+      take(rest, count - 1, due_by, max_bytes, bytes + size, [item | items])
+    else
+      _not_due_too_large_or_empty -> {Enum.reverse(items), queue}
     end
   end
 
@@ -630,14 +526,16 @@ defmodule BeamWeaver.Tracing.Exporters.WeaveScope.Queue do
   end
 
   defp emit(operation, state, item, metadata) do
+    run = item && item.run
+
     BeamWeaver.Telemetry.emit(
       [:beam_weaver, :weave_scope, :queue, operation],
       %{count: Map.get(metadata, :count, 1)},
-      %WeaveScopeEvent{
+      %{
         operation: operation,
         queue: self(),
-        run_id: item_run_id(item),
-        trace_id: item_trace_id(item),
+        run_id: run && run.id,
+        trace_id: run && run.trace_id,
         attempts: Map.get(metadata, :attempts),
         reason: Map.get(metadata, :reason),
         result: Map.get(metadata, :result),
@@ -648,25 +546,5 @@ defmodule BeamWeaver.Tracing.Exporters.WeaveScope.Queue do
         }
       }
     )
-  end
-
-  defp item_run_id(%{run: %Run{id: id}}), do: id
-  defp item_run_id(_item), do: nil
-
-  defp item_trace_id(%{run: %Run{trace_id: trace_id}}), do: trace_id
-  defp item_trace_id(_item), do: nil
-
-  defp flush_for_stop(server, timeout) do
-    GenServer.call(server, :flush, timeout)
-  catch
-    :exit, {:timeout, _} -> {:error, :weavescope_flush_incomplete}
-    :exit, _reason -> {:error, :weavescope_flush_incomplete}
-  end
-
-  defp stop_server(server, reason, timeout) do
-    GenServer.stop(server, reason, timeout)
-  catch
-    :exit, {:timeout, _} -> {:error, :weavescope_flush_incomplete}
-    :exit, _reason -> {:error, :weavescope_flush_incomplete}
   end
 end

@@ -17,19 +17,7 @@ defmodule BeamWeaver.Graph.Execution.Scheduler do
   @type ready :: TaskRequest.t() | String.t() | {String.t(), map()}
   @type schedule :: %{ready: [ready()], channels: [String.t()], updates: [map()]}
 
-  @spec trigger_to_nodes(map()) :: map()
-  def trigger_to_nodes(%Plan{triggers_by_channel: triggers}), do: triggers
-
-  def trigger_to_nodes(graph) do
-    graph
-    |> Plan.from()
-    |> trigger_to_nodes()
-  end
-
-  @spec tasks_from_channels(map(), Enumerable.t()) :: [TaskRequest.t()]
-  def tasks_from_channels(graph, updated_channels) do
-    triggers = trigger_to_nodes(graph)
-
+  defp tasks_from_channels(%Plan{triggers_by_channel: triggers}, updated_channels) do
     pulls =
       updated_channels
       |> Execution.normalize_channels()
@@ -42,10 +30,6 @@ defmodule BeamWeaver.Graph.Execution.Scheduler do
     add_tasks([], pulls)
   end
 
-  @doc false
-  @spec branch_channel(atom() | String.t(), atom() | String.t()) :: String.t()
-  defdelegate branch_channel(source, target), to: Plan
-
   @spec tasks_channel() :: String.t()
   def tasks_channel, do: @tasks
 
@@ -55,8 +39,7 @@ defmodule BeamWeaver.Graph.Execution.Scheduler do
   # read the state as nodes do, without the graph's bookkeeping; one that
   # raises fails the step with `:edge_exception`.
   @spec prepare_next_tasks(map(), [Route.t()], map()) :: {:ok, schedule()} | {:error, Error.t()}
-  def prepare_next_tasks(plan_or_graph, routes, state) do
-    graph = graph_for(plan_or_graph)
+  def prepare_next_tasks(%Plan{graph: graph} = plan, routes, state) do
     completed = Enum.map(routes, & &1.node)
     visible = ChannelLookup.drop_internal_keys(state)
 
@@ -76,13 +59,13 @@ defmodule BeamWeaver.Graph.Execution.Scheduler do
       branch_channels =
         for {source, target} <- source_routes,
             target != "__end__",
-            do: branch_channel(source, target)
+            do: Plan.branch_channel(source, target)
 
       send_entries =
         Enum.flat_map(routes, & &1.sends) ++ Enum.map(route_sends, &Route.send_request/1)
 
       branch_ready =
-        plan_or_graph
+        plan
         |> tasks_from_channels(branch_channels)
         |> merge_dynamic_routes(dynamic_routes)
 
@@ -100,8 +83,8 @@ defmodule BeamWeaver.Graph.Execution.Scheduler do
   defp tasks_channels(_sends), do: [@tasks]
 
   @spec add_channel_tasks(map(), [ready()], Enumerable.t()) :: [ready()]
-  def add_channel_tasks(plan_or_graph, ready, updated_channels),
-    do: add_tasks(ready, tasks_from_channels(plan_or_graph, updated_channels))
+  def add_channel_tasks(plan, ready, updated_channels),
+    do: add_tasks(ready, tasks_from_channels(plan, updated_channels))
 
   # Adds `new_tasks` to the tasks of a step. The edges that reach a node in a
   # step run it once, while every `Send` runs as its own task: one like a
@@ -139,9 +122,6 @@ defmodule BeamWeaver.Graph.Execution.Scheduler do
 
   defp send_key(%TaskRequest{node: node, update: update, timeout: timeout}),
     do: {:send, node, update, timeout}
-
-  defp graph_for(%Plan{graph: graph}), do: graph
-  defp graph_for(graph), do: graph
 
   defp node_routes(_graph, %Route{node: node, goto: [_first | _rest] = goto}, _state, _visible),
     do: {:ok, split_source_routes(node, goto, [])}

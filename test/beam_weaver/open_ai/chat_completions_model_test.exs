@@ -16,7 +16,6 @@ defmodule BeamWeaver.OpenAI.ChatCompletionsModelTest do
   alias BeamWeaver.Stream.Events
 
   test "builds Chat Completions requests with tools, structured output, multimodal options, and escape hatches" do
-    # Upstream reference:
     schema = %{type: "object", properties: %{answer: %{type: "string"}}, required: [:answer]}
     tool = weather_tool()
 
@@ -137,7 +136,6 @@ defmodule BeamWeaver.OpenAI.ChatCompletionsModelTest do
   end
 
   test "o-series Chat Completions requests coerce system role to developer" do
-    # Upstream reference:
     assert {:ok, body} =
              ChatCompletionsModel.request_body(
                %ChatCompletionsModel{model: "o3-mini"},
@@ -476,7 +474,6 @@ defmodule BeamWeaver.OpenAI.ChatCompletionsModelTest do
   end
 
   test "decodes Chat Completions message-level refusal payloads" do
-    # Upstream reference:
     response_body = %{
       "id" => "chatcmpl_refusal",
       "choices" => [
@@ -633,7 +630,8 @@ defmodule BeamWeaver.OpenAI.ChatCompletionsModelTest do
     assert {:ok, decoded} =
              BeamWeaver.OpenAI.Client.ResponseDecoder.chat_completions_stream_response(
                {:ok, response},
-               []
+               [],
+               BeamWeaver.OpenAI.Client.ResponseDecoder.config()
              )
 
     assert decoded["id"] == "chatcmpl_decoder_stream"
@@ -759,8 +757,6 @@ defmodule BeamWeaver.OpenAI.ChatCompletionsModelTest do
   end
 
   test "malformed streamed tool-call JSON becomes invalid tool-call metadata instead of crashing" do
-    # Upstream reference:
-    # - malformed streamed tool-call chunks are retained as invalid tool calls.
     body = """
     data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_bad","function":{"name":"bad_tool","arguments":"{\\"broken\\""}}]},"finish_reason":null}]}
 

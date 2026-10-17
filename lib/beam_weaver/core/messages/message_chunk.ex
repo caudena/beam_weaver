@@ -46,7 +46,7 @@ defmodule BeamWeaver.Core.Messages.MessageChunk do
       metadata:
         chunk.metadata
         |> Map.put_new(:invalid_tool_calls, invalid_tool_calls)
-        |> reject_empty_metadata(),
+        |> BeamWeaver.MapShape.compact([nil, :empty_list]),
       tool_calls: tool_calls,
       tool_call_id: chunk.tool_call_id
     )
@@ -76,9 +76,8 @@ defmodule BeamWeaver.Core.Messages.MessageChunk do
   defp merge_content(left, nil), do: left
 
   defp merge_content(left, right) when is_list(left) and is_list(right),
-    do: merge_content_lists(left, right)
+    do: Enum.reduce(right, left, &append_content_item(&2, &1))
 
-  defp merge_content(left, "") when is_list(left), do: left
   defp merge_content(left, right) when is_list(left), do: append_content_item(left, right)
   defp merge_content("", right) when is_list(right), do: right
   defp merge_content(left, right) when is_list(right), do: [left | right]
@@ -111,7 +110,7 @@ defmodule BeamWeaver.Core.Messages.MessageChunk do
         acc ++ [chunk]
 
       index ->
-        List.update_at(acc, index, &combine_tool_chunks([&1, chunk]))
+        List.update_at(acc, index, &combine_tool_chunks(&1, chunk))
     end
   end
 
@@ -128,20 +127,13 @@ defmodule BeamWeaver.Core.Messages.MessageChunk do
 
   defp mergeable_tool_chunks?(_left, _right), do: false
 
-  defp combine_tool_chunks(chunks) do
-    Enum.reduce(chunks, %ToolCallChunk{}, fn chunk, %ToolCallChunk{} = acc ->
-      %ToolCallChunk{
-        acc
-        | id: acc.id || chunk.id,
-          index: acc.index || chunk.index,
-          name: acc.name || chunk.name,
-          args: to_string(acc.args || "") <> to_string(chunk.args || "")
-      }
-    end)
-  end
-
-  defp merge_content_lists(left, right) do
-    Enum.reduce(right, left, &append_content_item(&2, &1))
+  defp combine_tool_chunks(left, right) do
+    %ToolCallChunk{
+      id: left.id || right.id,
+      index: left.index || right.index,
+      name: left.name || right.name,
+      args: to_string(left.args || "") <> to_string(right.args || "")
+    }
   end
 
   defp append_content_item(acc, ""), do: acc
@@ -193,7 +185,7 @@ defmodule BeamWeaver.Core.Messages.MessageChunk do
     |> Map.merge(right)
     |> map_put_existing_key(left, :text, text)
     |> map_put_if_present(left, right, :reasoning, reasoning)
-    |> put_merged_provider_block(raw_provider_block)
+    |> BeamWeaver.MapShape.put_present(:raw_provider_block, raw_provider_block)
     |> maybe_preserve_content_type(left_type)
   end
 
@@ -250,9 +242,6 @@ defmodule BeamWeaver.Core.Messages.MessageChunk do
         map
     end
   end
-
-  defp put_merged_provider_block(map, nil), do: map
-  defp put_merged_provider_block(map, block), do: Map.put(map, :raw_provider_block, block)
 
   defp map_put_existing_key(map, template, key, value) do
     if Map.has_key?(template, key), do: Map.put(map, key, value), else: map
@@ -312,36 +301,14 @@ defmodule BeamWeaver.Core.Messages.MessageChunk do
     Enum.any?([id, name, index], &(not is_nil(&1) and MapSet.member?(invalid_keys, &1)))
   end
 
-  defp invalid_tool_call_key(%InvalidToolCall{id: id}) when not is_nil(id), do: id
-  defp invalid_tool_call_key(%InvalidToolCall{name: name}) when not is_nil(name), do: name
   defp invalid_tool_call_key(%{id: id}) when not is_nil(id), do: id
   defp invalid_tool_call_key(%{name: name}) when not is_nil(name), do: name
   defp invalid_tool_call_key(_invalid), do: nil
 
-  defp decode_args(args) when is_map(args), do: {:ok, args}
-  defp decode_args(nil), do: {:ok, %{}}
   defp decode_args(""), do: {:ok, %{}}
 
-  defp decode_args(args) when is_binary(args) do
-    case BeamWeaver.JSON.decode(args) do
-      {:ok, decoded} when is_map(decoded) ->
-        {:ok, decoded}
-
-      {:ok, decoded} ->
-        {:error, "tool call arguments decoded to #{inspect(decoded)}, expected an object"}
-
-      {:error, error} ->
-        {:error, Exception.message(error)}
-    end
-  end
+  defp decode_args(args) when is_binary(args) or is_map(args) or is_nil(args),
+    do: BeamWeaver.Core.ToolCallParser.decode_tool_args(args)
 
   defp decode_args(args), do: {:error, "tool call arguments are not decodable: #{inspect(args)}"}
-
-  defp reject_empty_metadata(metadata) do
-    Enum.reduce(metadata, %{}, fn
-      {_key, []}, acc -> acc
-      {_key, nil}, acc -> acc
-      {key, value}, acc -> Map.put(acc, key, value)
-    end)
-  end
 end

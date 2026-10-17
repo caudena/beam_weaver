@@ -4,12 +4,14 @@ defmodule BeamWeaver.Prompt.Partials do
   alias BeamWeaver.Core.Error
   alias BeamWeaver.Prompt.StringTemplate
   alias BeamWeaver.Prompt.Variables
+  alias BeamWeaver.Result
 
   def merge_vars(partials, input) do
     vars = if is_map(input), do: input, else: %{input: input}
 
-    with {:ok, partials} <- partials |> Map.new() |> drop_overridden(vars) |> resolve_partials(input) do
-      {:ok, Map.merge(partials, vars)}
+    with {:ok, partials} <-
+           partials |> Map.new() |> drop_overridden(vars) |> Result.traverse(&resolve_partial(&1, input)) do
+      {:ok, partials |> Map.new() |> Map.merge(vars)}
     end
   end
 
@@ -52,46 +54,24 @@ defmodule BeamWeaver.Prompt.Partials do
     end)
   end
 
-  defp resolve_partials(partials, input) do
-    Enum.reduce_while(partials, {:ok, %{}}, fn {key, value}, {:ok, acc} ->
-      case resolve_partial(value, input) do
-        {:ok, value} -> {:cont, {:ok, Map.put(acc, key, value)}}
-        {:error, %Error{} = error} -> {:halt, {:error, error}}
-      end
-    end)
-  end
+  defp resolve_partial({key, fun}, _input) when is_function(fun, 0), do: call_partial(key, fun, %{})
+  defp resolve_partial({key, fun}, input) when is_function(fun, 1), do: call_partial(key, fn -> fun.(input) end, %{})
 
-  defp resolve_partial(fun, _input) when is_function(fun, 0) do
-    {:ok, fun.()}
+  defp resolve_partial({key, {module, function, args} = callback}, input)
+       when is_atom(module) and is_atom(function) and is_list(args),
+       do: call_partial(key, fn -> apply(module, function, [input | args]) end, %{callback: inspect(callback)})
+
+  defp resolve_partial(partial, _input), do: {:ok, partial}
+
+  defp call_partial(key, fun, details) do
+    {:ok, {key, fun.()}}
   rescue
     exception ->
       {:error,
-       Error.new(:prompt_partial_error, "prompt partial callback failed", %{
-         reason: Exception.message(exception)
-       })}
+       Error.new(
+         :prompt_partial_error,
+         "prompt partial callback failed",
+         Map.put(details, :reason, Exception.message(exception))
+       )}
   end
-
-  defp resolve_partial(fun, input) when is_function(fun, 1) do
-    {:ok, fun.(input)}
-  rescue
-    exception ->
-      {:error,
-       Error.new(:prompt_partial_error, "prompt partial callback failed", %{
-         reason: Exception.message(exception)
-       })}
-  end
-
-  defp resolve_partial({module, function, args}, input)
-       when is_atom(module) and is_atom(function) and is_list(args) do
-    {:ok, apply(module, function, [input | args])}
-  rescue
-    exception ->
-      {:error,
-       Error.new(:prompt_partial_error, "prompt partial callback failed", %{
-         reason: Exception.message(exception),
-         callback: inspect({module, function, args})
-       })}
-  end
-
-  defp resolve_partial(value, _input), do: {:ok, value}
 end

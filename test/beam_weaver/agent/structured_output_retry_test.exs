@@ -1,8 +1,6 @@
 defmodule BeamWeaver.Agent.StructuredOutputRetryTest do
   use ExUnit.Case, async: true
 
-  # Upstream reference:
-
   alias BeamWeaver.Agent
   alias BeamWeaver.Agent.Middleware.StructuredOutputRetry
   alias BeamWeaver.Agent.StructuredOutput

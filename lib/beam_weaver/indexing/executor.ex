@@ -10,42 +10,34 @@ defmodule BeamWeaver.Indexing.Executor do
   def apply_plan(vector_store, record_manager, planned, namespace, opts) do
     to_index = Enum.filter(planned.documents, &(&1.action in [:add, :update]))
     skipped = Enum.count(planned.documents, &(&1.action == :skip))
+    batch_size = Keyword.get(opts, :batch_size, length(to_index))
 
-    result = %Result{skipped: skipped}
-
-    if to_index == [] do
-      {:ok, result}
-    else
-      batch_size = Keyword.get(opts, :batch_size, length(to_index))
-
+    result =
       to_index
       |> Enum.chunk_every(max(batch_size, 1))
-      |> Enum.reduce_while({:ok, result}, fn batch, {:ok, acc} ->
+      |> Enum.reduce(%Result{skipped: skipped}, fn batch, acc ->
         docs = Enum.map(batch, & &1.document)
 
         with {:ok, ids} <- VectorStore.add_documents(vector_store, docs, opts),
              :ok <- put_records(record_manager, batch, namespace, opts) do
-          {:cont,
-           {:ok,
-            %{
-              acc
-              | added: acc.added + Enum.count(batch, &(&1.action == :add)),
-                updated: acc.updated + Enum.count(batch, &(&1.action == :update)),
-                indexed_ids: acc.indexed_ids ++ ids
-            }}}
+          %{
+            acc
+            | added: acc.added + Enum.count(batch, &(&1.action == :add)),
+              updated: acc.updated + Enum.count(batch, &(&1.action == :update)),
+              indexed_ids: acc.indexed_ids ++ ids
+          }
         else
           {:error, error} ->
-            {:cont,
-             {:ok,
-              %{
-                acc
-                | failed: acc.failed + length(batch),
-                  failed_ids: acc.failed_ids ++ Enum.map(docs, & &1.id),
-                  errors: [error | acc.errors]
-              }}}
+            %{
+              acc
+              | failed: acc.failed + length(batch),
+                failed_ids: acc.failed_ids ++ Enum.map(docs, & &1.id),
+                errors: [error | acc.errors]
+            }
         end
       end)
-    end
+
+    {:ok, result}
   end
 
   defp put_records(nil, _batch, _namespace, _opts), do: :ok

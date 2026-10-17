@@ -9,8 +9,7 @@ defmodule BeamWeaver.XAI.EmbeddingModel do
 
   alias BeamWeaver.Provider.OpenAICompatibleClient, as: Compat
   alias BeamWeaver.Models.ParamPolicy
-  alias BeamWeaver.Models.Profile
-  alias BeamWeaver.Models.ProfileRegistry
+  alias BeamWeaver.Provider.ChatModel.Options, as: ChatOptions
   alias BeamWeaver.Provider.EmbeddingRuntime
   alias BeamWeaver.Provider.Options
   alias BeamWeaver.XAI.Client
@@ -61,10 +60,9 @@ defmodule BeamWeaver.XAI.EmbeddingModel do
 
   @spec new(keyword() | map()) :: t()
   def new(opts \\ []) do
-    opts = if is_map(opts), do: Map.to_list(opts), else: opts
-    opts = Compat.expand_base_url(opts, endpoint: "embeddings")
+    opts = opts |> ChatOptions.keyword_options() |> Compat.expand_base_url(endpoint: "embeddings")
     model = Keyword.get(opts, :model, @default_model)
-    profile = profile_option(opts, model)
+    profile = ChatOptions.profile_option(opts, :xai, model)
 
     struct!(
       __MODULE__,
@@ -75,16 +73,12 @@ defmodule BeamWeaver.XAI.EmbeddingModel do
   end
 
   @impl true
-  def embed_documents(%__MODULE__{} = model, documents, opts \\ []) when is_list(documents) do
-    embed_fun = fn input, call_opts -> embed_input(model, input, call_opts) end
-    EmbeddingRuntime.embed_documents(model, documents, opts, embed_fun, runtime_error_opts())
-  end
+  def embed_documents(%__MODULE__{} = model, documents, opts \\ []) when is_list(documents),
+    do: EmbeddingRuntime.embed_documents(model, documents, opts, &embed_input(model, &1, &2))
 
   @impl true
-  def embed_query(%__MODULE__{} = model, query, opts \\ []) when is_binary(query) do
-    embed_fun = fn input, call_opts -> embed_input(model, input, call_opts) end
-    EmbeddingRuntime.embed_query(model, query, opts, embed_fun, runtime_error_opts())
-  end
+  def embed_query(%__MODULE__{} = model, query, opts \\ []) when is_binary(query),
+    do: EmbeddingRuntime.embed_query(model, query, opts, &embed_input(model, &1, &2), runtime_error_opts())
 
   @doc """
   Builds the xAI embeddings request body.
@@ -109,9 +103,8 @@ defmodule BeamWeaver.XAI.EmbeddingModel do
     body = request_body(model, input, opts)
 
     with :ok <- validate_request_params(model, opts),
-         {:ok, response} <- Client.post_json(client(model), model.endpoint, body, opts) do
-      embeddings_from_response(response)
-    end
+         {:ok, response} <- Client.post_json(client(model), model.endpoint, body, opts),
+         do: EmbeddingRuntime.embeddings_from_response(response, runtime_error_opts())
   end
 
   defp validate_request_params(%__MODULE__{} = model, opts) do
@@ -133,9 +126,6 @@ defmodule BeamWeaver.XAI.EmbeddingModel do
     ParamPolicy.validate(model.profile, params, Keyword.get(opts, :param_policy, model.param_policy))
   end
 
-  defp embeddings_from_response(response),
-    do: EmbeddingRuntime.embeddings_from_response(response, runtime_error_opts())
-
   defp client(%__MODULE__{} = model) do
     %Client{
       endpoint: model.endpoint,
@@ -145,26 +135,6 @@ defmodule BeamWeaver.XAI.EmbeddingModel do
       transport_opts: model.transport_opts,
       timeout: model.timeout
     }
-  end
-
-  defp profile_option(opts, model) do
-    case Keyword.fetch(opts, :profile) do
-      {:ok, profile} ->
-        Profile.new(profile)
-
-      :error ->
-        case ProfileRegistry.fetch(:xai, model) do
-          {:ok, profile} -> profile
-          {:error, error} -> raise ArgumentError, profile_error_message(error)
-        end
-    end
-  end
-
-  defp profile_error_message(%{message: message, details: details}) when is_map(details) do
-    case BeamWeaver.MapAccess.get(details, :expected) do
-      nil -> message
-      expected -> "#{message}; use #{expected}"
-    end
   end
 
   defp runtime_error_opts, do: [provider_name: "xAI"]

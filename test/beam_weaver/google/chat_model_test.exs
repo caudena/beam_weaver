@@ -635,7 +635,9 @@ defmodule BeamWeaver.Google.ChatModelTest do
     # A usageMetadata-only / finishReason-only chunk has no candidates.content.parts;
     # previously get_in returned nil and Enum.flat_map raised on the Atom.
     assert {:ok, %BeamWeaver.Core.Message{content: content}} =
-             BeamWeaver.Google.Streaming.final_message_from_sse(body)
+             body
+             |> BeamWeaver.Google.Streaming.response_from_sse_body()
+             |> BeamWeaver.Google.Messages.response_to_message()
 
     assert inspect(content) =~ "hello"
   end

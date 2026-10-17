@@ -4,28 +4,21 @@ defmodule BeamWeaver.Result do
   @spec traverse(Enumerable.t(), (term() -> {:ok, term()} | {:error, term()})) ::
           {:ok, [term()]} | {:error, term()}
   def traverse(enumerable, fun) when is_function(fun, 1) do
-    enumerable
-    |> Enum.reduce_while({:ok, []}, fn value, {:ok, acc} ->
-      case fun.(value) do
-        {:ok, mapped} -> {:cont, {:ok, [mapped | acc]}}
-        {:error, error} -> {:halt, {:error, error}}
-      end
-    end)
-    |> case do
-      {:ok, values} -> {:ok, Enum.reverse(values)}
-      {:error, error} -> {:error, error}
-    end
+    result =
+      Enum.reduce_while(enumerable, {:ok, []}, fn value, {:ok, acc} ->
+        case fun.(value) do
+          {:ok, mapped} -> {:cont, {:ok, [mapped | acc]}}
+          {:error, error} -> {:halt, {:error, error}}
+        end
+      end)
+
+    with {:ok, values} <- result, do: {:ok, Enum.reverse(values)}
   end
 
   @spec flat_traverse(Enumerable.t(), (term() -> {:ok, Enumerable.t()} | {:error, term()})) ::
           {:ok, [term()]} | {:error, term()}
   def flat_traverse(enumerable, fun) when is_function(fun, 1) do
-    enumerable
-    |> traverse(fun)
-    |> case do
-      {:ok, values} -> {:ok, Enum.flat_map(values, &List.wrap/1)}
-      {:error, error} -> {:error, error}
-    end
+    with {:ok, values} <- traverse(enumerable, fun), do: {:ok, Enum.flat_map(values, &List.wrap/1)}
   end
 
   @spec collect(Enumerable.t()) :: {:ok, [term()]} | {:error, term()}

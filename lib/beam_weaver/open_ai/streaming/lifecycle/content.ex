@@ -1,7 +1,10 @@
 defmodule BeamWeaver.OpenAI.Streaming.Lifecycle.Content do
   @moduledoc false
 
+  import BeamWeaver.MapShape, only: [reject_nil_values: 1]
+
   alias BeamWeaver.OpenAI.Streaming.Shared
+  alias BeamWeaver.Provider.ChatCompletionsWire
 
   def message_start(parsed_events), do: parsed_events |> first_response() |> response_message()
 
@@ -52,7 +55,7 @@ defmodule BeamWeaver.OpenAI.Streaming.Lifecycle.Content do
       "name" => data["name"],
       "args" => ""
     }
-    |> Shared.reject_nil_values()
+    |> reject_nil_values()
   end
 
   def tool_call_chunk(item) do
@@ -62,19 +65,17 @@ defmodule BeamWeaver.OpenAI.Streaming.Lifecycle.Content do
       "name" => item["name"],
       "args" => item["arguments"] || ""
     }
-    |> Shared.reject_nil_values()
+    |> reject_nil_values()
   end
 
-  def tool_call(data, arguments \\ nil) do
-    arguments = arguments || data["arguments"] || ""
-
+  def tool_call(data) do
     %{
       "type" => "tool_call",
       "id" => data["call_id"] || data["item_id"] || data["id"],
       "name" => data["name"],
-      "args" => Shared.decode_arguments(arguments)
+      "args" => ChatCompletionsWire.decode_arguments(data["arguments"] || "")
     }
-    |> Shared.reject_nil_values()
+    |> reject_nil_values()
   end
 
   def reasoning_has_summary?(%{"summary" => summary}) when is_list(summary), do: summary != []
@@ -96,6 +97,6 @@ defmodule BeamWeaver.OpenAI.Streaming.Lifecycle.Content do
       "model" => response["model"],
       "usage" => response["usage"]
     }
-    |> Shared.reject_nil_values()
+    |> reject_nil_values()
   end
 end

@@ -1,16 +1,8 @@
 defmodule BeamWeaver.Migrations.Postgres.Util do
   @moduledoc false
 
-  def qualify(prefix, name) do
-    case prefix do
-      nil -> quote_name(name)
-      false -> quote_name(name)
-      "" -> quote_name(name)
-      prefix -> quote_name(prefix) <> "." <> quote_name(name)
-    end
-  end
-
-  def regclass(prefix, name), do: qualify(prefix, name)
+  def qualify(prefix, name) when prefix in [nil, false, ""], do: quote_name(name)
+  def qualify(prefix, name), do: quote_name(prefix) <> "." <> quote_name(name)
 
   def quote_name(name) do
     name
@@ -21,7 +13,7 @@ defmodule BeamWeaver.Migrations.Postgres.Util do
 
   def index(_prefix, table, suffix), do: quote_name(index_name(table, suffix))
 
-  def index_name(table, suffix) do
+  defp index_name(table, suffix) do
     base =
       table
       |> to_string()
@@ -31,6 +23,9 @@ defmodule BeamWeaver.Migrations.Postgres.Util do
 
     "#{base}_#{suffix}"
   end
+
+  def drop_table(%{opts: opts} = spec),
+    do: Ecto.Migration.execute("DROP TABLE IF EXISTS #{qualify(spec[:prefix], opts.table)}")
 
   def escaped_comment(value), do: value |> to_string() |> String.replace("'", "''")
 

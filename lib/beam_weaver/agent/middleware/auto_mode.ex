@@ -70,7 +70,7 @@ defmodule BeamWeaver.Agent.Middleware.AutoMode do
 
   @impl true
   def wrap_tool_call(%__MODULE__{} = middleware, request, handler) do
-    name = tool_name(request)
+    name = Helpers.tool_name(request)
 
     if MapSet.member?(middleware.tools, name) do
       case classify(middleware, request) do
@@ -117,7 +117,7 @@ defmodule BeamWeaver.Agent.Middleware.AutoMode do
 
     state = %{
       messages: messages,
-      tool_call: %{id: Helpers.tool_call_id(call), name: tool_name(request), args: Map.get(call, :args, %{})}
+      tool_call: %{id: Helpers.tool_call_id(call), name: Helpers.tool_name(request), args: Map.get(call, :args, %{})}
     }
 
     case request.tool && Tool.description(request.tool) do
@@ -134,7 +134,4 @@ defmodule BeamWeaver.Agent.Middleware.AutoMode do
       metadata: %{status: "error", retryable: false}
     )
   end
-
-  defp tool_name(%{tool: nil, tool_call: call}), do: Map.get(call, :name)
-  defp tool_name(%{tool: tool}), do: Tool.name(tool)
 end

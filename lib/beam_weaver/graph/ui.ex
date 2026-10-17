@@ -94,14 +94,11 @@ defmodule BeamWeaver.Graph.UI do
     left = ui_list(left)
     right = ui_list(right)
 
-    {merged, by_id, removals} =
-      Enum.reduce(Enum.with_index(left), {left, %{}, MapSet.new()}, fn {message, index}, {messages, ids, removals} ->
-        {messages, Map.put(ids, id!(message), index), removals}
-      end)
+    by_id = left |> Enum.with_index() |> Map.new(fn {message, index} -> {message.id, index} end)
 
     {merged, _by_id, removals} =
-      Enum.reduce(right, {merged, by_id, removals}, fn message, {messages, by_id, removals} ->
-        message_id = id!(message)
+      Enum.reduce(right, {left, by_id, MapSet.new()}, fn message, {messages, by_id, removals} ->
+        message_id = message.id
 
         case {Map.fetch(by_id, message_id), remove?(message)} do
           {{:ok, _index}, true} ->
@@ -120,7 +117,7 @@ defmodule BeamWeaver.Graph.UI do
         end
       end)
 
-    Enum.reject(merged, &(id!(&1) in removals))
+    Enum.reject(merged, &(&1.id in removals))
   end
 
   defp ui_list(nil), do: []
@@ -162,12 +159,6 @@ defmodule BeamWeaver.Graph.UI do
 
   defp remove?(%{type: :remove_ui}), do: true
   defp remove?(_message), do: false
-
-  defp id!(%{id: id}) when is_binary(id), do: id
-
-  defp id!(other) do
-    raise ArgumentError, "UI message is missing an ID: #{inspect(other)}"
-  end
 
   defp message_id(%{id: id}) when is_binary(id), do: id
   defp message_id(%{"id" => id}) when is_binary(id), do: id

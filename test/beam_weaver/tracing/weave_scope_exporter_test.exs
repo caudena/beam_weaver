@@ -209,6 +209,15 @@ defmodule BeamWeaver.Tracing.WeaveScopeExporterTest do
     refute Map.has_key?(WeaveScope.to_event(:started, run, []), "environment")
   end
 
+  test "a run kind exports the same as an atom or a string" do
+    for kind <- [:generation, :model, :graph, :workflow, :tool, :unknown_kind] do
+      run = Run.new("run", id: "run-1", trace_id: "trace-1", kind: kind, started_at: ~U[2026-06-04 10:00:00Z])
+
+      assert WeaveScope.to_event(:started, run, [])["kind"] ==
+               WeaveScope.to_event(:started, %{run | kind: Atom.to_string(kind)}, [])["kind"]
+    end
+  end
+
   test "normalizes unexpected run statuses to the WeaveScope status contract" do
     run =
       Run.new("support_agent",
@@ -297,13 +306,8 @@ defmodule BeamWeaver.Tracing.WeaveScopeExporterTest do
   end
 
   test "queue dead-letters WeaveScope rejections without retrying them" do
-    name = :"weavescope_queue_#{System.unique_integer([:positive])}"
-
-    {:ok, pid} =
-      Queue.start_link(
-        name: name,
-        api_key: "ws_test",
-        endpoint: "http://weavescope.local",
+    pid =
+      start_queue(
         transport: BeamWeaver.Tracing.WeaveScopeRejectTransport,
         flush_interval: 0,
         retry_delay: 1,
@@ -350,13 +354,8 @@ defmodule BeamWeaver.Tracing.WeaveScopeExporterTest do
     {:ok, attempts} =
       Agent.start_link(fn -> 0 end, name: BeamWeaver.Tracing.WeaveScopeFlakyTransportAgent)
 
-    name = :"weavescope_queue_#{System.unique_integer([:positive])}"
-
-    {:ok, pid} =
-      Queue.start_link(
-        name: name,
-        api_key: "ws_test",
-        endpoint: "http://weavescope.local",
+    pid =
+      start_queue(
         transport: BeamWeaver.Tracing.WeaveScopeFlakyTransport,
         flush_interval: 0,
         retry_delay: 0,
@@ -393,13 +392,8 @@ defmodule BeamWeaver.Tracing.WeaveScopeExporterTest do
     {:ok, _attempts} =
       Agent.start_link(fn -> 0 end, name: BeamWeaver.Tracing.WeaveScopeAlwaysFailTransportAgent)
 
-    name = :"weavescope_queue_#{System.unique_integer([:positive])}"
-
-    {:ok, pid} =
-      Queue.start_link(
-        name: name,
-        api_key: "ws_test",
-        endpoint: "http://weavescope.local",
+    pid =
+      start_queue(
         transport: BeamWeaver.Tracing.WeaveScopeAlwaysFailTransport,
         flush_interval: 0,
         retry_delay: 0,
@@ -431,16 +425,7 @@ defmodule BeamWeaver.Tracing.WeaveScopeExporterTest do
     {:ok, capture} =
       Agent.start_link(fn -> [] end, name: BeamWeaver.Tracing.WeaveScopeCaptureTransportAgent)
 
-    name = :"weavescope_queue_#{System.unique_integer([:positive])}"
-
-    {:ok, pid} =
-      Queue.start_link(
-        name: name,
-        api_key: "ws_test",
-        endpoint: "http://weavescope.local",
-        transport: BeamWeaver.Tracing.WeaveScopeCaptureTransport,
-        flush_interval: 10_000
-      )
+    pid = start_queue(transport: BeamWeaver.Tracing.WeaveScopeCaptureTransport, flush_interval: 10_000)
 
     run =
       Run.new("domain_discovery_agent",
@@ -469,17 +454,7 @@ defmodule BeamWeaver.Tracing.WeaveScopeExporterTest do
     {:ok, capture} =
       Agent.start_link(fn -> [] end, name: BeamWeaver.Tracing.WeaveScopeCaptureTransportAgent)
 
-    name = :"weavescope_queue_#{System.unique_integer([:positive])}"
-
-    {:ok, pid} =
-      Queue.start_link(
-        name: name,
-        api_key: "ws_test",
-        endpoint: "http://weavescope.local",
-        transport: BeamWeaver.Tracing.WeaveScopeCaptureTransport,
-        flush_interval: 10_000,
-        max_items: 1
-      )
+    pid = start_queue(transport: BeamWeaver.Tracing.WeaveScopeCaptureTransport, flush_interval: 10_000, max_items: 1)
 
     first = Run.new("first", id: "first", trace_id: "first", kind: :model)
     second = Run.new("second", id: "second", trace_id: "second", kind: :model)
@@ -511,13 +486,8 @@ defmodule BeamWeaver.Tracing.WeaveScopeExporterTest do
         name: BeamWeaver.Tracing.WeaveScopeBlockingTransportAgent
       )
 
-    name = :"weavescope_queue_#{System.unique_integer([:positive])}"
-
-    {:ok, pid} =
-      Queue.start_link(
-        name: name,
-        api_key: "ws_test",
-        endpoint: "http://weavescope.local",
+    pid =
+      start_queue(
         transport: BeamWeaver.Tracing.WeaveScopeBlockingTransport,
         flush_interval: 10_000,
         max_items: 10,
@@ -589,22 +559,13 @@ defmodule BeamWeaver.Tracing.WeaveScopeExporterTest do
     {:ok, capture} =
       Agent.start_link(fn -> [] end, name: BeamWeaver.Tracing.WeaveScopeCaptureTransportAgent)
 
-    name = :"weavescope_queue_#{System.unique_integer([:positive])}"
-
-    {:ok, pid} =
-      Queue.start_link(
-        name: name,
-        api_key: "ws_test",
-        endpoint: "http://weavescope.local",
-        transport: BeamWeaver.Tracing.WeaveScopeCaptureTransport,
-        flush_interval: 10_000
-      )
+    pid = start_queue(transport: BeamWeaver.Tracing.WeaveScopeCaptureTransport, flush_interval: 10_000)
 
     test = self()
 
     owner =
       spawn(fn ->
-        {:ok, run} = Tracing.start_run("stuck tool", kind: :tool, exporter: Queue, exporter_opts: [queue: name])
+        {:ok, run} = Tracing.start_run("stuck tool", kind: :tool, exporter: Queue, exporter_opts: [queue: pid])
         send(test, {:run, run})
         Process.sleep(:infinity)
       end)
@@ -632,13 +593,8 @@ defmodule BeamWeaver.Tracing.WeaveScopeExporterTest do
     {:ok, capture} =
       Agent.start_link(fn -> [] end, name: BeamWeaver.Tracing.WeaveScopeCaptureTransportAgent)
 
-    name = :"weavescope_queue_#{System.unique_integer([:positive])}"
-
-    {:ok, pid} =
-      Queue.start_link(
-        name: name,
-        api_key: "ws_test",
-        endpoint: "http://weavescope.local",
+    pid =
+      start_queue(
         transport: BeamWeaver.Tracing.WeaveScopeCaptureTransport,
         flush_interval: 10_000,
         batch_size: 10,
@@ -664,6 +620,12 @@ defmodule BeamWeaver.Tracing.WeaveScopeExporterTest do
 
   def handle_queue_telemetry(event, measurements, metadata, test_pid) do
     send(test_pid, {:queue_event, event, measurements, metadata})
+  end
+
+  defp start_queue(opts) do
+    name = :"weavescope_queue_#{System.unique_integer([:positive])}"
+    {:ok, pid} = Queue.start_link([name: name, api_key: "ws_test", endpoint: "http://weavescope.local"] ++ opts)
+    pid
   end
 end
 

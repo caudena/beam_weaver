@@ -79,86 +79,23 @@ defmodule BeamWeaver.Agent.Spec do
           recursion_limit: non_neg_integer() | nil
         }
 
-  @dsl_attrs [
-    :name,
-    :description,
-    :model,
-    :model_opts,
-    :tools,
-    :validate_tools,
-    :middleware,
-    :filesystem,
-    :filesystem_permissions,
-    :skills,
-    :memory,
-    :subagents,
-    :async_subagents,
-    :compact_conversation,
-    :overflow_recovery,
-    :prompt_caching,
-    :exclude_tools,
-    :tool_descriptions,
-    :interrupt_on,
-    :system_prompt,
-    :response_format,
-    :checkpointer,
-    :store,
-    :cache,
-    :context_schema,
-    :input_schema,
-    :output_schema,
-    :interrupt_before,
-    :interrupt_after,
-    :recursion_limit,
-    :execution_mode,
-    :capability_profile,
-    :tool_timeout,
-    :step_timeout,
-    :run_timeout
-  ]
-
-  @default_attrs %{
-    model_opts: [],
-    validate_tools: false
-  }
-
-  @list_attrs [:tools, :middleware]
-  @interrupt_attrs [:interrupt_before, :interrupt_after]
-
-  @doc false
   @spec from_dsl_attrs(module(), map()) :: t()
   def from_dsl_attrs(module, attrs) when is_atom(module) and is_map(attrs) do
-    attrs
-    |> Map.take(@dsl_attrs)
-    |> apply_defaults()
-    |> normalize_list_attrs()
-    |> normalize_interrupt_attrs()
-    |> Map.put(:module, module)
-    |> put_default_name(module)
-    |> then(&struct(__MODULE__, &1))
+    struct(
+      __MODULE__,
+      Map.merge(attrs, %{
+        module: module,
+        name: attrs[:name] || inspect(module),
+        model_opts: attrs[:model_opts] || [],
+        validate_tools: attrs[:validate_tools] || false,
+        tools: List.wrap(attrs[:tools] || []),
+        middleware: List.wrap(attrs[:middleware] || []),
+        interrupt_before: interrupt_value(attrs[:interrupt_before]),
+        interrupt_after: interrupt_value(attrs[:interrupt_after])
+      })
+    )
   end
 
-  defp apply_defaults(attrs) do
-    Enum.reduce(@default_attrs, attrs, fn {key, default}, acc ->
-      Map.update(acc, key, default, &(&1 || default))
-    end)
-  end
-
-  defp normalize_list_attrs(attrs) do
-    Enum.reduce(@list_attrs, attrs, fn key, acc ->
-      Map.update(acc, key, [], &List.wrap(&1 || []))
-    end)
-  end
-
-  defp normalize_interrupt_attrs(attrs) do
-    Enum.reduce(@interrupt_attrs, attrs, fn key, acc ->
-      Map.update(acc, key, [], &normalize_interrupt_value/1)
-    end)
-  end
-
-  defp normalize_interrupt_value(:all), do: :all
-  defp normalize_interrupt_value("*"), do: :all
-  defp normalize_interrupt_value(value), do: List.wrap(value || [])
-
-  defp put_default_name(attrs, module), do: Map.update(attrs, :name, inspect(module), &(&1 || inspect(module)))
+  defp interrupt_value(value) when value in [:all, "*"], do: :all
+  defp interrupt_value(value), do: List.wrap(value || [])
 end

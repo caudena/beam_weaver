@@ -77,6 +77,8 @@ defmodule BeamWeaver.DeepSeek.ClientTest do
 
     assert Client.endpoint("https://deepseek.test/beta/", "/completions") ==
              "https://deepseek.test/beta/completions"
+
+    assert Client.new(base_url: "https://düüp.test/v1").beta_base_url == "https://düüp.test/beta"
   end
 
   test "a configured chat endpoint remains authoritative for beta-capable bodies" do

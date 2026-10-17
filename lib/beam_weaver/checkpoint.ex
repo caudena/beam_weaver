@@ -128,30 +128,15 @@ defmodule BeamWeaver.Checkpoint do
   @spec put(saver(), config(), checkpoint(), metadata(), versions()) ::
           {:ok, config()} | {:error, term()}
   def put(saver, config, checkpoint, metadata, new_versions) do
-    result =
-      saver.__struct__.put(
-        saver,
-        config,
-        checkpoint,
-        Normalization.normalize_metadata(config, metadata),
-        new_versions
-      )
-
-    Telemetry.emit(saver, :put, %{count: 1}, config, result)
-    result
+    args = [config, checkpoint, Normalization.normalize_metadata(config, metadata), new_versions]
+    call_saver(saver, :put, args, 1, config)
   end
 
   @spec put_writes(saver(), config(), writes(), String.t(), String.t()) ::
           :ok | {:error, term()}
   def put_writes(saver, config, writes, task_id, task_path \\ "") do
-    result = saver.__struct__.put_writes(saver, config, writes, task_id, task_path)
-
-    Telemetry.emit(saver, :put_writes, %{count: length(writes)}, config, result, %{
-      task_id: task_id,
-      task_path: task_path
-    })
-
-    result
+    metadata = %{task_id: task_id, task_path: task_path}
+    call_saver(saver, :put_writes, [config, writes, task_id, task_path], length(writes), config, metadata)
   end
 
   @spec put_checkpoint_with_writes(
@@ -174,8 +159,8 @@ defmodule BeamWeaver.Checkpoint do
       ) do
     module = saver.__struct__
 
-    if BeamWeaver.Behaviour.exported?(module, :put_checkpoint_with_writes, 7) do
-      result =
+    result =
+      if BeamWeaver.Behaviour.exported?(module, :put_checkpoint_with_writes, 7) do
         module.put_checkpoint_with_writes(
           saver,
           config,
@@ -185,21 +170,17 @@ defmodule BeamWeaver.Checkpoint do
           writes,
           opts
         )
-
-      Telemetry.emit(saver, :put_checkpoint_with_writes, %{count: length(writes)}, config, result)
-      result
-    else
-      result =
+      else
         {:error,
          Error.new(
            :atomic_checkpoint_write_unsupported,
            "checkpoint saver does not support atomic checkpoint and write persistence",
            %{saver: inspect(module)}
          )}
+      end
 
-      Telemetry.emit(saver, :put_checkpoint_with_writes, %{count: length(writes)}, config, result)
-      result
-    end
+    Telemetry.emit(saver, :put_checkpoint_with_writes, %{count: length(writes)}, config, result)
+    result
   end
 
   @doc """
@@ -222,16 +203,18 @@ defmodule BeamWeaver.Checkpoint do
   @spec fork_at(saver(), config(), String.t(), keyword()) ::
           {:ok, config()} | {:error, term()}
   def fork_at(saver, source_config, target_thread_id, opts \\ []) do
-    with true <- is_binary(target_thread_id) and target_thread_id != "",
-         {:ok, module} <- required_callback(saver, :fork_at, 4) do
-      module.fork_at(saver, source_config, target_thread_id, opts)
+    if is_binary(target_thread_id) and target_thread_id != "" do
+      with {:ok, module} <- required_callback(saver, :fork_at, 4),
+           do: module.fork_at(saver, source_config, target_thread_id, opts)
     else
-      false ->
-        {:error, Error.new(:invalid_checkpoint_fork, "target thread id is required")}
-
-      {:error, _error} = error ->
-        error
+      {:error, Error.new(:invalid_checkpoint_fork, "target thread id is required")}
     end
+  end
+
+  defp call_saver(saver, operation, args, count, config, metadata \\ %{}) do
+    result = apply(saver.__struct__, operation, [saver | args])
+    Telemetry.emit(saver, operation, %{count: count}, config, result, metadata)
+    result
   end
 
   defp checkpoint_read(saver, callback, args, fallback) do
@@ -302,53 +285,22 @@ defmodule BeamWeaver.Checkpoint do
   end
 
   @spec delete_thread(saver(), String.t()) :: :ok | {:error, term()}
-  def delete_thread(saver, thread_id) do
-    result = saver.__struct__.delete_thread(saver, thread_id)
-
-    Telemetry.emit(
-      saver,
-      :delete_thread,
-      %{count: 1},
-      %{"configurable" => %{"thread_id" => thread_id}},
-      result
-    )
-
-    result
-  end
+  def delete_thread(saver, thread_id),
+    do: call_saver(saver, :delete_thread, [thread_id], 1, %{"configurable" => %{"thread_id" => thread_id}})
 
   @spec delete_for_runs(saver(), [String.t()]) :: :ok | {:error, term()}
-  def delete_for_runs(saver, run_ids) when is_list(run_ids) do
-    result = saver.__struct__.delete_for_runs(saver, run_ids)
-
-    Telemetry.emit(saver, :delete_for_runs, %{count: length(run_ids)}, %{}, result, %{
-      run_ids: run_ids
-    })
-
-    result
-  end
+  def delete_for_runs(saver, run_ids) when is_list(run_ids),
+    do: call_saver(saver, :delete_for_runs, [run_ids], length(run_ids), %{}, %{run_ids: run_ids})
 
   @spec copy_thread(saver(), String.t(), String.t()) :: :ok | {:error, term()}
   def copy_thread(saver, source_thread_id, target_thread_id) do
-    result = saver.__struct__.copy_thread(saver, source_thread_id, target_thread_id)
-
-    Telemetry.emit(saver, :copy_thread, %{count: 1}, %{}, result, %{
-      source_thread_id: source_thread_id,
-      target_thread_id: target_thread_id
-    })
-
-    result
+    metadata = %{source_thread_id: source_thread_id, target_thread_id: target_thread_id}
+    call_saver(saver, :copy_thread, [source_thread_id, target_thread_id], 1, %{}, metadata)
   end
 
   @spec prune(saver(), [String.t()], keyword()) :: :ok | {:error, term()}
-  def prune(saver, thread_ids, opts \\ []) do
-    result = saver.__struct__.prune(saver, thread_ids, opts)
-
-    Telemetry.emit(saver, :prune, %{count: length(thread_ids)}, %{}, result, %{
-      thread_ids: thread_ids
-    })
-
-    result
-  end
+  def prune(saver, thread_ids, opts \\ []),
+    do: call_saver(saver, :prune, [thread_ids, opts], length(thread_ids), %{}, %{thread_ids: thread_ids})
 
   @spec next_version(saver(), term(), term() | nil) :: term()
   def next_version(saver, current, channel), do: Saver.next_version(saver, current, channel)

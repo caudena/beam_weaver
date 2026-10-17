@@ -3,7 +3,9 @@ defmodule BeamWeaver.Graph.Execution.SubgraphRouter do
 
   alias BeamWeaver.Checkpoint
   alias BeamWeaver.Graph.Command
+  alias BeamWeaver.Graph.Execution.CommandRouter
   alias BeamWeaver.Graph.Execution.Namespace
+  alias BeamWeaver.MapShape
 
   @compiled BeamWeaver.Graph.Compiled
 
@@ -16,28 +18,28 @@ defmodule BeamWeaver.Graph.Execution.SubgraphRouter do
     }
   end
 
-  @spec config(map()) :: map()
-  def config(runtime) do
-    config(runtime, :task)
-  end
-
   @spec config(map(), map() | :task) :: map()
   def config(runtime, compiled_or_mode) do
     configurable = Checkpoint.configurable(runtime.config)
     parent_ns = Map.get(configurable, "checkpoint_ns", "")
     task_id = runtime.scratchpad && runtime.scratchpad.task_id
     child_ns = child_namespace(parent_ns, runtime.node, task_id, compiled_or_mode)
-    checkpoint_map = checkpoint_map(configurable, parent_ns)
-    child_checkpoint_id = Map.get(checkpoint_map, child_ns)
+    %{"configurable" => child_configurable(configurable, parent_ns, child_ns)}
+  end
 
-    child_configurable =
+  @spec child_configurable(map(), String.t(), String.t()) :: map()
+  def child_configurable(configurable, parent_ns, child_ns) do
+    checkpoint_map =
       configurable
-      |> Map.put("checkpoint_ns", child_ns)
-      |> Map.put("checkpoint_map", checkpoint_map)
-      |> Map.delete("checkpoint_id")
-      |> maybe_put_checkpoint_id(child_checkpoint_id)
+      |> Map.get("checkpoint_map", %{})
+      |> Namespace.recast_checkpoint_map()
+      |> MapShape.put_present(Namespace.recast(parent_ns), Map.get(configurable, "checkpoint_id"))
 
-    %{"configurable" => child_configurable}
+    configurable
+    |> Map.put("checkpoint_ns", child_ns)
+    |> Map.put("checkpoint_map", checkpoint_map)
+    |> Map.delete("checkpoint_id")
+    |> MapShape.put_present("checkpoint_id", Map.get(checkpoint_map, child_ns))
   end
 
   @spec namespace_delegate(map(), map()) :: map() | nil
@@ -114,18 +116,13 @@ defmodule BeamWeaver.Graph.Execution.SubgraphRouter do
   end
 
   defp targets_subgraph?(%Command{graph: graph}, compiled, runtime) do
-    command_target?(graph, subgraph_identifiers(compiled, runtime))
-  end
-
-  defp command_target?(target, identifiers) do
-    target = to_string(target)
-    target in Enum.reject(identifiers, &(&1 in [nil, ""]))
+    CommandRouter.command_target?(graph, subgraph_identifiers(compiled, runtime))
   end
 
   defp subgraph_identifiers(compiled, runtime) do
     namespace =
       runtime
-      |> config()
+      |> config(:task)
       |> Checkpoint.configurable()
       |> Map.get("checkpoint_ns", "")
 
@@ -135,7 +132,7 @@ defmodule BeamWeaver.Graph.Execution.SubgraphRouter do
   defp find_subgraph(compiled, [node | rest]) do
     case Map.get(compiled.graph.nodes, to_string(node)) do
       %{fun: %{__struct__: @compiled} = child} ->
-        child = inherit_child_adapters(child, compiled)
+        child = inherit_runtime_adapters(child, compiled)
 
         case rest do
           [] -> child
@@ -145,14 +142,6 @@ defmodule BeamWeaver.Graph.Execution.SubgraphRouter do
       _missing ->
         nil
     end
-  end
-
-  defp inherit_child_adapters(child, parent) do
-    %{
-      child
-      | checkpointer: inherited_checkpointer(child, parent.checkpointer),
-        store: child.store || parent.store
-    }
   end
 
   defp inherited_checkpointer(compiled, parent_checkpointer) do
@@ -173,24 +162,6 @@ defmodule BeamWeaver.Graph.Execution.SubgraphRouter do
       _other -> child_namespace(parent_ns, node, task_id, :task)
     end
   end
-
-  defp checkpoint_map(configurable, namespace) do
-    configurable
-    |> Map.get("checkpoint_map", %{})
-    |> Namespace.recast_checkpoint_map()
-    |> maybe_put_namespace_checkpoint(namespace, Map.get(configurable, "checkpoint_id"))
-  end
-
-  defp maybe_put_namespace_checkpoint(map, _namespace, nil), do: map
-
-  defp maybe_put_namespace_checkpoint(map, namespace, checkpoint_id) do
-    Map.put(map, Namespace.recast(namespace), checkpoint_id)
-  end
-
-  defp maybe_put_checkpoint_id(configurable, nil), do: configurable
-
-  defp maybe_put_checkpoint_id(configurable, checkpoint_id),
-    do: Map.put(configurable, "checkpoint_id", checkpoint_id)
 
   defp namespace_targets_subgraph?(compiled, namespace) do
     case Namespace.recast(namespace) |> Namespace.normalize() do

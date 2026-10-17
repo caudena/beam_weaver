@@ -214,6 +214,13 @@ defmodule BeamWeaver.Tool.SchemaFromTest do
            }
   end
 
+  test "an integer-keyed ref resolves even when its segment also names an atom" do
+    String.to_atom("401")
+    schema = %{"properties" => %{"e" => %{"$ref" => "#/$defs/401"}}, "$defs" => %{401 => %{"type" => "string"}}}
+
+    assert {:ok, %{"properties" => %{"e" => %{"type" => "string"}}}} = Schema.dereference_refs(schema)
+  end
+
   test "dereference_refs returns tagged errors for remote or missing refs" do
     assert {:error, %Error{type: :invalid_json_schema_ref}} =
              Schema.dereference_refs(%{"broken" => %{"$ref" => "https://example.com/ref"}})

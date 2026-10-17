@@ -96,9 +96,7 @@ defmodule BeamWeaver.Migrations.Postgres.Memory.V01 do
     """)
   end
 
-  def down(%{opts: opts} = spec) do
-    execute("DROP TABLE IF EXISTS #{Util.qualify(spec[:prefix], opts.table)}")
-  end
+  def down(spec), do: Util.drop_table(spec)
 end
 
 defmodule BeamWeaver.Migrations.Postgres.Cache.V01 do
@@ -130,9 +128,7 @@ defmodule BeamWeaver.Migrations.Postgres.Cache.V01 do
     """)
   end
 
-  def down(%{opts: opts} = spec) do
-    execute("DROP TABLE IF EXISTS #{Util.qualify(spec[:prefix], opts.table)}")
-  end
+  def down(spec), do: Util.drop_table(spec)
 end
 
 defmodule BeamWeaver.Migrations.Postgres.VectorStore.V01 do
@@ -171,9 +167,7 @@ defmodule BeamWeaver.Migrations.Postgres.VectorStore.V01 do
     if opts.index, do: execute(index_sql(prefix, table, opts))
   end
 
-  def down(%{opts: opts} = spec) do
-    execute("DROP TABLE IF EXISTS #{Util.qualify(spec[:prefix], opts.table)}")
-  end
+  def down(spec), do: Util.drop_table(spec)
 
   defp index_sql(prefix, table, %{index: :hnsw} = opts) do
     with_opts =
@@ -235,7 +229,5 @@ defmodule BeamWeaver.Migrations.Postgres.RecordManager.V01 do
     """)
   end
 
-  def down(%{opts: opts} = spec) do
-    execute("DROP TABLE IF EXISTS #{Util.qualify(spec[:prefix], opts.table)}")
-  end
+  def down(spec), do: Util.drop_table(spec)
 end

@@ -29,18 +29,14 @@ defmodule BeamWeaver.Agent.State do
     known_keys = schema_keys(schema)
 
     projected =
-      known_keys
-      |> Enum.reduce(%{}, fn key, acc ->
-        case fetch_known(input, key) do
+      Enum.reduce(known_keys, atom_extras(input, known_keys), fn key, acc ->
+        case BeamWeaver.MapAccess.fetch(input, key) do
           {:ok, value} -> Map.put(acc, key, value)
           :error -> acc
         end
       end)
-      |> Map.merge(atom_extras(input, known_keys))
 
-    raw_input = raw_input(input, known_keys)
-    existing_raw = Map.get(projected, :raw_input)
-    raw_input = merge_raw_input(raw_input, existing_raw)
+    raw_input = merge_raw_input(raw_input(input, known_keys), Map.get(projected, :raw_input))
 
     if map_size(raw_input) == 0 do
       projected
@@ -75,11 +71,8 @@ defmodule BeamWeaver.Agent.State do
   # A turn's own answer: the model call clears an earlier turn's, so a key
   # holding `nil` means this turn has none yet.
   @spec structured_response?(map()) :: boolean()
-  def structured_response?(state) when is_map(state), do: structured_response(state) != nil
-
-  @spec structured_response(map()) :: term()
-  def structured_response(state) when is_map(state),
-    do: Map.get(state, :structured_response, Map.get(state, "structured_response"))
+  def structured_response?(state) when is_map(state),
+    do: Map.get(state, :structured_response, Map.get(state, "structured_response")) != nil
 
   defp schema_keys(nil), do: MapSet.new(@core_keys)
 
@@ -102,16 +95,6 @@ defmodule BeamWeaver.Agent.State do
   end
 
   defp schema_keys(_schema), do: MapSet.new(@core_keys)
-
-  defp fetch_known(input, key) when is_atom(key) do
-    string_key = Atom.to_string(key)
-
-    cond do
-      Map.has_key?(input, key) -> {:ok, Map.fetch!(input, key)}
-      Map.has_key?(input, string_key) -> {:ok, Map.fetch!(input, string_key)}
-      true -> :error
-    end
-  end
 
   defp atom_extras(input, known_keys) do
     input

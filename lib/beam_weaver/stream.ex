@@ -141,23 +141,38 @@ defmodule BeamWeaver.Stream do
   def mode?(_modes, _mode), do: false
 
   @spec event_mode(term()) :: atom()
-  def event_mode(event), do: stream_mode(event)
+  def event_mode(event), do: event_spec(event).mode
 
   @spec format(Envelope.t(), MapSet.t(atom()) | [atom()] | atom()) :: term()
-  def format(%Envelope{} = envelope, modes) do
-    _modes = modes
+  def format(%Envelope{} = envelope, _modes) do
     emit(:event, %{count: 1}, telemetry_metadata(envelope))
     envelope
   end
 
   @spec emit(atom(), map(), map()) :: :ok
-  def emit(event, measurements, metadata) do
-    if Code.ensure_loaded?(:telemetry) do
-      :telemetry.execute([:beam_weaver, :stream, event], measurements, metadata)
-    end
+  def emit(event, measurements, metadata),
+    do: :telemetry.execute([:beam_weaver, :stream, event], measurements, metadata)
 
-    :ok
+  @doc false
+  def run_producer(producer) do
+    producer.()
+  rescue
+    exception ->
+      {:error, Error.new(:stream_error, Exception.message(exception), %{exception: inspect(exception.__struct__)})}
+  catch
+    kind, reason ->
+      {:error, Error.new(:stream_error, "stream producer exited", %{kind: kind, reason: inspect(reason)})}
   end
+
+  @doc false
+  def producer_result(result) when result in [:ok, nil], do: :ok
+  def producer_result({:ok, _value}), do: :ok
+  def producer_result({:error, %Error{} = error}), do: {:error, error}
+
+  def producer_result({:error, reason}),
+    do: {:error, Error.new(:stream_error, "stream producer failed", %{reason: inspect(reason)})}
+
+  def producer_result(_result), do: :ok
 
   @doc """
   Builds a producer-backed stream that cancels the producer when the consumer halts.
@@ -179,22 +194,9 @@ defmodule BeamWeaver.Stream do
         task =
           start_live_resource_task(producer_supervisor, fn ->
             result =
-              try do
+              run_producer(fn ->
                 producer.(fn item -> send(parent, {:beam_weaver_stream_item, self(), item}) end)
-              rescue
-                exception ->
-                  {:error,
-                   Error.new(:stream_error, Exception.message(exception), %{
-                     exception: inspect(exception.__struct__)
-                   })}
-              catch
-                kind, reason ->
-                  {:error,
-                   Error.new(:stream_error, "stream producer exited", %{
-                     kind: kind,
-                     reason: inspect(reason)
-                   })}
-              end
+              end)
 
             send(
               parent,
@@ -262,18 +264,11 @@ defmodule BeamWeaver.Stream do
     end)
   end
 
-  defp normalize_live_resource_result(result) when result in [:ok, nil], do: :ok
-  defp normalize_live_resource_result({:ok, _value}), do: :ok
-  defp normalize_live_resource_result({:error, %Error{} = error}), do: {:error, error}
-
   defp normalize_live_resource_result({:error, %{__struct__: _module, type: type, message: message} = error})
        when is_atom(type) and is_binary(message),
        do: {:error, error}
 
-  defp normalize_live_resource_result({:error, reason}),
-    do: {:error, Error.new(:stream_error, "stream producer failed", %{reason: inspect(reason)})}
-
-  defp normalize_live_resource_result(_result), do: :ok
+  defp normalize_live_resource_result(result), do: producer_result(result)
 
   @doc """
   Multiplexes one or more live producers into a lazy stream of typed envelopes.
@@ -281,9 +276,6 @@ defmodule BeamWeaver.Stream do
   def mux(producers, opts \\ []) when is_list(producers) do
     BeamWeaver.Stream.Mux.stream(producers, opts)
   end
-
-  defp stream_mode(event), do: event |> event_spec() |> Map.fetch!(:mode)
-  defp event_name(event), do: event |> event_spec() |> Map.fetch!(:name)
 
   defp event_spec(%{__struct__: module}), do: Map.get(@event_specs, module, @custom_event_spec)
   defp event_spec(_event), do: @custom_event_spec
@@ -300,7 +292,7 @@ defmodule BeamWeaver.Stream do
       task_id: envelope.task_id,
       step: envelope.step,
       namespace: envelope.namespace,
-      event: event_name(envelope.event)
+      event: event_spec(envelope.event).name
     }
     |> MapShape.compact()
   end

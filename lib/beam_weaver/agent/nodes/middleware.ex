@@ -26,13 +26,6 @@ defmodule BeamWeaver.Agent.Nodes.Middleware do
        })}
   end
 
-  defp normalize_result(nil), do: %{}
   defp normalize_result(%Command{} = command), do: command
-
-  defp normalize_result(other) do
-    case Decision.normalize(other) do
-      {:ok, decision} -> Decision.to_update(decision)
-      {:error, %Error{} = error} -> {:error, error}
-    end
-  end
+  defp normalize_result(other), do: with({:ok, update} <- Decision.normalize(other), do: update)
 end

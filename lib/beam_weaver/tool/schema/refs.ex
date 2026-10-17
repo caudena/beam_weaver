@@ -3,7 +3,7 @@ defmodule BeamWeaver.Tool.Schema.Refs do
 
   alias BeamWeaver.Core.Error
 
-  def dereference_refs(schema, opts \\ []) do
+  def dereference_refs(schema, opts) do
     skip_keys =
       opts
       |> Keyword.get(:skip_keys, ["$defs", "definitions"])
@@ -24,17 +24,8 @@ defmodule BeamWeaver.Tool.Schema.Refs do
     end
   end
 
-  defp dereference(values, root, skip_keys, seen_refs) when is_list(values) do
-    case Enum.reduce_while(values, {:ok, []}, fn value, {:ok, acc} ->
-           case dereference(value, root, skip_keys, seen_refs) do
-             {:ok, dereferenced} -> {:cont, {:ok, [dereferenced | acc]}}
-             {:error, %Error{} = error} -> {:halt, {:error, error}}
-           end
-         end) do
-      {:ok, dereferenced} -> {:ok, Enum.reverse(dereferenced)}
-      {:error, %Error{} = error} -> {:error, error}
-    end
-  end
+  defp dereference(values, root, skip_keys, seen_refs) when is_list(values),
+    do: BeamWeaver.Result.traverse(values, &dereference(&1, root, skip_keys, seen_refs))
 
   defp dereference(value, _root, _skip_keys, _seen_refs), do: {:ok, value}
 
@@ -131,18 +122,9 @@ defmodule BeamWeaver.Tool.Schema.Refs do
   end
 
   defp fetch_pointer(%{} = map, segment) do
-    cond do
-      Map.has_key?(map, segment) ->
-        {:ok, Map.fetch!(map, segment)}
-
-      atom = existing_atom(segment) ->
-        Map.fetch(map, atom)
-
-      integer = integer_key(segment) ->
-        Map.fetch(map, integer)
-
-      true ->
-        :error
+    with :error <- Map.fetch(map, segment),
+         :error <- fetch_key(map, existing_atom(segment)) do
+      fetch_key(map, integer_key(segment))
     end
   end
 
@@ -160,6 +142,9 @@ defmodule BeamWeaver.Tool.Schema.Refs do
     |> String.replace("~1", "/")
     |> String.replace("~0", "~")
   end
+
+  defp fetch_key(_map, nil), do: :error
+  defp fetch_key(map, key), do: Map.fetch(map, key)
 
   defp existing_atom(segment) do
     String.to_existing_atom(segment)

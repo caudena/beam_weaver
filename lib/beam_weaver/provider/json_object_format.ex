@@ -46,13 +46,8 @@ defmodule BeamWeaver.Provider.JsonObjectFormat do
     {:error, Error.new(:invalid_response_format, message, details)}
   end
 
-  @spec instruction(String.t(), map(), boolean() | nil) :: map()
-  def instruction(name, schema, strict \\ nil) when is_binary(name) and is_map(schema) do
-    %{
-      "role" => "system",
-      "content" => instruction_text(name, schema, strict)
-    }
-  end
+  defp instruction(name, schema, strict \\ nil),
+    do: %{"role" => "system", "content" => instruction_text(name, schema, strict)}
 
   @spec inject_instruction([map()], map() | nil) :: [map()]
   def inject_instruction(messages, nil) when is_list(messages), do: messages

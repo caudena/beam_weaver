@@ -98,12 +98,7 @@ defmodule BeamWeaver.Core.Message do
   Builds a message and raises on invalid input.
   """
   @spec new!(role(), content(), keyword()) :: t()
-  def new!(role, content, opts \\ []) do
-    case new(role, content, opts) do
-      {:ok, message} -> message
-      {:error, error} -> raise ArgumentError, error.message
-    end
-  end
+  def new!(role, content, opts \\ []), do: role |> new(content, opts) |> BeamWeaver.Policy.bang()
 
   @doc """
   Builds a system message.
@@ -212,7 +207,7 @@ defmodule BeamWeaver.Core.Message do
   defp input_tool_calls(tool_calls) when is_list(tool_calls) do
     {valid, invalid} =
       tool_calls
-      |> Enum.map(&ToolCallParser.normalize_openai_call(&1, :atom_keys))
+      |> Enum.map(&ToolCallParser.normalize_openai_call/1)
       |> Enum.split_with(&match?({:ok, _call}, &1))
 
     {:ok, Enum.map(valid, &elem(&1, 1)), Enum.map(invalid, &elem(&1, 1))}
@@ -308,8 +303,6 @@ defmodule BeamWeaver.Core.Message do
     end
   end
 
-  defp normalize_id(nil), do: nil
-  defp normalize_id(id) when is_binary(id), do: id
   defp normalize_id(id) when is_integer(id) or is_float(id), do: to_string(id)
   defp normalize_id(id), do: id
 
@@ -326,48 +319,21 @@ defmodule BeamWeaver.Core.Message do
   defp stringify_tool_content(content),
     do: if(String.Chars.impl_for(content), do: to_string(content), else: inspect(content))
 
-  defp message_extra_blocks(%__MODULE__{role: :assistant, metadata: metadata}) do
-    case metadata_value(metadata, :reasoning_content) do
-      reasoning when is_binary(reasoning) and reasoning != "" ->
-        [ContentBlock.reasoning(reasoning)]
-
-      _other ->
-        []
-    end
-  end
+  defp message_extra_blocks(%__MODULE__{role: :assistant, metadata: %{reasoning_content: reasoning}})
+       when is_binary(reasoning) and reasoning != "",
+       do: [ContentBlock.reasoning(reasoning)]
 
   defp message_extra_blocks(_message), do: []
 
-  defp append_missing_tool_calls(blocks, %__MODULE__{role: :assistant, tool_calls: calls})
-       when is_list(calls) and calls != [] do
-    existing_ids =
-      blocks
-      |> Enum.filter(&tool_call_block?/1)
-      |> Enum.map(&block_id/1)
-      |> Enum.reject(&is_nil/1)
-      |> MapSet.new()
-
-    missing =
-      calls
-      |> Enum.reject(fn call ->
-        id = block_id(call)
-        not is_nil(id) and MapSet.member?(existing_ids, id)
-      end)
-      |> Enum.map(&tool_call_block/1)
-
-    blocks ++ missing
+  defp append_missing_tool_calls(blocks, %__MODULE__{role: :assistant, tool_calls: calls}) when is_list(calls) do
+    existing_ids = for %{type: :tool_call, id: id} when not is_nil(id) <- blocks, into: MapSet.new(), do: id
+    blocks ++ for(call <- calls, Map.get(call, :id) not in existing_ids, do: tool_call_block(call))
   end
 
   defp append_missing_tool_calls(blocks, _message), do: blocks
 
-  defp tool_call_block?(block) when is_map(block) do
-    Map.get(block, :type) == :tool_call
-  end
-
-  defp tool_call_block?(_block), do: false
-
   defp tool_call_block(call) when is_map(call) do
-    %{
+    MapShape.reject_nil_values(%{
       type: :tool_call,
       id: Map.get(call, :id),
       provider_id: Map.get(call, :provider_id),
@@ -375,20 +341,10 @@ defmodule BeamWeaver.Core.Message do
       name: Map.get(call, :name),
       thought_signature: Map.get(call, :thought_signature),
       args: Map.get(call, :args, %{})
-    }
-    |> Enum.reject(fn {_key, value} -> is_nil(value) end)
-    |> Map.new()
+    })
   end
 
-  defp block_id(block) when is_map(block), do: Map.get(block, :id)
-  defp block_id(_block), do: nil
-
-  defp metadata_value(map, key) when is_map(map), do: Map.get(map, key)
-
-  defp metadata_value(_map, _key), do: nil
-
-  defp validate_content(content) when is_binary(content), do: :ok
-  defp validate_content(content) when is_list(content), do: :ok
+  defp validate_content(content) when is_binary(content) or is_list(content), do: :ok
 
   defp validate_content(content) do
     {:error,

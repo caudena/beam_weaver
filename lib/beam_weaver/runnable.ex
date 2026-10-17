@@ -50,7 +50,4 @@ defmodule BeamWeaver.Runnable do
   @spec transform(runnable(), Enumerable.t(), keyword()) ::
           {:ok, Enumerable.t()} | {:error, Error.t()}
   defdelegate transform(runnable, input, opts \\ []), to: Runtime
-
-  @doc false
-  defdelegate coerce(runnable), to: Runtime
 end

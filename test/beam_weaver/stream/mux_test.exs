@@ -237,21 +237,9 @@ defmodule BeamWeaver.StreamMuxTest do
   end
 
   test "drop_newest backpressure policy reports dropped producer events" do
-    parent = self()
-
     stream =
       Stream.mux(
-        [
-          {:sink, :fast,
-           fn sink ->
-             for index <- 1..8 do
-               result = Sink.emit(sink, Stream.event(:custom, {:overflow, index}))
-               send(parent, {:emit_result, result})
-             end
-
-             :ok
-           end}
-        ],
+        [overflowing_producer(self())],
         max_buffer: 0,
         overflow: :drop_newest
       )
@@ -261,21 +249,9 @@ defmodule BeamWeaver.StreamMuxTest do
   end
 
   test "drop_oldest backpressure policy drops newest when buffer cannot hold any items" do
-    parent = self()
-
     stream =
       Stream.mux(
-        [
-          {:sink, :fast,
-           fn sink ->
-             for index <- 1..8 do
-               result = Sink.emit(sink, Stream.event(:custom, {:overflow, index}))
-               send(parent, {:emit_result, result})
-             end
-
-             :ok
-           end}
-        ],
+        [overflowing_producer(self())],
         max_buffer: 0,
         overflow: :drop_oldest
       )
@@ -314,21 +290,9 @@ defmodule BeamWeaver.StreamMuxTest do
   end
 
   test "error backpressure policy reports a typed stream error to the producer" do
-    parent = self()
-
     stream =
       Stream.mux(
-        [
-          {:sink, :fast,
-           fn sink ->
-             for index <- 1..8 do
-               result = Sink.emit(sink, Stream.event(:custom, {:overflow, index}))
-               send(parent, {:emit_result, result})
-             end
-
-             :ok
-           end}
-        ],
+        [overflowing_producer(self())],
         max_buffer: 0,
         overflow: :error
       )
@@ -353,5 +317,16 @@ defmodule BeamWeaver.StreamMuxTest do
              _event ->
                false
            end)
+  end
+
+  defp overflowing_producer(parent) do
+    {:sink, :fast,
+     fn sink ->
+       for index <- 1..8 do
+         send(parent, {:emit_result, Sink.emit(sink, Stream.event(:custom, {:overflow, index}))})
+       end
+
+       :ok
+     end}
   end
 end

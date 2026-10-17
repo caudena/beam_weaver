@@ -14,7 +14,6 @@ defmodule BeamWeaver.DeepSeek.Client do
   alias BeamWeaver.Provider.OpenAICompatibleClient, as: Compat
   alias BeamWeaver.Provider.OpenAICompatibleStreaming
   alias BeamWeaver.Provider.Options, as: ProviderOptions
-  alias BeamWeaver.Transport.Request
 
   @default_base_url "https://api.deepseek.com"
   @default_timeout 15_000
@@ -41,9 +40,14 @@ defmodule BeamWeaver.DeepSeek.Client do
   @doc "Builds a DeepSeek client from keyword options."
   @spec new(keyword()) :: t()
   def new(opts \\ []) do
-    configured_base_url = Compat.configured_url(opts, :base_url, [:deepseek, :base_url], @default_base_url)
-    api_root = api_root(configured_base_url)
-    base_url = stable_base_url(configured_base_url, api_root)
+    base_url =
+      opts
+      |> Compat.configured_url(:base_url, [:deepseek, :base_url], @default_base_url)
+      |> to_string()
+      |> String.trim_trailing("/")
+
+    api_root = api_root(base_url)
+    base_url = if String.ends_with?(base_url, ["/beta", "/anthropic"]), do: api_root, else: base_url
 
     beta_base_url =
       Compat.configured_url(opts, :beta_base_url, [:deepseek, :beta_base_url], endpoint(api_root, "beta"))
@@ -67,16 +71,9 @@ defmodule BeamWeaver.DeepSeek.Client do
 
     beta_chat_completions_endpoint =
       cond do
-        Keyword.has_key?(opts, :beta_chat_completions_endpoint) ->
-          Keyword.fetch!(opts, :beta_chat_completions_endpoint)
-
-        (Keyword.has_key?(opts, :chat_completions_endpoint) or
-           Keyword.has_key?(opts, :endpoint)) and
-            chat_completions_endpoint != default_chat_endpoint ->
-          chat_completions_endpoint
-
-        true ->
-          endpoint(beta_base_url, "chat/completions")
+        Keyword.has_key?(opts, :beta_chat_completions_endpoint) -> Keyword.fetch!(opts, :beta_chat_completions_endpoint)
+        chat_completions_endpoint != default_chat_endpoint -> chat_completions_endpoint
+        true -> endpoint(beta_base_url, "chat/completions")
       end
 
     %__MODULE__{
@@ -216,11 +213,6 @@ defmodule BeamWeaver.DeepSeek.Client do
   def anthropic_messages_stream_typed_events(%__MODULE__{} = client, body, opts \\ []) when is_map(body),
     do: client |> anthropic_http(opts) |> typed_stream(body, opts, &deepseek_anthropic_typed_events/2)
 
-  @doc false
-  @spec request(t(), map(), keyword()) :: Request.t()
-  def request(%__MODULE__{} = client, body, opts \\ []) when is_map(body),
-    do: client |> http(client.endpoint, opts) |> HTTPClient.request(body, opts)
-
   @doc "Returns a normalized endpoint for a base URL and path."
   @spec endpoint(String.t(), String.t()) :: String.t()
   def endpoint(base_url, path), do: Compat.endpoint(base_url, path)
@@ -245,12 +237,10 @@ defmodule BeamWeaver.DeepSeek.Client do
   end
 
   defp chat_endpoint(client, body, opts) do
-    if Keyword.get(opts, :beta, false) or beta_chat_request?(body),
+    if Keyword.get(opts, :beta, false) or prefix_request?(body) or strict_tools?(body),
       do: client.beta_chat_completions_endpoint,
       else: client.chat_completions_endpoint
   end
-
-  defp beta_chat_request?(body), do: prefix_request?(body) or strict_tools?(body)
 
   defp prefix_request?(body) do
     body
@@ -283,25 +273,7 @@ defmodule BeamWeaver.DeepSeek.Client do
 
     case Enum.find(["/v1", "/beta", "/anthropic"], &String.ends_with?(base_url, &1)) do
       nil -> base_url
-      suffix -> base_url |> strip_api_suffix(suffix) |> api_root()
-    end
-  end
-
-  defp stable_base_url(base_url, api_root) do
-    base_url = base_url |> to_string() |> String.trim_trailing("/")
-
-    if String.ends_with?(base_url, "/beta") or String.ends_with?(base_url, "/anthropic") do
-      api_root
-    else
-      base_url
-    end
-  end
-
-  defp strip_api_suffix(base_url, suffix) do
-    if String.ends_with?(base_url, suffix) do
-      String.slice(base_url, 0, byte_size(base_url) - byte_size(suffix))
-    else
-      base_url
+      suffix -> base_url |> String.replace_suffix(suffix, "") |> api_root()
     end
   end
 
@@ -311,9 +283,6 @@ defmodule BeamWeaver.DeepSeek.Client do
     typed =
       OpenAICompatibleStreaming.typed_events(events, %{
         provider: :deepseek,
-        provider_name: "DeepSeek",
-        usage_metadata: &BeamWeaver.OpenAI.ChatCompletions.Messages.Response.usage_metadata/1,
-        stream_metadata: &empty_stream_metadata/3,
         choice_usage: false,
         include_chunk_id: true,
         reasoning_index: 0,
@@ -355,8 +324,6 @@ defmodule BeamWeaver.DeepSeek.Client do
     |> Enum.map(&put_deepseek_provider/1)
   end
 
-  defp empty_stream_metadata(_events, _message, _opts), do: %{}
-
   defp deepseek_anthropic_typed_events(events, state) do
     {events, state} = BeamWeaver.Anthropic.Streaming.typed_events(events, state)
     {Enum.map(events, &put_deepseek_provider/1), state}
@@ -365,6 +332,4 @@ defmodule BeamWeaver.DeepSeek.Client do
   defp put_deepseek_provider(%BeamWeaver.Stream.Envelope{} = envelope) do
     %{envelope | metadata: Map.put(envelope.metadata || %{}, :provider, :deepseek)}
   end
-
-  defp put_deepseek_provider(event), do: event
 end

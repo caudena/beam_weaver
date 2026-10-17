@@ -1,10 +1,13 @@
 defmodule BeamWeaver.OpenAI.Messages.Request do
   @moduledoc false
 
+  import BeamWeaver.OpenAI.MessageParts, only: [block_option: 2, provider_role: 1, put_prompt_cache_breakpoint: 2]
+
   alias BeamWeaver.Core.ContentBlock
   alias BeamWeaver.Core.Message
   alias BeamWeaver.Core.Error
-  alias BeamWeaver.OpenAI.Messages.Shared
+  alias BeamWeaver.OpenAI.MessageParts
+  alias BeamWeaver.Provider.ChatCompletionsWire
   alias BeamWeaver.Result
   alias BeamWeaver.Tool.Renderer
 
@@ -50,15 +53,15 @@ defmodule BeamWeaver.OpenAI.Messages.Request do
     }
   end
 
-  defp response_schema(schema, true), do: Renderer.strict_json_schema(schema, optional: :nullable)
-  defp response_schema(schema, _strict), do: Shared.stringify_keys(schema)
+  def response_schema(schema, true), do: Renderer.strict_json_schema(schema, optional: :nullable)
+  def response_schema(schema, _strict), do: MessageParts.stringify_keys(schema)
 
   @spec normalize_input_items([map()] | nil) :: {:ok, [map()]} | {:error, Error.t()}
   def normalize_input_items(nil), do: {:ok, []}
 
   def normalize_input_items(items) when is_list(items) do
     if Enum.all?(items, &is_map/1) do
-      {:ok, Enum.map(items, &Shared.stringify_keys/1)}
+      {:ok, Enum.map(items, &MessageParts.stringify_keys/1)}
     else
       {:error, Error.new(:invalid_input_items, "OpenAI input_items must be maps")}
     end
@@ -105,8 +108,8 @@ defmodule BeamWeaver.OpenAI.Messages.Request do
 
   def response_id(_message), do: nil
 
-  defp stored?(%{raw_provider_response: %{"store" => false}}), do: false
-  defp stored?(_metadata), do: true
+  def stored?(%{raw_provider_response: %{"store" => false}}), do: false
+  def stored?(_metadata), do: true
 
   defp to_response_input(%Message{role: :tool} = message, _opts) do
     call_id = message.tool_call_id || message.id
@@ -119,8 +122,8 @@ defmodule BeamWeaver.OpenAI.Messages.Request do
            "call_id" => call_id,
            "output" => output
          }
-         |> Shared.put_optional("name", message.name)
-         |> Shared.put_optional("namespace", message_metadata(message, :namespace))}
+         |> MessageParts.put_optional("name", message.name)
+         |> MessageParts.put_optional("namespace", ChatCompletionsWire.metadata_value(message.metadata, :namespace))}
       end
     else
       {:error, Error.new(:invalid_tool_message, "tool messages require a tool_call_id or id")}
@@ -218,8 +221,8 @@ defmodule BeamWeaver.OpenAI.Messages.Request do
   defp input_item_type(%{type: type}) when is_atom(type) or is_binary(type), do: to_string(type)
   defp input_item_type(_block), do: nil
 
-  defp input_item(%ContentBlock.Unknown{value: value}), do: Shared.stringify_keys(value)
-  defp input_item(block), do: Shared.stringify_keys(block)
+  defp input_item(%ContentBlock.Unknown{value: value}), do: MessageParts.stringify_keys(value)
+  defp input_item(block), do: MessageParts.stringify_keys(block)
 
   # Output items, their ids and reasoning belong to the Responses API that
   # made them. A reply from another provider or API, such as an Anthropic or
@@ -276,31 +279,13 @@ defmodule BeamWeaver.OpenAI.Messages.Request do
 
   defp invalid_call_items(_message, _opts), do: []
 
-  defp message_metadata(%Message{metadata: metadata}, key) when is_map(metadata) do
-    Map.get(metadata, key) || Map.get(metadata, Atom.to_string(key))
-  end
-
-  defp message_metadata(_message, _key), do: nil
-
-  defp tool_output(content) when is_binary(content), do: {:ok, content}
-
   defp tool_output(content) when is_list(content) do
-    if portable_tool_output?(content) do
-      Result.traverse(content, &content_part/1)
-    else
-      {:ok, encode_tool_output(content)}
-    end
+    if portable_tool_output?(content),
+      do: Result.traverse(content, &content_part/1),
+      else: {:ok, ChatCompletionsWire.tool_output(content)}
   end
 
-  defp tool_output(content) when is_map(content), do: {:ok, encode_tool_output(content)}
-  defp tool_output(content), do: {:ok, to_string(content)}
-
-  defp encode_tool_output(content) do
-    case BeamWeaver.JSON.encode(content) do
-      {:ok, json} -> json
-      {:error, _error} -> inspect(content)
-    end
-  end
+  defp tool_output(content), do: {:ok, ChatCompletionsWire.tool_output(content)}
 
   # Responses accepts an array of input text/image/file parts as a function
   # output. Keep ordinary JSON lists encoded as JSON; only the portable closed
@@ -314,16 +299,6 @@ defmodule BeamWeaver.OpenAI.Messages.Request do
       _other -> false
     end)
   end
-
-  defp provider_role(%Message{} = message) do
-    message.metadata
-    |> Map.get(:openai_role)
-    |> Kernel.||(Atom.to_string(message.role))
-    |> provider_role_value()
-  end
-
-  defp provider_role_value(role) when is_atom(role), do: Atom.to_string(role)
-  defp provider_role_value(role), do: to_string(role)
 
   defp content_to_openai(content) when is_binary(content), do: {:ok, content}
 
@@ -344,21 +319,13 @@ defmodule BeamWeaver.OpenAI.Messages.Request do
     %{"type" => "input_text", "text" => text}
   end
 
-  defp content_block_to_openai(%{type: :text, text: text} = block) when is_binary(text) do
+  defp content_block_to_openai(%{type: type, text: text} = block)
+       when type in [:text, :plain_text] and is_binary(text) do
     %{"type" => "input_text", "text" => text}
     |> put_prompt_cache_breakpoint(block)
   end
 
-  defp content_block_to_openai(%{type: :plain_text, text: text} = block) when is_binary(text) do
-    %{"type" => "input_text", "text" => text}
-    |> put_prompt_cache_breakpoint(block)
-  end
-
-  defp content_block_to_openai(%{type: :image, url: url} = block) when is_binary(url) do
-    %{"type" => "input_image", "image_url" => url}
-    |> put_input_detail(block)
-    |> put_prompt_cache_breakpoint(block)
-  end
+  defp content_block_to_openai(%{type: :image, url: url} = block) when is_binary(url), do: image_part(url, block)
 
   defp content_block_to_openai(%{type: :image, file_id: file_id} = block) when is_binary(file_id) do
     %{"type" => "input_image", "file_id" => file_id}
@@ -373,69 +340,45 @@ defmodule BeamWeaver.OpenAI.Messages.Request do
       "image_url" => image_url,
       "detail" => block_option(block, :detail)
     }
-    |> Shared.reject_nil_values()
+    |> MessageParts.reject_nil_values()
     |> put_prompt_cache_breakpoint(block)
   end
 
   defp content_block_to_openai(%{type: :image_url, image_url: image_url} = block) do
-    image_url = Shared.stringify_value(image_url)
+    image_url = MessageParts.stringify_value(image_url)
 
     %{
       "type" => "input_image",
       "image_url" => image_url["url"] || image_url,
       "detail" => image_url["detail"] || block_option(block, :detail)
     }
-    |> Shared.reject_nil_values()
+    |> MessageParts.reject_nil_values()
     |> put_prompt_cache_breakpoint(block)
   end
 
-  defp content_block_to_openai(%{type: :image, base64: data} = block) when is_binary(data) do
-    %{
-      "type" => "input_image",
-      "image_url" =>
-        Shared.data_url(
-          Map.get(block, :mime_type) || Map.get(block, :format) || "image/png",
-          data
-        )
-    }
-    |> put_input_detail(block)
-    |> put_prompt_cache_breakpoint(block)
-  end
+  defp content_block_to_openai(%{type: :image, base64: data} = block) when is_binary(data),
+    do:
+      image_part(
+        MessageParts.data_url(Map.get(block, :mime_type) || Map.get(block, :format) || "image/png", data),
+        block
+      )
 
-  defp content_block_to_openai(%{type: :image, data: data} = block) when is_binary(data) do
-    %{
-      "type" => "input_image",
-      "image_url" => Shared.data_url(Map.get(block, :mime_type) || "image/png", data)
-    }
-    |> put_input_detail(block)
-    |> put_prompt_cache_breakpoint(block)
-  end
+  defp content_block_to_openai(%{type: :image, data: data} = block) when is_binary(data),
+    do: image_part(MessageParts.data_url(Map.get(block, :mime_type) || "image/png", data), block)
 
-  defp content_block_to_openai(%{type: :image, source: source} = block)
-       when is_map(source) do
+  defp content_block_to_openai(%{type: :image, source: source} = block) when is_map(source) do
     case {Map.get(source, :type), Map.get(source, :media_type), Map.get(source, :data)} do
-      {:base64, mime_type, data} when is_binary(mime_type) and is_binary(data) ->
-        %{"type" => "input_image", "image_url" => Shared.data_url(mime_type, data)}
-
-      {"base64", mime_type, data} when is_binary(mime_type) and is_binary(data) ->
-        %{"type" => "input_image", "image_url" => Shared.data_url(mime_type, data)}
+      {type, mime_type, data} when type in [:base64, "base64"] and is_binary(mime_type) and is_binary(data) ->
+        image_part(MessageParts.data_url(mime_type, data), block)
 
       _other ->
-        %{"type" => "input_image", "image_url" => nil} |> Shared.reject_nil_values()
+        image_part(nil, block)
     end
-    |> put_input_detail(block)
-    |> put_prompt_cache_breakpoint(block)
   end
 
   defp content_block_to_openai(%{type: :media, mime_type: mime_type, data: data} = block)
-       when is_binary(mime_type) and is_binary(data) do
-    %{
-      "type" => "input_image",
-      "image_url" => Shared.data_url(mime_type, data)
-    }
-    |> put_input_detail(block)
-    |> put_prompt_cache_breakpoint(block)
-  end
+       when is_binary(mime_type) and is_binary(data),
+       do: image_part(MessageParts.data_url(mime_type, data), block)
 
   defp content_block_to_openai(%{type: :file, url: url} = block) when is_binary(url) do
     %{"type" => "input_file", "file_url" => url}
@@ -450,50 +393,14 @@ defmodule BeamWeaver.OpenAI.Messages.Request do
     |> put_prompt_cache_breakpoint(block)
   end
 
-  defp content_block_to_openai(%{type: :file, base64: data} = block) when is_binary(data) do
-    %{
-      "type" => "input_file",
-      "file_data" => Shared.data_url(Map.get(block, :mime_type) || "application/pdf", data),
-      "filename" => Map.get(block, :filename)
-    }
-    |> Shared.reject_nil_values()
-    |> put_input_detail(block)
-    |> put_prompt_cache_breakpoint(block)
-  end
+  defp content_block_to_openai(%{type: type, base64: data} = block) when type in [:file, :audio] and is_binary(data),
+    do: inline_part(type, data, block)
 
-  defp content_block_to_openai(%{type: :file, data: data} = block) when is_binary(data) do
-    %{
-      "type" => "input_file",
-      "file_data" => Shared.data_url(Map.get(block, :mime_type) || "application/pdf", data),
-      "filename" => Map.get(block, :filename)
-    }
-    |> Shared.reject_nil_values()
-    |> put_input_detail(block)
-    |> put_prompt_cache_breakpoint(block)
-  end
-
-  defp content_block_to_openai(%{type: :audio, base64: data} = block) when is_binary(data) do
-    %{
-      "type" => "input_audio",
-      "input_audio" => %{
-        "data" => data,
-        "format" => Shared.audio_format(Map.get(block, :mime_type) || Map.get(block, :format))
-      }
-    }
-  end
-
-  defp content_block_to_openai(%{type: :audio, data: data} = block) when is_binary(data) do
-    %{
-      "type" => "input_audio",
-      "input_audio" => %{
-        "data" => data,
-        "format" => Shared.audio_format(Map.get(block, :mime_type) || Map.get(block, :format))
-      }
-    }
-  end
+  defp content_block_to_openai(%{type: type, data: data} = block) when type in [:file, :audio] and is_binary(data),
+    do: inline_part(type, data, block)
 
   defp content_block_to_openai(%ContentBlock.Unknown{value: value}) when is_map(value) do
-    Shared.stringify_keys(value)
+    MessageParts.stringify_keys(value)
   end
 
   # A content block the Responses API has no input part for, such as video,
@@ -508,27 +415,39 @@ defmodule BeamWeaver.OpenAI.Messages.Request do
 
   defp content_block_to_openai(block) when is_map(block) do
     BeamWeaver.MapShape.assert_atom_keys!(block)
-    Shared.stringify_keys(block)
+    MessageParts.stringify_keys(block)
   end
 
   defp put_input_detail(part, block) do
-    Shared.put_optional(part, "detail", block_option(block, :detail) |> Shared.stringify_value())
+    MessageParts.put_optional(part, "detail", block_option(block, :detail) |> MessageParts.stringify_value())
   end
 
-  defp put_prompt_cache_breakpoint(part, block) do
-    case block_option(block, :prompt_cache_breakpoint) do
-      breakpoint when is_map(breakpoint) ->
-        Map.put(part, "prompt_cache_breakpoint", Shared.stringify_keys(breakpoint))
-
-      _missing ->
-        part
-    end
+  defp image_part(url, block) do
+    %{"type" => "input_image"}
+    |> MessageParts.put_optional("image_url", url)
+    |> put_input_detail(block)
+    |> put_prompt_cache_breakpoint(block)
   end
 
-  defp block_option(block, key) do
-    metadata = Map.get(block, :metadata, %{}) || %{}
+  defp inline_part(:file, data, block) do
+    %{
+      "type" => "input_file",
+      "file_data" => MessageParts.data_url(Map.get(block, :mime_type) || "application/pdf", data),
+      "filename" => Map.get(block, :filename)
+    }
+    |> MessageParts.reject_nil_values()
+    |> put_input_detail(block)
+    |> put_prompt_cache_breakpoint(block)
+  end
 
-    Map.get(block, key) || Map.get(metadata, key) || Map.get(metadata, Atom.to_string(key))
+  defp inline_part(:audio, data, block) do
+    %{
+      "type" => "input_audio",
+      "input_audio" => %{
+        "data" => data,
+        "format" => MessageParts.audio_format(Map.get(block, :mime_type) || Map.get(block, :format))
+      }
+    }
   end
 
   defp assistant_content_items(%Message{content: content, id: id}, opts)
@@ -583,8 +502,8 @@ defmodule BeamWeaver.OpenAI.Messages.Request do
   defp assistant_content_event(%ContentBlock.Unknown{value: value}, _message_id, opts)
        when is_map(value) do
     (Map.get(value, :raw_provider_block) || Map.get(value, "raw_provider_block") || %{})
-    |> Shared.stringify_keys()
-    |> Map.merge(Shared.stringify_keys(value))
+    |> MessageParts.stringify_keys()
+    |> Map.merge(MessageParts.stringify_keys(value))
     |> drop_internal_provider_fields()
     |> sanitize_store_replay_item(opts)
   end
@@ -608,16 +527,16 @@ defmodule BeamWeaver.OpenAI.Messages.Request do
 
     {:item,
      block
-     |> Shared.stringify_keys()
+     |> MessageParts.stringify_keys()
      |> normalize_function_call_item()
      |> maybe_drop_store_false_id(opts)}
   end
 
   defp assistant_content_event(%{type: type} = block, _message_id, opts) do
     BeamWeaver.MapShape.assert_atom_keys!(block)
-    type = provider_type(type)
+    type = ChatCompletionsWire.provider_type(type)
 
-    if Shared.output_block_type?(type) do
+    if MessageParts.output_block_type?(type) do
       block
       |> sanitize_output_item(opts)
       |> sanitize_store_replay_item(opts)
@@ -651,30 +570,18 @@ defmodule BeamWeaver.OpenAI.Messages.Request do
 
   defp assistant_message_item(parts, id, opts) do
     %{"type" => "message", "role" => "assistant", "content" => parts}
-    |> Shared.put_optional("id", id)
+    |> MessageParts.put_optional("id", id)
     |> maybe_drop_store_false_id(opts)
   end
 
   defp assistant_tool_call_items(%Message{content: content, tool_calls: tool_calls} = message, opts)
        when is_list(tool_calls) do
-    if assistant_content_has_function_call?(content) do
+    if ChatCompletionsWire.content_has_tool_call?(content) do
       []
     else
       Enum.map(tool_calls, &tool_call_to_function_call_item(&1, opts)) ++ invalid_call_items(message, opts)
     end
   end
-
-  defp assistant_content_has_function_call?(content) when is_list(content) do
-    Enum.any?(content, fn
-      %{type: type} when type in [:function_call, "function_call", :tool_call, "tool_call", :tool_use, "tool_use"] ->
-        true
-
-      _block ->
-        false
-    end)
-  end
-
-  defp assistant_content_has_function_call?(_content), do: false
 
   defp tool_call_to_function_call_item(tool_call, opts) when is_map(tool_call) do
     %{
@@ -684,7 +591,7 @@ defmodule BeamWeaver.OpenAI.Messages.Request do
       "name" => Map.get(tool_call, :name),
       "arguments" => function_call_arguments(tool_call)
     }
-    |> Shared.reject_nil_values()
+    |> MessageParts.reject_nil_values()
     |> maybe_drop_store_false_id(opts)
   end
 
@@ -718,11 +625,8 @@ defmodule BeamWeaver.OpenAI.Messages.Request do
     |> Map.take(["type", "id", "call_id", "name", "arguments"])
     |> Map.merge(fields)
     |> Map.update("arguments", "{}", &normalize_function_call_arguments/1)
-    |> Shared.reject_nil_values()
+    |> MessageParts.reject_nil_values()
   end
-
-  defp provider_type(type) when is_atom(type), do: Atom.to_string(type)
-  defp provider_type(type), do: type
 
   defp sanitize_output_item(%{type: type} = block, _opts)
        when type in [:reasoning, "reasoning"] do
@@ -736,16 +640,16 @@ defmodule BeamWeaver.OpenAI.Messages.Request do
 
   defp sanitize_output_item(block, _opts) when is_map(block) do
     block
-    |> Shared.stringify_keys()
+    |> MessageParts.stringify_keys()
     |> drop_internal_provider_fields()
   end
 
   defp sanitize_reasoning_output_item(block) do
     block
-    |> Shared.stringify_keys()
+    |> MessageParts.stringify_keys()
     |> Map.take(["type", "id", "summary", "status", "encrypted_content"])
-    |> Shared.reject_nil_values()
-    |> Shared.put_optional("content", reasoning_replay_content(block))
+    |> MessageParts.reject_nil_values()
+    |> MessageParts.put_optional("content", reasoning_replay_content(block))
   end
 
   defp sanitize_store_replay_item(%{"type" => "reasoning", "encrypted_content" => encrypted} = item, opts)
@@ -784,8 +688,8 @@ defmodule BeamWeaver.OpenAI.Messages.Request do
     encrypted_content = BeamWeaver.MapAccess.get(block, :encrypted_content)
 
     cond do
-      match?([_part | _rest], content) -> Shared.stringify_value(content)
-      match?([_part | _rest], raw_content) -> Shared.stringify_value(raw_content)
+      match?([_part | _rest], content) -> MessageParts.stringify_value(content)
+      match?([_part | _rest], raw_content) -> MessageParts.stringify_value(raw_content)
       replayable_plain_reasoning?(summary, encrypted_content) -> plain_reasoning_content(block)
       true -> nil
     end

@@ -27,14 +27,13 @@ defmodule BeamWeaver.TypeSafe.Response do
   @doc false
   def from_serialized(fields) do
     response = struct(__MODULE__, fields)
-    metadata = BeamWeaver.MapAccess.normalize_keys(response.metadata, [:cost, :cache_hit, :original_usage])
 
     metadata =
-      if Map.has_key?(metadata, :original_usage),
-        do: Map.update!(metadata, :original_usage, &usage_keys/1),
-        else: metadata
+      response.metadata
+      |> BeamWeaver.MapAccess.normalize_keys([:cost, :cache_hit, :original_usage])
+      |> Map.replace_lazy(:original_usage, &usage_keys/1)
+      |> Map.replace_lazy(:cost, &cost_keys/1)
 
-    metadata = if Map.has_key?(metadata, :cost), do: Map.update!(metadata, :cost, &cost_keys/1), else: metadata
     %{response | usage: usage_keys(response.usage), metadata: metadata}
   end
 
@@ -52,9 +51,7 @@ defmodule BeamWeaver.TypeSafe.Response do
 
     if is_map(cost) do
       Enum.reduce([:input_cost_details, :output_cost_details], cost, fn key, acc ->
-        if Map.has_key?(acc, key),
-          do: Map.update!(acc, key, &BeamWeaver.MapAccess.normalize_keys(&1, [:uncached, :cache_read, :text])),
-          else: acc
+        Map.replace_lazy(acc, key, &BeamWeaver.MapAccess.normalize_keys(&1, [:uncached, :cache_read, :text]))
       end)
     else
       cost

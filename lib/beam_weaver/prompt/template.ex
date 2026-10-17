@@ -7,8 +7,6 @@ defmodule BeamWeaver.Prompt.Template do
   alias BeamWeaver.Template.Mustache
   alias BeamWeaver.Template.Simple
 
-  def render(template, vars, opts \\ [])
-
   def render(template, vars, opts) when is_binary(template) do
     case Keyword.get(opts, :template_format, :simple) do
       format when format in [:mustache, "mustache"] ->
@@ -27,47 +25,40 @@ defmodule BeamWeaver.Prompt.Template do
     do: {:error, Error.new(:invalid_prompt, "prompt template must be a string or content blocks")}
 
   def render_dict(template, vars, opts) when is_map(template) do
-    rendered =
-      template
-      |> Result.traverse(fn {key, value} ->
-        with {:ok, rendered} <- render_content_value(value, vars, opts) do
-          {:ok, {key, rendered}}
-        end
-      end)
-
-    case rendered do
-      {:ok, entries} -> {:ok, Message.user([Map.new(entries)])}
-      error -> error
+    with {:ok, rendered} <- render_content_block(template, vars, opts) do
+      {:ok, Message.user([rendered])}
     end
   end
 
   def render_dict(_template, _vars, _opts),
     do: {:error, Error.new(:invalid_prompt, "dict prompt template must be a map")}
 
-  def template_variables(template, template_format \\ :simple) do
-    case normalize_supported_template_format(template_format) do
-      {:ok, :simple} ->
+  def template_variables(template, template_format) do
+    case normalize_template_format(template_format) do
+      :simple ->
         with :ok <- Simple.validate_template(template) do
           {:ok, Simple.variables(template)}
         end
 
-      {:ok, :mustache} ->
+      :mustache ->
         {:ok, Mustache.variables(template)}
 
-      {:error, %Error{} = error} ->
-        {:error, error}
+      other ->
+        {:error,
+         Error.new(:unsupported_template_format, "unsupported prompt template format", %{
+           template_format: other,
+           supported: [:simple, :mustache]
+         })}
     end
   end
 
-  def check_valid_template(template, input_variables, opts \\ []) do
+  def check_valid_template(template, input_variables, opts) do
     template_format = Keyword.get(opts, :template_format, :simple)
 
     with {:ok, variables} <- template_variables(template, template_format),
-         :ok <- validate_template_variables(variables, input_variables) do
-      case render(template, Map.new(variables, &{&1, "x"}), template_format: template_format) do
-        {:ok, _rendered} -> :ok
-        {:error, %Error{} = error} -> {:error, error}
-      end
+         :ok <- validate_template_variables(variables, input_variables),
+         {:ok, _rendered} <- render(template, Map.new(variables, &{&1, "x"}), template_format: template_format) do
+      :ok
     end
   end
 
@@ -134,23 +125,6 @@ defmodule BeamWeaver.Prompt.Template do
 
   defp normalize_template_format(format) when format in [:mustache, "mustache"], do: :mustache
   defp normalize_template_format(format), do: format
-
-  defp normalize_supported_template_format(format) do
-    case normalize_template_format(format) do
-      :simple ->
-        {:ok, :simple}
-
-      :mustache ->
-        {:ok, :mustache}
-
-      other ->
-        {:error,
-         Error.new(:unsupported_template_format, "unsupported prompt template format", %{
-           template_format: other,
-           supported: [:simple, :mustache]
-         })}
-    end
-  end
 
   defp validate_template_variables(variables, input_variables) do
     expected = input_variables |> List.wrap() |> Enum.map(&to_string/1) |> MapSet.new()

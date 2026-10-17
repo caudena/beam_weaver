@@ -1,8 +1,6 @@
 defmodule BeamWeaver.VectorStoreEctoPostgresTest do
   use ExUnit.Case, async: false
 
-  # - pgvector adapter behavior translated to an explicit SQL-boundary adapter
-
   alias BeamWeaver.Core.Document
   alias BeamWeaver.Models.FakeEmbeddingModel
   alias BeamWeaver.Retriever
@@ -108,7 +106,6 @@ defmodule BeamWeaver.VectorStoreEctoPostgresTest do
   end
 
   test "retriever wrapper returns vectorstore search results" do
-    # Translates core in-memory indexer retriever behavior to the vectorstore retriever wrapper.
     store = ETS.new(embedding: %FakeEmbeddingModel{})
     assert {:ok, [_id]} = VectorStore.add_texts(store, ["standard retriever document"])
     retriever = VectorStore.as_retriever(store, k: 1)
@@ -131,7 +128,7 @@ defmodule BeamWeaver.VectorStoreEctoPostgresTest do
     assert ["x", "y"] in params
 
     assert {:error, %{type: :unsupported_vector_filter}} =
-             Filter.to_sql(%{group: %{contains: "a"}})
+             Filter.to_sql(%{group: %{contains: "a"}}, 1)
   end
 
   @tag :postgres

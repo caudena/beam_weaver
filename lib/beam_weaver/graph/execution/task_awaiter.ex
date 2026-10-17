@@ -20,8 +20,7 @@ defmodule BeamWeaver.Graph.Execution.TaskAwaiter do
     |> normalize_results(entries, run)
   end
 
-  @spec cancel_pending_tasks([map()]) :: :ok
-  def cancel_pending_tasks(entries) do
+  defp cancel_pending_tasks(entries) do
     Enum.each(entries, fn entry ->
       Task.shutdown(entry.task, :brutal_kill)
 
@@ -73,19 +72,7 @@ defmodule BeamWeaver.Graph.Execution.TaskAwaiter do
   defp normalize_task_result(_entry, {:ok, {:error, %Error{} = error, events}}),
     do: {:error, error, events}
 
-  defp normalize_task_result(_entry, {:ok, %TaskResult{} = result}), do: {:ok, result}
-
-  defp normalize_task_result(
-         _entry,
-         {:ok, {:error, %TaskResult{error: %Error{} = error} = result}}
-       ),
-       do: {:error, error, result.events}
-
-  defp normalize_task_result(_entry, {:ok, {:interrupted, %TaskResult{} = result}}),
-    do: {:ok, result}
-
   defp normalize_task_result(entry, {:exit, reason}), do: task_exit(entry, reason)
-  defp normalize_task_result(entry, nil), do: task_timeout(:node, entry, %{})
 
   # `:infinity` sorts after every integer, so plain `min` picks the nearest
   # finite deadline when there is one.
@@ -121,56 +108,22 @@ defmodule BeamWeaver.Graph.Execution.TaskAwaiter do
   defp remaining(:infinity, _now), do: :infinity
   defp remaining(deadline, now), do: max(deadline - now, 0)
 
-  defp task_timeout(:run, entry, run) do
-    error =
-      Error.new(:run_timeout, "graph run timed out", %{
-        node: entry.node,
-        step: entry.step,
-        timeout: Map.get(run, :run_timeout)
-      })
+  defp task_timeout(source, entry, run) do
+    {type, message, timeout, details} =
+      case source do
+        :run ->
+          {:run_timeout, "graph run timed out", run.run_timeout, %{}}
 
-    Telemetry.execute(:run_timeout, %{duration: Map.get(run, :run_timeout)}, %{
-      node: entry.node,
-      step: entry.step,
-      error: error
-    })
+        :step ->
+          {:step_timeout, "graph step timed out", run.step_timeout, %{}}
 
-    {:error, error, [Stream.task_event(:timeout, entry.node, error, entry.step, entry.id, entry.path)]}
-  end
+        :node ->
+          {:node_timeout, "node timed out", entry.timeout,
+           %{node_timeout: entry.timeout, step_timeout: run.step_timeout, run_timeout: run.run_timeout}}
+      end
 
-  defp task_timeout(:step, entry, run) do
-    error =
-      Error.new(:step_timeout, "graph step timed out", %{
-        node: entry.node,
-        step: entry.step,
-        timeout: Map.get(run, :step_timeout)
-      })
-
-    Telemetry.execute(:step_timeout, %{duration: Map.get(run, :step_timeout)}, %{
-      node: entry.node,
-      step: entry.step,
-      error: error
-    })
-
-    {:error, error, [Stream.task_event(:timeout, entry.node, error, entry.step, entry.id, entry.path)]}
-  end
-
-  defp task_timeout(:node, entry, run) do
-    error =
-      Error.new(:node_timeout, "node timed out", %{
-        node: entry.node,
-        step: entry.step,
-        timeout: entry.timeout,
-        node_timeout: entry.timeout,
-        step_timeout: Map.get(run, :step_timeout),
-        run_timeout: Map.get(run, :run_timeout)
-      })
-
-    Telemetry.execute(:node_timeout, %{duration: entry.timeout}, %{
-      node: entry.node,
-      step: entry.step,
-      error: error
-    })
+    error = Error.new(type, message, Map.merge(%{node: entry.node, step: entry.step, timeout: timeout}, details))
+    Telemetry.execute(type, %{duration: timeout}, %{node: entry.node, step: entry.step, error: error})
 
     {:error, error, [Stream.task_event(:timeout, entry.node, error, entry.step, entry.id, entry.path)]}
   end

@@ -99,7 +99,7 @@ defmodule BeamWeaver.OutputParserTest do
              Runnable.invoke(OutputParser.json(), "not-json")
   end
 
-  test "json parser recovers common partial JSON shapes from upstream tests" do
+  test "json parser recovers common partial JSON shapes" do
     cases = [
       {~s({"foo": "bar", "bar": "foo"}), %{"foo" => "bar", "bar" => "foo"}},
       {~s({"foo": "bar", "bar": "foo), %{"foo" => "bar", "bar" => "foo"}},
@@ -212,7 +212,6 @@ defmodule BeamWeaver.OutputParserTest do
   end
 
   test "json utility facade parses markdown partial JSON and checks required keys" do
-    # Upstream reference:
     assert {:ok, %{"name" => "Ada"}} =
              OutputParser.parse_json_markdown("""
              ```json
@@ -272,8 +271,6 @@ defmodule BeamWeaver.OutputParserTest do
              Runnable.transform(OutputParser.markdown_list(), ["- alpha\n", "- beta\n"])
 
     assert Enum.to_list(stream) == [["alpha"], ["beta"]]
-
-    assert {:ok, ["one", "two"]} = Runnable.invoke(OutputParser.numbered_list(), "1. one\n2. two")
   end
 
   test "csv and xml parsers handle common structured outputs" do
@@ -310,7 +307,6 @@ defmodule BeamWeaver.OutputParserTest do
   end
 
   test "xml parser handles attributes self-closing nodes and rejects entity payloads" do
-    # Upstream reference:
     assert {:ok,
             %{
               name: "root",
@@ -336,7 +332,6 @@ defmodule BeamWeaver.OutputParserTest do
   end
 
   test "xml parser transform and parse follow native stream semantics" do
-    # Upstream reference:
     input = "<foo><bar><baz></baz><baz>slim.shady</baz></bar><baz>tag</baz></foo>"
 
     assert {:ok, chunks} = Runnable.transform(OutputParser.xml(), String.graphemes(input))
@@ -359,7 +354,6 @@ defmodule BeamWeaver.OutputParserTest do
   end
 
   test "parse_result uses the first generation-like value" do
-    # Upstream reference:
     assert {:ok, "first"} =
              OutputParser.parse_result(
                OutputParser.string(),

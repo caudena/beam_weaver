@@ -176,26 +176,20 @@ defmodule BeamWeaver.Provider.Streaming do
     exception -> {:error, BeamWeaver.Core.Error.new(:invalid_provider_stream, Exception.message(exception))}
   end
 
-  defp parse_items(parser, events, state) when is_function(parser, 2) do
-    case parser.(events, state) do
-      {items, next_state} -> {:ok, normalize_items(items), next_state}
-      other -> {:error, {:invalid_stateful_parser_result, other}}
+  defp parse_items(parser, events, state) do
+    if is_function(parser, 2) do
+      case parser.(events, state) do
+        {items, next_state} -> {:ok, List.wrap(items), next_state}
+        other -> {:error, {:invalid_stateful_parser_result, other}}
+      end
+    else
+      {:ok, List.wrap(parser.(events)), state}
     end
   rescue
     exception -> {:error, exception}
   catch
     kind, reason -> {:error, {kind, reason}}
   end
-
-  defp parse_items(parser, events, state) when is_function(parser, 1) do
-    {:ok, normalize_items(parser.(events)), state}
-  rescue
-    exception -> {:error, exception}
-  catch
-    kind, reason -> {:error, {kind, reason}}
-  end
-
-  defp normalize_items(items), do: if(is_list(items), do: items, else: List.wrap(items))
 
   defp push_final(validation, items) do
     case StreamValidator.push(validation, items) do
