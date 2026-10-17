@@ -116,6 +116,18 @@ the call waits for another. Tools marked `concurrent false` don't wait for
 each other in this mode. See [One pause per
 call](docs/human_in_the_loop.md#one-pause-per-call).
 
+**Describe and check an answer.** `Graph.interrupt/2` takes
+`response_schema:`, a JSON-schema map or a `BeamWeaver.Schema` module, for
+the answer the node expects. The interrupt carries it as JSON schema in
+`response_schema`, in the run's result, `get_state/1` and the stream, so a
+client can build its form from it, and the resume value is checked against
+it: an object answer comes back with string keys, and one that doesn't match
+fails the run with `:invalid_resume` (`details.interrupt_id` names the
+interrupt) without retrying the node or running its `error_handler:`, while
+the interrupt waits for another answer. This works inside subgraphs and
+subagents, and for a tool of a call sent to a `ToolNode`. See [Check the
+answer](docs/human_in_the_loop.md#check-the-answer).
+
 **Every pause of a step.** A paused run lists every interrupt of its step in
 `interrupts`, so pauses in parallel branches or tasks can be answered without
 `get_state/1`. `BeamWeaver.Agent.resume_review/3` takes a built agent too. See
@@ -846,6 +858,14 @@ embeddings](docs/testing.md#fake-embeddings).
   `message`, that the tool was not executed and the model should not retry it
   unless the user asks. It used to be the `message` alone, or the rejection
   without the advice.
+- `get_state/2` `interrupts` and a run's `interrupt.interrupts` list each
+  interrupt of a paused subgraph, instead of one record for the subgraph's
+  pause with the others nested inside it. Answer them with a map from their
+  ids, as for parallel pauses
+  (`Map.new(interrupt.interrupts, &{&1.id, answer})`).
+- `bulk_update_state/4` without `as_node:` on a thread whose last step ran
+  several routing nodes fails with `:ambiguous_state_update`, as
+  `update_state/4` does; pass `as_node:`.
 - Removed strict-resume checkpoints: `Checkpoint.stage_resume/3`,
   `continue_staged/2`, `verify_resume_receipt/2`, and
   `Checkpoint.ResumeDelivery`.
@@ -905,6 +925,11 @@ embeddings](docs/testing.md#fake-embeddings).
   thread, count the rounds in the state with a reducer and check the count in
   the edge's `when:` function, such as
   `when: fn _update, state -> state.revisions < 3 end`.
+- An `Overwrite` written to a `DeltaChannel` key drops the other writes of its
+  step, as on a reducer key, live and after a reload. Before, the run kept the
+  other writes, and a reload gave a different value depending on the order of
+  the writes. A checkpoint saved earlier whose step mixed an `Overwrite` with
+  other writes now reads as the `Overwrite` alone.
 - Removed the `failure_policy:` graph option. It was never implemented: failed
   super-steps always let siblings finish and persist their writes, which is
   now documented as the behavior.
@@ -912,6 +937,10 @@ embeddings](docs/testing.md#fake-embeddings).
   `error_handler:`.
 - Removed `Graph.Errors`, `Graph.MessagesReducer`, and `Graph.Schema` (use
   `BeamWeaver.Schema`).
+- Removed `DeltaChannel.replay_history/4`. It read only the writes saved as
+  pending, for the whole thread whatever checkpoint the config named, and
+  missed the writes that checkpoints store with each step, so it returned the
+  wrong value. Read a thread's values at a checkpoint with `get_state/2`.
 
 #### Streaming
 
@@ -995,6 +1024,22 @@ embeddings](docs/testing.md#fake-embeddings).
   read string keys from loaded values, such as
   `tuple.checkpoint["channel_values"]["order"]["id"]`, reads the keys that
   were saved: `tuple.checkpoint["channel_values"][:order][:id]`.
+- `BeamWeaver.Memory.batch/2` normalizes and checks every operation's
+  namespace and key as `put/5` and `get/3` do, and returns
+  `{:error, {:invalid_namespace, message}}` without running any operation when
+  one is invalid. A put or delete that fails returns `{:error, error}` in its
+  place. Before, records could be written under namespaces such as `["a.b"]`,
+  `[]` or `[:users]` that `get/3` couldn't reach, and a failed put returned
+  `nil`. `search/3` and `list_namespaces/2` now return the same error for a
+  prefix with an empty part or a dot, instead of `[]`.
+- `Checkpoint.prune/3` returns
+  `{:error, %Error{type: :invalid_prune_strategy}}` for a `strategy:` it
+  doesn't know; it ran `:keep_latest`.
+- `Checkpoint.delete_for_runs/2` returns
+  `{:error, %Error{type: :delta_history_in_use}}` and deletes nothing when a
+  later checkpoint of the thread reads `DeltaChannel` history from the runs'
+  checkpoints. Before, it deleted them and later runs lost those keys' earlier
+  values.
 
 #### Tracing and telemetry
 
@@ -1864,9 +1909,73 @@ embeddings](docs/testing.md#fake-embeddings).
   dropped, and a node that a `Command`'s `goto` had put next was lost, so
   `next` became `[]` and continuing started a new run. `next` now keeps them;
   only the nodes that the updated node's own edges chose are chosen again.
+- `%Command{resume: ..., update: ...}` keeps its update when the resumed node
+  pauses again: the update is saved into the paused step first, as
+  `update_state/4` saves one, so resuming three times with three updates keeps
+  all three. When the step completes, `get_state/2` shows the update for
+  `DeltaChannel` keys too. Before, the update lived only in the run: each
+  pause after it dropped it for every key, so only the last update survived,
+  and a completed step lost it from `DeltaChannel` keys after a reload.
+- A run started with `%Command{update: ...}` and no `resume` saves the update
+  for `DeltaChannel` keys as well, in `get_state/2` and in the history.
+  Before, the run's result had the update but the saved state of a delta
+  channel didn't.
+- New input to a thread whose last step stopped partway (a node failed or
+  paused) is saved into that step before it continues, as `update_state/4`
+  saves an update, so it stays when the step stops again. Before, the input
+  lived only in the run: a step that paused or failed again lost it for every
+  key, and one that completed lost it from `DeltaChannel` keys after a reload.
+  Continuing a thread after `update_state/4` on such a step now also runs the
+  nodes that the finished nodes' writes trigger (`triggers:`), and an
+  `EphemeralValue` key a finished node wrote reaches the next step; before,
+  those nodes didn't run and the value was cleared. See [Durable
+  Execution](docs/durable_execution.md#what-survives-a-crash).
+- A resume map keyed by interrupt id gives every paused task the answers it
+  already used, including tasks the map doesn't answer. A task paused at its
+  second `Graph.interrupt/1` keeps its first answer when another task's
+  interrupt is answered; before, it asked its first question again.
+- Resuming from a stopped checkpoint earlier than the thread's latest saves to
+  a new checkpoint after it. Before, the answers were saved on that earlier
+  checkpoint, and a branch that had already gone on from it read them in its
+  `DeltaChannel` state.
+- A subgraph that pauses in several nodes at once, including an agent with
+  `interrupt_mode: :per_call` run as a graph node or as a subagent, pauses the
+  parent with every pause, and a map from their ids, such as
+  `Map.new(interrupt.interrupts, &{&1.id, answer})`, resumes them all at once
+  or one at a time; a single value is rejected with `:invalid_resume`. Before,
+  the parent showed one pause and every form of resume failed with
+  `:invalid_resume`.
+- `bulk_update_state/4` schedules what comes next as `update_state/4` does.
+  Each superstep counts as the result of `as_node:`, or of the node that ran
+  last, and the nodes after it are in `next`; a task waiting at a breakpoint
+  stays. Before, `next` was always empty, also with `as_node:`, and a task
+  waiting at a breakpoint was dropped.
+- `bulk_update_state/4` on a thread whose last step stopped partway (a node
+  paused or failed) saves each superstep into that step, as `update_state/4`
+  saves an update: the pauses and the failed node stay, an update made
+  `as_node:` a paused node answers it, and the step still routes from the
+  nodes that finished in it. Before, each superstep started a new step from
+  the finished nodes' writes, dropping the pauses and errors, and the nodes
+  after the finished ones never ran.
+- `bulk_update_state/4` checks every superstep before it saves any: one that
+  isn't a list fails the call with `:invalid_update` and nothing is saved.
+  Before, the supersteps ahead of it were saved first.
+- `%Command{resume: ..., goto: ...}` on a thread whose last step stopped
+  partway, or that waits at a breakpoint, saves the `goto`'s nodes into that
+  step before it continues, so a node the `goto` added that pauses or fails
+  runs on the next resume. Before, `next` didn't list it, and the next resume
+  finished the step without it.
+- A config with `checkpoint_id: ""` (or `nil`) means the thread's latest
+  checkpoint, as no id does: `get_state/2` returns it, and `invoke` and
+  `resume` continue the thread. Before, `get_state/2` returned `:error` and
+  `invoke` started the thread over from an empty state.
 
 #### Graphs
 
+- A `DeltaChannel` key whose reducer raises, such as a
+  `Graph.Messages.delta_channel/1` key given a write that holds no messages,
+  fails the step with `:invalid_update`, as a reducer key does. Before, the
+  exception was raised out of `invoke/3`.
 - `Graph.add_join/4`, and `deps:` with several nodes, fire when the upstream
   nodes finish in different steps, and when a thread continues after a
   failed or paused step: each upstream node's arrival is saved with its
@@ -1944,6 +2053,27 @@ embeddings](docs/testing.md#fake-embeddings).
   runs about 12% faster.
 - `Graph.ServerInfo.new/1` keeps a user's `is_authenticated: false`; it
   became `nil`.
+- A `DeltaChannel` key reads back each write as it was written: a list written
+  once is one write, and a `nil` write is kept. Before, a reload split a list
+  write into its items and lost a `nil` write. Checkpoints saved earlier read
+  as they did.
+- Messages written to a `Messages.delta_channel/1` key get their ids once,
+  before they are applied, streamed or saved. This covers strings,
+  `{role, content}` tuples, maps and the messages in an `Overwrite`, written
+  by nodes, as input, with `update_state/4` or by a paused step's finished
+  nodes. Before, every read gave them new ids, so `Messages.remove/1` with an
+  id the run returned did nothing. `DeltaChannel` takes `prepare:`, the
+  function that does this.
+- A key changed from a `DeltaChannel` to another channel keeps its value, in
+  `get_state/2` and `get_state_history/3`, and the next run adds to it.
+  Before, it read `nil` or a raw snapshot, and the next run started it over.
+- `get_state/2` on a thread with `DeltaChannel` keys reads checkpoints only
+  back to each key's last snapshot, and `get_state_history/3` reads no
+  checkpoint again. On `Checkpoint.Ecto` (Postgres or SQLite) those
+  checkpoints are listed a page at a time, so reading 60 of them back takes 6
+  reads instead of 61. Before, every read went back to the thread's first
+  checkpoint, once per key: a history of 800 checkpoints on Postgres took
+  almost four minutes, and now takes 49 ms.
 
 #### Streaming
 
@@ -1976,9 +2106,18 @@ embeddings](docs/testing.md#fake-embeddings).
   (`ChatModel.stream_typed_events/3`) sent them for the process that reads
   the provider's response; Anthropic's and Gemini's streams have no such
   events. A run's stream still starts and ends with its own.
+- `stream_mode: :messages` streams the messages that several nodes write in
+  one step to a `Graph.Messages.delta_channel/1` key. Before, such a step
+  streamed none of them.
 
 #### Memory, storage and caching
 
+- `Checkpoint.Ecto` gives a checkpoint saved without an id, as every graph and
+  agent run saves them, a UUIDv7 id. The ids came from a counter that starts
+  again whenever the VM boots, so a thread that continued after a restart or
+  a deploy reused ids it already had, and the saver overwrote those older
+  checkpoints in place: the thread's history and state came back wrong.
+  Checkpoints saved earlier keep their ids.
 - Encryption works in `Checkpoint.Ecto` and `Cache.Ecto`:
   `serialization: [codec: Serialization.Encrypted, encryption_key: key]` lost
   the key, so every write failed with `:invalid_serialization_key`. With
@@ -2021,6 +2160,40 @@ embeddings](docs/testing.md#fake-embeddings).
   instead of raising `FunctionClauseError` in the ETS store.
 - `Memory.get_many/3` returns a stored `{:error, _}` value as that value
   instead of reporting a failed read.
+- A cached graph node's `ttl:` counts from the run that saved the entry.
+  Before, every cache hit wrote the entry again, so an entry that kept being
+  hit never expired.
+- A node whose `error_handler:` supplied the result is not cached. Before, the
+  fallback was saved under the node's cache key, so later runs with the same
+  input skipped the node and got the fallback.
+- `BeamWeaver.Memory.list_namespaces/2` on `Memory.Ecto` no longer lists a
+  namespace whose records have all expired.
+- Reading an expired memory record or cache entry, or sweeping expired ones
+  in `Memory.ETS` or `Cache.ETS`, no longer deletes a value put under the same
+  key at the same moment.
+- A checkpoint holding a value that can't be rebuilt any more loads. A struct
+  whose tag is no longer registered, or whose module was removed, comes back
+  as a map of its fields, and an atom that no loaded code uses comes back as a
+  string, with one warning per tag or atom. Before, one such value made the
+  whole checkpoint unreadable (`:checkpoint_read_failed`, and
+  `Checkpoint.get_tuple/2` raised). `BeamWeaver.Serialization.load/2` behaves
+  the same way. See [Serialization](docs/storage.md#serialization).
+- `Checkpoint.prune/3` keeps what a thread's `DeltaChannel` keys still read:
+  every key's history on the latest checkpoint's branch, including writes
+  saved only by a paused step. The first checkpoint it keeps becomes the
+  thread's first, so `fork_at/4` works after a prune, and it also removes the
+  checkpoints of subgraph calls that finished. Before, a prune could lose
+  delta key values (after a fork, with several keys, or a paused step's
+  writes), left `fork_at/4` failing with `:checkpoint_lineage_missing`, and on
+  `Checkpoint.Ecto` read every checkpoint with its pending writes.
+- `Checkpoint.delete_for_runs/2` makes a checkpoint whose parent it deletes
+  the first of its thread, as `Checkpoint.prune/3` does, so `fork_at/4` can
+  copy it. Before, the checkpoint kept pointing at the deleted parent, and
+  `fork_at/4` failed with `:checkpoint_lineage_missing`.
+- `Checkpoint.ETS` keeps a checkpoint's parent when the same checkpoint is put
+  again, as `Checkpoint.Ecto` does. Before, putting it under one of its
+  descendants made the two each other's parent, and reading delta history from
+  them never returned.
 
 #### Tracing and telemetry
 
@@ -2124,6 +2297,9 @@ embeddings](docs/testing.md#fake-embeddings).
 
 #### Tools
 
+- A struct given for an `"object"` argument fails the tool's input check with
+  `:invalid_input`, as a value of any other wrong type does. Before, the check
+  raised `Protocol.UndefinedError`.
 - Tool modules may return `{:error, reason}` with any reason, or a bare value,
   like function tools. Before, anything but `{:ok, value}` or
   `{:error, %Core.Error{}}` raised `WithClauseError`. A string reason, from a

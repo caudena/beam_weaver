@@ -144,13 +144,61 @@ defmodule BeamWeaver.Checkpoint.ETS do
   def delete_for_runs(%__MODULE__{} = saver, run_ids) when is_list(run_ids) do
     run_ids = MapSet.new(run_ids)
 
-    for {{thread_id, namespace, checkpoint_id}, record} <- :ets.tab2list(saver.checkpoints),
-        MapSet.member?(run_ids, Map.get(record.metadata, "run_id")) do
-      :ets.delete(saver.checkpoints, {thread_id, namespace, checkpoint_id})
-      delete_writes_for_checkpoint(saver, thread_id, namespace, checkpoint_id)
-    end
+    removed =
+      for {key, run_id} <-
+            :ets.select(saver.checkpoints, [{{:"$1", %{metadata: %{"run_id" => :"$2"}}}, [], [{{:"$1", :"$2"}}]}]),
+          MapSet.member?(run_ids, run_id),
+          do: key
 
-    :ok
+    by_thread = Enum.group_by(removed, &elem(&1, 0), &Tuple.delete_at(&1, 0))
+
+    with {:ok, orphans} <- orphans_keeping_history(saver, by_thread) do
+      for {thread_id, namespace, checkpoint_id} = key <- removed do
+        :ets.delete(saver.checkpoints, key)
+        delete_writes_for_checkpoint(saver, thread_id, namespace, checkpoint_id)
+      end
+
+      Enum.each(orphans, &clear_parent(saver, &1))
+    end
+  end
+
+  # The checkpoints left whose parent goes, which become the first of their
+  # thread, as after `prune/3`, so their lineage can still be copied. Deleting
+  # the runs' checkpoints can't take delta history that one of them reads.
+  defp orphans_keeping_history(saver, by_thread) do
+    Enum.reduce_while(by_thread, {:ok, []}, fn {thread_id, removed}, {:ok, all} ->
+      removed = MapSet.new(removed)
+
+      case saver |> parent_links(thread_id) |> DeltaCompaction.orphans(removed) do
+        [] ->
+          {:cont, {:ok, all}}
+
+        orphans ->
+          if DeltaCompaction.breaks_history?(compaction_records(saver, thread_id), removed),
+            do: {:halt, {:error, DeltaCompaction.history_in_use(thread_id)}},
+            else: {:cont, {:ok, Enum.map(orphans, fn {namespace, id} -> {thread_id, namespace, id} end) ++ all}}
+      end
+    end)
+  end
+
+  # A thread's checkpoints as `DeltaCompaction` records of only their id and
+  # parent, read without copying the checkpoints.
+  defp parent_links(saver, thread_id) do
+    linked = [
+      {{{thread_id, :"$1", :"$2"}, %{parent_config: %{"configurable" => %{"checkpoint_id" => :"$3"}}}}, [],
+       [{{:"$1", :"$2", :"$3"}}]}
+    ]
+
+    saver.checkpoints
+    |> :ets.select(linked)
+    |> Enum.group_by(&elem(&1, 0), fn {_namespace, id, parent_id} -> %{id: id, parent_id: parent_id} end)
+  end
+
+  defp clear_parent(saver, key) do
+    case :ets.lookup(saver.checkpoints, key) do
+      [{^key, record}] -> :ets.insert(saver.checkpoints, {key, %{record | parent_config: nil}})
+      [] -> true
+    end
   end
 
   @impl true
@@ -186,15 +234,13 @@ defmodule BeamWeaver.Checkpoint.ETS do
 
   @impl true
   def prune(%__MODULE__{} = saver, thread_ids, opts) when is_list(thread_ids) do
-    strategy = Keyword.get(opts, :strategy, :keep_latest)
-
-    Enum.each(thread_ids, fn thread_id ->
-      if strategy in [:delete, "delete"],
-        do: delete_thread(saver, thread_id),
-        else: keep_latest_by_namespace(saver, thread_id)
-    end)
-
-    :ok
+    with {:ok, strategy} <- DeltaCompaction.strategy(opts) do
+      Enum.each(thread_ids, fn thread_id ->
+        if strategy == :delete,
+          do: delete_thread(saver, thread_id),
+          else: keep_latest_by_namespace(saver, thread_id)
+      end)
+    end
   end
 
   @impl true
@@ -396,25 +442,45 @@ defmodule BeamWeaver.Checkpoint.ETS do
     end)
   end
 
+  # The plan comes from one read of the thread, so a checkpoint saved while
+  # the thread is pruned stays.
   defp keep_latest_by_namespace(saver, thread_id) do
-    grouped =
-      saver.checkpoints
-      |> :ets.match_object({{thread_id, :_, :_}, :_})
-      |> Enum.group_by(fn {{_thread, namespace, _id}, _record} -> namespace end, fn {_key, record} -> record end)
+    {removals, roots} = saver |> compaction_records(thread_id) |> DeltaCompaction.prune_plan()
 
-    Enum.each(grouped, fn {namespace, records} ->
-      keep = DeltaCompaction.keep_ids(records)
+    for {namespace, checkpoint_id} <- removals do
+      :ets.delete(saver.checkpoints, {thread_id, namespace, checkpoint_id})
+      delete_writes_for_checkpoint(saver, thread_id, namespace, checkpoint_id)
+    end
 
-      Enum.each(records, fn record ->
-        checkpoint_id = record.checkpoint["id"]
-
-        unless checkpoint_id in keep do
-          :ets.delete(saver.checkpoints, {thread_id, namespace, checkpoint_id})
-          delete_writes_for_checkpoint(saver, thread_id, namespace, checkpoint_id)
-        end
-      end)
-    end)
+    Enum.each(roots, fn {namespace, checkpoint_id} -> clear_parent(saver, {thread_id, namespace, checkpoint_id}) end)
   end
+
+  defp compaction_records(saver, thread_id) do
+    pending =
+      saver.writes
+      |> :ets.select([{{{thread_id, :"$1", :"$2", :_, :_}, {:"$3", :_, :_}}, [], [{{:"$1", :"$2", :"$3"}}]}])
+      |> Enum.group_by(fn {namespace, checkpoint_id, _channel} -> {namespace, checkpoint_id} end, &elem(&1, 2))
+
+    saver.checkpoints
+    |> :ets.match_object({{thread_id, :_, :_}, :_})
+    |> Enum.group_by(
+      fn {{_thread, namespace, _id}, _record} -> namespace end,
+      fn {{_thread, namespace, checkpoint_id}, record} ->
+        %{
+          id: checkpoint_id,
+          parent_id: parent_id(record),
+          commit_order: record.commit_order,
+          checkpoint: record.checkpoint,
+          metadata: record.metadata,
+          pending_channels: pending |> Map.get({namespace, checkpoint_id}, []) |> MapSet.new(),
+          root_id: get_in(record.config, ["configurable", "checkpoint_map", ""])
+        }
+      end
+    )
+  end
+
+  defp parent_id(%{parent_config: %{"configurable" => configurable}}), do: configurable["checkpoint_id"]
+  defp parent_id(_record), do: nil
 
   defp delete_writes_for_checkpoint(saver, thread_id, namespace, checkpoint_id),
     do: :ets.match_delete(saver.writes, {{thread_id, namespace, checkpoint_id, :_, :_}, :_})
@@ -437,14 +503,16 @@ defmodule BeamWeaver.Checkpoint.ETS do
       checkpoint_map = Config.checkpoint_map(configurable, namespace, checkpoint_id)
       key = {thread_id, namespace, checkpoint_id}
 
-      order =
-        case :ets.lookup(saver.checkpoints, key) do
-          [{^key, record}] -> record.commit_order
-          [] -> next_commit_order(saver, thread_id, namespace)
-        end
-
       stored_config =
         Config.stored_config(thread_id, namespace, checkpoint_id, checkpoint_map, configurable["checkpoint_target_ns"])
+
+      # A checkpoint saved again keeps its place in the thread: its commit
+      # order and its parent.
+      {order, parent_config} =
+        case :ets.lookup(saver.checkpoints, key) do
+          [{^key, record}] -> {record.commit_order, record.parent_config}
+          [] -> {next_commit_order(saver, thread_id, namespace), parent_config(stored_config, parent_id)}
+        end
 
       record = %{
         config: stored_config,
@@ -455,7 +523,7 @@ defmodule BeamWeaver.Checkpoint.ETS do
           |> Map.put_new("ts", DateTime.utc_now() |> DateTime.to_iso8601())
           |> Map.put_new("channel_versions", Config.stringify_keys(versions || %{})),
         metadata: Config.stringify_keys(metadata || %{}),
-        parent_config: parent_config(stored_config, parent_id),
+        parent_config: parent_config,
         commit_order: order
       }
 

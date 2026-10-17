@@ -401,9 +401,9 @@ time. See [Checkpoints and Time Travel](checkpoints.md).
 
 ## Pause a graph node
 
-In a graph, call `BeamWeaver.Graph.interrupt/1` inside a node to pause and
+In a graph, call `BeamWeaver.Graph.interrupt/2` inside a node to pause and
 hand a value to the caller. The value you pass to `resume/2` becomes the
-return value of `Graph.interrupt/1`:
+return value of `Graph.interrupt/2`:
 
 ```elixir
 defmodule MyApp.TicketTriage do
@@ -449,16 +449,72 @@ state.sent
 Keep these rules in mind:
 
 - On resume the node runs again from the top, so code before
-  `Graph.interrupt/1` runs twice. Make it safe to repeat, or move side
+  `Graph.interrupt/2` runs twice. Make it safe to repeat, or move side
   effects after the interrupt.
 - A node may pause several times. Answers are matched to calls by order, so
-  call `Graph.interrupt/1` in the same order on every run.
-- `Graph.interrupt/1` pauses by throwing. Don't wrap it in a `try` that
+  call `Graph.interrupt/2` in the same order on every run.
+- `Graph.interrupt/2` pauses by throwing. Don't wrap it in a `try` that
   catches everything.
 - Use plain data for the payload and the answer; both are saved in the
   checkpoint.
-- `Graph.interrupt/1` works in graph nodes, not inside tools. To let a person
+- `Graph.interrupt/2` works in graph nodes, not inside tools. To let a person
   answer a tool call, use `interrupt_on` and a `:respond` decision.
+
+## Check the answer
+
+Give `Graph.interrupt/2` a `response_schema:` to say what answer the node
+expects: a JSON-schema map or a `BeamWeaver.Schema` module. The interrupt
+carries it as JSON schema in `response_schema`, as do the `interrupts` of
+`get_state/1`, so your app can build its form from it. The answer is checked
+against it before `Graph.interrupt/2` returns it, and an object answer comes
+back with string keys, whatever keys the resume used:
+
+```elixir
+defmodule MyApp.ReplyDecision do
+  use BeamWeaver.Schema
+
+  field :send, :boolean
+  field :reply, :string, required: false
+end
+
+defmodule MyApp.CheckedReply do
+  use BeamWeaver.Agent
+
+  alias BeamWeaver.Graph
+
+  def graph do
+    Graph.new()
+    |> Graph.add_node(:review, &review/1)
+    |> Graph.add_edge(Graph.start(), :review)
+    |> Graph.add_edge(:review, Graph.end_node())
+  end
+
+  def review(%{reply: reply}) do
+    question = %{question: "Send this reply?", reply: reply}
+    decision = Graph.interrupt(question, response_schema: MyApp.ReplyDecision)
+    %{sent: if(decision["send"], do: decision["reply"] || reply)}
+  end
+end
+
+opts = [checkpointer: saver, config: %{"configurable" => %{"thread_id" => "ticket-52"}}]
+
+{:interrupted, interrupt} = MyApp.CheckedReply.invoke(%{reply: "We refunded order A-1003."}, opts)
+interrupt.response_schema["required"]
+#=> ["send"]
+```
+
+An answer that doesn't match fails the run with an `:invalid_resume` error,
+whose `details.interrupt_id` names the interrupt. The node isn't retried and
+its `error_handler:` doesn't run: the interrupt waits for another answer.
+
+```elixir
+MyApp.CheckedReply.resume(%{send: "yes"}, opts)
+#=> {:error, %BeamWeaver.Core.Error{type: :invalid_resume}}
+
+{:ok, state} = MyApp.CheckedReply.resume(%{send: true}, opts)
+state.sent
+#=> "We refunded order A-1003."
+```
 
 ## Several pauses at once
 
@@ -533,7 +589,11 @@ tool call, use `BeamWeaver.Graph.Compiled.update_state/4` (see
 
 A graph that runs as a node of another graph can pause too: the parent
 returns `{:interrupted, interrupt}` and you resume the parent with the same
-thread. See [Subgraphs](subgraphs.md).
+thread. See [Subgraphs](subgraphs.md). A subgraph or a subagent that pauses
+several times at once, in parallel nodes or with one pause per call, pauses
+the parent with all of them: `interrupt.interrupts` and `get_state/1` on the
+parent list every pause, and a map from interrupt id to answer resumes them,
+as in [Several pauses at once](#several-pauses-at-once).
 
 Subagents pause the same way. When a subagent's tool needs review, the
 parent returns `{:interrupted, interrupt}` with the subagent's review, and
@@ -588,6 +648,6 @@ tables if you need an audit trail.
 - [`BeamWeaver.Agent`](https://hexdocs.pm/beam_weaver/BeamWeaver.Agent.html): `interrupt_on`, `resume/3`, `resume_review/3` and `get_state/2`
 - [`BeamWeaver.Agent.HITL`](https://hexdocs.pm/beam_weaver/BeamWeaver.Agent.HITL.html): reviews, decisions and `to_map/1`
 - [`BeamWeaver.Agent.Middleware.HumanInTheLoop`](https://hexdocs.pm/beam_weaver/BeamWeaver.Agent.Middleware.HumanInTheLoop.html): the middleware behind `interrupt_on`
-- [`BeamWeaver.Graph`](https://hexdocs.pm/beam_weaver/BeamWeaver.Graph.html): `interrupt/1` and `null_resume/0`
+- [`BeamWeaver.Graph`](https://hexdocs.pm/beam_weaver/BeamWeaver.Graph.html): `interrupt/2` and `null_resume/0`
 - [`BeamWeaver.Graph.Interrupt`](https://hexdocs.pm/beam_weaver/BeamWeaver.Graph.Interrupt.html): a pending interrupt
 - [`BeamWeaver.Checkpoint.Ecto`](https://hexdocs.pm/beam_weaver/BeamWeaver.Checkpoint.Ecto.html): durable checkpoints for production

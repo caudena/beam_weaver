@@ -8,6 +8,7 @@ defmodule BeamWeaver.Memory.EctoTest do
   alias BeamWeaver.Memory
   alias BeamWeaver.Memory.Ecto
   alias BeamWeaver.Memory.EctoTest.InterleavedQuery
+  alias BeamWeaver.Memory.PutOp
   alias BeamWeaver.Test.LivePostgres
   alias BeamWeaver.Test.PostgresRepo
 
@@ -86,6 +87,36 @@ defmodule BeamWeaver.Memory.EctoTest do
         do: assert(DateTime.diff(item.expires_at, DateTime.utc_now(), :minute) >= 590),
         else: assert(is_nil(item.expires_at))
     end
+  end
+
+  test "reading an expired record while it is put again keeps the new value" do
+    {table, store} = new_store()
+    racing = Ecto.new(repo: PostgresRepo, table: table, query_module: InterleavedQuery)
+
+    assert {:ok, _item} = Memory.put(store, ["notes"], "k", %{"v" => "old"}, ttl: 5)
+
+    {:ok, _result} =
+      Elixir.Ecto.Adapters.SQL.query(PostgresRepo, "UPDATE #{table} SET expires_at = now() - interval '1 minute'", [])
+
+    # Between the read of the expired record and its delete, the record is put again.
+    InterleavedQuery.before("DELETE", fn ->
+      assert {:ok, _item} = Memory.put(store, ["notes"], "k", %{"v" => "new"})
+    end)
+
+    assert :error = Memory.get(racing, ["notes"], "k")
+    assert {:ok, %{value: %{"v" => "new"}}} = Memory.get(store, ["notes"], "k")
+  end
+
+  test "a put that fails inside a batch returns its error, and the other operations still run" do
+    {_table, store} = new_store()
+
+    assert [{:error, _error}, nil] =
+             Memory.batch(store, [
+               %PutOp{namespace: ["notes"], key: "bad", value: {:not, :json}},
+               %PutOp{namespace: ["notes"], key: "good", value: %{"v" => 1}}
+             ])
+
+    assert ["good"] = Memory.yield_keys(store, ["notes"])
   end
 
   test "refresh_ttl: nil is the default, false, and other values raise" do

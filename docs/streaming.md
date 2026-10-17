@@ -421,7 +421,10 @@ whose payload is `%{type: :interrupt, interrupt: interrupt}`, and then the
 stream ends. Without `live: true`, `stream_events/2` returns
 `{:interrupted, interrupt}`, with the events in `interrupt.events`.
 Pass that `interrupt` to the review helpers and resume the run as shown in
-[Human-in-the-Loop](human_in_the_loop.md).
+[Human-in-the-Loop](human_in_the_loop.md). When the node described the answer
+it expects, `interrupt.response_schema` holds it as JSON schema, for your app
+to build its form from; see
+[Check the answer](human_in_the_loop.md#check-the-answer).
 
 ## Subgraphs
 

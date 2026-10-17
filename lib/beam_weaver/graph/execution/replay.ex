@@ -9,6 +9,7 @@ defmodule BeamWeaver.Graph.Execution.Replay do
   alias BeamWeaver.Graph.Execution.DeltaReplay
   alias BeamWeaver.Graph.Execution.SubgraphRouter
   alias BeamWeaver.Graph.Execution.TaskRequest
+  alias BeamWeaver.MapAccess
 
   # The state also holds what is known of the checkpoint it was read from
   # (`:known_checkpoint`), so writing the run's first checkpoint after it
@@ -29,19 +30,35 @@ defmodule BeamWeaver.Graph.Execution.Replay do
   defp restore_found_tuple(compiled, tuple), do: restore_tuple(compiled, tuple)
 
   # A checkpoint's state as a run keeps it: every channel saved with the
-  # thread, the graph's own bookkeeping included, under the graph's keys.
+  # thread, the graph's own bookkeeping included, under the graph's keys. It
+  # also holds the checkpoint's own config, what is known of it, and, for an
+  # update made while its step was stopped, the channels written in that step
+  # so far (`:step_channels`), which count as the step's writes when it
+  # completes.
   @spec restore_tuple(map(), map()) :: {:ok, map()} | {:error, Error.t()}
   def restore_tuple(compiled, tuple) do
     restored = Execution.checkpoint_state(tuple)
     values = ChannelLookup.graph_keys(compiled.graph, restored.values)
 
     with {:ok, values} <- DeltaReplay.restore_channel_values(compiled, tuple, values) do
-      {:ok, Map.merge(restored, %{values: values, checkpoint?: true})}
+      {:ok,
+       Map.merge(restored, %{
+         values: values,
+         checkpoint?: true,
+         checkpoint_config: tuple.config,
+         known_checkpoint: CheckpointIO.known_checkpoint(tuple.config, tuple),
+         step_channels: step_channels(tuple.checkpoint, restored.step_start)
+       })}
     end
   end
 
+  defp step_channels(_checkpoint, nil), do: []
+
+  defp step_channels(checkpoint, _step_start),
+    do: Map.get(checkpoint, "updated_channels", Map.get(checkpoint, :updated_channels, []))
+
   @spec empty_checkpoint_state() :: map()
-  def empty_checkpoint_state, do: Map.put(Execution.checkpoint_state(nil), :checkpoint?, false)
+  def empty_checkpoint_state, do: Map.merge(Execution.checkpoint_state(nil), %{checkpoint?: false, step_channels: []})
 
   @spec replay_pending?(map()) :: boolean()
   def replay_pending?(%{pending_writes: pending_writes, next: next}) do
@@ -71,12 +88,7 @@ defmodule BeamWeaver.Graph.Execution.Replay do
          (restored.next != [] and (no_input? or resume_requested?)))
   end
 
-  defp checkpoint_id?(config) do
-    config
-    |> Checkpoint.configurable()
-    |> Map.get("checkpoint_id")
-    |> is_binary()
-  end
+  defp checkpoint_id?(config), do: config |> Execution.checkpoint_id() |> is_binary()
 
   @spec initial_ready(map(), map(), map(), boolean()) :: [TaskRequest.t()]
   def initial_ready(compiled, _config, _restored, false), do: compiled.plan.entry_requests
@@ -135,6 +147,10 @@ defmodule BeamWeaver.Graph.Execution.Replay do
     end)
   end
 
+  # The pending interrupts of the checkpoint `config` names, each with the id
+  # of the task it pauses. A subgraph task that paused lists the subgraph's
+  # own pauses (`subgraph?: true`): an answer to one of them goes to that
+  # task, which hands it on to the subgraph by its id.
   @spec pending_interrupt_records(map(), map()) :: [map()]
   def pending_interrupt_records(%{checkpointer: nil}, _config), do: []
 
@@ -148,11 +164,31 @@ defmodule BeamWeaver.Graph.Execution.Replay do
         |> Map.get(:pending_writes, [])
         |> Enum.flat_map(fn
           {task_id, "__interrupt__", interrupts} ->
-            Enum.map(List.wrap(interrupts), &parent_interrupt_record(&1, task_id))
+            interrupts |> List.wrap() |> Enum.flat_map(&task_interrupt_records(&1, task_id))
 
           _other ->
             []
         end)
+    end
+  end
+
+  # The pauses that one task's interrupt stands for: a subgraph that paused
+  # stands for every pause it lists in `interrupts`, at any depth.
+  @spec task_interrupts(term()) :: [term()]
+  def task_interrupts(interrupt) do
+    case MapAccess.get(interrupt, :interrupts) do
+      [_ | _] = nested -> Enum.flat_map(nested, &task_interrupts/1)
+      _none -> [interrupt]
+    end
+  end
+
+  defp task_interrupt_records(interrupt, task_id) do
+    case task_interrupts(interrupt) do
+      [^interrupt] ->
+        [parent_interrupt_record(interrupt, task_id)]
+
+      nested ->
+        Enum.map(nested, &%{id: MapAccess.get(&1, :id), task_id: task_id, subgraph?: true})
     end
   end
 

@@ -15,25 +15,24 @@ defmodule BeamWeaver.Graph.Execution.Resume do
   def normalize(compiled, config, {:ok, resume}) when is_map(resume) and not is_struct(resume) do
     pending = Replay.pending_interrupt_records(compiled, config)
 
+    # An empty map answers none of the pauses, which keep the answers they
+    # already used.
     cond do
       pending == [] ->
         {:ok, resume}
 
-      map_size(resume) == 0 ->
-        {:ok, %{}}
+      map_size(resume) == 0 or resume_map_targets_pending?(resume, pending) ->
+        {:ok, resume_map_to_task_values(resume, pending)}
 
-      length(pending) == 1 and not resume_map_targets_pending?(resume, pending) ->
+      length(pending) == 1 ->
         {:ok, scalar_resume_with_consumed(pending, resume)}
 
-      length(pending) > 1 and not resume_map_targets_pending?(resume, pending) ->
+      true ->
         {:error,
          Error.new(
            :invalid_resume,
            "multiple pending interrupts require a resume map keyed by interrupt id"
          )}
-
-      true ->
-        {:ok, resume_map_to_task_values(resume, pending)}
     end
   end
 
@@ -95,25 +94,38 @@ defmodule BeamWeaver.Graph.Execution.Resume do
     Enum.any?(resume, fn {key, _value} -> MapSet.member?(pending_keys, to_string(key)) end)
   end
 
+  # Every paused task gets the answers it already used, so it doesn't ask its
+  # earlier questions again, whether or not the map answers its pause. A
+  # subgraph task gets the answers to the subgraph's own pauses as one map,
+  # keyed by their ids, which it hands on to the subgraph.
   defp resume_map_to_task_values(resume, pending_interrupts) do
-    by_interrupt_id = Map.new(pending_interrupts, &{to_string(&1.id), &1.task_id})
-    by_task_id = Map.new(pending_interrupts, &{to_string(&1.task_id), &1.task_id})
-    by_interrupt_id_pending = Map.new(pending_interrupts, &{to_string(&1.id), &1})
-    by_task_id_pending = Map.new(pending_interrupts, &{to_string(&1.task_id), &1})
+    by_interrupt_id = Map.new(pending_interrupts, &{to_string(&1.id), {&1.task_id, subgraph_interrupt_id(&1)}})
+    by_task_id = Map.new(pending_interrupts, &{to_string(&1.task_id), {&1.task_id, nil}})
+    used = Map.new(pending_interrupts, &{&1.task_id, interrupt_resumes(&1)})
 
-    Enum.reduce(resume, %{}, fn {key, value}, task_values ->
-      key = to_string(key)
-      task_id = Map.get(by_interrupt_id, key) || Map.get(by_task_id, key)
-      pending = Map.get(by_interrupt_id_pending, key) || Map.get(by_task_id_pending, key)
+    {task_values, subgraph_answers} =
+      Enum.reduce(resume, {used, %{}}, fn {key, value}, {task_values, subgraph_answers} ->
+        key = to_string(key)
 
-      if task_id do
-        values = interrupt_resumes(pending) ++ List.wrap(value)
-        Map.update(task_values, task_id, values, &(&1 ++ values))
-      else
-        task_values
-      end
+        case Map.get(by_interrupt_id, key) || Map.get(by_task_id, key) do
+          nil ->
+            {task_values, subgraph_answers}
+
+          {task_id, nil} ->
+            {Map.update!(task_values, task_id, &(&1 ++ List.wrap(value))), subgraph_answers}
+
+          {task_id, id} ->
+            {task_values, Map.update(subgraph_answers, task_id, %{id => value}, &Map.put(&1, id, value))}
+        end
+      end)
+
+    Enum.reduce(subgraph_answers, task_values, fn {task_id, answers}, task_values ->
+      Map.update!(task_values, task_id, &(&1 ++ [answers]))
     end)
   end
+
+  defp subgraph_interrupt_id(%{subgraph?: true, id: id}), do: id
+  defp subgraph_interrupt_id(_interrupt), do: nil
 
   defp interrupt_resumes(%{resumes: resumes}) when is_list(resumes), do: resumes
   defp interrupt_resumes(_interrupt), do: []

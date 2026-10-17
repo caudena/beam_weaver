@@ -4,6 +4,7 @@ defmodule BeamWeaver.Memory.ETSTest do
   alias BeamWeaver.Memory
   alias BeamWeaver.Memory.ETS
   alias BeamWeaver.Memory.GetOp
+  alias BeamWeaver.Memory.Item
   alias BeamWeaver.Memory.ListNamespacesOp
   alias BeamWeaver.Memory.MatchCondition
 
@@ -76,9 +77,38 @@ defmodule BeamWeaver.Memory.ETSTest do
     assert {:ok, %{value: %{"v" => 5_000}}} = Memory.get(store, ["notes"], "k")
   end
 
+  test "reading an expired record never deletes a value put at the same time" do
+    store = ETS.new()
+    expired = %Item{namespace: ["notes"], key: "k", value: %{"v" => 0}, expires_at: DateTime.from_unix!(0)}
+
+    readers = for _reader <- 1..4, do: Task.async(fn -> get_until_stopped(store) end)
+
+    lost =
+      Enum.count(1..5_000, fn version ->
+        :ets.insert(store.items, {{["notes"], "k"}, expired})
+        {:ok, _item} = Memory.put(store, ["notes"], "k", %{"v" => version})
+        not match?({:ok, %{value: %{"v" => ^version}}}, Memory.get(store, ["notes"], "k"))
+      end)
+
+    Enum.each(readers, &send(&1.pid, :stop))
+    Enum.each(readers, &Task.await/1)
+
+    assert lost == 0
+  end
+
   test "refresh_ttl: nil is the default, false, and other values raise" do
     assert %ETS{refresh_ttl: false} = ETS.new(refresh_ttl: nil)
     assert_raise ArgumentError, ~r/:refresh_ttl/, fn -> ETS.new(refresh_ttl: "yes") end
+  end
+
+  defp get_until_stopped(store) do
+    receive do
+      :stop -> :ok
+    after
+      0 ->
+        Memory.get(store, ["notes"], "k")
+        get_until_stopped(store)
+    end
   end
 
   defp read_until_stopped(store) do

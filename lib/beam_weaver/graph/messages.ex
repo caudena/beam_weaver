@@ -6,6 +6,11 @@ defmodule BeamWeaver.Graph.Messages do
   and deletes messages marked with `remove/1` (or everything before a
   `remove_all/0` marker). Messages without an id get one. `channel/1` and
   `state_schema/1` set up a `:messages` state key that uses it.
+
+  `delta_channel/1` sets up a key that checkpoints save as the messages each
+  step adds. Each write to it becomes messages with ids before it is applied
+  and saved, the messages in a `BeamWeaver.Graph.Overwrite` included, so
+  every read of the thread gives a message the same id.
   """
 
   alias BeamWeaver.Core.ContentBlock
@@ -13,6 +18,7 @@ defmodule BeamWeaver.Graph.Messages do
   alias BeamWeaver.Graph
   alias BeamWeaver.Graph.Channels.BinaryOperatorAggregate
   alias BeamWeaver.Graph.Channels.DeltaChannel
+  alias BeamWeaver.Graph.Overwrite
 
   @remove_all "__remove_all__"
 
@@ -40,7 +46,7 @@ defmodule BeamWeaver.Graph.Messages do
 
   @spec delta_channel(keyword()) :: Graph.channel_spec()
   def delta_channel(opts \\ []) do
-    Graph.channel({DeltaChannel, &delta_reducer/2}, opts)
+    Graph.channel({DeltaChannel, &delta_reducer/2}, Keyword.put_new(opts, :prepare, &prepare_delta_write/1))
   end
 
   @spec add_messages(term(), term()) :: [Message.t()]
@@ -127,6 +133,21 @@ defmodule BeamWeaver.Graph.Messages do
               "unsupported message representation: #{inspect(value)} (#{error.message})"
     end
   end
+
+  # A write as the delta channel saves it: its messages normalized, with ids.
+  # A write that doesn't hold messages stays as it is and fails when applied.
+  defp prepare_delta_write(write) do
+    case Overwrite.get(write) do
+      {:ok, value} -> Overwrite.new(prepare_messages(value))
+      :error -> prepare_messages(write)
+    end
+  rescue
+    ArgumentError -> write
+  end
+
+  defp prepare_messages(nil), do: nil
+  defp prepare_messages(messages) when is_list(messages), do: messages |> message_list() |> ensure_ids()
+  defp prepare_messages(message), do: [message] |> message_list() |> ensure_ids() |> hd()
 
   defp message_list(nil), do: []
   defp message_list(list) when is_list(list), do: Enum.map(list, &normalize/1)

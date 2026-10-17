@@ -875,6 +875,36 @@ defmodule BeamWeaver.Graph.CompiledTest do
              ])
   end
 
+  describe "bulk_update_state schedules what comes next" do
+    test "an update as a node runs the nodes after it, as update_state does" do
+      graph = assistant_graph(CheckpointETS.new())
+      config = %{"configurable" => %{"thread_id" => "bulk-as-node"}}
+
+      assert {:ok, _state} = Compiled.invoke(graph, %{log: ["hi"]}, config: config)
+      assert {:ok, _config} = Compiled.bulk_update_state(graph, config, [[%{log: ["u"]}]], as_node: :model)
+      assert {:ok, %{next: ["assistant"]}} = Compiled.get_state(graph, config)
+
+      assert {:ok, %{log: ["hi", "model", "assistant", "u", "assistant"]}} =
+               Compiled.invoke(graph, %{}, config: config)
+    end
+
+    test "the last superstep routes, and a task waiting at a breakpoint stays" do
+      saver = CheckpointETS.new()
+      graph = assistant_graph(saver, interrupt_before: [:assistant])
+      config = %{"configurable" => %{"thread_id" => "bulk-breakpoint"}}
+
+      assert {:interrupted, %{nodes: ["assistant"]}} = Compiled.invoke(graph, %{log: ["hi"]}, config: config)
+      assert {:ok, _config} = Compiled.bulk_update_state(graph, config, [[%{log: ["u"]}]])
+      assert {:ok, %{next: ["assistant"]}} = Compiled.get_state(graph, config)
+
+      assert {:ok, _config} =
+               Compiled.bulk_update_state(graph, config, [[%{log: ["v"]}], [%{log: ["w"]}]], as_node: :model)
+
+      assert {:ok, %{next: ["assistant"]}} = Compiled.get_state(graph, config)
+      assert {:ok, %{log: ["hi", "model", "u", "v", "w", "assistant"]}} = Compiled.resume(graph, nil, config: config)
+    end
+  end
+
   test "update_state infers continuation node while interrupted" do
     checkpointer = CheckpointETS.new()
 
@@ -1680,5 +1710,16 @@ defmodule BeamWeaver.Graph.CompiledTest do
     assert interrupt.timing == :before
     assert interrupt.nodes == ["approval"]
     assert interrupt.state == %{request: "delete"}
+  end
+
+  defp assistant_graph(saver, opts \\ []) do
+    Graph.new()
+    |> Graph.add_reducer(:log, &(&1 ++ &2))
+    |> Graph.add_node(:model, fn _state -> %{log: ["model"]} end)
+    |> Graph.add_node(:assistant, fn _state -> %{log: ["assistant"]} end)
+    |> Graph.add_edge(Graph.start(), :model)
+    |> Graph.add_edge(:model, :assistant)
+    |> Graph.add_edge(:assistant, Graph.end_node())
+    |> Graph.compile!([checkpointer: saver] ++ opts)
   end
 end

@@ -534,6 +534,133 @@ defmodule BeamWeaver.Graph.ContinueThreadTest do
     end
   end
 
+  describe "a command's goto in a stopped step" do
+    test "a goto task that pauses runs once, on the next resume" do
+      cases = [
+        {"goto-paused", nil, :extra},
+        {"goto-paused-update", %{log: ["note"]}, :extra},
+        {"goto-paused-send", nil, %Send{node: :extra, update: %{}}}
+      ]
+
+      for {id, update, goto} <- cases do
+        graph = goto_branches_graph()
+        config = thread(id)
+
+        assert {:interrupted, %{value: "Go on?"}} = Compiled.invoke(graph, %{log: []}, config: config)
+
+        assert {:interrupted, %{value: "Extra?"}} =
+                 Compiled.invoke(graph, %Command{resume: "yes", update: update, goto: goto}, config: config)
+
+        assert {:ok, %{next: ["extra"], interrupts: [%{value: "Extra?"}]}} = Compiled.get_state(graph, config)
+
+        assert {:ok, %{log: log}} = Compiled.resume(graph, "sure", config: config)
+        assert Enum.sort(log) == Enum.sort(["a", "b: yes", "extra: sure", "after a"] ++ ((update || %{})[:log] || []))
+      end
+    end
+
+    test "update_state takes no goto" do
+      graph = goto_branches_graph()
+      config = thread("goto-update-state")
+
+      assert {:interrupted, %{value: "Go on?"}} = Compiled.invoke(graph, %{log: []}, config: config)
+      assert {:ok, _config} = Compiled.update_state(graph, config, %{log: ["note"]}, command_goto: :extra)
+      assert {:ok, %{next: ["b"]}} = Compiled.get_state(graph, config)
+    end
+
+    test "a goto task that pauses in the step after a breakpoint runs on the next resume" do
+      graph =
+        Graph.new()
+        |> Graph.add_reducer(:log, &(&1 ++ &2))
+        |> Graph.add_node(:a, fn _state -> %{log: ["a"]} end)
+        |> Graph.add_node(:b, fn _state -> %{log: ["b"]} end)
+        |> Graph.add_node(:extra, fn _state ->
+          %{log: ["extra: #{Graph.interrupt("Extra?")} #{Graph.interrupt("Really?")}"]}
+        end)
+        |> Graph.add_edge(Graph.start(), :a)
+        |> Graph.add_edge(:a, :b)
+        |> Graph.compile!(checkpointer: CheckpointETS.new(), interrupt_before: [:b])
+
+      config = thread("goto-breakpoint")
+
+      assert {:interrupted, %{nodes: ["b"]}} = Compiled.invoke(graph, %{log: []}, config: config)
+
+      assert {:interrupted, %{value: "Really?"}} =
+               Compiled.invoke(graph, %Command{resume: "go", goto: :extra}, config: config)
+
+      assert {:ok, %{next: ["extra"]}} = Compiled.get_state(graph, config)
+      assert {:ok, %{log: ["a", "b", "extra: go sure"]}} = Compiled.resume(graph, "sure", config: config)
+    end
+  end
+
+  describe "bulk_update_state on a step that stopped partway" do
+    test "keeps the pause, and the step still routes from the nodes that finished" do
+      graph = branches_graph(fn _state -> %{log: ["b: " <> Graph.interrupt("Go on?")]} end)
+      config = thread("bulk-partway-pause")
+
+      assert {:interrupted, interrupt} = Compiled.invoke(graph, %{log: []}, config: config)
+      assert {:ok, _config} = Compiled.bulk_update_state(graph, config, [[%{log: ["note"]}], [%{log: ["more"]}]])
+      assert {:ok, %{next: ["b"], interrupts: [%{id: id}]}} = Compiled.get_state(graph, config)
+      assert id == interrupt.id
+
+      assert {:ok, %{log: ["a", "note", "more", "b: yes", "after a"]}} =
+               Compiled.resume(graph, %{interrupt.id => "yes"}, config: config)
+    end
+
+    test "keeps the failed node to run, and the step still routes from the nodes that finished" do
+      graph =
+        branches_graph(fn state ->
+          if state[:fixed], do: %{log: ["b"]}, else: {:error, Error.new(:outage, "b failed")}
+        end)
+
+      config = thread("bulk-partway-failure")
+
+      assert {:error, %Error{type: :outage}} = Compiled.invoke(graph, %{log: []}, config: config)
+      assert {:ok, _config} = Compiled.bulk_update_state(graph, config, [[%{fixed: true}]])
+      assert {:ok, %{values: %{log: ["a"], fixed: true}, next: ["b"]}} = Compiled.get_state(graph, config)
+
+      assert {:ok, %{log: ["a", "b", "after a"]}} = Compiled.invoke(graph, %{}, config: config)
+    end
+
+    test "a superstep as the paused node completes the step, and later supersteps route from there" do
+      graph = branches_graph(fn _state -> %{log: ["b: " <> Graph.interrupt("Go on?")]} end)
+      config = thread("bulk-partway-completes")
+
+      assert {:interrupted, _interrupt} = Compiled.invoke(graph, %{log: []}, config: config)
+
+      assert {:ok, _config} =
+               Compiled.bulk_update_state(graph, config, [[%{log: ["b, by hand"]}], [%{log: ["later"]}]], as_node: :b)
+
+      assert {:ok, %{next: ["after_a"], interrupts: []}} = Compiled.get_state(graph, config)
+      assert {:ok, %{log: ["a", "b, by hand", "later", "after a"]}} = Compiled.invoke(graph, %{}, config: config)
+    end
+
+    test "a superstep that isn't a list fails before any is saved" do
+      graph = branches_graph(fn _state -> %{log: ["b: " <> Graph.interrupt("Go on?")]} end)
+      config = thread("bulk-partway-invalid")
+
+      assert {:interrupted, _interrupt} = Compiled.invoke(graph, %{log: []}, config: config)
+      saved = length(Compiled.get_state_history(graph, config))
+
+      assert {:error, %Error{type: :invalid_update}} =
+               Compiled.bulk_update_state(graph, config, [[%{log: ["note"]}], :not_a_superstep])
+
+      assert length(Compiled.get_state_history(graph, config)) == saved
+    end
+
+    test "an update as the paused node answers it, and the step routes from it" do
+      graph = branches_graph(fn _state -> %{log: ["b: " <> Graph.interrupt("Go on?")]} end)
+      config = thread("bulk-partway-as-node")
+
+      assert {:interrupted, _interrupt} = Compiled.invoke(graph, %{log: []}, config: config)
+
+      assert {:ok, _config} =
+               Compiled.bulk_update_state(graph, config, [[%{log: ["b, by hand"]}, %{log: ["and more"]}]], as_node: :b)
+
+      assert {:ok, %{next: ["after_a"], interrupts: []}} = Compiled.get_state(graph, config)
+      assert {:ok, %{log: ["a", "b, by hand", "and more", "after a"]}} = Compiled.invoke(graph, %{}, config: config)
+    end
+  end
+
   test "a struct resume value answers the pending interrupt" do
     graph =
       Graph.new()
@@ -580,6 +707,19 @@ defmodule BeamWeaver.Graph.ContinueThreadTest do
     |> Graph.add_edge(:a, :after_a)
     |> Graph.add_edge(:after_a, Graph.end_node())
     |> Graph.add_edge(:b, Graph.end_node())
+    |> Graph.compile!(checkpointer: CheckpointETS.new())
+  end
+
+  defp goto_branches_graph do
+    Graph.new()
+    |> Graph.add_reducer(:log, &(&1 ++ &2))
+    |> Graph.add_node(:a, fn _state -> %{log: ["a"]} end)
+    |> Graph.add_node(:b, fn _state -> %{log: ["b: " <> Graph.interrupt("Go on?")]} end)
+    |> Graph.add_node(:extra, fn _state -> %{log: ["extra: " <> Graph.interrupt("Extra?")]} end)
+    |> Graph.add_node(:after_a, fn _state -> %{log: ["after a"]} end)
+    |> Graph.add_edge(Graph.start(), :a)
+    |> Graph.add_edge(Graph.start(), :b)
+    |> Graph.add_edge(:a, :after_a)
     |> Graph.compile!(checkpointer: CheckpointETS.new())
   end
 

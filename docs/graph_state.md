@@ -169,6 +169,13 @@ A `Topic` without `accumulate:` and an `EphemeralValue` hold what one step
 wrote: the nodes of the next step read it, and it is cleared after that step
 unless a node writes it again.
 
+A `DeltaChannel` rebuilds its value from the writes saved in earlier
+checkpoints whenever a thread is read, so a write must read back the same
+every time. Its `prepare:` option takes a function that prepares each write
+before it is applied, streamed or saved; a prepared write can go through it
+again and must come back unchanged. `BeamWeaver.Graph.Messages.delta_channel/1`
+uses it to give each message its id once.
+
 A channel that needs a function takes a `{module, function}` tuple. The same
 forms work with `Graph.add_channel/4`:
 `Graph.add_channel(graph, :refunded, {BinaryOperatorAggregate, &+/2}, initial: 0)`.
@@ -197,7 +204,8 @@ Compiled.invoke(notes, %{notes: ["opened by Ada"]})
 #=> {:ok, %{notes: ["ticket closed"]}}
 ```
 
-A key accepts one overwrite per step.
+A key accepts one overwrite per step, and the overwrite drops the step's other
+writes to the key.
 
 ## Private keys
 

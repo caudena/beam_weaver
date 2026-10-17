@@ -10,6 +10,10 @@ end
 defmodule BeamWeaver.Serialization.Registry do
   @moduledoc """
   Explicit decode allowlist for tagged BeamWeaver structs.
+
+  Only the structs registered here are rebuilt when a value loads. A saved
+  struct whose tag isn't registered, or whose module is no longer available,
+  loads as a map of its fields with string keys.
   """
 
   defstruct types: %{
@@ -138,8 +142,11 @@ defmodule BeamWeaver.Serialization.JSON do
   in the `BeamWeaver.Serialization.Registry` are tagged. Map keys keep their
   type at any depth: a JSON object names its atom keys under
   `"__beam_weaver_atom_keys__"`, and a map with other keys, such as integers,
-  is saved as a list of entries. Loading creates no atoms, so an atom key
-  that doesn't exist in the running system comes back as a string.
+  is saved as a list of entries. Loading creates no atoms, so an atom or an
+  atom key that doesn't exist in the running system comes back as a string.
+  A struct that can't be rebuilt, because its tag isn't in the registry or
+  its module is gone, comes back as a map of its fields. Each such atom and
+  tag is logged as a warning the first time it loads.
   """
 
   @behaviour BeamWeaver.Serialization.Codec

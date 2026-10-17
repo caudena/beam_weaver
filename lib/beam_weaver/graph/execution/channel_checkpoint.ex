@@ -5,6 +5,7 @@ defmodule BeamWeaver.Graph.Execution.ChannelCheckpoint do
   alias BeamWeaver.Graph.Channels.DeltaChannel
   alias BeamWeaver.Graph.Channels.DeltaSnapshot
   alias BeamWeaver.Graph.Execution.ChannelLookup
+  alias BeamWeaver.Graph.Execution.ChannelMerge
   alias BeamWeaver.Graph.StateGraph
 
   @spec checkpoint_channel_values(StateGraph.t(), map()) :: map()
@@ -47,12 +48,13 @@ defmodule BeamWeaver.Graph.Execution.ChannelCheckpoint do
     end)
   end
 
+  # The writes of the step to each delta channel, one list entry per write.
   @spec checkpoint_channel_deltas(StateGraph.t(), map()) :: map()
   def checkpoint_channel_deltas(%StateGraph{channels: channels} = graph, step_update) do
     Enum.reduce(channels, %{}, fn {key, channel}, deltas ->
       case {ChannelLookup.checkpointed_channel?(graph, key), channel, state_channel_value(step_update, key)} do
         {true, %DeltaChannel{}, {:ok, value}} ->
-          Map.put(deltas, to_string(key), List.wrap(value))
+          Map.put(deltas, to_string(key), ChannelMerge.step_writes(value))
 
         _other ->
           deltas

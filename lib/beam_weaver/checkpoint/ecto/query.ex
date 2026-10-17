@@ -47,6 +47,7 @@ defmodule BeamWeaver.Checkpoint.Ecto.Query do
   def all(saver, query), do: run(saver, &saver.repo.all(query, &1))
   def one(saver, query), do: run(saver, &saver.repo.one(query, &1))
   def delete_all(saver, query), do: run(saver, &saver.repo.delete_all(query, &1))
+  def update_all(saver, query, updates), do: run(saver, &saver.repo.update_all(query, updates, &1))
 
   def insert_all(saver, source, rows, opts),
     do: run(saver, &saver.repo.insert_all(source, rows, Keyword.merge(opts, &1)))

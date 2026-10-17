@@ -62,4 +62,20 @@ defmodule BeamWeaver.Checkpoint.ETSTest do
     assert latest.checkpoint["channel_values"]["__tasks__"] == ["thread-a-send"]
     assert first.pending_writes == [{"task-1", "__tasks__", "thread-a-send"}]
   end
+
+  test "delta channel history ends at a parent it already read" do
+    saver = ETS.new()
+    config = %{"configurable" => %{"thread_id" => "looped"}}
+    {:ok, first} = Checkpoint.put(saver, config, %{"channel_deltas" => %{"items" => ["a"]}}, %{}, %{})
+    {:ok, second} = Checkpoint.put(saver, first, %{"channel_deltas" => %{"items" => ["b"]}}, %{}, %{})
+
+    # A checkpoint saved again under its child, as earlier versions saved it,
+    # makes the two each other's parent.
+    key = {"looped", "", first["configurable"]["checkpoint_id"]}
+    [{^key, record}] = :ets.lookup(saver.checkpoints, key)
+    :ets.insert(saver.checkpoints, {key, %{record | parent_config: second}})
+
+    assert %{"items" => %{writes: writes}} = Checkpoint.get_delta_channel_history(saver, second, ["items"])
+    assert Enum.map(writes, & &1.value) == ["a", "b"]
+  end
 end

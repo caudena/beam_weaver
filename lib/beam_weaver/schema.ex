@@ -112,6 +112,19 @@ defmodule BeamWeaver.Schema do
 
   def to_json_schema(type), do: BeamWeaver.Tool.Schema.type_schema(type) |> stringify_keys()
 
+  @doc false
+  # A JSON-schema map as it is, or the schema a module declares; anything else
+  # raises.
+  @spec json_schema!(map() | module()) :: map()
+  def json_schema!(schema) when is_map(schema) and not is_struct(schema), do: schema
+
+  def json_schema!(module) when is_atom(module) do
+    module_schema(module) || raise ArgumentError, "#{inspect(module)} does not declare a JSON schema"
+  end
+
+  def json_schema!(other),
+    do: raise(ArgumentError, "expected a JSON Schema map or a schema module, got: #{inspect(other)}")
+
   @doc """
   Returns the JSON schema a module declares through `json_schema/0`,
   `schema/0`, or `use BeamWeaver.Schema`, or `nil` when it declares none.

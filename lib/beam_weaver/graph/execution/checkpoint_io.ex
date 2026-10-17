@@ -7,6 +7,7 @@ defmodule BeamWeaver.Graph.Execution.CheckpointIO do
   alias BeamWeaver.Graph.Execution
   alias BeamWeaver.Graph.Execution.ChannelCheckpoint
   alias BeamWeaver.Graph.Execution.ChannelLookup
+  alias BeamWeaver.Graph.Execution.ChannelMerge
   alias BeamWeaver.Graph.Execution.Route
 
   defp put(checkpointer, config, checkpoint, metadata, channel_versions) do
@@ -93,7 +94,11 @@ defmodule BeamWeaver.Graph.Execution.CheckpointIO do
     persisted_updated_channels = persisted_updated_channels(compiled.graph, updated_channels)
     {step_start, metadata} = Map.pop(metadata, :step_start)
 
-    metadata = Map.merge(metadata, %{step_update: persisted_step_update, updated_channels: persisted_updated_channels})
+    metadata =
+      Map.merge(metadata, %{
+        step_update: ChannelMerge.public_update(persisted_step_update),
+        updated_channels: persisted_updated_channels
+      })
 
     {counters, snapshot_channels} = delta_snapshot_state(compiled.graph, parent_counters, metadata)
 
@@ -179,7 +184,7 @@ defmodule BeamWeaver.Graph.Execution.CheckpointIO do
 
     pending_writes
     |> Enum.filter(&persisted_pending_write?(graph, &1.channel))
-    |> Enum.group_by(&{&1.task_id, &1.path || ""}, &{&1.channel, persisted_value(graph, &1.value)})
+    |> Enum.group_by(&{&1.task_id, &1.path || ""}, &{&1.channel, persisted_value(graph, &1.channel, &1.value)})
     |> Enum.reduce_while(:ok, fn {{task_id, path}, writes}, :ok ->
       writes = keep_pending_interrupt(writes, task_id, run.replay_pending_writes)
 
@@ -228,8 +233,10 @@ defmodule BeamWeaver.Graph.Execution.CheckpointIO do
 
   defp with_path(write, _paths), do: write
 
-  defp persisted_value(graph, %Route{} = route), do: Route.encode(route, graph)
-  defp persisted_value(_graph, value), do: value
+  # A write to a delta channel is saved as the channel prepares it, and so is
+  # applied as saved when the step continues.
+  defp persisted_value(graph, _channel, %Route{} = route), do: Route.encode(route, graph)
+  defp persisted_value(graph, channel, value), do: ChannelMerge.prepare_write(graph, channel, value)
 
   # A resumed task that fails stays paused at the interrupt it was resumed
   # from: that interrupt is saved in place of the error, which the run

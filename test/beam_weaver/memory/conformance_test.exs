@@ -64,6 +64,65 @@ defmodule BeamWeaver.Memory.ConformanceTest do
                  Memory.batch(store, [%GetOp{namespace: ["beam_weaver"], key: "internal"}])
       end
 
+      test "batch normalizes each operation's namespace and key, and rejects an invalid one before running any",
+           %{store: store} do
+        assert [nil, %{namespace: ["users", "1"], key: "prefs"}] =
+                 Memory.batch(store, [
+                   %PutOp{namespace: [:users, 1], key: :prefs, value: %{"theme" => "dark"}},
+                   %GetOp{namespace: ["users", "1"], key: "prefs"}
+                 ])
+
+        assert {:ok, %{value: %{"theme" => "dark"}}} = Memory.get(store, ["users", "1"], "prefs")
+
+        for namespace <- [[], ["users.ada"], ["users", ""]],
+            op <- [
+              %PutOp{namespace: namespace, key: "k", value: %{"v" => 1}},
+              %PutOp{namespace: namespace, key: "k", value: nil},
+              %GetOp{namespace: namespace, key: "k"}
+            ] do
+          assert {:error, {:invalid_namespace, _}} =
+                   Memory.batch(store, [%PutOp{namespace: ["other"], key: "k", value: %{"v" => 1}}, op])
+        end
+
+        for prefix <- [["users.ada"], ["users", ""]] do
+          assert {:error, {:invalid_namespace, _}} = Memory.batch(store, [%SearchOp{namespace: prefix}])
+
+          assert {:error, {:invalid_namespace, _}} =
+                   Memory.batch(store, [
+                     %ListNamespacesOp{match_conditions: [%MatchCondition{type: :suffix, path: prefix}]}
+                   ])
+        end
+
+        assert [[%{key: "prefs"}], [["users", "1"]]] =
+                 Memory.batch(store, [
+                   %SearchOp{namespace: [:users]},
+                   %ListNamespacesOp{match_conditions: [%MatchCondition{type: :prefix, path: [:users, "*"]}]}
+                 ])
+
+        assert [] = Memory.search(store, ["other"])
+      end
+
+      test "search and list_namespaces reject a prefix with an empty part or a dot", %{store: store} do
+        put!(store, ["users", "ada"], "k", %{"v" => 1})
+
+        for prefix <- [["users.ada"], ["users", ""]] do
+          assert {:error, {:invalid_namespace, _}} = Memory.search(store, prefix)
+          assert {:error, {:invalid_namespace, _}} = Memory.list_namespaces(store, prefix: prefix)
+          assert {:error, {:invalid_namespace, _}} = Memory.list_namespaces(store, suffix: prefix)
+        end
+
+        assert [%{key: "k"}] = Memory.search(store, [])
+        assert [["users", "ada"]] = Memory.list_namespaces(store, prefix: [:users, "*"])
+      end
+
+      test "list_namespaces skips a namespace whose records have all expired", %{store: store} do
+        assert {:ok, _item} = Memory.put(store, ["promos", "expired"], "spring", %{"code" => "SPRING10"}, ttl: 60)
+        assert {:ok, _item} = Memory.put(store, ["promos", "live"], "summer", %{"code" => "SUMMER10"}, ttl: 60)
+        expire!(store, ["promos", "expired"], "spring")
+
+        assert [["promos", "live"]] = Memory.list_namespaces(store, prefix: ["promos"])
+      end
+
       test "searches by namespace prefix, text query, filters, operators, and pagination", %{
         store: store
       } do
@@ -603,6 +662,16 @@ defmodule BeamWeaver.Memory.ConformanceTest do
     end)
 
     Ecto.new([repo: PostgresRepo, table: table] ++ opts)
+  end
+
+  defp expire!(%ETS{} = store, namespace, key) do
+    [{item_key, item}] = :ets.lookup(store.items, {namespace, key})
+    :ets.insert(store.items, {item_key, %{item | expires_at: DateTime.add(DateTime.utc_now(), -60, :second)}})
+  end
+
+  defp expire!(%Ecto{} = store, namespace, key) do
+    sql = "UPDATE #{store.table} SET expires_at = now() - interval '1 minute' WHERE namespace = $1 AND key = $2"
+    assert {:ok, %{num_rows: 1}} = Elixir.Ecto.Adapters.SQL.query(PostgresRepo, sql, [namespace, key])
   end
 
   defp metadata_value(metadata, key) do

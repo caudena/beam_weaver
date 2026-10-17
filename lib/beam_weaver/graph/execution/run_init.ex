@@ -1,6 +1,7 @@
 defmodule BeamWeaver.Graph.Execution.RunInit do
   @moduledoc false
 
+  alias BeamWeaver.Checkpoint
   alias BeamWeaver.Core.Error
   alias BeamWeaver.Graph.Execution
   alias BeamWeaver.Graph.Execution.ChannelMerge
@@ -11,6 +12,8 @@ defmodule BeamWeaver.Graph.Execution.RunInit do
   alias BeamWeaver.Graph.Execution.Route
   alias BeamWeaver.Graph.Execution.Run
   alias BeamWeaver.Graph.Execution.RunOptions
+  alias BeamWeaver.Graph.Execution.StoppedStep
+  alias BeamWeaver.Graph.Execution.SubgraphRouter
   alias BeamWeaver.Graph.Execution.TaskCollector
   alias BeamWeaver.Graph.ServerInfo
 
@@ -64,6 +67,24 @@ defmodule BeamWeaver.Graph.Execution.RunInit do
 
     replay? = Replay.replay_pending?(restored) or continue?
 
+    fork_from_checkpoint? =
+      (explicit_checkpoint_continue? or options.continue_from_checkpoint?) and
+        not options.resume_requested?
+
+    flags = {replay?, continue?, fork_from_checkpoint?}
+
+    if replay? and not fork_from_checkpoint? and not continue_task? and
+         keep_stopped_step?(compiled, input, options.command_goto, restored, options.config) do
+      with {:ok, config} <- update_stopped_step(compiled, input, options.command_goto, restored, options.config),
+           {:ok, restored} <- Replay.restore_checkpoint_state(compiled, config) do
+        start(compiled, %{}, %{options | config: config, command_goto: nil}, resume, restored, flags)
+      end
+    else
+      start(compiled, input, options, resume, restored, flags)
+    end
+  end
+
+  defp start(compiled, input, %RunOptions{} = options, resume, restored, {replay?, continue?, fork_from_checkpoint?}) do
     with {:ok, restored_values} <-
            ChannelMerge.apply_pending_writes(
              restored.values,
@@ -97,15 +118,20 @@ defmodule BeamWeaver.Graph.Execution.RunInit do
 
       task_trigger_versions = if replay?, do: restored.channel_versions, else: input_channel_versions
 
-      fork_from_checkpoint? =
-        (explicit_checkpoint_continue? or options.continue_from_checkpoint?) and
-          not options.resume_requested?
-
       with {:ok, continued_from} <-
              continued_from(compiled, options.config, restored, replay? and not fork_from_checkpoint?),
            {:ok, run_config} <-
              if(fork_from_checkpoint?,
-               do: write_fork_checkpoint(compiled, options.config, restored, initial_state, initial_ready, options),
+               do:
+                 write_fork_checkpoint(
+                   compiled,
+                   options.config,
+                   restored,
+                   initial_state,
+                   initial_ready,
+                   {input, input_updated_channels},
+                   options
+                 ),
                else: {:ok, options.config}
              ),
            {:ok, config, known_checkpoint} <-
@@ -158,7 +184,11 @@ defmodule BeamWeaver.Graph.Execution.RunInit do
            task_trigger_versions: task_trigger_versions,
            replay_pending_writes: if(replay?, do: restored.pending_writes, else: []),
            replay_routes: if(replay?, do: Route.from_writes(restored.pending_writes), else: []),
-           replay_input_updated_channels: if(replay?, do: input_updated_channels, else: []),
+           replayed_channels:
+             if(replay?,
+               do: Execution.normalize_channels(StoppedStep.channels(restored) ++ input_updated_channels),
+               else: []
+             ),
            step_timeout: options.step_timeout,
            run_timeout: options.run_timeout,
            run_deadline: TaskCollector.deadline(options.run_timeout),
@@ -174,6 +204,44 @@ defmodule BeamWeaver.Graph.Execution.RunInit do
     end
   end
 
+  # A run that continues a step the thread stopped in, at a pause, a failure
+  # or a breakpoint, with new input, such as a `Command`'s update, or with a
+  # `Command`'s `goto`, saves the input and the `goto`'s tasks into that step
+  # first, as `update_state/4` saves an update there, so they stay when the
+  # step stops again. A run that continues a step stopped partway on an
+  # earlier checkpoint than the thread's latest does the same with no input:
+  # what the step writes then goes to a checkpoint of its own, and the branch
+  # that already went on from that checkpoint doesn't see it.
+  defp keep_stopped_step?(compiled, input, goto, restored, config) do
+    stopped? = Replay.replay_pending?(restored)
+
+    ((input != %{} or goto not in [nil, []]) and (stopped? or restored.next != [])) or
+      (stopped? and not latest_checkpoint?(compiled, config, restored))
+  end
+
+  # The run goes on from the new checkpoint, with the rest of its config.
+  defp update_stopped_step(compiled, input, goto, restored, config) do
+    stopped = Execution.at_checkpoint(config, Execution.checkpoint_id(restored.checkpoint_config))
+
+    with {:ok, updated} <- StoppedStep.save(compiled, stopped, restored, {:update, input}, nil, goto) do
+      configurable = Map.merge(Checkpoint.configurable(config), Checkpoint.configurable(updated))
+      {:ok, config |> Map.delete(:configurable) |> Map.put("configurable", configurable)}
+    end
+  end
+
+  defp latest_checkpoint?(compiled, config, restored) do
+    config = SubgraphRouter.checkpoint_config(compiled, config)
+
+    is_nil(Execution.checkpoint_id(config)) or
+      case Checkpoint.get_tuple(
+             compiled.checkpointer,
+             Execution.at_checkpoint(%{"configurable" => Checkpoint.configurable(config)}, nil)
+           ) do
+        %{config: latest} -> Execution.checkpoint_id(latest) == Execution.checkpoint_id(restored.checkpoint_config)
+        nil -> true
+      end
+  end
+
   # In a step that a run continues, the state the step's tasks started from:
   # the checkpoint's own state, or, after an update made while the step was
   # stopped, the state of the checkpoint the step started from, when the
@@ -183,9 +251,9 @@ defmodule BeamWeaver.Graph.Execution.RunInit do
   defp continued_from(_compiled, _config, %{step_start: nil} = restored, true), do: {:ok, restored.values}
 
   defp continued_from(compiled, config, restored, true) do
-    configurable = Map.put(BeamWeaver.Checkpoint.configurable(config), "checkpoint_id", restored.step_start)
+    step_start = Execution.at_checkpoint(%{"configurable" => Checkpoint.configurable(config)}, restored.step_start)
 
-    case Replay.restore_checkpoint_state(compiled, %{"configurable" => configurable}) do
+    case Replay.restore_checkpoint_state(compiled, step_start) do
       {:ok, %{checkpoint?: true, values: values}} -> {:ok, values}
       {:ok, _missing} -> {:ok, restored.values}
       {:error, %Error{}} = error -> error
@@ -200,11 +268,19 @@ defmodule BeamWeaver.Graph.Execution.RunInit do
   defp run_values(values, false), do: Map.delete(values, :__edge_runs__)
 
   # The fork is a copy of the checkpoint it continues, with the writes of the
-  # tasks that finished in a stopped step in its state. Their routes move
-  # along, so the step still routes from those tasks when it completes, also
-  # when it stops again first. The step keeps its number, so its tasks keep
-  # their ids.
-  defp write_fork_checkpoint(compiled, config, restored, state, initial_ready, %RunOptions{} = options) do
+  # tasks that finished in a stopped step and the run's input, such as a
+  # `Command`'s update, in its state. Their routes move along, so the step
+  # still routes from those tasks when it completes, also when it stops again
+  # first. The step keeps its number, so its tasks keep their ids.
+  defp write_fork_checkpoint(
+         compiled,
+         config,
+         restored,
+         state,
+         initial_ready,
+         {input, input_updated_channels},
+         %RunOptions{} = options
+       ) do
     metadata = %{
       source: "fork",
       step: restored.step,
@@ -215,8 +291,8 @@ defmodule BeamWeaver.Graph.Execution.RunInit do
       interrupts: Map.get(restored, :interrupts, []),
       channel_versions: restored.channel_versions,
       versions_seen: restored.versions_seen,
-      updated_channels: [],
-      step_update: %{}
+      updated_channels: input_updated_channels,
+      step_update: input
     }
 
     with {:ok, config, _known_checkpoint} <-

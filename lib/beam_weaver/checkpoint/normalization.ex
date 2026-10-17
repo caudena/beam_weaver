@@ -8,6 +8,7 @@ defmodule BeamWeaver.Checkpoint.Normalization do
     config
     |> Map.get(:configurable, Map.get(config, "configurable", config))
     |> stringify_config()
+    |> drop_empty_checkpoint_id()
   end
 
   def normalize_tuple(nil, _saver), do: nil
@@ -36,6 +37,12 @@ defmodule BeamWeaver.Checkpoint.Normalization do
   defp stringify_config(config) when is_map(config), do: Map.new(config, fn {key, value} -> {to_string(key), value} end)
 
   defp stringify_config(_other), do: %{}
+
+  # An empty or nil `checkpoint_id` means the latest checkpoint, as no id does.
+  defp drop_empty_checkpoint_id(%{"checkpoint_id" => id} = configurable) when id in ["", nil],
+    do: Map.delete(configurable, "checkpoint_id")
+
+  defp drop_empty_checkpoint_id(configurable), do: configurable
 
   defp normalize_checkpoint(checkpoint) do
     checkpoint

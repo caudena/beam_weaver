@@ -45,14 +45,15 @@ defmodule BeamWeaver.Graph.Execution.TaskCollector do
     do: {:halt, Collection.halt(collection, :error, error)}
 
   # The run pauses on the step's first interrupt; `interrupts` lists every
-  # task's, so each can be answered by its id.
+  # task's, and every pause of a subgraph task, so each can be answered by its
+  # id.
   defp collect_results([], run, %Collection{} = collection, {:interrupted, paused}) do
     [{interrupt, entry} | _rest] = paused = Enum.reverse(paused)
 
     payload =
       interrupt
       |> interrupt_payload(run, entry)
-      |> Map.put(:interrupts, Enum.map(paused, &elem(&1, 0)))
+      |> Map.put(:interrupts, Enum.flat_map(paused, &Replay.task_interrupts(elem(&1, 0))))
 
     {:halt, Collection.halt(collection, :interrupted, payload)}
   end
@@ -157,6 +158,7 @@ defmodule BeamWeaver.Graph.Execution.TaskCollector do
     %{
       id: interrupt.id,
       value: interrupt.value,
+      response_schema: interrupt.response_schema,
       timing: :during,
       nodes: [entry.node],
       state: interrupt_state(run),

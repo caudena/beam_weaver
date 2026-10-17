@@ -375,8 +375,8 @@ threads:
 | Function | What it does |
 |---|---|
 | `delete_thread(saver, thread_id)` | Deletes every checkpoint of a thread. |
-| `prune(saver, thread_ids)` | Keeps only the latest checkpoint of each thread: the threads continue, but their history is gone. With `strategy: :delete` it deletes the threads. |
-| `delete_for_runs(saver, run_ids)` | Deletes the checkpoints that the given runs wrote (`metadata["run_id"]`). |
+| `prune(saver, thread_ids)` | Keeps the latest checkpoint of each thread, and the earlier ones its delta channels still read: the threads continue, but the rest of their history is gone, with the checkpoints of subgraph calls that finished. With `strategy: :delete` it deletes the threads; any other strategy returns an `:invalid_prune_strategy` error. |
+| `delete_for_runs(saver, run_ids)` | Deletes the checkpoints that the given runs wrote (`metadata["run_id"]`). When a later checkpoint reads delta channel history from them, it deletes nothing and returns a `:delta_history_in_use` error. |
 | `copy_thread(saver, from_id, to_id)` | Copies a whole thread to a new thread id. |
 | `fork_at(saver, config, thread_id)` | Copies one checkpoint and the ones before it to a new thread id. |
 

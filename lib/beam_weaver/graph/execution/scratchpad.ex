@@ -1,6 +1,8 @@
 defmodule BeamWeaver.Graph.Execution.Scratchpad do
   @moduledoc false
 
+  alias BeamWeaver.Core.Error
+  alias BeamWeaver.Core.Tool.Schema, as: ToolSchema
   alias BeamWeaver.Graph.Interrupt
   alias BeamWeaver.Graph.Resume
 
@@ -51,43 +53,68 @@ defmodule BeamWeaver.Graph.Execution.Scratchpad do
     end
   end
 
-  @spec interrupt(term()) :: term() | no_return()
-  def interrupt(value) do
+  @spec interrupt(term(), keyword()) :: term() | no_return()
+  def interrupt(value, opts \\ []) do
+    opts = Keyword.validate!(opts, [:response_schema])
+
     case Process.get(@process_key) do
-      %__MODULE__{resume_values: [%Resume{null?: true} | rest]} = scratchpad ->
-        consume_resume(scratchpad, rest, %Resume{null?: true})
-        nil
-
-      %__MODULE__{resume_values: [%Resume{value: resume} | rest]} = scratchpad ->
-        consume_resume(scratchpad, rest, %Resume{value: resume})
-        resume
-
-      %__MODULE__{resume_values: [resume | rest]} = scratchpad ->
-        consume_resume(scratchpad, rest, resume)
-        resume
-
       %__MODULE__{} = scratchpad ->
-        payload =
-          :erlang.term_to_binary({scratchpad.task_id, scratchpad.node, scratchpad.step, scratchpad.interrupt_counter})
-
-        interrupt = %Interrupt{
-          id: "interrupt_" <> Base.encode16(:crypto.hash(:sha256, payload), case: :lower),
-          value: value,
-          task_id: scratchpad.task_id,
-          node: scratchpad.node,
-          step: scratchpad.step,
-          resumes: scratchpad.consumed_resume_values
-        }
-
-        Process.put(@process_key, %{
-          scratchpad
-          | interrupt_counter: scratchpad.interrupt_counter + 1
-        })
-
-        throw({:beam_weaver_graph_interrupt, interrupt})
+        answer_or_pause(scratchpad, value, response_schema(opts[:response_schema]))
 
       _missing ->
-        raise RuntimeError, "BeamWeaver.Graph.interrupt/1 can only be called inside a graph node"
+        raise RuntimeError, "BeamWeaver.Graph.interrupt/2 can only be called inside a graph node"
+    end
+  end
+
+  defp answer_or_pause(%__MODULE__{resume_values: [resume | rest]} = scratchpad, _value, schema) do
+    answer = resume |> resume_value() |> check_answer(schema, scratchpad)
+    consume_resume(scratchpad, rest, resume)
+    answer
+  end
+
+  defp answer_or_pause(%__MODULE__{} = scratchpad, value, schema) do
+    interrupt = %Interrupt{
+      id: interrupt_id(scratchpad),
+      value: value,
+      response_schema: schema,
+      task_id: scratchpad.task_id,
+      node: scratchpad.node,
+      step: scratchpad.step,
+      resumes: scratchpad.consumed_resume_values
+    }
+
+    Process.put(@process_key, %{scratchpad | interrupt_counter: scratchpad.interrupt_counter + 1})
+    throw({:beam_weaver_graph_interrupt, interrupt})
+  end
+
+  defp resume_value(%Resume{null?: true}), do: nil
+  defp resume_value(%Resume{value: value}), do: value
+  defp resume_value(resume), do: resume
+
+  defp interrupt_id(scratchpad) do
+    payload =
+      :erlang.term_to_binary({scratchpad.task_id, scratchpad.node, scratchpad.step, scratchpad.interrupt_counter})
+
+    "interrupt_" <> Base.encode16(:crypto.hash(:sha256, payload), case: :lower)
+  end
+
+  defp response_schema(nil), do: nil
+  defp response_schema(schema), do: BeamWeaver.Schema.json_schema!(schema)
+
+  # An answer that doesn't match the schema fails the node, which stays
+  # paused at this interrupt: the run returns an `:invalid_resume` error and
+  # the next resume answers again. Retrying the node can't change the answer.
+  defp check_answer(answer, nil, _scratchpad), do: answer
+
+  defp check_answer(answer, schema, scratchpad) do
+    case ToolSchema.normalize_value(schema, answer) do
+      {:ok, answer} ->
+        answer
+
+      {:error, %Error{details: details}} ->
+        details = Map.merge(details, %{interrupt_id: interrupt_id(scratchpad), node: scratchpad.node, retryable: false})
+        error = Error.new(:invalid_resume, "resume value doesn't match the interrupt's response_schema", details)
+        throw({:beam_weaver_graph_error, error})
     end
   end
 

@@ -1,8 +1,6 @@
 defmodule BeamWeaver.Graph.ChannelTest do
   use ExUnit.Case, async: true
 
-  alias BeamWeaver.Checkpoint
-  alias BeamWeaver.Checkpoint.ETS, as: CheckpointETS
   alias BeamWeaver.Graph.Channel
   alias BeamWeaver.Graph.Channels.AnyValue
   alias BeamWeaver.Graph.Channels.BinaryOperatorAggregate
@@ -184,12 +182,12 @@ defmodule BeamWeaver.Graph.ChannelTest do
     assert Channel.checkpoint(channel) == Channel.missing()
 
     assert {:ok, channel, true} = Channel.update(channel, [%Overwrite{value: ["x"]}, "y"])
-    assert Channel.get(channel) == {:ok, ["x", "y"]}
+    assert Channel.get(channel) == {:ok, ["x"]}
 
     assert {:ok, channel, true} =
              Channel.update(channel, ["before", %{"__overwrite__" => ["z"]}, "after"])
 
-    assert Channel.get(channel) == {:ok, ["z", "before", "after"]}
+    assert Channel.get(channel) == {:ok, ["z"]}
 
     restored = Channel.from_checkpoint(DeltaChannel.new(reducer, initial: []), Channel.missing())
 
@@ -237,7 +235,7 @@ defmodule BeamWeaver.Graph.ChannelTest do
                ]
              )
 
-    assert Channel.get(replayed) == {:ok, %{"x" => 10, "z" => 30}}
+    assert Channel.get(replayed) == {:ok, %{"x" => 10}}
   end
 
   test "delta channel map reducers support deletion semantics and nil seeds" do
@@ -269,47 +267,5 @@ defmodule BeamWeaver.Graph.ChannelTest do
 
     assert {:ok, replayed, true} = DeltaChannel.replay_writes(nil_seed, [{"t0", "x", "after"}])
     assert Channel.get(replayed) == {:ok, "after"}
-  end
-
-  test "delta channel replays saver pending-write history for its channel" do
-    saver = CheckpointETS.new()
-    reducer = fn existing, updates -> existing ++ List.wrap(updates) end
-    channel = DeltaChannel.new(reducer, key: "items", initial: [])
-
-    {:ok, first} =
-      Checkpoint.put(
-        saver,
-        %{"configurable" => %{"thread_id" => "delta-history"}},
-        checkpoint("00000000000000000001"),
-        %{step: 0},
-        %{}
-      )
-
-    assert :ok =
-             Checkpoint.put_writes(saver, first, [{"items", "a"}, {"other", "skip"}], "task-a")
-
-    {:ok, second} =
-      Checkpoint.put(
-        saver,
-        first,
-        checkpoint("00000000000000000002"),
-        %{step: 1},
-        %{}
-      )
-
-    assert :ok = Checkpoint.put_writes(saver, second, [{"items", "b"}], "task-b")
-
-    assert {:ok, replayed, true} = DeltaChannel.replay_history(channel, saver, second)
-    assert Channel.get(replayed) == {:ok, ["a", "b"]}
-  end
-
-  defp checkpoint(id) do
-    %{
-      "id" => id,
-      "channel_values" => %{},
-      "channel_versions" => %{},
-      "versions_seen" => %{},
-      "updated_channels" => []
-    }
   end
 end

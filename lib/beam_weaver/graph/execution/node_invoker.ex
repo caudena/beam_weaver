@@ -411,6 +411,9 @@ defmodule BeamWeaver.Graph.Execution.NodeInvoker do
     :throw, {:beam_weaver_graph_parent_command, command} ->
       {:parent_command, command}
 
+    :throw, {:beam_weaver_graph_error, %Error{} = error} ->
+      {:error, error}
+
     kind, reason ->
       {:error,
        Error.new(:node_exit, "node exited before returning", %{

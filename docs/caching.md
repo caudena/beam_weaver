@@ -48,7 +48,9 @@ for %{event: %BeamWeaver.Stream.Events.Task{kind: :cache_hit, node: node}} <- ev
 
 The first run called the model and saved what `classify` returned. The second
 run found that result, skipped the node, and reported a `:cache_hit` task event.
-The `reply` node has no `cache:`, so it ran both times.
+The `reply` node has no `cache:`, so it ran both times. Only a node that
+returns is cached: one that fails or pauses runs again on the next call, and
+so does one whose `error_handler:` supplied the result.
 
 ## Choose the cache key
 
@@ -83,7 +85,7 @@ for %{event: %BeamWeaver.Stream.Events.Task{kind: :cache_hit, node: node}} <- ev
 
 | Option | Meaning | Default |
 | --- | --- | --- |
-| `ttl:` | How long an entry lives, in milliseconds | forever |
+| `ttl:` | How long an entry lives, in milliseconds from when the node ran; a hit doesn't extend it | forever |
 | `key:` | A function of `{graph, node, state}`, or `{module, function, args}`, that returns the key | the whole tuple |
 | `namespace:` | Keeps entries apart; change it to drop old results, for example when the prompt changes | `:default` |
 | `metadata:` | A map stored with each entry | `%{}` |

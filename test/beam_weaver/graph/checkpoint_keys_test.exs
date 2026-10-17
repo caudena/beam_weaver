@@ -11,6 +11,7 @@ defmodule BeamWeaver.Graph.CheckpointKeysTest do
   alias BeamWeaver.Core.Error
   alias BeamWeaver.Core.Message
   alias BeamWeaver.Graph
+  alias BeamWeaver.Graph.Channels.DeltaChannel
   alias BeamWeaver.Graph.Command
   alias BeamWeaver.Graph.Compiled
   alias BeamWeaver.Graph.Messages
@@ -25,6 +26,12 @@ defmodule BeamWeaver.Graph.CheckpointKeysTest do
     use BeamWeaver.Schema
 
     field :category, :string
+  end
+
+  defmodule Refund do
+    use BeamWeaver.Schema
+
+    field :amount, :integer
   end
 
   defmodule TriageAgent do
@@ -270,6 +277,61 @@ defmodule BeamWeaver.Graph.CheckpointKeysTest do
         refute_received {:prepared, _status}
       end
 
+      test "a subgraph's parallel pauses read back and one map answers them", %{saver: saver} do
+        ask = fn question -> fn _state -> %{log: ["#{question}:" <> Graph.interrupt(question)]} end end
+
+        child =
+          Graph.new(name: "Checks")
+          |> Graph.add_reducer(:log, &(&1 ++ &2))
+          |> Graph.add_node(:carrier, ask.("carrier"))
+          |> Graph.add_node(:stock, ask.("stock"))
+          |> Graph.add_edge(Graph.start(), :carrier)
+          |> Graph.add_edge(Graph.start(), :stock)
+          |> Graph.compile!()
+
+        graph =
+          Graph.new()
+          |> Graph.add_reducer(:log, &(&1 ++ &2))
+          |> Graph.add_node(:checks, child)
+          |> Graph.add_edge(Graph.start(), :checks)
+          |> Graph.compile!(checkpointer: saver)
+
+        config = thread_config()
+
+        assert {:interrupted, interrupt} = Compiled.invoke(graph, %{log: []}, config: config)
+        assert {:ok, snapshot} = Compiled.get_state(graph, config)
+        assert snapshot.interrupts |> Enum.map(& &1.value) |> Enum.sort() == ["carrier", "stock"]
+
+        answers = Map.new(snapshot.interrupts, &{&1.id, "ok"})
+        assert answers |> Map.keys() |> Enum.sort() == interrupt.interrupts |> Enum.map(& &1.id) |> Enum.sort()
+        assert {:ok, %{log: log}} = Compiled.resume(graph, answers, config: config)
+        assert Enum.sort(log) == ["carrier:ok", "stock:ok"]
+      end
+
+      test "a resume with an update keeps the update while the node pauses again", %{saver: saver} do
+        graph =
+          Graph.new()
+          |> Graph.add_reducer(:log, &(&1 ++ &2))
+          |> Graph.add_node(:ask, fn _state ->
+            %{log: ["ask:" <> Graph.interrupt("first?") <> Graph.interrupt("second?")]}
+          end)
+          |> Graph.add_edge(Graph.start(), :ask)
+          |> Graph.add_edge(:ask, Graph.end_node())
+          |> Graph.compile!(checkpointer: saver)
+
+        config = thread_config()
+
+        assert {:interrupted, _interrupt} = Compiled.invoke(graph, %{log: ["in"]}, config: config)
+
+        assert {:interrupted, %{value: "second?"}} =
+                 Compiled.invoke(graph, %Command{resume: "1", update: %{log: ["u1"]}}, config: config)
+
+        assert {:ok, %{values: %{log: ["in", "u1"]}}} = Compiled.get_state(graph, config)
+
+        assert {:ok, %{log: ["in", "u1", "u2", "ask:12"]}} =
+                 Compiled.invoke(graph, %Command{resume: "2", update: %{log: ["u2"]}}, config: config)
+      end
+
       test "maps nested in the state, interrupts and Send updates keep their keys", %{saver: saver} do
         test_pid = self()
         line = %{sku: "S-1", qty: 2}
@@ -334,6 +396,64 @@ defmodule BeamWeaver.Graph.CheckpointKeysTest do
         assert {:ok, _config} = Compiled.update_state(graph, config, %{reply: "Refund sent today."})
         assert {:ok, %{next: ["send_reply"], metadata: %{"as_node" => "draft"}}} = Compiled.get_state(graph, config)
         assert {:ok, %{sent: "Refund sent today."}} = Compiled.resume(graph, nil, config: config)
+      end
+
+      test "a delta key's history follows its own branch past the checkpoints of another", %{saver: saver} do
+        graph =
+          Graph.new(state_schema: %{items: Graph.channel({DeltaChannel, &append/2})})
+          |> Graph.add_node(:write, fn _state -> %{items: ["w"]} end)
+          |> Graph.add_edge(Graph.start(), :write)
+          |> Graph.add_edge(:write, Graph.end_node())
+          |> Graph.compile!(checkpointer: saver)
+
+        config = thread_config()
+        for turn <- 1..3, do: {:ok, _state} = Compiled.invoke(graph, %{items: ["t#{turn}"]}, config: config)
+        early = graph |> Compiled.get_state_history(config) |> List.last()
+        for turn <- 4..20, do: {:ok, _state} = Compiled.invoke(graph, %{items: ["t#{turn}"]}, config: config)
+
+        assert {:ok, _state} = Compiled.invoke(graph, %{items: ["fork"]}, config: early.config)
+        assert {:ok, %{values: %{items: items}}} = Compiled.get_state(graph, config)
+        assert items == early.values.items ++ ["fork", "w"]
+      end
+
+      if adapter != :ets do
+        test "a delta key's history is read a page at a time, not a checkpoint at a time", %{saver: saver} do
+          graph =
+            Graph.new(state_schema: %{items: Graph.channel({DeltaChannel, &append/2})})
+            |> Graph.add_node(:write, fn _state -> %{items: ["w"]} end)
+            |> Graph.add_edge(Graph.start(), :write)
+            |> Graph.add_edge(:write, Graph.end_node())
+            |> Graph.compile!(checkpointer: saver)
+
+          config = thread_config()
+          for turn <- 1..30, do: {:ok, _state} = Compiled.invoke(graph, %{items: ["t#{turn}"]}, config: config)
+          count_reads(config)
+
+          # 60 checkpoints and no snapshot: the history goes back to the first.
+          # The head is read, then again by the history, which lists the 59
+          # before it 8, 16, 32 and 64 at a time.
+          assert {:ok, %{values: %{items: items}}} = Compiled.get_state(graph, config)
+          assert length(items) == 60
+          assert reads() == 6
+        end
+      end
+
+      test "an interrupt keeps its response_schema, and the answer is checked against it", %{saver: saver} do
+        graph =
+          Graph.new()
+          |> Graph.add_node(:ask, fn _state -> %{refund: Graph.interrupt("How much?", response_schema: Refund)} end)
+          |> Graph.add_edge(Graph.start(), :ask)
+          |> Graph.add_edge(:ask, Graph.end_node())
+          |> Graph.compile!(checkpointer: saver)
+
+        config = thread_config()
+        schema = Refund.json_schema()
+
+        assert {:interrupted, %{response_schema: ^schema}} = Compiled.invoke(graph, %{}, config: config)
+        assert {:ok, %{interrupts: [%{response_schema: ^schema}]}} = Compiled.get_state(graph, config)
+        assert {:error, %Error{type: :invalid_resume}} = Compiled.resume(graph, %{amount: "forty"}, config: config)
+        assert {:ok, %{interrupts: [%{response_schema: ^schema}]}} = Compiled.get_state(graph, config)
+        assert {:ok, %{refund: %{"amount" => 40}}} = Compiled.resume(graph, %{amount: 40}, config: config)
       end
 
       # Checkpoints from before map keys kept their types: the state's atom
@@ -465,6 +585,31 @@ defmodule BeamWeaver.Graph.CheckpointKeysTest do
         end
 
       Ecto.Adapters.SQL.query!(repo, sql, [~s("#{from}"), ~s("#{to}")])
+    end
+  end
+
+  defp append(state, writes), do: state ++ Enum.flat_map(writes, &List.wrap/1)
+
+  # Counts the checkpoint reads of the thread `config` names: single reads and
+  # listings.
+  defp count_reads(config) do
+    thread_id = config["configurable"]["thread_id"]
+    handler = {__MODULE__, thread_id}
+    events = [[:beam_weaver, :checkpoint, :fetch_tuple], [:beam_weaver, :checkpoint, :list_result]]
+
+    :ok = :telemetry.attach_many(handler, events, &__MODULE__.handle_read/4, {self(), thread_id})
+    on_exit(fn -> :telemetry.detach(handler) end)
+  end
+
+  @doc false
+  def handle_read(_event, _measurements, %{thread_id: thread_id}, {pid, thread_id}), do: send(pid, :checkpoint_read)
+  def handle_read(_event, _measurements, _metadata, _config), do: :ok
+
+  defp reads(count \\ 0) do
+    receive do
+      :checkpoint_read -> reads(count + 1)
+    after
+      0 -> count
     end
   end
 

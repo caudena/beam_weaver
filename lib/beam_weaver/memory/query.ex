@@ -16,18 +16,25 @@ defmodule BeamWeaver.Memory.Query do
   def normalize_namespace(namespace), do: [to_string(namespace)]
 
   def validate_namespace(namespace) do
-    cond do
-      namespace == [] ->
-        {:error, {:invalid_namespace, "namespace cannot be empty"}}
+    with :ok <- validate_batch_namespace(namespace) do
+      if List.first(namespace) == @reserved_root,
+        do: {:error, {:invalid_namespace, "namespace cannot start with beam_weaver"}},
+        else: :ok
+    end
+  end
 
-      Enum.any?(namespace, &(&1 == "")) ->
+  # Batch operations may also use the reserved root.
+  def validate_batch_namespace([]), do: {:error, {:invalid_namespace, "namespace cannot be empty"}}
+  def validate_batch_namespace(namespace), do: validate_prefix(namespace)
+
+  # A search or listing prefix; `[]` matches every namespace.
+  def validate_prefix(prefix) do
+    cond do
+      Enum.any?(prefix, &(&1 == "")) ->
         {:error, {:invalid_namespace, "namespace parts cannot be empty"}}
 
-      Enum.any?(namespace, &String.contains?(&1, ".")) ->
+      Enum.any?(prefix, &String.contains?(&1, ".")) ->
         {:error, {:invalid_namespace, "namespace parts cannot contain dots"}}
-
-      List.first(namespace) == @reserved_root ->
-        {:error, {:invalid_namespace, "namespace cannot start with beam_weaver"}}
 
       true ->
         :ok
@@ -207,12 +214,12 @@ defmodule BeamWeaver.Memory.Query do
         )
 
       %PutOp{namespace: namespace, key: key, value: nil} ->
-        module.delete(store, namespace, key)
-        nil
+        with :ok <- module.delete(store, namespace, key), do: nil
 
       %PutOp{} = op ->
-        module.put(store, op.namespace, op.key, op.value, metadata: op.metadata, index: op.index, ttl: op.ttl)
-        nil
+        with {:ok, _item} <-
+               module.put(store, op.namespace, op.key, op.value, metadata: op.metadata, index: op.index, ttl: op.ttl),
+             do: nil
 
       %ListNamespacesOp{} = op ->
         module.list_namespaces(store, list_namespace_opts(op))

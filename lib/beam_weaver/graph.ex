@@ -209,7 +209,7 @@ defmodule BeamWeaver.Graph do
   @spec validation_report(t(), keyword()) :: BeamWeaver.Graph.Validation.Report.t()
   def validation_report(graph, opts \\ []), do: BeamWeaver.Graph.Validation.report(graph, opts)
 
-  @doc "A resume value that makes `interrupt/1` return `nil`."
+  @doc "A resume value that makes `interrupt/2` return `nil`."
   @spec null_resume() :: BeamWeaver.Graph.Resume.t()
   def null_resume, do: BeamWeaver.Graph.Resume.null()
 
@@ -219,7 +219,18 @@ defmodule BeamWeaver.Graph do
   The run returns `{:interrupted, interrupt}`. When it is resumed, the node
   runs again from the start, and this call returns the resume value. The graph
   needs a checkpointer. See [Human-in-the-Loop](human_in_the_loop.md).
+
+  Options:
+
+    * `:response_schema` - the answer the node expects: a JSON-schema map or a
+      `BeamWeaver.Schema` module. The interrupt carries it as JSON schema, for
+      a client to build its form from, and the resume value is checked
+      against it. An object answer comes back with string keys. An answer
+      that doesn't match fails the run with an `:invalid_resume` error, which
+      names the interrupt in `details.interrupt_id`; the node isn't retried
+      and its `error_handler:` doesn't run, and the interrupt waits for
+      another answer.
   """
-  @spec interrupt(term()) :: term() | no_return()
-  def interrupt(value), do: Scratchpad.interrupt(value)
+  @spec interrupt(term(), keyword()) :: term() | no_return()
+  def interrupt(value, opts \\ []), do: Scratchpad.interrupt(value, opts)
 end

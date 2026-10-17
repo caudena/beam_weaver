@@ -40,6 +40,30 @@ defmodule BeamWeaver.Core.Tool.Schema do
     end
   end
 
+  @doc false
+  # Validates any value against `schema`, as a property's value is: an object
+  # comes back with string keys. An error about the value itself names no key.
+  @spec normalize_value(map(), term()) :: {:ok, term()} | {:error, Error.t()}
+  def normalize_value(schema, value) when is_map(schema) do
+    with {:ok, value} <- normalize_property(nil, value, schema),
+         {:ok, value} <- normalize_untyped_object(schema, value) do
+      {:ok, value}
+    else
+      {:error, %Error{details: %{key: nil} = details} = error} ->
+        {:error, %{error | details: Map.delete(details, :key)}}
+
+      {:error, %Error{}} = error ->
+        error
+    end
+  end
+
+  # A schema without a type still describes an object's keys.
+  defp normalize_untyped_object(schema, value) do
+    if is_map(value) and not is_struct(value) and is_nil(schema_value(schema, :type)),
+      do: normalize(schema, value),
+      else: {:ok, value}
+  end
+
   @spec apply_defaults(map(), map()) :: map()
   def apply_defaults(input, schema) do
     schema
@@ -240,6 +264,8 @@ defmodule BeamWeaver.Core.Tool.Schema do
     end)
   end
 
+  defp put_nested_path(%Error{} = error, nil), do: error
+
   defp put_nested_path(%Error{} = error, parent_key) do
     details = Map.update(error.details, :path, [parent_key], &[parent_key | List.wrap(&1)])
     %{error | details: details}
@@ -254,7 +280,7 @@ defmodule BeamWeaver.Core.Tool.Schema do
   def valid_json_type?(value, "integer"), do: is_integer(value)
   def valid_json_type?(value, "number"), do: is_number(value)
   def valid_json_type?(value, "boolean"), do: is_boolean(value)
-  def valid_json_type?(value, "object"), do: is_map(value)
+  def valid_json_type?(value, "object"), do: is_map(value) and not is_struct(value)
   def valid_json_type?(value, "array"), do: is_list(value)
   def valid_json_type?(value, "null"), do: is_nil(value)
   def valid_json_type?(value, types) when is_list(types), do: Enum.any?(types, &valid_json_type?(value, &1))

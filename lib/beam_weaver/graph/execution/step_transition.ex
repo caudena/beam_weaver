@@ -65,8 +65,7 @@ defmodule BeamWeaver.Graph.Execution.StepTransition do
         updated_channels =
           (Execution.updated_channels(public_step_update) ++
              schedule.channels ++
-             Execution.pending_channels(run.replay_pending_writes) ++
-             run.replay_input_updated_channels)
+             run.replayed_channels)
           |> Execution.normalize_channels()
           |> Enum.reject(&Scheduler.node_outputs_channel?/1)
 
@@ -123,7 +122,7 @@ defmodule BeamWeaver.Graph.Execution.StepTransition do
                      task_trigger_versions: channel_versions,
                      replay_pending_writes: [],
                      replay_routes: [],
-                     replay_input_updated_channels: [],
+                     replayed_channels: [],
                      skip_interrupt_before?: false,
                      continued_from: nil,
                      step: run.step + 1

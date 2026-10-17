@@ -84,7 +84,7 @@ defmodule BeamWeaver.Memory.Ecto do
 
         cond do
           Query.expired?(item) ->
-            delete(store, namespace, key)
+            delete_expired(store, namespace, key)
             :error
 
           refresh_ttl ->
@@ -109,6 +109,12 @@ defmodule BeamWeaver.Memory.Ecto do
          do: :ok
   end
 
+  # A record put again since it was read is no longer expired, and stays.
+  defp delete_expired(store, namespace, key) do
+    sql = "DELETE FROM #{table(store)} WHERE namespace = $1 AND key = $2 AND expires_at <= now()"
+    query(store, sql, [namespace, key])
+  end
+
   @impl true
   def search(%__MODULE__{} = store, namespace, opts) do
     sql = """
@@ -129,8 +135,14 @@ defmodule BeamWeaver.Memory.Ecto do
 
   @impl true
   def list_namespaces(%__MODULE__{} = store, opts) do
-    with {:ok, %{rows: rows}} <-
-           query(store, "SELECT DISTINCT namespace FROM #{table(store)} ORDER BY namespace ASC", []),
+    sql = """
+    SELECT DISTINCT namespace
+    FROM #{table(store)}
+    WHERE expires_at IS NULL OR expires_at > now()
+    ORDER BY namespace ASC
+    """
+
+    with {:ok, %{rows: rows}} <- query(store, sql, []),
          do: rows |> Enum.map(fn [namespace] -> namespace end) |> Query.list_namespaces(opts)
   end
 

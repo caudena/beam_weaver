@@ -127,7 +127,7 @@ defmodule BeamWeaver.Graph.Execution.TaskExecutor do
             })
 
             RetryPolicy.run(
-              spec.retry_policy,
+              retry_policy(spec.retry_policy),
               fn attempt ->
                 runtime = runtime_attempt(task_run.runtime, attempt, first_attempt_time)
                 Scratchpad.with(task_run.scratchpad, fn -> invoke_attempt(task_run, runtime) end)
@@ -141,7 +141,10 @@ defmodule BeamWeaver.Graph.Execution.TaskExecutor do
     case result do
       {:ok, {:cached, value}} ->
         hit = Stream.task_event(:cache_hit, spec.name, command_of(value) || value, run.step, prepared.id, prepared.path)
-        finish_task(task_run, cache_key, value, [started, hit])
+        finish_task(task_run, nil, value, [started, hit])
+
+      {:ok, {:fallback, value}} ->
+        finish_task(task_run, nil, value, [started])
 
       {:ok, value} ->
         finish_task(task_run, cache_key, value, [started])
@@ -288,6 +291,16 @@ defmodule BeamWeaver.Graph.Execution.TaskExecutor do
      })}
   end
 
+  # An answer that doesn't match its interrupt's `response_schema` is the same
+  # on every attempt, so it is never retried, whatever the policy.
+  defp retry_policy(%RetryPolicy{} = policy),
+    do: %{policy | retry_on: &(not match?(%Error{type: :invalid_resume}, &1) and RetryPolicy.retry?(policy, &1))}
+
+  # An answer that doesn't match its interrupt's `response_schema` waits for
+  # another answer: a fallback would take the interrupt's place.
+  defp maybe_handle_node_error({:error, %Error{type: :invalid_resume}} = result, _task_run, _first_attempt_time),
+    do: result
+
   defp maybe_handle_node_error(
          {:error, %Error{} = error},
          %TaskRun{spec: %{error_handler: handler}} = task_run,
@@ -296,11 +309,12 @@ defmodule BeamWeaver.Graph.Execution.TaskExecutor do
        when not is_nil(handler) do
     runtime = runtime_attempt(task_run.runtime, task_run.spec.retry_policy.max_attempts, first_attempt_time)
 
-    normalize_error_handler_result(
-      call_error_handler(handler, error, task_run.state, runtime),
-      error,
-      task_run.spec.name
-    )
+    # A fallback isn't the node's result, so it isn't cached.
+    with {:ok, value} <-
+           handler
+           |> call_error_handler(error, task_run.state, runtime)
+           |> normalize_error_handler_result(error, task_run.spec.name),
+         do: {:ok, {:fallback, value}}
   end
 
   defp maybe_handle_node_error(result, _task_run, _first_attempt_time), do: result

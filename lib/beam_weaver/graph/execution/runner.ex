@@ -4,6 +4,7 @@ defmodule BeamWeaver.Graph.Execution.Runner do
   alias BeamWeaver.Core.Error
   alias BeamWeaver.Graph.Command
   alias BeamWeaver.Graph.Execution.ChannelLookup
+  alias BeamWeaver.Graph.Execution.ChannelMerge
   alias BeamWeaver.Graph.Execution.Resume, as: RunResume
   alias BeamWeaver.Graph.Execution.Run
   alias BeamWeaver.Graph.Execution.RunInit
@@ -35,7 +36,7 @@ defmodule BeamWeaver.Graph.Execution.Runner do
               context_metadata: trace_metadata(options)
             )
 
-          case RunInit.build(compiled, input, options, resume) do
+          case RunInit.build(compiled, ChannelMerge.prepare_update(input, compiled.graph), options, resume) do
             {:ok, run} ->
               telemetry = %{graph: compiled.name, run_id: run.run_id}
               started_at = Telemetry.start(:start, telemetry)

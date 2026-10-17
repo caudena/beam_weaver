@@ -118,6 +118,16 @@ with interrupts waits for a person instead; resume it as
 checkpoint, pass its `config` (see
 [Replay from an earlier checkpoint](checkpoints.md#replay-from-an-earlier-checkpoint)).
 
+New input continues a thread whose last step stopped partway, because a node
+failed or paused for a person. The input goes into the state first, as
+`update_state/4` puts an update into a stopped step (see
+[Pending writes](checkpoints.md#pending-writes)), and
+then the nodes of the step that hadn't finished run on it; a paused node
+pauses again unless the run answers it. The input is saved with the thread
+before those nodes run, so it stays when the step stops again. A thread that
+stopped at a breakpoint or in a crash has no step stopped partway: new input
+starts a new run from the first node, so continue it with an empty input.
+
 ## Determinism and side effects
 
 Continuing a run doesn't replay your code line by line. Nodes that finished
@@ -134,7 +144,7 @@ finish run again from their start. Write nodes with that in mind:
   model answers in the state as soon as you have them. Later nodes read them
   from the checkpoint instead of producing new ones.
 - **Expect interrupts to rerun their node.** A node that calls
-  `BeamWeaver.Graph.interrupt/1` starts over when it resumes, so do side
+  `BeamWeaver.Graph.interrupt/2` starts over when it resumes, so do side
   effects after the interrupt (see
   [Human-in-the-Loop](human_in_the_loop.md#pause-a-graph-node)).
 
@@ -372,7 +382,7 @@ also take only the error: `fn error -> %{problem: error.message} end`.
 If the handler itself raises, the run fails with `:node_error_handler_failed`
 and `details.handled_error` holds the node's error. With a checkpointer, the
 node's error is saved first, so continuing the thread runs the handler again,
-not the node. Interrupts are not errors: `Graph.interrupt/1` skips both
+not the node. Interrupts are not errors: `Graph.interrupt/2` skips both
 retries and handlers.
 
 ## Defaults for many nodes

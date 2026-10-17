@@ -42,6 +42,7 @@ defmodule BeamWeaver.Checkpoint.Ecto do
   alias BeamWeaver.Checkpoint.PendingWrite
   alias BeamWeaver.Checkpoint.Saver
   alias BeamWeaver.Core.Error
+  alias BeamWeaver.Core.ID
   alias BeamWeaver.Result
 
   defstruct repo: nil,
@@ -129,7 +130,7 @@ defmodule BeamWeaver.Checkpoint.Ecto do
         namespace = Map.get(configurable, "checkpoint_ns", "")
 
         checkpoint_id =
-          Map.get(checkpoint, "id") || Map.get(checkpoint, :id) || Config.generated_id()
+          Map.get(checkpoint, "id") || Map.get(checkpoint, :id) || ID.uuidv7()
 
         with :ok <- Query.lock_owner(saver, thread_id, namespace),
              {:ok, latest_id} <- latest_checkpoint_id(saver, thread_id, namespace),
@@ -247,8 +248,11 @@ defmodule BeamWeaver.Checkpoint.Ecto do
     end)
   end
 
+  # Each read is a query, so the history's checkpoints are listed a page at
+  # a time.
   @impl true
-  defdelegate get_delta_channel_history(saver, config, channel_names, opts), to: DeltaHistory, as: :get
+  def get_delta_channel_history(%__MODULE__{} = saver, config, channel_names, opts),
+    do: DeltaHistory.get(saver, config, channel_names, Keyword.put_new(opts, :read_ahead, 8))
 
   @impl true
   def delete_thread(%__MODULE__{} = saver, thread_id),

@@ -46,7 +46,7 @@ defmodule BeamWeaver.Cache.Ecto do
     case query(cache, sql, [BeamWeaver.Cache.stable_key(namespace), BeamWeaver.Cache.stable_key(key)]) do
       {:ok, %{rows: [[value, metadata, expires_at]]}} ->
         if expired?(expires_at) do
-          delete(cache, namespace, key, [])
+          delete_expired(cache, namespace, key)
           :miss
         else
           with {:ok, decoded} <- Serialization.load(value, serialization: cache.serialization),
@@ -107,6 +107,12 @@ defmodule BeamWeaver.Cache.Ecto do
   def sweep_expired(%__MODULE__{} = cache, _opts \\ []) do
     sql = "DELETE FROM #{table(cache)} WHERE expires_at IS NOT NULL AND expires_at <= now()"
     with {:ok, result} <- query(cache, sql, []), do: {:ok, Map.get(result, :num_rows, 0)}
+  end
+
+  # An entry put again since it was read is no longer expired, and stays.
+  defp delete_expired(cache, namespace, key) do
+    sql = "DELETE FROM #{table(cache)} WHERE namespace = $1 AND key = $2 AND expires_at <= now()"
+    query(cache, sql, [BeamWeaver.Cache.stable_key(namespace), BeamWeaver.Cache.stable_key(key)])
   end
 
   defp table(%__MODULE__{} = cache), do: Util.qualify(cache.prefix, cache.table)

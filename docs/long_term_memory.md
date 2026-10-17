@@ -82,9 +82,13 @@ Memory.put(store, ["customers", "ada@example.com"], "language", %{"value" => "Po
 #=> {:error, {:invalid_namespace, "namespace parts cannot contain dots"}}
 ```
 
+`BeamWeaver.Memory.search/3` and `BeamWeaver.Memory.list_namespaces/2`
+return the same error for such a prefix.
+
 `BeamWeaver.Memory.put_many/4`, `BeamWeaver.Memory.get_many/3` and
 `BeamWeaver.Memory.delete_many/3` work on several keys of one namespace at
-once.
+once, and `BeamWeaver.Memory.batch/2` runs a list of operations, checking
+every namespace before it runs any.
 
 ## Give the agent memory tools
 
@@ -320,8 +324,8 @@ from [Search](#search).
 
 ## Expiry and cleanup
 
-`ttl:` gives a record a lifetime in minutes. Once it has expired, `get` and
-`search` skip it:
+`ttl:` gives a record a lifetime in minutes. Once it has expired, `get`,
+`search` and `list_namespaces` skip it:
 
 ```elixir
 {:ok, item} = Memory.put(store, namespace, "promo_code", %{"value" => "SPRING10"}, ttl: 60 * 24 * 7)

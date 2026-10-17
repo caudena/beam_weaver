@@ -9,7 +9,13 @@ defmodule BeamWeaver.Memory do
 
   alias BeamWeaver.Adapter.Dispatch
   alias BeamWeaver.Core.Error
+  alias BeamWeaver.Memory.GetOp
+  alias BeamWeaver.Memory.ListNamespacesOp
+  alias BeamWeaver.Memory.MatchCondition
+  alias BeamWeaver.Memory.PutOp
   alias BeamWeaver.Memory.Query
+  alias BeamWeaver.Memory.SearchOp
+  alias BeamWeaver.Result
   alias BeamWeaver.Telemetry.AdapterEvent
   alias BeamWeaver.Telemetry.AdapterHelpers
 
@@ -117,7 +123,7 @@ defmodule BeamWeaver.Memory do
   @spec search(store(), namespace(), keyword()) :: [map()] | {:error, term()}
   def search(store, namespace, opts \\ []) do
     namespace = normalize_namespace(namespace)
-    result = store_call(store, :search, [namespace, opts])
+    result = with :ok <- Query.validate_prefix(namespace), do: store_call(store, :search, [namespace, opts])
 
     emit(store, :search, %{count: AdapterHelpers.result_count(result)}, %{
       namespace: namespace,
@@ -136,7 +142,10 @@ defmodule BeamWeaver.Memory do
       |> Keyword.update(:prefix, [], &normalize_namespace/1)
       |> Keyword.update(:suffix, [], &normalize_namespace/1)
 
-    result = store_call(store, :list_namespaces, [opts])
+    result =
+      with :ok <- Query.validate_prefix(opts[:prefix]),
+           :ok <- Query.validate_prefix(opts[:suffix]),
+           do: store_call(store, :list_namespaces, [opts])
 
     emit(store, :list_namespaces, %{count: AdapterHelpers.result_count(result)}, %{result: result})
 
@@ -158,9 +167,20 @@ defmodule BeamWeaver.Memory do
   @spec tokenize_path(String.t() | list()) :: {:ok, list()} | :error
   def tokenize_path(path), do: Query.tokenize_path(path)
 
+  @doc """
+  Runs `BeamWeaver.Memory.GetOp`, `BeamWeaver.Memory.PutOp`,
+  `BeamWeaver.Memory.SearchOp` and `BeamWeaver.Memory.ListNamespacesOp`
+  operations in order and returns one result for each: an item or `nil` for
+  a get, `nil` for a put, a list for a search or a listing, and
+  `{:error, error}` for an operation that failed.
+
+  Namespaces and keys are normalized as in `put/5`. If any operation has an
+  invalid namespace, none runs and the batch returns
+  `{:error, {:invalid_namespace, message}}`.
+  """
   @spec batch(store(), [struct()]) :: [term()] | {:error, term()}
   def batch(store, ops) when is_list(ops) do
-    result = store_call(store, :batch, [ops])
+    result = with {:ok, ops} <- Result.traverse(ops, &normalize_op/1), do: store_call(store, :batch, [ops])
     emit(store, :batch, %{count: length(ops)}, %{result: result})
     result
   end
@@ -204,6 +224,32 @@ defmodule BeamWeaver.Memory do
     emit(store, operation, %{count: 1}, namespace: namespace, key: key, result: result)
     result
   end
+
+  defp normalize_op(%op{namespace: namespace, key: key} = struct) when op in [GetOp, PutOp] do
+    namespace = normalize_namespace(namespace)
+
+    with :ok <- Query.validate_batch_namespace(namespace),
+         do: {:ok, %{struct | namespace: namespace, key: to_string(key)}}
+  end
+
+  defp normalize_op(%SearchOp{namespace: prefix} = op) do
+    prefix = normalize_namespace(prefix)
+    with :ok <- Query.validate_prefix(prefix), do: {:ok, %{op | namespace: prefix}}
+  end
+
+  defp normalize_op(%ListNamespacesOp{match_conditions: conditions} = op) do
+    with {:ok, conditions} <- Result.traverse(conditions || [], &normalize_condition/1),
+         do: {:ok, %{op | match_conditions: conditions}}
+  end
+
+  defp normalize_op(op), do: {:ok, op}
+
+  defp normalize_condition(%MatchCondition{path: path} = condition) do
+    path = normalize_namespace(path)
+    with :ok <- Query.validate_prefix(path), do: {:ok, %{condition | path: path}}
+  end
+
+  defp normalize_condition(condition), do: {:ok, condition}
 
   defp store_call(store, callback, args) do
     Dispatch.call(store, callback, args,

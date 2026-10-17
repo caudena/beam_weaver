@@ -127,6 +127,27 @@ defmodule BeamWeaver.Cache.ETSTest do
     assert :ets.info(cache.table, :size) <= 5
   end
 
+  test "reading or sweeping an expired entry never deletes a value put at the same time" do
+    cache = Cache.ETS.new()
+    expired = %{value: 0, metadata: %{}, inserted_at: 0, expires_at: 0}
+
+    readers =
+      for reader <- [:lookup, :lookup, :sweep, :sweep],
+          do: Task.async(fn -> read_until_stopped(cache, reader) end)
+
+    lost =
+      Enum.count(1..5_000, fn version ->
+        :ets.insert(cache.table, {{:race, "k"}, expired})
+        :ok = Cache.put(cache, :race, "k", version)
+        Cache.lookup(cache, :race, "k") != {:hit, version, %{}}
+      end)
+
+    Enum.each(readers, &send(&1.pid, :stop))
+    Enum.each(readers, &Task.await/1)
+
+    assert lost == 0
+  end
+
   test "cache helpers reject non-adapter globals" do
     assert {:error, %Error{type: :explicit_cache_required}} = Cache.lookup(true, :ns, :key)
     assert {:error, %Error{type: :invalid_cache}} = Cache.lookup(%{}, :ns, :key)
@@ -135,5 +156,18 @@ defmodule BeamWeaver.Cache.ETSTest do
   test "stable keys are deterministic for map order and never deserialize terms" do
     assert Cache.stable_key(%{a: 1, b: [2, 3]}) ==
              Cache.stable_key(%{b: [2, 3], a: 1})
+  end
+
+  defp read_until_stopped(cache, reader) do
+    receive do
+      :stop -> :ok
+    after
+      0 ->
+        if reader == :sweep,
+          do: Cache.sweep_expired(cache),
+          else: Cache.lookup(cache, :race, "k")
+
+        read_until_stopped(cache, reader)
+    end
   end
 end

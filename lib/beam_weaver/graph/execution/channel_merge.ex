@@ -18,6 +18,9 @@ defmodule BeamWeaver.Graph.Execution.ChannelMerge do
   @skip :__beam_weaver_skip_channel__
   # A state value that removes the key from the state.
   @delete :__beam_weaver_delete_channel__
+  # The step value of a delta channel that got several writes in the step:
+  # `{@writes, writes}`. A one-write step's value is the write itself.
+  @writes :__beam_weaver_delta_writes__
 
   @spec merge_update(map(), map() | nil, StateGraph.t()) :: map()
   def merge_update(state, update, graph) do
@@ -48,6 +51,19 @@ defmodule BeamWeaver.Graph.Execution.ChannelMerge do
 
     with {:ok, _step_update, next_state} <- merge_step_updates(state, updates, graph), do: {:ok, next_state}
   end
+
+  # An update as `update_state/4` makes one, or a superstep of
+  # `bulk_update_state/4`.
+  @type state_update :: {:update, map()} | {:superstep, [map()]}
+
+  # Merges `update` into `state`: the update as the step reports it, and the
+  # new state.
+  @spec merge_state_update(map(), state_update(), StateGraph.t()) :: {:ok, map(), map()} | {:error, Error.t()}
+  def merge_state_update(state, {:update, values}, graph) do
+    with {:ok, updated} <- merge_update_result(state, values, graph), do: {:ok, values, updated}
+  end
+
+  def merge_state_update(state, {:superstep, updates}, graph), do: merge_step_updates(state, updates, graph)
 
   @spec merge_step_updates(map(), [map()], StateGraph.t()) :: {:ok, map(), map()} | {:error, Error.t()}
   def merge_step_updates(state, updates, %StateGraph{} = graph) do
@@ -100,6 +116,41 @@ defmodule BeamWeaver.Graph.Execution.ChannelMerge do
 
   def ready_state(ready, state, graph), do: merge_update_result(state, TaskRequest.update(ready), graph)
 
+  # An update with each write to a delta channel prepared as the channel
+  # prepares its writes, so the update that is applied is the one saved.
+  @spec prepare_update(term(), StateGraph.t()) :: term()
+  def prepare_update(update, %StateGraph{} = graph) when is_map(update) and not is_struct(update) do
+    Map.new(update, fn {key, value} -> {key, prepare_write(graph, key, value)} end)
+  end
+
+  def prepare_update(update, _graph), do: update
+
+  @spec prepare_write(StateGraph.t(), term(), term()) :: term()
+  def prepare_write(graph, key, value) do
+    case ChannelLookup.channel_for(graph, key) do
+      %DeltaChannel{} = channel -> channel |> DeltaChannel.prepare([value]) |> hd()
+      _other -> value
+    end
+  end
+
+  # The writes a delta channel's step value stands for, as a checkpoint saves
+  # them.
+  @spec step_writes(term()) :: [term()]
+  def step_writes({@writes, writes}), do: writes
+  def step_writes(value), do: [value]
+
+  # A step update as it is streamed and saved in a checkpoint's metadata: a
+  # delta channel's several writes as a list.
+  @spec public_update(map()) :: map()
+  def public_update(update) when is_map(update) do
+    Map.new(update, fn
+      {key, {@writes, writes}} -> {key, writes}
+      entry -> entry
+    end)
+  end
+
+  def public_update(update), do: update
+
   defp group_step_updates(updates, graph) do
     updates
     |> Enum.reduce(%{}, fn update, grouped ->
@@ -127,11 +178,16 @@ defmodule BeamWeaver.Graph.Execution.ChannelMerge do
   end
 
   defp merge_declared_channel(key, values, state, channel) do
+    values = prepare_writes(channel, values)
+
     with {:ok, state_value} <- next_state_value(key, values, state, channel),
          {:ok, step_value} <- step_value(channel, values) do
       {:ok, step_value, state_value}
     end
   end
+
+  defp prepare_writes(%DeltaChannel{} = channel, values), do: DeltaChannel.prepare(channel, values)
+  defp prepare_writes(_channel, values), do: values
 
   # The channel's value after the writes, restored from the value in `state`.
   defp next_state_value(key, values, state, channel) do
@@ -166,9 +222,14 @@ defmodule BeamWeaver.Graph.Execution.ChannelMerge do
   end
 
   # What the step's own writes amount to, without the channel's earlier value:
-  # the value the step reports in its update.
-  defp step_value(%DeltaChannel{}, [value]), do: {:ok, value}
-  defp step_value(%DeltaChannel{}, values), do: {:ok, values}
+  # the value the step reports in its update. A delta channel's is what its
+  # checkpoint saves: the writes the step keeps.
+  defp step_value(%DeltaChannel{}, values) do
+    case DeltaChannel.kept_writes(values) do
+      [write] -> {:ok, write}
+      writes -> {:ok, {@writes, writes}}
+    end
+  end
 
   # A join is reported when it fires, at the end of the step.
   defp step_value(%NamedBarrierValue{}, _values), do: {:ok, @skip}
@@ -257,7 +318,7 @@ defmodule BeamWeaver.Graph.Execution.ChannelMerge do
         put_state_key(state, key, unwrap_overwrite(value))
 
       channel ->
-        with {:ok, state_value} <- next_state_value(key, [value], state, channel),
+        with {:ok, state_value} <- next_state_value(key, prepare_writes(channel, [value]), state, channel),
              do: apply_state_value(state, key, state_value)
     end
   end

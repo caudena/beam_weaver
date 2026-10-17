@@ -83,7 +83,7 @@ defmodule BeamWeaver.Memory.ETS do
       [{{^namespace, ^key}, item}] ->
         cond do
           Query.expired?(item) ->
-            delete(store, namespace, key)
+            delete_expired(store, item)
             :error
 
           refresh_ttl ->
@@ -105,14 +105,38 @@ defmodule BeamWeaver.Memory.ETS do
     :ok
   end
 
+  @doc false
+  @spec sweep_expired(t(), keyword()) :: {:ok, non_neg_integer()}
+  def sweep_expired(%__MODULE__{} = store, _opts \\ []) do
+    expired = for {_key, item} <- :ets.tab2list(store.items), Query.expired?(item), do: item
+    {:ok, Enum.count(expired, &delete_expired(store, &1))}
+  end
+
+  # The records left once the expired ones are deleted, from one read of the
+  # table.
+  defp live_items(store) do
+    {expired, live} = store.items |> :ets.tab2list() |> Enum.map(&elem(&1, 1)) |> Enum.split_with(&Query.expired?/1)
+    Enum.each(expired, &delete_expired(store, &1))
+    live
+  end
+
+  # Deletes `item` only while it is the stored record, so the record of a put
+  # that ran since it was read is kept. True when it was deleted.
+  defp delete_expired(store, %Item{} = item) do
+    key = {item.namespace, item.key}
+    unchanged = [{{key, :"$1"}, [{:"=:=", :"$1", {:const, item}}], [true]}]
+
+    if :ets.select_delete(store.items, unchanged) == 1 do
+      :ets.delete(store.vectors, key)
+      true
+    else
+      false
+    end
+  end
+
   @impl true
   def search(%__MODULE__{} = store, namespace, opts) do
-    BeamWeaver.Adapter.Sweepable.sweep_expired(store, [])
-
-    items =
-      store.items
-      |> :ets.tab2list()
-      |> Enum.map(fn {_key, item} -> item end)
+    items = live_items(store)
 
     case vector_scores(store, namespace, items, opts) do
       {:ok, scores} -> items |> Query.vector_search_items(namespace, scores, opts) |> maybe_refresh(store, opts)
@@ -123,14 +147,7 @@ defmodule BeamWeaver.Memory.ETS do
 
   @impl true
   def list_namespaces(%__MODULE__{} = store, opts) do
-    BeamWeaver.Adapter.Sweepable.sweep_expired(store, [])
-
-    namespaces =
-      store.items
-      |> :ets.tab2list()
-      |> Enum.map(fn {{namespace, _key}, _item} -> namespace end)
-
-    Query.list_namespaces(namespaces, opts)
+    store |> live_items() |> Enum.map(& &1.namespace) |> Query.list_namespaces(opts)
   end
 
   @impl true

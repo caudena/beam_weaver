@@ -89,17 +89,7 @@ defmodule BeamWeaver.OutputParser do
   """
   @spec schema(map() | module(), keyword()) :: struct()
   def schema(schema, opts \\ []),
-    do: Parser.new(:schema, %{schema: json_schema!(schema), as: Keyword.get(opts, :as)})
-
-  defp json_schema!(schema) when is_map(schema), do: schema
-
-  defp json_schema!(module) when is_atom(module) do
-    BeamWeaver.Schema.module_schema(module) ||
-      raise ArgumentError, "#{inspect(module)} does not declare a JSON schema"
-  end
-
-  defp json_schema!(other),
-    do: raise(ArgumentError, "expected a JSON Schema map or a schema module, got: #{inspect(other)}")
+    do: Parser.new(:schema, %{schema: BeamWeaver.Schema.json_schema!(schema), as: Keyword.get(opts, :as)})
 
   def parse(parser, input, opts \\ []), do: BeamWeaver.Runnable.invoke(parser, input, opts)
 

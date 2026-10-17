@@ -8,8 +8,10 @@ defmodule BeamWeaver.Graph.Execution.Stream do
   alias BeamWeaver.Core.Error
   alias BeamWeaver.Core.Message
   alias BeamWeaver.Graph.Execution.ChannelLookup
+  alias BeamWeaver.Graph.Execution.ChannelMerge
   alias BeamWeaver.Graph.Execution.Namespace
   alias BeamWeaver.Graph.Execution.TaskRequest
+  alias BeamWeaver.MapAccess
   alias BeamWeaver.Stream, as: BWStream
   alias BeamWeaver.Stream.Envelope
   alias BeamWeaver.Stream.Events
@@ -65,6 +67,8 @@ defmodule BeamWeaver.Graph.Execution.Stream do
   def emit_step(%{stream_sink: nil}, _ready, _update, _state), do: :ok
 
   def emit_step(run, ready, update, state) do
+    update = ChannelMerge.public_update(update)
+
     if mode_selected?(run.stream_modes, :messages) do
       update
       |> messages_from_update()
@@ -152,12 +156,14 @@ defmodule BeamWeaver.Graph.Execution.Stream do
     })
   end
 
-  # A step's update holds the messages as they were written: a string or a map
-  # becomes a message, and removal markers are left out.
+  # A step's update holds the messages as they were written, by every node
+  # that wrote them: a string or a map becomes a message, and removal markers
+  # are left out.
   defp messages_from_update(update) when is_map(update) do
     update
-    |> Map.get(:messages, Map.get(update, "messages", []))
+    |> MapAccess.get(:messages, [])
     |> List.wrap()
+    |> Enum.flat_map(&List.wrap/1)
     |> Enum.flat_map(fn
       %Message{} = message ->
         [message]

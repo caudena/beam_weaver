@@ -395,9 +395,9 @@ event types and shows how to send them to a LiveView.
 
 ## Interrupts
 
-`BeamWeaver.Graph.interrupt/1` pauses the run inside a node and hands a value
+`BeamWeaver.Graph.interrupt/2` pauses the run inside a node and hands a value
 to the caller. To resume later, the run needs a checkpointer. Resume with an
-answer: the node runs again from its start, and this time `interrupt/1`
+answer: the node runs again from its start, and this time `interrupt/2`
 returns the answer.
 
 ```elixir
@@ -440,6 +440,8 @@ state.reply
 Because the node starts over on resume, do side effects after the interrupt,
 not before. [Human-in-the-Loop](human_in_the_loop.md#pause-a-graph-node)
 covers the rules for pausing a node and answering several pauses at once.
+Pass `response_schema:` to describe the answer a client should send and check
+it on resume; see [Check the answer](human_in_the_loop.md#check-the-answer).
 
 To pause before or after a node without changing its code, declare
 `interrupt_before` or `interrupt_after` with node names (a compiled graph
@@ -606,7 +608,7 @@ from data at run time.
 
 ## Reference
 
-- [`BeamWeaver.Graph`](https://hexdocs.pm/beam_weaver/BeamWeaver.Graph.html): build, validate and compile graphs; `interrupt/1`
+- [`BeamWeaver.Graph`](https://hexdocs.pm/beam_weaver/BeamWeaver.Graph.html): build, validate and compile graphs; `interrupt/2`
 - [`BeamWeaver.Graph.Compiled`](https://hexdocs.pm/beam_weaver/BeamWeaver.Graph.Compiled.html): run a compiled graph: invoke, stream, resume, read state
 - [`BeamWeaver.Graph.Command`](https://hexdocs.pm/beam_weaver/BeamWeaver.Graph.Command.html): update the state and choose the next node
 - [`BeamWeaver.Graph.Send`](https://hexdocs.pm/beam_weaver/BeamWeaver.Graph.Send.html): run a node once per item

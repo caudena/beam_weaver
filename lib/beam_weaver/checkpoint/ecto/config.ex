@@ -1,12 +1,6 @@
 defmodule BeamWeaver.Checkpoint.Ecto.Config do
   @moduledoc false
 
-  def generated_id do
-    System.unique_integer([:positive, :monotonic])
-    |> Integer.to_string()
-    |> String.pad_leading(20, "0")
-  end
-
   def checkpoint_map(configurable, namespace, checkpoint_id) do
     configurable
     |> Map.get("checkpoint_map", %{})

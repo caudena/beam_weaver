@@ -246,6 +246,12 @@ Compiled.resume(refund_desk, "yes", config: config)
 #=> {:ok, %{amount: 40, approved: true, refunded: true}}
 ```
 
+A subgraph that pauses in several nodes at once pauses the parent with all
+of them: `interrupt.interrupts` and `get_state/1` on the parent list each
+pause. Answer them with a map from interrupt id to answer, all at once or one
+at a time, as for
+[several pauses in one graph](human_in_the_loop.md#several-pauses-at-once).
+
 While the subgraph waits, the parent's state can change: other nodes of the
 same step finish, `Compiled.update_state/4` edits it, or the `Command` that
 resumes the run carries an `update`. The subgraph still resumes where it

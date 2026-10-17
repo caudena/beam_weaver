@@ -25,8 +25,9 @@ defmodule BeamWeaver.Cache.ETS do
   def lookup(%__MODULE__{} = cache, namespace, key, _opts) do
     case :ets.lookup(cache.table, {namespace, key}) do
       [{{^namespace, ^key}, entry}] ->
+        # Only this entry goes: a put that ran since it was read stays.
         if expired?(entry) do
-          :ets.delete(cache.table, {namespace, key})
+          :ets.delete_object(cache.table, {{namespace, key}, entry})
           :miss
         else
           {:hit, entry.value, entry.metadata}
@@ -76,6 +77,14 @@ defmodule BeamWeaver.Cache.ETS do
     end
 
     :ok
+  end
+
+  @doc false
+  @spec sweep_expired(t(), keyword()) :: {:ok, non_neg_integer()}
+  def sweep_expired(%__MODULE__{} = cache, _opts \\ []) do
+    now = System.system_time(:millisecond)
+    expired = [{{:_, %{expires_at: :"$1"}}, [{:is_integer, :"$1"}, {:"=<", :"$1", now}], [true]}]
+    {:ok, :ets.select_delete(cache.table, expired)}
   end
 
   defp expired?(%{expires_at: nil}), do: false

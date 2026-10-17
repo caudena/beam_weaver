@@ -2,7 +2,6 @@ defmodule BeamWeaver.Graph.Execution.Collection do
   @moduledoc false
 
   alias BeamWeaver.Core.Error
-  alias BeamWeaver.Graph.Execution
   alias BeamWeaver.Graph.Execution.ChannelMerge
   alias BeamWeaver.Graph.Execution.Halt
   alias BeamWeaver.Graph.Execution.Route
@@ -91,9 +90,7 @@ defmodule BeamWeaver.Graph.Execution.Collection do
 
   @spec to_step_outcome(t(), map(), map()) :: {:ok, StepOutcome.t()} | {:halt, Halt.t()}
   def to_step_outcome(%__MODULE__{} = collection, run, graph) do
-    replayed = Execution.pending_channels(Map.get(run, :replay_pending_writes) || [])
-
-    case ChannelMerge.apply_step_writes(run.state, collection.updates, graph, replayed) do
+    case ChannelMerge.apply_step_writes(run.state, collection.updates, graph, run.replayed_channels) do
       {:ok, step_update, next_state} ->
         {:ok,
          %StepOutcome{

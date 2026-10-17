@@ -1,62 +1,184 @@
 defmodule BeamWeaver.Checkpoint.DeltaCompaction do
   @moduledoc false
 
+  # Which checkpoints of a thread `prune` keeps and `delete_for_runs` may
+  # delete. A saver describes each checkpoint of the thread as a record:
+  #
+  #   * `:id`, `:parent_id`, `:commit_order`
+  #   * `:checkpoint` and `:metadata`, decoded
+  #   * `:pending_channels` - the channels of the pending writes saved on it
+  #   * `:root_id` - the id of the top-level checkpoint a subgraph's
+  #     checkpoint belongs to (its `checkpoint_map[""]`), or nil
+  #
+  # and groups the records by namespace.
+
+  alias BeamWeaver.Checkpoint.DeltaHistory
+  alias BeamWeaver.Core.Error
   alias BeamWeaver.Graph.Channels.DeltaSnapshot
+  alias BeamWeaver.MapAccess
 
-  @spec keep_ids([map()]) :: [String.t()]
-  def keep_ids([]), do: []
+  @spec strategy(keyword()) :: {:ok, :keep_latest | :delete} | {:error, Error.t()}
+  def strategy(opts) do
+    case Keyword.get(opts, :strategy, :keep_latest) do
+      strategy when strategy in [:keep_latest, "keep_latest"] ->
+        {:ok, :keep_latest}
 
-  def keep_ids(records) do
-    records = Enum.sort_by(records, &Map.get(&1, :commit_order, 0))
-    latest = records |> List.last() |> checkpoint_id()
+      strategy when strategy in [:delete, "delete"] ->
+        {:ok, :delete}
 
-    cond do
-      not Enum.any?(records, &delta_checkpoint?/1) ->
-        MapSet.new([latest])
-
-      snapshot_index = nearest_snapshot_index(records) ->
-        records
-        |> Enum.drop(snapshot_index)
-        |> Enum.map(&checkpoint_id/1)
-        |> Enum.uniq()
-
-      true ->
-        records
-        |> Enum.map(&checkpoint_id/1)
-        |> Enum.uniq()
+      strategy ->
+        {:error,
+         Error.new(:invalid_prune_strategy, "prune strategy must be :keep_latest or :delete", %{
+           strategy: inspect(strategy)
+         })}
     end
   end
 
-  defp nearest_snapshot_index(records) do
+  # The ids `keep_latest` keeps in each namespace: the latest checkpoint and
+  # the ones before it that its delta channels still read. A subgraph call's
+  # namespace whose top-level checkpoint goes is dropped whole: the call is
+  # over.
+  @spec keep_latest(%{String.t() => [map()]}) :: %{String.t() => MapSet.t()}
+  def keep_latest(namespaces) do
+    root_kept = namespaces |> Map.get("", []) |> keep_ids()
+
+    Map.new(namespaces, fn {namespace, records} ->
+      if finished_call?(namespace, records, root_kept),
+        do: {namespace, MapSet.new()},
+        else: {namespace, keep_ids(records)}
+    end)
+  end
+
+  # What `keep_latest` does to a thread: the `{namespace, id}` checkpoints it
+  # deletes, and the kept ones whose parent goes, which become the first of
+  # their thread so their lineage can still be copied.
+  @spec prune_plan(%{String.t() => [map()]}) :: {[{String.t(), String.t()}], [{String.t(), String.t()}]}
+  def prune_plan(namespaces) do
+    keep = keep_latest(namespaces)
+
+    for {namespace, records} <- namespaces, record <- records, reduce: {[], []} do
+      {removals, roots} ->
+        kept = keep[namespace]
+
+        cond do
+          not MapSet.member?(kept, record.id) -> {[{namespace, record.id} | removals], roots}
+          record.parent_id && not MapSet.member?(kept, record.parent_id) -> {removals, [{namespace, record.id} | roots]}
+          true -> {removals, roots}
+        end
+    end
+  end
+
+  # The `{namespace, id}` checkpoints that stay when the ones in `removed`
+  # are deleted but whose parent is deleted. A record needs only `:id` and
+  # `:parent_id` here.
+  @spec orphans(%{String.t() => [map()]}, MapSet.t()) :: [{String.t(), String.t()}]
+  def orphans(namespaces, removed) do
+    for {namespace, records} <- namespaces,
+        record <- records,
+        orphan?(record, namespace, removed),
+        do: {namespace, record.id}
+  end
+
+  # Whether deleting the `{namespace, id}` checkpoints in `removed` takes
+  # delta history that a remaining checkpoint reads. Only an orphan can lose
+  # some: any other remaining checkpoint reads the deleted ones through it.
+  @spec breaks_history?(%{String.t() => [map()]}, MapSet.t()) :: boolean()
+  def breaks_history?(namespaces, removed) do
+    Enum.any?(namespaces, fn {namespace, records} ->
+      by_id = Map.new(records, &{&1.id, &1})
+
+      records
+      |> Enum.filter(&orphan?(&1, namespace, removed))
+      |> Enum.any?(fn record -> record |> history(by_id) |> Enum.any?(&MapSet.member?(removed, {namespace, &1.id})) end)
+    end)
+  end
+
+  @spec history_in_use(String.t()) :: Error.t()
+  def history_in_use(thread_id) do
+    Error.new(
+      :delta_history_in_use,
+      "later checkpoints of the thread read delta channel history that the runs' checkpoints hold",
+      %{thread_id: thread_id}
+    )
+  end
+
+  defp orphan?(record, namespace, removed),
+    do: not MapSet.member?(removed, {namespace, record.id}) and MapSet.member?(removed, {namespace, record.parent_id})
+
+  defp keep_ids([]), do: MapSet.new()
+
+  defp keep_ids(records) do
+    by_id = Map.new(records, &{&1.id, &1})
+
     records
-    |> Enum.with_index()
-    |> Enum.reverse()
-    |> Enum.find_value(fn {record, index} -> if snapshot_checkpoint?(record), do: index end)
+    |> Enum.max_by(& &1.commit_order)
+    |> history(by_id)
+    |> MapSet.new(& &1.id)
   end
 
-  defp delta_checkpoint?(record) do
-    snapshot_checkpoint?(record) or
-      record
-      |> checkpoint()
-      |> Map.get("channel_deltas", %{})
-      |> non_empty_map?()
+  # The checkpoints from `head` back through its parents, newest first, as
+  # far as its delta channels read: for each, back to the nearest checkpoint
+  # that stores its value, or else to the oldest that holds a write to it.
+  defp history(head, by_id) do
+    chain = chain(head, by_id, MapSet.new())
+    length = chain |> delta_channels() |> Enum.map(&read_length(chain, &1)) |> Enum.max(fn -> 1 end)
+    Enum.take(chain, length)
   end
 
-  defp snapshot_checkpoint?(record) do
-    record
-    |> checkpoint()
-    |> Map.get("channel_values", %{})
-    |> Enum.any?(fn {_key, value} -> delta_snapshot?(value) end)
+  defp chain(nil, _by_id, _seen), do: []
+
+  defp chain(record, by_id, seen) do
+    if MapSet.member?(seen, record.id),
+      do: [],
+      else: [record | chain(Map.get(by_id, record.parent_id), by_id, MapSet.put(seen, record.id))]
   end
 
-  defp delta_snapshot?(%DeltaSnapshot{}), do: true
-  defp delta_snapshot?(%{"__beam_weaver_delta_snapshot__" => _value}), do: true
-  defp delta_snapshot?(%{__beam_weaver_delta_snapshot__: _value}), do: true
-  defp delta_snapshot?(_value), do: false
+  defp read_length(chain, channel) do
+    chain
+    |> Enum.with_index(1)
+    |> Enum.reduce_while(1, fn {record, length}, read ->
+      cond do
+        stores?(record, channel) -> {:halt, length}
+        writes?(record, channel) -> {:cont, length}
+        true -> {:cont, read}
+      end
+    end)
+  end
 
-  defp non_empty_map?(map) when is_map(map), do: map_size(map) > 0
-  defp non_empty_map?(_value), do: false
+  # The delta channels of a chain: those its graph counted towards a
+  # snapshot, wrote as deltas or stored a snapshot of.
+  defp delta_channels(chain) do
+    chain
+    |> Enum.flat_map(fn record ->
+      counters = MapAccess.get(record.metadata, "counters_since_delta_snapshot", %{})
+      snapshots = for {channel, value} <- channel_values(record), DeltaSnapshot.snapshot?(value), do: channel
 
-  defp checkpoint_id(record), do: checkpoint(record)["id"]
-  defp checkpoint(%{checkpoint: checkpoint}), do: checkpoint
+      map_keys(counters) ++ map_keys(Map.get(record.checkpoint, "channel_deltas", %{})) ++ snapshots
+    end)
+    |> MapSet.new(&to_string/1)
+  end
+
+  defp stores?(record, channel), do: match?({:ok, _value}, DeltaHistory.stored_value(record, channel))
+
+  defp writes?(record, channel) do
+    deltas = Map.get(record.checkpoint, "channel_deltas", %{})
+    MapSet.member?(record.pending_channels, channel) or MapAccess.get(deltas, channel, []) != []
+  end
+
+  defp finished_call?(namespace, records, root_kept) do
+    task_namespace?(namespace) and
+      case Enum.max_by(records, & &1.commit_order, fn -> nil end) do
+        %{root_id: root_id} when is_binary(root_id) -> not MapSet.member?(root_kept, root_id)
+        _other -> false
+      end
+  end
+
+  # A subgraph namespace that holds one call: a task's id follows its node's
+  # name in one of its segments.
+  defp task_namespace?(namespace), do: namespace != "" and String.contains?(namespace, ":")
+
+  defp channel_values(record), do: Map.get(record.checkpoint, "channel_values", %{})
+
+  defp map_keys(map) when is_map(map), do: Map.keys(map)
+  defp map_keys(_value), do: []
 end

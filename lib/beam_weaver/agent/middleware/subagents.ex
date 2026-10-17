@@ -964,13 +964,24 @@ defmodule BeamWeaver.Agent.Middleware.Subagents do
 
   # The parent's interrupt carries the subagent's review, so `resume_review/2`
   # on the parent answers it, and its id, which a resumed step matches to the
-  # paused subagent.
+  # paused subagent. It lists every pause the subagent waits on in
+  # `interrupts`, as a subgraph's pause does, each with the subagent's
+  # metadata, so a map keyed by their ids answers them all.
   defp parent_interrupt(interrupt, metadata) do
+    interrupt
+    |> child_interrupt(metadata)
+    |> Map.merge(%{
+      task_id: nil,
+      resumes: [],
+      interrupts: interrupt |> Replay.task_interrupts() |> Enum.map(&child_interrupt(&1, metadata))
+    })
+  end
+
+  defp child_interrupt(interrupt, metadata) do
     %{
       id: value(interrupt, :id),
       value: value(interrupt, :value),
-      task_id: nil,
-      resumes: [],
+      response_schema: value(interrupt, :response_schema),
       metadata: Map.merge(metadata, value(interrupt, :metadata) || %{})
     }
   end
@@ -980,13 +991,31 @@ defmodule BeamWeaver.Agent.Middleware.Subagents do
          thread_id when thread_id not in [nil, ""] <- get_in(opts, [:config, "configurable", "thread_id"]),
          {:ok, snapshot} <- child_snapshot(agent, opts) do
       cond do
-        snapshot.interrupts != [] -> {:paused, hd(snapshot.interrupts)}
+        snapshot.interrupts != [] -> {:paused, paused_interrupt(snapshot)}
         snapshot.next == [] -> {:finished, snapshot.values}
         true -> {:unfinished, snapshot.config}
       end
     else
       _new -> :new
     end
+  end
+
+  # A paused subagent's interrupt as its run returned it: the first pause it
+  # saved, with every pause it waits on.
+  defp paused_interrupt(snapshot) do
+    first =
+      Enum.find_value(snapshot.pending_writes, hd(snapshot.interrupts), fn
+        {_task_id, "__interrupt__", interrupt} -> interrupt |> List.wrap() |> List.first()
+        _other -> nil
+      end)
+
+    %{
+      id: value(first, :id),
+      value: value(first, :value),
+      response_schema: value(first, :response_schema),
+      metadata: value(first, :metadata),
+      interrupts: snapshot.interrupts
+    }
   end
 
   defp child_snapshot(%Built{compiled: compiled}, opts),
@@ -999,7 +1028,8 @@ defmodule BeamWeaver.Agent.Middleware.Subagents do
   # pause the parent again, one review at a time.
   defp resume_value(runtime, interrupt) do
     with %{resume_values: [_ | _] = resumes} <- value(runtime, :scratchpad),
-         true <- value(interrupt, :id) in parent_interrupt_ids(runtime) do
+         ids = parent_interrupt_ids(runtime),
+         true <- Enum.any?(interrupt.interrupts, &(value(&1, :id) in ids)) do
       {:ok, List.last(resumes)}
     else
       _other -> :none

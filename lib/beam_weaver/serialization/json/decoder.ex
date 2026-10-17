@@ -5,6 +5,8 @@ defmodule BeamWeaver.Serialization.JSON.Decoder do
   alias BeamWeaver.Result
   alias BeamWeaver.Serialization.Registry
 
+  require Logger
+
   @type_tag "__beam_weaver_type__"
   @atom_keys_tag "__beam_weaver_atom_keys__"
   @plain_map_tag "map"
@@ -79,36 +81,24 @@ defmodule BeamWeaver.Serialization.JSON.Decoder do
     end
   end
 
-  def decode(%{@type_tag => "atom", "value" => value}, _registry) when is_binary(value) do
-    {:ok, String.to_existing_atom(value)}
-  rescue
-    ArgumentError ->
-      {:error,
-       Error.new(:unsupported_serialization_type, "atom is not loaded in the current VM", %{
-         value: value
-       })}
-  end
+  def decode(%{@type_tag => "atom", "value" => value}, _registry) when is_binary(value), do: existing_atom(value)
 
-  def decode(%{@type_tag => tag}, _registry) when tag in ["atom", "tuple"],
-    do: {:error, Error.new(:serialization_error, "encoded #{tag} is invalid")}
+  def decode(%{@type_tag => tag}, _registry)
+      when tag in ["atom", "tuple", "binary", "datetime", "naive_datetime", "date", "time"],
+      do: {:error, Error.new(:serialization_error, "encoded #{tag} is invalid")}
 
   def decode(%{@type_tag => tag} = map, registry) do
+    fields = Map.delete(map, @type_tag)
+
     case Registry.module_for(registry, tag) do
       nil ->
-        {:error,
-         Error.new(:unsupported_serialization_type, "encoded struct type is not registered", %{
-           tag: tag
-         })}
+        field_map(fields, registry, tag, "no module is registered for the tag")
 
       module ->
-        fields =
-          map
-          |> Map.delete(@type_tag)
-          |> decode_struct_fields(module, registry)
-
-        case fields do
-          {:ok, fields} -> decode_struct(module, fields)
-          error -> error
+        if Code.ensure_loaded?(module) and function_exported?(module, :__struct__, 0) do
+          with {:ok, fields} <- decode_struct_fields(fields, module, registry), do: decode_struct(module, fields)
+        else
+          field_map(fields, registry, tag, "#{inspect(module)}, registered for the tag, isn't available")
         end
     end
   end
@@ -132,6 +122,23 @@ defmodule BeamWeaver.Serialization.JSON.Decoder do
   def decode(list, registry) when is_list(list), do: Result.traverse(list, &decode(&1, registry))
 
   def decode(value, _registry), do: {:ok, value}
+
+  # A struct that can't be rebuilt loads as a map of its fields, with string
+  # keys, so the rest of the value still loads.
+  defp field_map(fields, registry, tag, reason) do
+    warn_once({:struct, tag}, "Loaded a saved #{inspect(tag)} struct as a map of its fields: #{reason}.")
+    decode(fields, registry)
+  end
+
+  # Once per tag or atom in the VM, however many values hold it.
+  defp warn_once(key, message) do
+    key = {__MODULE__, :warned, key}
+
+    if not :persistent_term.get(key, false) do
+      :persistent_term.put(key, true)
+      Logger.warning(message)
+    end
+  end
 
   defp decode_entry(%{"key" => key, "value" => value}, registry) do
     with {:ok, key} <- decode_key(key, registry),
@@ -170,12 +177,16 @@ defmodule BeamWeaver.Serialization.JSON.Decoder do
     {:error, Error.new(:serialization_error, "encoded map has a __struct__ key")}
   end
 
-  # Loading never creates atoms: an atom key that doesn't exist in this VM,
-  # because no loaded code uses it, stays a string.
-  defp atom_key(name) do
+  defp atom_key(name), do: existing_atom(name)
+
+  # Loading never creates atoms: an atom, or an atom key, that no loaded code
+  # uses comes back as its name.
+  defp existing_atom(name) do
     {:ok, String.to_existing_atom(name)}
   rescue
-    ArgumentError -> {:ok, name}
+    ArgumentError ->
+      warn_once({:atom, name}, "Loaded the saved atom #{inspect(name)} as a string: no loaded code uses it.")
+      {:ok, name}
   end
 
   # An exception's `__exception__` field comes from its module, like

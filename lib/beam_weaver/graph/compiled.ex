@@ -152,7 +152,16 @@ defmodule BeamWeaver.Graph.Compiled do
 
   def bulk_update_state(compiled, config, supersteps, opts \\ [])
 
-  @doc "Applies a bulk state update to a checkpointed graph configuration."
+  @doc """
+  Applies supersteps of updates to a checkpointed graph configuration.
+
+  Each superstep's updates merge as the writes of one step do, and each
+  superstep is saved the way `update_state/4` saves an update: it counts as
+  the result of `as_node:`, or of the node that ran last, so the nodes after
+  that node run next, and the tasks the thread still had to run, such as one
+  waiting at a breakpoint, stay. Returns the config of the last superstep's
+  checkpoint.
+  """
   @spec bulk_update_state(t(), map(), [[map()]], keyword()) :: {:ok, map()} | {:error, Error.t()}
   defdelegate bulk_update_state(compiled, config, supersteps, opts), to: StateUpdate
 

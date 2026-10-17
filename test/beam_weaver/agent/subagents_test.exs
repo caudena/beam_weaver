@@ -375,6 +375,44 @@ defmodule BeamWeaver.Agent.SubagentsTest.BusyDesk do
   end
 end
 
+defmodule BeamWeaver.Agent.SubagentsTest.PerCallClerk do
+  # Refunds two orders in one turn and reviews each call on its own.
+  use BeamWeaver.Agent
+
+  alias BeamWeaver.Models.FakeChatModel
+
+  name "per_call_clerk"
+  description "Refunds the orders named in the task."
+
+  model "fake:chat",
+    responses: [
+      FakeChatModel.tool_calls([{"issue_refund", %{"order_id" => "A-1"}}, {"issue_refund", %{"order_id" => "A-2"}}]),
+      "Refunded both."
+    ]
+
+  tools [BeamWeaver.Agent.SubagentsTest.IssueRefund]
+
+  middleware [
+    {BeamWeaver.Agent.Middleware.HumanInTheLoop, interrupt_mode: :per_call, interrupt_on: %{"issue_refund" => true}}
+  ]
+end
+
+defmodule BeamWeaver.Agent.SubagentsTest.PerCallDesk do
+  use BeamWeaver.Agent
+
+  alias BeamWeaver.Models.FakeChatModel
+
+  model "fake:chat",
+    responses: [
+      FakeChatModel.tool_call("task", %{"subagent_type" => "per_call_clerk", "description" => "Refund A-1 and A-2."}),
+      "Done."
+    ]
+
+  subagents do
+    subagent BeamWeaver.Agent.SubagentsTest.PerCallClerk
+  end
+end
+
 defmodule BeamWeaver.Agent.SubagentsTest.PlainClerk do
   use BeamWeaver.Agent
 
@@ -556,6 +594,43 @@ defmodule BeamWeaver.Agent.SubagentsTest.Escalation do
   ]
 end
 
+defmodule BeamWeaver.Agent.SubagentsTest.AskBudget do
+  # Asks for the budget, a whole number, before the model's call.
+  use BeamWeaver.Agent.Middleware
+
+  def name(_middleware), do: :ask_budget
+
+  def before_model(_middleware, _state, _runtime) do
+    BeamWeaver.Graph.interrupt("Budget?", response_schema: %{"type" => "integer"})
+    nil
+  end
+end
+
+defmodule BeamWeaver.Agent.SubagentsTest.BudgetClerk do
+  use BeamWeaver.Agent
+
+  name "budget_clerk"
+  description "Checks the budget."
+  model "fake:chat", responses: ["Within budget."]
+  middleware [BeamWeaver.Agent.SubagentsTest.AskBudget]
+end
+
+defmodule BeamWeaver.Agent.SubagentsTest.BudgetDesk do
+  use BeamWeaver.Agent
+
+  alias BeamWeaver.Models.FakeChatModel
+
+  model "fake:chat",
+    responses: [
+      FakeChatModel.tool_call("task", %{"subagent_type" => "budget_clerk", "description" => "Check the budget."}),
+      "Done."
+    ]
+
+  subagents do
+    subagent BeamWeaver.Agent.SubagentsTest.BudgetClerk
+  end
+end
+
 defmodule BeamWeaver.Agent.SubagentsTest do
   use ExUnit.Case, async: false
 
@@ -570,6 +645,7 @@ defmodule BeamWeaver.Agent.SubagentsTest do
   alias BeamWeaver.Agent.Subagent.Spec
   alias BeamWeaver.Agent.Subagent.StreamTransformer
   alias BeamWeaver.Agent.SubagentsTest.Answer
+  alias BeamWeaver.Agent.SubagentsTest.BudgetDesk
   alias BeamWeaver.Agent.SubagentsTest.BusyDesk
   alias BeamWeaver.Agent.SubagentsTest.CompiledDesk
   alias BeamWeaver.Agent.SubagentsTest.DelegatingDesk
@@ -579,6 +655,7 @@ defmodule BeamWeaver.Agent.SubagentsTest do
   alias BeamWeaver.Agent.SubagentsTest.LedgerDesk
   alias BeamWeaver.Agent.SubagentsTest.ManagedDesk
   alias BeamWeaver.Agent.SubagentsTest.MisconfiguredDesk
+  alias BeamWeaver.Agent.SubagentsTest.PerCallDesk
   alias BeamWeaver.Agent.SubagentsTest.ProbeToolkit
   alias BeamWeaver.Agent.SubagentsTest.RefundClerk
   alias BeamWeaver.Agent.SubagentsTest.ReviewedDesk
@@ -1080,6 +1157,18 @@ defmodule BeamWeaver.Agent.SubagentsTest do
   end
 
   describe "human review inside a subagent" do
+    test "a subagent's pause carries its response_schema, and an answer that doesn't match waits for another" do
+      opts = thread("budget-1")
+      schema = %{"type" => "integer"}
+
+      assert {:interrupted, %{response_schema: ^schema, interrupts: [%{response_schema: ^schema}]}} =
+               BudgetDesk.invoke(%{messages: ["Check the budget."]}, opts)
+
+      assert {:error, %Error{type: :invalid_resume}} = BudgetDesk.resume("plenty", opts)
+      assert {:ok, result} = BudgetDesk.resume(100, opts)
+      assert result.messages |> List.last() |> Message.text() == "Done."
+    end
+
     test "pauses the parent with the subagent's review and resuming the parent finishes the task" do
       opts = thread("review-1")
 
@@ -1137,6 +1226,31 @@ defmodule BeamWeaver.Agent.SubagentsTest do
       assert received_model_calls("historian") == 0
 
       assert tool_texts(result) == ["clerk: Refunded A-1.", "Three orders.", "clerk: Refunded A-2."]
+    end
+
+    test "a subagent that reviews each call on its own pauses the parent with every review" do
+      opts = thread("review-per-call")
+
+      assert {:interrupted, interrupt} = PerCallDesk.invoke(%{messages: ["Refund A-1 and A-2."]}, opts)
+      refute_received {:refunded, _order}
+
+      assert interrupt.interrupts |> Enum.map(& &1.value.args["order_id"]) |> Enum.sort() == ["A-1", "A-2"]
+      assert Enum.all?(interrupt.interrupts, &(&1.metadata.subagent_name == "per_call_clerk"))
+      assert {:ok, snapshot} = PerCallDesk.get_state(opts)
+
+      assert snapshot.interrupts |> Enum.map(& &1.id) |> Enum.sort() ==
+               interrupt.interrupts |> Enum.map(& &1.id) |> Enum.sort()
+
+      approve_a1 = Enum.find(interrupt.interrupts, &(&1.value.args["order_id"] == "A-1"))
+      assert {:interrupted, second} = PerCallDesk.resume_review(%{approve_a1.id => HITL.decision(:approve)}, opts)
+      assert_received {:refunded, "A-1"}
+      assert [%{value: %{args: %{"order_id" => "A-2"}}}] = second.interrupts
+
+      answers = Map.new(second.interrupts, &{&1.id, HITL.decision(:reject, message: "Not A-2.")})
+      assert {:ok, result} = PerCallDesk.resume_review(answers, opts)
+      refute_received {:refunded, "A-2"}
+      refute_received {:refunded, "A-1"}
+      assert tool_texts(result) == ["Refunded both."]
     end
 
     test "decisions that don't fit the subagent's review fail the parent's resume" do

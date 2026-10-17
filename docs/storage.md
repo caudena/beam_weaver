@@ -234,6 +234,20 @@ The tag is what gets stored, so keep it when you rename the module. Memory
 store values are saved as JSON as they are; give them string keys (see
 [Long-Term Memory](long_term_memory.md#records)).
 
+A value that can't be rebuilt any more doesn't make a checkpoint unreadable.
+A struct whose tag isn't in the registry, or whose module was removed, loads
+as a map of its fields, and an atom that no loaded code uses loads as a
+string. The rest of the checkpoint loads as it was saved, and a warning names
+each such tag or atom the first time it loads:
+
+```elixir
+Serialization.load(json)
+#=> {:ok, %{"id" => "ticket-42", "subject" => "Refund for order A-1001"}}
+```
+
+Data that names a struct of its own, with a `__struct__` key, still fails
+with `:serialization_error`.
+
 ## Encryption
 
 `BeamWeaver.Serialization.Encrypted` wraps the JSON in AES-256-GCM. It needs a

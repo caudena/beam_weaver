@@ -16,7 +16,6 @@ defmodule BeamWeaver.Graph.Execution.Run do
     :versions_seen,
     :task_trigger_versions,
     :replay_pending_writes,
-    :replay_input_updated_channels,
     :step_timeout,
     :run_timeout,
     :run_deadline,
@@ -30,6 +29,10 @@ defmodule BeamWeaver.Graph.Execution.Run do
     :continued_from,
     # The checkpoint `config` names, as `CheckpointIO.known_checkpoint()`.
     :known_checkpoint,
+    # The channels written for the run's first step before it ran: by the
+    # tasks that finished in a step that stopped partway, by updates made
+    # while it was stopped, and by the run's input.
+    replayed_channels: [],
     replay_routes: []
   ]
 

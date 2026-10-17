@@ -1,7 +1,6 @@
 defmodule BeamWeaver.Graph.Execution.Snapshot do
   @moduledoc false
 
-  alias BeamWeaver.Checkpoint
   alias BeamWeaver.Graph.Execution
   alias BeamWeaver.Graph.Execution.ChannelLookup
   alias BeamWeaver.Graph.Execution.ChannelMerge
@@ -81,16 +80,12 @@ defmodule BeamWeaver.Graph.Execution.Snapshot do
   end
 
   @spec latest_state?(map()) :: boolean()
-  def latest_state?(config) do
-    config
-    |> Checkpoint.configurable()
-    |> Map.get("checkpoint_id")
-    |> is_nil()
-  end
+  def latest_state?(config), do: config |> Execution.checkpoint_id() |> is_nil()
 
+  # A subgraph task that paused lists the subgraph's own pauses.
   defp pending_interrupts(pending_writes) do
     Enum.flat_map(pending_writes, fn
-      {_task_id, "__interrupt__", value} -> List.wrap(value)
+      {_task_id, "__interrupt__", value} -> value |> List.wrap() |> Enum.flat_map(&Replay.task_interrupts/1)
       _other -> []
     end)
   end

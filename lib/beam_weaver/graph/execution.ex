@@ -59,6 +59,18 @@ defmodule BeamWeaver.Graph.Execution do
     }
   end
 
+  @spec checkpoint_id(map()) :: String.t() | nil
+  def checkpoint_id(config), do: config |> Checkpoint.configurable() |> Map.get("checkpoint_id")
+
+  # `config` naming the checkpoint `checkpoint_id`, or the thread's latest
+  # with `nil`.
+  @spec at_checkpoint(map(), String.t() | nil) :: map()
+  def at_checkpoint(config, checkpoint_id) do
+    configurable = config |> Checkpoint.configurable() |> Map.delete("checkpoint_id")
+    configurable = if checkpoint_id, do: Map.put(configurable, "checkpoint_id", checkpoint_id), else: configurable
+    config |> Map.delete(:configurable) |> Map.put("configurable", configurable)
+  end
+
   # The state a checkpoint saved. Checkpoints saved as JSON before map keys
   # kept their types list the state's atom keys in "atom_channels".
   @spec checkpoint_values(map()) :: map()
