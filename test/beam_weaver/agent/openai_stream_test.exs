@@ -124,7 +124,8 @@ defmodule BeamWeaver.Agent.OpenAIStreamTest do
           "id" => "fc_agent_stream",
           "call_id" => "call_weather",
           "name" => "get_weather",
-          "arguments" => ~s({"location":"San Francisco, CA"})
+          "arguments" => ~s({"location":"San Francisco, CA"}),
+          "status" => "completed"
         },
         %{
           "type" => "function_call_output",

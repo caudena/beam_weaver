@@ -9,7 +9,7 @@
         "status": 429
       },
       "message": "rate limited",
-      "type": "rate_limit_error"
+      "type": "rate_limit"
     }
   },
   "provider": "zai",

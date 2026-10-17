@@ -59,9 +59,9 @@ mix examples.live --model anthropic:claude-sonnet-4-6 --only deepagents/
 
 `--offline` adds the offline scripts; `--jobs` and `--timeout` set concurrency
 and seconds per script. A script that fails because the provider was briefly
-over capacity (an HTTP 429 or 5xx error marked retryable) runs once more after
-15 seconds; a script that fails on its own checks, such as a tool the model
-didn't call, does not. `mix test` compiles every script and runs the offline ones.
+over capacity or unreachable (a retryable rate limit, server error, lost
+connection or timeout) runs once more after 15 seconds; a script that fails on
+its own checks, such as a tool the model didn't call, does not. `mix test` compiles every script and runs the offline ones.
 
 ## Agents and tools
 
@@ -72,6 +72,7 @@ didn't call, does not. `mix test` compiles every script and runs the offline one
 | [structured_output_agent.exs](https://github.com/caudena/beam_weaver/blob/master/examples/structured_output_agent.exs) | Look an order up with a tool, then answer as a map matching a schema | live |
 | [streaming_agent.exs](https://github.com/caudena/beam_weaver/blob/master/examples/streaming_agent.exs) | Print tokens and tool calls while the agent runs | live |
 | [hitl_agent.exs](https://github.com/caudena/beam_weaver/blob/master/examples/hitl_agent.exs) | Pause before a refund, approve it, resume from a checkpoint | live |
+| [hitl_per_call_agent.exs](https://github.com/caudena/beam_weaver/blob/master/examples/hitl_per_call_agent.exs) | Review each refund on its own while lookups run; answer the refunds one at a time | live |
 | [chat_model.exs](https://github.com/caudena/beam_weaver/blob/master/examples/chat_model.exs) | Call a chat model directly, without an agent | live |
 | [prompt_caching.exs](https://github.com/caudena/beam_weaver/blob/master/examples/prompt_caching.exs) | Reuse the provider's prompt cache for a long system prompt | live |
 
@@ -120,6 +121,7 @@ lists each one with the tools it must call.
 | [openai_apply_patch_tool.exs](https://github.com/caudena/beam_weaver/blob/master/examples/openai_apply_patch_tool.exs) | The `apply_patch` tool request and replay | offline |
 | [openai_json_http_error.exs](https://github.com/caudena/beam_weaver/blob/master/examples/openai_json_http_error.exs) | Provider error details kept on an HTTP error | offline |
 | [openai_gpt6_controls.exs](https://github.com/caudena/beam_weaver/blob/master/examples/openai_gpt6_controls.exs) | Access programs and cache prewarming | OpenAI |
+| [auto_mode_agent.exs](https://github.com/caudena/beam_weaver/blob/master/examples/auto_mode_agent.exs) | GPT-6 Luna lets a file deletion the user asked for run and blocks one nobody asked for | OpenAI |
 | [anthropic_opus55_compaction.exs](https://github.com/caudena/beam_weaver/blob/master/examples/anthropic_opus55_compaction.exs) | Server-side compaction and its replay | Anthropic |
 | [deepseek.exs](https://github.com/caudena/beam_weaver/blob/master/examples/deepseek.exs) | Chat, Responses, fill-in-the-middle and the Anthropic-style endpoint | DeepSeek |
 | [typesafe_dynamic_routing.exs](https://github.com/caudena/beam_weaver/blob/master/examples/typesafe_dynamic_routing.exs) | Route each request to a fast or a strong model with a classifier | TypeSafe and OpenAI; `--offline` |

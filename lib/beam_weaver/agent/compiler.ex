@@ -105,6 +105,7 @@ defmodule BeamWeaver.Agent.Compiler do
           middleware: middleware,
           assistant_name: spec.name,
           response_format: if(separate_structured_response?, do: nil, else: response_strategy),
+          structured_output: not is_nil(response_strategy || final_response_strategy),
           step_costs: step_costs
         ),
         model_node_opts(spec)
@@ -464,7 +465,8 @@ defmodule BeamWeaver.Agent.Compiler do
         response_format: final_response_strategy,
         final_instruction: @structured_response_instruction,
         step_costs: step_costs,
-        save_tool_set: false
+        save_tool_set: false,
+        structured_output: true
       ),
       model_node_opts(spec)
     )
@@ -555,7 +557,7 @@ defmodule BeamWeaver.Agent.Compiler do
     BeamWeaver.Graph.StateGraph.put_branch_routes(
       graph,
       router_source,
-      router,
+      to_tools(graph, router, middleware),
       path_map
     )
   end
@@ -565,7 +567,10 @@ defmodule BeamWeaver.Agent.Compiler do
       BeamWeaver.Graph.StateGraph.put_branch_routes(
         graph,
         @validation_node,
-        &__MODULE__.validation_router/1,
+        if(per_call_review?(middleware),
+          do: Routing.sending_tool_calls(&__MODULE__.validation_router/1),
+          else: &__MODULE__.validation_router/1
+        ),
         %{
           model: first_node(middleware, :before_model) || @model_node,
           tools: @tools_node,
@@ -633,15 +638,15 @@ defmodule BeamWeaver.Agent.Compiler do
         graph
 
       [only] ->
-        add_middleware_edge(graph, only, destination)
+        add_middleware_edge(graph, only, destination, middleware)
 
       [first | rest] ->
         {graph, previous} =
           Enum.reduce(rest, {graph, first}, fn node, {graph, previous} ->
-            {add_middleware_edge(graph, previous, node), node}
+            {add_middleware_edge(graph, previous, node, middleware), node}
           end)
 
-        add_middleware_edge(graph, previous, destination)
+        add_middleware_edge(graph, previous, destination, middleware)
     end
   end
 
@@ -654,7 +659,7 @@ defmodule BeamWeaver.Agent.Compiler do
     )
   end
 
-  defp add_middleware_edge(graph, source, destination) do
+  defp add_middleware_edge(graph, source, destination, middleware) do
     path_map =
       %{model: @model_node, tools: tools_entry_node(graph), end: Graph.end_node()}
       |> Map.put(destination, destination)
@@ -662,10 +667,22 @@ defmodule BeamWeaver.Agent.Compiler do
     BeamWeaver.Graph.StateGraph.put_branch_routes(
       graph,
       source,
-      fn state -> middleware_router(state, destination) end,
+      to_tools(graph, fn state -> middleware_router(state, destination) end, middleware),
       path_map
     )
   end
+
+  # In per-call review, a route that reaches the tools node directly sends it
+  # each pending call as a task of its own; the validation node, when there
+  # is one, sends them after it has checked them.
+  defp to_tools(graph, router, middleware) do
+    if per_call_review?(middleware) and tools_entry_node(graph) == @tools_node,
+      do: Routing.sending_tool_calls(router),
+      else: router
+  end
+
+  defp per_call_review?(middleware),
+    do: Enum.any?(middleware, &match?(%HumanInTheLoop{interrupt_mode: :per_call}, &1))
 
   defp maybe_put_structured_response_route(path_map, true),
     do: Map.put(path_map, :structured_response, @structured_response_node)

@@ -859,11 +859,11 @@ defmodule BeamWeaver.Moonshot.ChatModelTest do
     assert error.details.error["type"] == "invalid_request_error"
   end
 
-  test "Moonshot auth, quota, and overloaded HTTP errors are normalized from provider codes" do
+  test "Moonshot auth, quota, and overloaded HTTP errors get their types" do
     for {status, code, expected_type} <- [
-          {401, "invalid_authentication_error", :authentication_error},
-          {429, "exceeded_current_quota_error", :quota_error},
-          {503, "engine_overloaded_error", :overloaded_error}
+          {401, "invalid_authentication_error", :authentication},
+          {429, "exceeded_current_quota_error", :billing_exhausted},
+          {503, "engine_overloaded_error", :server_error}
         ] do
       model =
         ChatModel.new(
@@ -907,7 +907,7 @@ defmodule BeamWeaver.Moonshot.ChatModelTest do
           ]
         )
 
-      assert {:error, %Error{type: :quota_error} = error} = CoreChatModel.invoke(model, [Message.user("test")])
+      assert {:error, %Error{type: :billing_exhausted} = error} = CoreChatModel.invoke(model, [Message.user("test")])
       assert error.details.retryable == false
       refute BeamWeaver.RetryPredicates.transient?(error)
     end

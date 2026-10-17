@@ -14,6 +14,7 @@ System.put_env("TMPDIR", test_tmp_dir)
 ExUnit.after_suite(fn _result -> File.rm_rf(test_tmp_dir) end)
 
 Code.require_file("../support/typesafe.exs", __DIR__)
+Code.require_file("../support/openai_decisions.exs", __DIR__)
 
 Code.require_file("../support/config_helper.exs", __DIR__)
 Code.require_file("../support/eventually.exs", __DIR__)

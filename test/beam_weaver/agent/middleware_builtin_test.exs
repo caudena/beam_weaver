@@ -33,7 +33,7 @@ defmodule BeamWeaver.Agent.MiddlewareBuiltinTest do
       count = :ets.update_counter(table, :calls, 1, {:calls, 0})
 
       if count == 1 do
-        {:error, Error.new(:rate_limit_error, "temporary", %{retryable: true})}
+        {:error, Error.new(:rate_limit, "temporary", %{retryable: true})}
       else
         {:ok, Message.assistant("recovered")}
       end
@@ -162,7 +162,8 @@ defmodule BeamWeaver.Agent.MiddlewareBuiltinTest do
     model(%FailingModel{})
 
     middleware([
-      {BeamWeaver.Agent.Middleware.ModelRetry, max_retries: 1, initial_delay: 0, on_failure: :continue}
+      {BeamWeaver.Agent.Middleware.ModelRetry,
+       max_retries: 1, initial_delay: 0, retry_on: [:primary_failed], on_failure: :continue}
     ])
   end
 
@@ -954,8 +955,7 @@ defmodule BeamWeaver.Agent.MiddlewareBuiltinTest do
     assert %Message{role: :assistant, content: content, metadata: %{status: "error"}} =
              List.last(messages)
 
-    # `primary_failed` isn't a transient error, so it isn't retried.
-    assert content =~ "Model call failed after 1 attempt with primary_failed"
+    assert content =~ "Model call failed after 2 attempts with primary_failed"
   end
 
   test "model retry supports custom retry predicates and failure formatting" do
@@ -992,11 +992,21 @@ defmodule BeamWeaver.Agent.MiddlewareBuiltinTest do
     middleware =
       ModelRetry.new(
         max_retries: 0,
+        retry_on: [:primary_failed],
         on_failure: fn error -> "Custom error: #{error.type}" end
       )
 
     assert %Message{role: :assistant, content: "Custom error: primary_failed"} =
              ModelRetry.wrap_model_call(middleware, %ModelRequest{}, fn _request ->
+               {:error, Error.new(:primary_failed, "primary failed")}
+             end)
+
+    # An error the policy doesn't retry is returned as it is, for the middleware
+    # around this one; `on_failure` doesn't see it.
+    not_retried = ModelRetry.new(max_retries: 2, on_failure: fn error -> "Custom error: #{error.type}" end)
+
+    assert {:error, %Error{type: :primary_failed}} =
+             ModelRetry.wrap_model_call(not_retried, %ModelRequest{}, fn _request ->
                {:error, Error.new(:primary_failed, "primary failed")}
              end)
 
@@ -1008,10 +1018,10 @@ defmodule BeamWeaver.Agent.MiddlewareBuiltinTest do
              )
   end
 
-  test "model retry default does not retry explicit non-retryable quota errors" do
+  test "model retry default does not retry an exhausted quota" do
     table = :ets.new(:model_retry_quota, [:set, :public])
 
-    assert {:error, %Error{type: :quota_error}} =
+    assert {:error, %Error{type: :billing_exhausted}} =
              ModelRetry.wrap_model_call(
                ModelRetry.new(max_retries: 2, initial_delay: 0),
                %ModelRequest{},
@@ -1019,7 +1029,7 @@ defmodule BeamWeaver.Agent.MiddlewareBuiltinTest do
                  :ets.update_counter(table, :calls, 1, {:calls, 0})
 
                  {:error,
-                  Error.new(:quota_error, "Insufficient balance or no resource package. Please recharge.", %{
+                  Error.new(:billing_exhausted, "Insufficient balance or no resource package. Please recharge.", %{
                     retryable: false,
                     status: 429
                   })}
@@ -1237,6 +1247,28 @@ defmodule BeamWeaver.Agent.MiddlewareBuiltinTest do
            end)
   end
 
+  # `on_failure: :continue` covers the retries running out. An error the policy
+  # doesn't retry, such as a bad key, reaches the fallback around it instead of
+  # becoming the agent's answer.
+  test "model retry leaves an error it doesn't retry to the fallback around it" do
+    failing =
+      BeamWeaver.Models.init_chat_model!("fake:chat", error: Error.new(:authentication, "Invalid API key"))
+
+    fallback = BeamWeaver.Models.init_chat_model!("fake:chat", responses: ["Answered by the fallback."])
+
+    {:ok, agent} =
+      Agent.build(
+        model: failing,
+        middleware: [
+          {BeamWeaver.Agent.Middleware.ModelFallback, fallbacks: [fallback]},
+          {ModelRetry, on_failure: :continue}
+        ]
+      )
+
+    assert {:ok, result} = Agent.invoke(agent, %{messages: ["hello"]})
+    assert Message.text(List.last(result.messages)) == "Answered by the fallback."
+  end
+
   test "tool retry supports custom retry predicates and failure formatting" do
     table = :ets.new(:tool_retry_custom_predicate, [:set, :public])
 
@@ -1256,9 +1288,11 @@ defmodule BeamWeaver.Agent.MiddlewareBuiltinTest do
       tool_call: %{id: "call-custom", name: "custom_tool", args: %{}}
     }
 
+    # The second error isn't one the policy retries: it reaches the model as the
+    # tool returned it, without `on_failure`.
     assert %Message{
              role: :tool,
-             content: "Custom tool error: non_retryable_tool_error",
+             content: "stop",
              tool_call_id: "call-custom",
              metadata: %{status: "error", error_type: :non_retryable_tool_error}
            } =
@@ -1281,6 +1315,15 @@ defmodule BeamWeaver.Agent.MiddlewareBuiltinTest do
              end)
 
     assert :ets.lookup(table, :calls) == [{:calls, 2}]
+
+    assert %Message{role: :tool, content: "Custom tool error: retryable_tool_error"} =
+             ToolRetry.wrap_tool_call(middleware, request, fn _request ->
+               Message.tool("retry",
+                 tool_call_id: "call-custom",
+                 name: "custom_tool",
+                 metadata: %{status: "error", error_type: :retryable_tool_error}
+               )
+             end)
 
     assert {:error, %Error{type: :non_retryable_tool_error}} =
              ToolRetry.wrap_tool_call(
@@ -1552,6 +1595,85 @@ defmodule BeamWeaver.Agent.MiddlewareBuiltinTest do
              end)
   end
 
+  # A selector that answers each call with the next reply of its script, the
+  # last one repeating, and tells the test process about each call.
+  defmodule ScriptedSelector do
+    @behaviour BeamWeaver.Core.ChatModel
+
+    defstruct [:parent, :script]
+
+    @impl true
+    def invoke(%__MODULE__{parent: parent, script: script}, _messages, _opts) do
+      send(parent, :selection_call)
+
+      {:ok,
+       Elixir.Agent.get_and_update(script, fn [reply | rest] -> {reply, if(rest == [], do: [reply], else: rest)} end)}
+    end
+  end
+
+  defp scripted_selector(replies) do
+    {:ok, script} = Elixir.Agent.start_link(fn -> replies end)
+    %ScriptedSelector{parent: self(), script: script}
+  end
+
+  defp selection_reply(response), do: Message.assistant("", metadata: %{structured_response: response})
+
+  defp selected_tools(middleware) do
+    request = tool_selection_request(tools: Enum.map(["weather", "search", "math", "email"], &selection_tool/1))
+
+    case ToolSelection.wrap_model_call(middleware, request, &{:ok, &1}) do
+      {:ok, %ModelRequest{tools: tools}} -> Enum.map(tools, &Tool.name/1)
+      {:error, %Error{} = error} -> error
+    end
+  end
+
+  test "a selection reply without a tools list is asked for again" do
+    selector = scripted_selector([selection_reply(%{"choice" => "weather"}), selection_reply(%{tools: ["search"]})])
+
+    assert selected_tools(ToolSelection.new(model: selector)) == ["search"]
+    assert_received :selection_call
+    assert_received :selection_call
+  end
+
+  test "once max_retries run out, on_parsing_failure decides" do
+    malformed = selection_reply(%{"choice" => "weather"})
+
+    assert %Error{type: :invalid_tool_selection} =
+             selected_tools(ToolSelection.new(model: scripted_selector([malformed]), max_retries: 2))
+
+    assert_received :selection_call
+    assert_received :selection_call
+    assert_received :selection_call
+    refute_received :selection_call
+
+    fallback = fn on_parsing_failure ->
+      ToolSelection.new(
+        model: scripted_selector([malformed]),
+        max_retries: 0,
+        max_tools: 1,
+        always_include: ["email"],
+        on_parsing_failure: on_parsing_failure
+      )
+      |> selected_tools()
+    end
+
+    assert fallback.(:none) == ["email"]
+    assert fallback.(:all) == ["weather", "search", "math", "email"]
+    assert fallback.(["math", :search]) == ["math", "search", "email"]
+
+    assert fallback.(fn %Message{metadata: %{structured_response: %{"choice" => choice}}} -> [choice] end) == [
+             "weather",
+             "email"
+           ]
+
+    assert %Error{details: %{invalid_tools: ["calendar"]}} = fallback.(["calendar"])
+  end
+
+  test "on_parsing_failure and max_retries are checked when the middleware is built" do
+    assert_raise ArgumentError, ~r/on_parsing_failure/, fn -> ToolSelection.new(on_parsing_failure: :some) end
+    assert_raise ArgumentError, ~r/max_retries/, fn -> ToolSelection.new(max_retries: -1) end
+  end
+
   test "tool call limit end behavior stops before executing blocked tools" do
     parent = self()
 
@@ -1741,22 +1863,70 @@ defmodule BeamWeaver.Agent.MiddlewareBuiltinTest do
     assert content =~ "Tool call limit reached"
   end
 
-  test "tool call limit end behavior rejects unrelated pending calls for scoped limits" do
-    middleware = ToolCallLimit.new(tool_name: "limited", thread_limit: 0, exit_behavior: :end)
+  # Ending the run skips the tools node, so every call of the batch needs an
+  # answer, or the next turn fails on the unanswered call.
+  test "tool call limit end answers every call of the batch, which doesn't count against the thread" do
+    middleware = ToolCallLimit.new(tool_name: "limited", thread_limit: 1, exit_behavior: :end)
 
     state = %{
       messages: [
         Message.assistant("",
           tool_calls: [
-            %{id: "call-limited", name: "limited", args: %{}},
+            %{id: "call-limited-1", name: "limited", args: %{}},
+            %{id: "call-limited-2", name: "limited", args: %{}},
             %{id: "call-open", name: "open", args: %{}}
           ]
         )
       ]
     }
 
-    assert {:error, %Error{type: :tool_call_limit_parallel_end_unsupported}} =
+    assert %{jump_to: :end, thread_tool_call_count: %{"limited" => 0}, messages: messages} =
              ToolCallLimit.after_model(middleware, state, nil)
+
+    assert [
+             %Message{role: :tool, tool_call_id: "call-limited-1", content: stopped},
+             %Message{role: :tool, tool_call_id: "call-limited-2", content: refused},
+             %Message{role: :tool, tool_call_id: "call-open", content: stopped},
+             %Message{role: :assistant}
+           ] = messages
+
+    assert stopped =~ "Execution stopped before this tool call could run"
+    assert refused =~ "Tool call limit exceeded"
+  end
+
+  test "a thread goes on after tool call limit ends a run" do
+    lookup =
+      BeamWeaver.Core.Tool.from_function!(
+        name: "lookup_order",
+        description: "Look up an order",
+        input_schema: %{"type" => "object", "properties" => %{"order_id" => %{"type" => "string"}}},
+        handler: fn _args, _opts -> {:ok, "shipped"} end
+      )
+
+    {:ok, agent} =
+      Agent.build(
+        model: "fake:chat",
+        model_opts: [
+          responses: [
+            BeamWeaver.Models.FakeChatModel.tool_calls([
+              {"lookup_order", %{"order_id" => "A-1"}},
+              {"lookup_order", %{"order_id" => "A-2"}}
+            ]),
+            "You're welcome."
+          ]
+        ],
+        tools: [lookup],
+        middleware: [{ToolCallLimit, run_limit: 1, exit_behavior: :end}]
+      )
+
+    opts = [
+      checkpointer: BeamWeaver.Checkpoint.ETS.new(),
+      config: %{"configurable" => %{"thread_id" => "tool-call-limit-end"}}
+    ]
+
+    assert {:ok, _result} = Agent.invoke(agent, %{messages: ["Where are A-1 and A-2?"]}, opts)
+    assert {:ok, result} = Agent.invoke(agent, %{messages: ["Thanks"]}, opts)
+    assert Message.text(List.last(result.messages)) == "You're welcome."
   end
 
   test "summarization replaces older messages with an explicit summary model result" do
@@ -2276,6 +2446,32 @@ defmodule BeamWeaver.Agent.MiddlewareBuiltinTest do
                assert unchanged_request.messages == messages
                :unchanged
              end)
+  end
+
+  # A count of its own, such as a provider's tokenizer, decides when the edit
+  # fires instead of the approximate or model count.
+  test "context editing counts tokens with token_counter" do
+    messages = [
+      Message.user("Where is A-1001?"),
+      Message.assistant("", tool_calls: [%ToolCall{id: "call-1", name: "lookup_order", args: %{}}]),
+      Message.tool("Order A-1001 shipped on Monday.", tool_call_id: "call-1", name: "lookup_order")
+    ]
+
+    request = ModelRequest.new(messages: messages)
+
+    edited = fn middleware ->
+      ContextEditing.wrap_model_call(middleware, request, &Enum.map(&1.messages, fn m -> Message.text(m) end))
+    end
+
+    per_message = fn messages -> length(messages) * 1_000 end
+
+    assert ["Where is A-1001?", "", "[cleared]"] =
+             edited.(ContextEditing.new(trigger: 2_000, keep: 0, token_counter: per_message))
+
+    assert ["Where is A-1001?", "", "Order A-1001 shipped on Monday."] =
+             edited.(ContextEditing.new(trigger: 2_000, keep: 0))
+
+    assert_raise ArgumentError, ~r/token_counter/, fn -> ContextEditing.new(token_counter: :exact) end
   end
 
   test "typed middleware decisions normalize to normal agent state updates" do

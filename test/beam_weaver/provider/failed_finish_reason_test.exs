@@ -68,9 +68,9 @@ defmodule BeamWeaver.Provider.FailedFinishReasonTest do
   # A finish reason with which the provider reports that it couldn't finish
   # the reply, and the error it stands for.
   @failures [
-    {"Z.ai", "zai:glm-5.2", "network_error", :http_error, 500, true},
+    {"Z.ai", "zai:glm-5.2", "network_error", :server_error, 500, true},
     {"Z.ai", "zai:glm-5.2", "sensitive", :content_filter, 400, false},
-    {"DeepSeek", "deepseek:deepseek-v4-flash", "insufficient_system_resource", :overloaded_error, 503, true},
+    {"DeepSeek", "deepseek:deepseek-v4-flash", "insufficient_system_resource", :server_error, 503, true},
     {"DeepSeek", "deepseek:deepseek-v4-flash", "aborted", :server_error, 500, true}
   ]
 

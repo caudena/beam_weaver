@@ -854,6 +854,38 @@ defmodule BeamWeaver.Graph.RuntimeSurfaceTest do
     end
   end
 
+  test "a step's paused tasks all come back with the run, and each resumes by its id" do
+    parent = self()
+
+    graph =
+      Graph.new()
+      |> Graph.add_reducer(:log, &(&1 ++ &2))
+      |> Graph.add_node(:fan_out, fn _state ->
+        for item <- ["a", "b", "plain"], do: %Graph.Send{node: :worker, update: %{item: item}}
+      end)
+      |> Graph.add_node(:worker, fn %{item: item} ->
+        send(parent, {:ran, item})
+        if item == "plain", do: %{log: ["plain"]}, else: %{log: ["#{item}: #{Graph.interrupt("#{item}?")}"]}
+      end)
+      |> Graph.add_edge(Graph.start(), :fan_out)
+      |> Graph.add_edge(:worker, Graph.end_node())
+      |> Graph.compile!(checkpointer: CheckpointETS.new())
+
+    config = %{"configurable" => %{"thread_id" => "paused-sends"}}
+    assert {:interrupted, %{id: first, interrupts: interrupts}} = Compiled.invoke(graph, %{}, config: config)
+    ids = Map.new(interrupts, &{&1.value, &1.id})
+    assert Enum.sort(Map.keys(ids)) == ["a?", "b?"]
+    assert first in Map.values(ids)
+    for item <- ["a", "b", "plain"], do: assert_receive({:ran, ^item})
+
+    assert {:interrupted, %{interrupts: [%{value: "a?"}]}} =
+             Compiled.resume(graph, %{ids["b?"] => "yes"}, config: config)
+
+    assert {:ok, %{log: log}} = Compiled.resume(graph, %{ids["a?"] => "no"}, config: config)
+    assert Enum.sort(log) == ["a: no", "b: yes", "plain"]
+    refute_received {:ran, "plain"}
+  end
+
   test "update_state returns a tagged ambiguity error when continuation cannot be inferred" do
     checkpointer = CheckpointETS.new()
 

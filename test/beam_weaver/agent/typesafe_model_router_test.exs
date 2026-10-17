@@ -6,6 +6,7 @@ defmodule BeamWeaver.Agent.TypeSafeModelRouterTest do
   alias BeamWeaver.Core.{Error, Message, Tool}
   alias BeamWeaver.{Serialization, Stream}
   alias BeamWeaver.Stream.Events
+  alias BeamWeaver.TestSupport.OpenAIDecisions
   alias BeamWeaver.TestSupport.TypeSafe, as: Fixture
   alias BeamWeaver.Transport.Response
 
@@ -117,6 +118,107 @@ defmodule BeamWeaver.Agent.TypeSafeModelRouterTest do
     refute_received {:typesafe_request, _}
   end
 
+  defp choices do
+    %{
+      "fast" => %{model: %Chat{parent: self(), model: "fast"}, criteria: "Localized tasks"},
+      "powerful" => %{model: %Chat{parent: self(), model: "powerful"}, criteria: "Complex reasoning"}
+    }
+  end
+
+  @image %{type: :image, base64: "AAAA", mime_type: "image/png"}
+
+  test "any decision model routes, such as OpenAI's, which gets the message's images" do
+    route =
+      TypeSafeModelRouter.new(
+        classifier: OpenAIDecisions.model(choice: "powerful", confidence: 0.95),
+        choices: choices()
+      )
+
+    message = Message.user(["Fix this chart", @image, %{type: :audio, data: "BBBB", mime_type: "audio/wav"}])
+    update = TypeSafeModelRouter.before_agent(route, %{messages: [message]}, %{})
+    assert %{"accepted" => true, "choice" => "powerful", "confidence" => 0.95} = update.model_route
+    assert %Usage{input_tokens: 100, details: [%{provider: "openai", role: :classifier}]} = update.usage
+
+    assert_receive {:decisions_request, request}
+    assert [%{"type" => "choice", "name" => "choice", "choices" => [_, _]}] = request.json["questions"]
+
+    assert [%{"content" => [%{"text" => before}, %{"type" => "input_image"}, %{"text" => rest}]}] =
+             request.json["input"]
+
+    assert %{"message" => %{"role" => "user", "content" => content}} =
+             BeamWeaver.JSON.decode!(before <> "IMAGE" <> rest)
+
+    assert Enum.map(content, & &1["text"]) == ["Fix this chart", "IMAGE", "[audio omitted]"]
+  end
+
+  test "a classifier that takes no images gets a placeholder, and one that refuses leaves the base model" do
+    update = TypeSafeModelRouter.before_agent(router(), %{messages: [Message.user(["Fix this chart", @image])]}, %{})
+    assert update.model_route["accepted"]
+    assert_receive {:typesafe_request, request}
+
+    assert request.json["state"]["message"]["content"] == [
+             %{"type" => "text", "text" => "Fix this chart"},
+             "[image omitted]"
+           ]
+
+    route = TypeSafeModelRouter.new(classifier: OpenAIDecisions.model(refuse: true), choices: choices())
+
+    update =
+      TypeSafeModelRouter.before_agent(
+        route,
+        %{messages: [Message.user("task")], model_route: %{"accepted" => true}},
+        %{}
+      )
+
+    assert %{"accepted" => false, "reason" => "refused", "classifier_model" => "gpt-6-luna"} = update.model_route
+    assert update.usage.input_tokens == 100
+  end
+
+  test "a message the provider refuses with its images is classified again as text only" do
+    parent = self()
+
+    classifier =
+      OpenAIDecisions.model(
+        respond: fn request ->
+          send(parent, {:input, request.json["input"]})
+
+          if inspect(request.json["input"]) =~ "input_image",
+            do: {:ok, Response.new(status: 413, body: %{"error" => %{"message" => "Request too large."}})},
+            else: {:ok, OpenAIDecisions.response(request.json["questions"], choice: "fast")}
+        end
+      )
+
+    route = TypeSafeModelRouter.new(classifier: classifier, choices: choices())
+
+    {update, log} =
+      ExUnit.CaptureLog.with_log(fn ->
+        TypeSafeModelRouter.before_agent(route, %{messages: [Message.user(["Fix this chart", @image])]}, %{})
+      end)
+
+    assert log =~ "refused (HTTP 413)"
+    assert %{"accepted" => true, "choice" => "fast"} = update.model_route
+    assert_receive {:input, with_image}
+    assert inspect(with_image) =~ "input_image"
+    assert_receive {:input, text_only}
+    assert inspect(text_only) =~ "[image omitted]"
+    refute_received {:input, _input}
+  end
+
+  test "the classifier and its question are checked when the router is built" do
+    assert %BeamWeaver.OpenAI.DecisionModel{} =
+             TypeSafeModelRouter.new(classifier: "openai:gpt-6-luna", choices: choices()).classifier
+
+    structured = put_in(choices()["fast"].criteria, %{for: "small tasks"})
+
+    assert_raise ArgumentError, ~r/2 to 255 distinct choices/, fn ->
+      TypeSafeModelRouter.new(classifier: OpenAIDecisions.model(), choices: structured)
+    end
+
+    assert_raise ArgumentError, ~r/decision model/, fn ->
+      TypeSafeModelRouter.new(classifier: %Chat{}, choices: choices())
+    end
+  end
+
   test "provider failures fall back and publish their reason" do
     classifier = Fixture.model(respond: fn _ -> {:error, BeamWeaver.Transport.Error.new(:timeout, "timeout")} end)
     parent = self()
@@ -129,7 +231,7 @@ defmodule BeamWeaver.Agent.TypeSafeModelRouterTest do
       )
 
     assert update.model_route["reason"] == "classifier_error"
-    assert update.model_route["error"]["type"] == "transport_error"
+    assert update.model_route["error"]["type"] == "timeout"
     refute Map.has_key?(update, :usage)
     assert_receive {:event, %Events.Custom{payload: %{name: :model_route}}}
   end
@@ -200,7 +302,7 @@ defmodule BeamWeaver.Agent.TypeSafeModelRouterTest do
   end
 
   test "router outside ModelFallback permits fallback after selected model failure" do
-    route = router("powerful", 0.9, error: Error.new(:transport_error, "failed"))
+    route = router("powerful", 0.9, error: Error.new(:connection, "failed"))
     fallback = ModelFallback.new(fallbacks: [%Chat{parent: self(), model: "recovery"}])
     assert {:ok, agent} = agent(route, middleware: [route, fallback])
     assert {:ok, result} = BWAgent.invoke(agent, %{messages: [Message.user("task")]})

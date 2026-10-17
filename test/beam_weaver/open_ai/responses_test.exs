@@ -71,6 +71,96 @@ defmodule BeamWeaver.OpenAI.ResponsesTest do
            }
   end
 
+  # The API takes an assistant message item's id only when it issued it
+  # (`msg_...`); it refuses the id a thread gives a message it built itself.
+  test "an assistant message goes back without an id the API didn't issue" do
+    model = Models.init_chat_model!("openai:gpt-5.4-mini", api_key: "k")
+
+    history = [
+      Message.user("Where is A-1001?"),
+      Message.assistant("It shipped on Monday.", id: "0199d6a4-6f6e-7c1a-9b1e-3f2a4c5d6e7f"),
+      Message.assistant([%{type: :text, text: "Anything else?", id: "msg_abc"}]),
+      Message.user("Thanks")
+    ]
+
+    assert {:ok, body} = model.__struct__.request_body(model, history)
+    assert [first, second] = for(%{"role" => "assistant"} = item <- body["input"], do: item)
+    refute Map.has_key?(first, "id")
+    assert second["id"] == "msg_abc"
+  end
+
+  # The next request needs the namespace of a tool that tool search found, and
+  # the call's status and async flag, as the API sent them.
+  test "a function call goes back with its namespace, status and async flag" do
+    response = %{
+      "id" => "resp_1",
+      "object" => "response",
+      "status" => "completed",
+      "model" => "gpt-5.4-mini",
+      "output" => [
+        %{
+          "type" => "function_call",
+          "id" => "fc_1",
+          "call_id" => "call_1",
+          "name" => "lookup_order",
+          "namespace" => "orders",
+          "async" => true,
+          "status" => "completed",
+          "arguments" => ~s({"order_id":"A-1"})
+        }
+      ]
+    }
+
+    assert {:ok, reply} = BeamWeaver.OpenAI.Messages.Response.to_message(response)
+    model = Models.init_chat_model!("openai:gpt-5.4-mini", api_key: "k")
+    result = Message.tool("shipped", tool_call_id: "call_1", name: "lookup_order")
+
+    assert {:ok, body} = model.__struct__.request_body(model, [Message.user("Where is A-1?"), reply, result])
+
+    assert [%{"call_id" => "call_1", "namespace" => "orders", "async" => true, "status" => "completed"}] =
+             for(%{"type" => "function_call"} = item <- body["input"], do: item)
+  end
+
+  # A configuration update, such as a new reasoning effort, takes effect from
+  # its message on; tools added partway through come with a system message.
+  test "configuration_update and additional_tools blocks go as input items before their message" do
+    model = Models.init_chat_model!("openai:gpt-5.4-mini", api_key: "k")
+    get_time = %{"type" => "function", "name" => "get_time", "parameters" => %{"type" => "object"}}
+
+    messages = [
+      Message.user("What time is it?"),
+      Message.system([%{type: :additional_tools, role: "developer", tools: [get_time]}]),
+      Message.user([%{type: :configuration_update, reasoning: %{effort: :high}}, "Then plan my week."])
+    ]
+
+    assert {:ok, %{"input" => input}} = model.__struct__.request_body(model, messages)
+
+    assert [
+             %{"type" => "message", "role" => "user", "content" => "What time is it?"},
+             %{"type" => "additional_tools", "role" => "developer", "tools" => [%{"name" => "get_time"}]},
+             %{"type" => "configuration_update", "reasoning" => %{"effort" => "high"}},
+             %{
+               "type" => "message",
+               "role" => "user",
+               "content" => [%{"type" => "input_text", "text" => "Then plan my week."}]
+             }
+           ] = input
+  end
+
+  test "additional_tools needs a system message, and the Responses API" do
+    model = Models.init_chat_model!("openai:gpt-5.4-mini", api_key: "k")
+    on_user = Message.user([%{type: :additional_tools, tools: []}, "Hi"])
+
+    assert {:error, %BeamWeaver.Core.Error{type: :invalid_request, details: %{role: :user}}} =
+             model.__struct__.request_body(model, [on_user])
+
+    chat_completions = Models.init_chat_model!("openai:gpt-5.4-mini", api_key: "k", api: :chat_completions)
+    on_system = Message.system([%{type: :additional_tools, role: "developer", tools: []}])
+
+    assert {:error, %BeamWeaver.Core.Error{type: :unsupported_feature, details: %{alternative_api: :responses}}} =
+             chat_completions.__struct__.request_body(chat_completions, [on_system, Message.user("Hi")])
+  end
+
   test "returns preserved raw output items from assistant messages" do
     message =
       Message.assistant("",

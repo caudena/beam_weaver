@@ -106,20 +106,23 @@ defmodule BeamWeaver.Examples.LiveRunner do
 
     case script_opts[:run] do
       :offline ->
-        if opts[:offline], do: [%{script: script, provider: :offline, model: nil, args: []}], else: []
+        offline_jobs(script, opts[:offline])
 
       :live ->
         for {name, model} <- providers, model, do: %{script: script, provider: name, model: model, args: args}
 
       {:pinned, provider} ->
-        if provider in provider_names, do: [%{script: script, provider: provider, model: nil, args: args}], else: []
+        for ^provider <- provider_names, do: %{script: script, provider: provider, model: nil, args: args}
     end
   end
 
-  # A provider that is briefly over capacity (an HTTP 429 or 5xx error marked
-  # retryable) says nothing about the example, so such a run gets one more try
-  # after a pause. Failures of the example itself, such as a skipped tool,
-  # never do.
+  defp offline_jobs(script, true), do: [%{script: script, provider: :offline, model: nil, args: []}]
+  defp offline_jobs(_script, _offline), do: []
+
+  # A provider that is briefly over capacity or unreachable (a retryable
+  # rate limit, server error, lost connection or timeout) says nothing about
+  # the example, so such a run gets one more try after a pause. Failures of
+  # the example itself, such as a skipped tool, never do.
   defp run(job, env, timeout) do
     case run_once(job, env, timeout) do
       %{status: :fail, output: output} = result ->
@@ -136,7 +139,7 @@ defmodule BeamWeaver.Examples.LiveRunner do
   end
 
   defp transient_provider_error?(output),
-    do: output =~ "retryable: true" and Regex.match?(~r/status: (429|500|502|503|504|529)\b/, output)
+    do: output =~ "retryable: true" and Regex.match?(~r/type: :(rate_limit|server_error|connection|timeout)\b/, output)
 
   defp run_once(job, env, timeout) do
     log = Path.join([@logs, to_string(job.provider), String.replace(job.script, "/", "__") <> ".log"])

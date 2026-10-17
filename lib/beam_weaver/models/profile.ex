@@ -1,6 +1,11 @@
 defmodule BeamWeaver.Models.Profile do
   @moduledoc """
   Model capability metadata.
+
+  `reasoning_effort_levels` lists the reasoning efforts a model takes, such as
+  `[:low, :medium, :high]`, and is empty when it takes none or BeamWeaver
+  doesn't know them. `reasoning_effort_default` is the effort the provider
+  uses when a call names none, when it's known.
   """
 
   # credo:disable-for-next-line Credo.Check.Warning.StructFieldAmount
@@ -28,6 +33,8 @@ defmodule BeamWeaver.Models.Profile do
     audio_outputs: false,
     video_outputs: false,
     reasoning_output: false,
+    reasoning_effort_levels: [],
+    reasoning_effort_default: nil,
     tool_calling: false,
     tool_call_streaming: false,
     tool_choice: false,

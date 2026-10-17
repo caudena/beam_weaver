@@ -27,8 +27,8 @@ defmodule BeamWeaver.Graph.Nodes.ToolNode.Input do
   @spec extract(term(), atom() | String.t()) ::
           {:ok, [map()], :list | {:state, atom() | String.t()}} | {:error, Error.t()}
   def extract(input, messages_key) when is_map(input) do
-    if tool_call_with_context?(input) do
-      {:ok, [Map.get(input, :tool_call) || Map.get(input, "tool_call")], :list}
+    if sent_call?(input) do
+      {:ok, [Map.get(input, :tool_call) || Map.get(input, "tool_call")], {:state, messages_key}}
     else
       case fetch_messages(input, messages_key) do
         {:ok, key, messages} when is_list(messages) ->
@@ -58,8 +58,8 @@ defmodule BeamWeaver.Graph.Nodes.ToolNode.Input do
   @spec request_state(term(), term()) :: term()
   def request_state(input, runtime) do
     cond do
-      tool_call_with_context?(input) ->
-        Map.get(input, :state) || Map.get(input, "state")
+      sent_call?(input) ->
+        Map.get(input, :state) || Map.get(input, "state") || runtime_value(runtime, :previous_state)
 
       raw_tool_call_list?(input) and runtime_value(runtime, :previous_state) != nil ->
         runtime_value(runtime, :previous_state)
@@ -152,16 +152,19 @@ defmodule BeamWeaver.Graph.Nodes.ToolNode.Input do
   defp raw_tool_call_list?(input) when is_list(input), do: Enum.all?(input, &tool_call?/1)
   defp raw_tool_call_list?(_input), do: false
 
-  defp tool_call_with_context?(input) when is_map(input) do
+  # One tool call sent to the tools node as a task of its own, with the state
+  # it runs in, or without it to run in the step's state.
+  @doc false
+  def sent_call?(input) when is_map(input) do
     type = Map.get(input, :__type) || Map.get(input, "__type")
     tool_call = Map.get(input, :tool_call) || Map.get(input, "tool_call")
     state = Map.get(input, :state) || Map.get(input, "state")
 
     type in [:tool_call_with_context, "tool_call_with_context"] and tool_call?(tool_call) and
-      is_map(state)
+      (is_nil(state) or is_map(state))
   end
 
-  defp tool_call_with_context?(_input), do: false
+  def sent_call?(_input), do: false
 
   @doc false
   def tool_call_id(call) do

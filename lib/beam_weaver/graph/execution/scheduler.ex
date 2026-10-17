@@ -81,8 +81,6 @@ defmodule BeamWeaver.Graph.Execution.Scheduler do
       send_entries =
         Enum.flat_map(routes, & &1.sends) ++ Enum.map(route_sends, &Route.send_request/1)
 
-      send_channels = if send_entries == [], do: [], else: [@tasks]
-
       branch_ready =
         plan_or_graph
         |> tasks_from_channels(branch_channels)
@@ -91,11 +89,15 @@ defmodule BeamWeaver.Graph.Execution.Scheduler do
       {:ok,
        %{
          ready: add_tasks([], branch_ready ++ send_entries),
-         channels: Execution.normalize_channels(branch_channels ++ send_channels),
+         channels: Execution.normalize_channels(branch_channels ++ tasks_channels(send_entries)),
          updates: route_updates
        }}
     end
   end
+
+  # Sends reach their tasks through the tasks channel.
+  defp tasks_channels([]), do: []
+  defp tasks_channels(_sends), do: [@tasks]
 
   @spec add_channel_tasks(map(), [ready()], Enumerable.t()) :: [ready()]
   def add_channel_tasks(plan_or_graph, ready, updated_channels),

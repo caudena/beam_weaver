@@ -94,8 +94,6 @@ defmodule BeamWeaver.Models.ProfileRegistry.Moonshot do
   }
 
   @k3_extra %{
-    reasoning_efforts: [:max],
-    default_reasoning_effort: :max,
     thinking_always_enabled: true,
     dynamic_tool_loading: true,
     tool_choice_when_thinking: ["auto", "none", "required"],
@@ -114,6 +112,8 @@ defmodule BeamWeaver.Models.ProfileRegistry.Moonshot do
                  supported_params_by_api: %{
                    chat_completions: @k3_supported_params
                  },
+                 reasoning_effort_levels: [:max],
+                 reasoning_effort_default: :max,
                  extra:
                    Map.merge(@base_extra, @k3_extra)
                    |> Map.merge(%{

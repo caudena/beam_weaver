@@ -213,6 +213,42 @@ For actions that a person should sign off, such as refunds, pause the agent
 before the tool runs with `interrupt_on %{"issue_refund" => true}`. See
 [Human-in-the-Loop](human_in_the_loop.md).
 
+## Block risky tool calls
+
+`BeamWeaver.Agent.Middleware.AutoMode` lets an agent run its tools on its own
+but stops calls that look risky. Before each call of a tool in `tools`, it
+asks a decision model how likely the call is to be risky or not clearly asked
+for by the user. A call below 0.5 runs; any other gets an error message
+instead, and the tool doesn't run:
+
+```elixir
+defmodule MyApp.SupportAgent do
+  use BeamWeaver.Agent
+
+  alias BeamWeaver.Agent.Middleware.AutoMode
+
+  model "openai:gpt-5.4-mini"
+  system_prompt "You are Acme's support agent."
+  tools [MyApp.Tools.IssueRefund]
+  middleware [{AutoMode, tools: ["issue_refund"], classifier: "openai:gpt-6-luna"}]
+end
+```
+
+The decision model, `classifier`, gets the call, the tool's description and
+the last 30 messages, and only the user's messages count as asking for a
+call. It defaults to TypeSafe's `"typesafe:jev-latest"`; GPT-6 Luna also sees
+the images in the conversation. `instructions` replaces the question, which
+by default counts destructive actions, credential access, sharing data
+outside, security bypasses, persistence, changes to protected resources and
+anything the user didn't clearly ask for as risky.
+
+A blocked call answers the model with "The tool call `issue_refund` was
+blocked because it was classified as risky (probability: 0.91). The tool was
+not executed." `AutoMode` fails closed: a call the decision model declines to
+classify is blocked, and when the decision model fails, the run fails without
+running the tool. It asks no one; to have a person decide, require approval
+instead.
+
 ## Moderate with a model
 
 Some rules need judgment rather than a pattern. A guardrail can ask a second,
@@ -388,4 +424,5 @@ rules, assert that `invoke/2` returns `{:interrupted, interrupt}`. See
 - [`BeamWeaver.Agent.Middleware.ModelCallLimit`](https://hexdocs.pm/beam_weaver/BeamWeaver.Agent.Middleware.ModelCallLimit.html): cap model calls per run or thread
 - [`BeamWeaver.Agent.Middleware.ToolCallLimit`](https://hexdocs.pm/beam_weaver/BeamWeaver.Agent.Middleware.ToolCallLimit.html): cap tool calls per run or thread
 - [`BeamWeaver.Agent.Middleware.HumanInTheLoop`](https://hexdocs.pm/beam_weaver/BeamWeaver.Agent.Middleware.HumanInTheLoop.html): pause for approval
+- [`BeamWeaver.Agent.Middleware.AutoMode`](https://hexdocs.pm/beam_weaver/BeamWeaver.Agent.Middleware.AutoMode.html): block risky tool calls
 - [`BeamWeaver.OpenAI.ModerationMiddleware`](https://hexdocs.pm/beam_weaver/BeamWeaver.OpenAI.ModerationMiddleware.html): OpenAI's moderation endpoint

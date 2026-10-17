@@ -44,7 +44,12 @@ defmodule BeamWeaver.XAI.Client.ResponseDecoder do
       provider: :xai,
       provider_name: "xAI",
       header_fields: @header_fields,
-      context_overflow?: nil
+      context_overflow?: nil,
+      error_type: &error_type/3
     }
   end
+
+  # xAI documents a wrong API key as a 400.
+  defp error_type(400, _provider_error, "Incorrect API key" <> _rest), do: :authentication
+  defp error_type(_status, _provider_error, _message), do: nil
 end

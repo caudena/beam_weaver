@@ -9,7 +9,7 @@
         "status": 400
       },
       "message": "Invalid schema fixture",
-      "type": "http_error"
+      "type": "invalid_request"
     }
   },
   "provider": "xai",

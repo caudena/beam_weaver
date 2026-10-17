@@ -616,9 +616,17 @@ defmodule BeamWeaver.Graph.ContinueThreadTest do
   defp crash_in_notify(run) do
     test = self()
     {pid, ref} = spawn_monitor(fn -> run.(%{stop_in_notify: test}) end)
-    assert_receive :notify_started, 1_000
+    # However long the run takes to get there, unless it ends first.
+    receive do
+      :notify_started -> :ok
+      {:DOWN, ^ref, :process, ^pid, reason} -> flunk("the run ended before notify started: #{inspect(reason)}")
+    end
+
     Process.exit(pid, :kill)
-    assert_receive {:DOWN, ^ref, :process, ^pid, :killed}
+
+    receive do
+      {:DOWN, ^ref, :process, ^pid, reason} -> assert reason == :killed
+    end
   end
 
   defp thread(id), do: %{"configurable" => %{"thread_id" => id}}

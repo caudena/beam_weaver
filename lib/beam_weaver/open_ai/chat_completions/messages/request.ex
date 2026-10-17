@@ -111,13 +111,30 @@ defmodule BeamWeaver.OpenAI.ChatCompletions.Messages.Request do
   end
 
   defp to_openai_message(%Message{} = message) do
-    with {:ok, content} <- content_to_openai(message.content) do
+    with :ok <- check_additional_tools(message.content),
+         {:ok, content} <- content_to_openai(message.content) do
       {:ok, %{"role" => provider_role(message), "content" => content} |> put_optional("name", message.name)}
     end
   end
 
   defp to_openai_message(_message),
     do: {:error, Error.new(:invalid_message, "expected a BeamWeaver message")}
+
+  # Tools added partway through are an input item of the Responses API only.
+  defp check_additional_tools(content) when is_list(content) do
+    if Enum.any?(content, &(block_type(&1) == "additional_tools")) do
+      {:error,
+       Error.new(:unsupported_feature, "additional_tools needs the Responses API", %{
+         api: :chat_completions,
+         feature: :additional_tools,
+         alternative_api: :responses
+       })}
+    else
+      :ok
+    end
+  end
+
+  defp check_additional_tools(_content), do: :ok
 
   defp to_assistant_openai_message(%Message{} = message) do
     with {:ok, content} <- message.content |> assistant_content() |> content_to_openai() do

@@ -76,8 +76,32 @@ defmodule BeamWeaver.Provider.ResponseDecoderTest do
         body: ~s({"error":{"code":429,"status":"RESOURCE_EXHAUSTED","message":"Too many requests. Try again later."}})
       )
 
-    assert {:error, %{type: :http_error, details: %{retryable: true}}} =
+    assert {:error, %{type: :rate_limit, details: %{retryable: true}}} =
              ResponseDecoder.json({:ok, rate_limit}, provider: :google)
+  end
+
+  # Every provider decodes its HTTP errors here, so a status gets the same
+  # type, and `retryable`, from every provider.
+  test "an HTTP error's type and retryable follow its status" do
+    for {status, type, retryable} <- [
+          {400, :invalid_request, false},
+          {401, :authentication, false},
+          {402, :billing_exhausted, false},
+          {403, :permission_denied, false},
+          {404, :not_found, false},
+          {409, :http_error, true},
+          {413, :http_error, false},
+          {422, :invalid_request, false},
+          {429, :rate_limit, true},
+          {500, :server_error, true},
+          {501, :server_error, true},
+          {529, :server_error, true}
+        ] do
+      response = Response.new(status: status, body: ~s({"error":{"message":"The request failed."}}))
+
+      assert %Error{type: ^type, details: %{status: ^status, retryable: ^retryable}} =
+               ResponseDecoder.http_error(response, provider: :openai)
+    end
   end
 
   test "json decodes successful responses and can attach response headers" do
@@ -236,7 +260,7 @@ defmodule BeamWeaver.Provider.ResponseDecoderTest do
 
     assert [
              %BeamWeaver.Stream.Events.Error{
-               error: %Error{type: :http_error, message: "slow down"}
+               error: %Error{type: :rate_limit, message: "slow down"}
              }
            ] = Enum.to_list(stream)
 

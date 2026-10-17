@@ -137,7 +137,7 @@ defmodule BeamWeaver.OpenAI.ChatModel.TokenCounter do
   defp count_tokenized_tools(_tokenizer, nil, _opts), do: {:ok, 0}
 
   defp count_tokenized_tools(tokenizer, tools, opts),
-    do: count_tokenized_term(tokenizer, tools, opts)
+    do: count_tokenized_term(tokenizer, tools |> List.wrap() |> Enum.map(&BeamWeaver.Tool.Renderer.declaration/1), opts)
 
   defp count_tokenized_term(_tokenizer, value, _opts) when value in [nil, [], %{}], do: {:ok, 0}
 

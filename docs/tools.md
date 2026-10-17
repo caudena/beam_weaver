@@ -147,9 +147,11 @@ what the model reads:
 
 An error doesn't stop the agent. It becomes a tool message with
 `metadata.status` set to `"error"`, so the model can fix its arguments or
-explain the problem. When an agent runs the tool, an exception raised inside
-`invoke/3` is reported the same way (calling a tool module directly with
-`Tool.invoke/3` raises it):
+explain the problem; the `ToolError` middleware changes what it reads, or
+stops the run (see [Built-in Middleware](builtin_middleware.md#toolerror)).
+When an agent runs the tool, an exception raised inside `invoke/3` is
+reported the same way (calling a tool module directly with `Tool.invoke/3`
+raises it):
 
 ```elixir
 defmodule MyApp.SupportAgent do
@@ -309,7 +311,9 @@ two parallel graph nodes would.
 
 With `return_direct true`, the run ends as soon as the tool succeeds, and its
 result is the last message. Use it when the tool's output is the answer, so
-the model doesn't need another turn:
+the model doesn't need another turn. When the model calls it together with a
+tool that doesn't return directly, the model gets all the results and goes
+on:
 
 ```elixir
 defmodule MyApp.Tools.EscalateTicket do

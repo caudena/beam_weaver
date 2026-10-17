@@ -59,7 +59,8 @@ its result.
 
 | Option | Meaning | Default |
 | --- | --- | --- |
-| `model:` | The model that writes summaries, often a small one | required |
+| `model:` | The model that writes summaries, often a small one | required without `summarizer:` |
+| `summarizer:` | A function that writes the summary instead: it takes the messages to summarize and returns the text, `{:ok, text}` or `{:error, error}` | none |
 | `trigger:` | `{:messages, n}`, `{:tokens, n}`, or `{:fraction, f}` of `max_input_tokens:`; a list triggers on any of them | `{:messages, 20}` |
 | `keep:` | How much to keep word for word: `{:messages, n}`, `{:tokens, n}` or `{:fraction, f}` | `{:messages, 8}` |
 | `max_input_tokens:` | The context window of the agent's model, which fractions are taken of; required with a fraction | none |
@@ -73,6 +74,12 @@ middleware [
    model: "openai:gpt-5.4-mini", trigger: {:tokens, 50_000}, keep: {:messages, 20}}
 ]
 ```
+
+A summary call that fails is tried up to 3 times, a second or more apart,
+unless its error says retrying can't help, such as a bad API key (see
+[Models](models.md#errors)). One over the summary model's context window is
+tried once more with the middle of the old messages cut out. When it still
+fails, the run returns the error and the thread stays as it was.
 
 The old messages are gone from the thread for good; only the summary carries
 them on. To keep them out of the prompt but not out of the thread, trim

@@ -26,6 +26,7 @@ defmodule BeamWeaver.Anthropic.ChatModel.RequestBuilder do
     :mcp_servers,
     :output_config,
     :parallel_tool_calls,
+    :reasoning_effort,
     :response_format,
     :service_tier,
     :speed,
@@ -81,6 +82,7 @@ defmodule BeamWeaver.Anthropic.ChatModel.RequestBuilder do
          :ok <- validate_request_params(model, opts),
          :ok <- validate_metadata(option(model, opts, :metadata), model.model),
          :ok <- validate_sampling_params(model, opts),
+         :ok <- validate_effort(model, opts),
          :ok <- validate_thinking_params(model, opts),
          :ok <- validate_tool_compatibility(model, opts),
          :ok <- validate_model_features(model, opts),
@@ -140,10 +142,7 @@ defmodule BeamWeaver.Anthropic.ChatModel.RequestBuilder do
         )
         |> Options.put_optional("tools", tools)
         |> Options.put_optional("tool_choice", tool_choice(model, opts))
-        |> Options.put_optional(
-          "thinking",
-          Options.normalize_option_map(option(model, opts, :thinking))
-        )
+        |> Options.put_optional("thinking", Options.normalize_option_map(thinking(model, opts)))
         |> Options.put_optional("output_config", output_config)
         |> Options.put_optional(
           "context_management",
@@ -179,6 +178,7 @@ defmodule BeamWeaver.Anthropic.ChatModel.RequestBuilder do
           {:ok, map()} | {:error, Error.t()}
   def count_tokens_body(model, messages, opts \\ []) do
     with {:ok, model} <- ModelResolution.resolve(model, opts),
+         :ok <- validate_effort(model, opts),
          :ok <- validate_thinking_params(model, opts),
          :ok <- validate_tool_compatibility(model, opts),
          {:ok, {system, formatted_messages}} <-
@@ -204,10 +204,7 @@ defmodule BeamWeaver.Anthropic.ChatModel.RequestBuilder do
       |> Options.put_optional("system", system)
       |> Options.put_optional("tools", tools)
       |> Options.put_optional("tool_choice", tool_choice(model, opts))
-      |> Options.put_optional(
-        "thinking",
-        Options.normalize_option_map(option(model, opts, :thinking))
-      )
+      |> Options.put_optional("thinking", Options.normalize_option_map(thinking(model, opts)))
       |> Options.put_optional("output_config", output_config)
       |> Options.put_optional(
         "context_management",
@@ -233,7 +230,7 @@ defmodule BeamWeaver.Anthropic.ChatModel.RequestBuilder do
       |> Map.take(@supported_model_params)
 
     # Every model parameter of the call is checked, so a foreign option such
-    # as `reasoning_effort` is an error rather than dropped.
+    # as `frequency_penalty` is an error rather than dropped.
     params = Map.merge(model_params, Map.new(opts))
     policy = Keyword.get(opts, :param_policy, model.param_policy)
 
@@ -329,7 +326,7 @@ defmodule BeamWeaver.Anthropic.ChatModel.RequestBuilder do
   end
 
   defp validate_thinking_shape(model, opts) do
-    case option(model, opts, :thinking) do
+    case thinking(model, opts) do
       thinking when is_nil(thinking) or is_map(thinking) ->
         :ok
 
@@ -346,7 +343,7 @@ defmodule BeamWeaver.Anthropic.ChatModel.RequestBuilder do
   end
 
   defp validate_thinking_mode(model, opts) do
-    thinking_type = thinking_type(option(model, opts, :thinking))
+    thinking_type = thinking_type(thinking(model, opts))
     supported = profile_extra(model, :thinking_types)
 
     cond do
@@ -391,7 +388,7 @@ defmodule BeamWeaver.Anthropic.ChatModel.RequestBuilder do
   end
 
   defp validate_reduced_thinking_effort(model, opts) do
-    thinking_type = thinking_type(option(model, opts, :thinking))
+    thinking_type = thinking_type(thinking(model, opts))
 
     max_effort =
       case thinking_type do
@@ -416,12 +413,12 @@ defmodule BeamWeaver.Anthropic.ChatModel.RequestBuilder do
   end
 
   defp validate_thinking_block_binding(model, opts) do
-    case thinking_block_binding(option(model, opts, :thinking)) do
+    case thinking_block_binding(thinking(model, opts)) do
       nil ->
         :ok
 
       binding when is_map(binding) ->
-        adaptive? = thinking_type(option(model, opts, :thinking)) in [:adaptive, "adaptive"]
+        adaptive? = thinking_type(thinking(model, opts)) in [:adaptive, "adaptive"]
 
         if adaptive? and thinking_binding_behavior(binding) in [:error, "error", :drop_block, "drop_block"] do
           :ok
@@ -435,7 +432,7 @@ defmodule BeamWeaver.Anthropic.ChatModel.RequestBuilder do
   end
 
   defp validate_per_turn_effort(model, messages, opts) do
-    reduced? = thinking_type(option(model, opts, :thinking)) in [:disabled, "disabled", :between_tools, "between_tools"]
+    reduced? = thinking_type(thinking(model, opts)) in [:disabled, "disabled", :between_tools, "between_tools"]
     effort = request_effort(model, opts)
 
     changed? =
@@ -645,15 +642,13 @@ defmodule BeamWeaver.Anthropic.ChatModel.RequestBuilder do
         instructions = MapAccess.get(compaction, :instructions)
 
         conflicts =
-          [
-            if(not is_nil(option(model, opts, :context_management)), do: :context_management),
-            if(not is_nil(option(model, opts, :stop_sequences)) or Keyword.has_key?(opts, :stop),
-              do: :stop_sequences
-            ),
-            if(not is_nil(output_config_format(output_config)), do: :output_config),
-            if(forced_tool_choice?(Keyword.get(opts, :tool_choice)), do: :tool_choice)
-          ]
-          |> Enum.reject(&is_nil/1)
+          for {option, true} <- [
+                context_management: not is_nil(option(model, opts, :context_management)),
+                stop_sequences: not is_nil(option(model, opts, :stop_sequences)) or Keyword.has_key?(opts, :stop),
+                output_config: not is_nil(output_config_format(output_config)),
+                tool_choice: forced_tool_choice?(Keyword.get(opts, :tool_choice))
+              ],
+              do: option
 
         cond do
           type not in [:summarize, "summarize"] or
@@ -753,11 +748,52 @@ defmodule BeamWeaver.Anthropic.ChatModel.RequestBuilder do
 
   defp thinking_binding_behavior(binding), do: MapAccess.get(binding, :prefix_mismatch_behavior)
 
-  defp request_effort(model, opts) do
-    option(model, opts, :effort) ||
+  # The effort a request names: the call's, then the model's, each from
+  # `effort:`, `reasoning_effort:` (`effort:` wins when both are set) or
+  # `output_config`'s `effort`.
+  defp requested_effort(model, opts) do
+    Keyword.get(opts, :effort) || Keyword.get(opts, :reasoning_effort) ||
       output_config_effort(Keyword.get(opts, :output_config)) ||
-      output_config_effort(Map.get(model, :output_config)) ||
-      profile_extra(model, :default_effort)
+      Map.get(model, :effort) || Map.get(model, :reasoning_effort) ||
+      output_config_effort(Map.get(model, :output_config))
+  end
+
+  # The effort a request runs at: the one it names, or the model's default.
+  defp request_effort(model, opts),
+    do: requested_effort(model, opts) || profile_value(model, :reasoning_effort_default)
+
+  # The thinking a request sends: its `thinking`, or, when it names an effort
+  # on a model that takes only adaptive thinking, adaptive thinking with its
+  # summary shown.
+  defp thinking(model, opts) do
+    case option(model, opts, :thinking) do
+      nil ->
+        if adaptive_only_thinking_model?(model) and requested_effort(model, opts),
+          do: %{"type" => "adaptive", "display" => "summarized"}
+
+      thinking ->
+        thinking
+    end
+  end
+
+  # An effort the model's profile doesn't list fails before the request; a
+  # profile without levels leaves the check to Anthropic.
+  defp validate_effort(model, opts) do
+    levels = profile_value(model, :reasoning_effort_levels) || []
+    effort = requested_effort(model, opts)
+
+    if is_nil(effort) or levels == [] or to_string(effort) in Enum.map(levels, &to_string/1) do
+      :ok
+    else
+      {:error,
+       Error.new(:unsupported_model_param, "#{model.model} does not take reasoning effort #{effort}", %{
+         provider: :anthropic,
+         model: model.model,
+         params: [:reasoning_effort],
+         value: effort,
+         supported: levels
+       })}
+    end
   end
 
   defp output_config_effort(%{"effort" => effort}), do: effort
@@ -840,7 +876,7 @@ defmodule BeamWeaver.Anthropic.ChatModel.RequestBuilder do
   # or `:none`, and others drop a forced choice while thinking.
   def forced_tool_choice?(model, opts) do
     modes = profile_extra(model, :tool_choice_modes)
-    thinking? = thinking_enabled?(option(model, opts, :thinking)) or always_on_thinking_model?(model)
+    thinking? = thinking_enabled?(thinking(model, opts)) or always_on_thinking_model?(model)
 
     not (is_list(modes) and :any not in modes) and
       not (thinking? and profile_extra(model, :forced_tool_choice_with_thinking) != true)
@@ -849,7 +885,7 @@ defmodule BeamWeaver.Anthropic.ChatModel.RequestBuilder do
   defp tool_choice(model, opts) do
     choice = Keyword.get(opts, :tool_choice)
     parallel = Keyword.get(opts, :parallel_tool_calls, Map.get(model, :parallel_tool_calls))
-    thinking = option(model, opts, :thinking)
+    thinking = thinking(model, opts)
 
     if forced_tool_choice?(choice) and thinking_enabled?(thinking) and
          profile_extra(model, :forced_tool_choice_with_thinking) != true do
@@ -871,12 +907,15 @@ defmodule BeamWeaver.Anthropic.ChatModel.RequestBuilder do
   defp thinking_enabled?(%{type: type}), do: type in [:enabled, :adaptive, "enabled", "adaptive"]
   defp thinking_enabled?(_thinking), do: false
 
+  # The call's settings override the model's, and within each, `effort:` (or
+  # `reasoning_effort:`) overrides `output_config`'s `effort`.
   defp output_config(model, opts) do
     output_config =
       %{}
-      |> Options.merge_optional_map(option(model, opts, :output_config))
+      |> Options.merge_optional_map(Map.get(model, :output_config))
+      |> put_effort(Map.get(model, :effort) || Map.get(model, :reasoning_effort))
       |> Options.merge_optional_map(Keyword.get(opts, :output_config))
-      |> put_effort(option(model, opts, :effort))
+      |> put_effort(Keyword.get(opts, :effort) || Keyword.get(opts, :reasoning_effort))
 
     output_config =
       case Keyword.get(opts, :response_format) || Keyword.get(opts, :structured_output) do
@@ -933,9 +972,9 @@ defmodule BeamWeaver.Anthropic.ChatModel.RequestBuilder do
     |> maybe_add_beta(option(model, opts, :mcp_servers), "mcp-client-2025-11-20")
     |> maybe_add_beta(option(model, opts, :user_profile_id), "user-profiles-2026-08-18")
     |> maybe_add_beta(task_budget?(output_config), "task-budgets-2026-03-13")
-    |> maybe_add_beta(thinking_updates?(option(model, opts, :thinking)), "thinking-display-updates-2026-08-18")
+    |> maybe_add_beta(thinking_updates?(thinking(model, opts)), "thinking-display-updates-2026-08-18")
     |> maybe_add_beta(
-      thinking_block_binding(option(model, opts, :thinking)),
+      thinking_block_binding(thinking(model, opts)),
       "thinking-binding-controls-2026-08-01"
     )
     |> maybe_add_beta(tool_changes?(messages), "mid-conversation-tool-changes-2026-07-01")
@@ -1080,6 +1119,9 @@ defmodule BeamWeaver.Anthropic.ChatModel.RequestBuilder do
     do: MapAccess.get(extra, key)
 
   defp profile_extra(_model, _key), do: nil
+
+  defp profile_value(%{profile: %BeamWeaver.Models.Profile{} = profile}, key), do: Map.get(profile, key)
+  defp profile_value(_model, _key), do: nil
 
   defp maybe_put_container(body, model, messages, opts) do
     if Map.has_key?(body, "container") do

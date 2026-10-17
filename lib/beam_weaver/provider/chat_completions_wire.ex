@@ -33,12 +33,17 @@ defmodule BeamWeaver.Provider.ChatCompletionsWire do
 
   defp function_tool_choice(name), do: %{"type" => "function", "function" => %{"name" => name}}
 
+  # Invalid calls, whose arguments came back malformed, go back too: the agent
+  # answers each with an error tool message, which needs its call.
   def assistant_tool_calls(%Message{} = message) do
-    case message.tool_calls || [] do
+    case (message.tool_calls || []) ++ invalid_tool_calls(message) do
       [] -> nil
       calls -> Enum.map(calls, &assistant_tool_call/1)
     end
   end
+
+  defp invalid_tool_calls(%Message{metadata: %{invalid_tool_calls: calls}}) when is_list(calls), do: calls
+  defp invalid_tool_calls(_message), do: []
 
   def assistant_reasoning_content(%Message{} = message) do
     metadata_value(message.metadata, :reasoning_content) ||

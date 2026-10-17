@@ -305,16 +305,9 @@ defmodule BeamWeaver.Memory.ETS do
 
       with {:ok, query_vector} <- embed_query(store.index_config, query) do
         indexed_scores =
-          store.vectors
-          |> :ets.tab2list()
-          |> Enum.flat_map(fn {{item_namespace, key}, entries} ->
-            if Query.namespace_prefix?(item_namespace, namespace) do
-              score = best_score(query_vector, entries)
-              [{{item_namespace, key}, score}]
-            else
-              []
-            end
-          end)
+          for {{item_namespace, _key} = item_key, entries} <- :ets.tab2list(store.vectors),
+              Query.namespace_prefix?(item_namespace, namespace),
+              do: {item_key, best_score(query_vector, entries)}
 
         indexed_keys = MapSet.new(indexed_scores, fn {key, _score} -> key end)
 

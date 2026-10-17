@@ -210,7 +210,7 @@ defmodule BeamWeaver.Examples.Support do
   end
 
   defp takes_effort?(profile, effort) do
-    efforts = Map.get(profile.extra, :reasoning_efforts, [])
+    efforts = profile.reasoning_effort_levels
     BeamWeaver.Models.Profile.supports_param?(profile, :reasoning_effort) and (efforts == [] or effort in efforts)
   end
 end

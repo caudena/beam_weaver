@@ -238,8 +238,10 @@ defmodule BeamWeaver.Agent.Nodes.Model.Response do
     match?({:ok, _encoded}, BeamWeaver.Serialization.dump_json_value(value))
   end
 
-  def to_update(%ModelResponse{commands: commands} = response) when commands != [] do
-    base_update = base_response_update(response)
+  def to_update(response, opts \\ [])
+
+  def to_update(%ModelResponse{commands: commands} = response, opts) when commands != [] do
+    base_update = base_response_update(response, opts)
     {pre_response_commands, post_response_commands} = Enum.split_with(commands, &message_overwrite_command?/1)
 
     {pre_response_commands, base_update} =
@@ -248,9 +250,9 @@ defmodule BeamWeaver.Agent.Nodes.Model.Response do
     pre_response_commands ++ [base_update] ++ post_response_commands
   end
 
-  def to_update(%ModelResponse{} = response), do: base_response_update(response)
+  def to_update(%ModelResponse{} = response, opts), do: base_response_update(response, opts)
 
-  def to_update({:ok, response}), do: to_update(response)
+  def to_update({:ok, response}, opts), do: to_update(response, opts)
 
   def attach_runtime_metadata(%ModelResponse{} = response, %ToolSet{} = tool_set) do
     %{response | tool_set: tool_set, usage: Usage.from_messages(response.messages)}
@@ -287,17 +289,26 @@ defmodule BeamWeaver.Agent.Nodes.Model.Response do
 
   def maybe_limit_steps_response(_request, response, _step_costs), do: response
 
-  defp base_response_update(%ModelResponse{} = response) do
-    %{messages: response.messages}
-    |> maybe_put_structured_response(response.structured_response)
+  # A `:history` the model node repaired replaces the thread's messages, with
+  # the reply after it.
+  defp base_response_update(%ModelResponse{} = response, opts) do
+    messages =
+      case Keyword.get(opts, :history) do
+        nil -> response.messages
+        history -> Overwrite.new(history ++ response.messages)
+      end
+
+    %{messages: messages}
+    |> put_structured_response(response.structured_response, Keyword.get(opts, :structured_output, false))
     |> maybe_put_tool_set(response.tool_set)
     |> maybe_put_usage(response.usage)
   end
 
-  defp maybe_put_structured_response(update, nil), do: update
-
-  defp maybe_put_structured_response(update, value),
-    do: Map.put(update, :structured_response, value)
+  # An agent with a response format clears an earlier turn's answer when this
+  # call made none, so a checkpointed thread can't end on the old one.
+  defp put_structured_response(update, nil, true), do: Map.put(update, :structured_response, nil)
+  defp put_structured_response(update, nil, false), do: update
+  defp put_structured_response(update, value, _structured_output), do: Map.put(update, :structured_response, value)
 
   defp maybe_put_tool_set(update, nil), do: update
 

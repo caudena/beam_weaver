@@ -267,10 +267,11 @@ to log or to switch to a fallback. Without `retry:`, a node runs once.
 `retry_on:` takes:
 
 - `:error`, any `%BeamWeaver.Core.Error{}`: an error the node returns, an
-  exception it raises (`:node_exception`) or a timeout (`:node_timeout`);
-- `:transient`, only errors that look temporary, such as rate limits,
-  overloaded or unavailable servers (statuses 429, 500, 502, 503, 504 and
-  529), closed connections and timeouts
+  exception it raises (`:node_exception`) or a timeout (`:node_timeout`),
+  except one that says retrying can't help (`details.retryable: false`),
+  such as a model call's invalid API key;
+- `:transient`, only errors that look temporary, such as rate limits, server
+  errors, lost connections and timeouts
   (`BeamWeaver.RetryPredicates.transient?/1`);
 - an error type or a list of them, such as `[:rate_limit, :node_timeout]`;
 - a function that takes the error and returns `true` to retry.

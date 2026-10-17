@@ -30,26 +30,12 @@ defmodule BeamWeaver.Filesystem.Search do
     base = Keyword.get(opts, :path, "/")
     glob_match? = matcher(Keyword.get(opts, :glob))
 
-    files
-    |> Enum.filter(fn {path, _data} ->
-      Path.under_path?(path, base) and glob_match?.(Path.relative(path, base))
-    end)
-    |> Enum.flat_map(fn {path, data} ->
-      data = FileDataUtils.normalize_file_data(data)
-
-      if data && data.encoding == "utf-8" do
-        data.content
-        |> String.split("\n")
-        |> Enum.with_index(1)
-        |> Enum.flat_map(fn {line, line_number} ->
-          if String.contains?(line, pattern),
-            do: [%GrepMatch{path: path, line: line_number, text: line}],
-            else: []
-        end)
-      else
-        []
-      end
-    end)
+    for {path, data} <- files,
+        Path.under_path?(path, base) and glob_match?.(Path.relative(path, base)),
+        %{encoding: "utf-8", content: content} <- [FileDataUtils.normalize_file_data(data)],
+        {line, line_number} <- content |> String.split("\n") |> Enum.with_index(1),
+        String.contains?(line, pattern),
+        do: %GrepMatch{path: path, line: line_number, text: line}
   end
 
   def grep_matches_from_files(files, pattern, opts \\ []),

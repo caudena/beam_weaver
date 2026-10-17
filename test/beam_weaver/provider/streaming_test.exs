@@ -38,7 +38,7 @@ defmodule BeamWeaver.Provider.StreamingTest do
       assert [
                "hel",
                "lo",
-               %Events.Error{error: %Error{type: :http_error, message: "Overloaded", details: details}}
+               %Events.Error{error: %Error{type: :server_error, message: "Overloaded", details: details}}
              ] = live([event(delta("hel")), event(delta("lo")) <> first, second, event(delta("ignored"))])
 
       assert details.status == 529
@@ -111,7 +111,7 @@ defmodule BeamWeaver.Provider.StreamingTest do
         }
       }
 
-      assert ["hel", %Events.Error{error: %Error{type: :http_error, message: "Rate limit reached"} = error}] =
+      assert ["hel", %Events.Error{error: %Error{type: :rate_limit, message: "Rate limit reached"} = error}] =
                live([event(delta("hel")), event(failed), event(delta("ignored"))])
 
       assert error.details.status == 429
@@ -212,14 +212,14 @@ defmodule BeamWeaver.Provider.StreamingTest do
     test "a collected stream that reports an error decodes to that error" do
       body = event(delta("hel")) <> event(@overloaded)
 
-      assert {:error, %Error{type: :http_error, message: "Overloaded", details: %{status: 529, request_id: "req_1"}}} =
+      assert {:error, %Error{type: :server_error, message: "Overloaded", details: %{status: 529, request_id: "req_1"}}} =
                Streaming.collect(Chunks, @request, [chunks: [body]], &decode_error/1)
     end
 
     test "a collected stream whose finish reason reports a failure decodes to that error" do
       body = event(delta("hel")) <> event(%{"choices" => [%{"index" => 0, "finish_reason" => "network_error"}]})
 
-      assert {:error, %Error{type: :http_error, details: %{status: 500, code: "network_error", request_id: "req_1"}}} =
+      assert {:error, %Error{type: :server_error, details: %{status: 500, code: "network_error", request_id: "req_1"}}} =
                Streaming.collect(Chunks, @request, [chunks: [body]], &decode_error/1)
     end
 

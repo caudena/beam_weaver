@@ -563,7 +563,7 @@ defmodule BeamWeaver.Graph.ToolNodeTest do
       files: %{"/a.md" => "body"}
     }
 
-    assert [message] =
+    assert %{messages: [message]} =
              ToolNode.invoke(
                ToolNode.new([add], wrap_tool_call: [StateRecorderMiddleware]),
                %{
@@ -580,6 +580,21 @@ defmodule BeamWeaver.Graph.ToolNodeTest do
 
     assert message.content == "3"
     assert_receive {:tool_request_state, ^wrapper_state}
+
+    # A sent call without a state runs in the step's state.
+    step_state = %{messages: [Message.assistant("from the step")]}
+
+    assert %{messages: [%Message{content: "7"}]} =
+             ToolNode.invoke(
+               ToolNode.new([add], wrap_tool_call: [StateRecorderMiddleware]),
+               %{
+                 __type: :tool_call_with_context,
+                 tool_call: %{id: "call-step", name: "add", args: %{"a" => 3, "b" => 4}}
+               },
+               %Runtime{context: %{parent: self()}, previous_state: step_state}
+             )
+
+    assert_receive {:tool_request_state, ^step_state}
 
     previous_state = %{messages: [Message.assistant("from channels")], files: %{}}
     runtime = %Runtime{context: %{parent: self()}, previous_state: previous_state}

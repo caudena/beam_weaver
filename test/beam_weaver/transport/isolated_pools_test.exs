@@ -186,7 +186,7 @@ defmodule BeamWeaver.Transport.IsolatedPoolsTest do
       refused_port = closed_port()
       req_instances = req_finch_instances()
 
-      assert {:error, %Error{type: :transport_failure}} =
+      assert {:error, %Error{type: :timeout}} =
                Safe.stream(
                  Request.new(method: :get, url: "http://silent.example:#{port}/page"),
                  [url_policy: Keyword.put(policy(), :timeout, 100)],

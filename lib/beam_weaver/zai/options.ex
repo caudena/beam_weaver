@@ -177,7 +177,7 @@ defmodule BeamWeaver.ZAI.Options do
   end
 
   defp validate_reasoning_effort(%{"reasoning_effort" => effort} = body, profile) do
-    supported = profile_values(profile, :reasoning_efforts)
+    supported = Enum.map(profile.reasoning_effort_levels, &to_string/1)
 
     if supported == [] or effort in supported do
       :ok

@@ -217,21 +217,17 @@ defmodule BeamWeaver.Filesystem.Conformance do
     read = run(tools, "read_file", %{"file_path" => paths.todo})
     written = run(tools, "write_file", %{"file_path" => paths.note_new, "content" => "ok"})
 
-    [
-      if(not (is_binary(read) and String.contains?(read, @note)),
-        do: "read_file #{paths.todo}, which no rule denies, returned #{inspect(read)}"
-      ),
-      if(paths.todo not in listed(run(tools, "ls", %{"path" => paths.notes})),
-        do: "ls #{paths.notes} left out #{paths.todo}, which no rule denies"
-      ),
-      if(paths.todo not in listed(run(tools, "glob", %{"pattern" => "**/*", "path" => paths.dir})),
-        do: "glob **/* in #{paths.dir} left out #{paths.todo}, which no rule denies"
-      ),
-      if(is_binary(written) and String.starts_with?(written, "Error:"),
-        do: "write_file #{paths.note_new}, which no rule denies, returned #{inspect(written)}"
-      )
-    ]
-    |> Enum.reject(&is_nil/1)
+    for {problem, true} <- [
+          {"read_file #{paths.todo}, which no rule denies, returned #{inspect(read)}",
+           not (is_binary(read) and String.contains?(read, @note))},
+          {"ls #{paths.notes} left out #{paths.todo}, which no rule denies",
+           paths.todo not in listed(run(tools, "ls", %{"path" => paths.notes}))},
+          {"glob **/* in #{paths.dir} left out #{paths.todo}, which no rule denies",
+           paths.todo not in listed(run(tools, "glob", %{"pattern" => "**/*", "path" => paths.dir}))},
+          {"write_file #{paths.note_new}, which no rule denies, returned #{inspect(written)}",
+           is_binary(written) and String.starts_with?(written, "Error:")}
+        ],
+        do: problem
   end
 
   ## Helpers

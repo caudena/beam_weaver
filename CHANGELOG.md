@@ -487,6 +487,8 @@ breaking too). Read Security first.
 
 - `ChatModel.generate/3`, `generate_prompt/3`, `LLM.generate/3`, and
   `LLM.generate_prompt/3`; use `batch/3`.
+- `Provider.ReasoningControl`, which nothing in BeamWeaver used. Pass
+  `reasoning_effort:` to the model instead.
 - LangChain helpers: `Core.Error.create_message/2`, `error_codes/0`,
   `output_parser/2`, `context_overflow/2`, `tracer/2`; LangChain
   `lc`/`kwargs` message envelope decoding.
@@ -556,6 +558,18 @@ breaking too). Read Security first.
 
 #### Middleware
 
+- `Summarization` takes `summarizer:`, a function that writes the summary
+  instead of `model:`: it takes the messages to summarize and returns the
+  text, `{:ok, text}` or `{:error, error}`.
+- `ToolError` decides what the model reads when a tool fails, or stops the
+  run instead: its `on_error:` function takes the error and the tool call
+  request, and returns the text or `nil`. `tools:` limits it to some tools.
+- `ToolSelection` asks again, up to `max_retries:` times (1 by default), for
+  a selection reply without a list of tools; then `on_parsing_failure:`
+  decides: `:error` (the default), `:none`, `:all`, a list of tool names, or a
+  function of the reply.
+- `ContextEditing` takes `token_counter:`, a function of a message list that
+  returns its token count, in place of `token_count_method:`.
 - `Summarization` takes `max_input_tokens:`, the context window of the
   agent's model, which `{:fraction, f}` triggers and `keep:` settings are
   taken of. `compact_conversation` sets it from the agent's model, and the
@@ -572,6 +586,14 @@ breaking too). Read Security first.
   until the tool finishes, the output of `ToolFinish` and the message of
   `ToolError`); and state snapshots (`GraphValue`). It edits the events only,
   never the saved thread.
+- `AutoMode` runs low-risk calls of the tools you name and blocks risky ones.
+  Before each call it asks a decision model (`classifier:`, TypeSafe's
+  `"typesafe:jev-latest"` unless you pass another) how likely the call is to
+  be risky or not clearly authorized by the user, giving it the call, the
+  tool's description and the last 30 messages. A call at or above 0.5 gets an
+  error tool message instead of running. It fails closed: a call the
+  classifier declines is blocked, and a classifier error fails the run
+  without running the tool. `instructions:` replaces the question.
 
 #### Subagents and deep agents
 
@@ -594,6 +616,18 @@ breaking too). Read Security first.
 #### Human review, checkpoints and resuming
 
 - `BeamWeaver.Agent.resume_review/3` takes a built agent too.
+- `HumanInTheLoop` takes `interrupt_mode: :per_call`, which reviews each call
+  on its own as it starts. Every call of the turn runs as a task of its own,
+  calls that need no review run straight away and don't run again, and each
+  call that does pauses with a `"tool_approval"` interrupt: the call, its
+  description, the decisions it allows and the arguments schema an edit must
+  match. `resume_review/3` answers them with a map from interrupt id to
+  decision, all at once or one at a time, or with one decision when one call
+  waits. An edit keeps the tool, and an answer that doesn't fit fails the
+  resume with `:invalid_human_decision` while the call waits for another.
+  Tools marked `concurrent false` don't wait for each other in this mode.
+- A paused run lists every interrupt of its step in `interrupts`, so pauses
+  in parallel branches or tasks can be answered without `get_state/1`.
 
 #### Graphs
 
@@ -680,6 +714,41 @@ breaking too). Read Security first.
 
 #### Models and providers
 
+- `Models.Profile` has `reasoning_effort_levels`, the reasoning efforts a
+  model takes, and `reasoning_effort_default`, the one it uses when a call
+  names none, on every provider. Claude Opus 4.5 to 4.8, Sonnet 4.6 and
+  Sonnet 5, and Fable 5 and Mythos 5 got the levels and defaults Anthropic
+  documents.
+- Grok 4.7, `xai:grok-4.7`: a 500,000-token context and reasoning efforts
+  from `:low` to `:xhigh`.
+- OpenAI's Decisions API, in public beta, as a decision model:
+  `Models.init_decision_model("openai:gpt-6-luna")` or
+  `BeamWeaver.OpenAI.decision_model/1` asks predicate, choice and score
+  questions (`BeamWeaver.OpenAI.Decisions.Question`) about a string, user
+  messages with text and images, or other data, which goes as JSON text with
+  its messages' images in place. Answers keep their probabilities, a declined
+  question gets a `RefusalAnswer`, and `metadata.cost` counts input tokens
+  only, as the API bills. Questions are checked before the request.
+  `Models.cached/3` caches these decisions, and GPT-6 Luna's profile has
+  `decision_outputs: true`.
+- `DecisionModel.choice_question/3` and `yes_no_question/2` build a decision
+  model's own question, checked as the model would check it, and `choose/4`
+  and `probability/4` ask it, so code can work with any decision model.
+  TypeSafe's and OpenAI's models implement them.
+- OpenAI's Responses API takes a `configuration_update` block in a message,
+  such as a new reasoning effort from that message on, and an
+  `additional_tools` block, tools added partway through, in a system message.
+  They go as input items of their own, just before the rest of their
+  message, as `mcp_approval_response`, `tool_search_output` and
+  `apply_patch_call_output` blocks now do too (they used to go inside the
+  message, which the API refused). `additional_tools` on another message, or
+  on Chat Completions, is an error.
+- Anthropic models take `reasoning_effort:`, the standard name of `effort:`
+  (which wins when both are set), on the model or a call. It sets
+  `output_config.effort`, and on a model that takes only adaptive thinking,
+  from Claude Opus 4.7 and Sonnet 5 on, it turns on adaptive thinking with its
+  summary unless `thinking:` is set. An effort the model's profile doesn't
+  list fails with `:unsupported_model_param` before the request.
 - OpenAI and Anthropic models take `base_url:`, the API root, on the model or
   in `config :beam_weaver, :openai` / `:anthropic`, like the other providers.
   The OpenAI default is `https://api.openai.com/v1`, the Anthropic default
@@ -821,9 +890,18 @@ breaking too). Read Security first.
 - **Breaking:** `response_schema` raises `ArgumentError` for a module that
   declares no schema or doesn't exist, instead of asking the model for an
   empty object.
+- **Breaking:** A run ends on its tools' results only when every call of the
+  batch ran a tool with `return_direct true`. When the model also called a
+  tool that doesn't return directly, it gets all the results and goes on; one
+  return-direct result used to end the run.
 
 #### Middleware
 
+- `Summarization` tries a failed summary call up to 3 times, a second or more
+  apart, unless its error says retrying can't help, and a summary prompt over
+  the model's context window once more with the middle of the old messages
+  cut out. When the call still fails, the run returns its error and the
+  thread stays as it was.
 - A struct middleware listed as a bare module, `middleware [MyApp.Limit]`, is
   built like `{MyApp.Limit, []}`, so its hooks get the default struct instead
   of the module. Its default `name/1` becomes the last part of the module
@@ -880,6 +958,29 @@ breaking too). Read Security first.
   a tool gets the values the model gave it; `PII.stream_transform/1` still
   edits them in what a stream shows. To keep personal data out of a tool,
   check its arguments in the tool or in a `wrap_tool_call/3` middleware.
+- **Breaking:** `ModelRetry` and `ToolRetry` apply `on_failure` only when the
+  retries run out. An error their `retry_on` doesn't cover, such as a bad API
+  key, comes back as it is: from `ModelRetry` as `{:error, error}`, so a
+  `ModelFallback` listed before it still gets it, and from `ToolRetry` as the
+  tool returned it. With `on_failure: :continue` or a function, such an error
+  used to become the answer ("Model call failed after 1 attempt ...").
+- **Breaking:** `retry_on: :error`, the default of `ToolRetry` and of a graph
+  node's `retry:`, leaves out an error that says retrying can't help
+  (`details.retryable: false`), such as a provider's invalid API key; it
+  used to retry every `%Error{}`. To retry such an error anyway, name its
+  type (`retry_on: [:authentication]`) or use `retry_on: :all`.
+- **Breaking:** `TypeSafeModelRouter` takes any decision model as
+  `classifier:`, also as a `"provider:model"` string such as
+  `"openai:gpt-6-luna"`, and checks its question when it's built. A refusal or
+  a missing answer keeps the agent's model with the reason `"refused"`, and an
+  invalid response is a `"classifier_error"`: match those instead of
+  `"invalid_classifier_response"`, which is gone. Its default
+  `instructions` are one string rather than a map, since OpenAI's questions
+  take only strings, and the struct keeps the built question in `question`
+  instead of an `instructions` field. The classifier gets the message's text,
+  a placeholder such as `[image omitted]` for other content, and the images
+  too when its profile takes images; when the provider refuses a request
+  with images (HTTP 400 or 413), the router asks again as text only.
 
 #### Subagents and deep agents
 
@@ -960,6 +1061,17 @@ breaking too). Read Security first.
 
 #### Human review, checkpoints and resuming
 
+- **Breaking:** An `:edit` decision leaves the model's call in its message
+  and runs the reviewer's call in its place, which may name another tool.
+  The result starts with a note that a reviewer replaced the call, followed
+  by the call that ran; `HumanInTheLoop`'s `edit_notice:` words the note,
+  and `nil` leaves it out. The message used to carry the edited call: read
+  the call that ran from the decision or the result.
+- **Breaking:** A `:reject` decision's tool result says the user rejected the
+  call: "User rejected the tool call for `issue_refund` with reason: …", or,
+  without a `message`, that the tool was not executed and the model should
+  not retry it unless the user asks. It used to be the `message` alone, or
+  the rejection without the advice.
 - `invoke/2` and `stream_events/2` with an empty input continue the thread's
   latest checkpoint when its last run stopped before the end (a crash, a
   deploy or a breakpoint): they run the steps in `next` instead of starting
@@ -983,6 +1095,16 @@ breaking too). Read Security first.
 
 #### Graphs
 
+- **Breaking:** A step in which one task fails and another pauses returns the
+  error, whichever finishes first; the paused task stays pending, as
+  `get_state/1`'s `interrupts` shows. It used to return the pause when the
+  paused task came first in the step. Resume the thread once you have dealt
+  with the error.
+- **Breaking:** `ToolNode` answers a `tool_call_with_context` input with
+  `%{messages: [...]}`, as it does a state, instead of a list of messages,
+  and runs such a call in the step's state when the input has no `state`.
+  It takes the tool set it may run from that state, for a raw list of calls
+  too. Read the messages from the map's messages key.
 - **Breaking:** Graph nodes, `ToolNode` tools and the runs of
   `Compiled.batch_as_completed/3` no longer stop after 5 seconds by default:
   they run until they finish unless you set `timeout:`. The old default cut
@@ -1272,6 +1394,33 @@ breaking too). Read Security first.
 
 #### Models and providers
 
+- **Breaking:** A failed model call's error type is the same for every
+  provider and follows the HTTP status: `:invalid_request` (400 and 422),
+  `:authentication` (401, and the 400 with which Gemini and xAI refuse a
+  wrong API key), `:billing_exhausted` (402), `:permission_denied`
+  (403), `:not_found` (404), `:rate_limit` (429) and `:server_error` (every
+  5xx, which is retryable now, not only 500, 502, 503, 504 and 529). A request
+  that gets no response is a `:connection` error, and one that runs past its
+  timeout a `:timeout`. They were `:http_error` and `:transport_error`, and
+  from DeepSeek, Kimi and Z.ai `:authentication_error`, `:rate_limit_error`,
+  `:overloaded_error`, `:invalid_request_error` and `:quota_error`: match the
+  new types instead, and `:billing_exhausted` for `:quota_error`. A context
+  overflow, an exhausted quota and Z.ai's and Kimi's content filters keep
+  their types; any other status is still an `:http_error`, and a request the
+  transport refuses, such as a cassette mismatch, a `:transport_error`.
+  `Transport.ReqFinch` reports a timeout as a `:timeout`
+  `Transport.Error`, no longer `:transport_failure`.
+- **Breaking:** A profile's reasoning efforts are fields, no longer in
+  `extra`: read `reasoning_effort_levels` for `extra.reasoning_efforts` and
+  `extra.effort_levels`, and `reasoning_effort_default` for
+  `extra.default_reasoning_effort` and `extra.default_effort`.
+- Anthropic's `effort:` turns on adaptive thinking with its summary, as
+  `reasoning_effort:` does, on a model that takes only adaptive thinking;
+  set `thinking:` to send something else. A call's `output_config` is merged
+  over the model's instead of replacing it, and a call's effort, from any of
+  the three options, wins over the model's. Claude Haiku 4.5 and Sonnet 4.5,
+  which take no effort, reject `effort:` before the request instead of
+  sending it.
 - **Breaking:** `init_chat_model/2`, `init_embeddings/2` and
   `init_decision_model/2` return
   `{:error, %Error{type: :unsupported_model_param}}` for an option the model
@@ -1507,9 +1656,22 @@ breaking too). Read Security first.
   checkpoints with the parent's checkpointer instead of its own. They return
   the declared values, and a module may define either function instead of
   declaring it; declaring and defining the same one doesn't compile.
+- An agent with a response schema returns each turn's own structured answer
+  on a checkpointed thread. The thread kept the last turn's answer, so a later
+  turn whose first model call made none, such as one that called a tool
+  first, ended on the old answer. A model call that makes no structured
+  answer now clears it.
+- A tool call whose arguments came back malformed or truncated (an invalid
+  tool call) gets an error tool message right after its assistant message
+  before the next model call ("Tool call NAME with id ID could not be
+  executed - arguments were malformed or truncated."), and the thread keeps
+  it. Nothing answered it, so the model never learned the call failed, and
+  providers that need every call answered refused the next request.
 
 #### Middleware
 
+- `ToolRetry`'s `tools:` takes tool modules as well as names; a module used
+  to match no tool.
 - `BeamWeaver.Agent.Middleware.ShellTool` works in an agent: its private state
   key is declared as a channel, so building the agent no longer fails with
   `UndefinedFunctionError` for `:term.new/1`. Its sessions are supervised
@@ -1541,9 +1703,7 @@ breaking too). Read Security first.
 - `ToolRetry`'s `on_failure: :continue` message names the tool's error once,
   as in "Tool 'lookup_order' failed after 3 attempts with timeout: The
   archive service timed out. Please try again.", instead of repeating
-  "Tool error: … Args: …" inside it. `ToolRetry` and `ModelRetry` report the
-  attempts actually made: an error the policy doesn't retry fails after 1
-  attempt, not `max_attempts`.
+  "Tool error: … Args: …" inside it.
 - `PII.stream_transform/1` holds back `Token` and `MessageChunk` text
   separately, and per model call, so a whole agent stream passes through it:
   the text no longer comes out doubled in the message chunks and empty in the
@@ -1577,6 +1737,12 @@ breaking too). Read Security first.
   `interrupt_after: [:tools]`) or stops between the tool call and the next
   model call still applies it, once, when it continues on the thread. It was
   lost, and the model went on with the whole thread.
+- `ToolCallLimit` with `exit_behavior: :end` answers every call of the batch,
+  none of which runs: a refused call says it hit the limit, the others that
+  they were stopped. It answered only the refused calls, so the thread's next
+  turn failed with `:invalid_chat_history`, and a limit on one tool failed
+  with `:tool_call_limit_parallel_end_unsupported` when the batch also called
+  other tools. The batch no longer counts against the thread.
 
 #### Subagents and deep agents
 
@@ -1922,6 +2088,9 @@ breaking too). Read Security first.
   caller with a yamerl throw.
 - Pinned requests to an IPv6 address, such as `split_url/3` on a host that
   resolves to one, connect instead of failing with `:nxdomain`.
+- A `schema` output parser parses partial JSON with
+  `OutputParser.parse_partial/2`, and returns `nil` until the value matches
+  the schema; it failed on incomplete JSON.
 
 #### Tools
 
@@ -1983,6 +2152,15 @@ breaking too). Read Security first.
 
 #### Models and providers
 
+- An xAI error keeps xAI's message, such as "Incorrect API key provided";
+  it used to read "xAI request failed with HTTP 400".
+- Claude Opus 4.8, Fable 5 and Mythos 5 take a system message partway
+  through a conversation, as Anthropic documents; they used to refuse it
+  with `:invalid_messages`.
+- Claude Sonnet 4.6's profile allows 128,000 output tokens, Anthropic's
+  limit, and so does its default `max_tokens`; both were 64,000.
+- `openai:gpt-daybreak-blue-latest`, an alias OpenAI deprecated, fails with
+  `:deprecated_model` and names its model, `gpt-5.6-sol`.
 - Anthropic agents that stream (`stream: true`) can use tools, and their
   streamed reply has the same content as a non-streamed one, its thinking
   with the signature included: the request after a streamed tool call no
@@ -2206,6 +2384,29 @@ breaking too). Read Security first.
   its reasoning across turns; BeamWeaver sent the text of a reply from the
   thread without it. Only a reply restored from its `Provider.Replay`
   projection kept it.
+- OpenAI Responses requests send an assistant message's id only when the API
+  issued it (`msg_...`). An assistant message built by the app, or added by
+  middleware, went with the id the thread gave it, and OpenAI refused the
+  request ("Expected an ID that begins with 'msg'").
+- Every provider sends an invalid tool call back next to the error the agent
+  answers it with: Anthropic as a `tool_use` block (with its arguments when
+  they parse to an object), Gemini as a function call, Moonshot and Z.ai as a
+  tool call, and OpenAI Responses as a `function_call` item, as OpenAI Chat
+  Completions, xAI and DeepSeek already did.
+- An OpenAI Responses stream whose item reports a later `output_index` on its
+  later events than on its `added` event, as the API does after built-in tool
+  calls, gives one output item and one content block. The item came back
+  twice, once unfinished, and its first block never finished.
+- A replayed OpenAI Responses `function_call` keeps its `namespace` (a tool
+  that tool search found), `status` and `async` flag.
+- An Anthropic-style image given by URL or file id (`source` of type `"url"`
+  or `"file"`) keeps its source. It became an empty image, which the
+  Anthropic encoder refused; a source without what its type needs stays an
+  unknown block.
+- `count_tokens_approximately/2` and OpenAI's token counting count a tool
+  given as a module or `%Tool{}` struct by its name, description and
+  parameters, as a provider gets it. A struct counted as its `inspect` text
+  and a module as its name.
 
 #### Compaction engine
 

@@ -47,8 +47,9 @@ defmodule BeamWeaver.Models.Cached do
         )
 
       case Cache.lookup(cache, namespace, key) do
-        {:hit, %BeamWeaver.TypeSafe.Response{} = response, _metadata} ->
-          {:ok, BeamWeaver.TypeSafe.Response.cached(response)}
+        {:hit, %response_module{} = response, _metadata}
+        when response_module in [BeamWeaver.TypeSafe.Response, BeamWeaver.OpenAI.Decisions.Response] ->
+          {:ok, response_module.cached(response)}
 
         {:hit, _value, _metadata} ->
           {:error, Error.new(:invalid_cache_entry, "cached value is not a decision response")}

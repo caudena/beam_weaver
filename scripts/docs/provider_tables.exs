@@ -52,13 +52,14 @@ defmodule BeamWeaver.Docs.ProviderTables do
     rows =
       for {provider, label} <- @providers do
         models = rows(provider)
-        chat = Enum.filter(models, &(kind(&1) == "chat"))
+        chat = Enum.filter(models, &("chat" in kinds(&1)))
 
         [
           "[#{label}](providers/#{provider}.md)",
           "`#{provider}:`",
           models
-          |> Enum.frequencies_by(&kind/1)
+          |> Enum.flat_map(&kinds/1)
+          |> Enum.frequencies()
           |> Enum.sort()
           |> Enum.map_join(", ", fn {kind, n} -> "#{n} #{kind}" end),
           coverage(chat, :tool_calling),
@@ -78,7 +79,7 @@ defmodule BeamWeaver.Docs.ProviderTables do
       for row <- rows(provider) do
         [
           "`#{provider}:#{row.model}`",
-          kind(row),
+          Enum.join(kinds(row), ", "),
           tokens(row.max_input_tokens),
           tokens(row.max_output_tokens),
           yes(row.features[:tool_calling]),
@@ -93,12 +94,16 @@ defmodule BeamWeaver.Docs.ProviderTables do
 
   defp rows(provider), do: Enum.filter(Compatibility.matrix(), &(&1.provider == provider))
 
-  defp kind(row) do
-    cond do
-      row.features[:decision_output] -> "decision"
-      row.features[:tool_calling] or row.features[:streaming] -> "chat"
-      true -> "embedding"
-    end
+  # A model chats, answers typed questions, or both; any other model embeds.
+  defp kinds(%{features: features}) do
+    kinds =
+      for {kind, true} <- [
+            chat: features[:tool_calling] or features[:streaming],
+            decision: features[:decision_output]
+          ],
+          do: Atom.to_string(kind)
+
+    if kinds == [], do: ["embedding"], else: kinds
   end
 
   defp coverage(rows, feature, alternative \\ nil)

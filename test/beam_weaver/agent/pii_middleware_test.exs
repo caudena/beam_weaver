@@ -310,7 +310,7 @@ defmodule BeamWeaver.Agent.PIIMiddlewareTest do
   test "stream transform ends a failed model call's text before the next call's" do
     {transform, state} = PII.stream_transform(type: :email, strategy: :redact)
     token = &%Envelope{event: %Events.Token{text: &1}, run_id: "run", task_id: "model"}
-    failure = %Events.Debug{payload: %{type: :model_call_failed, error: Error.new(:http_error, "Busy")}}
+    failure = %Events.Debug{payload: %{type: :model_call_failed, error: Error.new(:server_error, "Busy")}}
     failed = %Envelope{event: failure, run_id: "run", task_id: "model"}
 
     {{:ok, _}, state} = transform.(token.("Mail ada@exa"), state)

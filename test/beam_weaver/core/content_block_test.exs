@@ -115,6 +115,35 @@ defmodule BeamWeaver.Core.ContentBlockTest do
              ]).content
   end
 
+  test "an Anthropic-style image keeps its URL or file source, and a broken one stays unknown" do
+    url_image = %{"type" => "image", "source" => %{"type" => "url", "url" => "https://acme.test/receipt.png"}}
+    assert {:ok, %ContentBlock.Image{url: "https://acme.test/receipt.png"}} = ContentBlock.from(url_image)
+
+    assert {:ok, %ContentBlock.Image{file_id: "file_123"}} =
+             ContentBlock.from(%{"type" => "image", "source" => %{"type" => "file", "file_id" => "file_123"}})
+
+    assert {:ok, %ContentBlock.Image{data: "aGk=", mime_type: "image/png"}} =
+             ContentBlock.from(%{
+               "type" => "image",
+               "source" => %{"type" => "base64", "data" => "aGk=", "media_type" => "image/png"}
+             })
+
+    broken = %{"type" => "image", "source" => %{"type" => "url"}}
+    assert {:ok, %ContentBlock.Unknown{provider_type: "image", value: ^broken}} = ContentBlock.from(broken)
+
+    model = BeamWeaver.Models.init_chat_model!("anthropic:claude-haiku-4-5", api_key: "k")
+    assert {:ok, body} = model.__struct__.request_body(model, [BeamWeaver.Core.Message.user([url_image])])
+
+    assert [
+             %{
+               "content" => [
+                 %{"type" => "image", "source" => %{"type" => "url", "url" => "https://acme.test/receipt.png"}}
+               ]
+             }
+           ] =
+             body["messages"]
+  end
+
   test "content block helpers expose native known types and data classification" do
     assert :text in ContentBlock.known_types()
     assert :server_tool_call in ContentBlock.known_types()

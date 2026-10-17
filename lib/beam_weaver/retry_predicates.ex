@@ -6,16 +6,15 @@ defmodule BeamWeaver.RetryPredicates do
   @transient_statuses [408, 409, 425, 429, 500, 502, 503, 504, 529]
   @transient_types [
     :timeout,
+    :connection,
     :closed,
     :closed_connection,
-    :transport_error,
     :transport_failure,
-    :http_error,
+    :server_error,
     :overloaded,
     :overload,
     :rate_limit,
     :rate_limited,
-    :rate_limit_error,
     :transient
   ]
 

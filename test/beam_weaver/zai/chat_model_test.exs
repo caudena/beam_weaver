@@ -500,7 +500,7 @@ defmodule BeamWeaver.ZAI.ChatModelTest do
         ]
       )
 
-    assert {:error, %Error{type: :rate_limit_error} = error} =
+    assert {:error, %Error{type: :rate_limit} = error} =
              CoreChatModel.invoke(error_model, [Message.user("rate limit")])
 
     assert error.details.status == 429
@@ -508,7 +508,7 @@ defmodule BeamWeaver.ZAI.ChatModelTest do
     assert error.details.request_id == "chatcmpl_zai_rate_limit"
   end
 
-  test "insufficient balance is normalized as non-retryable quota error" do
+  test "insufficient balance is a billing error that isn't retried" do
     error_model =
       ChatModel.new(
         api_key: "test-key",
@@ -526,7 +526,7 @@ defmodule BeamWeaver.ZAI.ChatModelTest do
         ]
       )
 
-    assert {:error, %Error{type: :quota_error} = error} =
+    assert {:error, %Error{type: :billing_exhausted} = error} =
              CoreChatModel.invoke(error_model, [Message.user("balance")])
 
     assert error.message == "Insufficient balance or no resource package. Please recharge."

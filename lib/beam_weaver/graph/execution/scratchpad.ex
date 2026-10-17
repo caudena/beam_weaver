@@ -46,6 +46,10 @@ defmodule BeamWeaver.Graph.Execution.Scratchpad do
     :ok
   end
 
+  @doc "The scratchpad of the node this process runs, or `nil`."
+  @spec current() :: t() | nil
+  def current, do: Process.get(@process_key)
+
   @spec clear() :: :ok
   def clear do
     Process.delete(@process_key)

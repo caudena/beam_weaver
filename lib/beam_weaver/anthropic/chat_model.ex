@@ -39,6 +39,7 @@ defmodule BeamWeaver.Anthropic.ChatModel do
             service_tier: nil,
             thinking: nil,
             output_config: nil,
+            reasoning_effort: nil,
             effort: nil,
             mcp_servers: nil,
             context_management: nil,

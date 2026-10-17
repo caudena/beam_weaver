@@ -64,7 +64,7 @@ defmodule BeamWeaver.OpenAI.ChatModelTest do
     assert %Profile{provider: :openai, id: "gpt-6-astra"} = astra.profile
     assert astra.profile.max_input_tokens == 1_050_000
     assert astra.profile.max_output_tokens == 128_000
-    assert astra.profile.extra.reasoning_efforts == [:low, :medium, :high, :xhigh, :max]
+    assert astra.profile.reasoning_effort_levels == [:low, :medium, :high, :xhigh, :max]
     assert astra.profile.extra.chat_completions_tool_calling == false
 
     assert {:ok, %ChatModel{model: "gpt-6-astra"}} =
@@ -869,7 +869,7 @@ defmodule BeamWeaver.OpenAI.ChatModelTest do
       assert model.profile.max_output_tokens == 128_000
       assert model.profile.extra.input_price_per_mtok == input_price
       assert model.profile.extra.output_price_per_mtok == output_price
-      assert model.profile.extra.reasoning_efforts == [:none, :low, :medium, :high, :xhigh, :max]
+      assert model.profile.reasoning_effort_levels == [:none, :low, :medium, :high, :xhigh, :max]
 
       costs = UsageCost.calculate(model.profile, %{input_tokens: 1_000_000, output_tokens: 1_000_000})
       assert_in_delta costs.total_cost, input_price + output_price, 1.0e-12

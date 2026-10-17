@@ -99,7 +99,7 @@ defmodule BeamWeaver.Core.Messages.TokenCounter do
   defp tool_token_count(tools, chars_per_token) do
     tools
     |> List.wrap()
-    |> Enum.map(&json_length/1)
+    |> Enum.map(&(&1 |> BeamWeaver.Tool.Renderer.declaration() |> json_length()))
     |> Enum.sum()
     |> ceil_tokens(chars_per_token)
   end

@@ -216,16 +216,10 @@ defmodule BeamWeaver.VectorStore.ETS do
     |> Enum.take(k)
   end
 
-  defp entries(%__MODULE__{} = store, filter) do
-    store.table
-    |> :ets.tab2list()
-    |> Enum.flat_map(fn
-      {{namespace, _id}, entry} when namespace == store.namespace ->
-        if filter_match?(entry.document, filter), do: [entry], else: []
-
-      _other ->
-        []
-    end)
+  defp entries(%__MODULE__{namespace: namespace} = store, filter) do
+    for {{^namespace, _id}, entry} <- :ets.tab2list(store.table),
+        filter_match?(entry.document, filter),
+        do: entry
   end
 
   defp filter_match?(_document, filter) when filter in [%{}, nil], do: true

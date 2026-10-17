@@ -8,8 +8,8 @@ defmodule BeamWeaver.Provider.ResponseDecoder do
   @header_metadata_key "_beamweaver_response_header_metadata"
 
   @doc """
-  Calls `on_success` with a 2xx response. Other statuses become the provider's
-  classified HTTP error and transport failures become a transport error.
+  Calls `on_success` with a 2xx response. Other statuses and transport
+  failures become an error (see `http_error/2` and `transport_error/2`).
   """
   @spec decode({:ok, Response.t()} | {:error, term()}, keyword(), (Response.t() -> result)) ::
           result | {:error, BeamWeaver.Core.Error.t()}
@@ -82,18 +82,15 @@ defmodule BeamWeaver.Provider.ResponseDecoder do
   end
 
   def http_error(%Response{} = response, opts \\ []) do
-    body = decode_error_body(response.body)
-    provider_error = if is_map(body), do: body["error"] || body[:error], else: nil
+    provider_error = response.body |> decode_error_body() |> provider_error()
 
     message =
       error_message(provider_error) ||
         "#{provider_name(opts)} request failed with HTTP #{response.status}"
 
     type = error_type(response.status, provider_error, message, opts)
-    classify = Keyword.get(opts, :classify, & &1)
 
-    opts
-    |> new_error(type, message, %{
+    new_error(opts, type, message, %{
       status: response.status,
       body: BeamWeaver.Transport.Redactor.redact(response.body),
       error: provider_error,
@@ -101,13 +98,15 @@ defmodule BeamWeaver.Provider.ResponseDecoder do
       code: error_field(provider_error, "code"),
       param: error_field(provider_error, "param"),
       request_id: response_header(response, Keyword.get(opts, :request_id_header, "x-request-id")),
-      retryable: type != :billing_exhausted and BeamWeaver.RetryPredicates.transient_status?(response.status)
+      retryable: retryable?(type, response.status)
     })
-    |> classify.()
   end
 
   @doc """
-  Turns a failed transport call into a `:transport_error`.
+  Turns a failed transport call into an error: a `:timeout`, a `:connection`
+  error when the request got no response, or a `:transport_error` when the
+  transport refused it, such as a URL its policy blocks or a cassette
+  mismatch.
 
   A `BeamWeaver.Transport.Error` keeps its type as `details.reason` (such as
   `:cassette_mismatch` or `:timeout`) and its details, with secrets redacted.
@@ -119,14 +118,19 @@ defmodule BeamWeaver.Provider.ResponseDecoder do
   def transport_error(%BeamWeaver.Core.Error{} = error, _opts), do: error
 
   def transport_error(%BeamWeaver.Transport.Error{} = error, opts) do
+    type = transport_type(error.type)
+
     details =
       error.details
       |> Map.new()
       |> BeamWeaver.Transport.Redactor.redact()
       |> rename_key(:reason, :cause)
-      |> Map.merge(%{reason: error.type, retryable: BeamWeaver.RetryPredicates.transient?(error)})
+      |> Map.merge(%{
+        reason: error.type,
+        retryable: type in [:timeout, :connection] or BeamWeaver.RetryPredicates.transient?(error)
+      })
 
-    new_error(opts, :transport_error, "#{provider_name(opts)} transport request failed: #{error.message}", details)
+    new_error(opts, type, "#{provider_name(opts)} transport request failed: #{error.message}", details)
   end
 
   def transport_error(error, opts) do
@@ -142,15 +146,44 @@ defmodule BeamWeaver.Provider.ResponseDecoder do
     end
   end
 
+  defp transport_type(:timeout), do: :timeout
+  defp transport_type(type) when type in [:transport_failure, :closed], do: :connection
+  defp transport_type(_type), do: :transport_error
+
+  # An error's type follows its HTTP status, the same for every provider,
+  # unless the error says more: that the prompt is over the context window
+  # (`:context_overflow?` checks the provider's wording), that credits or a
+  # usage limit ran out, or, from the provider's `:error_type`, a code of its
+  # own such as a content filter.
+  @status_types %{
+    400 => :invalid_request,
+    401 => :authentication,
+    402 => :billing_exhausted,
+    403 => :permission_denied,
+    404 => :not_found,
+    422 => :invalid_request,
+    429 => :rate_limit
+  }
+
   defp error_type(status, provider_error, message, opts) do
     context_overflow? = Keyword.get(opts, :context_overflow?, &default_context_overflow?/3)
+    provider_type = Keyword.get(opts, :error_type, fn _status, _provider_error, _message -> nil end)
 
     cond do
       context_overflow?.(status, provider_error, message) -> :context_overflow
       billing_exhausted?(status, provider_error, message) -> :billing_exhausted
-      true -> :http_error
+      true -> provider_type.(status, provider_error, message) || status_type(status)
     end
   end
+
+  defp status_type(status) when status in 500..599, do: :server_error
+  defp status_type(status), do: Map.get(@status_types, status, :http_error)
+
+  # Retrying can fix a rate limit, a server error, and the other statuses
+  # that say so (a request timeout, a conflict, a request sent too early).
+  defp retryable?(type, _status) when type in [:rate_limit, :server_error], do: true
+  defp retryable?(:http_error, status), do: BeamWeaver.RetryPredicates.transient_status?(status)
+  defp retryable?(_type, _status), do: false
 
   # OpenAI's spend and usage limits last until someone raises them or the
   # month ends, so retrying can't fix them either.
@@ -210,6 +243,14 @@ defmodule BeamWeaver.Provider.ResponseDecoder do
   end
 
   defp decode_error_body(body), do: body
+
+  # Most APIs nest the error in an `error` object; xAI's is the body itself,
+  # with the message in `error`.
+  defp provider_error(%{"error" => message} = body) when is_binary(message),
+    do: body |> Map.take(["code", "type"]) |> Map.put("message", message)
+
+  defp provider_error(%{} = body), do: body["error"] || body[:error]
+  defp provider_error(_body), do: nil
 
   defp error_message(%{"message" => message}) when is_binary(message), do: message
   defp error_message(%{message: message}) when is_binary(message), do: message

@@ -103,8 +103,8 @@ Answer each pending call with one decision:
 | Decision | What happens |
 |---|---|
 | `HITL.decision(:approve)` | The tool runs with the proposed arguments. |
-| `HITL.decision(:edit, edited_action: %{name: ..., args: ...})` | The tool runs with the arguments the person changed. |
-| `HITL.decision(:reject, message: "...")` | The tool doesn't run. The model gets `message` as a failed tool result and can tell the customer or try something else. |
+| `HITL.decision(:edit, edited_action: %{name: ..., args: ...})` | The call the person changed runs instead of the model's, and may name another tool. |
+| `HITL.decision(:reject, message: "...")` | The tool doesn't run. The model gets a failed tool result that says the user rejected the call, for the reason in `message`, and can tell the customer or try something else. |
 | `HITL.decision(:respond, message: "...")` | The tool doesn't run. `message` becomes the tool's successful result. |
 
 Each example below starts a new ticket and lets it pause first:
@@ -121,9 +121,9 @@ tool_result = fn {:ok, result} ->
 end
 ```
 
-An edit changes the arguments before the tool runs. Edited arguments must
-match the tool's input schema; an edit that doesn't is refused, and the
-review stays pending:
+An edit changes the call before the tool runs. Edited arguments must match
+the tool's input schema; an edit that doesn't is refused, and the review
+stays pending:
 
 ```elixir
 opts = pause_ticket.("ticket-43")
@@ -138,9 +138,17 @@ Answer the same review again with a valid edit:
 ```elixir
 edit = HITL.decision(:edit, edited_action: %{name: "issue_refund", args: %{"order_id" => "A-1001", "amount" => 20}})
 
-MyApp.SupportAgent.resume_review([edit], opts) |> tool_result.()
-#=> "Refunded $20 for order A-1001."
+result = MyApp.SupportAgent.resume_review([edit], opts) |> tool_result.()
+String.ends_with?(result, "Tool response:\nRefunded $20 for order A-1001.")
+#=> true
 ```
+
+The model's message keeps the call it made, so the result starts with a note
+that a reviewer replaced it, followed by the call that ran (`Executed
+instead: issue_refund with arguments {"amount":20,"order_id":"A-1001"}.`). To
+word the note yourself, or leave it out with `nil`, list the middleware with
+`edit_notice:`, as in
+`middleware [{BeamWeaver.Agent.Middleware.HumanInTheLoop, interrupt_on: ..., edit_notice: nil}]`.
 
 A rejection tells the model why:
 
@@ -149,8 +157,11 @@ opts = pause_ticket.("ticket-44")
 reject = HITL.decision(:reject, message: "Refunds over $20 need a manager. Offer store credit instead.")
 
 MyApp.SupportAgent.resume_review([reject], opts) |> tool_result.()
-#=> "Refunds over $20 need a manager. Offer store credit instead."
+#=> "User rejected the tool call for `issue_refund` with reason: Refunds over $20 need a manager. Offer store credit instead."
 ```
+
+A rejection without `message` also tells the model that the tool didn't run
+and not to retry the call unless the user asks for it.
 
 Use `:respond` when a person is the real answer to the call, for example an
 `ask_customer` tool that a support agent answers. Decisions can also be plain
@@ -293,8 +304,84 @@ decisions = [HITL.decision(:approve), HITL.decision(:reject, message: "Over the 
 {:ok, result} = MyApp.SupportAgent.resume_review(decisions, opts)
 
 for %{role: :tool} = message <- result.messages, do: BeamWeaver.Core.Message.text(message)
-#=> ["Over the $100 limit.", "Order A-1001 shipped on Monday.", "Refunded $25 for order A-1001."]
+#=> ["User rejected the tool call for `issue_refund` with reason: Over the $100 limit.", "Order A-1001 shipped on Monday.", "Refunded $25 for order A-1001."]
 ```
+
+## One pause per call
+
+To review each call on its own, list the review middleware with
+`interrupt_mode: :per_call` instead of declaring `interrupt_on`. Each call of
+the turn then runs as a task of its own: a call that needs review pauses with
+an interrupt of its own, and the others run straight away. The run pauses with
+all of them in `interrupt.interrupts`:
+
+```elixir
+defmodule MyApp.SupportAgent do
+  use BeamWeaver.Agent
+
+  alias BeamWeaver.Agent.Middleware.HumanInTheLoop
+  alias BeamWeaver.Models.FakeChatModel
+
+  model "fake:chat",
+    responses: [
+      FakeChatModel.tool_calls([
+        {"lookup_order", %{"order_id" => "A-1001"}},
+        {"issue_refund", %{"order_id" => "A-1001", "amount" => 25}},
+        {"issue_refund", %{"order_id" => "A-1002", "amount" => 300}}
+      ]),
+      "I refunded order A-1001. A manager will look at order A-1002."
+    ]
+
+  tools [MyApp.Tools.LookupOrder, MyApp.Tools.IssueRefund]
+
+  middleware [
+    {HumanInTheLoop,
+     interrupt_mode: :per_call,
+     interrupt_on: %{
+       "issue_refund" => %{
+         allowed_decisions: [:approve, :reject],
+         description: fn call, _state -> "Refund $#{call.args["amount"]} for order #{call.args["order_id"]}?" end
+       }
+     }}
+  ]
+end
+
+opts = [checkpointer: saver, config: %{"configurable" => %{"thread_id" => "ticket-48"}}]
+
+{:interrupted, interrupt} =
+  MyApp.SupportAgent.invoke(%{messages: ["Refund orders A-1001 and A-1002, please."]}, opts)
+
+interrupt.interrupts |> Enum.map(& &1.value.description) |> Enum.sort()
+#=> ["Refund $25 for order A-1001?", "Refund $300 for order A-1002?"]
+```
+
+Each interrupt's value is a `"tool_approval"` request with the call's
+`tool_call_id`, `name`, `args` and `description`, the `allowed_decisions`,
+and, when edits are allowed, the `args_schema` an edit's arguments must
+match. Answer each with one decision, keyed by its interrupt id, all at once
+or one at a time; a call without an answer waits:
+
+```elixir
+answers =
+  Map.new(interrupt.interrupts, fn %{id: id, value: %{args: args}} ->
+    if args["amount"] > 100,
+      do: {id, HITL.decision(:reject, message: "Over the $100 limit.")},
+      else: {id, HITL.decision(:approve)}
+  end)
+
+{:ok, result} = MyApp.SupportAgent.resume_review(answers, opts)
+
+for %{role: :tool} = message <- result.messages, do: BeamWeaver.Core.Message.text(message)
+#=> ["Order A-1001 shipped on Monday.", "Refunded $25 for order A-1001.", "User rejected the tool call for `issue_refund` with reason: Over the $100 limit."]
+```
+
+An edit keeps the tool and replaces its arguments. An answer that doesn't
+fit, such as a decision the rule doesn't allow, fails the resume with
+`:invalid_human_decision`, and the call waits for another answer. List the
+review before `ToolRetry` and `ToolError`, so it comes first; middleware
+listed before it runs again for each waiting call when the run resumes.
+Because each call is a task of its own, tools marked `concurrent false` don't
+wait for each other in this mode.
 
 ## A checkpointer is required
 
@@ -375,18 +462,17 @@ Keep these rules in mind:
 
 ## Several pauses at once
 
-Parallel branches can pause in the same step. Then `invoke/2` reports one of
-the interrupts, `get_state/1` lists them all, and a single resume value is
-rejected with `{:error, %BeamWeaver.Core.Error{type: :invalid_resume}}`.
-Answer them with a map from interrupt id to value. The map works for a single
-pause too:
+Parallel branches can pause in the same step. Then the run pauses on one of
+the interrupts and lists them all in `interrupts`, as `get_state/1` does, and
+a single resume value is rejected with
+`{:error, %BeamWeaver.Core.Error{type: :invalid_resume}}`. Answer them with a
+map from interrupt id to value. The map works for a single pause too:
 
 ```elixir
 opts = [checkpointer: saver, config: %{"configurable" => %{"thread_id" => "ticket-51"}}]
-{:interrupted, _interrupt} = MyApp.TicketTriage.invoke(%{order_id: "A-1002"}, opts)
+{:interrupted, interrupt} = MyApp.TicketTriage.invoke(%{order_id: "A-1002"}, opts)
 
-{:ok, snapshot} = MyApp.TicketTriage.get_state(opts)
-answers = Map.new(snapshot.interrupts, &{&1.id, "We refunded order A-1002."})
+answers = Map.new(interrupt.interrupts, &{&1.id, "We refunded order A-1002."})
 
 {:ok, state} = MyApp.TicketTriage.resume(answers, opts)
 state.sent

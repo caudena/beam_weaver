@@ -374,11 +374,11 @@ defmodule BeamWeaver.DeepSeek.ClientTest do
 
   test "normalizes DeepSeek error status, JSON octet-stream bodies, trace IDs, and retryability" do
     cases = [
-      {401, "authentication_error", :authentication_error, false},
-      {402, "insufficient balance", :quota_error, false},
-      {429, "rate limit reached", :rate_limit_error, true},
-      {503, "server overloaded", :overloaded_error, true},
-      {422, "invalid parameters", :invalid_request_error, false},
+      {401, "authentication_error", :authentication, false},
+      {402, "insufficient balance", :billing_exhausted, false},
+      {429, "rate limit reached", :rate_limit, true},
+      {503, "server overloaded", :server_error, true},
+      {422, "invalid parameters", :invalid_request, false},
       {500, "internal server error", :server_error, true}
     ]
 
@@ -424,7 +424,7 @@ defmodule BeamWeaver.DeepSeek.ClientTest do
 
     assert {:ok, stream} = Client.responses_stream(client, %{"stream" => true})
 
-    assert [%BeamWeaver.Stream.Events.Error{error: %Error{type: :rate_limit_error}}] =
+    assert [%BeamWeaver.Stream.Events.Error{error: %Error{type: :rate_limit}}] =
              Enum.to_list(stream)
   end
 
@@ -455,9 +455,9 @@ defmodule BeamWeaver.DeepSeek.ClientTest do
 
     assert {:ok, stream} = Client.anthropic_messages_stream(client, body)
     assert ["hi", %BeamWeaver.Stream.Events.Error{error: %Error{} = error}] = Enum.to_list(stream)
-    assert {error.type, error.details.status, error.details.request_id} == {:rate_limit_error, 429, "trace-stream"}
+    assert {error.type, error.details.status, error.details.request_id} == {:rate_limit, 429, "trace-stream"}
 
-    assert {:error, %Error{type: :rate_limit_error, message: "slow down", details: %{retryable: true}}} =
+    assert {:error, %Error{type: :rate_limit, message: "slow down", details: %{retryable: true}}} =
              Client.anthropic_messages_stream_response(client, body)
   end
 

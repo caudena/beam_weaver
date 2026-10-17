@@ -377,10 +377,10 @@ defmodule BeamWeaver.DeepSeek.Messages do
        when not is_binary(reasoning) or reasoning == "",
        do: content
 
-  defp prepend_reasoning_block(content, reasoning) when is_binary(content) do
-    [ContentBlock.reasoning(reasoning)] ++
-      if(content == "", do: [], else: [ContentBlock.text(content)])
-  end
+  defp prepend_reasoning_block("", reasoning), do: [ContentBlock.reasoning(reasoning)]
+
+  defp prepend_reasoning_block(content, reasoning) when is_binary(content),
+    do: [ContentBlock.reasoning(reasoning), ContentBlock.text(content)]
 
   defp prepend_reasoning_block(content, reasoning) when is_list(content) do
     [ContentBlock.reasoning(reasoning) | content]

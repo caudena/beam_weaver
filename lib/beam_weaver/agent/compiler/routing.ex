@@ -3,6 +3,7 @@ defmodule BeamWeaver.Agent.Compiler.Routing do
 
   alias BeamWeaver.Agent.State
   alias BeamWeaver.Agent.StructuredOutput.ResultHandler
+  alias BeamWeaver.Graph.Send
 
   def model_router(state) do
     case State.jump_to(state) do
@@ -51,6 +52,20 @@ defmodule BeamWeaver.Agent.Compiler.Routing do
   # hooks left, and anything else goes to the next hook. Tool calls, also
   # after a jump to the tools, reach the tools only once every hook, such as
   # a review, has seen them; the last hook's router sends them there.
+  # A router that goes to the tools node sends each pending tool call there as
+  # a task of its own instead, so a review can pause each call on its own.
+  # With no call pending, it goes to the tools node as usual.
+  def sending_tool_calls(router) do
+    fn state ->
+      with :tools <- router.(state) do
+        case pending_tool_calls(State.messages(state)) do
+          [] -> :tools
+          calls -> Enum.map(calls, &%Send{node: :tools, update: %{__type: :tool_call_with_context, tool_call: &1}})
+        end
+      end
+    end
+  end
+
   def after_model_router(state, next) do
     case State.jump_to(state) do
       target when target in [:model, :end] -> target
@@ -177,14 +192,19 @@ defmodule BeamWeaver.Agent.Compiler.Routing do
     end
   end
 
+  # The run ends on the tools' results only when every call of the batch ran
+  # a tool that returns directly; any other result goes back to the model.
   defp return_direct_tool_result?(state) do
-    state
-    |> State.messages()
-    |> last_tool_messages()
-    |> Enum.any?(fn message ->
-      metadata = Map.get(message, :metadata, %{}) || %{}
-      Map.get(metadata, :return_direct) == true
-    end)
+    case state |> State.messages() |> last_tool_messages() do
+      [] ->
+        false
+
+      messages ->
+        Enum.all?(messages, fn message ->
+          metadata = Map.get(message, :metadata, %{}) || %{}
+          Map.get(metadata, :return_direct) == true
+        end)
+    end
   end
 
   defp last_tool_messages(messages) when is_list(messages) do

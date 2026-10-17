@@ -6,6 +6,7 @@ defmodule BeamWeaver.OpenAI do
   alias BeamWeaver.Config
   alias BeamWeaver.OpenAI.ChatCompletionsModel
   alias BeamWeaver.OpenAI.ChatModel
+  alias BeamWeaver.OpenAI.DecisionModel
   alias BeamWeaver.OpenAI.EmbeddingModel
   alias BeamWeaver.OpenAI.Images
   alias BeamWeaver.OpenAI.ModerationMiddleware
@@ -57,6 +58,13 @@ defmodule BeamWeaver.OpenAI do
     |> provider_opts("embeddings")
     |> EmbeddingModel.new()
   end
+
+  @doc """
+  Builds an OpenAI Decisions API model, `gpt-6-luna` unless `:model` names
+  another. See `BeamWeaver.OpenAI.DecisionModel`.
+  """
+  @spec decision_model(keyword()) :: DecisionModel.t()
+  def decision_model(opts \\ []), do: DecisionModel.new(opts)
 
   @doc "Generates images through the Images API and emits a priced generation observation."
   @spec generate_image(String.t(), keyword()) :: {:ok, map()} | {:error, term()}

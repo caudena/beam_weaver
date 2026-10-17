@@ -30,7 +30,8 @@ defmodule BeamWeaver.Agent.Nodes.Model do
     tools: [],
     model_opts: [],
     middleware: [],
-    save_tool_set: true
+    save_tool_set: true,
+    structured_output: false
   ]
 
   @type t :: %__MODULE__{
@@ -43,7 +44,8 @@ defmodule BeamWeaver.Agent.Nodes.Model do
           response_format: term(),
           final_instruction: String.t() | nil,
           step_costs: map() | nil,
-          save_tool_set: boolean()
+          save_tool_set: boolean(),
+          structured_output: boolean()
         }
 
   @spec new(term(), keyword()) :: t()
@@ -58,13 +60,15 @@ defmodule BeamWeaver.Agent.Nodes.Model do
       response_format: Keyword.get(opts, :response_format),
       final_instruction: Keyword.get(opts, :final_instruction),
       step_costs: Keyword.get(opts, :step_costs),
-      save_tool_set: Keyword.get(opts, :save_tool_set, true)
+      save_tool_set: Keyword.get(opts, :save_tool_set, true),
+      structured_output: Keyword.get(opts, :structured_output, false)
     }
   end
 
   @spec invoke(t(), map(), term()) :: map() | {:error, Error.t()}
   def invoke(%__MODULE__{} = node, state, runtime) when is_map(state) do
-    with {:ok, messages} <- Prompt.state_messages(state),
+    with {:ok, history} <- Prompt.state_messages(state),
+         messages = Prompt.answer_invalid_tool_calls(history),
          :ok <- Prompt.validate_chat_history(messages),
          {:ok, system_message} <- Prompt.system_message(node.system_prompt, state, runtime),
          {:ok, model} <- resolve_model(node.model, state, runtime),
@@ -82,7 +86,10 @@ defmodule BeamWeaver.Agent.Nodes.Model do
          {:ok, response} <- call_model_with_middleware(node, request) do
       response
       |> forget_tool_set(node)
-      |> Response.to_update()
+      |> Response.to_update(
+        structured_output: node.structured_output,
+        history: if(messages != history, do: messages)
+      )
     end
   end
 

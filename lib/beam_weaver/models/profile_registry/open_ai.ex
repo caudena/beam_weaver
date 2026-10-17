@@ -66,6 +66,7 @@ defmodule BeamWeaver.Models.ProfileRegistry.OpenAI do
                           reasoning_output: true,
                           temperature: false,
                           tokenizer: :o200k_base,
+                          reasoning_effort_levels: [:low, :medium, :high, :xhigh, :max],
                           extra: %{
                             frontier: true,
                             availability: :trusted_access_rollout,
@@ -85,7 +86,6 @@ defmodule BeamWeaver.Models.ProfileRegistry.OpenAI do
                             fast_mode_price_multiplier: 2.0,
                             fast_mode_service_tiers: [:fast, :priority],
                             fast_mode_eu_data_residency: false,
-                            reasoning_efforts: [:low, :medium, :high, :xhigh, :max],
                             unsupported_reasoning_efforts: [:none, :minimal],
                             reasoning_modes: [:standard, :pro],
                             persisted_reasoning_contexts: [:auto, :current_turn, :all_turns],
@@ -124,7 +124,16 @@ defmodule BeamWeaver.Models.ProfileRegistry.OpenAI do
       cache_read_discount_rate: 0.95
     },
     %{id: "gpt-6-sol", name: "GPT-6 Sol", input: 2.00, cached: 0.20, output: 10.00, cutoff: "2026-04-20"},
-    %{id: "gpt-6-luna", name: "GPT-6 Luna", input: 0.10, cached: 0.01, output: 0.50, cutoff: "2026-05-18"}
+    # Luna also answers the Decisions API (see `BeamWeaver.OpenAI.DecisionModel`).
+    %{
+      id: "gpt-6-luna",
+      name: "GPT-6 Luna",
+      input: 0.10,
+      cached: 0.01,
+      output: 0.50,
+      cutoff: "2026-05-18",
+      decision_outputs: true
+    }
   ]
 
   @gpt_6_profiles Map.new(@gpt_6_specs, fn spec ->
@@ -174,8 +183,15 @@ defmodule BeamWeaver.Models.ProfileRegistry.OpenAI do
                        audio_inputs: false,
                        video_inputs: false,
                        reasoning_output: true,
+                       decision_outputs: Map.get(spec, :decision_outputs, false),
                        temperature: not reasoning_required?,
                        tokenizer: :o200k_base,
+                       reasoning_effort_default: :medium,
+                       reasoning_effort_levels:
+                         if(reasoning_required?,
+                           do: [:low, :medium, :high, :xhigh, :max],
+                           else: [:none, :low, :medium, :high, :xhigh, :max]
+                         ),
                        extra: %{
                          frontier: true,
                          knowledge_cutoff: spec.cutoff,
@@ -196,12 +212,6 @@ defmodule BeamWeaver.Models.ProfileRegistry.OpenAI do
                          fast_mode_price_multiplier: 2.0,
                          fast_mode_service_tiers: [:fast, :priority],
                          fast_mode_eu_data_residency: false,
-                         default_reasoning_effort: :medium,
-                         reasoning_efforts:
-                           if(reasoning_required?,
-                             do: [:low, :medium, :high, :xhigh, :max],
-                             else: [:none, :low, :medium, :high, :xhigh, :max]
-                           ),
                          unsupported_reasoning_efforts:
                            if(reasoning_required?, do: [:none, :minimal], else: [:minimal]),
                          reasoning_modes: [:standard, :pro],
@@ -398,6 +408,8 @@ defmodule BeamWeaver.Models.ProfileRegistry.OpenAI do
                               audio_inputs: false,
                               reasoning_output: true,
                               tokenizer: :o200k_base,
+                              reasoning_effort_default: :medium,
+                              reasoning_effort_levels: [:none, :low, :medium, :high, :xhigh, :max],
                               extra:
                                 Map.merge(
                                   %{
@@ -407,8 +419,6 @@ defmodule BeamWeaver.Models.ProfileRegistry.OpenAI do
                                     flex_price_multiplier: 0.5,
                                     fast_mode_price_multiplier: 2.0,
                                     fast_mode_service_tiers: [:fast, :priority],
-                                    default_reasoning_effort: :medium,
-                                    reasoning_efforts: [:none, :low, :medium, :high, :xhigh, :max],
                                     reasoning_modes: [:standard, :pro],
                                     persisted_reasoning_contexts: [:auto, :current_turn, :all_turns],
                                     prompt_cache_modes: [:implicit, :explicit],
@@ -499,16 +509,14 @@ defmodule BeamWeaver.Models.ProfileRegistry.OpenAI do
                                    audio_inputs: false,
                                    reasoning_output: Map.get(spec, :reasoning, true),
                                    tokenizer: :o200k_base,
-                                   extra:
-                                     Map.merge(pricing, %{
-                                       frontier: true,
-                                       reasoning_efforts: spec.efforts
-                                     })
+                                   reasoning_effort_levels: spec.efforts,
+                                   extra: Map.put(pricing, :frontier, true)
                                  })}
                               end
                             )
 
   @openai_deprecated_models %{
+    "gpt-daybreak-blue-latest" => "gpt-5.6-sol",
     "gpt-5-chat-latest" => "gpt-5.5",
     "gpt-5-chat" => "gpt-5.5",
     "gpt-4.1-nano" => "gpt-5-nano",

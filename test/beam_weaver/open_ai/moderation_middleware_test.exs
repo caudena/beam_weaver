@@ -161,7 +161,7 @@ defmodule BeamWeaver.OpenAI.ModerationMiddlewareTest do
         transport_opts: [status: 429, body: %{"error" => %{"message" => "Rate limit reached", "type" => "requests"}}]
       )
 
-    assert {:error, %BeamWeaver.Core.Error{type: :http_error, message: "Rate limit reached", details: %{status: 429}}} =
+    assert {:error, %BeamWeaver.Core.Error{type: :rate_limit, message: "Rate limit reached", details: %{status: 429}}} =
              ModerationMiddleware.moderate(rate_limited, "hello")
 
     # The middleware passes the error on.

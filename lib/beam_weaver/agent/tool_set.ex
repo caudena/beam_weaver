@@ -49,10 +49,7 @@ defmodule BeamWeaver.Agent.ToolSet do
 
   @spec list(t() | nil) :: [term()]
   def list(%__MODULE__{tools: tools, order: order}) do
-    ordered =
-      Enum.flat_map(order, fn name ->
-        if Map.has_key?(tools, name), do: [tools[name]], else: []
-      end)
+    ordered = for name <- order, Map.has_key?(tools, name), do: Map.fetch!(tools, name)
 
     extras = tools |> Map.drop(order) |> Map.values()
     ordered ++ extras

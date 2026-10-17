@@ -322,15 +322,38 @@ defmodule BeamWeaver.Models do
     BeamWeaver.OpenAI.EmbeddingModel,
     BeamWeaver.XAI.EmbeddingModel,
     BeamWeaver.TypeSafe.DecisionModel,
+    BeamWeaver.OpenAI.DecisionModel,
     BeamWeaver.Models.FakeChatModel,
     BeamWeaver.Models.FakeEmbeddingModel
   ]
 
   @builtin_models @api_models ++ @other_builtin_models
 
-  # The fake chat model stands in for any provider in tests, so it takes (and
-  # has no use for) the connection options every provider takes.
-  @provider_connection_options [:api_key, :base_url, :endpoint, :timeout, :transport, :transport_opts, :extra_body]
+  # Options a model builds its client from. The fake chat model stands in for
+  # any provider in tests, so it takes (and has no use for) the connection
+  # options every provider takes.
+  @client_options %{
+    BeamWeaver.TypeSafe.DecisionModel => [:api_key, :base_url, :timeout, :transport, :transport_opts, :default_headers],
+    BeamWeaver.OpenAI.DecisionModel => [
+      :api_key,
+      :base_url,
+      :organization,
+      :project,
+      :timeout,
+      :transport,
+      :transport_opts,
+      :default_headers
+    ],
+    BeamWeaver.Models.FakeChatModel => [
+      :api_key,
+      :base_url,
+      :endpoint,
+      :timeout,
+      :transport,
+      :transport_opts,
+      :extra_body
+    ]
+  }
 
   # The output cap and stop sequences have one name per provider; the other
   # common names are accepted as aliases.
@@ -399,17 +422,22 @@ defmodule BeamWeaver.Models do
   defp validate_options(_provider, _module, _model_id, opts, _profile), do: {:ok, opts}
 
   defp accepted_options(module) do
-    struct_keys(module) ++
-      [:model, :profile_registry] ++
-      Keyword.keys(Map.get(@aliases, module, [])) ++
-      if(:streaming in struct_keys(module), do: [:stream], else: []) ++
-      if(module in @api_models, do: [:api], else: []) ++
-      if(module in @base_url_models, do: [:base_url], else: []) ++
-      if(module == BeamWeaver.TypeSafe.DecisionModel,
-        do: [:api_key, :base_url, :timeout, :transport, :transport_opts, :default_headers],
-        else: []
-      ) ++
-      if(module == BeamWeaver.Models.FakeChatModel, do: @provider_connection_options, else: [])
+    fields = struct_keys(module)
+
+    shared =
+      for {option, true} <- [
+            stream: :streaming in fields,
+            api: module in @api_models,
+            base_url: module in @base_url_models
+          ],
+          do: option
+
+    Enum.concat([
+      fields,
+      [:model, :profile_registry | shared],
+      Keyword.keys(Map.get(@aliases, module, [])),
+      Map.get(@client_options, module, [])
+    ])
   end
 
   # Options the model takes on each call, such as `tools:`, get a hint.

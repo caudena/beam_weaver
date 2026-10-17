@@ -275,8 +275,11 @@ defmodule BeamWeaver.Template.Mustache do
       {:var, "."} ->
         []
 
-      {:var, name} ->
-        if inside_section?, do: [], else: [top_level(name)]
+      {:var, name} when not inside_section? ->
+        [top_level(name)]
+
+      {:var, _name} ->
+        []
 
       {:section, name, children} ->
         [top_level(name) | collect_variables(children, true)]

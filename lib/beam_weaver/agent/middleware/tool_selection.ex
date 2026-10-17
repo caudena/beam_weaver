@@ -1,6 +1,15 @@
 defmodule BeamWeaver.Agent.Middleware.ToolSelection do
   @moduledoc """
   Filters and augments tools available to the model at runtime.
+
+  With `:model`, `:system_prompt`, `:max_tools`, `:always_include`,
+  `:max_retries` or `:on_parsing_failure`, a model first selects the tools
+  relevant to the user's last message. A selection reply without a tools list
+  is asked for again up to `:max_retries` times (1 by default); then
+  `:on_parsing_failure` decides: `:error` (the default) fails the call, `:none`
+  offers no tools, `:all` every tool, and a list of names or a function of the
+  reply those tools. `:max_tools` doesn't cap that fallback, and
+  `:always_include` tools come with any selection.
   """
 
   use BeamWeaver.Agent.Middleware
@@ -12,6 +21,7 @@ defmodule BeamWeaver.Agent.Middleware.ToolSelection do
   alias BeamWeaver.Core.Message
   alias BeamWeaver.Core.Tool
   alias BeamWeaver.Models
+  alias BeamWeaver.Options
 
   @default_system_prompt "Your goal is to select the most relevant tools for answering the user's query."
 
@@ -26,6 +36,8 @@ defmodule BeamWeaver.Agent.Middleware.ToolSelection do
             system_prompt: @default_system_prompt,
             max_tools: nil,
             always_include: [],
+            max_retries: 1,
+            on_parsing_failure: :error,
             descriptions: %{}
 
   def new(opts \\ []) do
@@ -41,6 +53,8 @@ defmodule BeamWeaver.Agent.Middleware.ToolSelection do
       system_prompt: Keyword.get(opts, :system_prompt, @default_system_prompt),
       max_tools: Keyword.get(opts, :max_tools),
       always_include: opts |> Keyword.get(:always_include, []) |> normalize_names(),
+      max_retries: Keyword.get(opts, :max_retries, 1),
+      on_parsing_failure: opts |> Keyword.get(:on_parsing_failure, :error) |> normalize_parsing_failure(),
       descriptions:
         opts
         |> Keyword.get(:descriptions, %{})
@@ -164,12 +178,9 @@ defmodule BeamWeaver.Agent.Middleware.ToolSelection do
       last_user_message!(request.messages)
     ]
 
-    opts = [response_format: selection_response_format(valid_names)]
-
-    with {:ok, %Message{} = response} <- ChatModel.invoke(model, messages, opts),
-         {:ok, selected_names} <- selected_tool_names(response),
+    with {:ok, selected_names, max_tools} <- selection(middleware, model, messages, valid_names),
          {:ok, selected_names} <- validate_selected_names(selected_names, valid_names),
-         selected_names <- cap_and_dedupe(selected_names, middleware.max_tools),
+         selected_names <- cap_and_dedupe(selected_names, max_tools),
          selected_tools <- tools_by_selection(selectable_tools, selected_names),
          always_tools <- tools_by_selection(ToolSet.list(tool_set), middleware.always_include) do
       {:ok, ToolSet.new(selected_tools ++ always_tools, source: :middleware)}
@@ -187,6 +198,33 @@ defmodule BeamWeaver.Agent.Middleware.ToolSelection do
          exception: inspect(exception.__struct__)
        })}
   end
+
+  # The selected names, and the cap on them: `max_tools` for the model's
+  # selection, none for the `on_parsing_failure` fallback, a deliberate choice.
+  defp selection(middleware, model, messages, valid_names, attempt \\ 0) do
+    opts = [response_format: selection_response_format(valid_names)]
+
+    with {:ok, %Message{} = response} <- ChatModel.invoke(model, messages, opts) do
+      case selected_tool_names(response) do
+        {:ok, names} ->
+          {:ok, names, middleware.max_tools}
+
+        {:error, _malformed} when attempt < middleware.max_retries ->
+          selection(middleware, model, messages, valid_names, attempt + 1)
+
+        {:error, %Error{} = error} ->
+          parsing_failure(middleware.on_parsing_failure, response, error, valid_names)
+      end
+    end
+  end
+
+  defp parsing_failure(:error, _response, error, _valid_names), do: {:error, error}
+  defp parsing_failure(:none, _response, _error, _valid_names), do: {:ok, [], nil}
+  defp parsing_failure(:all, _response, _error, valid_names), do: {:ok, valid_names, nil}
+  defp parsing_failure(names, _response, _error, _valid_names) when is_list(names), do: {:ok, names, nil}
+
+  defp parsing_failure(fun, response, _error, _valid_names),
+    do: {:ok, response |> fun.() |> List.wrap() |> Enum.map(&to_string/1), nil}
 
   defp selection_response_format(valid_names) do
     %{
@@ -330,14 +368,25 @@ defmodule BeamWeaver.Agent.Middleware.ToolSelection do
   end
 
   defp selector_opts?(opts) do
-    Enum.any?([:model, :system_prompt, :max_tools, :always_include], &Keyword.has_key?(opts, &1))
+    Enum.any?(
+      [:model, :system_prompt, :max_tools, :always_include, :max_retries, :on_parsing_failure],
+      &Keyword.has_key?(opts, &1)
+    )
   end
+
+  defp normalize_parsing_failure(names) when is_list(names), do: normalize_names(names)
+  defp normalize_parsing_failure(fun) when is_function(fun, 1), do: fun
+  defp normalize_parsing_failure(value), do: Options.atom_enum!("on_parsing_failure", value, [:error, :none, :all])
 
   defp normalize_model(nil), do: nil
   defp normalize_model(model) when is_binary(model), do: Models.init_chat_model!(model)
   defp normalize_model(model), do: model
 
   defp normalize_names(names), do: names |> List.wrap() |> Enum.map(&to_string/1)
+
+  defp validate!(%__MODULE__{max_retries: retries}) when not (is_integer(retries) and retries >= 0) do
+    raise ArgumentError, "max_retries must be a non-negative integer"
+  end
 
   defp validate!(%__MODULE__{max_tools: max_tools})
        when is_integer(max_tools) and max_tools < 0 do

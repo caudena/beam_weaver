@@ -55,7 +55,8 @@ defmodule BeamWeaver.Agent.ModelCallFailureStreamTest do
 
       assert [
                {:token, "It shipped on"},
-               {:model_call_failed, %Error{type: :http_error, message: "Overloaded", details: %{status: 529}}, "model"},
+               {:model_call_failed, %Error{type: :server_error, message: "Overloaded", details: %{status: 529}},
+                "model"},
                {:token, "It shipped on Monday."},
                {:answer, "It shipped on Monday."}
              ] = timeline(events)
@@ -90,12 +91,12 @@ defmodule BeamWeaver.Agent.ModelCallFailureStreamTest do
       assert {:ok, events} = BeamWeaver.Agent.stream_events(agent, %{messages: ["Where is A-1001?"]}, live: true)
       events = Enum.to_list(events)
 
-      assert [%Envelope{event: %Events.Error{error: %Error{type: :http_error, message: "Overloaded"}}, node: nil}] =
+      assert [%Envelope{event: %Events.Error{error: %Error{type: :server_error, message: "Overloaded"}}, node: nil}] =
                Enum.filter(events, &match?(%Envelope{event: %Events.Error{}}, &1))
 
       assert %Envelope{event: %Events.Error{}} = List.last(events)
 
-      assert [{:token, "It shipped on"}, {:model_call_failed, %Error{type: :http_error}, "model"}] = timeline(events)
+      assert [{:token, "It shipped on"}, {:model_call_failed, %Error{type: :server_error}, "model"}] = timeline(events)
     end
   end
 
@@ -166,7 +167,7 @@ defmodule BeamWeaver.Agent.ModelCallFailureStreamTest do
     refute Enum.any?(events, &match?(%Envelope{event: %Events.Error{}}, &1))
 
     assert [
-             {:model_call_failed, %Error{type: :http_error, details: %{status: 529}}, "model"},
+             {:model_call_failed, %Error{type: :server_error, details: %{status: 529}}, "model"},
              {:answer, "It shipped on Monday."}
            ] =
              timeline(events)

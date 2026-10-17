@@ -9,10 +9,9 @@ defmodule BeamWeaver.TypeSafe.DecisionModel do
   @behaviour BeamWeaver.Core.DecisionModel
   @behaviour BeamWeaver.Runnable
 
-  alias BeamWeaver.Core.Error
+  alias BeamWeaver.Core.{DecisionModel, Error}
   alias BeamWeaver.Models.{ProfileRegistry, UsageCost}
-  alias BeamWeaver.Tracing
-  alias BeamWeaver.TypeSafe.{Client, Input}
+  alias BeamWeaver.TypeSafe.{Client, Input, Question}
 
   defstruct [:client, :profile, model: "jev-latest"]
   @type t :: %__MODULE__{}
@@ -35,16 +34,27 @@ defmodule BeamWeaver.TypeSafe.DecisionModel do
   def profile(model), do: model.profile
 
   @impl true
-  def invoke(model, input, opts \\ []), do: BeamWeaver.Core.DecisionModel.invoke(model, input, opts)
+  def invoke(model, input, opts \\ []), do: DecisionModel.invoke(model, input, opts)
+
+  @impl BeamWeaver.Core.DecisionModel
+  def choice_question(_model, instructions, options),
+    do: checked(Question.choice(instructions: instructions, criteria: options))
+
+  @impl BeamWeaver.Core.DecisionModel
+  def yes_no_question(_model, instructions), do: checked(Question.noul(instructions: instructions))
+
+  defp checked(question) do
+    with {:ok, _input} <- Input.normalize(%{state: "", questions: %{"question" => question}}), do: {:ok, question}
+  end
 
   @impl true
   def evaluate(%__MODULE__{} = model, input, opts) do
-    with :ok <- supported_options(opts),
+    with :ok <- DecisionModel.check_options(opts, [:model, :max_bytes, :max_items, :max_depth], "Jev"),
          :ok <- valid_model(Keyword.get(opts, :model, model.model)),
          {:ok, input} <- Input.normalize(input, opts) do
       body = Map.put(input, "model", Keyword.get(opts, :model, model.model))
 
-      trace(model, body, opts, fn ->
+      DecisionModel.traced("typesafe", "TypeSafe.#{body["model"]}", body, opts, fn ->
         started = System.monotonic_time(:millisecond)
 
         with {:ok, response} <- Client.evaluate(model.client, body, opts) do
@@ -62,93 +72,6 @@ defmodule BeamWeaver.TypeSafe.DecisionModel do
     case ProfileRegistry.fetch(:typesafe, response.model) do
       {:ok, profile} -> UsageCost.calculate(profile, response.usage)
       _ -> nil
-    end
-  end
-
-  defp supported_options(opts) do
-    unsupported =
-      Keyword.keys(opts) --
-        [
-          :model,
-          :timeout,
-          :headers,
-          :transport_opts,
-          :max_bytes,
-          :max_items,
-          :max_depth,
-          :trace?,
-          :trace,
-          :exporter,
-          :exporter_opts,
-          :tags,
-          :metadata,
-          :run_name,
-          :run_id,
-          :config,
-          :configurable,
-          :context,
-          :max_concurrency,
-          :recursion_limit,
-          :opts,
-          :callbacks,
-          :cache,
-          :rate_limiter,
-          :task_supervisor
-        ]
-
-    if unsupported == [],
-      do: :ok,
-      else:
-        {:error,
-         Error.new(:unsupported_feature, "Jev does not support these invocation options", %{options: unsupported})}
-  end
-
-  defp trace(_model, body, opts, fun) do
-    if Keyword.get(opts, :trace?, Keyword.get(opts, :trace, true)) != false and
-         (Tracing.capture_context() != nil or Tracing.exporter_configured?() or Keyword.has_key?(opts, :exporter)) do
-      exporter = Keyword.take(opts, [:exporter, :exporter_opts])
-
-      metadata =
-        BeamWeaver.Runnable.Config.inheritable_metadata(opts)
-        |> Map.merge(%{provider: "typesafe", model: body["model"], model_kind: "decision"})
-
-      BeamWeaver.Tracing.Runner.run(
-        Keyword.get(opts, :run_name) || "TypeSafe.#{body["model"]}",
-        [
-          kind: :model,
-          inputs: Map.take(body, ["state", "questions"]),
-          metadata: metadata,
-          tags: Keyword.get(opts, :tags, [])
-        ],
-        exporter,
-        fun,
-        fn run, result ->
-          case result do
-            {:ok, response} ->
-              Tracing.finish_run(
-                run,
-                exporter ++
-                  [
-                    outputs: response,
-                    usage: response.usage,
-                    metadata: %{
-                      model: response.model,
-                      request_id: response.request_id,
-                      cost: response.metadata.cost,
-                      latency_ms: response.latency_ms
-                    }
-                  ]
-              )
-
-            {:error, error} ->
-              Tracing.fail_run(run, error, exporter)
-          end
-
-          result
-        end
-      )
-    else
-      fun.()
     end
   end
 end

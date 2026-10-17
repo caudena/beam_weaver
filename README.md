@@ -21,7 +21,7 @@ about ten minutes; you need an API key only for the last step.
 ```elixir
 def deps do
   [
-    {:beam_weaver, "~> 0.1.32"}
+    {:beam_weaver, "~> 1.0.0"}
   ]
 end
 ```

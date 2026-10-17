@@ -3,9 +3,10 @@
 BeamWeaver calls OpenAI's Responses API by default
 (`BeamWeaver.OpenAI.ChatModel`) and its Chat Completions API when you ask for
 it (`BeamWeaver.OpenAI.ChatCompletionsModel`). The same provider gives you
-embeddings (`BeamWeaver.OpenAI.EmbeddingModel`), OpenAI's built-in tools such
-as web search (`BeamWeaver.OpenAI.ToolCalling`), image generation and a
-moderation middleware.
+embeddings (`BeamWeaver.OpenAI.EmbeddingModel`), typed decisions
+(`BeamWeaver.OpenAI.DecisionModel`), OpenAI's built-in tools such as web
+search (`BeamWeaver.OpenAI.ToolCalling`), image generation and a moderation
+middleware.
 
 ## Setup
 
@@ -39,7 +40,7 @@ every request through a proxy or gateway.
 | `openai:gpt-5.6-sol` | chat | 1,050,000 | 128,000 | yes | yes | yes | text, image |
 | `openai:gpt-5.6-terra` | chat | 1,050,000 | 128,000 | yes | yes | yes | text, image |
 | `openai:gpt-6-astra` | chat | 1,050,000 | 128,000 | yes | yes | yes | text, image |
-| `openai:gpt-6-luna` | chat | 1,050,000 | 128,000 | yes | yes | yes | text, image |
+| `openai:gpt-6-luna` | chat, decision | 1,050,000 | 128,000 | yes | yes | yes | text, image |
 | `openai:gpt-6-sol` | chat | 1,050,000 | 128,000 | yes | yes | yes | text, image |
 | `openai:gpt-6.1-sol` | chat | 922,000 | 128,000 | yes | yes | yes | text, image |
 | `openai:text-embedding-3-large` | embedding | 8,191 | — | — | — | — | text |
@@ -134,6 +135,24 @@ which `BeamWeaver.Core.Message.text/1` skips. Reasoning tokens are counted in
 `usage_metadata.output_token_details.reasoning`. Raise `timeout` for high
 effort: the default of 15 seconds is often too short.
 
+Changing `reasoning_effort` partway through a conversation starts the prompt
+cache over. GPT-6 models can take the new effort in a `configuration_update`
+block instead, which applies from its message on and keeps the cached prefix:
+
+```elixir
+BeamWeaver.Core.Message.user([
+  %{type: :configuration_update, reasoning: %{effort: :high}},
+  "Now analyze the failure modes."
+])
+```
+
+The Responses API also takes tools added partway through, in an
+`additional_tools` block on a system message, such as
+`Message.system([%{type: :additional_tools, role: "developer", tools: [...]}])`.
+Both blocks go as input items of their own, just before the rest of their
+message. Chat Completions has neither: an `additional_tools` block there
+returns an `:unsupported_feature` error.
+
 ## Built-in tools
 
 OpenAI runs these tools itself, so there is nothing to implement. Each helper
@@ -208,6 +227,50 @@ offer it. Cached input tokens are reported in
 
 [Retrieval](../retrieval.md) shows embeddings in a vector store.
 
+## Decisions
+
+GPT-6 Luna also answers OpenAI's Decisions API, in public beta: typed
+questions about some state, answered with probabilities instead of text.
+`init_decision_model/2` creates the decision model, and
+`BeamWeaver.Core.DecisionModel.invoke/3` asks it the questions:
+
+```elixir
+alias BeamWeaver.OpenAI.Decisions.Question
+
+{:ok, luna} = BeamWeaver.Models.init_decision_model("openai:gpt-6-luna")
+
+{:ok, response} =
+  BeamWeaver.Core.DecisionModel.invoke(luna, %{
+    state: "Stripe has failed to connect for three days. Help ASAP.",
+    questions: %{
+      urgent: Question.predicate(instructions: "Is this request urgent?"),
+      team:
+        Question.choice(
+          instructions: "Which team should handle this request?",
+          choices: %{"billing" => "Payments and subscriptions.", "technical" => "Bugs and integrations."}
+        ),
+      mood: Question.score(instructions: "How frustrated is the customer?", levels: ["Calm", "Concerned", "Angry"])
+    }
+  })
+
+response.answers["team"].choice
+```
+
+A predicate is answered with a `probability`, a choice with the chosen value,
+the probability of each value and a `confidence`, and a score with the
+expected level counted from 0, which may fall between two levels. A choice
+takes 2 to 255 values, strings or booleans. A question the model declines
+gets a `BeamWeaver.OpenAI.Decisions.RefusalAnswer`.
+
+`state` is a string, user messages with text and images, or other data such
+as a conversation or a map, which goes as JSON text with the images of its
+messages in place. Images are data URLs or HTTP(S) URLs, at most 128 a
+request; turn files, audio and other content into text first. The API doesn't
+bill output tokens, so `response.metadata.cost` counts input only.
+[`TypeSafeModelRouter`](typesafe.md#route-an-agent) and
+[`AutoMode`](../guardrails.md#block-risky-tool-calls) take Luna as their
+`classifier:`.
+
 ## Images and moderation
 
 `BeamWeaver.OpenAI.generate_image/2` calls the Images API and returns OpenAI's
@@ -250,7 +313,9 @@ In tests, use `"fake:chat"` instead of an OpenAI model; it needs no key (see
 answer them from a cassette with `transport: BeamWeaver.Transport.Replay`
 and `transport_opts: [cassette_path: "test/cassettes/openai.yml"]`;
 [Replay provider responses](../testing.md#replay-provider-responses) shows
-how to write one.
+how to write one. To test code that asks GPT-6 Luna for decisions, build it
+with `BeamWeaver.OpenAI.decision_model/1` and a `transport:` that returns a
+fixed answer, as [TypeSafe's testing section](typesafe.md#testing) shows.
 
 ## Reference
 
@@ -258,6 +323,8 @@ how to write one.
 - [`BeamWeaver.OpenAI.ChatModel`](https://hexdocs.pm/beam_weaver/BeamWeaver.OpenAI.ChatModel.html): the Responses API model
 - [`BeamWeaver.OpenAI.ChatCompletionsModel`](https://hexdocs.pm/beam_weaver/BeamWeaver.OpenAI.ChatCompletionsModel.html): the Chat Completions model
 - [`BeamWeaver.OpenAI.EmbeddingModel`](https://hexdocs.pm/beam_weaver/BeamWeaver.OpenAI.EmbeddingModel.html): embeddings
+- [`BeamWeaver.OpenAI.DecisionModel`](https://hexdocs.pm/beam_weaver/BeamWeaver.OpenAI.DecisionModel.html): the Decisions API model
+- [`BeamWeaver.OpenAI.Decisions.Question`](https://hexdocs.pm/beam_weaver/BeamWeaver.OpenAI.Decisions.Question.html): predicate, choice and score questions
 - [`BeamWeaver.OpenAI.ToolCalling`](https://hexdocs.pm/beam_weaver/BeamWeaver.OpenAI.ToolCalling.html): built-in tool declarations
 - [`BeamWeaver.OpenAI.ModerationMiddleware`](https://hexdocs.pm/beam_weaver/BeamWeaver.OpenAI.ModerationMiddleware.html): moderation for agents
 - [`BeamWeaver.PromptCache`](https://hexdocs.pm/beam_weaver/BeamWeaver.PromptCache.html): prompt-cache keys

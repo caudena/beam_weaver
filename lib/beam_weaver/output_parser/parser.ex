@@ -51,10 +51,20 @@ defmodule BeamWeaver.OutputParser.Parser do
   def invoke(%__MODULE__{kind: :openai_functions, opts: opts}, input, _opts),
     do: BeamWeaver.OutputParser.parse_openai_functions(input, opts)
 
+  # A partial parse, of a reply still streaming, reads incomplete JSON and
+  # returns `nil` while the value doesn't match the schema yet.
   def invoke(%__MODULE__{kind: :schema, opts: %{schema: schema} = opts}, input, _opts) do
-    with {:ok, data} <- BeamWeaver.OutputParser.parse_json(BeamWeaver.OutputParser.text(input)),
-         :ok <- BeamWeaver.OutputParser.validate_schema(schema, data) do
-      BeamWeaver.OutputParser.cast_schema(data, Map.get(opts, :as))
+    partial? = Map.get(opts, :partial, false)
+
+    result =
+      with {:ok, data} <- BeamWeaver.OutputParser.parse_json(BeamWeaver.OutputParser.text(input), partial: partial?),
+           :ok <- BeamWeaver.OutputParser.validate_schema(schema, data) do
+        BeamWeaver.OutputParser.cast_schema(data, Map.get(opts, :as))
+      end
+
+    case result do
+      {:error, _error} when partial? -> {:ok, nil}
+      result -> result
     end
   end
 

@@ -79,6 +79,7 @@ defmodule BeamWeaver.OpenAI.Streaming.Lifecycle do
       []
     else
       parsed_events
+      |> Shared.pin_output_indexes()
       |> Enum.reduce(State.initial(parsed_events), &apply_lifecycle_event/2)
       |> State.finish(parsed_events)
     end

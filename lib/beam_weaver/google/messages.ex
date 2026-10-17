@@ -154,8 +154,8 @@ defmodule BeamWeaver.Google.Messages do
     Enum.any?(parts, &match?(%{"functionResponse" => %{}}, &1))
   end
 
-  defp parts(content) when is_binary(content),
-    do: if(content == "", do: [], else: [%{"text" => content}])
+  defp parts(""), do: []
+  defp parts(content) when is_binary(content), do: [%{"text" => content}]
 
   defp parts(content) when is_list(content) do
     content
@@ -328,11 +328,28 @@ defmodule BeamWeaver.Google.Messages do
 
   defp content_has_tool_call?(_content), do: false
 
-  defp tool_call_parts(%Message{tool_calls: calls}) when is_list(calls) do
-    Enum.flat_map(calls, &function_call_part/1)
+  # Invalid calls, whose arguments came back malformed, go back too, with the
+  # arguments when they parse to an object: the agent answers each with an
+  # error function response, which needs its call.
+  defp tool_call_parts(%Message{tool_calls: calls} = message) when is_list(calls) do
+    Enum.flat_map(calls ++ invalid_tool_calls(message), &function_call_part/1)
   end
 
   defp tool_call_parts(_message), do: []
+
+  defp invalid_tool_calls(%Message{metadata: %{invalid_tool_calls: calls}}) when is_list(calls) do
+    for call <- calls, is_map(call), is_binary(value(call, :name)) do
+      args =
+        case BeamWeaver.JSON.decode(value(call, :args) || "") do
+          {:ok, %{} = args} -> args
+          _other -> %{}
+        end
+
+      %{name: value(call, :name), args: args}
+    end
+  end
+
+  defp invalid_tool_calls(_message), do: []
 
   defp tool_result_parts(%Message{role: :tool} = message) do
     {response, media_parts} = tool_response_with_media(message.content)

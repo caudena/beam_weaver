@@ -139,13 +139,16 @@ end
 result.model_route["choice"]
 ```
 
-The router uses `typesafe:jev-latest` unless you pass `classifier:`. When
-Jev's confidence is below `min_confidence` (default `0.8`), or the call
-fails, the agent keeps its own model. `result.model_route` records the choice,
-its probabilities and the reason. A chosen model uses its own API key and
-connection settings, and gets only the agent's model options it takes. Put
-the router before `BeamWeaver.Agent.Middleware.ModelFallback` in the
-middleware list.
+The router uses `typesafe:jev-latest` unless you pass `classifier:`, which
+takes any decision model, such as OpenAI's `"openai:gpt-6-luna"`, as a model or
+a `"provider:model"` string. When the confidence is below `min_confidence`
+(default `0.8`), or the classifier declines or fails, the agent keeps its own
+model. `result.model_route` records the choice, its probabilities and the
+reason. Jev reads the message's text, with a placeholder such as
+`[image omitted]` for anything else; a classifier that takes images, such as
+GPT-6 Luna, sees them too. A chosen model uses its own API key and connection
+settings, and gets only the agent's model options it takes. Put the router
+before `BeamWeaver.Agent.Middleware.ModelFallback` in the middleware list.
 
 ## Limitations
 

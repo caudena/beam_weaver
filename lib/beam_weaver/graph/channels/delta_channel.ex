@@ -112,18 +112,9 @@ defmodule BeamWeaver.Graph.Channels.DeltaChannel do
   defp tuple_fallback_values(tuple, key) do
     key = to_string(key)
 
-    tuple
-    |> Map.get(:pending_writes, [])
-    |> Enum.flat_map(fn
-      {_task_id, channel, value} ->
-        if to_string(channel) == key, do: [value], else: []
-
-      {_task_id, channel, value, _path} ->
-        if to_string(channel) == key, do: [value], else: []
-
-      _other ->
-        []
-    end)
+    for write when tuple_size(write) in [3, 4] <- Map.get(tuple, :pending_writes, []),
+        to_string(elem(write, 1)) == key,
+        do: elem(write, 2)
   end
 
   defp history_config(config) do

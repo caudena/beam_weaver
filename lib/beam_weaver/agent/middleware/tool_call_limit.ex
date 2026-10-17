@@ -15,8 +15,9 @@ defmodule BeamWeaver.Agent.Middleware.ToolCallLimit do
     * `:run_limit` - calls allowed in one `invoke/2` call. It can't exceed
       `:thread_limit`.
     * `:exit_behavior` - `:continue` (the default) refuses the extra calls and
-      lets the model go on; `:end` ends the run; `:error` fails it with a
-      `:tool_call_limit_exceeded` error.
+      lets the model go on; `:end` ends the run, and no call of the batch runs:
+      each gets a tool message, so the thread can go on; `:error` fails the
+      run with a `:tool_call_limit_exceeded` error.
     * `:message` - replaces the text of the refused call's tool message.
 
   Neither limit has a default; set at least one.
@@ -103,17 +104,7 @@ defmodule BeamWeaver.Agent.Middleware.ToolCallLimit do
          })}
 
       middleware.exit_behavior == :end ->
-        end_update(
-          middleware,
-          state,
-          thread_counts,
-          run_counts,
-          key,
-          next_thread_count,
-          next_run_count,
-          blocked,
-          calls
-        )
+        end_update(middleware, state, thread_counts, run_counts, key, thread_count, next_run_count, blocked, calls)
 
       true ->
         %{
@@ -139,41 +130,40 @@ defmodule BeamWeaver.Agent.Middleware.ToolCallLimit do
     end)
   end
 
+  # Ending the run skips the tools node, so every call of the batch gets a tool
+  # message and none runs: a refused call says it hit the limit, the others
+  # that they were stopped. The thread keeps its count from before the batch.
   defp end_update(
          %__MODULE__{} = middleware,
          state,
          thread_counts,
          run_counts,
          key,
-         next_thread_count,
-         next_run_count,
+         thread_count,
+         run_count,
          blocked,
          calls
        ) do
-    other_pending =
-      Enum.filter(calls, fn call ->
-        middleware.tool_name && not matches_tool?(middleware, call)
+    answers =
+      Enum.map(calls, fn call ->
+        if call in blocked, do: limit_message(call, middleware), else: stopped_message(call)
       end)
 
-    if other_pending != [] do
-      {:error,
-       Error.new(
-         :tool_call_limit_parallel_end_unsupported,
-         "cannot end execution with other tool calls pending",
-         %{tools: Enum.map(other_pending, &tool_name/1)}
-       )}
-    else
-      run_count = next_run_count + length(blocked)
+    %{
+      thread_tool_call_count: Map.put(thread_counts, key, thread_count),
+      run_tool_call_count: Map.put(run_counts, key, run_count + length(blocked)),
+      jump_to: :end,
+      messages: answers ++ [Message.assistant(final_message(middleware, blocked, state))]
+    }
+  end
 
-      %{
-        thread_tool_call_count: Map.put(thread_counts, key, next_thread_count),
-        run_tool_call_count: Map.put(run_counts, key, run_count),
-        jump_to: :end,
-        messages:
-          Enum.map(blocked, &limit_message(&1, middleware)) ++
-            [Message.assistant(final_message(middleware, blocked, state))]
-      }
-    end
+  defp stopped_message(call) do
+    Message.tool(
+      "Execution stopped before this tool call could run because another tool call in the same batch exceeded the limit.",
+      tool_call_id: tool_call_id(call),
+      name: tool_name(call),
+      metadata: %{status: "error", error_type: :tool_call_stopped}
+    )
   end
 
   defp limit_message(call, %__MODULE__{} = middleware) do

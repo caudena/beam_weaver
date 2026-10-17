@@ -29,6 +29,7 @@ Export `XAI_API_KEY`.
 | `xai:grok-4.3` | chat | 1,000,000 | 30,000 | yes | yes | yes | text, image |
 | `xai:grok-4.5` | chat | 500,000 | 30,000 | yes | yes | yes | text, image |
 | `xai:grok-4.6` | chat | 500,000 | — | yes | yes | yes | text, image |
+| `xai:grok-4.7` | chat | 500,000 | — | yes | yes | yes | text, image |
 | `xai:grok-build-0.1` | chat | 256,000 | 30,000 | yes | yes | yes | text, image |
 | `xai:v1` | embedding | — | — | — | — | — | text |
 <!-- /generated -->

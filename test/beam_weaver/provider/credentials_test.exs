@@ -96,9 +96,14 @@ defmodule BeamWeaver.Provider.CredentialsTest do
     assert details.cassette == "test/cassettes/openai.yml"
     assert details.request.url == "https://api.openai.com/v1/responses"
 
-    timeout = BeamWeaver.Transport.Error.new(:transport_failure, "transport request failed", %{reason: ":timeout"})
+    refused = BeamWeaver.Transport.Error.new(:transport_failure, "transport request failed", %{reason: ":econnrefused"})
 
-    assert %Error{type: :transport_error, details: %{reason: :transport_failure, cause: ":timeout", retryable: true}} =
+    assert %Error{type: :connection, details: %{reason: :transport_failure, cause: ":econnrefused", retryable: true}} =
+             ResponseDecoder.transport_error(refused, provider: :openai)
+
+    timeout = BeamWeaver.Transport.Error.new(:timeout, "transport request timed out")
+
+    assert %Error{type: :timeout, details: %{reason: :timeout, retryable: true}} =
              ResponseDecoder.transport_error(timeout, provider: :openai)
   end
 

@@ -1,7 +1,12 @@
 defmodule BeamWeaver.Agent.Middleware.Helpers do
   @moduledoc false
 
+  require Logger
+
+  alias BeamWeaver.Core.DecisionModel
+  alias BeamWeaver.Core.Error
   alias BeamWeaver.Core.Message
+  alias BeamWeaver.Core.Tool
   alias BeamWeaver.Models.ParamPolicy
   alias BeamWeaver.Models.Profile
 
@@ -76,6 +81,40 @@ defmodule BeamWeaver.Agent.Middleware.Helpers do
   def tool_call_id(%{"provider_id" => id}) when is_binary(id), do: id
   def tool_call_id(_call), do: nil
 
+  # The names of a `tools:` option: names as given, and the names of tool
+  # modules and structs.
+  def tool_names(nil), do: nil
+
+  def tool_names(tools) do
+    tools
+    |> List.wrap()
+    |> MapSet.new(fn
+      name when is_binary(name) ->
+        name
+
+      name when is_atom(name) and not is_nil(name) ->
+        if tool_module?(name), do: Tool.name(name), else: Atom.to_string(name)
+
+      tool ->
+        Tool.name(tool)
+    end)
+  end
+
+  defp tool_module?(module), do: Code.ensure_loaded?(module) and function_exported?(module, :name, 1)
+
+  # The error a tool call failed with, from a wrapped call's result: its
+  # `{:error, error}`, or the error the tool node already turned into a tool
+  # message for the model, which `error_message` keeps the tool's own text of.
+  def tool_failure({:error, %Error{} = error}), do: error
+
+  def tool_failure(%Message{role: :tool, metadata: %{status: "error"} = metadata} = message) do
+    text = Map.get(metadata, :error_message) || Message.text(message)
+    details = metadata |> Map.take([:retryable]) |> Map.put(:tool_message, message)
+    Error.new(Map.get(metadata, :error_type, :tool_error), text, details)
+  end
+
+  def tool_failure(_result), do: nil
+
   defp calling_index(messages, index, tool_call_id) do
     messages
     |> Enum.take(index)
@@ -134,6 +173,66 @@ defmodule BeamWeaver.Agent.Middleware.Helpers do
 
   defp param_apis(%Profile{supported_params_by_api: by_api}) when is_map(by_api), do: [nil | Map.keys(by_api)]
   defp param_apis(_profile), do: [nil]
+
+  # A decision model given as one or as a "provider:model" string, such as a
+  # middleware's classifier.
+  def decision_model!(spec) when is_binary(spec), do: BeamWeaver.Models.init_decision_model!(spec)
+
+  def decision_model!(model) do
+    if DecisionModel.model?(model),
+      do: model,
+      else: raise(ArgumentError, "classifier must be a decision model or a \"provider:model\" string")
+  end
+
+  # The provider of a decision model, as its usage records it.
+  def decision_provider(model) do
+    case model_profile(model) do
+      %Profile{provider: provider} when not is_nil(provider) -> to_string(provider)
+      _profile -> nil
+    end
+  end
+
+  def decision_images?(model), do: match?(%Profile{image_inputs: true}, model_profile(model))
+
+  # A message as a decision model takes it: its text, its images when
+  # `images?`, and a placeholder such as `[audio omitted]` for other content.
+  # Reasoning is left out, and data in a tool's output becomes JSON text.
+  def decision_message(%Message{content: content} = message, images?) when is_list(content),
+    do: %{message | content: Enum.flat_map(content, &decision_content(&1, images?))}
+
+  def decision_message(%Message{content: nil} = message, _images?), do: %{message | content: ""}
+  def decision_message(%Message{} = message, _images?), do: message
+
+  defp decision_content(text, _images?) when is_binary(text), do: [text]
+
+  defp decision_content(%{type: type} = block, images?) when is_atom(type) do
+    cond do
+      type in [:text, :plain_text] -> [block]
+      type in [:image, :image_url] and images? -> [block]
+      type == :reasoning -> []
+      true -> ["[#{type} omitted]"]
+    end
+  end
+
+  defp decision_content(data, _images?) do
+    case BeamWeaver.JSON.encode(data) do
+      {:ok, json} -> [json]
+      {:error, _error} -> [inspect(data)]
+    end
+  end
+
+  # Asks with `with_images` and, when the provider refuses a request with
+  # images (HTTP 400 or 413), once more with `text_only`.
+  def with_text_fallback(with_images, text_only, ask) do
+    case ask.(with_images) do
+      {:error, %Error{details: %{status: status}}} when status in [400, 413] and with_images != text_only ->
+        Logger.warning("Decision request with images was refused (HTTP #{status}); asking again without them.")
+        ask.(text_only)
+
+      result ->
+        result
+    end
+  end
 
   # Wrappers such as `Models.cached/3` keep the model they wrap in `:model`.
   defp model_profile(%{profile: %Profile{} = profile}), do: profile

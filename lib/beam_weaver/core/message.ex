@@ -251,8 +251,10 @@ defmodule BeamWeaver.Core.Message do
     end
   end
 
+  defp normalize_message_content_blocks(""), do: ContentBlock.normalize_many([])
+
   defp normalize_message_content_blocks(content) when is_binary(content),
-    do: ContentBlock.normalize_many(if(content == "", do: [], else: [content]))
+    do: ContentBlock.normalize_many([content])
 
   defp normalize_message_content_blocks(content) when is_list(content),
     do: ContentBlock.normalize_many(content)

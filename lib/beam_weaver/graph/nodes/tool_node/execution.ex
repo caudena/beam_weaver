@@ -11,6 +11,7 @@ defmodule BeamWeaver.Graph.Nodes.ToolNode.Execution do
   alias BeamWeaver.Core.Tool
   alias BeamWeaver.Core.ToolRuntime
   alias BeamWeaver.Graph.Command
+  alias BeamWeaver.Graph.Execution.Scratchpad
   alias BeamWeaver.Graph.Nodes.ToolNode.Input
   alias BeamWeaver.Graph.Nodes.ToolNode.Output
   alias BeamWeaver.Stream.Events
@@ -20,15 +21,19 @@ defmodule BeamWeaver.Graph.Nodes.ToolNode.Execution do
 
   def invoke(node, input, runtime) do
     with {:ok, tool_calls, output_shape} <- Input.extract(input, node.messages_key) do
-      node = apply_tool_set(node, input)
-      calls = Enum.map(tool_calls, &Input.normalize_call/1)
       request_state = Input.request_state(input, runtime)
+      node = apply_tool_set(node, request_state)
+      calls = Enum.map(tool_calls, &Input.normalize_call/1)
+
+      # A call sent as a task of its own can pause the run, as a node can: its
+      # process gets the node's scratchpad. Calls that share a task can't.
+      scratchpad = if Input.sent_call?(input), do: Scratchpad.current()
 
       results =
         calls
         |> Enum.with_index()
         |> execution_groups(node)
-        |> Enum.flat_map(&execute_group(&1, node, request_state, runtime))
+        |> Enum.flat_map(&execute_group(&1, node, request_state, runtime, scratchpad))
         |> Enum.sort_by(fn {index, _call, _result} -> index end)
 
       with :ok <- halt_on_signal(results) do
@@ -83,10 +88,11 @@ defmodule BeamWeaver.Graph.Nodes.ToolNode.Execution do
   defp prepend_concurrent_group(groups, concurrent),
     do: [{:concurrent, Enum.reverse(concurrent)} | groups]
 
-  defp execute_group({:concurrent, indexed_calls}, node, request_state, runtime) do
+  defp execute_group({:concurrent, indexed_calls}, node, request_state, runtime, scratchpad) do
     indexed_calls
     |> async_stream_tools(
       runtime,
+      scratchpad,
       fn {call, index} ->
         call = Map.put(call, :index, index)
         {index, call, execute_call(node, call, request_state, runtime)}
@@ -102,15 +108,15 @@ defmodule BeamWeaver.Graph.Nodes.ToolNode.Execution do
     end)
   end
 
-  defp execute_group({:sequential, indexed_calls}, node, request_state, runtime) do
-    execute_group({:concurrent, indexed_calls}, node, request_state, runtime)
+  defp execute_group({:sequential, indexed_calls}, node, request_state, runtime, scratchpad) do
+    execute_group({:concurrent, indexed_calls}, node, request_state, runtime, scratchpad)
   end
 
-  defp async_stream_tools(indexed_calls, runtime, fun, opts) do
+  defp async_stream_tools(indexed_calls, runtime, scratchpad, fun, opts) do
     context = Tracing.capture_context()
 
     traced_fun = fn entry ->
-      Tracing.attach_context(context, fn -> fun.(entry) end)
+      Tracing.attach_context(context, fn -> with_scratchpad(scratchpad, fn -> fun.(entry) end) end)
     end
 
     case task_supervisor(runtime) do
@@ -121,6 +127,9 @@ defmodule BeamWeaver.Graph.Nodes.ToolNode.Execution do
         Task.Supervisor.async_stream_nolink(supervisor, indexed_calls, traced_fun, opts)
     end
   end
+
+  defp with_scratchpad(nil, fun), do: fun.()
+  defp with_scratchpad(scratchpad, fun), do: Scratchpad.with(scratchpad, fun)
 
   defp task_supervisor(%{task_supervisor: supervisor}) when not is_nil(supervisor),
     do: supervisor
@@ -354,14 +363,18 @@ defmodule BeamWeaver.Graph.Nodes.ToolNode.Execution do
   end
 
   # The content is written for the model; `error_message` keeps the tool's own
-  # message for middleware such as `ToolRetry` that report the error again.
+  # message, and `retryable` whether the error says retrying can help, for
+  # middleware such as `ToolRetry` that handle the error again.
   defp tool_error_message(node, call, %Error{} = error) do
     Message.tool(format_error(node, error, call),
       tool_call_id: call.id,
       name: call.name,
-      metadata: %{status: "error", error_type: error.type, error_message: error.message}
+      metadata: Map.merge(%{status: "error", error_type: error.type, error_message: error.message}, retryable(error))
     )
   end
+
+  defp retryable(%Error{details: %{retryable: retryable}}) when is_boolean(retryable), do: %{retryable: retryable}
+  defp retryable(%Error{}), do: %{}
 
   defp truncate_tool_output(%Message{role: :tool, content: content} = message, node, call)
        when is_binary(content) do

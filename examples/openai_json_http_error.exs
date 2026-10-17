@@ -54,13 +54,14 @@ server =
 try do
   client = Client.new(endpoint: "http://127.0.0.1:#{port}/v1/responses", api_key: "local-fixture")
   {:error, error} = Client.responses(client, %{"model" => "gpt-5.4-mini", "input" => "hello"})
-  :http_error = error.type
+  :invalid_request = error.type
   400 = error.details.status
   "Expected an ID that begins with 'fc'" = error.message
   "req_example" = error.details.request_id
 
   IO.inspect(
     %{
+      type: error.type,
       status: error.details.status,
       message: error.message,
       param: error.details.param,

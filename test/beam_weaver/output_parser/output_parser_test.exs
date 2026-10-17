@@ -45,6 +45,21 @@ defmodule BeamWeaver.OutputParserTest do
     end
   end
 
+  # A reply still streaming parses as far as it goes; a value that doesn't
+  # match the schema yet is nil instead of an error.
+  test "a schema parser parses partial JSON, and is nil until the value matches" do
+    parser =
+      OutputParser.schema(%{
+        "type" => "object",
+        "properties" => %{"status" => %{"type" => "string"}},
+        "required" => ["status"]
+      })
+
+    assert {:ok, %{"status" => "ship"}} = OutputParser.parse_partial(parser, ~s({"status": "ship))
+    assert {:ok, nil} = OutputParser.parse_partial(parser, ~s({"stat))
+    assert {:error, _error} = BeamWeaver.Runnable.invoke(parser, ~s({"status": "ship))
+  end
+
   test "string parser extracts text from messages" do
     message =
       Message.assistant([

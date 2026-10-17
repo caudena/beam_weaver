@@ -102,7 +102,7 @@ defmodule BeamWeaver.OpenAI.ModelPolicy do
   @spec validate_reasoning_effort(BeamWeaver.Models.Profile.t() | nil, term()) ::
           :ok | {:error, BeamWeaver.Core.Error.t()}
   def validate_reasoning_effort(
-        %{provider: provider, extra: %{reasoning_efforts: [_ | _] = efforts}} = profile,
+        %{provider: provider, reasoning_effort_levels: [_ | _] = efforts} = profile,
         reasoning
       )
       when provider in [:openai, :xai] do

@@ -248,17 +248,16 @@ defmodule BeamWeaver.Graph.Execution.CheckpointIO do
       |> List.wrap()
       |> Map.new(fn {task_id, channel, path} -> {{task_id, channel}, path} end)
 
-    Enum.flat_map(writes, fn
-      {task_id, channel, value} ->
-        if channel in channels, do: [{task_id, channel, value, Map.get(paths, {task_id, channel}, "")}], else: []
-
-      {task_id, channel, value, path} ->
-        if channel in channels, do: [{task_id, channel, value, path || ""}], else: []
-
-      _other ->
-        []
-    end)
+    for {task_id, channel, value, path} <- Enum.map(writes, &with_path(&1, paths)),
+        channel in channels,
+        do: {task_id, channel, value, path || ""}
   end
+
+  # A write saved without its task's path gets it from the paths saved apart.
+  defp with_path({task_id, channel, value}, paths),
+    do: {task_id, channel, value, Map.get(paths, {task_id, channel}, "")}
+
+  defp with_path(write, _paths), do: write
 
   defp write_parts(%TaskWrite{} = write), do: {write.task_id, write.channel, write.value, write.path}
   defp write_parts({task_id, channel, value, path}), do: {task_id, channel, value, path}

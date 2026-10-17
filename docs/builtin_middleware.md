@@ -68,7 +68,10 @@ result.messages |> List.last() |> Message.text()
 The scripted model fails every time, so all three attempts fail. By default
 the run then returns the error; `on_failure: :continue` ends it with an
 assistant message instead, and with a one-argument function you write that
-message from the error yourself.
+message from the error yourself. `on_failure` handles only the retries
+running out: an error `retry_on` doesn't cover, such as a bad API key, is
+returned as it is, so a `ModelFallback` listed before `ModelRetry` still
+gets it.
 
 | Option | Default | Meaning |
 | --- | --- | --- |
@@ -77,11 +80,12 @@ message from the error yourself.
 | `backoff` | `2.0` | multiplies the delay after each retry |
 | `max_delay` | `5_000` | upper bound of the delay, in milliseconds |
 | `jitter` | `false` | `true` adds a random part to each delay |
-| `retry_on` | `:transient` | which errors to retry: `:transient`, `:error` (all), an error type or a list of types, or a function of the error |
+| `retry_on` | `:transient` | which errors to retry: `:transient`, `:error` (all but those marked `retryable: false`), an error type or a list of types, or a function of the error |
 | `on_failure` | `:error` | `:error`, `:continue`, or a function that returns the final message |
 
-`:transient` covers timeouts, rate limits, overloaded providers and server
-errors, so an invalid API key fails at once instead of being retried. A
+`:transient` covers the errors [marked retryable](models.md#errors), such as
+timeouts, rate limits and server errors, so an invalid API key fails at once
+instead of being retried. A
 streamed reply that the provider breaks off with an error, such as Anthropic's
 `overloaded_error`, counts as the same error without streaming: an overload is
 retried, a content filter or an exhausted quota is not. A reply that Z.ai or
@@ -119,8 +123,8 @@ result.messages |> List.last() |> Message.text()
 `model` is, or model values from `BeamWeaver.Models.init_chat_model!/2`, as
 here, when a model needs options. A fallback uses its own API key and
 connection settings, never those of the agent's model, and gets only the
-agent's model options it takes, such as `temperature:`; `reasoning_effort:`
-for an OpenAI model doesn't reach a Claude fallback. `retry_on` limits the
+agent's model options it takes, such as `temperature:`; `top_k:` for a
+Claude model doesn't reach an OpenAI fallback. `retry_on` limits the
 errors that switch models (default: all). To retry each model before moving to the next, list
 `ModelFallback` before `ModelRetry`:
 
@@ -181,9 +185,51 @@ result.messages |> Enum.find(&(&1.role == :tool)) |> Message.text()
 ```
 
 `ToolRetry` takes the options of `ModelRetry`, plus `tools` to retry only the
-named tools. Its `retry_on` default is every error. With the default
+named tools. Its `retry_on` default is `:error`: every error except one that
+says retrying can't help, such as an invalid API key from a model the tool
+calls. With the default
 `on_failure: :error`, the last failure reaches the model like any other tool
-error (`"Tool error: ..."`).
+error (`"Tool error: ..."`), and so does an error `retry_on` doesn't cover,
+whatever `on_failure` says.
+
+### ToolError
+
+Decides what the model reads when a tool fails, or stops the run instead.
+`on_error` takes the error and the `BeamWeaver.Agent.ToolCallRequest`, and
+returns the text the model reads, or `nil` to stop the run with the error.
+Here it keeps the archive's error out of the conversation:
+
+```elixir
+defmodule MyApp.SupportAgent do
+  use BeamWeaver.Agent
+
+  alias BeamWeaver.Agent.Middleware
+  alias BeamWeaver.Models.FakeChatModel
+
+  model "fake:chat",
+    responses: [
+      FakeChatModel.tool_call("lookup_order", %{"order_id" => "Z-0042"}),
+      "Our order archive is down. Please try again in a few minutes."
+    ]
+
+  tools [MyApp.Tools.LookupOrder]
+  middleware [{Middleware.ToolError, on_error: &__MODULE__.on_error/2}]
+
+  def on_error(%BeamWeaver.Core.Error{type: :timeout}, request),
+    do: "#{request.tool_call.name} is unavailable right now. Ask the customer to try again later."
+
+  def on_error(_error, _request), do: nil
+end
+
+{:ok, result} = MyApp.SupportAgent.invoke(%{messages: ["Where is my old order Z-0042?"]})
+result.messages |> Enum.find(&(&1.role == :tool)) |> Message.text()
+#=> "lookup_order is unavailable right now. Ask the customer to try again later."
+```
+
+`tools` limits it to the named tools. Arguments the model got wrong, and calls
+to a tool the agent doesn't have, still reach the model as they are, so it can
+fix the call. `ToolError` doesn't retry: list `ToolRetry` after it, and the
+last failure reaches `on_error`.
 
 ## Limits
 
@@ -332,8 +378,12 @@ next model call only, so after `resume` a call to one gets "tool is not
 registered"; list them to keep them across a pause.
 
 With `model`, a model picks the relevant tools from the user's last message,
-up to `max_tools`; `always_include` names tools it can't drop. Use a small,
-fast model for this:
+up to `max_tools`; `always_include` names tools it can't drop. A reply
+without a list of tools is asked for again `max_retries` times (default 1);
+then `on_parsing_failure` decides: `:error` (the default) fails the call,
+`:none` offers no tools, `:all` every tool, and a list of names or a function
+of the reply those tools, which `max_tools` doesn't cap. Use a small, fast
+model for this:
 
 ```elixir
 model "anthropic:claude-sonnet-4-6"
@@ -560,7 +610,10 @@ messages |> ContextEditing.clear_tool_uses(trigger: 0, keep: 1) |> Enum.map(&Mes
 ```
 
 Other options: `exclude_tools` (never clear these), `clear_tool_inputs: true`
-(also clear the call arguments) and `placeholder`.
+(also clear the call arguments) and `placeholder`. Tokens are counted
+approximately; `token_count_method: :model` counts them with the agent's
+model, and `token_counter`, a function of a message list that returns its
+token count, counts them your way, such as with a provider's tokenizer.
 
 ### Summarization
 
@@ -595,8 +648,12 @@ Enum.map(result.messages, &Message.text/1)
 model, which you set along with a fraction; a list of triggers fires on any
 of them, and `{:all, triggers}` on all. `keep` (default `{:messages, 8}`) is
 a single `{:messages, n}`, `{:tokens, n}` or `{:fraction, f}`. Unlike
-`ContextEditing`, the summary replaces the history in the saved state. See
-[Context Management](context_management.md) for choosing between them.
+`ContextEditing`, the summary replaces the history in the saved state. A
+`summarizer:` function of the old messages can write the summary instead of
+a model. A failed summary call is retried unless retrying can't help; when it
+still fails, the run returns the error and keeps the history. See
+[Context Management](context_management.md#summarize-old-messages), which
+also covers choosing between them.
 
 ## Documented elsewhere
 
@@ -613,7 +670,8 @@ a single `{:messages, n}`, `{:tokens, n}` or `{:fraction, f}`. Unlike
 | `ToolEmulator` | listing it in `middleware` | [Testing](testing.md#emulate-tools-with-side-effects) |
 | `PromptCaching` | `prompt_caching` | [Caching](caching.md) |
 | `OverflowRecovery`, `CompactConversation` | `overflow_recovery`, `compact_conversation` | [Context Management](context_management.md) |
-| `TypeSafeModelRouter` | listing it in `middleware` | [TypeSafe](providers/typesafe.md) |
+| `AutoMode` | listing it in `middleware` | [Guardrails](guardrails.md#block-risky-tool-calls) |
+| `TypeSafeModelRouter` | listing it in `middleware` | [TypeSafe](providers/typesafe.md#route-an-agent) |
 | `BeamWeaver.OpenAI.ModerationMiddleware` | listing it in `middleware` | [Guardrails](guardrails.md) |
 
 ## Reference

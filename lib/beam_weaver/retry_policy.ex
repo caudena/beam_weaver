@@ -91,12 +91,24 @@ defmodule BeamWeaver.RetryPolicy do
     end
   end
 
+  @doc """
+  Whether the policy retries `error`. `:retry_on` takes:
+
+    * `:error` (the default) - any `%BeamWeaver.Core.Error{}` except one
+      whose `details.retryable` is `false`, such as an invalid API key;
+    * `:transient` - errors that look temporary
+      (`BeamWeaver.RetryPredicates.transient?/1`);
+    * `:all` - anything;
+    * an error type or a list of them;
+    * a function of the error, or `{module, function, extra_args}`.
+  """
   @spec retry?(t(), Error.t() | term()) :: boolean()
   def retry?(%__MODULE__{retry_on: :all}, _error), do: true
 
   def retry?(%__MODULE__{retry_on: :transient}, error),
     do: BeamWeaver.RetryPredicates.transient?(error)
 
+  def retry?(%__MODULE__{retry_on: :error}, %Error{details: %{retryable: false}}), do: false
   def retry?(%__MODULE__{retry_on: :error}, %Error{}), do: true
   def retry?(%__MODULE__{retry_on: :error}, _error), do: false
   def retry?(%__MODULE__{retry_on: type}, %Error{type: type}) when is_atom(type), do: true

@@ -56,13 +56,17 @@ defmodule BeamWeaver.Graph.Execution.TaskCollector do
   defp collect_results([], _run, %Collection{} = collection, {:failed, %Error{} = error}),
     do: {:halt, Collection.halt(collection, :error, error)}
 
-  defp collect_results(
-         [],
-         run,
-         %Collection{} = collection,
-         {:interrupted, interrupt, entry}
-       ) do
-    {:halt, Collection.halt(collection, :interrupted, interrupt_payload(interrupt, run, entry))}
+  # The run pauses on the step's first interrupt; `interrupts` lists every
+  # task's, so each can be answered by its id.
+  defp collect_results([], run, %Collection{} = collection, {:interrupted, paused}) do
+    [{interrupt, entry} | _rest] = paused = Enum.reverse(paused)
+
+    payload =
+      interrupt
+      |> interrupt_payload(run, entry)
+      |> Map.put(:interrupts, Enum.map(paused, &elem(&1, 0)))
+
+    {:halt, Collection.halt(collection, :interrupted, payload)}
   end
 
   defp collect_results(
@@ -80,22 +84,15 @@ defmodule BeamWeaver.Graph.Execution.TaskCollector do
          [{entry, {:ok, %TaskResult{status: :interrupted} = result}} | rest],
          run,
          collection,
-         :normal
-       ) do
-    collect_results(
-      rest,
-      run,
-      Collection.add_result(collection, entry, result),
-      {:interrupted, result.interrupt, entry}
-    )
-  end
-
-  defp collect_results(
-         [{entry, {:ok, %TaskResult{status: :interrupted} = result}} | rest],
-         run,
-         collection,
          mode
        ) do
+    mode =
+      case mode do
+        :normal -> {:interrupted, [{result.interrupt, entry}]}
+        {:interrupted, paused} -> {:interrupted, [{result.interrupt, entry} | paused]}
+        failed -> failed
+      end
+
     collect_results(rest, run, Collection.add_result(collection, entry, result), mode)
   end
 
@@ -162,15 +159,10 @@ defmodule BeamWeaver.Graph.Execution.TaskCollector do
     {:halt, Collection.halt(collection, :error, elem(mode, 1))}
   end
 
-  defp handle_task_failure(
-         _error,
-         rest,
-         run,
-         collection,
-         {:interrupted, _interrupt, _entry} = mode
-       ) do
-    collect_results(rest, run, collection, mode)
-  end
+  # A failed task fails the step even when another paused before it, as when
+  # it fails first; the paused tasks stay pending.
+  defp handle_task_failure(error, rest, run, collection, {:interrupted, _paused}),
+    do: handle_task_failure(error, rest, run, collection, :normal)
 
   defp handle_task_failure(error, rest, run, collection, :normal) do
     if hard_budget_error?(error) do

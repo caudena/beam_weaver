@@ -40,6 +40,106 @@ defmodule BeamWeaver.Agent.SummarizationTest do
     end
   end
 
+  # A summary model that answers each call with the next result of its
+  # script and sends the prompt it got to the test process.
+  defmodule ScriptedSummaryModel do
+    @behaviour BeamWeaver.Core.ChatModel
+
+    defstruct [:parent, :script, profile: %Profile{max_input_tokens: 100_000}]
+
+    @impl true
+    def invoke(%__MODULE__{parent: parent, script: script}, [prompt], _opts) do
+      send(parent, {:summary_prompt, Message.text(prompt)})
+
+      case Agent.get_and_update(script, fn [result | rest] -> {result, if(rest == [], do: [result], else: rest)} end) do
+        {:error, _error} = error -> error
+        text -> {:ok, Message.assistant(text)}
+      end
+    end
+  end
+
+  defp scripted_summary_model(results) do
+    {:ok, script} = Agent.start_link(fn -> results end)
+    %ScriptedSummaryModel{parent: self(), script: script}
+  end
+
+  defp summarize_old_messages(middleware) do
+    middleware = %{middleware | trigger: {:messages, 3}, keep: {:messages, 1}}
+    Summarization.before_model(middleware, %{messages: messages(4)}, nil)
+  end
+
+  describe "a summary call that fails" do
+    test "is tried again when retrying can help" do
+      busy = BeamWeaver.Core.Error.new(:server_error, "Overloaded", %{status: 529, retryable: true})
+      middleware = Summarization.new(model: scripted_summary_model([{:error, busy}, "The customer asked twice."]))
+
+      assert %{messages: %Overwrite{value: [summary | _kept]}} = summarize_old_messages(middleware)
+      assert Message.text(summary) == "Conversation summary:\nThe customer asked twice."
+      assert_received {:summary_prompt, _first}
+      assert_received {:summary_prompt, _second}
+    end
+
+    test "returns its error, keeping the thread, when retrying can't help" do
+      unauthorized = BeamWeaver.Core.Error.new(:authentication, "Invalid API key", %{status: 401, retryable: false})
+      middleware = Summarization.new(model: scripted_summary_model([{:error, unauthorized}]))
+
+      assert {:error, ^unauthorized} = summarize_old_messages(middleware)
+      assert_received {:summary_prompt, _prompt}
+      refute_received {:summary_prompt, _again}
+    end
+
+    test "over the model's context window is tried once with the middle of the history cut out" do
+      overflow = BeamWeaver.Core.Error.new(:context_overflow, "prompt is too long", %{status: 400, retryable: false})
+      model = scripted_summary_model([{:error, overflow}, "Shorter summary."])
+      middleware = Summarization.new(model: model, trigger: {:messages, 3}, keep: {:messages, 1})
+
+      thread = [
+        Message.user("Refund order A-1001. " <> String.duplicate("a", 400)),
+        Message.assistant(String.duplicate("b", 400)),
+        Message.user(String.duplicate("c", 400) <> " Also cancel A-1002."),
+        Message.user("Thanks.")
+      ]
+
+      assert %{messages: %Overwrite{value: [summary | _kept]}} =
+               Summarization.before_model(middleware, %{messages: thread}, nil)
+
+      assert Message.text(summary) == "Conversation summary:\nShorter summary."
+
+      assert_received {:summary_prompt, first}
+      assert_received {:summary_prompt, second}
+      assert String.length(second) < String.length(first)
+      assert second =~ "Refund order A-1001."
+      assert second =~ "[... middle of conversation omitted ...]"
+      assert second =~ "Also cancel A-1002."
+      refute second =~ String.duplicate("b", 400)
+    end
+  end
+
+  describe ":summarizer" do
+    test "writes the summary from the messages to summarize instead of a model" do
+      summarizer = fn messages -> "#{length(messages)} questions about orders.\n" end
+      middleware = Summarization.new(summarizer: summarizer)
+
+      assert %{messages: %Overwrite{value: [summary, kept]}} = summarize_old_messages(middleware)
+      assert Message.text(summary) == "Conversation summary:\n3 questions about orders."
+      assert Message.text(kept) == "Question 4"
+    end
+
+    test "can fail with an error, and must return text" do
+      error = BeamWeaver.Core.Error.new(:summary_service_down, "The summary service is down")
+
+      assert {:error, ^error} =
+               summarize_old_messages(Summarization.new(summarizer: fn _messages -> {:error, error} end))
+
+      assert {:error, %BeamWeaver.Core.Error{type: :invalid_summary}} =
+               summarize_old_messages(Summarization.new(summarizer: fn _messages -> :done end))
+    end
+
+    test "or a model is required" do
+      assert_raise ArgumentError, ~r/needs :model or :summarizer/, fn -> Summarization.new([]) end
+    end
+  end
+
   # A scripted agent model with a 10,000-token context window.
   def agent_model do
     model = BeamWeaver.Models.init_chat_model!("fake:chat", responses: ["Answer."])

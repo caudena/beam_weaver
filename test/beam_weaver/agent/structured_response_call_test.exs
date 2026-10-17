@@ -47,6 +47,39 @@ defmodule BeamWeaver.Agent.StructuredResponseCallTest do
     refute Enum.any?(messages, &(&1.content == "Give your final answer now, in the required format."))
   end
 
+  # The thread keeps the last turn's answer in its state; a new turn must get
+  # its own instead of ending on that one.
+  test "each turn of a checkpointed thread gets its own structured answer" do
+    model =
+      Models.init_chat_model!("fake:chat",
+        responses: [
+          FakeChatModel.tool_call("lookup_order", %{"order_id" => "A-1001"}),
+          "It shipped.",
+          FakeChatModel.final(%{status: "shipped"}),
+          "It was delivered.",
+          FakeChatModel.final(%{status: "delivered"})
+        ]
+      )
+
+    {:ok, agent} = BeamWeaver.Agent.build(model: model, tools: [lookup_tool()], response_format: Answer)
+    opts = [checkpointer: BeamWeaver.Checkpoint.ETS.new(), config: %{"configurable" => %{"thread_id" => "A-1001"}}]
+
+    assert {:ok, %{structured_response: %{"status" => "shipped"}}} =
+             BeamWeaver.Agent.invoke(agent, %{messages: ["Where is A-1001?"]}, opts)
+
+    assert {:ok, %{structured_response: %{"status" => "delivered"}}} =
+             BeamWeaver.Agent.invoke(agent, %{messages: ["And now?"]}, opts)
+  end
+
+  defp lookup_tool do
+    Tool.from_function!(
+      name: "lookup_order",
+      description: "Look up an order",
+      input_schema: %{"type" => "object", "properties" => %{"order_id" => %{"type" => "string"}}},
+      handler: fn _args, _opts -> "shipped" end
+    )
+  end
+
   defp collect_calls(acc) do
     receive do
       {:fake_chat_model_call, messages, opts} -> collect_calls([{messages, opts} | acc])

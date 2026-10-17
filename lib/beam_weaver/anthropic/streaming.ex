@@ -347,16 +347,13 @@ defmodule BeamWeaver.Anthropic.Streaming do
         [%{type: :server_tool_call_chunk, args: partial_json, index: index}]
       end
 
-    chunk =
-      CoreMessages.ai_chunk(content,
-        tool_call_chunks: if(start_block["type"] == "tool_use", do: [tool_chunk], else: [])
-      )
+    {tool_call_chunks, events} =
+      case start_block["type"] do
+        "tool_use" -> {[tool_chunk], [%Events.ToolCallChunk{chunk: tool_chunk}]}
+        _other -> {[], []}
+      end
 
-    events =
-      if start_block["type"] == "tool_use",
-        do: [%Events.ToolCallChunk{chunk: tool_chunk}],
-        else: []
-
+    chunk = CoreMessages.ai_chunk(content, tool_call_chunks: tool_call_chunks)
     {events ++ [%Events.MessageChunk{chunk: chunk}], state}
   end
 

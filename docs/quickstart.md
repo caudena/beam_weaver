@@ -15,7 +15,7 @@ cd my_app
 ```elixir
 def deps do
   [
-    {:beam_weaver, "~> 0.1.32"}
+    {:beam_weaver, "~> 1.0.0"}
   ]
 end
 ```

@@ -42,15 +42,9 @@ defmodule BeamWeaver.Indexing.RecordManager.ETS do
     source_ids = opts |> Keyword.get(:source_ids) |> normalize_source_ids()
 
     records =
-      manager.table
-      |> :ets.tab2list()
-      |> Enum.flat_map(fn
-        {{^namespace, _id}, %Record{} = record} ->
-          if source_ids == nil or record.source_id in source_ids, do: [record], else: []
-
-        _other ->
-          []
-      end)
+      for {{^namespace, _id}, %Record{} = record} <- :ets.tab2list(manager.table),
+          source_ids == nil or record.source_id in source_ids,
+          do: record
 
     {:ok, records}
   end

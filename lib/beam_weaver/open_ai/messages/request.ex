@@ -11,6 +11,14 @@ defmodule BeamWeaver.OpenAI.Messages.Request do
   # Providers whose Responses API replies this input takes back as items.
   @responses_providers ["openai", "xai", "deepseek"]
 
+  # Blocks that go as input items of their own, just before the rest of their
+  # message: a `configuration_update`, such as a new reasoning effort from this
+  # message on, the items that answer a provider tool, and `additional_tools`,
+  # tools added partway through, which only a system message carries (OpenAI
+  # takes it only with the developer role).
+  @input_item_types ~w(configuration_update mcp_approval_response tool_search_output apply_patch_call_output
+                       additional_tools)
+
   @spec to_responses_input([Message.t()], keyword()) :: {:ok, [map()]} | {:error, Error.t()}
   def to_responses_input(messages, opts \\ [])
 
@@ -161,15 +169,57 @@ defmodule BeamWeaver.OpenAI.Messages.Request do
     end
   end
 
+  defp to_response_input(%Message{content: content} = message, _opts) when is_list(content) do
+    {items, content} = Enum.split_with(content, &(input_item_type(&1) in @input_item_types))
+
+    with :ok <- check_additional_tools(message, items),
+         {:ok, content} <- content_to_openai(content) do
+      {:ok, Enum.map(items, &input_item/1) ++ message_items(message, content, items)}
+    end
+  end
+
   defp to_response_input(%Message{} = message, _opts) do
     with {:ok, content} <- content_to_openai(message.content) do
-      {:ok, %{"type" => "message", "role" => provider_role(message), "content" => content}}
+      {:ok, message_item(message, content)}
     end
   end
 
   defp to_response_input(_message, _opts) do
     {:error, Error.new(:invalid_message, "expected a BeamWeaver message")}
   end
+
+  # A message whose blocks all went as items of their own adds no message.
+  defp message_items(_message, [], [_ | _]), do: []
+  defp message_items(message, content, _items), do: [message_item(message, content)]
+
+  defp message_item(message, content),
+    do: %{"type" => "message", "role" => provider_role(message), "content" => content}
+
+  defp check_additional_tools(%Message{role: :system}, _items), do: :ok
+
+  defp check_additional_tools(%Message{role: role}, items) do
+    if Enum.any?(items, &(input_item_type(&1) == "additional_tools")) do
+      {:error,
+       Error.new(
+         :invalid_request,
+         "additional_tools goes on a system message: OpenAI takes it only with the developer role",
+         %{
+           api: :responses,
+           role: role
+         }
+       )}
+    else
+      :ok
+    end
+  end
+
+  defp input_item_type(%ContentBlock.Unknown{provider_type: type}) when not is_nil(type), do: to_string(type)
+  defp input_item_type(%{__struct__: _module}), do: nil
+  defp input_item_type(%{type: type}) when is_atom(type) or is_binary(type), do: to_string(type)
+  defp input_item_type(_block), do: nil
+
+  defp input_item(%ContentBlock.Unknown{value: value}), do: Shared.stringify_keys(value)
+  defp input_item(block), do: Shared.stringify_keys(block)
 
   # Output items, their ids and reasoning belong to the Responses API that
   # made them. A reply from another provider or API, such as an Anthropic or
@@ -185,7 +235,13 @@ defmodule BeamWeaver.OpenAI.Messages.Request do
 
   defp responses_reply?(_message), do: true
 
-  defp portable_assistant_items(%Message{content: content, tool_calls: tool_calls}, opts) do
+  # The id of an assistant message item: the API's own (`msg_...`). A message
+  # keeps the response's id, and a thread gives a message it didn't get from
+  # the API an id of its own; the API refuses both as an item id.
+  defp message_item_id("msg_" <> _rest = id), do: id
+  defp message_item_id(_id), do: nil
+
+  defp portable_assistant_items(%Message{content: content, tool_calls: tool_calls} = assistant, opts) do
     parts =
       content
       |> List.wrap()
@@ -203,9 +259,22 @@ defmodule BeamWeaver.OpenAI.Messages.Request do
           []
       end)
 
-    message = if parts == [], do: [], else: [%{"type" => "message", "role" => "assistant", "content" => parts}]
-    message ++ Enum.map(tool_calls, &(&1 |> tool_call_to_function_call_item(opts) |> Map.delete("id")))
+    assistant_message(parts) ++
+      Enum.map(tool_calls, &(&1 |> tool_call_to_function_call_item(opts) |> Map.delete("id"))) ++
+      invalid_call_items(assistant, opts)
   end
+
+  defp assistant_message([]), do: []
+  defp assistant_message(parts), do: [%{"type" => "message", "role" => "assistant", "content" => parts}]
+
+  # Invalid calls, whose arguments came back malformed, go back too, without
+  # an id the API didn't issue: the agent answers each with an error output,
+  # which needs its call. A reply the API made keeps them in its content.
+  defp invalid_call_items(%Message{metadata: %{invalid_tool_calls: calls}}, opts) when is_list(calls) do
+    for call <- calls, is_map(call), do: call |> tool_call_to_function_call_item(opts) |> Map.delete("id")
+  end
+
+  defp invalid_call_items(_message, _opts), do: []
 
   defp message_metadata(%Message{metadata: metadata}, key) when is_map(metadata) do
     Map.get(metadata, key) || Map.get(metadata, Atom.to_string(key))
@@ -462,8 +531,10 @@ defmodule BeamWeaver.OpenAI.Messages.Request do
     Map.get(block, key) || Map.get(metadata, key) || Map.get(metadata, Atom.to_string(key))
   end
 
-  defp assistant_content_items(%Message{content: content, id: message_id}, opts)
+  defp assistant_content_items(%Message{content: content, id: id}, opts)
        when is_binary(content) do
+    message_id = message_item_id(id)
+
     case content do
       "" ->
         []
@@ -479,8 +550,10 @@ defmodule BeamWeaver.OpenAI.Messages.Request do
     end
   end
 
-  defp assistant_content_items(%Message{content: content, id: message_id}, opts)
+  defp assistant_content_items(%Message{content: content, id: id}, opts)
        when is_list(content) do
+    message_id = message_item_id(id)
+
     content
     |> Enum.reduce({[], nil, []}, fn block, state ->
       case assistant_content_event(block, message_id, opts) do
@@ -582,12 +655,12 @@ defmodule BeamWeaver.OpenAI.Messages.Request do
     |> maybe_drop_store_false_id(opts)
   end
 
-  defp assistant_tool_call_items(%Message{content: content, tool_calls: tool_calls}, opts)
+  defp assistant_tool_call_items(%Message{content: content, tool_calls: tool_calls} = message, opts)
        when is_list(tool_calls) do
     if assistant_content_has_function_call?(content) do
       []
     else
-      Enum.map(tool_calls, &tool_call_to_function_call_item(&1, opts))
+      Enum.map(tool_calls, &tool_call_to_function_call_item(&1, opts)) ++ invalid_call_items(message, opts)
     end
   end
 
@@ -625,7 +698,15 @@ defmodule BeamWeaver.OpenAI.Messages.Request do
   defp normalize_function_call_arguments(arguments) when is_binary(arguments), do: arguments
   defp normalize_function_call_arguments(arguments), do: BeamWeaver.JSON.encode!(arguments)
 
+  # A `function_call` item goes back with the fields the API gave it that the
+  # next request needs: the `namespace` of a tool tool search found, `status`
+  # and `async`. A decoded call keeps them in its raw item.
+  @function_call_fields ["namespace", "status", "async"]
+
   defp normalize_function_call_item(item) do
+    raw = if is_map(item["raw_provider_block"]), do: item["raw_provider_block"], else: %{}
+    fields = Map.merge(Map.take(raw, @function_call_fields), Map.take(item, @function_call_fields))
+
     item
     |> Map.update("type", "function_call", fn
       "tool_call" -> "function_call"
@@ -635,6 +716,7 @@ defmodule BeamWeaver.OpenAI.Messages.Request do
     |> Map.update("id", item["provider_id"] || item["id"], fn id -> item["provider_id"] || id end)
     |> Map.put_new("arguments", item["args"] || item["input"])
     |> Map.take(["type", "id", "call_id", "name", "arguments"])
+    |> Map.merge(fields)
     |> Map.update("arguments", "{}", &normalize_function_call_arguments/1)
     |> Shared.reject_nil_values()
   end

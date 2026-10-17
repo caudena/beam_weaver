@@ -216,17 +216,24 @@ defmodule BeamWeaver.Graph.PregelBehaviorTest do
   end
 
   test "compiled graph streams events and yields batch results as they complete" do
+    test = self()
+
+    # A run given `hold: true` finishes only when the test lets it go.
     graph =
       Graph.new()
       |> Graph.add_node(:work, fn state ->
-        Process.sleep(state.sleep_ms)
+        if state[:hold] do
+          send(test, {:holding, self()})
+          receive do: (:go -> :ok)
+        end
+
         %{value: state.value * 2}
       end)
       |> Graph.add_edge(Graph.start(), :work)
       |> Graph.add_edge(:work, Graph.end_node())
       |> Graph.compile!()
 
-    assert {:ok, stream} = Compiled.stream_events(graph, %{value: 1, sleep_ms: 0})
+    assert {:ok, stream} = Compiled.stream_events(graph, %{value: 1})
 
     assert Enum.any?(
              stream,
@@ -234,22 +241,23 @@ defmodule BeamWeaver.Graph.PregelBehaviorTest do
            )
 
     assert {:ok, completion_stream} =
-             Compiled.batch_as_completed(
-               graph,
-               [
-                 %{value: 1, sleep_ms: 30},
-                 %{value: 2, sleep_ms: 5}
-               ],
-               max_concurrency: 2
-             )
+             Compiled.batch_as_completed(graph, [%{value: 1, hold: true}, %{value: 2}], max_concurrency: 2)
 
-    completions = Enum.to_list(completion_stream)
-    assert elem(hd(completions), 0) == 1
-    assert {0, {:ok, %{value: 2, sleep_ms: 30}}} in completions
-    assert {1, {:ok, %{value: 4, sleep_ms: 5}}} in completions
+    # The second run comes out first; only then does the first one finish.
+    completions =
+      Enum.map(completion_stream, fn
+        {1, _result} = completion ->
+          receive do: ({:holding, first} -> send(first, :go))
+          completion
 
-    assert {:ok, single_completion_stream} = Compiled.batch_as_completed(graph, [%{value: 3, sleep_ms: 0}])
-    assert Enum.to_list(single_completion_stream) == [{0, {:ok, %{value: 6, sleep_ms: 0}}}]
+        completion ->
+          completion
+      end)
+
+    assert completions == [{1, {:ok, %{value: 4}}}, {0, {:ok, %{value: 2, hold: true}}}]
+
+    assert {:ok, single_completion_stream} = Compiled.batch_as_completed(graph, [%{value: 3}])
+    assert Enum.to_list(single_completion_stream) == [{0, {:ok, %{value: 6}}}]
   end
 
   test "checkpoint adapter failures surface through native runtime boundaries" do

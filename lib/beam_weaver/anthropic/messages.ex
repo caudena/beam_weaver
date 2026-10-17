@@ -289,9 +289,8 @@ defmodule BeamWeaver.Anthropic.Messages do
 
   defp message_content(%Message{role: role, content: content} = message, _opts)
        when is_binary(content) do
-    if role == :assistant and message.tool_calls != [] do
-      initial = if content == "", do: [], else: [%{"type" => "text", "text" => content}]
-      {:ok, add_missing_tool_use_blocks(initial, message)}
+    if role == :assistant and (message.tool_calls != [] or invalid_tool_calls(message) != []) do
+      {:ok, add_missing_tool_use_blocks(text_blocks(content), message)}
     else
       {:ok, content}
     end
@@ -307,6 +306,9 @@ defmodule BeamWeaver.Anthropic.Messages do
 
     {:ok, blocks}
   end
+
+  defp text_blocks(""), do: []
+  defp text_blocks(text), do: [%{"type" => "text", "text" => text}]
 
   # A reply from another provider, such as an OpenAI reply after a model
   # fallback, goes as its text and tool calls. Its reasoning and provider
@@ -713,8 +715,19 @@ defmodule BeamWeaver.Anthropic.Messages do
   defp nested_value(map, key) when is_map(map), do: Map.get(map, key)
   defp nested_value(_value, _key), do: nil
 
-  defp add_missing_tool_use_blocks(content, %Message{role: :assistant, tool_calls: calls})
-       when is_list(calls) and calls != [] do
+  # Invalid calls, whose arguments came back malformed or truncated, go back as
+  # `tool_use` blocks too, with the arguments when they parse to an object:
+  # the agent answers each with an error `tool_result`, which needs its call.
+  defp add_missing_tool_use_blocks(content, %Message{role: :assistant, tool_calls: calls} = message)
+       when is_list(calls) do
+    add_tool_use_blocks(content, calls ++ Enum.map(invalid_tool_calls(message), &invalid_call_as_tool_use/1))
+  end
+
+  defp add_missing_tool_use_blocks(content, _message), do: content
+
+  defp add_tool_use_blocks(content, []), do: content
+
+  defp add_tool_use_blocks(content, calls) do
     existing_ids =
       content
       |> Enum.filter(&(is_map(&1) and &1["type"] == "tool_use"))
@@ -733,7 +746,24 @@ defmodule BeamWeaver.Anthropic.Messages do
     content ++ missing
   end
 
-  defp add_missing_tool_use_blocks(content, _message), do: content
+  defp invalid_tool_calls(%Message{metadata: %{invalid_tool_calls: calls}}) when is_list(calls),
+    do: Enum.filter(calls, &(is_map(&1) and is_binary(BeamWeaver.MapAccess.get(&1, :name))))
+
+  defp invalid_tool_calls(_message), do: []
+
+  defp invalid_call_as_tool_use(call) do
+    input =
+      case BeamWeaver.JSON.decode(BeamWeaver.MapAccess.get(call, :args) || "") do
+        {:ok, %{} = args} -> args
+        _other -> %{}
+      end
+
+    %{
+      call_id: tool_call_id(call),
+      name: BeamWeaver.MapAccess.get(call, :name),
+      args: input
+    }
+  end
 
   defp tool_call_to_tool_use(call) when is_map(call) do
     %{

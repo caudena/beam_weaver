@@ -55,7 +55,7 @@
     BeamWeaver.Agent.ModelResponse,
     BeamWeaver.Agent.ExtendedModelResponse,
     BeamWeaver.Agent.ToolCallRequest,
-    ~r/^BeamWeaver\.Agent\.Middleware\.(ContextEditing|DynamicPrompt|ModelCallLimit|ModelFallback|ModelRetry|PII|StructuredOutputRetry|ToolCallLimit|ToolCallNormalization|ToolChoice|ToolRetry|ToolSelection)/,
+    ~r/^BeamWeaver\.Agent\.Middleware\.(ContextEditing|DynamicPrompt|ModelCallLimit|ModelFallback|ModelRetry|PII|StructuredOutputRetry|ToolCallLimit|ToolCallNormalization|ToolChoice|ToolError|ToolRetry|ToolSelection)/,
     BeamWeaver.RetryPolicy,
     BeamWeaver.RetryPredicates
   ],
@@ -78,7 +78,8 @@
     BeamWeaver.Agent.HITL,
     ~r/^BeamWeaver\.Agent\.HITL\./,
     BeamWeaver.Agent.Middleware.HumanInTheLoop,
-    ~r/^BeamWeaver\.Agent\.Middleware\.HumanInTheLoop\./
+    ~r/^BeamWeaver\.Agent\.Middleware\.HumanInTheLoop\./,
+    BeamWeaver.Agent.Middleware.AutoMode
   ],
   "Deep Agents": [
     BeamWeaver.Agent.Middleware.TodoList,

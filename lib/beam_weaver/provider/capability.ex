@@ -93,12 +93,7 @@ defmodule BeamWeaver.Provider.Capability do
   """
   @spec supported_features(Profile.t() | nil) :: [atom()]
   def supported_features(%Profile{} = profile) do
-    @feature_fields
-    |> Enum.flat_map(fn {feature, field} ->
-      if Map.get(profile, field) == true, do: [feature], else: []
-    end)
-    |> Enum.uniq()
-    |> Enum.sort()
+    Enum.sort(for {feature, field} <- @feature_fields, Map.get(profile, field) == true, uniq: true, do: feature)
   end
 
   def supported_features(_profile), do: []

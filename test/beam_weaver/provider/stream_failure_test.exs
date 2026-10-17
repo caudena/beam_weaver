@@ -30,15 +30,15 @@ defmodule BeamWeaver.Provider.StreamFailureTest do
   # OpenAI's Responses API (and xAI's) with an `error` event, Chat Completions
   # APIs and Gemini with an `error` object. Each case breaks off after the
   # start of the answer.
-  for {model, opts, format, status, type} <- [
-        {"openai:gpt-4.1", [], :responses, 500, :http_error},
-        {"openai:gpt-4.1", [api: :chat_completions], :chat_completions, 500, :http_error},
-        {"xai:grok-4.3", [], :responses, 500, :http_error},
-        {"xai:grok-4.3", [api: :chat_completions], :chat_completions, 500, :http_error},
-        {"google:gemini-2.5-flash", [], :gemini, 503, :http_error},
-        {"moonshot:kimi-k2.6", [], :chat_completions, 500, :http_error},
-        {"zai:glm-5.2", [], :chat_completions, 500, :http_error},
-        {"deepseek:deepseek-v4-flash", [], :chat_completions, 500, :server_error}
+  for {model, opts, format, status} <- [
+        {"openai:gpt-4.1", [], :responses, 500},
+        {"openai:gpt-4.1", [api: :chat_completions], :chat_completions, 500},
+        {"xai:grok-4.3", [], :responses, 500},
+        {"xai:grok-4.3", [api: :chat_completions], :chat_completions, 500},
+        {"google:gemini-2.5-flash", [], :gemini, 503},
+        {"moonshot:kimi-k2.6", [], :chat_completions, 500},
+        {"zai:glm-5.2", [], :chat_completions, 500},
+        {"deepseek:deepseek-v4-flash", [], :chat_completions, 500}
       ] do
     describe "#{model} #{inspect(opts)}" do
       setup do
@@ -54,24 +54,24 @@ defmodule BeamWeaver.Provider.StreamFailureTest do
         events = Enum.map(envelopes, & &1.event)
 
         assert [%Events.Error{error: error}] = Enum.filter(events, &is_struct(&1, Events.Error))
-        assert_failure(error, unquote(type), unquote(status))
+        assert_failure(error, unquote(status))
         refute Enum.any?(events, &(is_struct(&1, Events.Message) or is_struct(&1, Events.Done)))
       end
 
       test "stream_response/3 and a text stream return the error", %{model: model} do
         assert {:error, error} = model.__struct__.stream_response(model, [Message.user("Where is order A-1001?")])
-        assert_failure(error, unquote(type), unquote(status))
+        assert_failure(error, unquote(status))
 
         assert {:ok, stream} = ChatModel.stream(model, [Message.user("Where is order A-1001?")])
         assert ["It shipped on", %Events.Error{error: error}] = Enum.to_list(stream)
-        assert_failure(error, unquote(type), unquote(status))
+        assert_failure(error, unquote(status))
       end
 
       test "a streaming agent returns the error", %{opts: opts} do
         {:ok, agent} = BeamWeaver.Agent.build(name: "orders", model: unquote(model), model_opts: [stream: true] ++ opts)
 
         assert {:error, error} = BeamWeaver.Agent.invoke(agent, %{messages: ["Where is order A-1001?"]})
-        assert_failure(error, unquote(type), unquote(status))
+        assert_failure(error, unquote(status))
       end
     end
   end
@@ -112,7 +112,7 @@ defmodule BeamWeaver.Provider.StreamFailureTest do
         assert {:error, collected_error} = context.failed.__struct__.stream_response(context.failed, messages)
 
         for error <- [text_error, lifecycle_error, typed_error, collected_error] do
-          assert %Error{type: :http_error, message: "The model failed to generate a response."} = error
+          assert %Error{type: :server_error, message: "The model failed to generate a response."} = error
           assert error.details.status == 500
           assert error.details.code == "server_error"
           assert error.details.retryable
@@ -164,7 +164,7 @@ defmodule BeamWeaver.Provider.StreamFailureTest do
              %Envelope{event: %Events.Error{error: error}}
            ] = Enum.to_list(stream)
 
-    assert_failure(error, :http_error, 500)
+    assert_failure(error, 500)
   end
 
   # A failure whose code no provider documents is a retryable server error,
@@ -183,7 +183,7 @@ defmodule BeamWeaver.Provider.StreamFailureTest do
         capture_log(fn ->
           assert {:ok, stream} = ChatModel.stream(model, messages)
           assert ["It shipped on", %Events.Error{error: error}] = Enum.to_list(stream)
-          assert %Error{type: :http_error, message: "Try again, Ada."} = error
+          assert %Error{type: :server_error, message: "Try again, Ada."} = error
           assert error.details.status == 500
           assert error.details.retryable
         end)
@@ -290,8 +290,8 @@ defmodule BeamWeaver.Provider.StreamFailureTest do
 
   # The error the same failure gets without streaming: the provider's HTTP
   # error with the status the error names, which can be retried.
-  defp assert_failure(error, type, status) do
-    assert %Error{type: ^type, message: "The model is overloaded."} = error
+  defp assert_failure(error, status) do
+    assert %Error{type: :server_error, message: "The model is overloaded."} = error
     assert error.details.status == status
     assert error.details.retryable
   end

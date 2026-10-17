@@ -151,12 +151,13 @@ defmodule BeamWeaver.Graph.CheckpointKeysTest do
 
         config = thread_config()
 
-        assert {:interrupted, %{value: "Refund $40 for A-1002?"}} =
-                 Compiled.invoke(graph, %{results: []}, config: config)
+        # The failed charge fails the step, and the refund question waits.
+        assert {:error, %Error{type: :card_declined}} = Compiled.invoke(graph, %{results: []}, config: config)
 
         assert_receive {:lookup_ran, "A-1001"}
 
         assert {:ok, snapshot} = Compiled.get_state(graph, config)
+        assert [%{value: "Refund $40 for A-1002?"}] = snapshot.interrupts
 
         assert snapshot.next_tasks == [
                  %{"node" => "refund", "update" => %{order_id: "A-1002", amount: 40}},

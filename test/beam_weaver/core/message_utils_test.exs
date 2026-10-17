@@ -10,6 +10,50 @@ defmodule BeamWeaver.Core.MessageUtilsTest do
   alias BeamWeaver.Provider.MessageCodec
   alias BeamWeaver.Tokenizer.StaticVocabulary
 
+  defmodule LookupOrder do
+    use BeamWeaver.Tool
+
+    name "lookup_order"
+    description "Look up an order."
+
+    schema do
+      field :order_id, :string
+    end
+
+    @impl true
+    def invoke(_tool, _args, _opts), do: {:ok, "shipped"}
+  end
+
+  # A tool counts as the declaration a provider gets, its name, description
+  # and parameters, whether it was given as a module, a struct or a map.
+  test "tools count by their declaration, however they were given" do
+    alias BeamWeaver.Core.Tool
+
+    struct_tool =
+      Tool.from_function!(
+        name: "lookup_order",
+        description: "Look up an order.",
+        input_schema: Tool.input_schema(LookupOrder),
+        handler: fn _args, _opts -> {:ok, "shipped"} end
+      )
+
+    declaration = %{
+      "name" => "lookup_order",
+      "description" => "Look up an order.",
+      "parameters" => Tool.input_schema(LookupOrder)
+    }
+
+    messages = [Message.user("Where is A-1?")]
+    {:ok, expected} = Utils.count_tokens_approximately(messages, tools: [declaration])
+    assert {:ok, ^expected} = Utils.count_tokens_approximately(messages, tools: [LookupOrder])
+    assert {:ok, ^expected} = Utils.count_tokens_approximately(messages, tools: [struct_tool])
+
+    model = BeamWeaver.Models.init_chat_model!("openai:gpt-5.4-mini", api_key: "k")
+    {:ok, expected} = BeamWeaver.OpenAI.ChatModel.count_tokens(model, messages, tools: [declaration])
+    assert {:ok, ^expected} = BeamWeaver.OpenAI.ChatModel.count_tokens(model, messages, tools: [LookupOrder])
+    assert {:ok, ^expected} = BeamWeaver.OpenAI.ChatModel.count_tokens(model, messages, tools: [struct_tool])
+  end
+
   test "Message.from converts strings, tuples, maps, and messages" do
     assert {:ok, %Message{role: :user, content: "hello"}} = Message.from("hello")
     assert {:ok, %Message{role: :assistant, content: "hi"}} = Message.from({"assistant", "hi"})

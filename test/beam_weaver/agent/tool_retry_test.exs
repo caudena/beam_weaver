@@ -25,6 +25,24 @@ defmodule BeamWeaver.Agent.ToolRetryTest do
       do: {:error, Error.new(:not_found, "No order #{order_id}.")}
   end
 
+  defmodule AskSupervisor do
+    use BeamWeaver.Tool
+
+    alias BeamWeaver.Core.Error
+
+    name "ask_supervisor"
+    description "Ask the supervisor model."
+
+    schema do
+      field :question, :string
+    end
+
+    # The tool's own model call failed with a key that retrying won't fix.
+    @impl true
+    def invoke(_tool, _args, _opts),
+      do: {:error, Error.new(:authentication, "Invalid API key", %{status: 401, retryable: false})}
+  end
+
   defmodule ContinueAgent do
     use BeamWeaver.Agent
 
@@ -55,6 +73,26 @@ defmodule BeamWeaver.Agent.ToolRetryTest do
     middleware [{ToolRetry, retry_on: :timeout, on_failure: :continue}]
   end
 
+  defmodule ModuleFilterAgent do
+    use BeamWeaver.Agent
+
+    model "fake:chat",
+      responses: [FakeChatModel.tool_call("lookup_order", %{"order_id" => "Z-0042"}), "Sorry, try later."]
+
+    tools [LookupOrder]
+    middleware [{ToolRetry, tools: [LookupOrder], retry_on: :timeout, on_failure: :continue}]
+  end
+
+  defmodule DefaultAgent do
+    use BeamWeaver.Agent
+
+    model "fake:chat",
+      responses: [FakeChatModel.tool_call("ask_supervisor", %{"question" => "Refund A-1001?"}), "I can't ask now."]
+
+    tools [AskSupervisor]
+    middleware [{ToolRetry, on_failure: :continue}]
+  end
+
   defp tool_text(module) do
     assert {:ok, result} = module.invoke(%{messages: ["Where is my order?"]})
     result.messages |> Enum.find(&(&1.role == :tool)) |> Message.text()
@@ -69,8 +107,21 @@ defmodule BeamWeaver.Agent.ToolRetryTest do
     assert tool_text(ErrorAgent) == ~s(Tool error: The archive service timed out. Args: %{"order_id" => "Z-0042"})
   end
 
-  test "the message counts the attempts made and keeps one period" do
-    assert tool_text(NotRetriedAgent) ==
-             "Tool 'lookup_order' failed after 1 attempt with not_found: No order A-9999. Please try again."
+  # `on_failure` handles the retries running out; an error the policy doesn't
+  # retry reaches the model as the tool returned it.
+  test "an error the policy doesn't retry reaches the model as the tool returned it" do
+    assert tool_text(NotRetriedAgent) == ~s(Tool error: No order A-9999. Args: %{"order_id" => "A-9999"})
+  end
+
+  # By default every error is retried except one that says retrying can't
+  # help, which reaches the model as the tool returned it.
+  test "by default an error marked retryable: false isn't retried" do
+    assert tool_text(DefaultAgent) ==
+             ~s(Tool error: Invalid API key. Args: %{"question" => "Refund A-1001?"}. Details: %{status: 401, retryable: false})
+  end
+
+  test ":tools takes tool modules as well as names" do
+    assert tool_text(ModuleFilterAgent) ==
+             "Tool 'lookup_order' failed after 3 attempts with timeout: The archive service timed out. Please try again."
   end
 end

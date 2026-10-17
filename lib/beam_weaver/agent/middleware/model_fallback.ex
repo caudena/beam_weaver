@@ -11,8 +11,8 @@ defmodule BeamWeaver.Agent.Middleware.ModelFallback do
       error), an error type or a list of types, or a function of the error.
 
   A fallback gets the agent's model options that its profile takes, such as
-  `temperature:`; the ones it doesn't take, such as `reasoning_effort:` for a
-  Claude model, are left out. The settings of the agent's model itself
+  `temperature:`; the ones it doesn't take, such as `top_k:` for an OpenAI
+  model, are left out. The settings of the agent's model itself
   (`api_key:`, `base_url:`, `endpoint:`, `transport:`, `extra_body:` and the
   like) never reach a fallback, which uses its own: when a fallback's API key
   isn't in your configuration, pass a model value with `api_key:`.

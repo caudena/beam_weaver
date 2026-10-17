@@ -155,7 +155,7 @@ defmodule BeamWeaver.TypeSafe.DecisionModelTest do
   test "transport failures and missing credentials are explicit errors" do
     model = Fixture.model(respond: fn _ -> {:error, BeamWeaver.Transport.Error.new(:timeout, "timed out")} end)
 
-    assert {:error, %{type: :transport_error, details: %{reason: :timeout, retryable: true}}} =
+    assert {:error, %{type: :timeout, details: %{reason: :timeout, retryable: true}}} =
              DecisionModel.invoke(model, Fixture.input())
 
     assert_received {:typesafe_request, _}

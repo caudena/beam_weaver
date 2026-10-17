@@ -141,7 +141,7 @@ defmodule BeamWeaver.Tracing.MiddlewareTraceTest do
     request = ModelRequest.new(messages: [Message.user("hi")])
 
     error =
-      Error.new(:rate_limit_error, "Insufficient balance or no resource package.", %{
+      Error.new(:billing_exhausted, "Insufficient balance or no resource package.", %{
         status: 429,
         code: "1113",
         provider: "zai"
@@ -162,7 +162,7 @@ defmodule BeamWeaver.Tracing.MiddlewareTraceTest do
     assert wrapper.status == :error
 
     assert wrapper.error == %{
-             type: :rate_limit_error,
+             type: :billing_exhausted,
              message: "Insufficient balance or no resource package.",
              details: %{status: 429, code: "1113", provider: "zai"}
            }

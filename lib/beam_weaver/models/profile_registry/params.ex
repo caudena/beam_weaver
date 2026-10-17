@@ -97,6 +97,7 @@ defmodule BeamWeaver.Models.ProfileRegistry.Params do
     :mcp_servers,
     :output_config,
     :parallel_tool_calls,
+    :reasoning_effort,
     :response_format,
     :service_tier,
     :speed,

@@ -9,6 +9,34 @@ defmodule BeamWeaver.OpenAI.StreamingTest do
   alias BeamWeaver.Stream.Envelope
   alias BeamWeaver.Stream.Events
 
+  # After built-in tool calls the API can report a later `output_index` on an
+  # item's later events than on its `added` event; the item stays one item.
+  test "an item whose output_index drifts stays one item and one block" do
+    body = ~S"""
+    event: response.output_item.added
+    data: {"type":"response.output_item.added","output_index":2,"item":{"id":"fc_1","type":"function_call","call_id":"call_1","name":"lookup_order","arguments":"","status":"in_progress"}}
+
+    event: response.function_call_arguments.delta
+    data: {"type":"response.function_call_arguments.delta","item_id":"fc_1","output_index":2,"delta":"{\"order_id\":"}
+
+    event: response.function_call_arguments.delta
+    data: {"type":"response.function_call_arguments.delta","item_id":"fc_1","output_index":4,"delta":"\"A-1\"}"}
+
+    event: response.output_item.done
+    data: {"type":"response.output_item.done","output_index":4,"item":{"id":"fc_1","type":"function_call","call_id":"call_1","name":"lookup_order","arguments":"{\"order_id\":\"A-1\"}","status":"completed"}}
+
+    """
+
+    assert [%{"id" => "fc_1", "status" => "completed", "arguments" => ~s({"order_id":"A-1"})}] =
+             Streaming.output_items(body)
+
+    blocks =
+      for %{"event" => "content-block-" <> kind, "index" => index} <- Streaming.lifecycle_events(body),
+          do: {kind, index}
+
+    assert blocks == [{"start", 0}, {"delta", 0}, {"delta", 0}, {"finish", 0}]
+  end
+
   test "parses SSE events and keeps reasoning summaries separate from text deltas" do
     body = """
     event: response.output_item.added

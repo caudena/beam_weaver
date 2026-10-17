@@ -153,7 +153,7 @@ defmodule BeamWeaver.Agent.OpenAIResponsesStreamTest do
              Enum.filter(events, &match?(%Envelope{event: %Events.Error{}}, &1))
 
     refute Enum.any?(events, &match?(%Envelope{event: %Events.Message{}}, &1))
-    assert error.type == :http_error
+    assert error.type == :invalid_request
     assert error.message == @provider_error
     assert error.details.status == 400
     assert error.details.request_id == "req_fixture"

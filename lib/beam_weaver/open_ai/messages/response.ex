@@ -153,11 +153,9 @@ defmodule BeamWeaver.OpenAI.Messages.Response do
     [reasoning_block(item)]
   end
 
-  defp output_item_blocks(%{"type" => type} = item) do
-    # Preserve future provider output items as opaque content. Only explicit
-    # function calls become client-executable calls below.
-    if is_binary(type), do: [provider_output_block(item)], else: []
-  end
+  # Preserve future provider output items as opaque content. Only explicit
+  # function calls become client-executable calls below.
+  defp output_item_blocks(%{"type" => type} = item) when is_binary(type), do: [provider_output_block(item)]
 
   defp output_item_blocks(_item), do: []
 

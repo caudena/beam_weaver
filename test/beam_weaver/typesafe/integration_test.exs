@@ -94,7 +94,7 @@ defmodule BeamWeaver.TypeSafe.IntegrationTest do
     assert {:error, _} = DecisionModel.invoke(model, Fixture.input())
     assert Tracing.capture_context().run_id == parent.id
     runs = BeamWeaver.Tracing.Store.list() |> Enum.filter(&(&1.kind == :model))
-    assert [%{status: :error, parent_id: id, error: %{type: :transport_error}}] = runs
+    assert [%{status: :error, parent_id: id, error: %{type: :timeout}}] = runs
     assert id == parent.id
     Tracing.finish_run(parent)
   end

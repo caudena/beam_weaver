@@ -117,7 +117,7 @@ defmodule BeamWeaver.Anthropic.StreamReplyTest do
     events = Enum.map(envelopes, & &1.event)
 
     assert for(%Events.Token{text: text} <- events, do: text) == ["It shipped on"]
-    assert [%Events.Error{error: %Error{type: :http_error, message: "Overloaded"} = error}] = errors(events)
+    assert [%Events.Error{error: %Error{type: :server_error, message: "Overloaded"} = error}] = errors(events)
     refute Enum.any?(events, &(is_struct(&1, Events.Message) or is_struct(&1, Events.Done)))
 
     assert error.details.status == 529
@@ -129,7 +129,7 @@ defmodule BeamWeaver.Anthropic.StreamReplyTest do
   test "stream_response/3 and a text stream return the error instead of the reply so far" do
     model = model(script: [cut_off("overloaded_error", "Overloaded"), cut_off("overloaded_error", "Overloaded")])
 
-    assert {:error, %Error{type: :http_error, message: "Overloaded", details: %{status: 529}}} =
+    assert {:error, %Error{type: :server_error, message: "Overloaded", details: %{status: 529}}} =
              model.__struct__.stream_response(model, [Message.user("Where is order A-1001?")])
 
     assert {:ok, stream} = ChatModel.stream(model, [Message.user("Where is order A-1001?")])
@@ -138,8 +138,8 @@ defmodule BeamWeaver.Anthropic.StreamReplyTest do
 
   test "an error event is classified like the same error without streaming" do
     for {type, message, error_type, status, retryable?} <- [
-          {"rate_limit_error", "Number of request tokens has exceeded your rate limit", :http_error, 429, true},
-          {"api_error", "Internal server error", :http_error, 500, true},
+          {"rate_limit_error", "Number of request tokens has exceeded your rate limit", :rate_limit, 429, true},
+          {"api_error", "Internal server error", :server_error, 500, true},
           {"invalid_request_error", "prompt is too long: 210000 tokens > 200000 maximum", :context_overflow, 400, false}
         ] do
       model = model(script: [cut_off(type, message)])
@@ -159,7 +159,7 @@ defmodule BeamWeaver.Anthropic.StreamReplyTest do
         model_opts: model_opts(script: [cut_off("overloaded_error", "Overloaded")], stream: true)
       )
 
-    assert {:error, %Error{type: :http_error, message: "Overloaded", details: %{status: 529}}} =
+    assert {:error, %Error{type: :server_error, message: "Overloaded", details: %{status: 529}}} =
              BeamWeaver.Agent.invoke(agent, %{messages: ["Where is order A-1001?"]})
   end
 

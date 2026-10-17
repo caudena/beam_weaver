@@ -35,7 +35,7 @@ defmodule BeamWeaver.Provider.StreamErrorClassificationTest do
 
   @openai [
     {"a rate limit", %{"code" => "rate_limit_exceeded", "type" => "requests", "message" => "Rate limit reached"}, 429,
-     :http_error, true},
+     :rate_limit, true},
     {"an exhausted quota",
      %{"code" => "insufficient_quota", "type" => "insufficient_quota", "message" => "You exceeded your current quota"},
      429, :billing_exhausted, false},
@@ -49,21 +49,21 @@ defmodule BeamWeaver.Provider.StreamErrorClassificationTest do
      }, 400, :context_overflow, false},
     {"a prompt the usage policy rejects",
      %{"code" => "invalid_prompt", "message" => "Invalid prompt: your prompt was flagged by our usage policy."}, 400,
-     :http_error, false},
+     :invalid_request, false},
     {"a server error", %{"code" => "server_error", "type" => "server_error", "message" => "The server had an error."},
-     500, :http_error, true},
+     500, :server_error, true},
     {"an overloaded server",
      %{"code" => "server_is_overloaded", "type" => "service_unavailable_error", "message" => "Try again later."}, 503,
-     :http_error, true}
+     :server_error, true}
   ]
 
   @anthropic [
-    {"an overload", %{"type" => "overloaded_error", "message" => "Overloaded"}, 529, :http_error, true},
-    {"a rate limit", %{"type" => "rate_limit_error", "message" => "Slow down"}, 429, :http_error, true},
-    {"a billing error", %{"type" => "billing_error", "message" => "Check your billing details"}, 402, :http_error,
-     false},
-    {"an invalid request", %{"type" => "invalid_request_error", "message" => "messages: bad role"}, 400, :http_error,
-     false},
+    {"an overload", %{"type" => "overloaded_error", "message" => "Overloaded"}, 529, :server_error, true},
+    {"a rate limit", %{"type" => "rate_limit_error", "message" => "Slow down"}, 429, :rate_limit, true},
+    {"a billing error", %{"type" => "billing_error", "message" => "Check your billing details"}, 402,
+     :billing_exhausted, false},
+    {"an invalid request", %{"type" => "invalid_request_error", "message" => "messages: bad role"}, 400,
+     :invalid_request, false},
     {"a context overflow",
      %{"type" => "invalid_request_error", "message" => "prompt is too long: 210000 tokens > 200000 maximum"}, 400,
      :context_overflow, false}
@@ -75,13 +75,13 @@ defmodule BeamWeaver.Provider.StreamErrorClassificationTest do
        "code" => 429,
        "status" => "RESOURCE_EXHAUSTED",
        "message" => "Quota exceeded for metric: generate_content_free_tier_input_token_count, limit: 250000"
-     }, 429, :http_error, true},
+     }, 429, :rate_limit, true},
     {"depleted prepaid credits",
      %{"code" => 429, "status" => "RESOURCE_EXHAUSTED", "message" => "Your prepayment credits are depleted."}, 429,
      :billing_exhausted, false},
     {"an invalid argument",
      %{"code" => 400, "status" => "INVALID_ARGUMENT", "message" => "Request contains an invalid argument."}, 400,
-     :http_error, false},
+     :invalid_request, false},
     {"a context overflow",
      %{
        "code" => 400,
@@ -89,9 +89,9 @@ defmodule BeamWeaver.Provider.StreamErrorClassificationTest do
        "message" => "The input token count (1200000) exceeds the maximum number of tokens allowed (1048576)."
      }, 400, :context_overflow, false},
     {"an unavailable model", %{"code" => 503, "status" => "UNAVAILABLE", "message" => "The model is overloaded."}, 503,
-     :http_error, true},
+     :server_error, true},
     {"an error named only by its status", %{"status" => "PERMISSION_DENIED", "message" => "Permission denied."}, 403,
-     :http_error, false}
+     :permission_denied, false}
   ]
 
   @moonshot [
@@ -99,15 +99,15 @@ defmodule BeamWeaver.Provider.StreamErrorClassificationTest do
      %{"type" => "content_filter", "message" => "The request was rejected because it was considered high risk"}, 400,
      :content_filter, false},
     {"an exhausted quota", %{"type" => "exceeded_current_quota_error", "message" => "Token quota is insufficient"}, 429,
-     :quota_error, false},
+     :billing_exhausted, false},
     {"a rate limit", %{"type" => "rate_limit_reached_error", "message" => "Organization-level RPM limit reached"}, 429,
-     :rate_limit_error, true},
+     :rate_limit, true},
     {"an overloaded engine",
      %{"type" => "engine_overloaded_error", "message" => "The engine is currently overloaded, please try again later"},
-     429, :overloaded_error, true},
+     429, :rate_limit, true},
     {"a context overflow", %{"type" => "invalid_request_error", "message" => "Input token length too long"}, 400,
      :context_overflow, false},
-    {"a server error", %{"type" => "server_error", "message" => "Internal error"}, 500, :http_error, true}
+    {"a server error", %{"type" => "server_error", "message" => "Internal error"}, 500, :server_error, true}
   ]
 
   @zai [
@@ -117,29 +117,30 @@ defmodule BeamWeaver.Provider.StreamErrorClassificationTest do
      :content_filter, false},
     {"an insufficient balance",
      %{"code" => "1113", "message" => "Insufficient balance or no resource package. Please recharge."}, 429,
-     :quota_error, false},
-    {"a usage limit", %{"code" => "1308", "message" => "Usage limit reached for 5 hours."}, 429, :quota_error, false},
-    {"a rate limit", %{"code" => "1302", "message" => "Rate limit reached for requests"}, 429, :rate_limit_error, true},
-    {"an overload", %{"code" => "1305", "message" => "The service may be temporarily overloaded"}, 429,
-     :overloaded_error, true},
-    {"a prompt too long", %{"code" => "1261", "message" => "Prompt too long"}, 400, :context_overflow, false},
-    {"an invalid parameter", %{"code" => "1214", "message" => "Parameter messages is invalid."}, 400, :http_error,
+     :billing_exhausted, false},
+    {"a usage limit", %{"code" => "1308", "message" => "Usage limit reached for 5 hours."}, 429, :billing_exhausted,
      false},
-    {"a network error", %{"code" => "1234", "message" => "Network error, please try again later"}, 500, :http_error,
+    {"a rate limit", %{"code" => "1302", "message" => "Rate limit reached for requests"}, 429, :rate_limit, true},
+    {"an overload", %{"code" => "1305", "message" => "The service may be temporarily overloaded"}, 429, :rate_limit,
+     true},
+    {"a prompt too long", %{"code" => "1261", "message" => "Prompt too long"}, 400, :context_overflow, false},
+    {"an invalid parameter", %{"code" => "1214", "message" => "Parameter messages is invalid."}, 400, :invalid_request,
+     false},
+    {"a network error", %{"code" => "1234", "message" => "Network error, please try again later"}, 500, :server_error,
      true}
   ]
 
   @deepseek [
-    {"a rate limit", %{"type" => "rate_limit_error", "message" => "Rate Limit Reached"}, 429, :rate_limit_error, true},
-    {"an exhausted balance", %{"type" => "insufficient_quota", "message" => "Insufficient Balance"}, 429, :quota_error,
-     false},
+    {"a rate limit", %{"type" => "rate_limit_error", "message" => "Rate Limit Reached"}, 429, :rate_limit, true},
+    {"an exhausted balance", %{"type" => "insufficient_quota", "message" => "Insufficient Balance"}, 429,
+     :billing_exhausted, false},
     {"a context overflow",
      %{"type" => "invalid_request_error", "message" => "This model's maximum context length is 131072 tokens."}, 400,
      :context_overflow, false},
-    {"an invalid request", %{"type" => "invalid_request_error", "message" => "Invalid format"}, 400,
-     :invalid_request_error, false},
+    {"an invalid request", %{"type" => "invalid_request_error", "message" => "Invalid format"}, 400, :invalid_request,
+     false},
     {"an overloaded server", %{"type" => "service_unavailable_error", "message" => "Server Overloaded"}, 503,
-     :overloaded_error, true}
+     :server_error, true}
   ]
 
   for {provider, model, opts, format, cases} <- [
@@ -181,6 +182,37 @@ defmodule BeamWeaver.Provider.StreamErrorClassificationTest do
     end
   end
 
+  # Each API's answer to a wrong API key, which Gemini and xAI give with a 400.
+  describe "a wrong API key" do
+    @gemini_key_error %{
+      "code" => 400,
+      "status" => "INVALID_ARGUMENT",
+      "message" => "API key not valid. Please pass a valid API key.",
+      "details" => [%{"@type" => "type.googleapis.com/google.rpc.ErrorInfo", "reason" => "API_KEY_INVALID"}]
+    }
+
+    for {name, model, format, status, body} <- [
+          {"OpenAI", "openai:gpt-4.1", :responses, 401,
+           %{"error" => %{"code" => "invalid_api_key", "message" => "Incorrect API key provided."}}},
+          {"Anthropic", "anthropic:claude-haiku-4-5", :anthropic, 401,
+           %{"type" => "error", "error" => %{"type" => "authentication_error", "message" => "invalid x-api-key"}}},
+          {"Gemini", "google:gemini-2.5-flash", :gemini, 400, %{"error" => @gemini_key_error}},
+          {"xAI", "xai:grok-4.3", :responses, 400,
+           %{
+             "code" => "invalid-argument",
+             "error" => "Incorrect API key provided. You can obtain an API key from https://console.x.ai."
+           }}
+        ] do
+      @tag model: model, opts: [], format: format, status: status, error: %{}, raw_body: body
+      test "is an :authentication error from #{name}", context do
+        context = Map.put(context, :error, nil)
+
+        assert %Error{type: :authentication, details: %{retryable: false}} = error = invoke_raw_error(context)
+        assert error.message =~ ~r/API key|x-api-key/
+      end
+    end
+  end
+
   describe "OpenAI Responses error events" do
     @describetag model: "openai:gpt-4.1", opts: [], format: :responses, status: 400
 
@@ -192,7 +224,7 @@ defmodule BeamWeaver.Provider.StreamErrorClassificationTest do
 
     @tag error: %{"code" => "invalid_prompt", "message" => "Invalid prompt."}, event: :failed
     test "a failed response is the error its code names", context do
-      assert %Error{type: :http_error, message: "Invalid prompt.", details: %{status: 400, retryable: false}} =
+      assert %Error{type: :invalid_request, message: "Invalid prompt.", details: %{status: 400, retryable: false}} =
                stream_error(context)
     end
 
@@ -200,7 +232,7 @@ defmodule BeamWeaver.Provider.StreamErrorClassificationTest do
          event: :failed,
          status: 500
     test "a failed response with a server error can be retried", context do
-      assert %Error{type: :http_error, details: %{status: 500, retryable: true}} = error = stream_error(context)
+      assert %Error{type: :server_error, details: %{status: 500, retryable: true}} = error = stream_error(context)
       assert RetryPredicates.transient?(error)
     end
 
@@ -239,6 +271,23 @@ defmodule BeamWeaver.Provider.StreamErrorClassificationTest do
     assert {:ok, events} = ChatModel.stream_typed_events(model, [Message.user("Where is A-1001?")])
     assert [^error] = for(%{event: %BeamWeaver.Stream.Events.Error{error: error}} <- events, do: error)
 
+    error
+  end
+
+  defp invoke_raw_error(context) do
+    model =
+      BeamWeaver.Models.init_chat_model!(context.model,
+        api_key: "k",
+        transport: Scripted,
+        transport_opts: [
+          parent: self(),
+          status: context.status,
+          http_body: BeamWeaver.JSON.encode!(context.raw_body),
+          stream_body: ""
+        ]
+      )
+
+    assert {:error, %Error{} = error} = ChatModel.invoke(model, [Message.user("Where is A-1001?")])
     error
   end
 

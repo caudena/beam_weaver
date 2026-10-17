@@ -56,8 +56,8 @@ defmodule BeamWeaver.Models.InitializerTest do
     assert typo.details.params == [:temprature]
     assert typo.details.provider == :openai
 
-    assert {:error, foreign} = Models.init_chat_model("anthropic:claude-haiku-4-5", reasoning_effort: :low)
-    assert foreign.details.params == [:reasoning_effort]
+    assert {:error, foreign} = Models.init_chat_model("anthropic:claude-haiku-4-5", frequency_penalty: 0.5)
+    assert foreign.details.params == [:frequency_penalty]
     refute foreign.message =~ "when you call"
 
     assert {:error, call_option} = Models.init_chat_model("openai:gpt-5.4-mini", tools: [%{"type" => "web_search"}])

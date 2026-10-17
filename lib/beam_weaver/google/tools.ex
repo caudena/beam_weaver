@@ -60,18 +60,15 @@ defmodule BeamWeaver.Google.Tools do
   def render_tools(tools, _opts) when is_list(tools) do
     {builtins, custom} = Enum.split_with(tools, &builtin_tool?/1)
 
-    declarations =
-      custom
-      |> Enum.map(&function_declaration/1)
-
-    rendered =
-      Enum.map(builtins, &builtin_tool/1) ++
-        if declarations == [], do: [], else: [%{"functionDeclarations" => declarations}]
-
-    {:ok, rendered}
+    declarations = Enum.map(custom, &function_declaration/1)
+    {:ok, Enum.map(builtins, &builtin_tool/1) ++ function_declarations(declarations)}
   rescue
     error in ArgumentError -> {:error, Error.new(:invalid_tool, Exception.message(error))}
   end
+
+  # Gemini takes the function declarations together, in one tool.
+  defp function_declarations([]), do: []
+  defp function_declarations(declarations), do: [%{"functionDeclarations" => declarations}]
 
   @impl true
   def render_tool_choice(nil, _tools, _opts), do: {:ok, nil}

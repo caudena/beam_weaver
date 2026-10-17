@@ -4,18 +4,21 @@ defmodule BeamWeaver.Agent.Middleware.ToolRetry do
 
   It takes the retry options of `BeamWeaver.Agent.Middleware.ModelRetry`
   (`:max_retries`, `:initial_delay`, `:backoff`, `:max_delay`, `:jitter`,
-  `:retry_on`, which retries every error by default), plus:
+  `:retry_on`, which by default retries every error except one that says
+  retrying can't help, such as a model call's invalid API key), plus:
 
     * `:tools` - retry only the calls of these tools.
     * `:on_failure` - what happens once the retries run out: `:error` (the
       default) treats the last failure like any other tool error, `:continue`
       gives the model a message that says how many attempts failed, and a
       one-argument function gives it the text it builds from the
-      `%BeamWeaver.Core.Error{}`.
+      `%BeamWeaver.Core.Error{}`. An error `:retry_on` doesn't cover reaches
+      the model as the tool returned it.
   """
 
   use BeamWeaver.Agent.Middleware
 
+  alias BeamWeaver.Agent.Middleware.Helpers
   alias BeamWeaver.Agent.Middleware.RetryRunner
   alias BeamWeaver.Core.Error
   alias BeamWeaver.Core.Message
@@ -30,7 +33,7 @@ defmodule BeamWeaver.Agent.Middleware.ToolRetry do
   def new(opts \\ []) do
     %__MODULE__{
       policy: RetryPolicy.new!(RetryRunner.policy_opts(opts, [:name, :tools, :on_failure])),
-      tools: opts |> Keyword.get(:tools) |> normalize_tools(),
+      tools: opts |> Keyword.get(:tools) |> Helpers.tool_names(),
       on_failure: opts |> Keyword.get(:on_failure, :error) |> normalize_on_failure()
     }
   end
@@ -46,31 +49,30 @@ defmodule BeamWeaver.Agent.Middleware.ToolRetry do
              fn -> handler.(request) |> retryable_tool_result() end,
              telemetry_prefix: [:beam_weaver, :agent, :tool_retry]
            ) do
-        {{:error, %Error{} = error}, attempts} -> handle_failure(middleware, request, error, attempts)
-        {other, _attempts} -> other
+        # An error the policy doesn't retry goes on as the tool returned it;
+        # `on_failure` handles only the retries running out.
+        {{:error, %Error{} = error}, attempts} ->
+          if RetryPolicy.retry?(middleware.policy, error),
+            do: handle_failure(middleware, request, error, attempts),
+            else: tool_result(error)
+
+        {other, _attempts} ->
+          other
       end
     else
       handler.(request)
     end
   end
 
-  defp retryable_tool_result({:error, %Error{}} = error), do: error
-
-  # The tool node has already turned the error into a message for the model;
-  # `error_message` holds the tool's own text.
-  defp retryable_tool_result(%Message{role: :tool, metadata: metadata} = message) do
-    metadata = metadata || %{}
-
-    if Map.get(metadata, :status) == "error" do
-      type = Map.get(metadata, :error_type, :tool_error)
-      text = Map.get(metadata, :error_message) || Message.text(message)
-      {:error, Error.new(type, text, %{tool_message: message})}
-    else
-      message
+  defp retryable_tool_result(result) do
+    case Helpers.tool_failure(result) do
+      nil -> result
+      error -> {:error, error}
     end
   end
 
-  defp retryable_tool_result(other), do: other
+  defp tool_result(%Error{details: %{tool_message: message}}), do: message
+  defp tool_result(%Error{} = error), do: {:error, error}
 
   defp retry_tool?(%__MODULE__{tools: nil}, _request), do: true
 
@@ -116,19 +118,6 @@ defmodule BeamWeaver.Agent.Middleware.ToolRetry do
   defp sentence(text) do
     text = String.trim_trailing(text)
     if String.ends_with?(text, [".", "!", "?"]), do: text, else: text <> "."
-  end
-
-  defp normalize_tools(nil), do: nil
-
-  defp normalize_tools(tools) do
-    tools
-    |> List.wrap()
-    |> Enum.map(fn
-      tool when is_binary(tool) -> tool
-      tool when is_atom(tool) -> to_string(tool)
-      tool -> Tool.name(tool)
-    end)
-    |> MapSet.new()
   end
 
   defp normalize_on_failure(:raise), do: :error

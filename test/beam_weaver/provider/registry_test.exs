@@ -104,6 +104,30 @@ defmodule BeamWeaver.Provider.RegistryTest do
            end)
   end
 
+  # Every provider lists a model's reasoning efforts in the same two profile
+  # fields, with the default among them.
+  test "reasoning efforts are profile fields on every provider" do
+    for profile <- ProfileRegistry.all() do
+      assert Enum.all?(profile.reasoning_effort_levels, &is_atom/1)
+      assert profile.reasoning_effort_default in [nil | profile.reasoning_effort_levels]
+
+      for legacy <- [:reasoning_efforts, :effort_levels, :default_effort, :default_reasoning_effort] do
+        refute Map.has_key?(profile.extra, legacy), "#{profile.provider}:#{profile.id} has extra.#{legacy}"
+      end
+    end
+
+    for {provider, model, levels, default} <- [
+          {:anthropic, "claude-opus-5-5", [:low, :medium, :high, :xhigh, :max], :medium},
+          {:xai, "grok-4.5", [:low, :medium, :high], :high},
+          {:zai, "glm-5.3", [:low, :high, :max], :max},
+          {:deepseek, "deepseek-v4-pro", [:low, :high, :max], nil},
+          {:moonshot, "kimi-k3", [:max], :max}
+        ] do
+      assert {:ok, %Profile{reasoning_effort_levels: ^levels, reasoning_effort_default: ^default}} =
+               ProfileRegistry.fetch(provider, model)
+    end
+  end
+
   test "runtime providers can be registered, inferred, initialized, and unregistered" do
     assert :ok = Registry.register(:dummy, DummyProvider)
     assert {:ok, entry} = Registry.fetch(:dummy)

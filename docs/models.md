@@ -223,6 +223,31 @@ To stream from an agent, add `stream: true` to its model options and call
 `stream_events/2` with `live: true`. [Streaming](streaming.md) covers events,
 chunks and tool-call deltas.
 
+### Errors
+
+A failed call's `type` says what went wrong, the same for every provider, and
+`details.retryable` whether trying again can help. `details.status` and
+`details.code` keep the provider's HTTP status and error code:
+
+| Type | When | Retryable |
+|---|---|---|
+| `:invalid_request` | the provider rejects the request (HTTP 400 or 422) | no |
+| `:authentication` | the API key is wrong (401; a 400 from Gemini and xAI) | no |
+| `:permission_denied` | the key may not use the model or feature (403) | no |
+| `:not_found` | the model doesn't exist (404) | no |
+| `:rate_limit` | too many requests (429) | yes |
+| `:server_error` | the provider failed or is overloaded (5xx) | yes |
+| `:connection` | the request got no response | yes |
+| `:timeout` | the request ran past its timeout | yes |
+| `:context_overflow` | the prompt doesn't fit the model's context window | no |
+| `:billing_exhausted` | credits, a spend limit or a usage limit ran out | no |
+| `:content_filter` | Z.ai's or Kimi's content filter blocked the request | no |
+
+Any other HTTP status is an `:http_error`, retryable for 408, 409 and 425. A
+request the transport refuses, such as one that matches no cassette in a test,
+is a `:transport_error`. `ModelRetry` retries only the retryable errors (see
+[Built-in Middleware](builtin_middleware.md#modelretry)).
+
 ### Cache and rate-limit a model
 
 `BeamWeaver.Models.cached/3` wraps a model so that repeated requests are
@@ -238,7 +263,7 @@ names its reasoning controls differently:
 | Provider | Options |
 | --- | --- |
 | OpenAI, xAI | `reasoning_effort:`, or `reasoning:` as a map |
-| Anthropic | `effort:` and `thinking:` |
+| Anthropic | `reasoning_effort:` (or `effort:`) and `thinking:` |
 | Google | `thinking_level:` or `thinking_budget:`, and `include_thoughts:` |
 | DeepSeek, Z.ai | `thinking:` and `reasoning_effort:` |
 | Moonshot | `thinking:` on Kimi K2 models, `reasoning_effort:` on Kimi K3 |
@@ -249,9 +274,10 @@ Set them when you create the model, or per call:
 {:ok, model} = BeamWeaver.Models.init_chat_model("openai:gpt-5.4-mini", reasoning_effort: :low)
 ```
 
-The provider pages list the values each model accepts. When a provider
-returns its reasoning, the reply's content holds `:reasoning` blocks (see
-[Messages](messages.md)).
+A model's profile lists the efforts it takes in `reasoning_effort_levels`, and
+the one it uses when you name none in `reasoning_effort_default`; the provider
+pages say more. When a provider returns its reasoning, the reply's content
+holds `:reasoning` blocks (see [Messages](messages.md)).
 
 ## Model profiles
 
@@ -365,9 +391,33 @@ model call.
 
 Decision models answer typed questions about a piece of state instead of
 writing text: a choice between options, a score on a scale, or true or false.
-`BeamWeaver.Models.init_decision_model/2` creates one, such as
-`"typesafe:jev-1.13.0"`, and `BeamWeaver.Core.DecisionModel.invoke/3` asks it
-the questions. See [TypeSafe](providers/typesafe.md).
+`BeamWeaver.Models.init_decision_model/2` creates one, such as TypeSafe's
+`"typesafe:jev-1.13.0"` or OpenAI's `"openai:gpt-6-luna"`, and
+`BeamWeaver.Core.DecisionModel.invoke/3` asks it the questions. Each provider
+has its own questions; see [TypeSafe](providers/typesafe.md) and
+[OpenAI](providers/openai.md#decisions).
+
+Code that works with either provider builds its question with
+`DecisionModel.choice_question/3` or `DecisionModel.yes_no_question/2`, then
+asks it with `DecisionModel.choose/4` or `DecisionModel.probability/4`:
+
+```elixir
+alias BeamWeaver.Core.DecisionModel
+
+{:ok, model} = BeamWeaver.Models.init_decision_model("openai:gpt-6-luna")
+{:ok, question} = DecisionModel.yes_no_question(model, "Does the customer ask for a refund?")
+
+case DecisionModel.probability(model, "I want my money back for order A-1001.", question) do
+  {:ok, probability, _response} when probability >= 0.8 -> :refund_request
+  {:ok, _probability, _response} -> :other
+  {:refused, _response} -> :unclear
+  {:error, error} -> {:error, error}
+end
+```
+
+[`TypeSafeModelRouter`](providers/typesafe.md#route-an-agent) and
+[`AutoMode`](guardrails.md#block-risky-tool-calls) ask their `classifier:` this
+way.
 
 ## API keys
 

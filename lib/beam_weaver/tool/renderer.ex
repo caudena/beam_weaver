@@ -37,6 +37,19 @@ defmodule BeamWeaver.Tool.Renderer do
     end)
   end
 
+  @doc false
+  # What a tool adds to a request, for counting its tokens: a map as given,
+  # and a tool module or `%Tool{}` struct, which has no JSON form of its own,
+  # as its name, description and parameters.
+  @spec declaration(term()) :: term()
+  def declaration(%{} = tool) when not is_struct(tool), do: tool
+
+  def declaration(tool) do
+    %{"name" => Tool.name(tool), "description" => Tool.description(tool), "parameters" => Tool.input_schema(tool)}
+  rescue
+    _exception -> tool
+  end
+
   @doc """
   Renders an OpenAI function declaration.
   """

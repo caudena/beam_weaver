@@ -107,15 +107,17 @@ defmodule BeamWeaver.Core.Messages.Buffer do
   defp xml_role_type(%Message{role: :tool}, opts),
     do: opts |> Keyword.get(:tool_prefix, "Tool") |> to_string() |> String.downcase()
 
-  defp xml_content_parts(content) when is_binary(content) do
-    if content == "", do: [], else: [xml_escape(content)]
-  end
+  defp xml_content_parts(""), do: []
+  defp xml_content_parts(content) when is_binary(content), do: [xml_escape(content)]
 
   defp xml_content_parts(content) when is_list(content) do
     content
     |> Enum.flat_map(fn
+      "" ->
+        []
+
       text when is_binary(text) ->
-        if text == "", do: [], else: [xml_escape(text)]
+        [xml_escape(text)]
 
       block when is_map(block) ->
         case xml_content_block(block) do

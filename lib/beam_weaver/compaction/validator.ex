@@ -198,20 +198,19 @@ defmodule BeamWeaver.Compaction.Validator do
       end)
       |> add_lineage_artifact_sources(Keyword.get(opts, :lineage_artifact_refs, []))
 
-    invalid =
-      Enum.flat_map(refs, fn ref ->
-        artifact_id = fetch(ref, "artifact_id")
-        cited = ref |> fetch("source_event_ids") |> MapSet.new()
-
-        case Map.fetch(sources, artifact_id) do
-          {:ok, allowed} -> if MapSet.subset?(cited, allowed), do: [], else: [artifact_id]
-          :error -> [artifact_id]
-        end
-      end)
+    invalid = for ref <- refs, not cites_known_sources?(ref, sources), do: fetch(ref, "artifact_id")
 
     if invalid == [],
       do: :ok,
       else: invalid("semantic cites artifacts without host source provenance", %{artifact_ids: invalid})
+  end
+
+  # Whether every event a reference cites is a source of its artifact.
+  defp cites_known_sources?(ref, sources) do
+    case Map.fetch(sources, fetch(ref, "artifact_id")) do
+      {:ok, allowed} -> ref |> fetch("source_event_ids") |> MapSet.new() |> MapSet.subset?(allowed)
+      :error -> false
+    end
   end
 
   defp add_lineage_artifact_sources(sources, refs) when is_list(refs) do

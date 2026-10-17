@@ -62,33 +62,23 @@ defmodule BeamWeaver.Moonshot.Client.ResponseDecoder do
       provider: :moonshot,
       include_response_headers: Keyword.get(opts, :include_response_headers, false),
       context_overflow?: &context_overflow?/3,
-      classify: &classify/1
+      error_type: &error_type/3
     ]
   end
 
   # Kimi names the error in `type`, such as `exceeded_current_quota_error`
   # (HTTP 429 or 403, an exhausted balance or suspended account), which
-  # retrying can't fix, or `engine_overloaded_error` (HTTP 429), which it can.
-  defp classify(%{type: :http_error, details: details} = error) do
-    status = details[:status]
-    code = ResponseDecoder.error_field(details[:error], "code") || details[:code]
-    error_type = ResponseDecoder.error_field(details[:error], "type") || details[:error_type]
+  # retrying can't fix, or `content_filter` (HTTP 400). Its other errors
+  # follow their HTTP status, such as `engine_overloaded_error`, a 429.
+  defp error_type(_status, provider_error, _message) do
+    names = [ResponseDecoder.error_field(provider_error, "code"), ResponseDecoder.error_field(provider_error, "type")]
 
-    type =
-      cond do
-        status == 401 -> :authentication_error
-        "exceeded_current_quota_error" in [code, error_type] -> :quota_error
-        "engine_overloaded_error" in [code, error_type] or status in [502, 503, 504] -> :overloaded_error
-        status == 429 -> :rate_limit_error
-        error_type == "content_filter" or code == "content_filter" -> :content_filter
-        true -> :http_error
-      end
-
-    details = if type == :quota_error, do: Map.put(details, :retryable, false), else: details
-    %{error | type: type, details: details}
+    cond do
+      "exceeded_current_quota_error" in names -> :billing_exhausted
+      "content_filter" in names -> :content_filter
+      true -> nil
+    end
   end
-
-  defp classify(error), do: error
 
   defp context_overflow?(400, provider_error, message) when is_binary(message) do
     code = ResponseDecoder.error_field(provider_error, "code")

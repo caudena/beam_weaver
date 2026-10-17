@@ -6,7 +6,10 @@ defmodule BeamWeaver.Transport.ReqFinch do
   `:max_response_bytes` while streaming both successful and error responses.
   `:stream_idle_timeout` controls the maximum wait between response chunks,
   while `:total_timeout` bounds the complete request. The legacy `:timeout`
-  option remains the fallback for both limits.
+  option remains the fallback for both limits. A request that runs past them
+  fails with a `:timeout` `BeamWeaver.Transport.Error`, and one that gets no
+  response for another reason, such as a refused connection, with
+  `:transport_failure`.
 
   ## Connection pools
 
@@ -207,13 +210,11 @@ defmodule BeamWeaver.Transport.ReqFinch do
 
   defp isolated_pool_options(connect_options, mint_connect_options, ipv6?) do
     # As Req does for the pools it starts: an IPv6 address needs an IPv6 socket.
-    inet6 = if ipv6?, do: [inet6: true], else: []
-
     transport_options =
-      Keyword.merge(
-        Keyword.take(connect_options, [:timeout]) ++ inet6,
-        Keyword.get(connect_options, :transport_opts, [])
-      )
+      connect_options
+      |> Keyword.take([:timeout])
+      |> Kernel.++(inet6_options(ipv6?))
+      |> Keyword.merge(Keyword.get(connect_options, :transport_opts, []))
 
     connection_options =
       connect_options
@@ -225,6 +226,9 @@ defmodule BeamWeaver.Transport.ReqFinch do
     |> maybe_put_protocols(Keyword.get(connect_options, :protocols))
     |> Keyword.put(:conn_opts, connection_options)
   end
+
+  defp inet6_options(true), do: [inet6: true]
+  defp inet6_options(false), do: []
 
   # `URI` drops the brackets around an IPv6 address, and a host name has no `:`.
   defp ipv6_address?(%URI{host: host}), do: is_binary(host) and String.contains?(host, ":")
@@ -379,6 +383,13 @@ defmodule BeamWeaver.Transport.ReqFinch do
        ) do
     {:error, Error.new(:response_headers_too_large, "transport response headers exceeded the configured byte limit"),
      acc}
+  end
+
+  # Finch ends a request that runs past its timeouts with a `:timeout`
+  # transport error.
+  defp normalize_stream_reduce_result({:error, %module{reason: :timeout} = error}, acc)
+       when module in [Req.TransportError, Mint.TransportError] do
+    {:error, Error.new(:timeout, "transport request timed out", %{reason: inspect(error)}), acc}
   end
 
   defp normalize_stream_reduce_result({:error, error}, acc) do

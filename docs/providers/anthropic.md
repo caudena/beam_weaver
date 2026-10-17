@@ -38,7 +38,7 @@ request through a proxy or gateway.
 | `anthropic:claude-opus-5-5` | chat | 1,000,000 | 128,000 | yes | yes | yes | text, image, PDF |
 | `anthropic:claude-sonnet-4-5` | chat | 200,000 | 64,000 | yes | yes | yes | text, image, PDF |
 | `anthropic:claude-sonnet-4-5-20250929` | chat | 200,000 | 64,000 | yes | — | yes | text, image, PDF |
-| `anthropic:claude-sonnet-4-6` | chat | 1,000,000 | 64,000 | yes | yes | yes | text, image, PDF |
+| `anthropic:claude-sonnet-4-6` | chat | 1,000,000 | 128,000 | yes | yes | yes | text, image, PDF |
 | `anthropic:claude-sonnet-5` | chat | 1,000,000 | 128,000 | yes | yes | yes | text, image, PDF |
 | `anthropic:claude-sonnet-5-5` | chat | 1,000,000 | 128,000 | yes | yes | yes | text, image, PDF |
 <!-- /generated -->
@@ -77,7 +77,7 @@ BeamWeaver.Core.Message.text(reply)
 | --- | --- |
 | `max_tokens` | Output cap. Defaults to the model's maximum output, such as 64,000 for Claude Haiku 4.5. `max_output_tokens` is the same option. |
 | `thinking` | Extended thinking: `%{type: :enabled, budget_tokens: 4_096}` or `%{type: :adaptive}`. See below. |
-| `effort` | How much the model thinks and writes, from `:low` to `:max`, on models that support it. |
+| `reasoning_effort` | How much the model thinks and writes, from `:low` to `:max`, on the models that take it; `effort` is the same option. See below. |
 | `cache_control` | `%{type: :ephemeral}` caches the request prefix. See below. |
 | `stop_sequences` | Strings that end the answer; `stop` is the same option. |
 | `top_k` | Sampling, with `temperature` and `top_p`, on models that allow it. |
@@ -104,18 +104,24 @@ end
 ```
 
 Newer models, from Claude Opus 4.7 and the 5.x family on, decide how much to
-think themselves. Steer them with `effort:` instead. BeamWeaver rejects a
-manual `budget_tokens`, a `temperature` other than 1, and `top_k` for them
-before the request is sent:
+think themselves. Steer them with `reasoning_effort:` instead, which turns
+adaptive thinking on, with its summary in the reply, unless you set
+`thinking:` yourself. BeamWeaver rejects a manual `budget_tokens`, a
+`temperature` other than 1, and `top_k` for them before the request is sent:
 
 ```elixir
 defmodule MyApp.SupportAgent do
   use BeamWeaver.Agent
 
-  model "anthropic:claude-opus-5-5", effort: :high, timeout: 120_000
+  model "anthropic:claude-opus-5-5", reasoning_effort: :high, timeout: 120_000
   system_prompt "You are Acme's support agent."
 end
 ```
+
+Claude Opus 4.5 and 4.6 and Sonnet 4.6 take an effort alongside their
+thinking budget; Haiku 4.5 and Sonnet 4.5 take none. A model's profile lists
+its levels in `reasoning_effort_levels`, and BeamWeaver rejects one it doesn't
+list before the request is sent.
 
 Claude Opus 5.5, Sonnet 5.5, Fable 5.1 and Mythos 5.1 can't turn thinking
 off: they reject `thinking: %{type: :disabled}`. Thinking comes back as

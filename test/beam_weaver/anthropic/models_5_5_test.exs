@@ -28,8 +28,8 @@ defmodule BeamWeaver.Anthropic.Models55Test do
       assert profile.max_context_tokens == 1_000_000
       assert profile.max_output_tokens == 128_000
       assert profile.release_date == released
-      assert profile.extra.default_effort == effort
-      assert profile.extra.effort_levels == [:low, :medium, :high, :xhigh, :max]
+      assert profile.reasoning_effort_default == effort
+      assert profile.reasoning_effort_levels == [:low, :medium, :high, :xhigh, :max]
       assert profile.extra.prompt_cache_min_tokens == 512
       assert profile.extra.batch_max_output_tokens == 300_000
       assert profile.extra.thinking_display_default == :omitted

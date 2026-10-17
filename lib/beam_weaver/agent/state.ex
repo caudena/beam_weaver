@@ -72,9 +72,10 @@ defmodule BeamWeaver.Agent.State do
     end
   end
 
+  # A turn's own answer: the model call clears an earlier turn's, so a key
+  # holding `nil` means this turn has none yet.
   @spec structured_response?(map()) :: boolean()
-  def structured_response?(state) when is_map(state),
-    do: Map.has_key?(state, :structured_response) or Map.has_key?(state, "structured_response")
+  def structured_response?(state) when is_map(state), do: structured_response(state) != nil
 
   @spec structured_response(map()) :: term()
   def structured_response(state) when is_map(state),

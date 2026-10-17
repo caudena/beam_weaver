@@ -44,6 +44,9 @@ defmodule BeamWeaver.OpenAI.Provider do
   def embedding_model(_opts), do: {:ok, BeamWeaver.OpenAI.EmbeddingModel}
 
   @impl true
+  def decision_model(_opts), do: {:ok, BeamWeaver.OpenAI.DecisionModel}
+
+  @impl true
   def profile(model), do: ProfileRegistry.fetch(:openai, model)
 
   @impl true
@@ -57,8 +60,9 @@ defmodule BeamWeaver.OpenAI.Provider do
   @impl true
   def default_model(:chat), do: "gpt-5.5"
   def default_model(:embedding), do: "text-embedding-3-small"
+  def default_model(:decision), do: "gpt-6-luna"
   def default_model(_kind), do: nil
 
   @impl true
-  def capabilities, do: %{api_families: [:responses, :chat_completions, :embeddings]}
+  def capabilities, do: %{api_families: [:responses, :chat_completions, :embeddings, :decisions]}
 end

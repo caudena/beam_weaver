@@ -43,10 +43,10 @@ defmodule BeamWeaver.Models.ProfileRegistry.ZAI do
                name: "GLM-5.3",
                release_date: "2026-08-18",
                last_updated: "2026-08-27",
+               reasoning_effort_levels: [:low, :high, :max],
+               reasoning_effort_default: :max,
                extra:
                  Map.merge(@common_extra, %{
-                   reasoning_efforts: [:low, :high, :max],
-                   default_reasoning_effort: :max,
                    thinking_modes: [:enabled],
                    input_price_per_mtok: 1.40,
                    cached_input_price_per_mtok: 0.26,
@@ -67,10 +67,10 @@ defmodule BeamWeaver.Models.ProfileRegistry.ZAI do
                      video_inputs: true,
                      pdf_inputs: true,
                      attachment: true,
+                     reasoning_effort_levels: [:low, :high, :max],
+                     reasoning_effort_default: :max,
                      extra:
                        Map.merge(@common_extra, %{
-                         reasoning_efforts: [:low, :high, :max],
-                         default_reasoning_effort: :max,
                          thinking_modes: [:enabled],
                          native_multimodal: true,
                          input_price_per_mtok: 0.15,
@@ -109,10 +109,10 @@ defmodule BeamWeaver.Models.ProfileRegistry.ZAI do
                       video_inputs: true,
                       pdf_inputs: true,
                       attachment: true,
+                      reasoning_effort_levels: [:low, :high, :max],
+                      reasoning_effort_default: :max,
                       extra:
                         Map.merge(@common_extra, %{
-                          reasoning_efforts: [:low, :high, :max],
-                          default_reasoning_effort: :max,
                           thinking_modes: [:enabled],
                           native_multimodal: true,
                           input_price_per_mtok: 0.37,
@@ -129,9 +129,9 @@ defmodule BeamWeaver.Models.ProfileRegistry.ZAI do
                name: "GLM-5.2",
                release_date: "2026-06-16",
                last_updated: "2026-08-27",
+               reasoning_effort_levels: [:max, :xhigh, :high, :medium, :low, :minimal, :none],
                extra:
                  Map.merge(@common_extra, %{
-                   reasoning_efforts: [:max, :xhigh, :high, :medium, :low, :minimal, :none],
                    thinking_modes: [:enabled, :disabled],
                    input_price_per_mtok: 1.40,
                    cached_input_price_per_mtok: 0.26,

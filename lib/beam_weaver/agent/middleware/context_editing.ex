@@ -1,12 +1,18 @@
 defmodule BeamWeaver.Agent.Middleware.ContextEditing do
   @moduledoc """
   Applies explicit message edits before model calls.
+
+  The default edit clears old tool results once the request is over its
+  `:trigger` tokens. `:token_count_method` counts them approximately (the
+  default) or with the agent's model (`:model`); a `:token_counter`, a
+  function of a message list that returns its token count, replaces both.
   """
 
   use BeamWeaver.Agent.Middleware
 
   alias BeamWeaver.Agent.ModelRequest
   alias BeamWeaver.Agent.State
+  alias BeamWeaver.Core.Error
   alias BeamWeaver.Core.LanguageModel
   alias BeamWeaver.Core.Message
   alias BeamWeaver.Core.Messages.Utils
@@ -39,7 +45,8 @@ defmodule BeamWeaver.Agent.Middleware.ContextEditing do
 
   defstruct editor: nil,
             edits: [],
-            token_count_method: :approximate
+            token_count_method: :approximate,
+            token_counter: nil
 
   def new(opts \\ []) do
     if Keyword.has_key?(opts, :editor) do
@@ -47,7 +54,8 @@ defmodule BeamWeaver.Agent.Middleware.ContextEditing do
     else
       %__MODULE__{
         edits: Keyword.get(opts, :edits, [ClearToolUses.new(opts)]),
-        token_count_method: opts |> Keyword.get(:token_count_method, :approximate) |> normalize_counter()
+        token_count_method: opts |> Keyword.get(:token_count_method, :approximate) |> normalize_counter(),
+        token_counter: opts |> Keyword.get(:token_counter) |> token_counter!()
       }
     end
   end
@@ -309,6 +317,16 @@ defmodule BeamWeaver.Agent.Middleware.ContextEditing do
     Map.put(call, :args, %{})
   end
 
+  defp count_tokens(messages, _request, %__MODULE__{token_counter: counter}) when is_function(counter, 1) do
+    case counter.(messages) do
+      count when is_integer(count) ->
+        {:ok, count}
+
+      other ->
+        {:error, Error.new(:token_count_failed, "token_counter must return an integer", %{value: inspect(other)})}
+    end
+  end
+
   defp count_tokens(messages, %ModelRequest{} = request, %__MODULE__{token_count_method: :model}) do
     LanguageModel.count_tokens(request.model, prompt_messages(request.system_message) ++ messages, tools: request.tools)
   end
@@ -322,4 +340,9 @@ defmodule BeamWeaver.Agent.Middleware.ContextEditing do
 
   defp normalize_counter(value),
     do: Options.atom_enum!("token_count_method", value, [:approximate, :model])
+
+  defp token_counter!(counter) when is_nil(counter) or is_function(counter, 1), do: counter
+
+  defp token_counter!(counter),
+    do: raise(ArgumentError, "token_counter must be a function of a message list, got #{inspect(counter)}")
 end

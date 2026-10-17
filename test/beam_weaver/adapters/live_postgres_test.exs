@@ -814,6 +814,8 @@ defmodule BeamWeaver.Adapters.LivePostgresTest do
              tool_calls: [%ToolCall{id: "call-live", thought_signature: "sig-live"}]
            } = restored_assistant
 
+    # The invalid call goes back too, next to the error the agent answers it
+    # with, with no arguments since its JSON doesn't parse.
     assert {:ok,
             {nil,
              [
@@ -823,8 +825,10 @@ defmodule BeamWeaver.Adapters.LivePostgresTest do
                      "functionCall" => %{
                        "name" => "lookup",
                        "args" => %{"q" => "beam"}
-                     }
-                   }
+                     },
+                     "thoughtSignature" => "sig-live"
+                   },
+                   %{"functionCall" => %{"name" => "broken", "args" => %{}}}
                  ]
                }
              ]}} = BeamWeaver.Google.Messages.encode_messages([restored_assistant])

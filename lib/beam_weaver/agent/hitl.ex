@@ -126,6 +126,12 @@ defmodule BeamWeaver.Agent.HITL do
     |> reject_nil_values()
   end
 
+  @doc """
+  The resume value for review decisions: a list, or `%{decisions: list}`,
+  answers one review of a model turn. Reviews of single calls
+  (`interrupt_mode: :per_call`) take a map from interrupt id to decision, or
+  one decision when a single call waits.
+  """
   @spec resume_value([Decision.t() | map()] | map()) :: map()
   def resume_value(%{decisions: decisions}),
     do: %{decisions: Enum.map(decisions, &decision_map/1)}
@@ -135,6 +141,13 @@ defmodule BeamWeaver.Agent.HITL do
 
   def resume_value(decisions) when is_list(decisions),
     do: %{decisions: Enum.map(decisions, &decision_map/1)}
+
+  def resume_value(%Decision{} = decision), do: to_map(decision)
+  def resume_value(%{type: _type} = decision), do: decision
+  def resume_value(%{"type" => _type} = decision), do: decision
+
+  def resume_value(answers) when is_map(answers),
+    do: Map.new(answers, fn {interrupt_id, decision} -> {interrupt_id, decision_map(decision)} end)
 
   def decision(type, opts \\ []) do
     %Decision{
@@ -178,5 +191,7 @@ defmodule BeamWeaver.Agent.HITL do
     do: {:error, Error.new(:invalid_hitl_review, "interrupt value must be a map")}
 
   defp decision_map(%Decision{} = decision), do: to_map(decision)
-  defp decision_map(%{} = decision), do: decision
+
+  # Anything else goes as it is, for the review to refuse.
+  defp decision_map(decision), do: decision
 end

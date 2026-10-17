@@ -231,7 +231,7 @@ defmodule BeamWeaver.Transport.ReqFinchTest do
     url = start_silent_http_server()
     request = Request.new(method: :get, url: url)
 
-    assert {:error, %Error{type: :transport_failure}} = ReqFinch.request(request, timeout: 50)
+    assert {:error, %Error{type: :timeout}} = ReqFinch.request(request, timeout: 50)
   end
 
   test "attaches BeamWeaver provider metadata to Finch telemetry" do
@@ -369,7 +369,7 @@ defmodule BeamWeaver.Transport.ReqFinchTest do
     url = start_silent_http_server()
     request = Request.new(method: :get, url: url)
 
-    assert {:error, %Error{type: :transport_failure}} =
+    assert {:error, %Error{type: :timeout}} =
              ReqFinch.stream(request, [timeout: 50], fn _chunk -> :ok end)
   end
 

@@ -97,7 +97,7 @@ defmodule BeamWeaver.OpenAI.ModerationMiddleware do
   Calls the OpenAI moderation endpoint for a single text value.
 
   A request that fails returns the client's error unchanged, such as
-  `:missing_api_key`, `:http_error` or `:transport_error`.
+  `:missing_api_key`, `:rate_limit` or `:timeout`.
   """
   @spec moderate(t(), String.t()) :: {:ok, map()} | {:error, Error.t()}
   def moderate(%__MODULE__{} = middleware, text) when is_binary(text) do

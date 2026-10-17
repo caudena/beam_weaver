@@ -90,6 +90,7 @@ defmodule BeamWeaver.OpenAI.Streaming.Response do
 
   defp reconstruct_output_items(parsed_events) do
     parsed_events
+    |> Shared.pin_output_indexes()
     |> Enum.reduce(%{items: %{}, item_indexes: %{}}, &apply_output_event/2)
     |> Map.fetch!(:items)
     |> Enum.sort_by(fn {index, _item} -> index end)

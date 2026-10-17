@@ -260,18 +260,17 @@ defmodule BeamWeaver.Google.StreamingTest do
             {[sse(candidate([call_part("call-ping", "ping")], false))], ok_response(), :invalid_provider_stream}
 
           :provider ->
-            {[sse(provider_error)], ok_response(), :http_error}
+            {[sse(provider_error)], ok_response(), :server_error}
 
           :provider_after_stop ->
-            {[sse(terminal()), sse(provider_error)], ok_response(), :http_error}
+            {[sse(terminal()), sse(provider_error)], ok_response(), :server_error}
 
           :http ->
             {[], {:ok, Response.new(status: 503, body: provider_error, headers: [{"x-request-id", "req-error"}])},
-             :http_error}
+             :server_error}
 
           :transport ->
-            {[sse(terminal())], {:error, BeamWeaver.Transport.Error.new(:closed, "connection closed")},
-             :transport_error}
+            {[sse(terminal())], {:error, BeamWeaver.Transport.Error.new(:closed, "connection closed")}, :connection}
         end
 
       model = model(fn _ -> {chunks, result} end)

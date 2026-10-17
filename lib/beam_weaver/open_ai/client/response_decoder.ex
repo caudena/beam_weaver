@@ -92,7 +92,8 @@ defmodule BeamWeaver.OpenAI.Client.ResponseDecoder do
       provider: config.provider,
       provider_name: config.provider_name,
       include_response_headers: Keyword.get(opts, :include_response_headers, false),
-      context_overflow?: config.context_overflow?
+      context_overflow?: config.context_overflow?,
+      error_type: Map.get(config, :error_type)
     ]
     |> Enum.reject(fn {_key, value} -> is_nil(value) end)
   end

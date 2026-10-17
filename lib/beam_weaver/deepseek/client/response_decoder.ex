@@ -295,42 +295,22 @@ defmodule BeamWeaver.DeepSeek.Client.ResponseDecoder do
       include_response_headers: Keyword.get(opts, :include_response_headers, false),
       request_id_header: "x-ds-trace-id",
       context_overflow?: &context_overflow?/3,
-      classify: &classify/1
+      error_type: &error_type/3
     ]
   end
 
-  defp classify(%{type: :http_error, details: details} = error) do
-    status = details[:status]
-    code = ProviderResponseDecoder.error_field(details[:error], "code") || details[:code]
-    error_type = ProviderResponseDecoder.error_field(details[:error], "type") || details[:error_type]
+  # DeepSeek's balance runs out with a 402, or with a code or message that
+  # says so. Its other errors follow their HTTP status.
+  @balance_codes ["insufficient_balance", "insufficient_quota", "quota_exceeded"]
 
-    type =
-      cond do
-        status == 401 -> :authentication_error
-        insufficient_balance?(status, code, error_type, error.message) -> :quota_error
-        status == 429 -> :rate_limit_error
-        status == 503 -> :overloaded_error
-        status in [400, 422] -> :invalid_request_error
-        status in [500, 502, 504] -> :server_error
-        true -> :http_error
-      end
+  defp error_type(_status, provider_error, message) do
+    code = ProviderResponseDecoder.error_field(provider_error, "code")
+    type = ProviderResponseDecoder.error_field(provider_error, "type")
 
-    details =
-      if type in [:authentication_error, :quota_error, :invalid_request_error],
-        do: Map.put(details, :retryable, false),
-        else: details
-
-    %{error | type: type, details: details}
-  end
-
-  defp classify(error), do: error
-
-  defp insufficient_balance?(status, code, error_type, message) do
-    status == 402 or
-      code in ["insufficient_balance", "insufficient_quota", "quota_exceeded"] or
-      error_type in ["insufficient_balance", "insufficient_quota", "quota_exceeded"] or
-      (is_binary(message) and
-         String.contains?(String.downcase(message), ["insufficient balance", "insufficient quota", "quota exceeded"]))
+    if code in @balance_codes or type in @balance_codes or
+         String.contains?(String.downcase(message), ["insufficient balance", "insufficient quota", "quota exceeded"]) do
+      :billing_exhausted
+    end
   end
 
   defp context_overflow?(400, provider_error, message) when is_binary(message) do

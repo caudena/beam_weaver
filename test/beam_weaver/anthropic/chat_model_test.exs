@@ -194,7 +194,7 @@ defmodule BeamWeaver.Anthropic.ChatModelTest do
   test "request body includes tools, structured output, thinking, mcp betas, and reused container" do
     model =
       ChatModel.new(
-        model: "claude-sonnet-4-5",
+        model: "claude-sonnet-4-6",
         thinking: %{type: :enabled, budget_tokens: 1024},
         reuse_last_container: true
       )
@@ -411,13 +411,73 @@ defmodule BeamWeaver.Anthropic.ChatModelTest do
     assert body["output_config"] == %{"effort" => "high"}
   end
 
+  describe "reasoning_effort" do
+    defp effort_body(model_opts, call_opts) do
+      model = ChatModel.new(model_opts)
+
+      with {:ok, body} <- ChatModel.request_body(model, [Message.user("hello")], call_opts),
+           do: {:ok, Map.take(body, ["output_config", "thinking"])}
+    end
+
+    # `reasoning_effort` is the standard name of Anthropic's `effort`, and
+    # turns on adaptive thinking, with its summary shown, on a model that
+    # takes only adaptive thinking.
+    test "is sent as output_config.effort" do
+      assert {:ok, %{"output_config" => %{"effort" => "low"}, "thinking" => thinking}} =
+               effort_body([model: "claude-opus-4-7", reasoning_effort: :low], [])
+
+      assert thinking == %{"type" => "adaptive", "display" => "summarized"}
+
+      assert {:ok, %{"output_config" => %{"effort" => "medium"}}} =
+               effort_body([model: "claude-opus-4-7"], reasoning_effort: :medium)
+    end
+
+    test "effort: wins over reasoning_effort:, and the call's over the model's" do
+      assert {:ok, %{"output_config" => %{"effort" => "high"}}} =
+               effort_body([model: "claude-opus-4-7", reasoning_effort: :low, effort: :high], [])
+
+      assert {:ok, %{"output_config" => %{"effort" => "medium"}}} =
+               effort_body([model: "claude-opus-4-7", effort: :high], reasoning_effort: :medium)
+
+      assert {:ok, %{"output_config" => %{"effort" => "low"}}} =
+               effort_body([model: "claude-opus-4-7", effort: :high], output_config: %{effort: :low})
+    end
+
+    test "keeps the thinking the request sets, and adds none on a model with a thinking budget" do
+      assert {:ok, %{"thinking" => %{"type" => "disabled"}}} =
+               effort_body([model: "claude-opus-4-7", reasoning_effort: :low], thinking: %{type: :disabled})
+
+      assert {:ok, body} = effort_body([model: "claude-sonnet-4-6", reasoning_effort: :max], [])
+      assert body == %{"output_config" => %{"effort" => "max"}}
+    end
+
+    test "an effort the model doesn't take is an error before the request" do
+      assert {:error, %Error{type: :unsupported_model_param, details: details}} =
+               effort_body([model: "claude-opus-4-6"], reasoning_effort: :xhigh)
+
+      assert details.params == [:reasoning_effort]
+      assert details.supported == [:low, :medium, :high, :max]
+
+      assert {:error, %Error{details: %{params: [:reasoning_effort]}}} =
+               effort_body([model: "claude-haiku-4-5"], reasoning_effort: :low)
+    end
+
+    test "the profile lists the model's levels and default" do
+      assert %{reasoning_effort_levels: [:low, :medium, :high], reasoning_effort_default: :high} =
+               ChatModel.new(model: "claude-opus-4-5").profile
+
+      assert %{reasoning_effort_levels: [], reasoning_effort_default: nil} =
+               ChatModel.new(model: "claude-haiku-4-5").profile
+    end
+  end
+
   test "Claude Opus 5 defaults to adaptive thinking and enforces its effort cap" do
     model = ChatModel.new(model: "claude-opus-5")
 
     assert {:ok, body} =
              ChatModel.request_body(model, [Message.user("hello")], effort: :max)
 
-    refute Map.has_key?(body, "thinking")
+    assert body["thinking"] == %{"type" => "adaptive", "display" => "summarized"}
     assert body["output_config"] == %{"effort" => "max"}
 
     for effort <- [:xhigh, :max] do
@@ -611,7 +671,7 @@ defmodule BeamWeaver.Anthropic.ChatModelTest do
       assert model.profile.extra.prompt_cache_min_tokens == 512
       assert model.profile.extra.knowledge_cutoff == "2026-06"
       assert model.profile.extra.training_data_cutoff == "2026-06"
-      assert model.profile.extra.effort_levels == [:low, :medium, :high, :xhigh, :max]
+      assert model.profile.reasoning_effort_levels == [:low, :medium, :high, :xhigh, :max]
       assert model.profile.extra.tool_choice_modes == [:auto, :none]
       assert model.profile.structured_output_with_tools
 
@@ -632,7 +692,7 @@ defmodule BeamWeaver.Anthropic.ChatModelTest do
 
     assert model.max_tokens == 128_000
     assert profile.max_input_tokens == 1_000_000
-    assert profile.extra.default_effort == :medium
+    assert profile.reasoning_effort_default == :medium
     assert profile.extra.compaction_on_demand
     assert profile.extra.input_price_per_mtok == 4.0
     assert profile.extra.output_price_per_mtok == 20.0

@@ -41,10 +41,10 @@ calling a model directly and reading its profile.
 <!-- generated: provider-overview -->
 | Provider | Prefix | Models | Tools | Structured output | Reasoning | Image input |
 | --- | --- | --- | --- | --- | --- | --- |
-| [OpenAI](providers/openai.md) | `openai:` | 17 chat, 2 embedding | all | all | 16 of 17 | all |
+| [OpenAI](providers/openai.md) | `openai:` | 17 chat, 1 decision, 2 embedding | all | all | 16 of 17 | all |
 | [Anthropic](providers/anthropic.md) | `anthropic:` | 19 chat | all | 16 of 19 | all | all |
 | [Google Gemini](providers/google.md) | `google:` | 7 chat | all | all | all | all |
-| [xAI](providers/xai.md) | `xai:` | 7 chat, 1 embedding | all | all | 6 of 7 | all |
+| [xAI](providers/xai.md) | `xai:` | 8 chat, 1 embedding | all | all | 7 of 8 | all |
 | [Moonshot (Kimi)](providers/moonshot.md) | `moonshot:` | 5 chat | all | all | all | all |
 | [Z.ai](providers/zai.md) | `zai:` | 8 chat | all | all | all | 2 of 8 |
 | [DeepSeek](providers/deepseek.md) | `deepseek:` | 4 chat | all | all | all | 3 of 4 |
@@ -157,7 +157,8 @@ A fallback is a `"provider:model"` string, resolved the way the agent's
 `model` is, or a model value from `BeamWeaver.Models.init_chat_model!/2` when
 it needs options. It uses its own API key and connection settings, and of the
 agent's model options it gets only those it takes, so `reasoning_effort:` on
-an OpenAI model doesn't reach a Claude fallback. When a fallback's key isn't
+an OpenAI model doesn't reach a Claude Haiku 4.5 fallback, which takes no
+effort. When a fallback's key isn't
 in your configuration, give it one with `init_chat_model!/2`. BeamWeaver
 never retries a failed call by itself; add
 `BeamWeaver.Agent.Middleware.ModelRetry` for that.

@@ -22,6 +22,51 @@ defmodule BeamWeaver.Agent.Nodes.Model.Prompt do
     end
   end
 
+  # A reply whose tool-call arguments came back malformed or truncated keeps
+  # them as invalid calls, which no tool runs. Each one gets an error tool
+  # message right after its assistant message before the next model call, so
+  # the model learns the call failed and the provider sees every call it was
+  # sent answered.
+  def answer_invalid_tool_calls(messages) do
+    answered = for %Message{role: :tool, tool_call_id: id} <- messages, not is_nil(id), into: MapSet.new(), do: id
+
+    {messages, _answered} =
+      Enum.flat_map_reduce(messages, answered, fn
+        %Message{role: :assistant} = message, answered ->
+          {answers, answered} = invalid_call_answers(message, answered)
+          {[message | answers], answered}
+
+        message, answered ->
+          {[message], answered}
+      end)
+
+    messages
+  end
+
+  defp invalid_call_answers(%Message{metadata: metadata}, answered) do
+    calls = if is_map(metadata), do: Map.get(metadata, :invalid_tool_calls) || [], else: []
+
+    Enum.reduce(calls, {[], answered}, fn call, {answers, answered} ->
+      id = if is_map(call), do: tool_call_id(call) || Map.get(call, :provider_id)
+
+      if is_nil(id) or MapSet.member?(answered, id) do
+        {answers, answered}
+      else
+        name = Map.get(call, :name) || "unknown"
+
+        answer =
+          Message.tool(
+            "Tool call #{name} with id #{id} could not be executed - arguments were malformed or truncated.",
+            tool_call_id: id,
+            name: name,
+            metadata: %{status: "error", error_type: :invalid_tool_call}
+          )
+
+        {answers ++ [answer], MapSet.put(answered, id)}
+      end
+    end)
+  end
+
   def validate_chat_history(messages) do
     tool_results =
       messages

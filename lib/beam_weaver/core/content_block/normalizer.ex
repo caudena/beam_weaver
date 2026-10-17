@@ -197,19 +197,43 @@ defmodule BeamWeaver.Core.ContentBlock.Normalizer do
   end
 
   defp image_block(map) do
-    source = ContentBlock.get(map, :source)
+    case ContentBlock.get(map, :source) do
+      %{} = source -> source_image_block(map, source)
+      _other -> plain_image_block(map)
+    end
+  end
 
+  # An Anthropic-style image names its source: base64 data, a URL or an
+  # uploaded file. One that lacks what its source needs stays an unknown
+  # block instead of becoming an empty image.
+  defp source_image_block(map, source) do
+    fields =
+      case ContentBlock.get(source, :type) do
+        type when type in [:url, "url"] -> %{url: ContentBlock.get(source, :url)}
+        type when type in [:file, "file"] -> %{file_id: ContentBlock.get(source, :file_id)}
+        type when type in [nil, :base64, "base64"] -> base64_source(source)
+        _other -> %{}
+      end
+
+    if Enum.any?(Map.values(fields), &is_binary/1),
+      do: ContentBlock.image(Map.put(fields, :metadata, metadata(map))),
+      else: ContentBlock.unknown("image", map, metadata(map))
+  end
+
+  defp base64_source(source) do
+    case {ContentBlock.get(source, :data), ContentBlock.get(source, :media_type)} do
+      {data, mime_type} when is_binary(data) and is_binary(mime_type) -> %{data: data, mime_type: mime_type}
+      _other -> %{}
+    end
+  end
+
+  defp plain_image_block(map) do
     {data, mime_type} =
-      cond do
-        is_map(source) ->
-          {ContentBlock.get(source, :data), ContentBlock.get(source, :media_type)}
-
-        ContentBlock.get(map, :source_type) == "base64" ->
-          {ContentBlock.get(map, :data), ContentBlock.get(map, :mime_type)}
-
-        true ->
-          {ContentBlock.get(map, :data) || ContentBlock.get(map, :base64),
-           ContentBlock.get(map, :mime_type) || ContentBlock.get(map, :format)}
+      if ContentBlock.get(map, :source_type) == "base64" do
+        {ContentBlock.get(map, :data), ContentBlock.get(map, :mime_type)}
+      else
+        {ContentBlock.get(map, :data) || ContentBlock.get(map, :base64),
+         ContentBlock.get(map, :mime_type) || ContentBlock.get(map, :format)}
       end
 
     ContentBlock.image(%{

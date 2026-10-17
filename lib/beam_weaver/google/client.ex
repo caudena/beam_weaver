@@ -143,8 +143,16 @@ defmodule BeamWeaver.Google.Client do
       provider: :google,
       request_id_header: "x-request-id",
       include_response_headers: Keyword.get(opts, :include_response_headers, false),
-      context_overflow?: &context_overflow?/3
+      context_overflow?: &context_overflow?/3,
+      error_type: &error_type/3
     ]
+  end
+
+  # Gemini rejects a wrong or expired API key with a 400 whose `ErrorInfo`
+  # reason says so.
+  defp error_type(_status, provider_error, _message) do
+    reasons = for %{"reason" => reason} <- List.wrap(ResponseDecoder.error_field(provider_error, "details")), do: reason
+    if Enum.any?(reasons, &(&1 in ["API_KEY_INVALID", "API_KEY_EXPIRED"])), do: :authentication
   end
 
   defp attach_header_metadata(decoded, headers) do

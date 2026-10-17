@@ -7,10 +7,19 @@ defmodule BeamWeaver.Agent.Middleware.Summarization do
   message with the summary followed by the messages it kept. A tool call is
   never separated from its result.
 
+  A summary call that fails is tried up to 3 times, a second or more apart,
+  unless its error says retrying can't help. One that is over the model's
+  context window is tried once more with the middle of the old messages cut
+  out. When it still fails, the run returns its error and the thread stays
+  as it was.
+
   Options:
 
     * `:model` - the model that writes summaries, a model value or a
-      `"provider:model"` string. Required.
+      `"provider:model"` string. Required without `:summarizer`.
+    * `:summarizer` - a function that writes the summary instead of `:model`:
+      it takes the messages to summarize and returns the summary text, or
+      `{:ok, text}` or `{:error, error}`.
     * `:trigger` - `{:messages, n}` (the default, 20), `{:tokens, n}`, or
       `{:fraction, f}` of `:max_input_tokens`; a list fires on any of them and
       `{:all, triggers}` on all. `nil` turns summarization off.
@@ -39,8 +48,12 @@ defmodule BeamWeaver.Agent.Middleware.Summarization do
   alias BeamWeaver.Core.Messages.Utils
   alias BeamWeaver.Graph.Overwrite
   alias BeamWeaver.Models
+  alias BeamWeaver.RetryPolicy
+
+  @summary_retry RetryPolicy.new!(max_attempts: 3, initial_delay: 1_000, max_delay: 10_000, jitter: true)
 
   defstruct model: nil,
+            summarizer: nil,
             summary_prefix: "Conversation summary:",
             trigger: {:messages, 20},
             keep: {:messages, 8},
@@ -51,7 +64,8 @@ defmodule BeamWeaver.Agent.Middleware.Summarization do
 
   def new(opts \\ []) do
     %__MODULE__{
-      model: opts |> Keyword.fetch!(:model) |> normalize_model(),
+      model: opts |> Keyword.get(:model) |> normalize_model(),
+      summarizer: Keyword.get(opts, :summarizer),
       summary_prefix: Keyword.get(opts, :summary_prefix, "Conversation summary:"),
       trigger: Keyword.get(opts, :trigger, {:messages, 20}),
       keep: Keyword.get(opts, :keep, {:messages, 8}),
@@ -101,32 +115,82 @@ defmodule BeamWeaver.Agent.Middleware.Summarization do
     {old, recent} = Enum.split(messages, cutoff)
     recent = Utils.strip_reasoning_blocks(recent)
 
-    with {:ok, summary_prompt} <- summary_prompt(middleware, old) do
-      case ChatModel.invoke(middleware.model, [summary_prompt], trace_metadata: %{source: :summarization}) do
-        {:ok, %Message{} = summary} ->
-          %{
-            messages:
-              Overwrite.new([
-                Message.user(middleware.summary_prefix <> "\n" <> Message.text(summary))
-                | recent
-              ])
-          }
-
-        error ->
-          error
-      end
+    with {:ok, summary} <- create_summary(middleware, trim_messages_for_summary(middleware, old)) do
+      %{messages: Overwrite.new([Message.user(middleware.summary_prefix <> "\n" <> summary) | recent])}
     end
   end
 
-  defp summary_prompt(middleware, messages) do
-    messages = trim_messages_for_summary(middleware, messages)
+  defp create_summary(%__MODULE__{summarizer: summarizer}, messages) when is_function(summarizer, 1) do
+    case summarizer.(messages) do
+      {:error, %Error{}} = error ->
+        error
 
+      {:ok, summary} when is_binary(summary) ->
+        {:ok, String.trim(summary)}
+
+      summary when is_binary(summary) ->
+        {:ok, String.trim(summary)}
+
+      other ->
+        {:error, Error.new(:invalid_summary, "summarizer must return the summary text", %{value: inspect(other)})}
+    end
+  end
+
+  defp create_summary(%__MODULE__{} = middleware, messages) do
+    history = history_text(messages)
+
+    case summarize(middleware, history) do
+      {:error, %Error{type: :context_overflow}} = error ->
+        case cut_middle(middleware, history) do
+          nil -> error
+          shorter -> summarize(middleware, shorter)
+        end
+
+      result ->
+        result
+    end
+  end
+
+  defp summarize(middleware, history) do
+    prompt = Message.user(String.replace(middleware.summary_prompt, "{messages}", history))
+
+    case RetryPolicy.run(@summary_retry, fn ->
+           ChatModel.invoke(middleware.model, [prompt], trace_metadata: %{source: :summarization})
+         end) do
+      {:ok, %Message{} = summary} -> {:ok, String.trim(Message.text(summary))}
+      error -> error
+    end
+  end
+
+  defp history_text(messages) do
     case Utils.buffer_string(messages) do
-      {:ok, text} ->
-        {:ok, Message.user(String.replace(middleware.summary_prompt, "{messages}", text))}
+      {:ok, text} -> text
+      _error -> inspect(messages)
+    end
+  end
 
-      _error ->
-        {:ok, Message.user(String.replace(middleware.summary_prompt, "{messages}", inspect(messages)))}
+  # The start of the history, where the task is usually stated, and its most
+  # recent part, within half of its tokens and 40% of the summary model's
+  # input limit when its profile has one; `nil` when nothing would be left.
+  defp cut_middle(middleware, history) do
+    with {:ok, tokens} when tokens > 0 <- count_messages(middleware, [Message.user(history)]) do
+      budget =
+        case middleware.model do
+          %{profile: %{max_input_tokens: limit}} when is_integer(limit) -> min(div(tokens, 2), div(limit * 2, 5))
+          _model -> div(tokens, 2)
+        end
+
+      keep = div(String.length(history) * budget, tokens)
+
+      if keep > 0 do
+        head = div(keep, 4)
+        tail = keep - head
+
+        String.slice(history, 0, head) <>
+          "\n\n[... middle of conversation omitted ...]\n\n" <> String.slice(history, -tail, tail)
+      end
+    else
+      _other -> nil
     end
   end
 
@@ -287,6 +351,17 @@ defmodule BeamWeaver.Agent.Middleware.Summarization do
   defp metadata_value(_map, _key), do: nil
 
   defp validate!(%__MODULE__{} = middleware) do
+    cond do
+      not (is_nil(middleware.summarizer) or is_function(middleware.summarizer, 1)) ->
+        raise ArgumentError, "summarizer must be a function of the messages, got #{inspect(middleware.summarizer)}"
+
+      is_nil(middleware.model) and is_nil(middleware.summarizer) ->
+        raise ArgumentError, "summarization needs :model or :summarizer to write summaries"
+
+      true ->
+        :ok
+    end
+
     validate_context_size!(middleware.trigger, :trigger, true)
     validate_context_size!(middleware.keep, :keep, false)
 

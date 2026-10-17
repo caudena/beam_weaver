@@ -169,9 +169,10 @@ Z.ai's own part for a document, `%{"type" => "file", "file" => %{"file_url" => u
 (or `"file_id"`, or `"file_data"` with a data URL), works in a message's
 content too and becomes the same file block. Z.ai downloads URL media itself,
 so the URL must be public; when Z.ai can't fetch or read a file, the call
-fails with an HTTP 400 `:http_error` whose Z.ai code is `"1210"`. The other
-GLM models take text only, and every model rejects audio; a block a model
-can't take returns an `:unsupported_feature` error before the request. The
+fails with an `:invalid_request` error (HTTP 400) whose Z.ai code is
+`"1210"`. The other GLM models take text only, and every model rejects audio;
+a block a model can't take returns an `:unsupported_feature` error before the
+request. The
 [zai_media.exs](https://github.com/caudena/beam_weaver/blob/master/examples/zai_media.exs)
 example sends an image, a PDF and a video.
 
@@ -179,11 +180,13 @@ example sends an image, a PDF and a video.
 
 Z.ai names its errors by code, which BeamWeaver keeps in `details.code`: 1301,
 its content filter, is a `:content_filter` error, and its plan and usage
-limits are a `:quota_error`; `ModelRetry` retries neither. A reply that Z.ai
-stops partway reports why as its finish reason instead, and the call fails
-the same way, with or without streaming: `sensitive` (its safety review
-blocked the reply) is a `:content_filter` error, and `network_error` (its
-inference failed) a server error that `ModelRetry` retries.
+limits are `:billing_exhausted`; `ModelRetry` retries neither. Its other
+errors get their [type](../models.md#errors) from their HTTP status: 1302 (a
+rate limit) and 1305 (an overload) are `:rate_limit` errors. A reply that Z.ai
+stops partway reports why as its finish reason instead, and the call fails the
+same way, with or without streaming: `sensitive` (its safety review blocked
+the reply) is a `:content_filter` error, and `network_error` (its inference
+failed) a `:server_error` that `ModelRetry` retries.
 
 ## Limitations
 

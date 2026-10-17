@@ -1,6 +1,11 @@
 defmodule BeamWeaver.Agent.Middleware.ModelRetry do
   @moduledoc """
   Retries model calls according to a shared `%BeamWeaver.RetryPolicy{}`.
+
+  `:on_failure` (`:error`, `:continue` or a one-argument function) decides
+  what happens once the retries run out. An error the policy's `:retry_on`
+  doesn't cover is returned as it is, so middleware listed before this one,
+  such as `BeamWeaver.Agent.Middleware.ModelFallback`, still gets it.
   """
 
   use BeamWeaver.Agent.Middleware
@@ -29,8 +34,16 @@ defmodule BeamWeaver.Agent.Middleware.ModelRetry do
     case RetryRunner.run_counting(middleware.policy, fn -> handler.(request) end,
            telemetry_prefix: [:beam_weaver, :agent, :model_retry]
          ) do
-      {{:error, %Error{} = error}, attempts} -> handle_failure(middleware, error, attempts)
-      {other, _attempts} -> other
+      # An error the policy doesn't retry goes on as it is, for the middleware
+      # around this one, such as `ModelFallback`; `on_failure` handles only
+      # the retries running out.
+      {{:error, %Error{} = error}, attempts} ->
+        if RetryPolicy.retry?(middleware.policy, error),
+          do: handle_failure(middleware, error, attempts),
+          else: {:error, error}
+
+      {other, _attempts} ->
+        other
     end
   end
 
