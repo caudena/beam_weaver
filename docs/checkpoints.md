@@ -7,7 +7,7 @@ earlier step, as it was or with different values.
 
 ```elixir
 defmodule MyApp.TicketTriage do
-  use BeamWeaver.Agent
+  use BeamWeaver.Graph
 
   alias BeamWeaver.Graph
 
@@ -33,7 +33,7 @@ opts = [checkpointer: saver, config: config]
 
 {:ok, _state} = MyApp.TicketTriage.invoke(%{subject: "Refund for order A-1001"}, opts)
 
-{:ok, graph} = BeamWeaver.Agent.compiled_graph(MyApp.TicketTriage, checkpointer: saver)
+{:ok, graph} = MyApp.TicketTriage.compiled_graph(checkpointer: saver)
 history = BeamWeaver.Graph.Compiled.get_state_history(graph, config)
 
 Enum.map(history, & &1.next)
@@ -123,9 +123,9 @@ old.values
 ## List the history
 
 History and state edits are functions of the compiled graph,
-`BeamWeaver.Graph.Compiled`. `BeamWeaver.Agent.compiled_graph/2` compiles a
-graph or agent module; give it the saver you run the module with, as in the
-first example. `BeamWeaver.Graph.Compiled.get_state_history/3` returns a
+`BeamWeaver.Graph.Compiled`. The `compiled_graph/1` of a graph or agent
+module compiles its graph; give it the saver you run the module with, as in
+the first example. `BeamWeaver.Graph.Compiled.get_state_history/3` returns a
 thread's snapshots, newest first, and takes these options:
 
 - `limit: 10` returns at most that many.
@@ -157,7 +157,7 @@ end
 chat = [checkpointer: saver, config: %{"configurable" => %{"thread_id" => "ticket-43"}}]
 {:ok, _state} = MyApp.SupportAgent.invoke(%{messages: ["Where is order A-1001?"]}, chat)
 
-{:ok, agent_graph} = BeamWeaver.Agent.compiled_graph(MyApp.SupportAgent, checkpointer: saver)
+{:ok, agent_graph} = MyApp.SupportAgent.compiled_graph(checkpointer: saver)
 agent_graph |> Compiled.get_state_history(chat[:config]) |> Enum.map(& &1.next)
 #=> [[], ["model"]]
 ```
@@ -311,7 +311,7 @@ pausing and resuming. This graph asks before it refunds:
 
 ```elixir
 defmodule MyApp.RefundApproval do
-  use BeamWeaver.Agent
+  use BeamWeaver.Graph
 
   alias BeamWeaver.Graph
 
@@ -341,7 +341,7 @@ paused runs the node again, so it pauses again and takes a new answer:
 ```elixir
 {:ok, %{approved: true}} = MyApp.RefundApproval.resume("yes", approval)
 
-{:ok, approval_graph} = BeamWeaver.Agent.compiled_graph(MyApp.RefundApproval, checkpointer: saver)
+{:ok, approval_graph} = MyApp.RefundApproval.compiled_graph(checkpointer: saver)
 
 paused =
   approval_graph
@@ -476,3 +476,4 @@ threads.
 - [`BeamWeaver.Checkpoint.Saver`](https://hexdocs.pm/beam_weaver/BeamWeaver.Checkpoint.Saver.html): the behaviour for custom savers
 - [`BeamWeaver.Graph.Compiled`](https://hexdocs.pm/beam_weaver/BeamWeaver.Graph.Compiled.html): `get_state_history/3`, `update_state/4` and running compiled graphs
 - [`BeamWeaver.Agent`](https://hexdocs.pm/beam_weaver/BeamWeaver.Agent.html): `compiled_graph/2`, `invoke/3` and `get_state/2`
+- [`BeamWeaver.Graph`](https://hexdocs.pm/beam_weaver/BeamWeaver.Graph.html): the `compiled_graph/1` of graph and agent modules

@@ -70,8 +70,7 @@ gift_cards =
 
 `BeamWeaver.Core.Document.new/2` returns an error tuple for bad input instead
 of raising. Put a `"source"` in the metadata: search results carry it, so the
-model can cite it, and [incremental indexing](#incremental-indexing) tracks
-documents by it. Use string keys, because Postgres stores metadata as JSON and
+model can cite it. Use string keys, because Postgres stores metadata as JSON and
 returns string keys.
 
 BeamWeaver has no document loaders. Read your sources with plain Elixir, one
@@ -138,8 +137,8 @@ words, and joins the pieces back into chunks of up to `chunk_size` characters.
 
 `BeamWeaver.TextSplitter.split_documents/2` splits documents instead of
 strings. It returns `{:ok, stream}`, a lazy stream of chunks that keep their
-document's metadata. `BeamWeaver.VectorStore.add_documents/3` and
-`BeamWeaver.Indexing.index/3` take the stream as it is. The chunks of a
+document's metadata. `BeamWeaver.VectorStore.add_documents/3` takes the
+stream as it is. The chunks of a
 document with an `id` get ids made from it, one per chunk, and the document's
 id as `"parent_id"` in their metadata:
 
@@ -265,16 +264,15 @@ embeddings =
 store = BeamWeaver.VectorStore.EctoPostgres.new(repo: MyApp.Repo, embedding: embeddings)
 ```
 
-A migration creates its table, and the table of the record manager from
-[Incremental indexing](#incremental-indexing). It also enables the pgvector
-extension, which must be installed on the database server:
+A migration creates its table. It also enables the pgvector extension, which
+must be installed on the database server:
 
 ```elixir
 defmodule MyApp.Repo.Migrations.AddHelpCenterIndex do
   use Ecto.Migration
 
-  def up, do: BeamWeaver.Migrations.up(adapters: [:vector_store, :record_manager])
-  def down, do: BeamWeaver.Migrations.down(adapters: [:record_manager, :vector_store])
+  def up, do: BeamWeaver.Migrations.up(adapters: [:vector_store])
+  def down, do: BeamWeaver.Migrations.down(adapters: [:vector_store])
 end
 ```
 
@@ -351,69 +349,6 @@ end
 {:ok, [doc]} = Retriever.retrieve(%MyApp.KeywordRetriever{documents: articles}, "express")
 doc.metadata["source"]
 #=> "shipping.md"
-```
-
-## Incremental indexing
-
-Articles change, and embedding every chunk again on each change costs time
-and money. `BeamWeaver.Indexing.index/3` with a record manager embeds only what
-changed: the record manager remembers a hash of every chunk it has indexed.
-
-```elixir
-alias BeamWeaver.Indexing
-alias BeamWeaver.Indexing.RecordManager
-
-help_center = VectorStore.ETS.new(embedding: embeddings)
-records = RecordManager.ETS.new()
-opts = [record_manager: records, cleanup: :incremental]
-
-{:ok, first} = Indexing.index(help_center, chunks, opts)
-{:ok, again} = Indexing.index(help_center, chunks, opts)
-{first.added, again.added, again.skipped}
-#=> {4, 0, 4}
-```
-
-The second run found all four chunks unchanged and skipped them. Now edit the
-refunds article and index it again:
-
-```elixir
-refunds =
-  Document.new!(
-    "Refunds go back to the original card within 3 business days.\nStore credit is instant.",
-    metadata: %{"source" => "refunds.md"}
-  )
-
-{:ok, refund_chunks} = TextSplitter.split_documents(splitter, [refunds])
-{:ok, result} = Indexing.index(help_center, refund_chunks, opts)
-{result.added, result.skipped, result.deleted}
-#=> {1, 1, 1}
-```
-
-A chunk's id is a hash of its content and metadata, so the edited chunk is a
-new one: it was added, and the unchanged chunk was skipped. Then
-`cleanup: :incremental` deleted the old version, because its source,
-`refunds.md`, was part of this run and the chunk wasn't. The shipping chunks
-stayed, so you can re-index one article at a time. Chunks without a
-`"source"` belong to the document they were split from, by its
-`"parent_id"`, so when a document with an id gets shorter, its leftover
-chunks are deleted too.
-
-| `cleanup:` | Deletes |
-| --- | --- |
-| `:none` (default) | Nothing: old versions of edited chunks stay searchable |
-| `:incremental` | The chunks of each source in this run that the run didn't include |
-| `:full` | Every chunk the run didn't include. Pass your whole corpus, and `force?: true` to confirm. |
-
-`index/3` returns a `BeamWeaver.Indexing.Result` with `added`, `updated`,
-`skipped`, `deleted` and `failed` counts. When the store rejects a batch, the
-run goes on and counts it in `failed`, with the chunk ids in `failed_ids` and
-the reason in `errors`, so check them. Cleanup leaves alone the sources whose
-new chunks failed to write: their old chunks stay searchable until a later
-run writes the new ones. In production, keep the records in Postgres next to
-the vectors with `BeamWeaver.Indexing.RecordManager.EctoPostgres`:
-
-```elixir
-records = BeamWeaver.Indexing.RecordManager.EctoPostgres.new(repo: MyApp.Repo)
 ```
 
 ## Agentic retrieval
@@ -528,8 +463,4 @@ again when nothing relevant came back, make each step a node of a
 - [`BeamWeaver.VectorStore.EctoPostgres`](https://hexdocs.pm/beam_weaver/BeamWeaver.VectorStore.EctoPostgres.html): Postgres and pgvector vector store
 - [`BeamWeaver.Retriever`](https://hexdocs.pm/beam_weaver/BeamWeaver.Retriever.html): retrieving, and the behaviour for your own retrievers
 - [`BeamWeaver.RetrievalPolicy`](https://hexdocs.pm/beam_weaver/BeamWeaver.RetrievalPolicy.html): the options `as_retriever/2` accepts
-- [`BeamWeaver.Indexing`](https://hexdocs.pm/beam_weaver/BeamWeaver.Indexing.html): incremental indexing
-- [`BeamWeaver.Indexing.Result`](https://hexdocs.pm/beam_weaver/BeamWeaver.Indexing.Result.html): the counts of an indexing run
-- [`BeamWeaver.Indexing.RecordManager.ETS`](https://hexdocs.pm/beam_weaver/BeamWeaver.Indexing.RecordManager.ETS.html): in-memory record manager
-- [`BeamWeaver.Indexing.RecordManager.EctoPostgres`](https://hexdocs.pm/beam_weaver/BeamWeaver.Indexing.RecordManager.EctoPostgres.html): Postgres record manager
 - [`BeamWeaver.Migrations`](https://hexdocs.pm/beam_weaver/BeamWeaver.Migrations.html): creating the Postgres tables

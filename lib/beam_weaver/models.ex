@@ -1,7 +1,7 @@
 defmodule BeamWeaver.Models do
   @moduledoc """
   Creates chat, embedding and decision models from `"provider:model"` strings,
-  and wraps models with tools, structured output, a cache or a rate limiter.
+  and wraps models with tools, a cache or a rate limiter.
 
   ```elixir
   {:ok, model} = BeamWeaver.Models.init_chat_model("fake:chat", responses: ["Hello, Ada."])
@@ -23,15 +23,6 @@ defmodule BeamWeaver.Models do
   @doc "Wraps a chat model so that every call offers it `tools`."
   def bind_tools(model, tools, opts \\ []) do
     %BeamWeaver.Models.BoundTools{model: model, tools: tools, opts: opts}
-  end
-
-  @doc """
-  Wraps a chat model so that every reply carries data matching `schema` in
-  `metadata.structured_response`. See
-  [Structured Output](structured_output.md#without-an-agent).
-  """
-  def with_structured_output(model, schema, opts \\ []) do
-    %BeamWeaver.Models.StructuredOutput{model: model, schema: schema, opts: opts}
   end
 
   @doc """

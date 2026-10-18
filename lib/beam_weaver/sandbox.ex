@@ -375,7 +375,7 @@ defmodule BeamWeaver.Sandbox.Local do
   alias BeamWeaver.Filesystem.FileDataUtils
   alias BeamWeaver.Filesystem.Path, as: FilesystemPath
   alias BeamWeaver.Sandbox
-  alias BeamWeaver.Tools.Shell.CommandRunner
+  alias BeamWeaver.Sandbox.CommandRunner
 
   @default_max_output_bytes 512_000
 

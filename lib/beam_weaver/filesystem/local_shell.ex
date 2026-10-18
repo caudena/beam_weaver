@@ -17,8 +17,8 @@ defmodule BeamWeaver.Filesystem.LocalShell do
   alias BeamWeaver.Filesystem
   alias BeamWeaver.Filesystem.Executable
   alias BeamWeaver.Filesystem.Local
+  alias BeamWeaver.Sandbox.CommandRunner
   alias BeamWeaver.Sandbox.OutputBuffer
-  alias BeamWeaver.Tools.Shell.CommandRunner
 
   # `env` can carry credentials meant only for the commands.
   @derive {Inspect, except: [:env]}

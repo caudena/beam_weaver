@@ -2,10 +2,8 @@ defmodule BeamWeaver.Core.DecisionModel do
   @moduledoc """
   Models that evaluate state against typed questions instead of generating text.
 
-  Inputs contain `:state` and `:questions`. Implementations also implement
-  `BeamWeaver.Runnable`, so `Runnable.invoke/3`, `Runnable.batch/3` and
-  `Runnable.sequence/2` take them. `Runnable.stream/3` yields one completed
-  result, not token deltas.
+  Inputs contain `:state` and `:questions`. `invoke/3` answers one input and
+  `batch/3` answers several.
 
   Each provider has its own questions and answers, such as
   `BeamWeaver.TypeSafe.Question` and `BeamWeaver.OpenAI.Decisions.Question`.
@@ -16,7 +14,8 @@ defmodule BeamWeaver.Core.DecisionModel do
   """
 
   alias BeamWeaver.Core.Error
-  alias BeamWeaver.{Runnable, Tracing}
+  alias BeamWeaver.{Result, Tracing}
+  alias BeamWeaver.Tracing.Options, as: TraceOptions
 
   @callback evaluate(struct(), map(), keyword()) :: {:ok, struct()} | {:error, Error.t()}
   @callback decision_model?(struct()) :: boolean()
@@ -49,7 +48,30 @@ defmodule BeamWeaver.Core.DecisionModel do
     end
   end
 
-  def batch(model, inputs, opts \\ []), do: Runnable.batch(model, inputs, opts)
+  @doc """
+  Answers each of `inputs` with `invoke/3` and `opts`, `max_concurrency:` at
+  a time (default: the number of schedulers). Returns the responses in the
+  order of `inputs`, or the first error. A call still running after
+  `timeout:` milliseconds (default `300_000`) is stopped and fails the batch.
+  """
+  @spec batch(term(), [map()], keyword()) :: {:ok, [struct()]} | {:error, Error.t()}
+  def batch(model, inputs, opts \\ []) when is_list(inputs) do
+    context = Tracing.capture_context()
+
+    inputs
+    |> Task.async_stream(
+      fn input -> Tracing.attach_context(context, fn -> invoke(model, input, opts) end) end,
+      ordered: true,
+      max_concurrency: Keyword.get(opts, :max_concurrency, System.schedulers_online()),
+      timeout: Keyword.get(opts, :timeout, 300_000),
+      on_timeout: :kill_task
+    )
+    |> Stream.map(fn
+      {:ok, result} -> result
+      {:exit, reason} -> {:error, Error.new(:decision_batch_exit, "batch task exited", %{reason: inspect(reason)})}
+    end)
+    |> Result.collect()
+  end
 
   @doc """
   Builds `model`'s question asking which of `options`, names mapped to
@@ -99,8 +121,8 @@ defmodule BeamWeaver.Core.DecisionModel do
     end
   end
 
-  # Options any call to a decision model may carry: the request's own, and
-  # those of the runnable and tracing layers around it.
+  # Options any call to a decision model may carry: the request's own, those
+  # of its trace run, `batch/3`'s, and those of the model wrappers around it.
   @call_options [
     :timeout,
     :headers,
@@ -113,17 +135,16 @@ defmodule BeamWeaver.Core.DecisionModel do
     :metadata,
     :run_name,
     :run_id,
-    :config,
-    :configurable,
-    :context,
     :max_concurrency,
-    :recursion_limit,
-    :opts,
     :callbacks,
     :cache,
     :rate_limiter,
     :task_supervisor
   ]
+
+  # Options that configure the trace run or the batch, kept out of the run's
+  # metadata.
+  @run_options [:trace, :run_name, :run_id, :max_concurrency, :task_supervisor]
 
   # Fails for an option neither a decision model call nor this provider's
   # model (`provider_options`) takes.
@@ -148,7 +169,7 @@ defmodule BeamWeaver.Core.DecisionModel do
 
       metadata =
         opts
-        |> Runnable.Config.inheritable_metadata()
+        |> trace_metadata()
         |> Map.merge(%{provider: provider, model: body["model"], model_kind: "decision"})
 
       Tracing.Runner.run(
@@ -189,6 +210,24 @@ defmodule BeamWeaver.Core.DecisionModel do
     else
       request.()
     end
+  end
+
+  # The run's metadata: the call's plain options, such as `timeout:`, without
+  # credentials, then `metadata:`, then the `trace:` fields.
+  defp trace_metadata(opts) do
+    options =
+      for {key, value} <- Keyword.drop(opts, @run_options),
+          is_binary(value) or is_number(value) or (is_atom(value) and not is_nil(value)),
+          name = Atom.to_string(key),
+          not String.contains?(name, "api_key") and not String.starts_with?(name, "__"),
+          into: %{},
+          do: {key, value}
+
+    metadata = Keyword.get(opts, :metadata)
+
+    options
+    |> Map.merge(if is_map(metadata), do: metadata, else: %{})
+    |> TraceOptions.metadata(Keyword.get(opts, :trace))
   end
 
   defp question(%module{} = model, callback, args) do

@@ -1,8 +1,8 @@
 defmodule BeamWeaver.OpenAI.DecisionModel do
   @moduledoc """
   OpenAI's Decisions API, in public beta: ask `gpt-6-luna` typed questions
-  about some state, through `BeamWeaver.Core.DecisionModel` or
-  `BeamWeaver.Runnable`. Create one with
+  about some state, with `BeamWeaver.Core.DecisionModel.invoke/3` or
+  `BeamWeaver.Core.DecisionModel.batch/3`. Create one with
   `BeamWeaver.Models.init_decision_model("openai:gpt-6-luna")`.
 
   The input has `state` and `questions`, a map of names to
@@ -22,7 +22,6 @@ defmodule BeamWeaver.OpenAI.DecisionModel do
   use BeamWeaver.Provider.RedactedInspect
 
   @behaviour BeamWeaver.Core.DecisionModel
-  @behaviour BeamWeaver.Runnable
 
   alias BeamWeaver.Core.DecisionModel
   alias BeamWeaver.Models.{ProfileRegistry, UsageCost}
@@ -53,7 +52,6 @@ defmodule BeamWeaver.OpenAI.DecisionModel do
   def model_id(model), do: model.model
   def profile(model), do: model.profile
 
-  @impl true
   def invoke(model, input, opts \\ []), do: DecisionModel.invoke(model, input, opts)
 
   @impl BeamWeaver.Core.DecisionModel

@@ -92,25 +92,16 @@ defmodule BeamWeaver.Transport.Cassette do
   end
 
   defp parse_yaml(contents) do
-    documents = :yamerl_constr.string(String.to_charlist(contents), str_node_as_binary: true, map_node_format: :map)
+    case BeamWeaver.YAML.decode(contents, string_keys: true) do
+      {:ok, document} ->
+        {:ok, document}
 
-    case documents do
-      [document] ->
-        {:ok, BeamWeaver.Prompt.Loader.Codec.normalize_yaml(document)}
-
-      _other ->
+      {:error, :not_one_document} ->
         {:error, Error.new(:invalid_cassette, "cassette must contain exactly one YAML document")}
+
+      {:error, {:invalid, reason}} ->
+        {:error, Error.new(:invalid_cassette, "cassette YAML could not be parsed", %{reason: reason})}
     end
-  rescue
-    error ->
-      {:error,
-       Error.new(:invalid_cassette, "cassette YAML could not be parsed", %{
-         reason: Exception.message(error)
-       })}
-  catch
-    # yamerl throws its parse errors.
-    :throw, {:yamerl_exception, errors} ->
-      {:error, Error.new(:invalid_cassette, "cassette YAML could not be parsed", %{reason: inspect(errors)})}
   end
 
   defp interactions(%{"requests" => requests, "responses" => responses})

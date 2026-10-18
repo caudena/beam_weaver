@@ -504,7 +504,7 @@ defmodule BeamWeaver.Graph.CompiledTest do
 
     assert graph.graph.nodes["answer"].timeout == :infinity
     assert graph.graph.nodes["checked"].timeout == 200
-    assert BeamWeaver.Graph.Nodes.ToolNode.new([]).timeout == :infinity
+    assert BeamWeaver.Agent.ToolNode.new([]).timeout == :infinity
     assert {:ok, %{}} = Compiled.invoke(graph, %{})
   end
 

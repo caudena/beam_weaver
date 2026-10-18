@@ -15,7 +15,6 @@ defmodule BeamWeaver.Graph.RuntimeSurfaceTest do
   alias BeamWeaver.Graph.ServerInfo
   alias BeamWeaver.Models.FakeChatModel
   alias BeamWeaver.RetryPolicy
-  alias BeamWeaver.Runnable
 
   def handle_graph_telemetry(event, measurements, metadata, pid) do
     send(pid, {:graph_telemetry, event, measurements, metadata})
@@ -342,7 +341,7 @@ defmodule BeamWeaver.Graph.RuntimeSurfaceTest do
     assert ServerInfo.from_configurable(%{}) == nil
   end
 
-  test "runnable, tool, model, and compiled subgraph nodes convert through explicit node specs" do
+  test "function, tool, model, and compiled subgraph nodes convert through explicit node specs" do
     tool =
       Tool.from_function!(
         name: "double",
@@ -366,17 +365,14 @@ defmodule BeamWeaver.Graph.RuntimeSurfaceTest do
 
     graph =
       Graph.new()
-      |> Graph.add_node(
-        :runnable,
-        Runnable.lambda(fn state -> {:ok, %{value: state.value + 1}} end)
-      )
+      |> Graph.add_node(:increment, fn state -> %{value: state.value + 1} end)
       |> Graph.add_node(:tool, tool, input: fn state -> %{input: %{"value" => state.value}} end)
       |> Graph.add_node(:model, model)
       |> Graph.add_node(:subgraph, subgraph)
-      |> Graph.add_edge(:runnable, :tool)
+      |> Graph.add_edge(:increment, :tool)
       |> Graph.add_edge(:tool, :model)
       |> Graph.add_edge(:model, :subgraph)
-      |> Graph.add_edge(Graph.start(), :runnable)
+      |> Graph.add_edge(Graph.start(), :increment)
       |> Graph.add_edge(:subgraph, Graph.end_node())
       |> Graph.compile!()
 
@@ -389,7 +385,7 @@ defmodule BeamWeaver.Graph.RuntimeSurfaceTest do
     assert result.subgraph_value == 3
 
     nodes = Compiled.get_graph(graph).nodes
-    assert nodes["runnable"].kind == :runnable
+    assert nodes["increment"].kind == :function
     assert nodes["tool"].kind == :tool
     assert nodes["model"].kind == :model
     assert nodes["subgraph"].kind == :subgraph

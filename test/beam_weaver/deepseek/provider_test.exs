@@ -47,15 +47,15 @@ defmodule BeamWeaver.DeepSeek.ProviderTest do
 
   test "DeepAgents resolver identifies both DeepSeek API models" do
     assert {:ok, chat} = ModelResolver.resolve_model("deepseek:deepseek-v4-flash")
-    assert ModelResolver.get_model_provider(chat) == "deepseek"
-    assert ModelResolver.get_model_identifier(chat) == "deepseek-v4-flash"
+    assert BeamWeaver.Models.Identity.provider(chat) == "deepseek"
+    assert BeamWeaver.Models.Identity.identifier(chat) == "deepseek-v4-flash"
 
     for model <- ["deepseek-v4-flash", "deepseek-v4-flash-vision-exp", "deepseek-v4-pro"] do
       assert {:ok, responses} =
                ModelResolver.resolve_model("deepseek:" <> model, api: :responses)
 
-      assert ModelResolver.get_model_provider(responses) == "deepseek"
-      assert ModelResolver.get_model_identifier(responses) == model
+      assert BeamWeaver.Models.Identity.provider(responses) == "deepseek"
+      assert BeamWeaver.Models.Identity.identifier(responses) == model
     end
   end
 

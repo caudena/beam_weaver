@@ -465,7 +465,7 @@ return value of `Graph.interrupt/2`:
 
 ```elixir
 defmodule MyApp.TicketTriage do
-  use BeamWeaver.Agent
+  use BeamWeaver.Graph
 
   alias BeamWeaver.Graph
 
@@ -536,7 +536,7 @@ defmodule MyApp.ReplyDecision do
 end
 
 defmodule MyApp.CheckedReply do
-  use BeamWeaver.Agent
+  use BeamWeaver.Graph
 
   alias BeamWeaver.Graph
 

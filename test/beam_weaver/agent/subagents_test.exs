@@ -747,6 +747,80 @@ defmodule BeamWeaver.Agent.SubagentsTest.BudgetDesk do
   end
 end
 
+defmodule BeamWeaver.Agent.SubagentsTest.StatusGraph do
+  # A graph module that answers with the status of the order in its task.
+  use BeamWeaver.Graph
+
+  alias BeamWeaver.Core.Message
+  alias BeamWeaver.Graph
+
+  def graph do
+    Graph.new(state_schema: Graph.Messages.state_schema())
+    |> Graph.add_node(:look_up, &look_up/1)
+    |> Graph.add_edge(Graph.start(), :look_up)
+    |> Graph.add_edge(:look_up, Graph.end_node())
+  end
+
+  def look_up(%{messages: messages}) do
+    [order_id] = Regex.run(~r/A-\d+/, messages |> List.last() |> Message.text())
+    %{messages: [Message.assistant("#{order_id} shipped on Monday.")]}
+  end
+end
+
+defmodule BeamWeaver.Agent.SubagentsTest.RefundGraph do
+  # A graph module that asks a person before it refunds the order in its task.
+  use BeamWeaver.Graph
+
+  alias BeamWeaver.Core.Message
+  alias BeamWeaver.Graph
+
+  def graph do
+    Graph.new(state_schema: Graph.Messages.state_schema())
+    |> Graph.add_node(:refund, &refund/1)
+    |> Graph.add_edge(Graph.start(), :refund)
+    |> Graph.add_edge(:refund, Graph.end_node())
+  end
+
+  def refund(%{messages: messages}) do
+    [order_id] = Regex.run(~r/A-\d+/, messages |> List.last() |> Message.text())
+    approved? = Graph.interrupt(%{question: "Refund #{order_id}?"}) == "yes"
+    %{messages: [Message.assistant(if(approved?, do: "Refunded #{order_id}.", else: "Kept #{order_id}."))]}
+  end
+end
+
+defmodule BeamWeaver.Agent.SubagentsTest.PollingGraph do
+  # A graph module that polls until its own recursion limit stops it.
+  use BeamWeaver.Graph
+
+  alias BeamWeaver.Graph
+
+  recursion_limit 2
+
+  def graph do
+    Graph.new()
+    |> Graph.add_node(:poll, fn _state -> BeamWeaver.Agent.SubagentsTest.Observer.notify(:polled) && %{} end)
+    |> Graph.add_edge(Graph.start(), :poll)
+    |> Graph.add_edge(:poll, :poll)
+  end
+end
+
+defmodule BeamWeaver.Agent.SubagentsTest.GraphDesk do
+  # Hands one task to the graph module named in the context.
+  use BeamWeaver.Agent
+
+  alias BeamWeaver.Agent.Subagent.Compiled
+  alias BeamWeaver.Agent.SubagentsTest
+
+  model %SubagentsTest.DelegateModel{}
+  recursion_limit 7
+
+  subagents [
+    %Compiled{name: "status_graph", description: "Looks orders up.", agent: SubagentsTest.StatusGraph},
+    %Compiled{name: "refund_graph", description: "Refunds what a person approves.", agent: SubagentsTest.RefundGraph},
+    %Compiled{name: "polling_graph", description: "Polls an order.", agent: SubagentsTest.PollingGraph}
+  ]
+end
+
 defmodule BeamWeaver.Agent.SubagentsTest do
   use ExUnit.Case, async: false
 
@@ -774,6 +848,7 @@ defmodule BeamWeaver.Agent.SubagentsTest do
   alias BeamWeaver.Agent.SubagentsTest.DraftModel
   alias BeamWeaver.Agent.SubagentsTest.DraftStamp
   alias BeamWeaver.Agent.SubagentsTest.Desk
+  alias BeamWeaver.Agent.SubagentsTest.GraphDesk
   alias BeamWeaver.Agent.SubagentsTest.GraphProbe
   alias BeamWeaver.Agent.SubagentsTest.LazyDesk
   alias BeamWeaver.Agent.SubagentsTest.LedgerDesk
@@ -805,6 +880,14 @@ defmodule BeamWeaver.Agent.SubagentsTest do
 
   defp delegate(subagent, opts \\ []) do
     DelegatingDesk.invoke(%{messages: ["Help, please."]}, Keyword.put(opts, :context, %{subagent: subagent}))
+  end
+
+  defp received_count(message, count \\ 0) do
+    receive do
+      ^message -> received_count(message, count + 1)
+    after
+      0 -> count
+    end
   end
 
   defp received_model_calls(label, count \\ 0) do
@@ -997,6 +1080,36 @@ defmodule BeamWeaver.Agent.SubagentsTest do
     end
   end
 
+  describe "a graph module as a compiled subagent" do
+    test "runs its graph and answers with its last message" do
+      assert {:ok, result} = GraphDesk.invoke(%{messages: ["Help, please."]}, context: %{subagent: "status_graph"})
+      assert tool_texts(result) == ["A-7 shipped on Monday."]
+    end
+
+    test "pauses the parent, and resuming the parent finishes the graph" do
+      opts = Keyword.put(thread("refund-graph"), :context, %{subagent: "refund_graph"})
+
+      assert {:interrupted, %{value: %{question: "Refund A-7?"}}} =
+               GraphDesk.invoke(%{messages: ["Help, please."]}, opts)
+
+      assert {:ok, result} = GraphDesk.resume("yes", opts)
+      assert tool_texts(result) == ["Refunded A-7."]
+    end
+
+    test "keeps its own recursion limit" do
+      assert {:ok, _result} = GraphDesk.invoke(%{messages: ["Help, please."]}, context: %{subagent: "polling_graph"})
+      assert received_count(:polled) == 2
+    end
+
+    test "isn't a subagent spec, which builds an agent" do
+      assert_raise ArgumentError,
+                   ~r/StatusGraph is a graph module; run it as a %BeamWeaver.Agent.Subagent.Compiled{}/,
+                   fn ->
+                     Spec.from_agent_module(BeamWeaver.Agent.SubagentsTest.StatusGraph)
+                   end
+    end
+  end
+
   describe "building subagents" do
     test "building an agent checks each subagent and names the one it can't build" do
       # Each of these used to show up only as a tool error, when a task called
@@ -1034,7 +1147,8 @@ defmodule BeamWeaver.Agent.SubagentsTest do
 
       historian = %Compiled{name: "historian", description: "Summarizes order history.", agent: String}
 
-      assert {:error, %Error{type: :invalid_subagent, message: ~s(subagent "historian": String is not an agent module)}} =
+      assert {:error,
+              %Error{type: :invalid_subagent, message: ~s(subagent "historian": String is not an agent or graph module)}} =
                Agent.build(model: "fake:chat", subagents: [historian])
     end
 

@@ -61,7 +61,7 @@ waits for people.
 
 ```elixir
 defmodule MyApp.TicketTriage do
-  use BeamWeaver.Agent
+  use BeamWeaver.Graph
 
   alias BeamWeaver.Graph
 
@@ -86,9 +86,15 @@ state.reply
 #=> "Routed to the billing queue."
 ```
 
-Agents are graphs too: `use BeamWeaver.Agent` compiles the model and tool loop
-into a graph, so checkpoints, interrupts and streaming work the same way for
-both. A graph node can call a model or a whole agent. See [Graphs](graphs.md).
+A module with `use BeamWeaver.Graph` is a graph module: it runs the graph its
+`graph/0` builds. An agent module declares a model and tools instead, and
+BeamWeaver builds its graph for it, the loop that calls the model and runs the
+tools it asks for; that is why every agent module declares a `model`. Both
+kinds of module run with the same functions, such as `invoke/2` and
+`resume/2`, so checkpoints, interrupts and streaming work the same way for
+both, and either kind can be a node of another graph. Choose a graph when you
+know the steps, and an agent when the model should choose them; a graph node
+can also call a model or a whole agent. See [Graphs](graphs.md).
 
 ## Deep agents
 
@@ -210,7 +216,7 @@ structured output, against the profile. See [Models](models.md) and
 | --- | --- |
 | Agent | A module with `use BeamWeaver.Agent` that runs a model and tool loop. |
 | Tool | A module with `use BeamWeaver.Tool`, or a function, that a model can call. |
-| Graph | Nodes and edges you define, compiled with `BeamWeaver.Graph`. |
+| Graph | Nodes and edges you define with `BeamWeaver.Graph`; a module with `use BeamWeaver.Graph` runs one. |
 | Deep agent | An agent with planning, a filesystem, skills, memory files or subagents. |
 | Subagent | An agent another agent delegates a task to with the `task` tool. |
 | State | The map a run reads and updates; for agents it holds `messages`. |
@@ -229,7 +235,7 @@ structured output, against the profile. See [Models](models.md) and
 ## Reference
 
 - [`BeamWeaver.Agent`](https://hexdocs.pm/beam_weaver/BeamWeaver.Agent.html): the agent DSL and runtime
-- [`BeamWeaver.Graph`](https://hexdocs.pm/beam_weaver/BeamWeaver.Graph.html): building graphs
+- [`BeamWeaver.Graph`](https://hexdocs.pm/beam_weaver/BeamWeaver.Graph.html): building graphs and graph modules
 - [`BeamWeaver.Checkpoint`](https://hexdocs.pm/beam_weaver/BeamWeaver.Checkpoint.html): checkpointers
 - [`BeamWeaver.Memory`](https://hexdocs.pm/beam_weaver/BeamWeaver.Memory.html): memory stores
 - [`BeamWeaver.Models`](https://hexdocs.pm/beam_weaver/BeamWeaver.Models.html): models and providers

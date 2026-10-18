@@ -3,7 +3,7 @@ defmodule BeamWeaver.PromptCache do
   Helpers for stable provider prompt-cache keys.
   """
 
-  alias BeamWeaver.Agent.ModelResolver
+  alias BeamWeaver.Models.Identity
 
   @default_version "v1"
   @digest_length 20
@@ -60,8 +60,8 @@ defmodule BeamWeaver.PromptCache do
   @doc "Returns the provider-prefixed model identifier used in cache keys."
   @spec provider_model(term()) :: String.t()
   def provider_model(model) do
-    provider = ModelResolver.get_model_provider(model)
-    identifier = ModelResolver.get_model_identifier(model)
+    provider = Identity.provider(model)
+    identifier = Identity.identifier(model)
 
     cond do
       is_binary(identifier) and String.contains?(identifier, ":") ->

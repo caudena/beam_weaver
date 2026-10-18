@@ -24,7 +24,6 @@
     {"examples/interpreter_adapter.exs", run: :offline, tools: false},
     {"examples/openai_apply_patch_tool.exs", run: :offline, tools: false},
     {"examples/openai_json_http_error.exs", run: :offline, tools: false},
-    {"examples/prompt_parser_pipeline.exs", run: :offline, tools: false},
     {"examples/research_pipeline_graph.exs", run: :offline, tools: false},
     {"examples/retrieval_indexing_agent.exs", run: :offline, tools: false},
     {"examples/sandbox_provider_registry.exs", run: :offline, tools: false},

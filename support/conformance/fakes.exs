@@ -273,63 +273,6 @@ defmodule BeamWeaver.TestSupport.Conformance.Fakes.BadVectorEmbeddingModel do
   def embed_query(_model, _query, _opts), do: {:ok, ["not numeric"]}
 end
 
-defmodule BeamWeaver.TestSupport.Conformance.Fakes.LLM do
-  @behaviour BeamWeaver.Core.LLM
-
-  alias BeamWeaver.Core.LanguageModel
-  alias BeamWeaver.Models.ParamPolicy
-
-  defstruct prefix: "completion",
-            stream_chunks: nil,
-            profile: nil,
-            tokenizer: nil,
-            param_policy: nil,
-            error: nil,
-            parent: nil
-
-  def from_config, do: %__MODULE__{prefix: BeamWeaver.Config.get([:test_support, :fake_llm_prefix], "env")}
-
-  @impl true
-  def complete(%__MODULE__{} = model, prompt, opts) do
-    with :ok <- validate_params(model, opts) do
-      if model.parent, do: send(model.parent, {:fake_llm_call, prompt, opts})
-      maybe_error(model) || {:ok, "#{model.prefix}: #{prompt}"}
-    end
-  end
-
-  def stream(%__MODULE__{stream_chunks: chunks} = model, prompt, opts) when is_list(chunks) do
-    with :ok <- validate_params(model, opts) do
-      if model.parent, do: send(model.parent, {:fake_llm_stream, prompt, opts})
-      {:ok, chunks}
-    end
-  end
-
-  def stream(%__MODULE__{} = model, prompt, opts) do
-    with {:ok, text} <- complete(model, prompt, opts), do: {:ok, [text]}
-  end
-
-  def count_tokens(%__MODULE__{tokenizer: nil}, input, _opts),
-    do: {:ok, LanguageModel.count_tokens_approximately(input)}
-
-  def count_tokens(%__MODULE__{tokenizer: tokenizer}, input, opts),
-    do: LanguageModel.count_tokens({:tokenizer, tokenizer}, input, opts)
-
-  defp maybe_error(%__MODULE__{error: nil}), do: nil
-  defp maybe_error(%__MODULE__{error: error}), do: {:error, error}
-
-  defp validate_params(model, opts),
-    do: ParamPolicy.validate(model.profile, opts, Keyword.get(opts, :param_policy, model.param_policy))
-end
-
-defmodule BeamWeaver.TestSupport.Conformance.Fakes.BadLLM do
-  @behaviour BeamWeaver.Core.LLM
-
-  defstruct []
-
-  @impl true
-  def complete(_model, _prompt, _opts), do: {:ok, %{text: "not a string"}}
-end
-
 defmodule BeamWeaver.TestSupport.Conformance.Fakes.Tools do
   def adder do
     BeamWeaver.Core.Tool.from_function!(

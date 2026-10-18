@@ -1,23 +1,38 @@
+alias BeamWeaver.Agent
 alias BeamWeaver.Core.Document
 alias BeamWeaver.Core.Message
-alias BeamWeaver.Indexing
+alias BeamWeaver.Models.FakeChatModel
 alias BeamWeaver.Models.FakeEmbeddingModel
 alias BeamWeaver.Retriever
 alias BeamWeaver.TextSplitter
 alias BeamWeaver.VectorStore
-alias BeamWeaver.VectorStore.ETS, as: VectorETS
 
-store = VectorETS.new(embedding: %FakeEmbeddingModel{})
+store = VectorStore.ETS.new(embedding: %FakeEmbeddingModel{})
 
 {:ok, chunks} =
   TextSplitter.split_documents(TextSplitter.character(chunk_size: 200), [
-    Document.new!("BeamWeaver uses explicit retrievers.", metadata: %{source: "guide"})
+    Document.new!("Refunds reach the original card within 5 business days.", metadata: %{"source" => "refunds.md"}),
+    Document.new!("Express shipping arrives the next business day.", metadata: %{"source" => "shipping.md"})
   ])
 
-docs = Enum.map(chunks, &put_in(&1.metadata[:tenant], "demo"))
+{:ok, _ids} = VectorStore.add_documents(store, chunks)
 
-{:ok, %{added: 1}} = Indexing.index(store, docs)
-retriever = VectorStore.as_retriever(store, k: 1)
-{:ok, [%Document{} = doc]} = Retriever.retrieve(retriever, "retrievers")
+search =
+  store
+  |> VectorStore.as_retriever(k: 1)
+  |> Retriever.as_tool(name: "search_help_center", description: "Search Acme's help center for policies.")
 
-IO.puts(Message.text(Message.assistant(doc.content)))
+{:ok, agent} =
+  Agent.build(
+    model: %FakeChatModel{
+      responses: [
+        FakeChatModel.tool_call("search_help_center", %{"query" => "refund timing"}),
+        "Refunds reach your card within 5 business days."
+      ]
+    },
+    tools: [search]
+  )
+
+{:ok, result} = Agent.invoke(agent, %{messages: ["How long do refunds take?"]})
+
+IO.puts(result.messages |> List.last() |> Message.text())

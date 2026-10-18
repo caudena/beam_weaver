@@ -444,7 +444,7 @@ defmodule BeamWeaver.Agent.Nodes.Model do
   defp trace_structured_output(strategy, structured_policy, request, messages, opts, fun) when is_function(fun, 0) do
     if Tracing.capture_context() do
       Tracing.Runner.run(
-        "RunnableSequence",
+        "StructuredOutput",
         [
           kind: :chain,
           inputs: %{messages: messages},

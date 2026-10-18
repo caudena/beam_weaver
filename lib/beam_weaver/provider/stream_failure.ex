@@ -153,13 +153,17 @@ defmodule BeamWeaver.Provider.StreamFailure do
   def response_failure(_response), do: nil
 
   @doc false
-  # Creates the table of the errors warned about. The transport supervisor
-  # calls it when it starts, so the table lasts as long as the application.
+  # The table of the errors warned about lasts as long as the application,
+  # which starts this child: its process creates and owns the table.
+  def child_spec(_opts), do: %{id: __MODULE__, start: {Agent, :start_link, [&new_table/0]}}
+
+  @doc false
+  # Creates the table of the errors warned about.
   @spec new_table() :: :ets.table()
   def new_table do
     :ets.new(@warned, [:set, :public, :named_table, read_concurrency: true])
   rescue
-    # A supervisor that is still exiting owns the table still.
+    # An owner that is still exiting owns the table still.
     ArgumentError -> @warned
   end
 

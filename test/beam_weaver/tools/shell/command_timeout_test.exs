@@ -35,8 +35,8 @@ defmodule BeamWeaver.Tools.Shell.CommandTimeoutTest do
 
   import BeamWeaver.Tools.Shell.CommandTimeoutTest.Helpers
 
+  alias BeamWeaver.Sandbox.CommandRunner
   alias BeamWeaver.ShellPolicy
-  alias BeamWeaver.Tools.Shell.CommandRunner
   alias BeamWeaver.Tools.Shell.HostExecutor
   alias BeamWeaver.Tools.Shell.Session
 

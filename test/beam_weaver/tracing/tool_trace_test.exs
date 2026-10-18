@@ -2,10 +2,10 @@ defmodule BeamWeaver.Tracing.ToolTraceTest do
   use ExUnit.Case, async: false
 
   alias BeamWeaver.Agent.ToolCallRequest
+  alias BeamWeaver.Agent.ToolNode
   alias BeamWeaver.Core.Error
   alias BeamWeaver.Core.Message
   alias BeamWeaver.Core.Tool
-  alias BeamWeaver.Graph.Nodes.ToolNode
   alias BeamWeaver.ShellPolicy
   alias BeamWeaver.Tracing
   alias BeamWeaver.Tracing.Context

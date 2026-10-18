@@ -83,20 +83,5 @@ defmodule BeamWeaver.OpenAI.NamespaceTest do
       assert {:ok, _body} = Client.retrieve_response(client, "resp_1")
       assert_received {:fake_transport_request, %{url: "https://gateway.example/v1/responses/resp_1"}}
     end
-
-    test "moderation posts under the middleware client's base_url" do
-      client =
-        Client.new(
-          base_url: "https://gateway.example/v1",
-          api_key: "sk-test",
-          transport: @transport,
-          transport_opts: [parent: self(), body: %{"results" => [%{"flagged" => false}]}]
-        )
-
-      middleware = OpenAI.moderation_middleware(client: client)
-
-      assert {:ok, %{"flagged" => false}} = BeamWeaver.OpenAI.ModerationMiddleware.moderate(middleware, "hello")
-      assert_received {:fake_transport_request, %{url: "https://gateway.example/v1/moderations"}}
-    end
   end
 end

@@ -166,6 +166,7 @@ defmodule BeamWeaver.AgentCapabilitiesTest do
   alias BeamWeaver.Agent.Subagent.AsyncSpec
   alias BeamWeaver.Agent.Subagent.Spec
   alias BeamWeaver.Agent.ToolCallRequest
+  alias BeamWeaver.Agent.ToolNode
   alias BeamWeaver.Checkpoint
   alias BeamWeaver.Core.ContentBlock
   alias BeamWeaver.Core.Message
@@ -183,7 +184,6 @@ defmodule BeamWeaver.AgentCapabilitiesTest do
   alias BeamWeaver.Graph
   alias BeamWeaver.Graph.Command
   alias BeamWeaver.Graph.ExecutionInfo
-  alias BeamWeaver.Graph.Nodes.ToolNode
   alias BeamWeaver.Graph.Overwrite
   alias BeamWeaver.Graph.Runtime
   alias BeamWeaver.Models.FakeChatModel
@@ -279,12 +279,12 @@ defmodule BeamWeaver.AgentCapabilitiesTest do
     assert {:ok, %FakeChatModel{response: "from spec"} = resolved} =
              DeepAgentModels.resolve_model("fake:chat", response: "from spec")
 
-    assert DeepAgentModels.get_model_identifier(%{model_name: "preferred", model: "fallback"}) ==
+    assert BeamWeaver.Models.Identity.identifier(%{model_name: "preferred", model: "fallback"}) ==
              "preferred"
 
-    assert DeepAgentModels.get_model_identifier(%{model: "fallback"}) == "fallback"
-    assert DeepAgentModels.get_model_identifier(resolved) == "chat"
-    assert DeepAgentModels.get_model_provider(resolved) == "fake"
+    assert BeamWeaver.Models.Identity.identifier(%{model: "fallback"}) == "fallback"
+    assert BeamWeaver.Models.Identity.identifier(resolved) == "chat"
+    assert BeamWeaver.Models.Identity.provider(resolved) == "fake"
   end
 
   test "built-in deep agent capabilities are composable toolkits" do

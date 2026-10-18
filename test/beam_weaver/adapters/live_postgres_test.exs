@@ -28,9 +28,6 @@ defmodule BeamWeaver.Adapters.LivePostgresTest do
   alias BeamWeaver.Graph.ExecutionInfo
   alias BeamWeaver.Graph.Messages.Remove
   alias BeamWeaver.Graph.Send
-  alias BeamWeaver.Indexing.Record
-  alias BeamWeaver.Indexing.RecordManager
-  alias BeamWeaver.Indexing.RecordManager.EctoPostgres, as: EctoRecordManager
   alias BeamWeaver.Memory
   alias BeamWeaver.Memory.Ecto, as: EctoMemory
   alias BeamWeaver.Memory.GetOp
@@ -1306,41 +1303,6 @@ defmodule BeamWeaver.Adapters.LivePostgresTest do
 
     assert :ok = VectorStore.delete(store, [id1, id2])
     assert {:ok, []} = VectorStore.similarity_search(store, "alpha", k: 2)
-  end
-
-  test "record manager stores and filters indexing records live" do
-    table = BeamWeaver.Test.LivePostgres.unique_table("bw_records")
-
-    manager =
-      EctoRecordManager.new(
-        repo: BeamWeaver.Test.PostgresRepo,
-        table: table,
-        namespace: "tenant-a"
-      )
-
-    version = BeamWeaver.Test.LivePostgres.migrate(adapters: [{:record_manager, table: table}])
-
-    on_exit(fn ->
-      BeamWeaver.Test.LivePostgres.drop_tables([table])
-      BeamWeaver.Test.LivePostgres.clear_migration(version)
-    end)
-
-    assert :ok =
-             RecordManager.put(manager, %Record{
-               id: "doc-1",
-               source_id: "source-a",
-               hash: "hash-a",
-               metadata: %{kind: "live"}
-             })
-
-    assert {:ok, %Record{id: "doc-1", metadata: %{"kind" => "live"}}} =
-             RecordManager.get(manager, "doc-1")
-
-    assert {:ok, [%Record{id: "doc-1"}]} =
-             RecordManager.list(manager, source_ids: ["source-a"])
-
-    assert :ok = RecordManager.delete(manager, ["doc-1"])
-    assert {:ok, nil} = RecordManager.get(manager, "doc-1")
   end
 
   defp captured_worker_output_schema do

@@ -1,7 +1,7 @@
 defmodule BeamWeaver.TypeSafe.IntegrationTest do
   use ExUnit.Case, async: false
   alias BeamWeaver.Core.DecisionModel
-  alias BeamWeaver.{Models, Runnable, Tracing}
+  alias BeamWeaver.{Models, Tracing}
   alias BeamWeaver.TestSupport.TypeSafe, as: Fixture
 
   defmodule Limiter do
@@ -44,8 +44,8 @@ defmodule BeamWeaver.TypeSafe.IntegrationTest do
     limiter = %Limiter{parent: self()}
     cache = BeamWeaver.Cache.ETS.new(visibility: :private)
     model = Fixture.model() |> Models.with_rate_limiter(limiter: limiter) |> Models.cached(cache)
-    assert {:ok, first} = Runnable.invoke(model, Fixture.input())
-    assert {:ok, cached} = Runnable.invoke(model, Fixture.input())
+    assert {:ok, first} = DecisionModel.invoke(model, Fixture.input())
+    assert {:ok, cached} = DecisionModel.invoke(model, Fixture.input())
     assert first.answers == cached.answers
     assert cached.usage.total_tokens == 0
     assert_receive :limit_checked
@@ -65,12 +65,11 @@ defmodule BeamWeaver.TypeSafe.IntegrationTest do
     input = put_in(Fixture.input(), [:state, :api_key], "sensitive-state-secret")
     assert {:ok, _} = DecisionModel.invoke(model, input)
     assert {:ok, [_, _]} = DecisionModel.batch(model, [input, input], max_concurrency: 2)
-    assert {:ok, [_, _]} = Runnable.batch(model, [input, input], max_concurrency: 2)
     assert Tracing.capture_context().run_id == parent.id
     Tracing.finish_run(parent)
 
     runs = BeamWeaver.Tracing.Store.list() |> Enum.filter(&(&1.kind == :model))
-    assert length(runs) == 5
+    assert length(runs) == 3
 
     for run <- runs do
       assert run.parent_id == parent.id

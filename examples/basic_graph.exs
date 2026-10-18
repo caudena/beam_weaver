@@ -1,5 +1,5 @@
 defmodule BeamWeaver.Examples.BasicGraph do
-  use BeamWeaver.Agent
+  use BeamWeaver.Graph
 
   graph do
     node(:greet, fn state -> %{answer: "hello #{state.name}"} end)

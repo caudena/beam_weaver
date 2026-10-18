@@ -2,13 +2,11 @@ defmodule BeamWeaver.Models.Cached do
   @moduledoc false
 
   @behaviour BeamWeaver.Core.ChatModel
-  @behaviour BeamWeaver.Core.LLM
   @behaviour BeamWeaver.Core.DecisionModel
 
   alias BeamWeaver.Cache
   alias BeamWeaver.Core.ChatModel
   alias BeamWeaver.Core.Error
-  alias BeamWeaver.Core.LLM
   alias BeamWeaver.Core.Message
   alias BeamWeaver.Stream
   alias BeamWeaver.Stream.Events
@@ -30,12 +28,7 @@ defmodule BeamWeaver.Models.Cached do
         :trace?,
         :exporter,
         :exporter_opts,
-        :config,
-        :configurable,
-        :context,
-        :max_concurrency,
-        :recursion_limit,
-        :opts
+        :max_concurrency
       ])
 
     with :ok <- require_decision_model(wrapper) do
@@ -87,25 +80,6 @@ defmodule BeamWeaver.Models.Cached do
     with {:ok, value} <- invoke(wrapper, input, opts), do: {:ok, [value]}
   end
 
-  def stream(%__MODULE__{} = wrapper, prompt, opts) when is_binary(prompt) do
-    case lookup(wrapper, :llm, prompt, opts) do
-      {:hit, completion, _metadata} when is_binary(completion) ->
-        {:ok, [completion]}
-
-      {:hit, completion, _metadata} ->
-        invalid_completion(completion)
-
-      {:miss, store} ->
-        with {:ok, chunks} <- LLM.stream(wrapper.model, prompt, opts),
-             chunks = Enum.to_list(chunks),
-             :ok <- store.(Enum.join(chunks)),
-             do: {:ok, chunks}
-
-      {:error, %Error{}} = error ->
-        error
-    end
-  end
-
   @impl true
   def stream_events(%__MODULE__{} = wrapper, messages, opts) when is_list(messages) do
     case lookup(wrapper, :chat_model, messages, opts) do
@@ -120,32 +94,6 @@ defmodule BeamWeaver.Models.Cached do
       {:error, %Error{}} = error ->
         error
     end
-  end
-
-  @impl true
-  def complete(%__MODULE__{} = wrapper, prompt, opts) when is_binary(prompt) do
-    case lookup(wrapper, :llm, prompt, opts) do
-      {:hit, completion, _metadata} when is_binary(completion) ->
-        {:ok, completion}
-
-      {:hit, completion, _metadata} ->
-        invalid_completion(completion)
-
-      {:miss, store} ->
-        with {:ok, completion} <- LLM.complete(wrapper.model, prompt, opts),
-             :ok <- store.(completion),
-             do: {:ok, completion}
-
-      {:error, %Error{}} = error ->
-        error
-    end
-  end
-
-  defp invalid_completion(completion) do
-    {:error,
-     Error.new(:invalid_cache_entry, "cached LLM completion must be a string", %{
-       cached: inspect(completion)
-     })}
   end
 
   defp lookup(wrapper, kind, input, opts) do

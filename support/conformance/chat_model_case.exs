@@ -13,7 +13,6 @@ defmodule BeamWeaver.TestSupport.Conformance.ChatModelCase do
       alias BeamWeaver.Core.Message
       alias BeamWeaver.Core.Messages.InvalidToolCall
       alias BeamWeaver.Core.Tool
-      alias BeamWeaver.Models
       alias BeamWeaver.TestSupport.Conformance.Subject
       alias BeamWeaver.Stream.Envelope
       alias BeamWeaver.Stream.Events
@@ -155,9 +154,7 @@ defmodule BeamWeaver.TestSupport.Conformance.ChatModelCase do
           model = build_subject()
 
           assert {:ok, %Message{tool_calls: calls}} =
-                   ChatModel.invoke(model, fixture(:messages),
-                     tools: [lookup_tool(), time_tool()]
-                   )
+                   ChatModel.invoke(model, fixture(:messages), tools: [lookup_tool(), time_tool()])
 
           assert Enum.map(calls, &(Map.get(&1, :name) || Map.get(&1, "name"))) == [
                    "lookup",
@@ -188,7 +185,7 @@ defmodule BeamWeaver.TestSupport.Conformance.ChatModelCase do
       end
 
       if Subject.capability?(@beamweaver_subject, :structured_output) do
-        test "chat model supports structured output wrapper" do
+        test "chat model returns the data of a response format" do
           schema =
             fixture(:structured_schema, %{
               "title" => "answer",
@@ -197,13 +194,12 @@ defmodule BeamWeaver.TestSupport.Conformance.ChatModelCase do
               "properties" => %{"value" => %{"type" => "string"}}
             })
 
-          model = build_subject() |> Models.with_structured_output(schema)
-
           assert {:ok, %Message{metadata: metadata}} =
-                   ChatModel.invoke(model, fixture(:messages), [])
+                   ChatModel.invoke(build_subject(), fixture(:messages),
+                     response_format: %{name: "answer", schema: schema}
+                   )
 
-          assert metadata[:structured_response] || metadata["structured_response"] ||
-                   metadata["parsed"]
+          assert metadata[:parsed] || metadata["parsed"]
         end
       end
 

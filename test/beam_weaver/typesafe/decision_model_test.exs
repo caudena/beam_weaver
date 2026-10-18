@@ -1,7 +1,7 @@
 defmodule BeamWeaver.TypeSafe.DecisionModelTest do
   use ExUnit.Case, async: true
   alias BeamWeaver.Core.{ChatModel, DecisionModel, Message}
-  alias BeamWeaver.{Models, Runnable, Serialization}
+  alias BeamWeaver.{Models, Serialization}
   alias BeamWeaver.Provider.{Compatibility, Registry}
   alias BeamWeaver.TestSupport.TypeSafe, as: Fixture
   alias BeamWeaver.TypeSafe.{ChoiceAnswer, Client, Input, NoulAnswer, Question, ScoreAnswer}
@@ -182,14 +182,11 @@ defmodule BeamWeaver.TypeSafe.DecisionModelTest do
     assert_receive {:typesafe_request, %{method: :get, url: "https://gateway.test/v1/models"}}
   end
 
-  test "Runnable composition, direct invoke, bounded batch, and one-result streams" do
+  test "direct invoke and bounded batch" do
     model = Fixture.model()
-    pipeline = Runnable.sequence([model, Runnable.lambda(& &1.answers["urgency"].noul)])
-    assert {:ok, 0.98} = Runnable.invoke(pipeline, Fixture.input())
+    assert {:ok, response} = DecisionModel.invoke(model, Fixture.input())
+    assert response.answers["urgency"].noul == 0.98
     assert {:ok, [_, _]} = DecisionModel.batch(model, [Fixture.input(), Fixture.input()], max_concurrency: 2)
-    assert {:ok, _} = DecisionModel.invoke(model, Fixture.input())
-    assert {:ok, stream} = Runnable.stream(model, Fixture.input())
-    assert [%BeamWeaver.TypeSafe.Response{}] = Enum.to_list(stream)
   end
 
   test "response serialization preserves typed answers and structured criteria" do

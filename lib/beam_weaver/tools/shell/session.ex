@@ -6,8 +6,8 @@ defmodule BeamWeaver.Tools.Shell.Session do
   use GenServer, restart: :temporary
 
   alias BeamWeaver.Core.Error
+  alias BeamWeaver.Sandbox.CommandRunner
   alias BeamWeaver.ShellPolicy
-  alias BeamWeaver.Tools.Shell.CommandRunner
   alias BeamWeaver.Tools.Shell.HostExecutor
 
   # `env` carries the session's variables, including any the policy sets for

@@ -13,7 +13,7 @@ with the same subject gets the category from the cache:
 
 ```elixir
 defmodule MyApp.TicketTriage do
-  use BeamWeaver.Agent
+  use BeamWeaver.Graph
 
   alias BeamWeaver.Core.{ChatModel, Message}
   alias BeamWeaver.Graph
@@ -110,7 +110,7 @@ plain struct, so a graph module can declare it:
 
 ```elixir
 defmodule MyApp.TicketTriage do
-  use BeamWeaver.Agent
+  use BeamWeaver.Graph
 
   alias BeamWeaver.Graph
 

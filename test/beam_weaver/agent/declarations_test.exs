@@ -6,7 +6,6 @@ defmodule BeamWeaver.Agent.DeclarationsTest do
   alias BeamWeaver.Core.Error
   alias BeamWeaver.Core.Message
   alias BeamWeaver.Core.Tool
-  alias BeamWeaver.Graph
   alias BeamWeaver.Models.FakeChatModel
 
   defmodule Echo do
@@ -130,19 +129,6 @@ defmodule BeamWeaver.Agent.DeclarationsTest do
     tool_timeout 10_000
   end
 
-  defmodule RunTimeoutGraph do
-    use BeamWeaver.Agent
-
-    run_timeout 50
-
-    def graph do
-      Graph.new()
-      |> Graph.add_node(:wait, fn _state -> Process.sleep(1_000) && %{} end, timeout: 5_000)
-      |> Graph.add_edge(Graph.start(), :wait)
-      |> Graph.add_edge(:wait, Graph.end_node())
-    end
-  end
-
   defmodule SlowToolAgent do
     use BeamWeaver.Agent
 
@@ -186,17 +172,11 @@ defmodule BeamWeaver.Agent.DeclarationsTest do
     end
   end
 
-  defmodule BreakpointGraph do
+  defmodule BreakpointAgent do
     use BeamWeaver.Agent
 
+    model "fake:chat"
     interrupts before: Process.get(:declarations_test_breakpoints, [])
-
-    def graph do
-      Graph.new()
-      |> Graph.add_node(:check, fn _state -> %{} end)
-      |> Graph.add_edge(Graph.start(), :check)
-      |> Graph.add_edge(:check, Graph.end_node())
-    end
   end
 
   defmodule MisspelledContextAgent do
@@ -262,9 +242,9 @@ defmodule BeamWeaver.Agent.DeclarationsTest do
       assert {:error, %Error{type: :invalid_context, details: %{field: :plan}}} =
                RuntimeFieldOptionsAgent.invoke(%{messages: ["Hi"]})
 
-      Process.put(:declarations_test_breakpoints, [:check])
-      assert {:ok, compiled} = Agent.compiled_graph(BreakpointGraph)
-      assert compiled.interrupt_before == MapSet.new(["check"])
+      Process.put(:declarations_test_breakpoints, [:tools])
+      assert {:ok, compiled} = Agent.compiled_graph(BreakpointAgent)
+      assert compiled.interrupt_before == MapSet.new(["tools"])
     end
 
     test "model_opts, merged over the options after model in any order" do
@@ -303,10 +283,6 @@ defmodule BeamWeaver.Agent.DeclarationsTest do
       assert compiled.step_timeout == 30_000
       assert compiled.run_timeout == 60_000
       assert compiled.graph.nodes["tools"].fun.timeout == 10_000
-    end
-
-    test "a graph module's run_timeout stops the run" do
-      assert {:error, %Error{type: :run_timeout}} = RunTimeoutGraph.invoke(%{})
     end
 
     test "tool_timeout limits each tool step" do

@@ -1,7 +1,7 @@
 # Subgraphs
 
-A subgraph is a compiled graph, or an agent, used as one node of another
-graph. Use one to reuse a workflow in several graphs, to keep each part small
+A subgraph is a compiled graph, a graph module or an agent, used as one node
+of another graph. Use one to reuse a workflow in several graphs, to keep each part small
 and testable on its own, or to run an agent as one step of a larger workflow
 with its checkpoints, interrupts and events in the same run.
 
@@ -105,8 +105,8 @@ The same options work on any node, not only subgraphs.
 
 ## Agents as subgraphs
 
-An agent module can be a node too: add the module, and each time the node runs
-the agent's graph runs as a subgraph. Here the parent maps its ticket to the
+An agent module can be a node too, like a graph module: add the module, and
+each time the node runs the agent's graph runs as a subgraph. Here the parent maps its ticket to the
 agent's `messages` and the agent's last message back to a reply:
 
 ```elixir
@@ -141,9 +141,10 @@ limit by default; if you give the agent node a `timeout:`, leave it enough
 time for a whole agent run. When the parent keeps the conversation in a `messages` key of
 its own, with `BeamWeaver.Graph.Messages.state_schema/1`, leave out `input:`
 and `output:`: the agent reads the conversation, and its new messages are
-added to it. A graph module works the same way, and
-`BeamWeaver.Agent.compiled_graph/2` returns an agent's compiled graph when you
-need it as a value.
+added to it. A graph module works the same way: both kinds of module
+implement the `BeamWeaver.Graph` behaviour, whose `compiled_graph/1`, such as
+`MyApp.SupportAgent.compiled_graph([])`, returns the module's compiled graph
+when you need it as a value.
 
 You can also call `Compiled.invoke/3` or `MyApp.SupportAgent.invoke/2` from an
 ordinary node function. That is simpler, but the call is a separate run: its
@@ -349,7 +350,7 @@ tell how each subgraph ended.
 
 ## Reference
 
-- [`BeamWeaver.Graph`](https://hexdocs.pm/beam_weaver/BeamWeaver.Graph.html): `add_node/4` with `input:` and `output:`
+- [`BeamWeaver.Graph`](https://hexdocs.pm/beam_weaver/BeamWeaver.Graph.html): `add_node/4` with `input:` and `output:`, and the behaviour of graph and agent modules
 - [`BeamWeaver.Graph.Compiled`](https://hexdocs.pm/beam_weaver/BeamWeaver.Graph.Compiled.html): run graphs and read their history
 - [`BeamWeaver.Agent`](https://hexdocs.pm/beam_weaver/BeamWeaver.Agent.html): `compiled_graph/2` turns an agent into a graph
 - [`BeamWeaver.Graph.Command`](https://hexdocs.pm/beam_weaver/BeamWeaver.Graph.Command.html): `parent/0` routes the parent graph

@@ -359,7 +359,7 @@ to its `stream_writer` arrives as a `Custom` event:
 
 ```elixir
 defmodule MyApp.TicketTriage do
-  use BeamWeaver.Agent
+  use BeamWeaver.Graph
 
   alias BeamWeaver.Graph
 
@@ -536,7 +536,8 @@ of the events on the server.
 
 ## Reference
 
-- [`BeamWeaver.Agent`](https://hexdocs.pm/beam_weaver/BeamWeaver.Agent.html): `stream_events/3` for agents and graph modules
+- [`BeamWeaver.Agent`](https://hexdocs.pm/beam_weaver/BeamWeaver.Agent.html): `stream_events/3` for agents
+- [`BeamWeaver.Graph`](https://hexdocs.pm/beam_weaver/BeamWeaver.Graph.html): graph modules, whose `stream_events/2` takes the same options
 - [`BeamWeaver.Stream`](https://hexdocs.pm/beam_weaver/BeamWeaver.Stream.html): `event_mode/1` and stream helpers
 - [`BeamWeaver.Stream.Envelope`](https://hexdocs.pm/beam_weaver/BeamWeaver.Stream.Envelope.html): the wrapper around every event
 - [`BeamWeaver.Stream.Events`](https://hexdocs.pm/beam_weaver/BeamWeaver.Stream.Events.html): the event structs

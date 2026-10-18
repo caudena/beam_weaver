@@ -6,21 +6,6 @@ defmodule BeamWeaver.Agent.DSLTest do
   alias BeamWeaver.Core.Tool
   alias BeamWeaver.Models.FakeChatModel
 
-  defmodule GreetingAgent do
-    use BeamWeaver.Agent
-
-    reducer(:messages, fn existing, update -> existing ++ List.wrap(update) end)
-    node(:greet, &__MODULE__.greet/2)
-    edge(BeamWeaver.Graph.start(), :greet)
-    edge(:greet, BeamWeaver.Graph.end_node())
-
-    def greet(state, runtime) do
-      greeting = Map.get(runtime.context || %{}, :greeting, "hello")
-      existing = Map.get(state, :messages, [])
-      %{messages: existing ++ ["#{greeting}, #{state.name}"], done: true}
-    end
-  end
-
   defmodule ToolCallingModel do
     @behaviour ChatModel
 
@@ -132,36 +117,32 @@ defmodule BeamWeaver.Agent.DSLTest do
     prompt_caching(scope: "ai_report", version: "v2")
   end
 
-  test "agent modules invoke through the generated graph" do
-    assert {:ok, %{messages: ["hi, Ada"], done: true}} =
-             GreetingAgent.invoke(%{name: "Ada"}, context: %{greeting: "hi"})
-  end
-
-  test "duplicate DSL node names fail at compile time" do
+  test "an agent module without a model doesn't compile, and points to graph modules" do
     source = """
-    defmodule DuplicateAgent do
+    defmodule ModellessAgent do
       use BeamWeaver.Agent
-      node :same, fn state -> state end
-      node :same, fn state -> state end
-      edge BeamWeaver.Graph.start(), :same
+
+      def graph, do: BeamWeaver.Graph.new()
     end
     """
 
-    assert_raise CompileError, ~r/duplicate BeamWeaver agent node names/, fn ->
-      Code.compile_string(source)
-    end
+    error = assert_raise CompileError, fn -> Code.compile_string(source) end
+    assert Exception.message(error) =~ "ModellessAgent declares no model"
+    assert Exception.message(error) =~ "use BeamWeaver.Graph"
   end
 
-  test "DSL agents must declare a start edge" do
-    source = """
-    defmodule NoEntrypointAgent do
-      use BeamWeaver.Agent
-      node :only, fn state -> state end
-    end
-    """
+  test "graph declarations in an agent module point to graph modules" do
+    for declaration <- ["graph do\n  node :only, fn state -> state end\nend", "node :only, fn state -> state end"] do
+      source = """
+      defmodule GraphDeclaringAgent do
+        use BeamWeaver.Agent
+        model "fake:chat"
+        #{declaration}
+      end
+      """
 
-    assert_raise CompileError, ~r/must define an edge from Graph.start/, fn ->
-      Code.compile_string(source)
+      error = assert_raise CompileError, fn -> Code.compile_string(source) end
+      assert Exception.message(error) =~ "graph modules `use BeamWeaver.Graph`"
     end
   end
 
@@ -259,18 +240,17 @@ defmodule BeamWeaver.Agent.DSLTest do
     assert middleware.version == "v2"
   end
 
-  test "model/tools DSL cannot be mixed with manual graph nodes" do
+  test "an agent module can't define graph/0" do
     source = """
-    defmodule MixedAgent do
+    defmodule GraphDefiningAgent do
       use BeamWeaver.Agent
-      model :some_model
-      node :manual, fn state -> state end
-      edge BeamWeaver.Graph.start(), :manual
+      model "fake:chat"
+      def graph, do: BeamWeaver.Graph.new()
     end
     """
 
-    assert_raise CompileError, ~r/model\/tools DSL builds its own graph/, fn ->
-      Code.compile_string(source)
-    end
+    error = assert_raise CompileError, fn -> Code.compile_string(source) end
+    assert Exception.message(error) =~ "GraphDefiningAgent defines graph/0"
+    assert Exception.message(error) =~ "use BeamWeaver.Graph"
   end
 end

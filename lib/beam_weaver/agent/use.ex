@@ -7,6 +7,7 @@ defmodule BeamWeaver.Agent.Use do
 
     quote do
       @behaviour BeamWeaver.Agent
+      @behaviour BeamWeaver.Graph
 
       import BeamWeaver.Agent, only: unquote(imports)
 

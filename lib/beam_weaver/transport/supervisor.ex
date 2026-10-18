@@ -9,10 +9,6 @@ defmodule BeamWeaver.Transport.Supervisor do
 
   @impl true
   def init(_opts) do
-    # The supervisor owns the table of the provider stream errors BeamWeaver
-    # has warned about, so the table lasts as long as the application.
-    BeamWeaver.Provider.StreamFailure.new_table()
-
     children = [
       {Finch, name: BeamWeaver.Transport.Finch},
       BeamWeaver.Transport.IsolatedPools

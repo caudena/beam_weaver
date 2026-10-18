@@ -8,7 +8,7 @@ should decide what to do next.
 
 ```elixir
 defmodule MyApp.TicketTriage do
-  use BeamWeaver.Agent
+  use BeamWeaver.Graph
 
   alias BeamWeaver.Graph
 
@@ -48,10 +48,10 @@ empty graph, `Graph.add_node/4` adds a node (a name and a function), and
 mark where a run begins and where it finishes.
 
 In an application, return the builder from `def graph` in a module with
-`use BeamWeaver.Agent`, as above. The module gets the same functions as an
-agent, such as `invoke/2`, `stream_events/2`, `resume/2` and `get_state/1`,
-and compiles the graph on each call with that call's options, such as its
-checkpointer.
+`use BeamWeaver.Graph`, as above: a graph module. The module gets
+`invoke/2`, `stream_events/2`, `resume/2` and `get_state/1`, the same
+functions an agent module has, and compiles the graph on each call with that
+call's options, such as its checkpointer.
 
 In a script or a test, or when the shape of the graph comes from data, compile
 the builder with `Graph.compile!/2` and run it with
@@ -402,7 +402,7 @@ returns the answer.
 
 ```elixir
 defmodule MyApp.RefundApproval do
-  use BeamWeaver.Agent
+  use BeamWeaver.Graph
 
   alias BeamWeaver.Graph
 
@@ -450,7 +450,7 @@ run past the pause:
 
 ```elixir
 defmodule MyApp.CheckedRefund do
-  use BeamWeaver.Agent
+  use BeamWeaver.Graph
 
   alias BeamWeaver.Graph
 
@@ -572,7 +572,7 @@ how keys merge. `start()` and `finish()` are the start and end markers.
 
 ```elixir
 defmodule MyApp.TicketTriage do
-  use BeamWeaver.Agent
+  use BeamWeaver.Graph
 
   graph do
     state do
@@ -608,10 +608,9 @@ from data at run time.
 
 ## Reference
 
-- [`BeamWeaver.Graph`](https://hexdocs.pm/beam_weaver/BeamWeaver.Graph.html): build, validate and compile graphs; `interrupt/2`
+- [`BeamWeaver.Graph`](https://hexdocs.pm/beam_weaver/BeamWeaver.Graph.html): build, validate and compile graphs; `interrupt/2`; graph modules and their declarations
 - [`BeamWeaver.Graph.Compiled`](https://hexdocs.pm/beam_weaver/BeamWeaver.Graph.Compiled.html): run a compiled graph: invoke, stream, resume, read state
 - [`BeamWeaver.Graph.Command`](https://hexdocs.pm/beam_weaver/BeamWeaver.Graph.Command.html): update the state and choose the next node
 - [`BeamWeaver.Graph.Send`](https://hexdocs.pm/beam_weaver/BeamWeaver.Graph.Send.html): run a node once per item
 - [`BeamWeaver.Graph.Runtime`](https://hexdocs.pm/beam_weaver/BeamWeaver.Graph.Runtime.html): the second argument of a node
 - [`BeamWeaver.RetryPolicy`](https://hexdocs.pm/beam_weaver/BeamWeaver.RetryPolicy.html): node retry options
-- [`BeamWeaver.Agent`](https://hexdocs.pm/beam_weaver/BeamWeaver.Agent.html): graph modules and the `graph do` DSL

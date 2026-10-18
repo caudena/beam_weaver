@@ -19,7 +19,7 @@ defmodule BeamWeaver.Graph.SubgraphNodeTest do
   end
 
   defmodule ApprovalGraph do
-    use BeamWeaver.Agent
+    use BeamWeaver.Graph
 
     alias BeamWeaver.Graph
 
@@ -54,7 +54,7 @@ defmodule BeamWeaver.Graph.SubgraphNodeTest do
     |> Graph.compile!()
   end
 
-  describe "an agent module as a node" do
+  describe "an agent or graph module as a node" do
     test "runs the agent and adds its messages to the conversation" do
       desk = single_node_graph(Graph.new(state_schema: Messages.state_schema()), :support, SupportAgent)
 

@@ -4,7 +4,6 @@ defmodule BeamWeaver.RetrievalTest do
   alias BeamWeaver.Core.Document
   alias BeamWeaver.Core.Tool
   alias BeamWeaver.Core.ToolResult
-  alias BeamWeaver.ExampleSelector
   alias BeamWeaver.Models.FakeEmbeddingModel
   alias BeamWeaver.Retriever
   alias BeamWeaver.TextSplitter
@@ -116,13 +115,18 @@ defmodule BeamWeaver.RetrievalTest do
       Retriever.as_tool(retriever,
         name: "policy_search",
         description: "Search policies.",
-        document_prompt: BeamWeaver.Prompt.string("{path}: {content}"),
+        document_prompt: "{{{path}}}: {content}",
         document_separator: "\n"
       )
 
     assert {:ok, prompt_content} = Tool.invoke(prompt_tool, %{"query" => "alpha"})
-    assert prompt_content =~ "alpha.md: alpha policy"
-    assert prompt_content =~ "appendix.md: alpha appendix"
+    assert prompt_content =~ "{alpha.md}: alpha policy"
+    assert prompt_content =~ "{appendix.md}: alpha appendix"
+
+    missing_tool = Retriever.as_tool(retriever, name: "policy_search", document_prompt: "{owner}: {content}")
+
+    assert {:error, %{type: :tool_exception, message: message}} = Tool.invoke(missing_tool, %{"query" => "alpha"})
+    assert message =~ "owner"
 
     artifact_tool =
       Retriever.as_tool(retriever,
@@ -174,20 +178,5 @@ defmodule BeamWeaver.RetrievalTest do
     tool_message = Enum.find(messages, &(&1.role == :tool))
     assert tool_message.content == "Refunds take 5 days."
     assert [%Document{id: "refunds"}] = tool_message.metadata.artifact
-  end
-
-  test "indexing assigns stable IDs and example selectors choose bounded examples" do
-    store = ETSVectorStore.new(embedding: %FakeEmbeddingModel{})
-    docs = [Document.new!("alpha", metadata: %{example: %{input: "a", output: "b"}})]
-
-    assert {:ok, result} = BeamWeaver.Indexing.index(store, docs)
-    assert result.added == 1
-
-    selector =
-      ExampleSelector.length_based([%{input: "short"}, %{input: String.duplicate("x", 100)}],
-        max_length: 2
-      )
-
-    assert {:ok, [%{input: "short"}]} = ExampleSelector.select(selector, %{}, k: 2)
   end
 end

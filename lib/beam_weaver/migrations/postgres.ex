@@ -12,9 +12,12 @@ defmodule BeamWeaver.Migrations.Postgres do
     :checkpoint,
     :memory,
     :cache,
-    :vector_store,
-    :record_manager
+    :vector_store
   ]
+
+  # Tables of adapters BeamWeaver no longer has: `:all` doesn't create them,
+  # and `down/1` with `:all` drops them from a database that has them.
+  @retired [:record_manager]
 
   @current_versions %{checkpoint: 2, memory: 2, cache: 1, vector_store: 1, record_manager: 1}
   @vector_indexes [:ivfflat, :hnsw, false]
@@ -57,7 +60,7 @@ defmodule BeamWeaver.Migrations.Postgres do
   def down(opts) do
     opts = with_defaults(opts)
 
-    for spec <- normalize_specs(opts) do
+    for spec <- normalize_specs(opts, @retired) do
       initial = migrated_version(opts, spec)
       target = Keyword.get(opts, :version, @initial_version)
 
@@ -195,7 +198,8 @@ defmodule BeamWeaver.Migrations.Postgres do
   defp versions_result([spec], fun), do: fun.(spec)
   defp versions_result(specs, fun), do: Map.new(specs, &{&1.key, fun.(&1)})
 
-  defp normalize_specs(opts) do
+  # `retired` adapters join `:all`.
+  defp normalize_specs(opts, retired \\ []) do
     selector =
       cond do
         Keyword.has_key?(opts, :adapter) -> Keyword.fetch!(opts, :adapter)
@@ -204,14 +208,14 @@ defmodule BeamWeaver.Migrations.Postgres do
       end
 
     selector
-    |> normalize_selector()
+    |> normalize_selector(retired)
     |> Enum.map(&normalize_spec(&1, opts))
     |> Enum.map(&Map.put(&1, :prefix, Keyword.get(opts, :prefix, @default_prefix)))
   end
 
-  defp normalize_selector(:all), do: @adapter_order
-  defp normalize_selector(adapter) when is_atom(adapter), do: [adapter]
-  defp normalize_selector(adapters) when is_list(adapters), do: adapters
+  defp normalize_selector(:all, retired), do: @adapter_order ++ retired
+  defp normalize_selector(adapter, _retired) when is_atom(adapter), do: [adapter]
+  defp normalize_selector(adapters, _retired) when is_list(adapters), do: adapters
 
   defp normalize_spec({adapter, adapter_opts}, opts)
        when is_atom(adapter) and is_list(adapter_opts) do

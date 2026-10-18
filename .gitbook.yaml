@@ -34,7 +34,8 @@ redirects:
   persistence: checkpoints.md
   prebuilt_middleware: builtin_middleware.md
   prompt_caching: caching.md
-  prompts_parsers: prompts_and_parsers.md
+  prompts_and_parsers: structured_output.md
+  prompts_parsers: structured_output.md
   replay: testing.md
   runtime: runtime_context.md
   semantic_dsl: agents.md

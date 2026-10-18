@@ -2,6 +2,7 @@ defmodule BeamWeaver.Core.Tool.Output do
   @moduledoc false
 
   alias BeamWeaver.Core.Message
+  alias BeamWeaver.Core.Tool.Passthrough
   alias BeamWeaver.Core.ToolResult
 
   @content_block_types ~w(text image_url image json search_result custom_tool_call_output document file)
@@ -42,7 +43,7 @@ defmodule BeamWeaver.Core.Tool.Output do
 
   defp tool_output?(%Message{role: :tool}), do: true
   defp tool_output?(%ToolResult{}), do: true
-  defp tool_output?(_content), do: false
+  defp tool_output?(content), do: Passthrough.passthrough?(content)
 
   defp message_content(content) when is_binary(content), do: content
 

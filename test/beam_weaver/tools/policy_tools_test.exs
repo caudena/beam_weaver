@@ -12,10 +12,10 @@ defmodule BeamWeaver.Tools.PolicyToolsTest do
   use ExUnit.Case, async: true
 
   alias BeamWeaver.Agent.Middleware.ShellTool
+  alias BeamWeaver.Agent.ToolNode
   alias BeamWeaver.Core.Document
   alias BeamWeaver.Core.Message
   alias BeamWeaver.Core.Tool
-  alias BeamWeaver.Graph.Nodes.ToolNode
   alias BeamWeaver.Models.FakeEmbeddingModel
   alias BeamWeaver.ShellPolicy
   alias BeamWeaver.Tools.FileSearch

@@ -81,6 +81,7 @@ defmodule BeamWeaver.Agent.Middleware.Subagents do
   alias BeamWeaver.Graph.Execution.Namespace
   alias BeamWeaver.Graph.Execution.Replay
   alias BeamWeaver.Graph.Execution.SubgraphRouter
+  alias BeamWeaver.Graph.ModuleRunner
   alias BeamWeaver.Graph.StateGraph
   alias BeamWeaver.MapShape
   alias BeamWeaver.Stream.Sink
@@ -238,9 +239,11 @@ defmodule BeamWeaver.Agent.Middleware.Subagents do
   defp validate_subagent(%Compiled{agent: :host_managed}, _middleware, _opts), do: :ok
 
   defp validate_subagent(%Compiled{agent: module}, _middleware, opts) when is_atom(module) do
-    if BeamWeaver.Behaviour.exported?(module, :__beam_weaver_agent_spec__, 0),
-      do: Compiler.validate_module(module, opts),
-      else: {:error, Error.new(:invalid_subagent, "#{inspect(module)} is not an agent module")}
+    cond do
+      BeamWeaver.Behaviour.exported?(module, :__beam_weaver_agent_spec__, 0) -> Compiler.validate_module(module, opts)
+      graph_module?(module) -> :ok
+      true -> {:error, Error.new(:invalid_subagent, "#{inspect(module)} is not an agent or graph module")}
+    end
   end
 
   defp validate_subagent(%Compiled{agent: agent}, _middleware, _opts) do
@@ -860,10 +863,10 @@ defmodule BeamWeaver.Agent.Middleware.Subagents do
     case child_status(agent, opts) do
       :new ->
         child_input = without_child_private_keys(child_input, agent)
-        with_child_stream(runtime, stream_metadata, &Agent.invoke(agent, child_input, opts ++ &1))
+        with_child_stream(runtime, stream_metadata, &child_invoke(agent, child_input, opts ++ &1))
 
       {:unfinished, config} ->
-        with_child_stream(runtime, stream_metadata, &Agent.invoke(agent, %{}, Keyword.put(opts, :config, config) ++ &1))
+        with_child_stream(runtime, stream_metadata, &child_invoke(agent, %{}, Keyword.put(opts, :config, config) ++ &1))
 
       {:finished, values} ->
         {:ok, values}
@@ -883,7 +886,7 @@ defmodule BeamWeaver.Agent.Middleware.Subagents do
     case resume_value(runtime, interrupt) do
       {:ok, resume} ->
         runtime
-        |> with_child_stream(stream_metadata, &Agent.resume(agent, resume, opts ++ &1))
+        |> with_child_stream(stream_metadata, &child_resume(agent, resume, opts ++ &1))
         |> resume_result()
 
       :none ->
@@ -974,7 +977,23 @@ defmodule BeamWeaver.Agent.Middleware.Subagents do
   defp child_snapshot(%Built{compiled: compiled}, opts),
     do: Graph.Compiled.get_state(compiled, Keyword.fetch!(opts, :config))
 
-  defp child_snapshot(agent, opts), do: Agent.get_state(agent, opts)
+  defp child_snapshot(agent, opts) do
+    if graph_module?(agent), do: agent.get_state(opts), else: Agent.get_state(agent, opts)
+  end
+
+  # A graph module runs with its own functions, an agent with `BeamWeaver.Agent`.
+  defp child_invoke(agent, input, opts) do
+    if graph_module?(agent), do: agent.invoke(input, opts), else: Agent.invoke(agent, input, opts)
+  end
+
+  defp child_resume(agent, resume, opts) do
+    if graph_module?(agent), do: agent.resume(resume, opts), else: Agent.resume(agent, resume, opts)
+  end
+
+  defp graph_module?(agent) do
+    is_atom(agent) and not BeamWeaver.Behaviour.exported?(agent, :__beam_weaver_agent_spec__, 0) and
+      BeamWeaver.Behaviour.implemented_by?(agent, BeamWeaver.Graph)
+  end
 
   # A resumed step reruns every `task` call. The resume value belongs to the
   # subagent whose interrupt the parent paused with; other paused subagents
@@ -1355,7 +1374,12 @@ defmodule BeamWeaver.Agent.Middleware.Subagents do
     do: declared_recursion_limit(agent) || parent_recursion_limit(runtime)
 
   defp declared_recursion_limit(%Built{}), do: nil
-  defp declared_recursion_limit(module), do: module.__beam_weaver_agent_spec__().recursion_limit
+
+  defp declared_recursion_limit(module) do
+    if graph_module?(module),
+      do: ModuleRunner.recursion_limit(module),
+      else: module.__beam_weaver_agent_spec__().recursion_limit
+  end
 
   # A node sees the steps its run has left; the parent run's limit is those
   # plus the current step.

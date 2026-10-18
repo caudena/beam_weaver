@@ -24,6 +24,7 @@ defmodule BeamWeaver.FormatterTest do
 
     dsl =
       BeamWeaver.Agent.DSL.imports() ++
+        BeamWeaver.Graph.DSL.imports() ++
         (BeamWeaver.Tool.__info__(:macros) -- internal) ++
         (BeamWeaver.Schema.__info__(:macros) -- internal) ++ @block_words
 

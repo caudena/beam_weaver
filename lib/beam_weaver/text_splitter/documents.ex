@@ -116,7 +116,7 @@ defmodule BeamWeaver.TextSplitter.Documents do
 
   # The chunks of a document with an id get ids derived from it ("refunds:0",
   # "refunds:1", ...), so storing them keeps every chunk, and the document's id
-  # as "parent_id", so indexing can tell which chunks a document no longer has.
+  # as "parent_id", so each chunk names the document it came from.
   # A chunk split again keeps the parent id it already has.
   defp with_chunk_ids(chunks, %Document{id: nil}), do: chunks
 

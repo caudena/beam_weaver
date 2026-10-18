@@ -11,6 +11,16 @@ defmodule BeamWeaver.SkillTest do
       assert {:ok, %Skill{metadata: %{"owner" => ""}}} = Skill.parse(document)
     end
 
+    test "an empty metadata mapping is no metadata, and an empty mapping isn't a tool list" do
+      # `metadata: {}` failed with "skill metadata must be a map".
+      document = "---\nname: notes\ndescription: Take notes.\nmetadata: {}\n---\nWrite notes.\n"
+      assert {:ok, %Skill{metadata: metadata}} = Skill.parse(document)
+      assert metadata == %{}
+
+      document = "---\nname: notes\ndescription: Take notes.\nallowed-tools: {}\n---\nWrite notes.\n"
+      assert {:error, %Error{details: %{field: "allowed-tools"}}} = Skill.parse(document)
+    end
+
     test "parses the complete supported metadata subset" do
       document = """
       ---

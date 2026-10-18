@@ -8,6 +8,7 @@ defmodule BeamWeaver.Application do
     BeamWeaver.Provider.Registry.load_from_config!()
 
     children = [
+      BeamWeaver.Provider.StreamFailure,
       BeamWeaver.Transport.Supervisor,
       BeamWeaver.Tracing.Supervisor,
       BeamWeaver.RateLimiter.Supervisor,

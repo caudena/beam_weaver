@@ -251,25 +251,13 @@ defmodule BeamWeaver.Skill do
   end
 
   defp decode_frontmatter(yaml) do
-    documents =
-      :yamerl_constr.string(String.to_charlist(yaml), keep_duplicate_keys: true, str_node_as_binary: true)
-
-    case documents do
-      [document] ->
-        with :ok <- validate_yaml_unique_keys(document) do
-          case normalize_yaml(document) do
-            %{} = frontmatter -> {:ok, frontmatter}
-            _other -> invalid("skill frontmatter must be a map")
-          end
-        end
-
-      _other ->
-        invalid("skill frontmatter must contain exactly one YAML document")
+    case BeamWeaver.YAML.decode(yaml, unique_keys: true) do
+      {:ok, %{} = frontmatter} -> {:ok, frontmatter}
+      {:ok, _other} -> invalid("skill frontmatter must be a map")
+      {:error, :duplicate_keys} -> invalid("skill frontmatter contains duplicate fields")
+      {:error, :not_one_document} -> invalid("skill frontmatter must contain exactly one YAML document")
+      {:error, {:invalid, _reason}} -> invalid("skill frontmatter is invalid YAML")
     end
-  rescue
-    _exception -> invalid("skill frontmatter is invalid YAML")
-  catch
-    _kind, _reason -> invalid("skill frontmatter is invalid YAML")
   end
 
   defp validate_fields(frontmatter) do
@@ -457,32 +445,4 @@ defmodule BeamWeaver.Skill do
     details = if is_binary(field), do: %{field: field}, else: %{}
     {:error, Error.new(:invalid_skill, message, details)}
   end
-
-  # Strings come back as binaries, so a list is a mapping (key-value pairs,
-  # kept as a list to find duplicate keys) or a sequence, and "" stays "".
-  defp normalize_yaml(value) when is_list(value) do
-    if yaml_mapping?(value) do
-      Map.new(value, fn {key, map_value} -> {key, normalize_yaml(map_value)} end)
-    else
-      Enum.map(value, &normalize_yaml/1)
-    end
-  end
-
-  defp normalize_yaml(:null), do: nil
-  defp normalize_yaml(value) when is_atom(value) and not is_boolean(value), do: to_string(value)
-  defp normalize_yaml(value), do: value
-
-  defp yaml_mapping?(value), do: value != [] and Enum.all?(value, &match?({_key, _value}, &1))
-
-  defp validate_yaml_unique_keys(value) when is_list(value) do
-    {keys, children} = if yaml_mapping?(value), do: Enum.unzip(value), else: {[], value}
-
-    if length(keys) == MapSet.size(MapSet.new(keys)) do
-      Enum.find_value(children, :ok, fn child -> with :ok <- validate_yaml_unique_keys(child), do: nil end)
-    else
-      invalid("skill frontmatter contains duplicate fields")
-    end
-  end
-
-  defp validate_yaml_unique_keys(_value), do: :ok
 end

@@ -54,7 +54,6 @@
 ## Retrieval
 
 * [Retrieval](retrieval.md)
-* [Prompts and Parsers](prompts_and_parsers.md)
 
 ## Production
 

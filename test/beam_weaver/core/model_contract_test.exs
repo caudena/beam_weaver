@@ -3,22 +3,9 @@ defmodule BeamWeaver.Core.ModelContractTest do
 
   alias BeamWeaver.Core.ChatModel
   alias BeamWeaver.Core.EmbeddingModel
-  alias BeamWeaver.Core.LLM
   alias BeamWeaver.Core.Message
-  alias BeamWeaver.Prompt
   alias BeamWeaver.Stream.Envelope
   alias BeamWeaver.Stream.Events
-
-  defmodule BadStreamLLM do
-    @behaviour BeamWeaver.Core.LLM
-
-    defstruct []
-
-    @impl true
-    def complete(_model, _prompt, _opts), do: {:ok, "fallback"}
-
-    def stream(_model, _prompt, _opts), do: {:ok, ["good", %{bad: true}]}
-  end
 
   defmodule InvokeOnlyChatModel do
     @behaviour BeamWeaver.Core.ChatModel
@@ -52,7 +39,7 @@ defmodule BeamWeaver.Core.ModelContractTest do
     model = %InvokeOnlyChatModel{reply: "native"}
 
     assert [{:ok, first}, {:ok, second}] =
-             ChatModel.batch(model, ["one", %Prompt.Value{text: "two"}])
+             ChatModel.batch(model, ["one", [Message.user("two")]])
 
     assert first.content == "native: one"
     assert second.content == "native: two"
@@ -115,43 +102,5 @@ defmodule BeamWeaver.Core.ModelContractTest do
     assert {:ok, random_two} = EmbeddingModel.embed_query(random, "seeded")
     assert length(random_one) == 4
     refute random_one == random_two
-  end
-
-  test "LLM wrapper rejects non-string completions" do
-    assert {:error, error} =
-             LLM.complete(%BeamWeaver.TestSupport.Conformance.Fakes.BadLLM{}, "hello")
-
-    assert error.type == :invalid_response
-  end
-
-  test "LLM facade exposes native streaming and validates list chunks" do
-    model = %BeamWeaver.Models.FakeLLM{stream_chunks: ["a", "b"]}
-
-    assert {:ok, ["a", "b"]} = LLM.stream(model, "hello")
-
-    assert {:error, error} = LLM.stream(%BadStreamLLM{}, "hello")
-    assert error.type == :invalid_response
-  end
-
-  test "fake LLM can rotate response lists and stream selected responses as chunks" do
-    model = BeamWeaver.Models.FakeLLM.new(responses: ["ab", "cd"])
-
-    assert {:ok, "ab"} = LLM.complete(model, "first")
-    assert {:ok, "cd"} = LLM.complete(model, "second")
-    assert {:ok, "ab"} = LLM.complete(model, "third")
-
-    assert {:ok, ["c", "d"]} = LLM.stream(model, "streamed")
-    assert {:ok, ["a", "b"]} = LLM.stream(model, "async streamed")
-  end
-
-  test "LLM facade exposes invoke and batch" do
-    model = %BeamWeaver.Models.FakeLLM{response: "completion", parent: self()}
-
-    assert {:ok, "completion"} = LLM.invoke(model, "single")
-    assert_received {:fake_llm_call, "single", []}
-
-    assert [{:ok, "completion"}, {:ok, "completion"}] = LLM.batch(model, ["a", "b"])
-    assert_received {:fake_llm_call, "a", []}
-    assert_received {:fake_llm_call, "b", []}
   end
 end

@@ -1,5 +1,5 @@
 defmodule BeamWeaver.Examples.ResearchPipelineGraph do
-  use BeamWeaver.Agent
+  use BeamWeaver.Graph
 
   name("ResearchPipeline")
 

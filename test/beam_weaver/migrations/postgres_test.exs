@@ -234,6 +234,42 @@ defmodule BeamWeaver.Migrations.PostgresTest do
     assert {:ok, [_first, _second]} = BeamWeaver.VectorStore.similarity_search(store, "alpha", k: 2)
   end
 
+  test "adapters: :all leaves out the record manager's table, and down with :all drops it" do
+    schema = LivePostgres.unique_schema()
+    opts = [prefix: schema, adapters: :all]
+
+    all = LivePostgres.migrate(opts)
+    # A database that created the record manager's table before it was removed.
+    records = LivePostgres.migrate(prefix: schema, adapters: [:record_manager])
+
+    on_exit(fn ->
+      LivePostgres.drop_schema(schema)
+      LivePostgres.clear_migration(all)
+      LivePostgres.clear_migration(records)
+    end)
+
+    assert LivePostgres.table_exists?("beam_weaver_checkpoints", schema)
+    assert LivePostgres.table_exists?("beam_weaver_indexing_records", schema)
+
+    LivePostgres.rollback(all, opts)
+
+    refute LivePostgres.table_exists?("beam_weaver_checkpoints", schema)
+    refute LivePostgres.table_exists?("beam_weaver_indexing_records", schema)
+  end
+
+  test "adapters: :all creates the tables of the current adapters only" do
+    schema = LivePostgres.unique_schema()
+    version = LivePostgres.migrate(prefix: schema, adapters: :all)
+
+    on_exit(fn ->
+      LivePostgres.drop_schema(schema)
+      LivePostgres.clear_migration(version)
+    end)
+
+    assert LivePostgres.table_exists?("beam_weaver_vectors", schema)
+    refute LivePostgres.table_exists?("beam_weaver_indexing_records", schema)
+  end
+
   test "keeps the tables of every adapter in the schema that prefix: names" do
     schema = LivePostgres.unique_schema()
     checkpoints = LivePostgres.unique_table("bw_prefix_checkpoints")
@@ -299,11 +335,6 @@ defmodule BeamWeaver.Migrations.PostgresTest do
     assert {:ok, [_id]} = BeamWeaver.VectorStore.add_documents(vectors, [BeamWeaver.Core.Document.new!("alpha")])
     assert {:ok, [%{content: "alpha"}]} = BeamWeaver.VectorStore.similarity_search(vectors, "alpha", k: 1)
 
-    records = BeamWeaver.Indexing.RecordManager.EctoPostgres.new(repo: PostgresRepo, prefix: schema, table: "records")
-    record = %BeamWeaver.Indexing.Record{id: "doc-1", source_id: "source-a", hash: "hash-a"}
-    assert :ok = BeamWeaver.Indexing.RecordManager.put(records, record)
-    assert {:ok, %{id: "doc-1"}} = BeamWeaver.Indexing.RecordManager.get(records, "doc-1")
-
     {:ok, %{rows: counts}} =
       Ecto.Adapters.SQL.query(
         PostgresRepo,
@@ -314,7 +345,8 @@ defmodule BeamWeaver.Migrations.PostgresTest do
         []
       )
 
-    assert counts == [[1, 1, 1]]
+    # The record manager's table is still created, and nothing writes to it.
+    assert counts == [[1, 1, 0]]
     refute LivePostgres.table_exists?(checkpoints)
   end
 

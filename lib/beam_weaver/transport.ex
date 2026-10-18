@@ -17,6 +17,11 @@ defmodule BeamWeaver.Transport do
 
   @optional_callbacks stream: 3, stream_reduce: 4
 
+  @doc false
+  # The transport a request goes through when the caller names none.
+  def default(nil), do: BeamWeaver.Transport.ReqFinch
+  def default(transport), do: transport
+
   @doc """
   Executes a transport request through `transport`.
   """

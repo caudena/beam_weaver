@@ -8,8 +8,7 @@ defmodule BeamWeaver.Provider.Options do
   def option(model, opts, key), do: Keyword.get(opts, key, Map.get(model, key))
 
   @doc false
-  def default_transport(nil), do: BeamWeaver.Transport.ReqFinch
-  def default_transport(transport), do: transport
+  defdelegate default_transport(transport), to: BeamWeaver.Transport, as: :default
 
   @doc false
   def merge_optional_map(map, nil), do: map

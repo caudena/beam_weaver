@@ -282,25 +282,25 @@ function that takes the `%BeamWeaver.Core.Error{}` and returns the text.
 
 ## Without an agent
 
-`BeamWeaver.Models.with_structured_output/3` wraps a chat model so that each
-call returns structured data. It picks a strategy the same way, and the answer
-is in the reply's `metadata.structured_response`:
+For structured data from one model call, pass `response_format:` to
+`BeamWeaver.Core.ChatModel.invoke/3`: a `name:` and the schema as JSON Schema
+under `schema:`. A model with native structured output answers in that
+schema, and the decoded answer is in the reply's `metadata.parsed`:
 
 ```elixir
 alias BeamWeaver.Core.ChatModel
 alias BeamWeaver.Models.FakeChatModel
 
 {:ok, model} = BeamWeaver.Models.init_chat_model("fake:chat", responses: [FakeChatModel.final(%{category: "billing", priority: "low"})])
-triager = BeamWeaver.Models.with_structured_output(model, MyApp.Schemas.Triage)
+format = %{name: "triage", schema: MyApp.Schemas.Triage.json_schema()}
 
-{:ok, reply} = ChatModel.invoke(triager, "I was charged twice for order A-1001.")
-reply.metadata.structured_response
+{:ok, reply} = ChatModel.invoke(model, "I was charged twice for order A-1001.", response_format: format)
+reply.metadata.parsed
 #=> %{"category" => "billing", "priority" => "low"}
 ```
 
-An answer that fails the schema returns `{:error, %BeamWeaver.Core.Error{}}`,
-as in an agent. To pull JSON or XML out of an ordinary reply instead, use an
-[output parser](prompts_and_parsers.md#output-parsers).
+The rest of this page is what an agent adds: a strategy that suits each
+model, the check of the answer against the schema, and the retries.
 
 ## Test with the fake model
 
@@ -316,5 +316,5 @@ your code handles a bad answer, script one that breaks the schema, as in
 - [`BeamWeaver.Schema`](https://hexdocs.pm/beam_weaver/BeamWeaver.Schema.html): declare schemas with `field`
 - [`BeamWeaver.Agent.StructuredOutput`](https://hexdocs.pm/beam_weaver/BeamWeaver.Agent.StructuredOutput.html): the `auto`, `tool` and `provider` strategies
 - [`BeamWeaver.Agent.Middleware.StructuredOutputRetry`](https://hexdocs.pm/beam_weaver/BeamWeaver.Agent.Middleware.StructuredOutputRetry.html): retry answers that fail validation
-- [`BeamWeaver.Models`](https://hexdocs.pm/beam_weaver/BeamWeaver.Models.html): `with_structured_output/3` for direct model calls
+- [`BeamWeaver.Core.ChatModel`](https://hexdocs.pm/beam_weaver/BeamWeaver.Core.ChatModel.html): `invoke/3` with `response_format:` for direct model calls
 - [`BeamWeaver.Models.FakeChatModel`](https://hexdocs.pm/beam_weaver/BeamWeaver.Models.FakeChatModel.html): script structured answers with `final/1`

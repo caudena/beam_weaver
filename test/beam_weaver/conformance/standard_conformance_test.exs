@@ -1,17 +1,10 @@
 defmodule BeamWeaver.TestSupport.Conformance.StandardConformanceFixtures do
   def cache, do: BeamWeaver.Cache.ETS.new(visibility: :private)
 
-  def chat_history_session do
-    BeamWeaver.Core.ChatHistory.ETS.new()
-    |> BeamWeaver.Core.ChatHistory.ETS.for_session("standard")
-  end
-
   def character_splitter, do: BeamWeaver.TextSplitter.character(chunk_size: 10, chunk_overlap: 1)
 
   def vector_store,
     do: BeamWeaver.VectorStore.ETS.new(embedding: %BeamWeaver.Models.FakeEmbeddingModel{})
-
-  def record_manager, do: BeamWeaver.Indexing.RecordManager.ETS.new(namespace: :standard)
 
   def retriever do
     store = vector_store()
@@ -31,11 +24,6 @@ defmodule BeamWeaver.TestSupport.Conformance.CacheETSTest do
     cache: &BeamWeaver.TestSupport.Conformance.StandardConformanceFixtures.cache/0
 end
 
-defmodule BeamWeaver.TestSupport.Conformance.ChatHistoryETSTest do
-  use BeamWeaver.TestSupport.Conformance.ChatHistoryCase,
-    session: &BeamWeaver.TestSupport.Conformance.StandardConformanceFixtures.chat_history_session/0
-end
-
 defmodule BeamWeaver.TestSupport.Conformance.TextSplitterCharacterTest do
   use BeamWeaver.TestSupport.Conformance.TextSplitterCase,
     splitter: &BeamWeaver.TestSupport.Conformance.StandardConformanceFixtures.character_splitter/0
@@ -44,17 +32,6 @@ end
 defmodule BeamWeaver.TestSupport.Conformance.VectorStoreETSTest do
   use BeamWeaver.TestSupport.Conformance.VectorStoreCase,
     store: &BeamWeaver.TestSupport.Conformance.StandardConformanceFixtures.vector_store/0
-end
-
-defmodule BeamWeaver.TestSupport.Conformance.RecordManagerETSTest do
-  use BeamWeaver.TestSupport.Conformance.RecordManagerCase,
-    record_manager: &BeamWeaver.TestSupport.Conformance.StandardConformanceFixtures.record_manager/0
-end
-
-defmodule BeamWeaver.TestSupport.Conformance.IndexingETSTest do
-  use BeamWeaver.TestSupport.Conformance.IndexingCase,
-    vector_store: &BeamWeaver.TestSupport.Conformance.StandardConformanceFixtures.vector_store/0,
-    record_manager: &BeamWeaver.TestSupport.Conformance.StandardConformanceFixtures.record_manager/0
 end
 
 defmodule BeamWeaver.TestSupport.Conformance.RetrieverVectorStoreTest do

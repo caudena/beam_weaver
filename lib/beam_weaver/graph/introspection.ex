@@ -207,7 +207,7 @@ defmodule BeamWeaver.Graph.Introspection do
 
   defp subgraphs(graph) do
     graph.nodes
-    |> Enum.filter(fn {_name, spec} -> spec.kind in [:subgraph, :agent] end)
+    |> Enum.filter(fn {_name, spec} -> spec.kind == :subgraph end)
     |> Map.new(fn {name, spec} -> {name, spec.metadata} end)
   end
 

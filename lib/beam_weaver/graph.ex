@@ -27,14 +27,61 @@ defmodule BeamWeaver.Graph do
   #=> "Routed to the billing queue."
   ```
 
-  In an application, return the graph from the `graph/0` function of a module
-  with `use BeamWeaver.Agent`; the module then gets `invoke/2`,
-  `stream_events/2` and `resume/2`.
-
   The [Graphs](graphs.md) guide covers routing, parallel branches, `Command`
   and `Send`; [Graph State](graph_state.md) covers how updates merge.
+
+  ## Graph modules
+
+  In an application, define a graph in a module with `use BeamWeaver.Graph`,
+  and return the builder from `c:graph/0`:
+
+  ```elixir
+  defmodule MyApp.Triage do
+    use BeamWeaver.Graph
+
+    alias BeamWeaver.Graph
+
+    def graph do
+      Graph.new()
+      |> Graph.add_node(:classify, &classify/1)
+      |> Graph.add_edge(Graph.start(), :classify)
+      |> Graph.add_edge(:classify, Graph.end_node())
+    end
+
+    def classify(%{subject: subject}), do: %{category: if(subject =~ ~r/refund/i, do: :billing, else: :general)}
+  end
+
+  {:ok, state} = MyApp.Triage.invoke(%{subject: "Refund for order A-1001"})
+  state.category
+  #=> :billing
+  ```
+
+  The module gets `invoke/2`, `stream_events/2`, `resume/2` and
+  `get_state/1`, which take the options of the functions of the same name in
+  `BeamWeaver.Graph.Compiled`, and compile the graph on each call with that
+  call's `checkpointer:`, `store:` and `cache:`. Instead of defining
+  `graph/0`, a module can declare its nodes and edges; see
+  [Static graphs as modules](graphs.md#static-graphs-as-modules).
+
+  | Declaration | What it does |
+  | --- | --- |
+  | `checkpointer`, `store`, `cache` | The storage the graph compiles with when a call brings none. |
+  | `interrupt_before [...]`, `interrupt_after [...]` | Pauses the run before or after these nodes; `interrupts before: [...], after: [...]` declares both. |
+  | `recursion_limit 50` | The most steps one run may take. |
+  | `step_timeout`, `run_timeout` | Time limits, in milliseconds, for each step and the whole run. |
+  | `name "..."` | The compiled graph's name. |
+
+  Declarations are evaluated each time the module runs. For that reason, a
+  declaration that creates an ETS saver, store or cache, such as
+  `checkpointer BeamWeaver.Checkpoint.ETS.new()`, doesn't compile: create it
+  once and pass it per call, or declare storage kept in your database.
+
+  A graph module implements this module's behaviour, and so does an agent
+  module (`use BeamWeaver.Agent`). Either one runs as a node of another graph,
+  and `c:compiled_graph/1` compiles it with a call's options.
   """
 
+  alias BeamWeaver.Core.Error
   alias BeamWeaver.Graph.ChannelSpec
   alias BeamWeaver.Graph.Compiled
   alias BeamWeaver.Graph.Compiler
@@ -52,6 +99,24 @@ defmodule BeamWeaver.Graph do
 
   @typedoc "A node name. `start/0` and `end_node/0` name the entry and the exit."
   @type node_name :: atom() | String.t()
+
+  @doc "The module's graph, built with `new/1` or compiled."
+  @callback graph() :: t() | Compiled.t()
+
+  @doc """
+  The module's graph, compiled with `opts`: `:checkpointer`, `:store`,
+  `:cache`, `:interrupt_before`, `:interrupt_after`, `:step_timeout`,
+  `:run_timeout` and `:name` replace what the module declares.
+  """
+  @callback compiled_graph(opts :: keyword()) :: {:ok, Compiled.t()} | {:error, Error.t()}
+
+  @doc "The checkpointer the module declares, or `nil`."
+  @callback checkpointer() :: struct() | nil
+
+  @doc "The memory store the module declares, or `nil`."
+  @callback store() :: struct() | nil
+
+  defmacro __using__(_opts), do: BeamWeaver.Graph.DSL.using()
 
   @doc "The entry of a graph, for edges such as `add_edge(graph, Graph.start(), :first)`."
   def start, do: @start
@@ -109,8 +174,8 @@ defmodule BeamWeaver.Graph do
   `fun` takes the state, or the state and the run's runtime, and returns a map
   of the keys it changes, a `BeamWeaver.Graph.Command`, a list of
   `BeamWeaver.Graph.Send`, or `{:error, reason}` to fail. A compiled graph, or
-  a module with `use BeamWeaver.Agent`, runs as a subgraph, and the keys it
-  changed become the node's update.
+  a graph or agent module, runs as a subgraph, and the keys it changed become
+  the node's update.
 
   Options:
 

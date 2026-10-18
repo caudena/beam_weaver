@@ -58,9 +58,9 @@ defmodule BeamWeaver.Graph.Execution.NodeInvoker do
     end)
   end
 
-  # A subgraph, or an agent module run as one, is a graph of its own: without an
-  # `input:` projection it gets the parent's public state, never the parent's
-  # private, managed or internal keys.
+  # A subgraph, or a graph or agent module run as one, is a graph of its own:
+  # without an `input:` projection it gets the parent's public state, never the
+  # parent's private, managed or internal keys.
   defp subgraph_state(%NodeSpec{input: nil, fun: fun}, state, %StateGraph{} = graph) do
     if subgraph_node?(fun), do: ChannelLookup.public_state(graph, state), else: state
   end
@@ -68,7 +68,7 @@ defmodule BeamWeaver.Graph.Execution.NodeInvoker do
   defp subgraph_state(_spec, state, _graph), do: state
 
   defp subgraph_node?(%{__struct__: @compiled}), do: true
-  defp subgraph_node?(module) when is_atom(module), do: BeamWeaver.Behaviour.implemented_by?(module, BeamWeaver.Agent)
+  defp subgraph_node?(module) when is_atom(module), do: BeamWeaver.Behaviour.implemented_by?(module, BeamWeaver.Graph)
   defp subgraph_node?(_fun), do: false
 
   @spec node_error(String.t() | nil, term()) :: Error.t()
@@ -83,10 +83,8 @@ defmodule BeamWeaver.Graph.Execution.NodeInvoker do
 
   defp call_node(module, state, runtime) when is_atom(module) do
     cond do
-      BeamWeaver.Behaviour.implemented_by?(module, BeamWeaver.Agent) ->
-        with {:ok, compiled} <- BeamWeaver.Agent.compiled_graph(module) do
-          call_node(compiled, state, runtime)
-        end
+      BeamWeaver.Behaviour.implemented_by?(module, BeamWeaver.Graph) ->
+        with {:ok, compiled} <- module.compiled_graph([]), do: call_node(compiled, state, runtime)
 
       BeamWeaver.Behaviour.exported?(module, :invoke, 2) ->
         {:ok, module.invoke(state, runtime)}

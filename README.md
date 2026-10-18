@@ -79,7 +79,7 @@ it without one.
 | [Graphs](docs/graphs.md) | Workflows with branches, parallel steps, subgraphs and interrupts. |
 | [Durable execution](docs/durable_execution.md) | Checkpoints in Postgres or SQLite, resume after failures, time travel. |
 | [Deep agents](docs/deep_agents.md) | Planning, a virtual filesystem, skills, subagents and sandboxed code execution. |
-| [Retrieval](docs/retrieval.md) | Text splitters, embeddings, vector stores, retrievers and incremental indexing. |
+| [Retrieval](docs/retrieval.md) | Text splitters, embeddings, vector stores and retrievers. |
 | [Testing](docs/testing.md) | Scripted fake models and recorded provider responses for fast, offline tests. |
 | [Tracing](docs/tracing.md) | Run trees with token usage and costs, exported to WeaveScope. |
 

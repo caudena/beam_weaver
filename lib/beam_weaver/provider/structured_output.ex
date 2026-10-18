@@ -85,7 +85,7 @@ defmodule BeamWeaver.Provider.StructuredOutput do
 
   defp schema_parser(schema) when is_map(schema) do
     schema = BeamWeaver.MapShape.normalize_value(schema)
-    fn parsed -> BeamWeaver.OutputParser.validate_schema(schema, parsed) end
+    fn parsed -> BeamWeaver.Schema.Validator.validate(schema, parsed) end
   end
 
   defp schema_parser(_schema), do: nil

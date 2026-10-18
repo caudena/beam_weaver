@@ -97,7 +97,7 @@ lists each one with the tools it must call.
 
 | Script | What it shows | Runs |
 |---|---|---|
-| [basic_graph.exs](https://github.com/caudena/beam_weaver/blob/master/examples/basic_graph.exs) | A one-node graph in an agent module | offline |
+| [basic_graph.exs](https://github.com/caudena/beam_weaver/blob/master/examples/basic_graph.exs) | A one-node graph in a graph module | offline |
 | [branching_waiting_graph.exs](https://github.com/caudena/beam_weaver/blob/master/examples/branching_waiting_graph.exs) | Route with a command and fan out with sends | offline |
 | [durable_interrupt_resume_graph.exs](https://github.com/caudena/beam_weaver/blob/master/examples/durable_interrupt_resume_graph.exs) | Pause a graph for input and resume it from a checkpoint | offline |
 | [research_pipeline_graph.exs](https://github.com/caudena/beam_weaver/blob/master/examples/research_pipeline_graph.exs) | Node dependencies, conditions and bounded revision loops | offline |
@@ -106,8 +106,7 @@ lists each one with the tools it must call.
 
 | Script | What it shows | Runs |
 |---|---|---|
-| [retrieval_indexing_agent.exs](https://github.com/caudena/beam_weaver/blob/master/examples/retrieval_indexing_agent.exs) | Split, index and retrieve documents with fake embeddings | offline |
-| [prompt_parser_pipeline.exs](https://github.com/caudena/beam_weaver/blob/master/examples/prompt_parser_pipeline.exs) | Fill a prompt template and parse a JSON reply | offline |
+| [retrieval_indexing_agent.exs](https://github.com/caudena/beam_weaver/blob/master/examples/retrieval_indexing_agent.exs) | Split documents into a vector store and give an agent a search tool, with fake embeddings | offline |
 | [streaming_redaction.exs](https://github.com/caudena/beam_weaver/blob/master/examples/streaming_redaction.exs) | Redact email addresses from a message stream | offline |
 | [streaming_tool_call_chunks.exs](https://github.com/caudena/beam_weaver/blob/master/examples/streaming_tool_call_chunks.exs) | Rebuild tool calls from streamed chunks | offline |
 | [interpreter_adapter.exs](https://github.com/caudena/beam_weaver/blob/master/examples/interpreter_adapter.exs) | A custom interpreter with snapshot and restore | offline |

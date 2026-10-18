@@ -67,8 +67,13 @@ defmodule BeamWeaver.Agent do
   `checkpointer BeamWeaver.Checkpoint.ETS.new()`, doesn't compile, because
   every call would get a new, empty one. Create it once and pass it per call
   with `checkpointer:`, `store:` or `cache:`, or declare storage kept in your
-  database, such as `BeamWeaver.Checkpoint.Ecto`. Instead of a model, a
-  module can define `graph/0` to run a graph built with `BeamWeaver.Graph`.
+  database, such as `BeamWeaver.Checkpoint.Ecto`.
+
+  Every agent module declares a model. A module that runs a graph of your own
+  nodes instead is a graph module, with `use BeamWeaver.Graph`. An agent
+  module implements the `BeamWeaver.Graph` behaviour too, so it runs as a
+  node of a graph, and its `c:BeamWeaver.Graph.compiled_graph/1` compiles
+  the agent loop.
 
   The [Agents](agents.md) guide covers each declaration, and
   [Deep Agents](deep_agents.md) covers the capabilities.
@@ -83,33 +88,21 @@ defmodule BeamWeaver.Agent do
   @type agent_module :: module()
   @type built_agent :: Built.t()
 
-  @callback graph() :: BeamWeaver.Graph.t() | Compiled.t()
   @doc false
   @callback __beam_weaver_agent_spec__() :: struct()
-  @callback checkpointer() :: struct() | nil
-  @callback store() :: struct() | nil
 
   defmacro __using__(_opts) do
     BeamWeaver.Agent.Use.quoted()
   end
 
-  defmacro node(name, fun_ast, opts \\ []) do
-    quote bind_quoted: [name: name, fun_ast: Macro.escape(fun_ast), opts: opts] do
-      @beam_weaver_nodes {name, fun_ast, opts}
-    end
-  end
-
-  defmacro edge(start_node, end_node, opts \\ []) do
-    quote bind_quoted: [start_node: start_node, end_node: end_node, opts: opts] do
-      @beam_weaver_edges {start_node, end_node, opts}
-    end
-  end
-
-  defmacro reducer(key, reducer_ast) do
-    quote bind_quoted: [key: key, reducer_ast: Macro.escape(reducer_ast)] do
-      @beam_weaver_reducers {key, reducer_ast}
-    end
-  end
+  @doc false
+  defmacro graph(_block), do: DSL.graph_declaration!(__CALLER__, :graph)
+  @doc false
+  defmacro node(_name, _fun, _opts \\ []), do: DSL.graph_declaration!(__CALLER__, :node)
+  @doc false
+  defmacro edge(_start_node, _end_node, _opts \\ []), do: DSL.graph_declaration!(__CALLER__, :edge)
+  @doc false
+  defmacro reducer(_key, _reducer), do: DSL.graph_declaration!(__CALLER__, :reducer)
 
   defmacro model(expr_ast, opts_ast \\ nil) do
     quote bind_quoted: [expr_ast: Macro.escape(expr_ast), opts_ast: Macro.escape(opts_ast)] do
@@ -144,16 +137,6 @@ defmodule BeamWeaver.Agent do
       quote bind_quoted: [attr: attr, expr_ast: Macro.escape(expr_ast)] do
         Module.put_attribute(__MODULE__, attr, expr_ast)
       end
-    end
-  end
-
-  defmacro graph(do: block) do
-    attribute_quotes =
-      for {attr, entry} <- DSL.graph_block_entries!(__CALLER__, block),
-          do: quote(do: Module.put_attribute(__MODULE__, unquote(attr), unquote(entry)))
-
-    quote do
-      (unquote_splicing(attribute_quotes))
     end
   end
 
@@ -229,38 +212,6 @@ defmodule BeamWeaver.Agent do
       :tool -> BeamWeaver.Agent.StructuredOutput.tool(schema, opts)
       :provider -> BeamWeaver.Agent.StructuredOutput.provider(schema, opts)
       other -> raise ArgumentError, "unknown response_schema strategy #{inspect(other)}"
-    end
-  end
-
-  def __add_graph_channel__(graph, key, merge, opts) do
-    alias BeamWeaver.Graph.Channels.BinaryOperatorAggregate
-    alias BeamWeaver.Graph.Channels.LastValue
-
-    case merge do
-      :last ->
-        BeamWeaver.Graph.add_channel(graph, key, LastValue, opts)
-
-      :map ->
-        BeamWeaver.Graph.add_channel(
-          graph,
-          key,
-          {BinaryOperatorAggregate, &Map.merge/2},
-          Keyword.put_new(opts, :initial, %{})
-        )
-
-      :list ->
-        BeamWeaver.Graph.add_channel(
-          graph,
-          key,
-          {BinaryOperatorAggregate, fn left, right -> List.wrap(left) ++ List.wrap(right) end},
-          Keyword.put_new(opts, :initial, [])
-        )
-
-      reducer when is_function(reducer, 2) ->
-        BeamWeaver.Graph.add_channel(graph, key, {BinaryOperatorAggregate, reducer}, opts)
-
-      other ->
-        raise ArgumentError, "unknown graph state channel merge #{inspect(other)}"
     end
   end
 
@@ -368,6 +319,7 @@ defmodule BeamWeaver.Agent do
 
   @doc """
   Compiles an agent module's graph, for example to use the agent as a subgraph.
+  The module's own `c:BeamWeaver.Graph.compiled_graph/1` calls it.
   """
   @spec compiled_graph(agent_module(), keyword()) :: {:ok, Compiled.t()} | {:error, Error.t()}
   defdelegate compiled_graph(agent_module, opts \\ []), to: BeamWeaver.Agent.Runner

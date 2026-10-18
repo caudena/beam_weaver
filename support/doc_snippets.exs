@@ -336,6 +336,7 @@ defmodule BeamWeaver.TestSupport.DocSnippets do
       quote do
         defmodule unquote(Module.concat(state.namespace, "Fragment#{block.line}")) do
           unquote(Map.get(@fragment_uses, block.arg))
+          unquote(fragment_model(block.arg, body))
           unquote(body)
         end
       end
@@ -343,6 +344,14 @@ defmodule BeamWeaver.TestSupport.DocSnippets do
     compile!(block, {:__block__, [], env_forms(state.env) ++ [module]})
     state
   end
+
+  # Every agent module declares a model; an agent fragment without one gets
+  # the scripted one.
+  defp fragment_model("agent", body) do
+    unless Enum.any?(top_level(body), &match?({:model, _meta, [_ | _]}, &1)), do: quote(do: model("fake:chat"))
+  end
+
+  defp fragment_model(_arg, _body), do: nil
 
   defp quote!(%Block{} = block) do
     case Code.string_to_quoted(block.code, file: block.file, line: block.line, columns: true) do

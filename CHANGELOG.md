@@ -224,6 +224,18 @@ subagents](docs/subagents.md#declare-subagents).
 
 #### Graphs and streaming
 
+**Graph modules.** `use BeamWeaver.Graph` turns a module into a graph:
+return the builder from `graph/0`, or declare its nodes and edges with
+`node`, `edge`, `reducer` and `graph do ... end`. The module gets `invoke/2`,
+`stream_events/2`, `resume/2` and `get_state/1`, and compiles its graph on
+each call with that call's options. It declares `checkpointer`, `store`,
+`cache`, `interrupt_before`, `interrupt_after`, `recursion_limit`,
+`step_timeout`, `run_timeout` and `name`. Graph and agent modules implement
+the `BeamWeaver.Graph` behaviour, so either runs as a node of another graph,
+a graph module also runs as a `%BeamWeaver.Agent.Subagent.Compiled{}`
+subagent, and `compiled_graph/1` returns the module's compiled graph. See
+[Graphs](docs/graphs.md#build-and-run-a-graph).
+
 **Choose the events you stream.** `stream_events/3` on agents and graphs
 honors `stream_mode:`, live or not: one of the modes
 `BeamWeaver.Stream.event_mode/1` returns, or a list of them, such as
@@ -347,8 +359,8 @@ to 256 codes. See [Errors](docs/models.md#errors).
 #### Memory, storage and retrieval
 
 **Tables in a Postgres schema.** `prefix:` on `Checkpoint.Ecto`,
-`Memory.Ecto`, `Cache.Ecto`, `VectorStore.EctoPostgres` and
-`Indexing.RecordManager.EctoPostgres` reads and writes the tables that
+`Memory.Ecto`, `Cache.Ecto` and `VectorStore.EctoPostgres` reads and writes
+the tables that
 `BeamWeaver.Migrations.up(prefix: ...)` creates in a Postgres schema. Before,
 the migration put the tables in the schema but every adapter looked for them
 in `public`. `prefix: ""` or `prefix: false` uses no schema, as with the
@@ -366,10 +378,6 @@ and pgvector](docs/storage.md#the-vector-store-and-pgvector).
 `:unsupported_operation`. `BeamWeaver.Memory.Item` and `SearchItem` have a
 `ttl` field: the record's lifetime in minutes, or `nil`. See [Expiry and
 cleanup](docs/long_term_memory.md#expiry-and-cleanup).
-
-**Failed documents in indexing results.** `Indexing.Result` has `failed_ids`,
-the ids of the documents the vector store or the record manager rejected. See
-[Incremental indexing](docs/retrieval.md#incremental-indexing).
 
 #### Tracing and telemetry
 
@@ -767,6 +775,11 @@ embeddings](docs/testing.md#fake-embeddings).
 
 #### Middleware
 
+- `BeamWeaver.OpenAI.ModerationMiddleware` is now
+  `BeamWeaver.Agent.Middleware.OpenAIModeration`, with the same options, and
+  `OpenAI.moderation_middleware/1` is gone: list
+  `{BeamWeaver.Agent.Middleware.OpenAIModeration, opts}` in `middleware`,
+  whose client reads the OpenAI settings as the shortcut did.
 - `CompactConversation` no longer adds a section about the
   `compact_conversation` tool to the system prompt by default; the tool's
   description says when to use it. `system_prompt:` still adds a section of
@@ -901,8 +914,8 @@ embeddings](docs/testing.md#fake-embeddings).
   thread id, or turn that subagent's review off with `interrupt_on: false`.
 - `Agent.Subagent.Spec.new/1` and `subagent` lines raise `ArgumentError` for
   unknown options instead of ignoring them, and the unused `todo_list` field
-  is gone. `Spec.from_agent_module/2` raises for a module without a model; run
-  a graph module as a `%BeamWeaver.Agent.Subagent.Compiled{}`.
+  is gone. `Spec.from_agent_module/2` raises for a graph module; run it as a
+  `%BeamWeaver.Agent.Subagent.Compiled{}`.
 - The async subagent tools write only the tasks they change, and the
   middleware merges those writes, so parallel task tool calls no longer fail
   on the second write or undo each other (cancelling one task and updating
@@ -973,6 +986,32 @@ embeddings](docs/testing.md#fake-embeddings).
 
 #### Graphs
 
+- Graph modules `use BeamWeaver.Graph` instead of `use BeamWeaver.Agent`:
+  change the `use` line of a module that defines `graph/0` or declares
+  `node`, `edge`, `reducer` or `graph do ... end`; its declarations and run
+  functions stay the same. Graph modules have no `resume_review/2`; call
+  `resume/2`. The agent-only declarations `context_schema`, `input_schema`,
+  `output_schema`, `description` and `middleware` don't apply to them; pass
+  `input_schema:` and `output_schema:` to `Graph.new/1`. Their input reaches
+  the graph as given: string keys no longer move into `raw_input`.
+- An agent module declares a `model`: a module with `use BeamWeaver.Agent`
+  and no model, or one that defines `graph/0`, doesn't compile, and graph
+  declarations in an agent module don't compile either. The errors point to
+  `use BeamWeaver.Graph`.
+- `graph/0`, `checkpointer/0` and `store/0` are callbacks of the
+  `BeamWeaver.Graph` behaviour, which agent modules implement too; mark
+  definitions of them `@impl true` or `@impl BeamWeaver.Graph`, not
+  `@impl BeamWeaver.Agent`.
+- `BeamWeaver.Agent.compiled_graph/2` takes agent modules only; call a graph
+  module's own `compiled_graph/1`. A graph or agent module added as a node
+  has the kind `:subgraph` in `Compiled.get_graph/2` and `draw_mermaid/2`,
+  instead of `:agent`.
+- `BeamWeaver.Graph.Nodes.ToolNode` is now `BeamWeaver.Agent.ToolNode`, and
+  `BeamWeaver.Graph.Nodes.ValidationNode` is now
+  `BeamWeaver.Agent.ValidationNode`. They run agent middleware, tool sets and
+  usage accounting, so they sit with the agents. A graph that builds its own
+  tool loop writes `alias BeamWeaver.Agent.ToolNode`; `new/2`, `invoke/3`,
+  `tools_condition/2` and the options are unchanged.
 - A step in which one task fails and another pauses returns the error,
   whichever finishes first; the paused task stays pending, as `get_state/1`'s
   `interrupts` shows. It used to return the pause when the paused task came
@@ -1143,60 +1182,63 @@ embeddings](docs/testing.md#fake-embeddings).
 
 #### Tracing and telemetry
 
+- An agent's structured-output trace run is named `"StructuredOutput"`, not
+  `"RunnableSequence"`.
 - Removed the supervisor-first `Tracing.async(supervisor, fun)` form; use
   `Tracing.async(fun, supervisor: supervisor)`.
 
 #### Retrieval, prompts and parsers
 
+- Removed the prompt kit: `BeamWeaver.Prompt` with its templates, few-shot
+  prompts, partials and prompt files, `BeamWeaver.Template`, and
+  `BeamWeaver.ExampleSelector`. Write a prompt with string interpolation or
+  EEx and pass its messages to the model; chat models no longer take a
+  `Prompt.Value`.
+- Removed `BeamWeaver.OutputParser`. Decode a reply with `JSON.decode/1`,
+  and get structured answers with `response_format:` on `ChatModel.invoke/3`
+  or an agent's `response_format`.
+- Removed `BeamWeaver.Runnable` (`invoke/3`, `batch/3`, `stream/3`,
+  `transform/3`, `lambda/2`, `sequence/2`), with its composition functions,
+  specs and graph drawing. Graph nodes no longer take Runnables: put the work
+  in a node function. Decision models no longer implement the behaviour: call
+  `Core.DecisionModel.invoke/3` and `batch/3`. `Retriever.as_runnable/1` is
+  gone: call `Retriever.retrieve/3`, or give an agent the retriever with
+  `Retriever.as_tool/2`. Compose with functions, `with` and
+  `Task.async_stream/3`.
+- Removed `BeamWeaver.Indexing` and its record managers. Add documents with
+  `VectorStore.add_documents/3` and delete them with `VectorStore.delete/2`.
+  `BeamWeaver.Migrations.up/1` with `adapters: :all` no longer creates the
+  record manager's table; `down/1` with `:all` or `:record_manager` still
+  drops it from a database that has it.
+- Removed `Core.ChatHistory` and its adapters: keep a conversation in a
+  thread with a checkpointer. Removed `Core.LLM` and `Models.FakeLLM`, with
+  the text-completion `complete/3` and string `stream/3` of `Models.cached/3`,
+  which caches chat and decision models; and `Tool.Converter`.
+- `Retriever.as_tool/2` takes `document_prompt:` as a template string, such
+  as `"{source}: {content}"`, instead of a prompt: `{content}` is the
+  document's text, any other `{name}` its metadata value under that name, and
+  `{{` and `}}` are literal braces. A name the metadata doesn't have fails the
+  tool call with a `:tool_exception` error. For any other formatting, pass
+  `document_formatter:`, a function from document to text.
 - Chunks no longer copy their document's `id`. The chunks of a document with
   an id get ids made from it, `"refunds:0"`, `"refunds:1"` and so on, in
   `TextSplitter.split_documents/2`, `transform_documents/3`,
   `create_documents/3`, `split_file/3` and `split_url/3`, and carry the
   document's id as `"parent_id"` in their metadata (a chunk split again keeps
-  the one it has); chunks of a document without an id still have none.
-  `Indexing.index/3` uses `"parent_id"` as a chunk's source when its metadata
-  has no `source_id` or `source`, so `cleanup: :incremental` deletes the
-  chunks a shorter version of a document no longer has. Code that looked
-  chunks up by their document's id should use the derived ids.
-- Chat prompts read a message role as `BeamWeaver.Core.Message.from/1` does:
-  `"developer"` (or `:developer`) renders a system message with
-  `metadata.openai_role: :developer`, and a role other than `system`, `user`,
-  `assistant` and `tool` (atoms or strings), such as `"human"`, `"ai"` or
-  `"critic"`, is an `:invalid_role` error from `Prompt.format/3`,
-  `format_prompt/3`, `Prompt.to_spec/1` and `Prompt.save/3`, and from
-  `Prompt.load/2` and `Prompt.from_spec/2` for a saved template with that
-  role. Before, `"human"` and `"ai"` were read as `user` and `assistant`, and
-  any other role, `"developer"` included, rendered a user message. Use `:user`
-  and `:assistant`.
-- `Prompt.few_shot/1` and `Prompt.few_shot_chat/1` raise `ArgumentError` for
-  an option they don't take instead of dropping it. `few_shot_chat/1` takes
-  `prefix_messages:` and `suffix_messages:`, not `prefix:` and `suffix:`.
-- Document prompts receive the document text as `{content}` only.
-- Removed the runnable composition functions `Runnable.parallel/1`, `map/1`,
-  `each/1`, `generator/2`, `passthrough/0`, `assign/2`, `pick/1`, `branch/1`,
-  `router/1`, `with_retry/2`, `with_fallbacks/3`, `bind/2`, `with_config/2`,
-  `with_types/2`, `configure/2`, `alternatives/4`, `with_history/2`,
-  `with_listeners/2`, `as_tool/2`, `pipe/3`, `get_name/1`,
-  `batch_as_completed/3`, `stream_events/3`, `stream_log/3`, runnable
-  specs/registry, and runnable graph drawing. `Runnable.invoke/3`, `batch/3`,
-  `stream/3`, `transform/3`, `lambda/2`, and `sequence/2` remain. Use Elixir
-  functions, `with`, and `Task.async_stream/3` for composition.
+  the one it has); chunks of a document without an id still have none. Code
+  that looked chunks up by their document's id should use the derived ids.
 - Removed document loaders and blobs (`DocumentLoader`, `DocumentTransformer`,
   `DocumentIndex`, `Blob`, `BlobLoader`, `BlobParser`, `BlobLike`,
   `DocumentLike`), `Indexing.DocumentIndex`, `StructuredQuery`,
   `DocumentCompressor`, `CrossEncoder`, `Core.HTML`, and `Core.Strings`. Load
   sources with plain Elixir into `%Core.Document{}` and pass them to
-  `TextSplitter` and `Indexing.index/3`; `Core.Document.from/1` builds
-  documents from strings and `:content` maps.
+  `TextSplitter` and `VectorStore.add_documents/3`; `Core.Document.from/1`
+  builds documents from strings and `:content` maps.
 - Removed `Core.Document.lc_namespace/0`, `serializable?/0`,
   `langchain_string/1`, the `type` field, and its `page_content=`
   `String.Chars` impl.
 - Removed the text splitter option aliases `is_separator_regex`,
   `max_chunk_size`, `headers_to_split_on`, and `strip_headers`.
-- Removed `OutputParser.Spec` (parser serialization to spec maps) and
-  `OutputParser.output_schema_for/1`.
-- Removed the unused `%BeamWeaver.Indexing{}` struct. `Indexing.index/3`
-  returns an `Indexing.Result`.
 
 #### Tools
 
@@ -1220,8 +1262,8 @@ embeddings](docs/testing.md#fake-embeddings).
   `remaining_steps`) are left out. A tool that needs one names it with
   `injected :name, {:state, :key}`, which reads any key; the `shell` tool of
   `Agent.Middleware.ShellTool` now reads its session that way.
-  `Graph.Nodes.ToolNode.new/2` takes `private_keys:` to leave keys out in a
-  graph of your own.
+  `Agent.ToolNode.new/2` takes `private_keys:` to leave keys out in a graph
+  of your own.
 - `@behaviour BeamWeaver.Core.Tool` on its own no longer makes a tool.
   Hand-written tools call `use BeamWeaver.Core.Tool`, which defaults every
   optional callback the module does not define. Tool conversion recognizes
@@ -1308,19 +1350,28 @@ embeddings](docs/testing.md#fake-embeddings).
   reporting success while storing nothing. Pass State files in the agent's
   input as `files:`, or set them with `Graph.Compiled.update_state/4`.
 - Removed the forwarding protocols `Graph.Channel.Dispatch`,
-  `Filesystem.Backend`, `Filesystem.ExecutableBackend`, `Sandbox.Backend`, and
-  `Indexing.RecordManager.Backend`. `use BeamWeaver.Graph.Channel` (and
-  `Filesystem`, `Filesystem.Executable`, `Sandbox`, `Indexing.RecordManager`)
-  declares the behaviour, and the facade functions call the struct's module.
-  Check an implementation with `Channel.implemented_by?/1`,
-  `Filesystem.backend?/1`, `Filesystem.Executable.executable?/1`,
-  `Sandbox.sandbox?/1`, or `RecordManager.record_manager?/1`.
+  `Filesystem.Backend`, `Filesystem.ExecutableBackend` and `Sandbox.Backend`.
+  `use BeamWeaver.Graph.Channel` (and `Filesystem`, `Filesystem.Executable`,
+  `Sandbox`) declares the behaviour, and the facade functions call the
+  struct's module. Check an implementation with `Channel.implemented_by?/1`,
+  `Filesystem.backend?/1`, `Filesystem.Executable.executable?/1` or
+  `Sandbox.sandbox?/1`.
 - Removed `Filesystem.Utils`, the deprecated `Filesystem.is_directory/0` (use
   `directory_error/0`), and `Filesystem.ls_info/3` and `glob_info/3` (use
   `ls/3` and `glob/3`).
 
 #### Models and providers
 
+- `Models.with_structured_output/3` is removed. For one call, pass
+  `response_format: %{name: ..., schema: ...}` to `ChatModel.invoke/3`: the
+  reply's `metadata.parsed` holds the data, where the wrapper put it in
+  `metadata.structured_response`. For a strategy picked per model, with tool
+  calls as the fallback and retries, give an agent a `response_format`.
+- `Core.DecisionModel.batch/3` fails a batch whose call exits or outlasts
+  `timeout:` with a `:decision_batch_exit` error, not `:runnable_batch_exit`.
+  Decision model calls no longer take `config:`, `configurable:`, `context:`,
+  `recursion_limit:` or `opts:`, and their trace runs no longer copy
+  `configurable:` values into their metadata.
 - A failed model call's error type is the same for every provider and follows
   the HTTP status: `:invalid_request` (400 and 422), `:authentication` (401,
   and the 400 with which Gemini and xAI refuse a wrong API key),
@@ -1506,8 +1557,8 @@ embeddings](docs/testing.md#fake-embeddings).
   and the `Core.Messages.system/2`, `user/2`, `assistant/2`, `tool/2`,
   `function/2`, `chat/3`, and `to_message/1` constructors. Use
   `Core.Message.system/2` and friends.
-- Removed the role aliases. Message tuples, maps, prompt templates, prompt
-  specs, `Utils.filter/2`, and `trim/2` accept only `"user"`, `"assistant"`,
+- Removed the role aliases. Message tuples, maps, `Utils.filter/2`, and
+  `trim/2` accept only `"user"`, `"assistant"`,
   `"system"`, `"tool"`, and `"developer"` (or the matching atoms); `"human"`,
   `"ai"`, and `"function"`, the `type` alias for `role`, and
   `additional_kwargs` are no longer read.
@@ -1781,9 +1832,9 @@ embeddings](docs/testing.md#fake-embeddings).
   than `:ivfflat`, `:hnsw` or `false`, and for more than 2,000 dimensions
   with an index, instead of failing in Postgres or creating an `:ivfflat`
   index.
-- `Memory.Ecto`, `Cache.Ecto`, `VectorStore.EctoPostgres` and
-  `RecordManager.EctoPostgres` quote their table names the way the migration
-  does, so names with capitals match the tables it created.
+- `Memory.Ecto`, `Cache.Ecto` and `VectorStore.EctoPostgres` quote their
+  table names the way the migration does, so names with capitals match the
+  tables it created.
 
 #### Tracing and telemetry
 
@@ -1792,11 +1843,6 @@ embeddings](docs/testing.md#fake-embeddings).
 
 #### Retrieval, prompts and parsers
 
-- `Runnable.invoke/3` and `Runnable.stream/3` call a chat model without the
-  run's own `tags:`, `metadata:`, `run_id:`, `configurable:` and other run
-  settings; its other options, such as `temperature:`, still reach it.
-  `Prompt.structured_chain/3` works the same way, so the run's `metadata:` is
-  no longer sent to the provider as request metadata.
 - `BeamWeaver.Schema.module_schema/1` is the one lookup for a schema declared
   on a module (`json_schema/0`, `schema/0`, or `use BeamWeaver.Schema`);
   output-parser and structured-output schemas now also accept
@@ -2040,6 +2086,9 @@ embeddings](docs/testing.md#fake-embeddings).
 
 #### Subagents and deep agents
 
+- A `SKILL.md` with `metadata: {}` loads with no metadata, and
+  `allowed-tools: {}` is an error, as another mapping there is. Before,
+  `metadata: {}` failed the skill and `allowed-tools: {}` read as no tools.
 - The general-purpose subagent works as the parent's twin: it gets the
   parent's `tool_descriptions`, its capability profile (the prompt suffix,
   hidden tools, tool descriptions and middleware), and the parent's own
@@ -2278,7 +2327,8 @@ embeddings](docs/testing.md#fake-embeddings).
 - `Graph.Messages.remove/1` deletes a message by id. Before, every removal
   raised `ArgumentError` out of `invoke/2`. Removing an id that isn't in the
   list fails the run with an `:invalid_update` error.
-- An agent or graph module (`use BeamWeaver.Agent`) can be a graph node:
+- An agent or graph module (`use BeamWeaver.Agent` or `use BeamWeaver.Graph`)
+  can be a graph node:
   `Graph.add_node(graph, :support, MyApp.SupportAgent)` runs its graph as a
   subgraph, with its checkpoints, interrupts and events in the parent's run.
   Before, the run failed with a `:node_exception`.
@@ -2557,40 +2607,18 @@ embeddings](docs/testing.md#fake-embeddings).
 - `TextSplitter.markdown_syntax/1` gives every chunk its document's metadata;
   only the last chunk had it, so incremental indexing could lose the other
   chunks' `source`.
-- `Runnable.sequence/2` can pipe a prompt into a chat model, and
-  `Runnable.invoke/3`, `stream/3` and `batch/3` accept a string for a chat
-  model. Both failed with `:runnable_exception`, because the model got the
-  prompt value or the string instead of a message list.
-- `OutputParser.schema/2` takes a `BeamWeaver.Schema` module, or any module
-  that declares a JSON schema; it always failed with "schema parser expected
-  an object". A module without a schema raises `ArgumentError`.
-- A value passed to `Prompt.format/3` overrides a partial of the same name
-  when one uses an atom key and the other a string key; the partial won.
-  `Prompt.partial/2` replaces an earlier partial the same way.
-- `Prompt.save/3` saves chat prompts with literal messages, such as
-  `Message.system("...")`, as messages whose braces stay text; it raised
-  `FunctionClauseError`. A prompt part that can't be saved returns an error.
-- `Prompt.load/2` reads a YAML prompt file back as it was saved. An empty
-  string or an empty list came back as `%{}`, so a saved literal
-  `Message.assistant("", tool_calls: ...)` failed to load with
-  `:invalid_content` and a prompt with an empty partial failed with
-  `:runnable_exception` when formatted, and a list of integers such as
-  `[104, 105]` came back as the string `"hi"`. A key that isn't a plain name,
-  such as `"label: #1"`, is now quoted when saved instead of making the file
-  unreadable, and a file that isn't valid YAML returns
-  `:invalid_prompt_spec` with the line and column instead of crashing the
-  caller with a yamerl throw.
 - Pinned requests to an IPv6 address, such as `split_url/3` on a host that
   resolves to one, connect instead of failing with `:nxdomain`.
-- A `schema` output parser parses partial JSON with
-  `OutputParser.parse_partial/2`, and returns `nil` until the value matches
-  the schema; it failed on incomplete JSON.
-- Pretty-printed JSON (`Prompt.save/3` to a `.json` file, the schema in the
-  JSON-object mode instruction, recorded cassettes) handles atom values and
+- Pretty-printed JSON (the schema in the JSON-object mode instruction,
+  recorded cassettes) handles atom values and
   structs such as `DateTime` the way compact JSON does, instead of raising.
 
 #### Tools
 
+- `Core.Tool.invoke/3` with a tool-call input (`type: "tool_call"`) returns
+  a tool's `%Graph.Command{}` as it is, as it does for plain arguments.
+  Before, it came back as a tool message whose content was the command's
+  text.
 - A struct given for an `"object"` argument fails the tool's input check with
   `:invalid_input`, as a value of any other wrong type does. Before, the check
   raised `Protocol.UndefinedError`.
@@ -2772,8 +2800,8 @@ embeddings](docs/testing.md#fake-embeddings).
   last chunk's.
 - A streamed Kimi reply holds its reasoning in one `:reasoning` block instead
   of one block per streamed piece.
-- `Models.cached/3`, `with_rate_limiter/2`, `bind_tools/3`, and
-  `with_structured_output/3` work when the call is traced, which includes
+- `Models.cached/3`, `with_rate_limiter/2` and `bind_tools/3` work when the
+  call is traced, which includes
   every call inside an agent or graph. Tracing read the wrapped model as a
   string and raised `Protocol.UndefinedError`.
 - OpenAI Chat Completions, response retrieval, input-item listing, response

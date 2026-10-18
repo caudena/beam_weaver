@@ -247,7 +247,7 @@ triage graph classifies a ticket and pauses before a refund:
 
 ```elixir
 defmodule MyApp.TicketTriage do
-  use BeamWeaver.Agent
+  use BeamWeaver.Graph
 
   alias BeamWeaver.Graph
 

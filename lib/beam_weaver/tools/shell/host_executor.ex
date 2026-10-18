@@ -5,8 +5,8 @@ defmodule BeamWeaver.Tools.Shell.HostExecutor do
 
   @behaviour BeamWeaver.Tools.Shell.Executor
 
+  alias BeamWeaver.Sandbox.CommandRunner
   alias BeamWeaver.ShellPolicy
-  alias BeamWeaver.Tools.Shell.CommandRunner
 
   @impl true
   def run(command, %ShellPolicy{} = policy, opts \\ []) do

@@ -1,12 +1,11 @@
 defmodule BeamWeaver.Core.LanguageModel do
   @moduledoc """
-  Common model helpers shared by chat, LLM, and embedding providers.
+  Helpers shared by chat models: chat input normalization and token counting.
   """
 
   alias BeamWeaver.Core.Error
   alias BeamWeaver.Core.Message
   alias BeamWeaver.Core.Messages.TokenCounter
-  alias BeamWeaver.Prompt
   alias BeamWeaver.Tokenizer
 
   @callback model_id(term()) :: String.t() | nil
@@ -19,8 +18,6 @@ defmodule BeamWeaver.Core.LanguageModel do
   Normalizes chat model input into a message list.
   """
   @spec normalize_chat_input(term()) :: {:ok, [Message.t()]} | {:error, Error.t()}
-  def normalize_chat_input(%Prompt.Value{} = value), do: {:ok, Prompt.to_messages(value)}
-
   def normalize_chat_input(messages) when is_list(messages) do
     if Enum.all?(messages, &match?(%Message{}, &1)) do
       {:ok, messages}

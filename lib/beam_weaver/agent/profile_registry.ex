@@ -1,7 +1,7 @@
 defmodule BeamWeaver.Agent.ProfileRegistry do
   @moduledoc false
 
-  alias BeamWeaver.Agent.ModelResolver
+  alias BeamWeaver.Models.Identity
 
   @spec register(term(), map(), String.t() | atom(), struct(), (struct(), struct() -> struct())) :: :ok
   def register(registry_key, builtin_profiles, key, incoming, merge) when is_function(merge, 2) do
@@ -39,8 +39,8 @@ defmodule BeamWeaver.Agent.ProfileRegistry do
   def for_model(spec, nil, get) when is_binary(spec), do: get.(spec)
 
   def for_model(model, nil, get) do
-    identifier = ModelResolver.get_model_identifier(model)
-    provider = ModelResolver.get_model_provider(model)
+    identifier = Identity.identifier(model)
+    provider = Identity.provider(model)
 
     cond do
       provider && identifier ->

@@ -676,7 +676,7 @@ also covers choosing between them.
 | `OverflowRecovery`, `CompactConversation` | `overflow_recovery`, `compact_conversation` | [Context Management](context_management.md) |
 | `AutoMode` | listing it in `middleware` | [Guardrails](guardrails.md#block-risky-tool-calls) |
 | `TypeSafeModelRouter` | listing it in `middleware` | [TypeSafe](providers/typesafe.md#route-an-agent) |
-| `BeamWeaver.OpenAI.ModerationMiddleware` | listing it in `middleware` | [Guardrails](guardrails.md) |
+| `BeamWeaver.Agent.Middleware.OpenAIModeration` | listing it in `middleware` | [Guardrails](guardrails.md) |
 
 ## Reference
 

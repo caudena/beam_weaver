@@ -9,6 +9,8 @@
     BeamWeaver.Agent.Built,
     BeamWeaver.Agent.Schema,
     BeamWeaver.Agent.Usage,
+    BeamWeaver.Agent.ToolNode,
+    BeamWeaver.Agent.ValidationNode,
     BeamWeaver.Agent.ProviderProfile,
     BeamWeaver.Schema,
     ~r/^BeamWeaver\.Agent\.StructuredOutput/
@@ -29,7 +31,6 @@
     BeamWeaver.Core.EmbeddingModel,
     BeamWeaver.Core.DecisionModel,
     BeamWeaver.Core.LanguageModel,
-    BeamWeaver.Core.LLM,
     BeamWeaver.Core.Message,
     ~r/^BeamWeaver\.Core\.Messages/,
     BeamWeaver.Core.ContentBlock,
@@ -55,7 +56,7 @@
     BeamWeaver.Agent.ModelResponse,
     BeamWeaver.Agent.ExtendedModelResponse,
     BeamWeaver.Agent.ToolCallRequest,
-    ~r/^BeamWeaver\.Agent\.Middleware\.(ContextEditing|DynamicPrompt|ModelCallLimit|ModelFallback|ModelRetry|PII|StructuredOutputRetry|ToolCallLimit|ToolCallNormalization|ToolChoice|ToolError|ToolRetry|ToolSelection|UnsupportedMedia)/,
+    ~r/^BeamWeaver\.Agent\.Middleware\.(ContextEditing|DynamicPrompt|ModelCallLimit|ModelFallback|ModelRetry|OpenAIModeration|PII|StructuredOutputRetry|ToolCallLimit|ToolCallNormalization|ToolChoice|ToolError|ToolRetry|ToolSelection|UnsupportedMedia)/,
     BeamWeaver.RetryPolicy,
     BeamWeaver.RetryPredicates
   ],
@@ -66,8 +67,6 @@
   "Memory and Context": [
     BeamWeaver.Memory,
     ~r/^BeamWeaver\.Memory\./,
-    BeamWeaver.Core.ChatHistory,
-    ~r/^BeamWeaver\.Core\.ChatHistory\./,
     BeamWeaver.Agent.Middleware.Memory,
     BeamWeaver.Agent.Middleware.Summarization,
     BeamWeaver.Agent.Middleware.CompactConversation,
@@ -111,8 +110,7 @@
     BeamWeaver.Checkpoint,
     ~r/^BeamWeaver\.Checkpoint\./,
     BeamWeaver.ExecutionPolicy,
-    BeamWeaver.TimeoutPolicy,
-    BeamWeaver.Runnable
+    BeamWeaver.TimeoutPolicy
   ],
   Retrieval: [
     BeamWeaver.Core.Document,
@@ -120,13 +118,7 @@
     BeamWeaver.VectorStore,
     ~r/^BeamWeaver\.VectorStore\./,
     BeamWeaver.Retriever,
-    BeamWeaver.RetrievalPolicy,
-    BeamWeaver.Indexing,
-    ~r/^BeamWeaver\.Indexing\./,
-    BeamWeaver.Prompt,
-    ~r/^BeamWeaver\.Prompt\./,
-    BeamWeaver.OutputParser,
-    BeamWeaver.ExampleSelector
+    BeamWeaver.RetrievalPolicy
   ],
   Production: [
     BeamWeaver.Tracing,

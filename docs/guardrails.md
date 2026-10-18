@@ -295,7 +295,7 @@ result.messages |> List.last() |> BeamWeaver.Core.Message.text()
 call fails rather than send an unchecked answer. In production, pass a
 provider model such as `BeamWeaver.Models.init_chat_model!("openai:gpt-5.4-mini")`.
 To use OpenAI's moderation endpoint instead, add
-`{BeamWeaver.OpenAI.ModerationMiddleware, check_input: true, check_output: true}`
+`{BeamWeaver.Agent.Middleware.OpenAIModeration, check_input: true, check_output: true}`
 to the agent's middleware; it needs an OpenAI API key.
 
 ## Handle a filtered reply
@@ -425,4 +425,4 @@ rules, assert that `invoke/2` returns `{:interrupted, interrupt}`. See
 - [`BeamWeaver.Agent.Middleware.ToolCallLimit`](https://hexdocs.pm/beam_weaver/BeamWeaver.Agent.Middleware.ToolCallLimit.html): cap tool calls per run or thread
 - [`BeamWeaver.Agent.Middleware.HumanInTheLoop`](https://hexdocs.pm/beam_weaver/BeamWeaver.Agent.Middleware.HumanInTheLoop.html): pause for approval
 - [`BeamWeaver.Agent.Middleware.AutoMode`](https://hexdocs.pm/beam_weaver/BeamWeaver.Agent.Middleware.AutoMode.html): block risky tool calls
-- [`BeamWeaver.OpenAI.ModerationMiddleware`](https://hexdocs.pm/beam_weaver/BeamWeaver.OpenAI.ModerationMiddleware.html): OpenAI's moderation endpoint
+- [`BeamWeaver.Agent.Middleware.OpenAIModeration`](https://hexdocs.pm/beam_weaver/BeamWeaver.Agent.Middleware.OpenAIModeration.html): OpenAI's moderation endpoint

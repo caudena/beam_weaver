@@ -1,13 +1,13 @@
 defmodule BeamWeaver.TypeSafe.DecisionModel do
   @moduledoc """
-  Jev decision model. Evaluate `state` and named `questions` through
-  `BeamWeaver.Core.DecisionModel` or `BeamWeaver.Runnable`.
+  Jev decision model. Evaluate `state` and named `questions` with
+  `BeamWeaver.Core.DecisionModel.invoke/3` or
+  `BeamWeaver.Core.DecisionModel.batch/3`.
   """
 
   use BeamWeaver.Provider.RedactedInspect
 
   @behaviour BeamWeaver.Core.DecisionModel
-  @behaviour BeamWeaver.Runnable
 
   alias BeamWeaver.Core.{DecisionModel, Error}
   alias BeamWeaver.Models.{ProfileRegistry, UsageCost}
@@ -33,7 +33,6 @@ defmodule BeamWeaver.TypeSafe.DecisionModel do
   def model_id(model), do: model.model
   def profile(model), do: model.profile
 
-  @impl true
   def invoke(model, input, opts \\ []), do: DecisionModel.invoke(model, input, opts)
 
   @impl BeamWeaver.Core.DecisionModel

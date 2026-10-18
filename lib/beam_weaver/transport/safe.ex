@@ -28,7 +28,6 @@ defmodule BeamWeaver.Transport.Safe do
   @behaviour BeamWeaver.Transport
 
   alias BeamWeaver.Core.Error, as: CoreError
-  alias BeamWeaver.Provider.Options, as: ProviderOptions
   alias BeamWeaver.Transport
   alias BeamWeaver.Transport.Error
   alias BeamWeaver.Transport.Request
@@ -43,7 +42,7 @@ defmodule BeamWeaver.Transport.Safe do
   @impl true
   def request(%Request{} = request, opts) do
     policy = URLPolicy.new(Keyword.get(opts, :url_policy, opts))
-    transport = ProviderOptions.default_transport(Keyword.get(opts, :transport))
+    transport = Transport.default(Keyword.get(opts, :transport))
     opts = transport_options(opts, policy)
 
     do_request(transport, request, opts, policy, 0)
@@ -56,7 +55,7 @@ defmodule BeamWeaver.Transport.Safe do
   @impl true
   def stream_reduce(%Request{} = request, opts, acc, reducer) when is_function(reducer, 2) do
     policy = URLPolicy.new(Keyword.get(opts, :url_policy, opts))
-    transport = ProviderOptions.default_transport(Keyword.get(opts, :transport))
+    transport = Transport.default(Keyword.get(opts, :transport))
     opts = transport_options(opts, policy)
 
     do_stream_reduce(transport, request, opts, acc, reducer, policy, 0)

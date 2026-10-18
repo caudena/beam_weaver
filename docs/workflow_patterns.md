@@ -251,10 +251,11 @@ ends the run with the last draft.
 
 An agent is the loop below: a model node that may ask for tools, and a tool
 node that runs them and goes back to the model. Building it by hand shows the
-moving parts:
+moving parts. The tool node is `BeamWeaver.Agent.ToolNode`, the one every
+agent uses:
 
 ```elixir
-alias BeamWeaver.Graph.Nodes.ToolNode
+alias BeamWeaver.Agent.ToolNode
 alias BeamWeaver.Models.FakeChatModel
 
 defmodule MyApp.Tools.LookupOrder do
@@ -336,6 +337,6 @@ see [Subgraphs](subgraphs.md#agents-as-subgraphs).
 - [`BeamWeaver.Graph`](https://hexdocs.pm/beam_weaver/BeamWeaver.Graph.html): build and compile graphs
 - [`BeamWeaver.Graph.Send`](https://hexdocs.pm/beam_weaver/BeamWeaver.Graph.Send.html): send work to a node, once per item
 - [`BeamWeaver.Graph.Command`](https://hexdocs.pm/beam_weaver/BeamWeaver.Graph.Command.html): update the state and choose the next nodes
-- [`BeamWeaver.Graph.Nodes.ToolNode`](https://hexdocs.pm/beam_weaver/BeamWeaver.Graph.Nodes.ToolNode.html): run the tool calls of the last model message
+- [`BeamWeaver.Agent.ToolNode`](https://hexdocs.pm/beam_weaver/BeamWeaver.Agent.ToolNode.html): run the tool calls of the last model message
 - [`BeamWeaver.Core.ChatModel`](https://hexdocs.pm/beam_weaver/BeamWeaver.Core.ChatModel.html): call a chat model
 - [`BeamWeaver.Models.FakeChatModel`](https://hexdocs.pm/beam_weaver/BeamWeaver.Models.FakeChatModel.html): scripted model for examples and tests

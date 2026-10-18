@@ -21,7 +21,7 @@ defmodule BeamWeaver.Provider.Response do
   import BeamWeaver.Provider.ChatCompletionsWire, only: [metadata_value: 2]
 
   alias BeamWeaver.Core.Message
-  alias BeamWeaver.Agent.ModelResolver
+  alias BeamWeaver.Models.Identity
   alias BeamWeaver.MapShape
   alias BeamWeaver.Models.Profile
   alias BeamWeaver.Provider.Outcome
@@ -181,7 +181,7 @@ defmodule BeamWeaver.Provider.Response do
   defp replay_binding(provider, model, opts) do
     Keyword.get(opts, :replay_binding, %{
       provider: provider,
-      model: ModelResolver.get_model_identifier(model),
+      model: Identity.identifier(model),
       profile: model_profile_value(model, :id)
     })
   end
@@ -295,7 +295,7 @@ defmodule BeamWeaver.Provider.Response do
 
   defp normalize_model(model, %Message{} = message, provider) do
     metadata = message.response_metadata || %{}
-    model_identifier = ModelResolver.get_model_identifier(model)
+    model_identifier = Identity.identifier(model)
 
     %{
       provider: provider,
@@ -426,7 +426,7 @@ defmodule BeamWeaver.Provider.Response do
       model_profile_value(model, :provider) ||
       Map.get(message.response_metadata || %{}, :model_provider) ||
       Map.get(message.response_metadata || %{}, :provider) ||
-      ModelResolver.get_model_provider(model)
+      Identity.provider(model)
   end
 
   defp reasoning_content(%Message{} = message) do

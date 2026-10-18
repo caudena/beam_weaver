@@ -51,7 +51,9 @@ API key: each entry of `responses:` is what the model says on one turn. The
 `use BeamWeaver.Agent` turns a module into an agent. Inside it, you write
 declarations such as `model` and `tools`, one per line, without parentheses.
 The module gets `invoke/2`, `stream_events/2`, `resume/2`, `resume_review/2`
-and `get_state/1`.
+and `get_state/1`. Every agent module declares a `model`, and one without it
+doesn't compile; to run steps you define instead, write a
+[graph module](graphs.md#build-and-run-a-graph) with `use BeamWeaver.Graph`.
 
 To use a real model, change the `model` line. The script goes away, because the
 model now decides what to do:

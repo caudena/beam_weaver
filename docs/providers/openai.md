@@ -287,9 +287,9 @@ response, with each image base64-encoded:
 [%{"b64_json" => png} | _] = response["data"]
 ```
 
-`BeamWeaver.OpenAI.moderation_middleware/1` checks each user message before
-the model sees it, and each answer after, with OpenAI's moderation endpoint.
-When something is flagged, the run ends with a refusal:
+`BeamWeaver.Agent.Middleware.OpenAIModeration` checks each user message
+before the model sees it, and each answer after, with OpenAI's moderation
+endpoint. When something is flagged, the run ends with a refusal:
 
 ```elixir
 defmodule MyApp.SupportAgent do
@@ -297,7 +297,7 @@ defmodule MyApp.SupportAgent do
 
   model "openai:gpt-5.4-mini"
   system_prompt "You are Acme's support agent."
-  middleware [BeamWeaver.OpenAI.moderation_middleware()]
+  middleware [BeamWeaver.Agent.Middleware.OpenAIModeration]
 end
 ```
 
@@ -331,5 +331,5 @@ fixed answer, as [TypeSafe's testing section](typesafe.md#testing) shows.
 - [`BeamWeaver.OpenAI.DecisionModel`](https://hexdocs.pm/beam_weaver/BeamWeaver.OpenAI.DecisionModel.html): the Decisions API model
 - [`BeamWeaver.OpenAI.Decisions.Question`](https://hexdocs.pm/beam_weaver/BeamWeaver.OpenAI.Decisions.Question.html): predicate, choice and score questions
 - [`BeamWeaver.OpenAI.ToolCalling`](https://hexdocs.pm/beam_weaver/BeamWeaver.OpenAI.ToolCalling.html): built-in tool declarations
-- [`BeamWeaver.OpenAI.ModerationMiddleware`](https://hexdocs.pm/beam_weaver/BeamWeaver.OpenAI.ModerationMiddleware.html): moderation for agents
+- [`BeamWeaver.Agent.Middleware.OpenAIModeration`](https://hexdocs.pm/beam_weaver/BeamWeaver.Agent.Middleware.OpenAIModeration.html): moderation for agents
 - [`BeamWeaver.PromptCache`](https://hexdocs.pm/beam_weaver/BeamWeaver.PromptCache.html): prompt-cache keys

@@ -147,18 +147,6 @@ defmodule BeamWeaver.Agent.DeclaredStorageTest do
              """) =~ "declared_storage_probe.ex:4: the `filesystem` declaration creates a new, empty in-memory store"
     end
 
-    test "doesn't compile in a graph module either" do
-      assert compile_error("""
-             defmodule BeamWeaver.Agent.DeclaredStorageTest.InlineGraphSaver do
-               use BeamWeaver.Agent
-               alias BeamWeaver.Checkpoint
-               checkpointer Checkpoint.ETS.new()
-
-               def graph, do: BeamWeaver.Graph.new()
-             end
-             """) =~ "the `checkpointer` declaration creates a new, empty in-memory saver with `Checkpoint.ETS.new()`"
-    end
-
     test "inside a function compiles: it runs when the function is called" do
       assert [{BeamWeaver.Agent.DeclaredStorageTest.ScratchStore, _beam}] =
                Code.compile_string("""

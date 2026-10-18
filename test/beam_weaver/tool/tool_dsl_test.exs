@@ -3,8 +3,6 @@ defmodule BeamWeaver.Tool.DSLTest do
 
   alias BeamWeaver.Core.Tool
   alias BeamWeaver.Core.ToolResult
-  alias BeamWeaver.Runnable
-  alias BeamWeaver.Tool.Converter
   alias BeamWeaver.Tool.Renderer
 
   defmodule SearchDocs do
@@ -71,12 +69,6 @@ defmodule BeamWeaver.Tool.DSLTest do
     def injected(_tool), do: %{}
     def return_direct(_tool), do: false
     def invoke(_tool, input, _opts), do: {:ok, String.upcase(input.value)}
-  end
-
-  defmodule DemoToolkit do
-    @behaviour BeamWeaver.ToolKit
-
-    def tools(_opts), do: [SearchDocs, %DirectTool{}]
   end
 
   test "module DSL compiles to a normal executable tool behaviour" do
@@ -164,36 +156,6 @@ defmodule BeamWeaver.Tool.DSLTest do
   test "direct behaviour modules work without the macro" do
     assert {:ok, "ADA"} = Tool.invoke(%DirectTool{}, %{value: "ada"})
     assert Tool.input_schema(%DirectTool{}).required == [:value]
-  end
-
-  test "converter handles modules, structs, toolkits, and duplicate toolkit names" do
-    assert {:ok, tool} = Converter.to_tool(SearchDocs)
-    assert %Tool{} = tool
-    assert Tool.name(tool) == "search_docs"
-
-    assert {:ok, [search, direct]} = Converter.to_tools(DemoToolkit)
-    assert Enum.map([search, direct], &Tool.name/1) == ["search_docs", "direct_tool"]
-
-    assert {:error, error} = Converter.to_tools([SearchDocs, %SearchDocs{}])
-    assert error.type == :duplicate_tool
-  end
-
-  test "runnable conversion invokes the runnable through the tool boundary" do
-    runnable =
-      Runnable.lambda(fn input, _opts -> {:ok, %{echo: input["value"] || input[:value]}} end)
-
-    assert {:ok, tool} =
-             Converter.to_tool(runnable,
-               name: "echo",
-               description: "Echoes input",
-               input_schema: %{
-                 type: "object",
-                 properties: %{value: %{type: "string"}},
-                 required: [:value]
-               }
-             )
-
-    assert {:ok, %{echo: "hello"}} = Tool.invoke(tool, %{value: "hello"})
   end
 
   test "provider-safe name validation happens while rendering provider schemas" do

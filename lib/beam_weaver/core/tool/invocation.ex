@@ -5,9 +5,9 @@ defmodule BeamWeaver.Core.Tool.Invocation do
   alias BeamWeaver.Core.Message
   alias BeamWeaver.Core.Tool
   alias BeamWeaver.Core.Tool.Output
+  alias BeamWeaver.Core.Tool.Passthrough
   alias BeamWeaver.Core.Tool.Schema
   alias BeamWeaver.Core.ToolResult
-  alias BeamWeaver.Graph.Command
 
   @spec invoke(term(), term(), keyword()) :: {:ok, term()} | {:error, Error.t()}
   def invoke(tool, input, opts) when is_map(input) do
@@ -232,11 +232,12 @@ defmodule BeamWeaver.Core.Tool.Invocation do
 
   # A `:content_and_artifact` tool returns `{content, artifact}`; both travel on
   # as a `ToolResult`, which an agent's tool node turns into a tool message
-  # with the artifact in `metadata.artifact`. A command, a message or a list of
-  # them passes through as it is, as from any tool.
+  # with the artifact in `metadata.artifact`. A struct, such as a message or a
+  # graph command, or a list of structs passes through as it is, as from any
+  # tool, for the tool node to read.
   defp format_invocation_result(result, tool, %{wrap_output?: false}) do
     if Tool.response_format(tool) in [:content_and_artifact, "content_and_artifact"] and
-         not tool_output?(result) do
+         not passed_through?(result) do
       content_and_artifact(result)
     else
       result
@@ -251,9 +252,11 @@ defmodule BeamWeaver.Core.Tool.Invocation do
     ToolResult.success(content, artifact: artifact, status: status)
   end
 
-  defp tool_output?(%ToolResult{}), do: true
-  defp tool_output?(%Command{}), do: true
-  defp tool_output?(%Message{}), do: true
-  defp tool_output?([_ | _] = outputs), do: Enum.all?(outputs, &(match?(%Command{}, &1) or match?(%Message{}, &1)))
-  defp tool_output?(_result), do: false
+  # A message, a command for the runtime, or a list of them is the tool's
+  # output as it is; anything else is its content.
+  defp passed_through?([_ | _] = outputs), do: Enum.all?(outputs, &single_output?/1)
+  defp passed_through?(result), do: single_output?(result)
+
+  defp single_output?(%Message{}), do: true
+  defp single_output?(result), do: Passthrough.passthrough?(result)
 end

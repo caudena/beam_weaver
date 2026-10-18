@@ -24,8 +24,8 @@ defmodule BeamWeaver.Sandbox.Docker do
   alias BeamWeaver.Filesystem.FileDataUtils
   alias BeamWeaver.Filesystem.Path, as: FilesystemPath
   alias BeamWeaver.Sandbox
+  alias BeamWeaver.Sandbox.CommandRunner
   alias BeamWeaver.Sandbox.OutputBuffer
-  alias BeamWeaver.Tools.Shell.CommandRunner
 
   @not_started "container_not_started"
 

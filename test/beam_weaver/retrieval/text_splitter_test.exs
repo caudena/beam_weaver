@@ -200,11 +200,7 @@ defmodule BeamWeaver.TextSplitterTest do
       TextSplitter.split_documents(TextSplitter.recursive_character(chunk_size: 25, chunk_overlap: 0), [document])
 
     store = BeamWeaver.VectorStore.ETS.new(embedding: %BeamWeaver.Models.FakeEmbeddingModel{})
-    records = BeamWeaver.Indexing.RecordManager.ETS.new()
-
-    assert {:ok, %{added: 2, skipped: 0}} =
-             BeamWeaver.Indexing.index(store, chunks, record_manager: records)
-
+    assert {:ok, ["refunds:0", "refunds:1"]} = BeamWeaver.VectorStore.add_documents(store, chunks)
     assert {:ok, [_, _]} = BeamWeaver.VectorStore.get_by_ids(store, ["refunds:0", "refunds:1"])
   end
 

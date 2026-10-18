@@ -1,12 +1,12 @@
 defmodule BeamWeaver.OpenAI.SecretsTest do
   use ExUnit.Case, async: false
 
+  alias BeamWeaver.Agent.Middleware.OpenAIModeration
   alias BeamWeaver.OpenAI
   alias BeamWeaver.OpenAI.ChatCompletionsModel
   alias BeamWeaver.OpenAI.ChatModel
   alias BeamWeaver.OpenAI.Client
   alias BeamWeaver.OpenAI.EmbeddingModel
-  alias BeamWeaver.OpenAI.ModerationMiddleware
   alias BeamWeaver.OpenAI.ResponsesModel
   alias BeamWeaver.Transport.Redactor
 
@@ -22,7 +22,7 @@ defmodule BeamWeaver.OpenAI.SecretsTest do
       %ResponsesModel{api_key: "sk-secret-responses"},
       %ChatCompletionsModel{api_key: "sk-secret-completions"},
       %EmbeddingModel{api_key: "sk-secret-embedding"},
-      ModerationMiddleware.new(api_key: "sk-secret-moderation")
+      OpenAIModeration.new(api_key: "sk-secret-moderation")
     ]
 
     for struct <- structs do

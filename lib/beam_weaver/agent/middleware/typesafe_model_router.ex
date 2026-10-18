@@ -32,6 +32,7 @@ defmodule BeamWeaver.Agent.Middleware.TypeSafeModelRouter do
   alias BeamWeaver.Agent.Middleware.Helpers
   alias BeamWeaver.Core.{DecisionModel, Error, Message}
   alias BeamWeaver.{Graph, MapAccess}
+  alias BeamWeaver.Models.Identity
 
   @instructions "Which configured model is sufficient to complete the task in `message.content`? " <>
                   "Choose the least costly sufficient option according to its criteria. Classify the task's " <>
@@ -237,8 +238,8 @@ defmodule BeamWeaver.Agent.Middleware.TypeSafeModelRouter do
   defp identity(model),
     do: %{
       "module" => inspect(model.__struct__),
-      "model" => ModelResolver.get_model_identifier(model),
-      "provider" => ModelResolver.get_model_provider(model)
+      "model" => Identity.identifier(model),
+      "provider" => Identity.provider(model)
     }
 
   defp validate_selectors(opts, model) do
@@ -249,8 +250,8 @@ defmodule BeamWeaver.Agent.Middleware.TypeSafeModelRouter do
           _ -> []
         end
 
-    id = ModelResolver.get_model_identifier(model)
-    provider = ModelResolver.get_model_provider(model)
+    id = Identity.identifier(model)
+    provider = Identity.provider(model)
     allowed = [id, if(provider && id, do: "#{provider}:#{id}")]
 
     if Enum.all?(selectors, &(is_nil(&1) or (is_binary(&1) and &1 in allowed))),

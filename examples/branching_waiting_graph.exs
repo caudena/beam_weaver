@@ -2,7 +2,7 @@ alias BeamWeaver.Graph.Command
 alias BeamWeaver.Graph.Send
 
 defmodule BeamWeaver.Examples.BranchingWaitingGraph do
-  use BeamWeaver.Agent
+  use BeamWeaver.Graph
 
   graph do
     state do

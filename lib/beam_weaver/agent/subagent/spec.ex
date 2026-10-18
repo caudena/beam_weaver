@@ -155,8 +155,16 @@ defmodule BeamWeaver.Agent.Subagent.Spec do
   def from_agent_module(module, opts \\ []) when is_atom(module) do
     Code.ensure_compiled!(module)
 
-    unless function_exported?(module, :__beam_weaver_agent_spec__, 0) do
-      raise ArgumentError, "#{inspect(module)} is not a BeamWeaver agent module"
+    cond do
+      function_exported?(module, :__beam_weaver_agent_spec__, 0) ->
+        :ok
+
+      BeamWeaver.Behaviour.implemented_by?(module, BeamWeaver.Graph) ->
+        raise ArgumentError,
+              "#{inspect(module)} is a graph module; run it as a %BeamWeaver.Agent.Subagent.Compiled{} subagent"
+
+      true ->
+        raise ArgumentError, "#{inspect(module)} is not a BeamWeaver agent module"
     end
 
     overrides = opts |> Map.new() |> validate_keys!()
@@ -176,10 +184,7 @@ defmodule BeamWeaver.Agent.Subagent.Spec do
   defp read_module(module, overrides) do
     agent = reading(module, fn -> module.__beam_weaver_agent_spec__() end)
 
-    if is_nil(agent.model) do
-      raise ArgumentError,
-            "#{inspect(module)} has no model; run a graph module as a %BeamWeaver.Agent.Subagent.Compiled{} subagent"
-    end
+    if is_nil(agent.model), do: raise(ArgumentError, "the model declaration of #{inspect(module)} returned nil")
 
     fields =
       agent

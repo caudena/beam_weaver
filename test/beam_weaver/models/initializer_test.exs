@@ -257,16 +257,12 @@ defmodule BeamWeaver.Models.InitializerTest do
     end
   end
 
-  test "fake chat initializer preserves opts and chat input normalization accepts strings and prompt values" do
+  test "fake chat initializer preserves opts and chat input normalization accepts strings" do
     parent = self()
     assert {:ok, model} = Models.init_chat_model("fake:chat", response: "pong", parent: parent)
 
     assert {:ok, %Message{content: "pong"}} = ChatModel.invoke(model, "ping")
     assert_receive {:fake_chat_model_call, [%Message{role: :user, content: "ping"}], _opts}
-
-    prompt = %BeamWeaver.Prompt.Value{text: "from prompt"}
-    assert {:ok, %Message{content: "pong"}} = ChatModel.invoke(model, prompt)
-    assert_receive {:fake_chat_model_call, [%Message{role: :user, content: "from prompt"}], _opts}
   end
 
   test "init_embeddings accepts provider-prefixed identifiers" do

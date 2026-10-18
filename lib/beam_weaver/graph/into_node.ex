@@ -28,13 +28,13 @@ defimpl BeamWeaver.Graph.IntoNode, for: Function do
 end
 
 defimpl BeamWeaver.Graph.IntoNode, for: Atom do
-  # An agent or graph module (`use BeamWeaver.Agent`) also exports `invoke/2`,
-  # with call options as its second argument, so it is recognised first: its
-  # graph runs as a subgraph.
+  # A module that implements `BeamWeaver.Graph`, such as a graph or agent
+  # module, also exports `invoke/2`, with call options as its second argument,
+  # so it is recognised first: its graph runs as a subgraph.
   def to_node(module, _name, _opts) do
     cond do
-      BeamWeaver.Behaviour.implemented_by?(module, BeamWeaver.Agent) ->
-        {:ok, %{fun: module, kind: :agent, metadata: %{module: module}}}
+      BeamWeaver.Behaviour.implemented_by?(module, BeamWeaver.Graph) ->
+        {:ok, %{fun: module, kind: :subgraph, metadata: %{module: module}}}
 
       BeamWeaver.Behaviour.exported?(module, :invoke, 2) ->
         {:ok, %{fun: module, kind: :module, metadata: %{module: module}}}
@@ -52,7 +52,6 @@ defimpl BeamWeaver.Graph.IntoNode, for: Any do
   alias BeamWeaver.Core.ChatModel
   alias BeamWeaver.Core.Tool
   alias BeamWeaver.Graph.Compiled
-  alias BeamWeaver.Runnable
 
   def to_node(%Compiled{} = compiled, _name, _opts),
     do: {:ok, %{fun: compiled, kind: :subgraph, metadata: %{graph: compiled.name}}}
@@ -64,9 +63,6 @@ defimpl BeamWeaver.Graph.IntoNode, for: Any do
     cond do
       chat_model?(module) ->
         {:ok, %{fun: model_node(struct), kind: :model, metadata: %{module: module}}}
-
-      runnable?(module) ->
-        {:ok, %{fun: runnable_node(struct), kind: :runnable, metadata: %{module: module}}}
 
       function_exported?(module, :invoke, 3) or function_exported?(module, :invoke, 2) ->
         {:ok, %{fun: struct, kind: :struct, metadata: %{module: module}}}
@@ -86,15 +82,7 @@ defimpl BeamWeaver.Graph.IntoNode, for: Any do
          callable: inspect(other)
        })}
 
-  defp runnable?(module), do: BeamWeaver.Behaviour.implemented_by?(module, Runnable)
-
   defp chat_model?(module), do: BeamWeaver.Behaviour.implemented_by?(module, ChatModel)
-
-  defp runnable_node(runnable) do
-    fn state, _runtime ->
-      with {:ok, value} <- Runnable.invoke(runnable, state), do: value
-    end
-  end
 
   defp model_node(model) do
     fn state, _runtime ->

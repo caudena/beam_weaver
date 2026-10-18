@@ -19,13 +19,13 @@ defmodule BeamWeaver.Agent.Compiler do
   alias BeamWeaver.Agent.StructuredOutput.ToolStrategy
   alias BeamWeaver.Agent.Subagent.Compiled
   alias BeamWeaver.Agent.Subagent.Spec, as: SubagentSpec
+  alias BeamWeaver.Agent.ToolNode
+  alias BeamWeaver.Agent.ValidationNode
   alias BeamWeaver.Core.Error
   alias BeamWeaver.Core.Tool
   alias BeamWeaver.Graph
   alias BeamWeaver.Graph.ChannelSpec
   alias BeamWeaver.Graph.Execution.ChannelLookup
-  alias BeamWeaver.Graph.Nodes.ToolNode
-  alias BeamWeaver.Graph.Nodes.ValidationNode
   alias BeamWeaver.Graph.StateGraph
   alias BeamWeaver.MapShape
 

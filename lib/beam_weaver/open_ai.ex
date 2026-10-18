@@ -9,7 +9,6 @@ defmodule BeamWeaver.OpenAI do
   alias BeamWeaver.OpenAI.DecisionModel
   alias BeamWeaver.OpenAI.EmbeddingModel
   alias BeamWeaver.OpenAI.Images
-  alias BeamWeaver.OpenAI.ModerationMiddleware
   alias BeamWeaver.OpenAI.Responses
   alias BeamWeaver.OpenAI.ResponsesModel
   alias BeamWeaver.OpenAI.ToolCalling
@@ -69,16 +68,6 @@ defmodule BeamWeaver.OpenAI do
   @doc "Generates images through the Images API and emits a priced generation observation."
   @spec generate_image(String.t(), keyword()) :: {:ok, map()} | {:error, term()}
   def generate_image(prompt, opts \\ []), do: Images.generate(prompt, provider_opts(opts, "images/generations"))
-
-  @doc """
-  Builds an OpenAI moderation agent middleware.
-  """
-  @spec moderation_middleware(keyword()) :: ModerationMiddleware.t()
-  def moderation_middleware(opts \\ []) do
-    opts
-    |> provider_opts("moderations")
-    |> ModerationMiddleware.new()
-  end
 
   @doc """
   Returns the OpenAI tool declaration helpers.

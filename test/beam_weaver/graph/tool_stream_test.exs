@@ -1,6 +1,7 @@
 defmodule BeamWeaver.Graph.ToolStreamTest do
   use ExUnit.Case, async: true
 
+  alias BeamWeaver.Agent.ToolNode
   alias BeamWeaver.Core.Error
   alias BeamWeaver.Core.Message
   alias BeamWeaver.Core.Tool
@@ -8,7 +9,6 @@ defmodule BeamWeaver.Graph.ToolStreamTest do
   alias BeamWeaver.Graph
   alias BeamWeaver.Graph.Compiled
   alias BeamWeaver.Graph.Messages
-  alias BeamWeaver.Graph.Nodes.ToolNode
   alias BeamWeaver.Stream.Envelope
   alias BeamWeaver.Stream.Events
   alias BeamWeaver.Stream.Transformers

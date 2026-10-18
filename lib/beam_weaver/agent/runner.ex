@@ -11,9 +11,7 @@ defmodule BeamWeaver.Agent.Runner do
   alias BeamWeaver.Graph
   alias BeamWeaver.Graph.Command
   alias BeamWeaver.Graph.Compiled
-  alias BeamWeaver.Graph.StateGraph
-
-  require Logger
+  alias BeamWeaver.Graph.ModuleRunner
 
   @type input :: map()
   @type agent_module :: module()
@@ -84,7 +82,7 @@ defmodule BeamWeaver.Agent.Runner do
 
   defp applied_spec(agent_module) when is_atom(agent_module) do
     spec = agent_module.__beam_weaver_agent_spec__()
-    warn_on_new_storage(agent_module, spec)
+    ModuleRunner.warn_on_new_storage(agent_module, Map.take(spec, [:checkpointer, :store]))
     Capabilities.apply(spec)
   end
 
@@ -93,44 +91,6 @@ defmodule BeamWeaver.Agent.Runner do
   # would build it.
   defp validate(%Built{}, _spec), do: :ok
   defp validate(agent_module, spec) when is_atom(agent_module), do: Compiler.validate_module(spec)
-
-  @new_storage [
-    checkpointer: {BeamWeaver.Checkpoint.ETS, :checkpoints, "saver", "BeamWeaver.Checkpoint.Ecto"},
-    store: {BeamWeaver.Memory.ETS, :items, "store", "BeamWeaver.Memory.Ecto"}
-  ]
-
-  # A declared `checkpointer` or `store` that calls a function returning a new
-  # ETS saver or store each time loses every thread, like an inline
-  # `Checkpoint.ETS.new()`, which doesn't compile. A second evaluation of the
-  # declaration shows it: a long-lived saver comes back with the same tables.
-  # Checked once per version of the module.
-  defp warn_on_new_storage(agent_module, spec) do
-    for {declaration, {adapter, table, noun, durable}} <- @new_storage,
-        declared = Map.fetch!(spec, declaration),
-        match?(%{__struct__: ^adapter}, declared),
-        first_check?(agent_module, declaration),
-        new_tables?(declared, apply(agent_module, declaration, []), table) do
-      Logger.warning(
-        "#{inspect(agent_module)}'s `#{declaration}` declaration returned a new #{inspect(adapter)} #{noun} " <>
-          "when it was evaluated again. Declarations are evaluated on every call, so every call gets an " <>
-          "empty #{noun} and what earlier calls saved is lost. Create the #{noun} once, in your " <>
-          "application's supervision tree or a test's setup, and pass it per call with `#{declaration}:`, " <>
-          "or return that same #{noun} from the declaration; or use #{durable}."
-      )
-    end
-
-    :ok
-  end
-
-  defp first_check?(agent_module, declaration) do
-    key = {__MODULE__, :new_storage, agent_module, declaration, agent_module.module_info(:md5)}
-    not :persistent_term.get(key, false) and :persistent_term.put(key, true) == :ok
-  end
-
-  defp new_tables?(%adapter{} = first, %adapter{} = second, table),
-    do: Map.fetch!(first, table) != Map.fetch!(second, table)
-
-  defp new_tables?(_first, _second, _table), do: false
 
   # A built agent is compiled with its build options. A call that brings its
   # own checkpointer, store, cache or breakpoints compiles the same graph with
@@ -141,26 +101,10 @@ defmodule BeamWeaver.Agent.Runner do
       else: {:ok, compiled}
   end
 
-  defp compiled(agent_module, %Spec{model: model} = spec, opts) when is_atom(agent_module) and not is_nil(model) do
+  defp compiled(agent_module, spec, opts) when is_atom(agent_module) do
     spec
     |> Compiler.compile_graph()
     |> Graph.compile(Compiler.compile_opts(spec, opts))
-  end
-
-  defp compiled(agent_module, spec, opts) when is_atom(agent_module) do
-    case agent_module.graph() do
-      %Compiled{} = compiled ->
-        {:ok, compiled}
-
-      %StateGraph{} = graph ->
-        Graph.compile(graph, Compiler.compile_opts(spec, opts))
-
-      other ->
-        {:error,
-         Error.new(:invalid_agent, "agent graph/0 must return a StateGraph or Compiled graph", %{
-           returned: inspect(other)
-         })}
-    end
   end
 
   # The input schema checks new input. A `Command`, which resumes or updates

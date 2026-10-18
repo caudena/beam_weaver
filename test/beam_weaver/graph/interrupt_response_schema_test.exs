@@ -1,12 +1,12 @@
 defmodule BeamWeaver.Graph.InterruptResponseSchemaTest do
   use ExUnit.Case, async: true
 
+  alias BeamWeaver.Agent.ToolNode
   alias BeamWeaver.Checkpoint.ETS, as: CheckpointETS
   alias BeamWeaver.Core.Error
   alias BeamWeaver.Core.Tool
   alias BeamWeaver.Graph
   alias BeamWeaver.Graph.Compiled
-  alias BeamWeaver.Graph.Nodes.ToolNode
   alias BeamWeaver.Graph.Send
   alias BeamWeaver.Stream.Envelope
   alias BeamWeaver.Stream.Events

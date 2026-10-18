@@ -9,11 +9,11 @@ defmodule BeamWeaver.Tracing.MiddlewareTraceTest do
   alias BeamWeaver.Core.Error
   alias BeamWeaver.Agent.Nodes.Model, as: ModelNode
   alias BeamWeaver.Agent.StructuredOutput
+  alias BeamWeaver.Agent.ToolNode
   alias BeamWeaver.Core.Message
   alias BeamWeaver.Core.Tool
   alias BeamWeaver.Graph
   alias BeamWeaver.Graph.Compiled
-  alias BeamWeaver.Graph.Nodes.ToolNode
   alias BeamWeaver.Models.FakeChatModel
   alias BeamWeaver.Tracing
   alias BeamWeaver.Tracing.Context
@@ -281,7 +281,7 @@ defmodule BeamWeaver.Tracing.MiddlewareTraceTest do
     assert tool_run.outputs == %{output: "echo hi"}
   end
 
-  test "structured output traces as a sequence parent with parsed output" do
+  test "structured output traces as a parent run with parsed output" do
     schema = %{
       "title" => "answer",
       "type" => "object",
@@ -305,25 +305,25 @@ defmodule BeamWeaver.Tracing.MiddlewareTraceTest do
 
     assert {:ok, _finished_parent} = Tracing.finish_run(parent)
 
-    sequence = run_by_name!("RunnableSequence")
-    model = run_by_kind_child!(:model, sequence.id)
+    structured = run_by_name!("StructuredOutput")
+    model = run_by_kind_child!(:model, structured.id)
 
-    assert sequence.parent_id == parent.id
-    assert model.parent_id == sequence.id
-    assert sequence.metadata.structured_output == true
-    assert sequence.metadata.structured_output_schema == ["answer"]
-    assert sequence.metadata.structured_output_strategy == :provider
-    assert sequence.metadata.structured_output_requested_strategy == :provider
-    assert sequence.metadata.structured_output_effective_strategy == :provider
-    assert sequence.metadata.structured_output_fallback_reason == nil
-    assert sequence.metadata.structured_output_schema_bytes > 0
-    assert sequence.metadata.structured_output_schema_properties == 1
+    assert structured.parent_id == parent.id
+    assert model.parent_id == structured.id
+    assert structured.metadata.structured_output == true
+    assert structured.metadata.structured_output_schema == ["answer"]
+    assert structured.metadata.structured_output_strategy == :provider
+    assert structured.metadata.structured_output_requested_strategy == :provider
+    assert structured.metadata.structured_output_effective_strategy == :provider
+    assert structured.metadata.structured_output_fallback_reason == nil
+    assert structured.metadata.structured_output_schema_bytes > 0
+    assert structured.metadata.structured_output_schema_properties == 1
     assert model.metadata.thread_id == "thread-1"
     assert model.metadata.structured_output == :response_format
     assert model.metadata.structured_output_requested_strategy == :provider
     assert model.metadata.structured_output_effective_strategy == :provider
     refute Map.has_key?(model.metadata, :middleware)
-    assert sequence.outputs == %{structured_response: %{"ok" => true}}
+    assert structured.outputs == %{structured_response: %{"ok" => true}}
   end
 
   defp run_by_name!(name) do

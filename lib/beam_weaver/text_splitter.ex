@@ -94,8 +94,7 @@ defmodule BeamWeaver.TextSplitter do
 
   Chunks keep their document's metadata. The chunks of a document with an id
   get ids made from it (`"refunds:0"`, `"refunds:1"`, ...) and the document's
-  id as `"parent_id"` in their metadata, which `BeamWeaver.Indexing.index/3`
-  uses as their source when they have no `"source"`.
+  id as `"parent_id"` in their metadata.
   """
   defdelegate split_documents(splitter, documents), to: Documents
 

@@ -44,7 +44,6 @@ MyApp.SupportAgent.invoke(%{messages: ["Where is order A-1001?"]}, opts)
 | Memory store | Long-term memory | `BeamWeaver.Memory.ETS` | `BeamWeaver.Memory.Ecto` (Postgres) | `:memory` |
 | Cache | Cached graph nodes | `BeamWeaver.Cache.ETS` | `BeamWeaver.Cache.Ecto` (Postgres) | `:cache` |
 | Vector store | Retrieval | `BeamWeaver.VectorStore.ETS` | `BeamWeaver.VectorStore.EctoPostgres` (Postgres with pgvector) | `:vector_store` |
-| Record manager | Incremental indexing | `BeamWeaver.Indexing.RecordManager.ETS` | `BeamWeaver.Indexing.RecordManager.EctoPostgres` (Postgres) | `:record_manager` |
 
 ETS tables live on one node and belong to the process that created them, so
 create them once, in a test's setup or a long-lived process. The Ecto adapters
@@ -79,11 +78,11 @@ end
 
 Then run `mix ecto.migrate`. A migration per feature works just as well:
 `up(adapters: [:memory])` for long-term memory, or
-`up(adapters: [:vector_store, :record_manager])` for retrieval.
+`up(adapters: [:vector_store])` for retrieval.
 
 | Option | Meaning |
 | --- | --- |
-| `adapters:` | Which tables to create: `:checkpoint` (the default), `:memory`, `:cache`, `:vector_store`, `:record_manager`, or `:all`. |
+| `adapters:` | Which tables to create: `:checkpoint` (the default), `:memory`, `:cache`, `:vector_store`, or `:all`. `:record_manager` is the table of the record manager that earlier versions had: `:all` doesn't create it, and `down/1` with `:all` or `:record_manager` drops it. |
 | `{adapter, opts}` | An entry with options, such as `{:memory, table: "support_memory"}` or `{:vector_store, dimensions: 1024}`. |
 | `prefix:` | The Postgres schema for the tables, such as `"agents"`. `up/1` creates it unless you pass `create_schema: false`. The default is `public`. |
 | `version:` | For `down/1`: `version: 2` undoes schema version 2 and later and keeps the tables. Without it, `down/1` drops them. |
@@ -155,10 +154,10 @@ defmodule MyApp.Repo.Migrations.AddHelpCenterIndex do
   use Ecto.Migration
 
   def up do
-    BeamWeaver.Migrations.up(adapters: [{:vector_store, dimensions: 1024, index: :hnsw}, :record_manager])
+    BeamWeaver.Migrations.up(adapters: [{:vector_store, dimensions: 1024, index: :hnsw}])
   end
 
-  def down, do: BeamWeaver.Migrations.down(adapters: [:record_manager, :vector_store])
+  def down, do: BeamWeaver.Migrations.down(adapters: [:vector_store])
 end
 ```
 
@@ -301,8 +300,8 @@ run it under your supervision tree (see
 ## Write your own adapter
 
 An adapter is a struct whose module implements the behaviour for its kind:
-`BeamWeaver.Checkpoint.Saver`, `BeamWeaver.Memory.Store`, `BeamWeaver.Cache`,
-`BeamWeaver.VectorStore` or `BeamWeaver.Indexing.RecordManager`. Cleanup is
+`BeamWeaver.Checkpoint.Saver`, `BeamWeaver.Memory.Store`, `BeamWeaver.Cache`
+or `BeamWeaver.VectorStore`. Cleanup is
 optional: implement the `BeamWeaver.Adapter.Sweepable` protocol for
 `sweep_expired/2` and `BeamWeaver.Adapter.Retainable` for `prune/2`. This cache
 stores nothing, which turns caching off in tests:
@@ -345,7 +344,6 @@ For a custom checkpoint saver, see
 - [`BeamWeaver.Memory.Ecto`](https://hexdocs.pm/beam_weaver/BeamWeaver.Memory.Ecto.html): Postgres memory store
 - [`BeamWeaver.Cache.Ecto`](https://hexdocs.pm/beam_weaver/BeamWeaver.Cache.Ecto.html): Postgres cache
 - [`BeamWeaver.VectorStore.EctoPostgres`](https://hexdocs.pm/beam_weaver/BeamWeaver.VectorStore.EctoPostgres.html): Postgres and pgvector vector store
-- [`BeamWeaver.Indexing.RecordManager.EctoPostgres`](https://hexdocs.pm/beam_weaver/BeamWeaver.Indexing.RecordManager.EctoPostgres.html): Postgres record manager
 - [`BeamWeaver.Serialization`](https://hexdocs.pm/beam_weaver/BeamWeaver.Serialization.html): saving and loading values as JSON
 - [`BeamWeaver.Serialization.Registry`](https://hexdocs.pm/beam_weaver/BeamWeaver.Serialization.Registry.html): structs allowed to load
 - [`BeamWeaver.Serialization.Encrypted`](https://hexdocs.pm/beam_weaver/BeamWeaver.Serialization.Encrypted.html): AES-256-GCM codec

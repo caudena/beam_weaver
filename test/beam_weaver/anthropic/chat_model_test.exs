@@ -1100,7 +1100,7 @@ defmodule BeamWeaver.Anthropic.ChatModelTest do
       "properties" => %{"value" => %{"type" => "string"}}
     }
 
-    inner =
+    model =
       ChatModel.new(
         model: "claude-haiku-4-5-20251001",
         api_key: "anthropic-secret",
@@ -1131,12 +1131,21 @@ defmodule BeamWeaver.Anthropic.ChatModelTest do
         ]
       )
 
-    model = Models.with_structured_output(inner, schema)
+    response_format = %{name: "answer", schema: schema}
+
+    # The model's own profile has no native structured output.
+    assert {:error, %Error{type: :unsupported_feature}} =
+             CoreChatModel.invoke(model, [Message.user("answer")], response_format: response_format)
+
+    refute_received {:fake_transport_request, _request}
 
     assert {:ok, %Message{} = response} =
-             CoreChatModel.invoke(model, [Message.user("answer")], model: "claude-fable-5-1")
+             CoreChatModel.invoke(model, [Message.user("answer")],
+               model: "claude-fable-5-1",
+               response_format: response_format
+             )
 
-    assert response.metadata.structured_response == %{"value" => "native"}
+    assert response.metadata.parsed == %{"value" => "native"}
     assert response.response_metadata.model.requested_model == "claude-fable-5-1"
     assert response.response_metadata.model.profile_id == "claude-fable-5-1"
     assert response.response_metadata.limits.max_input_tokens == 1_000_000

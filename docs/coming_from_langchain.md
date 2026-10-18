@@ -77,7 +77,7 @@ arguments of `create_agent` become declarations. Write
 | `create_agent(...)` | a module with `use BeamWeaver.Agent` | [Agents](agents.md) |
 | `init_chat_model("provider:model")` | `BeamWeaver.Models.init_chat_model/2`, with the same model strings | [Models](models.md) |
 | `model.invoke`, `model.batch`, `model.stream` | `BeamWeaver.Core.ChatModel.invoke/3`, `batch/3`, `stream_typed_events/3` | [Models](models.md) |
-| `model.with_structured_output(...)` | `BeamWeaver.Models.with_structured_output/3` | [Structured Output](structured_output.md) |
+| `model.with_structured_output(...)` | `response_format:` on `BeamWeaver.Core.ChatModel.invoke/3`, or an agent's `response_format` | [Structured Output](structured_output.md) |
 | `HumanMessage`, `AIMessage`, `ToolMessage` | one `%BeamWeaver.Core.Message{}` struct with a `role` | [Messages](messages.md) |
 | `trim_messages`, `filter_messages` | `BeamWeaver.Core.Messages.Utils` | [Messages](messages.md) |
 | `@tool` | a module with `use BeamWeaver.Tool` | [Tools](tools.md) |
@@ -100,8 +100,8 @@ arguments of `create_agent` become declarations. Write
 | `stream_mode="updates"`, `"messages"`, `"custom"` | `stream_events/2` with `stream_mode: :updates` (or `:messages`, `:custom`, a list of them) | [Streaming](streaming.md) |
 | `RetryPolicy`, `CachePolicy` | the `retry:`, `timeout:` and `cache:` options of a node | [Graphs](graphs.md#node-options) |
 | Embeddings, vector stores, retrievers | `BeamWeaver.Models.init_embeddings/2`, `BeamWeaver.VectorStore`, `BeamWeaver.Retriever` | [Retrieval](retrieval.md) |
-| Prompt templates, output parsers | `BeamWeaver.Prompt`, `BeamWeaver.OutputParser` | [Prompts and Parsers](prompts_and_parsers.md) |
-| LCEL chains | `BeamWeaver.Runnable.sequence/2`, or a function that formats the prompt, calls the model and parses the reply | [Prompts and Parsers](prompts_and_parsers.md#prompt-model-and-parser) |
+| Prompt templates, output parsers | string interpolation or EEx for prompts, `JSON.decode/1` for a reply, and `response_format:` for structured answers | [Structured Output](structured_output.md) |
+| LCEL chains | a function that formats the prompt, calls the model and reads the reply | [Models](models.md) |
 | `GenericFakeChatModel`, fake embeddings | `"fake:chat"`, `"fake:embedding"` | [Testing](testing.md) |
 | LangSmith | `BeamWeaver.Tracing`, with export to WeaveScope | [Tracing](tracing.md) |
 
