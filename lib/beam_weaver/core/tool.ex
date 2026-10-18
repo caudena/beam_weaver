@@ -132,85 +132,62 @@ defmodule BeamWeaver.Core.Tool do
   """
   @spec from_function(keyword()) :: {:ok, t()} | {:error, Error.t()}
   def from_function(opts) do
-    name = Keyword.get(opts, :name)
-    description = Keyword.get(opts, :description)
-    input_schema = Keyword.get(opts, :input_schema)
-    handler = Keyword.get(opts, :handler)
-    injected = Keyword.get(opts, :injected, %{})
-    return_direct = Keyword.get(opts, :return_direct, false)
-    response_format = Keyword.get(opts, :response_format)
-    output_schema = Keyword.get(opts, :output_schema)
-    handle_tool_error = Keyword.get(opts, :handle_tool_error)
-    handle_validation_error = Keyword.get(opts, :handle_validation_error)
-    parse_args = Keyword.get(opts, :parse_args)
-    concurrent? = Keyword.get(opts, :concurrent, true)
-    max_result_chars = Keyword.get(opts, :max_result_chars, :unlimited)
-    tags = Keyword.get(opts, :tags, [])
-    metadata = Keyword.get(opts, :metadata, %{})
-    provider_opts = Keyword.get(opts, :provider_opts, %{})
-    artifact = Keyword.get(opts, :artifact)
+    tool = %__MODULE__{
+      name: Keyword.get(opts, :name),
+      description: Keyword.get(opts, :description),
+      input_schema: Keyword.get(opts, :input_schema),
+      return_direct: Keyword.get(opts, :return_direct, false) == true,
+      response_format: Keyword.get(opts, :response_format),
+      output_schema: Keyword.get(opts, :output_schema),
+      handle_tool_error: Keyword.get(opts, :handle_tool_error),
+      handle_validation_error: Keyword.get(opts, :handle_validation_error),
+      parse_args: Keyword.get(opts, :parse_args),
+      concurrent?: Keyword.get(opts, :concurrent, true),
+      max_result_chars: Keyword.get(opts, :max_result_chars, :unlimited),
+      tags: Keyword.get(opts, :tags, []),
+      metadata: Keyword.get(opts, :metadata, %{}),
+      provider_opts: Keyword.get(opts, :provider_opts, %{}),
+      artifact: Keyword.get(opts, :artifact),
+      handler: Keyword.get(opts, :handler)
+    }
 
     cond do
-      not valid_name?(name) ->
+      not is_binary(tool.name) or tool.name == "" ->
         {:error, Error.new(:invalid_tool, "tool name is required")}
 
-      not is_binary(description) or description == "" ->
+      not is_binary(tool.description) or tool.description == "" ->
         {:error, Error.new(:invalid_tool, "tool description is required")}
 
-      not is_map(input_schema) ->
+      not is_map(tool.input_schema) ->
         {:error, Error.new(:invalid_tool, "tool input_schema must be a map")}
 
-      not is_function(handler, 2) ->
+      not is_function(tool.handler, 2) ->
         {:error, Error.new(:invalid_tool, "tool handler must accept input and opts")}
 
-      output_schema != nil and not is_map(output_schema) ->
+      tool.output_schema != nil and not is_map(tool.output_schema) ->
         {:error, Error.new(:invalid_tool, "tool output_schema must be a map")}
 
-      parse_args != nil and not is_function(parse_args, 1) ->
+      tool.parse_args != nil and not is_function(tool.parse_args, 1) ->
         {:error, Error.new(:invalid_tool, "tool parse_args must accept args")}
 
-      not is_boolean(concurrent?) ->
+      not is_boolean(tool.concurrent?) ->
         {:error, Error.new(:invalid_tool, "tool concurrent option must be a boolean")}
 
-      not valid_max_result_chars?(max_result_chars) ->
-        {:error,
-         Error.new(
-           :invalid_tool,
-           "tool max_result_chars must be :unlimited or a positive integer"
-         )}
+      not (tool.max_result_chars == :unlimited or (is_integer(tool.max_result_chars) and tool.max_result_chars > 0)) ->
+        {:error, Error.new(:invalid_tool, "tool max_result_chars must be :unlimited or a positive integer")}
 
-      not is_list(tags) ->
+      not is_list(tool.tags) ->
         {:error, Error.new(:invalid_tool, "tool tags must be a list")}
 
-      not is_map(metadata) ->
+      not is_map(tool.metadata) ->
         {:error, Error.new(:invalid_tool, "tool metadata must be a map")}
 
-      not (is_map(provider_opts) or Keyword.keyword?(provider_opts)) ->
+      not (is_map(tool.provider_opts) or Keyword.keyword?(tool.provider_opts)) ->
         {:error, Error.new(:invalid_tool, "tool provider_opts must be a map or keyword list")}
 
       true ->
-        with {:ok, injected} <- Injected.normalize(injected) do
-          {:ok,
-           %__MODULE__{
-             name: name,
-             description: description,
-             input_schema: input_schema,
-             injected: injected,
-             return_direct: return_direct == true,
-             response_format: response_format,
-             output_schema: output_schema,
-             handle_tool_error: handle_tool_error,
-             handle_validation_error: handle_validation_error,
-             parse_args: parse_args,
-             concurrent?: concurrent?,
-             max_result_chars: max_result_chars,
-             tags: tags,
-             metadata: metadata,
-             provider_opts: provider_opts,
-             artifact: artifact,
-             handler: handler
-           }}
-        end
+        with {:ok, injected} <- Injected.normalize(Keyword.get(opts, :injected, %{})),
+             do: {:ok, %{tool | injected: injected}}
     end
   end
 
@@ -448,7 +425,7 @@ defmodule BeamWeaver.Core.Tool do
   @spec normalize_input(map(), map()) :: {:ok, map()} | {:error, Error.t()}
   def normalize_input(schema, input), do: Schema.normalize(schema, input)
 
-  defp trace_tool_call(tool, input, opts, fun) when is_function(fun, 1) do
+  defp trace_tool_call(tool, input, opts, fun) do
     call_opts = Keyword.drop(opts, @internal_trace_opt_keys)
 
     if BeamWeaver.Core.ChatModel.trace?(opts) do
@@ -503,7 +480,7 @@ defmodule BeamWeaver.Core.Tool do
     })
     |> Map.merge(Keyword.get(opts, :trace_metadata, %{}) || %{})
     |> TraceOptions.metadata(Keyword.get(opts, :trace))
-    |> put_present(:tool_call_id, tool_call_id(input, opts))
+    |> put_present(:tool_call_id, Keyword.get(opts, :tool_call_id) || BeamWeaver.MapAccess.get(input, :id))
   end
 
   defp trace_inputs(tool, input, opts) do
@@ -532,16 +509,6 @@ defmodule BeamWeaver.Core.Tool do
   defp public_trace_input(tool, input) when is_map(input), do: Invocation.without_injected(input, injected(tool))
 
   defp public_trace_input(_tool, input), do: %{"input" => input}
-
-  defp tool_call_id(input, opts) when is_map(input) do
-    Keyword.get(opts, :tool_call_id) || BeamWeaver.MapAccess.get(input, :id)
-  end
-
-  defp tool_call_id(_input, opts), do: Keyword.get(opts, :tool_call_id)
-
-  defp valid_name?(name), do: is_binary(name) and name != ""
-  defp valid_max_result_chars?(:unlimited), do: true
-  defp valid_max_result_chars?(value), do: is_integer(value) and value > 0
 
   defp callback(tool, callback, extra_args \\ []) do
     {module, first_arg} = callback_target(tool)

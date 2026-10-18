@@ -15,22 +15,18 @@ defmodule BeamWeaver.ZAI.ChatModelTest do
   alias BeamWeaver.ZAI.Streaming
 
   test "namespace and client constructors read Z.ai config defaults and derive endpoints" do
-    with_config(
-      :zai,
-      [
-        api_key: "zai-secret",
-        base_url: "https://proxy.test/api/paas/v4"
-      ],
-      fn ->
-        model = BeamWeaver.ZAI.chat_model(default_headers: [{"x-test-header", "beam-weaver-test"}])
-        request = Client.request(%Client{endpoint: model.endpoint, api_key: model.api_key}, %{})
-
-        assert model.endpoint == "https://proxy.test/api/paas/v4/chat/completions"
-        assert model.api_key == "zai-secret"
-        assert {"authorization", "Bearer zai-secret"} in request.headers
-        assert {"user-agent", "beam_weaver-zai/0.1"} in request.headers
-      end
+    BeamWeaver.TestSupport.ConfigHelper.put_config(:zai,
+      api_key: "zai-secret",
+      base_url: "https://proxy.test/api/paas/v4"
     )
+
+    model = BeamWeaver.ZAI.chat_model(default_headers: [{"x-test-header", "beam-weaver-test"}])
+    request = Client.request(%Client{endpoint: model.endpoint, api_key: model.api_key}, %{})
+
+    assert model.endpoint == "https://proxy.test/api/paas/v4/chat/completions"
+    assert model.api_key == "zai-secret"
+    assert {"authorization", "Bearer zai-secret"} in request.headers
+    assert {"user-agent", "beam_weaver-zai/0.1"} in request.headers
   end
 
   test "model constructor accepts Z.ai base_url alias" do
@@ -637,10 +633,5 @@ defmodule BeamWeaver.ZAI.ChatModelTest do
       },
       handler: fn args, _opts -> args end
     )
-  end
-
-  defp with_config(group, values, fun) do
-    BeamWeaver.TestSupport.ConfigHelper.put_config(group, values)
-    fun.()
   end
 end

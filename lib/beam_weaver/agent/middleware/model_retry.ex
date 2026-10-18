@@ -37,13 +37,8 @@ defmodule BeamWeaver.Agent.Middleware.ModelRetry do
       # An error the policy doesn't retry goes on as it is, for the middleware
       # around this one, such as `ModelFallback`; `on_failure` handles only
       # the retries running out.
-      {{:error, %Error{} = error}, attempts} ->
-        if RetryPolicy.retry?(middleware.policy, error),
-          do: handle_failure(middleware, error, attempts),
-          else: {:error, error}
-
-      {other, _attempts} ->
-        other
+      {:exhausted, error, attempts} -> handle_failure(middleware, error, attempts)
+      result -> result
     end
   end
 
@@ -54,14 +49,9 @@ defmodule BeamWeaver.Agent.Middleware.ModelRetry do
 
   defp handle_failure(%__MODULE__{on_failure: :error}, %Error{} = error, _attempts), do: {:error, error}
 
-  defp handle_failure(%__MODULE__{on_failure: :continue}, %Error{} = error, attempts) do
-    Message.assistant(failure_message(error, attempts),
-      metadata: %{status: "error", error_type: error.type}
-    )
-  end
-
-  defp handle_failure(%__MODULE__{on_failure: fun}, %Error{} = error, _attempts) when is_function(fun, 1) do
-    Message.assistant(fun.(error), metadata: %{status: "error", error_type: error.type})
+  defp handle_failure(%__MODULE__{on_failure: on_failure}, %Error{} = error, attempts) do
+    text = if on_failure == :continue, do: failure_message(error, attempts), else: on_failure.(error)
+    Message.assistant(text, metadata: %{status: "error", error_type: error.type})
   end
 
   defp failure_message(%Error{} = error, attempts) do
@@ -74,18 +64,9 @@ defmodule BeamWeaver.Agent.Middleware.ModelRetry do
   defp normalize_on_failure(value),
     do: Options.atom_enum!("on_failure", value, [:error, :continue])
 
+  # Model calls retry only transient errors unless told otherwise.
   defp model_policy_opts(opts) do
-    case RetryRunner.policy_opts(opts, [:name, :on_failure]) do
-      %RetryPolicy{} = policy -> policy
-      policy_opts when is_list(policy_opts) -> put_default_retry_on(opts, policy_opts)
-    end
-  end
-
-  defp put_default_retry_on(opts, policy_opts) do
-    if Keyword.has_key?(opts, :policy) or Keyword.has_key?(opts, :retry_on) do
-      policy_opts
-    else
-      Keyword.put(policy_opts, :retry_on, :transient)
-    end
+    opts = if Keyword.has_key?(opts, :policy), do: opts, else: Keyword.put_new(opts, :retry_on, :transient)
+    RetryRunner.policy_opts(opts, [:name, :on_failure])
   end
 end

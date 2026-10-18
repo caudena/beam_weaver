@@ -287,8 +287,8 @@ defmodule BeamWeaver.Graph.Execution.RunInit do
       run_id: options.run_id,
       next: Replay.ready_names(initial_ready),
       next_tasks: Replay.checkpoint_next_records(initial_ready, compiled.graph),
-      tasks: Map.get(restored, :tasks, []),
-      interrupts: Map.get(restored, :interrupts, []),
+      tasks: [],
+      interrupts: [],
       channel_versions: restored.channel_versions,
       versions_seen: restored.versions_seen,
       updated_channels: input_updated_channels,
@@ -308,11 +308,7 @@ defmodule BeamWeaver.Graph.Execution.RunInit do
   end
 
   defp maybe_clear_pending_writes(restored, %RunOptions{clear_pending_writes?: true}) do
-    restored
-    |> Map.put(:pending_writes, [])
-    |> Map.put(:pending_write_paths, [])
-    |> Map.put(:pending_write_records, [])
-    |> Map.put(:interrupts, [])
+    %{restored | pending_writes: [], pending_write_paths: []}
   end
 
   defp maybe_clear_pending_writes(restored, _options), do: restored

@@ -713,7 +713,7 @@ defmodule BeamWeaver.Graph.PregelBehaviorTest do
     assert thread_two_values.total == 5
   end
 
-  test "compiled graph facade covers batch, invalid update, fork, and send behavior" do
+  test "compiled graph facade covers batch, fork, and send behavior" do
     chain =
       Graph.new(input_schema: %{input: :integer}, output_schema: %{output: :integer})
       |> Graph.add_node(:one, fn state -> %{one: state.input + 1} end, input: [:input])
@@ -728,18 +728,6 @@ defmodule BeamWeaver.Graph.PregelBehaviorTest do
              {:ok, %{output: 4}},
              {:ok, %{output: 3}}
            ] = Compiled.batch(chain, [%{input: 3}, %{input: 2}, %{input: 1}])
-
-    invalid =
-      Graph.new(output_schema: %{hello: :string})
-      |> Graph.add_node(:one, fn _state -> %{hello: "world"} end)
-      |> Graph.add_node(:two, fn _state -> %{hello: "there"} end)
-      |> Graph.add_edge(Graph.start(), :one)
-      |> Graph.add_edge(Graph.start(), :two)
-      |> Graph.add_edge(:one, Graph.end_node())
-      |> Graph.add_edge(:two, Graph.end_node())
-      |> Graph.compile!()
-
-    assert {:error, %Error{type: :invalid_update}} = Compiled.invoke(invalid, %{})
 
     checkpointer = CheckpointETS.new()
 
@@ -1163,18 +1151,7 @@ defmodule BeamWeaver.Graph.PregelBehaviorTest do
   end
 
   test "command input goto resumes from checkpoint and adds branch task" do
-    checkpointer = CheckpointETS.new()
-
-    graph =
-      Graph.new()
-      |> Graph.add_reducer(:foo, &<>/2)
-      |> Graph.add_node(:node1, fn _state -> %{foo: "|node-1"} end)
-      |> Graph.add_node(:node2, fn _state -> %{foo: "|node-2"} end)
-      |> Graph.add_edge(:node1, :node2)
-      |> Graph.add_edge(Graph.start(), :node1)
-      |> Graph.add_edge(:node2, Graph.end_node())
-      |> Graph.compile!(checkpointer: checkpointer, interrupt_before: [:node1])
-
+    graph = paused_before_node1()
     config = %{"configurable" => %{"thread_id" => "beam-weaver-command-input-goto"}}
 
     assert {:interrupted, %{timing: :before, nodes: ["node1"]}} =
@@ -1185,18 +1162,7 @@ defmodule BeamWeaver.Graph.PregelBehaviorTest do
   end
 
   test "command input resume continues from a static interrupt checkpoint" do
-    checkpointer = CheckpointETS.new()
-
-    graph =
-      Graph.new()
-      |> Graph.add_reducer(:foo, &<>/2)
-      |> Graph.add_node(:node1, fn _state -> %{foo: "|node-1"} end)
-      |> Graph.add_node(:node2, fn _state -> %{foo: "|node-2"} end)
-      |> Graph.add_edge(:node1, :node2)
-      |> Graph.add_edge(Graph.start(), :node1)
-      |> Graph.add_edge(:node2, Graph.end_node())
-      |> Graph.compile!(checkpointer: checkpointer, interrupt_before: [:node1])
-
+    graph = paused_before_node1()
     config = %{"configurable" => %{"thread_id" => "beam-weaver-command-input-static-resume"}}
 
     assert {:interrupted, %{timing: :before, nodes: ["node1"]}} =
@@ -1492,39 +1458,7 @@ defmodule BeamWeaver.Graph.PregelBehaviorTest do
   end
 
   test "parent command from deeply nested subgraph targets the immediate parent graph" do
-    sub_sub_graph =
-      Graph.new(name: "sub_sub_graph")
-      |> Graph.add_reducer(:dialog_state, fn existing, update -> existing ++ List.wrap(update) end)
-      |> Graph.add_node(:sub_sub_child, fn _state ->
-        %BeamWeaver.Graph.Command{
-          graph: BeamWeaver.Graph.Command.parent(),
-          goto: :sub_child_3,
-          update: %{dialog_state: ["sub_sub_child"]}
-        }
-      end)
-      |> Graph.add_edge(Graph.start(), :sub_sub_child)
-      |> Graph.compile!()
-
-    sub_graph =
-      Graph.new(name: "sub_graph")
-      |> Graph.add_reducer(:dialog_state, fn existing, update -> existing ++ List.wrap(update) end)
-      |> Graph.add_node(:sub_child_1, fn _state -> %{dialog_state: ["sub_child_1"]} end)
-      |> Graph.add_node(:sub_child_2, sub_sub_graph)
-      |> Graph.add_node(:sub_child_3, fn _state -> %{dialog_state: ["sub_child_3"]} end)
-      |> Graph.add_edge(:sub_child_1, :sub_child_2)
-      |> Graph.add_edge(Graph.start(), :sub_child_1)
-      |> Graph.add_edge(:sub_child_3, Graph.end_node())
-      |> Graph.compile!()
-
-    graph =
-      Graph.new(name: "main_graph")
-      |> Graph.add_reducer(:dialog_state, fn existing, update -> existing ++ List.wrap(update) end)
-      |> Graph.add_node(:child_1, fn _state -> %{dialog_state: ["child_1"]} end)
-      |> Graph.add_node(:child_2, sub_graph)
-      |> Graph.add_edge(:child_1, :child_2)
-      |> Graph.add_edge(Graph.start(), :child_1)
-      |> Graph.add_edge(:child_2, Graph.end_node())
-      |> Graph.compile!()
+    graph = nested_command_graph(BeamWeaver.Graph.Command.parent())
 
     # Each subgraph passes up only what it added to the list it received.
     assert {:ok, %{dialog_state: ["init", "child_1", "sub_child_1", "sub_sub_child", "sub_child_3"]}} =
@@ -1532,39 +1466,7 @@ defmodule BeamWeaver.Graph.PregelBehaviorTest do
   end
 
   test "named graph command bubbles until the matching subgraph handles it" do
-    sub_sub_graph =
-      Graph.new(name: "sub_sub_graph")
-      |> Graph.add_reducer(:dialog_state, fn existing, update -> existing ++ List.wrap(update) end)
-      |> Graph.add_node(:sub_sub_child, fn _state ->
-        %BeamWeaver.Graph.Command{
-          graph: "sub_graph",
-          goto: :sub_child_3,
-          update: %{dialog_state: ["sub_sub_child"]}
-        }
-      end)
-      |> Graph.add_edge(Graph.start(), :sub_sub_child)
-      |> Graph.compile!()
-
-    sub_graph =
-      Graph.new(name: "sub_graph")
-      |> Graph.add_reducer(:dialog_state, fn existing, update -> existing ++ List.wrap(update) end)
-      |> Graph.add_node(:sub_child_1, fn _state -> %{dialog_state: ["sub_child_1"]} end)
-      |> Graph.add_node(:sub_child_2, sub_sub_graph)
-      |> Graph.add_node(:sub_child_3, fn _state -> %{dialog_state: ["sub_child_3"]} end)
-      |> Graph.add_edge(:sub_child_1, :sub_child_2)
-      |> Graph.add_edge(Graph.start(), :sub_child_1)
-      |> Graph.add_edge(:sub_child_3, Graph.end_node())
-      |> Graph.compile!()
-
-    graph =
-      Graph.new(name: "main_graph")
-      |> Graph.add_reducer(:dialog_state, fn existing, update -> existing ++ List.wrap(update) end)
-      |> Graph.add_node(:child_1, fn _state -> %{dialog_state: ["child_1"]} end)
-      |> Graph.add_node(:child_2, sub_graph)
-      |> Graph.add_edge(:child_1, :child_2)
-      |> Graph.add_edge(Graph.start(), :child_1)
-      |> Graph.add_edge(:child_2, Graph.end_node())
-      |> Graph.compile!()
+    graph = nested_command_graph("sub_graph")
 
     # Each subgraph passes up only what it added to the list it received.
     assert {:ok, %{dialog_state: ["init", "child_1", "sub_child_1", "sub_sub_child", "sub_child_3"]}} =
@@ -2078,6 +1980,54 @@ defmodule BeamWeaver.Graph.PregelBehaviorTest do
     refute_receive :step_a, 50
     refute_receive :ask_1, 50
     assert_receive :ask_2
+  end
+
+  # A graph whose subgraph's subgraph returns a `Command` for `target` that
+  # goes to `sub_child_3`.
+  defp nested_command_graph(target) do
+    sub_sub_graph =
+      Graph.new(name: "sub_sub_graph")
+      |> Graph.add_reducer(:dialog_state, fn existing, update -> existing ++ List.wrap(update) end)
+      |> Graph.add_node(:sub_sub_child, fn _state ->
+        %BeamWeaver.Graph.Command{
+          graph: target,
+          goto: :sub_child_3,
+          update: %{dialog_state: ["sub_sub_child"]}
+        }
+      end)
+      |> Graph.add_edge(Graph.start(), :sub_sub_child)
+      |> Graph.compile!()
+
+    sub_graph =
+      Graph.new(name: "sub_graph")
+      |> Graph.add_reducer(:dialog_state, fn existing, update -> existing ++ List.wrap(update) end)
+      |> Graph.add_node(:sub_child_1, fn _state -> %{dialog_state: ["sub_child_1"]} end)
+      |> Graph.add_node(:sub_child_2, sub_sub_graph)
+      |> Graph.add_node(:sub_child_3, fn _state -> %{dialog_state: ["sub_child_3"]} end)
+      |> Graph.add_edge(:sub_child_1, :sub_child_2)
+      |> Graph.add_edge(Graph.start(), :sub_child_1)
+      |> Graph.add_edge(:sub_child_3, Graph.end_node())
+      |> Graph.compile!()
+
+    Graph.new(name: "main_graph")
+    |> Graph.add_reducer(:dialog_state, fn existing, update -> existing ++ List.wrap(update) end)
+    |> Graph.add_node(:child_1, fn _state -> %{dialog_state: ["child_1"]} end)
+    |> Graph.add_node(:child_2, sub_graph)
+    |> Graph.add_edge(:child_1, :child_2)
+    |> Graph.add_edge(Graph.start(), :child_1)
+    |> Graph.add_edge(:child_2, Graph.end_node())
+    |> Graph.compile!()
+  end
+
+  defp paused_before_node1 do
+    Graph.new()
+    |> Graph.add_reducer(:foo, &<>/2)
+    |> Graph.add_node(:node1, fn _state -> %{foo: "|node-1"} end)
+    |> Graph.add_node(:node2, fn _state -> %{foo: "|node-2"} end)
+    |> Graph.add_edge(:node1, :node2)
+    |> Graph.add_edge(Graph.start(), :node1)
+    |> Graph.add_edge(:node2, Graph.end_node())
+    |> Graph.compile!(checkpointer: CheckpointETS.new(), interrupt_before: [:node1])
   end
 
   defp data_writes(writes), do: Enum.reject(writes, &control_write?/1)

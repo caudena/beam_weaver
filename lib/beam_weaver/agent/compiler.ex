@@ -75,7 +75,7 @@ defmodule BeamWeaver.Agent.Compiler do
 
     graph =
       Graph.new(
-        name: spec.name || inspect(spec.module),
+        name: spec.name,
         state_schema: state_schema,
         context_schema: context_schema,
         input_schema: spec.input_schema,
@@ -132,11 +132,11 @@ defmodule BeamWeaver.Agent.Compiler do
       checkpointer: Keyword.get(opts, :checkpointer, spec.checkpointer),
       store: Keyword.get(opts, :store, spec.store),
       cache: Keyword.get(opts, :cache, spec.cache),
-      interrupt_before: Keyword.get(opts, :interrupt_before, spec.interrupt_before || []),
-      interrupt_after: Keyword.get(opts, :interrupt_after, spec.interrupt_after || []),
+      interrupt_before: Keyword.get(opts, :interrupt_before, spec.interrupt_before),
+      interrupt_after: Keyword.get(opts, :interrupt_after, spec.interrupt_after),
       step_timeout: Keyword.get(opts, :step_timeout, spec.step_timeout || :infinity),
       run_timeout: Keyword.get(opts, :run_timeout, spec.run_timeout || :infinity),
-      name: Keyword.get(opts, :name, spec.name || inspect(spec.module))
+      name: Keyword.get(opts, :name, spec.name)
     ]
   end
 
@@ -147,7 +147,7 @@ defmodule BeamWeaver.Agent.Compiler do
   # name each other as subagents are checked once.
   @spec validate(Spec.t(), keyword()) :: :ok | {:error, Error.t()}
   def validate(%Spec{} = spec, opts) do
-    with {:ok, middleware} <- Middleware.normalize_all(spec.middleware || []),
+    with {:ok, middleware} <- Middleware.normalize_all(spec.middleware),
          {:ok, tools} <- declared_tools(spec.tools),
          :ok <- validate_tools(tools),
          :ok <- validate_response_format(spec.response_format) do
@@ -273,7 +273,7 @@ defmodule BeamWeaver.Agent.Compiler do
   # its declared fields under their atom keys.
   @spec run_opts(Spec.t(), keyword()) :: {:ok, keyword()} | {:error, Error.t()}
   def run_opts(%Spec{} = spec, opts) do
-    with {:ok, middleware} <- Middleware.normalize_all(spec.middleware || []),
+    with {:ok, middleware} <- Middleware.normalize_all(spec.middleware),
          {:ok, _tools} <- declared_tools(spec.tools),
          :ok <- validate_required_checkpointer(middleware, spec, opts),
          {:ok, context} <-
@@ -281,18 +281,14 @@ defmodule BeamWeaver.Agent.Compiler do
            |> middleware_context_schema()
            |> Schema.merge_schema(spec.context_schema)
            |> Schema.normalize_context(Keyword.get(opts, :context)) do
-      {:ok,
-       opts
-       |> maybe_put_context(context)
-       |> maybe_put_recursion_limit(spec.recursion_limit)}
+      opts = if is_nil(context), do: opts, else: Keyword.put(opts, :context, context)
+
+      opts =
+        if is_nil(spec.recursion_limit), do: opts, else: Keyword.put_new(opts, :recursion_limit, spec.recursion_limit)
+
+      {:ok, opts}
     end
   end
-
-  defp maybe_put_context(opts, nil), do: opts
-  defp maybe_put_context(opts, context), do: Keyword.put(opts, :context, context)
-
-  defp maybe_put_recursion_limit(opts, nil), do: opts
-  defp maybe_put_recursion_limit(opts, limit), do: Keyword.put_new(opts, :recursion_limit, limit)
 
   defp validate_required_checkpointer(middleware, %Spec{} = spec, opts) do
     requiring = Enum.filter(middleware, &Middleware.requires_checkpointer?/1)

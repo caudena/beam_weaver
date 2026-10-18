@@ -52,8 +52,9 @@ defmodule BeamWeaver.Filesystem.State do
   def read(%__MODULE__{} = backend, path, opts) do
     with {:ok, path} <- FsPath.clean_path(path),
          {:ok, data} <- fetch_file(files(backend, opts), state_path(path, opts)),
-         {:ok, content} <- data |> FileDataUtils.normalize_file_data() |> FileDataUtils.read_content(opts) do
-      %Filesystem.ReadResult{file_data: %{FileDataUtils.normalize_file_data(data) | content: content}}
+         data = FileDataUtils.normalize_file_data(data),
+         {:ok, content} <- FileDataUtils.read_content(data, opts) do
+      %Filesystem.ReadResult{file_data: %{data | content: content}}
     else
       {:error, error} -> %Filesystem.ReadResult{error: error}
     end
@@ -112,35 +113,25 @@ defmodule BeamWeaver.Filesystem.State do
 
   @impl true
   def glob(%__MODULE__{} = backend, pattern, opts) do
-    case FsPath.clean_path(Keyword.get(opts, :path, "/")) do
-      {:ok, path} ->
-        with files = visible_files(backend, opts),
-             true <- exists?(files, path) || {:error, "file_not_found"},
-             {:ok, matches} <- Search.glob_files(files, pattern, path: path) do
-          %Filesystem.GlobResult{matches: matches}
-        else
-          {:error, error} -> %Filesystem.GlobResult{error: error}
-        end
-
-      {:error, error} ->
-        %Filesystem.GlobResult{error: error}
+    with {:ok, path} <- FsPath.clean_path(Keyword.get(opts, :path, "/")),
+         files = visible_files(backend, opts),
+         true <- exists?(files, path) || {:error, "file_not_found"},
+         {:ok, matches} <- Search.glob_files(files, pattern, path: path) do
+      %Filesystem.GlobResult{matches: matches}
+    else
+      {:error, error} -> %Filesystem.GlobResult{error: error}
     end
   end
 
   @impl true
   def grep(%__MODULE__{} = backend, pattern, opts) do
-    case FsPath.clean_path(Keyword.get(opts, :path, "/")) do
-      {:ok, path} ->
-        with files = visible_files(backend, opts),
-             true <- exists?(files, path) || {:error, "file_not_found"},
-             {:ok, matches} <- Search.grep_files(files, pattern, path: path, glob: Keyword.get(opts, :glob)) do
-          %Filesystem.GrepResult{matches: matches}
-        else
-          {:error, error} -> %Filesystem.GrepResult{error: error}
-        end
-
-      {:error, error} ->
-        %Filesystem.GrepResult{error: error}
+    with {:ok, path} <- FsPath.clean_path(Keyword.get(opts, :path, "/")),
+         files = visible_files(backend, opts),
+         true <- exists?(files, path) || {:error, "file_not_found"},
+         {:ok, matches} <- Search.grep_files(files, pattern, path: path, glob: Keyword.get(opts, :glob)) do
+      %Filesystem.GrepResult{matches: matches}
+    else
+      {:error, error} -> %Filesystem.GrepResult{error: error}
     end
   end
 

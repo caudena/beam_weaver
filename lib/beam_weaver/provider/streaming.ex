@@ -29,9 +29,7 @@ defmodule BeamWeaver.Provider.Streaming do
           error_decoder()
         ) ::
           Enumerable.t()
-  def live_sse(transport, %Request{} = request, transport_opts, opts, parser, error_decoder)
-      when (is_function(parser, 1) or is_function(parser, 2)) and
-             is_function(error_decoder, 1) do
+  def live_sse(transport, %Request{} = request, transport_opts, opts, parser, error_decoder) do
     provider = Keyword.get(opts, :provider)
 
     Stream.live_resource(
@@ -49,7 +47,7 @@ defmodule BeamWeaver.Provider.Streaming do
                      {:ok, items, parser_state} <- parse_items(parser, events, state.parser),
                      {:ok, validation} <-
                        StreamValidator.push(state.validation, items, transport_bytes: byte_size(chunk)) do
-                  emit_items(items, sink)
+                  Enum.each(items, sink)
                   %{buffer: buffer, validation: validation, parser: parser_state, failure: failure}
                 else
                   {:error, error} ->
@@ -84,8 +82,7 @@ defmodule BeamWeaver.Provider.Streaming do
 
   @spec collect(module(), Request.t(), keyword(), error_decoder(), keyword()) ::
           {:ok, term()} | {:error, term()}
-  def collect(transport, %Request{} = request, transport_opts, decoder, opts \\ [])
-      when is_function(decoder, 1) do
+  def collect(transport, %Request{} = request, transport_opts, decoder, opts \\ []) do
     maximum = Keyword.get(transport_opts, :max_response_bytes, 16 * 1024 * 1024)
 
     result =
@@ -141,11 +138,13 @@ defmodule BeamWeaver.Provider.Streaming do
     with {:ok, items, parser_state} <- parse_items(parser, events, state.parser),
          {:ok, final_items} <- finalize_parser(parser_state, response, opts),
          items = items ++ final_items,
-         {:ok, validation} <- push_final(state.validation, items),
-         :ok <- StreamValidator.finish(validation) do
-      emit_items(items, sink)
+         {:ok, _validation} <- StreamValidator.push(state.validation, items) do
+      Enum.each(items, sink)
       notify_response(response, opts)
       :ok
+    else
+      {:error, error, %StreamValidator{}} -> {:error, error}
+      other -> other
     end
   end
 
@@ -167,8 +166,6 @@ defmodule BeamWeaver.Provider.Streaming do
     end
   end
 
-  defp emit_items(items, sink) when is_list(items), do: Enum.each(items, sink)
-
   defp parse_chunk(buffer, chunk, opts) do
     {events, buffer} = SSE.process_chunk(buffer, chunk, strict: Keyword.get(opts, :strict_sse, false))
     {:ok, events, buffer}
@@ -189,13 +186,6 @@ defmodule BeamWeaver.Provider.Streaming do
     exception -> {:error, exception}
   catch
     kind, reason -> {:error, {kind, reason}}
-  end
-
-  defp push_final(validation, items) do
-    case StreamValidator.push(validation, items) do
-      {:ok, validation} -> {:ok, validation}
-      {:error, error, _validation} -> {:error, error}
-    end
   end
 
   defp notify_response(%Response{} = response, opts) do

@@ -55,13 +55,7 @@ defmodule BeamWeaver.Core.Messages.Trim do
   end
 
   defp keep_by_strategy(messages, max_tokens, counter, :last, opts) do
-    system =
-      if Keyword.get(opts, :include_system, false) and
-           match?([%Message{role: :system} | _], messages),
-         do: [hd(messages)],
-         else: []
-
-    candidates = if system == [], do: messages, else: tl(messages)
+    {system, candidates} = split_system(messages, opts)
 
     with {:ok, kept} <-
            candidates
@@ -108,16 +102,18 @@ defmodule BeamWeaver.Core.Messages.Trim do
   defp apply_start_on(messages, nil, _opts), do: messages
 
   defp apply_start_on(messages, role, opts) do
-    {system, messages} =
-      if Keyword.get(opts, :include_system, false) and
-           match?([%Message{role: :system} | _], messages),
-         do: {[hd(messages)], tl(messages)},
-         else: {[], messages}
+    {system, messages} = split_system(messages, opts)
 
     case Enum.find_index(messages, &role_match?(&1, role)) do
       nil -> system ++ messages
       index -> system ++ Enum.drop(messages, index)
     end
+  end
+
+  defp split_system(messages, opts) do
+    if Keyword.get(opts, :include_system) && match?([%Message{role: :system} | _], messages),
+      do: {[hd(messages)], tl(messages)},
+      else: {[], messages}
   end
 
   defp role_match?(%Message{role: message_role}, roles) when is_list(roles),
@@ -143,33 +139,26 @@ defmodule BeamWeaver.Core.Messages.Trim do
   end
 
   defp preserve_tool_adjacency(messages) do
-    tool_result_ids =
-      messages
-      |> Enum.filter(&(&1.role == :tool))
-      |> Enum.map(& &1.tool_call_id)
-      |> MapSet.new()
+    tool_result_ids = for %Message{role: :tool, tool_call_id: id} <- messages, into: MapSet.new(), do: id
 
-    messages
-    |> Enum.map(fn
-      %Message{role: :assistant, tool_calls: calls} = message when calls != [] ->
-        %{message | tool_calls: Enum.filter(calls, &(Map.get(&1, :id) in tool_result_ids))}
+    messages =
+      Enum.map(messages, fn
+        %Message{role: :assistant, tool_calls: calls} = message when calls != [] ->
+          %{message | tool_calls: Enum.filter(calls, &(Map.get(&1, :id) in tool_result_ids))}
 
-      message ->
-        message
-    end)
-    |> then(fn messages ->
-      assistant_call_ids =
-        messages
-        |> Enum.flat_map(fn
-          %Message{role: :assistant, tool_calls: calls} -> Enum.map(calls, &Map.get(&1, :id))
-          _message -> []
-        end)
-        |> MapSet.new()
-
-      Enum.reject(messages, fn
-        %Message{role: :tool, tool_call_id: id} -> not MapSet.member?(assistant_call_ids, id)
-        _message -> false
+        message ->
+          message
       end)
+
+    assistant_call_ids =
+      for %Message{role: :assistant, tool_calls: calls} <- messages,
+          call <- calls,
+          into: MapSet.new(),
+          do: Map.get(call, :id)
+
+    Enum.reject(messages, fn
+      %Message{role: :tool, tool_call_id: id} -> not MapSet.member?(assistant_call_ids, id)
+      _message -> false
     end)
   end
 

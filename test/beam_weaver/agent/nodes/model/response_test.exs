@@ -110,6 +110,13 @@ defmodule BeamWeaver.Agent.Nodes.Model.ResponseTest do
     end
   end
 
+  test "attach_diagnostics/5 names a model given as a string by that string" do
+    request = ModelRequest.new(model: "x:y", messages: [])
+    %Error{details: details} = Response.attach_diagnostics(Error.new(:model_error, "boom"), request, [], [])
+
+    assert details.model_request.model == "x:y"
+  end
+
   defp diagnosed(text) do
     message = Message.assistant(text)
     request = ModelRequest.new(model: "test-model", messages: [message])

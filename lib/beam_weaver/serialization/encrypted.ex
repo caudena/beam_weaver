@@ -122,13 +122,8 @@ defmodule BeamWeaver.Serialization.Encrypted do
   defp encrypted_envelope?(_value), do: false
 
   defp decode64(value, field) do
-    case Base.decode64(value) do
-      {:ok, decoded} ->
-        {:ok, decoded}
-
-      :error ->
-        {:error, Error.new(:serialization_error, "encrypted #{field} is not valid base64")}
-    end
+    with :error <- Base.decode64(value),
+         do: {:error, Error.new(:serialization_error, "encrypted #{field} is not valid base64")}
   end
 
   defp decrypt(key, nonce, ciphertext, tag) do

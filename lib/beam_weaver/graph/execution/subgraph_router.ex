@@ -56,21 +56,17 @@ defmodule BeamWeaver.Graph.Execution.SubgraphRouter do
   end
 
   @spec checkpoint_config(map(), map()) :: map()
-  def checkpoint_config(compiled, config) do
-    if Map.get(compiled, :checkpoint_scope, :inherit) == :shared do
-      configurable = Checkpoint.configurable(config)
-      namespace = Map.get(configurable, "checkpoint_ns", "")
-      recast = Namespace.recast(namespace)
+  def checkpoint_config(%{checkpoint_scope: :shared}, config) do
+    configurable = Checkpoint.configurable(config)
+    namespace = Map.get(configurable, "checkpoint_ns", "")
+    recast = Namespace.recast(namespace)
 
-      if recast != namespace do
-        Map.put(config, "configurable", Map.put(configurable, "checkpoint_ns", recast))
-      else
-        config
-      end
-    else
-      config
-    end
+    if recast != namespace,
+      do: Map.put(config, "configurable", Map.put(configurable, "checkpoint_ns", recast)),
+      else: config
   end
+
+  def checkpoint_config(_compiled, config), do: config
 
   @spec rebase_time_travel_config(map(), map()) :: map()
   def rebase_time_travel_config(compiled, config) do
@@ -86,7 +82,7 @@ defmodule BeamWeaver.Graph.Execution.SubgraphRouter do
       is_nil(root_checkpoint_id) ->
         config
 
-      not namespace_targets_subgraph?(compiled, namespace) ->
+      is_nil(namespace_delegate(compiled, config)) ->
         config
 
       true ->
@@ -116,17 +112,8 @@ defmodule BeamWeaver.Graph.Execution.SubgraphRouter do
   end
 
   defp targets_subgraph?(%Command{graph: graph}, compiled, runtime) do
-    CommandRouter.command_target?(graph, subgraph_identifiers(compiled, runtime))
-  end
-
-  defp subgraph_identifiers(compiled, runtime) do
-    namespace =
-      runtime
-      |> config(:task)
-      |> Checkpoint.configurable()
-      |> Map.get("checkpoint_ns", "")
-
-    [compiled.name, runtime.node, namespace, Namespace.recast(namespace)]
+    namespace = runtime |> config(:task) |> Checkpoint.configurable() |> Map.get("checkpoint_ns", "")
+    CommandRouter.command_target?(graph, [compiled.name, runtime.node, namespace, Namespace.recast(namespace)])
   end
 
   defp find_subgraph(compiled, [node | rest]) do
@@ -160,13 +147,6 @@ defmodule BeamWeaver.Graph.Execution.SubgraphRouter do
     case Map.get(compiled, :checkpoint_scope, :inherit) do
       :shared -> Namespace.child(parent_ns, node, nil) |> Namespace.serialize()
       _other -> child_namespace(parent_ns, node, task_id, :task)
-    end
-  end
-
-  defp namespace_targets_subgraph?(compiled, namespace) do
-    case Namespace.recast(namespace) |> Namespace.normalize() do
-      [_node | _rest] = path -> not is_nil(find_subgraph(compiled, path))
-      [] -> false
     end
   end
 end

@@ -56,12 +56,7 @@ defmodule BeamWeaver.Provider.Capability do
     profile = model_profile(model)
     provider = profile_value(profile, :provider) || provider_value(model)
     model_id = profile_value(profile, :id) || model_id(model)
-    requested = requested_features(model, opts)
-
-    unsupported =
-      requested
-      |> Enum.reject(&supports?(profile, &1))
-      |> Enum.uniq()
+    unsupported = model |> requested_features(opts) |> Enum.reject(&supports?(profile, &1))
 
     with {:ok, policy} <- unsupported_policy(opts) do
       case {policy, unsupported} do
@@ -89,7 +84,7 @@ defmodule BeamWeaver.Provider.Capability do
   end
 
   defp supported_features(%Profile{} = profile) do
-    Enum.sort(for {feature, field} <- @feature_fields, Map.get(profile, field) == true, uniq: true, do: feature)
+    Enum.sort(for {feature, field} <- @feature_fields, Map.get(profile, field) == true, do: feature)
   end
 
   defp supported_features(_profile), do: []

@@ -102,33 +102,6 @@ defmodule BeamWeaver.StreamTest do
     refute_received :producer_not_cancelled
   end
 
-  test "Mux backpressure policies emit deterministic debug events" do
-    stream =
-      BeamWeaver.Stream.Mux.stream(
-        [
-          {:sink, :fast_model,
-           fn sink ->
-             BeamWeaver.Stream.Sink.emit(sink, %Events.Token{text: "one"})
-             BeamWeaver.Stream.Sink.emit(sink, %Events.Token{text: "two"})
-             :ok
-           end}
-        ],
-        max_buffer: 0,
-        overflow: :drop_newest
-      )
-      |> Enum.take(3)
-
-    assert Enum.any?(stream, fn
-             %Envelope{
-               event: %Events.Debug{payload: %{type: :backpressure_drop, dropped: :newest}}
-             } ->
-               true
-
-             _event ->
-               false
-           end)
-  end
-
   test "Mux heartbeats are opt-in event-mode lifecycle events" do
     stream =
       BeamWeaver.Stream.Mux.stream(

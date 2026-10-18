@@ -171,13 +171,10 @@ defmodule BeamWeaver.Transport.Safe do
       # options would sever the binding between the validated address, Host,
       # SNI, and certificate verification. HTTP/1 is deliberate: Finch may
       # transparently replay an HTTP/2 request while a pool is draining.
-      stream_idle_timeout =
-        Keyword.get(opts, :stream_idle_timeout, Keyword.get(opts, :timeout, 15_000))
-
       connect_options = [
         hostname: target.host,
         protocols: [:http1],
-        timeout: Keyword.get(opts, :connect_timeout, min(stream_idle_timeout, 5_000))
+        timeout: Keyword.get(opts, :connect_timeout, min(opts[:stream_idle_timeout], 5_000))
       ]
 
       wire_opts =
@@ -342,15 +339,9 @@ defmodule BeamWeaver.Transport.Safe do
     %{error | details: details}
   end
 
-  defp header(headers, key) do
-    Enum.find_value(headers, fn
-      {header, value} when is_binary(header) ->
-        if String.downcase(header) == key, do: value
-
-      _other ->
-        nil
-    end)
-  end
+  # Runs only on response headers that `validate_response_headers/2` accepted.
+  defp header(headers, key),
+    do: Enum.find_value(headers, fn {header, value} -> if String.downcase(header) == key, do: value end)
 
   defp absolute_redirect_url(nil, _base_url), do: nil
   defp absolute_redirect_url("http" <> _rest = url, _base_url), do: url

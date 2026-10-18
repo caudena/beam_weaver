@@ -60,9 +60,11 @@ defmodule BeamWeaver.Provider.EmbeddingRuntime do
   end
 
   defp embed_documents_by_token_budget(model, documents, chunk_size, opts, embed_fun) do
+    tokenizer_opts = tokenizer_opts(model, opts)
+
     with {:ok, tokenizer} <- tokenizer(model, opts),
-         :ok <- validate_special_tokens(documents, model, opts),
-         {:ok, records} <- token_chunk_records(documents, tokenizer, model, opts),
+         :ok <- validate_special_tokens(documents, tokenizer_opts),
+         {:ok, records} <- token_chunk_records(documents, tokenizer, tokenizer_opts, model, opts),
          {:ok, vectors} <- embed_token_records(records, chunk_size, opts, embed_fun) do
       {:ok, aggregate_token_records(records, vectors, length(documents))}
     end
@@ -75,11 +77,9 @@ defmodule BeamWeaver.Provider.EmbeddingRuntime do
     end
   end
 
-  defp token_chunk_records(documents, tokenizer, model, opts) do
+  defp token_chunk_records(documents, tokenizer, tokenizer_opts, model, opts) do
     ctx_length =
       max(Keyword.get(opts, :embedding_ctx_length, Map.get(model, :embedding_ctx_length)), 1)
-
-    tokenizer_opts = tokenizer_opts(model, opts)
 
     documents
     |> Enum.with_index()
@@ -167,15 +167,11 @@ defmodule BeamWeaver.Provider.EmbeddingRuntime do
     ]
   end
 
-  defp validate_special_tokens(documents, model, opts) do
-    allowed =
-      opts
-      |> Keyword.get(:allowed_special, Map.get(model, :allowed_special))
-      |> normalize_special_tokens()
+  defp validate_special_tokens(documents, tokenizer_opts) do
+    allowed = normalize_special_tokens(tokenizer_opts[:allowed_special])
 
     disallowed =
-      opts
-      |> Keyword.get(:disallowed_special, Map.get(model, :disallowed_special))
+      tokenizer_opts[:disallowed_special]
       |> normalize_special_tokens()
       |> Enum.reject(&(&1 in allowed))
 

@@ -65,10 +65,10 @@ defmodule BeamWeaver.Stream.Mux do
     owner = self()
     trace_context = Tracing.capture_context()
 
-    {tasks, queue, queue_size} =
+    state =
       mux.producers
       |> Enum.with_index()
-      |> Enum.reduce({[], :queue.new(), 0}, fn {producer, index}, {tasks, queue, size} ->
+      |> Enum.reduce(%State{mux: mux}, fn {producer, index}, state ->
         spec = normalize_producer(producer, index)
         token = make_ref()
 
@@ -81,23 +81,21 @@ defmodule BeamWeaver.Stream.Mux do
           namespace: mux.namespace
         }
 
-        task = start_task(mux, spec, sink, trace_context)
+        task =
+          Tracing.async(fn -> run_producer(spec, sink) end,
+            context: trace_context,
+            supervisor: mux.policy.producer_supervisor
+          )
 
-        task_info =
-          {task.pid, %{task: task, name: spec.name, token: token, started_at: System.monotonic_time(:millisecond)}}
+        task_info = %{task: task, name: spec.name, token: token, started_at: System.monotonic_time(:millisecond)}
 
-        {queue, size} = queue_in(queue, size, debug_event(mux, spec.name, :producer_start))
-
-        {[task_info | tasks], queue, size}
+        queue_in(
+          %{state | tasks: Map.put(state.tasks, task.pid, task_info)},
+          debug_event(mux, spec.name, :producer_start)
+        )
       end)
 
-    %State{
-      mux: mux,
-      tasks: Map.new(tasks),
-      queue: queue,
-      queue_size: queue_size,
-      timeout_deadline: timeout_deadline(mux.policy.timeout)
-    }
+    %{state | timeout_deadline: timeout_deadline(mux.policy.timeout)}
   end
 
   defp next(%{done?: true} = state), do: {:halt, state}
@@ -115,7 +113,7 @@ defmodule BeamWeaver.Stream.Mux do
       receive do
         {:beam_weaver_mux_emit, token, ref, pid, name, item, emit_opts} ->
           state =
-            if task_token?(state.tasks, pid, token) do
+            if task_token?(state.tasks, token) do
               enqueue_item(state, ref, pid, name, item, emit_opts)
             else
               send(pid, {:beam_weaver_mux_ack, ref, {:error, cancelled_error()}})
@@ -208,29 +206,19 @@ defmodule BeamWeaver.Stream.Mux do
     end
   end
 
-  defp maybe_append_debug(state, event, %{max_buffer: 0}), do: queue_in(state, event)
+  defp maybe_append_debug(%{queue_size: size} = state, event, %{max_buffer: max}) when max == 0 or size < max,
+    do: queue_in(state, event)
 
-  defp maybe_append_debug(%{queue_size: size} = state, _event, %{max_buffer: max})
-       when size >= max, do: state
-
-  defp maybe_append_debug(state, event, _policy), do: queue_in(state, event)
+  defp maybe_append_debug(state, _event, _policy), do: state
 
   defp handle_timeout(%{mux: mux} = state) do
     if heartbeat_interval(mux) != :infinity and not timeout_expired?(state) do
       {[debug_event(mux, nil, :heartbeat, mux.policy.heartbeat.payload)], %{state | heartbeat_sent?: true}}
     else
-      stream_timeout(state)
+      event = envelope(mux, %Events.Error{error: Error.new(:stream_timeout, "stream producer timed out")})
+      cleanup(state)
+      {[event], %{state | tasks: %{}, done?: true}}
     end
-  end
-
-  defp stream_timeout(%{mux: mux} = state) do
-    event =
-      envelope(mux, %Events.Error{
-        error: Error.new(:stream_timeout, "stream producer timed out")
-      })
-
-    cleanup(state)
-    {[event], %{state | tasks: %{}, done?: true}}
   end
 
   # A producer task replies once it returns, right after its done message.
@@ -259,15 +247,8 @@ defmodule BeamWeaver.Stream.Mux do
     state = %{state | tasks: tasks} |> release_blocked()
 
     if heartbeat_due_on_finish?(mux, task_info, state) do
-      heartbeat =
-        debug_event(mux, task_info.name, :heartbeat, mux.policy.heartbeat.payload)
-
-      state =
-        state
-        |> queue_in(event)
-        |> Map.put(:heartbeat_sent?, true)
-
-      {heartbeat, state}
+      heartbeat = debug_event(mux, task_info.name, :heartbeat, mux.policy.heartbeat.payload)
+      {heartbeat, %{queue_in(state, event) | heartbeat_sent?: true}}
     else
       {event, state}
     end
@@ -286,22 +267,15 @@ defmodule BeamWeaver.Stream.Mux do
 
   defp queue_room?(%{queue_size: size}, %{max_buffer: max}), do: size < max
 
-  defp queue_in(queue, size, item), do: {:queue.in(item, queue), size + 1}
-
-  defp queue_in(%{queue: queue, queue_size: size} = state, item) do
-    {queue, size} = queue_in(queue, size, item)
-    %{state | queue: queue, queue_size: size}
-  end
+  defp queue_in(%{queue: queue, queue_size: size} = state, item),
+    do: %{state | queue: :queue.in(item, queue), queue_size: size + 1}
 
   defp queue_out(%{queue: queue, queue_size: size} = state) do
     {{:value, item}, queue} = :queue.out(queue)
-    {item, %{state | queue: queue, queue_size: max(size - 1, 0)}}
+    {item, %{state | queue: queue, queue_size: size - 1}}
   end
 
-  defp queue_drop_oldest(%{queue: queue, queue_size: size} = state) when size > 0 do
-    {{:value, _item}, queue} = :queue.out(queue)
-    %{state | queue: queue, queue_size: size - 1}
-  end
+  defp queue_drop_oldest(state), do: state |> queue_out() |> elem(1)
 
   defp queue_trim_to(%{queue_size: size} = state, max_size) when size > max_size do
     state
@@ -310,13 +284,6 @@ defmodule BeamWeaver.Stream.Mux do
   end
 
   defp queue_trim_to(state, _max_size), do: state
-
-  defp start_task(%__MODULE__{policy: policy}, spec, sink, trace_context) do
-    Tracing.async(fn -> run_producer(spec, sink) end,
-      context: trace_context,
-      supervisor: policy.producer_supervisor
-    )
-  end
 
   defp run_producer(spec, %Sink{} = sink) do
     result =
@@ -416,13 +383,5 @@ defmodule BeamWeaver.Stream.Mux do
   defp timeout_expired?(%{timeout_deadline: deadline}) when is_integer(deadline),
     do: deadline <= System.monotonic_time(:millisecond)
 
-  defp task_token?(tasks, pid, token) do
-    case Map.get(tasks, pid) do
-      %{token: ^token} ->
-        true
-
-      _other ->
-        Enum.any?(tasks, fn {_task_pid, %{token: task_token}} -> task_token == token end)
-    end
-  end
+  defp task_token?(tasks, token), do: Enum.any?(tasks, &match?({_pid, %{token: ^token}}, &1))
 end

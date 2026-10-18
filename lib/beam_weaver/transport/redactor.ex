@@ -169,9 +169,11 @@ defmodule BeamWeaver.Transport.Redactor do
   defp redact(headers, patterns) when is_list(headers) and headers != [] and is_tuple(hd(headers)) do
     Enum.map(headers, fn
       {key, value} ->
+        name = key_name(key) || key
+
         if secret_key?(key, patterns),
-          do: {to_string(key), @redacted},
-          else: {to_string(key), redact(value, patterns)}
+          do: {name, @redacted},
+          else: {name, redact(value, patterns)}
 
       other ->
         redact(other, patterns)
@@ -254,7 +256,22 @@ defmodule BeamWeaver.Transport.Redactor do
     end
   end
 
-  defp secret_key?(key, patterns), do: key |> to_string() |> secret_name?(patterns)
+  defp secret_key?(key, patterns) do
+    case key_name(key) do
+      nil -> false
+      name -> secret_name?(name, patterns)
+    end
+  end
+
+  # The string a key converts to, or nil for a key that doesn't name
+  # anything, such as a tuple.
+  defp key_name(key) when is_binary(key), do: key
+  defp key_name(key) when is_atom(key) or is_number(key), do: to_string(key)
+
+  defp key_name(key) when is_list(key),
+    do: if(:io_lib.printable_unicode_list(key), do: List.to_string(key))
+
+  defp key_name(_key), do: nil
 
   # A name is a secret when, normalized (lowercase, `_` for `-`), it is a
   # secret header name or holds a secret part, and isn't a token count or

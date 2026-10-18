@@ -9,15 +9,7 @@ defmodule BeamWeaver.Provider.ChatRuntime do
   alias BeamWeaver.Stream.Events
   alias BeamWeaver.Stream.Sink
 
-  def invoke(module, model, messages, opts) do
-    opts = put_response_header_opt(model, opts)
-
-    with {:ok, body} <- module.request_body(model, messages, Keyword.put(opts, :stream, false)),
-         {:ok, response} <- module.send_request(:invoke, model, body, opts),
-         {:ok, message} <- module.decode_response(response, opts) do
-      module.parse_response(model, message, opts)
-    end
-  end
+  def invoke(module, model, messages, opts), do: reply(:invoke, false, module, model, messages, opts)
 
   def stream(module, model, messages, opts) do
     with {:ok, body} <- module.request_body(model, messages, Keyword.put(opts, :stream, true)) do
@@ -25,11 +17,14 @@ defmodule BeamWeaver.Provider.ChatRuntime do
     end
   end
 
-  def stream_response(module, model, messages, opts) do
-    opts = put_response_header_opt(model, opts)
+  def stream_response(module, model, messages, opts),
+    do: reply(:stream_response, true, module, model, messages, opts)
 
-    with {:ok, body} <- module.request_body(model, messages, Keyword.put(opts, :stream, true)),
-         {:ok, response} <- module.send_request(:stream_response, model, body, opts),
+  defp reply(call, stream?, module, %{include_response_headers: include?} = model, messages, opts) do
+    opts = Keyword.put_new(opts, :include_response_headers, include?)
+
+    with {:ok, body} <- module.request_body(model, messages, Keyword.put(opts, :stream, stream?)),
+         {:ok, response} <- module.send_request(call, model, body, opts),
          {:ok, message} <- module.decode_response(response, opts) do
       module.parse_response(model, message, opts)
     end
@@ -47,9 +42,6 @@ defmodule BeamWeaver.Provider.ChatRuntime do
       mux_typed_events(events, source, Keyword.get(opts, :exact_request_metadata, %{}), opts)
     end
   end
-
-  defp put_response_header_opt(%{include_response_headers: include?}, opts),
-    do: Keyword.put_new(opts, :include_response_headers, include?)
 
   # The mux reads the provider's events in a producer of its own. Its `Debug`
   # events for that producer's start and stop are not part of the model call,

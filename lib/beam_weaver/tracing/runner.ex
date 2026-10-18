@@ -5,9 +5,7 @@ defmodule BeamWeaver.Tracing.Runner do
 
   @spec run(String.t() | atom(), keyword(), keyword(), (-> term()), (term(), term() -> term())) ::
           term()
-  def run(name, start_opts, exporter_opts, fun, result_fun)
-      when is_list(start_opts) and is_list(exporter_opts) and is_function(fun, 0) and
-             is_function(result_fun, 2) do
+  def run(name, start_opts, exporter_opts, fun, result_fun) do
     {:ok, run} = Tracing.start_run(name, exporter_opts ++ start_opts)
 
     try do

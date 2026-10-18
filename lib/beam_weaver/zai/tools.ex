@@ -20,9 +20,7 @@ defmodule BeamWeaver.ZAI.Tools do
 
   @doc "Converts one tool to a Z.ai Chat Completions declaration."
   @spec to_chat_tool(term()) :: map()
-  def to_chat_tool(%{__struct__: _module} = tool), do: ChatCompletions.Messages.tool_to_openai(tool)
-
-  def to_chat_tool(tool) when is_map(tool) do
+  def to_chat_tool(tool) when is_map(tool) and not is_struct(tool) do
     tool = BeamWeaver.MapShape.stringify_keys(tool)
 
     if is_binary(tool["type"]) and tool["type"] != "function",

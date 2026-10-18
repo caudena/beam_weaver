@@ -58,16 +58,14 @@ defmodule BeamWeaver.Agent.DSL do
   def collect_attrs(module) do
     @dsl_fields
     |> Map.new(&{&1, Module.get_attribute(module, attr(&1))})
-    |> Map.put(:context_schema_entries, collect(module, :context_schema_entries))
+    |> Map.put(:context_schema_entries, module |> Module.get_attribute(attr(:context_schema_entries)) |> Enum.reverse())
   end
-
-  defp collect(module, name), do: module |> Module.get_attribute(attr(name)) |> Enum.reverse()
 
   defp attr(name), do: :"beam_weaver_#{name}"
 
   def schema_from_entries(base, entries) do
-    Enum.reduce(entries, base || %{}, fn {key, declaration}, acc ->
-      Map.put(acc, key, schema_entry(declaration))
+    Enum.reduce(entries, base || %{}, fn {key, {:field, type, opts}}, acc ->
+      Map.put(acc, key, BeamWeaver.Agent.Schema.field(nil, type, opts))
     end)
   end
 
@@ -157,8 +155,6 @@ defmodule BeamWeaver.Agent.DSL do
     declarations = Enum.map(attrs, fn {name, ast} -> {Map.get(@declaration_names, name, name), ast} end)
     GraphDSL.reject_in_memory_adapters!(env, declarations, [])
   end
-
-  defp schema_entry({:field, type, opts}), do: BeamWeaver.Agent.Schema.field(nil, type, opts)
 
   defp block_expressions({:__block__, _meta, expressions}), do: expressions
   defp block_expressions(expression), do: [expression]

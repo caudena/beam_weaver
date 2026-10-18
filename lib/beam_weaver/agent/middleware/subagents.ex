@@ -56,7 +56,6 @@ defmodule BeamWeaver.Agent.Middleware.Subagents do
   alias BeamWeaver.Agent.Middleware.Summarization
   alias BeamWeaver.Agent.Middleware.TodoList
   alias BeamWeaver.Agent.Middleware.ToolCallNormalization
-  alias BeamWeaver.Agent.ModelRequest
   alias BeamWeaver.Agent.ModelResolver
   alias BeamWeaver.Agent.Nodes.Model.Prompt
   alias BeamWeaver.Agent.ProviderProfile
@@ -86,8 +85,8 @@ defmodule BeamWeaver.Agent.Middleware.Subagents do
   alias BeamWeaver.MapShape
   alias BeamWeaver.Stream.Sink
 
-  import BeamWeaver.Agent.Middleware.Helpers, only: [append_prompt: 2]
-  import BeamWeaver.Agent.Subagent.Helpers, only: [available_agents: 1, value: 2, value: 3]
+  import BeamWeaver.Agent.Subagent.Helpers,
+    only: [agent_names: 1, available_agents: 1, value: 2, value: 3, with_agents_prompt: 3]
 
   @default_subagent_prompt """
   In order to complete the objective that the user asks of you, you have access to a number of standard tools.
@@ -328,19 +327,8 @@ defmodule BeamWeaver.Agent.Middleware.Subagents do
   end
 
   @impl true
-  def wrap_model_call(%__MODULE__{system_prompt: prompt}, %ModelRequest{} = request, handler)
-      when prompt in [nil, ""],
-      do: handler.(request)
-
-  def wrap_model_call(%__MODULE__{} = middleware, %ModelRequest{} = request, handler) do
-    prompt =
-      middleware.system_prompt <>
-        "\n\nAvailable subagent types:\n\n" <> available_agents(middleware.subagents)
-
-    request
-    |> ModelRequest.override(system_message: append_prompt(request.system_message, prompt))
-    |> handler.()
-  end
+  def wrap_model_call(%__MODULE__{} = middleware, request, handler),
+    do: handler.(with_agents_prompt(request, middleware, "Available subagent types"))
 
   # A parent without a checkpointer fails before it starts when a subagent
   # pauses for review, or a subagent of a subagent at any depth does, as an
@@ -404,15 +392,8 @@ defmodule BeamWeaver.Agent.Middleware.Subagents do
     end
   end
 
-  defp merge_general_purpose_profiles(profiles) do
-    Enum.reduce(profiles, %GeneralPurposeSubagentProfile{}, fn profile, acc ->
-      %GeneralPurposeSubagentProfile{
-        enabled: if(is_nil(profile.enabled), do: acc.enabled, else: profile.enabled),
-        description: profile.description || acc.description,
-        system_prompt: profile.system_prompt || acc.system_prompt
-      }
-    end)
-  end
+  defp merge_general_purpose_profiles(profiles),
+    do: Enum.reduce(profiles, %GeneralPurposeSubagentProfile{}, &GeneralPurposeSubagentProfile.merge(&2, &1))
 
   defp normalize_subagents(entries, host) do
     Enum.reduce_while(entries, {:ok, []}, fn entry, {:ok, subagents} ->
@@ -537,7 +518,7 @@ defmodule BeamWeaver.Agent.Middleware.Subagents do
       model: subagent.model || parent.model,
       model_opts: subagent.model_opts,
       tools: subagent.tools || parent.parent_tools || [],
-      backend: subagent_backend(subagent, parent.backend),
+      backend: if(is_nil(subagent.filesystem), do: parent.backend, else: subagent.filesystem),
       permissions: subagent.permissions || parent.permissions,
       skills: subagent.skills || parent.skills,
       interrupt_on: review_rules(subagent.interrupt_on, parent.interrupt_on),
@@ -616,10 +597,7 @@ defmodule BeamWeaver.Agent.Middleware.Subagents do
   # The subagent runs with every declaration of its spec, plus the inherited
   # model, tools and review rules and the `base_middleware` capabilities.
   defp agent_options(%Spec{} = subagent, context, name_suffix, prompt_suffix) do
-    name =
-      ["deepagents.subagent.#{subagent.name}", name_suffix]
-      |> Enum.reject(&blank?/1)
-      |> Enum.join(".")
+    name = Enum.join(["deepagents.subagent.#{subagent.name}" | List.wrap(name_suffix)], ".")
 
     system_prompt =
       [subagent.system_prompt, prompt_suffix]
@@ -819,10 +797,9 @@ defmodule BeamWeaver.Agent.Middleware.Subagents do
       else: {:error, Error.new(:invalid_subagent_proposal, "child proposal requires type, task, and correlation id")}
   end
 
-  defp unknown_subagent(name, subagents) do
-    allowed = Enum.map_join(subagents, ", ", &"`#{&1.name}`")
-    "We cannot invoke subagent #{name} because it does not exist, the only allowed types are #{allowed}"
-  end
+  defp unknown_subagent(name, subagents),
+    do:
+      "We cannot invoke subagent #{name} because it does not exist, the only allowed types are #{agent_names(subagents)}"
 
   defp child_mode(mode) when mode in [:foreground, :background], do: {:ok, mode}
   defp child_mode(mode), do: {:error, Error.new(:invalid_subagent, "invalid child_mode #{inspect(mode)}")}
@@ -1096,8 +1073,10 @@ defmodule BeamWeaver.Agent.Middleware.Subagents do
     ]
   end
 
+  defp base_middleware_entry(module, context) when module in [TodoList, Filesystem, Skills],
+    do: base_middleware_entry({module, []}, context)
+
   defp base_middleware_entry({TodoList, opts}, _context), do: [TodoList.new(opts)]
-  defp base_middleware_entry(TodoList, _context), do: [TodoList.new()]
 
   defp base_middleware_entry({Filesystem, opts}, context) do
     [
@@ -1108,13 +1087,8 @@ defmodule BeamWeaver.Agent.Middleware.Subagents do
     ]
   end
 
-  defp base_middleware_entry(Filesystem, context),
-    do: [filesystem_middleware(context.backend, context.permissions)]
-
   defp base_middleware_entry({Skills, opts}, context),
     do: [maybe_skills(Keyword.get(opts, :backend, context.backend), Keyword.get(opts, :skills, context.skills))]
-
-  defp base_middleware_entry(Skills, context), do: [maybe_skills(context.backend, context.skills)]
 
   defp base_middleware_entry({Summarization, opts}, context),
     do: [maybe_summarization(context, opts)]
@@ -1145,9 +1119,6 @@ defmodule BeamWeaver.Agent.Middleware.Subagents do
 
   defp maybe_model_call_limit(:structured_once), do: ModelCallLimit.new(run_limit: 1)
   defp maybe_model_call_limit(_execution_mode), do: nil
-
-  defp subagent_backend(%Spec{filesystem: nil}, parent_backend), do: parent_backend
-  defp subagent_backend(%Spec{filesystem: backend}, _parent_backend), do: backend
 
   defp execution_mode(nil), do: {:ok, :agent_loop}
 
@@ -1226,12 +1197,8 @@ defmodule BeamWeaver.Agent.Middleware.Subagents do
 
   defp context_window(model, _opts), do: Capabilities.max_input_tokens(model)
 
-  defp maybe_compact_conversation(_model, _backend, summarization, _compact)
-       when summarization in [nil, false],
-       do: nil
-
-  defp maybe_compact_conversation(_model, _backend, _summarization, compact)
-       when compact in [nil, false],
+  defp maybe_compact_conversation(_model, _backend, summarization, compact)
+       when summarization in [nil, false] or compact in [nil, false],
        do: nil
 
   defp maybe_compact_conversation(model, backend, _summarization, settings)
@@ -1260,14 +1227,6 @@ defmodule BeamWeaver.Agent.Middleware.Subagents do
 
   defp task_message([], description), do: Message.user(description)
   defp task_message(_inherited, description), do: Message.user(@inherited_conversation_note <> to_string(description))
-
-  defp stable_parent_message?(%Message{role: :tool}), do: false
-
-  defp stable_parent_message?(%Message{role: :assistant} = message) do
-    not non_empty_list?(message.tool_calls) and not non_empty_list?(message.server_tool_calls)
-  end
-
-  defp stable_parent_message?(%Message{}), do: true
 
   defp stable_parent_message?(%{} = message) do
     role = value(message, :role)
@@ -1391,34 +1350,35 @@ defmodule BeamWeaver.Agent.Middleware.Subagents do
   end
 
   defp task_result_metadata(%Compiled{} = subagent, cached?, input_hash) do
-    %{
+    subagent
+    |> subagent_metadata()
+    |> Map.merge(%{
       integration: :deepagents,
       kind: :subagent_result,
-      subagent_name: subagent.name,
-      subagent_type: subagent.name,
       execution_mode: subagent.execution_mode,
-      structured_output_strategy: subagent.structured_output_strategy,
       cache_hit: cached?
-    }
-    |> MapShape.put_present(:capture_key, subagent.capture_output && subagent.capture_output.key)
+    })
     |> MapShape.put_present(:input_hash, input_hash)
   end
 
   defp subagent_trace(%Compiled{} = subagent, phase) do
-    metadata =
+    [
+      name: "deepagents.subagent.#{subagent.name}",
+      execution_mode: to_string(subagent.execution_mode),
+      metadata: subagent |> subagent_metadata() |> MapShape.put_present(:subagent_phase, phase)
+    ]
+  end
+
+  defp subagent_metadata(%Compiled{} = subagent) do
+    MapShape.put_present(
       %{
         subagent_name: subagent.name,
         subagent_type: subagent.name,
         structured_output_strategy: subagent.structured_output_strategy
-      }
-      |> MapShape.put_present(:subagent_phase, phase)
-      |> MapShape.put_present(:capture_key, subagent.capture_output && subagent.capture_output.key)
-
-    [
-      name: "deepagents.subagent.#{subagent.name}",
-      execution_mode: to_string(subagent.execution_mode),
-      metadata: metadata
-    ]
+      },
+      :capture_key,
+      subagent.capture_output && subagent.capture_output.key
+    )
   end
 
   defp capture_cache(parent_state, %{dedupe: dedupe}, subagent_name, input_hash)
@@ -1499,10 +1459,9 @@ defmodule BeamWeaver.Agent.Middleware.Subagents do
     |> Base.encode16(case: :lower)
   end
 
-  defp json_safe_value(nil), do: nil
-  defp json_safe_value(true), do: true
-  defp json_safe_value(false), do: false
-  defp json_safe_value(value) when is_binary(value) or is_number(value), do: value
+  defp json_safe_value(value) when is_nil(value) or is_boolean(value) or is_binary(value) or is_number(value),
+    do: value
+
   defp json_safe_value(value) when is_atom(value), do: Atom.to_string(value)
 
   defp json_safe_value(%Date{} = value), do: Date.to_iso8601(value)
@@ -1563,14 +1522,11 @@ defmodule BeamWeaver.Agent.Middleware.Subagents do
     "Subagent error: #{error.message} type=#{inspect(error.type)}" <> details
   end
 
-  defp child_state_update(parent_state, child_state)
-       when is_map(parent_state) and is_map(child_state) do
-    child_state
-    |> Enum.reject(fn {key, value} ->
-      child_state_excluded_key?(key) or Map.get(parent_state, key) == value
-    end)
-    |> Map.new()
-  end
+  defp child_state_update(parent_state, child_state) when is_map(parent_state) and is_map(child_state),
+    do:
+      Map.reject(child_state, fn {key, value} ->
+        child_state_excluded_key?(key) or Map.get(parent_state, key) == value
+      end)
 
   defp child_state_update(_parent_state, _child_state), do: %{}
 

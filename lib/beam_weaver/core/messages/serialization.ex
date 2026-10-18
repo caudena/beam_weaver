@@ -7,6 +7,8 @@ defmodule BeamWeaver.Core.Messages.Serialization do
   alias BeamWeaver.Core.Message
 
   @version 1
+  @fields ~w(role content id name metadata response_metadata usage_metadata status artifacts server_tool_calls
+             server_tool_results tool_calls tool_call_id)
 
   @spec encode(Message.t()) :: map()
   def encode(%Message{} = message) do
@@ -31,23 +33,9 @@ defmodule BeamWeaver.Core.Messages.Serialization do
   end
 
   @spec decode(map()) :: {:ok, Message.t()} | {:error, Error.t()}
-  def decode(%{"version" => @version, "type" => "message"} = map) do
-    Message.from(%{
-      role: map["role"],
-      content: map["content"],
-      id: map["id"],
-      name: map["name"],
-      metadata: map["metadata"] || %{},
-      response_metadata: map["response_metadata"] || %{},
-      usage_metadata: map["usage_metadata"],
-      status: map["status"],
-      artifacts: map["artifacts"] || [],
-      server_tool_calls: map["server_tool_calls"] || [],
-      server_tool_results: map["server_tool_results"] || [],
-      tool_calls: map["tool_calls"] || [],
-      tool_call_id: map["tool_call_id"]
-    })
-  end
+  # `Message.from/1` fills in the defaults of the fields left out.
+  def decode(%{"version" => @version, "type" => "message"} = map),
+    do: map |> Map.take(@fields) |> Map.put_new("content", nil) |> Message.from()
 
   def decode(%{"type" => "message"} = map) do
     {:error,

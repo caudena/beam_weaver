@@ -38,14 +38,12 @@ defmodule BeamWeaver.Agent.CapabilityProfile do
     |> then(&struct(__MODULE__, &1))
   end
 
-  def builtin(nil), do: new(name: :default)
-  def builtin(:default), do: new(name: :default)
+  def builtin(name) when name in [nil, :default], do: new(name: :default)
 
   def builtin(:anthropic) do
     new(
       name: :anthropic,
-      prompt_suffix: "Use tools carefully and keep intermediate artifacts in the filesystem.",
-      default_subagent?: true
+      prompt_suffix: "Use tools carefully and keep intermediate artifacts in the filesystem."
     )
   end
 
@@ -187,29 +185,17 @@ defmodule BeamWeaver.Agent.CapabilityProfile do
           "## Codex-Specific Behavior\n\nAct as an autonomous senior engineer: gather context, implement, verify, and finish the task end-to-end when feasible.\n\n## Parallel Tool Use\n\nBatch independent searches and file reads before acting.\n\n## Plan Hygiene\n\nReconcile any TODO or plan items before finishing."
       )
 
-    %{
-      "anthropic" => anthropic_universal,
-      "anthropic:claude-haiku-4-5" => %{anthropic_universal | name: "anthropic:claude-haiku-4-5"},
-      "anthropic:claude-sonnet-4-6" => %{
-        anthropic_universal
-        | name: "anthropic:claude-sonnet-4-6"
-      },
-      "anthropic:claude-fable-5-1" => %{
-        anthropic_opus
-        | name: "anthropic:claude-fable-5-1"
-      },
-      "anthropic:claude-mythos-5-1" => %{
-        anthropic_opus
-        | name: "anthropic:claude-mythos-5-1"
-      },
-      "anthropic:claude-fable-5" => %{anthropic_opus | name: "anthropic:claude-fable-5"},
-      "anthropic:claude-mythos-5" => %{anthropic_opus | name: "anthropic:claude-mythos-5"},
-      "anthropic:claude-opus-4-8" => %{anthropic_opus | name: "anthropic:claude-opus-4-8"},
-      "anthropic:claude-opus-4-7" => %{anthropic_opus | name: "anthropic:claude-opus-4-7"},
-      "openai:gpt-5.5" => %{codex | name: "openai:gpt-5.5"},
-      "openai:gpt-5.4" => %{codex | name: "openai:gpt-5.4"},
-      "openai:gpt-5.4-mini" => %{codex | name: "openai:gpt-5.4-mini"}
-    }
+    named = [
+      {anthropic_universal, ~w(anthropic:claude-haiku-4-5 anthropic:claude-sonnet-4-6)},
+      {anthropic_opus, ~w(anthropic:claude-fable-5-1 anthropic:claude-mythos-5-1 anthropic:claude-fable-5)},
+      {anthropic_opus, ~w(anthropic:claude-mythos-5 anthropic:claude-opus-4-8 anthropic:claude-opus-4-7)},
+      {codex, ~w(openai:gpt-5.5 openai:gpt-5.4 openai:gpt-5.4-mini)}
+    ]
+
+    for {profile, keys} <- named,
+        key <- keys,
+        into: %{"anthropic" => anthropic_universal},
+        do: {key, %{profile | name: key}}
   end
 
   defp normalize_general_purpose(nil), do: %GeneralPurposeSubagentProfile{}
@@ -230,19 +216,9 @@ defmodule BeamWeaver.Agent.CapabilityProfile do
     end
   end
 
-  defp merge_general_purpose(
-         %GeneralPurposeSubagentProfile{} = base,
-         %GeneralPurposeSubagentProfile{} = override
-       ) do
-    GeneralPurposeSubagentProfile.new(
-      enabled: if(is_nil(override.enabled), do: base.enabled, else: override.enabled),
-      description: override.description || base.description,
-      system_prompt: override.system_prompt || base.system_prompt
-    )
-  end
-
   defp merge_general_purpose(nil, override), do: override
   defp merge_general_purpose(base, nil), do: base
+  defp merge_general_purpose(base, override), do: GeneralPurposeSubagentProfile.merge(base, override)
 
   defp merged_default_subagent?(_base, _override, %GeneralPurposeSubagentProfile{enabled: false}),
     do: false

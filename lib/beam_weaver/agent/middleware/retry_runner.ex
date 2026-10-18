@@ -18,23 +18,25 @@ defmodule BeamWeaver.Agent.Middleware.RetryRunner do
     )
   end
 
-  # Like `run/3`, and also returns how many attempts it made: fewer than the
-  # policy's `max_attempts` when an error isn't one it retries.
-  @spec run_counting(RetryPolicy.t(), (-> term()), keyword()) :: {term(), pos_integer()}
+  # Like `run/3`, but an error the policy retries comes back, once the
+  # retries run out, as `{:exhausted, error, attempts}`. An error it doesn't
+  # retry comes back as it is.
+  @spec run_counting(RetryPolicy.t(), (-> term()), keyword()) :: term() | {:exhausted, Error.t(), pos_integer()}
   def run_counting(%RetryPolicy{} = policy, fun, opts) when is_function(fun, 0) do
     attempts = :counters.new(1, [])
 
-    result =
-      run(
-        policy,
-        fn ->
-          :counters.add(attempts, 1, 1)
-          fun.()
-        end,
-        opts
-      )
+    counted = fn ->
+      :counters.add(attempts, 1, 1)
+      fun.()
+    end
 
-    {result, :counters.get(attempts, 1)}
+    case run(policy, counted, opts) do
+      {:error, error} = result ->
+        if RetryPolicy.retry?(policy, error), do: {:exhausted, error, :counters.get(attempts, 1)}, else: result
+
+      result ->
+        result
+    end
   end
 
   defp normalize_result({:error, error}), do: {:error, normalize_error(error)}

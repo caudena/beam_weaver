@@ -14,21 +14,13 @@ defimpl BeamWeaver.Adapter.Retainable, for: BeamWeaver.Cache.ETS do
     namespace = Keyword.get(opts, :namespace)
     cutoff = cutoff_ms(opts)
 
-    age_deleted =
-      cache.table
-      |> entries(namespace)
-      |> Enum.reduce(0, fn
-        {key, %{inserted_at: inserted_at}}, acc
-        when is_integer(cutoff) and is_integer(inserted_at) and inserted_at <= cutoff ->
-          :ets.delete(cache.table, key)
-          acc + 1
-
-        _entry, acc ->
-          acc
-      end)
+    aged =
+      for {key, %{inserted_at: inserted_at}} <- entries(cache.table, namespace),
+          is_integer(cutoff) and is_integer(inserted_at) and inserted_at <= cutoff,
+          do: :ets.delete(cache.table, key)
 
     limit_deleted = cache.table |> entries(namespace) |> prune_to_limit(cache.table, Keyword.get(opts, :max_entries))
-    {:ok, age_deleted + limit_deleted}
+    {:ok, length(aged) + limit_deleted}
   end
 
   defp entries(table, namespace) do
@@ -68,25 +60,13 @@ defimpl BeamWeaver.Adapter.Retainable, for: BeamWeaver.Memory.ETS do
     namespace = Keyword.get(opts, :namespace)
     cutoff = BeamWeaver.Memory.Query.prune_cutoff(opts)
 
-    age_deleted =
-      store.items
-      |> entries(namespace)
-      |> Enum.reduce(0, fn
-        {{entry_namespace, key}, %{updated_at: updated_at}}, acc
-        when not is_nil(cutoff) ->
-          if DateTime.compare(updated_at, cutoff) != :gt do
-            BeamWeaver.Memory.ETS.delete(store, entry_namespace, key)
-            acc + 1
-          else
-            acc
-          end
-
-        _entry, acc ->
-          acc
-      end)
+    aged =
+      for {{entry_namespace, key}, %{updated_at: updated_at}} <- entries(store.items, namespace),
+          not is_nil(cutoff) and DateTime.compare(updated_at, cutoff) != :gt,
+          do: BeamWeaver.Memory.ETS.delete(store, entry_namespace, key)
 
     limit_deleted = store.items |> entries(namespace) |> prune_to_limit(store, Keyword.get(opts, :max_entries))
-    {:ok, age_deleted + limit_deleted}
+    {:ok, length(aged) + limit_deleted}
   end
 
   defp entries(table, namespace) do

@@ -76,7 +76,7 @@ defmodule BeamWeaver.Tracing.Run do
     case Keyword.fetch(opts, :context_metadata) do
       {:ok, ^raw_metadata} -> metadata
       {:ok, context_metadata} -> BeamWeaver.Tracing.Redactor.redact(context_metadata)
-      :error -> BeamWeaver.Tracing.Redactor.redact(metadata)
+      :error -> metadata
     end
   end
 

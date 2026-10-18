@@ -32,7 +32,7 @@ defmodule BeamWeaver.Provider.StructuredOutput do
 
   @doc false
   def parse(%Message{} = message, parser, opts) do
-    with :ok <- maybe_ensure_not_refusal(message, opts),
+    with :ok <- ensure_not_refusal(message, opts),
          :ok <- maybe_ensure_complete(message, opts),
          {:ok, parsed} <- decode_json(message),
          {:ok, parsed} <- run_parser(parser, parsed, message, opts) do
@@ -90,25 +90,17 @@ defmodule BeamWeaver.Provider.StructuredOutput do
 
   defp schema_parser(_schema), do: nil
 
-  defp maybe_ensure_not_refusal(message, opts) do
-    if Keyword.get(opts, :refusal?, false) do
-      ensure_not_refusal(message, opts)
-    else
-      :ok
-    end
-  end
-
   defp ensure_not_refusal(message, opts) do
-    case refusal_block(message.content) do
-      nil ->
-        :ok
-
-      refusal ->
+    case Keyword.get(opts, :refusal?, false) && refusal_block(message.content) do
+      refusal when is_map(refusal) ->
         {:error,
          Error.new(:openai_refusal, "#{provider_name(opts)} refused the structured output request", %{
            refusal: refusal,
            response: response_details(message)
          })}
+
+      _none ->
+        :ok
     end
   end
 

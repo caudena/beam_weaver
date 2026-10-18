@@ -885,6 +885,23 @@ defmodule BeamWeaver.OpenAI.ChatModelTest do
     end
   end
 
+  test "GPT-6 request builder treats a nil reasoning effort as unset" do
+    model = ChatModel.new(model: "gpt-6-sol")
+
+    for reasoning <- [%{effort: nil}, %{"effort" => nil}] do
+      assert {:ok, body} = ChatModel.request_body(model, [Message.user("hi")], reasoning: reasoning)
+      refute Map.has_key?(body, "reasoning")
+    end
+
+    assert {:ok, body} = ChatModel.request_body(model, [Message.user("hi")], reasoning: %{effort: nil, summary: :auto})
+    assert body["reasoning"] == %{"summary" => "auto"}
+
+    assert {:ok, body} =
+             ChatModel.request_body(model, [Message.user("hi")], reasoning: %{effort: nil}, reasoning_effort: :low)
+
+    assert body["reasoning"] == %{"effort" => "low"}
+  end
+
   test "Responses carries access programs and prompt-cache prewarming from the current schema" do
     model = ChatModel.new(model: "gpt-6-sol")
 

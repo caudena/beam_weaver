@@ -238,7 +238,11 @@ defmodule BeamWeaver.Agent.Middleware.Summarization do
     end
   end
 
-  defp history_text(messages) do
+  @doc false
+  # The messages as the summary model reads them, which `compact_conversation`
+  # also saves to a file.
+  @spec history_text([Message.t()]) :: String.t()
+  def history_text(messages) do
     case Utils.buffer_string(messages) do
       {:ok, text} -> text
       _error -> inspect(messages)
@@ -276,15 +280,11 @@ defmodule BeamWeaver.Agent.Middleware.Summarization do
     |> Enum.any?(&triggered?(&1, middleware, messages, token_count))
   end
 
-  defp triggered?({kind, triggers}, middleware, messages, token_count)
-       when kind == :all and is_list(triggers) do
-    Enum.all?(triggers, &triggered?(&1, middleware, messages, token_count))
-  end
+  defp triggered?({:all, triggers}, middleware, messages, token_count),
+    do: Enum.all?(triggers, &triggered?(&1, middleware, messages, token_count))
 
-  defp triggered?({kind, triggers}, middleware, messages, token_count)
-       when kind == :any and is_list(triggers) do
-    Enum.any?(triggers, &triggered?(&1, middleware, messages, token_count))
-  end
+  defp triggered?({:any, triggers}, middleware, messages, token_count),
+    do: Enum.any?(triggers, &triggered?(&1, middleware, messages, token_count))
 
   defp triggered?({:messages, count}, _middleware, messages, _token_count),
     do: length(messages) >= count
@@ -382,17 +382,13 @@ defmodule BeamWeaver.Agent.Middleware.Summarization do
     |> Enum.reverse()
     |> Enum.find_value(fn
       %Message{role: :assistant, usage_metadata: usage, response_metadata: response_metadata} ->
-        case metadata_value(usage || %{}, :total_tokens) do
-          total_tokens when is_integer(total_tokens) ->
-            message_provider =
-              metadata_value(response_metadata || %{}, :model_provider) ||
-                metadata_value(response_metadata || %{}, :provider)
+        total_tokens = metadata_value(usage || %{}, :total_tokens)
+        response_metadata = response_metadata || %{}
 
-            if provider_matches?(message_provider, provider), do: total_tokens, else: nil
+        message_provider =
+          metadata_value(response_metadata, :model_provider) || metadata_value(response_metadata, :provider)
 
-          _missing ->
-            nil
-        end
+        if is_integer(total_tokens) and provider_matches?(message_provider, provider), do: total_tokens
 
       _message ->
         nil
@@ -454,9 +450,10 @@ defmodule BeamWeaver.Agent.Middleware.Summarization do
     Enum.each(values, &validate_context_size!(&1, field, false))
   end
 
-  defp validate_context_size!({kind, values}, field, _allow_list?)
+  # Only a trigger combines conditions; `:keep` is a single size.
+  defp validate_context_size!({kind, values}, :trigger, _allow_list?)
        when kind in [:all, :any] and is_list(values) do
-    Enum.each(values, &validate_context_size!(&1, field, false))
+    Enum.each(values, &validate_context_size!(&1, :trigger, false))
   end
 
   defp validate_context_size!({kind, value}, field, _allow_list?)

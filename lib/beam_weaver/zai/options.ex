@@ -144,7 +144,7 @@ defmodule BeamWeaver.ZAI.Options do
   end
 
   defp validate_thinking(%{"thinking" => thinking} = body, profile) do
-    supported = profile_values(profile, :thinking_modes)
+    supported = profile.extra |> Map.get(:thinking_modes, []) |> Enum.map(&to_string/1)
 
     case thinking do
       %{"type" => type} ->
@@ -184,8 +184,6 @@ defmodule BeamWeaver.ZAI.Options do
   end
 
   defp validate_reasoning_effort(_body, _profile), do: :ok
-
-  defp profile_values(profile, key), do: profile.extra |> Map.get(key, []) |> Enum.map(&to_string/1)
 
   defp validate_tool_stream(%{"tool_stream" => true, "stream" => true}), do: :ok
 

@@ -37,9 +37,12 @@ defmodule BeamWeaver.DeepSeek.Messages do
     with :ok <- validate_messages(messages, :chat_completions, model),
          {:ok, wire_messages} <-
            messages
-           |> Enum.map(&text_only_message/1)
+           |> Enum.map(&%{&1 | content: Message.text(&1)})
            |> ChatCompletions.Messages.to_openai_messages(),
-         {:ok, wire_messages} <- decorate_chat_messages(wire_messages, messages),
+         {:ok, wire_messages} <-
+           wire_messages
+           |> Enum.zip(messages)
+           |> BeamWeaver.Result.traverse(fn {wire, message} -> decorate_chat_message(wire, message) end),
          :ok <- validate_prefix_messages(wire_messages) do
       {:ok, wire_messages}
     end
@@ -204,13 +207,6 @@ defmodule BeamWeaver.DeepSeek.Messages do
   defp normalize_content_type(type) when is_atom(type), do: normalize_content_type(Atom.to_string(type))
   defp normalize_content_type(type) when is_binary(type), do: Map.get(@content_types, type, :unknown)
   defp normalize_content_type(_type), do: :unknown
-
-  defp text_only_message(%Message{} = message), do: %{message | content: Message.text(message)}
-
-  defp decorate_chat_messages(wire_messages, messages) do
-    Enum.zip(wire_messages, messages)
-    |> BeamWeaver.Result.traverse(fn {wire, message} -> decorate_chat_message(wire, message) end)
-  end
 
   defp decorate_chat_message(wire, %Message{role: :assistant} = message) do
     {:ok,

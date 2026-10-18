@@ -109,7 +109,7 @@ defmodule BeamWeaver.Models.InvocationMetadata do
       param_policy: inspect(metadata.param_policy),
       invocation_metadata: metadata
     }
-    |> Map.merge(metadata.extra || %{})
+    |> Map.merge(metadata.extra)
     |> BeamWeaver.MapShape.compact([nil, :empty_list, :empty_map])
   end
 

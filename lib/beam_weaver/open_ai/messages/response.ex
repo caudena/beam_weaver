@@ -4,6 +4,7 @@ defmodule BeamWeaver.OpenAI.Messages.Response do
   alias BeamWeaver.Core.Message
   alias BeamWeaver.Core.Messages
   alias BeamWeaver.Core.Error
+  alias BeamWeaver.MapShape
   alias BeamWeaver.OpenAI.MessageParts
 
   @spec to_message(map()) :: {:ok, Message.t()} | {:error, Error.t()}
@@ -15,10 +16,7 @@ defmodule BeamWeaver.OpenAI.Messages.Response do
   def to_message(response) when is_map(response) do
     {tool_calls, invalid_tool_calls} = output_tool_calls(response)
 
-    metadata =
-      response
-      |> response_metadata()
-      |> put_invalid_tool_calls(invalid_tool_calls)
+    metadata = response |> response_metadata() |> MapShape.put_optional(:invalid_tool_calls, invalid_tool_calls)
 
     Message.new(:assistant, response_content(response),
       id: response["id"],
@@ -36,11 +34,6 @@ defmodule BeamWeaver.OpenAI.Messages.Response do
 
   defp usage_metadata(%{"usage" => usage}) when is_map(usage), do: MessageParts.usage_metadata(usage, :responses)
   defp usage_metadata(_response), do: nil
-
-  defp put_invalid_tool_calls(metadata, []), do: metadata
-
-  defp put_invalid_tool_calls(metadata, invalid_tool_calls),
-    do: Map.put(metadata, :invalid_tool_calls, invalid_tool_calls)
 
   defp output_text(%{"output_text" => text}) when is_binary(text), do: text
 
@@ -78,9 +71,10 @@ defmodule BeamWeaver.OpenAI.Messages.Response do
 
   defp output_content_blocks(_response), do: []
 
-  defp output_item_blocks(%{"type" => "message", "content" => content} = item)
-       when is_list(content) do
-    Enum.flat_map(content, &message_part_block(&1, item["id"]))
+  defp output_item_blocks(%{"type" => "message", "content" => content} = item) when is_list(content) do
+    content
+    |> Enum.flat_map(&message_part_block/1)
+    |> put_part_item_id(item["id"])
   end
 
   defp output_item_blocks(%{"type" => "reasoning"} = item) do
@@ -93,7 +87,7 @@ defmodule BeamWeaver.OpenAI.Messages.Response do
 
   defp output_item_blocks(_item), do: []
 
-  defp message_part_block(%{"type" => type, "text" => text} = part, item_id)
+  defp message_part_block(%{"type" => type, "text" => text} = part)
        when type in ["output_text", "text"] and is_binary(text) do
     [
       %{
@@ -104,10 +98,9 @@ defmodule BeamWeaver.OpenAI.Messages.Response do
       }
       |> MessageParts.reject_nil_values()
     ]
-    |> put_part_item_id(item_id)
   end
 
-  defp message_part_block(%{"type" => type} = part, item_id)
+  defp message_part_block(%{"type" => type} = part)
        when type in ["output_audio", "audio"] do
     [
       %{
@@ -121,10 +114,9 @@ defmodule BeamWeaver.OpenAI.Messages.Response do
       }
       |> MessageParts.reject_nil_values()
     ]
-    |> put_part_item_id(item_id)
   end
 
-  defp message_part_block(%{"type" => "refusal"} = part, item_id) do
+  defp message_part_block(%{"type" => "refusal"} = part) do
     [
       %{
         type: :refusal,
@@ -133,10 +125,9 @@ defmodule BeamWeaver.OpenAI.Messages.Response do
       }
       |> MessageParts.reject_nil_values()
     ]
-    |> put_part_item_id(item_id)
   end
 
-  defp message_part_block(_part, _item_id), do: []
+  defp message_part_block(_part), do: []
 
   defp reasoning_block(item) do
     %{
@@ -319,7 +310,7 @@ defmodule BeamWeaver.OpenAI.Messages.Response do
       model_provider: "openai",
       provider: :openai,
       usage: response["usage"],
-      output: normalize_output(response["output"]),
+      output: if(is_list(response["output"]), do: response["output"]),
       audio: first_message_part(response, ["output_audio", "audio"]),
       reasoning: first_output_item(response, "reasoning"),
       reasoning_context: get_in(response, ["reasoning", "context"]),
@@ -337,11 +328,6 @@ defmodule BeamWeaver.OpenAI.Messages.Response do
     }
     |> MessageParts.reject_nil_values()
   end
-
-  defp normalize_output(output) when is_list(output),
-    do: output
-
-  defp normalize_output(_output), do: nil
 
   defp first_output_item(%{"output" => output}, type) when is_list(output) do
     Enum.find(output, &(Map.get(&1, "type") == type))

@@ -225,9 +225,11 @@ defmodule BeamWeaver.Agent.Middleware.ContextEditing do
          {:ok, assistant_index, assistant, tool_call} <-
            matching_tool_call(messages, index, tool_message),
          false <- excluded_tool?(edit, tool_message, tool_call) do
-      messages
-      |> List.replace_at(index, cleared_tool_message(tool_message, edit))
-      |> maybe_clear_tool_inputs(edit, assistant_index, assistant, tool_message.tool_call_id)
+      messages = List.replace_at(messages, index, cleared_tool_message(tool_message, edit))
+
+      if edit.clear_tool_inputs == false,
+        do: messages,
+        else: clear_tool_inputs(messages, assistant_index, assistant, tool_message.tool_call_id)
     else
       _other -> messages
     end
@@ -266,22 +268,7 @@ defmodule BeamWeaver.Agent.Middleware.ContextEditing do
     %{message | content: edit.placeholder, artifacts: [], response_metadata: metadata}
   end
 
-  defp maybe_clear_tool_inputs(
-         messages,
-         %ClearToolUses{clear_tool_inputs: false},
-         _index,
-         _assistant,
-         _id
-       ),
-       do: messages
-
-  defp maybe_clear_tool_inputs(
-         messages,
-         %ClearToolUses{},
-         assistant_index,
-         assistant,
-         tool_call_id
-       ) do
+  defp clear_tool_inputs(messages, assistant_index, assistant, tool_call_id) do
     calls =
       Enum.map(assistant.tool_calls || [], fn call ->
         if tool_call_id(call) == tool_call_id, do: Map.put(call, :args, %{}), else: call

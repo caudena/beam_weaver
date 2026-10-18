@@ -41,7 +41,7 @@ defmodule BeamWeaver.Agent.ToolNode.Output do
   @spec build([term()], :list | {:state, atom() | String.t()}) ::
           map() | [Message.t()] | Command.t() | [Command.t() | map()]
   def build(results, output_shape) do
-    usage = Usage.from_messages(Enum.filter(results, &match?(%Message{}, &1)))
+    usage = Usage.from_messages(results)
 
     if Enum.any?(results, &match?(%Command{}, &1)) do
       results
@@ -58,12 +58,7 @@ defmodule BeamWeaver.Agent.ToolNode.Output do
   @spec format(term()) :: String.t()
   def format(value) when is_binary(value), do: value
 
-  def format(value) when is_map(value) or is_list(value) do
-    case BeamWeaver.JSON.encode(value) do
-      {:ok, json} -> json
-      {:error, _error} -> inspect(value)
-    end
-  end
+  def format(value) when is_map(value) or is_list(value), do: BeamWeaver.JSON.encode_or_inspect(value)
 
   def format(value), do: to_string(value)
 
@@ -83,30 +78,16 @@ defmodule BeamWeaver.Agent.ToolNode.Output do
 
   defp validate_tool_command(%Command{} = command, call, require_terminator \\ true) do
     with {:ok, command, terminator_count} <- normalize_command_messages(command, call) do
-      cond do
-        not require_terminator ->
-          {:ok, command}
-
-        parent_command?(command) ->
-          {:ok, command}
-
-        remove_all_messages_command?(command) ->
-          {:ok, command}
-
-        terminator_count == 1 ->
-          {:ok, command}
-
-        true ->
-          {:error,
-           Error.new(
-             :invalid_tool_command,
-             "tool command update must include exactly one matching tool message",
-             %{
-               tool: call.name,
-               tool_call_id: call.id,
-               matching_tool_messages: terminator_count
-             }
-           )}
+      if not require_terminator or parent_command?(command) or remove_all_messages_command?(command) or
+           terminator_count == 1 do
+        {:ok, command}
+      else
+        {:error,
+         Error.new(:invalid_tool_command, "tool command update must include exactly one matching tool message", %{
+           tool: call.name,
+           tool_call_id: call.id,
+           matching_tool_messages: terminator_count
+         })}
       end
     end
   end
@@ -151,10 +132,7 @@ defmodule BeamWeaver.Agent.ToolNode.Output do
   end
 
   defp validate_single_terminating_message(outputs, call) do
-    count =
-      outputs
-      |> Enum.map(&terminating_message_count(&1, call))
-      |> Enum.sum()
+    count = Enum.sum_by(outputs, &terminating_message_count(&1, call))
 
     if count == 1 do
       :ok
@@ -356,12 +334,8 @@ defmodule BeamWeaver.Agent.ToolNode.Output do
   defp terminating_message_count(%Message{} = message, call),
     do: matching_tool_message_count([message], call)
 
-  defp terminating_message_count(%Command{update: update}, call) when is_map(update) do
-    case command_messages(update) do
-      {_key, messages} when is_list(messages) -> matching_tool_message_count(messages, call)
-      _other -> 0
-    end
-  end
+  defp terminating_message_count(%Command{update: update}, call) when is_map(update),
+    do: matching_tool_message_count(message_list(update), call)
 
   defp matching_tool_message_count(messages, call) do
     Enum.count(messages, fn
@@ -381,13 +355,13 @@ defmodule BeamWeaver.Agent.ToolNode.Output do
   defp parent_command?(%Command{graph: graph}),
     do: graph in [Command.parent(), "parent", "__parent__"]
 
-  defp remove_all_messages_command?(%Command{update: update}) when is_map(update) do
-    case command_messages(update) do
-      {_key, messages} when is_list(messages) ->
-        Enum.any?(messages, &match?(%Remove{id: "__remove_all__"}, &1))
+  defp remove_all_messages_command?(%Command{update: update}) when is_map(update),
+    do: Enum.any?(message_list(update), &match?(%Remove{id: "__remove_all__"}, &1))
 
-      _other ->
-        false
+  defp message_list(update) do
+    case command_messages(update) do
+      {_key, messages} when is_list(messages) -> messages
+      _other -> []
     end
   end
 end

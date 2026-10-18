@@ -30,6 +30,16 @@ defmodule BeamWeaver.Agent.GeneralPurposeSubagentProfile do
     |> put_present(:system_prompt, profile.system_prompt)
   end
 
+  @doc false
+  # `override`'s settings, and `base`'s where `override` has none.
+  def merge(%__MODULE__{} = base, %__MODULE__{} = override) do
+    %__MODULE__{
+      enabled: if(is_nil(override.enabled), do: base.enabled, else: override.enabled),
+      description: override.description || base.description,
+      system_prompt: override.system_prompt || base.system_prompt
+    }
+  end
+
   def from_map(map) when is_map(map) do
     unknown =
       Map.keys(map) --

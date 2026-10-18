@@ -77,7 +77,6 @@ defmodule BeamWeaver.Compaction.Request do
          :ok <- trigger(request),
          :ok <- hashes(request),
          {:ok, policy} <- Policy.new(request.policy),
-         true <- policy.mode in [:portable, :native],
          true <- request.trigger != :auto or policy.enabled,
          true <- focus?(request.focus),
          {:ok, rehydration} <- RehydrationState.new(request.rehydration_state),

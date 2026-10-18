@@ -37,7 +37,7 @@ defmodule BeamWeaver.Models.ProfileRefresh do
       Keyword.get(opts, :force, false) == true ->
         {:ok, data_dir}
 
-      confirm_external_write?(data_dir, cwd, opts) ->
+      Keyword.get(opts, :confirm_fun, fn _target, _current -> false end).(data_dir, cwd) == true ->
         {:ok, data_dir}
 
       true ->
@@ -111,17 +111,10 @@ defmodule BeamWeaver.Models.ProfileRefresh do
   defp write_profiles_file(data_dir, provider, profiles) do
     output_path = Path.join(data_dir, @artifact_name)
 
-    with :ok <- ensure_regular_output(output_path),
-         :ok <- atomic_write(output_path, artifact_json(provider, profiles)) do
-      {:ok, output_path}
-    end
-  end
-
-  defp ensure_regular_output(output_path) do
     if symlink?(output_path) do
       {:error, Error.new(:unsafe_output_path, "profiles artifact is a symlink", %{path: output_path})}
     else
-      :ok
+      with :ok <- atomic_write(output_path, artifact_json(provider, profiles)), do: {:ok, output_path}
     end
   end
 
@@ -164,12 +157,6 @@ defmodule BeamWeaver.Models.ProfileRefresh do
   def profile_json(profile), do: BeamWeaver.MapShape.stringify_keys(profile)
 
   defp inside?(path, cwd), do: path == cwd or String.starts_with?(path, cwd <> "/")
-
-  defp confirm_external_write?(data_dir, cwd, opts) do
-    confirm_fun = Keyword.get(opts, :confirm_fun, fn _target, _current -> false end)
-
-    confirm_fun.(data_dir, cwd) == true
-  end
 
   defp symlink?(path) do
     case File.lstat(path) do

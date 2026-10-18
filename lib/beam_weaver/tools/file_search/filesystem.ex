@@ -121,30 +121,27 @@ defmodule BeamWeaver.Tools.FileSearch.Filesystem do
     count = line_count + if path_match?, do: 1, else: 0
 
     if count > 0 do
-      document =
-        Document.new!(Integer.to_string(count),
-          metadata:
-            file_metadata(file, %{
-              match_count: count,
-              line_match_count: line_count,
-              path_match?: path_match?,
-              output_mode: "count"
-            })
-        )
-
-      Map.from_struct(document)
+      count
+      |> Integer.to_string()
+      |> Document.new!(
+        metadata:
+          file_metadata(file, %{
+            match_count: count,
+            line_match_count: line_count,
+            path_match?: path_match?,
+            output_mode: "count"
+          })
+      )
+      |> Map.from_struct()
     end
   end
 
   defp file_document(file, content, matcher, _output_mode, tool) do
     if matches?(matcher, content) or matches?(matcher, file.relative_path) do
-      document =
-        Document.new!(
-          snippet(content, matcher, tool.snippet_bytes),
-          metadata: file_metadata(file)
-        )
-
-      Map.from_struct(document)
+      content
+      |> snippet(matcher, tool.snippet_bytes)
+      |> Document.new!(metadata: file_metadata(file))
+      |> Map.from_struct()
     end
   end
 
@@ -326,7 +323,7 @@ defmodule BeamWeaver.Tools.FileSearch.Filesystem do
     end
   end
 
-  defp compile_pattern(pattern) when is_binary(pattern) and pattern != "" do
+  defp compile_pattern(pattern) do
     segments = Path.split(pattern)
 
     if Path.type(pattern) == :absolute or ".." in segments or
@@ -339,8 +336,6 @@ defmodule BeamWeaver.Tools.FileSearch.Filesystem do
       {:ok, Regex.compile!("^" <> compile_segments(segments) <> "$")}
     end
   end
-
-  defp compile_pattern(pattern), do: invalid_pattern(pattern)
 
   defp invalid_pattern(pattern) do
     {:error,

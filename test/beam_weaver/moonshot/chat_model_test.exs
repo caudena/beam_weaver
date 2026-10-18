@@ -16,28 +16,24 @@ defmodule BeamWeaver.Moonshot.ChatModelTest do
   alias BeamWeaver.Stream.Events
 
   test "namespace and client constructors read Moonshot config defaults and derive endpoints" do
-    with_config(
-      :moonshot,
-      [
-        api_key: "moonshot-secret",
-        base_url: "https://proxy.test/v1"
-      ],
-      fn ->
-        model =
-          BeamWeaver.Moonshot.chat_model(default_headers: [{"x-test-header", "beam-weaver-test"}])
-
-        request = Client.request(%Client{endpoint: model.endpoint, api_key: model.api_key}, %{})
-
-        assert model.endpoint == "https://proxy.test/v1/chat/completions"
-
-        assert model.count_tokens_endpoint ==
-                 "https://proxy.test/v1/tokenizers/estimate-token-count"
-
-        assert model.api_key == "moonshot-secret"
-        assert {"authorization", "Bearer moonshot-secret"} in request.headers
-        assert {"user-agent", "beam_weaver-moonshot/0.1"} in request.headers
-      end
+    BeamWeaver.TestSupport.ConfigHelper.put_config(:moonshot,
+      api_key: "moonshot-secret",
+      base_url: "https://proxy.test/v1"
     )
+
+    model =
+      BeamWeaver.Moonshot.chat_model(default_headers: [{"x-test-header", "beam-weaver-test"}])
+
+    request = Client.request(%Client{endpoint: model.endpoint, api_key: model.api_key}, %{})
+
+    assert model.endpoint == "https://proxy.test/v1/chat/completions"
+
+    assert model.count_tokens_endpoint ==
+             "https://proxy.test/v1/tokenizers/estimate-token-count"
+
+    assert model.api_key == "moonshot-secret"
+    assert {"authorization", "Bearer moonshot-secret"} in request.headers
+    assert {"user-agent", "beam_weaver-moonshot/0.1"} in request.headers
   end
 
   test "model constructor accepts Moonshot base_url alias" do
@@ -929,10 +925,5 @@ defmodule BeamWeaver.Moonshot.ChatModelTest do
     assert deprecated.type == :deprecated_model
     assert deprecated.details.replacement == "kimi-k3"
     assert deprecated.details.expected == "moonshot:kimi-k3"
-  end
-
-  defp with_config(group, values, fun) do
-    BeamWeaver.TestSupport.ConfigHelper.put_config(group, values)
-    fun.()
   end
 end

@@ -3,14 +3,7 @@ defmodule BeamWeaver.TextSplitter.MarkdownHeaders do
 
   alias BeamWeaver.Core.Document
 
-  defstruct headers: [
-              {"#", "Header 1"},
-              {"##", "Header 2"},
-              {"###", "Header 3"},
-              {"####", "Header 4"},
-              {"#####", "Header 5"},
-              {"######", "Header 6"}
-            ],
+  defstruct headers: for(level <- 1..6, do: {String.duplicate("#", level), "Header #{level}"}),
             return_each_line: false,
             strip_whitespace: true,
             strip_headers?: true
@@ -78,20 +71,9 @@ defmodule BeamWeaver.TextSplitter.MarkdownHeaders do
     end)
   end
 
-  defp flush_markdown_section(_document, _splitter, _metadata, [], docs), do: docs
-
   defp flush_markdown_section(document, splitter, metadata, lines, docs) do
-    content =
-      lines
-      |> Enum.reverse()
-      |> Enum.join("\n")
-      |> maybe_trim(splitter)
-
-    if content == "" do
-      docs
-    else
-      [Document.new!(content, metadata: Map.merge(document.metadata, metadata)) | docs]
-    end
+    content = lines |> Enum.reverse() |> Enum.join("\n") |> maybe_trim(splitter)
+    if content == "", do: docs, else: [Document.new!(content, metadata: Map.merge(document.metadata, metadata)) | docs]
   end
 
   defp drop_deeper_headers(metadata, level, header_map) do
@@ -112,14 +94,7 @@ defmodule BeamWeaver.TextSplitter.HTMLHeaders do
   alias BeamWeaver.Core.Document
   alias BeamWeaver.TextSplitter.Shared
 
-  defstruct headers: [
-              {"h1", "Header 1"},
-              {"h2", "Header 2"},
-              {"h3", "Header 3"},
-              {"h4", "Header 4"},
-              {"h5", "Header 5"},
-              {"h6", "Header 6"}
-            ],
+  defstruct headers: for(level <- 1..6, do: {"h#{level}", "Header #{level}"}),
             strip_whitespace: true
 
   def new(opts), do: struct(__MODULE__, opts)
@@ -155,20 +130,9 @@ defmodule BeamWeaver.TextSplitter.HTMLHeaders do
     |> Enum.reverse()
   end
 
-  defp flush_html_section(_document, _metadata, [], docs), do: docs
-
   defp flush_html_section(document, metadata, buffer, docs) do
-    content =
-      buffer
-      |> Enum.reverse()
-      |> Enum.join("")
-      |> Shared.strip_markup()
-
-    if content == "" do
-      docs
-    else
-      [Document.new!(content, metadata: Map.merge(document.metadata, metadata)) | docs]
-    end
+    content = buffer |> Enum.reverse() |> Enum.join("") |> Shared.strip_markup()
+    if content == "", do: docs, else: [Document.new!(content, metadata: Map.merge(document.metadata, metadata)) | docs]
   end
 
   defp drop_deeper_headers(metadata, tag, header_map) do

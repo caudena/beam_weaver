@@ -34,11 +34,14 @@ defmodule BeamWeaver.TextSplitter.RecursiveJSON do
   end
 
   defp split_json_value(map, splitter) when is_map(map) do
+    limit = chunk_limit(splitter)
+    min_size = min_chunk_size(splitter)
+
     map
     |> Enum.sort_by(fn {key, _value} -> to_string(key) end)
     |> Enum.flat_map(&entry_chunks(&1, splitter))
-    |> repack_entries(splitter, [], %{})
-    |> merge_small_chunks(splitter)
+    |> merge_adjacent(fn _previous, merged -> encoded_size(merged) <= limit end)
+    |> merge_adjacent(fn previous, merged -> encoded_size(previous) < min_size and encoded_size(merged) <= limit end)
   end
 
   defp split_json_value(value, _splitter), do: [value]
@@ -58,24 +61,18 @@ defmodule BeamWeaver.TextSplitter.RecursiveJSON do
 
   defp entry_chunks({key, value}, _splitter), do: [%{key => value}]
 
-  defp repack_entries([], _splitter, chunks, current) when current == %{},
-    do: Enum.reverse(chunks)
+  # Merges each chunk into the one before it while `merge?.(previous, merged)`.
+  defp merge_adjacent(chunks, merge?) do
+    chunks
+    |> Enum.reduce([], fn
+      chunk, [previous | rest] = acc ->
+        merged = deep_merge(previous, chunk)
+        if merge?.(previous, merged), do: [merged | rest], else: [chunk | acc]
 
-  defp repack_entries([], _splitter, chunks, current),
-    do: Enum.reverse([current | chunks])
-
-  defp repack_entries([entry | rest], splitter, chunks, current) when current == %{} do
-    repack_entries(rest, splitter, chunks, entry)
-  end
-
-  defp repack_entries([entry | rest], splitter, chunks, current) do
-    merged = deep_merge(current, entry)
-
-    if encoded_size(merged) <= chunk_limit(splitter) do
-      repack_entries(rest, splitter, chunks, merged)
-    else
-      repack_entries(rest, splitter, [current | chunks], entry)
-    end
+      chunk, [] ->
+        [chunk]
+    end)
+    |> Enum.reverse()
   end
 
   defp convert_lists(values) when is_list(values), do: values |> index_keys() |> convert_lists()
@@ -101,32 +98,6 @@ defmodule BeamWeaver.TextSplitter.RecursiveJSON do
   defp chunk_limit(splitter), do: trunc(splitter.chunk_size * 1.05)
   defp min_chunk_size(%{min_chunk_size: size}) when is_integer(size) and size > 0, do: size
   defp min_chunk_size(_splitter), do: 0
-
-  defp merge_small_chunks(chunks, splitter) do
-    min_size = min_chunk_size(splitter)
-
-    if min_size == 0 do
-      chunks
-    else
-      chunks
-      |> Enum.reduce([], fn chunk, acc ->
-        case acc do
-          [previous | rest] ->
-            merged = deep_merge(previous, chunk)
-
-            if encoded_size(previous) < min_size and encoded_size(merged) <= chunk_limit(splitter) do
-              [merged | rest]
-            else
-              [chunk | acc]
-            end
-
-          [] ->
-            [chunk]
-        end
-      end)
-      |> Enum.reverse()
-    end
-  end
 
   defp nested_splitter(splitter, key) do
     overhead = encoded_size(%{key => %{}})

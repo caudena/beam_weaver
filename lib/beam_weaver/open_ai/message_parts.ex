@@ -4,35 +4,13 @@ defmodule BeamWeaver.OpenAI.MessageParts do
   alias BeamWeaver.Core.Message
   alias BeamWeaver.MapShape
 
-  @output_block_types MapSet.new([
-                        "additional_tools",
-                        "reasoning",
-                        "computer_call",
-                        "computer_call_output",
-                        "web_search_call",
-                        "file_search_call",
-                        "code_interpreter_call",
-                        "local_shell_call",
-                        "local_shell_call_output",
-                        "shell_call",
-                        "shell_call_output",
-                        "program",
-                        "program_output",
-                        "mcp_call",
-                        "mcp_list_tools",
-                        "mcp_approval_request",
-                        "mcp_approval_response",
-                        "image_generation_call",
-                        "tool_search_call",
-                        "tool_search_output",
-                        "custom_tool_call",
-                        "custom_tool_call_output",
-                        "apply_patch_call",
-                        "apply_patch_call_output",
-                        "compaction",
-                        "function_call",
-                        "function_call_output"
-                      ])
+  # The Responses API item types a reply carries as content blocks of their own.
+  @output_block_types ~w(additional_tools reasoning computer_call computer_call_output web_search_call file_search_call
+                         code_interpreter_call local_shell_call local_shell_call_output shell_call shell_call_output
+                         program program_output mcp_call mcp_list_tools mcp_approval_request mcp_approval_response
+                         image_generation_call tool_search_call tool_search_output custom_tool_call
+                         custom_tool_call_output apply_patch_call apply_patch_call_output compaction function_call
+                         function_call_output)
 
   @input_token_details [
     cache_read: "cached_tokens",
@@ -54,7 +32,8 @@ defmodule BeamWeaver.OpenAI.MessageParts do
     flex_reasoning: "flex_reasoning"
   ]
 
-  def output_block_type?(type), do: MapSet.member?(@output_block_types, type)
+  def output_block_types, do: @output_block_types
+  def output_block_type?(type), do: type in @output_block_types
 
   def stringify_keys(map) when is_map(map), do: MapShape.stringify_keys(map)
 
@@ -64,6 +43,11 @@ defmodule BeamWeaver.OpenAI.MessageParts do
 
   def put_optional(body, _key, nil), do: body
   def put_optional(body, key, value), do: Map.put(body, key, value)
+
+  # Puts each request field in `keys`, under its string name, that
+  # `value_of.(key)` gives a value other than nil or [] for.
+  def put_fields(body, keys, value_of),
+    do: Enum.reduce(keys, body, &MapShape.put_optional(&2, Atom.to_string(&1), value_of.(&1)))
 
   def data_url(mime_type, data), do: "data:#{mime_type};base64,#{data}"
 

@@ -119,7 +119,6 @@ defmodule BeamWeaver.DeepSeek.ResponsesModel do
          {:ok, opts} <- render_tools(opts),
          {:ok, body} <- RequestBuilder.request_body(model, messages, opts),
          body = Map.put(body, "stream", Keyword.get(opts, :stream, false)),
-         :ok <- validate_responses_model(body["model"]),
          :ok <- Messages.validate_messages(messages, :responses, body["model"]),
          :ok <- reject_unsupported(body, &Map.has_key?/2),
          :ok <- validate_instructions(body),

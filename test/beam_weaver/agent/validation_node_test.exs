@@ -5,6 +5,36 @@ defmodule BeamWeaver.Agent.ValidationNodeTest do
   alias BeamWeaver.Core.Message
   alias BeamWeaver.Core.Tool
 
+  defmodule LookupOrder do
+    use BeamWeaver.Tool
+
+    name "lookup_order"
+    description "Look up an order."
+
+    schema do
+      field :order_id, :string, required: true
+    end
+
+    @impl true
+    def invoke(_tool, _input, _opts), do: "should not run"
+  end
+
+  test "takes tools given as structs and modules" do
+    calls = [
+      Message.assistant("",
+        tool_calls: [
+          %{id: "valid", name: "lookup_order", args: %{"order_id" => "A-1"}},
+          %{id: "invalid", name: "lookup_order", args: %{}}
+        ]
+      )
+    ]
+
+    for tool <- [%LookupOrder{}, LookupOrder] do
+      assert [%Message{metadata: %{status: "success"}}, %Message{metadata: %{status: "error"}}] =
+               ValidationNode.invoke(ValidationNode.new([tool]), calls)
+    end
+  end
+
   test "validates tool calls without executing tools" do
     parent = self()
 

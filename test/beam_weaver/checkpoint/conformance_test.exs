@@ -361,6 +361,24 @@ defmodule BeamWeaver.Checkpoint.ConformanceTest do
                  Checkpoint.get_tuple(saver, next)
       end
 
+      test "put_many stores each write's own task id and path", %{saver: saver} do
+        checkpoint = checkpoint(channel_values: %{"value" => 1}, channel_versions: %{"value" => 1})
+
+        entry = %{
+          config: config(unique("thread")),
+          checkpoint: checkpoint,
+          metadata: metadata([]),
+          versions: checkpoint["channel_versions"],
+          writes: [{"t1", "ch", 1}, {"t2", "ch", 2, "node:path"}]
+        }
+
+        assert {:ok, [stored]} = Checkpoint.put_many(saver, [entry])
+
+        assert %{pending_writes: writes, pending_write_paths: paths} = Checkpoint.get_tuple(saver, stored)
+        assert Enum.sort(writes) == [{"t1", "ch", 1}, {"t2", "ch", 2}]
+        assert Enum.sort(paths) == [{"t1", "ch", ""}, {"t2", "ch", "node:path"}]
+      end
+
       test "saver facade covers get list put writes copy delete prune operations", %{saver: saver} do
         thread_id = unique("async-thread")
         run_id = unique("run")

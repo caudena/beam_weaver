@@ -3,14 +3,7 @@ defmodule BeamWeaver.TextSplitter.MarkdownSyntax do
 
   alias BeamWeaver.Core.Document
 
-  defstruct headers: [
-              {"#", "Header 1"},
-              {"##", "Header 2"},
-              {"###", "Header 3"},
-              {"####", "Header 4"},
-              {"#####", "Header 5"},
-              {"######", "Header 6"}
-            ],
+  defstruct headers: for(level <- 1..6, do: {String.duplicate("#", level), "Header #{level}"}),
             return_each_line: false,
             strip_headers?: true,
             chunk_size: 1_000,

@@ -1,26 +1,9 @@
 defmodule BeamWeaver.Graph.Execution.TaskResult do
   @moduledoc false
 
-  defstruct [
-    :task_id,
-    :node,
-    :path,
-    :step,
-    :status,
-    :update,
-    :updates,
-    :sends,
-    :next,
-    :interrupt,
-    :command,
-    events: []
-  ]
+  defstruct [:status, :interrupt, :command, update: %{}, updates: [], sends: [], next: [], events: []]
 
   @type t :: %__MODULE__{
-          task_id: String.t(),
-          node: String.t(),
-          path: String.t(),
-          step: non_neg_integer(),
           status: :ok | :interrupted | :parent_command,
           update: map(),
           updates: [map()],
@@ -31,13 +14,9 @@ defmodule BeamWeaver.Graph.Execution.TaskResult do
           events: list()
         }
 
-  @spec ok(String.t(), String.t(), String.t(), non_neg_integer(), map(), list()) :: t()
-  def ok(task_id, node, path, step, normalized, events) do
+  @spec ok(map(), list()) :: t()
+  def ok(normalized, events) do
     %__MODULE__{
-      task_id: task_id,
-      node: node,
-      path: path,
-      step: step,
       status: :ok,
       update: normalized.update,
       updates: normalized.updates,
@@ -47,38 +26,9 @@ defmodule BeamWeaver.Graph.Execution.TaskResult do
     }
   end
 
-  @spec interrupted(String.t(), String.t(), String.t(), non_neg_integer(), term(), list()) :: t()
-  def interrupted(task_id, node, path, step, interrupt, events) do
-    %__MODULE__{
-      task_id: task_id,
-      node: node,
-      path: path,
-      step: step,
-      status: :interrupted,
-      update: %{},
-      updates: [],
-      sends: [],
-      next: [],
-      interrupt: interrupt,
-      events: events
-    }
-  end
+  @spec interrupted(term(), list()) :: t()
+  def interrupted(interrupt, events), do: %__MODULE__{status: :interrupted, interrupt: interrupt, events: events}
 
-  @spec parent_command(String.t(), String.t(), String.t(), non_neg_integer(), term(), list()) ::
-          t()
-  def parent_command(task_id, node, path, step, command, events) do
-    %__MODULE__{
-      task_id: task_id,
-      node: node,
-      path: path,
-      step: step,
-      status: :parent_command,
-      update: %{},
-      updates: [],
-      sends: [],
-      next: [],
-      command: command,
-      events: events
-    }
-  end
+  @spec parent_command(term(), list()) :: t()
+  def parent_command(command, events), do: %__MODULE__{status: :parent_command, command: command, events: events}
 end

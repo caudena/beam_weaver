@@ -114,16 +114,8 @@ defmodule BeamWeaver.OpenAI.EmbeddingModel do
     ParamPolicy.validate(model.profile, params, Keyword.get(opts, :param_policy, model.param_policy))
   end
 
-  defp client(%__MODULE__{} = model) do
-    %Client{
-      api_key: model.api_key,
-      organization: model.organization,
-      project: model.project,
-      transport: model.transport,
-      transport_opts: model.transport_opts,
-      timeout: model.timeout
-    }
-  end
+  defp client(%__MODULE__{} = model),
+    do: struct(Client, Map.take(model, ~w(api_key organization project transport transport_opts timeout)a))
 
   defp runtime_error_opts, do: [provider_name: "OpenAI"]
 end

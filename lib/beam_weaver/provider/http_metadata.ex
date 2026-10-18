@@ -57,8 +57,6 @@ defmodule BeamWeaver.Provider.HTTPMetadata do
       end)
   end
 
-  defp body_summary(nil), do: nil
-
   defp body_summary(body) when is_binary(body) do
     case BeamWeaver.JSON.decode(body) do
       {:ok, decoded} -> body_summary(decoded)
@@ -103,8 +101,6 @@ defmodule BeamWeaver.Provider.HTTPMetadata do
   end
 
   defp tool_names(_tools), do: nil
-
-  defp response_format_summary(nil), do: nil
 
   defp response_format_summary(format) when is_map(format) do
     reject_nil_values(%{

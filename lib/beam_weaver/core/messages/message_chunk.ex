@@ -87,9 +87,7 @@ defmodule BeamWeaver.Core.Messages.MessageChunk do
     (left ++ right)
     |> Enum.map(&normalize_tool_call_chunk/1)
     |> Enum.reduce([], &merge_tool_chunk/2)
-    |> Enum.with_index()
-    |> Enum.sort_by(fn {chunk, order} -> {chunk.index || 0, order} end)
-    |> Enum.map(&elem(&1, 0))
+    |> Enum.sort_by(&(&1.index || 0))
   end
 
   defp normalize_tool_call_chunk(%ToolCallChunk{} = chunk), do: chunk
@@ -141,7 +139,7 @@ defmodule BeamWeaver.Core.Messages.MessageChunk do
   defp append_content_item(acc, item) when is_binary(item) do
     case List.last(acc) do
       last when is_binary(last) ->
-        List.update_at(acc, -1, &(to_string(&1) <> item))
+        List.update_at(acc, -1, &(&1 <> item))
 
       _other ->
         acc ++ [item]
@@ -186,7 +184,7 @@ defmodule BeamWeaver.Core.Messages.MessageChunk do
     |> map_put_existing_key(left, :text, text)
     |> map_put_if_present(left, right, :reasoning, reasoning)
     |> BeamWeaver.MapShape.put_present(:raw_provider_block, raw_provider_block)
-    |> maybe_preserve_content_type(left_type)
+    |> BeamWeaver.MapShape.put_present(:type, left_type)
   end
 
   defp text_content_blocks?(left, right),
@@ -196,8 +194,7 @@ defmodule BeamWeaver.Core.Messages.MessageChunk do
     reasoning_block?(left) and reasoning_block?(right)
   end
 
-  defp reasoning_block?(block) when is_map(block),
-    do: Map.get(block, :type) in [:reasoning, "reasoning"]
+  defp reasoning_block?(block), do: Map.get(block, :type) in [:reasoning, "reasoning"]
 
   defp map_put_if_present(map, left, right, key, value) do
     if Map.has_key?(left, key) or Map.has_key?(right, key), do: Map.put(map, key, value), else: map
@@ -247,31 +244,16 @@ defmodule BeamWeaver.Core.Messages.MessageChunk do
     if Map.has_key?(template, key), do: Map.put(map, key, value), else: map
   end
 
-  defp maybe_preserve_content_type(map, nil), do: map
-
-  defp maybe_preserve_content_type(map, left_type) do
-    if Map.has_key?(map, :type), do: Map.put(map, :type, left_type), else: map
-  end
-
   defp finalized_tool_calls(%Chunk{} = chunk) do
-    explicit_invalid_keys =
-      chunk.invalid_tool_calls
-      |> List.wrap()
-      |> Enum.map(&invalid_tool_call_key/1)
-      |> MapSet.new()
+    explicit_invalid_keys = MapSet.new(List.wrap(chunk.invalid_tool_calls), &invalid_tool_call_key/1)
 
-    {tool_calls, invalid_tool_calls} =
-      (chunk.tool_call_chunks || [])
-      |> Enum.reject(&stale_tool_chunk?(&1, explicit_invalid_keys))
-      |> Enum.reduce({[], []}, fn tool_call_chunk, {valid, invalid} ->
-        case finalize_tool_call(tool_call_chunk) do
-          {:ok, tool_call} -> {[tool_call | valid], invalid}
-          {:error, invalid_call} -> {valid, [invalid_call | invalid]}
-        end
-      end)
+    results =
+      for tool_call_chunk <- chunk.tool_call_chunks || [],
+          not stale_tool_chunk?(tool_call_chunk, explicit_invalid_keys),
+          do: finalize_tool_call(tool_call_chunk)
 
-    {(chunk.tool_calls || []) ++ Enum.reverse(tool_calls),
-     (chunk.invalid_tool_calls || []) ++ Enum.reverse(invalid_tool_calls)}
+    {(chunk.tool_calls || []) ++ for({:ok, tool_call} <- results, do: tool_call),
+     (chunk.invalid_tool_calls || []) ++ for({:error, invalid_call} <- results, do: invalid_call)}
   end
 
   defp finalize_tool_call(%ToolCallChunk{} = chunk) do

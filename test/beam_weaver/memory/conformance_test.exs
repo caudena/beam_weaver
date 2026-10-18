@@ -39,6 +39,11 @@ defmodule BeamWeaver.Memory.ConformanceTest do
     end
   end
 
+  defmodule Link do
+    @derive [JSON.Encoder, Jason.Encoder]
+    defstruct [:host]
+  end
+
   for adapter <- [:ets, :ecto] do
     describe "#{adapter} memory store conformance" do
       if adapter == :ecto do
@@ -155,6 +160,11 @@ defmodule BeamWeaver.Memory.ConformanceTest do
         assert {:ok, _item} = Memory.put(store, ["mixed"], "plain", "just text")
         assert {:ok, _item} = Memory.put(store, ["mixed"], "doc", %{"kind" => "note"})
         assert [%{key: "doc"}] = Memory.search(store, ["mixed"], filter: %{"kind" => "note"})
+      end
+
+      test "a filter on a field of a stored struct matches the field of its JSON form", %{store: store} do
+        assert {:ok, _item} = Memory.put(store, ["links"], "home", %{"a" => %Link{host: "x"}})
+        assert [%{key: "home"}] = Memory.search(store, ["links"], filter: %{"a.host" => "x"})
       end
 
       test "search with an empty namespace prefix finds the records of every namespace", %{store: store} do

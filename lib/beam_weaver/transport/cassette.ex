@@ -69,13 +69,8 @@ defmodule BeamWeaver.Transport.Cassette do
   end
 
   defp read(path) do
-    case File.read(path) do
-      {:ok, contents} ->
-        {:ok, contents}
-
-      {:error, reason} ->
-        {:error, Error.new(:missing_cassette, "cassette not found: #{path}", %{reason: reason})}
-    end
+    with {:error, reason} <- File.read(path),
+         do: {:error, Error.new(:missing_cassette, "cassette not found: #{path}", %{reason: reason})}
   end
 
   defp unzip_if_needed(path, contents) do

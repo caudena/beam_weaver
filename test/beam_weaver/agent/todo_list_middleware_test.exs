@@ -72,15 +72,7 @@ defmodule BeamWeaver.Agent.TodoListMiddlewareTest do
         tool_description: "Custom todo tool description"
       )
 
-    request = %ModelRequest{
-      model: %SequentialTodoModel{},
-      system_message: nil,
-      messages: [Message.user("hello")],
-      tools: [],
-      state: %{},
-      runtime: %{context: %{}},
-      model_opts: []
-    }
+    request = ModelRequest.new(messages: [Message.user("hello")])
 
     assert {:ok, %ModelRequest{} = modified} =
              TodoList.wrap_model_call(middleware, request, fn request -> {:ok, request} end)
@@ -95,15 +87,7 @@ defmodule BeamWeaver.Agent.TodoListMiddlewareTest do
   test "appends todo instructions to an existing system message" do
     middleware = TodoList.new()
 
-    request = %ModelRequest{
-      model: %SequentialTodoModel{},
-      system_message: Message.system("Original prompt"),
-      messages: [Message.user("hello")],
-      tools: [],
-      state: %{},
-      runtime: %{context: %{}},
-      model_opts: []
-    }
+    request = ModelRequest.new(system_prompt: "Original prompt", messages: [Message.user("hello")])
 
     assert {:ok, %ModelRequest{system_message: %Message{content: content}}} =
              TodoList.wrap_model_call(middleware, request, fn request -> {:ok, request} end)
@@ -195,41 +179,15 @@ defmodule BeamWeaver.Agent.TodoListMiddlewareTest do
   end
 
   test "parallel todo policy ignores unrelated tools and allows a single todo call" do
-    middleware = TodoList.new()
+    after_model = fn calls ->
+      TodoList.after_model(TodoList.new(), %{messages: [Message.assistant("", tool_calls: calls)]}, nil)
+    end
 
-    assert is_nil(
-             TodoList.after_model(
-               middleware,
-               %{
-                 messages: [
-                   Message.assistant("",
-                     tool_calls: [
-                       %{id: "other", name: "lookup", args: %{}},
-                       todo_call("call-1", %{"todos" => [%{"content" => "Task 1", "status" => "pending"}]})
-                     ]
-                   )
-                 ]
-               },
-               nil
-             )
-           )
+    other = %{id: "other", name: "lookup", args: %{}}
+    pending = fn id, content -> todo_call(id, %{"todos" => [%{"content" => content, "status" => "pending"}]}) end
 
-    assert %{messages: messages} =
-             TodoList.after_model(
-               middleware,
-               %{
-                 messages: [
-                   Message.assistant("",
-                     tool_calls: [
-                       %{id: "other", name: "lookup", args: %{}},
-                       todo_call("call-1", %{"todos" => [%{"content" => "Task 1", "status" => "pending"}]}),
-                       todo_call("call-2", %{"todos" => [%{"content" => "Task 2", "status" => "pending"}]})
-                     ]
-                   )
-                 ]
-               },
-               nil
-             )
+    assert is_nil(after_model.([other, pending.("call-1", "Task 1")]))
+    assert %{messages: messages} = after_model.([other, pending.("call-1", "Task 1"), pending.("call-2", "Task 2")])
 
     assert Enum.map(messages, & &1.tool_call_id) == ["call-1", "call-2"]
   end

@@ -97,23 +97,13 @@ defmodule BeamWeaver.Core.Messages.TokenCounter do
   defp tool_token_count(tools, chars_per_token) do
     tools
     |> List.wrap()
-    |> Enum.map(&(&1 |> BeamWeaver.Tool.Renderer.declaration() |> json_length()))
-    |> Enum.sum()
+    |> Enum.sum_by(&(&1 |> BeamWeaver.Tool.Renderer.declaration() |> json_length()))
     |> ceil_tokens(chars_per_token)
   end
 
-  defp json_length(value) do
-    case BeamWeaver.JSON.encode(value) do
-      {:ok, json} -> String.length(json)
-      {:error, _error} -> value |> inspect() |> String.length()
-    end
-  end
+  defp json_length(value), do: value |> BeamWeaver.JSON.encode_or_inspect() |> String.length()
 
-  defp ceil_tokens(chars, chars_per_token) do
-    chars
-    |> Kernel./(chars_per_token)
-    |> Float.ceil()
-  end
+  defp ceil_tokens(chars, chars_per_token), do: Float.ceil(chars / chars_per_token)
 
   defp scaling_state do
     %{

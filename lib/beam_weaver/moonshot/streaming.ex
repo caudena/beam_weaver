@@ -26,6 +26,7 @@ defmodule BeamWeaver.Moonshot.Streaming do
 
   defp stream_metadata(events, message, opts) do
     reasoning_content = ChatCompletionsWire.content_reasoning(message.content)
+    header_metadata = Keyword.get(opts, :header_metadata, %{})
 
     events
     |> Enum.reduce(%{model_provider: "moonshot", provider: :moonshot}, fn
@@ -45,13 +46,6 @@ defmodule BeamWeaver.Moonshot.Streaming do
         acc
     end)
     |> put_optional(:reasoning_content, reasoning_content)
-    |> put_headers(opts)
-  end
-
-  defp put_headers(metadata, opts) do
-    header_metadata = Keyword.get(opts, :header_metadata, %{})
-
-    metadata
     |> put_optional(:headers, header_metadata[:headers])
     |> put_optional(:request_id, header_metadata[:request_id])
     |> put_optional(:transport, BeamWeaver.Provider.ResponseDecoder.transport_metadata(header_metadata))

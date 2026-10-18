@@ -1350,40 +1350,21 @@ defmodule BeamWeaver.Agent.MiddlewareBuiltinTest do
              Agent.invoke(ModelCallLimitAgent, %{messages: [Message.user("hello")]})
   end
 
-  test "model call limit can end the agent with a tagged assistant message" do
-    parent = self()
+  test "model call limit can end the agent with a tagged assistant message, or a custom one" do
+    for {agent, content} <- [
+          {ModelCallLimitEndAgent, "Model call limits exceeded: thread limit (0/0)"},
+          {ModelCallLimitMessageAgent, "No additional research needed."}
+        ] do
+      assert {:ok, %{messages: messages}} =
+               Agent.invoke(agent, %{messages: [Message.user("hello")]}, context: %{parent: self()})
 
-    assert {:ok, %{messages: messages}} =
-             Agent.invoke(ModelCallLimitEndAgent, %{messages: [Message.user("hello")]}, context: %{parent: parent})
+      refute_received {:model_call, _messages, _opts}
 
-    refute_received {:model_call, _messages, _opts}
-
-    assert [
-             %Message{role: :user, content: "hello"},
-             %Message{
-               role: :assistant,
-               content: "Model call limits exceeded: thread limit (0/0)",
-               metadata: %{error_type: :model_call_limit_exceeded}
-             }
-           ] = messages
-  end
-
-  test "model call limit can end with a custom assistant message" do
-    parent = self()
-
-    assert {:ok, %{messages: messages}} =
-             Agent.invoke(ModelCallLimitMessageAgent, %{messages: [Message.user("hello")]}, context: %{parent: parent})
-
-    refute_received {:model_call, _messages, _opts}
-
-    assert [
-             %Message{role: :user, content: "hello"},
-             %Message{
-               role: :assistant,
-               content: "No additional research needed.",
-               metadata: %{error_type: :model_call_limit_exceeded}
-             }
-           ] = messages
+      assert [
+               %Message{role: :user, content: "hello"},
+               %Message{role: :assistant, content: ^content, metadata: %{error_type: :model_call_limit_exceeded}}
+             ] = messages
+    end
   end
 
   test "model call limit validates native options and increments private counters" do

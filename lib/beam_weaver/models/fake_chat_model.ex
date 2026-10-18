@@ -158,12 +158,7 @@ defmodule BeamWeaver.Models.FakeChatModel do
             ]
           end)
 
-        {:ok,
-         chunks ++
-           [
-             Stream.envelope(%Events.Message{message: message}, metadata: metadata),
-             Stream.envelope(%Events.Done{usage: message.usage_metadata}, metadata: metadata)
-           ]}
+        {:ok, chunks ++ reply_events(message, metadata)}
       end
     end
   end
@@ -179,15 +174,8 @@ defmodule BeamWeaver.Models.FakeChatModel do
       if model.stream_events do
         {:ok, with_invocation_metadata(model.stream_events, model, opts)}
       else
-        with {:ok, message} <- invoke(%{model | parent: nil}, messages, opts) do
-          metadata = invocation_metadata(model, opts)
-
-          {:ok,
-           [
-             Stream.envelope(%Events.Message{message: message}, metadata: metadata),
-             Stream.envelope(%Events.Done{usage: message.usage_metadata}, metadata: metadata)
-           ]}
-        end
+        with {:ok, message} <- invoke(%{model | parent: nil}, messages, opts),
+             do: {:ok, reply_events(message, invocation_metadata(model, opts))}
       end
     end
   end
@@ -276,6 +264,13 @@ defmodule BeamWeaver.Models.FakeChatModel do
 
   defp maybe_put_usage(%Message{} = message, usage) when is_map(usage),
     do: %{message | usage_metadata: usage}
+
+  defp reply_events(message, metadata) do
+    [
+      Stream.envelope(%Events.Message{message: message}, metadata: metadata),
+      Stream.envelope(%Events.Done{usage: message.usage_metadata}, metadata: metadata)
+    ]
+  end
 
   defp with_invocation_metadata(events, model, opts) do
     metadata = invocation_metadata(model, opts)

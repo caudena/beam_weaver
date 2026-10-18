@@ -56,7 +56,7 @@ defmodule BeamWeaver.Retriever do
       response_format: response_format,
       handler: fn %{"query" => query}, call_opts ->
         with {:ok, docs} <- retrieve(retriever, query, call_opts) do
-          content = format_documents(docs, separator, formatter, prompt)
+          content = Enum.map_join(docs, separator, &format_document(&1, formatter, prompt))
 
           if response_format in [:content_and_artifact, "content_and_artifact"] do
             {:ok, {content, docs}}
@@ -66,10 +66,6 @@ defmodule BeamWeaver.Retriever do
         end
       end
     )
-  end
-
-  defp format_documents(documents, separator, formatter, prompt) do
-    Enum.map_join(documents, separator, &format_document(&1, formatter, prompt))
   end
 
   defp format_document(document, formatter, _prompt) when is_function(formatter, 1),

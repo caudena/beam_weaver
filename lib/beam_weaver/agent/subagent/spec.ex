@@ -73,48 +73,13 @@ defmodule BeamWeaver.Agent.Subagent.Spec do
   # and `read?` says whether its declarations were read; neither is an option.
   @private_fields [:source, :read?]
 
-  defstruct [
-    :name,
-    :description,
-    :system_prompt,
-    :model,
-    :tools,
-    :validate_tools,
-    :response_format,
-    :context_schema,
-    :input_schema,
-    :output_schema,
-    :filesystem,
-    :permissions,
-    :skills,
-    :memory,
-    :subagents,
-    :async_subagents,
-    :compact_conversation,
-    :overflow_recovery,
-    :prompt_caching,
-    :exclude_tools,
-    :tool_descriptions,
-    :interrupt_on,
-    :checkpointer,
-    :store,
-    :cache,
-    :recursion_limit,
-    :tool_timeout,
-    :step_timeout,
-    :run_timeout,
-    :capability_profile,
-    :capture_output,
-    :source,
-    model_opts: [],
-    middleware: [],
-    interrupt_before: [],
-    interrupt_after: [],
-    execution_mode: :agent_loop,
-    base_middleware: [],
-    inherit_messages: false,
-    read?: true
-  ]
+  # The agent options that default to something other than nil.
+  @agent_defaults [model_opts: [], middleware: [], interrupt_before: [], interrupt_after: []]
+
+  defstruct [:name, :description, :capture_output, :source] ++
+              (@agent_fields -- Keyword.keys(@agent_defaults)) ++
+              @agent_defaults ++
+              [execution_mode: :agent_loop, base_middleware: [], inherit_messages: false, read?: true]
 
   @type t :: %__MODULE__{}
 

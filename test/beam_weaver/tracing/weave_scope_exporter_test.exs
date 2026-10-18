@@ -197,13 +197,7 @@ defmodule BeamWeaver.Tracing.WeaveScopeExporterTest do
   end
 
   test "does not use exporter options as environment fallback" do
-    run =
-      Run.new("support_agent",
-        id: "run-1",
-        trace_id: "trace-1",
-        kind: :agent,
-        started_at: ~U[2026-06-04 10:00:00Z]
-      )
+    run = new_run("support_agent", "run-1", "trace-1", :agent)
 
     refute Map.has_key?(WeaveScope.to_event(:started, run, environment: "staging"), "environment")
     refute Map.has_key?(WeaveScope.to_event(:started, run, []), "environment")
@@ -211,7 +205,7 @@ defmodule BeamWeaver.Tracing.WeaveScopeExporterTest do
 
   test "a run kind exports the same as an atom or a string" do
     for kind <- [:generation, :model, :graph, :workflow, :tool, :unknown_kind] do
-      run = Run.new("run", id: "run-1", trace_id: "trace-1", kind: kind, started_at: ~U[2026-06-04 10:00:00Z])
+      run = new_run("run", "run-1", "trace-1", kind)
 
       assert WeaveScope.to_event(:started, run, [])["kind"] ==
                WeaveScope.to_event(:started, %{run | kind: Atom.to_string(kind)}, [])["kind"]
@@ -219,13 +213,7 @@ defmodule BeamWeaver.Tracing.WeaveScopeExporterTest do
   end
 
   test "normalizes unexpected run statuses to the WeaveScope status contract" do
-    run =
-      Run.new("support_agent",
-        id: "run-1",
-        trace_id: "trace-1",
-        kind: :agent,
-        started_at: ~U[2026-06-04 10:00:00Z]
-      )
+    run = new_run("support_agent", "run-1", "trace-1", :agent)
 
     malformed = %{run | status: :warning}
 
@@ -234,13 +222,7 @@ defmodule BeamWeaver.Tracing.WeaveScopeExporterTest do
   end
 
   test "returns per-event rejections from WeaveScope batch responses" do
-    run =
-      Run.new("domain_discovery_agent",
-        id: "bad-run",
-        trace_id: "trace-1",
-        kind: :graph,
-        started_at: ~U[2026-06-04 10:00:00Z]
-      )
+    run = new_run("domain_discovery_agent", "bad-run", "trace-1", :graph)
 
     assert {:rejected, [%{"code" => "invalid_kind", "id" => "bad-run"}]} =
              WeaveScope.export_batch(
@@ -255,13 +237,7 @@ defmodule BeamWeaver.Tracing.WeaveScopeExporterTest do
     {:ok, capture} =
       Agent.start_link(fn -> [] end, name: BeamWeaver.Tracing.WeaveScopeRequestOptionsTransportAgent)
 
-    run =
-      Run.new("export_options_agent",
-        id: "request-options-run",
-        trace_id: "trace-request-options",
-        kind: :graph,
-        started_at: ~U[2026-06-04 10:00:00Z]
-      )
+    run = new_run("export_options_agent", "request-options-run", "trace-request-options", :graph)
 
     assert :ok =
              WeaveScope.export_batch(
@@ -280,13 +256,7 @@ defmodule BeamWeaver.Tracing.WeaveScopeExporterTest do
   end
 
   test "logs WeaveScope export failures with endpoint and event context" do
-    run =
-      Run.new("failing_export_agent",
-        id: "failing-export-run",
-        trace_id: "trace-failing-export",
-        kind: :graph,
-        started_at: ~U[2026-06-04 10:00:00Z]
-      )
+    run = new_run("failing_export_agent", "failing-export-run", "trace-failing-export", :graph)
 
     log =
       capture_log([level: :debug], fn ->
@@ -314,13 +284,7 @@ defmodule BeamWeaver.Tracing.WeaveScopeExporterTest do
         max_attempts: 3
       )
 
-    run =
-      Run.new("domain_discovery_agent",
-        id: "bad-run",
-        trace_id: "trace-1",
-        kind: :graph,
-        started_at: ~U[2026-06-04 10:00:00Z]
-      )
+    run = new_run("domain_discovery_agent", "bad-run", "trace-1", :graph)
 
     capture_log([level: :debug], fn ->
       Queue.enqueue(pid, :started, run)
@@ -363,13 +327,7 @@ defmodule BeamWeaver.Tracing.WeaveScopeExporterTest do
         max_attempts: 2
       )
 
-    run =
-      Run.new("retrying_export",
-        id: "retry-run",
-        trace_id: "trace-retry",
-        kind: :model,
-        started_at: ~U[2026-06-04 10:00:00Z]
-      )
+    run = new_run("retrying_export", "retry-run", "trace-retry", :model)
 
     Queue.enqueue(pid, :started, run)
     assert Queue.flush(pid) == :ok
@@ -427,13 +385,7 @@ defmodule BeamWeaver.Tracing.WeaveScopeExporterTest do
 
     pid = start_queue(transport: BeamWeaver.Tracing.WeaveScopeCaptureTransport, flush_interval: 10_000)
 
-    run =
-      Run.new("domain_discovery_agent",
-        id: "agent-run",
-        trace_id: "trace-1",
-        kind: :graph,
-        started_at: ~U[2026-06-04 10:00:00Z]
-      )
+    run = new_run("domain_discovery_agent", "agent-run", "trace-1", :graph)
 
     finished = %{run | status: :ok, ended_at: ~U[2026-06-04 10:00:02Z], outputs: %{ok: true}}
 
@@ -621,6 +573,9 @@ defmodule BeamWeaver.Tracing.WeaveScopeExporterTest do
   def handle_queue_telemetry(event, measurements, metadata, test_pid) do
     send(test_pid, {:queue_event, event, measurements, metadata})
   end
+
+  defp new_run(name, id, trace_id, kind),
+    do: Run.new(name, id: id, trace_id: trace_id, kind: kind, started_at: ~U[2026-06-04 10:00:00Z])
 
   defp start_queue(opts) do
     name = :"weavescope_queue_#{System.unique_integer([:positive])}"

@@ -53,6 +53,7 @@ defmodule BeamWeaver.ShellPolicy.Parser do
   @reserved ~w(! { if then else elif while until do)
 
   @metachars [?\s, ?\t, ?\n, ?\r, ?;, ?&, ?|, ?(, ?), ?<, ?>]
+  @operators %{?; => [";;&", ";;", ";&", ";"], ?& => ["&&", "&"], ?| => ["||", "|&", "|"]}
   @special_parameters ~c"@*#?-$!0123456789"
   @max_nesting 16
 
@@ -137,16 +138,8 @@ defmodule BeamWeaver.ShellPolicy.Parser do
       ?\r ->
         loop(text, pos + 1, stop, op(state, pos, pos + 1))
 
-      ?; ->
-        size = operator_size(text, pos, stop, [";;&", ";;", ";&", ";"])
-        loop(text, pos + size, stop, op(state, pos, pos + size))
-
-      ?& ->
-        size = operator_size(text, pos, stop, ["&&", "&"])
-        loop(text, pos + size, stop, op(state, pos, pos + size))
-
-      ?| ->
-        size = operator_size(text, pos, stop, ["||", "|&", "|"])
+      byte when is_map_key(@operators, byte) ->
+        size = operator_size(text, pos, stop, @operators[byte])
         loop(text, pos + size, stop, op(state, pos, pos + size))
 
       ?( ->
@@ -271,12 +264,7 @@ defmodule BeamWeaver.ShellPolicy.Parser do
 
     if state.ctx == :subst and word.raw == "case", do: fail(:case_in_substitution)
 
-    kind =
-      cond do
-        state.target? -> :target
-        named_descriptor?(word, text, after_word, stop) -> :target
-        true -> :word
-      end
+    kind = if state.target? or named_descriptor?(word, text, after_word, stop), do: :target, else: :word
 
     state = %{push(state, {kind, word}) | target?: false}
     loop(text, after_word, stop, %{state | nested: state.nested ++ nested})
@@ -906,15 +894,10 @@ defmodule BeamWeaver.ShellPolicy.Parser do
   # `{`, `!`, ...) and the `function NAME` of a function definition, so each
   # command starts at the word the shell runs.
   defp split(tokens, source, in_line?) do
-    tokens
-    |> Enum.chunk_by(&match?({:op, _start, _stop}, &1))
-    |> Enum.reject(&match?([{:op, _start, _stop} | _rest], &1))
-    |> Enum.flat_map(fn chunk ->
-      case chunk |> drop_reserved() |> command(source, in_line?) do
-        nil -> []
-        command -> [command]
-      end
-    end)
+    for chunk <- Enum.chunk_by(tokens, &match?({:op, _start, _stop}, &1)),
+        not match?([{:op, _start, _stop} | _rest], chunk),
+        simple = command(drop_reserved(chunk), source, in_line?),
+        do: simple
   end
 
   defp drop_reserved([{:word, %Word{raw: "function"}}, {:word, _name} | rest]), do: drop_reserved(rest)

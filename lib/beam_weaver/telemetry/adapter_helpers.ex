@@ -1,8 +1,6 @@
 defmodule BeamWeaver.Telemetry.AdapterHelpers do
   @moduledoc false
 
-  alias BeamWeaver.Core.Error
-
   @spec adapter_name(term()) :: module() | String.t()
   def adapter_name(%{__struct__: module}), do: module
   def adapter_name(other), do: inspect(other)
@@ -26,17 +24,14 @@ defmodule BeamWeaver.Telemetry.AdapterHelpers do
 
   @spec result_type(term(), keyword()) :: atom()
   def result_type(result, opts \\ []) do
-    miss_values = Keyword.get(opts, :miss_values, [])
-
     cond do
       match?({:error, _error}, result) -> :error
-      Enum.any?(miss_values, &(&1 == result)) -> :miss
+      Enum.any?(Keyword.get(opts, :miss_values, []), &(&1 == result)) -> :miss
       true -> :ok
     end
   end
 
   @spec error_type(term()) :: atom() | String.t() | nil
-  def error_type({:error, %Error{type: type}}), do: type
   def error_type({:error, %{type: type}}), do: type
   def error_type({:error, reason}), do: inspect(reason)
   def error_type(_result), do: nil

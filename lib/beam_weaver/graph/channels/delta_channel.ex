@@ -77,10 +77,9 @@ defmodule BeamWeaver.Graph.Channels.DeltaChannel do
 
   @impl true
   def from_checkpoint(channel, checkpoint) do
-    cond do
-      checkpoint == Channel.missing() -> %{channel | value: channel.initial}
-      true -> %{channel | value: DeltaSnapshot.unwrap(checkpoint)}
-    end
+    if checkpoint == Channel.missing(),
+      do: %{channel | value: channel.initial},
+      else: %{channel | value: DeltaSnapshot.unwrap(checkpoint)}
   end
 
   @doc false

@@ -11,10 +11,9 @@ defmodule BeamWeaver.Graph.Execution.CommandRouter do
 
   @spec command_opts(Command.t(), keyword()) :: keyword()
   def command_opts(%Command{} = command, opts) do
-    opts
-    |> Keyword.put(:continue_from_checkpoint?, true)
-    |> maybe_put_command_resume(command.resume)
-    |> maybe_put_command_goto(command.goto)
+    opts = Keyword.put(opts, :continue_from_checkpoint?, true)
+    opts = if is_nil(command.resume), do: opts, else: Keyword.put(opts, :resume, command.resume)
+    if is_nil(command.goto), do: opts, else: Keyword.put(opts, :command_goto, command.goto)
   end
 
   @spec command_update(Command.t()) :: map()
@@ -93,7 +92,7 @@ defmodule BeamWeaver.Graph.Execution.CommandRouter do
 
     command_ready =
       Enum.map(next, &TaskRequest.pull/1) ++
-        Enum.map(sends, &TaskRequest.send(&1.node, &1.update || %{}, [Scheduler.tasks_channel()]))
+        Enum.map(sends, &TaskRequest.send(&1.node, &1.update, [Scheduler.tasks_channel()]))
 
     Scheduler.add_tasks(ready, command_ready)
   end
@@ -111,8 +110,7 @@ defmodule BeamWeaver.Graph.Execution.CommandRouter do
         acc
 
       %Command{} = command, acc ->
-        normalized = normalize_node_result(command)
-        merge_normalized(acc, normalized)
+        merge_normalized(acc, normalize_node_result(command))
 
       %Send{} = send, acc ->
         %{acc | sends: acc.sends ++ [send]}
@@ -159,12 +157,6 @@ defmodule BeamWeaver.Graph.Execution.CommandRouter do
     command_target?(graph, current_graph_identifiers(run) ++ task_graph_identifiers(run, entry))
   end
 
-  defp maybe_put_command_resume(opts, nil), do: opts
-  defp maybe_put_command_resume(opts, resume), do: Keyword.put(opts, :resume, resume)
-
-  defp maybe_put_command_goto(opts, nil), do: opts
-  defp maybe_put_command_goto(opts, goto), do: Keyword.put(opts, :command_goto, goto)
-
   @spec command_target?(term(), [term()]) :: boolean()
   def command_target?(target, identifiers) do
     target = to_string(target)
@@ -172,25 +164,14 @@ defmodule BeamWeaver.Graph.Execution.CommandRouter do
   end
 
   defp current_graph_identifiers(run) do
-    namespace =
-      run.config
-      |> Checkpoint.configurable()
-      |> Map.get("checkpoint_ns", "")
-
+    namespace = namespace(run)
     [run.compiled.name, namespace, Namespace.recast(namespace)]
   end
 
   defp task_graph_identifiers(run, entry) do
-    namespace =
-      run.config
-      |> Checkpoint.configurable()
-      |> Map.get("checkpoint_ns", "")
-
-    task_namespace =
-      namespace
-      |> Namespace.child(entry.node, entry.id)
-      |> Namespace.serialize()
-
+    task_namespace = run |> namespace() |> Namespace.child(entry.node, entry.id) |> Namespace.serialize()
     [entry.node, task_namespace, Namespace.recast(task_namespace)]
   end
+
+  defp namespace(run), do: run.config |> Checkpoint.configurable() |> Map.get("checkpoint_ns", "")
 end

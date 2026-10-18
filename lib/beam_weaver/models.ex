@@ -82,23 +82,9 @@ defmodule BeamWeaver.Models do
   """
   @spec init_chat_model(String.t() | atom() | map() | keyword(), keyword()) ::
           {:ok, term()} | {:error, Error.t()}
-  def init_chat_model(model_or_opts \\ [], opts \\ [])
+  def init_chat_model(model_or_opts \\ [], opts \\ []) do
+    {model, opts} = model_and_opts(model_or_opts, opts, "openai:gpt-5.5")
 
-  def init_chat_model(opts, extra_opts) when is_list(opts) do
-    model = Keyword.get(opts, :model) || Keyword.get(extra_opts, :model)
-    init_chat_model(model || "openai:gpt-5.5", Keyword.merge(opts, extra_opts))
-  end
-
-  def init_chat_model(%{} = opts, extra_opts) do
-    opts = Map.to_list(opts)
-    init_chat_model(opts, extra_opts)
-  end
-
-  def init_chat_model(model, opts) when is_atom(model) do
-    init_chat_model(Atom.to_string(model), opts)
-  end
-
-  def init_chat_model(model, opts) when is_binary(model) do
     with {:ok, provider, model_id} <- parse_model_id(model, :chat),
          {:ok, module} <- ProviderRegistry.chat_provider(provider, Keyword.put(opts, :model, model_id)),
          {:ok, profile} <- fetch_profile(provider, model_id, opts) do
@@ -117,20 +103,9 @@ defmodule BeamWeaver.Models do
   """
   @spec init_embeddings(String.t() | atom() | map() | keyword(), keyword()) ::
           {:ok, term()} | {:error, Error.t()}
-  def init_embeddings(model_or_opts \\ [], opts \\ [])
+  def init_embeddings(model_or_opts \\ [], opts \\ []) do
+    {model, opts} = model_and_opts(model_or_opts, opts, "openai:text-embedding-3-small")
 
-  def init_embeddings(opts, extra_opts) when is_list(opts) do
-    model = Keyword.get(opts, :model) || Keyword.get(extra_opts, :model)
-    init_embeddings(model || "openai:text-embedding-3-small", Keyword.merge(opts, extra_opts))
-  end
-
-  def init_embeddings(%{} = opts, extra_opts),
-    do: opts |> Map.to_list() |> init_embeddings(extra_opts)
-
-  def init_embeddings(model, opts) when is_atom(model),
-    do: model |> Atom.to_string() |> init_embeddings(opts)
-
-  def init_embeddings(model, opts) when is_binary(model) do
     with {:ok, provider, model_id} <- parse_model_id(model, :embedding),
          {:ok, module} <- ProviderRegistry.embedding_provider(provider, opts),
          {:ok, profile} <- fetch_profile(provider, model_id, opts) do
@@ -150,7 +125,11 @@ defmodule BeamWeaver.Models do
 
   def init_decision_model(input, opts) when is_list(input) do
     opts = Keyword.merge(input, opts)
-    init_decision_model(Keyword.get(opts, :model, "typesafe:jev-latest"), opts)
+
+    case Keyword.get(opts, :model, "typesafe:jev-latest") do
+      model when is_list(model) or is_map(model) -> invalid_decision_model(model)
+      model -> init_decision_model(model, opts)
+    end
   end
 
   def init_decision_model(model, opts) when is_atom(model), do: init_decision_model(Atom.to_string(model), opts)
@@ -163,13 +142,42 @@ defmodule BeamWeaver.Models do
       build_model(provider, module, id, opts, profile)
     else
       {:error, _} = error -> error
-      _ -> {:error, Error.new(:invalid_model, "decision models require a provider: prefix", %{model: model})}
+      _ -> invalid_decision_model(model)
     end
   end
+
+  def init_decision_model(model, _opts), do: invalid_decision_model(model)
 
   @doc "Initializes a decision model and raises on invalid configuration."
   def init_decision_model!(model_or_opts \\ [], opts \\ []),
     do: model_or_opts |> init_decision_model(opts) |> BeamWeaver.Policy.bang()
+
+  defp invalid_decision_model(model),
+    do: {:error, Error.new(:invalid_model, "decision models require a provider: prefix", %{model: model})}
+
+  # The model id and options from either argument form: an id, or options
+  # that carry it as `:model`.
+  defp model_and_opts(opts, extra_opts, default) when is_list(opts) do
+    model = Keyword.get(opts, :model) || Keyword.get(extra_opts, :model)
+    {model_id(model || default), Keyword.merge(opts, extra_opts)}
+  end
+
+  defp model_and_opts(%{} = opts, extra_opts, default), do: model_and_opts(Map.to_list(opts), extra_opts, default)
+  defp model_and_opts(model, opts, _default), do: {model_id(model), opts}
+
+  defp model_id(model) when is_atom(model), do: Atom.to_string(model)
+  defp model_id(model), do: model
+
+  # Bare chat ids of these families need their provider's prefix.
+  @prefixed_families [
+    {"gemini-", "Gemini", "google"},
+    {"kimi-", "Kimi", "moonshot"},
+    {"glm-", "GLM", "zai"},
+    {"deepseek-", "DeepSeek", "deepseek"}
+  ]
+
+  defp parse_model_id(model, _kind) when not is_binary(model),
+    do: {:error, Error.new(:invalid_model, "model identifier is invalid", %{model: model})}
 
   defp parse_model_id(model, kind) do
     case String.split(model, ":", parts: 2) do
@@ -182,36 +190,18 @@ defmodule BeamWeaver.Models do
            model: model_id
          })}
 
-      ["gemini-" <> _rest = model_id] when kind == :chat ->
-        {:error,
-         Error.new(:invalid_model, "Gemini model identifiers require the google: prefix", %{
-           model: model_id,
-           expected: "google:#{model_id}"
-         })}
-
-      ["kimi-" <> _rest = model_id] when kind == :chat ->
-        {:error,
-         Error.new(:invalid_model, "Kimi model identifiers require the moonshot: prefix", %{
-           model: model_id,
-           expected: "moonshot:#{model_id}"
-         })}
-
-      ["glm-" <> _rest = model_id] when kind == :chat ->
-        {:error,
-         Error.new(:invalid_model, "GLM model identifiers require the zai: prefix", %{
-           model: model_id,
-           expected: "zai:#{model_id}"
-         })}
-
-      ["deepseek-" <> _rest = model_id] when kind == :chat ->
-        {:error,
-         Error.new(:invalid_model, "DeepSeek model identifiers require the deepseek: prefix", %{
-           model: model_id,
-           expected: "deepseek:#{model_id}"
-         })}
-
       [model_id] when model_id != "" ->
-        {:ok, ProviderRegistry.infer_provider(model_id, kind), model_id}
+        case kind == :chat and Enum.find(@prefixed_families, &String.starts_with?(model_id, elem(&1, 0))) do
+          {_prefix, family, provider} ->
+            {:error,
+             Error.new(:invalid_model, "#{family} model identifiers require the #{provider}: prefix", %{
+               model: model_id,
+               expected: "#{provider}:#{model_id}"
+             })}
+
+          _none ->
+            {:ok, ProviderRegistry.infer_provider(model_id, kind), model_id}
+        end
 
       _other ->
         {:error, Error.new(:invalid_model, "model identifier is invalid", %{model: model})}
@@ -438,8 +428,8 @@ defmodule BeamWeaver.Models do
   defp rename_aliases(opts, module) do
     opts = if :streaming in struct_keys(module), do: rename(opts, :stream, :streaming), else: opts
 
-    module
-    |> then(&Map.get(@aliases, &1, []))
+    @aliases
+    |> Map.get(module, [])
     |> Enum.reduce(opts, fn {from, to}, acc -> rename(acc, from, to) end)
   end
 

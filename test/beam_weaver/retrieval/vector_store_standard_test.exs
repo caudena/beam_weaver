@@ -1,8 +1,6 @@
 defmodule BeamWeaver.VectorStoreStandardTest do
   use ExUnit.Case, async: true
 
-  # Native coverage for:
-
   alias BeamWeaver.Core.Document
   alias BeamWeaver.Models.FakeEmbeddingModel
   alias BeamWeaver.VectorStore
@@ -58,11 +56,8 @@ defmodule BeamWeaver.VectorStoreStandardTest do
     assert :ok = VectorStore.delete(store, ["missing"])
     assert :ok = VectorStore.delete(store, ["missing", "still-missing"])
 
-    assert {:ok, ["1", "2"]} =
-             VectorStore.add_documents(store, Enum.take(documents, 2), ids: ["1", "2"])
-
-    assert {:ok, ["1", "2"]} =
-             VectorStore.add_documents(store, Enum.take(documents, 2), ids: ["1", "2"])
+    assert {:ok, ["1", "2"]} = VectorStore.add_documents(store, documents, ids: ["1", "2"])
+    assert {:ok, ["1", "2"]} = VectorStore.add_documents(store, documents, ids: ["1", "2"])
 
     assert {:ok,
             [

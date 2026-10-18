@@ -28,17 +28,14 @@ defmodule BeamWeaver.Tracing.Options do
   end
 
   @spec put_thread_id_config(map(), term()) :: map()
-  def put_thread_id_config(config, trace) when is_map(config) do
-    case trace_value(trace, :thread_id) do
-      value when value in [nil, ""] ->
-        config
+  def put_thread_id_config(config, trace) do
+    {config_key, configurable} = configurable(config)
+    thread_id = trace_value(trace, :thread_id)
 
-      thread_id ->
-        put_configurable_value(config, "thread_id", thread_id)
-    end
+    if thread_id in [nil, ""] or Map.has_key?(configurable, "thread_id") or Map.has_key?(configurable, :thread_id),
+      do: config,
+      else: Map.put(config, config_key, Map.put(configurable, "thread_id", thread_id))
   end
-
-  def put_thread_id_config(config, _trace), do: config
 
   defp put_standard_fields(metadata, trace_map) do
     Enum.reduce(@standard_keys, metadata, fn key, acc ->
@@ -107,16 +104,6 @@ defmodule BeamWeaver.Tracing.Options do
   defp normalize_field_value(value) when is_atom(value) and not is_nil(value), do: Atom.to_string(value)
   defp normalize_field_value(_value), do: nil
 
-  defp put_configurable_value(config, key, value) do
-    {config_key, configurable} = configurable(config)
-
-    if has_configurable_key?(configurable, key) do
-      config
-    else
-      Map.put(config, config_key, Map.put(configurable, key, value))
-    end
-  end
-
   defp configurable(config) do
     cond do
       Map.has_key?(config, "configurable") -> {"configurable", map_value(Map.get(config, "configurable"))}
@@ -125,22 +112,15 @@ defmodule BeamWeaver.Tracing.Options do
     end
   end
 
-  defp has_configurable_key?(configurable, key) do
-    Map.has_key?(configurable, key) or Map.has_key?(configurable, String.to_existing_atom(key))
-  rescue
-    ArgumentError -> Map.has_key?(configurable, key)
+  defp trace_value(trace, key) do
+    map = map_value(trace)
+    Map.get(map, key) || Map.get(map, to_string(key))
   end
-
-  defp trace_value(trace, key), do: map_get(map_value(trace), key)
 
   defp map_value(value) when is_map(value), do: value
   defp map_value(value) when is_list(value), do: Map.new(value)
   defp map_value(_value), do: %{}
 
-  defp scrub_removed_metadata_keys(metadata) when is_map(metadata),
+  defp scrub_removed_metadata_keys(metadata),
     do: Map.reject(metadata, fn {key, _value} -> to_string(key) in @removed_metadata_keys end)
-
-  defp map_get(map, key) when is_map(map) do
-    Map.get(map, key) || Map.get(map, to_string(key))
-  end
 end

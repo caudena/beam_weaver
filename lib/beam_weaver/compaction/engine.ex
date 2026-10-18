@@ -28,7 +28,7 @@ defmodule BeamWeaver.Compaction.Engine do
          {:ok, request} <- rebase_anti_thrash(request, before),
          :ok <- eligible(request, before),
          {:ok, prefix, tail, projected, manifest, projected_budget} <- project(request, before),
-         {:continue, prefix} <- maybe_pruned(request, before, projected_budget, prefix, projected, manifest),
+         {:continue, [_ | _] = prefix} <- maybe_pruned(request, before, projected_budget, prefix, projected, manifest),
          {:ok, semantic, usage} <- summarize(request, before, prefix),
          {:ok, final_bytes, final_categories} <- render(request, semantic, tail),
          {:ok, after_budget} <- budget(request, final_bytes, final_categories),

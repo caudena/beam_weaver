@@ -54,8 +54,7 @@ defmodule BeamWeaver.ZAI.Messages do
   defp metadata(response, choice, usage) do
     message = choice["message"] || %{}
     header_metadata = response["_beamweaver_response_header_metadata"] || %{}
-    decoded_headers = header_metadata[:headers] || %{}
-    x_log_id = decoded_headers[:x_log_id]
+    x_log_id = header_metadata[:headers][:x_log_id]
 
     %{
       id: response["id"],
@@ -132,18 +131,11 @@ defmodule BeamWeaver.ZAI.Messages do
   defp content_to_zai(content, _context) when is_binary(content), do: {:ok, content}
 
   defp content_to_zai(content, context) when is_list(content) do
-    content
-    |> BeamWeaver.MapShape.assert_atom_keys_in!()
-    |> Result.traverse(&content_part(&1, context))
-    |> case do
-      {:ok, parts} ->
-        case Enum.reject(parts, &is_nil/1) do
-          [] -> {:ok, ""}
-          parts -> {:ok, parts}
-        end
-
-      error ->
-        error
+    with {:ok, parts} <- content |> MapShape.assert_atom_keys_in!() |> Result.traverse(&content_part(&1, context)) do
+      case Enum.reject(parts, &is_nil/1) do
+        [] -> {:ok, ""}
+        parts -> {:ok, parts}
+      end
     end
   end
 
@@ -288,16 +280,14 @@ defmodule BeamWeaver.ZAI.Messages do
      Error.new(:invalid_content_block, message, %{provider: :zai, model: profile && profile.id, feature: feature})}
   end
 
-  defp cached_tokens(usage) do
-    usage["cached_tokens"] ||
-      get_in(usage, ["prompt_tokens_details", "cached_tokens"]) ||
-      get_in(usage, ["input_tokens_details", "cached_tokens"]) ||
-      0
-  end
-
   defp input_token_details(usage) do
     %{
-      cache_read: positive(cached_tokens(usage))
+      cache_read:
+        positive(
+          usage["cached_tokens"] ||
+            get_in(usage, ["prompt_tokens_details", "cached_tokens"]) ||
+            get_in(usage, ["input_tokens_details", "cached_tokens"])
+        )
     }
     |> BeamWeaver.MapShape.reject_nil_or_empty()
   end

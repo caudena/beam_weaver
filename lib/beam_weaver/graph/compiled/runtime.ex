@@ -49,30 +49,27 @@ defmodule BeamWeaver.Graph.Compiled.Runtime do
     |> run_result()
   end
 
-  def graph_input(%{graph: %{input_schema: input_schema}}, input) when is_map(input) do
-    case schema_key_names(input_schema) do
-      [] -> input
-      keys -> Map.filter(input, fn {key, _value} -> to_string(key) in keys end)
-    end
-  end
+  def graph_input(%{graph: %{input_schema: input_schema}}, input) when is_map(input),
+    do: take_schema_keys(input, input_schema)
 
-  def graph_output(%{graph: %{output_schema: output_schema}}, output) when is_map(output) do
-    case schema_key_names(output_schema) do
-      [] -> output
-      keys -> Map.filter(output, fn {key, _value} -> to_string(key) in keys end)
-    end
-  end
+  def graph_output(%{graph: %{output_schema: output_schema}}, output) when is_map(output),
+    do: take_schema_keys(output, output_schema)
 
   def graph_output(_compiled, output), do: output
+
+  defp take_schema_keys(map, schema) do
+    case schema_key_names(schema) do
+      [] -> map
+      keys -> Map.filter(map, fn {key, _value} -> to_string(key) in keys end)
+    end
+  end
 
   defp rebase_time_travel_opts(opts, compiled) do
     case Keyword.fetch(opts, :config) do
       {:ok, config} when is_map(config) ->
         rebased = SubgraphRouter.rebase_time_travel_config(compiled, config)
-
-        opts
-        |> Keyword.put(:config, rebased)
-        |> maybe_clear_rebased_pending_writes(config, rebased)
+        opts = Keyword.put(opts, :config, rebased)
+        if config != rebased, do: Keyword.put(opts, :clear_pending_writes?, true), else: opts
 
       _other ->
         opts
@@ -166,7 +163,9 @@ defmodule BeamWeaver.Graph.Compiled.Runtime do
   defp emit_outcome(_sink, _compiled, _run_id, {:ok, _result}), do: :ok
 
   defp emit_outcome(sink, compiled, run_id, {:interrupted, interrupt}) do
-    emit_debug(sink, compiled, run_id, %{type: :interrupt, interrupt: interrupt})
+    event = BWStream.event(:debug, %{type: :interrupt, interrupt: interrupt})
+    Sink.emit(sink, BWStream.envelope(event, run_id: run_id, graph: compiled.name))
+    :ok
   end
 
   # The stream ends with an `Error` event: a top-level graph has no parent
@@ -175,18 +174,6 @@ defmodule BeamWeaver.Graph.Compiled.Runtime do
     do: CommandRouter.parent_command_error(command)
 
   defp emit_outcome(_sink, _compiled, _run_id, {:error, %Error{} = error}), do: {:error, error}
-
-  defp emit_debug(sink, compiled, run_id, payload) do
-    Sink.emit(sink, BWStream.envelope(BWStream.event(:debug, payload), run_id: run_id, graph: compiled.name))
-    :ok
-  end
-
-  defp maybe_clear_rebased_pending_writes(opts, config, rebased) when config != rebased,
-    do: Keyword.put(opts, :clear_pending_writes?, true)
-
-  defp maybe_clear_rebased_pending_writes(opts, _config, _rebased), do: opts
-
-  defp schema_key_names(nil), do: []
 
   defp schema_key_names(%{"properties" => properties}) when is_map(properties) do
     properties |> Map.keys() |> Enum.map(&to_string/1)

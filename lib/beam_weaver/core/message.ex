@@ -205,12 +205,8 @@ defmodule BeamWeaver.Core.Message do
   defp merge_role_opt(_key, _left, right), do: right
 
   defp input_tool_calls(tool_calls) when is_list(tool_calls) do
-    {valid, invalid} =
-      tool_calls
-      |> Enum.map(&ToolCallParser.normalize_openai_call/1)
-      |> Enum.split_with(&match?({:ok, _call}, &1))
-
-    {:ok, Enum.map(valid, &elem(&1, 1)), Enum.map(invalid, &elem(&1, 1))}
+    results = Enum.map(tool_calls, &ToolCallParser.normalize_openai_call/1)
+    {:ok, for({:ok, call} <- results, do: call), for({:error, call} <- results, do: call)}
   end
 
   defp input_tool_calls(_tool_calls), do: {:error, Error.new(:invalid_tool_call, "tool calls must be a list")}
@@ -222,18 +218,14 @@ defmodule BeamWeaver.Core.Message do
   def text(%__MODULE__{content: content}) when is_binary(content), do: content
 
   def text(%__MODULE__{content: content}) when is_list(content) do
-    content
-    |> Enum.flat_map(fn
-      text when is_binary(text) -> [text]
-      %ContentBlock.Text{text: text} when is_binary(text) -> [text]
-      %ContentBlock.PlainText{text: text} when is_binary(text) -> [text]
-      %{type: :text, text: text} when is_binary(text) -> [text]
-      %{type: :plain_text, text: text} when is_binary(text) -> [text]
-      %{content: text} when is_binary(text) -> [text]
-      %{text: text} when is_binary(text) -> [text]
-      _other -> []
+    Enum.map_join(content, fn
+      text when is_binary(text) -> text
+      %{type: :text, text: text} when is_binary(text) -> text
+      %{type: :plain_text, text: text} when is_binary(text) -> text
+      %{content: text} when is_binary(text) -> text
+      %{text: text} when is_binary(text) -> text
+      _other -> ""
     end)
-    |> Enum.join("")
   end
 
   @doc """
@@ -309,12 +301,8 @@ defmodule BeamWeaver.Core.Message do
   defp normalize_tool_call_id(:tool, id), do: normalize_id(id)
   defp normalize_tool_call_id(_role, id), do: id
 
-  defp stringify_tool_content(content) when is_map(content) or is_list(content) do
-    case BeamWeaver.JSON.encode(content) do
-      {:ok, json} -> json
-      {:error, _error} -> inspect(content)
-    end
-  end
+  defp stringify_tool_content(content) when is_map(content) or is_list(content),
+    do: BeamWeaver.JSON.encode_or_inspect(content)
 
   defp stringify_tool_content(content),
     do: if(String.Chars.impl_for(content), do: to_string(content), else: inspect(content))

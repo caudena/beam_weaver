@@ -26,24 +26,20 @@ defmodule BeamWeaver.Cache do
   def lookup(cache, namespace, key, opts \\ []) do
     emit(cache, :lookup, %{count: 1}, %{namespace: namespace, key: key})
 
-    case adapter(cache, :lookup) do
-      {:ok, module} ->
-        case module.lookup(cache, namespace, key, opts) do
-          {:hit, _value, _metadata} = hit ->
-            emit(cache, :hit, %{count: 1}, %{namespace: namespace, key: key, result: :hit})
-            hit
+    with {:ok, module} <- adapter(cache, :lookup) do
+      case module.lookup(cache, namespace, key, opts) do
+        {:hit, _value, _metadata} = hit ->
+          emit(cache, :hit, %{count: 1}, %{namespace: namespace, key: key, result: :hit})
+          hit
 
-          :miss ->
-            emit(cache, :miss, %{count: 1}, %{namespace: namespace, key: key, result: :miss})
-            :miss
+        :miss ->
+          emit(cache, :miss, %{count: 1}, %{namespace: namespace, key: key, result: :miss})
+          :miss
 
-          {:error, %Error{type: type}} = error ->
-            emit(cache, :error, %{count: 1}, %{namespace: namespace, key: key, error: type})
-            error
-        end
-
-      {:error, %Error{} = error} ->
-        {:error, error}
+        {:error, %Error{type: type}} = error ->
+          emit(cache, :error, %{count: 1}, %{namespace: namespace, key: key, error: type})
+          error
+      end
     end
   end
 

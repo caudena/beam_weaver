@@ -34,26 +34,10 @@ defmodule BeamWeaver.Graph.Match do
 
   def match?(expected, output, _state), do: expected == output
 
-  defp value_match?(expected, value, _state) when is_function(expected, 1),
-    do: expected.(value) == true
-
-  defp value_match?(expected, value, state) when is_function(expected, 2),
-    do: expected.(value, state) == true
-
-  defp value_match?(%Range{} = range, value, _state), do: value in range
-
-  defp value_match?([], value, _state), do: value in []
-
-  defp value_match?(expected, value, state) when is_list(expected) do
-    if Keyword.keyword?(expected),
-      do: value_match?(Map.new(expected), value, state),
-      else: value in expected
-  end
-
-  defp value_match?(expected, value, state) when is_map(expected) and not is_struct(expected),
-    do: match?(expected, value, state)
-
-  defp value_match?(expected, value, _state), do: expected == value
+  # A value of a map pattern matches as a whole pattern does, except that
+  # `nil`, `true` and `false` match only themselves.
+  defp value_match?(expected, value, _state) when is_boolean(expected) or is_nil(expected), do: expected == value
+  defp value_match?(expected, value, state), do: match?(expected, value, state)
 
   defp output_map?(output), do: is_map(output) and not is_struct(output)
 end

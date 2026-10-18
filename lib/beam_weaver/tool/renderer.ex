@@ -12,6 +12,10 @@ defmodule BeamWeaver.Tool.Renderer do
   @schema_child_keys ["properties", "items", "anyOf", "oneOf", "allOf", "$defs", "definitions"]
   @provider_name ~r/^[A-Za-z0-9_-]{1,64}$/
   @deepseek_name ~r/^[A-Za-z0-9_-]{1,128}$/
+  @strict_unsupported_keywords ~w(default allOf not if then else dependentRequired dependentSchemas format minimum
+                                  maximum exclusiveMinimum exclusiveMaximum multipleOf minLength maxLength pattern
+                                  minItems maxItems uniqueItems minProperties maxProperties patternProperties
+                                  propertyNames unevaluatedProperties)
 
   @doc """
   Renders a readable tool description.
@@ -57,22 +61,8 @@ defmodule BeamWeaver.Tool.Renderer do
   Renders an OpenAI function declaration.
   """
   @spec openai_function(term(), keyword()) :: {:ok, map()} | {:error, Error.t()}
-  def openai_function(tool, opts \\ []) do
-    with :ok <- validate_provider_name(Tool.name(tool), Keyword.get(opts, :provider, :openai)),
-         {:ok, parameters} <-
-           tool
-           |> Tool.input_schema()
-           |> BeamWeaver.MapShape.stringify_keys()
-           |> Schema.dereference_refs() do
-      function = %{
-        "name" => Tool.name(tool),
-        "description" => Tool.description(tool),
-        "parameters" => maybe_strict_schema(parameters, Keyword.get(opts, :strict))
-      }
-
-      {:ok, put_present(function, "strict", Keyword.get(opts, :strict))}
-    end
-  end
+  def openai_function(tool, opts \\ []),
+    do: function_declaration(tool, Keyword.get(opts, :provider, :openai), "parameters", Keyword.get(opts, :strict))
 
   @doc """
   Renders an OpenAI Responses tool declaration.
@@ -95,19 +85,9 @@ defmodule BeamWeaver.Tool.Renderer do
   """
   @spec anthropic_tool(term(), keyword()) :: {:ok, map()} | {:error, Error.t()}
   def anthropic_tool(tool, opts \\ []) do
-    with :ok <- validate_provider_name(Tool.name(tool), :anthropic),
-         {:ok, input_schema} <-
-           tool
-           |> Tool.input_schema()
-           |> BeamWeaver.MapShape.stringify_keys()
-           |> Schema.dereference_refs() do
+    with {:ok, tool} <- function_declaration(tool, :anthropic, "input_schema", Keyword.get(opts, :strict)) do
       tool =
-        %{
-          "name" => Tool.name(tool),
-          "description" => Tool.description(tool),
-          "input_schema" => maybe_strict_schema(input_schema, Keyword.get(opts, :strict))
-        }
-        |> put_present("strict", Keyword.get(opts, :strict))
+        tool
         |> put_present("cache_control", Keyword.get(opts, :cache_control))
         |> put_present("defer_loading", Keyword.get(opts, :defer_loading))
         |> put_present("input_examples", Keyword.get(opts, :input_examples))
@@ -149,8 +129,17 @@ defmodule BeamWeaver.Tool.Renderer do
      })}
   end
 
-  defp maybe_strict_schema(schema, true), do: strict_schema(schema, :required)
-  defp maybe_strict_schema(schema, _strict), do: schema
+  # The name, description and schema (under `schema_key`) of a provider's
+  # function declaration.
+  defp function_declaration(tool, provider, schema_key, strict) do
+    with :ok <- validate_provider_name(Tool.name(tool), provider),
+         {:ok, schema} <-
+           tool |> Tool.input_schema() |> BeamWeaver.MapShape.stringify_keys() |> Schema.dereference_refs() do
+      schema = if strict == true, do: strict_schema(schema, :required), else: schema
+      function = %{"name" => Tool.name(tool), "description" => Tool.description(tool), schema_key => schema}
+      {:ok, put_present(function, "strict", strict)}
+    end
+  end
 
   @doc false
   @spec strict_json_schema(term(), keyword()) :: term()
@@ -168,7 +157,7 @@ defmodule BeamWeaver.Tool.Renderer do
 
   defp strict_schema(schema, optional) when is_map(schema) do
     schema
-    |> strip_strict_unsupported_keywords()
+    |> Map.drop(@strict_unsupported_keywords)
     |> strict_schema_children(optional)
     |> close_object_schema(optional)
   end
@@ -289,36 +278,6 @@ defmodule BeamWeaver.Tool.Renderer do
   end
 
   defp maybe_add_null_enum(schema), do: schema
-
-  defp strip_strict_unsupported_keywords(schema) when is_map(schema) do
-    Map.drop(schema, [
-      "default",
-      "allOf",
-      "not",
-      "if",
-      "then",
-      "else",
-      "dependentRequired",
-      "dependentSchemas",
-      "format",
-      "minimum",
-      "maximum",
-      "exclusiveMinimum",
-      "exclusiveMaximum",
-      "multipleOf",
-      "minLength",
-      "maxLength",
-      "pattern",
-      "minItems",
-      "maxItems",
-      "uniqueItems",
-      "minProperties",
-      "maxProperties",
-      "patternProperties",
-      "propertyNames",
-      "unevaluatedProperties"
-    ])
-  end
 
   defp put_strict_required(schema, properties) when map_size(properties) == 0, do: schema
 

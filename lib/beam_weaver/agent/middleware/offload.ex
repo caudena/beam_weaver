@@ -43,8 +43,6 @@ defmodule BeamWeaver.Agent.Middleware.Offload do
     end)
   end
 
-  def content_preview(content), do: content |> preview() |> elem(0)
-
   # The numbered head and tail lines of `content`, and a note on what they
   # leave out, so the model doesn't take the preview for the whole content.
   def preview(content) do
@@ -112,14 +110,8 @@ defmodule BeamWeaver.Agent.Middleware.Offload do
     do: Map.update(state, state_key, files_update, &Map.merge(&1 || %{}, files_update))
 
   defp split_lines(content) do
-    content
-    |> String.replace("\r\n", "\n")
-    |> String.replace("\r", "\n")
-    |> String.split("\n")
-    |> then(fn
-      [] -> []
-      lines -> if List.last(lines) == "", do: Enum.drop(lines, -1), else: lines
-    end)
+    lines = String.split(content, ["\r\n", "\r", "\n"])
+    if List.last(lines) == "", do: Enum.drop(lines, -1), else: lines
   end
 
   defp numbered_lines(lines, start) do

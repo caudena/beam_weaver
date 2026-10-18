@@ -5,6 +5,7 @@ defmodule BeamWeaver.Graph.Execution.TaskExecutor do
   alias BeamWeaver.RetryPolicy
   alias BeamWeaver.Graph.Command
   alias BeamWeaver.Graph.Execution.Cache
+  alias BeamWeaver.Graph.Execution.ChannelLookup
   alias BeamWeaver.Graph.Execution.CommandRouter
   alias BeamWeaver.Graph.Execution.ExecutableTask
   alias BeamWeaver.Graph.Execution.NodeInvoker
@@ -21,24 +22,25 @@ defmodule BeamWeaver.Graph.Execution.TaskExecutor do
   def run_step_tasks(%{ready: ready} = run) do
     Enum.map(ready, fn ready_entry ->
       case TaskPlanner.prepare(run, ready_entry) do
-        {:ok, plan} -> start_task(run, plan)
-        {:error, %Error{} = error, prepared} -> failed_task(run, prepared, error)
+        {:ok, plan} ->
+          executable_task(plan.prepared, plan.timeout, task_deadline(plan), start_node_task(TaskRun.new(run, plan)))
+
+        {:error, %Error{} = error, prepared} ->
+          failed_task(run, prepared, error)
       end
     end)
   end
 
-  defp start_task(run, plan) do
-    prepared = plan.prepared
-
+  defp executable_task(prepared, timeout, deadline, task) do
     %ExecutableTask{
       id: prepared.id,
       node: prepared.node,
       path: prepared.path,
       step: prepared.step,
-      timeout: plan.timeout,
-      deadline: task_deadline(plan),
+      timeout: timeout,
+      deadline: deadline,
       prepared: prepared,
-      task: start_node_task(TaskRun.new(run, plan))
+      task: task
     }
   end
 
@@ -54,25 +56,15 @@ defmodule BeamWeaver.Graph.Execution.TaskExecutor do
     })
 
     failed = Stream.task_event(:error, prepared.node, error, run.step, prepared.id, prepared.path)
-
-    %ExecutableTask{
-      id: prepared.id,
-      node: prepared.node,
-      path: prepared.path,
-      step: prepared.step,
-      timeout: :infinity,
-      deadline: :infinity,
-      prepared: prepared,
-      task: Task.completed({:error, error, [failed]})
-    }
+    executable_task(prepared, :infinity, :infinity, Task.completed({:error, error, [failed]}))
   end
 
-  defp start_node_task(%TaskRun{} = task_run) do
-    Tracing.async(fn -> execute_node(task_run) end,
-      context: Map.get(task_run.run, :trace_context),
-      supervisor: task_run.run.task_supervisor
-    )
-  end
+  defp start_node_task(%TaskRun{} = task_run),
+    do:
+      Tracing.async(fn -> execute_node(task_run) end,
+        context: task_run.run.trace_context,
+        supervisor: task_run.run.task_supervisor
+      )
 
   # The awaiter's backstop for the whole task: every attempt's node timeout plus
   # the retry delays between them, with slack so the per-attempt timeout in
@@ -90,14 +82,8 @@ defmodule BeamWeaver.Graph.Execution.TaskExecutor do
     spec = task_run.spec
     prepared = task_run.prepared
 
-    started_at =
-      Telemetry.start(:node_start, %{graph: run.compiled.name, node: spec.name, step: run.step})
-
-    task_run = %{task_run | started_at: started_at}
-
-    started =
-      Stream.task_event(:start, spec.name, task_run.state, run.step, prepared.id, prepared.path)
-
+    task_run = %{task_run | started_at: Telemetry.start(:node_start, node_metadata(task_run))}
+    started = task_event(task_run, :start, task_run.state)
     cache_key = Cache.key(spec, %{compiled: run.compiled, state: task_run.state})
 
     first_attempt_time = System.system_time(:millisecond)
@@ -108,23 +94,14 @@ defmodule BeamWeaver.Graph.Execution.TaskExecutor do
       else
         case Cache.lookup(run.compiled.cache, cache_key) do
           {:hit, cached} ->
-            Telemetry.execute(:cache_hit, %{count: 1}, %{
-              graph: run.compiled.name,
-              node: spec.name,
-              step: run.step
-            })
-
+            Telemetry.execute(:cache_hit, %{count: 1}, node_metadata(task_run))
             {:ok, {:cached, cached}}
 
           {:error, %Error{} = error} ->
             {:error, error}
 
           :miss ->
-            Telemetry.execute(:cache_miss, %{count: 1}, %{
-              graph: run.compiled.name,
-              node: spec.name,
-              step: run.step
-            })
+            Telemetry.execute(:cache_miss, %{count: 1}, node_metadata(task_run))
 
             RetryPolicy.run(
               retry_policy(spec.retry_policy),
@@ -140,8 +117,7 @@ defmodule BeamWeaver.Graph.Execution.TaskExecutor do
 
     case result do
       {:ok, {:cached, value}} ->
-        hit = Stream.task_event(:cache_hit, spec.name, command_of(value) || value, run.step, prepared.id, prepared.path)
-        finish_task(task_run, nil, value, [started, hit])
+        finish_task(task_run, nil, value, [started, task_event(task_run, :cache_hit, command_of(value) || value)])
 
       {:ok, {:fallback, value}} ->
         finish_task(task_run, nil, value, [started])
@@ -151,30 +127,10 @@ defmodule BeamWeaver.Graph.Execution.TaskExecutor do
 
       {:error, %Error{} = error} ->
         emit_error_telemetry(error, task_run)
-        failed = Stream.task_event(:error, spec.name, error, run.step, prepared.id, prepared.path)
-
-        {:error, error, [started, failed]}
+        {:error, error, [started, task_event(task_run, :error, error)]}
 
       {:interrupted, interrupt} ->
-        interrupted =
-          Stream.task_event(
-            :interrupt,
-            spec.name,
-            interrupt,
-            run.step,
-            prepared.id,
-            prepared.path
-          )
-
-        {:ok,
-         TaskResult.interrupted(
-           prepared.id,
-           spec.name,
-           prepared.path,
-           run.step,
-           interrupt,
-           [started, interrupted]
-         )}
+        {:ok, TaskResult.interrupted(interrupt, [started, task_event(task_run, :interrupt, interrupt)])}
 
       {:parent_command, command} ->
         parent_command_result(task_run, command, [started])
@@ -208,20 +164,19 @@ defmodule BeamWeaver.Graph.Execution.TaskExecutor do
     end
   end
 
-  defp parent_command_result(%TaskRun{run: run, spec: spec, prepared: prepared}, command, events) do
-    event = Stream.task_event(:parent_command, spec.name, command, run.step, prepared.id, prepared.path)
-    {:ok, TaskResult.parent_command(prepared.id, spec.name, prepared.path, run.step, command, events ++ [event])}
-  end
+  defp parent_command_result(task_run, command, events),
+    do: {:ok, TaskResult.parent_command(command, events ++ [task_event(task_run, :parent_command, command)])}
 
-  defp runtime_attempt(runtime, attempt, first_attempt_time) do
-    execution =
-      runtime.execution
-      |> Map.new()
-      |> Map.put(:node_attempt, attempt)
-      |> Map.put(:node_first_attempt_time, first_attempt_time)
+  defp task_event(%TaskRun{run: run, spec: spec, prepared: prepared}, kind, payload),
+    do: Stream.task_event(kind, spec.name, payload, run.step, prepared.id, prepared.path)
 
-    %{runtime | execution: execution}
-  end
+  defp node_metadata(%TaskRun{run: run, spec: spec}), do: %{graph: run.compiled.name, node: spec.name, step: run.step}
+
+  defp runtime_attempt(runtime, attempt, first_attempt_time),
+    do: %{
+      runtime
+      | execution: %{runtime.execution | node_attempt: attempt, node_first_attempt_time: first_attempt_time}
+    }
 
   defp invoke_attempt(%TaskRun{timeout: timeout} = task_run, runtime)
        when is_integer(timeout) and timeout > 0 do
@@ -321,9 +276,6 @@ defmodule BeamWeaver.Graph.Execution.TaskExecutor do
 
   defp normalize_error_handler_result(result, original_error, node) do
     case result do
-      {:ok, %Command{} = command} ->
-        {:ok, command}
-
       {:ok, {:error, %Error{} = handled_error}} ->
         {:error, handled_error}
 
@@ -337,19 +289,12 @@ defmodule BeamWeaver.Graph.Execution.TaskExecutor do
         {:ok, value}
 
       {:error, %Error{} = handler_error} ->
-        {:error, remember_handled_error(handler_error, original_error)}
+        {:error, put_in(handler_error.details[:handled_error], original_error)}
     end
   end
 
-  defp remember_handled_error(%Error{} = handler_error, %Error{} = original_error) do
-    put_in(handler_error.details[:handled_error], original_error)
-  end
-
-  defp retry_delay_budget(%RetryPolicy{} = policy) do
-    1..max(policy.max_attempts - 1, 0)//1
-    |> Enum.map(&RetryPolicy.delay(policy, &1))
-    |> Enum.sum()
-  end
+  defp retry_delay_budget(%RetryPolicy{} = policy),
+    do: Enum.sum_by(1..max(policy.max_attempts - 1, 0)//1, &RetryPolicy.delay(policy, &1))
 
   defp call_error_handler(handler, error, state, runtime) do
     cond do
@@ -376,77 +321,21 @@ defmodule BeamWeaver.Graph.Execution.TaskExecutor do
        })}
   end
 
-  defp finish_successful_task(%TaskRun{} = task_run, cache_key, value, started_events) do
-    run = task_run.run
-    spec = task_run.spec
-    prepared = task_run.prepared
-
-    Telemetry.stop(:node_stop, task_run.started_at, %{
-      graph: run.compiled.name,
-      node: spec.name,
-      step: run.step
-    })
+  defp finish_successful_task(%TaskRun{run: run} = task_run, cache_key, value, started_events) do
+    Telemetry.stop(:node_stop, task_run.started_at, node_metadata(task_run))
 
     {projected, raw_output} = unwrap_node_output(value)
 
     normalized =
       projected
       |> CommandRouter.normalize_node_result()
-      |> capture_node_output(spec.name, raw_output)
+      |> capture_node_output(task_run.spec.name, raw_output)
 
-    case managed_write_error(normalized.updates, run.compiled.graph.managed) do
-      nil ->
-        case Cache.put(run.compiled.cache, cache_key, value) do
-          :ok ->
-            finished =
-              Stream.task_event(
-                :finish,
-                spec.name,
-                normalized.update,
-                run.step,
-                prepared.id,
-                prepared.path
-              )
-
-            {:ok,
-             TaskResult.ok(
-               prepared.id,
-               spec.name,
-               prepared.path,
-               run.step,
-               normalized,
-               started_events ++ [finished]
-             )}
-
-          {:error, %Error{} = error} ->
-            failed = Stream.task_event(:error, spec.name, error, run.step, prepared.id, prepared.path)
-            {:error, error, started_events ++ [failed]}
-        end
-
-      %Error{} = error ->
-        failed =
-          Stream.task_event(:error, spec.name, error, run.step, prepared.id, prepared.path)
-
-        {:error, error, started_events ++ [failed]}
-    end
-  end
-
-  defp managed_write_error(_updates, managed) when managed in [%{}, nil], do: nil
-
-  defp managed_write_error(updates, managed) when is_list(updates) do
-    Enum.find_value(updates, &managed_write_error(&1, managed))
-  end
-
-  defp managed_write_error(update, managed) do
-    managed_keys = MapSet.new(Map.keys(managed), &to_string/1)
-
-    written =
-      update
-      |> Map.keys()
-      |> Enum.find(&(to_string(&1) in managed_keys))
-
-    if written do
-      Error.new(:invalid_update, "managed graph values are read-only", %{key: written})
+    with :ok <- ChannelLookup.check_managed_writes(run.compiled.graph, normalized.updates),
+         :ok <- Cache.put(run.compiled.cache, cache_key, value) do
+      {:ok, TaskResult.ok(normalized, started_events ++ [task_event(task_run, :finish, normalized.update)])}
+    else
+      {:error, %Error{} = error} -> {:error, error, started_events ++ [task_event(task_run, :error, error)]}
     end
   end
 

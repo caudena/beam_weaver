@@ -72,14 +72,10 @@ defmodule BeamWeaver.Filesystem.Composite do
   defp route_folders(backend, path) do
     base = folder(path)
 
-    backend.routes
-    |> Map.keys()
-    |> Enum.filter(&String.starts_with?(&1, base))
-    |> Enum.map(fn prefix ->
+    for prefix <- Map.keys(backend.routes), String.starts_with?(prefix, base), uniq: true do
       [next | _rest] = prefix |> String.replace_prefix(base, "") |> String.split("/")
       %Filesystem.FileInfo{path: base <> next, is_dir: true}
-    end)
-    |> Enum.uniq_by(& &1.path)
+    end
     |> Enum.sort_by(& &1.path)
   end
 
@@ -177,12 +173,7 @@ defmodule BeamWeaver.Filesystem.Composite do
     if Executable.executable?(backend.default) do
       Executable.execute(backend.default, command, opts)
     else
-      %Executable.ExecuteResult{
-        exit_code: 1,
-        output: "",
-        error: "default backend does not support execute",
-        truncated: false
-      }
+      %Executable.ExecuteResult{exit_code: 1, error: "default backend does not support execute"}
     end
   end
 
@@ -230,15 +221,8 @@ defmodule BeamWeaver.Filesystem.Composite do
     if String.starts_with?(prefix, "/"), do: prefix, else: "/" <> prefix
   end
 
-  defp normalize_artifacts_root(root) when is_binary(root) do
-    root
-    |> String.trim()
-    |> case do
-      "" -> "/"
-      "/" -> "/"
-      root -> "/" <> (root |> String.trim_leading("/") |> String.trim_trailing("/"))
-    end
-  end
+  defp normalize_artifacts_root(root) when is_binary(root),
+    do: "/" <> (root |> String.trim() |> String.trim_leading("/") |> String.trim_trailing("/"))
 
   defp normalize_artifacts_root(_root), do: "/"
 

@@ -19,13 +19,9 @@ defmodule BeamWeaver.Graph.Execution.Scheduler do
 
   defp tasks_from_channels(%Plan{triggers_by_channel: triggers}, updated_channels) do
     pulls =
-      updated_channels
-      |> Execution.normalize_channels()
-      |> Enum.flat_map(fn channel ->
-        triggers
-        |> Map.get(channel, [])
-        |> Enum.map(&TaskRequest.pull(&1, [channel]))
-      end)
+      for channel <- Execution.normalize_channels(updated_channels),
+          node <- Map.get(triggers, channel, []),
+          do: TaskRequest.pull(node, [channel])
 
     add_tasks([], pulls)
   end
@@ -50,11 +46,9 @@ defmodule BeamWeaver.Graph.Execution.Scheduler do
       route_updates = Enum.flat_map(node_routes, fn {_sends, _routes, updates} -> updates end)
 
       dynamic_routes =
-        source_routes
-        |> Enum.map(fn {_source, target} -> target end)
-        |> Kernel.++(dependency_routes)
-        |> Enum.reject(&(&1 == "__end__"))
-        |> Enum.map(&to_string/1)
+        for target <- Enum.map(source_routes, &elem(&1, 1)) ++ dependency_routes,
+            target != "__end__",
+            do: to_string(target)
 
       branch_channels =
         for {source, target} <- source_routes,
@@ -72,15 +66,12 @@ defmodule BeamWeaver.Graph.Execution.Scheduler do
       {:ok,
        %{
          ready: add_tasks([], branch_ready ++ send_entries),
-         channels: Execution.normalize_channels(branch_channels ++ tasks_channels(send_entries)),
+         # Sends reach their tasks through the tasks channel.
+         channels: Execution.normalize_channels(branch_channels ++ if(send_entries == [], do: [], else: [@tasks])),
          updates: route_updates
        }}
     end
   end
-
-  # Sends reach their tasks through the tasks channel.
-  defp tasks_channels([]), do: []
-  defp tasks_channels(_sends), do: [@tasks]
 
   @spec add_channel_tasks(map(), [ready()], Enumerable.t()) :: [ready()]
   def add_channel_tasks(plan, ready, updated_channels),
@@ -154,31 +145,18 @@ defmodule BeamWeaver.Graph.Execution.Scheduler do
 
   defp merge_dynamic_routes(branch_ready, dynamic_routes) do
     known = MapSet.new(branch_ready, &TaskRequest.name/1)
-
-    extra =
-      dynamic_routes
-      |> Enum.reject(&MapSet.member?(known, &1))
-      |> Enum.map(&TaskRequest.pull/1)
-
-    branch_ready ++ extra
+    branch_ready ++ for(route <- dynamic_routes, not MapSet.member?(known, route), do: TaskRequest.pull(route))
   end
 
   defp guarded_routes_for_node(graph, node, state, visible) do
-    specs = Map.get(graph.guarded_edges, node, [])
+    {defaults, guarded} = graph.guarded_edges |> Map.get(node, []) |> Enum.split_with(& &1.default?)
 
-    {defaults, guarded} = Enum.split_with(specs, & &1.default?)
-
-    matched =
-      guarded
-      |> Enum.filter(&guarded_edge_matches?(&1, state, visible))
+    matched = Enum.filter(guarded, &guarded_edge_matches?(&1, state, visible))
 
     selected =
       if matched == [], do: Enum.filter(defaults, &edge_under_limit?(&1, state)), else: matched
 
-    updates =
-      selected
-      |> Enum.filter(& &1.max_runs)
-      |> Enum.map(fn spec -> %{__edge_runs__: %{spec.id => 1}} end)
+    updates = for %{max_runs: max_runs} = spec <- selected, max_runs, do: %{__edge_runs__: %{spec.id => 1}}
 
     {Enum.map(selected, & &1.target), updates}
   end
@@ -192,15 +170,11 @@ defmodule BeamWeaver.Graph.Execution.Scheduler do
 
   defp edge_under_limit?(%GuardedEdgeSpec{max_runs: max_runs} = spec, state)
        when is_integer(max_runs) do
-    edge_run_count(state, spec.id) < max_runs
+    runs = Map.get(state, :__edge_runs__, Map.get(state, "__edge_runs__", %{}))
+    Map.get(runs, spec.id, Map.get(runs, to_string(spec.id), 0)) < max_runs
   end
 
   defp edge_under_limit?(_spec, _state), do: true
-
-  defp edge_run_count(state, id) do
-    runs = Map.get(state, :__edge_runs__, Map.get(state, "__edge_runs__", %{}))
-    Map.get(runs, id, Map.get(runs, to_string(id), 0))
-  end
 
   defp dependency_routes(graph, completed, state, visible) do
     graph.nodes
@@ -232,25 +206,13 @@ defmodule BeamWeaver.Graph.Execution.Scheduler do
   end
 
   defp split_source_routes(source, route_outputs, updates) do
-    {sends, routes} =
-      route_outputs
-      |> List.wrap()
-      |> Enum.reduce({[], []}, fn
-        %BeamWeaver.Graph.Send{} = send, {sends, routes} ->
-          {[send | sends], routes}
-
-        route, {sends, routes} ->
-          {sends, [{source, to_string(route)} | routes]}
-      end)
-
-    {Enum.reverse(sends), Enum.reverse(routes), updates}
+    {sends, routes} = Enum.split_with(route_outputs, &match?(%Send{}, &1))
+    {sends, Enum.map(routes, &{source, to_string(&1)}), updates}
   end
 
-  @doc false
   # Drops the per-step node-output channel from an update shown to callers.
   def hide_node_outputs(update), do: update |> Map.delete(:__node_outputs__) |> Map.delete("__node_outputs__")
 
-  @doc false
   def node_outputs_channel?(channel), do: to_string(channel) == "__node_outputs__"
 
   defp route_condition(spec, state) do

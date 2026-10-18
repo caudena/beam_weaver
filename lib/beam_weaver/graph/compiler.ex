@@ -86,12 +86,7 @@ defmodule BeamWeaver.Graph.Compiler do
       function_exported?(module, :put_writes, 5)
   end
 
-  defp cached_nodes(graph) do
-    graph.nodes
-    |> Enum.filter(fn {_name, spec} -> spec.cache not in [false, nil] end)
-    |> Enum.map(fn {name, _spec} -> name end)
-    |> Enum.sort()
-  end
+  defp cached_nodes(graph), do: Enum.sort(for {name, spec} <- graph.nodes, spec.cache not in [false, nil], do: name)
 
   defp normalize_node(:__start__), do: "__start__"
   defp normalize_node(:start), do: "__start__"

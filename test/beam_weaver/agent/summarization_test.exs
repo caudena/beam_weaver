@@ -40,6 +40,23 @@ defmodule BeamWeaver.Agent.SummarizationTest do
     end
   end
 
+  test "keep takes a single size, not a list or a combination of them" do
+    for keep <- [{:all, [{:messages, 1}]}, {:any, [{:messages, 1}]}, [{:messages, 1}]] do
+      assert_raise ArgumentError, ~r/unsupported keep context size/, fn ->
+        Summarization.new(summarizer: fn _messages -> "s" end, trigger: {:messages, 2}, keep: keep)
+      end
+    end
+
+    middleware =
+      Summarization.new(
+        summarizer: fn _messages -> "s" end,
+        trigger: {:all, [{:messages, 2}, {:any, [{:tokens, 1}, {:messages, 9}]}]},
+        keep: {:messages, 1}
+      )
+
+    assert %{messages: %Overwrite{}} = Summarization.before_model(middleware, %{messages: messages(3)}, nil)
+  end
+
   # A summary model that answers each call with the next result of its
   # script and sends the prompt it got to the test process.
   defmodule ScriptedSummaryModel do

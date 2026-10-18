@@ -680,6 +680,15 @@ defmodule BeamWeaver.Core.MessageUtilsTest do
     assert first.content == "system"
   end
 
+  test "trim treats include_system: nil like leaving the option out" do
+    messages = [Message.system("system prompt"), Message.user("one two three")]
+
+    for strategy <- [:last, :first] do
+      assert Utils.trim(messages, max_tokens: 10, strategy: strategy, include_system: nil) ==
+               Utils.trim(messages, max_tokens: 10, strategy: strategy)
+    end
+  end
+
   test "trim accepts tokenizer counters and preserves assistant/tool-message adjacency" do
     tokenizer =
       %StaticVocabulary{

@@ -882,22 +882,6 @@ defmodule BeamWeaver.Agent.SubagentsTest do
     DelegatingDesk.invoke(%{messages: ["Help, please."]}, Keyword.put(opts, :context, %{subagent: subagent}))
   end
 
-  defp received_count(message, count \\ 0) do
-    receive do
-      ^message -> received_count(message, count + 1)
-    after
-      0 -> count
-    end
-  end
-
-  defp received_model_calls(label, count \\ 0) do
-    receive do
-      {:model_call, ^label} -> received_model_calls(label, count + 1)
-    after
-      0 -> count
-    end
-  end
-
   defp received(message, count \\ 0) do
     receive do
       ^message -> received(message, count + 1)
@@ -909,6 +893,35 @@ defmodule BeamWeaver.Agent.SubagentsTest do
   defp checkpoint_namespaces(saver, thread_id) do
     for record <- Checkpoint.list(saver, %{"configurable" => %{"thread_id" => thread_id}}),
         do: record.config["configurable"]["checkpoint_ns"]
+  end
+
+  # The spec of `agent`'s subagent `name`, as a `task` call builds it.
+  defp subagent_spec(agent, name) do
+    middleware = Enum.find(agent.spec.middleware, &match?(%Subagents{}, &1))
+    assert {:ok, %Compiled{agent: %Agent.Built{spec: spec}}} = Subagents.build_subagent(middleware, name)
+    spec
+  end
+
+  # A general-purpose subagent drafts a reply with `DraftModel`.
+  defp draft(opts) do
+    {:ok, agent} =
+      Agent.build(
+        [
+          model: %DraftModel{},
+          filesystem: BeamWeaver.Filesystem.State.new(),
+          subagents: [GeneralPurposeSubagentProfile.new()]
+        ] ++ opts
+      )
+
+    Agent.invoke(agent, %{messages: ["Draft a reply."]})
+  end
+
+  # The checkpointer `RecordedExpert` declares, for this test.
+  defp expert_saver do
+    saver = Checkpoint.ETS.new()
+    :persistent_term.put({__MODULE__, :expert_saver}, saver)
+    on_exit(fn -> :persistent_term.erase({__MODULE__, :expert_saver}) end)
+    saver
   end
 
   describe "a subagent module runs as declared" do
@@ -936,13 +949,13 @@ defmodule BeamWeaver.Agent.SubagentsTest do
 
     test "with its own subagents" do
       assert {:ok, result} = delegate("coordinator")
-      assert received_model_calls("expert") == 1
+      assert received({:model_call, "expert"}) == 1
       assert tool_texts(result) == ["The expert says 30 days."]
     end
 
     test "with its own call counts, not the parent's" do
       assert {:ok, result} = delegate("limited_expert")
-      assert received_model_calls("limited_expert") == 1
+      assert received({:model_call, "limited_expert"}) == 1
       assert tool_texts(result) == ["Within 30 days."]
     end
 
@@ -992,29 +1005,21 @@ defmodule BeamWeaver.Agent.SubagentsTest do
     end
 
     test "with its own checkpointer, under the parent's thread" do
-      expert_saver = Checkpoint.ETS.new()
-      :persistent_term.put({__MODULE__, :expert_saver}, expert_saver)
-      on_exit(fn -> :persistent_term.erase({__MODULE__, :expert_saver}) end)
+      expert_saver = expert_saver()
       opts = thread("own-checkpointer")
 
       assert {:ok, result} = delegate("recorded_expert", opts)
       assert tool_texts(result) == ["Within 30 days."]
 
-      thread_config = %{"configurable" => %{"thread_id" => "own-checkpointer"}}
-
-      namespaces = fn saver ->
-        for record <- Checkpoint.list(saver, thread_config), do: record.config["configurable"]["checkpoint_ns"]
-      end
-
-      assert Enum.any?(namespaces.(expert_saver), &String.contains?(&1, "subagent.recorded_expert"))
-      refute Enum.any?(namespaces.(opts[:checkpointer]), &String.contains?(&1, "subagent.recorded_expert"))
+      own = checkpoint_namespaces(expert_saver, "own-checkpointer")
+      parents = checkpoint_namespaces(opts[:checkpointer], "own-checkpointer")
+      assert Enum.any?(own, &String.contains?(&1, "subagent.recorded_expert"))
+      refute Enum.any?(parents, &String.contains?(&1, "subagent.recorded_expert"))
     end
 
     test "as a compiled subagent, with its own checkpointer" do
       # The module's checkpointer/0 returned nil, so it saved with the parent's.
-      expert_saver = Checkpoint.ETS.new()
-      :persistent_term.put({__MODULE__, :expert_saver}, expert_saver)
-      on_exit(fn -> :persistent_term.erase({__MODULE__, :expert_saver}) end)
+      expert_saver = expert_saver()
       opts = thread("compiled-own-checkpointer")
 
       assert {:ok, result} =
@@ -1031,9 +1036,7 @@ defmodule BeamWeaver.Agent.SubagentsTest do
     test "with its own checkpointer, in a parent run without a thread" do
       # Every task failed with "checkpoint config requires thread_id". The
       # subagent now saves in a thread named after the parent run.
-      expert_saver = Checkpoint.ETS.new()
-      :persistent_term.put({__MODULE__, :expert_saver}, expert_saver)
-      on_exit(fn -> :persistent_term.erase({__MODULE__, :expert_saver}) end)
+      expert_saver = expert_saver()
 
       for run_id <- ["desk-run-1", "desk-run-2"] do
         assert {:ok, result} = delegate("recorded_expert", run_id: run_id)
@@ -1062,21 +1065,20 @@ defmodule BeamWeaver.Agent.SubagentsTest do
 
       assert {:ok, _result} = delegate("scripted_expert", opts)
 
-      namespaces =
-        for record <- Checkpoint.list(opts[:checkpointer], %{"configurable" => %{"thread_id" => "per-call"}}),
-            do: record.config["configurable"]["checkpoint_ns"]
-
-      assert Enum.any?(namespaces, &String.contains?(&1, "subagent.scripted_expert"))
+      assert Enum.any?(
+               checkpoint_namespaces(opts[:checkpointer], "per-call"),
+               &String.contains?(&1, "subagent.scripted_expert")
+             )
     end
 
     test "a subagent takes the parent's recursion limit unless it sets its own" do
       # A model call and a tool call take one step each: seven steps allow four
       # model calls, three steps two.
       assert {:ok, _result} = delegate("looper")
-      assert received_model_calls("loop") == 4
+      assert received({:model_call, "loop"}) == 4
 
       assert {:ok, _result} = delegate("short_looper")
-      assert received_model_calls("loop") == 2
+      assert received({:model_call, "loop"}) == 2
     end
   end
 
@@ -1098,7 +1100,7 @@ defmodule BeamWeaver.Agent.SubagentsTest do
 
     test "keeps its own recursion limit" do
       assert {:ok, _result} = GraphDesk.invoke(%{messages: ["Help, please."]}, context: %{subagent: "polling_graph"})
-      assert received_count(:polled) == 2
+      assert received(:polled) == 2
     end
 
     test "isn't a subagent spec, which builds an agent" do
@@ -1231,12 +1233,7 @@ defmodule BeamWeaver.Agent.SubagentsTest do
                  subagents: [researcher]
                )
 
-      middleware = Enum.find(agent.spec.middleware, &match?(%Subagents{}, &1))
-
-      summarization = fn name ->
-        assert {:ok, %Compiled{agent: %Agent.Built{spec: spec}}} = Subagents.build_subagent(middleware, name)
-        Enum.find(spec.middleware, &match?(%Summarization{}, &1))
-      end
+      summarization = fn name -> Enum.find(subagent_spec(agent, name).middleware, &match?(%Summarization{}, &1)) end
 
       assert %Summarization{trigger: {:fraction, 0.8}, max_input_tokens: 200_000} = summarization.("general-purpose")
       assert %Summarization{trigger: {:fraction, 0.8}, max_input_tokens: 50_000} = summarization.("researcher")
@@ -1293,12 +1290,7 @@ defmodule BeamWeaver.Agent.SubagentsTest do
                  subagents: experts
                )
 
-      middleware = Enum.find(agent.spec.middleware, &match?(%Subagents{}, &1))
-
-      entries = fn name, module ->
-        assert {:ok, %Compiled{agent: %Agent.Built{spec: spec}}} = Subagents.build_subagent(middleware, name)
-        Enum.filter(spec.middleware, &is_struct(&1, module))
-      end
+      entries = fn name, module -> Enum.filter(subagent_spec(agent, name).middleware, &is_struct(&1, module)) end
 
       assert entries.("skilled", Skills) == [own_skills]
       assert entries.("filer", Filesystem) == [own_files]
@@ -1318,12 +1310,7 @@ defmodule BeamWeaver.Agent.SubagentsTest do
                  subagents: experts
                )
 
-      middleware = Enum.find(agent.spec.middleware, &match?(%Subagents{}, &1))
-
-      modules = fn name ->
-        assert {:ok, %Compiled{agent: %Agent.Built{spec: spec}}} = Subagents.build_subagent(middleware, name)
-        for %module{} <- spec.middleware, do: module
-      end
+      modules = fn name -> for %module{} <- subagent_spec(agent, name).middleware, do: module end
 
       assert Filesystem in modules.("deep")
       assert Skills in modules.("deep")
@@ -1450,15 +1437,7 @@ defmodule BeamWeaver.Agent.SubagentsTest do
     end
 
     test "it isn't offered a tool the parent excludes" do
-      {:ok, agent} =
-        Agent.build(
-          model: %DraftModel{},
-          filesystem: BeamWeaver.Filesystem.State.new(),
-          exclude_tools: ["write_file"],
-          subagents: [GeneralPurposeSubagentProfile.new()]
-        )
-
-      assert {:ok, result} = Agent.invoke(agent, %{messages: ["Draft a reply."]})
+      assert {:ok, result} = draft(exclude_tools: ["write_file"])
       assert_received {:offered, "Write the draft.", tools}
       assert "read_file" in tools
       refute "write_file" in tools
@@ -1468,15 +1447,7 @@ defmodule BeamWeaver.Agent.SubagentsTest do
     test "it keeps the permissions of the parent's own filesystem entry" do
       deny_writes = BeamWeaver.Filesystem.Permission.new(operations: [:write], paths: ["/**"], mode: :deny)
 
-      {:ok, agent} =
-        Agent.build(
-          model: %DraftModel{},
-          filesystem: BeamWeaver.Filesystem.State.new(),
-          middleware: [{BeamWeaver.Agent.Middleware.Filesystem, permissions: [deny_writes]}],
-          subagents: [GeneralPurposeSubagentProfile.new()]
-        )
-
-      assert {:ok, result} = Agent.invoke(agent, %{messages: ["Draft a reply."]})
+      assert {:ok, result} = draft(middleware: [{BeamWeaver.Agent.Middleware.Filesystem, permissions: [deny_writes]}])
       assert [answer] = tool_texts(result)
       assert answer =~ ~r/denied/i
       refute Map.has_key?(Map.get(result, :files) || %{}, "/draft.md")
@@ -1508,29 +1479,14 @@ defmodule BeamWeaver.Agent.SubagentsTest do
     end
 
     test "it has no task list" do
-      {:ok, agent} =
-        Agent.build(
-          model: %DraftModel{},
-          filesystem: BeamWeaver.Filesystem.State.new(),
-          subagents: [GeneralPurposeSubagentProfile.new()]
-        )
-
-      assert {:ok, _result} = Agent.invoke(agent, %{messages: ["Draft a reply."]})
+      assert {:ok, _result} = draft([])
       assert_received {:offered, "Write the draft.", tools}
       assert "write_file" in tools
       refute "write_todos" in tools
     end
 
     test "it sees the tool descriptions the parent sets" do
-      {:ok, agent} =
-        Agent.build(
-          model: %DraftModel{},
-          filesystem: BeamWeaver.Filesystem.State.new(),
-          tool_descriptions: %{"write_file" => "Save a reply draft for Acme support."},
-          subagents: [GeneralPurposeSubagentProfile.new()]
-        )
-
-      assert {:ok, _result} = Agent.invoke(agent, %{messages: ["Draft a reply."]})
+      assert {:ok, _result} = draft(tool_descriptions: %{"write_file" => "Save a reply draft for Acme support."})
 
       assert_received {:prompted, "Write the draft.", _prompt,
                        %{"write_file" => "Save a reply draft for Acme support."}}
@@ -1544,15 +1500,7 @@ defmodule BeamWeaver.Agent.SubagentsTest do
           middleware: [DraftStamp]
         )
 
-      {:ok, agent} =
-        Agent.build(
-          model: %DraftModel{},
-          filesystem: BeamWeaver.Filesystem.State.new(),
-          capability_profile: profile,
-          subagents: [GeneralPurposeSubagentProfile.new()]
-        )
-
-      assert {:ok, _result} = Agent.invoke(agent, %{messages: ["Draft a reply."]})
+      assert {:ok, _result} = draft(capability_profile: profile)
       assert_received {:prompted, "Write the draft.", prompt, %{"read_file" => "Read an Acme support file."}}
       assert prompt =~ "contains the complete answer.\n\nKeep drafts under 50 words.\n\n"
       assert_received {:stamped, "Write the draft."}
@@ -1579,11 +1527,8 @@ defmodule BeamWeaver.Agent.SubagentsTest do
           subagents: [researcher]
         )
 
-      middleware = Enum.find(agent.spec.middleware, &match?(%Subagents{}, &1))
-
       entries = fn name, module ->
-        assert {:ok, %Compiled{agent: %Agent.Built{spec: spec}}} = Subagents.build_subagent(middleware, name)
-        Enum.filter(spec.middleware, &(is_struct(&1, module) or match?({^module, _opts}, &1)))
+        Enum.filter(subagent_spec(agent, name).middleware, &(is_struct(&1, module) or match?({^module, _opts}, &1)))
       end
 
       assert entries.("general-purpose", Filesystem) == [own_files]
@@ -1610,8 +1555,7 @@ defmodule BeamWeaver.Agent.SubagentsTest do
           subagents: [GeneralPurposeSubagentProfile.new()]
         )
 
-      middleware = Enum.find(agent.spec.middleware, &match?(%Subagents{}, &1))
-      assert {:ok, %Compiled{agent: %Agent.Built{spec: spec}}} = Subagents.build_subagent(middleware, "general-purpose")
+      spec = subagent_spec(agent, "general-purpose")
       assert [%ModelCallLimit{run_limit: 5}] = Enum.filter(spec.middleware, &is_struct(&1, ModelCallLimit))
     end
   end
@@ -1712,7 +1656,7 @@ defmodule BeamWeaver.Agent.SubagentsTest do
 
       assert {:interrupted, first} = BusyDesk.invoke(%{messages: ["Refund A-1 and A-2."]}, opts)
       assert {:ok, %{action_requests: [%{args: %{"order_id" => "A-1"}}]}} = HITL.from_interrupt(first)
-      assert received_model_calls("historian") == 1
+      assert received({:model_call, "historian"}) == 1
 
       assert {:interrupted, second} = BusyDesk.resume_review([HITL.decision(:approve)], opts)
       assert_received {:refunded, "A-1"}
@@ -1722,7 +1666,7 @@ defmodule BeamWeaver.Agent.SubagentsTest do
       assert {:ok, result} = BusyDesk.resume_review([HITL.decision(:approve)], opts)
       assert_received {:refunded, "A-2"}
       refute_received {:refunded, "A-1"}
-      assert received_model_calls("historian") == 0
+      assert received({:model_call, "historian"}) == 0
 
       assert tool_texts(result) == ["clerk: Refunded A-1.", "Three orders.", "clerk: Refunded A-2."]
     end
@@ -1776,11 +1720,11 @@ defmodule BeamWeaver.Agent.SubagentsTest do
       opts = thread("review-parallel-new-message")
 
       assert {:interrupted, _first} = BusyDesk.invoke(%{messages: ["Refund A-1 and A-2."]}, opts)
-      assert received_model_calls("historian") == 1
+      assert received({:model_call, "historian"}) == 1
 
       assert {:ok, result} = BusyDesk.invoke(%{messages: ["Stop."]}, opts)
       refute_received {:refunded, _order}
-      assert received_model_calls("historian") == 0
+      assert received({:model_call, "historian"}) == 0
 
       assert Enum.map(result.messages, & &1.role) == [:user, :assistant, :tool, :tool, :tool, :user, :assistant]
       assert [a1, "Three orders.", a2] = tool_texts(result)

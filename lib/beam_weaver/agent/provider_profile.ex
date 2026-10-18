@@ -96,14 +96,11 @@ defmodule BeamWeaver.Agent.ProviderProfile do
     {model, Keyword.merge(profile_opts(profile), opts)}
   end
 
+  @string_keys ~w(name provider model_opts init_kwargs init_kwargs_factory pre_init)
+
   defp normalize_keys(opts) do
     Map.new(opts, fn
-      {"name", value} -> {:name, value}
-      {"provider", value} -> {:provider, value}
-      {"model_opts", value} -> {:model_opts, value}
-      {"init_kwargs", value} -> {:init_kwargs, value}
-      {"init_kwargs_factory", value} -> {:init_kwargs_factory, value}
-      {"pre_init", value} -> {:pre_init, value}
+      {key, value} when key in @string_keys -> {String.to_existing_atom(key), value}
       pair -> pair
     end)
   end
@@ -115,15 +112,10 @@ defmodule BeamWeaver.Agent.ProviderProfile do
   end
 
   defp profile_opts(%__MODULE__{} = profile) do
-    dynamic =
-      if is_function(profile.init_kwargs_factory, 0) do
-        profile.init_kwargs_factory.()
-      else
-        []
-      end
+    dynamic = if is_function(profile.init_kwargs_factory, 0), do: profile.init_kwargs_factory.(), else: []
 
-    []
-    |> Keyword.merge(List.wrap(profile.model_opts))
+    profile.model_opts
+    |> List.wrap()
     |> Keyword.merge(List.wrap(profile.init_kwargs))
     |> Keyword.merge(dynamic |> Map.new() |> Enum.to_list())
   end
@@ -142,10 +134,6 @@ defmodule BeamWeaver.Agent.ProviderProfile do
   defp merge_factories(base, nil), do: base
 
   defp merge_factories(base, override) do
-    fn ->
-      []
-      |> Keyword.merge(base.() |> Map.new() |> Enum.to_list())
-      |> Keyword.merge(override.() |> Map.new() |> Enum.to_list())
-    end
+    fn -> Keyword.merge(base.() |> Map.new() |> Enum.to_list(), override.() |> Map.new() |> Enum.to_list()) end
   end
 end

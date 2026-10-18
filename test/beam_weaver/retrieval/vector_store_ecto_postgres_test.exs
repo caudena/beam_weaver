@@ -176,4 +176,74 @@ defmodule BeamWeaver.VectorStoreEctoPostgresTest do
     assert :ok = VectorStore.delete(store, [id])
     assert {:ok, []} = VectorStore.similarity_search(store, "alpha", k: 1)
   end
+
+  @tag :postgres
+  test "EctoPostgres and ETS match the same documents for $contain and $like on every value type" do
+    assert LivePostgres.available?()
+
+    table = LivePostgres.unique_table("bw_vector_filter_test")
+    version = LivePostgres.migrate(adapters: [{:vector_store, table: table, dimensions: 3}])
+
+    on_exit(fn ->
+      LivePostgres.drop_tables([table])
+      LivePostgres.clear_migration(version)
+    end)
+
+    embedding = %FakeEmbeddingModel{dimensions: 3}
+
+    postgres =
+      EctoPostgres.new(repo: PostgresRepo, table: table, namespace: "filters", embedding: embedding, dimensions: 3)
+
+    ets = ETS.new(embedding: embedding)
+
+    values = %{
+      "text" => "Hello World",
+      "percent" => "50% off",
+      "percent_lookalike" => "500 off",
+      "underscore" => "a_b",
+      "underscore_lookalike" => "axb",
+      "backslash" => "a\\b",
+      "plain_b" => "ab",
+      "number" => 12,
+      "boolean" => true,
+      "list" => ["red", 12, true],
+      "object" => %{"red" => 1},
+      "null" => nil
+    }
+
+    documents =
+      [Document.new!("missing", id: "missing", metadata: %{})] ++
+        for({id, value} <- values, do: Document.new!(id, id: id, metadata: %{"v" => value}))
+
+    for store <- [postgres, ets], do: assert({:ok, _ids} = VectorStore.add_documents(store, documents))
+
+    all_ids = documents |> Enum.map(& &1.id) |> Enum.sort()
+
+    cases = [
+      {%{"v" => %{"$contain" => "WORLD"}}, ["text"]},
+      {%{"v" => %{"$contain" => "0% o"}}, ["percent"]},
+      {%{"v" => %{"$contain" => "_b"}}, ["underscore"]},
+      {%{"v" => %{"$contain" => "\\b"}}, ["backslash"]},
+      {%{"v" => %{"$contain" => "red"}}, ["list"]},
+      {%{"v" => %{"$contain" => "RED"}}, []},
+      {%{"v" => %{"$contain" => 12}}, ["list"]},
+      {%{"v" => %{"$contain" => true}}, ["list"]},
+      {%{"v" => %{"$contain" => "1"}}, []},
+      {%{"$not" => %{"v" => %{"$contain" => "red"}}}, all_ids -- ["list"]},
+      {%{"v" => %{"$like" => "hello%"}}, ["text"]},
+      {%{"v" => %{"$like" => "12"}}, []},
+      {%{"v" => %{"$like" => "true"}}, []},
+      {%{"v" => %{"$like" => "%red%"}}, []},
+      {%{"$not" => %{"v" => %{"$like" => "%red%"}}}, all_ids}
+    ]
+
+    # Each entry is {filter, Postgres ids, ETS ids}.
+    assert for({filter, _expected} <- cases, do: {filter, matching_ids(postgres, filter), matching_ids(ets, filter)}) ==
+             for({filter, expected} <- cases, do: {filter, expected, expected})
+  end
+
+  defp matching_ids(store, filter) do
+    assert {:ok, documents} = VectorStore.similarity_search(store, "query", k: 50, filter: filter)
+    documents |> Enum.map(& &1.id) |> Enum.sort()
+  end
 end

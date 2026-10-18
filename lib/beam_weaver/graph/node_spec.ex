@@ -54,7 +54,7 @@ defmodule BeamWeaver.Graph.NodeSpec do
   @spec new(String.t(), term(), keyword()) :: {:ok, t()} | {:error, Error.t()}
   def new(name, callable, opts) do
     with :ok <- validate_options(name, opts),
-         {:ok, node} <- BeamWeaver.Graph.IntoNode.to_node(callable, name, opts),
+         {:ok, node} <- BeamWeaver.Graph.IntoNode.to_node(callable),
          {:ok, retry, retry_policy} <-
            normalize_retry(Keyword.get(opts, :retry, 0)),
          {:ok, timeout, execution_policy} <- normalize_timeout(Keyword.get(opts, :timeout, :infinity)),
@@ -62,14 +62,14 @@ defmodule BeamWeaver.Graph.NodeSpec do
       {:ok,
        %__MODULE__{
          name: name,
-         fun: Map.fetch!(node, :fun),
-         kind: Map.fetch!(node, :kind),
+         fun: node.fun,
+         kind: node.kind,
          input: Keyword.get(opts, :input),
          output: Keyword.get(opts, :output),
          deps: normalize_deps(Keyword.get(opts, :deps, [])),
          condition: Keyword.get(opts, :when),
-         input_schema: Keyword.get(opts, :input_schema, Map.get(node, :input_schema)),
-         output_schema: Keyword.get(opts, :output_schema, Map.get(node, :output_schema)),
+         input_schema: Keyword.get(opts, :input_schema),
+         output_schema: Keyword.get(opts, :output_schema),
          destinations: normalize_destinations(Keyword.get(opts, :destinations, [])),
          metadata: normalize_metadata(Keyword.get(opts, :metadata, %{}), node),
          defer: Keyword.get(opts, :defer, false) == true,
@@ -174,14 +174,7 @@ defmodule BeamWeaver.Graph.NodeSpec do
 
   defp normalize_cache(cache), do: {:ok, cache, nil}
 
-  defp normalize_deps(nil), do: []
-  defp normalize_deps(dep) when is_atom(dep) or is_binary(dep), do: [to_string(dep)]
   defp normalize_deps(deps), do: deps |> List.wrap() |> Enum.map(&to_string/1) |> Enum.uniq()
-
-  defp normalize_destinations(nil), do: []
-
-  defp normalize_destinations(destination) when is_atom(destination) or is_binary(destination),
-    do: [to_string(destination)]
 
   defp normalize_destinations(destinations) when is_map(destinations) do
     Map.new(destinations, fn {target, label} -> {to_string(target), label} end)
@@ -190,8 +183,6 @@ defmodule BeamWeaver.Graph.NodeSpec do
   defp normalize_destinations(destinations),
     do: destinations |> List.wrap() |> Enum.map(&to_string/1) |> Enum.uniq()
 
-  defp normalize_metadata(metadata, node) when is_map(metadata),
-    do: Map.merge(Map.get(node, :metadata, %{}), metadata)
-
-  defp normalize_metadata(_metadata, node), do: Map.get(node, :metadata, %{})
+  defp normalize_metadata(metadata, node) when is_map(metadata), do: Map.merge(node.metadata, metadata)
+  defp normalize_metadata(_metadata, node), do: node.metadata
 end

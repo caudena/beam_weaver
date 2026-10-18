@@ -179,13 +179,10 @@ defmodule BeamWeaver.Checkpoint.Ecto.Maintenance do
   end
 
   defp do_prune(saver, thread_ids, strategy) do
-    Enum.reduce_while(thread_ids, :ok, fn thread_id, :ok ->
-      result =
-        if strategy == :delete,
-          do: do_delete_thread(saver, thread_id),
-          else: prune_keep_latest(saver, thread_id)
+    prune_thread = if strategy == :delete, do: &do_delete_thread/2, else: &prune_keep_latest/2
 
-      case result do
+    Enum.reduce_while(thread_ids, :ok, fn thread_id, :ok ->
+      case prune_thread.(saver, thread_id) do
         :ok -> {:cont, :ok}
         {:error, _reason} = error -> {:halt, error}
       end

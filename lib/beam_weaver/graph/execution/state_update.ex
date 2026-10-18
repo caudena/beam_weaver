@@ -4,6 +4,7 @@ defmodule BeamWeaver.Graph.Execution.StateUpdate do
   alias BeamWeaver.Checkpoint
   alias BeamWeaver.Core.Error
   alias BeamWeaver.Graph.Execution
+  alias BeamWeaver.Graph.Execution.ChannelLookup
   alias BeamWeaver.Graph.Execution.ChannelMerge
   alias BeamWeaver.Graph.Execution.CheckpointIO
   alias BeamWeaver.Graph.Execution.CommandRouter
@@ -24,43 +25,28 @@ defmodule BeamWeaver.Graph.Execution.StateUpdate do
   def get_state(%{checkpointer: nil}, _config), do: :error
 
   def get_state(%{checkpointer: checkpointer} = compiled, config) do
-    case SubgraphRouter.namespace_delegate(compiled, config) do
-      %{__struct__: _module} = delegate ->
-        get_state(delegate, config)
-
-      nil ->
-        config = SubgraphRouter.checkpoint_config(compiled, config)
-
-        case Checkpoint.get_tuple(checkpointer, config) do
-          nil ->
-            :error
-
-          tuple ->
-            Snapshot.from_tuple(compiled, tuple, apply_pending?: Snapshot.latest_state?(config))
-        end
-    end
+    in_namespace(compiled, config, &get_state(&1, config), fn config ->
+      case Checkpoint.get_tuple(checkpointer, config) do
+        nil -> :error
+        tuple -> Snapshot.from_tuple(compiled, tuple, apply_pending?: Snapshot.latest_state?(config))
+      end
+    end)
   end
 
   @spec get_state_history(map(), map(), keyword()) :: [map()] | {:error, Error.t()}
   def get_state_history(%{checkpointer: nil}, _config, _opts), do: []
 
   def get_state_history(%{checkpointer: checkpointer} = compiled, config, opts) do
-    case SubgraphRouter.namespace_delegate(compiled, config) do
-      %{__struct__: _module} = delegate ->
-        get_state_history(delegate, config, opts)
-
-      nil ->
-        config = SubgraphRouter.checkpoint_config(compiled, config)
-
-        # Each checkpoint's delta channel values come from its parent's.
-        case checkpointer
-             |> Checkpoint.list(config, opts)
-             |> then(&DeltaReplay.put_history_values(compiled, &1))
-             |> BeamWeaver.Result.traverse(&Snapshot.from_tuple(compiled, &1, apply_pending?: false)) do
-          {:ok, snapshots} -> snapshots
-          {:error, %Error{}} = error -> error
-        end
-    end
+    in_namespace(compiled, config, &get_state_history(&1, config, opts), fn config ->
+      # Each checkpoint's delta channel values come from its parent's.
+      case checkpointer
+           |> Checkpoint.list(config, opts)
+           |> then(&DeltaReplay.put_history_values(compiled, &1))
+           |> BeamWeaver.Result.traverse(&Snapshot.from_tuple(compiled, &1, apply_pending?: false)) do
+        {:ok, snapshots} -> snapshots
+        {:error, %Error{}} = error -> error
+      end
+    end)
   end
 
   @spec update_state(map(), map(), map(), keyword()) :: {:ok, map()} | {:error, Error.t()}
@@ -69,14 +55,12 @@ defmodule BeamWeaver.Graph.Execution.StateUpdate do
   end
 
   def update_state(%{} = compiled, config, values, opts) when is_map(values) do
-    case SubgraphRouter.namespace_delegate(compiled, config) do
-      %{__struct__: _module} = delegate ->
-        update_state(delegate, config, values, opts)
-
-      nil ->
-        config = SubgraphRouter.checkpoint_config(compiled, config)
-        do_update_state(compiled, config, ChannelMerge.prepare_update(values, compiled.graph), opts)
-    end
+    in_namespace(
+      compiled,
+      config,
+      &update_state(&1, config, values, opts),
+      &do_update_state(compiled, &1, ChannelMerge.prepare_update(values, compiled.graph), opts)
+    )
   end
 
   @spec bulk_update_state(map(), map(), [[map()]], keyword()) ::
@@ -85,15 +69,22 @@ defmodule BeamWeaver.Graph.Execution.StateUpdate do
     {:error, Error.new(:missing_checkpointer, "bulk_update_state requires a checkpointer")}
   end
 
-  def bulk_update_state(%{} = compiled, config, supersteps, opts)
-      when is_list(supersteps) do
-    case SubgraphRouter.namespace_delegate(compiled, config) do
-      %{__struct__: _module} = delegate ->
-        bulk_update_state(delegate, config, supersteps, opts)
+  def bulk_update_state(%{} = compiled, config, supersteps, opts) when is_list(supersteps) do
+    in_namespace(
+      compiled,
+      config,
+      &bulk_update_state(&1, config, supersteps, opts),
+      &do_bulk_update_state(compiled, &1, supersteps, opts)
+    )
+  end
 
-      nil ->
-        config = SubgraphRouter.checkpoint_config(compiled, config)
-        do_bulk_update_state(compiled, config, supersteps, opts)
+  # A config whose namespace names a subgraph goes to that subgraph
+  # (`delegate`); otherwise `fun` gets the config the graph's checkpoints
+  # are read with.
+  defp in_namespace(compiled, config, delegate, fun) do
+    case SubgraphRouter.namespace_delegate(compiled, config) do
+      %{__struct__: _module} = subgraph -> delegate.(subgraph)
+      nil -> fun.(SubgraphRouter.checkpoint_config(compiled, config))
     end
   end
 
@@ -102,25 +93,24 @@ defmodule BeamWeaver.Graph.Execution.StateUpdate do
   # edges and private keys saved with the thread carry over. A thread whose
   # last step stopped partway gets the update in that step.
   defp do_update_state(%{} = compiled, config, values, opts) do
-    with :ok <- validate_update(compiled.graph, values),
+    with :ok <- ChannelLookup.check_managed_writes(compiled.graph, [values]),
          {:ok, loaded} <- load(compiled, config),
          {:ok, updated_config} <- save_update(compiled, config, loaded, values, opts) do
       maybe_resume_after_update(compiled, updated_config, opts)
     end
   end
 
-  defp save_update(compiled, config, :new, values, opts) do
-    with {:ok, updated_config, _base} <- write_update(compiled, config, @new_base, {:update, values}, step(opts), opts),
-         do: {:ok, updated_config}
-  end
-
   defp save_update(compiled, _config, {:stopped, tuple, restored}, values, opts),
     do: StoppedStep.save(compiled, tuple.config, restored, {:update, values}, Keyword.get(opts, :as_node), nil)
 
-  defp save_update(compiled, _config, {:completed, tuple, restored}, values, opts) do
-    base = Map.put(restored, :tasks, checkpoint_tasks(tuple))
+  defp save_update(compiled, config, loaded, values, opts) do
+    {config, base} =
+      case loaded do
+        :new -> {config, @new_base}
+        {:completed, tuple, restored} -> {tuple.config, Map.put(restored, :tasks, checkpoint_tasks(tuple))}
+      end
 
-    with {:ok, updated_config, _base} <- write_update(compiled, tuple.config, base, {:update, values}, step(opts), opts),
+    with {:ok, updated_config, _base} <- write_update(compiled, config, base, {:update, values}, step(opts), opts),
          do: {:ok, updated_config}
   end
 
@@ -236,10 +226,7 @@ defmodule BeamWeaver.Graph.Execution.StateUpdate do
     node = to_string(as_node)
 
     others =
-      base.tasks
-      |> last_finished_task_nodes()
-      |> Enum.map(&to_string/1)
-      |> Enum.reject(&(&1 == node))
+      for task_node <- last_finished_task_nodes(base.tasks), other = to_string(task_node), other != node, do: other
 
     led_to_by_others = others |> Enum.flat_map(&edge_targets(graph, &1)) |> MapSet.new()
     replaced = graph |> edge_targets(node) |> MapSet.new() |> MapSet.difference(led_to_by_others)
@@ -267,13 +254,8 @@ defmodule BeamWeaver.Graph.Execution.StateUpdate do
         _none -> []
       end
 
-    guarded = graph.guarded_edges |> Map.get(node, []) |> Enum.map(& &1.target)
-
-    graph.edges
-    |> Map.get(node, [])
-    |> Kernel.++(conditional)
-    |> Kernel.++(guarded)
-    |> Enum.map(&to_string/1)
+    guarded = for spec <- Map.get(graph.guarded_edges, node, []), do: spec.target
+    Enum.map(Map.get(graph.edges, node, []) ++ conditional ++ guarded, &to_string/1)
   end
 
   defp update_as_node(graph, tasks, opts) do
@@ -303,27 +285,16 @@ defmodule BeamWeaver.Graph.Execution.StateUpdate do
     do: Map.get(checkpoint, "tasks", Map.get(checkpoint, :tasks, []))
 
   defp last_finished_task_nodes(tasks) do
-    tasks
-    |> Enum.filter(&(Map.get(&1, :kind) == :finish or Map.get(&1, "kind") == "finish"))
-    |> Enum.map(&(Map.get(&1, :node) || Map.get(&1, "node")))
-    |> Enum.reject(&is_nil/1)
+    for task <- tasks,
+        Map.get(task, :kind) == :finish or Map.get(task, "kind") == "finish",
+        node <- [Map.get(task, :node) || Map.get(task, "node")],
+        not is_nil(node),
+        do: node
   end
 
   defp routes_after_update?(graph, node) do
     Map.has_key?(graph.edges, node) or Map.has_key?(graph.conditional_edges, node) or
       Map.has_key?(graph.guarded_edges, node)
-  end
-
-  defp validate_update(graph, values) do
-    managed_keys = MapSet.new(Map.keys(graph.managed || %{}), &to_string/1)
-
-    case Enum.find(Map.keys(values), &(to_string(&1) in managed_keys)) do
-      nil ->
-        :ok
-
-      key ->
-        {:error, Error.new(:invalid_update, "managed graph values are read-only", %{key: key})}
-    end
   end
 
   defp maybe_resume_after_update(compiled, updated_config, opts) do

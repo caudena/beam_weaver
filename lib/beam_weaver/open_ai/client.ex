@@ -139,7 +139,7 @@ defmodule BeamWeaver.OpenAI.Client do
   Posts a streaming Chat Completions body and returns typed BeamWeaver stream envelopes.
 
   The stream ends with the complete reply, decoded like a reply from
-  `chat_completions/3`, followed by its `Done` events.
+  `chat_completions/3`, followed by one `Done` event.
   """
   @spec chat_completions_stream_typed_events(t(), map(), keyword()) ::
           {:ok, Enumerable.t()} | {:error, Error.t()}
@@ -149,22 +149,14 @@ defmodule BeamWeaver.OpenAI.Client do
   @doc """
   Retrieves a Responses API response.
   """
-  def retrieve_response(%__MODULE__{} = client, response_id, opts \\ []) when is_binary(response_id) do
-    client
-    |> http(endpoint(client, "responses/#{response_id}"), opts)
-    |> HTTPClient.get(opts)
-    |> ResponseDecoder.json(opts, ResponseDecoder.config())
-  end
+  def retrieve_response(%__MODULE__{} = client, response_id, opts \\ []) when is_binary(response_id),
+    do: get(client, "responses/#{response_id}", opts)
 
   @doc """
   Lists input items for a Responses API response.
   """
-  def list_response_input_items(%__MODULE__{} = client, response_id, opts \\ []) when is_binary(response_id) do
-    client
-    |> http(endpoint(client, "responses/#{response_id}/input_items"), opts)
-    |> HTTPClient.get(opts)
-    |> ResponseDecoder.json(opts, ResponseDecoder.config())
-  end
+  def list_response_input_items(%__MODULE__{} = client, response_id, opts \\ []) when is_binary(response_id),
+    do: get(client, "responses/#{response_id}/input_items", opts)
 
   @doc """
   Compacts a Responses API response when the provider supports it.
@@ -246,6 +238,13 @@ defmodule BeamWeaver.OpenAI.Client do
   # events back for the complete reply that ends the stream.
   defp chat_completions_typed_events(events, state),
     do: events |> Streaming.typed_events() |> OpenAICompatibleStreaming.hold_events(events, state)
+
+  defp get(client, path, opts) do
+    client
+    |> http(endpoint(client, path), opts)
+    |> HTTPClient.get(opts)
+    |> ResponseDecoder.json(opts, ResponseDecoder.config())
+  end
 
   defp http(client, endpoint, opts) do
     headers =

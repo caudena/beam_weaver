@@ -44,18 +44,16 @@ defmodule BeamWeaver.Moonshot.Messages do
     message = choice["message"] || %{}
     metadata = metadata(response, choice)
 
-    Message.new(:assistant, ChatCompletionsWire.response_content(message),
-      id: response["id"],
-      metadata: metadata,
-      response_metadata: metadata,
-      usage_metadata: usage_metadata(response),
-      status: choice["finish_reason"],
-      tool_calls: ChatCompletionsWire.tool_calls(message)
-    )
-    |> case do
-      {:ok, message} -> {:ok, enrich_cache_write_ttl(message)}
-      {:error, _error} = error -> error
-    end
+    with {:ok, message} <-
+           Message.new(:assistant, ChatCompletionsWire.response_content(message),
+             id: response["id"],
+             metadata: metadata,
+             response_metadata: metadata,
+             usage_metadata: usage_metadata(response),
+             status: choice["finish_reason"],
+             tool_calls: ChatCompletionsWire.tool_calls(message)
+           ),
+         do: {:ok, enrich_cache_write_ttl(message)}
   end
 
   def chat_response_to_message(_response) do
@@ -113,18 +111,17 @@ defmodule BeamWeaver.Moonshot.Messages do
       message
     else
       details = Map.get(usage, :input_token_details, %{})
-      details = if is_map(details), do: details, else: %{}
-      total = Map.get(details, :cache_write)
       write_5m = write_5m || 0
       write_1h = write_1h || 0
       reported = write_5m + write_1h
-      total = if is_integer(total), do: max(total, reported), else: reported
+      total = if is_integer(details[:cache_write]), do: max(details[:cache_write], reported), else: reported
 
       details =
-        details
-        |> Map.put(:cache_write, total)
-        |> Map.put(:ephemeral_5m_input_tokens, write_5m)
-        |> Map.put(:ephemeral_1h_input_tokens, write_1h)
+        Map.merge(details, %{
+          cache_write: total,
+          ephemeral_5m_input_tokens: write_5m,
+          ephemeral_1h_input_tokens: write_1h
+        })
 
       %{message | usage_metadata: Map.put(usage, :input_token_details, details)}
     end
@@ -213,18 +210,12 @@ defmodule BeamWeaver.Moonshot.Messages do
   defp content_to_moonshot(content, opts) when is_list(content) do
     skip_reasoning? = Keyword.get(opts, :skip_reasoning?, false)
 
-    content
-    |> BeamWeaver.MapShape.assert_atom_keys_in!()
-    |> Result.traverse(&content_part(&1, skip_reasoning?))
-    |> case do
-      {:ok, parts} ->
-        case Enum.reject(parts, &is_nil/1) do
-          [] -> {:ok, ""}
-          parts -> {:ok, parts}
-        end
-
-      error ->
-        error
+    with {:ok, parts} <-
+           content |> MapShape.assert_atom_keys_in!() |> Result.traverse(&content_part(&1, skip_reasoning?)) do
+      case Enum.reject(parts, &is_nil/1) do
+        [] -> {:ok, ""}
+        parts -> {:ok, parts}
+      end
     end
   end
 
@@ -269,27 +260,16 @@ defmodule BeamWeaver.Moonshot.Messages do
       "text" ->
         {:ok, %{"type" => "text", "text" => Map.get(block, :text) || Map.get(block, :content) || ""}}
 
-      "image" ->
+      type when type in ["image", "video"] ->
         media_part(
-          "image_url",
+          type <> "_url",
           Map.get(block, :url),
           Map.get(block, :data) || Map.get(block, :base64),
-          Map.get(block, :mime_type) || "image/png"
+          Map.get(block, :mime_type) || if(type == "image", do: "image/png", else: "video/mp4")
         )
 
-      "video" ->
-        media_part(
-          "video_url",
-          Map.get(block, :url),
-          Map.get(block, :data) || Map.get(block, :base64),
-          Map.get(block, :mime_type) || "video/mp4"
-        )
-
-      "image_url" ->
-        validate_url_part(provider_block, "image_url")
-
-      "video_url" ->
-        validate_url_part(provider_block, "video_url")
+      kind when kind in ["image_url", "video_url"] ->
+        validate_url_part(provider_block, kind)
 
       type when type in ["audio", "audio_url", "input_audio"] ->
         unsupported_content_block(:audio)
@@ -366,27 +346,11 @@ defmodule BeamWeaver.Moonshot.Messages do
      })}
   end
 
-  defp unsupported_content_block(:audio) do
-    {:error,
-     Error.new(:unsupported_feature, "Moonshot Kimi does not support audio content blocks", %{
-       provider: :moonshot,
-       feature: :audio_input
-     })}
-  end
-
-  defp unsupported_content_block(:file) do
-    {:error,
-     Error.new(:unsupported_feature, "Moonshot Kimi does not support file content blocks", %{
-       provider: :moonshot,
-       feature: :file_input
-     })}
-  end
-
   defp unsupported_content_block(type) do
     {:error,
      Error.new(:unsupported_feature, "Moonshot Kimi does not support #{type} content blocks", %{
        provider: :moonshot,
-       feature: type
+       feature: Map.get(%{audio: :audio_input, file: :file_input}, type, type)
      })}
   end
 

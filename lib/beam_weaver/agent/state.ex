@@ -74,8 +74,6 @@ defmodule BeamWeaver.Agent.State do
   def structured_response?(state) when is_map(state),
     do: Map.get(state, :structured_response, Map.get(state, "structured_response")) != nil
 
-  defp schema_keys(nil), do: MapSet.new(@core_keys)
-
   defp schema_keys(schema) when is_map(schema) do
     schema
     |> Map.keys()
@@ -96,19 +94,11 @@ defmodule BeamWeaver.Agent.State do
 
   defp schema_keys(_schema), do: MapSet.new(@core_keys)
 
-  defp atom_extras(input, known_keys) do
-    input
-    |> Enum.filter(fn {key, _value} -> is_atom(key) and not MapSet.member?(known_keys, key) end)
-    |> Map.new()
-  end
+  defp atom_extras(input, known_keys),
+    do: for({key, value} <- input, is_atom(key), not MapSet.member?(known_keys, key), into: %{}, do: {key, value})
 
-  defp raw_input(input, known_keys) do
-    input
-    |> Enum.filter(fn {key, _value} ->
-      is_binary(key) and not known_string_key?(key, known_keys)
-    end)
-    |> Map.new()
-  end
+  defp raw_input(input, known_keys),
+    do: for({key, value} <- input, is_binary(key), not known_string_key?(key, known_keys), into: %{}, do: {key, value})
 
   defp known_string_key?(key, known_keys) do
     Enum.any?(known_keys, &(is_atom(&1) and Atom.to_string(&1) == key))

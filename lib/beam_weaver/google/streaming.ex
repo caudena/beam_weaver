@@ -73,7 +73,9 @@ defmodule BeamWeaver.Google.Streaming do
       {:ok,
        [
          Stream.envelope(%Events.Message{message: message}, metadata: %{provider: :google}),
-         Stream.envelope(%Events.Done{result: response}, metadata: %{provider: :google})
+         Stream.envelope(%Events.Done{result: response, usage: response["usageMetadata"]},
+           metadata: %{provider: :google}
+         )
        ]}
     end
   end
@@ -147,30 +149,22 @@ defmodule BeamWeaver.Google.Streaming do
     |> finish_response_parts()
   end
 
-  defp append_response_part({parts, nil}, %{"text" => text} = part),
-    do: {parts, {:text, Map.delete(part, "text"), [text]}}
-
-  defp append_response_part({parts, nil}, part), do: {parts, {:part, part}}
-
-  defp append_response_part({parts, previous_part}, %{"text" => text} = part) do
-    case previous_part do
-      {:text, previous_part, chunks} = pending ->
-        if text_part_mergeable?(previous_part, part) do
-          {parts, {:text, previous_part, [text | chunks]}}
-        else
-          {[materialize_response_part(pending) | parts], {:text, Map.delete(part, "text"), [text]}}
-        end
-
-      _other ->
-        {[materialize_response_part(previous_part) | parts], {:text, Map.delete(part, "text"), [text]}}
-    end
+  # The state holds the parts so far and the part still open, if any.
+  defp append_response_part({parts, {:text, previous_part, chunks} = pending}, %{"text" => text} = part) do
+    if text_part_mergeable?(previous_part, part),
+      do: {parts, {:text, previous_part, [text | chunks]}},
+      else: {close_response_part(parts, pending), {:text, Map.delete(part, "text"), [text]}}
   end
 
-  defp append_response_part({parts, previous_part}, part),
-    do: {[materialize_response_part(previous_part) | parts], {:part, part}}
+  defp append_response_part({parts, pending}, %{"text" => text} = part),
+    do: {close_response_part(parts, pending), {:text, Map.delete(part, "text"), [text]}}
 
-  defp finish_response_parts({parts, nil}), do: Enum.reverse(parts)
-  defp finish_response_parts({parts, part}), do: Enum.reverse([materialize_response_part(part) | parts])
+  defp append_response_part({parts, pending}, part), do: {close_response_part(parts, pending), {:part, part}}
+
+  defp finish_response_parts({parts, pending}), do: parts |> close_response_part(pending) |> Enum.reverse()
+
+  defp close_response_part(parts, nil), do: parts
+  defp close_response_part(parts, pending), do: [materialize_response_part(pending) | parts]
 
   defp materialize_response_part({:text, part, chunks}) do
     Map.put(part, "text", chunks |> Enum.reverse() |> IO.iodata_to_binary())

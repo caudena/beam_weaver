@@ -21,21 +21,13 @@ defmodule BeamWeaver.TextSplitter.Shared do
   end
 
   def normalize_opts(opts, defaults \\ []) do
-    opts = maybe_put_separator(opts)
+    opts =
+      case Keyword.fetch(opts, :separator) do
+        {:ok, separator} -> opts |> Keyword.delete(:separator) |> Keyword.put(:separators, [separator])
+        :error -> opts
+      end
 
-    common_fields()
-    |> Keyword.merge(defaults)
-    |> Keyword.merge(opts)
-  end
-
-  defp maybe_put_separator(opts) do
-    case Keyword.fetch(opts, :separator) do
-      {:ok, separator} ->
-        opts |> Keyword.delete(:separator) |> Keyword.put(:separators, [separator])
-
-      :error ->
-        opts
-    end
+    common_fields() |> Keyword.merge(defaults) |> Keyword.merge(opts)
   end
 
   def validate(splitter) do
@@ -160,51 +152,30 @@ defmodule BeamWeaver.TextSplitter.Shared do
     keep_separator(pieces, seps, splitter)
   end
 
+  # The split alternates pieces and separators: piece, separator, ..., piece.
   defp split_regex(text, separator, splitter) do
-    regex = Regex.compile!(separator)
-    {pieces, seps} = regex_pieces_and_separators(regex, text)
-    keep_separator(pieces, seps, splitter)
+    parts =
+      separator |> Regex.compile!() |> Regex.split(text, include_captures: true, trim: false) |> Enum.chunk_every(2)
+
+    keep_separator(Enum.map(parts, &hd/1), for([_piece, sep] <- parts, do: sep), splitter)
   end
 
+  # `seps` has one separator fewer than `pieces`.
   defp keep_separator(pieces, seps, splitter) do
-    mode = keep_separator_mode(Map.get(splitter, :keep_separator, false))
-
-    pieces
-    |> Enum.with_index()
-    |> Enum.map(fn {piece, index} ->
-      cond do
-        mode == :end and index < length(pieces) - 1 ->
-          piece <> Enum.at(seps, index, "")
-
-        mode == :start and index > 0 ->
-          Enum.at(seps, index - 1, "") <> piece
-
-        true ->
-          piece
+    pieces =
+      case keep_separator_mode(Map.get(splitter, :keep_separator, false)) do
+        :end -> Enum.zip_with(pieces, seps ++ [""], &<>/2)
+        :start -> [hd(pieces) | Enum.zip_with(seps, tl(pieces), &<>/2)]
+        false -> pieces
       end
-    end)
-    |> maybe_strip(splitter)
+
+    maybe_strip(pieces, splitter)
   end
 
   defp keep_separator_mode(true), do: :start
   defp keep_separator_mode(:start), do: :start
   defp keep_separator_mode(:end), do: :end
   defp keep_separator_mode(_other), do: false
-
-  defp regex_pieces_and_separators(regex, text) do
-    tokens = Regex.split(regex, text, include_captures: true, trim: false)
-
-    {pieces, seps, _expect_piece?} =
-      Enum.reduce(tokens, {[], [], true}, fn token, {pieces, seps, expect_piece?} ->
-        if expect_piece? do
-          {[token | pieces], seps, false}
-        else
-          {pieces, [token | seps], true}
-        end
-      end)
-
-    {Enum.reverse(pieces), Enum.reverse(seps)}
-  end
 
   defp merge_recursive_pieces(pieces, splitter, separators, separator) do
     {chunks, current} =
@@ -278,8 +249,7 @@ defmodule BeamWeaver.TextSplitter.Shared do
     end
   end
 
-  defp join_current(current, separator, splitter),
-    do: current |> Enum.join(separator) |> then(&maybe_strip([&1], splitter)) |> hd()
+  defp join_current(current, separator, splitter), do: hd(maybe_strip([Enum.join(current, separator)], splitter))
 
   defp merge_separator(splitter, separator) do
     if keep_separator_mode(Map.get(splitter, :keep_separator, false)) do
@@ -327,27 +297,24 @@ defmodule BeamWeaver.TextSplitter.Shared do
   defp measure(%{length_function: fun}, text) when is_function(fun, 1), do: fun.(text)
   defp measure(_splitter, text), do: String.length(text)
 
-  defp start_index(text, chunk, {byte_offset, char_offset}) do
-    case binary_match_from(text, chunk, byte_offset) do
-      {byte_start, _length} ->
-        char_start = char_offset + char_length_between(text, byte_offset, byte_start)
-        {char_start, next_search_position(text, byte_start, char_start)}
+  # Where `chunk` starts in `text`, in characters: searching from
+  # `position` (a byte and a character offset), then from the start. Also
+  # returns the position the next search starts from.
+  defp start_index(text, chunk, {byte_offset, char_offset} = position) do
+    match =
+      case :binary.match(text, chunk, scope: {byte_offset, byte_size(text) - byte_offset}) do
+        {byte_start, _length} ->
+          {byte_start, char_offset + String.length(binary_part(text, byte_offset, byte_start - byte_offset))}
 
-      :nomatch ->
-        case :binary.match(text, chunk) do
-          {byte_start, _length} ->
-            char_start = char_index(text, byte_start)
-            {char_start, next_search_position(text, byte_start, char_start)}
+        :nomatch ->
+          with {byte_start, _length} <- :binary.match(text, chunk),
+               do: {byte_start, String.length(binary_part(text, 0, byte_start))}
+      end
 
-          :nomatch ->
-            {nil, {byte_offset, char_offset}}
-        end
+    case match do
+      {byte_start, char_start} -> {char_start, next_search_position(text, byte_start, char_start)}
+      :nomatch -> {nil, position}
     end
-  end
-
-  defp binary_match_from(text, chunk, byte_offset) do
-    byte_offset = min(byte_offset, byte_size(text))
-    :binary.match(text, chunk, scope: {byte_offset, byte_size(text) - byte_offset})
   end
 
   defp next_search_position(text, byte_start, char_start) do
@@ -358,14 +325,4 @@ defmodule BeamWeaver.TextSplitter.Shared do
       nil -> {byte_start, char_start}
     end
   end
-
-  defp char_length_between(_text, byte_start, byte_end) when byte_end <= byte_start, do: 0
-
-  defp char_length_between(text, byte_start, byte_end) do
-    text
-    |> binary_part(byte_start, byte_end - byte_start)
-    |> String.length()
-  end
-
-  defp char_index(text, byte_offset), do: String.length(binary_part(text, 0, byte_offset))
 end

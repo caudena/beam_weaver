@@ -23,95 +23,36 @@ defmodule BeamWeaver.Graph.Validation do
   def report(%StateGraph{} = graph, opts) do
     validate_static? = Keyword.get(opts, :validate_static, false)
 
-    []
-    |> maybe_add_diagnostic(
-      graph.diagnostics != [],
-      "graph contains duplicate declarations",
-      %{duplicates: Enum.reverse(graph.diagnostics)}
-    )
-    |> maybe_add_diagnostic(
-      map_size(graph.nodes) == 0,
-      "graph must define at least one node",
-      %{}
-    )
-    |> maybe_add_diagnostic(
-      graph.entry_points == [],
-      "graph must define an entry point",
-      %{}
-    )
-    |> maybe_add_diagnostic(
-      missing_references(graph),
-      "graph references missing nodes",
-      fn missing -> %{missing: Enum.sort(missing)} end
-    )
-    |> maybe_add_diagnostic(
-      duplicate_finish_without_node?(graph),
-      "finish points must reference defined nodes",
-      %{}
-    )
-    |> maybe_add_diagnostic(
-      invalid_nodes(graph),
-      "graph contains invalid nodes",
-      &%{invalid: &1}
-    )
-    |> maybe_add_diagnostic(
-      invalid_routers(graph),
-      "graph contains invalid conditional routers",
-      &%{invalid: &1}
-    )
-    |> maybe_add_diagnostic(
-      invalid_reducers(graph),
-      "graph contains invalid reducers",
-      &%{invalid: &1}
-    )
-    |> maybe_add_diagnostic(
-      invalid_channels(graph),
-      "graph contains invalid channels",
-      &%{invalid: &1}
-    )
-    |> maybe_add_diagnostic(
-      invalid_managed(graph),
-      "graph contains invalid managed values",
-      &%{invalid: &1}
-    )
-    |> maybe_add_diagnostic(
-      invalid_reserved_names(graph),
-      "graph uses reserved node or channel names",
-      &%{invalid: &1}
-    )
-    |> maybe_add_diagnostic(
-      invalid_waiting_edges(graph),
-      "graph contains invalid waiting edges",
-      &%{invalid: &1}
-    )
-    |> maybe_add_diagnostic(
-      static_unreachable_nodes(graph, validate_static?),
-      "graph contains unreachable nodes",
-      &%{nodes: &1}
-    )
-    |> maybe_add_diagnostic(
-      static_dead_end_nodes(graph, validate_static?),
-      "graph contains dead-end nodes",
-      &%{nodes: &1}
-    )
-    |> Enum.reverse()
-    |> Report.new()
-  end
+    # Each check: what it found (`nil`, `false` or `[]` for nothing), its
+    # message, and its details, or a function of what it found.
+    checks = [
+      {graph.diagnostics != [], "graph contains duplicate declarations",
+       %{duplicates: Enum.reverse(graph.diagnostics)}},
+      {map_size(graph.nodes) == 0, "graph must define at least one node", %{}},
+      {graph.entry_points == [], "graph must define an entry point", %{}},
+      {missing_references(graph), "graph references missing nodes", &%{missing: Enum.sort(&1)}},
+      {duplicate_finish_without_node?(graph), "finish points must reference defined nodes", %{}},
+      {invalid_nodes(graph), "graph contains invalid nodes", &%{invalid: &1}},
+      {invalid_routers(graph), "graph contains invalid conditional routers", &%{invalid: &1}},
+      {invalid_reducers(graph), "graph contains invalid reducers", &%{invalid: &1}},
+      {invalid_channels(graph), "graph contains invalid channels", &%{invalid: &1}},
+      {invalid_managed(graph), "graph contains invalid managed values", &%{invalid: &1}},
+      {invalid_reserved_names(graph), "graph uses reserved node or channel names", &%{invalid: &1}},
+      {invalid_waiting_edges(graph), "graph contains invalid waiting edges", &%{invalid: &1}},
+      {validate_static? and unreachable_nodes(graph), "graph contains unreachable nodes", &%{nodes: &1}},
+      {validate_static? and MapSet.size(graph.finish_points) > 0 and dead_end_nodes(graph),
+       "graph contains dead-end nodes", &%{nodes: &1}}
+    ]
 
-  defp maybe_add_diagnostic(diagnostics, value, _message, _details) when value in [nil, false, []],
-    do: diagnostics
-
-  defp maybe_add_diagnostic(diagnostics, true, message, details) when is_map(details) do
-    add_diagnostic(diagnostics, message, details)
-  end
-
-  defp maybe_add_diagnostic(diagnostics, value, message, details_fun)
-       when is_function(details_fun, 1) do
-    add_diagnostic(diagnostics, message, details_fun.(value))
-  end
-
-  defp add_diagnostic(diagnostics, message, details) do
-    [%{type: :invalid_graph, message: message, details: details} | diagnostics]
+    Report.new(
+      for {found, message, details} <- checks, found not in [nil, false, []] do
+        %{
+          type: :invalid_graph,
+          message: message,
+          details: if(is_function(details, 1), do: details.(found), else: details)
+        }
+      end
+    )
   end
 
   defp missing_references(graph) do
@@ -128,7 +69,7 @@ defmodule BeamWeaver.Graph.Validation do
           Enum.flat_map(specs, fn spec -> [spec.source, spec.target] end)
         end) ++
         Enum.flat_map(graph.waiting_edges, fn spec -> spec.upstream ++ [spec.target] end) ++
-        Enum.flat_map(graph.nodes, fn {_node, spec} -> List.wrap(spec.deps) end) ++
+        Enum.flat_map(graph.nodes, fn {_node, spec} -> spec.deps end) ++
         Enum.flat_map(graph.channel_subscriptions, fn {_channel, nodes} -> nodes end) ++
         MapSet.to_list(graph.finish_points)
 
@@ -145,9 +86,9 @@ defmodule BeamWeaver.Graph.Validation do
   # A node whose options were invalid is kept as an `:invalid` spec holding the
   # error, so the graph reports it here instead of running without them.
   defp invalid_nodes(graph) do
-    graph.nodes
-    |> Enum.filter(fn {_name, spec} -> spec.kind == :invalid or not valid_node_callable?(spec.fun) end)
-    |> Enum.map(fn {name, spec} -> invalid_node(name, spec) end)
+    for {name, spec} <- graph.nodes,
+        spec.kind == :invalid or not valid_node_callable?(spec.fun),
+        do: invalid_node(name, spec)
   end
 
   defp invalid_node(name, %NodeSpec{kind: :invalid, metadata: %{error: %Error{message: message}}} = spec),
@@ -172,57 +113,42 @@ defmodule BeamWeaver.Graph.Validation do
   defp valid_node_callable?(_fun), do: false
 
   defp invalid_routers(graph) do
-    graph.conditional_edges
-    |> Enum.reject(fn {_source, spec} -> is_function(spec.router, 1) or is_function(spec.router, 2) end)
-    |> Enum.map(fn {source, spec} -> %{node: source, router: inspect_callable(spec.router)} end)
+    for {source, spec} <- graph.conditional_edges,
+        not (is_function(spec.router, 1) or is_function(spec.router, 2)),
+        do: %{node: source, router: inspect_callable(spec.router)}
   end
 
   defp invalid_reducers(graph) do
-    graph.reducers
-    |> Enum.reject(fn {_key, reducer} -> is_function(reducer, 2) end)
-    |> Enum.map(fn {key, reducer} -> %{key: key, reducer: inspect_callable(reducer)} end)
+    for {key, reducer} <- graph.reducers,
+        not is_function(reducer, 2),
+        do: %{key: key, reducer: inspect_callable(reducer)}
   end
 
   defp invalid_channels(graph) do
-    graph.channels
-    |> Enum.reject(fn {_key, channel} -> valid_channel?(channel) end)
-    |> Enum.map(fn {key, channel} -> %{key: key, channel: inspect(channel)} end)
+    for {key, channel} <- graph.channels, not valid_channel?(channel), do: %{key: key, channel: inspect(channel)}
   end
 
   defp invalid_waiting_edges(graph) do
     known = MapSet.new(Map.keys(graph.nodes))
 
-    graph.waiting_edges
-    |> Enum.reject(fn %WaitingEdgeSpec{upstream: upstream, target: target} ->
-      upstream != [] and
-        Enum.all?(upstream, &MapSet.member?(known, &1)) and
-        MapSet.member?(known, target)
-    end)
-    |> Enum.map(fn %WaitingEdgeSpec{} = spec ->
-      %{upstream: spec.upstream, target: spec.target, channel: spec.channel}
-    end)
+    for %WaitingEdgeSpec{upstream: upstream, target: target} = spec <- graph.waiting_edges,
+        not (upstream != [] and Enum.all?(upstream, &MapSet.member?(known, &1)) and MapSet.member?(known, target)),
+        do: %{upstream: upstream, target: target, channel: spec.channel}
   end
 
   defp invalid_reserved_names(graph) do
     reserved_prefixes = ["__branch__:", "__tasks__", "__interrupt__", "__error__", "__barrier__:"]
 
     node_errors =
-      graph.nodes
-      |> Map.keys()
-      |> Enum.filter(fn node ->
-        Enum.any?(reserved_prefixes, &String.starts_with?(node, &1))
-      end)
-      |> Enum.map(&%{kind: :node, name: &1})
+      for node <- Map.keys(graph.nodes),
+          Enum.any?(reserved_prefixes, &String.starts_with?(node, &1)),
+          do: %{kind: :node, name: node}
 
     channel_errors =
-      graph.channels
-      |> Map.keys()
-      |> Enum.map(&to_string/1)
-      |> Enum.filter(fn channel ->
-        channel in ["__tasks__", "__interrupt__", "__error__"] or
-          String.starts_with?(channel, "__branch__:")
-      end)
-      |> Enum.map(&%{kind: :channel, name: &1})
+      for key <- Map.keys(graph.channels),
+          channel = to_string(key),
+          channel in ["__tasks__", "__interrupt__", "__error__"] or String.starts_with?(channel, "__branch__:"),
+          do: %{kind: :channel, name: channel}
 
     node_errors ++ channel_errors
   end
@@ -236,29 +162,8 @@ defmodule BeamWeaver.Graph.Validation do
     |> Enum.sort()
   end
 
-  defp static_unreachable_nodes(_graph, false), do: nil
-  defp static_unreachable_nodes(graph, true), do: unreachable_nodes(graph)
-
-  defp static_dead_end_nodes(_graph, false), do: nil
-  defp static_dead_end_nodes(graph, true), do: dead_end_nodes(graph)
-
   defp dead_end_nodes(graph) do
-    if MapSet.size(graph.finish_points) == 0 do
-      nil
-    else
-      do_dead_end_nodes(graph)
-    end
-  end
-
-  defp do_dead_end_nodes(graph) do
-    reverse =
-      graph
-      |> adjacency()
-      |> Enum.reduce(%{}, fn {source, targets}, acc ->
-        Enum.reduce(targets, acc, fn target, inner ->
-          Map.update(inner, target, [source], &Enum.uniq(&1 ++ [source]))
-        end)
-      end)
+    reverse = add_edges(%{}, for({source, targets} <- adjacency(graph), target <- targets, do: {target, source}))
 
     can_finish =
       graph.finish_points
@@ -288,41 +193,32 @@ defmodule BeamWeaver.Graph.Validation do
 
   defp adjacency(graph) do
     conditional =
-      graph.conditional_edges
-      |> Enum.map(fn {source, spec} ->
-        targets =
-          spec.path_map
-          |> Map.values()
-          |> Enum.reject(&(is_nil(&1) or &1 == "__end__"))
-
-        {source, targets}
+      Map.new(graph.conditional_edges, fn {source, spec} ->
+        {source, Enum.reject(Map.values(spec.path_map), &(is_nil(&1) or &1 == "__end__"))}
       end)
-      |> Map.new()
 
-    waiting =
-      Enum.reduce(graph.waiting_edges, %{}, fn spec, acc ->
-        Enum.reduce(spec.upstream, acc, fn upstream, inner ->
-          Map.update(inner, upstream, [spec.target], &Enum.uniq(&1 ++ [spec.target]))
-        end)
+    guarded =
+      Map.new(graph.guarded_edges, fn {source, specs} ->
+        {source, for(spec <- specs, spec.target != "__end__", do: spec.target)}
       end)
+
+    # A node that routes with `Command` or `Send` lists its targets in
+    # `destinations:`.
+    destinations =
+      for {node, spec} <- graph.nodes,
+          targets = Enum.reject(destinations(spec), &(&1 == "__end__")),
+          targets != [],
+          into: %{},
+          do: {node, targets}
 
     graph.edges
     |> merge_adjacency(conditional)
-    |> merge_adjacency(waiting)
-    |> merge_adjacency(guarded_adjacency(graph))
-    |> merge_adjacency(dependency_adjacency(graph))
-    |> merge_adjacency(destination_adjacency(graph))
-  end
-
-  # A node that routes with `Command` or `Send` lists its targets in
-  # `destinations:`.
-  defp destination_adjacency(graph) do
-    graph.nodes
-    |> Enum.map(fn {node, spec} ->
-      {node, spec |> destinations() |> Enum.reject(&(&1 == "__end__"))}
-    end)
-    |> Enum.reject(fn {_node, targets} -> targets == [] end)
-    |> Map.new()
+    |> merge_adjacency(
+      add_edges(%{}, for(spec <- graph.waiting_edges, upstream <- spec.upstream, do: {upstream, spec.target}))
+    )
+    |> merge_adjacency(guarded)
+    |> merge_adjacency(add_edges(%{}, for({node, spec} <- graph.nodes, dep <- spec.deps, do: {dep, node})))
+    |> merge_adjacency(destinations)
   end
 
   defp nodes_routing_to_end(graph) do
@@ -337,26 +233,8 @@ defmodule BeamWeaver.Graph.Validation do
 
   defp destinations(_spec), do: []
 
-  defp guarded_adjacency(graph) do
-    graph.guarded_edges
-    |> Enum.map(fn {source, specs} ->
-      targets =
-        specs
-        |> Enum.map(& &1.target)
-        |> Enum.reject(&(&1 == "__end__"))
-
-      {source, targets}
-    end)
-    |> Map.new()
-  end
-
-  defp dependency_adjacency(graph) do
-    Enum.reduce(graph.nodes, %{}, fn {node, spec}, acc ->
-      Enum.reduce(spec.deps, acc, fn dep, inner ->
-        Map.update(inner, dep, [node], &Enum.uniq(&1 ++ [node]))
-      end)
-    end)
-  end
+  defp add_edges(adjacency, edges),
+    do: Enum.reduce(edges, adjacency, fn {from, to}, acc -> Map.update(acc, from, [to], &Enum.uniq(&1 ++ [to])) end)
 
   defp merge_adjacency(left, right) do
     Enum.reduce(right, left, fn {source, targets}, acc ->
@@ -365,9 +243,7 @@ defmodule BeamWeaver.Graph.Validation do
   end
 
   defp invalid_managed(graph) do
-    graph.managed
-    |> Enum.reject(fn {_key, managed} -> valid_managed?(managed) end)
-    |> Enum.map(fn {key, managed} -> %{key: key, managed: inspect(managed)} end)
+    for {key, managed} <- graph.managed, not valid_managed?(managed), do: %{key: key, managed: inspect(managed)}
   end
 
   defp valid_managed?(%{__struct__: module}) do

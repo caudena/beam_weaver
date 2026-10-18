@@ -240,6 +240,16 @@ defmodule BeamWeaver.Models.InitializerTest do
     assert bare.details.expected == "deepseek:deepseek-v4-pro"
   end
 
+  test "initializers reject a model option that is not an identifier" do
+    for model <- [[foo: 1], [], %{foo: 1}, 123] do
+      for init <- [&Models.init_chat_model/2, &Models.init_embeddings/2, &Models.init_decision_model/2] do
+        assert {:error, %BeamWeaver.Core.Error{type: :invalid_model}} = init.([model: model], [])
+        assert {:error, %BeamWeaver.Core.Error{type: :invalid_model}} = init.(%{model: model}, [])
+        assert {:error, %BeamWeaver.Core.Error{type: :invalid_model}} = init.([], model: model)
+      end
+    end
+  end
+
   test "init_chat_model rejects discontinued Moonshot identifiers with replacements" do
     assert {:error, error} = Models.init_chat_model("moonshot:kimi-latest")
 

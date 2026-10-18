@@ -47,15 +47,11 @@ defmodule BeamWeaver.Core.Tool.Output do
 
   defp message_content(content) when is_binary(content), do: content
 
-  defp message_content([]), do: stringify_content([])
-
-  defp message_content(content) when is_list(content) do
-    if Enum.all?(content, &message_content_block?/1),
+  defp message_content(content) do
+    if is_list(content) and content != [] and Enum.all?(content, &message_content_block?/1),
       do: content,
-      else: stringify_content(content)
+      else: BeamWeaver.JSON.encode_or_inspect(content)
   end
-
-  defp message_content(content), do: stringify_content(content)
 
   defp message_content_block?(text) when is_binary(text), do: true
 
@@ -67,11 +63,4 @@ defmodule BeamWeaver.Core.Tool.Output do
   end
 
   defp message_content_block?(_block), do: false
-
-  defp stringify_content(content) do
-    case BeamWeaver.JSON.encode(content) do
-      {:ok, json} -> json
-      {:error, _error} -> inspect(content)
-    end
-  end
 end

@@ -14,11 +14,11 @@ defmodule BeamWeaver.TextSplitter.Documents do
   @spec stream_text(term(), String.t() | Enumerable.t()) ::
           {:ok, Enumerable.t()} | {:error, Error.t()}
   def stream_text(splitter, texts) do
+    texts = if is_binary(texts), do: [texts], else: texts
+
     with :ok <- validate(splitter) do
       {:ok,
-       texts
-       |> text_stream()
-       |> Stream.flat_map(fn
+       Stream.flat_map(texts, fn
          text when is_binary(text) -> BeamWeaver.TextSplitter.split_text(splitter, text)
          value -> raise ArgumentError, "expected text, got: #{inspect(value)}"
        end)}
@@ -47,12 +47,7 @@ defmodule BeamWeaver.TextSplitter.Documents do
   def split_file(splitter, path, opts) do
     case File.read(path) do
       {:ok, content} ->
-        metadata =
-          opts
-          |> Keyword.get(:metadata, %{})
-          |> Map.put_new(:source, path)
-
-        split_documents(splitter, [Document.new!(content, metadata: metadata)])
+        split_source(splitter, content, path, opts)
 
       {:error, reason} ->
         {:error,
@@ -71,13 +66,13 @@ defmodule BeamWeaver.TextSplitter.Documents do
     # fetcher.
     with {:ok, _url} <- URLPolicy.validate(url, %{policy | resolve?: false}),
          {:ok, content} <- fetch_url(url, policy, Keyword.get(opts, :fetcher)) do
-      metadata =
-        opts
-        |> Keyword.get(:metadata, %{})
-        |> Map.put_new(:source, url)
-
-      split_documents(splitter, [Document.new!(content, metadata: metadata)])
+      split_source(splitter, content, url, opts)
     end
+  end
+
+  defp split_source(splitter, content, source, opts) do
+    metadata = opts |> Keyword.get(:metadata, %{}) |> Map.put_new(:source, source)
+    split_documents(splitter, [Document.new!(content, metadata: metadata)])
   end
 
   def create_documents(splitter, texts, opts) do
@@ -127,9 +122,6 @@ defmodule BeamWeaver.TextSplitter.Documents do
       %{chunk | id: "#{id}:#{index}", metadata: Map.put_new(chunk.metadata, "parent_id", id)}
     end)
   end
-
-  defp text_stream(text) when is_binary(text), do: [text]
-  defp text_stream(texts), do: texts
 
   def metadata_for_index(metadata, index) when is_list(metadata), do: Enum.at(metadata, index, %{})
   def metadata_for_index(metadata, _index), do: metadata

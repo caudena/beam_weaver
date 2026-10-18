@@ -10,11 +10,7 @@ defmodule BeamWeaver.Graph.Execution.Namespace do
   def normalize(nil), do: []
   def normalize([]), do: []
 
-  def normalize(namespace) when is_binary(namespace) do
-    namespace
-    |> String.split(@separator, trim: true)
-    |> Enum.map(&to_string/1)
-  end
+  def normalize(namespace) when is_binary(namespace), do: String.split(namespace, @separator, trim: true)
 
   def normalize(namespace) when is_atom(namespace), do: [to_string(namespace)]
   def normalize(namespace) when is_list(namespace), do: Enum.map(namespace, &to_string/1)
@@ -27,11 +23,10 @@ defmodule BeamWeaver.Graph.Execution.Namespace do
 
   @spec recast(t() | String.t() | atom() | nil) :: String.t()
   def recast(namespace) do
-    namespace
-    |> normalize()
-    |> Enum.reject(&numeric_segment?/1)
-    |> Enum.map(&strip_task_id/1)
-    |> serialize()
+    Enum.join(
+      for(segment <- normalize(namespace), not numeric_segment?(segment), do: strip_task_id(segment)),
+      @separator
+    )
   end
 
   @spec serialize(t() | String.t() | atom() | nil) :: String.t()

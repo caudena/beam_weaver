@@ -219,7 +219,7 @@ defmodule BeamWeaver.Graph.Execution do
 
   @spec task_path(term()) :: String.t()
   def task_path({node, update, timeout}) do
-    encode_task_path(%{
+    BeamWeaver.JSON.encode_or_inspect(%{
       "node" => to_string(node),
       "update" => normalize_path_value(update),
       "timeout" => normalize_path_value(timeout)
@@ -227,7 +227,7 @@ defmodule BeamWeaver.Graph.Execution do
   end
 
   def task_path({node, update}) do
-    encode_task_path(%{
+    BeamWeaver.JSON.encode_or_inspect(%{
       "node" => to_string(node),
       "update" => normalize_path_value(update)
     })
@@ -237,19 +237,14 @@ defmodule BeamWeaver.Graph.Execution do
   def task_path({node, update, timeout, repeat}) do
     path = %{"node" => to_string(node), "update" => normalize_path_value(update), "repeat" => repeat}
 
-    encode_task_path(if timeout, do: Map.put(path, "timeout", normalize_path_value(timeout)), else: path)
+    BeamWeaver.JSON.encode_or_inspect(
+      if timeout, do: Map.put(path, "timeout", normalize_path_value(timeout)), else: path
+    )
   end
 
   def task_path(path) when is_binary(path), do: path
 
-  def task_path(path), do: encode_task_path(normalize_path_value(path))
-
-  defp encode_task_path(path) do
-    case BeamWeaver.JSON.encode(path) do
-      {:ok, encoded} -> encoded
-      {:error, _reason} -> inspect(path)
-    end
-  end
+  def task_path(path), do: BeamWeaver.JSON.encode_or_inspect(normalize_path_value(path))
 
   defp normalize_path_value(%{__struct__: _module} = value), do: inspect(value)
 

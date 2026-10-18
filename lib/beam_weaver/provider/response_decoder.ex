@@ -23,18 +23,16 @@ defmodule BeamWeaver.Provider.ResponseDecoder do
 
   # A reply that the provider ends with a finish reason that reports a
   # failure fails as it does in a stream (see `StreamFailure`).
-  def json({:ok, %Response{status: status, body: body} = response}, opts)
-      when status in 200..299 do
-    with {:ok, decoded} <- decode_json_body(body, opts) do
-      case StreamFailure.response_failure(decoded) do
-        nil -> {:ok, attach_headers(decoded, response, opts)}
-        {status, failed} -> {:error, http_error(%{response | status: status, body: failed}, opts)}
+  def json(result, opts) do
+    decode(result, opts, fn response ->
+      with {:ok, decoded} <- decode_json_body(response.body, opts) do
+        case StreamFailure.response_failure(decoded) do
+          nil -> {:ok, attach_headers(decoded, response, opts)}
+          {status, failed} -> {:error, http_error(%{response | status: status, body: failed}, opts)}
+        end
       end
-    end
+    end)
   end
-
-  def json({:ok, %Response{} = response}, opts), do: {:error, http_error(response, opts)}
-  def json({:error, error}, opts), do: {:error, transport_error(error, opts)}
 
   defp decode_json_body(body, _opts) when is_map(body), do: {:ok, body}
 
@@ -271,10 +269,9 @@ defmodule BeamWeaver.Provider.ResponseDecoder do
     |> compact_headers()
   end
 
-  @doc "Stores response header metadata on a decoded provider body for message decoding."
-  @spec attach_header_metadata(map(), map()) :: map()
-  def attach_header_metadata(decoded, metadata) when map_size(metadata) == 0, do: decoded
-  def attach_header_metadata(decoded, metadata), do: Map.put(decoded, @header_metadata_key, metadata)
+  # Stores response header metadata on a decoded provider body for message decoding.
+  defp attach_header_metadata(decoded, metadata) when map_size(metadata) == 0, do: decoded
+  defp attach_header_metadata(decoded, metadata), do: Map.put(decoded, @header_metadata_key, metadata)
 
   defp compact_headers(map), do: MapShape.compact(map, [nil, :empty_string, :empty_map])
 

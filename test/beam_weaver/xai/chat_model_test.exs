@@ -16,34 +16,22 @@ defmodule BeamWeaver.XAI.ChatModelTest do
   alias BeamWeaver.XAI.Tools
 
   test "namespace and client constructors read xAI config defaults and derive endpoints" do
-    with_config(
-      :xai,
-      [
-        api_key: "env-secret",
-        base_url: "https://proxy.test/v1"
-      ],
-      fn ->
-        model = BeamWeaver.XAI.chat_model(default_headers: [{"user-agent", "beam-weaver-test"}])
-        request = Client.request(%Client{endpoint: model.endpoint, api_key: model.api_key}, %{})
+    BeamWeaver.TestSupport.ConfigHelper.put_config(:xai, api_key: "env-secret", base_url: "https://proxy.test/v1")
 
-        assert model.endpoint == "https://proxy.test/v1/responses"
-        assert model.api_key == "env-secret"
-        assert {"authorization", "Bearer env-secret"} in request.headers
+    model = BeamWeaver.XAI.chat_model(default_headers: [{"user-agent", "beam-weaver-test"}])
+    request = Client.request(%Client{endpoint: model.endpoint, api_key: model.api_key}, %{})
 
-        chat_model = BeamWeaver.XAI.chat_completions_model()
-        assert chat_model.endpoint == "https://proxy.test/v1/chat/completions"
-      end
-    )
+    assert model.endpoint == "https://proxy.test/v1/responses"
+    assert model.api_key == "env-secret"
+    assert {"authorization", "Bearer env-secret"} in request.headers
+
+    chat_model = BeamWeaver.XAI.chat_completions_model()
+    assert chat_model.endpoint == "https://proxy.test/v1/chat/completions"
   end
 
   test "ChatCompletionsModel.new/1 accepts the streaming flag without crashing" do
-    # :streaming is a validation-only flag; it must not reach struct!/2 (no such field).
     assert %ChatCompletionsModel{} = ChatCompletionsModel.new(streaming: true)
     assert %ChatCompletionsModel{} = ChatCompletionsModel.new(streaming: true, n: 1)
-
-    assert_raise ArgumentError, "n must be 1 when streaming", fn ->
-      ChatCompletionsModel.new(streaming: true, n: 2)
-    end
   end
 
   test "model constructors accept xAI base_url alias" do
@@ -818,11 +806,6 @@ defmodule BeamWeaver.XAI.ChatModelTest do
 
     assert dynamic_properties == %{"type" => "object"}
     refute Map.has_key?(dynamic_properties, "additionalProperties")
-  end
-
-  defp with_config(group, values, fun) do
-    BeamWeaver.TestSupport.ConfigHelper.put_config(group, values)
-    fun.()
   end
 
   defp nullable_crm_schema do

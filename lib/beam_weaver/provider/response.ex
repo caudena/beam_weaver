@@ -52,13 +52,14 @@ defmodule BeamWeaver.Provider.Response do
   def from_message(model, %Message{} = message, opts \\ []) do
     provider = provider(model, message, opts)
     headers = normalize_headers(message.response_metadata)
+    usage = normalize_usage(message.usage_metadata, message.response_metadata)
 
     %__MODULE__{
       message: message,
-      usage: normalize_usage(message.usage_metadata, message.response_metadata),
+      usage: usage,
       limits: normalize_limits(model, message.response_metadata),
       model: normalize_model(model, message, provider),
-      reasoning: normalize_reasoning(model, message, opts),
+      reasoning: normalize_reasoning(model, message, usage, opts),
       tooling: normalize_tooling(message, message.response_metadata),
       safety: normalize_safety(message.response_metadata),
       grounding: normalize_grounding(message.response_metadata),
@@ -155,7 +156,7 @@ defmodule BeamWeaver.Provider.Response do
   end
 
   defp execution_replay(%Message{role: :assistant} = message, model, opts) do
-    Replay.project(message, replay_binding(message, model, opts))
+    Replay.project(message, replay_binding(provider(model, message, opts), model, opts))
   end
 
   defp execution_replay(%Message{}, _model, _opts), do: {:ok, nil}
@@ -174,9 +175,6 @@ defmodule BeamWeaver.Provider.Response do
   end
 
   defp replay_projection(_message, _provider, _model, _opts), do: nil
-
-  defp replay_binding(%Message{} = message, model, opts),
-    do: replay_binding(provider(model, message, opts), model, opts)
 
   defp replay_binding(provider, model, opts) do
     Keyword.get(opts, :replay_binding, %{
@@ -311,8 +309,7 @@ defmodule BeamWeaver.Provider.Response do
     |> reject_empty_values()
   end
 
-  defp normalize_reasoning(model, %Message{} = message, opts) do
-    usage = normalize_usage(message.usage_metadata, message.response_metadata)
+  defp normalize_reasoning(model, %Message{} = message, usage, opts) do
     metadata = message.response_metadata || %{}
 
     %{
@@ -631,13 +628,7 @@ defmodule BeamWeaver.Provider.Response do
   defp normalize_headers(%{headers: headers}) when is_map(headers), do: Map.filter(headers, &is_atom(elem(&1, 0)))
   defp normalize_headers(_metadata), do: %{}
 
-  defp existing_limits(metadata) when is_map(metadata) do
-    case metadata[:limits] do
-      limits when is_map(limits) -> limits
-      _limits -> %{}
-    end
-  end
-
+  defp existing_limits(%{limits: %{} = limits}), do: limits
   defp existing_limits(_metadata), do: %{}
 
   defp effort_from_config(config) when is_list(config), do: Keyword.get(config, :effort)
@@ -683,6 +674,27 @@ defmodule BeamWeaver.Provider.Response do
   defp sum_present(nil, right), do: right
   defp sum_present(left, right), do: left + right
 
+  # Provider usage arrives as JSON: its known keys become atoms, and every
+  # spelling of the token details one name.
+  @usage_keys Map.merge(
+                Map.new(
+                  ~w(input_tokens prompt_tokens output_tokens completion_tokens total_tokens total input_token_details
+                     output_token_details cache_read cache_read_tokens cache_read_input_tokens cache_creation
+                     cache_creation_tokens cache_creation_input_tokens cache_write cache_write_tokens
+                     ephemeral_5m_input_tokens ephemeral_1h_input_tokens reasoning reasoning_tokens thinking_tokens
+                     service_tier inference_geo)a,
+                  &{Atom.to_string(&1), &1}
+                ),
+                %{
+                  "input_tokens_details" => :input_token_details,
+                  "prompt_token_details" => :input_token_details,
+                  "prompt_tokens_details" => :input_token_details,
+                  "output_tokens_details" => :output_token_details,
+                  "completion_token_details" => :output_token_details,
+                  "completion_tokens_details" => :output_token_details
+                }
+              )
+
   defp usage_key_map(map) when is_map(map) do
     map
     |> Enum.flat_map(fn
@@ -702,36 +714,7 @@ defmodule BeamWeaver.Provider.Response do
   defp usage_key_value(value), do: value
 
   defp usage_key(key) when is_atom(key), do: key
-  defp usage_key("input_tokens"), do: :input_tokens
-  defp usage_key("prompt_tokens"), do: :prompt_tokens
-  defp usage_key("output_tokens"), do: :output_tokens
-  defp usage_key("completion_tokens"), do: :completion_tokens
-  defp usage_key("total_tokens"), do: :total_tokens
-  defp usage_key("total"), do: :total
-  defp usage_key("input_token_details"), do: :input_token_details
-  defp usage_key("input_tokens_details"), do: :input_token_details
-  defp usage_key("prompt_token_details"), do: :input_token_details
-  defp usage_key("prompt_tokens_details"), do: :input_token_details
-  defp usage_key("output_token_details"), do: :output_token_details
-  defp usage_key("output_tokens_details"), do: :output_token_details
-  defp usage_key("completion_token_details"), do: :output_token_details
-  defp usage_key("completion_tokens_details"), do: :output_token_details
-  defp usage_key("cache_read"), do: :cache_read
-  defp usage_key("cache_read_tokens"), do: :cache_read_tokens
-  defp usage_key("cache_read_input_tokens"), do: :cache_read_input_tokens
-  defp usage_key("cache_creation"), do: :cache_creation
-  defp usage_key("cache_creation_tokens"), do: :cache_creation_tokens
-  defp usage_key("cache_creation_input_tokens"), do: :cache_creation_input_tokens
-  defp usage_key("cache_write"), do: :cache_write
-  defp usage_key("cache_write_tokens"), do: :cache_write_tokens
-  defp usage_key("ephemeral_5m_input_tokens"), do: :ephemeral_5m_input_tokens
-  defp usage_key("ephemeral_1h_input_tokens"), do: :ephemeral_1h_input_tokens
-  defp usage_key("reasoning"), do: :reasoning
-  defp usage_key("reasoning_tokens"), do: :reasoning_tokens
-  defp usage_key("thinking_tokens"), do: :thinking_tokens
-  defp usage_key("service_tier"), do: :service_tier
-  defp usage_key("inference_geo"), do: :inference_geo
-  defp usage_key(_key), do: nil
+  defp usage_key(key), do: Map.get(@usage_keys, key)
 
   defp put_if_absent(map, _key, nil), do: map
   defp put_if_absent(map, _key, ""), do: map

@@ -28,6 +28,7 @@ defmodule BeamWeaver.Tools.Filesystem do
   alias BeamWeaver.Core.Tool
   alias BeamWeaver.Filesystem
   alias BeamWeaver.Filesystem.Executable
+  alias BeamWeaver.Filesystem.FileDataUtils
   alias BeamWeaver.Filesystem.Permission, as: FilesystemPermission
   alias BeamWeaver.Filesystem.State
   alias BeamWeaver.Graph.Command
@@ -84,8 +85,7 @@ defmodule BeamWeaver.Tools.Filesystem do
       edit_tool(backend, permissions, state_key),
       glob_tool(backend, permissions),
       grep_tool(backend, permissions)
-    ]
-    |> maybe_add_execute(backend)
+    ] ++ if(Executable.executable?(backend), do: [execute_tool(backend)], else: [])
   end
 
   defp ls_tool(backend, permissions) do
@@ -187,8 +187,11 @@ defmodule BeamWeaver.Tools.Filesystem do
 
   defp file_line_count(backend, path, opts) do
     case Filesystem.download_files(backend, [path], opts) do
-      [%Filesystem.DownloadResult{error: nil, content: content}] when is_binary(content) -> line_count(content)
-      _error -> nil
+      [%Filesystem.DownloadResult{error: nil, content: content}] when is_binary(content) ->
+        length(FileDataUtils.lines(content))
+
+      _error ->
+        nil
     end
   end
 
@@ -266,22 +269,17 @@ defmodule BeamWeaver.Tools.Filesystem do
 
   # The first lines that fit in `budget` characters with their line breaks,
   # and the lines left over.
-  defp fitting_lines(lines, budget) do
-    {count, _chars} =
-      Enum.reduce_while(lines, {0, -1}, fn line, {count, chars} ->
-        chars = chars + String.length(line) + 1
-        if chars <= budget, do: {:cont, {count + 1, chars}}, else: {:halt, {count, chars}}
-      end)
+  defp fitting_lines(lines, budget), do: Enum.split(lines, fitting_count(lines, -1, budget))
 
-    Enum.split(lines, count)
-  end
-
-  # Lines as `read_file` counts them: a final newline ends the last line.
-  defp line_count(""), do: 0
-
-  defp line_count(content) do
-    lines = content |> String.replace("\r\n", "\n") |> String.replace("\r", "\n") |> String.split("\n")
-    if List.last(lines) == "", do: length(lines) - 1, else: length(lines)
+  # How many of the first `items` fit in `budget` characters, after `used`,
+  # with one separator each.
+  defp fitting_count(items, used, budget) do
+    items
+    |> Enum.reduce_while({0, used}, fn item, {count, chars} ->
+      chars = chars + String.length(item) + 1
+      if chars <= budget, do: {:cont, {count + 1, chars}}, else: {:halt, {count, chars}}
+    end)
+    |> elem(0)
   end
 
   defp write_tool(backend, permissions, state_key) do
@@ -455,38 +453,31 @@ defmodule BeamWeaver.Tools.Filesystem do
   defp regex_like?(pattern) when is_binary(pattern), do: Regex.match?(@regex_signal, pattern)
   defp regex_like?(_pattern), do: false
 
-  defp maybe_add_execute(tools, backend) do
-    if Executable.executable?(backend) do
-      tools ++
-        [
-          tool(
-            "execute",
-            "Execute a shell command inside the configured sandbox backend. " <>
-              "Returns the command's output followed by its exit code.",
-            %{
-              "type" => "object",
-              "properties" => %{
-                "command" => %{"type" => "string"},
-                "timeout" => %{"type" => "integer", "minimum" => 1, "maximum" => 3600}
-              },
-              "required" => ["command"]
-            },
-            fn input, _opts ->
-              case normalize_timeout(value(input, :timeout)) do
-                {:ok, opts} ->
-                  backend
-                  |> Executable.execute(value(input, :command, ""), opts)
-                  |> execute_result(Keyword.get(opts, :timeout), value(input, :tool_call_id))
+  defp execute_tool(backend) do
+    tool(
+      "execute",
+      "Execute a shell command inside the configured sandbox backend. " <>
+        "Returns the command's output followed by its exit code.",
+      %{
+        "type" => "object",
+        "properties" => %{
+          "command" => %{"type" => "string"},
+          "timeout" => %{"type" => "integer", "minimum" => 1, "maximum" => 3600}
+        },
+        "required" => ["command"]
+      },
+      fn input, _opts ->
+        case normalize_timeout(value(input, :timeout)) do
+          {:ok, opts} ->
+            backend
+            |> Executable.execute(value(input, :command, ""), opts)
+            |> execute_result(Keyword.get(opts, :timeout), value(input, :tool_call_id))
 
-                {:error, error} ->
-                  "Error: #{error}"
-              end
-            end
-          )
-        ]
-    else
-      tools
-    end
+          {:error, error} ->
+            "Error: #{error}"
+        end
+      end
+    )
   end
 
   # A command that ran answers with a tool message whose metadata has its exit
@@ -573,10 +564,8 @@ defmodule BeamWeaver.Tools.Filesystem do
       |> FilesystemPermission.filter_paths(:read, Enum.map(entries, & &1.path), backend, opts)
       |> MapSet.new()
 
-    entries
-    |> Enum.filter(&MapSet.member?(allowed, &1.path))
-    |> Enum.map(&(&1 |> json_entry() |> BeamWeaver.JSON.encode!()))
-    |> json_list(narrow)
+    encoded = for entry <- entries, MapSet.member?(allowed, entry.path), do: BeamWeaver.JSON.encode!(json_entry(entry))
+    json_list(encoded, narrow)
   end
 
   defp render_allowed(%{error: error}, _field, _backend, _permissions, _opts, _narrow), do: "Error: #{error}"
@@ -592,7 +581,7 @@ defmodule BeamWeaver.Tools.Filesystem do
     if String.length(json) <= @max_result_chars do
       json
     else
-      shown = fitting_entries(encoded, @max_result_chars - @truncation_note_chars)
+      shown = Enum.take(encoded, fitting_count(encoded, 2, @max_result_chars - @truncation_note_chars))
 
       json_array(shown) <>
         "\n\n[Results truncated: showing the first #{length(shown)} of #{length(encoded)} results. #{narrow}]"
@@ -600,16 +589,6 @@ defmodule BeamWeaver.Tools.Filesystem do
   end
 
   defp json_array(encoded), do: "[" <> Enum.join(encoded, ",") <> "]"
-
-  defp fitting_entries(encoded, budget) do
-    encoded
-    |> Enum.reduce_while({[], 2}, fn entry, {shown, chars} ->
-      chars = chars + String.length(entry) + 1
-      if chars <= budget, do: {:cont, {[entry | shown], chars}}, else: {:halt, {shown, chars}}
-    end)
-    |> elem(0)
-    |> Enum.reverse()
-  end
 
   defp write_command(
          tool_name,

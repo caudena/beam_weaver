@@ -59,7 +59,7 @@ defmodule BeamWeaver.Graph.Messages do
 
     case last_remove_all_index(right) do
       nil -> merge_messages(left, right)
-      index -> right |> Enum.drop(index + 1) |> reject_remove_markers()
+      index -> right |> Enum.drop(index + 1) |> Enum.reject(&match?(%Remove{}, &1))
     end
     |> maybe_format(Keyword.get(opts, :format))
   end
@@ -81,15 +81,10 @@ defmodule BeamWeaver.Graph.Messages do
         index -> {[], Enum.drop(write_messages, index + 1)}
       end
 
-    {result, index} =
-      Enum.reduce(Enum.with_index(state_messages), {state_messages, %{}}, fn {message, index}, {messages, acc} ->
-        if is_binary(message.id),
-          do: {messages, Map.put(acc, message.id, index)},
-          else: {messages, acc}
-      end)
+    index = for {%{id: id}, position} <- Enum.with_index(state_messages), is_binary(id), into: %{}, do: {id, position}
 
     {result, _index} =
-      Enum.reduce(write_messages, {result, index}, fn
+      Enum.reduce(write_messages, {state_messages, index}, fn
         %Remove{id: id}, {messages, index} ->
           case Map.fetch(index, id) do
             {:ok, position} ->
@@ -193,10 +188,6 @@ defmodule BeamWeaver.Graph.Messages do
       end)
 
     Enum.reject(merged, &MapSet.member?(removals, &1.id))
-  end
-
-  defp reject_remove_markers(messages) do
-    Enum.reject(messages, &match?(%Remove{}, &1))
   end
 
   defp maybe_format(messages, nil), do: messages

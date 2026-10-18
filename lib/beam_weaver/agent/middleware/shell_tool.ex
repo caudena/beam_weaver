@@ -90,7 +90,7 @@ defmodule BeamWeaver.Agent.Middleware.ShellTool do
 
   @impl true
   def before_agent(%__MODULE__{} = middleware, state, runtime) do
-    case existing_session(state, middleware.state_key) do
+    case Map.get(state, middleware.state_key) do
       pid when is_pid(pid) ->
         %{middleware.state_key => pid}
 
@@ -107,7 +107,7 @@ defmodule BeamWeaver.Agent.Middleware.ShellTool do
     # for this run's thread (started lazily by the tool after a resume, when
     # before_agent did not run to put a pid in state). They are the same
     # process on an ordinary run, so stopping is idempotent.
-    stop_session(existing_session(state, middleware.state_key))
+    stop_session(Map.get(state, middleware.state_key))
     stop_session(keyed_session(runtime, middleware))
     %{middleware.state_key => nil}
   end
@@ -149,7 +149,4 @@ defmodule BeamWeaver.Agent.Middleware.ShellTool do
 
   defp runtime_config(%{config: config}), do: config
   defp runtime_config(_runtime), do: nil
-
-  defp existing_session(state, key) when is_map(state), do: Map.get(state, key)
-  defp existing_session(_state, _key), do: nil
 end

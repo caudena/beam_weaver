@@ -38,7 +38,7 @@ defmodule BeamWeaver.Graph.Execution.TaskRun do
       spec: plan.spec,
       prepared: plan.prepared,
       state: node_state(plan.node_state),
-      error: Map.get(plan, :error),
+      error: plan.error,
       timeout: plan.timeout,
       scratchpad: plan.scratchpad
     }
@@ -62,7 +62,7 @@ defmodule BeamWeaver.Graph.Execution.TaskRun do
 
   defp node_state(state), do: state
 
-  defp inject_managed(state, managed, _runtime) when managed in [%{}, nil], do: state
+  defp inject_managed(state, managed, _runtime) when managed == %{}, do: state
   defp inject_managed(state, _managed, _runtime) when not is_map(state), do: state
 
   defp inject_managed(state, managed, runtime) do

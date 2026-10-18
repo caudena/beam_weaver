@@ -41,7 +41,7 @@ defmodule BeamWeaver.Migrations.Postgres do
         initial == :infinity ->
           :ok
 
-        initial == 0 ->
+        initial == 0 and target >= @initial_version ->
           change(spec, @initial_version..target, :up)
           record_version(opts, spec, target)
 
@@ -209,8 +209,7 @@ defmodule BeamWeaver.Migrations.Postgres do
 
     selector
     |> normalize_selector(retired)
-    |> Enum.map(&normalize_spec(&1, opts))
-    |> Enum.map(&Map.put(&1, :prefix, Keyword.get(opts, :prefix, @default_prefix)))
+    |> Enum.map(&Map.put(normalize_spec(&1, opts), :prefix, Keyword.get(opts, :prefix, @default_prefix)))
   end
 
   defp normalize_selector(:all, retired), do: @adapter_order ++ retired

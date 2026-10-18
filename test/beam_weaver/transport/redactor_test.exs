@@ -133,6 +133,22 @@ defmodule BeamWeaver.Transport.RedactorTest do
     assert same?(redacted.settings, request.settings)
   end
 
+  test "redacts the values under keys that aren't strings or atoms, such as tuples" do
+    map = %{{:a, 1} => "x", {:b, 2} => %{api_key: "nested-secret"}, 3 => "Bearer live-token"}
+
+    expected = %{
+      {:a, 1} => "x",
+      {:b, 2} => %{api_key: Redactor.redacted()},
+      3 => "Bearer " <> Redactor.redacted()
+    }
+
+    assert Redactor.redact(map) == expected
+    assert BeamWeaver.Tracing.Redactor.redact(map) == expected
+
+    assert Redactor.redact([{{:a, 1}, "x"}, {{:b, 2}, "Bearer live-token"}, {~c"authorization", "secret"}]) ==
+             [{{:a, 1}, "x"}, {{:b, 2}, "Bearer " <> Redactor.redacted()}, {"authorization", Redactor.redacted()}]
+  end
+
   test "runs no regular expression over long text whose = and @ are not part of a secret" do
     text =
       String.duplicate(

@@ -245,9 +245,12 @@ VectorStore.get_by_ids(store, ["gift-cards"])
 
 A `filter:` map matches metadata. A plain value must be equal, and an operator
 map compares: `%{"year" => %{"$gte" => 2025}}`. The operators are `$eq`, `$ne`,
-`$gt`, `$gte`, `$lt`, `$lte`, `$in`, `$nin`, `$contain` and `$like`. Combine
-filters with `"$and"`, `"$or"` and `"$not"`, and reach into nested maps with a
-dotted key such as `"product.sku"`.
+`$gt`, `$gte`, `$lt`, `$lte`, `$in`, `$nin`, `$contain` and `$like`.
+`$contain` matches a substring of a string, ignoring case, or an element of a
+list; `$like` matches a whole string, ignoring case, where `%` is any run of
+characters and `_` is one character. Combine filters with `"$and"`, `"$or"`
+and `"$not"`, and reach into nested maps with a dotted key such as
+`"product.sku"`.
 
 ### Postgres
 

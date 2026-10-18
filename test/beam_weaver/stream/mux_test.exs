@@ -237,15 +237,20 @@ defmodule BeamWeaver.StreamMuxTest do
   end
 
   test "drop_newest backpressure policy reports dropped producer events" do
-    stream =
+    events =
       Stream.mux(
         [overflowing_producer(self())],
         max_buffer: 0,
         overflow: :drop_newest
       )
+      |> Enum.to_list()
 
-    Enum.to_list(stream)
     assert_receive {:emit_result, {:dropped, :newest}}
+
+    assert Enum.any?(
+             events,
+             &match?(%Envelope{event: %Events.Debug{payload: %{type: :backpressure_drop, dropped: :newest}}}, &1)
+           )
   end
 
   test "drop_oldest backpressure policy drops newest when buffer cannot hold any items" do

@@ -35,10 +35,10 @@ defmodule BeamWeaver.Tool.Schema.Refs do
   defp remove_titles(schema, properties_context?) when is_map(schema) do
     Enum.reduce(schema, %{}, fn {key, value}, acc ->
       cond do
-        title_key?(key) and not properties_context? ->
+        key in [:title, "title"] and not properties_context? ->
           acc
 
-        properties_key?(key) and is_map(value) ->
+        key in [:properties, "properties"] and is_map(value) ->
           Map.put(acc, key, remove_titles(value, true))
 
         true ->
@@ -49,11 +49,8 @@ defmodule BeamWeaver.Tool.Schema.Refs do
 
   defp remove_titles(value, _properties_context?), do: value
 
-  defp title_key?(key), do: key in [:title, "title"]
-  defp properties_key?(key), do: key in [:properties, "properties"]
-
   defp dereference_ref(value, ref, root, skip_keys, seen_refs) do
-    rest = delete_ref(value)
+    rest = Map.drop(value, ["$ref", :"$ref"])
 
     with {:ok, rest} <- dereference_map(rest, root, skip_keys, seen_refs),
          {:ok, resolved} <- resolve_or_break_cycle(ref, root, skip_keys, seen_refs) do
@@ -61,7 +58,7 @@ defmodule BeamWeaver.Tool.Schema.Refs do
     end
   end
 
-  defp resolve_or_break_cycle(ref, root, skip_keys, seen_refs) when is_binary(ref) do
+  defp resolve_or_break_cycle(ref, root, skip_keys, seen_refs) do
     if ref in seen_refs do
       {:ok, %{}}
     else
@@ -91,12 +88,6 @@ defmodule BeamWeaver.Tool.Schema.Refs do
   defp fetch_ref(%{"$ref" => ref}) when is_binary(ref), do: {:ok, ref}
   defp fetch_ref(%{:"$ref" => ref}) when is_binary(ref), do: {:ok, ref}
   defp fetch_ref(_value), do: :error
-
-  defp delete_ref(map) do
-    map
-    |> Map.delete("$ref")
-    |> Map.delete(:"$ref")
-  end
 
   defp skip_key?(key, skip_keys), do: to_string(key) in skip_keys
 

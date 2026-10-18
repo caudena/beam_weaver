@@ -334,12 +334,7 @@ defmodule BeamWeaver.Agent.Middleware.HumanInTheLoop do
   defp with_notice(content, %__MODULE__{edit_notice: nil}, _edit), do: content
 
   defp with_notice(content, middleware, edit) do
-    args =
-      case BeamWeaver.JSON.encode(edit.args) do
-        {:ok, json} -> json
-        {:error, _error} -> inspect(edit.args)
-      end
-
+    args = BeamWeaver.JSON.encode_or_inspect(edit.args)
     notice = "#{middleware.edit_notice} Executed instead: #{edit.name} with arguments #{args}."
 
     case content do
@@ -356,35 +351,28 @@ defmodule BeamWeaver.Agent.Middleware.HumanInTheLoop do
     end
   end
 
+  # The reviewable calls of the turn, or only the first one in `:first` mode.
   defp review_requests(middleware, calls, state, runtime) do
-    reducer = fn {call, idx}, acc ->
-      name = tool_call_name(call)
+    reviews =
+      calls
+      |> Stream.with_index()
+      |> Stream.flat_map(fn {call, idx} ->
+        config = Map.get(middleware.interrupt_on, tool_call_name(call))
 
-      case Map.get(middleware.interrupt_on, name) do
-        nil ->
-          {:cont, acc}
+        if config && reviewable?(config, call, state, runtime) do
+          {action_request, review_config} = create_action_and_config(middleware, call, config, state, runtime)
+          [{action_request, review_config, {idx, config}}]
+        else
+          []
+        end
+      end)
+      |> Enum.take(if middleware.interrupt_mode == :first, do: 1, else: length(calls))
 
-        config ->
-          if reviewable?(config, call, state, runtime) do
-            {action_request, review_config} =
-              create_action_and_config(middleware, call, config, state, runtime)
-
-            acc = %{
-              action_requests: acc.action_requests ++ [action_request],
-              review_configs: acc.review_configs ++ [review_config],
-              interrupt_indices: acc.interrupt_indices ++ [{idx, config}]
-            }
-
-            if middleware.interrupt_mode == :first, do: {:halt, acc}, else: {:cont, acc}
-          else
-            {:cont, acc}
-          end
-      end
-    end
-
-    calls
-    |> Enum.with_index()
-    |> Enum.reduce_while(%{action_requests: [], review_configs: [], interrupt_indices: []}, reducer)
+    %{
+      action_requests: Enum.map(reviews, &elem(&1, 0)),
+      review_configs: Enum.map(reviews, &elem(&1, 1)),
+      interrupt_indices: Enum.map(reviews, &elem(&1, 2))
+    }
   end
 
   defp reviewable?(config, call, state, runtime) do
@@ -399,7 +387,7 @@ defmodule BeamWeaver.Agent.Middleware.HumanInTheLoop do
 
   defp create_action_and_config(middleware, call, config, state, runtime) do
     name = tool_call_name(call)
-    args = tool_call_args(call)
+    args = Map.get(call, :args, %{})
 
     description =
       case Map.get(config, :description) do
@@ -449,25 +437,16 @@ defmodule BeamWeaver.Agent.Middleware.HumanInTheLoop do
   end
 
   defp apply_decisions(middleware, ai_message, calls, interrupt_indices, decisions) do
-    decision_by_index =
-      interrupt_indices
-      |> Enum.zip(decisions)
-      |> Map.new(fn {{idx, config}, decision} -> {idx, {config, decision}} end)
+    interrupt_indices
+    |> Enum.zip(decisions)
+    |> Enum.reduce_while({:ok, [], %{}}, fn {{idx, config}, decision}, {:ok, synthetic, edits} ->
+      call = Enum.at(calls, idx)
 
-    calls
-    |> Enum.with_index()
-    |> Enum.reduce_while({:ok, [], %{}}, fn {call, idx}, {:ok, synthetic, edits} ->
-      case Map.fetch(decision_by_index, idx) do
-        :error ->
-          {:cont, {:ok, synthetic, edits}}
-
-        {:ok, {config, decision}} ->
-          case process_decision(middleware, decision, call, config) do
-            {:ok, {:edit, edit}} -> {:cont, {:ok, synthetic, Map.put(edits, Helpers.tool_call_id(call), edit)}}
-            {:ok, :approve} -> {:cont, {:ok, synthetic, edits}}
-            {:ok, %Message{} = message} -> {:cont, {:ok, synthetic ++ [message], edits}}
-            {:error, %Error{} = error} -> {:halt, {:error, error}}
-          end
+      case process_decision(middleware, decision, call, config) do
+        {:ok, {:edit, edit}} -> {:cont, {:ok, synthetic, Map.put(edits, Helpers.tool_call_id(call), edit)}}
+        {:ok, :approve} -> {:cont, {:ok, synthetic, edits}}
+        {:ok, %Message{} = message} -> {:cont, {:ok, synthetic ++ [message], edits}}
+        {:error, %Error{} = error} -> {:halt, {:error, error}}
       end
     end)
     |> case do
@@ -689,10 +668,7 @@ defmodule BeamWeaver.Agent.Middleware.HumanInTheLoop do
   defp decision_atom(value) when is_binary(value), do: Enum.find(@decisions, &(Atom.to_string(&1) == value))
   defp decision_atom(_value), do: nil
 
-  defp decision_message(%Decision{message: message}), do: message
   defp decision_message(decision), do: Map.get(decision, :message, Map.get(decision, "message"))
 
   defp tool_call_name(call), do: Map.get(call, :name)
-
-  defp tool_call_args(call), do: Map.get(call, :args, %{})
 end

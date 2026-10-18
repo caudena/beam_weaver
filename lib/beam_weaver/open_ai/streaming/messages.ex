@@ -7,6 +7,7 @@ defmodule BeamWeaver.OpenAI.Streaming.Messages do
   alias BeamWeaver.Core.Error
   alias BeamWeaver.Core.Messages
   alias BeamWeaver.OpenAI.Streaming.Lifecycle
+  alias BeamWeaver.Provider.OpenAICompatibleStreaming
   alias BeamWeaver.Stream
   alias BeamWeaver.Stream.Events
 
@@ -33,36 +34,23 @@ defmodule BeamWeaver.OpenAI.Streaming.Messages do
   end
 
   def typed_events(parsed_events) when is_list(parsed_events) do
-    message_events =
+    chunks =
       parsed_events
       |> positioned_message_chunks()
-      |> Enum.flat_map(fn {position, chunk} ->
-        chunk
-        |> chunk_to_events()
-        |> Enum.map(&{position, &1})
-      end)
+      |> Enum.group_by(fn {position, _chunk} -> position end, fn {_position, chunk} -> chunk end)
 
-    {event_groups, _remaining_message_events} =
+    # A Chat Completions stream can send the finish reason and the usage in
+    # separate chunks, each with its `Done`; the events end with one.
+    {done, events} =
       parsed_events
       |> Enum.with_index()
-      |> Enum.map_reduce(message_events, fn {event, position}, pending_message_events ->
-        {current_message_events, remaining_message_events} =
-          Enum.split_while(pending_message_events, fn {event_position, _event} ->
-            event_position == position
-          end)
-
-        events =
-          Enum.map(current_message_events, fn {_position, event} -> event end) ++
-            custom_events(event) ++ done_event(event)
-
-        {events, remaining_message_events}
+      |> Enum.flat_map(fn {event, position} ->
+        Enum.flat_map(Map.get(chunks, position, []), &chunk_to_events/1) ++ custom_events(event) ++ done_event(event)
       end)
+      |> Enum.map(&Stream.envelope(&1, metadata: %{provider: :openai}))
+      |> Enum.split_with(&match?(%Stream.Envelope{event: %Events.Done{}}, &1))
 
-    event_groups
-    |> List.flatten()
-    |> Enum.map(fn event ->
-      Stream.envelope(event, metadata: %{provider: :openai})
-    end)
+    events ++ OpenAICompatibleStreaming.merge_done(done)
   end
 
   def typed_events(_body), do: []
@@ -190,13 +178,10 @@ defmodule BeamWeaver.OpenAI.Streaming.Messages do
         do: [%Events.Token{text: chunk.content}],
         else: []
 
-    tool_call_events =
-      Enum.map(chunk.tool_call_chunks || [], &%Events.ToolCallChunk{chunk: &1})
+    tool_call_events = Enum.map(chunk.tool_call_chunks, &%Events.ToolCallChunk{chunk: &1})
 
     token_events ++ tool_call_events ++ [%Events.MessageChunk{chunk: chunk}]
   end
-
-  defp chunk_to_events(chunk), do: [%Events.MessageChunk{chunk: chunk}]
 
   defp custom_events(%{"data" => data} = event) when is_map(data) do
     if Lifecycle.typed_custom_event?(data) do

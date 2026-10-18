@@ -1,6 +1,7 @@
 defmodule BeamWeaver.Checkpoint.Batch do
   @moduledoc false
 
+  alias BeamWeaver.Checkpoint.PendingWrite
   alias BeamWeaver.Core.Error
 
   @max_entries 1_000
@@ -44,6 +45,28 @@ defmodule BeamWeaver.Checkpoint.Batch do
   end
 
   def entry(_entry), do: invalid("checkpoint batch entries must be maps")
+
+  # One pending write of an entry: a `PendingWrite`, `{task_id, channel, value,
+  # path}`, `{task_id, channel, value}` or `{channel, value}`. A write without
+  # its own task id or path takes the entry's `write_opts` ones, and only a
+  # `PendingWrite` brings its own index.
+  @spec write(term(), String.t(), String.t()) ::
+          {:ok, String.t(), non_neg_integer() | nil, String.t(), term(), String.t()} | :error
+  def write(%PendingWrite{} = write, _task, _path),
+    do: {:ok, write.task_id, write.index, to_string(write.channel), write.value, write.path || ""}
+
+  def write({task, channel, value, path}, _default_task, _default_path)
+      when is_binary(task),
+      do: {:ok, task, nil, to_string(channel), value, to_string(path || "")}
+
+  def write({task, channel, value}, _default_task, default_path)
+      when is_binary(task),
+      do: {:ok, task, nil, to_string(channel), value, to_string(default_path || "")}
+
+  def write({channel, value}, task, path),
+    do: {:ok, task, nil, to_string(channel), value, to_string(path || "")}
+
+  def write(_write, _task, _path), do: :error
 
   def fork_entries(lineage, target_thread_id) when is_binary(target_thread_id) do
     Enum.map(lineage, fn tuple ->

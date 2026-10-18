@@ -68,8 +68,10 @@ defmodule BeamWeaver.Google.StreamingTest do
         event
       end)
 
-    assert [%Events.Custom{}, %Events.Message{message: message}, %Events.Done{result: response}] = events
+    assert [%Events.Custom{}, %Events.Message{message: message}, %Events.Done{result: response, usage: usage}] = events
     assert {:ok, ^message} = Messages.response_to_message(response)
+    assert %{} = usage
+    assert usage == response["usageMetadata"]
     assert message.content == ""
 
     assert [%{id: "call-ping", name: "benchmark_ping", args: %{"value" => "ping"}, thought_signature: "sig-call-ping"}] =

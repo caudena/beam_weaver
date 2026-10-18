@@ -114,7 +114,7 @@ defmodule BeamWeaver.Graph.Execution.Stream do
     end
   end
 
-  @spec task_event(atom(), String.t(), term(), non_neg_integer(), String.t(), String.t() | nil) ::
+  @spec task_event(atom(), String.t(), term(), non_neg_integer(), String.t(), String.t()) ::
           {:task, Events.Task.t()}
   def task_event(kind, node, payload, step, task_id, path) do
     {:task,
@@ -124,7 +124,7 @@ defmodule BeamWeaver.Graph.Execution.Stream do
        payload: payload,
        step: step,
        task_id: task_id,
-       path: path || ""
+       path: path
      }}
   end
 
@@ -159,24 +159,12 @@ defmodule BeamWeaver.Graph.Execution.Stream do
   # A step's update holds the messages as they were written, by every node
   # that wrote them: a string or a map becomes a message, and removal markers
   # are left out.
-  defp messages_from_update(update) when is_map(update) do
-    update
-    |> MapAccess.get(:messages, [])
-    |> List.wrap()
-    |> Enum.flat_map(&List.wrap/1)
-    |> Enum.flat_map(fn
-      %Message{} = message ->
-        [message]
-
-      value ->
-        case Message.from(value) do
-          {:ok, message} -> [message]
-          {:error, _error} -> []
-        end
-    end)
+  defp messages_from_update(update) do
+    for written <- List.wrap(MapAccess.get(update, :messages, [])),
+        value <- List.wrap(written),
+        {:ok, message} <- [Message.from(value)],
+        do: message
   end
-
-  defp messages_from_update(_update), do: []
 
   defp namespace(run) do
     run.config
@@ -186,8 +174,5 @@ defmodule BeamWeaver.Graph.Execution.Stream do
     |> Namespace.normalize()
   end
 
-  defp public_state(%{compiled: %{graph: graph}}, state) when is_map(state),
-    do: ChannelLookup.public_state(graph, state)
-
-  defp public_state(_run, state), do: state
+  defp public_state(run, state), do: ChannelLookup.public_state(run.compiled.graph, state)
 end

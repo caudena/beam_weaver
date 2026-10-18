@@ -17,8 +17,6 @@ defmodule BeamWeaver.Filesystem.LocalShell do
   alias BeamWeaver.Filesystem
   alias BeamWeaver.Filesystem.Executable
   alias BeamWeaver.Filesystem.Local
-  alias BeamWeaver.Sandbox.CommandRunner
-  alias BeamWeaver.Sandbox.OutputBuffer
 
   # `env` can carry credentials meant only for the commands.
   @derive {Inspect, except: [:env]}
@@ -44,35 +42,18 @@ defmodule BeamWeaver.Filesystem.LocalShell do
   @impl BeamWeaver.Filesystem.Executable
   def id(%__MODULE__{root: root}), do: "local-shell:#{root}"
 
+  # Runs the command as `BeamWeaver.Sandbox.Local` does, in `root`.
   @impl BeamWeaver.Filesystem.Executable
   def execute(%__MODULE__{} = backend, command, opts) do
-    with {:ok, timeout} <- opts |> Keyword.get(:timeout, backend.timeout) |> CommandRunner.timeout_ms() do
-      case CommandRunner.run(command,
-             shell: CommandRunner.shell(),
-             cd: backend.root,
-             env: backend.env,
-             inherit_env: backend.inherit_env,
-             timeout: timeout,
-             into: %OutputBuffer{max_bytes: backend.max_output_bytes}
-           ) do
-        {:ok, {output, truncated?}, exit_code} ->
-          %Executable.ExecuteResult{exit_code: exit_code, output: output, truncated: truncated?}
+    sandbox = %BeamWeaver.Sandbox.Local{
+      root: backend.root,
+      env: backend.env,
+      inherit_env: backend.inherit_env,
+      max_output_bytes: backend.max_output_bytes
+    }
 
-        {:timeout, _kill_attempted?} ->
-          %Executable.ExecuteResult{exit_code: 124, output: "", error: "timeout", truncated: false}
-
-        {:error, reason} ->
-          %Executable.ExecuteResult{
-            exit_code: 1,
-            output: "",
-            error: CommandRunner.error_message(reason),
-            truncated: false
-          }
-      end
-    else
-      {:error, error} ->
-        %Executable.ExecuteResult{exit_code: nil, output: "", error: error, truncated: false}
-    end
+    result = BeamWeaver.Sandbox.Local.execute(sandbox, command, Keyword.put_new(opts, :timeout, backend.timeout))
+    struct(Executable.ExecuteResult, Map.from_struct(result))
   end
 
   @impl BeamWeaver.Filesystem

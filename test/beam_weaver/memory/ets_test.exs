@@ -41,6 +41,12 @@ defmodule BeamWeaver.Memory.ETSTest do
     assert [{:error, :stored}, nil] = Memory.get_many(store, ["kv"], ["odd", "missing"])
   end
 
+  test "a filter on a field of a stored struct with no JSON form matches nothing" do
+    store = ETS.new()
+    assert {:ok, _item} = Memory.put(store, ["links"], "home", %{"a" => URI.parse("http://x")})
+    assert [] = Memory.search(store, ["links"], filter: %{"a.host" => "x"})
+  end
+
   test "list_namespaces batch op ignores unknown match-condition types instead of crashing" do
     store = ETS.new()
 

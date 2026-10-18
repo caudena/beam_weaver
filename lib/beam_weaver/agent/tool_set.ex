@@ -79,16 +79,8 @@ defmodule BeamWeaver.Agent.ToolSet do
   def saved_names(_state), do: nil
 
   @spec validate(t()) :: :ok | {:error, Error.t()}
-  def validate(%__MODULE__{} = tool_set) do
-    tool_set.tools
-    |> Map.values()
-    |> Enum.reduce_while(:ok, fn tool, :ok ->
-      case validate_tool(tool) do
-        :ok -> {:cont, :ok}
-        {:error, %Error{} = error} -> {:halt, {:error, error}}
-      end
-    end)
-  end
+  def validate(%__MODULE__{} = tool_set),
+    do: Enum.find_value(Map.values(tool_set.tools), :ok, fn tool -> with :ok <- validate_tool(tool), do: nil end)
 
   defp validate_tool(tool) do
     name = Tool.name(tool)
@@ -112,10 +104,5 @@ defmodule BeamWeaver.Agent.ToolSet do
        })}
   end
 
-  defp tool_entries(tools) do
-    tools
-    |> List.wrap()
-    |> Enum.reject(&is_nil/1)
-    |> Enum.map(fn tool -> {Tool.name(tool), tool} end)
-  end
+  defp tool_entries(tools), do: for(tool <- List.wrap(tools), not is_nil(tool), do: {Tool.name(tool), tool})
 end

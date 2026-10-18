@@ -141,8 +141,10 @@ defmodule BeamWeaver.OpenAI.ModelPolicy do
 
   defp restricted_temperature_model?(_model), do: false
 
+  defp reasoning_effort(%{"effort" => nil}), do: nil
   defp reasoning_effort(%{"effort" => effort}) when is_atom(effort), do: Atom.to_string(effort)
   defp reasoning_effort(%{"effort" => effort}) when is_binary(effort), do: effort
+  defp reasoning_effort(%{effort: nil}), do: nil
   defp reasoning_effort(%{effort: effort}) when is_atom(effort), do: Atom.to_string(effort)
   defp reasoning_effort(%{effort: effort}) when is_binary(effort), do: effort
   defp reasoning_effort(nil), do: nil

@@ -209,137 +209,6 @@ defmodule BeamWeaver.ShellPolicy.Commands do
     end
   end
 
-  defp handlers do
-    %{
-      # Prefix wrappers: only the command they wrap needs allowing.
-      "env" => {:transparent, &env/2},
-      "genv" => {:transparent, &env/2},
-      "command" => {:transparent, &command_builtin/2},
-      "builtin" => {:builtin, &transparent/2},
-      "exec" => {:transparent, &exec/2},
-      "nohup" => {:transparent, &nohup/2},
-      "gnohup" => {:transparent, &nohup/2},
-      "time" => {:transparent, &time/2},
-      "nice" => {:transparent, &nice/2},
-      "gnice" => {:transparent, &nice/2},
-      "timeout" => {:transparent, &timeout/2},
-      "gtimeout" => {:transparent, &timeout/2},
-      "stdbuf" => {:transparent, &stdbuf/2},
-      "gstdbuf" => {:transparent, &stdbuf/2},
-      "flock" => {:transparent, &flock/2},
-      "chrt" => {:transparent, &chrt/2},
-      "ionice" => {:transparent, &ionice/2},
-      "taskset" => {:transparent, &taskset/2},
-      "busybox" => {:transparent, &busybox/2},
-      "toybox" => {:transparent, &busybox/2},
-      # Builtins whose arguments are shell code, or that bash evaluates.
-      "eval" => {:builtin, &eval/2},
-      "trap" => {:builtin, &trap/2},
-      "alias" => {:builtin, &alias_command/2},
-      "source" => {:builtin, &opaque_from(&1, &2, :script_file)},
-      "." => {:builtin, &opaque_from(&1, &2, :script_file)},
-      "fc" => {:builtin, &opaque_from(&1, &2, :history)},
-      "coproc" => {:builtin, &opaque_from(&1, &2, :coprocess)},
-      "let" => {:builtin, &opaque_from(&1, &2, :arithmetic)},
-      "hash" => {:builtin, &option_letter(&1, &2, ?p, :hashed_path)},
-      "enable" => {:builtin, &option_letter(&1, &2, ?f, :loadable_builtin)},
-      "export" => {:builtin, &declaration/2},
-      "readonly" => {:builtin, &declaration/2},
-      "declare" => {:builtin, &declaration/2},
-      "typeset" => {:builtin, &declaration/2},
-      "local" => {:builtin, &declaration/2},
-      "read" => {:builtin, &variable_names(&1, &2, %{flags: "ers", args: "adinNptu"})},
-      "mapfile" =>
-        {:builtin, &variable_names(&1, &2, %{flags: "t", args: "cdnOsu", opaque: "C", opaque_reason: :callback})},
-      "readarray" =>
-        {:builtin, &variable_names(&1, &2, %{flags: "t", args: "cdnOsu", opaque: "C", opaque_reason: :callback})},
-      "unset" => {:builtin, &variable_names(&1, &2, %{flags: "fvn"})},
-      "getopts" => {:builtin, &getopts/2},
-      "printf" => {:program, &printf/2},
-      "test" => {:program, &test/2},
-      "[" => {:program, &test/2},
-      "[[" => {:builtin, &double_bracket/2},
-      # Commands that need an allow rule of their own besides the commands
-      # they run.
-      "sudo" => {:program, &sudo/2},
-      "doas" => {:program, &doas/2},
-      "setsid" => {:program, &setsid/2},
-      "xargs" => {:program, &xargs/2},
-      "find" => {:program, &find/2},
-      "parallel" => {:program, &parallel/2},
-      "watch" => {:program, &watch/2},
-      "script" => {:program, &script/2},
-      "ssh" => {:program, &ssh/2},
-      # Programs with an option that runs a command.
-      "scp" => {:program, &scp/2},
-      "rsync" => {:program, &rsync/2},
-      "tar" => {:program, &tar/2},
-      "gtar" => {:program, &tar/2},
-      "bsdtar" => {:program, &tar/2},
-      "zip" => {:program, &zip/2},
-      "make" => {:program, &make/2},
-      "gmake" => {:program, &make/2},
-      "git" => {:program, &git/2},
-      "mix" => {:program, &mix/2},
-      # Project and version managers that run a command in their environment.
-      "uv" => {:program, &environment_runner(&1, &2, "run", %{})},
-      "poetry" => {:program, &environment_runner(&1, &2, "run", %{})},
-      "pipenv" => {:program, &environment_runner(&1, &2, "run", %{})},
-      "pdm" => {:program, &environment_runner(&1, &2, "run", %{})},
-      "hatch" => {:program, &environment_runner(&1, &2, "run", %{})},
-      "rye" => {:program, &environment_runner(&1, &2, "run", %{})},
-      "conda" => {:program, &environment_runner(&1, &2, "run", @conda_run)},
-      "mamba" => {:program, &environment_runner(&1, &2, "run", @conda_run)},
-      "micromamba" => {:program, &environment_runner(&1, &2, "run", @conda_run)},
-      "bundle" => {:program, &environment_runner(&1, &2, "exec", %{})},
-      "npm" => {:program, &environment_runner(&1, &2, "exec", %{})},
-      "pnpm" => {:program, &environment_runner(&1, &2, "exec", %{})},
-      "rbenv" => {:program, &environment_runner(&1, &2, "exec", %{})},
-      "pyenv" => {:program, &environment_runner(&1, &2, "exec", %{})},
-      "nodenv" => {:program, &environment_runner(&1, &2, "exec", %{})},
-      "asdf" => {:program, &environment_runner(&1, &2, "exec", %{})},
-      "direnv" => {:program, &environment_runner(&1, &2, "exec", %{positional: 1})},
-      # Interpreters and programs that take code on their command line.
-      "python" => {:program, &python/2},
-      "pypy" => {:program, &python/2},
-      "perl" => {:program, &perl/2},
-      "ruby" => {:program, &ruby/2},
-      "node" => {:program, &node/2},
-      "nodejs" => {:program, &node/2},
-      "bun" => {:program, &inline_anywhere(&1, &2, ~w(-e -p --eval --print), fn -> :plain end)},
-      "deno" => {:program, &deno/2},
-      "php" => {:program, &php/2},
-      "lua" => {:program, &lua/2},
-      "luajit" => {:program, &lua/2},
-      "R" => {:program, &r/2},
-      "Rscript" => {:program, &inline_anywhere(&1, &2, ~w(-e), fn -> :plain end)},
-      "elixir" => {:program, &inline_anywhere(&1, &2, ~w(-e --eval --rpc-eval), fn -> :plain end)},
-      "julia" => {:program, &script_or_inline(&1, &2, ~w(-e -E --eval --print -i))},
-      "osascript" => {:program, &script_or_inline(&1, &2, ~w(-e))},
-      "expect" => {:program, &script_or_inline(&1, &2, ~w(-c -i))},
-      "tclsh" => {:program, &script_or_inline(&1, &2, [])},
-      "wish" => {:program, &script_or_inline(&1, &2, [])},
-      "dc" => {:program, &script_or_inline(&1, &2, ~w(-e --expression))},
-      "awk" => {:program, &awk/2},
-      "gawk" => {:program, &awk/2},
-      "mawk" => {:program, &awk/2},
-      "nawk" => {:program, &awk/2},
-      "sed" => {:program, &sed/2},
-      "gsed" => {:program, &sed/2},
-      "vim" => {:program, &vim/2},
-      "vi" => {:program, &vim/2},
-      "nvim" => {:program, &vim/2},
-      "view" => {:program, &vim/2},
-      "vimdiff" => {:program, &vim/2},
-      "gvim" => {:program, &vim/2},
-      "mvim" => {:program, &vim/2},
-      "emacs" =>
-        {:program,
-         &inline_anywhere(&1, &2, ~w(--eval -eval --execute -execute -f --funcall -funcall), fn -> :plain end)},
-      "emacsclient" => {:program, &inline_anywhere(&1, &2, ~w(-e --eval), fn -> :plain end)}
-    }
-  end
-
   ## Results
 
   defp opaque_from(command, [first | _args], reason), do: {:opaque, {first.start, command.stop}, reason}
@@ -483,6 +352,14 @@ defmodule BeamWeaver.ShellPolicy.Commands do
     end
   end
 
+  # A wrapper with the options in `spec` and the `spec.positional` operands
+  # before the command it runs.
+  defp wrapper(command, args, spec, wrap \\ &transparent/2) do
+    with_options(command, args, spec, fn _seen, operands ->
+      positional(command, operands, Map.get(spec, :positional, 0), &wrap.(command, &1))
+    end)
+  end
+
   ## Prefix wrappers
 
   @env %{
@@ -511,18 +388,6 @@ defmodule BeamWeaver.ShellPolicy.Commands do
     end
   end
 
-  defp command_builtin(command, args),
-    do: with_options(command, args, %{flags: "p", stop: "vV"}, fn _seen, operands -> transparent(command, operands) end)
-
-  defp exec(command, args),
-    do: with_options(command, args, %{flags: "cl", args: "a"}, fn _seen, operands -> transparent(command, operands) end)
-
-  defp nohup(command, args),
-    do:
-      with_options(command, args, %{long_stop: ~w(--help --version)}, fn _seen, operands ->
-        transparent(command, operands)
-      end)
-
   @time %{
     flags: "aplqvh",
     args: "fo",
@@ -532,15 +397,10 @@ defmodule BeamWeaver.ShellPolicy.Commands do
     long_stop: ~w(--help --version)
   }
 
-  defp time(command, args),
-    do: with_options(command, args, @time, fn _seen, operands -> transparent(command, operands) end)
-
   @nice %{args: "n", numeric: true, long_args: ~w(--adjustment), long_stop: ~w(--help --version)}
 
-  defp nice(command, args),
-    do: with_options(command, args, @nice, fn _seen, operands -> transparent(command, operands) end)
-
   @timeout %{
+    positional: 1,
     flags: "fpv",
     args: "ks",
     long_flags: ~w(--foreground --preserve-status --verbose),
@@ -548,16 +408,7 @@ defmodule BeamWeaver.ShellPolicy.Commands do
     long_stop: ~w(--help --version)
   }
 
-  defp timeout(command, args) do
-    with_options(command, args, @timeout, fn _seen, operands ->
-      positional(command, operands, 1, &transparent(command, &1))
-    end)
-  end
-
   @stdbuf %{args: "ioe", long_args: ~w(--input --output --error), long_stop: ~w(--help --version)}
-
-  defp stdbuf(command, args),
-    do: with_options(command, args, @stdbuf, fn _seen, operands -> transparent(command, operands) end)
 
   @flock %{
     flags: "sxenoFu",
@@ -586,6 +437,7 @@ defmodule BeamWeaver.ShellPolicy.Commands do
   end
 
   @chrt %{
+    positional: 1,
     flags: "abdfiorRv",
     args: "TPD",
     stop: "pmh",
@@ -593,12 +445,6 @@ defmodule BeamWeaver.ShellPolicy.Commands do
     long_args: ~w(--sched-runtime --sched-period --sched-deadline),
     long_stop: ~w(--pid --max --help --version)
   }
-
-  defp chrt(command, args) do
-    with_options(command, args, @chrt, fn _seen, operands ->
-      positional(command, operands, 1, &transparent(command, &1))
-    end)
-  end
 
   @ionice %{
     flags: "t",
@@ -609,16 +455,13 @@ defmodule BeamWeaver.ShellPolicy.Commands do
     long_stop: ~w(--pid --pgid --uid --help --version)
   }
 
-  defp ionice(command, args),
-    do: with_options(command, args, @ionice, fn _seen, operands -> transparent(command, operands) end)
-
-  @taskset %{flags: "ac", stop: "phV", long_flags: ~w(--all-tasks --cpu-list), long_stop: ~w(--pid --help --version)}
-
-  defp taskset(command, args) do
-    with_options(command, args, @taskset, fn _seen, operands ->
-      positional(command, operands, 1, &transparent(command, &1))
-    end)
-  end
+  @taskset %{
+    positional: 1,
+    flags: "ac",
+    stop: "phV",
+    long_flags: ~w(--all-tasks --cpu-list),
+    long_stop: ~w(--pid --help --version)
+  }
 
   # `busybox APPLET ...` runs the applet, which may be a shell.
   defp busybox(command, [%Word{value: nil} = applet | _rest]), do: opaque_at(command, applet, :dynamic_command)
@@ -832,19 +675,9 @@ defmodule BeamWeaver.ShellPolicy.Commands do
   defp sudo(command, args),
     do: with_options(command, args, @sudo, fn _seen, operands -> env_assignments(command, operands, &host/2) end)
 
-  defp doas(command, args),
-    do:
-      with_options(
-        command,
-        args,
-        %{flags: "n", args: "au", opaque: "s", stop: "LC", opaque_reason: :login_shell},
-        fn _seen, operands -> host(command, operands) end
-      )
+  @doas %{flags: "n", args: "au", opaque: "s", stop: "LC", opaque_reason: :login_shell}
 
   @setsid %{flags: "cfw", stop: "hV", long_flags: ~w(--ctty --fork --wait), long_stop: ~w(--help --version)}
-
-  defp setsid(command, args),
-    do: with_options(command, args, @setsid, fn _seen, operands -> host(command, operands) end)
 
   @xargs %{
     flags: "0prtxo",
@@ -1199,9 +1032,7 @@ defmodule BeamWeaver.ShellPolicy.Commands do
         opaque_at(command, word, :dynamic_command)
 
       [%Word{value: ^subcommand} | inner] when options == [] ->
-        with_options(command, inner, spec, fn _seen, operands ->
-          positional(command, operands, Map.get(spec, :positional, 0), &host(command, &1))
-        end)
+        wrapper(command, inner, spec, &host/2)
 
       [%Word{value: ^subcommand} | _inner] ->
         opaque_at(command, hd(options), :unknown_option)
@@ -1215,7 +1046,7 @@ defmodule BeamWeaver.ShellPolicy.Commands do
   defp mix(command, [%Word{value: "eval"} = subcommand | _rest]), do: opaque_at(command, subcommand, :inline_code)
 
   defp mix(command, [%Word{value: "run"} | rest]),
-    do: inline_anywhere(command, rest, ~w(-e --eval), fn -> :plain end)
+    do: inline_anywhere(command, rest, ~w(-e --eval))
 
   defp mix(_command, _args), do: :plain
 
@@ -1296,7 +1127,7 @@ defmodule BeamWeaver.ShellPolicy.Commands do
   # Opaque when any word, anywhere, is one of `flags` (or `flag=...`): a
   # safety net for an option whose argument the option parse misread as the
   # script.
-  defp inline_anywhere(command, args, flags, fun) do
+  defp inline_anywhere(command, args, flags, fun \\ fn -> :plain end) do
     assigned = Enum.map(flags, &(&1 <> "="))
 
     case Enum.find(args, &(is_binary(&1.value) and (&1.value in flags or String.starts_with?(&1.value, assigned)))) do
@@ -1305,48 +1136,42 @@ defmodule BeamWeaver.ShellPolicy.Commands do
     end
   end
 
-  defp python(command, args) do
-    interpreter(command, args, %{
-      inline: "c",
-      opaque: "i",
-      stop: "mVh",
-      args: "WXQ",
-      flags: "bBdEIOPqsSuvxR",
-      long_args: ~w(--check-hash-based-pycs),
-      long_stop: ~w(--help --version --help-env --help-xoptions --help-all)
-    })
-  end
+  @python %{
+    inline: "c",
+    opaque: "i",
+    stop: "mVh",
+    args: "WXQ",
+    flags: "bBdEIOPqsSuvxR",
+    long_args: ~w(--check-hash-based-pycs),
+    long_stop: ~w(--help --version --help-env --help-xoptions --help-all)
+  }
 
   # perl's `-e`/`-E` take code, and `-M`/`-m` load a module from text that
   # can carry code (`-M'strict;system(...)'`). `-lane` and `-de` cluster:
   # `-l` and `-d` take an optional value and the letters after it go on.
-  defp perl(command, args) do
-    interpreter(command, args, %{
-      inline: "eEMm",
-      opaque: "D",
-      opaque_reason: :debugger,
-      stop: "vVh",
-      args: "I",
-      attached: "iFxC",
-      digits: "l0d",
-      flags: "acfnpsStTuUwWX",
-      long_stop: ~w(--version --help)
-    })
-  end
+  @perl %{
+    inline: "eEMm",
+    opaque: "D",
+    opaque_reason: :debugger,
+    stop: "vVh",
+    args: "I",
+    attached: "iFxC",
+    digits: "l0d",
+    flags: "acfnpsStTuUwWX",
+    long_stop: ~w(--version --help)
+  }
 
-  defp ruby(command, args) do
-    interpreter(command, args, %{
-      inline: "e",
-      stop: "vh",
-      attached: "Fix",
-      args: "CEIr",
-      digits: "0TW",
-      one: "K",
-      flags: "acdlnpsSUwy",
-      long_flags: ~w(--verbose --jit --yjit --rjit --disable-gems),
-      long_stop: ~w(--version --help --copyright)
-    })
-  end
+  @ruby %{
+    inline: "e",
+    stop: "vh",
+    attached: "Fix",
+    args: "CEIr",
+    digits: "0TW",
+    one: "K",
+    flags: "acdlnpsSUwy",
+    long_flags: ~w(--verbose --jit --yjit --rjit --disable-gems),
+    long_stop: ~w(--version --help --copyright)
+  }
 
   @node_inline ~w(-e -p -pe -ep --eval --print)
 
@@ -1380,19 +1205,16 @@ defmodule BeamWeaver.ShellPolicy.Commands do
   defp deno(command, []), do: opaque_from(command, [], :standard_input)
   defp deno(_command, _args), do: :plain
 
-  defp php(command, args) do
-    interpreter(command, args, %{
-      inline: "rBRE",
-      opaque: "a",
-      stop: "vhimS",
-      args: "cdfzt",
-      flags: "CeHlnqsw",
-      long_stop: ~w(--version --help --ini)
-    })
-  end
+  @php %{
+    inline: "rBRE",
+    opaque: "a",
+    stop: "vhimS",
+    args: "cdfzt",
+    flags: "CeHlnqsw",
+    long_stop: ~w(--version --help --ini)
+  }
 
-  defp lua(command, args),
-    do: interpreter(command, args, %{inline: "e", opaque: "i", args: "l", flags: "vEW", long_stop: ~w(--version)})
+  @lua %{inline: "e", opaque: "i", args: "l", flags: "vEW", long_stop: ~w(--version)}
 
   # `R -e EXPR` runs code; `R` with no script (`R --vanilla < file`) reads it
   # from standard input. `R CMD ...` and `R -f FILE` run files.
@@ -1434,7 +1256,31 @@ defmodule BeamWeaver.ShellPolicy.Commands do
     end)
   end
 
+  # awk and sed read their program from `program_options`, from files named
+  # by `program_files` (`-` for standard input) or from their first operand;
+  # with a `sandbox` option they run no commands.
+  defp program(command, args, spec, runs_commands?) do
+    with_options(command, args, spec, fn seen, operands ->
+      sources = for {source, _word} <- option_values(seen, spec.program_options), do: source
+      files = for {file, _word} <- option_values(seen, spec.program_files), do: file
+
+      programs =
+        if sources == [] and files == [], do: for(word <- Enum.take(operands, 1), do: word.value), else: sources
+
+      cond do
+        Enum.any?(spec.sandbox, &(&1 in seen)) -> :plain
+        "-" in files -> opaque_from(command, args, :standard_input)
+        nil in programs -> opaque_from(command, args, :dynamic_script)
+        Enum.any?(programs, runs_commands?) -> opaque_from(command, args, :inline_code)
+        true -> :plain
+      end
+    end)
+  end
+
   @awk %{
+    program_options: [?e, "--source"],
+    program_files: [?f, ?E, "--file", "--exec"],
+    sandbox: [?S, "--sandbox"],
     args: "vFfeEilW",
     optional: "dDLop",
     flags: "bcCgMnNOPrsStVhy",
@@ -1444,34 +1290,17 @@ defmodule BeamWeaver.ShellPolicy.Commands do
       ~w(--sandbox --characters-as-bytes --traditional --copyright --gen-pot --help --use-lc-numeric --bignum --non-decimal-data --optimize --posix --re-interval --no-optimize --lint-old --version --csv)
   }
 
+  defp awk(command, args), do: program(command, args, @awk, &awk_runs_commands?/1)
+
   # An awk program can run commands with `system()`, pipes (`print | "sh"`,
   # `"cmd" | getline`) and gawk's indirect calls (`@name()`).
-  defp awk(command, args) do
-    with_options(command, args, @awk, fn seen, operands ->
-      sources = for {source, _word} <- option_values(seen, [?e, "--source"]), do: source
-      files = for {file, _word} <- option_values(seen, [?f, ?E, "--file", "--exec"]), do: file
-
-      programs =
-        cond do
-          ?S in seen or "--sandbox" in seen -> []
-          sources != [] or files != [] -> sources
-          operands != [] -> [hd(operands).value]
-          true -> []
-        end
-
-      cond do
-        "-" in files and not (?S in seen or "--sandbox" in seen) -> opaque_from(command, args, :standard_input)
-        nil in programs -> opaque_from(command, args, :dynamic_script)
-        Enum.any?(programs, &awk_runs_commands?/1) -> opaque_from(command, args, :inline_code)
-        true -> :plain
-      end
-    end)
-  end
-
   defp awk_runs_commands?(program),
     do: String.contains?(program, ["system", "@"]) or String.contains?(String.replace(program, "||", ""), "|")
 
   @sed %{
+    program_options: [?e, "--expression"],
+    program_files: [?f, "--file"],
+    sandbox: ["--sandbox"],
     flags: "nrEsuz",
     args: "efl",
     optional: "i",
@@ -1482,31 +1311,11 @@ defmodule BeamWeaver.ShellPolicy.Commands do
     long_stop: ~w(--help --version)
   }
 
-  # GNU sed's `e` command and the `e` flag of `s` run commands.
-  defp sed(command, args) do
-    with_options(command, args, @sed, fn seen, operands ->
-      expressions = for {expression, _word} <- option_values(seen, [?e, "--expression"]), do: expression
-      files = for {file, _word} <- option_values(seen, [?f, "--file"]), do: file
+  defp sed(command, args), do: program(command, args, @sed, &sed_runs_commands?/1)
 
-      scripts =
-        cond do
-          "--sandbox" in seen -> []
-          expressions != [] or files != [] -> expressions
-          operands != [] -> [hd(operands).value]
-          true -> []
-        end
-
-      cond do
-        "-" in files and "--sandbox" not in seen -> opaque_from(command, args, :standard_input)
-        nil in scripts -> opaque_from(command, args, :dynamic_script)
-        Enum.any?(scripts, &sed_runs_commands?/1) -> opaque_from(command, args, :inline_code)
-        true -> :plain
-      end
-    end)
-  end
-
-  # Reads a sed script far enough to find the `e` command and the `s///e`
-  # flag. Anything it can't read counts as running a command.
+  # Reads a sed script far enough to find GNU sed's `e` command and the
+  # `s///e` flag, which run commands. Anything it can't read counts as
+  # running a command.
   defp sed_runs_commands?(script) do
     sed_commands(script)
     false
@@ -1620,4 +1429,94 @@ defmodule BeamWeaver.ShellPolicy.Commands do
 
   defp sed_skip_digits(<<byte, rest::binary>>) when byte in ?0..?9, do: sed_skip_digits(rest)
   defp sed_skip_digits(rest), do: rest
+
+  ## Handlers
+
+  # Last in the module, after the option specs it names.
+  defp handlers do
+    groups = [
+      # Prefix wrappers: only the command they wrap needs allowing.
+      {~w(env genv), {:transparent, &env/2}},
+      {~w(command), {:transparent, &wrapper(&1, &2, %{flags: "p", stop: "vV"})}},
+      {~w(builtin), {:builtin, &transparent/2}},
+      {~w(exec), {:transparent, &wrapper(&1, &2, %{flags: "cl", args: "a"})}},
+      {~w(nohup gnohup), {:transparent, &wrapper(&1, &2, %{long_stop: ~w(--help --version)})}},
+      {~w(time), {:transparent, &wrapper(&1, &2, @time)}},
+      {~w(nice gnice), {:transparent, &wrapper(&1, &2, @nice)}},
+      {~w(timeout gtimeout), {:transparent, &wrapper(&1, &2, @timeout)}},
+      {~w(stdbuf gstdbuf), {:transparent, &wrapper(&1, &2, @stdbuf)}},
+      {~w(flock), {:transparent, &flock/2}},
+      {~w(chrt), {:transparent, &wrapper(&1, &2, @chrt)}},
+      {~w(ionice), {:transparent, &wrapper(&1, &2, @ionice)}},
+      {~w(taskset), {:transparent, &wrapper(&1, &2, @taskset)}},
+      {~w(busybox toybox), {:transparent, &busybox/2}},
+      # Builtins whose arguments are shell code, or that bash evaluates.
+      {~w(eval), {:builtin, &eval/2}},
+      {~w(trap), {:builtin, &trap/2}},
+      {~w(alias), {:builtin, &alias_command/2}},
+      {~w(source .), {:builtin, &opaque_from(&1, &2, :script_file)}},
+      {~w(fc), {:builtin, &opaque_from(&1, &2, :history)}},
+      {~w(coproc), {:builtin, &opaque_from(&1, &2, :coprocess)}},
+      {~w(let), {:builtin, &opaque_from(&1, &2, :arithmetic)}},
+      {~w(hash), {:builtin, &option_letter(&1, &2, ?p, :hashed_path)}},
+      {~w(enable), {:builtin, &option_letter(&1, &2, ?f, :loadable_builtin)}},
+      {~w(export readonly declare typeset local), {:builtin, &declaration/2}},
+      {~w(read), {:builtin, &variable_names(&1, &2, %{flags: "ers", args: "adinNptu"})}},
+      {~w(mapfile readarray),
+       {:builtin, &variable_names(&1, &2, %{flags: "t", args: "cdnOsu", opaque: "C", opaque_reason: :callback})}},
+      {~w(unset), {:builtin, &variable_names(&1, &2, %{flags: "fvn"})}},
+      {~w(getopts), {:builtin, &getopts/2}},
+      {~w(printf), {:program, &printf/2}},
+      {~w(test [), {:program, &test/2}},
+      {~w([[), {:builtin, &double_bracket/2}},
+      # Commands that need an allow rule of their own besides the commands
+      # they run.
+      {~w(sudo), {:program, &sudo/2}},
+      {~w(doas), {:program, fn command, args -> wrapper(command, args, @doas, &host/2) end}},
+      {~w(setsid), {:program, fn command, args -> wrapper(command, args, @setsid, &host/2) end}},
+      {~w(xargs), {:program, &xargs/2}},
+      {~w(find), {:program, &find/2}},
+      {~w(parallel), {:program, &parallel/2}},
+      {~w(watch), {:program, &watch/2}},
+      {~w(script), {:program, &script/2}},
+      {~w(ssh), {:program, &ssh/2}},
+      # Programs with an option that runs a command.
+      {~w(scp), {:program, &scp/2}},
+      {~w(rsync), {:program, &rsync/2}},
+      {~w(tar gtar bsdtar), {:program, &tar/2}},
+      {~w(zip), {:program, &zip/2}},
+      {~w(make gmake), {:program, &make/2}},
+      {~w(git), {:program, &git/2}},
+      {~w(mix), {:program, &mix/2}},
+      # Project and version managers that run a command in their environment.
+      {~w(uv poetry pipenv pdm hatch rye), {:program, &environment_runner(&1, &2, "run", %{})}},
+      {~w(conda mamba micromamba), {:program, &environment_runner(&1, &2, "run", @conda_run)}},
+      {~w(bundle npm pnpm rbenv pyenv nodenv asdf), {:program, &environment_runner(&1, &2, "exec", %{})}},
+      {~w(direnv), {:program, &environment_runner(&1, &2, "exec", %{positional: 1})}},
+      # Interpreters and programs that take code on their command line.
+      {~w(python pypy), {:program, &interpreter(&1, &2, @python)}},
+      {~w(perl), {:program, &interpreter(&1, &2, @perl)}},
+      {~w(ruby), {:program, &interpreter(&1, &2, @ruby)}},
+      {~w(node nodejs), {:program, &node/2}},
+      {~w(bun), {:program, &inline_anywhere(&1, &2, ~w(-e -p --eval --print))}},
+      {~w(deno), {:program, &deno/2}},
+      {~w(php), {:program, &interpreter(&1, &2, @php)}},
+      {~w(lua luajit), {:program, &interpreter(&1, &2, @lua)}},
+      {~w(R), {:program, &r/2}},
+      {~w(Rscript), {:program, &inline_anywhere(&1, &2, ~w(-e))}},
+      {~w(elixir), {:program, &inline_anywhere(&1, &2, ~w(-e --eval --rpc-eval))}},
+      {~w(julia), {:program, &script_or_inline(&1, &2, ~w(-e -E --eval --print -i))}},
+      {~w(osascript), {:program, &script_or_inline(&1, &2, ~w(-e))}},
+      {~w(expect), {:program, &script_or_inline(&1, &2, ~w(-c -i))}},
+      {~w(tclsh wish), {:program, &script_or_inline(&1, &2, [])}},
+      {~w(dc), {:program, &script_or_inline(&1, &2, ~w(-e --expression))}},
+      {~w(awk gawk mawk nawk), {:program, &awk/2}},
+      {~w(sed gsed), {:program, &sed/2}},
+      {~w(vim vi nvim view vimdiff gvim mvim), {:program, &vim/2}},
+      {~w(emacs), {:program, &inline_anywhere(&1, &2, ~w(--eval -eval --execute -execute -f --funcall -funcall))}},
+      {~w(emacsclient), {:program, &inline_anywhere(&1, &2, ~w(-e --eval))}}
+    ]
+
+    for {names, handler} <- groups, name <- names, into: %{}, do: {name, handler}
+  end
 end

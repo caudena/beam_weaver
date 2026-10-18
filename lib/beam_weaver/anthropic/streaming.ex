@@ -5,6 +5,7 @@ defmodule BeamWeaver.Anthropic.Streaming do
 
   alias BeamWeaver.Anthropic.Messages
   alias BeamWeaver.Core.Messages, as: CoreMessages
+  alias BeamWeaver.Provider.OpenAICompatibleStreaming
   alias BeamWeaver.Provider.Options
   alias BeamWeaver.Provider.SSE
   alias BeamWeaver.Stream
@@ -33,9 +34,10 @@ defmodule BeamWeaver.Anthropic.Streaming do
   end
 
   # A live stream ends with the complete reply, the message `response/1`
-  # decodes to, followed by the `Done` event. Until the stream closes, the
-  # parser state also builds the reply and holds `Done` back;
-  # `finish_typed_events/2` emits both.
+  # decodes to, followed by one `Done` event. Until the stream closes, the
+  # parser state also builds the reply and holds `Done` back, one for each
+  # `message_delta`; `finish_typed_events/2` emits the reply and one `Done`
+  # made of the held ones.
   @spec reply_typed_events([map()], map() | nil) :: {[Stream.Envelope.t()], map()}
   def reply_typed_events(events, state) when is_list(events) do
     %{parser: parser, reply: reply, done: done} = state || %{parser: nil, reply: initial_state(), done: []}
@@ -53,6 +55,8 @@ defmodule BeamWeaver.Anthropic.Streaming do
   def finish_typed_events(nil, _decode), do: {:ok, []}
 
   def finish_typed_events(%{reply: reply, done: done}, decode) do
+    done = OpenAICompatibleStreaming.merge_done(done)
+
     if reply == initial_state() do
       {:ok, done}
     else

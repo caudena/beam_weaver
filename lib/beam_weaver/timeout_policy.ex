@@ -55,11 +55,8 @@ defmodule BeamWeaver.TimeoutPolicy do
     end
   end
 
-  def coerce(value) when is_float(value) or is_integer(value) do
-    value
-    |> duration_to_ms()
-    |> then(&coerce(%__MODULE__{run_timeout: &1}))
-  end
+  def coerce(value) when is_float(value) or is_integer(value),
+    do: coerce(%__MODULE__{run_timeout: duration_to_ms(value)})
 
   def coerce(opts) when is_list(opts), do: opts |> Map.new() |> coerce()
 
@@ -100,14 +97,9 @@ defmodule BeamWeaver.TimeoutPolicy do
 
   defp effective_timeout_from_policy(nil), do: nil
 
-  defp effective_timeout_from_policy(%__MODULE__{run_timeout: nil, idle_timeout: idle}),
-    do: idle
-
-  defp effective_timeout_from_policy(%__MODULE__{run_timeout: run, idle_timeout: nil}),
-    do: run
-
+  # A coerced policy sets at least one of the budgets.
   defp effective_timeout_from_policy(%__MODULE__{run_timeout: run, idle_timeout: idle}),
-    do: min(run, idle)
+    do: Enum.min(Enum.reject([run, idle], &is_nil/1))
 
   defp duration_to_ms(nil), do: nil
   defp duration_to_ms(value) when is_float(value), do: round(value * 1_000)

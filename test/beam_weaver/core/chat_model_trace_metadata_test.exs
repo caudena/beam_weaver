@@ -30,6 +30,18 @@ defmodule BeamWeaver.Core.ChatModelTraceMetadataTest do
     refute Map.has_key?(metadata.invocation_params, :trace_metadata)
   end
 
+  test "traces a reply whose transport metadata isn't a map without a request id" do
+    model = BeamWeaver.Models.init_chat_model!("fake:chat", responses: ["Done."])
+    reply = Message.assistant("Done.", response_metadata: %{transport: "x"})
+    opts = [exporter: Exporter, exporter_opts: [test_pid: self()]]
+
+    assert {:ok, ^reply} =
+             ChatModel.trace_call(model, [Message.user("Summarize this conversation")], opts, fn -> {:ok, reply} end)
+
+    assert_receive {:trace_export, :ok, %Run{kind: :model, metadata: metadata}}
+    refute Map.has_key?(metadata, :request_id)
+  end
+
   test "every built-in chat model leaves trace_metadata: out of its request" do
     models = [
       BeamWeaver.OpenAI.chat_model(model: "gpt-5.4-mini"),

@@ -68,26 +68,20 @@ defmodule BeamWeaver.MapShape do
   end
 
   @spec assert_atom_keys!(term()) :: term()
-  def assert_atom_keys!(map) when is_map(map) do
-    case Enum.find(map, fn {key, _value} -> not is_atom(key) end) do
-      nil -> map
-      {key, _value} -> raise ArgumentError, "expected atom map keys, got #{inspect(key)}"
-    end
-  end
-
-  def assert_atom_keys!(value),
-    do: raise(ArgumentError, "expected map with atom keys, got #{inspect(value)}")
+  def assert_atom_keys!(value), do: assert_keys!(value, &is_atom/1, "atom")
 
   @spec assert_string_keys!(term()) :: term()
-  def assert_string_keys!(map) when is_map(map) do
-    case Enum.find(map, fn {key, _value} -> not is_binary(key) end) do
+  def assert_string_keys!(value), do: assert_keys!(value, &is_binary/1, "string")
+
+  defp assert_keys!(map, valid_key?, kind) when is_map(map) do
+    case Enum.find(map, fn {key, _value} -> not valid_key?.(key) end) do
       nil -> map
-      {key, _value} -> raise ArgumentError, "expected string map keys, got #{inspect(key)}"
+      {key, _value} -> raise ArgumentError, "expected #{kind} map keys, got #{inspect(key)}"
     end
   end
 
-  def assert_string_keys!(value),
-    do: raise(ArgumentError, "expected map with string keys, got #{inspect(value)}")
+  defp assert_keys!(value, _valid_key?, kind),
+    do: raise(ArgumentError, "expected map with #{kind} keys, got #{inspect(value)}")
 
   @spec assert_atom_keys_deep!(term()) :: term()
   def assert_atom_keys_deep!(map) when is_map(map) do

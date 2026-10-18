@@ -55,7 +55,7 @@ defmodule BeamWeaver.Agent.Middleware.ModelCallLimit do
     thread_count = count(state, :thread_model_call_count)
     run_count = count(state, :run_model_call_count)
 
-    if limit_exceeded?(middleware, thread_count, run_count) do
+    if exceeded?(thread_count, middleware.thread_limit) or exceeded?(run_count, middleware.run_limit) do
       message = limit_message(thread_count, run_count, middleware)
       details = limit_details(thread_count, run_count, middleware)
 
@@ -99,10 +99,6 @@ defmodule BeamWeaver.Agent.Middleware.ModelCallLimit do
   defp normalize_exit_behavior(value),
     do: Options.atom_enum!("exit_behavior", value, [:end, :error])
 
-  defp limit_exceeded?(%__MODULE__{} = middleware, thread_count, run_count) do
-    exceeded?(thread_count, middleware.thread_limit) or exceeded?(run_count, middleware.run_limit)
-  end
-
   defp exceeded?(_count, nil), do: false
   defp exceeded?(count, limit), do: count >= limit
 
@@ -119,17 +115,14 @@ defmodule BeamWeaver.Agent.Middleware.ModelCallLimit do
 
   defp limit_message(thread_count, run_count, %__MODULE__{} = middleware) do
     exceeded =
-      [
-        limit_fragment(:thread, thread_count, middleware.thread_limit),
-        limit_fragment(:run, run_count, middleware.run_limit)
-      ]
-      |> Enum.reject(&is_nil/1)
+      for {scope, count, limit} <- [
+            {:thread, thread_count, middleware.thread_limit},
+            {:run, run_count, middleware.run_limit}
+          ],
+          exceeded?(count, limit),
+          do: "#{scope} limit (#{count}/#{limit})"
 
     "Model call limits exceeded: " <> Enum.join(exceeded, ", ")
-  end
-
-  defp limit_fragment(scope, count, limit) do
-    if exceeded?(count, limit), do: "#{scope} limit (#{count}/#{limit})"
   end
 
   defp limit_details(thread_count, run_count, %__MODULE__{} = middleware) do

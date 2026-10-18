@@ -3,6 +3,7 @@ defmodule BeamWeaver.Agent.Nodes.Model.Response do
 
   alias BeamWeaver.Agent.ExtendedModelResponse
   alias BeamWeaver.Agent.ModelRequest
+  alias BeamWeaver.Agent.ModelResolver
   alias BeamWeaver.Agent.ModelResponse
   alias BeamWeaver.Agent.ToolSet
   alias BeamWeaver.Agent.Usage
@@ -73,13 +74,8 @@ defmodule BeamWeaver.Agent.Nodes.Model.Response do
   end
 
   defp error_details(error) do
-    details =
-      case Map.get(error, :details) do
-        details when is_map(details) -> details
-        _other -> %{}
-      end
-
-    details
+    error
+    |> Map.get(:details)
     |> safe_details()
     |> Map.put_new(:reason, inspect(error))
   end
@@ -104,25 +100,20 @@ defmodule BeamWeaver.Agent.Nodes.Model.Response do
     Map.put_new(details, :model_response, redact_and_clip(response))
   end
 
-  defp model_name(%{model: model}) when is_binary(model), do: model
+  # The name of the model a request goes to, as diagnostics and traces show it.
+  def model_name(model) when is_binary(model), do: model
+  def model_name(%{model: model}) when is_binary(model), do: model
 
-  defp model_name(model) do
-    module = if is_map(model), do: Map.get(model, :__struct__), else: nil
-
+  def model_name(%{__struct__: module} = model) do
     cond do
-      is_atom(module) and function_exported?(module, :model_name, 1) ->
-        module.model_name(model)
-
-      is_atom(module) and function_exported?(module, :model_id, 1) ->
-        module.model_id(model)
-
-      is_atom(module) ->
-        inspect(module)
-
-      true ->
-        inspect(model)
+      function_exported?(module, :model_name, 1) -> module.model_name(model)
+      function_exported?(module, :model_id, 1) -> module.model_id(model)
+      true -> inspect(module)
     end
   end
+
+  # A value that is no model, such as a map from middleware, can hold an API key.
+  def model_name(model), do: ModelResolver.describe(model)
 
   defp message_details(%Message{} = message) do
     %{
@@ -214,11 +205,7 @@ defmodule BeamWeaver.Agent.Nodes.Model.Response do
 
   defp safe_detail_value(%Error{} = error), do: sanitize_error(error)
 
-  defp safe_detail_value(%{__struct__: _module} = value) do
-    if serializable?(value), do: value, else: inspect(value)
-  end
-
-  defp safe_detail_value(value) when is_map(value) do
+  defp safe_detail_value(value) when is_map(value) and not is_struct(value) do
     Map.new(value, fn {key, nested} -> {safe_detail_key(key), safe_detail_value(nested)} end)
   end
 
@@ -326,7 +313,7 @@ defmodule BeamWeaver.Agent.Nodes.Model.Response do
   defp append_response_command(%ModelResponse{} = response, %Command{} = command) do
     %{
       response
-      | commands: response.commands ++ [%{command | update: normalize_command_update(command.update)}]
+      | commands: response.commands ++ [%{command | update: if(is_map(command.update), do: command.update, else: %{})}]
     }
   end
 
@@ -367,18 +354,10 @@ defmodule BeamWeaver.Agent.Nodes.Model.Response do
   defp message_ids(messages), do: for(%Message{id: id} <- messages, not is_nil(id), into: MapSet.new(), do: id)
 
   defp fetch_update_value(update, key) do
-    case Map.fetch(update, key) do
-      {:ok, value} -> {:ok, key, value}
-      :error -> fetch_string_update_value(update, key)
-    end
-  end
-
-  defp fetch_string_update_value(update, key) do
-    string_key = to_string(key)
-
-    case Map.fetch(update, string_key) do
-      {:ok, value} -> {:ok, string_key, value}
-      :error -> :error
+    cond do
+      Map.has_key?(update, key) -> {:ok, key, Map.fetch!(update, key)}
+      Map.has_key?(update, to_string(key)) -> {:ok, to_string(key), Map.fetch!(update, to_string(key))}
+      true -> :error
     end
   end
 
@@ -438,7 +417,4 @@ defmodule BeamWeaver.Agent.Nodes.Model.Response do
       Tool.name(tool) == name and Tool.return_direct(tool)
     end)
   end
-
-  defp normalize_command_update(update) when is_map(update), do: update
-  defp normalize_command_update(_update), do: %{}
 end

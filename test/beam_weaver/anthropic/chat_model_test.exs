@@ -44,27 +44,21 @@ defmodule BeamWeaver.Anthropic.ChatModelTest do
   end
 
   test "client constructor reads config defaults and builds Anthropic headers" do
-    with_config(
-      :anthropic,
-      [
-        api_key: "env-secret"
-      ],
-      fn ->
-        client =
-          Client.new(
-            betas: ["tools-beta"],
-            default_headers: [{"user-agent", "beam-weaver-test"}]
-          )
+    BeamWeaver.TestSupport.ConfigHelper.put_config(:anthropic, api_key: "env-secret")
 
-        request = Client.request(client, %{"model" => "claude-haiku-4-5-20251001"})
+    client =
+      Client.new(
+        betas: ["tools-beta"],
+        default_headers: [{"user-agent", "beam-weaver-test"}]
+      )
 
-        assert request.url == "https://api.anthropic.com/v1/messages"
-        assert {"x-api-key", "env-secret"} in request.headers
-        assert {"anthropic-version", "2023-06-01"} in request.headers
-        assert {"anthropic-beta", "tools-beta"} in request.headers
-        assert {"user-agent", "beam-weaver-test"} in request.headers
-      end
-    )
+    request = Client.request(client, %{"model" => "claude-haiku-4-5-20251001"})
+
+    assert request.url == "https://api.anthropic.com/v1/messages"
+    assert {"x-api-key", "env-secret"} in request.headers
+    assert {"anthropic-version", "2023-06-01"} in request.headers
+    assert {"anthropic-beta", "tools-beta"} in request.headers
+    assert {"user-agent", "beam-weaver-test"} in request.headers
   end
 
   test "invokes Anthropic Messages API through fake transport and decodes assistant text" do
@@ -1497,10 +1491,5 @@ defmodule BeamWeaver.Anthropic.ChatModelTest do
 
       assert {:ok, %{"metadata" => %{"user_id" => ^user_id}}} = ChatModel.request_body(model, [Message.user("ping")])
     end
-  end
-
-  defp with_config(group, values, fun) do
-    BeamWeaver.TestSupport.ConfigHelper.put_config(group, values)
-    fun.()
   end
 end

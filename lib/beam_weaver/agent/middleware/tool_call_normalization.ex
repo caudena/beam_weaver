@@ -123,7 +123,7 @@ defmodule BeamWeaver.Agent.Middleware.ToolCallNormalization do
   defp truncate_args(value, :unlimited), do: value
 
   defp truncate_args(value, max) when is_map(value),
-    do: Map.new(value, &truncate_arg_pair(&1, max))
+    do: Map.new(value, fn {key, value} -> {key, truncate_args(value, max)} end)
 
   defp truncate_args(value, max) when is_list(value), do: Enum.map(value, &truncate_args(&1, max))
 
@@ -132,6 +132,4 @@ defmodule BeamWeaver.Agent.Middleware.ToolCallNormalization do
        do: binary_part(value, 0, max) <> "\n\n... argument truncated at #{max} bytes."
 
   defp truncate_args(value, _max), do: value
-
-  defp truncate_arg_pair({key, value}, max), do: {key, truncate_args(value, max)}
 end

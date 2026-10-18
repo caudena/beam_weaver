@@ -39,7 +39,7 @@ defmodule BeamWeaver.Graph.Execution.StoppedStep do
           {:ok, map()} | {:error, Error.t()}
   def save(compiled, config, restored, update, as_node, goto) do
     graph = compiled.graph
-    node = node_name(as_node)
+    node = if is_nil(as_node), do: nil, else: to_string(as_node)
 
     ready =
       compiled
@@ -49,7 +49,8 @@ defmodule BeamWeaver.Graph.Execution.StoppedStep do
 
     with {:ok, state} <- ChannelMerge.apply_pending_writes(restored.values, restored.pending_writes, graph),
          {:ok, values, updated} <- ChannelMerge.merge_state_update(state, update, graph),
-         {:ok, _arrivals, updated} <- ChannelMerge.merge_step_updates(updated, arrivals(graph, node), graph) do
+         arrivals = if(node, do: StateGraph.join_writes(graph, node), else: []),
+         {:ok, _arrivals, updated} <- ChannelMerge.merge_step_updates(updated, arrivals, graph) do
       writes =
         restored
         |> CheckpointIO.pending_writes_on(@moved_channels)
@@ -193,10 +194,4 @@ defmodule BeamWeaver.Graph.Execution.StoppedStep do
     do: {task_id, Route.channel(), Route.encode(route, graph), path}
 
   defp decode_route(write), do: [write] |> Route.from_writes() |> hd()
-
-  defp arrivals(_graph, nil), do: []
-  defp arrivals(graph, node), do: StateGraph.join_writes(graph, node)
-
-  defp node_name(nil), do: nil
-  defp node_name(node), do: to_string(node)
 end

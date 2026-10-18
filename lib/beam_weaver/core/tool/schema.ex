@@ -8,11 +8,22 @@ defmodule BeamWeaver.Core.Tool.Schema do
   def public_input(schema, []), do: schema
 
   def public_input(schema, injected_keys) when is_map(schema) do
-    injected_names = MapSet.new(Enum.map(injected_keys, &to_string/1))
+    injected_names = MapSet.new(injected_keys, &to_string/1)
+    injected? = &MapSet.member?(injected_names, to_string(&1))
 
-    schema
-    |> remove_injected_properties(injected_names)
-    |> remove_injected_required(injected_names)
+    schema =
+      case schema_value(schema, :properties) do
+        {key, properties} when is_map(properties) ->
+          Map.put(schema, key, Map.reject(properties, fn {property, _schema} -> injected?.(property) end))
+
+        _other ->
+          schema
+      end
+
+    case schema_value(schema, :required) do
+      {key, required} when is_list(required) -> Map.put(schema, key, Enum.reject(required, injected?))
+      _other -> schema
+    end
   end
 
   @spec properties(map()) :: map()
@@ -143,9 +154,12 @@ defmodule BeamWeaver.Core.Tool.Schema do
   defp validate_enum(_key, _value, _enum), do: :ok
 
   defp validate_schema_type(key, value, spec) do
-    case schema_value(spec, :type) do
-      {_type_key, type} -> validate_type(key, value, type)
-      nil -> :ok
+    with {_type_key, type} <- schema_value(spec, :type),
+         false <- valid_json_type?(value, type) do
+      {:error,
+       Error.new(:invalid_input, "tool input has invalid type", %{key: key, expected: type, actual: inspect(value)})}
+    else
+      _valid -> :ok
     end
   end
 
@@ -228,19 +242,13 @@ defmodule BeamWeaver.Core.Tool.Schema do
 
   defp validate_collection_bounds(_key, _value, _spec), do: :ok
 
-  defp minimum_bound(key, value, {_schema_key, minimum}, message) when is_number(minimum) do
-    if value >= minimum,
-      do: :ok,
-      else: {:error, Error.new(:invalid_input, message, %{key: key, minimum: minimum})}
-  end
+  defp minimum_bound(key, value, {_schema_key, minimum}, message) when is_number(minimum) and value < minimum,
+    do: {:error, Error.new(:invalid_input, message, %{key: key, minimum: minimum})}
 
   defp minimum_bound(_key, _value, _bound, _message), do: :ok
 
-  defp maximum_bound(key, value, {_schema_key, maximum}, message) when is_number(maximum) do
-    if value <= maximum,
-      do: :ok,
-      else: {:error, Error.new(:invalid_input, message, %{key: key, maximum: maximum})}
-  end
+  defp maximum_bound(key, value, {_schema_key, maximum}, message) when is_number(maximum) and value > maximum,
+    do: {:error, Error.new(:invalid_input, message, %{key: key, maximum: maximum})}
 
   defp maximum_bound(_key, _value, _bound, _message), do: :ok
 
@@ -271,10 +279,6 @@ defmodule BeamWeaver.Core.Tool.Schema do
     %{error | details: details}
   end
 
-  defp validate_type(key, value, type) do
-    if valid_json_type?(value, type), do: :ok, else: {:error, type_error(key, value, type)}
-  end
-
   def valid_json_type?(value, type) when is_atom(type), do: valid_json_type?(value, Atom.to_string(type))
   def valid_json_type?(value, "string"), do: is_binary(value)
   def valid_json_type?(value, "integer"), do: is_integer(value)
@@ -286,46 +290,8 @@ defmodule BeamWeaver.Core.Tool.Schema do
   def valid_json_type?(value, types) when is_list(types), do: Enum.any?(types, &valid_json_type?(value, &1))
   def valid_json_type?(_value, _other), do: true
 
-  defp type_error(key, value, expected) do
-    Error.new(:invalid_input, "tool input has invalid type", %{
-      key: key,
-      expected: expected,
-      actual: inspect(value)
-    })
-  end
-
   defp put_default(input, key, default) do
     if has_key?(input, key), do: input, else: Map.put(input, key, default)
-  end
-
-  defp remove_injected_properties(schema, injected_names) do
-    case schema_value(schema, :properties) do
-      {key, properties} when is_map(properties) ->
-        properties =
-          Map.reject(properties, fn {property, _schema} ->
-            MapSet.member?(injected_names, to_string(property))
-          end)
-
-        Map.put(schema, key, properties)
-
-      _other ->
-        schema
-    end
-  end
-
-  defp remove_injected_required(schema, injected_names) do
-    case schema_value(schema, :required) do
-      {key, required} when is_list(required) ->
-        required =
-          Enum.reject(required, fn field ->
-            MapSet.member?(injected_names, to_string(field))
-          end)
-
-        Map.put(schema, key, required)
-
-      _other ->
-        schema
-    end
   end
 
   defp schema_value(schema, key) when is_map(schema) do

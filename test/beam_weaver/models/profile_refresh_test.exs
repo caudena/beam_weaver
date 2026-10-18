@@ -3,10 +3,11 @@ defmodule BeamWeaver.Models.ProfileRefreshTest do
 
   alias BeamWeaver.Models.ProfileRefresh
 
-  test "refresh aborts when user declines an external output directory" do
-    root = tmp_dir("profile-refresh-root")
-    external = tmp_dir("profile-refresh-external")
-    data_dir = Path.join(external, "data")
+  @moduletag :tmp_dir
+
+  test "refresh aborts when user declines an external output directory", %{tmp_dir: tmp_dir} do
+    root = Path.join(tmp_dir, "root")
+    data_dir = Path.join([tmp_dir, "external", "data"])
 
     assert {:error, error} =
              ProfileRefresh.refresh("anthropic", data_dir,
@@ -19,9 +20,7 @@ defmodule BeamWeaver.Models.ProfileRefreshTest do
     refute File.exists?(Path.join(data_dir, "profiles.json"))
   end
 
-  test "refresh writes BeamWeaver profile JSON from source data" do
-    data_dir = tmp_dir("profile-refresh-data")
-
+  test "refresh writes BeamWeaver profile JSON from source data", %{tmp_dir: data_dir} do
     assert {:ok, %{path: path, profiles: [%{id: "claude-3-opus"}]}} =
              ProfileRefresh.refresh("anthropic", data_dir, source_data: source_data(), force: true)
 
@@ -33,9 +32,7 @@ defmodule BeamWeaver.Models.ProfileRefreshTest do
     assert [%{"id" => "claude-3-opus", "provider" => "anthropic", "image_inputs" => true}] = artifact["profiles"]
   end
 
-  test "refresh fails without writing when provider is absent" do
-    data_dir = tmp_dir("profile-refresh-missing")
-
+  test "refresh fails without writing when provider is absent", %{tmp_dir: data_dir} do
     assert {:error, error} =
              ProfileRefresh.refresh("missing-provider", data_dir,
                source_data: source_data(),
@@ -61,12 +58,5 @@ defmodule BeamWeaver.Models.ProfileRefreshTest do
         }
       }
     }
-  end
-
-  defp tmp_dir(name) do
-    path = Path.join(System.tmp_dir!(), "#{name}-#{System.unique_integer([:positive])}")
-    File.mkdir_p!(path)
-    on_exit(fn -> File.rm_rf(path) end)
-    path
   end
 end

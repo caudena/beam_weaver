@@ -22,10 +22,7 @@ defmodule BeamWeaver.ExecutionPolicy do
         }
 
   @spec new(keyword() | map() | t()) :: {:ok, t()} | {:error, Error.t()}
-  def new(%__MODULE__{} = policy), do: validate(policy)
-
-  def new(opts),
-    do: Policy.build(__MODULE__, opts, @fields, &validate/1, normalize: &normalize_value/2)
+  def new(opts), do: Policy.build(__MODULE__, opts, @fields, &validate/1, normalize: &normalize_value/2)
 
   @spec new!(keyword() | map() | t()) :: t()
   def new!(opts), do: opts |> new() |> Policy.bang()

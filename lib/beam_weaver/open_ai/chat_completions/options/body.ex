@@ -5,11 +5,23 @@ defmodule BeamWeaver.OpenAI.ChatCompletions.Options.Body do
 
   alias BeamWeaver.OpenAI.ChatCompletions.Messages
   alias BeamWeaver.OpenAI.ChatCompletions.Options.Validation
+  alias BeamWeaver.OpenAI.ChatModel.StructuredOutput
   alias BeamWeaver.Core.Error
   alias BeamWeaver.OpenAI.MessageParts
   alias BeamWeaver.OpenAI.ModelPolicy
   alias BeamWeaver.Provider.ChatCompletionsWire
   alias BeamWeaver.Provider.Options
+
+  # Request fields from the call's option, or else the model's: sent as they
+  # are, as maps with string keys, or normalized. Then those only a call sets.
+  @model_fields ~w(top_p frequency_penalty presence_penalty seed parallel_tool_calls user modalities store
+                   prompt_cache_key safety_identifier)a
+  @model_map_fields ~w(metadata moderation audio logit_bias prompt_cache_options)a
+  @model_value_fields ~w(service_tier function_call functions prompt_cache_retention verbosity web_search_options
+                         search_parameters)a
+  @call_fields ~w(logprobs top_logprobs n stop)a
+  @call_map_fields ~w(stream_options)a
+  @call_value_fields ~w(prediction)a
 
   @spec to_body(term(), [BeamWeaver.Core.Message.t()], keyword()) :: {:ok, map()} | {:error, Error.t()}
   def to_body(model, messages, opts) do
@@ -39,77 +51,13 @@ defmodule BeamWeaver.OpenAI.ChatCompletions.Options.Body do
           )
         )
         |> put_output_cap(model_name, model, opts)
-        |> Options.put_optional("top_p", option(model, opts, :top_p))
-        |> Options.put_optional("frequency_penalty", option(model, opts, :frequency_penalty))
-        |> Options.put_optional("presence_penalty", option(model, opts, :presence_penalty))
-        |> Options.put_optional("seed", option(model, opts, :seed))
-        |> Options.put_optional("parallel_tool_calls", option(model, opts, :parallel_tool_calls))
-        |> Options.put_optional(
-          "metadata",
-          Options.normalize_option_map(option(model, opts, :metadata))
-        )
-        |> Options.put_optional(
-          "moderation",
-          Options.normalize_option_map(option(model, opts, :moderation))
-        )
-        |> Options.put_optional("user", option(model, opts, :user))
-        |> Options.put_optional(
-          "service_tier",
-          Options.normalize_value(option(model, opts, :service_tier))
-        )
-        |> Options.put_optional("modalities", option(model, opts, :modalities))
-        |> Options.put_optional(
-          "audio",
-          Options.normalize_option_map(option(model, opts, :audio))
-        )
-        |> Options.put_optional("store", option(model, opts, :store))
+        |> MessageParts.put_fields(@model_fields, &option(model, opts, &1))
+        |> MessageParts.put_fields(@model_map_fields, &Options.normalize_option_map(option(model, opts, &1)))
+        |> MessageParts.put_fields(@model_value_fields, &Options.normalize_value(option(model, opts, &1)))
+        |> MessageParts.put_fields(@call_fields, &Keyword.get(opts, &1))
+        |> MessageParts.put_fields(@call_map_fields, &Options.normalize_option_map(Keyword.get(opts, &1)))
+        |> MessageParts.put_fields(@call_value_fields, &Options.normalize_value(Keyword.get(opts, &1)))
         |> Options.put_optional("stream", Keyword.get(opts, :stream, false))
-        |> Options.put_optional(
-          "stream_options",
-          Options.normalize_option_map(Keyword.get(opts, :stream_options))
-        )
-        |> Options.put_optional(
-          "prediction",
-          Options.normalize_value(Keyword.get(opts, :prediction))
-        )
-        |> Options.put_optional("logprobs", Keyword.get(opts, :logprobs))
-        |> Options.put_optional(
-          "logit_bias",
-          Options.normalize_option_map(option(model, opts, :logit_bias))
-        )
-        |> Options.put_optional("top_logprobs", Keyword.get(opts, :top_logprobs))
-        |> Options.put_optional("n", Keyword.get(opts, :n))
-        |> Options.put_optional("stop", Keyword.get(opts, :stop))
-        |> Options.put_optional(
-          "function_call",
-          Options.normalize_value(option(model, opts, :function_call))
-        )
-        |> Options.put_optional(
-          "functions",
-          Options.normalize_value(option(model, opts, :functions))
-        )
-        |> Options.put_optional("prompt_cache_key", option(model, opts, :prompt_cache_key))
-        |> Options.put_optional(
-          "prompt_cache_options",
-          Options.normalize_option_map(option(model, opts, :prompt_cache_options))
-        )
-        |> Options.put_optional(
-          "prompt_cache_retention",
-          Options.normalize_value(option(model, opts, :prompt_cache_retention))
-        )
-        |> Options.put_optional("safety_identifier", option(model, opts, :safety_identifier))
-        |> Options.put_optional(
-          "verbosity",
-          Options.normalize_value(option(model, opts, :verbosity))
-        )
-        |> Options.put_optional(
-          "web_search_options",
-          Options.normalize_value(option(model, opts, :web_search_options))
-        )
-        |> Options.put_optional(
-          "search_parameters",
-          Options.normalize_value(option(model, opts, :search_parameters))
-        )
         |> Options.merge_extra_body(Options.extra_body(model, opts))
 
       {:ok, body}
@@ -134,20 +82,8 @@ defmodule BeamWeaver.OpenAI.ChatCompletions.Options.Body do
       %{type: type} = format when is_binary(type) ->
         {:ok, MessageParts.stringify_keys(format)}
 
-      %{name: name, schema: schema} = format when is_binary(name) and is_map(schema) ->
-        {:ok, Messages.structured_output_format(name, schema, strict: Map.get(format, :strict, true))}
-
-      %{"name" => name, "schema" => schema} = format when is_binary(name) and is_map(schema) ->
-        {:ok, Messages.structured_output_format(name, schema, strict: Map.get(format, "strict", true))}
-
-      {name, schema} when is_binary(name) and is_map(schema) ->
-        {:ok, Messages.structured_output_format(name, schema)}
-
-      other ->
-        {:error,
-         Error.new(:invalid_response_format, "structured output requires a name and schema", %{
-           response_format: inspect(other)
-         })}
+      format ->
+        StructuredOutput.schema_format(format, &Messages.structured_output_format/3)
     end
   end
 

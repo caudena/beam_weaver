@@ -4,21 +4,12 @@ defmodule BeamWeaver.Agent.Middleware.PII.Detector do
   @builtin_types ["email", "credit_card", "ip", "mac_address", "url"]
 
   def detect(text, middleware) do
-    built_in =
-      middleware.detectors
-      |> Enum.flat_map(&detect_builtin(&1, text))
+    type = middleware.pii_type || to_string(List.first(middleware.detectors))
 
     configured =
       case middleware.detector do
-        nil ->
-          []
-
-        detector ->
-          detect_custom_detector(
-            detector,
-            middleware.pii_type || to_string(List.first(middleware.detectors)),
-            text
-          )
+        nil -> []
+        detector -> detect_custom_detector(detector, type, text)
       end
 
     custom =
@@ -31,8 +22,11 @@ defmodule BeamWeaver.Agent.Middleware.PII.Detector do
           apply(module, function, [text | args]) |> normalize_matches(middleware.pii_type)
       end)
 
-    (built_in ++ configured ++ custom)
-    |> Enum.uniq_by(fn match -> {match.start, match.end, match.value, match.type} end)
+    middleware.detectors
+    |> Enum.flat_map(&detect_builtin(&1, text))
+    |> Enum.concat(configured)
+    |> Enum.concat(custom)
+    |> Enum.uniq_by(&{&1.start, &1.end, &1.value, &1.type})
     |> Enum.sort_by(& &1.start)
   end
 

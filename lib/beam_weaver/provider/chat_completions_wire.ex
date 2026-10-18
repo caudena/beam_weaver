@@ -177,12 +177,7 @@ defmodule BeamWeaver.Provider.ChatCompletionsWire do
 
   def tool_output(content) when is_binary(content), do: content
 
-  def tool_output(content) when is_map(content) or is_list(content) do
-    case BeamWeaver.JSON.encode(content) do
-      {:ok, json} -> json
-      {:error, _error} -> inspect(content)
-    end
-  end
+  def tool_output(content) when is_map(content) or is_list(content), do: BeamWeaver.JSON.encode_or_inspect(content)
 
   def tool_output(content), do: to_string(content)
 

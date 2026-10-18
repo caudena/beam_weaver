@@ -159,12 +159,10 @@ defmodule BeamWeaver.Agent.Middleware.ToolSelection do
        ) do
     tools = ToolSet.list(tool_set)
 
-    with :ok <- validate_always_include(middleware, tools),
-         selectable_tools <- reject_always_include(tools, middleware.always_include) do
-      if selectable_tools == [] do
-        {:ok, tool_set}
-      else
-        select_tools(middleware, tool_set, selectable_tools, request)
+    with :ok <- validate_always_include(middleware, tools) do
+      case Enum.reject(tools, &(Tool.name(&1) in middleware.always_include)) do
+        [] -> {:ok, tool_set}
+        selectable_tools -> select_tools(middleware, tool_set, selectable_tools, request)
       end
     end
   end
@@ -179,10 +177,9 @@ defmodule BeamWeaver.Agent.Middleware.ToolSelection do
     ]
 
     with {:ok, selected_names, max_tools} <- selection(middleware, model, messages, valid_names),
-         {:ok, selected_names} <- validate_selected_names(selected_names, valid_names),
-         selected_names <- cap_and_dedupe(selected_names, max_tools),
-         selected_tools <- tools_by_selection(selectable_tools, selected_names),
-         always_tools <- tools_by_selection(ToolSet.list(tool_set), middleware.always_include) do
+         {:ok, selected_names} <- validate_selected_names(selected_names, valid_names) do
+      selected_tools = tools_by_selection(selectable_tools, cap_and_dedupe(selected_names, max_tools))
+      always_tools = tools_by_selection(ToolSet.list(tool_set), middleware.always_include)
       {:ok, ToolSet.new(selected_tools ++ always_tools, source: :middleware)}
     else
       {:error, %Error{} = error} ->
@@ -323,10 +320,6 @@ defmodule BeamWeaver.Agent.Middleware.ToolSelection do
         tool -> [tool]
       end
     end)
-  end
-
-  defp reject_always_include(tools, always_include) do
-    Enum.reject(tools, &(Tool.name(&1) in always_include))
   end
 
   defp validate_always_include(%__MODULE__{always_include: []}, _tools), do: :ok

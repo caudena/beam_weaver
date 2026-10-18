@@ -108,8 +108,9 @@ defmodule BeamWeaver.Tracing.Exporters.WeaveScope do
       "outputs" => outputs,
       "usage" => usage,
       "error" => error,
-      "environment" => environment(metadata, context_metadata),
-      "version" => version(metadata, context_metadata, opts),
+      "environment" => metadata_value(metadata, "environment") || metadata_value(context_metadata, "environment"),
+      "version" =>
+        metadata_value(metadata, "version") || metadata_value(context_metadata, "version") || configured_version(opts),
       "model_provider" =>
         metadata_value(metadata, "provider") || metadata_value(metadata, "model_provider") ||
           metadata_value(context_metadata, "provider") || metadata_value(context_metadata, "model_provider"),
@@ -179,17 +180,6 @@ defmodule BeamWeaver.Tracing.Exporters.WeaveScope do
   def lifecycle_rank(:error), do: 3
   def lifecycle_rank(_event), do: 0
 
-  defp environment(metadata, context_metadata) do
-    metadata_value(metadata, "environment") ||
-      metadata_value(context_metadata, "environment")
-  end
-
-  defp version(metadata, context_metadata, opts) do
-    metadata_value(metadata, "version") ||
-      metadata_value(context_metadata, "version") ||
-      configured_version(opts)
-  end
-
   defp configured_version(opts) do
     case Config.option(opts, :version, [:weave_scope, :version]) do
       value when value in [nil, ""] ->
@@ -247,17 +237,12 @@ defmodule BeamWeaver.Tracing.Exporters.WeaveScope do
   defp beam_weaver_version, do: to_string(Application.spec(:beam_weaver, :vsn) || "unknown")
 
   defp metadata_value(map, key) when is_map(map) do
-    Map.get(map, key) || existing_atom_value(map, key)
-  end
-
-  defp metadata_value(_map, _key), do: nil
-
-  defp existing_atom_value(map, key) when is_binary(key) do
-    atom_key = String.to_existing_atom(key)
-    Map.get(map, atom_key)
+    Map.get(map, key) || Map.get(map, String.to_existing_atom(key))
   rescue
     ArgumentError -> nil
   end
+
+  defp metadata_value(_map, _key), do: nil
 
   defp maybe_iso8601(nil), do: nil
   defp maybe_iso8601(%DateTime{} = datetime), do: DateTime.to_iso8601(datetime)

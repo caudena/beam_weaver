@@ -90,6 +90,11 @@ defmodule BeamWeaver.Sandbox.LocalTest do
 
     assert error ==
              "File '#{large_path}': Binary file exceeds maximum preview size of 512000 bytes"
+
+    nul_path = Path.join(root, "large.bin")
+    Sandbox.upload_files(sandbox, [{nul_path, :binary.copy(<<0>>, 513_000)}])
+    assert %Sandbox.ReadResult{file_data: nil, error: error} = Sandbox.read(sandbox, nul_path)
+    assert error =~ "Binary file exceeds maximum preview size"
   end
 
   test "glob returns relative matches and grep returns sandbox plus relative paths", %{
@@ -299,6 +304,9 @@ defmodule BeamWeaver.Sandbox.LocalTest do
 
     assert [%Sandbox.UploadResult{path: "relative.txt", error: "invalid_path"}] =
              Sandbox.upload_files(sandbox, [{"relative.txt", "nope"}])
+
+    assert [%Sandbox.DownloadResult{path: "relative.txt", content: nil, error: "invalid_path"}] =
+             Sandbox.download_files(sandbox, ["relative.txt"])
   end
 
   test "blocks symlink escapes for reads, writes, listings, and recursive grep", %{
@@ -415,20 +423,6 @@ defmodule BeamWeaver.Sandbox.LocalTest do
 
     assert [%Sandbox.DownloadResult{path: ^path, content: ^content, error: nil}] =
              Sandbox.download_files(sandbox, [path])
-  end
-
-  test "invalid paths and preview limits return standard error markers", %{
-    sandbox: sandbox,
-    root: root
-  } do
-    assert [%Sandbox.DownloadResult{path: "relative.txt", content: nil, error: "invalid_path"}] =
-             Sandbox.download_files(sandbox, ["relative.txt"])
-
-    path = Path.join(root, "large.bin")
-    Sandbox.upload_files(sandbox, [{path, :binary.copy(<<0>>, 513_000)}])
-
-    assert %Sandbox.ReadResult{file_data: nil, error: error} = Sandbox.read(sandbox, path)
-    assert error =~ "Binary file exceeds maximum preview size"
   end
 
   test "a host path is taken literally as a sandbox path, not reinterpreted", %{

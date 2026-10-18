@@ -86,34 +86,19 @@ defmodule BeamWeaver.Filesystem.FileDataUtils do
     end
   end
 
-  # `limit` lines of `content` after skipping `offset` lines, as every
-  # backend reads text: `\r\n` and `\r` end lines as `\n` does, and a final
-  # newline ends the last line rather than starting another.
+  # `limit` lines of `content` after skipping `offset` lines.
   def slice_lines(content, opts) do
     offset = opts |> Keyword.get(:offset, 0) |> int_or(0) |> max(0)
     limit = opts |> Keyword.get(:limit, 2_000) |> int_or(2_000)
+    content |> lines() |> Enum.drop(offset) |> Enum.take(max(limit, 0)) |> Enum.join("\n")
+  end
 
-    lines =
-      content
-      |> String.replace("\r\n", "\n")
-      |> String.replace("\r", "\n")
-      |> String.split("\n")
-
-    lines =
-      if List.last(lines) == "" do
-        Enum.drop(lines, -1)
-      else
-        lines
-      end
-
-    if offset > length(lines) do
-      ""
-    else
-      lines
-      |> Enum.drop(offset)
-      |> Enum.take(max(limit, 0))
-      |> Enum.join("\n")
-    end
+  # The lines of `content` as every backend reads text: `\r\n` and `\r` end
+  # lines as `\n` does, and a final newline ends the last line rather than
+  # starting another.
+  def lines(content) do
+    lines = content |> String.replace("\r\n", "\n") |> String.replace("\r", "\n") |> String.split("\n")
+    if List.last(lines) == "", do: Enum.drop(lines, -1), else: lines
   end
 
   def binary_content?(bytes),

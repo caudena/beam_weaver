@@ -257,6 +257,20 @@ defmodule BeamWeaver.Migrations.PostgresTest do
     refute LivePostgres.table_exists?("beam_weaver_indexing_records", schema)
   end
 
+  test "up with version: 0 migrates nothing and creates no tables" do
+    schema = LivePostgres.unique_schema()
+    opts = [prefix: schema, adapters: [:cache], version: 0]
+    version = LivePostgres.migrate(opts)
+
+    on_exit(fn ->
+      LivePostgres.drop_schema(schema)
+      LivePostgres.clear_migration(version)
+    end)
+
+    refute LivePostgres.table_exists?("beam_weaver_cache_entries", schema)
+    assert BeamWeaver.Migrations.migrated_version(Keyword.put(opts, :repo, PostgresRepo)) == 0
+  end
+
   test "adapters: :all creates the tables of the current adapters only" do
     schema = LivePostgres.unique_schema()
     version = LivePostgres.migrate(prefix: schema, adapters: :all)

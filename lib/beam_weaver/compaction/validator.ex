@@ -25,9 +25,10 @@ defmodule BeamWeaver.Compaction.Validator do
     end
   end
 
+  # `semantic` comes from `Semantic.new/1`, which validated its shape.
   @spec validate(Semantic.t(), [InputEvent.t()], keyword()) ::
           {:ok, Semantic.t()} | {:error, Error.t()}
-  def validate(%Semantic{} = semantic, events, opts) when is_list(events) do
+  def validate(%Semantic{} = semantic, events, opts) do
     allowed_ids =
       events
       |> Enum.map(& &1.event_id)
@@ -42,8 +43,7 @@ defmodule BeamWeaver.Compaction.Validator do
     expected_range = Keyword.fetch!(opts, :coverage)
     maximum_bytes = Keyword.get(opts, :maximum_bytes, 131_072)
 
-    with {:ok, semantic} <- validate_shape(semantic),
-         :ok <- exact_coverage(semantic.coverage, expected_range),
+    with :ok <- exact_coverage(semantic.coverage, expected_range),
          :ok <- known_sources(semantic, allowed_ids),
          :ok <- source_backed_artifacts(semantic.artifact_refs, events, opts),
          :ok <- exact_excerpts(semantic.user_requests, direct_user),
@@ -58,10 +58,13 @@ defmodule BeamWeaver.Compaction.Validator do
     end
   end
 
-  def validate(_semantic, _events, _opts), do: invalid("semantic validation input is invalid")
-
   @spec source_event_ids(Semantic.t()) :: [String.t()]
-  def source_event_ids(%Semantic{} = semantic), do: source_ids(semantic)
+  def source_event_ids(%Semantic{} = semantic) do
+    semantic
+    |> Semantic.to_map()
+    |> collect_source_ids([])
+    |> Enum.uniq()
+  end
 
   defp sourced_list(values, maximum) do
     list(values, maximum, fn value ->
@@ -168,7 +171,7 @@ defmodule BeamWeaver.Compaction.Validator do
   end
 
   defp known_sources(semantic, allowed_ids) do
-    unknown = semantic |> source_ids() |> Enum.reject(&MapSet.member?(allowed_ids, &1))
+    unknown = semantic |> source_event_ids() |> Enum.reject(&MapSet.member?(allowed_ids, &1))
 
     if unknown == [], do: :ok, else: invalid("semantic cites unknown source events", %{event_ids: unknown})
   end
@@ -242,13 +245,6 @@ defmodule BeamWeaver.Compaction.Validator do
     [semantic.objective, semantic.user_requests, semantic.constraints, semantic.decisions] ++
       Map.values(semantic.progress) ++
       [semantic.critical_context, semantic.errors, semantic.artifact_refs]
-  end
-
-  defp source_ids(semantic) do
-    semantic
-    |> Semantic.to_map()
-    |> collect_source_ids([])
-    |> Enum.uniq()
   end
 
   defp collect_source_ids(%{} = value, acc) do

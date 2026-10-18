@@ -9,9 +9,9 @@ defmodule BeamWeaver.Tool.Schema.Fields do
 
   def from_fields(fields) when is_list(fields) do
     {properties, required} =
-      fields
-      |> Enum.map(&normalize_field/1)
-      |> Enum.reduce({%{}, []}, fn {name, type, opts}, {properties, required} ->
+      Enum.reduce(fields, {%{}, []}, fn field, {properties, required} ->
+        {name, type, opts} = normalize_field(field)
+
         schema =
           type
           |> type_schema()
@@ -144,20 +144,14 @@ defmodule BeamWeaver.Tool.Schema.Fields do
   end
 
   defp put_nullable(schema, opts) do
-    if Keyword.get(opts, :nullable, false) do
-      cond do
-        not is_nil(BeamWeaver.MapAccess.get(schema, :type)) ->
-          type = BeamWeaver.MapAccess.get(schema, :type)
-          Map.put(schema, :type, List.wrap(type) ++ ["null"])
+    type = BeamWeaver.MapAccess.get(schema, :type)
+    any_of = BeamWeaver.MapAccess.get(schema, :anyOf)
 
-        is_list(BeamWeaver.MapAccess.get(schema, :anyOf)) ->
-          Map.put(schema, :anyOf, BeamWeaver.MapAccess.get(schema, :anyOf) ++ [%{type: "null"}])
-
-        true ->
-          %{anyOf: [schema, %{type: "null"}]}
-      end
-    else
-      schema
+    cond do
+      !Keyword.get(opts, :nullable, false) -> schema
+      not is_nil(type) -> Map.put(schema, :type, List.wrap(type) ++ ["null"])
+      is_list(any_of) -> Map.put(schema, :anyOf, any_of ++ [%{type: "null"}])
+      true -> %{anyOf: [schema, %{type: "null"}]}
     end
   end
 

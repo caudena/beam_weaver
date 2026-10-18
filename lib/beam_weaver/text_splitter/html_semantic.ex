@@ -64,7 +64,7 @@ defmodule BeamWeaver.TextSplitter.HTMLSemantic do
   defp sections(html, %{headers: []}), do: [{%{}, html}]
 
   defp sections(html, splitter) do
-    header_tags = splitter.headers |> Enum.map(&elem(&1, 0)) |> Enum.map(&String.downcase/1)
+    header_tags = Enum.map(splitter.headers, &String.downcase(elem(&1, 0)))
     header_names = Map.new(splitter.headers, fn {tag, name} -> {String.downcase(tag), name} end)
     regex = Regex.compile!("<(#{Enum.join(header_tags, "|")})(?:\\s[^>]*)?>(.*?)</\\1>", "is")
     matches = Regex.scan(regex, html, return: :index)
@@ -130,9 +130,6 @@ defmodule BeamWeaver.TextSplitter.HTMLSemantic do
     |> String.replace(~r/<!--.*?-->/su, " ")
     |> String.replace(~r/<(script|style)[^>]*>.*?<\/\1>/isu, " ")
   end
-
-  defp replace_custom_handlers(html, %{custom_handlers: handlers}) when map_size(handlers) == 0,
-    do: html
 
   defp replace_custom_handlers(html, %{custom_handlers: handlers}) do
     Enum.reduce(handlers, html, fn {tag, handler}, acc ->

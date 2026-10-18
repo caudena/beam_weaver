@@ -29,7 +29,8 @@ defmodule BeamWeaver.Transport.RedactorReferenceTest do
     def redact(headers) when is_list(headers) and headers != [] and is_tuple(hd(headers)) do
       Enum.map(headers, fn
         {key, value} ->
-          if secret_key?(key), do: {to_string(key), @redacted}, else: {to_string(key), redact(value)}
+          name = key_name(key) || key
+          if secret_key?(key), do: {name, @redacted}, else: {name, redact(value)}
 
         other ->
           redact(other)
@@ -78,11 +79,17 @@ defmodule BeamWeaver.Transport.RedactorReferenceTest do
     def redact(value), do: value
 
     defp secret_key?(key) do
-      normalized = key |> to_string() |> String.downcase() |> String.replace("-", "_")
+      normalized = (key_name(key) || "") |> String.downcase() |> String.replace("-", "_")
 
       not usage_or_limit_token_key?(normalized) and
         (normalized in @secret_header_names or Enum.any?(@secret_key_parts, &String.contains?(normalized, &1)))
     end
+
+    # Strings, atoms, numbers and printable charlists name a key; other
+    # terms, such as tuples, don't.
+    defp key_name(key) when is_binary(key) or is_atom(key) or is_number(key), do: to_string(key)
+    defp key_name(key) when is_list(key), do: if(:io_lib.printable_unicode_list(key), do: List.to_string(key))
+    defp key_name(_key), do: nil
 
     defp usage_or_limit_token_key?(normalized) do
       normalized in @usage_token_keys or String.ends_with?(normalized, ["_tokens", "_token_count", "_token_limit"])

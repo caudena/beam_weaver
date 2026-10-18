@@ -113,7 +113,7 @@ defmodule BeamWeaver.Stream.MessagesTransformer do
 
     case result do
       {:ok, events} when is_list(events) ->
-        process_projected_events(transformer, events)
+        reduce_events(transformer, events, &do_process/2)
 
       {:ok, event} ->
         do_process(transformer, event)
@@ -141,8 +141,6 @@ defmodule BeamWeaver.Stream.MessagesTransformer do
         process_whole_message(transformer, message, metadata)
     end
   end
-
-  defp process_projected_events(transformer, events), do: reduce_events(transformer, events, &do_process/2)
 
   defp reduce_events(transformer, events, process) do
     {emitted, transformer} =
@@ -268,7 +266,7 @@ defmodule BeamWeaver.Stream.MessagesTransformer do
     run_id = event_run_id(metadata, payload)
     role = MapAccess.get(payload, :role) || :assistant
 
-    if assistant_role?(role) and not is_nil(run_id) do
+    if role in [:assistant, :ai, "assistant", "ai"] and not is_nil(run_id) do
       stream = %MessageStream{
         message_id: MapAccess.get(payload, :message_id) || run_id,
         run_id: run_id,
@@ -332,43 +330,35 @@ defmodule BeamWeaver.Stream.MessagesTransformer do
     end
   end
 
-  defp process_whole_message(transformer, %Message{role: :tool}, _metadata),
-    do: {:ok, transformer, []}
-
   defp process_whole_message(transformer, %Message{role: :assistant} = message, metadata) do
     if Map.has_key?(transformer.by_run, run_id(metadata)) do
       {:ok, transformer, []}
     else
-      complete_whole_message(transformer, message, metadata)
+      text = Message.text(message)
+      message_id = message.id || run_id(metadata)
+
+      stream = %MessageStream{
+        message_id: message_id,
+        run_id: run_id(metadata) || message_id,
+        node: MapAccess.get(metadata, :node),
+        role: :assistant,
+        events: lifecycle_events(message_id, text),
+        text_deltas: [text],
+        done: true,
+        output: message,
+        metadata: metadata
+      }
+
+      {:ok, %{transformer | completed: transformer.completed ++ [stream]}, [stream]}
     end
   end
 
   defp process_whole_message(transformer, _message, _metadata), do: {:ok, transformer, []}
 
-  defp complete_whole_message(transformer, %Message{} = message, metadata) do
-    text = Message.text(message)
-    message_id = message.id || run_id(metadata)
-
-    stream = %MessageStream{
-      message_id: message_id,
-      run_id: run_id(metadata) || message_id,
-      node: MapAccess.get(metadata, :node),
-      role: :assistant,
-      events: lifecycle_events(message_id, text),
-      text_deltas: [text],
-      done: true,
-      output: message,
-      metadata: metadata
-    }
-
-    {:ok, %{transformer | completed: transformer.completed ++ [stream]}, [stream]}
-  end
-
   defp record_event(%MessageStream{} = stream, event),
     do: %{stream | events: [event | stream.events], events_reversed?: true}
 
-  defp append_text_delta(stream, nil), do: stream
-  defp append_text_delta(stream, ""), do: stream
+  defp append_text_delta(stream, text) when text in [nil, ""], do: stream
 
   defp append_text_delta(stream, text),
     do: %{stream | text_deltas: [text | stream.text_deltas], text_deltas_reversed?: true}
@@ -425,9 +415,6 @@ defmodule BeamWeaver.Stream.MessagesTransformer do
 
   defp single_open_run_id(%__MODULE__{open_order: [run_id]}), do: run_id
   defp single_open_run_id(_transformer), do: nil
-
-  defp assistant_role?(role) when role in [:assistant, :ai, "assistant", "ai", nil], do: true
-  defp assistant_role?(_role), do: false
 
   defp normalize_stream(%MessageStream{} = stream) do
     %{

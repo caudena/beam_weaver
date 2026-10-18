@@ -8,11 +8,7 @@ defmodule BeamWeaver.Agent.StructuredOutput.Schema do
   def schema_specs(%{oneOf: variants}), do: variant_specs(variants)
   def schema_specs(schema), do: [schema_spec(schema)]
 
-  defp variant_specs(variants) do
-    variants
-    |> Enum.with_index()
-    |> Enum.map(fn {variant, index} -> variant_spec(variant, index) end)
-  end
+  defp variant_specs(variants), do: Enum.with_index(variants, &variant_spec/2)
 
   defp variant_spec(variant, index) when is_map(variant) do
     case Map.get(variant, :title) || Map.get(variant, "title") do

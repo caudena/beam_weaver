@@ -1,6 +1,8 @@
 defmodule BeamWeaver.Core.ToolCallParser do
   @moduledoc false
 
+  import BeamWeaver.MapAccess, only: [get: 2]
+
   alias BeamWeaver.Core.Messages
 
   @spec parse_raw_calls([map()]) ::
@@ -39,30 +41,29 @@ defmodule BeamWeaver.Core.ToolCallParser do
     do: openai_call(Map.get(call, :id), Map.get(function, :name), Map.get(function, :arguments))
 
   def normalize_openai_call(%{} = call) do
-    case BeamWeaver.MapAccess.get(call, :type) do
+    fields = [
+      id: get(call, :id) || get(call, :call_id),
+      provider_id: get(call, :provider_id),
+      call_id: get(call, :call_id),
+      name: get(call, :name)
+    ]
+
+    case get(call, :type) do
       type when type in [:invalid_tool_call, "invalid_tool_call"] ->
         {:error,
          Messages.invalid_tool_call(
-           id: BeamWeaver.MapAccess.get(call, :id) || BeamWeaver.MapAccess.get(call, :call_id),
-           provider_id: BeamWeaver.MapAccess.get(call, :provider_id),
-           call_id: BeamWeaver.MapAccess.get(call, :call_id),
-           name: BeamWeaver.MapAccess.get(call, :name),
-           args: BeamWeaver.MapAccess.get(call, :args) || BeamWeaver.MapAccess.get(call, :arguments),
-           error: BeamWeaver.MapAccess.get(call, :error)
+           fields ++ [args: get(call, :args) || get(call, :arguments), error: get(call, :error)]
          )}
 
       type when type in [:tool_call, "tool_call", nil] ->
-        if BeamWeaver.MapAccess.get(call, :name) do
+        if fields[:name] do
           {:ok,
            Messages.tool_call(
-             id: BeamWeaver.MapAccess.get(call, :id) || BeamWeaver.MapAccess.get(call, :call_id),
-             provider_id: BeamWeaver.MapAccess.get(call, :provider_id),
-             call_id: BeamWeaver.MapAccess.get(call, :call_id),
-             name: BeamWeaver.MapAccess.get(call, :name),
-             thought_signature: BeamWeaver.MapAccess.get(call, :thought_signature),
-             args:
-               BeamWeaver.MapAccess.get(call, :args) ||
-                 BeamWeaver.MapAccess.get(call, :arguments) || %{}
+             fields ++
+               [
+                 thought_signature: get(call, :thought_signature),
+                 args: get(call, :args) || get(call, :arguments) || %{}
+               ]
            )}
         else
           {:ok, call}
@@ -76,13 +77,13 @@ defmodule BeamWeaver.Core.ToolCallParser do
   def normalize_openai_call(call), do: {:ok, call}
 
   defp parse_raw_call(raw_call) when is_map(raw_call) do
-    case BeamWeaver.MapAccess.get(raw_call, :function) do
+    case get(raw_call, :function) do
       nil ->
         {:ok, nil}
 
       function when is_map(function) ->
-        name = BeamWeaver.MapAccess.get(function, :name)
-        arguments = BeamWeaver.MapAccess.get(function, :arguments)
+        name = get(function, :name)
+        arguments = get(function, :arguments)
 
         case decode_tool_args(arguments) do
           {:ok, args} ->
@@ -90,7 +91,7 @@ defmodule BeamWeaver.Core.ToolCallParser do
              Messages.tool_call(
                name: name || "",
                args: args,
-               id: BeamWeaver.MapAccess.get(raw_call, :id)
+               id: get(raw_call, :id)
              )}
 
           {:error, error} ->
@@ -98,7 +99,7 @@ defmodule BeamWeaver.Core.ToolCallParser do
              Messages.invalid_tool_call(
                name: name,
                args: arguments,
-               id: BeamWeaver.MapAccess.get(raw_call, :id),
+               id: get(raw_call, :id),
                error: error
              )}
         end
@@ -108,13 +109,13 @@ defmodule BeamWeaver.Core.ToolCallParser do
   defp parse_raw_call(_raw_call), do: {:ok, nil}
 
   defp parse_raw_chunk(raw_call) when is_map(raw_call) do
-    function = BeamWeaver.MapAccess.get(raw_call, :function)
+    function = get(raw_call, :function)
 
     Messages.tool_call_chunk(
-      name: if(is_map(function), do: BeamWeaver.MapAccess.get(function, :name)),
-      args: if(is_map(function), do: BeamWeaver.MapAccess.get(function, :arguments)),
-      id: BeamWeaver.MapAccess.get(raw_call, :id),
-      index: BeamWeaver.MapAccess.get(raw_call, :index)
+      name: get(function, :name),
+      args: get(function, :arguments),
+      id: get(raw_call, :id),
+      index: get(raw_call, :index)
     )
   end
 

@@ -65,8 +65,8 @@ defmodule BeamWeaver.Agent.Subagent.StreamTransformerTest do
       StreamTransformer.process_many(transformer(), [
         tools_start(parent_task_id: "x", subagent_type: "researcher", tool_call_id: "tc-1"),
         child_start(["tools:x"]),
-        values(%{k: 1}, namespace: ["tools:x"]),
-        values(%{k: 2}, namespace: ["tools:x"])
+        event("values", %{k: 1}, ["tools:x"]),
+        event("values", %{k: 2}, ["tools:x"])
       ])
 
     assert [%{values: [%{k: 1}, %{k: 2}]} = handle] = transformer.log
@@ -78,42 +78,18 @@ defmodule BeamWeaver.Agent.Subagent.StreamTransformerTest do
       StreamTransformer.process_many(transformer(), [
         tools_start(parent_task_id: "x", subagent_type: "researcher", tool_call_id: "tc-1"),
         child_start(["tools:x"]),
-        values(%{k: "root"}, namespace: [])
+        event("values", %{k: "root"}, [])
       ])
 
     assert [%{values: []}] = transformer.log
   end
 
-  test "nested declared subagents surface under the parent handle" do
+  test "nested declared subagents surface under the parent handle, with their own values, updates and errors" do
     {:ok, transformer, _handles} =
       StreamTransformer.process_many(transformer(), [
         tools_start(parent_task_id: "p", subagent_type: "researcher", tool_call_id: "tc-p"),
         child_start(["tools:p"]),
-        tools_start(
-          namespace: ["tools:p"],
-          parent_task_id: "c",
-          subagent_type: "coder",
-          tool_call_id: "tc-c"
-        ),
-        child_start(["tools:p", "tools:c"])
-      ])
-
-    assert [
-             %{
-               path: ["tools:p"],
-               subagents: [
-                 %{path: ["tools:p", "tools:c"], graph_name: "coder", trigger_call_id: "tc-c"}
-               ]
-             }
-           ] = transformer.log
-  end
-
-  test "nested child values updates and errors stay on the child handle" do
-    {:ok, transformer, _handles} =
-      StreamTransformer.process_many(transformer(), [
-        tools_start(parent_task_id: "p", subagent_type: "researcher", tool_call_id: "tc-p"),
-        child_start(["tools:p"]),
-        values(%{parent: true}, namespace: ["tools:p"]),
+        event("values", %{parent: true}, ["tools:p"]),
         tools_start(
           namespace: ["tools:p"],
           parent_task_id: "c",
@@ -121,9 +97,9 @@ defmodule BeamWeaver.Agent.Subagent.StreamTransformerTest do
           tool_call_id: "tc-c"
         ),
         child_start(["tools:p", "tools:c"]),
-        values(%{child: true}, namespace: ["tools:p", "tools:c"]),
-        updates(%{child_update: true}, namespace: ["tools:p", "tools:c"]),
-        error(%{message: "child boom"}, namespace: ["tools:p", "tools:c"])
+        event("values", %{child: true}, ["tools:p", "tools:c"]),
+        event("updates", %{child_update: true}, ["tools:p", "tools:c"]),
+        event("error", %{message: "child boom"}, ["tools:p", "tools:c"])
       ])
 
     assert [
@@ -136,6 +112,8 @@ defmodule BeamWeaver.Agent.Subagent.StreamTransformerTest do
                subagents: [
                  %{
                    path: ["tools:p", "tools:c"],
+                   graph_name: "coder",
+                   trigger_call_id: "tc-c",
                    values: [%{child: true}],
                    updates: [%{child_update: true}],
                    status: :failed,
@@ -268,56 +246,22 @@ defmodule BeamWeaver.Agent.Subagent.StreamTransformerTest do
   end
 
   defp parent_tasks_result(opts) do
-    parent_task_id = Keyword.fetch!(opts, :parent_task_id)
-    error = Keyword.get(opts, :error)
-    interrupts = Keyword.get(opts, :interrupts, [])
-
     %{
       "type" => "event",
       "method" => "tasks",
       "params" => %{
-        "namespace" => Keyword.get(opts, :namespace, []),
+        "namespace" => [],
         "data" => %{
-          "id" => parent_task_id,
+          "id" => Keyword.fetch!(opts, :parent_task_id),
           "name" => "tools",
-          "error" => error,
-          "interrupts" => interrupts,
+          "error" => Keyword.get(opts, :error),
+          "interrupts" => [],
           "result" => %{}
         }
       }
     }
   end
 
-  defp values(payload, opts) do
-    %{
-      "type" => "event",
-      "method" => "values",
-      "params" => %{
-        "namespace" => Keyword.fetch!(opts, :namespace),
-        "data" => payload
-      }
-    }
-  end
-
-  defp updates(payload, opts) do
-    %{
-      "type" => "event",
-      "method" => "updates",
-      "params" => %{
-        "namespace" => Keyword.fetch!(opts, :namespace),
-        "data" => payload
-      }
-    }
-  end
-
-  defp error(payload, opts) do
-    %{
-      "type" => "event",
-      "method" => "error",
-      "params" => %{
-        "namespace" => Keyword.fetch!(opts, :namespace),
-        "data" => payload
-      }
-    }
-  end
+  defp event(method, payload, namespace),
+    do: %{"type" => "event", "method" => method, "params" => %{"namespace" => namespace, "data" => payload}}
 end

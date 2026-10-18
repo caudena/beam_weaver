@@ -217,12 +217,7 @@ defmodule BeamWeaver.Agent.Middleware.Helpers do
     end
   end
 
-  defp decision_content(data, _images?) do
-    case BeamWeaver.JSON.encode(data) do
-      {:ok, json} -> [json]
-      {:error, _error} -> [inspect(data)]
-    end
-  end
+  defp decision_content(data, _images?), do: [BeamWeaver.JSON.encode_or_inspect(data)]
 
   # Asks with `with_images` and, when the provider refuses a request with
   # images (HTTP 400 or 413), once more with `text_only`.
@@ -238,9 +233,9 @@ defmodule BeamWeaver.Agent.Middleware.Helpers do
   end
 
   # Wrappers such as `Models.cached/3` keep the model they wrap in `:model`.
-  defp model_profile(%{profile: %Profile{} = profile}), do: profile
-  defp model_profile(%{model: %{} = model}), do: model_profile(model)
-  defp model_profile(_model), do: nil
+  def model_profile(%{profile: %Profile{} = profile}), do: profile
+  def model_profile(%{model: %{} = model}), do: model_profile(model)
+  def model_profile(_model), do: nil
 
   defp model_module(%{model: %_{} = model}), do: model_module(model)
   defp model_module(%module{}), do: module

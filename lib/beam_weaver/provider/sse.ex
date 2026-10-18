@@ -13,11 +13,10 @@ defmodule BeamWeaver.Provider.SSE do
   def process_chunk(buffer, chunk, opts \\ [])
 
   def process_chunk(buffer, chunk, opts) when is_binary(buffer) and is_binary(chunk) do
-    data = normalize_newlines(buffer <> chunk)
-    parts = String.split(data, "\n\n", trim: false)
-
     {events, [remaining]} =
-      parts
+      (buffer <> chunk)
+      |> String.replace("\r\n", "\n")
+      |> String.split("\n\n")
       |> Enum.split(-1)
 
     {Enum.flat_map(events, &parse_event(&1, opts)), remaining}
@@ -56,9 +55,5 @@ defmodule BeamWeaver.Provider.SSE do
           end
       end
     end
-  end
-
-  defp normalize_newlines(data) do
-    String.replace(data, "\r\n", "\n")
   end
 end

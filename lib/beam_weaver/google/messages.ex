@@ -161,10 +161,7 @@ defmodule BeamWeaver.Google.Messages do
 
   defp parts(content), do: [%{"text" => to_string(content)}]
 
-  defp part(%ContentBlock.Text{text: text, metadata: metadata}),
-    do: [%{"text" => text} |> put_thought_signature(thought_signature(metadata))]
-
-  defp part(%ContentBlock.PlainText{text: text, metadata: metadata}),
+  defp part(%module{text: text, metadata: metadata}) when module in [ContentBlock.Text, ContentBlock.PlainText],
     do: [%{"text" => text} |> put_thought_signature(thought_signature(metadata))]
 
   defp part(%ContentBlock.Image{} = block),
@@ -203,7 +200,6 @@ defmodule BeamWeaver.Google.Messages do
 
   defp map_part(block) do
     BeamWeaver.MapShape.assert_atom_keys!(block)
-    provider_block = Options.stringify_keys(block)
 
     case ChatCompletionsWire.provider_type(Map.get(block, :type)) do
       # Gemini can sign the last text part of a reply; the signature goes
@@ -241,29 +237,14 @@ defmodule BeamWeaver.Google.Messages do
         function_call_part(block)
 
       _other ->
-        [Map.drop(provider_block, ["type"])]
+        [block |> Options.stringify_keys() |> Map.drop(["type"])]
     end
   end
 
-  defp function_call_part(call) do
-    [
-      %{
-        "functionCall" => %{
-          "name" => function_call_name(call),
-          "args" => function_call_args(call)
-        }
-      }
-      |> put_thought_signature(thought_signature(call))
-    ]
-  end
-
-  defp function_call_name(call) when is_map(call),
-    do: MapAccess.get(call, :name) || "tool"
-
-  defp function_call_args(call) when is_map(call) do
-    normalize_function_call_args(
-      MapAccess.get(call, :args) || MapAccess.get(call, :arguments) || MapAccess.get(call, :input) || %{}
-    )
+  defp function_call_part(call) when is_map(call) do
+    args = MapAccess.get(call, :args) || MapAccess.get(call, :arguments) || MapAccess.get(call, :input) || %{}
+    function_call = %{"name" => MapAccess.get(call, :name) || "tool", "args" => normalize_function_call_args(args)}
+    [put_thought_signature(%{"functionCall" => function_call}, thought_signature(call))]
   end
 
   defp normalize_function_call_args(args) when is_map(args), do: Options.stringify_keys(args)
@@ -324,7 +305,7 @@ defmodule BeamWeaver.Google.Messages do
         "response" => response
       }
       |> Options.reject_nil_values()
-      |> put_function_response_parts(media_parts)
+      |> Options.put_optional("parts", media_parts)
 
     [
       %{
@@ -374,9 +355,6 @@ defmodule BeamWeaver.Google.Messages do
 
   defp default_tool_mime_type(:image), do: "image/png"
   defp default_tool_mime_type(:file), do: "application/pdf"
-
-  defp put_function_response_parts(response, []), do: response
-  defp put_function_response_parts(response, parts), do: Map.put(response, "parts", parts)
 
   defp tool_response_block(%ContentBlock.Text{text: text}), do: text
   defp tool_response_block(%ContentBlock.PlainText{text: text}), do: text
@@ -479,26 +457,22 @@ defmodule BeamWeaver.Google.Messages do
         call_id: id,
         name: block[:name],
         thought_signature: block[:thought_signature],
-        args: block[:args] || %{}
+        args: block.args
       )
     end
   end
 
   defp thought_signature(map) when is_map(map) do
+    metadata = MapAccess.get(map, :metadata)
+
     MapAccess.get(map, :thought_signature) ||
       Map.get(map, "thoughtSignature") ||
       Map.get(map, :thoughtSignature) ||
-      metadata_thought_signature(MapAccess.get(map, :metadata))
-  end
-
-  defp thought_signature(_map), do: nil
-
-  defp metadata_thought_signature(metadata) when is_map(metadata) do
-    MapAccess.get(metadata, :thought_signature) ||
+      MapAccess.get(metadata, :thought_signature) ||
       MapAccess.get(metadata, :thoughtSignature)
   end
 
-  defp metadata_thought_signature(_metadata), do: nil
+  defp thought_signature(_map), do: nil
 
   defp put_thought_signature(part, signature) when is_binary(signature) and signature != "" do
     Map.put(part, "thoughtSignature", signature)

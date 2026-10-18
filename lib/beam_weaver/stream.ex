@@ -165,8 +165,6 @@ defmodule BeamWeaver.Stream do
   end
 
   @doc false
-  def producer_result(result) when result in [:ok, nil], do: :ok
-  def producer_result({:ok, _value}), do: :ok
   def producer_result({:error, %Error{} = error}), do: {:error, error}
 
   def producer_result({:error, reason}),

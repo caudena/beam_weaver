@@ -25,40 +25,30 @@ defmodule BeamWeaver.Agent.ToolNode.Input do
 
   @spec extract(term(), atom() | String.t()) ::
           {:ok, [map()], :list | {:state, atom() | String.t()}} | {:error, Error.t()}
-  def extract(input, messages_key) when is_map(input) do
-    if sent_call?(input) do
-      {:ok, [Map.get(input, :tool_call) || Map.get(input, "tool_call")], {:state, messages_key}}
-    else
-      case fetch_messages(input, messages_key) do
-        {:ok, key, messages} when is_list(messages) ->
-          extract_from_messages(messages, {:state, key})
+  def extract(input, messages_key) do
+    cond do
+      sent_call?(input) ->
+        {:ok, [get_value(input, :tool_call)], {:state, messages_key}}
 
-        _other ->
-          {:error, Error.new(:invalid_tool_node_input, "tool node expected messages or tool calls")}
-      end
+      match?([%Message{} | _rest], input) ->
+        extract_from_messages(input, :list)
+
+      raw_tool_call_list?(input) ->
+        {:ok, input, :list}
+
+      true ->
+        case is_map(input) and fetch_messages(input, messages_key) do
+          {:ok, key, messages} when is_list(messages) -> extract_from_messages(messages, {:state, key})
+          _other -> {:error, Error.new(:invalid_tool_node_input, "tool node expected messages or tool calls")}
+        end
     end
-  end
-
-  def extract([%Message{} | _rest] = messages, _messages_key),
-    do: extract_from_messages(messages, :list)
-
-  def extract(tool_calls, _messages_key) when is_list(tool_calls) do
-    if Enum.all?(tool_calls, &tool_call?/1) do
-      {:ok, tool_calls, :list}
-    else
-      {:error, Error.new(:invalid_tool_node_input, "tool node expected messages or tool calls")}
-    end
-  end
-
-  def extract(_input, _messages_key) do
-    {:error, Error.new(:invalid_tool_node_input, "tool node expected messages or tool calls")}
   end
 
   @spec request_state(term(), term()) :: term()
   def request_state(input, runtime) do
     cond do
       sent_call?(input) ->
-        Map.get(input, :state) || Map.get(input, "state") || ToolRuntime.runtime_value(runtime, :previous_state)
+        get_value(input, :state) || ToolRuntime.runtime_value(runtime, :previous_state)
 
       raw_tool_call_list?(input) and ToolRuntime.runtime_value(runtime, :previous_state) != nil ->
         ToolRuntime.runtime_value(runtime, :previous_state)
@@ -100,44 +90,18 @@ defmodule BeamWeaver.Agent.ToolNode.Input do
     end
   end
 
+  # The calls of the latest assistant message that no tool message after it
+  # answers.
   defp extract_from_messages(messages, shape) do
-    messages
-    |> last_ai_and_following_tool_messages()
-    |> case do
-      {%Message{tool_calls: tool_calls}, tool_messages} when is_list(tool_calls) ->
-        tool_message_ids = MapSet.new(tool_messages, & &1.tool_call_id)
+    {following, earlier} = messages |> Enum.reverse() |> Enum.split_while(&(not match?(%Message{role: :assistant}, &1)))
 
-        pending =
-          Enum.reject(tool_calls, fn call ->
-            call
-            |> tool_call_id()
-            |> then(&MapSet.member?(tool_message_ids, &1))
-          end)
-
-        {:ok, pending, shape}
+    case earlier do
+      [%Message{tool_calls: tool_calls} | _rest] when is_list(tool_calls) ->
+        answered = for %Message{role: :tool, tool_call_id: id} <- following, into: MapSet.new(), do: id
+        {:ok, Enum.reject(tool_calls, &MapSet.member?(answered, tool_call_id(&1))), shape}
 
       _other ->
         {:ok, [], shape}
-    end
-  end
-
-  defp last_ai_and_following_tool_messages(messages) do
-    index =
-      messages
-      |> Enum.with_index()
-      |> Enum.reverse()
-      |> Enum.find_value(fn
-        {%Message{role: :assistant}, index} -> index
-        _other -> nil
-      end)
-
-    if is_integer(index) do
-      ai_message = Enum.at(messages, index)
-
-      tool_messages =
-        messages |> Enum.drop(index + 1) |> Enum.filter(&match?(%Message{role: :tool}, &1))
-
-      {ai_message, tool_messages}
     end
   end
 
@@ -152,9 +116,9 @@ defmodule BeamWeaver.Agent.ToolNode.Input do
   # it runs in, or without it to run in the step's state.
   @doc false
   def sent_call?(input) when is_map(input) do
-    type = Map.get(input, :__type) || Map.get(input, "__type")
-    tool_call = Map.get(input, :tool_call) || Map.get(input, "tool_call")
-    state = Map.get(input, :state) || Map.get(input, "state")
+    type = get_value(input, :__type)
+    tool_call = get_value(input, :tool_call)
+    state = get_value(input, :state)
 
     type in [:tool_call_with_context, "tool_call_with_context"] and tool_call?(tool_call) and
       (is_nil(state) or is_map(state))

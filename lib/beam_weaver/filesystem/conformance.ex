@@ -180,50 +180,46 @@ defmodule BeamWeaver.Filesystem.Conformance do
   end
 
   defp writes(backend, tools, paths) do
-    written = run(tools, "write_file", %{"file_path" => paths.vault_new, "content" => "changed"})
+    write_denied =
+      denied(
+        tools,
+        "write_file",
+        %{"file_path" => paths.vault_new, "content" => "changed"},
+        "Error: Permission denied writing #{paths.vault_new}"
+      )
 
-    edited =
-      run(tools, "edit_file", %{"file_path" => paths.key_link, "old_string" => @secret, "new_string" => "changed"})
+    edit_denied =
+      denied(
+        tools,
+        "edit_file",
+        %{"file_path" => paths.key_link, "old_string" => @secret, "new_string" => "changed"},
+        "Error: Permission denied editing #{paths.key_link}"
+      )
 
     write_problem =
-      cond do
-        match?(%Filesystem.ReadResult{error: nil}, Filesystem.read(backend, paths.secret_new)) ->
-          "write_file #{paths.vault_new} wrote #{paths.secret_new}, which a rule denies"
-
-        written != "Error: Permission denied writing #{paths.vault_new}" ->
-          "write_file #{paths.vault_new} wasn't denied: #{describe(written)}"
-
-        true ->
-          nil
-      end
+      if match?(%Filesystem.ReadResult{error: nil}, Filesystem.read(backend, paths.secret_new)),
+        do: "write_file #{paths.vault_new} wrote #{paths.secret_new}, which a rule denies",
+        else: write_denied
 
     edit_problem =
-      cond do
-        not String.contains?(content(backend, paths.key), @secret) ->
-          "edit_file #{paths.key_link} changed #{paths.key}, which a rule denies"
-
-        edited != "Error: Permission denied editing #{paths.key_link}" ->
-          "edit_file #{paths.key_link} wasn't denied: #{describe(edited)}"
-
-        true ->
-          nil
-      end
+      if String.contains?(content(backend, paths.key), @secret),
+        do: edit_denied,
+        else: "edit_file #{paths.key_link} changed #{paths.key}, which a rule denies"
 
     # `write_file` replaces a file that exists, so the link to the secret must
     # be denied too. It runs last: a leak replaces the secret's text.
-    replaced = run(tools, "write_file", %{"file_path" => paths.key_link, "content" => @replacement})
+    replace_denied =
+      denied(
+        tools,
+        "write_file",
+        %{"file_path" => paths.key_link, "content" => @replacement},
+        "Error: Permission denied writing #{paths.key_link}"
+      )
 
     replace_problem =
-      cond do
-        String.contains?(content(backend, paths.key), @replacement) ->
-          "write_file #{paths.key_link} replaced #{paths.key}, which a rule denies"
-
-        replaced != "Error: Permission denied writing #{paths.key_link}" ->
-          "write_file #{paths.key_link} wasn't denied: #{describe(replaced)}"
-
-        true ->
-          nil
-      end
+      if String.contains?(content(backend, paths.key), @replacement),
+        do: "write_file #{paths.key_link} replaced #{paths.key}, which a rule denies",
+        else: replace_denied
 
     Enum.reject([write_problem, edit_problem, replace_problem], &is_nil/1)
   end

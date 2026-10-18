@@ -23,7 +23,9 @@ defmodule BeamWeaver.Agent.ToolNode.Execution do
     with {:ok, tool_calls, output_shape} <- Input.extract(input, node.messages_key) do
       request_state = Input.request_state(input, runtime)
       node = apply_tool_set(node, request_state)
-      calls = Enum.map(tool_calls, &Input.normalize_call/1)
+
+      calls =
+        for {call, index} <- Enum.with_index(tool_calls), do: call |> Input.normalize_call() |> Map.put(:index, index)
 
       # A call sent as a task of its own can pause the run, as a node can: its
       # process gets the node's scratchpad. Calls that share a task can't.
@@ -31,24 +33,12 @@ defmodule BeamWeaver.Agent.ToolNode.Execution do
 
       results =
         calls
-        |> Enum.with_index()
         |> execution_groups(node)
         |> Enum.flat_map(&execute_group(&1, node, request_state, runtime, scratchpad))
-        |> Enum.sort_by(fn {index, _call, _result} -> index end)
 
       with :ok <- halt_on_signal(results) do
-        results =
-          results
-          |> Enum.map(fn {_index, call, result} -> normalize_task_result(node, call, result) end)
-          |> flatten_outputs()
-
-        case Enum.find(results, &match?({:error, %Error{}}, &1)) do
-          {:error, %Error{} = error} ->
-            {:error, error}
-
-          nil ->
-            Output.build(results, output_shape)
-        end
+        results = Enum.flat_map(results, fn {call, result} -> List.wrap(normalize_task_result(node, call, result)) end)
+        Enum.find(results, &match?({:error, %Error{}}, &1)) || Output.build(results, output_shape)
       end
     end
   end
@@ -58,7 +48,7 @@ defmodule BeamWeaver.Agent.ToolNode.Execution do
   # `{:beam_weaver_graph_error, error}`. The step's other calls finish first;
   # then an error wins, else the first interrupt in call order pauses the node.
   defp halt_on_signal(results) do
-    signals = for {_index, _call, {:ok, {tag, _payload} = signal}} when tag in @signals <- results, do: signal
+    signals = for {_call, {:ok, {tag, _payload} = signal}} when tag in @signals <- results, do: signal
 
     case Enum.find(signals, &match?({:beam_weaver_graph_error, _error}, &1)) || List.first(signals) do
       nil -> :ok
@@ -67,59 +57,35 @@ defmodule BeamWeaver.Agent.ToolNode.Execution do
     end
   end
 
-  defp execution_groups(indexed_calls, node) do
-    {groups, concurrent} =
-      Enum.reduce(indexed_calls, {[], []}, fn {call, _index} = entry, {groups, concurrent} ->
-        if tool_concurrent?(node, call) do
-          {groups, [entry | concurrent]}
-        else
-          {[[entry] | prepend_concurrent_group(groups, concurrent)], []}
-        end
-      end)
-
-    groups
-    |> prepend_concurrent_group(concurrent)
-    |> Enum.reverse()
-  end
-
-  defp prepend_concurrent_group(groups, []), do: groups
-
-  defp prepend_concurrent_group(groups, concurrent), do: [Enum.reverse(concurrent) | groups]
-
-  defp execute_group(indexed_calls, node, request_state, runtime, scratchpad) do
-    indexed_calls
-    |> async_stream_tools(
-      runtime,
-      scratchpad,
-      fn {call, index} ->
-        call = Map.put(call, :index, index)
-        {index, call, execute_call(node, call, request_state, runtime)}
-      end,
-      ordered: true,
-      timeout: node.timeout,
-      on_timeout: :kill_task
-    )
-    |> Enum.zip(indexed_calls)
-    |> Enum.map(fn
-      {{:ok, {index, call, value}}, _entry} -> {index, call, {:ok, value}}
-      {{:exit, reason}, {call, index}} -> {index, call, {:exit, reason}}
+  # Consecutive calls of concurrent tools run as one group; every other call
+  # is a group of its own. Groups run one after another, each in call order.
+  defp execution_groups(calls, node) do
+    calls
+    |> Enum.chunk_by(&tool_concurrent?(node, &1))
+    |> Enum.flat_map(fn [call | _rest] = chunk ->
+      if tool_concurrent?(node, call), do: [chunk], else: Enum.map(chunk, &[&1])
     end)
   end
 
-  defp async_stream_tools(indexed_calls, runtime, scratchpad, fun, opts) do
+  # Each call with its task's result, `{:ok, result}` or `{:exit, reason}`.
+  defp execute_group(calls, node, request_state, runtime, scratchpad) do
     context = Tracing.capture_context()
 
-    traced_fun = fn entry ->
-      Tracing.attach_context(context, fn -> with_scratchpad(scratchpad, fn -> fun.(entry) end) end)
+    run = fn call ->
+      Tracing.attach_context(context, fn ->
+        with_scratchpad(scratchpad, fn -> execute_call(node, call, request_state, runtime) end)
+      end)
     end
 
-    case task_supervisor(runtime) do
-      nil ->
-        Task.async_stream(indexed_calls, traced_fun, opts)
+    opts = [ordered: true, timeout: node.timeout, on_timeout: :kill_task]
 
-      supervisor ->
-        Task.Supervisor.async_stream_nolink(supervisor, indexed_calls, traced_fun, opts)
-    end
+    results =
+      case task_supervisor(runtime) do
+        nil -> Task.async_stream(calls, run, opts)
+        supervisor -> Task.Supervisor.async_stream_nolink(supervisor, calls, run, opts)
+      end
+
+    Enum.zip(calls, results)
   end
 
   defp with_scratchpad(nil, fun), do: fun.()
@@ -155,20 +121,17 @@ defmodule BeamWeaver.Agent.ToolNode.Execution do
 
     emit_tool_started(runtime, call)
 
-    result =
-      node.wrap_tool_call
-      |> Enum.filter(&Middleware.hook?(&1, :wrap_tool_call))
-      |> Enum.reverse()
-      |> Enum.reduce(&execute_tool_request(node, &1), fn middleware, inner ->
-        fn request ->
-          Middleware.call_wrapper(middleware, :wrap_tool_call, request, inner)
-        end
-      end)
-      |> then(fn handler -> handler.(request) end)
-      |> normalize_wrapped_tool_result()
-
-    emit_tool_terminal(runtime, call, result)
-    result
+    node.wrap_tool_call
+    |> Enum.filter(&Middleware.hook?(&1, :wrap_tool_call))
+    |> Enum.reverse()
+    |> Enum.reduce(&execute_tool_request(node, &1), fn middleware, inner ->
+      fn request ->
+        Middleware.call_wrapper(middleware, :wrap_tool_call, request, inner)
+      end
+    end)
+    |> then(fn handler -> handler.(request) end)
+    |> normalize_wrapped_tool_result()
+    |> tap(&emit_tool_terminal(runtime, call, &1))
   rescue
     exception ->
       error =
@@ -178,9 +141,7 @@ defmodule BeamWeaver.Agent.ToolNode.Execution do
           exception: inspect(exception.__struct__)
         })
 
-      result = handle_tool_error(node, call, error)
-      emit_tool_terminal(runtime, call, result)
-      result
+      node |> handle_tool_error(call, error) |> tap(&emit_tool_terminal(runtime, call, &1))
   catch
     :throw, {tag, _payload} = signal when tag in @signals ->
       signal
@@ -194,9 +155,7 @@ defmodule BeamWeaver.Agent.ToolNode.Execution do
           reason: inspect(reason)
         })
 
-      result = handle_tool_error(node, call, error)
-      emit_tool_terminal(runtime, call, result)
-      result
+      node |> handle_tool_error(call, error) |> tap(&emit_tool_terminal(runtime, call, &1))
   end
 
   defp execute_tool_request(node, %ToolCallRequest{} = request) do
@@ -204,36 +163,32 @@ defmodule BeamWeaver.Agent.ToolNode.Execution do
     tool = request.tool || Map.get(node.tools, call.name)
 
     if is_nil(tool) do
-      handle_tool_error(
-        node,
-        call,
-        Error.new(:unknown_tool, "tool is not registered", %{tool: call.name})
-      )
+      handle_tool_error(node, call, Error.new(:unknown_tool, "tool is not registered", %{tool: call.name}))
     else
-      tool_runtime = tool_runtime(node, tool, call, tool_state(node, request.state), request.runtime)
+      tool_runtime =
+        ToolRuntime.new(
+          tool: tool,
+          tool_name: call.name,
+          tool_call: call,
+          tool_call_id: call.id,
+          args: call.args,
+          state: tool_state(node, request.state),
+          runtime: request.runtime,
+          tools: Map.values(node.tools)
+        )
 
-      case inject_tool_args(tool, call.args, call, request.state, request.runtime, tool_runtime) do
-        {:ok, args} ->
-          tool_runtime = %{tool_runtime | args: args}
-
-          case Tool.invoke(tool, args,
-                 tool_call_id: call.id,
-                 tool_runtime: tool_runtime,
-                 trace_input: call.args,
-                 trace_metadata: tool_call_trace_metadata(call)
-               ) do
-            {:ok, value} ->
-              case Output.normalize(value, call) do
-                {:ok, output} -> Output.return_direct(output, tool)
-                {:error, %Error{} = error} -> handle_tool_error(node, call, error)
-              end
-
-            {:error, %Error{} = error} ->
-              handle_tool_error(node, call, error)
-          end
-
-        {:error, %Error{} = error} ->
-          handle_tool_error(node, call, error)
+      with {:ok, args} <- inject_tool_args(tool, call, request.state, request.runtime, tool_runtime),
+           {:ok, value} <-
+             Tool.invoke(tool, args,
+               tool_call_id: call.id,
+               tool_runtime: %{tool_runtime | args: args},
+               trace_input: call.args,
+               trace_metadata: tool_call_trace_metadata(call)
+             ),
+           {:ok, output} <- Output.normalize(value, call) do
+        Output.return_direct(output, tool)
+      else
+        {:error, %Error{} = error} -> handle_tool_error(node, call, error)
       end
     end
   end
@@ -289,7 +244,6 @@ defmodule BeamWeaver.Agent.ToolNode.Execution do
   end
 
   defp tool_event_output(%Message{role: :tool, content: content}), do: content
-  defp tool_event_output(%Command{} = command), do: command
 
   defp tool_event_output(outputs) when is_list(outputs),
     do: Enum.map(outputs, &tool_event_output/1)
@@ -303,13 +257,6 @@ defmodule BeamWeaver.Agent.ToolNode.Execution do
 
   defp normalize_task_result(node, call, {:ok, outputs}) when is_list(outputs),
     do: truncate_tool_output(outputs, node, call)
-
-  defp normalize_task_result(
-         %{handle_errors: false},
-         _call,
-         {:ok, {:error, %Error{} = error}}
-       ),
-       do: {:error, error}
 
   defp normalize_task_result(node, call, {:ok, {:error, %Error{} = error}}) do
     handle_tool_error(node, call, error)
@@ -423,10 +370,10 @@ defmodule BeamWeaver.Agent.ToolNode.Execution do
 
   defp handle_error?(_node, _error), do: false
 
-  defp inject_tool_args(tool, args, call, state, runtime, tool_runtime) do
+  defp inject_tool_args(tool, call, state, runtime, tool_runtime) do
     tool
     |> Tool.injected()
-    |> Enum.reduce_while({:ok, args}, fn {arg, source}, {:ok, acc} ->
+    |> Enum.reduce_while({:ok, call.args}, fn {arg, source}, {:ok, acc} ->
       case injected_value(source, call, state, runtime, tool_runtime) do
         {:ok, value} ->
           {:cont, {:ok, Map.put(acc, arg, value)}}
@@ -437,28 +384,12 @@ defmodule BeamWeaver.Agent.ToolNode.Execution do
     end)
   end
 
-  defp tool_runtime(node, tool, call, state, runtime) do
-    ToolRuntime.new(
-      tool: tool,
-      tool_name: call.name,
-      tool_call: call,
-      tool_call_id: call.id,
-      args: call.args,
-      state: state,
-      runtime: runtime,
-      tools: Map.values(node.tools)
-    )
-  end
-
   # The state a tool gets, without the node's private keys: an agent's tools
   # see what the run returns, not its bookkeeping, and can't hand the
   # bookkeeping on, as the `task` tool hands the state to a subagent.
   # `{:state, key}` still reads a private key by name.
-  defp tool_state(%{private_keys: private_keys}, state) when is_map(state) and not is_struct(state) do
-    if MapSet.size(private_keys) == 0,
-      do: state,
-      else: Map.reject(state, fn {key, _value} -> private_key?(private_keys, key) end)
-  end
+  defp tool_state(%{private_keys: private_keys}, state) when is_map(state) and not is_struct(state),
+    do: Map.reject(state, fn {key, _value} -> private_key?(private_keys, key) end)
 
   defp tool_state(_node, state), do: state
 
@@ -479,20 +410,14 @@ defmodule BeamWeaver.Agent.ToolNode.Execution do
     end
   end
 
-  defp flatten_outputs(outputs) do
-    Enum.flat_map(outputs, fn
-      output when is_list(output) -> output
-      output -> [output]
-    end)
-  end
-
   defp injected_value(:state, _call, _state, _runtime, tool_runtime), do: {:ok, tool_runtime.state}
 
   defp injected_value({:state, field_or_path}, _call, state, _runtime, _tool_runtime),
     do: {:ok, get_state_field(state, field_or_path)}
 
-  defp injected_value(:store, _call, _state, runtime, _tool_runtime),
-    do: {:ok, ToolRuntime.runtime_value(runtime, :store)}
+  defp injected_value(source, _call, _state, runtime, _tool_runtime)
+       when source in [:store, :context, :config, :checkpointer],
+       do: {:ok, ToolRuntime.runtime_value(runtime, source)}
 
   defp injected_value(:runtime, _call, _state, runtime, _tool_runtime), do: {:ok, runtime}
 
@@ -501,15 +426,6 @@ defmodule BeamWeaver.Agent.ToolNode.Execution do
 
   defp injected_value(:tool_call_id, call, _state, _runtime, _tool_runtime),
     do: {:ok, call.id}
-
-  defp injected_value(:context, _call, _state, runtime, _tool_runtime),
-    do: {:ok, ToolRuntime.runtime_value(runtime, :context)}
-
-  defp injected_value(:config, _call, _state, runtime, _tool_runtime),
-    do: {:ok, ToolRuntime.runtime_value(runtime, :config)}
-
-  defp injected_value(:checkpointer, _call, _state, runtime, _tool_runtime),
-    do: {:ok, ToolRuntime.runtime_value(runtime, :checkpointer)}
 
   defp injected_value(source, _call, _state, _runtime, _tool_runtime) do
     {:error,
@@ -536,13 +452,7 @@ defmodule BeamWeaver.Agent.ToolNode.Execution do
         Map.fetch!(state, Atom.to_string(field))
 
       is_binary(field) ->
-        state
-        |> Map.keys()
-        |> Enum.find(&(to_string(&1) == field))
-        |> case do
-          nil -> nil
-          key -> Map.fetch!(state, key)
-        end
+        with {_key, value} <- Enum.find(state, fn {key, _value} -> to_string(key) == field end), do: value
 
       true ->
         nil
@@ -559,12 +469,10 @@ defmodule BeamWeaver.Agent.ToolNode.Execution do
 
   defp format_error(node, %Error{} = error, call) do
     hidden = hidden_arg_names(node, call)
-    args = sanitize_value(call.args || %{}, hidden)
-    details = sanitize_value(error.details || %{}, hidden)
 
     ["Tool error: #{error.message}"]
-    |> maybe_append("Args", args)
-    |> maybe_append("Details", details)
+    |> maybe_append("Args", sanitize_value(call.args, hidden))
+    |> maybe_append("Details", sanitize_value(error.details, hidden))
     |> join_sentences()
   end
 
@@ -582,21 +490,13 @@ defmodule BeamWeaver.Agent.ToolNode.Execution do
   end
 
   defp hidden_arg_names(node, call) do
-    base =
-      ~w(state store runtime tool_runtime context config checkpointer tool_message)
-      |> MapSet.new()
+    injected =
+      case Map.get(node.tools, call.name) do
+        nil -> []
+        tool -> tool |> Tool.injected() |> Map.keys()
+      end
 
-    case Map.get(node.tools, call.name) do
-      nil ->
-        base
-
-      tool ->
-        tool
-        |> Tool.injected()
-        |> Map.keys()
-        |> Enum.map(&to_string/1)
-        |> Enum.reduce(base, &MapSet.put(&2, &1))
-    end
+    MapSet.new(~w(state store runtime tool_runtime context config checkpointer tool_message) ++ injected, &to_string/1)
   end
 
   @doc false

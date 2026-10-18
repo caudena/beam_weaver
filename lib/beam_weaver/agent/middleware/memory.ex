@@ -48,11 +48,10 @@ defmodule BeamWeaver.Agent.Middleware.Memory do
 
   @impl true
   def before_model(%__MODULE__{} = middleware, state, runtime) do
-    if Map.has_key?(state || %{}, middleware.state_key) or
-         Map.has_key?(state || %{}, to_string(middleware.state_key)) do
+    if Map.has_key?(state, middleware.state_key) or Map.has_key?(state, to_string(middleware.state_key)) do
       %{}
     else
-      %{middleware.state_key => load_memory(middleware, state || %{}, runtime)}
+      %{middleware.state_key => load_memory(middleware, state, runtime)}
     end
   end
 

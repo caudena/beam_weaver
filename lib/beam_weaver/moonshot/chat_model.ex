@@ -147,8 +147,6 @@ defmodule BeamWeaver.Moonshot.ChatModel do
     }
   end
 
-  defp render_tools([]), do: {:ok, []}
-
   defp render_tools(tools) do
     with {:ok, rendered} <- Tools.render_chat_tools(tools),
          :ok <- Tools.validate_chat_tools(rendered),
@@ -172,12 +170,9 @@ defmodule BeamWeaver.Moonshot.ChatModel do
 
   defp validate_web_search_thinking(_body), do: :ok
 
-  defp validate_dynamic_tools(%{"messages" => messages, "model" => "kimi-k3"})
-       when is_list(messages),
-       do: :ok
+  defp validate_dynamic_tools(%{"model" => "kimi-k3"}), do: :ok
 
-  defp validate_dynamic_tools(%{"messages" => messages, "model" => model})
-       when is_list(messages) do
+  defp validate_dynamic_tools(%{"messages" => messages, "model" => model}) do
     if Enum.any?(messages, &Map.has_key?(&1, "tools")) do
       {:error,
        Error.new(
@@ -199,7 +194,7 @@ defmodule BeamWeaver.Moonshot.ChatModel do
     top_level_tools? = match?([_ | _], body["tools"])
 
     dynamic_tools? =
-      Enum.any?(body["messages"] || [], fn message ->
+      Enum.any?(body["messages"], fn message ->
         match?([_ | _], message["tools"])
       end)
 

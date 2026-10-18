@@ -4,6 +4,12 @@ defmodule BeamWeaver.Graph.StateGraph.Normalization do
   alias BeamWeaver.Graph.Channels.BinaryOperatorAggregate
   alias BeamWeaver.Graph.ChannelSpec
 
+  # The keys of a map channel spec that aren't the channel's own options.
+  @schema_keys Enum.flat_map(
+                 ~w(channel type subscriber subscribers triggers visibility private)a,
+                 &[&1, Atom.to_string(&1)]
+               )
+
   def normalize_reducers(reducers) do
     Map.new(reducers, fn {key, reducer} -> {state_key(key), reducer} end)
   end
@@ -94,11 +100,6 @@ defmodule BeamWeaver.Graph.StateGraph.Normalization do
     end)
   end
 
-  def normalize_subscribers(nil), do: []
-
-  def normalize_subscribers(subscriber) when is_atom(subscriber) or is_binary(subscriber),
-    do: [normalize_node(subscriber)]
-
   def normalize_subscribers(subscribers),
     do: subscribers |> List.wrap() |> Enum.map(&normalize_node/1) |> Enum.uniq()
 
@@ -159,26 +160,9 @@ defmodule BeamWeaver.Graph.StateGraph.Normalization do
       |> normalize_visibility()
 
     opts =
-      spec
-      |> Enum.reject(fn {option, _value} ->
-        option in [
-          :channel,
-          "channel",
-          :type,
-          "type",
-          :subscriber,
-          "subscriber",
-          :subscribers,
-          "subscribers",
-          :triggers,
-          "triggers",
-          :visibility,
-          "visibility",
-          :private,
-          "private"
-        ]
-      end)
-      |> Enum.map(fn {option, value} -> {BeamWeaver.MapAccess.existing_atom_key(option), value} end)
+      for {option, value} <- spec,
+          option not in @schema_keys,
+          do: {BeamWeaver.MapAccess.existing_atom_key(option), value}
 
     if channel,
       do: {normalize_channel(channel, key, opts), subscribers, visibility},

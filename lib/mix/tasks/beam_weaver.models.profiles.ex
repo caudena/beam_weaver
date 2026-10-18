@@ -89,22 +89,18 @@ defmodule Mix.Tasks.BeamWeaver.Models.Profiles do
 
   defp profile_line(profile) do
     capabilities =
-      [
-        {:responses, profile.responses_api},
-        {:chat_completions, profile.chat_completions_api},
-        {:tools, profile.tool_calling},
-        {:tool_call_streaming, profile.tool_call_streaming},
-        {:structured, profile.structured_output},
-        {:streaming, profile.streaming},
-        {:reasoning, profile.reasoning_output}
-      ]
-      |> Enum.flat_map(fn
-        {name, true} -> [Atom.to_string(name)]
-        {_name, _value} -> []
-      end)
-      |> Enum.join(",")
+      for {name, true} <- [
+            responses: profile.responses_api,
+            chat_completions: profile.chat_completions_api,
+            tools: profile.tool_calling,
+            tool_call_streaming: profile.tool_call_streaming,
+            structured: profile.structured_output,
+            streaming: profile.streaming,
+            reasoning: profile.reasoning_output
+          ],
+          do: name
 
-    "#{profile.provider}:#{profile.id} #{profile.name} [#{capabilities}]"
+    "#{profile.provider}:#{profile.id} #{profile.name} [#{Enum.join(capabilities, ",")}]"
   end
 
   defp provider_atom!(provider) do

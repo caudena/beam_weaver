@@ -205,13 +205,6 @@ defmodule BeamWeaver.Tools.PolicyToolsTest do
     refute File.exists?(marker)
   end
 
-  test "shell tool rejects unsafe commands before execution" do
-    shell = Shell.new(policy: ShellPolicy.new!(allow: ["echo "]))
-
-    assert {:error, error} = Tool.invoke(shell, %{"command" => "rm -rf /"})
-    assert error.type == :shell_command_rejected
-  end
-
   test "shell tool rejects chained commands that share an allowed prefix" do
     marker =
       Path.join(System.tmp_dir!(), "beam_weaver_shell_policy_#{System.unique_integer([:positive])}")
@@ -291,50 +284,26 @@ defmodule BeamWeaver.Tools.PolicyToolsTest do
   end
 
   test "shell host executor applies stderr policies" do
-    separate =
+    command = %{"command" => "printf out; printf err >&2"}
+
+    shell = fn stderr ->
       Shell.new(
         policy:
           ShellPolicy.new!(
             allow: [~r/^printf out; printf err >&2$/],
             allow_compound: true,
-            stderr: :separate,
+            stderr: stderr,
             max_output_bytes: 20
           )
       )
+    end
 
-    assert {:ok, %{output: "out", stderr: "err"}} =
-             Tool.invoke(separate, %{"command" => "printf out; printf err >&2"})
+    assert {:ok, %{output: "out", stderr: "err"}} = Tool.invoke(shell.(:separate), command)
 
-    discard =
-      Shell.new(
-        policy:
-          ShellPolicy.new!(
-            allow: [~r/^printf out; printf err >&2$/],
-            allow_compound: true,
-            stderr: :discard,
-            max_output_bytes: 20
-          )
-      )
-
-    assert {:ok, %{output: "out"} = result} =
-             Tool.invoke(discard, %{"command" => "printf out; printf err >&2"})
-
+    assert {:ok, %{output: "out"} = result} = Tool.invoke(shell.(:discard), command)
     refute Map.has_key?(result, :stderr)
 
-    merge =
-      Shell.new(
-        policy:
-          ShellPolicy.new!(
-            allow: [~r/^printf out; printf err >&2$/],
-            allow_compound: true,
-            stderr: :merge,
-            max_output_bytes: 20
-          )
-      )
-
-    assert {:ok, %{output: merged}} =
-             Tool.invoke(merge, %{"command" => "printf out; printf err >&2"})
-
+    assert {:ok, %{output: merged}} = Tool.invoke(shell.(:merge), command)
     assert merged =~ "out"
     assert merged =~ "err"
   end

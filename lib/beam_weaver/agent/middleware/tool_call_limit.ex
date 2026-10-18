@@ -132,7 +132,7 @@ defmodule BeamWeaver.Agent.Middleware.ToolCallLimit do
         not matches_tool?(middleware, call) ->
           {allowed, blocked, thread_acc, run_acc}
 
-        would_exceed?(middleware, thread_acc, run_acc) ->
+        would_exceed?(thread_acc, middleware.thread_limit) or would_exceed?(run_acc, middleware.run_limit) ->
           {allowed, blocked ++ [call], thread_acc, run_acc}
 
         true ->
@@ -168,14 +168,14 @@ defmodule BeamWeaver.Agent.Middleware.ToolCallLimit do
     tool_desc = if middleware.tool_name, do: "'#{middleware.tool_name}' tool", else: "Tool"
 
     exceeded =
-      [
-        final_limit_fragment(:thread, thread_count, middleware.thread_limit),
-        final_limit_fragment(:run, run_count, middleware.run_limit)
-      ]
-      |> Enum.reject(&is_nil/1)
-      |> Enum.join(" and ")
+      for {scope, count, limit} <- [
+            {:thread, thread_count, middleware.thread_limit},
+            {:run, run_count, middleware.run_limit}
+          ],
+          limit != nil and count > limit,
+          do: "#{scope} limit exceeded (#{count}/#{limit} calls)"
 
-    "#{tool_desc} call limit reached: #{exceeded}."
+    "#{tool_desc} call limit reached: #{Enum.join(exceeded, " and ")}."
   end
 
   defp tool_message_content(%__MODULE__{tool_name: nil, message: message})
@@ -187,13 +187,6 @@ defmodule BeamWeaver.Agent.Middleware.ToolCallLimit do
        do: "Tool call limit exceeded. Do not call '#{tool_name}' again."
 
   defp tool_message_content(%__MODULE__{message: message}), do: message
-
-  defp final_limit_fragment(_scope, _count, nil), do: nil
-
-  defp final_limit_fragment(scope, count, limit) when count > limit,
-    do: "#{scope} limit exceeded (#{count}/#{limit} calls)"
-
-  defp final_limit_fragment(_scope, _count, _limit), do: nil
 
   defp validate!(%__MODULE__{thread_limit: nil, run_limit: nil}) do
     raise ArgumentError, "at least one tool call limit must be configured"
@@ -216,11 +209,6 @@ defmodule BeamWeaver.Agent.Middleware.ToolCallLimit do
 
   defp matches_tool?(%__MODULE__{tool_name: nil}, _call), do: true
   defp matches_tool?(%__MODULE__{tool_name: name}, call), do: tool_name(call) == name
-
-  defp would_exceed?(%__MODULE__{} = middleware, thread_count, run_count) do
-    would_exceed?(thread_count, middleware.thread_limit) or
-      would_exceed?(run_count, middleware.run_limit)
-  end
 
   defp would_exceed?(_count, nil), do: false
   defp would_exceed?(count, limit), do: count + 1 > limit

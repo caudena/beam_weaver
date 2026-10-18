@@ -39,8 +39,6 @@ defmodule BeamWeaver.RetryPolicy do
         }
 
   @spec new(keyword() | map() | t()) :: {:ok, t()} | {:error, Error.t()}
-  def new(%__MODULE__{} = policy), do: validate(policy)
-
   def new(opts),
     do:
       Policy.build(__MODULE__, opts, @fields, &validate/1,

@@ -11,6 +11,8 @@ defmodule BeamWeaver.Sandbox do
 
   alias BeamWeaver.Core.Error
   alias BeamWeaver.Core.ID
+  alias BeamWeaver.Filesystem.Edit
+  alias BeamWeaver.Filesystem.FileDataUtils
   alias BeamWeaver.Telemetry
   alias BeamWeaver.Tracing.Redactor
 
@@ -195,6 +197,28 @@ defmodule BeamWeaver.Sandbox do
 
   def error(type, message, details \\ %{}), do: Error.new(type, message, details)
 
+  @doc false
+  # The result of an edit of `content`, the text of the file at `path`;
+  # `write` saves the edited text and returns `:ok` or `{:error, error}`.
+  def edit_result(path, content, old, new, opts, write) do
+    case Edit.replacement(content, old, new, Keyword.get(opts, :replace_all, false)) do
+      {:ok, occurrences, updated} ->
+        case write.(updated) do
+          :ok -> %EditResult{path: path, occurrences: occurrences}
+          {:error, error} -> %EditResult{path: path, error: error}
+        end
+
+      {:error, :not_found} ->
+        %EditResult{path: path, error: "string not found"}
+
+      {:error, "multiple occurrences" = error} ->
+        %EditResult{path: path, occurrences: length(:binary.matches(content, old)), error: error}
+
+      {:error, error} ->
+        %EditResult{path: path, error: FileDataUtils.error_string(error)}
+    end
+  end
+
   defp execute_metadata(sandbox, command, opts) do
     %{
       sandbox: BeamWeaver.Telemetry.AdapterHelpers.adapter_name(sandbox),
@@ -240,8 +264,6 @@ defmodule BeamWeaver.Sandbox do
   defp timeout_result?(%ExecuteResult{exit_code: 124, error: error}), do: error in ["timeout", :timeout]
   defp timeout_result?(_result), do: false
 
-  defp timeout_option_ms(nil), do: nil
-  defp timeout_option_ms(:infinity), do: :infinity
   defp timeout_option_ms(timeout) when is_integer(timeout) and timeout > 3_600, do: timeout
   defp timeout_option_ms(timeout) when is_integer(timeout), do: timeout * 1_000
   defp timeout_option_ms(timeout), do: timeout
@@ -371,7 +393,6 @@ defmodule BeamWeaver.Sandbox.Local do
 
   use BeamWeaver.Sandbox
 
-  alias BeamWeaver.Filesystem.Edit
   alias BeamWeaver.Filesystem.FileDataUtils
   alias BeamWeaver.Filesystem.Path, as: FilesystemPath
   alias BeamWeaver.Sandbox
@@ -418,8 +439,13 @@ defmodule BeamWeaver.Sandbox.Local do
   @impl true
   def read(%__MODULE__{} = sandbox, path, opts) do
     with {:ok, resolved} <- resolve(sandbox, path),
-         {:ok, bytes} <- File.read(resolved) do
-      read_bytes(path, bytes, sandbox, opts)
+         {:ok, data} <-
+           FileDataUtils.encode_disk_file(
+             resolved,
+             path,
+             Keyword.put(opts, :max_binary_preview, sandbox.max_binary_preview)
+           ) do
+      %Sandbox.ReadResult{file_data: %{"content" => data.content, "encoding" => data.encoding}}
     else
       {:error, reason} -> %Sandbox.ReadResult{error: FileDataUtils.error_string(reason)}
     end
@@ -455,20 +481,7 @@ defmodule BeamWeaver.Sandbox.Local do
   def edit(%__MODULE__{} = sandbox, path, old, new, opts) do
     with {:ok, resolved} <- resolve(sandbox, path),
          {:ok, content} <- File.read(resolved) do
-      case Edit.replacement(content, old, new, Keyword.get(opts, :replace_all, false)) do
-        {:ok, occurrences, updated} ->
-          :ok = File.write!(resolved, updated)
-          %Sandbox.EditResult{path: path, occurrences: occurrences, error: nil}
-
-        {:error, :not_found} ->
-          %Sandbox.EditResult{path: path, occurrences: 0, error: "string not found"}
-
-        {:error, "multiple occurrences" = error} ->
-          %Sandbox.EditResult{path: path, occurrences: count_occurrences(content, old), error: error}
-
-        {:error, error} ->
-          %Sandbox.EditResult{path: path, occurrences: 0, error: FileDataUtils.error_string(error)}
-      end
+      Sandbox.edit_result(path, content, old, new, opts, &File.write!(resolved, &1))
     else
       {:error, reason} ->
         %Sandbox.EditResult{path: path, occurrences: 0, error: FileDataUtils.error_string(reason)}
@@ -479,24 +492,17 @@ defmodule BeamWeaver.Sandbox.Local do
   def ls(%__MODULE__{} = sandbox, path, _opts) do
     with {:ok, resolved} <- resolve(sandbox, path),
          {:ok, names} <- File.ls(resolved) do
-      entries =
-        names
-        |> Enum.sort()
-        |> Enum.map(fn name -> {name, Path.join(resolved, name)} end)
-        |> Enum.filter(fn {_name, full} -> safe_resolved_path?(sandbox, full) end)
-        |> Enum.map(fn {name, full} ->
-          entry_path =
-            if host_path?(sandbox, path),
-              do: Path.join(path, name),
-              else: FilesystemPath.join_virtual(path, name)
+      host_path? = host_path?(sandbox, path)
 
+      entries =
+        for name <- Enum.sort(names), full = Path.join(resolved, name), safe_resolved_path?(sandbox, full) do
           %{
-            "path" => entry_path,
+            "path" => if(host_path?, do: Path.join(path, name), else: FilesystemPath.join_virtual(path, name)),
             "is_dir" => File.dir?(full),
             "type" => if(File.dir?(full), do: "directory", else: "file"),
             "size" => if(File.regular?(full), do: File.stat!(full).size)
           }
-        end)
+        end
 
       %Sandbox.ListResult{entries: entries}
     else
@@ -511,13 +517,22 @@ defmodule BeamWeaver.Sandbox.Local do
     with {:ok, resolved} <- resolve(sandbox, base),
          :ok <- exists(resolved),
          {:ok, paths} <- search(resolved, FilesystemPath.search_pattern(pattern)) do
+      host_path? = host_path?(sandbox, base)
+
       matches =
         paths
         |> Enum.filter(&safe_resolved_path?(sandbox, &1))
         |> Enum.sort()
         |> Enum.map(fn path ->
-          %{"path" => glob_path(sandbox, base, path, resolved), "is_dir" => File.dir?(path)}
-          |> maybe_put_size(sandbox, base, path)
+          relative = Path.relative_to(path, resolved)
+
+          if host_path?,
+            do: %{"path" => relative, "is_dir" => File.dir?(path)},
+            else: %{
+              "path" => FilesystemPath.join_virtual(base, relative),
+              "is_dir" => File.dir?(path),
+              "size" => if(File.regular?(path), do: File.stat!(path).size)
+            }
         end)
 
       %Sandbox.GlobResult{matches: matches}
@@ -576,15 +591,9 @@ defmodule BeamWeaver.Sandbox.Local do
   end
 
   @impl true
-  def upload_files(%__MODULE__{} = sandbox, files, _opts) do
+  def upload_files(%__MODULE__{} = sandbox, files, opts) do
     Enum.map(files, fn {path, content} ->
-      with {:ok, resolved} <- resolve(sandbox, path),
-           :ok <- File.mkdir_p(Path.dirname(resolved)),
-           :ok <- File.write(resolved, IO.iodata_to_binary(content)) do
-        %Sandbox.UploadResult{path: path, error: nil}
-      else
-        {:error, reason} -> %Sandbox.UploadResult{path: path, error: FileDataUtils.error_string(reason)}
-      end
+      %Sandbox.UploadResult{path: path, error: write(sandbox, path, content, opts).error}
     end)
   end
 
@@ -636,7 +645,7 @@ defmodule BeamWeaver.Sandbox.Local do
   defp resolve(_sandbox, _path), do: {:error, "invalid_path"}
 
   defp safe_resolved_path?(%__MODULE__{root: root}, path) do
-    with {:ok, virtual_path, _candidate} <- sandbox_path(root, path),
+    with {:ok, virtual_path} <- sandbox_path(root, path),
          {:ok, _resolved, _virtual} <- FilesystemPath.virtual_to_real(root, virtual_path) do
       true
     else
@@ -651,36 +660,10 @@ defmodule BeamWeaver.Sandbox.Local do
 
       if expanded == root or String.starts_with?(expanded, root <> "/") do
         relative = Path.relative_to(expanded, root)
-
-        {:ok, if(relative == ".", do: "/", else: "/" <> relative), expanded}
+        {:ok, if(relative == ".", do: "/", else: "/" <> relative)}
       else
-        relative = String.trim_leading(clean_path, "/")
-        {:ok, clean_path, Path.expand(Path.join(root, relative))}
+        {:ok, clean_path}
       end
-    end
-  end
-
-  defp read_bytes(path, bytes, sandbox, opts) do
-    cond do
-      bytes == "" ->
-        %Sandbox.ReadResult{
-          file_data: %{"content" => FileDataUtils.empty_content_warning(), "encoding" => "utf-8"}
-        }
-
-      FileDataUtils.binary_content?(bytes) and byte_size(bytes) > sandbox.max_binary_preview ->
-        %Sandbox.ReadResult{
-          error: "File '#{path}': Binary file exceeds maximum preview size of #{sandbox.max_binary_preview} bytes"
-        }
-
-      FileDataUtils.binary_content?(bytes) ->
-        %Sandbox.ReadResult{
-          file_data: %{"content" => Base.encode64(bytes), "encoding" => "base64"}
-        }
-
-      true ->
-        %Sandbox.ReadResult{
-          file_data: %{"content" => FileDataUtils.slice_lines(bytes, opts), "encoding" => "utf-8"}
-        }
     end
   end
 
@@ -691,49 +674,19 @@ defmodule BeamWeaver.Sandbox.Local do
   defp grep_file(path, pattern, resolved_base, requested_base, host_path?) do
     with {:ok, content} <- File.read(path),
          false <- FileDataUtils.binary_content?(content) do
-      content
-      |> String.split("\n")
-      |> Enum.with_index(1)
-      |> Enum.flat_map(fn {line, line_number} ->
-        if String.contains?(line, pattern),
-          do: [
-            %{
-              "path" => grep_path(path, requested_base, resolved_base, host_path?),
-              "relative_path" => Path.relative_to(path, resolved_base),
-              "line" => line_number,
-              "text" => line
-            }
-          ],
-          else: []
-      end)
+      relative = Path.relative_to(path, resolved_base)
+      match_path = if host_path?, do: path, else: FilesystemPath.join_virtual(requested_base, relative)
+
+      for {line, line_number} <- content |> String.split("\n") |> Enum.with_index(1),
+          String.contains?(line, pattern),
+          do: %{"path" => match_path, "relative_path" => relative, "line" => line_number, "text" => line}
     else
       _binary_or_error -> []
     end
   end
 
-  defp count_occurrences(content, needle), do: content |> :binary.matches(needle) |> length()
-
   defp host_path?(%__MODULE__{root: root}, path) when is_binary(path) do
     expanded = Path.expand(path)
     expanded == root or String.starts_with?(expanded, root <> "/")
-  end
-
-  defp glob_path(sandbox, base, path, resolved_base) do
-    if host_path?(sandbox, base),
-      do: Path.relative_to(path, resolved_base),
-      else: FilesystemPath.join_virtual(base, Path.relative_to(path, resolved_base))
-  end
-
-  defp grep_path(path, _requested_base, _resolved_base, true), do: path
-
-  defp grep_path(path, requested_base, resolved_base, false),
-    do: FilesystemPath.join_virtual(requested_base, Path.relative_to(path, resolved_base))
-
-  defp maybe_put_size(entry, sandbox, base, path) do
-    if host_path?(sandbox, base) do
-      entry
-    else
-      Map.put(entry, "size", if(File.regular?(path), do: File.stat!(path).size))
-    end
   end
 end

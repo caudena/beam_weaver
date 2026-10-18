@@ -18,6 +18,7 @@ defmodule BeamWeaver.Agent.Middleware.UnsupportedMedia do
 
   use BeamWeaver.Agent.Middleware
 
+  alias BeamWeaver.Agent.Middleware.Helpers
   alias BeamWeaver.Agent.ModelRequest
   alias BeamWeaver.Core.ContentBlock
   alias BeamWeaver.Core.Message
@@ -83,7 +84,8 @@ defmodule BeamWeaver.Agent.Middleware.UnsupportedMedia do
   end
 
   defp builtin_profile(model) do
-    with %Profile{provider: provider, id: id} = profile when is_atom(provider) and is_binary(id) <- model_profile(model),
+    with %Profile{provider: provider, id: id} = profile when is_atom(provider) and is_binary(id) <-
+           Helpers.model_profile(model),
          {:ok, ^profile} <- ProfileRegistry.fetch(provider, id),
          true <- profile.extra[:unknown] != true do
       profile
@@ -91,9 +93,4 @@ defmodule BeamWeaver.Agent.Middleware.UnsupportedMedia do
       _other -> nil
     end
   end
-
-  # Wrappers such as `Models.cached/3` keep the model they wrap in `:model`.
-  defp model_profile(%{profile: %Profile{} = profile}), do: profile
-  defp model_profile(%{model: %{} = model}), do: model_profile(model)
-  defp model_profile(_model), do: nil
 end

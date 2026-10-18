@@ -50,13 +50,9 @@ defmodule BeamWeaver.Agent.Middleware.ToolRetry do
            ) do
         # An error the policy doesn't retry goes on as the tool returned it;
         # `on_failure` handles only the retries running out.
-        {{:error, %Error{} = error}, attempts} ->
-          if RetryPolicy.retry?(middleware.policy, error),
-            do: handle_failure(middleware, request, error, attempts),
-            else: tool_result(error)
-
-        {other, _attempts} ->
-          other
+        {:exhausted, error, attempts} -> handle_failure(middleware, request, error, attempts)
+        {:error, error} -> tool_result(error)
+        result -> result
       end
     else
       handler.(request)

@@ -327,11 +327,8 @@ defmodule BeamWeaver.OpenAI.Messages.Request do
 
   defp content_block_to_openai(%{type: :image, url: url} = block) when is_binary(url), do: image_part(url, block)
 
-  defp content_block_to_openai(%{type: :image, file_id: file_id} = block) when is_binary(file_id) do
-    %{"type" => "input_image", "file_id" => file_id}
-    |> put_input_detail(block)
-    |> put_prompt_cache_breakpoint(block)
-  end
+  defp content_block_to_openai(%{type: :image, file_id: file_id} = block) when is_binary(file_id),
+    do: input_part(%{"type" => "input_image", "file_id" => file_id}, block)
 
   defp content_block_to_openai(%{type: :image_url, image_url: image_url} = block)
        when is_binary(image_url) do
@@ -380,18 +377,11 @@ defmodule BeamWeaver.OpenAI.Messages.Request do
        when is_binary(mime_type) and is_binary(data),
        do: image_part(MessageParts.data_url(mime_type, data), block)
 
-  defp content_block_to_openai(%{type: :file, url: url} = block) when is_binary(url) do
-    %{"type" => "input_file", "file_url" => url}
-    |> put_input_detail(block)
-    |> put_prompt_cache_breakpoint(block)
-  end
+  defp content_block_to_openai(%{type: :file, url: url} = block) when is_binary(url),
+    do: input_part(%{"type" => "input_file", "file_url" => url}, block)
 
-  defp content_block_to_openai(%{type: :file, file_id: file_id} = block)
-       when is_binary(file_id) do
-    %{"type" => "input_file", "file_id" => file_id}
-    |> put_input_detail(block)
-    |> put_prompt_cache_breakpoint(block)
-  end
+  defp content_block_to_openai(%{type: :file, file_id: file_id} = block) when is_binary(file_id),
+    do: input_part(%{"type" => "input_file", "file_id" => file_id}, block)
 
   defp content_block_to_openai(%{type: type, base64: data} = block) when type in [:file, :audio] and is_binary(data),
     do: inline_part(type, data, block)
@@ -422,12 +412,10 @@ defmodule BeamWeaver.OpenAI.Messages.Request do
     MessageParts.put_optional(part, "detail", block_option(block, :detail) |> MessageParts.stringify_value())
   end
 
-  defp image_part(url, block) do
-    %{"type" => "input_image"}
-    |> MessageParts.put_optional("image_url", url)
-    |> put_input_detail(block)
-    |> put_prompt_cache_breakpoint(block)
-  end
+  defp image_part(url, block),
+    do: input_part(MessageParts.put_optional(%{"type" => "input_image"}, "image_url", url), block)
+
+  defp input_part(part, block), do: part |> put_input_detail(block) |> put_prompt_cache_breakpoint(block)
 
   defp inline_part(:file, data, block) do
     %{
@@ -436,8 +424,7 @@ defmodule BeamWeaver.OpenAI.Messages.Request do
       "filename" => Map.get(block, :filename)
     }
     |> MessageParts.reject_nil_values()
-    |> put_input_detail(block)
-    |> put_prompt_cache_breakpoint(block)
+    |> input_part(block)
   end
 
   defp inline_part(:audio, data, block) do
@@ -450,38 +437,30 @@ defmodule BeamWeaver.OpenAI.Messages.Request do
     }
   end
 
-  defp assistant_content_items(%Message{content: content, id: id}, opts)
-       when is_binary(content) do
-    message_id = message_item_id(id)
+  defp assistant_content_items(%Message{content: ""}, _opts), do: []
 
-    case content do
-      "" ->
-        []
-
-      text ->
-        [
-          assistant_message_item(
-            [%{"type" => "output_text", "text" => text, "annotations" => []}],
-            message_id,
-            opts
-          )
-        ]
-    end
+  defp assistant_content_items(%Message{content: text, id: id}, opts) when is_binary(text) do
+    part = %{"type" => "output_text", "text" => text, "annotations" => []}
+    [assistant_message_item([part], message_item_id(id), opts)]
   end
 
   defp assistant_content_items(%Message{content: content, id: id}, opts)
        when is_list(content) do
     message_id = message_item_id(id)
 
+    # The state holds the items so far and the parts, with their id, of the
+    # message item still open.
     content
-    |> Enum.reduce({[], nil, []}, fn block, state ->
+    |> Enum.reduce({[], nil, []}, fn block, {items, open_id, parts} = state ->
       case assistant_content_event(block, message_id, opts) do
-        {:message_part, id, part} -> add_assistant_message_part(state, id, part, opts)
-        {:item, item} -> add_assistant_raw_item(state, item, opts)
+        {:message_part, ^open_id, part} -> {items, open_id, [part | parts]}
+        {:message_part, id, part} -> {close_assistant_message(state, opts), id, [part]}
+        {:item, item} -> {[item | close_assistant_message(state, opts)], nil, []}
         :skip -> state
       end
     end)
-    |> flush_assistant_message_parts(opts)
+    |> close_assistant_message(opts)
+    |> Enum.reverse()
   end
 
   defp assistant_content_event(%{type: type, text: text} = block, message_id, _opts)
@@ -510,14 +489,14 @@ defmodule BeamWeaver.OpenAI.Messages.Request do
 
   defp assistant_content_event(%ContentBlock.Reasoning{} = block, _message_id, opts) do
     block
-    |> sanitize_output_item(opts)
+    |> sanitize_output_item()
     |> sanitize_store_replay_item(opts)
   end
 
   defp assistant_content_event(%{"type" => type} = block, _message_id, opts)
        when type in [:reasoning, "reasoning"] do
     block
-    |> sanitize_output_item(opts)
+    |> sanitize_output_item()
     |> sanitize_store_replay_item(opts)
   end
 
@@ -538,7 +517,7 @@ defmodule BeamWeaver.OpenAI.Messages.Request do
 
     if MessageParts.output_block_type?(type) do
       block
-      |> sanitize_output_item(opts)
+      |> sanitize_output_item()
       |> sanitize_store_replay_item(opts)
     else
       :skip
@@ -547,26 +526,10 @@ defmodule BeamWeaver.OpenAI.Messages.Request do
 
   defp assistant_content_event(_block, _message_id, _opts), do: :skip
 
-  defp add_assistant_message_part({items, nil, []}, id, part, _opts), do: {items, id, [part]}
+  defp close_assistant_message({items, nil, []}, _opts), do: items
 
-  defp add_assistant_message_part({items, id, parts}, id, part, _opts),
-    do: {items, id, [part | parts]}
-
-  defp add_assistant_message_part({items, id, parts}, next_id, part, opts) do
-    {[assistant_message_item(Enum.reverse(parts), id, opts) | items], next_id, [part]}
-  end
-
-  defp add_assistant_raw_item({items, nil, []}, item, _opts), do: {[item | items], nil, []}
-
-  defp add_assistant_raw_item({items, id, parts}, item, opts) do
-    {[item, assistant_message_item(Enum.reverse(parts), id, opts) | items], nil, []}
-  end
-
-  defp flush_assistant_message_parts({items, nil, []}, _opts), do: Enum.reverse(items)
-
-  defp flush_assistant_message_parts({items, id, parts}, opts) do
-    Enum.reverse([assistant_message_item(Enum.reverse(parts), id, opts) | items])
-  end
+  defp close_assistant_message({items, id, parts}, opts),
+    do: [assistant_message_item(Enum.reverse(parts), id, opts) | items]
 
   defp assistant_message_item(parts, id, opts) do
     %{"type" => "message", "role" => "assistant", "content" => parts}
@@ -628,21 +591,14 @@ defmodule BeamWeaver.OpenAI.Messages.Request do
     |> MessageParts.reject_nil_values()
   end
 
-  defp sanitize_output_item(%{type: type} = block, _opts)
-       when type in [:reasoning, "reasoning"] do
-    sanitize_reasoning_output_item(block)
-  end
+  defp sanitize_output_item(%{type: type} = block) when type in [:reasoning, "reasoning"],
+    do: sanitize_reasoning_output_item(block)
 
-  defp sanitize_output_item(%{"type" => type} = block, _opts)
-       when type in [:reasoning, "reasoning"] do
-    sanitize_reasoning_output_item(block)
-  end
+  defp sanitize_output_item(%{"type" => type} = block) when type in [:reasoning, "reasoning"],
+    do: sanitize_reasoning_output_item(block)
 
-  defp sanitize_output_item(block, _opts) when is_map(block) do
-    block
-    |> MessageParts.stringify_keys()
-    |> drop_internal_provider_fields()
-  end
+  defp sanitize_output_item(block) when is_map(block),
+    do: block |> MessageParts.stringify_keys() |> drop_internal_provider_fields()
 
   defp sanitize_reasoning_output_item(block) do
     block

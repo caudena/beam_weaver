@@ -100,16 +100,10 @@ defmodule BeamWeaver.Filesystem.Local do
   end
 
   @impl true
-  def upload_files(%__MODULE__{} = backend, files, _opts) do
+  def upload_files(%__MODULE__{} = backend, files, opts) do
     Enum.map(files, fn {path, content} ->
-      with {:ok, real, virtual} <- FsPath.virtual_to_real(backend.root, path),
-           :ok <- File.mkdir_p(Path.dirname(real)),
-           :ok <- File.write(real, IO.iodata_to_binary(content)) do
-        %Filesystem.UploadResult{path: virtual}
-      else
-        {:error, reason} ->
-          %Filesystem.UploadResult{path: path, error: FileDataUtils.error_string(reason)}
-      end
+      %Filesystem.WriteResult{path: written, error: error} = write(backend, path, content, opts)
+      %Filesystem.UploadResult{path: written, error: error}
     end)
   end
 

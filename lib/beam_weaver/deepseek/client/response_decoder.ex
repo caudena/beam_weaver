@@ -54,34 +54,39 @@ defmodule BeamWeaver.DeepSeek.Client.ResponseDecoder do
     |> chat_stream_response()
   end
 
-  def reduce_chat_events(events, state) do
-    Enum.reduce(events, state || %{response: %{}, choices: %{}}, &apply_chat_event/2)
-  end
+  def reduce_chat_events(events, state), do: reduce_events(events, state, &apply_chat_choice/2)
 
   def chat_stream_response(state) do
     if map_size(state.choices) == 0 do
       {:error, Error.new(:invalid_response, "DeepSeek chat-completions stream had no choices")}
     else
-      {:ok, finalize_chat_response(state)}
+      {:ok, finalize_response(state, &finalize_chat_choice/1)}
     end
   end
 
-  defp apply_chat_event(%{"data" => data}, state) when is_map(data) do
-    response = put_response_fields(state.response, data)
+  defp reduce_events(events, state, apply_choice) do
+    Enum.reduce(events, state || %{response: %{}, choices: %{}}, fn
+      %{"data" => data}, acc when is_map(data) ->
+        choices = data |> Map.get("choices", []) |> Enum.reduce(acc.choices, apply_choice)
+        %{acc | response: put_response_fields(acc.response, data), choices: choices}
 
-    choices =
-      data
-      |> Map.get("choices", [])
-      |> Enum.reduce(state.choices, &apply_chat_choice/2)
-
-    %{state | response: response, choices: choices}
+      _event, acc ->
+        acc
+    end)
   end
 
-  defp apply_chat_event(_event, state), do: state
+  defp finalize_response(%{response: response, choices: choices}, finalize_choice) do
+    choices =
+      choices
+      |> Enum.sort_by(fn {index, _choice} -> index end)
+      |> Enum.map(fn {_index, choice} -> finalize_choice.(choice) end)
+
+    Map.put(response, "choices", choices)
+  end
 
   defp apply_chat_choice(choice, choices) when is_map(choice) do
     index = choice["index"] || 0
-    current = Map.get(choices, index, initial_chat_choice(index))
+    current = Map.get(choices, index, %{index: index, message: %{}, tool_calls: %{}, finish_reason: nil, logprobs: nil})
     delta = choice["delta"] || %{}
 
     current =
@@ -95,10 +100,6 @@ defmodule BeamWeaver.DeepSeek.Client.ResponseDecoder do
   end
 
   defp apply_chat_choice(_choice, choices), do: choices
-
-  defp initial_chat_choice(index) do
-    %{index: index, message: %{}, tool_calls: %{}, finish_reason: nil, logprobs: nil}
-  end
 
   defp apply_chat_delta(message, delta) when is_map(delta) do
     message
@@ -120,7 +121,7 @@ defmodule BeamWeaver.DeepSeek.Client.ResponseDecoder do
         |> put_present("id", call["id"])
         |> put_present("type", call["type"])
         |> update_in(["function"], fn current_function ->
-          (current_function || %{})
+          current_function
           |> put_present("name", function["name"])
           |> append_string("arguments", function["arguments"])
         end)
@@ -130,16 +131,6 @@ defmodule BeamWeaver.DeepSeek.Client.ResponseDecoder do
   end
 
   defp apply_chat_tool_calls(tool_calls, _calls), do: tool_calls
-
-  defp finalize_chat_response(%{response: response, choices: choices}) do
-    Map.put(
-      response,
-      "choices",
-      choices
-      |> Enum.sort_by(fn {index, _choice} -> index end)
-      |> Enum.map(fn {_index, choice} -> finalize_chat_choice(choice) end)
-    )
-  end
 
   defp finalize_chat_choice(choice) do
     message = Map.put_new(choice.message, "role", "assistant")
@@ -168,22 +159,9 @@ defmodule BeamWeaver.DeepSeek.Client.ResponseDecoder do
   defp completion_response(body) do
     body
     |> BeamWeaver.Provider.SSE.events()
-    |> Enum.reduce(%{response: %{}, choices: %{}}, &apply_completion_event/2)
-    |> finalize_completion_response()
+    |> reduce_events(nil, &apply_completion_choice/2)
+    |> finalize_response(& &1)
   end
-
-  defp apply_completion_event(%{"data" => data}, state) when is_map(data) do
-    response = put_response_fields(state.response, data)
-
-    choices =
-      data
-      |> Map.get("choices", [])
-      |> Enum.reduce(state.choices, &apply_completion_choice/2)
-
-    %{state | response: response, choices: choices}
-  end
-
-  defp apply_completion_event(_event, state), do: state
 
   defp apply_completion_choice(choice, choices) when is_map(choice) do
     index = choice["index"] || 0
@@ -206,16 +184,6 @@ defmodule BeamWeaver.DeepSeek.Client.ResponseDecoder do
       "logprobs" => choice["logprobs"]
     }
     |> reject_nil_values()
-  end
-
-  defp finalize_completion_response(%{response: response, choices: choices}) do
-    Map.put(
-      response,
-      "choices",
-      choices
-      |> Enum.sort_by(fn {index, _choice} -> index end)
-      |> Enum.map(fn {_index, choice} -> choice end)
-    )
   end
 
   defp put_response_fields(response, data) do

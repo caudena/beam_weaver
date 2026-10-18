@@ -57,6 +57,20 @@ defmodule BeamWeaver.Provider.TypedStreamTest do
         assert %Envelope{event: %Events.Debug{payload: %{type: :producer_start}}} = List.first(events)
         assert %Envelope{event: %Events.Debug{payload: %{type: :producer_stop}}} = List.last(events)
       end
+
+      test "the typed stream ends with one Done, also when the usage comes after the finish", context do
+        model = BeamWeaver.Models.init_chat_model!(context.model, model_opts(context, usage_apart(context.format)))
+        assert {:ok, events} = ChatModel.stream_typed_events(model, [Message.user("Where is A-1001?")])
+        events = Enum.to_list(events)
+
+        assert [%Events.Done{} = done] = for(%Envelope{event: %Events.Done{} = done} <- events, do: done)
+        assert %Envelope{event: ^done} = List.last(events)
+        assert [%Message{}] = for(%Envelope{event: %Events.Message{message: message}} <- events, do: message)
+
+        if context.format in [:chat_completions, :anthropic] do
+          assert done.usage == last_usage(context.format)
+        end
+      end
     end
   end
 
@@ -65,8 +79,8 @@ defmodule BeamWeaver.Provider.TypedStreamTest do
 
   defp model(context), do: BeamWeaver.Models.init_chat_model!(context.model, model_opts(context))
 
-  defp model_opts(context),
-    do: [api_key: "k", transport: SSE, transport_opts: [body: reply(context.format)]] ++ context.opts
+  defp model_opts(context, body \\ nil),
+    do: [api_key: "k", transport: SSE, transport_opts: [body: body || reply(context.format)]] ++ context.opts
 
   defp reply(:chat_completions) do
     encode([
@@ -122,26 +136,7 @@ defmodule BeamWeaver.Provider.TypedStreamTest do
     ])
   end
 
-  defp reply(:anthropic) do
-    message = %{
-      "id" => "msg_1",
-      "type" => "message",
-      "role" => "assistant",
-      "model" => "claude-haiku-4-5",
-      "content" => [],
-      "stop_reason" => nil,
-      "usage" => %{"input_tokens" => 5, "output_tokens" => 1}
-    }
-
-    encode([
-      %{"type" => "message_start", "message" => message},
-      %{"type" => "content_block_start", "index" => 0, "content_block" => %{"type" => "text", "text" => ""}},
-      %{"type" => "content_block_delta", "index" => 0, "delta" => %{"type" => "text_delta", "text" => "It shipped."}},
-      %{"type" => "content_block_stop", "index" => 0},
-      %{"type" => "message_delta", "delta" => %{"stop_reason" => "end_turn"}, "usage" => %{"output_tokens" => 3}},
-      %{"type" => "message_stop"}
-    ])
-  end
+  defp reply(:anthropic), do: anthropic_reply([%{"output_tokens" => 3}])
 
   defp reply(:gemini) do
     encode([
@@ -157,6 +152,56 @@ defmodule BeamWeaver.Provider.TypedStreamTest do
         "modelVersion" => "gemini-2.5-flash"
       }
     ])
+  end
+
+  # The reply with its usage sent after the finish: Chat Completions send it
+  # in a chunk of its own, without choices, and Anthropic in a further
+  # `message_delta`.
+  defp usage_apart(:chat_completions) do
+    encode([
+      %{
+        "id" => "chatcmpl_1",
+        "model" => "m",
+        "choices" => [%{"index" => 0, "delta" => %{"role" => "assistant", "content" => "It shipped."}}]
+      },
+      %{
+        "id" => "chatcmpl_1",
+        "model" => "m",
+        "choices" => [%{"index" => 0, "delta" => %{}, "finish_reason" => "stop"}]
+      },
+      %{"id" => "chatcmpl_1", "model" => "m", "choices" => [], "usage" => last_usage(:chat_completions)}
+    ]) <> "data: [DONE]\n\n"
+  end
+
+  defp usage_apart(:anthropic), do: anthropic_reply([%{"output_tokens" => 2}, last_usage(:anthropic)])
+  defp usage_apart(format), do: reply(format)
+
+  defp last_usage(:chat_completions), do: %{"prompt_tokens" => 5, "completion_tokens" => 3, "total_tokens" => 8}
+  defp last_usage(:anthropic), do: %{"output_tokens" => 3}
+
+  # One `message_delta` per usage.
+  defp anthropic_reply(usages) do
+    message = %{
+      "id" => "msg_1",
+      "type" => "message",
+      "role" => "assistant",
+      "model" => "claude-haiku-4-5",
+      "content" => [],
+      "stop_reason" => nil,
+      "usage" => %{"input_tokens" => 5, "output_tokens" => 1}
+    }
+
+    deltas =
+      for usage <- usages, do: %{"type" => "message_delta", "delta" => %{"stop_reason" => "end_turn"}, "usage" => usage}
+
+    encode(
+      [
+        %{"type" => "message_start", "message" => message},
+        %{"type" => "content_block_start", "index" => 0, "content_block" => %{"type" => "text", "text" => ""}},
+        %{"type" => "content_block_delta", "index" => 0, "delta" => %{"type" => "text_delta", "text" => "It shipped."}},
+        %{"type" => "content_block_stop", "index" => 0}
+      ] ++ deltas ++ [%{"type" => "message_stop"}]
+    )
   end
 
   defp encode(events) do

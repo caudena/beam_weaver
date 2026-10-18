@@ -88,17 +88,7 @@ defmodule BeamWeaver.Agent.Middleware.AsyncSubagentsTest do
     )
   end
 
-  defp start_tool(middleware) do
-    Enum.find(AsyncSubagents.tools(middleware), &(&1.name == "start_async_task"))
-  end
-
-  defp list_tool(middleware) do
-    Enum.find(AsyncSubagents.tools(middleware), &(&1.name == "list_async_tasks"))
-  end
-
-  defp check_tool(middleware) do
-    Enum.find(AsyncSubagents.tools(middleware), &(&1.name == "check_async_task"))
-  end
+  defp tool(middleware, name), do: Enum.find(AsyncSubagents.tools(middleware), &(&1.name == name))
 
   defp state_with_running_task do
     %{
@@ -161,7 +151,7 @@ defmodule BeamWeaver.Agent.Middleware.AsyncSubagentsTest do
   end
 
   test "starting a task tells the model to hand the full task ID to the user and not poll" do
-    description = middleware() |> start_tool() |> Tool.description()
+    description = middleware() |> tool("start_async_task") |> Tool.description()
 
     assert description =~ "runs in the background"
     assert description =~ "Give the user the full task ID"
@@ -174,19 +164,21 @@ defmodule BeamWeaver.Agent.Middleware.AsyncSubagentsTest do
     interrupted = %{id: "task-1", task_id: "task-1", subagent_name: "researcher", status: "interrupted"}
     input = %{state: %{async_tasks: %{"task-1" => interrupted}}, tool_call_id: "call-1"}
 
-    assert %Command{update: %{async_tasks: %{"task-1" => listed}}} = run(list_tool(tracking_middleware()), input)
+    assert %Command{update: %{async_tasks: %{"task-1" => listed}}} =
+             run(tool(tracking_middleware(), "list_async_tasks"), input)
+
     assert_received {:checked_async_task, "task-1"}
     assert listed.status == "success"
 
     assert %Command{update: %{async_tasks: %{"task-1" => checked}}} =
-             run(check_tool(tracking_middleware()), Map.put(input, :task_id, "task-1"))
+             run(tool(tracking_middleware(), "check_async_task"), Map.put(input, :task_id, "task-1"))
 
     assert_received {:checked_async_task, "task-1"}
     assert checked.status == "success"
   end
 
   test "start task generates stable fallback IDs and native trace metadata when remote IDs are missing" do
-    tool = start_tool(middleware())
+    tool = tool(middleware(), "start_async_task")
 
     assert %Command{update: %{async_tasks: tasks, messages: [message]}} =
              run(tool, %{
@@ -216,7 +208,7 @@ defmodule BeamWeaver.Agent.Middleware.AsyncSubagentsTest do
   end
 
   test "success filter selects a task whose live status became success" do
-    tool = list_tool(middleware())
+    tool = tool(middleware(), "list_async_tasks")
 
     input = %{
       state: state_with_running_task(),
@@ -230,7 +222,7 @@ defmodule BeamWeaver.Agent.Middleware.AsyncSubagentsTest do
   end
 
   test "running filter excludes a task that has completed remotely" do
-    tool = list_tool(middleware())
+    tool = tool(middleware(), "list_async_tasks")
 
     input = %{
       state: state_with_running_task(),
@@ -242,7 +234,7 @@ defmodule BeamWeaver.Agent.Middleware.AsyncSubagentsTest do
   end
 
   test "list task refresh skips terminal tasks and refreshes only active tasks" do
-    tool = list_tool(tracking_middleware())
+    tool = tool(tracking_middleware(), "list_async_tasks")
 
     input = %{
       state: %{
@@ -387,7 +379,7 @@ defmodule BeamWeaver.Agent.Middleware.AsyncSubagentsTest do
 
   test "a tool called outside a run sends nil for the run and the trace" do
     input = %{state: %{}, tool_call_id: "call-1", subagent_type: "researcher", description: "Collect."}
-    assert %Command{} = run(start_tool(parent_middleware()), input)
+    assert %Command{} = run(tool(parent_middleware(), "start_async_task"), input)
 
     assert_received {:client_call, :start, opts}
 

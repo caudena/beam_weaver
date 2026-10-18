@@ -11,14 +11,11 @@ defmodule BeamWeaver.Core.Tool.Invocation do
 
   @spec invoke(term(), term(), keyword()) :: {:ok, term()} | {:error, Error.t()}
   def invoke(tool, input, opts) when is_map(input) do
-    error_call = invocation_error_context(tool, input)
+    call = invocation_call(tool, input)
 
-    case normalize_invocation(tool, input) do
-      {:ok, call} ->
-        invoke_normalized(tool, call, opts)
-
-      {:error, %Error{} = error} ->
-        handle_invocation_error(tool, error, error_call)
+    case validate_tool_call(tool, call) do
+      :ok -> invoke_normalized(tool, call, opts)
+      {:error, %Error{} = error} -> handle_invocation_error(tool, error, call)
     end
   end
 
@@ -27,19 +24,7 @@ defmodule BeamWeaver.Core.Tool.Invocation do
       [key] = tool |> Tool.args() |> Map.keys()
       invoke(tool, %{key => input}, opts)
     else
-      handle_invocation_error(
-        tool,
-        Error.new(:invalid_input, "tool input must be a map"),
-        %{input: input, tool_call_id: nil, tool_call_name: nil, wrap_output?: false}
-      )
-    end
-  end
-
-  defp normalize_invocation(tool, input) do
-    if tool_call_input?(input) do
-      normalize_tool_call_invocation(tool, input)
-    else
-      {:ok, %{input: input, tool_call_id: nil, tool_call_name: nil, wrap_output?: false}}
+      handle_invocation_error(tool, Error.new(:invalid_input, "tool input must be a map"), invocation_call(tool, input))
     end
   end
 
@@ -47,35 +32,7 @@ defmodule BeamWeaver.Core.Tool.Invocation do
     BeamWeaver.MapAccess.get(input, :type) in [:tool_call, "tool_call"]
   end
 
-  defp normalize_tool_call_invocation(tool, input) do
-    args = BeamWeaver.MapAccess.get(input, :args)
-    call_name = BeamWeaver.MapAccess.get(input, :name)
-    call_id = BeamWeaver.MapAccess.get(input, :id)
-    tool_name = Tool.name(tool)
-
-    cond do
-      not is_map(args) ->
-        {:error, Error.new(:invalid_input, "tool_call input must include map args")}
-
-      is_binary(call_name) and call_name != tool_name ->
-        {:error,
-         Error.new(:invalid_input, "tool_call name does not match tool", %{
-           expected: tool_name,
-           actual: call_name
-         })}
-
-      true ->
-        {:ok,
-         %{
-           input: args,
-           tool_call_id: call_id,
-           tool_call_name: call_name || tool_name,
-           wrap_output?: true
-         }}
-    end
-  end
-
-  defp invocation_error_context(tool, input) do
+  defp invocation_call(tool, input) do
     if tool_call_input?(input) do
       %{
         input: BeamWeaver.MapAccess.get(input, :args),
@@ -85,6 +42,22 @@ defmodule BeamWeaver.Core.Tool.Invocation do
       }
     else
       %{input: input, tool_call_id: nil, tool_call_name: nil, wrap_output?: false}
+    end
+  end
+
+  defp validate_tool_call(_tool, %{wrap_output?: false}), do: :ok
+
+  defp validate_tool_call(_tool, %{input: args}) when not is_map(args),
+    do: {:error, Error.new(:invalid_input, "tool_call input must include map args")}
+
+  defp validate_tool_call(tool, %{tool_call_name: call_name}) do
+    tool_name = Tool.name(tool)
+
+    if is_binary(call_name) and call_name != tool_name do
+      {:error,
+       Error.new(:invalid_input, "tool_call name does not match tool", %{expected: tool_name, actual: call_name})}
+    else
+      :ok
     end
   end
 
@@ -207,28 +180,18 @@ defmodule BeamWeaver.Core.Tool.Invocation do
 
   defp format_error_content(_policy, _error), do: :error
 
-  defp format_error_result(content, tool, %{wrap_output?: true} = call), do: wrap_output(content, tool, call, :error)
+  defp format_error_result(content, _tool, %{wrap_output?: true} = call), do: wrap_output(content, call, :error)
   defp format_error_result(content, _tool, _call), do: content
 
-  defp wrap_output(content, tool, call, status),
-    do:
-      Output.format(content,
-        tool_call_id: call.tool_call_id,
-        name: call.tool_call_name || Tool.name(tool),
-        status: status
-      )
+  defp wrap_output(content, call, status),
+    do: Output.format(content, tool_call_id: call.tool_call_id, name: call.tool_call_name, status: status)
 
   defp inject_call_id(input, _tool, %{tool_call_id: nil}), do: input
 
-  defp inject_call_id(input, tool, %{tool_call_id: call_id}) do
-    tool
-    |> Tool.injected()
-    |> Enum.filter(fn {_key, source} -> source == :tool_call_id end)
-    |> Enum.reduce(input, fn {key, _source}, acc -> Map.put(acc, key, call_id) end)
-  end
+  defp inject_call_id(input, tool, %{tool_call_id: call_id}),
+    do: for({key, :tool_call_id} <- Tool.injected(tool), into: input, do: {key, call_id})
 
-  defp format_invocation_result(result, tool, %{wrap_output?: true} = call),
-    do: wrap_output(result, tool, call, :success)
+  defp format_invocation_result(result, _tool, %{wrap_output?: true} = call), do: wrap_output(result, call, :success)
 
   # A `:content_and_artifact` tool returns `{content, artifact}`; both travel on
   # as a `ToolResult`, which an agent's tool node turns into a tool message

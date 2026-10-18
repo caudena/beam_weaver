@@ -41,11 +41,7 @@ defmodule BeamWeaver.Agent.ModelRequest do
     do: Message.text(message)
 
   def system_prompt(%__MODULE__{system_message: messages}) when is_list(messages) do
-    messages
-    |> Enum.filter(&match?(%Message{role: :system}, &1))
-    |> Enum.map(&Message.text/1)
-    |> Enum.reject(&(&1 in [nil, ""]))
-    |> case do
+    case for(%Message{role: :system} = message <- messages, text = Message.text(message), text != "", do: text) do
       [] -> nil
       parts -> Enum.join(parts, "\n")
     end

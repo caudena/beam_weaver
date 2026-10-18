@@ -61,18 +61,7 @@ defmodule BeamWeaver.Models.Cached do
   def invoke(%__MODULE__{} = wrapper, input, opts) when is_map(input), do: evaluate(wrapper, input, opts)
 
   def invoke(%__MODULE__{} = wrapper, messages, opts) when is_list(messages) do
-    case lookup(wrapper, :chat_model, messages, opts) do
-      {:hit, message, _metadata} ->
-        {:ok, zero_cached_cost(message)}
-
-      {:miss, store} ->
-        with {:ok, message} <- ChatModel.invoke(wrapper.model, messages, opts),
-             :ok <- store.(message),
-             do: {:ok, message}
-
-      {:error, %Error{}} = error ->
-        error
-    end
+    with {:ok, message, _status, _metadata} <- chat(wrapper, messages, opts), do: {:ok, message}
   end
 
   @impl true
@@ -82,14 +71,19 @@ defmodule BeamWeaver.Models.Cached do
 
   @impl true
   def stream_events(%__MODULE__{} = wrapper, messages, opts) when is_list(messages) do
+    with {:ok, message, status, metadata} <- chat(wrapper, messages, opts),
+         do: {:ok, cached_event_stream(message, status, metadata)}
+  end
+
+  defp chat(wrapper, messages, opts) do
     case lookup(wrapper, :chat_model, messages, opts) do
       {:hit, message, metadata} ->
-        {:ok, cached_event_stream(zero_cached_cost(message), :hit, metadata)}
+        {:ok, zero_cached_cost(message), :hit, metadata}
 
       {:miss, store} ->
         with {:ok, message} <- ChatModel.invoke(wrapper.model, messages, opts),
              :ok <- store.(message),
-             do: {:ok, cached_event_stream(message, :miss, %{})}
+             do: {:ok, message, :miss, %{}}
 
       {:error, %Error{}} = error ->
         error

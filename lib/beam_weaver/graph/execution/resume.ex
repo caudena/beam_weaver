@@ -8,45 +8,27 @@ defmodule BeamWeaver.Graph.Execution.Resume do
   @spec normalize(map(), map(), :error | {:ok, term()}) :: {:ok, term()} | {:error, Error.t()}
   def normalize(_compiled, _config, :error), do: {:ok, nil}
 
-  def normalize(compiled, config, {:ok, %GraphResume{} = resume}) do
-    {:ok, scalar_resume_with_consumed(compiled, config, resume)}
-  end
+  def normalize(compiled, config, {:ok, %GraphResume{} = resume}),
+    do: {:ok, compiled |> Replay.pending_interrupt_records(config) |> scalar_resume_with_consumed(resume)}
 
-  def normalize(compiled, config, {:ok, resume}) when is_map(resume) and not is_struct(resume) do
+  def normalize(compiled, config, {:ok, resume}) do
     pending = Replay.pending_interrupt_records(compiled, config)
+    map? = is_map(resume) and not is_struct(resume)
 
     # An empty map answers none of the pauses, which keep the answers they
     # already used.
     cond do
-      pending == [] ->
+      map? and pending == [] ->
         {:ok, resume}
 
-      map_size(resume) == 0 or resume_map_targets_pending?(resume, pending) ->
+      map? and (map_size(resume) == 0 or resume_map_targets_pending?(resume, pending)) ->
         {:ok, resume_map_to_task_values(resume, pending)}
 
-      length(pending) == 1 ->
-        {:ok, scalar_resume_with_consumed(pending, resume)}
+      length(pending) > 1 ->
+        {:error, Error.new(:invalid_resume, "multiple pending interrupts require a resume map keyed by interrupt id")}
 
       true ->
-        {:error,
-         Error.new(
-           :invalid_resume,
-           "multiple pending interrupts require a resume map keyed by interrupt id"
-         )}
-    end
-  end
-
-  def normalize(compiled, config, {:ok, resume}) do
-    pending = Replay.pending_interrupt_records(compiled, config)
-
-    if length(pending) > 1 do
-      {:error,
-       Error.new(
-         :invalid_resume,
-         "multiple pending interrupts require a resume map keyed by interrupt id"
-       )}
-    else
-      {:ok, scalar_resume_with_consumed(pending, resume)}
+        {:ok, scalar_resume_with_consumed(pending, resume)}
     end
   end
 
@@ -68,12 +50,6 @@ defmodule BeamWeaver.Graph.Execution.Resume do
   end
 
   def values_for_task(resume, _task_id), do: [resume]
-
-  defp scalar_resume_with_consumed(compiled, config, resume) do
-    compiled
-    |> Replay.pending_interrupt_records(config)
-    |> scalar_resume_with_consumed(resume)
-  end
 
   defp scalar_resume_with_consumed([pending], resume) do
     %{pending.task_id => interrupt_resumes(pending) ++ resume_values(resume)}

@@ -109,10 +109,12 @@ defmodule BeamWeaver.CompactionTest do
     run_agent_id = first_request.run_agent_id
 
     later_events = [
-      event(run_agent_id, 7, :user, "continue from the compacted history"),
+      event(run_agent_id, 7, :user, "implement the requested behavior from the compacted history"),
       event(run_agent_id, 8, :assistant, String.duplicate("new work ", 1_000)),
       event(run_agent_id, 9, :user, "keep the new decision"),
-      event(run_agent_id, 10, :assistant, "continuing")
+      event(run_agent_id, 10, :assistant, "continuing"),
+      event(run_agent_id, 11, :user, "continue"),
+      event(run_agent_id, 12, :assistant, "still continuing")
     ]
 
     later_source_id = hd(later_events).event_id
@@ -138,6 +140,39 @@ defmodule BeamWeaver.CompactionTest do
     assert {:ok, second_result} = Compaction.compact(%{}, second_request)
     assert second_result.compaction_checkpoint.parent_checkpoint_id == first_checkpoint.checkpoint_id
     assert :erlang.term_to_binary(first_checkpoint) == frozen_parent
+  end
+
+  test "compaction fails without calling the model when every event is protected" do
+    events = Enum.map(events(), &%{&1 | protected: true})
+    request = request(events, fn _payload -> flunk("summarizer must not run") end)
+
+    assert {:error, %{type: :current_input_item_too_large}} = Compaction.compact(%{}, request)
+  end
+
+  test "compaction does not reuse the previous summary when every event is protected" do
+    {first_request, first_checkpoint} = compacted_request()
+    run_agent_id = first_request.run_agent_id
+
+    events =
+      Enum.map(
+        [
+          event(run_agent_id, 7, :user, "continue from the compacted history"),
+          event(run_agent_id, 8, :assistant, String.duplicate("new work ", 1_000))
+        ],
+        &%{&1 | protected: true}
+      )
+
+    request = %{
+      first_request
+      | request_id: ID.uuidv7(),
+        parent_checkpoint_id: first_checkpoint.checkpoint_id,
+        previous_semantic: first_checkpoint.semantic,
+        events: events,
+        active_input_event_ids: [List.last(events).event_id],
+        summarize: fn _payload -> flunk("summarizer must not run") end
+    }
+
+    assert {:error, %{type: :current_input_item_too_large}} = Compaction.compact(%{}, request)
   end
 
   test "automatic check below trigger is skipped without calling the model" do

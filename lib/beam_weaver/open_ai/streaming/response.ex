@@ -221,15 +221,10 @@ defmodule BeamWeaver.OpenAI.Streaming.Response do
   defp apply_output_event(_event, state), do: state
 
   defp put_item(state, index, item) when is_integer(index) and is_map(item) do
-    existing_item =
-      state.items
-      |> Map.get(index, %{})
-      |> Shared.stringify_keys()
-
     item =
       item
       |> Shared.stringify_keys()
-      |> preserve_existing_list(existing_item, "partial_images")
+      |> preserve_existing_list(Map.get(state.items, index, %{}), "partial_images")
 
     state
     |> put_in([:items, index], item)
@@ -242,7 +237,6 @@ defmodule BeamWeaver.OpenAI.Streaming.Response do
     item =
       state.items
       |> Map.get(index, %{})
-      |> Shared.stringify_keys()
       |> fun.()
       |> Shared.stringify_keys()
 
@@ -282,7 +276,7 @@ defmodule BeamWeaver.OpenAI.Streaming.Response do
   defp put_indexed(list, index, value) when is_list(list) and is_integer(index) and index >= 0 do
     list
     |> extend_to(index + 1)
-    |> List.replace_at(index, Shared.stringify_keys(value))
+    |> List.replace_at(index, value)
   end
 
   defp put_indexed(list, _index, _value), do: list
@@ -290,29 +284,16 @@ defmodule BeamWeaver.OpenAI.Streaming.Response do
   defp extend_to(list, size) when length(list) >= size, do: list
   defp extend_to(list, size), do: list ++ List.duplicate(nil, size - length(list))
 
-  defp ensure_item(item, type) when is_map(item) do
-    item
-    |> Shared.stringify_keys()
-    |> Map.put_new("type", type)
-  end
+  defp ensure_item(item, type), do: Map.put_new(item, "type", type)
 
-  defp ensure_text_part(part) when is_map(part) do
-    part
-    |> Shared.stringify_keys()
-    |> Map.put_new("type", "output_text")
-    |> Map.put_new("text", "")
-  end
+  defp ensure_text_part(part) when is_map(part),
+    do: part |> Map.put_new("type", "output_text") |> Map.put_new("text", "")
 
-  defp ensure_summary_part(part) when is_map(part) do
-    part
-    |> Shared.stringify_keys()
-    |> Map.put_new("type", "summary_text")
-    |> Map.put_new("text", "")
-  end
+  defp ensure_summary_part(part) when is_map(part),
+    do: part |> Map.put_new("type", "summary_text") |> Map.put_new("text", "")
 
   defp finalize_item(item) do
     item
-    |> Shared.stringify_keys()
     |> Map.update("content", nil, &compact_list/1)
     |> Map.update("summary", nil, &compact_list/1)
     |> reject_nil_values()

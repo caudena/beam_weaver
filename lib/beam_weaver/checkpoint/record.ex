@@ -15,6 +15,8 @@ defmodule BeamWeaver.Checkpoint.Metadata do
 
   @type t :: %__MODULE__{}
 
+  @fields [:source, :step, :writes, :parents, :thread, :run_id]
+
   @spec from_map(map()) :: t()
   def from_map(metadata) when is_map(metadata) do
     %__MODULE__{
@@ -24,21 +26,7 @@ defmodule BeamWeaver.Checkpoint.Metadata do
       parents: MapAccess.get(metadata, :parents, %{}),
       thread: MapAccess.get(metadata, :thread, %{}),
       run_id: MapAccess.get(metadata, :run_id),
-      extra:
-        Map.drop(metadata, [
-          :source,
-          "source",
-          :step,
-          "step",
-          :writes,
-          "writes",
-          :parents,
-          "parents",
-          :thread,
-          "thread",
-          :run_id,
-          "run_id"
-        ])
+      extra: Map.drop(metadata, @fields ++ Enum.map(@fields, &Atom.to_string/1))
     }
   end
 end

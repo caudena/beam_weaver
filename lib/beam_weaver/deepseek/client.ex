@@ -128,7 +128,11 @@ defmodule BeamWeaver.DeepSeek.Client do
   def chat_completions_stream_typed_events(%__MODULE__{} = client, body, opts \\ []) when is_map(body) do
     client
     |> http(chat_endpoint(client, body, opts), opts)
-    |> typed_stream(body, opts, &deepseek_chat_typed_events/2)
+    |> typed_stream(
+      body,
+      Keyword.put(opts, :parser_finalizer, &finish_chat_typed_events/1),
+      &deepseek_chat_typed_events/2
+    )
   end
 
   @spec responses(t(), map(), keyword()) :: {:ok, map()} | {:error, Error.t()}
@@ -269,7 +273,7 @@ defmodule BeamWeaver.DeepSeek.Client do
   defp field(_value, _name, default), do: default
 
   defp api_root(base_url) do
-    base_url = base_url |> to_string() |> String.trim_trailing("/")
+    base_url = String.trim_trailing(base_url, "/")
 
     case Enum.find(["/v1", "/beta", "/anthropic"], &String.ends_with?(base_url, &1)) do
       nil -> base_url
@@ -277,33 +281,30 @@ defmodule BeamWeaver.DeepSeek.Client do
     end
   end
 
+  # Parses a batch of a live Chat Completions stream, holding its `Done`
+  # events back for the complete reply that ends the stream.
   defp deepseek_chat_typed_events(events, state) do
-    state = ResponseDecoder.reduce_chat_events(events, state)
+    events
+    |> OpenAICompatibleStreaming.typed_events(%{
+      provider: :deepseek,
+      choice_usage: false,
+      include_chunk_id: true,
+      reasoning_index: 0,
+      unknown_delta_key: :deepseek_delta
+    })
+    |> OpenAICompatibleStreaming.hold_events(events, state)
+  end
 
-    typed =
-      OpenAICompatibleStreaming.typed_events(events, %{
-        provider: :deepseek,
-        choice_usage: false,
-        include_chunk_id: true,
-        reasoning_index: 0,
-        unknown_delta_key: :deepseek_delta
-      })
-
-    typed =
-      Enum.flat_map(typed, fn
-        %BeamWeaver.Stream.Envelope{event: %BeamWeaver.Stream.Events.Done{}} = envelope ->
-          with {:ok, response} <- ResponseDecoder.chat_stream_response(state),
-               {:ok, message} <- BeamWeaver.DeepSeek.Messages.chat_response_to_message(response) do
-            [%{envelope | event: %BeamWeaver.Stream.Events.Message{message: message}}, envelope]
-          else
-            {:error, error} -> [%{envelope | event: %BeamWeaver.Stream.Events.Error{error: error}}]
-          end
-
-        envelope ->
-          [envelope]
-      end)
-
-    {typed, state}
+  # Ends a live Chat Completions stream with the complete reply: the response
+  # the stream's events add up to, decoded like a non-streamed one. A stream
+  # without choices has no reply.
+  defp finish_chat_typed_events(state) do
+    OpenAICompatibleStreaming.finish_typed_events(state, :deepseek, fn events ->
+      case events |> ResponseDecoder.reduce_chat_events(nil) |> ResponseDecoder.chat_stream_response() do
+        {:ok, response} -> BeamWeaver.DeepSeek.Messages.chat_response_to_message(response)
+        {:error, _error} -> :none
+      end
+    end)
   end
 
   defp deepseek_responses_typed_events(events) do

@@ -96,15 +96,8 @@ defmodule BeamWeaver.OpenAI.ChatCompletionsModel do
   def count_tokens(%__MODULE__{} = model, input, opts), do: TokenCounter.count_text(model, input, opts)
 
   defp client(%__MODULE__{} = model) do
-    %Client{
-      chat_completions_endpoint: model.endpoint,
-      api_key: model.api_key,
-      organization: model.organization,
-      project: model.project,
-      transport: model.transport,
-      transport_opts: model.transport_opts,
-      timeout: model.timeout
-    }
+    fields = Map.take(model, ~w(api_key organization project transport transport_opts timeout)a)
+    struct(Client, Map.put(fields, :chat_completions_endpoint, model.endpoint))
   end
 
   @impl true

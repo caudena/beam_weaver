@@ -121,7 +121,10 @@ defmodule BeamWeaver.Agent.Middleware.OverflowRecovery do
   def wrap_model_call(%__MODULE__{} = middleware, %ModelRequest{} = request, handler) do
     with {:overflow, overflow} <- sent(handler.(request)),
          {:overflow, overflow, request, send} <- send_clipped(middleware, request, handler, overflow) do
-      send_summarized(middleware, request, send) || overflow
+      case middleware.summarization do
+        nil -> overflow
+        summarization -> Summarization.send_summarized(summarization, request, send) || overflow
+      end
     else
       {:sent, result} -> result
     end
@@ -169,12 +172,19 @@ defmodule BeamWeaver.Agent.Middleware.OverflowRecovery do
   """
   @spec clip_tail([Message.t()], Filesystem.t(), keyword()) :: t()
   def clip_tail(messages, backend \\ State.new(), opts \\ []) when is_list(messages) do
-    case tail_tool_batch(messages) do
-      nil ->
-        %__MODULE__{messages: messages}
-
-      {start, tail} ->
-        maybe_clip_tail(messages, backend, opts, start, tail)
+    with {start, tail} <- tail_tool_batch(messages),
+         threshold =
+           derive_threshold_tokens(Keyword.get(opts, :keep, @default_keep), Keyword.get(opts, :max_input_tokens)),
+         true <- count_tokens(tail, Keyword.get(opts, :token_counter, :approximate)) >= threshold,
+         {new_tail, [_ | _] = replacements, files_update} <- clip_batch(messages, tail, backend, opts) do
+      %__MODULE__{
+        messages: Enum.take(messages, start) ++ new_tail,
+        replacements: replacements,
+        files_update: files_update,
+        clipped?: true
+      }
+    else
+      _nothing_clipped -> %__MODULE__{messages: messages}
     end
   end
 
@@ -225,11 +235,6 @@ defmodule BeamWeaver.Agent.Middleware.OverflowRecovery do
     end
   end
 
-  defp send_summarized(%__MODULE__{summarization: nil}, _request, _send), do: nil
-
-  defp send_summarized(%__MODULE__{summarization: summarization}, request, send),
-    do: Summarization.send_summarized(summarization, request, send)
-
   # The clipped call sees the thread as it is saved when the call succeeds,
   # with the clipped results and their files, so that a summary of it keeps
   # them clipped.
@@ -259,58 +264,26 @@ defmodule BeamWeaver.Agent.Middleware.OverflowRecovery do
 
   defp save_clip(other, _middleware, _request, _result), do: other
 
-  defp maybe_clip_tail(messages, backend, opts, start, tail) do
-    threshold =
-      derive_threshold_tokens(
-        Keyword.get(opts, :keep, @default_keep),
-        Keyword.get(opts, :max_input_tokens)
-      )
-
-    if count_tokens(tail, Keyword.get(opts, :token_counter, :approximate)) < threshold do
-      %__MODULE__{messages: messages}
-    else
-      do_clip_tail(messages, backend, opts, start, tail)
-    end
-  end
-
-  defp do_clip_tail(messages, backend, opts, start, tail) do
+  # The clipped batch, the clipped results, and the files they were saved to.
+  defp clip_batch(messages, tail, backend, opts) do
     tool_call_index = build_tool_call_index(messages)
 
-    {new_tail, replacements, files_update} =
-      Enum.reduce(tail, {[], [], nil}, fn message, {new_tail, replacements, files_acc} ->
-        case clip_one(message, tool_call_index, backend, opts, files_acc) do
-          {nil, files_acc} ->
-            {new_tail ++ [message], replacements, files_acc}
+    Enum.reduce(tail, {[], [], nil}, fn message, {new_tail, replacements, files_acc} ->
+      case clip_one(message, tool_call_index, backend, opts, files_acc) do
+        {nil, files_acc} ->
+          {new_tail ++ [message], replacements, files_acc}
 
-          {%Message{} = clipped, files_acc} ->
-            clipped = ensure_id(clipped)
-            {new_tail ++ [clipped], replacements ++ [clipped], files_acc}
-        end
-      end)
-
-    if replacements == [] do
-      %__MODULE__{messages: messages}
-    else
-      %__MODULE__{
-        messages: Enum.take(messages, start) ++ new_tail,
-        replacements: replacements,
-        files_update: files_update,
-        clipped?: true
-      }
-    end
+        {%Message{} = clipped, files_acc} ->
+          clipped = ensure_id(clipped)
+          {new_tail ++ [clipped], replacements ++ [clipped], files_acc}
+      end
+    end)
   end
 
-  defp tail_tool_batch([]), do: nil
-
   defp tail_tool_batch(messages) do
-    if match?(%Message{role: :tool}, List.last(messages)) do
-      reversed_tail =
-        messages
-        |> Enum.reverse()
-        |> Enum.take_while(&match?(%Message{role: :tool}, &1))
-        |> Enum.reverse()
-
-      {length(messages) - length(reversed_tail), reversed_tail}
+    case messages |> Enum.reverse() |> Enum.take_while(&match?(%Message{role: :tool}, &1)) do
+      [] -> nil
+      reversed_tail -> {length(messages) - length(reversed_tail), Enum.reverse(reversed_tail)}
     end
   end
 

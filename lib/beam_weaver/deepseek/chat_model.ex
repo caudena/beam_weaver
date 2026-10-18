@@ -74,10 +74,9 @@ defmodule BeamWeaver.DeepSeek.ChatModel do
     do: Options.to_body(model, messages, opts)
 
   def count_tokens(%__MODULE__{} = model, input, opts \\ []) do
-    case model.tokenizer || BeamWeaver.Models.tokenizer_for(model) do
+    case BeamWeaver.Models.tokenizer_for(model) do
       {:ok, tokenizer} -> LanguageModel.count_tokens({:tokenizer, tokenizer}, input, opts)
-      tokenizer when not is_nil(tokenizer) -> LanguageModel.count_tokens({:tokenizer, tokenizer}, input, opts)
-      _missing -> {:ok, LanguageModel.count_tokens_approximately(input)}
+      nil -> {:ok, LanguageModel.count_tokens_approximately(input)}
     end
   end
 

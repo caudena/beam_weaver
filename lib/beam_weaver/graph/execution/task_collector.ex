@@ -168,25 +168,12 @@ defmodule BeamWeaver.Graph.Execution.TaskCollector do
     }
   end
 
-  defp interrupt_payload(%{id: _id, value: _value} = interrupt, run, entry) do
-    interrupt
-    |> Map.put(:timing, Map.get(interrupt, :timing, :during))
-    |> Map.put(:nodes, Map.get(interrupt, :nodes, [entry.node]))
-    |> Map.put(:state, interrupt_state(run))
-    |> Map.put(:config, merge_interrupt_config(run.config, Map.get(interrupt, :config)))
-    |> Map.put(:step, run.step)
-    |> Map.put(:task_id, entry.id)
-  end
+  defp interrupt_payload(%{id: _id, value: _value} = interrupt, run, entry),
+    do: interrupt |> Map.put_new(:timing, :during) |> Map.put_new(:nodes, [entry.node]) |> pausing(run, entry)
 
   # A subgraph that stopped at a breakpoint pauses its parent's task.
-  defp interrupt_payload(%{timing: timing, nodes: _nodes} = interrupt, run, entry)
-       when timing in [:before, :after] do
-    interrupt
-    |> Map.put(:state, interrupt_state(run))
-    |> Map.put(:config, merge_interrupt_config(run.config, Map.get(interrupt, :config)))
-    |> Map.put(:step, run.step)
-    |> Map.put(:task_id, entry.id)
-  end
+  defp interrupt_payload(%{timing: timing, nodes: _nodes} = interrupt, run, entry) when timing in [:before, :after],
+    do: pausing(interrupt, run, entry)
 
   defp interrupt_payload(nodes, run, timing) do
     %{
@@ -196,6 +183,16 @@ defmodule BeamWeaver.Graph.Execution.TaskCollector do
       config: run.config,
       step: run.step
     }
+  end
+
+  # A subgraph's pause as the pause of its task in this run.
+  defp pausing(interrupt, run, entry) do
+    Map.merge(interrupt, %{
+      state: interrupt_state(run),
+      config: merge_interrupt_config(run.config, Map.get(interrupt, :config)),
+      step: run.step,
+      task_id: entry.id
+    })
   end
 
   # What the caller sees of the paused run: its public state, as in `get_state/2`.
@@ -218,11 +215,7 @@ defmodule BeamWeaver.Graph.Execution.TaskCollector do
         |> Map.merge(parent_map)
         |> maybe_put_target_checkpoint(target, child_map)
 
-      update_in(
-        parent_config,
-        ["configurable", "checkpoint_map"],
-        fn _existing -> merged end
-      )
+      put_in(parent_config, ["configurable", "checkpoint_map"], merged)
     else
       parent_config
     end

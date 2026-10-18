@@ -41,7 +41,7 @@ defmodule BeamWeaver.Anthropic.Messages do
   end
 
   def response_to_message(response) when is_map(response) do
-    content = normalize_response_content(response["content"] || [])
+    content = normalize_response_content(response["content"])
     metadata = response_metadata(response)
 
     message_content =
@@ -550,12 +550,7 @@ defmodule BeamWeaver.Anthropic.Messages do
 
   defp merge_passthrough(formatted, block, keys) do
     extras = block["extras"] || block["metadata"] || %{}
-
-    keys
-    |> Enum.reduce(formatted, fn key, acc ->
-      value = block[key] || extras[key]
-      if is_nil(value), do: acc, else: Map.put(acc, key, value)
-    end)
+    Enum.reduce(keys, formatted, &BeamWeaver.MapShape.put_present(&2, &1, block[&1] || extras[&1]))
   end
 
   defp merge_typed_metadata(formatted, metadata, keys) do

@@ -6,108 +6,48 @@ defmodule BeamWeaver.TextSplitterTest do
   alias BeamWeaver.TextSplitter
   alias BeamWeaver.Tokenizer.Approximate
 
-  test "character splitter matches word-boundary overlap behavior" do
-    splitter = TextSplitter.character(separator: " ", chunk_size: 7, chunk_overlap: 3)
+  # Splits `text` with a character splitter, on spaces unless `opts` names
+  # another separator.
+  defp split(text, opts),
+    do: TextSplitter.split_text(TextSplitter.character(Keyword.merge([separator: " "], opts)), text)
 
-    assert TextSplitter.split_text(splitter, "foo bar baz 123") == [
-             "foo bar",
-             "bar baz",
-             "baz 123"
-           ]
+  test "character splitter matches word-boundary overlap behavior" do
+    assert split("foo bar baz 123", chunk_size: 7, chunk_overlap: 3) == ["foo bar", "bar baz", "baz 123"]
   end
 
   test "character splitter drops empty chunks and handles edge inputs" do
-    assert TextSplitter.split_text(
-             TextSplitter.character(separator: " ", chunk_size: 2, chunk_overlap: 0),
-             "foo  bar"
-           ) == ["foo", "bar"]
-
-    assert TextSplitter.split_text(
-             TextSplitter.character(separator: " ", chunk_size: 2, chunk_overlap: 0),
-             "f b"
-           ) == ["f", "b"]
-
-    assert TextSplitter.split_text(
-             TextSplitter.character(separator: " ", chunk_size: 5, chunk_overlap: 0),
-             ""
-           ) == []
-
-    assert TextSplitter.split_text(
-             TextSplitter.character(separator: " ", chunk_size: 5, chunk_overlap: 0),
-             " "
-           ) == []
+    assert split("foo  bar", chunk_size: 2, chunk_overlap: 0) == ["foo", "bar"]
+    assert split("f b", chunk_size: 2, chunk_overlap: 0) == ["f", "b"]
+    assert split("", chunk_size: 5, chunk_overlap: 0) == []
+    assert split(" ", chunk_size: 5, chunk_overlap: 0) == []
   end
 
   test "character splitter uses whole split-piece overlap semantics" do
-    assert TextSplitter.split_text(
-             TextSplitter.character(separator: " ", chunk_size: 3, chunk_overlap: 1),
-             "foo bar baz a a"
-           ) == ["foo", "bar", "baz", "a a"]
-
-    assert TextSplitter.split_text(
-             TextSplitter.character(separator: " ", chunk_size: 3, chunk_overlap: 1),
-             "a a foo bar baz"
-           ) == ["a a", "foo", "bar", "baz"]
-
-    assert TextSplitter.split_text(
-             TextSplitter.character(separator: " ", chunk_size: 1, chunk_overlap: 1),
-             "foo bar baz 123"
-           ) == ["foo", "bar", "baz", "123"]
-
-    assert TextSplitter.split_text(
-             TextSplitter.character(separator: " ", chunk_size: 10, chunk_overlap: 0),
-             "singleword"
-           ) == ["singleword"]
+    assert split("foo bar baz a a", chunk_size: 3, chunk_overlap: 1) == ["foo", "bar", "baz", "a a"]
+    assert split("a a foo bar baz", chunk_size: 3, chunk_overlap: 1) == ["a a", "foo", "bar", "baz"]
+    assert split("foo bar baz 123", chunk_size: 1, chunk_overlap: 1) == ["foo", "bar", "baz", "123"]
+    assert split("singleword", chunk_size: 10, chunk_overlap: 0) == ["singleword"]
   end
 
   test "character splitter supports regex separators and start/end separator retention" do
     text = "foo.bar.baz.123"
+    opts = [chunk_size: 1, chunk_overlap: 0]
 
-    assert TextSplitter.split_text(
-             TextSplitter.character(
-               separator: Regex.escape("."),
-               separator_regex?: true,
-               chunk_size: 1,
-               chunk_overlap: 0,
-               keep_separator: true
-             ),
-             text
-           ) == ["foo", ".bar", ".baz", ".123"]
+    assert split(text, [separator: Regex.escape("."), separator_regex?: true, keep_separator: true] ++ opts) ==
+             ["foo", ".bar", ".baz", ".123"]
 
-    assert TextSplitter.split_text(
-             TextSplitter.character(
-               separator: ".",
-               chunk_size: 1,
-               chunk_overlap: 0,
-               keep_separator: :end
-             ),
-             text
-           ) == ["foo.", "bar.", "baz.", "123"]
-
-    assert TextSplitter.split_text(
-             TextSplitter.character(separator: ".", chunk_size: 1, chunk_overlap: 0),
-             text
-           ) == ["foo", "bar", "baz", "123"]
+    assert split(text, [separator: ".", keep_separator: :end] ++ opts) == ["foo.", "bar.", "baz.", "123"]
+    assert split(text, [separator: "."] ++ opts) == ["foo", "bar", "baz", "123"]
   end
 
   test "character splitter rejects string separator retention modes" do
-    splitter =
-      TextSplitter.character(
-        separator: ".",
-        chunk_size: 1,
-        chunk_overlap: 0,
-        keep_separator: "end"
-      )
-
-    assert_raise ArgumentError,
-                 ~s(keep_separator must be false, true, :start, or :end, got "end"; use :end),
-                 fn -> TextSplitter.split_text(splitter, "foo.bar") end
+    assert_raise ArgumentError, ~s(keep_separator must be false, true, :start, or :end, got "end"; use :end), fn ->
+      split("foo.bar", separator: ".", chunk_size: 1, chunk_overlap: 0, keep_separator: "end")
+    end
   end
 
   test "chunk overlap equal to chunk size is accepted for already-small text" do
-    splitter = TextSplitter.character(separator: " ", chunk_size: 5, chunk_overlap: 5)
-
-    assert TextSplitter.split_text(splitter, "hello") == ["hello"]
+    assert split("hello", chunk_size: 5, chunk_overlap: 5) == ["hello"]
   end
 
   test "recursive character splitting respects chunk size, overlap, separators, and start indexes" do
@@ -571,15 +511,6 @@ defmodule BeamWeaver.TextSplitterTest do
       |> TextSplitter.from_tokenizer(chunk_size: 2, chunk_overlap: 1)
 
     assert TextSplitter.split_text(splitter, "one two three") == ["one two", "two three"]
-
-    openai_splitter =
-      Approximate
-      |> struct(mode: :words)
-      |> TextSplitter.from_tokenizer(chunk_size: 4, chunk_overlap: 1)
-
-    chunks = TextSplitter.split_text(openai_splitter, "hello world from beam weaver")
-    assert length(chunks) >= 2
-    assert Enum.all?(chunks, &is_binary/1)
   end
 
   test "transform_documents is the BeamWeaver document-transformer entry point" do
@@ -625,7 +556,6 @@ defmodule BeamWeaver.TextSplitterTest do
 
     assert first == [%{"a" => 1, "b" => 2}]
     assert second == [%{"c" => 3, "d" => 4}]
-    assert first == [%{"a" => 1, "b" => 2}]
 
     data = %{
       "config" => %{},

@@ -20,8 +20,6 @@ defmodule BeamWeaver.Sandbox.Docker do
 
   use BeamWeaver.Sandbox
 
-  alias BeamWeaver.Filesystem.Edit
-  alias BeamWeaver.Filesystem.FileDataUtils
   alias BeamWeaver.Filesystem.Path, as: FilesystemPath
   alias BeamWeaver.Sandbox
   alias BeamWeaver.Sandbox.CommandRunner
@@ -93,7 +91,7 @@ defmodule BeamWeaver.Sandbox.Docker do
     args =
       ["run", "-d", "--init", "--name", name, "--network", sandbox.network, "--workdir", sandbox.root]
       |> maybe_flag("--rm", sandbox.remove?)
-      |> maybe_runtime(sandbox.runtime)
+      |> maybe_option("--runtime", sandbox.runtime)
       |> maybe_option("--cpus", sandbox.cpus)
       |> maybe_option("--memory", sandbox.memory)
       |> maybe_option("--pids-limit", sandbox.pids_limit)
@@ -231,11 +229,7 @@ defmodule BeamWeaver.Sandbox.Docker do
       dd if=#{shell_quote(directory <> "/output")} bs=1 skip=#{offset} count=#{limit} 2>/dev/null || true
       """
 
-      case System.cmd(
-             "docker",
-             ["exec", sandbox.container, "sh", "-lc", script],
-             stderr_to_stdout: true
-           ) do
+      case exec_sh(sandbox, script) do
         {output, 0} -> decode_exec_window(output, offset)
         {output, _status} -> {:error, String.trim(output)}
       end
@@ -258,12 +252,8 @@ defmodule BeamWeaver.Sandbox.Docker do
       kill -TERM "$pid" 2>/dev/null || true
       """
 
-      case System.cmd(
-             "docker",
-             ["exec", sandbox.container, "sh", "-lc", script],
-             stderr_to_stdout: true
-           ) do
-        {_output, 0} -> wait_exec_stop(sandbox, handle, grace_ms)
+      case exec_sh(sandbox, script) do
+        {_output, 0} -> wait_exec_stop(sandbox, handle, System.monotonic_time(:millisecond) + grace_ms)
         {output, _status} -> {:error, String.trim(output)}
       end
     end
@@ -287,7 +277,13 @@ defmodule BeamWeaver.Sandbox.Docker do
   def read(%__MODULE__{container: nil}, _path, _opts), do: %Sandbox.ReadResult{error: @not_started}
 
   def read(%__MODULE__{} = sandbox, path, opts) do
-    container_path = container_path!(sandbox, path)
+    case container_path(sandbox, path) do
+      {:ok, container_path} -> read_file(sandbox, container_path, opts)
+      {:error, error} -> %Sandbox.ReadResult{error: error}
+    end
+  end
+
+  defp read_file(sandbox, container_path, opts) do
     offset = Keyword.get(opts, :offset, 0)
     limit = Keyword.get(opts, :limit, 2_000)
 
@@ -375,13 +371,7 @@ defmodule BeamWeaver.Sandbox.Docker do
         %Sandbox.ExecuteResult{exit_code: nil, output: "", error: error, truncated: false}
     end
   rescue
-    exception ->
-      %Sandbox.ExecuteResult{
-        exit_code: 1,
-        output: "",
-        error: Exception.message(exception),
-        truncated: false
-      }
+    exception -> %Sandbox.ExecuteResult{exit_code: 1, error: Exception.message(exception)}
   end
 
   @impl true
@@ -391,22 +381,7 @@ defmodule BeamWeaver.Sandbox.Docker do
   def edit(%__MODULE__{} = sandbox, path, old, new, opts) do
     with {:ok, container_path} <- container_path(sandbox, path),
          {:ok, content} <- copy_out(sandbox, container_path) do
-      case Edit.replacement(content, old, new, Keyword.get(opts, :replace_all, false)) do
-        {:ok, occurrences, updated} ->
-          case replace_file(sandbox, container_path, updated) do
-            :ok -> %Sandbox.EditResult{path: path, occurrences: occurrences}
-            {:error, error} -> %Sandbox.EditResult{path: path, error: error}
-          end
-
-        {:error, :not_found} ->
-          %Sandbox.EditResult{path: path, occurrences: 0, error: "string not found"}
-
-        {:error, "multiple occurrences" = error} ->
-          %Sandbox.EditResult{path: path, occurrences: length(:binary.matches(content, old)), error: error}
-
-        {:error, error} ->
-          %Sandbox.EditResult{path: path, error: FileDataUtils.error_string(error)}
-      end
+      Sandbox.edit_result(path, content, old, new, opts, &replace_file(sandbox, container_path, &1))
     else
       {:error, error} -> %Sandbox.EditResult{path: path, error: error}
     end
@@ -415,10 +390,17 @@ defmodule BeamWeaver.Sandbox.Docker do
   @impl true
   def ls(%__MODULE__{container: nil}, _path, _opts), do: %Sandbox.ListResult{error: @not_started}
 
+  def ls(%__MODULE__{} = sandbox, path, _opts) do
+    case container_path(sandbox, path) do
+      {:ok, container_path} -> list_dir(sandbox, container_path)
+      {:error, error} -> %Sandbox.ListResult{error: error}
+    end
+  end
+
   # A path that doesn't exist is the error `file_not_found`, as on the other
   # backends, not `find`'s message.
-  def ls(%__MODULE__{} = sandbox, path, _opts) do
-    dir = sandbox |> container_path!(path) |> shell_quote()
+  defp list_dir(sandbox, container_path) do
+    dir = shell_quote(container_path)
 
     cmd =
       "if test -e #{dir}; then find #{dir} -maxdepth 1 -mindepth 1 -printf '%y|%p\\n'; " <>
@@ -533,18 +515,9 @@ defmodule BeamWeaver.Sandbox.Docker do
   end
 
   @impl true
-  def upload_files(%__MODULE__{container: nil}, files, _opts),
-    do: Enum.map(files, fn {path, _content} -> %Sandbox.UploadResult{path: path, error: @not_started} end)
-
-  def upload_files(%__MODULE__{} = sandbox, files, _opts) do
+  def upload_files(%__MODULE__{} = sandbox, files, opts) do
     Enum.map(files, fn {path, content} ->
-      with {:ok, container_path} <- container_path(sandbox, path),
-           :ok <- make_room(sandbox, container_path),
-           :ok <- copy_in(sandbox, container_path, content) do
-        %Sandbox.UploadResult{path: path}
-      else
-        {:error, error} -> %Sandbox.UploadResult{path: path, error: error}
-      end
+      %Sandbox.UploadResult{path: path, error: write(sandbox, path, content, opts).error}
     end)
   end
 
@@ -701,9 +674,6 @@ defmodule BeamWeaver.Sandbox.Docker do
     end
   end
 
-  defp maybe_runtime(args, nil), do: args
-  defp maybe_runtime(args, runtime), do: args ++ ["--runtime", to_string(runtime)]
-
   defp maybe_option(args, _name, nil), do: args
   defp maybe_option(args, name, value), do: args ++ [name, to_string(value)]
 
@@ -789,19 +759,19 @@ defmodule BeamWeaver.Sandbox.Docker do
     :ok
   end
 
-  defp shell_quote(value), do: "'" <> String.replace(to_string(value), "'", "'\"'\"'") <> "'"
+  # Runs `script` with `sh -lc` in the container, for its output and status.
+  defp exec_sh(sandbox, script),
+    do: System.cmd("docker", ["exec", sandbox.container, "sh", "-lc", script], stderr_to_stdout: true)
 
-  defp container_path!(%__MODULE__{} = sandbox, path) do
-    case container_path(sandbox, path) do
-      {:ok, container_path} -> container_path
-      {:error, message} -> raise ArgumentError, message
-    end
-  end
+  defp shell_quote(value), do: "'" <> String.replace(to_string(value), "'", "'\"'\"'") <> "'"
 
   defp container_path(%__MODULE__{} = sandbox, path) do
     cond do
       not is_binary(path) or not String.starts_with?(path, "/") ->
         {:error, "sandbox paths must be absolute virtual paths"}
+
+      not String.valid?(path) ->
+        {:error, "invalid_path"}
 
       String.contains?(path, ["\0", "~"]) or Enum.member?(Path.split(path), "..") ->
         {:error, "invalid sandbox path"}
@@ -831,27 +801,18 @@ defmodule BeamWeaver.Sandbox.Docker do
     Enum.all?(expected, fn {key, value} -> actual[to_string(key)] == to_string(value) end)
   end
 
-  defp valid_label?(value) do
-    case label_string(value) do
-      {:ok, string} ->
-        byte_size(string) in 1..200 and not String.contains?(string, [<<0>>, "\n", "\r"])
-
-      :error ->
-        false
-    end
+  defp valid_label?(value) when is_binary(value) or is_atom(value) or is_integer(value) do
+    string = to_string(value)
+    byte_size(string) in 1..200 and not String.contains?(string, [<<0>>, "\n", "\r"])
   end
 
-  defp validate_expected_labels(labels) when map_size(labels) > 0 do
-    if Enum.all?(labels, fn {key, value} -> valid_label?(key) and valid_label?(value) end),
+  defp valid_label?(_value), do: false
+
+  defp validate_expected_labels(labels) do
+    if map_size(labels) > 0 and Enum.all?(labels, fn {key, value} -> valid_label?(key) and valid_label?(value) end),
       do: :ok,
       else: {:error, "invalid_docker_container_identity"}
   end
-
-  defp validate_expected_labels(_labels), do: {:error, "invalid_docker_container_identity"}
-
-  defp label_string(value) when is_binary(value), do: {:ok, value}
-  defp label_string(value) when is_atom(value) or is_integer(value), do: {:ok, to_string(value)}
-  defp label_string(_value), do: :error
 
   defp validate_exec_handle(%__MODULE__{container: container}, %{
          container: container,
@@ -865,7 +826,7 @@ defmodule BeamWeaver.Sandbox.Docker do
   defp validate_exec_handle(_sandbox, _handle), do: {:error, "docker_exec_identity_mismatch"}
 
   defp decode_exec_window(output, offset) do
-    with {:ok, size, status, bytes} <- split_exec_response(output),
+    with [size, status, bytes] <- String.split(output, "\n", parts: 3),
          {observed, ""} <- Integer.parse(size),
          {:ok, parsed_status} <- parse_optional_status(status) do
       {:ok,
@@ -882,34 +843,10 @@ defmodule BeamWeaver.Sandbox.Docker do
     end
   end
 
-  defp split_exec_response(output) do
-    with {first, 1} <- :binary.match(output, "\n"),
-         rest_offset = first + 1,
-         rest_size = byte_size(output) - rest_offset,
-         rest = binary_part(output, rest_offset, rest_size),
-         {second, 1} <- :binary.match(rest, "\n") do
-      {:ok, binary_part(output, 0, first), binary_part(rest, 0, second),
-       binary_part(rest, second + 1, byte_size(rest) - second - 1)}
-    else
-      :nomatch -> {:error, "invalid_docker_exec_response"}
-    end
-  end
-
   defp parse_optional_status(""), do: {:ok, nil}
+  defp parse_optional_status(value), do: with({status, ""} <- Integer.parse(value), do: {:ok, status})
 
-  defp parse_optional_status(value) do
-    case Integer.parse(value) do
-      {status, ""} -> {:ok, status}
-      _error -> {:error, "invalid_docker_exec_status"}
-    end
-  end
-
-  defp wait_exec_stop(sandbox, handle, grace_ms) do
-    deadline = System.monotonic_time(:millisecond) + grace_ms
-    do_wait_exec_stop(sandbox, handle, deadline)
-  end
-
-  defp do_wait_exec_stop(sandbox, handle, deadline) do
+  defp wait_exec_stop(sandbox, handle, deadline) do
     case read_exec(sandbox, handle, 0, 1) do
       {:ok, %{running: false}} ->
         :ok
@@ -918,32 +855,25 @@ defmodule BeamWeaver.Sandbox.Docker do
         if System.monotonic_time(:millisecond) >= deadline do
           directory = handle.directory
 
-          case System.cmd(
-                 "docker",
-                 [
-                   "exec",
-                   sandbox.container,
-                   "sh",
-                   "-lc",
-                   "wrapper=$(cat #{shell_quote(directory <> "/wrapper_pid")} 2>/dev/null || true); " <>
-                     "child=$(cat #{shell_quote(directory <> "/pid")} 2>/dev/null || true); " <>
-                     "test -n \"$wrapper\" || exit 3; " <>
-                     "test -z \"$child\" || kill -KILL \"$child\" 2>/dev/null || true; " <>
-                     "kill -KILL \"$wrapper\" 2>/dev/null || true; " <>
-                     "alive() { test -n \"$1\" && kill -0 \"$1\" 2>/dev/null; }; " <>
-                     "i=0; while test $i -lt 20 && (alive \"$child\" || alive \"$wrapper\"); " <>
-                     "do sleep 0.05; i=$((i+1)); done; " <>
-                     "(alive \"$child\" || alive \"$wrapper\") && exit 4; " <>
-                     "printf 137 > #{shell_quote(directory <> "/status")}"
-                 ],
-                 stderr_to_stdout: true
-               ) do
+          script =
+            "wrapper=$(cat #{shell_quote(directory <> "/wrapper_pid")} 2>/dev/null || true); " <>
+              "child=$(cat #{shell_quote(directory <> "/pid")} 2>/dev/null || true); " <>
+              "test -n \"$wrapper\" || exit 3; " <>
+              "test -z \"$child\" || kill -KILL \"$child\" 2>/dev/null || true; " <>
+              "kill -KILL \"$wrapper\" 2>/dev/null || true; " <>
+              "alive() { test -n \"$1\" && kill -0 \"$1\" 2>/dev/null; }; " <>
+              "i=0; while test $i -lt 20 && (alive \"$child\" || alive \"$wrapper\"); " <>
+              "do sleep 0.05; i=$((i+1)); done; " <>
+              "(alive \"$child\" || alive \"$wrapper\") && exit 4; " <>
+              "printf 137 > #{shell_quote(directory <> "/status")}"
+
+          case exec_sh(sandbox, script) do
             {_output, 0} -> confirm_killed_exec(sandbox, handle)
             {output, _status} -> {:error, String.trim(output)}
           end
         else
           Process.sleep(50)
-          do_wait_exec_stop(sandbox, handle, deadline)
+          wait_exec_stop(sandbox, handle, deadline)
         end
 
       {:error, _reason} = error ->

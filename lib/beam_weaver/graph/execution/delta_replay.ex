@@ -66,7 +66,7 @@ defmodule BeamWeaver.Graph.Execution.DeltaReplay do
   defp walk_history(compiled, tuple, keys) do
     compiled.checkpointer
     |> Checkpoint.get_delta_channel_history(tuple.config, keys)
-    |> Map.new(fn {key, history} -> {key, replay(channel(compiled.graph, key), history)} end)
+    |> Map.new(fn {key, history} -> {key, replay(ChannelLookup.channel_for(compiled.graph, key), history)} end)
   end
 
   defp history_values(compiled, tuple, parent) do
@@ -89,13 +89,13 @@ defmodule BeamWeaver.Graph.Execution.DeltaReplay do
   defp from_parent(compiled, tuple, key, parent_tuple, parent_restored) do
     case {DeltaHistory.stored_value(tuple, key), Map.get(parent_restored, key)} do
       {{:ok, seed}, _parent} ->
-        replay(channel(compiled.graph, key), %{seed: seed, writes: []})
+        replay(ChannelLookup.channel_for(compiled.graph, key), %{seed: seed, writes: []})
 
       {:error, {:error, %Error{}} = error} ->
         error
 
       {:error, parent} ->
-        replay(channel(compiled.graph, key), %{
+        replay(ChannelLookup.channel_for(compiled.graph, key), %{
           seed: parent_value(parent_tuple, key, parent),
           writes: DeltaHistory.pending_writes(parent_tuple, key) ++ DeltaHistory.step_writes(tuple, key)
         })
@@ -169,8 +169,6 @@ defmodule BeamWeaver.Graph.Execution.DeltaReplay do
       {:error, %Error{}} = error -> error
     end
   end
-
-  defp channel(graph, name), do: ChannelLookup.channel_for(graph, name)
 
   defp checkpoint_key(tuple) do
     configurable = tuple.config["configurable"]

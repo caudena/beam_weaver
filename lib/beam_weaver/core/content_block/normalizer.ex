@@ -18,8 +18,8 @@ defmodule BeamWeaver.Core.ContentBlock.Normalizer do
     type = get(map, :type)
 
     cond do
-      provider_image_bytes?(map) ->
-        {:ok, provider_image_bytes_block(map)}
+      image = provider_image_bytes_block(map) ->
+        {:ok, image}
 
       match?("data:" <> _rest, get(map, :url)) ->
         ContentBlock.from_data_uri(get(map, :url), metadata(map))
@@ -86,8 +86,8 @@ defmodule BeamWeaver.Core.ContentBlock.Normalizer do
            metadata: metadata(map)
          })}
 
-      known_map_type?(type) ->
-        {:ok, normalize_known_map_block(map, type)}
+      known_type = known_map_type(type) ->
+        {:ok, normalize_known_map_block(map, known_type)}
 
       true ->
         {:ok, ContentBlock.unknown(to_string(type || "unknown"), map, metadata(map))}
@@ -106,13 +106,11 @@ defmodule BeamWeaver.Core.ContentBlock.Normalizer do
     }
   end
 
-  defp known_map_type?(type) when is_atom(type), do: type in @known_map_types
-  defp known_map_type?(type) when is_binary(type), do: Map.has_key?(@known_map_type_names, type)
-  defp known_map_type?(_type), do: false
+  defp known_map_type(type) when is_atom(type), do: if(type in @known_map_types, do: type)
+  defp known_map_type(type) when is_binary(type), do: Map.get(@known_map_type_names, type)
+  defp known_map_type(_type), do: nil
 
   defp normalize_known_map_block(map, type) do
-    type = normalize_type(type)
-
     case type do
       :function_call -> function_call_block(map)
       :tool_call -> tool_call_block(map, :tool_call)
@@ -130,9 +128,6 @@ defmodule BeamWeaver.Core.ContentBlock.Normalizer do
       type -> provider_output_block(map, type)
     end
   end
-
-  defp normalize_type(type) when is_atom(type), do: type
-  defp normalize_type(type) when is_binary(type), do: Map.fetch!(@known_map_type_names, type)
 
   defp text_block(map) do
     %{
@@ -277,7 +272,12 @@ defmodule BeamWeaver.Core.ContentBlock.Normalizer do
 
   defp reasoning_block(map) do
     reasoning = get(map, :reasoning) || get(map, :text)
-    metadata = put_metadata_thought_signature(metadata(map), thought_signature(map))
+    signature = thought_signature(map)
+
+    metadata =
+      if is_binary(signature) and signature != "",
+        do: Map.put(metadata(map), :thought_signature, signature),
+        else: metadata(map)
 
     if is_binary(reasoning) and is_nil(get(map, :id)) and
          is_nil(get(map, :summary)) and is_nil(get(map, :status)) and
@@ -291,7 +291,7 @@ defmodule BeamWeaver.Core.ContentBlock.Normalizer do
         summary: get(map, :summary),
         status: get(map, :status),
         encrypted_content: get(map, :encrypted_content),
-        thought_signature: thought_signature(map),
+        thought_signature: signature,
         raw_provider_block: get(map, :raw_provider_block)
       }
       |> MapShape.reject_nil_values()
@@ -405,7 +405,7 @@ defmodule BeamWeaver.Core.ContentBlock.Normalizer do
 
     if is_binary(mime_type) and String.starts_with?(mime_type, "image/") do
       ContentBlock.image(%{
-        data: encode_binary_data(data),
+        data: if(is_binary(data), do: Base.encode64(data), else: data),
         mime_type: mime_type,
         metadata: metadata(map)
       })
@@ -452,23 +452,19 @@ defmodule BeamWeaver.Core.ContentBlock.Normalizer do
     end
   end
 
-  defp provider_image_bytes?(map) do
-    image = get(map, :image)
-    source = if is_map(image), do: get(image, :source), else: nil
-
-    is_map(source) and is_binary(get(source, :bytes))
-  end
-
+  # An image given as raw bytes under `image.source.bytes`, or nil.
   defp provider_image_bytes_block(map) do
-    image = get(map, :image)
-    source = get(image, :source)
-    format = get(image, :format) || "jpeg"
-
-    ContentBlock.image(%{
-      data: Base.encode64(get(source, :bytes)),
-      mime_type: "image/#{format}",
-      metadata: metadata(map)
-    })
+    with %{} = image <- get(map, :image),
+         %{} = source <- get(image, :source),
+         bytes when is_binary(bytes) <- get(source, :bytes) do
+      ContentBlock.image(%{
+        data: Base.encode64(bytes),
+        mime_type: "image/#{get(image, :format) || "jpeg"}",
+        metadata: metadata(map)
+      })
+    else
+      _other -> nil
+    end
   end
 
   defp thought_signature(map), do: signature(map) || signature(metadata(map))
@@ -477,15 +473,6 @@ defmodule BeamWeaver.Core.ContentBlock.Normalizer do
     do: get(map, :thought_signature) || Map.get(map, "thoughtSignature") || Map.get(map, :thoughtSignature)
 
   defp signature(_value), do: nil
-
-  defp put_metadata_thought_signature(metadata, signature) when is_binary(signature) and signature != "" do
-    Map.put(metadata, :thought_signature, signature)
-  end
-
-  defp put_metadata_thought_signature(metadata, _signature), do: metadata
-
-  defp encode_binary_data(data) when is_binary(data), do: Base.encode64(data)
-  defp encode_binary_data(data), do: data
 
   defp project_guard_content(%{} = guard_content) do
     %{

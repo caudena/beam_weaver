@@ -144,7 +144,6 @@ defmodule BeamWeaver.Agent.Capabilities do
     end
   end
 
-  defp append_prompt(prompt, suffix) when suffix in [nil, ""], do: prompt
   defp append_prompt(nil, suffix), do: suffix
   defp append_prompt(prompt, suffix) when is_binary(prompt), do: prompt <> "\n\n" <> suffix
   defp append_prompt(prompt, suffix), do: Helpers.append_prompt(prompt, suffix)
@@ -253,15 +252,9 @@ defmodule BeamWeaver.Agent.Capabilities do
       enabled?(spec.compact_conversation) or enabled?(spec.overflow_recovery)
   end
 
-  defp maybe_filesystem(%Spec{filesystem: filesystem} = spec, resolved_filesystem) do
-    if empty?(filesystem) do
-      nil
-    else
-      Middleware.Filesystem.new(
-        backend: resolved_filesystem,
-        permissions: List.wrap(spec.filesystem_permissions || [])
-      )
-    end
+  defp maybe_filesystem(%Spec{} = spec, resolved_filesystem) do
+    if not empty?(spec.filesystem),
+      do: Middleware.Filesystem.new(declared_backend_opts(Middleware.Filesystem, spec, resolved_filesystem))
   end
 
   defp maybe_skills(%Spec{skills: skills}, _filesystem) when skills in [nil, false, []], do: nil
@@ -327,16 +320,8 @@ defmodule BeamWeaver.Agent.Capabilities do
   end
 
   defp maybe_async_subagents(%Spec{} = spec) do
-    subagents =
-      spec.async_subagents
-      |> List.wrap()
-      |> Kernel.++(async_subagents(spec.subagents))
-
-    if subagents == [] do
-      nil
-    else
-      Middleware.AsyncSubagents.new(subagents: subagents)
-    end
+    subagents = List.wrap(spec.async_subagents) ++ Enum.filter(List.wrap(spec.subagents), &match?(%AsyncSpec{}, &1))
+    if subagents != [], do: Middleware.AsyncSubagents.new(subagents: subagents)
   end
 
   # A `subagent` line that led back to an agent module being read left that
@@ -344,21 +329,12 @@ defmodule BeamWeaver.Agent.Capabilities do
   defp sync_subagents(subagents) do
     subagents
     |> List.wrap()
-    |> Enum.reject(&async_subagent?/1)
+    |> Enum.reject(&match?(%AsyncSpec{}, &1))
     |> Enum.map(fn
       %SubagentSpec{} = subagent -> SubagentSpec.read(subagent)
       subagent -> subagent
     end)
   end
-
-  defp async_subagents(subagents) do
-    subagents
-    |> List.wrap()
-    |> Enum.filter(&async_subagent?/1)
-  end
-
-  defp async_subagent?(%AsyncSpec{}), do: true
-  defp async_subagent?(_subagent), do: false
 
   # `compact_conversation` also turns on automatic summarization, configured by
   # its `summarization:` option; the other options configure the tool.

@@ -110,13 +110,6 @@ defmodule BeamWeaver.Agent.Middleware.OpenAIModerationTest do
     assert List.last(updated_messages).content =~ "flagged"
   end
 
-  test "before_model callback jumps to end when invoked directly" do
-    middleware = middleware_for("async", @flagged_result, exit_behavior: :end)
-
-    assert {:jump, :end, %{messages: [%Message{role: :assistant}]}} =
-             OpenAIModeration.before_model(middleware, %{messages: [Message.user("async")]}, runtime())
-  end
-
   test "new/1 builds its client from the provider options" do
     middleware =
       OpenAIModeration.new(

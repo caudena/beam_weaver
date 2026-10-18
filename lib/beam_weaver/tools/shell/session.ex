@@ -28,12 +28,7 @@ defmodule BeamWeaver.Tools.Shell.Session do
   @type t :: pid()
 
   @spec start_link(keyword()) :: GenServer.on_start()
-  def start_link(opts) do
-    case Keyword.fetch(opts, :name) do
-      {:ok, name} -> GenServer.start_link(__MODULE__, opts, name: name)
-      :error -> GenServer.start_link(__MODULE__, opts)
-    end
-  end
+  def start_link(opts), do: GenServer.start_link(__MODULE__, opts, Keyword.take(opts, [:name]))
 
   @spec execute(t(), String.t(), keyword()) :: {:ok, map()} | {:error, Error.t()}
   def execute(pid, command, opts \\ []) when is_pid(pid) do
@@ -149,9 +144,7 @@ defmodule BeamWeaver.Tools.Shell.Session do
   end
 
   defp build_state(policy, opts) do
-    workspace = Keyword.get(opts, :workspace_root) || Keyword.get(opts, :workspace)
-
-    with {:ok, cwd, temp_root} <- workspace_root(workspace, policy) do
+    with {:ok, cwd, temp_root} <- workspace_root(Keyword.get(opts, :workspace_root), policy) do
       {:ok,
        %__MODULE__{
          policy: policy,
@@ -199,8 +192,6 @@ defmodule BeamWeaver.Tools.Shell.Session do
   defp normalize_commands(command) when is_binary(command), do: [command]
   defp normalize_commands(commands) when is_list(commands), do: Enum.map(commands, &to_string/1)
 
-  defp run_startup_commands(%__MODULE__{startup_commands: []} = state), do: {:ok, state}
-
   defp run_startup_commands(%__MODULE__{} = state) do
     Enum.reduce_while(state.startup_commands, {:ok, state}, fn command, {:ok, state} ->
       case run_command(state, command, timeout: state.policy.timeout) do
@@ -220,8 +211,6 @@ defmodule BeamWeaver.Tools.Shell.Session do
       end
     end)
   end
-
-  defp run_shutdown_commands(%__MODULE__{shutdown_commands: []} = state), do: state
 
   defp run_shutdown_commands(%__MODULE__{} = state) do
     Enum.reduce(state.shutdown_commands, state, fn command, state ->
@@ -256,29 +245,22 @@ defmodule BeamWeaver.Tools.Shell.Session do
     stderr_path = Path.join(scratch, "stderr")
 
     result =
-      case CommandRunner.run(session_script(command, metadata_path, env_path),
-             shell: CommandRunner.shell(),
-             cd: state.cwd,
-             env: run_env(state),
-             inherit_env: state.policy.inherit_env,
-             stderr: CommandRunner.stderr_option(stderr_path, state.policy),
-             timeout: timeout
-           ) do
-        {:ok, output, status} ->
-          metadata = read_metadata(metadata_path)
-          env = read_env(env_path, state.env)
-          stderr = CommandRunner.read_stderr(stderr_path, state.policy)
+      CommandRunner.run(session_script(command, metadata_path, env_path),
+        shell: CommandRunner.shell(),
+        cd: state.cwd,
+        env: run_env(state),
+        inherit_env: state.policy.inherit_env,
+        stderr: CommandRunner.stderr_option(stderr_path, state.policy),
+        timeout: timeout
+      )
 
-          {:ok, {output, status, metadata, env, stderr}}
-
-        other ->
-          other
-      end
-
+    metadata = read_metadata(metadata_path)
+    env = read_env(env_path, state.env)
+    stderr = CommandRunner.read_stderr(stderr_path, state.policy)
     File.rm_rf(scratch)
 
     case result do
-      {:ok, {output, status, metadata, env, stderr}} ->
+      {:ok, output, status} ->
         status = Map.get(metadata, :status, status)
 
         state =
@@ -369,7 +351,7 @@ defmodule BeamWeaver.Tools.Shell.Session do
   end
 
   defp safe_int(value) do
-    case Integer.parse(String.trim(to_string(value))) do
+    case Integer.parse(String.trim(value)) do
       {int, ""} -> int
       _other -> nil
     end

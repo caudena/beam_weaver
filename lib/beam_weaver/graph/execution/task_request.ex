@@ -65,11 +65,11 @@ defmodule BeamWeaver.Graph.Execution.TaskRequest do
       )
 
   def from_checkpoint(%{node: node, update: update} = record),
-    do: send(node, update || %{}, [], timeout: Map.get(record, :timeout), repeat: Map.get(record, :repeat))
+    do: send(node, update, [], timeout: Map.get(record, :timeout), repeat: Map.get(record, :repeat))
 
   def from_checkpoint(%{"node" => node}), do: pull(node)
   def from_checkpoint(%{node: node}), do: pull(node)
-  def from_checkpoint({node, update}), do: send(node, update || %{})
+  def from_checkpoint({node, update}), do: send(node, update)
   def from_checkpoint(node), do: pull(node)
 
   # A saved record as callers see it in a snapshot. Records saved before map

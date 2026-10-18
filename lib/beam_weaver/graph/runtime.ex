@@ -164,10 +164,8 @@ defmodule BeamWeaver.Graph.Runtime do
   defp maybe_to_string(nil), do: nil
   defp maybe_to_string(value), do: to_string(value)
 
-  defp normalize_field_overrides(overrides) do
-    Map.new(overrides, fn {key, value} -> {field_atom(key), value} end)
-    |> Map.reject(fn {key, _value} -> is_nil(key) end)
-  end
+  defp normalize_field_overrides(overrides),
+    do: for({key, value} <- overrides, field = field_atom(key), into: %{}, do: {field, value})
 
   defp field_atom(key) when is_atom(key) do
     if key in @fields, do: key

@@ -3,9 +3,11 @@ defmodule BeamWeaver.Agent.Nodes.Model do
 
   alias BeamWeaver.Agent.Middleware
   alias BeamWeaver.Agent.ModelRequest
+  alias BeamWeaver.Agent.ModelResolver
   alias BeamWeaver.Agent.ModelResponse
   alias BeamWeaver.Agent.Nodes.Model.Prompt
   alias BeamWeaver.Agent.Nodes.Model.Response
+  alias BeamWeaver.Agent.ProviderProfile
   alias BeamWeaver.Agent.StructuredOutput
   alias BeamWeaver.Agent.StructuredOutput.ProviderStrategy
   alias BeamWeaver.Agent.StructuredOutput.ToolStrategy
@@ -140,6 +142,29 @@ defmodule BeamWeaver.Agent.Nodes.Model do
   end
 
   defp execute_model(%ModelRequest{} = request, step_costs) do
+    case resolve_model(request) do
+      {:ok, request} ->
+        call_resolved_model(request, step_costs)
+
+      {:error, %Error{} = error} ->
+        messages = Prompt.prompt_messages(request.system_message) ++ request.messages
+        {:error, Response.attach_diagnostics(error, request, messages, request.model_opts)}
+    end
+  end
+
+  # Middleware can put a "provider:model" string on the request. It becomes a
+  # chat model for this call, with its provider profile, as the agent's own
+  # `model` does when the agent is built. The request's model options go with
+  # the call, as for any model.
+  defp resolve_model(%ModelRequest{model: %_{}} = request), do: {:ok, request}
+
+  defp resolve_model(%ModelRequest{model: model} = request) do
+    opts = if is_binary(model) or is_atom(model), do: ProviderProfile.apply_provider_profile(to_string(model)), else: []
+
+    with {:ok, model} <- ModelResolver.resolve_agent_model(model, opts), do: {:ok, %{request | model: model}}
+  end
+
+  defp call_resolved_model(%ModelRequest{} = request, step_costs) do
     base_tool_set = request.tool_set || ToolSet.new(request.tools)
 
     {strategy, structured_policy} =
@@ -192,14 +217,10 @@ defmodule BeamWeaver.Agent.Nodes.Model do
   # a model again (`ModelRetry`, `ModelFallback`); only a run that fails ends
   # with an `Error` event.
   defp call_model(model, messages, opts, runtime) do
-    case send_model_call(model, messages, opts, runtime) do
-      {:error, _reason} = result ->
-        {:error, error} = Response.normalize_model_result(result)
-        emit_stream_event(runtime, %Events.Debug{payload: %{type: :model_call_failed, error: error}})
-        result
-
-      result ->
-        result
+    with {:error, _reason} = result <- send_model_call(model, messages, opts, runtime) do
+      {:error, error} = Response.normalize_model_result(result)
+      emit_stream_event(runtime, %Events.Debug{payload: %{type: :model_call_failed, error: error}})
+      result
     end
   end
 
@@ -207,16 +228,9 @@ defmodule BeamWeaver.Agent.Nodes.Model do
     cond do
       typed_stream?(model, opts) ->
         ChatModel.trace_call(model, messages, opts, fn ->
-          case stream_typed_model(model, messages, opts, runtime) do
-            {:error, %Error{type: :unsupported_feature}} = error ->
-              if stream_response?(model, opts) do
-                model.__struct__.stream_response(model, messages, opts)
-              else
-                error
-              end
-
-            result ->
-              result
+          with {:error, %Error{type: :unsupported_feature}} = error <-
+                 stream_typed_model(model, messages, opts, runtime) do
+            if stream_response?(model, opts), do: model.__struct__.stream_response(model, messages, opts), else: error
           end
         end)
 
@@ -244,21 +258,12 @@ defmodule BeamWeaver.Agent.Nodes.Model do
   defp stream_typed_model(model, messages, opts, runtime) do
     with {:ok, events} <- ChatModel.stream_typed_events(model, messages, opts) do
       events
-      |> Enum.reduce_while(stream_acc(), &collect_stream_event(&1, &2, runtime))
+      |> Enum.reduce_while(%{message: nil, chunks: [], tokens: [], error: nil}, fn event, acc ->
+        emit_stream_event(runtime, event)
+        collect_typed_event(with(%Envelope{event: inner} <- event, do: inner), acc)
+      end)
       |> stream_result()
     end
-  end
-
-  defp stream_acc, do: %{message: nil, chunks: [], tokens: [], error: nil}
-
-  defp collect_stream_event(%Envelope{} = envelope, acc, runtime) do
-    emit_stream_event(runtime, envelope)
-    collect_typed_event(envelope.event, acc)
-  end
-
-  defp collect_stream_event(event, acc, runtime) do
-    emit_stream_event(runtime, event)
-    collect_typed_event(event, acc)
   end
 
   defp collect_typed_event(%Events.Message{message: %Message{role: :assistant} = message}, acc) do
@@ -416,24 +421,21 @@ defmodule BeamWeaver.Agent.Nodes.Model do
     |> Enum.filter(&(is_map(&1) and not is_struct(&1)))
   end
 
-  defp put_structured_output_trace_opts(opts, %ToolStrategy{schema_specs: specs}, structured_policy) do
-    opts
-    |> Keyword.put(:structured_output_strategy, :tool)
-    |> Keyword.put(:structured_output_tool_names, Enum.map(specs, & &1.name))
-    |> put_structured_policy_opts(structured_policy)
-  end
+  defp put_structured_output_trace_opts(opts, strategy, structured_policy) do
+    opts =
+      case strategy do
+        %ToolStrategy{schema_specs: specs} ->
+          opts
+          |> Keyword.put(:structured_output_strategy, :tool)
+          |> Keyword.put(:structured_output_tool_names, Enum.map(specs, & &1.name))
 
-  defp put_structured_output_trace_opts(opts, %ProviderStrategy{}, structured_policy) do
-    opts
-    |> Keyword.put(:structured_output_strategy, :provider)
-    |> put_structured_policy_opts(structured_policy)
-  end
+        %ProviderStrategy{} ->
+          Keyword.put(opts, :structured_output_strategy, :provider)
 
-  defp put_structured_output_trace_opts(opts, _strategy, structured_policy) do
-    put_structured_policy_opts(opts, structured_policy)
-  end
+        _strategy ->
+          opts
+      end
 
-  defp put_structured_policy_opts(opts, structured_policy) do
     Enum.reduce(StructuredOutput.Policy.to_metadata(structured_policy), opts, fn {key, value}, acc ->
       Keyword.put(acc, key, value)
     end)
@@ -472,17 +474,13 @@ defmodule BeamWeaver.Agent.Nodes.Model do
     Tracing.fail_run(run, error)
   end
 
-  defp finish_structured_run(run, other) do
-    Tracing.finish_run(run, outputs: %{output: inspect(other)})
-  end
-
   defp structured_trace_metadata(strategy, structured_policy, %ModelRequest{} = request, opts) do
     %{
       structured_output: true,
       structured_output_schema: structured_schema_names(strategy),
       structured_output_strategy: structured_strategy_name(strategy),
       provider_strategy: Keyword.get(opts, :structured_output_strategy),
-      model: model_name(request.model)
+      model: Response.model_name(request.model)
     }
     |> Map.merge(StructuredOutput.Policy.to_metadata(structured_policy))
   end
@@ -509,16 +507,4 @@ defmodule BeamWeaver.Agent.Nodes.Model do
 
   defp structured_strategy_name(%ToolStrategy{}), do: :tool
   defp structured_strategy_name(%ProviderStrategy{}), do: :provider
-
-  defp model_name(%{model: model}) when is_binary(model), do: model
-
-  defp model_name(%{__struct__: module} = model) do
-    cond do
-      function_exported?(module, :model_name, 1) -> module.model_name(model)
-      function_exported?(module, :model_id, 1) -> module.model_id(model)
-      true -> inspect(module)
-    end
-  end
-
-  defp model_name(model), do: inspect(model)
 end

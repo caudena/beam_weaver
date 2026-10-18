@@ -45,8 +45,7 @@ defmodule BeamWeaver.ZAI.Streaming do
   defp stream_metadata(events, message, opts) do
     reasoning_content = ChatCompletionsWire.content_reasoning(message.content)
     header_metadata = Keyword.get(opts, :header_metadata, %{})
-    decoded_headers = header_metadata[:headers] || %{}
-    x_log_id = decoded_headers[:x_log_id]
+    x_log_id = header_metadata[:headers][:x_log_id]
 
     events
     |> Enum.reduce(%{model_provider: "zai", provider: :zai, api: :chat_completions}, fn

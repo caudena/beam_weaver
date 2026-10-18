@@ -437,7 +437,6 @@ defmodule BeamWeaver.Core.ChatModel do
       model
       |> model_param_map()
       |> approved_param_map(param_keys)
-      |> reject_nil_or_empty()
       |> maybe_merge_extra_body(model, param_keys)
 
     call_params =
@@ -712,19 +711,18 @@ defmodule BeamWeaver.Core.ChatModel do
 
   defp normalize_usage_metadata(_usage), do: %{}
 
-  defp metadata_first(nil, _keys), do: nil
-
   defp metadata_first(metadata, keys) when is_map(metadata) do
     Enum.find_value(keys, &Map.get(metadata, &1))
   end
 
+  # `nil`, or a value such as a string where a provider's metadata map would
+  # be, has none of the keys.
+  defp metadata_first(_metadata, _keys), do: nil
+
   defp normalize_string(nil), do: nil
   defp normalize_string(value), do: to_string(value)
 
-  defp maybe_put(map, _key, nil), do: map
-  defp maybe_put(map, _key, value) when value == %{}, do: map
-  defp maybe_put(map, _key, value) when value == [], do: map
-  defp maybe_put(map, key, value), do: Map.put(map, key, value)
+  defp maybe_put(map, key, value), do: if(nil_or_empty?(value), do: map, else: Map.put(map, key, value))
 
   defp reject_nil_or_empty(map) do
     Map.reject(map, fn {_key, value} -> nil_or_empty?(value) end)

@@ -15,7 +15,6 @@ defmodule BeamWeaver.Agent.Middleware.AsyncSubagents do
 
   use BeamWeaver.Agent.Middleware
 
-  alias BeamWeaver.Agent.ModelRequest
   alias BeamWeaver.Agent.Protocol.Client
   alias BeamWeaver.Agent.Subagent.AsyncSpec
   alias BeamWeaver.Agent.Subagent.AsyncTask
@@ -28,8 +27,8 @@ defmodule BeamWeaver.Agent.Middleware.AsyncSubagents do
   alias BeamWeaver.MapShape
   alias BeamWeaver.Tracing
 
-  import BeamWeaver.Agent.Middleware.Helpers, only: [append_prompt: 2]
-  import BeamWeaver.Agent.Subagent.Helpers, only: [available_agents: 1, value: 2, value: 3]
+  import BeamWeaver.Agent.Subagent.Helpers,
+    only: [agent_names: 1, available_agents: 1, value: 2, value: 3, with_agents_prompt: 3]
 
   # Listing skips these. `interrupted` isn't one: a person can resume the run
   # on the server, and it runs on.
@@ -110,19 +109,8 @@ defmodule BeamWeaver.Agent.Middleware.AsyncSubagents do
   end
 
   @impl true
-  def wrap_model_call(%__MODULE__{system_prompt: prompt}, %ModelRequest{} = request, handler)
-      when prompt in [nil, ""],
-      do: handler.(request)
-
-  def wrap_model_call(%__MODULE__{} = middleware, %ModelRequest{} = request, handler) do
-    prompt =
-      middleware.system_prompt <>
-        "\n\nAvailable async subagent types:\n\n" <> available_agents(middleware.subagents)
-
-    request
-    |> ModelRequest.override(system_message: append_prompt(request.system_message, prompt))
-    |> handler.()
-  end
+  def wrap_model_call(%__MODULE__{} = middleware, request, handler),
+    do: handler.(with_agents_prompt(request, middleware, "Available async subagent types"))
 
   # A spec written as a struct gets its client from its `url:` as one built
   # with `AsyncSpec.new/1` does.
@@ -130,13 +118,7 @@ defmodule BeamWeaver.Agent.Middleware.AsyncSubagents do
   defp normalize(opts), do: AsyncSpec.new(opts)
 
   defp validate_unique_names!(subagents) do
-    names = Enum.map(subagents, & &1.name)
-
-    duplicates =
-      names
-      |> Enum.frequencies()
-      |> Enum.filter(fn {_name, count} -> count > 1 end)
-      |> Enum.map(fn {name, _count} -> name end)
+    duplicates = for {name, count} <- Enum.frequencies_by(subagents, & &1.name), count > 1, do: name
 
     if duplicates != [] do
       raise ArgumentError, "duplicate async subagent names: #{Enum.join(duplicates, ", ")}"
@@ -170,7 +152,7 @@ defmodule BeamWeaver.Agent.Middleware.AsyncSubagents do
     subagent = Enum.find(subagents, &(&1.name == name))
 
     if is_nil(subagent) do
-      "Unknown async subagent type `#{name}`. Available types: #{available_agent_names(subagents)}"
+      "Unknown async subagent type `#{name}`. Available types: #{agent_names(subagents)}"
     else
       description = value(input, :description, "")
 
@@ -223,7 +205,6 @@ defmodule BeamWeaver.Agent.Middleware.AsyncSubagents do
                Client.check_task(subagent.client, subagent, task_id, client_opts(input, subagent)) do
           maybe_task_command(input, "check_async_task", task_id, refresh(task, remote, timestamp()))
         else
-          :no_remote_client -> encode_task(task)
           {:error, :unknown_subagent} -> encode_task(task)
           {:error, reason} -> "Async subagent error: #{format_error(reason)}"
         end
@@ -252,7 +233,6 @@ defmodule BeamWeaver.Agent.Middleware.AsyncSubagents do
             updated |> Map.put(:status, "running") |> merge_remote(remote)
           )
         else
-          :no_remote_client -> task_command(input, "update_async_task", task_id, updated)
           {:error, :unknown_subagent} -> "Unknown async subagent: #{value(task, :subagent_name)}"
           {:error, reason} -> "Async subagent error: #{format_error(reason)}"
         end
@@ -275,7 +255,6 @@ defmodule BeamWeaver.Agent.Middleware.AsyncSubagents do
           cancelled = checked |> Map.put(:status, remote_status(remote, "cancelled")) |> merge_remote(remote)
           task_command(input, "cancel_async_task", task_id, cancelled)
         else
-          :no_remote_client -> task_command(input, "cancel_async_task", task_id, Map.put(checked, :status, "cancelled"))
           {:error, :unknown_subagent} -> "Unknown async subagent: #{value(task, :subagent_name)}"
           {:error, reason} -> "Async subagent error: #{format_error(reason)}"
         end
@@ -408,7 +387,6 @@ defmodule BeamWeaver.Agent.Middleware.AsyncSubagents do
     name = value(task, :subagent_name)
 
     case Enum.find(subagents, &(&1.name == name)) do
-      %AsyncSpec{client: nil} -> :no_remote_client
       %AsyncSpec{} = subagent -> {:ok, subagent}
       nil -> {:error, :unknown_subagent}
     end
@@ -445,13 +423,8 @@ defmodule BeamWeaver.Agent.Middleware.AsyncSubagents do
     end
   end
 
-  defp filter_tasks(tasks, status_filter) when status_filter in [nil, "", "all"],
-    do: Map.values(tasks)
-
   defp filter_tasks(tasks, status_filter) do
-    tasks
-    |> Map.values()
-    |> Enum.filter(&(value(&1, :status) == status_filter))
+    for task <- Map.values(tasks), status_filter in [nil, "", "all"] or value(task, :status) == status_filter, do: task
   end
 
   defp remote_id(remote),
@@ -501,9 +474,6 @@ defmodule BeamWeaver.Agent.Middleware.AsyncSubagents do
     #{available_agents(subagents)}
     """
   end
-
-  defp available_agent_names(subagents),
-    do: Enum.map_join(subagents, ", ", &"`#{&1.name}`")
 
   defp timestamp,
     do: DateTime.utc_now() |> DateTime.truncate(:second) |> DateTime.to_iso8601()

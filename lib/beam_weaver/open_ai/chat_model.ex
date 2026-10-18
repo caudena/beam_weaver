@@ -158,16 +158,8 @@ defmodule BeamWeaver.OpenAI.ChatModel do
   end
 
   defp client(%__MODULE__{} = model) do
-    %Client{
-      endpoint: model.endpoint,
-      api_key: model.api_key,
-      organization: model.organization,
-      project: model.project,
-      default_headers: model.default_headers,
-      transport: model.transport,
-      transport_opts: model.transport_opts,
-      timeout: model.timeout
-    }
+    fields = ~w(endpoint api_key organization project default_headers transport transport_opts timeout)a
+    struct(Client, Map.take(model, fields))
   end
 
   @impl true

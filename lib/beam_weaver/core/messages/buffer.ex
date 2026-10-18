@@ -8,15 +8,18 @@ defmodule BeamWeaver.Core.Messages.Buffer do
   def render(messages, opts) do
     separator = Keyword.get(opts, :message_separator, "\n")
 
-    case Keyword.get(opts, :format, :prefix) |> normalize_format() do
-      {:ok, :prefix} ->
+    case Keyword.get(opts, :format, :prefix) do
+      format when format in [:prefix, "prefix"] ->
         {:ok, Enum.map_join(messages, separator, &buffer_line(&1, opts))}
 
-      {:ok, :xml} ->
+      format when format in [:xml, "xml"] ->
         {:ok, Enum.map_join(messages, separator, &xml_message(&1, opts))}
 
-      {:error, %Error{} = error} ->
-        {:error, error}
+      format ->
+        {:error,
+         Error.new(:invalid_buffer_format, "supported buffer formats are :prefix and :xml", %{
+           format: format
+         })}
     end
   end
 
@@ -27,16 +30,6 @@ defmodule BeamWeaver.Core.Messages.Buffer do
   defp buffer_prefix(:assistant, opts), do: Keyword.get(opts, :ai_prefix, "AI")
   defp buffer_prefix(:system, opts), do: Keyword.get(opts, :system_prefix, "System")
   defp buffer_prefix(:tool, opts), do: Keyword.get(opts, :tool_prefix, "Tool")
-
-  defp normalize_format(format) when format in [:prefix, "prefix"], do: {:ok, :prefix}
-  defp normalize_format(format) when format in [:xml, "xml"], do: {:ok, :xml}
-
-  defp normalize_format(format) do
-    {:error,
-     Error.new(:invalid_buffer_format, "supported buffer formats are :prefix and :xml", %{
-       format: format
-     })}
-  end
 
   defp assistant_tool_info(%Message{role: :assistant, tool_calls: calls}) when calls != [],
     do: inspect(calls)
@@ -62,23 +55,15 @@ defmodule BeamWeaver.Core.Messages.Buffer do
     content_parts = xml_content_parts(message.content) ++ xml_server_tool_parts(message)
 
     if message.role == :assistant and message.tool_calls != [] do
-      parts = ["<message type=#{type}>"]
-
-      parts =
-        if content_parts == [],
-          do: parts,
-          else: parts ++ ["  <content>#{Enum.join(content_parts, " ")}</content>"]
+      content = if content_parts == [], do: [], else: ["  <content>#{Enum.join(content_parts, " ")}</content>"]
 
       tool_parts =
-        Enum.map(message.tool_calls, fn call ->
-          id = call |> Map.get(:id) |> Kernel.||("") |> to_string() |> xml_attr()
-          name = call |> Map.get(:name, "") |> Kernel.||("") |> to_string() |> xml_attr()
-          args = call |> Map.get(:args, %{}) |> json_string() |> xml_escape()
-          "  <tool_call id=#{id} name=#{name}>#{args}</tool_call>"
-        end)
+        for call <- message.tool_calls do
+          args = call |> Map.get(:args, %{}) |> BeamWeaver.JSON.encode_or_inspect() |> xml_escape()
+          "  <tool_call id=#{xml_attr(call, :id)} name=#{xml_attr(call, :name)}>#{args}</tool_call>"
+        end
 
-      (parts ++ tool_parts ++ ["</message>"])
-      |> Enum.join("\n")
+      Enum.join(["<message type=#{type}>" | content] ++ tool_parts ++ ["</message>"], "\n")
     else
       "<message type=#{type}>#{Enum.join(content_parts, " ")}</message>"
     end
@@ -110,41 +95,32 @@ defmodule BeamWeaver.Core.Messages.Buffer do
     do: text |> truncate_xml_text() |> maybe_xml_escape()
 
   defp xml_content_block(block) do
-    cond do
-      base64_block?(block) ->
-        nil
-
-      block_type(block) == :text ->
+    case if(base64_block?(block), do: :data, else: Map.get(block, :type)) do
+      :text ->
         block |> Map.get(:text) |> empty_to_nil() |> maybe_xml_escape()
 
-      block_type(block) == :reasoning ->
-        block
-        |> Map.get(:reasoning)
-        |> empty_to_nil()
-        |> then(fn
-          nil -> nil
-          value -> "<reasoning>#{xml_escape(to_string(value))}</reasoning>"
-        end)
+      :reasoning ->
+        case Map.get(block, :reasoning) do
+          value when value in [nil, ""] -> nil
+          value -> "<reasoning>#{xml_escape(value)}</reasoning>"
+        end
 
-      block_type(block) in [:image, :image_url] ->
+      type when type in [:image, :image_url] ->
         xml_media_block("image", block)
 
-      block_type(block) == :audio ->
-        xml_media_block("audio", block)
+      type when type in [:audio, :video] ->
+        xml_media_block(Atom.to_string(type), block)
 
-      block_type(block) == :video ->
-        xml_media_block("video", block)
-
-      block_type(block) == :"text-plain" ->
+      :"text-plain" ->
         block |> Map.get(:text) |> truncate_xml_text() |> maybe_xml_escape()
 
-      block_type(block) == :server_tool_call ->
+      :server_tool_call ->
         xml_server_tool_call(block)
 
-      block_type(block) == :server_tool_result ->
+      :server_tool_result ->
         xml_server_tool_result(block)
 
-      true ->
+      _other ->
         nil
     end
   end
@@ -156,35 +132,21 @@ defmodule BeamWeaver.Core.Messages.Buffer do
   end
 
   defp xml_server_tool_call(call) when is_map(call) do
-    id = call |> Map.get(:id) |> Kernel.||("") |> to_string() |> xml_attr()
-    name = call |> Map.get(:name) |> Kernel.||("") |> to_string() |> xml_attr()
-
-    args =
-      call
-      |> Map.get(:args)
-      |> Kernel.||(%{})
-      |> json_string()
-      |> truncate_xml_text()
-      |> xml_escape()
-
-    "<server_tool_call id=#{id} name=#{name}>#{args}</server_tool_call>"
+    args = (Map.get(call, :args) || %{}) |> BeamWeaver.JSON.encode_or_inspect() |> truncate_xml_text() |> xml_escape()
+    "<server_tool_call id=#{xml_attr(call, :id)} name=#{xml_attr(call, :name)}>#{args}</server_tool_call>"
   end
 
   defp xml_server_tool_call(_call), do: nil
 
   defp xml_server_tool_result(result) when is_map(result) do
-    tool_call_id =
-      result |> Map.get(:tool_call_id) |> Kernel.||("") |> to_string() |> xml_attr()
-
-    status = result |> Map.get(:status) |> Kernel.||("") |> to_string() |> xml_attr()
-
     output =
       case Map.get(result, :output) do
         nil -> ""
-        value -> value |> json_string() |> truncate_xml_text() |> xml_escape()
+        value -> value |> BeamWeaver.JSON.encode_or_inspect() |> truncate_xml_text() |> xml_escape()
       end
 
-    "<server_tool_result tool_call_id=#{tool_call_id} status=#{status}>#{output}</server_tool_result>"
+    attrs = "tool_call_id=#{xml_attr(result, :tool_call_id)} status=#{xml_attr(result, :status)}"
+    "<server_tool_result #{attrs}>#{output}</server_tool_result>"
   end
 
   defp xml_server_tool_result(_result), do: nil
@@ -218,20 +180,13 @@ defmodule BeamWeaver.Core.Messages.Buffer do
   defp data_url?(value), do: match?("data:" <> _rest, value)
 
   defp maybe_xml_escape(nil), do: nil
-  defp maybe_xml_escape(value), do: xml_escape(to_string(value))
+  defp maybe_xml_escape(value), do: xml_escape(value)
 
   defp truncate_xml_text(nil), do: nil
 
   defp truncate_xml_text(value) do
     value = to_string(value)
     if String.length(value) > 500, do: String.slice(value, 0, 500) <> "...", else: value
-  end
-
-  defp json_string(value) do
-    case BeamWeaver.JSON.encode(value) do
-      {:ok, json} -> json
-      {:error, _error} -> inspect(value)
-    end
   end
 
   defp xml_escape(value) do
@@ -251,5 +206,5 @@ defmodule BeamWeaver.Core.Messages.Buffer do
     ~s("#{escaped}")
   end
 
-  defp block_type(block), do: Map.get(block, :type)
+  defp xml_attr(map, key), do: xml_attr(Map.get(map, key) || "")
 end

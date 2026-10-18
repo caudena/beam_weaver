@@ -67,14 +67,8 @@ defmodule BeamWeaver.VectorStore do
     ids = Keyword.get(opts, :ids, [])
 
     documents =
-      texts
-      |> Enum.with_index()
-      |> Enum.map(fn {text, index} ->
-        Document.new!(text,
-          id: Enum.at(ids, index),
-          metadata: metadata_for_index(metadata, index)
-        )
-      end)
+      for {text, index} <- Enum.with_index(texts),
+          do: Document.new!(text, id: Enum.at(ids, index), metadata: metadata_for_index(metadata, index))
 
     add_documents(store, documents, opts)
   end
@@ -189,11 +183,7 @@ defmodule BeamWeaver.VectorStore do
     exception -> {:error, Error.new(:invalid_documents, Exception.message(exception))}
   end
 
-  defp metadata_for_index(nil, _index), do: %{}
-
-  defp metadata_for_index(metadata, index) when is_list(metadata),
-    do: Enum.at(metadata, index, %{})
-
+  defp metadata_for_index(metadata, index) when is_list(metadata), do: Enum.at(metadata, index, %{})
   defp metadata_for_index(metadata, _index) when is_map(metadata), do: metadata
   defp metadata_for_index(_metadata, _index), do: %{}
 

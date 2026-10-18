@@ -52,9 +52,8 @@ defmodule BeamWeaver.OpenAI.ToolCalling do
   """
   @spec web_search(keyword()) :: map()
   def web_search(opts \\ []) do
-    type = Keyword.get(opts, :type, "web_search_preview")
-
-    build(type, Keyword.delete(opts, :type))
+    {type, opts} = Keyword.pop(opts, :type, "web_search_preview")
+    build(type, opts)
   end
 
   @doc """
@@ -144,19 +143,9 @@ defmodule BeamWeaver.OpenAI.ToolCalling do
         :error -> List.duplicate("You have correctly called this tool.", length(calls))
       end
 
-    messages = [
-      Message.user(input),
-      Message.assistant("", tool_calls: calls)
-    ]
-
     messages =
-      messages ++
-        Enum.map(Enum.zip(outputs, calls), fn {output, call} ->
-          Message.tool(output,
-            tool_call_id: call.id,
-            name: call.name
-          )
-        end)
+      [Message.user(input), Message.assistant("", tool_calls: calls)] ++
+        for {output, call} <- Enum.zip(outputs, calls), do: Message.tool(output, tool_call_id: call.id, name: call.name)
 
     case Keyword.get(opts, :ai_response) do
       response when is_binary(response) and response != "" ->
@@ -205,13 +194,7 @@ defmodule BeamWeaver.OpenAI.ToolCalling do
     do: {to_string(name), args}
 
   defp example_call_name_and_args(%{__struct__: module} = call) do
-    args =
-      call
-      |> Map.from_struct()
-      |> Enum.reject(fn {_key, value} -> is_nil(value) end)
-      |> Map.new()
-
-    {module |> Module.split() |> List.last(), args}
+    {module |> Module.split() |> List.last(), call |> Map.from_struct() |> BeamWeaver.MapShape.reject_nil_values()}
   end
 
   defp example_call_name_and_args(call) when is_map(call) do

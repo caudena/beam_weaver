@@ -58,7 +58,7 @@ defmodule BeamWeaver.Provider.OpenAICompatibleStreaming do
       |> Enum.flat_map(&done_event(&1, config))
       |> Enum.map(&Stream.envelope(&1, metadata: %{provider: config.provider}))
 
-    chunk_events ++ done_events
+    chunk_events ++ merge_done(done_events)
   end
 
   def typed_events(_body, _config), do: []
@@ -66,7 +66,8 @@ defmodule BeamWeaver.Provider.OpenAICompatibleStreaming do
   # A live stream is parsed batch by batch and ends with the complete reply.
   # Until the stream closes, the parser state keeps every event and holds the
   # `Done` events back, so that they follow the reply: `finish_typed_events/3`
-  # emits both.
+  # emits the reply, then one `Done` made of the held ones (see
+  # `merge_done/1`).
   @type stream_state :: %{events: [map()], done: [Stream.Envelope.t()]}
 
   @spec typed_events([map()], stream_state() | nil, config()) :: {[Stream.Envelope.t()], stream_state()}
@@ -91,6 +92,7 @@ defmodule BeamWeaver.Provider.OpenAICompatibleStreaming do
         ) :: {:ok, [Stream.Envelope.t()]} | {:error, term()}
   def finish_typed_events(state, provider, reply) do
     %{events: seen, done: done} = state || %{events: [], done: []}
+    done = merge_done(done)
 
     case reply.(Enum.reverse(seen)) do
       {:ok, message} ->
@@ -102,6 +104,28 @@ defmodule BeamWeaver.Provider.OpenAICompatibleStreaming do
       {:error, _error} = error ->
         error
     end
+  end
+
+  # A stream ends with one `Done`, though a provider can send its parts in
+  # separate events, such as the finish reason and, in a later chunk, the
+  # usage. Each field keeps the last value the held events set, and their
+  # metadata merge.
+  @spec merge_done([Stream.Envelope.t()]) :: [Stream.Envelope.t()]
+  def merge_done([]), do: []
+
+  def merge_done(done) do
+    event =
+      done
+      |> Enum.map(& &1.event)
+      |> Enum.reduce(fn event, merged ->
+        Map.merge(merged, event, fn
+          :metadata, earlier, later -> Map.merge(earlier, later)
+          _key, earlier, nil -> earlier
+          _key, _earlier, later -> later
+        end)
+      end)
+
+    [%{List.last(done) | event: event}]
   end
 
   @spec stream_body_to_message(binary() | term(), config(), keyword()) ::
@@ -349,15 +373,11 @@ defmodule BeamWeaver.Provider.OpenAICompatibleStreaming do
         []
       end
 
-    tool_call_events = Enum.map(chunk.tool_call_chunks || [], &%Events.ToolCallChunk{chunk: &1})
+    tool_call_events = Enum.map(chunk.tool_call_chunks, &%Events.ToolCallChunk{chunk: &1})
     metadata = event_metadata(config, reasoning_chunk?(chunk))
     events = token_events ++ tool_call_events ++ [%Events.MessageChunk{chunk: chunk}]
 
     Enum.map(events, &Stream.envelope(&1, metadata: metadata))
-  end
-
-  defp chunk_to_events(chunk, config) do
-    [Stream.envelope(%Events.MessageChunk{chunk: chunk}, metadata: event_metadata(config, false))]
   end
 
   defp event_metadata(config, true), do: %{provider: config.provider, block_type: :reasoning}

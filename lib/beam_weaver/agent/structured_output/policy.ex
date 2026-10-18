@@ -88,10 +88,10 @@ defmodule BeamWeaver.Agent.StructuredOutput.Policy do
       tools_active?(tools) and not structured_output_with_tools?(model) ->
         {:fallback, :tools_not_supported}
 
-      over_limit?(schema_bytes(spec), schema_byte_limit(model)) ->
+      over_limit?(schema_bytes(spec), limit(model, :structured_output_max_schema_bytes)) ->
         {:fallback, :schema_too_large}
 
-      over_limit?(schema_properties(spec), schema_property_limit(model)) ->
+      over_limit?(schema_properties(spec), limit(model, :structured_output_max_schema_properties)) ->
         {:fallback, :schema_too_many_properties}
 
       true ->
@@ -110,36 +110,22 @@ defmodule BeamWeaver.Agent.StructuredOutput.Policy do
   end
 
   defp provider_structured_output?(model) do
-    profile = profile(model)
-
     model_value(model, :supports_structured_output) == true or
-      profile_value(profile, :structured_output) == true
+      profile_value(profile(model), :structured_output) == true
   end
 
   @spec structured_output_with_tools?(term()) :: boolean()
   def structured_output_with_tools?(model) do
-    profile = profile(model)
-
     model_value(model, :supports_structured_output_with_tools) == true or
-      profile_value(profile, :structured_output_with_tools) == true
+      profile_value(profile(model), :structured_output_with_tools) == true
   end
 
-  defp schema_byte_limit(model) do
-    model
-    |> profile()
-    |> profile_value(:structured_output_max_schema_bytes)
-    |> finite_limit()
+  defp limit(model, key) do
+    case model |> profile() |> profile_value(key) do
+      value when is_integer(value) and value >= 0 -> value
+      _none -> :infinity
+    end
   end
-
-  defp schema_property_limit(model) do
-    model
-    |> profile()
-    |> profile_value(:structured_output_max_schema_properties)
-    |> finite_limit()
-  end
-
-  defp finite_limit(value) when is_integer(value) and value >= 0, do: value
-  defp finite_limit(_value), do: :infinity
 
   defp over_limit?(_value, :infinity), do: false
   defp over_limit?(value, limit), do: value > limit

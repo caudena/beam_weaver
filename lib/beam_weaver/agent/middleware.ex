@@ -26,6 +26,7 @@ defmodule BeamWeaver.Agent.Middleware do
 
   alias BeamWeaver.Agent.Middleware.Hooks
   alias BeamWeaver.Core.Error
+  alias BeamWeaver.Result
 
   @type t :: module() | struct()
   @type hook :: :before_agent | :before_model | :after_model | :after_agent | :wrap_model_call | :wrap_tool_call
@@ -119,16 +120,7 @@ defmodule BeamWeaver.Agent.Middleware do
 
   @doc "Normalizes a list of middleware entries."
   @spec normalize_all([term()]) :: {:ok, [t()]} | {:error, Error.t()}
-  def normalize_all(entries) do
-    entries
-    |> List.wrap()
-    |> Enum.reduce_while({:ok, []}, fn entry, {:ok, acc} ->
-      case normalize(entry) do
-        {:ok, middleware} -> {:cont, {:ok, acc ++ [middleware]}}
-        {:error, _error} = error -> {:halt, error}
-      end
-    end)
-  end
+  def normalize_all(entries), do: entries |> List.wrap() |> Result.traverse(&normalize/1)
 
   @doc "Returns the stable middleware name."
   @spec name(t()) :: String.t()

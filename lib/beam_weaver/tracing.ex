@@ -43,8 +43,8 @@ defmodule BeamWeaver.Tracing do
   @spec start_run(String.t() | atom(), keyword()) :: {:ok, Run.t()}
   def start_run(name, opts \\ []) do
     parent_context = Context.current()
-    parent_id = Keyword.get(opts, :parent_id) || context_run_id(parent_context)
-    trace_id = Keyword.get(opts, :trace_id) || context_trace_id(parent_context)
+    parent_id = Keyword.get(opts, :parent_id) || (parent_context && parent_context.run_id)
+    trace_id = Keyword.get(opts, :trace_id) || (parent_context && parent_context.trace_id)
     run_metadata = merge_context_metadata(parent_context, Keyword.get(opts, :metadata, %{}))
 
     context_metadata =
@@ -124,8 +124,8 @@ defmodule BeamWeaver.Tracing do
         %{
           event: normalize_event(event),
           payload: payload,
-          run_id: context_run_id(context),
-          trace_id: context_trace_id(context),
+          run_id: context && context.run_id,
+          trace_id: context && context.trace_id,
           tags: normalize_tags(Keyword.get(opts, :tags, [])),
           metadata: Keyword.get(opts, :metadata, %{})
         },
@@ -222,7 +222,7 @@ defmodule BeamWeaver.Tracing do
       updater.(%{
         run
         | status: status,
-          ended_at: timestamp(),
+          ended_at: DateTime.utc_now(),
           outputs: Redactor.redact(Keyword.get(opts, :outputs, run.outputs)),
           metadata: merge_redacted(run.metadata, Keyword.get(opts, :metadata, %{})),
           usage: merge_redacted(run.usage, Keyword.get(opts, :usage, %{}))
@@ -243,7 +243,7 @@ defmodule BeamWeaver.Tracing do
   # The exporter of a call's `:exporter` option, or the configured one, with
   # its options; `nil` when nothing exports.
   defp exporter(opts) do
-    case exporter_option(opts) do
+    case Keyword.get_lazy(opts, :exporter, &configured_exporter/0) do
       nil -> nil
       exporter -> {exporter, Config.option(opts, :exporter_opts, [:tracing, :exporter_opts], [])}
     end
@@ -270,8 +270,6 @@ defmodule BeamWeaver.Tracing do
     :ok
   end
 
-  defp exporter_option(opts), do: Keyword.get_lazy(opts, :exporter, &configured_exporter/0)
-
   defp default_exporter do
     if not is_nil(Config.get([:weave_scope, :api_key])) and not is_nil(Config.get([:weave_scope, :endpoint])),
       do: @weave_scope_queue
@@ -291,12 +289,6 @@ defmodule BeamWeaver.Tracing do
 
   defp run_id(%Run{id: id}), do: id
   defp run_id(id), do: id
-
-  defp context_run_id(%Context{run_id: run_id}), do: run_id
-  defp context_run_id(nil), do: nil
-
-  defp context_trace_id(%Context{trace_id: trace_id}), do: trace_id
-  defp context_trace_id(nil), do: nil
 
   defp merge_context_tags(%Context{tags: tags}, child_tags), do: tags ++ List.wrap(child_tags || [])
 
@@ -346,6 +338,4 @@ defmodule BeamWeaver.Tracing do
   defp merge_redacted(map, nil), do: map
 
   defp merge_redacted(map, new_values), do: Map.merge(map || %{}, Redactor.redact(new_values))
-
-  defp timestamp, do: DateTime.utc_now()
 end

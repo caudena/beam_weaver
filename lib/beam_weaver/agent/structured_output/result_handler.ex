@@ -42,7 +42,7 @@ defmodule BeamWeaver.Agent.StructuredOutput.ResultHandler do
         {:ok, %ModelResponse{messages: [message]}}
 
       [_one, _two | _rest] ->
-        names = structured_calls |> Enum.map(&call_name/1) |> Enum.reject(&is_nil/1)
+        names = Enum.map(structured_calls, &call_name/1)
 
         error =
           Error.new(

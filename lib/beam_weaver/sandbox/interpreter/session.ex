@@ -74,11 +74,7 @@ defmodule BeamWeaver.Sandbox.Interpreter.Session do
 
   @impl true
   def handle_call({:eval, code, opts}, _from, state) do
-    timeout = Keyword.get(opts, :timeout, state.timeout)
-
-    case timed_call(state, :eval, timeout, fn ->
-           state.adapter.eval(state.adapter_state, code, opts)
-         end) do
+    case timed_call(state, :eval, opts, fn -> state.adapter.eval(state.adapter_state, code, opts) end) do
       {:ok, result} ->
         case normalize_eval(result, state.adapter_state) do
           {:ok, value, adapter_state} ->
@@ -95,9 +91,7 @@ defmodule BeamWeaver.Sandbox.Interpreter.Session do
 
   def handle_call({:snapshot, opts}, _from, state) do
     if function_exported?(state.adapter, :snapshot, 2) do
-      timeout = Keyword.get(opts, :timeout, state.timeout)
-
-      case timed_call(state, :snapshot, timeout, fn -> state.adapter.snapshot(state.adapter_state, opts) end) do
+      case timed_call(state, :snapshot, opts, fn -> state.adapter.snapshot(state.adapter_state, opts) end) do
         {:ok, result} ->
           case normalize_snapshot(result, state) do
             {:ok, %Snapshot{} = snapshot} -> {:reply, {:ok, snapshot}, state}
@@ -128,11 +122,9 @@ defmodule BeamWeaver.Sandbox.Interpreter.Session do
          state}
 
       true ->
-        timeout = Keyword.get(opts, :timeout, state.timeout)
-
-        case timed_call(state, :restore, timeout, fn -> state.adapter.restore(snapshot.data, opts) end) do
+        case timed_call(state, :restore, opts, fn -> state.adapter.restore(snapshot.data, opts) end) do
           {:ok, result} ->
-            case normalize_restore(result) do
+            case normalize_state(result) do
               {:ok, adapter_state} -> {:reply, :ok, %{state | adapter_state: adapter_state}}
               {:error, %Error{} = error} -> {:reply, {:error, error}, state}
             end
@@ -189,11 +181,7 @@ defmodule BeamWeaver.Sandbox.Interpreter.Session do
   end
 
   defp open_adapter(adapter, opts) do
-    case adapter.open(opts) do
-      {:ok, state} -> {:ok, state}
-      {:error, %Error{} = error} -> {:error, error}
-      state -> {:ok, state}
-    end
+    normalize_state(adapter.open(opts))
   rescue
     exception ->
       {:error,
@@ -203,7 +191,8 @@ defmodule BeamWeaver.Sandbox.Interpreter.Session do
        })}
   end
 
-  defp timed_call(state, operation, timeout, fun) do
+  defp timed_call(state, operation, opts, fun) do
+    timeout = Keyword.get(opts, :timeout, state.timeout)
     metadata = operation_metadata(state, operation, timeout)
     start = System.monotonic_time()
 
@@ -298,19 +287,15 @@ defmodule BeamWeaver.Sandbox.Interpreter.Session do
     end
   end
 
-  defp normalize_restore({:ok, adapter_state}), do: {:ok, adapter_state}
-  defp normalize_restore({:error, %Error{} = error}), do: {:error, error}
-  defp normalize_restore(adapter_state), do: {:ok, adapter_state}
+  # An adapter's state from `open/1` or `restore/2`, which may return it bare.
+  defp normalize_state({:ok, adapter_state}), do: {:ok, adapter_state}
+  defp normalize_state({:error, %Error{} = error}), do: {:error, error}
+  defp normalize_state(adapter_state), do: {:ok, adapter_state}
 
   defp close_adapter(%__MODULE__{adapter_state: nil} = state, _opts), do: state
 
   defp close_adapter(%__MODULE__{adapter: adapter, adapter_state: adapter_state} = state, opts) do
-    if function_exported?(adapter, :close, 2) do
-      adapter.close(adapter_state, opts)
-    else
-      :ok
-    end
-
+    if function_exported?(adapter, :close, 2), do: adapter.close(adapter_state, opts)
     %{state | adapter_state: nil}
   rescue
     _exception -> %{state | adapter_state: nil}

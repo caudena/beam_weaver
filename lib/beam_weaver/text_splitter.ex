@@ -9,6 +9,7 @@ defmodule BeamWeaver.TextSplitter do
 
   alias BeamWeaver.TextSplitter.Documents
   alias BeamWeaver.TextSplitter.Language
+  alias BeamWeaver.TextSplitter.RecursiveJSON
   alias BeamWeaver.TextSplitter.Shared
 
   @callback split_text(term(), String.t()) :: [String.t()]
@@ -31,32 +32,19 @@ defmodule BeamWeaver.TextSplitter do
   def jsx(opts \\ []), do: BeamWeaver.TextSplitter.JSX.new(opts)
   def token(opts \\ []), do: BeamWeaver.TextSplitter.Token.new(opts)
 
-  def from_language(language, opts \\ []) do
-    recursive_character_from_language(language, opts)
-  end
+  def from_language(language, opts \\ []), do: recursive_character_from_language(language, opts)
 
   def recursive_character_from_language(language, opts \\ []) do
-    language
-    |> get_separators_for_language()
-    |> then(
-      &recursive_character(
-        opts
-        |> Keyword.put(:separators, &1)
-        |> Keyword.put_new(:separator_regex?, true)
-        |> Keyword.put_new(:keep_separator, true)
-      )
-    )
-  end
-
-  def get_separators_for_language(language) do
-    Language.separators(language)
-  end
-
-  def from_tokenizer(tokenizer, opts \\ []) do
     opts
-    |> Keyword.put(:tokenizer, tokenizer)
-    |> token()
+    |> Keyword.put(:separators, get_separators_for_language(language))
+    |> Keyword.put_new(:separator_regex?, true)
+    |> Keyword.put_new(:keep_separator, true)
+    |> recursive_character()
   end
+
+  def get_separators_for_language(language), do: Language.separators(language)
+
+  def from_tokenizer(tokenizer, opts \\ []), do: token(Keyword.put(opts, :tokenizer, tokenizer))
 
   def split_text(%__MODULE__{} = splitter, text) when is_binary(text),
     do: Shared.split_text(splitter, text)
@@ -64,21 +52,14 @@ defmodule BeamWeaver.TextSplitter do
   def split_text(%module{} = splitter, text) when is_binary(text),
     do: module.split_text(splitter, text)
 
-  def split_json(%BeamWeaver.TextSplitter.RecursiveJSON{} = splitter, json_data, opts \\ []) do
-    BeamWeaver.TextSplitter.RecursiveJSON.split_json(splitter, json_data, opts)
-  end
+  def split_json(%RecursiveJSON{} = splitter, json_data, opts \\ []),
+    do: RecursiveJSON.split_json(splitter, json_data, opts)
 
-  def split_json_text(%BeamWeaver.TextSplitter.RecursiveJSON{} = splitter, json_data, opts \\ []) do
-    BeamWeaver.TextSplitter.RecursiveJSON.split_json_text(splitter, json_data, opts)
-  end
+  def split_json_text(%RecursiveJSON{} = splitter, json_data, opts \\ []),
+    do: RecursiveJSON.split_json_text(splitter, json_data, opts)
 
-  def create_json_documents(
-        %BeamWeaver.TextSplitter.RecursiveJSON{} = splitter,
-        json_values,
-        opts \\ []
-      ) do
-    BeamWeaver.TextSplitter.RecursiveJSON.create_json_documents(splitter, json_values, opts)
-  end
+  def create_json_documents(%RecursiveJSON{} = splitter, json_values, opts \\ []),
+    do: RecursiveJSON.create_json_documents(splitter, json_values, opts)
 
   @doc """
   Lazily splits one text or an enumerable of texts into text chunks.

@@ -190,73 +190,28 @@ defmodule BeamWeaver.Provider.ResponseDecoderTest do
   end
 
   test "http client shared SSE helper streams parsed events with transport opts" do
-    client =
-      HTTPClient.new(
-        endpoint: "https://example.test/stream",
-        transport: StreamTransport,
-        transport_opts: [parent: self()],
-        timeout: 123
-      )
-
-    assert {:ok, stream} =
-             HTTPClient.stream_sse(
-               client,
-               %{"stream" => true},
-               [],
-               fn events -> Enum.map(events, &get_in(&1, ["data", "text"])) end,
-               &ResponseDecoder.json(&1, provider_name: "TestProvider")
-             )
+    assert {:ok, stream} = stream_sse(StreamTransport, [], &texts/1)
 
     assert Enum.to_list(stream) == ["hel", "lo"]
     assert_received {:stream_timeout, 123}
   end
 
   test "http client shared SSE helper carries state between parser batches" do
-    client =
-      HTTPClient.new(
-        endpoint: "https://example.test/stream",
-        transport: StreamTransport,
-        transport_opts: [parent: self()],
-        timeout: 123
-      )
-
     parser = fn events, prefix ->
       text = Enum.map_join(events, &get_in(&1, ["data", "text"]))
       value = to_string(prefix || "") <> text
       {if(text == "", do: [], else: [value]), value}
     end
 
-    assert {:ok, stream} =
-             HTTPClient.stream_sse(
-               client,
-               %{"stream" => true},
-               [],
-               parser,
-               &ResponseDecoder.json(&1, provider_name: "TestProvider")
-             )
+    assert {:ok, stream} = stream_sse(StreamTransport, [], parser)
 
     assert Enum.to_list(stream) == ["hel", "hello"]
   end
 
   test "http client shared SSE helper invokes the opt-in response callback once and stays lazy" do
     parent = self()
-
-    client =
-      HTTPClient.new(
-        endpoint: "https://example.test/stream",
-        transport: StreamTransport,
-        transport_opts: [parent: parent],
-        timeout: 123
-      )
-
-    assert {:ok, stream} =
-             HTTPClient.stream_sse(
-               client,
-               %{"stream" => true},
-               [on_response: fn response -> send(parent, {:lazy_sse_response, response}) end],
-               fn events -> Enum.map(events, &get_in(&1, ["data", "text"])) end,
-               &ResponseDecoder.json(&1, provider_name: "TestProvider")
-             )
+    on_response = fn response -> send(parent, {:lazy_sse_response, response}) end
+    assert {:ok, stream} = stream_sse(StreamTransport, [on_response: on_response], &texts/1)
 
     refute_received {:lazy_sse_response, _response}
     assert Enum.to_list(stream) == ["hel", "lo"]
@@ -273,21 +228,8 @@ defmodule BeamWeaver.Provider.ResponseDecoderTest do
 
   test "http client shared SSE helper invokes the response callback for HTTP failures" do
     parent = self()
-
-    client =
-      HTTPClient.new(
-        endpoint: "https://example.test/stream",
-        transport: ErrorStreamTransport
-      )
-
-    assert {:ok, stream} =
-             HTTPClient.stream_sse(
-               client,
-               %{"stream" => true},
-               [on_response: fn response -> send(parent, {:failed_sse_response, response}) end],
-               fn _events -> [] end,
-               &ResponseDecoder.json(&1, provider_name: "TestProvider")
-             )
+    on_response = fn response -> send(parent, {:failed_sse_response, response}) end
+    assert {:ok, stream} = stream_sse(ErrorStreamTransport, [on_response: on_response], fn _events -> [] end)
 
     assert [
              %BeamWeaver.Stream.Events.Error{
@@ -343,4 +285,17 @@ defmodule BeamWeaver.Provider.ResponseDecoderTest do
     refute metadata_text =~ "response-secret"
     refute metadata_text =~ "query-secret"
   end
+
+  defp stream_sse(transport, opts, parser) do
+    [endpoint: "https://example.test/stream", transport: transport, transport_opts: [parent: self()], timeout: 123]
+    |> HTTPClient.new()
+    |> HTTPClient.stream_sse(
+      %{"stream" => true},
+      opts,
+      parser,
+      &ResponseDecoder.json(&1, provider_name: "TestProvider")
+    )
+  end
+
+  defp texts(events), do: Enum.map(events, &get_in(&1, ["data", "text"]))
 end

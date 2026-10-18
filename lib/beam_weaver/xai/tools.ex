@@ -101,8 +101,28 @@ defmodule BeamWeaver.XAI.Tools do
 
   @doc false
   @spec validate_chat_completions_tools([map()]) :: :ok | {:error, Error.t()}
-  def validate_chat_completions_tools(tools),
-    do: validate_tool_types(tools, @chat_completions_tool_types, :chat_completions)
+  def validate_chat_completions_tools(tools) when is_list(tools) do
+    unsupported =
+      tools
+      |> Enum.map(&Map.get(&1, "type"))
+      |> Enum.reject(&(is_nil(&1) or &1 in @chat_completions_tool_types))
+      |> Enum.uniq()
+
+    case unsupported do
+      [] ->
+        :ok
+
+      types ->
+        {:error,
+         Error.new(:unsupported_feature, "xAI tool type is not supported by this API", %{
+           provider: :xai,
+           api: :chat_completions,
+           feature: :tools,
+           unsupported: types,
+           supported: Enum.sort(@chat_completions_tool_types)
+         })}
+    end
+  end
 
   @doc "Builds an xAI web search server tool declaration."
   @spec web_search(keyword()) :: map()
@@ -160,27 +180,4 @@ defmodule BeamWeaver.XAI.Tools do
     do: type in @builtin_types
 
   defp builtin_tool?(_tool), do: false
-
-  defp validate_tool_types(tools, allowed, api) when is_list(tools) do
-    unsupported =
-      tools
-      |> Enum.map(&Map.get(&1, "type"))
-      |> Enum.reject(&(is_nil(&1) or &1 in allowed))
-      |> Enum.uniq()
-
-    case unsupported do
-      [] ->
-        :ok
-
-      types ->
-        {:error,
-         Error.new(:unsupported_feature, "xAI tool type is not supported by this API", %{
-           provider: :xai,
-           api: api,
-           feature: :tools,
-           unsupported: types,
-           supported: Enum.sort(allowed)
-         })}
-    end
-  end
 end

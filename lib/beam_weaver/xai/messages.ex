@@ -47,20 +47,20 @@ defmodule BeamWeaver.XAI.Messages do
   end
 
   defp preserve_open_empty_object_maps(%{} = schema) do
-    schema
-    |> maybe_open_empty_object_map()
-    |> update_schema_child("properties", fn properties ->
-      Map.new(properties, fn {key, value} -> {key, preserve_open_empty_object_maps(value)} end)
-    end)
-    |> update_schema_child("items", &preserve_open_empty_object_maps/1)
-    |> update_schema_child("anyOf", fn schemas -> Enum.map(schemas, &preserve_open_empty_object_maps/1) end)
-    |> update_schema_child("oneOf", fn schemas -> Enum.map(schemas, &preserve_open_empty_object_maps/1) end)
-    |> update_schema_child("allOf", fn schemas -> Enum.map(schemas, &preserve_open_empty_object_maps/1) end)
-    |> update_schema_child("$defs", fn defs ->
-      Map.new(defs, fn {key, value} -> {key, preserve_open_empty_object_maps(value)} end)
-    end)
-    |> update_schema_child("definitions", fn defs ->
-      Map.new(defs, fn {key, value} -> {key, preserve_open_empty_object_maps(value)} end)
+    schema = maybe_open_empty_object_map(schema)
+
+    Map.new(schema, fn
+      {key, schemas} when key in ["properties", "$defs", "definitions"] ->
+        {key, Map.new(schemas, fn {name, value} -> {name, preserve_open_empty_object_maps(value)} end)}
+
+      {key, schemas} when key in ["anyOf", "oneOf", "allOf"] ->
+        {key, Enum.map(schemas, &preserve_open_empty_object_maps/1)}
+
+      {"items", items} ->
+        {"items", preserve_open_empty_object_maps(items)}
+
+      entry ->
+        entry
     end)
   end
 
@@ -80,13 +80,6 @@ defmodule BeamWeaver.XAI.Messages do
   end
 
   defp maybe_open_empty_object_map(schema), do: schema
-
-  defp update_schema_child(schema, key, fun) do
-    case Map.fetch(schema, key) do
-      {:ok, value} -> Map.put(schema, key, fun.(value))
-      :error -> schema
-    end
-  end
 
   @spec responses_to_message(map()) :: {:ok, Message.t()} | {:error, Error.t()}
   def responses_to_message(response) when is_map(response) do
@@ -154,15 +147,15 @@ defmodule BeamWeaver.XAI.Messages do
     |> Map.put(:api, api)
   end
 
-  defp reasoning_content(response) do
-    response
-    |> first_choice_message()
-    |> case do
+  defp reasoning_content(%{"choices" => [%{"message" => message} | _rest]}) do
+    case message do
       %{"reasoning_content" => reasoning} when is_binary(reasoning) -> reasoning
       %{"reasoning" => reasoning} when is_binary(reasoning) -> reasoning
       _message -> nil
     end
   end
+
+  defp reasoning_content(_response), do: nil
 
   defp citations(response) do
     cond do
@@ -189,10 +182,4 @@ defmodule BeamWeaver.XAI.Messages do
       _value -> 0
     end
   end
-
-  defp first_choice_message(%{"choices" => [%{"message" => message} | _rest]})
-       when is_map(message),
-       do: message
-
-  defp first_choice_message(_response), do: nil
 end

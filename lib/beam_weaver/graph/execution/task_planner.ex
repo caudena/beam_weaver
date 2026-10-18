@@ -29,7 +29,7 @@ defmodule BeamWeaver.Graph.Execution.TaskPlanner do
         TaskRequest.kind(ready_entry)
       )
 
-    with {:ok, spec} <- fetch_node(compiled.graph, node_name),
+    with {:ok, spec} <- Map.fetch(compiled.graph.nodes, node_name),
          {:ok, timeout} <- task_timeout(ready_entry, spec),
          {:ok, node_state} <- ChannelMerge.ready_state(ready_entry, run.state, compiled.graph) do
       {:ok,
@@ -50,17 +50,8 @@ defmodule BeamWeaver.Graph.Execution.TaskPlanner do
          started_at: System.monotonic_time(:millisecond)
        }}
     else
+      :error -> {:error, Error.new(:invalid_graph, "graph references a missing node", %{node: node_name}), prepared}
       {:error, %Error{} = error} -> {:error, error, prepared}
-    end
-  end
-
-  defp fetch_node(graph, node_name) do
-    case Map.fetch(graph.nodes, node_name) do
-      {:ok, spec} ->
-        {:ok, spec}
-
-      :error ->
-        {:error, Error.new(:invalid_graph, "graph references a missing node", %{node: node_name})}
     end
   end
 

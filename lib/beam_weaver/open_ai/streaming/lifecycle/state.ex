@@ -23,10 +23,7 @@ defmodule BeamWeaver.OpenAI.Streaming.Lifecycle.State do
 
   def ensure_block(state, key, content) do
     case Map.get(state.blocks, key) do
-      %{finished?: true} ->
-        state
-
-      %{index: _index} ->
+      %{} ->
         state
 
       nil ->
@@ -85,14 +82,9 @@ defmodule BeamWeaver.OpenAI.Streaming.Lifecycle.State do
   end
 
   def close_message_parts(state, output_index) do
-    state.blocks
-    |> Enum.filter(fn
-      {{:text, ^output_index, _content_index}, %{finished?: false}} -> true
-      _block -> false
-    end)
-    |> Enum.reduce(state, fn {key, block}, acc ->
-      finish_block(acc, key, block.content)
-    end)
+    for {{:text, ^output_index, _content_index} = key, %{finished?: false} = block} <- state.blocks, reduce: state do
+      acc -> finish_block(acc, key, block.content)
+    end
   end
 
   def remember_item_index(state, id, index) when is_binary(id) and is_integer(index) do

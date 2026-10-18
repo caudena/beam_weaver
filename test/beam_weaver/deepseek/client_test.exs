@@ -293,6 +293,37 @@ defmodule BeamWeaver.DeepSeek.ClientTest do
     assert response["_beamweaver_response_header_list"] == [["x-ds-trace-id", "trace-stream"]]
   end
 
+  test "typed chat streams end with one reply and one Done that carry the usage sent after the finish reason" do
+    sse = """
+    data: {"id":"chat-usage","model":"deepseek-v4-flash","choices":[{"index":0,"delta":{"role":"assistant","content":"Hi"}}]}
+
+    data: {"id":"chat-usage","model":"deepseek-v4-flash","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
+
+    data: {"id":"chat-usage","model":"deepseek-v4-flash","choices":[],"usage":{"prompt_tokens":3,"completion_tokens":1,"total_tokens":4}}
+
+    data: [DONE]
+
+    """
+
+    client = test_client(response_body: sse, chunks: chunk_every(sse, 23))
+    body = %{"model" => "deepseek-v4-flash", "messages" => [], "stream" => true}
+
+    assert {:ok, stream} = Client.chat_completions_stream_typed_events(client, body)
+    events = Enum.map(stream, & &1.event)
+
+    assert [%BeamWeaver.Stream.Events.Message{message: message}] =
+             Enum.filter(events, &match?(%BeamWeaver.Stream.Events.Message{}, &1))
+
+    assert BeamWeaver.Core.Message.text(message) == "Hi"
+    assert message.usage_metadata.input_tokens == 3
+    assert message.usage_metadata.output_tokens == 1
+
+    assert [%BeamWeaver.Stream.Events.Message{}, %BeamWeaver.Stream.Events.Done{usage: usage}] =
+             Enum.drop_while(events, &(not match?(%BeamWeaver.Stream.Events.Message{}, &1)))
+
+    assert usage == %{"prompt_tokens" => 3, "completion_tokens" => 1, "total_tokens" => 4}
+  end
+
   test "Responses, FIM, and Anthropic collected streams reuse their wire reconstructors" do
     responses_sse = """
     event: response.output_item.added
@@ -495,13 +526,6 @@ defmodule BeamWeaver.DeepSeek.ClientTest do
     )
   end
 
-  defp chunk_every(body, size), do: do_chunk_every(body, size, [])
-  defp do_chunk_every("", _size, acc), do: Enum.reverse(acc)
-
-  defp do_chunk_every(body, size, acc) do
-    case body do
-      <<chunk::binary-size(^size), rest::binary>> -> do_chunk_every(rest, size, [chunk | acc])
-      chunk -> Enum.reverse([chunk | acc])
-    end
-  end
+  defp chunk_every(body, size),
+    do: body |> :binary.bin_to_list() |> Enum.chunk_every(size) |> Enum.map(&:binary.list_to_bin/1)
 end

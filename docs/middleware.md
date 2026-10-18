@@ -124,7 +124,8 @@ Call it once, several times (to retry), or not at all:
 
 - `wrap_model_call/3` gets a `BeamWeaver.Agent.ModelRequest` with `messages`,
   `system_message`, `tools`, `model`, `state` and `runtime`. Change it with
-  `BeamWeaver.Agent.ModelRequest.override/2` before calling the handler. The
+  `BeamWeaver.Agent.ModelRequest.override/2` before calling the handler; a
+  `model:` can be a chat model or a `"provider:model"` string. The
   handler returns `{:ok, %BeamWeaver.Agent.ModelResponse{}}` or
   `{:error, error}`; return that, a changed response, or an assistant message
   to answer without calling the model.

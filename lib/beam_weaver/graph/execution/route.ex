@@ -44,7 +44,7 @@ defmodule BeamWeaver.Graph.Execution.Route do
   def send_request(%TaskRequest{} = request), do: request
 
   def send_request(%Send{} = send),
-    do: TaskRequest.send(send.node, send.update || %{}, [@tasks], timeout: send.timeout)
+    do: TaskRequest.send(send.node, send.update, [@tasks], timeout: send.timeout)
 
   # The route as a pending write saves it. The output is kept only when the
   # node's routing reads it.

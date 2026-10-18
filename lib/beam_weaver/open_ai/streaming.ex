@@ -48,11 +48,7 @@ defmodule BeamWeaver.OpenAI.Streaming do
   Extracts text deltas from Responses API or chat-completions SSE payloads.
   """
   @spec text_deltas(binary() | term()) :: [String.t()]
-  def text_deltas(body) when is_binary(body) do
-    body
-    |> events()
-    |> Enum.flat_map(&text_delta/1)
-  end
+  def text_deltas(body) when is_binary(body), do: body |> events() |> text_deltas()
 
   def text_deltas(parsed_events) when is_list(parsed_events) do
     Enum.flat_map(parsed_events, &text_delta/1)
@@ -64,11 +60,7 @@ defmodule BeamWeaver.OpenAI.Streaming do
   Extracts reasoning summary deltas from Responses API SSE payloads.
   """
   @spec reasoning_summary_deltas(binary() | term()) :: [String.t()]
-  def reasoning_summary_deltas(body) when is_binary(body) do
-    body
-    |> events()
-    |> reasoning_summary_deltas()
-  end
+  def reasoning_summary_deltas(body) when is_binary(body), do: body |> events() |> reasoning_summary_deltas()
 
   def reasoning_summary_deltas(parsed_events) when is_list(parsed_events) do
     Enum.flat_map(parsed_events, fn

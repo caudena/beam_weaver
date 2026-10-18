@@ -348,10 +348,7 @@ defmodule BeamWeaver.Transport.URLPolicy do
   end
 
   defp normalize_address(address) when is_tuple(address) and tuple_size(address) in [4, 8] do
-    case :inet.ntoa(address) do
-      encoded when is_list(encoded) -> {:ok, address}
-      {:error, reason} -> {:error, reason}
-    end
+    with encoded when is_list(encoded) <- :inet.ntoa(address), do: {:ok, address}
   end
 
   defp normalize_address(address) when is_binary(address), do: :inet.parse_address(String.to_charlist(address))

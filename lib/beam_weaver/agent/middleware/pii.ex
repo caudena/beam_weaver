@@ -52,6 +52,7 @@ defmodule BeamWeaver.Agent.Middleware.PII do
   alias BeamWeaver.Graph.Overwrite
   alias BeamWeaver.MapAccess
   alias BeamWeaver.Options
+  alias BeamWeaver.Result
   alias BeamWeaver.Stream.Envelope
   alias BeamWeaver.Stream.Events
 
@@ -140,7 +141,7 @@ defmodule BeamWeaver.Agent.Middleware.PII do
   def wrap_model_call(%__MODULE__{} = middleware, %ModelRequest{} = request, handler) do
     case handler.(request) do
       {:ok, %ModelResponse{messages: messages} = response} ->
-        with {:ok, messages} <- edit_all(messages, &edit_message(&1, middleware)),
+        with {:ok, messages} <- Result.traverse(messages, &edit_message(&1, middleware)),
              do: {:ok, %{response | messages: messages}}
 
       # A reply that failed the structured-output checks travels in the
@@ -230,7 +231,7 @@ defmodule BeamWeaver.Agent.Middleware.PII do
 
       last ->
         {read, unread} = Enum.split(messages, last + 1)
-        with {:ok, unread} <- edit_all(unread, &edit_tool_result(&1, middleware)), do: {:ok, read ++ unread}
+        with {:ok, unread} <- Result.traverse(unread, &edit_tool_result(&1, middleware)), do: {:ok, read ++ unread}
     end
   end
 
@@ -251,7 +252,8 @@ defmodule BeamWeaver.Agent.Middleware.PII do
   end
 
   defp edit_message(%Message{content: blocks} = message, middleware) when is_list(blocks) do
-    with {:ok, blocks} <- edit_all(blocks, &edit_block_text(&1, middleware)), do: {:ok, %{message | content: blocks}}
+    with {:ok, blocks} <- Result.traverse(blocks, &edit_block_text(&1, middleware)),
+         do: {:ok, %{message | content: blocks}}
   end
 
   defp edit_message(message, _middleware), do: {:ok, message}
@@ -479,7 +481,7 @@ defmodule BeamWeaver.Agent.Middleware.PII do
   # content of a message and the arguments of its tool calls, and the fields
   # of content blocks.
   defp redact_value(text, middleware) when is_binary(text), do: edit_text(text, middleware)
-  defp redact_value(list, middleware) when is_list(list), do: edit_all(list, &redact_value(&1, middleware))
+  defp redact_value(list, middleware) when is_list(list), do: Result.traverse(list, &redact_value(&1, middleware))
 
   defp redact_value(%Message{} = message, middleware) do
     with {:ok, content} <- redact_value(message.content, middleware),
@@ -499,27 +501,11 @@ defmodule BeamWeaver.Agent.Middleware.PII do
   defp redact_value(%_{} = value, _middleware), do: {:ok, value}
 
   defp redact_value(%{} = map, middleware) do
-    with {:ok, pairs} <- edit_all(Map.to_list(map), &redact_pair(&1, middleware)), do: {:ok, Map.new(pairs)}
+    redact_pair = fn {key, value} -> with {:ok, value} <- redact_value(value, middleware), do: {:ok, {key, value}} end
+    with {:ok, pairs} <- Result.traverse(Map.to_list(map), redact_pair), do: {:ok, Map.new(pairs)}
   end
 
   defp redact_value(value, _middleware), do: {:ok, value}
-
-  defp redact_pair({key, value}, middleware) do
-    with {:ok, value} <- redact_value(value, middleware), do: {:ok, {key, value}}
-  end
-
-  defp edit_all(items, edit) do
-    Enum.reduce_while(items, {:ok, []}, fn item, {:ok, acc} ->
-      case edit.(item) do
-        {:ok, edited} -> {:cont, {:ok, [edited | acc]}}
-        {:error, %Error{}} = error -> {:halt, error}
-      end
-    end)
-    |> case do
-      {:ok, edited} -> {:ok, Enum.reverse(edited)}
-      error -> error
-    end
-  end
 
   defp update_event(%Envelope{event: event} = envelope, fun), do: %{envelope | event: fun.(event)}
   defp update_chunk(envelope, fun), do: update_event(envelope, &%{&1 | chunk: fun.(&1.chunk)})
@@ -675,14 +661,11 @@ defmodule BeamWeaver.Agent.Middleware.PII do
     )
   end
 
-  defp put_map_value(map, key, value) when is_map(map) do
-    string_key = Atom.to_string(key)
-
-    cond do
-      Map.has_key?(map, key) -> Map.put(map, key, value)
-      Map.has_key?(map, string_key) -> Map.put(map, string_key, value)
-      true -> Map.put(map, key, value)
-    end
+  # Puts `key` as the map has it, an atom or a string.
+  defp put_map_value(map, key, value) do
+    if Map.has_key?(map, Atom.to_string(key)) and not Map.has_key?(map, key),
+      do: Map.put(map, Atom.to_string(key), value),
+      else: Map.put(map, key, value)
   end
 
   defp normalize_strategy!(strategy),

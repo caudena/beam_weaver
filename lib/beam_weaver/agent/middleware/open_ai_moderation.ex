@@ -70,28 +70,12 @@ defmodule BeamWeaver.Agent.Middleware.OpenAIModeration do
   def before_model(%__MODULE__{check_input: false, check_tool_results: false}, _state, _runtime),
     do: nil
 
-  def before_model(%__MODULE__{} = middleware, state, _runtime) do
-    messages = state_messages(state)
-
-    if messages == [] do
-      nil
-    else
-      moderate_inputs(middleware, messages)
-    end
-  end
+  def before_model(%__MODULE__{} = middleware, state, _runtime), do: moderate_inputs(middleware, state_messages(state))
 
   @impl true
   def after_model(%__MODULE__{check_output: false}, _state, _runtime), do: nil
 
-  def after_model(%__MODULE__{} = middleware, state, _runtime) do
-    messages = state_messages(state)
-
-    if messages == [] do
-      nil
-    else
-      moderate_output(middleware, messages)
-    end
-  end
+  def after_model(%__MODULE__{} = middleware, state, _runtime), do: moderate_output(middleware, state_messages(state))
 
   @doc """
   Calls the OpenAI moderation endpoint for a single text value.
@@ -111,13 +95,7 @@ defmodule BeamWeaver.Agent.Middleware.OpenAIModeration do
 
       {:ok, response} ->
         {:error,
-         Error.new(
-           :invalid_openai_moderation_response,
-           "OpenAI moderation response is invalid",
-           %{
-             response: response
-           }
-         )}
+         Error.new(:invalid_openai_moderation_response, "OpenAI moderation response is invalid", %{response: response})}
 
       {:error, %Error{}} = error ->
         error
@@ -143,33 +121,26 @@ defmodule BeamWeaver.Agent.Middleware.OpenAIModeration do
 
   defp maybe_moderate_tool_messages(_middleware, messages, false), do: {:ok, messages, false}
 
+  # The tool results after the last assistant message.
   defp maybe_moderate_tool_messages(middleware, messages, true) do
     case BeamWeaver.Agent.Middleware.Helpers.last_role_index(messages, :assistant) do
-      nil -> {:ok, messages, false}
-      index -> moderate_tool_messages_after(middleware, messages, index + 1, false)
-    end
-  end
+      nil ->
+        {:ok, messages, false}
 
-  defp moderate_tool_messages_after(_middleware, messages, index, changed?)
-       when index >= length(messages),
-       do: {:ok, messages, changed?}
+      last ->
+        messages
+        |> Enum.with_index()
+        |> Enum.drop(last + 1)
+        |> Enum.reduce_while({:ok, messages, false}, fn
+          {%Message{role: :tool} = message, index}, {:ok, messages, changed?} ->
+            case moderate_message_at(middleware, messages, index, :tool, message) do
+              {:ok, messages, changed} -> {:cont, {:ok, messages, changed? or changed}}
+              other -> {:halt, other}
+            end
 
-  defp moderate_tool_messages_after(middleware, messages, index, changed?) do
-    case Enum.at(messages, index) do
-      %Message{role: :tool} = message ->
-        case moderate_message_at(middleware, messages, index, :tool, message) do
-          {:ok, ^messages, false} ->
-            moderate_tool_messages_after(middleware, messages, index + 1, changed?)
-
-          {:ok, updated, true} ->
-            moderate_tool_messages_after(middleware, updated, index + 1, true)
-
-          other ->
-            other
-        end
-
-      _other ->
-        moderate_tool_messages_after(middleware, messages, index + 1, changed?)
+          _message, acc ->
+            {:cont, acc}
+        end)
     end
   end
 

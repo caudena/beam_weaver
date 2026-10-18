@@ -39,7 +39,6 @@ defmodule BeamWeaver.Checkpoint.Ecto do
   alias BeamWeaver.Checkpoint.Ecto.Maintenance
   alias BeamWeaver.Checkpoint.Ecto.Query
   alias BeamWeaver.Checkpoint.Lineage
-  alias BeamWeaver.Checkpoint.PendingWrite
   alias BeamWeaver.Checkpoint.Saver
   alias BeamWeaver.Core.Error
   alias BeamWeaver.Core.ID
@@ -200,20 +199,7 @@ defmodule BeamWeaver.Checkpoint.Ecto do
         |> Enum.with_index()
         |> Result.traverse(fn {write, index} ->
           {channel, value} = Config.normalize_write(write)
-
-          with {:ok, value} <- dump_json_value(saver, value) do
-            {:ok,
-             %{
-               thread_id: thread_id,
-               checkpoint_ns: namespace,
-               checkpoint_id: checkpoint_id,
-               task_id: task_id,
-               write_index: index,
-               channel: channel,
-               value: Config.store_write_value(value),
-               task_path: task_path
-             }}
-          end
+          write_row(saver, {thread_id, namespace, checkpoint_id}, task_id, index, channel, value, task_path)
         end)
 
       with {:ok, rows} <- rows, do: insert_write_rows(saver, rows)
@@ -350,35 +336,40 @@ defmodule BeamWeaver.Checkpoint.Ecto do
   end
 
   defp put_batch_writes(saver, config, writes, opts) do
-    if Enum.all?(writes, &match?(%PendingWrite{}, &1)) do
-      configurable = Checkpoint.configurable(config)
+    configurable = Checkpoint.configurable(config)
+    owner = {configurable["thread_id"], Map.get(configurable, "checkpoint_ns", ""), configurable["checkpoint_id"]}
+    default_task = Keyword.get(opts, :task_id, "checkpoint")
+    default_path = Keyword.get(opts, :task_path, "")
 
-      rows =
-        Result.traverse(writes, fn write ->
-          with {:ok, value} <- dump_json_value(saver, write.value) do
-            {:ok,
-             %{
-               thread_id: configurable["thread_id"],
-               checkpoint_ns: Map.get(configurable, "checkpoint_ns", ""),
-               checkpoint_id: configurable["checkpoint_id"],
-               task_id: write.task_id,
-               write_index: write.index,
-               channel: to_string(write.channel),
-               value: Config.store_write_value(value),
-               task_path: write.path || ""
-             }}
-          end
-        end)
+    rows =
+      writes
+      |> Enum.with_index()
+      |> Result.traverse(fn {write, index} ->
+        case Batch.write(write, default_task, default_path) do
+          {:ok, task_id, write_index, channel, value, path} ->
+            write_row(saver, owner, task_id, write_index || index, channel, value, path)
 
-      with {:ok, rows} <- rows, do: insert_write_rows(saver, rows)
-    else
-      put_writes(
-        saver,
-        config,
-        writes,
-        Keyword.get(opts, :task_id, "checkpoint"),
-        Keyword.get(opts, :task_path, "")
-      )
+          :error ->
+            {:error, Error.new(:invalid_checkpoint_batch, "invalid pending write")}
+        end
+      end)
+
+    with {:ok, rows} <- rows, do: insert_write_rows(saver, rows)
+  end
+
+  defp write_row(saver, {thread_id, namespace, checkpoint_id}, task_id, index, channel, value, path) do
+    with {:ok, value} <- dump_json_value(saver, value) do
+      {:ok,
+       %{
+         thread_id: thread_id,
+         checkpoint_ns: namespace,
+         checkpoint_id: checkpoint_id,
+         task_id: task_id,
+         write_index: index,
+         channel: channel,
+         value: Config.store_write_value(value),
+         task_path: path
+       }}
     end
   end
 
@@ -389,11 +380,7 @@ defmodule BeamWeaver.Checkpoint.Ecto do
         select: max(checkpoint.commit_order)
       )
 
-    case Query.one(saver, query) do
-      {:ok, nil} -> {:ok, 1}
-      {:ok, order} -> {:ok, order + 1}
-      {:error, _reason} = error -> error
-    end
+    with {:ok, order} <- Query.one(saver, query), do: {:ok, (order || 0) + 1}
   end
 
   def dump_json_value(%__MODULE__{} = saver, value),

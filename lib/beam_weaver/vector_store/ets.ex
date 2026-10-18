@@ -99,16 +99,8 @@ defmodule BeamWeaver.VectorStore.ETS do
 
     case BeamWeaver.JSON.encode(payload) do
       {:ok, json} ->
-        case File.write(path, json) do
-          :ok ->
-            :ok
-
-          {:error, reason} ->
-            {:error,
-             Error.new(:vector_store_dump_failed, "failed to write vector store dump", %{
-               reason: reason
-             })}
-        end
+        with {:error, reason} <- File.write(path, json),
+             do: {:error, Error.new(:vector_store_dump_failed, "failed to write vector store dump", %{reason: reason})}
 
       {:error, reason} ->
         {:error,
@@ -226,16 +218,8 @@ defmodule BeamWeaver.VectorStore.ETS do
   defp filter_match?(%Document{} = document, filter), do: Filter.match?(document.metadata, filter)
 
   defp read_dump(path) do
-    case File.read(path) do
-      {:ok, body} ->
-        {:ok, body}
-
-      {:error, reason} ->
-        {:error,
-         Error.new(:vector_store_load_failed, "failed to read vector store dump", %{
-           reason: reason
-         })}
-    end
+    with {:error, reason} <- File.read(path),
+         do: {:error, Error.new(:vector_store_load_failed, "failed to read vector store dump", %{reason: reason})}
   end
 
   defp decode_dump(body) do

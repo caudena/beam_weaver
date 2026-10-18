@@ -34,7 +34,7 @@ defmodule BeamWeaver.Graph.Execution.Scratchpad do
       task_id: Keyword.fetch!(opts, :task_id),
       node: Keyword.fetch!(opts, :node),
       step: Keyword.fetch!(opts, :step),
-      resume_values: List.wrap(Keyword.get(opts, :resume_values, []))
+      resume_values: Keyword.get(opts, :resume_values, [])
     }
   end
 

@@ -160,7 +160,7 @@ defmodule BeamWeaver.Provider.ChatCompletionsStreamReplyTest do
 
     assert {:ok, stream} = ChatModel.stream_typed_events(model, [Message.user("hi")])
     events = for %{event: %type{} = event} <- Enum.to_list(stream), type in [Events.Message, Events.Done], do: event
-    assert [%Events.Message{message: reply}, %Events.Done{}, %Events.Done{usage: %{"total_tokens" => 15}}] = events
+    assert [%Events.Message{message: reply}, %Events.Done{usage: %{"total_tokens" => 15}}] = events
 
     assert reply.content == "Hi"
     assert reply.id == "x1"
@@ -176,47 +176,6 @@ defmodule BeamWeaver.Provider.ChatCompletionsStreamReplyTest do
              total_tokens: 15,
              output_token_details: %{reasoning: 10}
            }
-  end
-
-  test "xai chat completions: a streaming agent keeps the reply's usage and metadata" do
-    body =
-      sse([
-        %{
-          "id" => "x1",
-          "model" => "grok-4.3",
-          "choices" => [%{"index" => 0, "delta" => %{"role" => "assistant", "content" => "Hi"}}]
-        },
-        %{
-          "id" => "x1",
-          "model" => "grok-4.3",
-          "choices" => [%{"index" => 0, "delta" => %{}, "finish_reason" => "stop"}]
-        },
-        %{
-          "id" => "x1",
-          "model" => "grok-4.3",
-          "choices" => [],
-          "usage" => %{"prompt_tokens" => 5, "completion_tokens" => 2, "total_tokens" => 7}
-        }
-      ])
-
-    {:ok, agent} =
-      BeamWeaver.Agent.build(
-        model: "xai:grok-4.3",
-        model_opts: [
-          api: :chat_completions,
-          api_key: "k",
-          stream: true,
-          transport: ScriptedSSE,
-          transport_opts: transport_opts([body])
-        ],
-        name: "a"
-      )
-
-    assert {:ok, %{messages: messages}} = BeamWeaver.Agent.invoke(agent, %{messages: ["hello"]})
-    reply = List.last(messages)
-    assert Message.text(reply) == "Hi"
-    assert reply.usage_metadata.total_tokens == 7
-    assert reply.response_metadata.model_provider == "xai"
   end
 
   test "openai chat completions: a typed stream ends with the reply decoded like an invoked one" do
@@ -301,7 +260,7 @@ defmodule BeamWeaver.Provider.ChatCompletionsStreamReplyTest do
 
     assert {:ok, stream} = ChatModel.stream_typed_events(model, [Message.user("Where is order A-1001?")])
     events = for %{event: %type{} = event} <- Enum.to_list(stream), type in [Events.Message, Events.Done], do: event
-    assert [%Events.Message{message: reply}, %Events.Done{}, %Events.Done{usage: %{"total_tokens" => 7}}] = events
+    assert [%Events.Message{message: reply}, %Events.Done{usage: %{"total_tokens" => 7}}] = events
 
     assert {:ok, expected} = model.__struct__.invoke(model, [Message.user("Where is order A-1001?")])
     assert reply.content == "Checking."
@@ -317,44 +276,46 @@ defmodule BeamWeaver.Provider.ChatCompletionsStreamReplyTest do
     end
   end
 
-  test "openai chat completions: a streaming agent keeps the reply's usage and metadata" do
-    body =
-      sse([
-        %{"id" => "c1", "model" => "gpt-4.1", "choices" => [%{"index" => 0, "delta" => %{"content" => "Hi"}}]},
-        %{
-          "id" => "c1",
-          "model" => "gpt-4.1",
-          "choices" => [%{"index" => 0, "delta" => %{}, "finish_reason" => "stop"}]
-        },
-        %{
-          "id" => "c1",
-          "model" => "gpt-4.1",
-          "choices" => [],
-          "usage" => %{"prompt_tokens" => 5, "completion_tokens" => 2, "total_tokens" => 7}
-        }
-      ])
+  for {provider, model} <- [{"xai", "grok-4.3"}, {"openai", "gpt-4.1"}] do
+    test "#{provider} chat completions: a streaming agent keeps the reply's usage and metadata" do
+      body =
+        sse([
+          %{"id" => "c1", "model" => unquote(model), "choices" => [%{"index" => 0, "delta" => %{"content" => "Hi"}}]},
+          %{
+            "id" => "c1",
+            "model" => unquote(model),
+            "choices" => [%{"index" => 0, "delta" => %{}, "finish_reason" => "stop"}]
+          },
+          %{
+            "id" => "c1",
+            "model" => unquote(model),
+            "choices" => [],
+            "usage" => %{"prompt_tokens" => 5, "completion_tokens" => 2, "total_tokens" => 7}
+          }
+        ])
 
-    {:ok, agent} =
-      BeamWeaver.Agent.build(
-        model: "openai:gpt-4.1",
-        model_opts: [
-          api: :chat_completions,
-          api_key: "k",
-          stream: true,
-          transport: ScriptedSSE,
-          transport_opts: transport_opts([body])
-        ],
-        name: "a"
-      )
+      {:ok, agent} =
+        BeamWeaver.Agent.build(
+          model: unquote("#{provider}:#{model}"),
+          model_opts: [
+            api: :chat_completions,
+            api_key: "k",
+            stream: true,
+            transport: ScriptedSSE,
+            transport_opts: transport_opts([body])
+          ],
+          name: "a"
+        )
 
-    assert {:ok, %{messages: messages}} = BeamWeaver.Agent.invoke(agent, %{messages: ["hello"]})
-    reply = List.last(messages)
-    assert Message.text(reply) == "Hi"
-    assert reply.id == "c1"
-    assert reply.usage_metadata.total_tokens == 7
-    assert reply.response_metadata.model_provider == "openai"
-    assert reply.response_metadata.model_name == "gpt-4.1"
-    assert reply.response_metadata.request_id == "req-1"
+      assert {:ok, %{messages: messages}} = BeamWeaver.Agent.invoke(agent, %{messages: ["hello"]})
+      reply = List.last(messages)
+      assert Message.text(reply) == "Hi"
+      assert reply.id == "c1"
+      assert reply.usage_metadata.total_tokens == 7
+      assert reply.response_metadata.model_provider == unquote(provider)
+      assert reply.response_metadata.model_name == unquote(model)
+      assert reply.response_metadata.request_id == "req-1"
+    end
   end
 
   defp transport_opts(bodies) do

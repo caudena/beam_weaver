@@ -50,6 +50,17 @@ defmodule BeamWeaver.Migrations.SQLiteTest do
              )
   end
 
+  test "up with version: 0 migrates nothing and creates no tables" do
+    {opts, checkpoints, writes} = migration_options()
+    version = LiveSQLite.migrate(Keyword.put(opts, :version, 0))
+
+    on_exit(fn -> cleanup(version, checkpoints, writes) end)
+
+    refute LiveSQLite.table_exists?(checkpoints)
+    refute LiveSQLite.table_exists?(writes)
+    assert BeamWeaver.Migrations.migrated_version(opts) == 0
+  end
+
   test "migrates checkpoints down" do
     {opts, checkpoints, writes} = migration_options()
     version = LiveSQLite.migrate(opts)

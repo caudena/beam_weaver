@@ -147,15 +147,7 @@ defmodule BeamWeaver.VectorStore.EctoPostgres do
 
   defp order_documents(documents, ids) do
     by_id = Map.new(documents, &{&1.id, &1})
-
-    ids
-    |> Enum.map(&to_string/1)
-    |> Enum.flat_map(fn id ->
-      case by_id do
-        %{^id => document} -> [document]
-        _other -> []
-      end
-    end)
+    for id <- ids, document = by_id[to_string(id)], do: document
   end
 
   defp distance_operator(%__MODULE__{distance: :l2}), do: "<->"

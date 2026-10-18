@@ -182,12 +182,9 @@ defmodule BeamWeaver.Agent do
   end
 
   defmacro interrupts(opts_ast) do
-    before_ast = quote(do: Keyword.get(unquote(opts_ast), :before, []))
-    after_ast = quote(do: Keyword.get(unquote(opts_ast), :after, []))
-
-    quote bind_quoted: [before_ast: Macro.escape(before_ast), after_ast: Macro.escape(after_ast)] do
-      @beam_weaver_interrupt_before before_ast
-      @beam_weaver_interrupt_after after_ast
+    quote do
+      require BeamWeaver.Graph.DSL
+      BeamWeaver.Graph.DSL.interrupts(unquote(opts_ast))
     end
   end
 
@@ -204,8 +201,8 @@ defmodule BeamWeaver.Agent do
     schema =
       schema
       |> response_json_schema()
-      |> maybe_put_schema_title(Keyword.get(opts, :name))
-      |> maybe_put_schema_description(Keyword.get(opts, :description))
+      |> put_schema_text("title", Keyword.get(opts, :name))
+      |> put_schema_text("description", Keyword.get(opts, :description))
 
     case Keyword.get(opts, :strategy, :auto) do
       :auto -> BeamWeaver.Agent.StructuredOutput.auto(schema, opts)
@@ -228,13 +225,8 @@ defmodule BeamWeaver.Agent do
 
   defp response_json_schema(schema), do: BeamWeaver.Schema.to_json_schema(schema)
 
-  defp maybe_put_schema_title(schema, nil), do: schema
-  defp maybe_put_schema_title(schema, name) when is_map(schema), do: Map.put(schema, "title", to_string(name))
-
-  defp maybe_put_schema_description(schema, nil), do: schema
-
-  defp maybe_put_schema_description(schema, description) when is_map(schema),
-    do: Map.put(schema, "description", to_string(description))
+  defp put_schema_text(schema, _key, nil), do: schema
+  defp put_schema_text(schema, key, text) when is_map(schema), do: Map.put(schema, key, to_string(text))
 
   @doc """
   Builds an agent at runtime, from options with the same names as the

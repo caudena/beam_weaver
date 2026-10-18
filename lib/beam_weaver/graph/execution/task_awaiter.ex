@@ -10,13 +10,10 @@ defmodule BeamWeaver.Graph.Execution.TaskAwaiter do
   def await([], _run), do: []
 
   def await(entries, run) do
-    timeout = wait_timeout(entries, run)
-    tasks = Enum.map(entries, & &1.task)
-
-    tasks
-    |> Task.yield_many(timeout)
-    |> Enum.zip(entries)
-    |> Enum.map(fn {{_task, result}, entry} -> {entry, result} end)
+    entries
+    |> Enum.map(& &1.task)
+    |> Task.yield_many(wait_timeout(entries, run))
+    |> Enum.zip_with(entries, fn {_task, result}, entry -> {entry, result} end)
     |> normalize_results(entries, run)
   end
 
@@ -32,10 +29,7 @@ defmodule BeamWeaver.Graph.Execution.TaskAwaiter do
   end
 
   defp normalize_results(results, entries, run) do
-    unresolved =
-      results
-      |> Enum.filter(fn {_entry, result} -> is_nil(result) end)
-      |> Enum.map(fn {entry, _result} -> entry end)
+    unresolved = for {entry, nil} <- results, do: entry
 
     if unresolved == [] do
       Enum.map(results, fn {entry, result} -> {entry, normalize_task_result(entry, result)} end)
@@ -79,10 +73,9 @@ defmodule BeamWeaver.Graph.Execution.TaskAwaiter do
   defp wait_timeout(entries, run) do
     now = System.monotonic_time(:millisecond)
 
-    entries
-    |> Enum.flat_map(&deadlines(&1, run))
-    |> Enum.map(fn {_source, deadline} -> remaining(deadline, now) end)
-    |> Enum.min(fn -> :infinity end)
+    Enum.min(for(entry <- entries, {_source, deadline} <- deadlines(entry, run), do: remaining(deadline, now)), fn ->
+      :infinity
+    end)
   end
 
   defp timeout_entry(unresolved, run) do

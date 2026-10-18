@@ -42,7 +42,7 @@ defmodule BeamWeaver.Agent.ToolNode do
   @spec new([term()], keyword()) :: t()
   def new(tools, opts \\ []) when is_list(tools) do
     %__MODULE__{
-      tools: Map.new(tools, fn tool -> {Tool.name(tool), tool} end),
+      tools: tools_by_name(tools),
       handle_errors: Keyword.get(opts, :handle_errors, true),
       timeout: Keyword.get(opts, :timeout, :infinity),
       wrap_tool_call: Keyword.get(opts, :wrap_tool_call, []),

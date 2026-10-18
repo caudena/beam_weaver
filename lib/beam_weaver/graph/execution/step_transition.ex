@@ -46,98 +46,72 @@ defmodule BeamWeaver.Graph.Execution.StepTransition do
     completed = Enum.map(run.replay_routes, & &1.node) ++ Replay.ready_names(ready)
     routing_state = Route.put_outputs(outcome.state, run.replay_routes, compiled.graph)
 
-    case Scheduler.prepare_next_tasks(compiled.plan, routes, routing_state) do
-      {:ok, schedule} -> schedule_next_step(run, ready, outcome, completed, routing_state, schedule)
-      {:error, %Error{} = error} -> {:halt, {:error, error}}
-    end
-  end
+    with {:ok, schedule} <- Scheduler.prepare_next_tasks(compiled.plan, routes, routing_state),
+         {:ok, schedule_step_update, scheduled_state} <-
+           ChannelMerge.merge_step_updates(routing_state, schedule.updates, compiled.graph) do
+      public_step_update = outcome.step_update |> Map.merge(schedule_step_update) |> Scheduler.hide_node_outputs()
 
-  defp schedule_next_step(run, ready, outcome, completed, routing_state, schedule) do
-    compiled = run.compiled
+      updated_channels =
+        (Execution.updated_channels(public_step_update) ++ schedule.channels ++ run.replayed_channels)
+        |> Execution.normalize_channels()
+        |> Enum.reject(&Scheduler.node_outputs_channel?/1)
 
-    case ChannelMerge.merge_step_updates(routing_state, schedule.updates, compiled.graph) do
-      {:ok, schedule_step_update, scheduled_state} ->
-        public_step_update =
-          outcome.step_update
-          |> Map.merge(schedule_step_update)
-          |> Scheduler.hide_node_outputs()
+      next_ready = Scheduler.add_channel_tasks(compiled.plan, schedule.ready, updated_channels)
+      versions_seen = Execution.mark_versions_seen(run.versions_seen, completed, run.channel_versions)
 
-        updated_channels =
-          (Execution.updated_channels(public_step_update) ++
-             schedule.channels ++
-             run.replayed_channels)
-          |> Execution.normalize_channels()
-          |> Enum.reject(&Scheduler.node_outputs_channel?/1)
+      channel_versions =
+        Execution.next_channel_versions(compiled.checkpointer, run.channel_versions, updated_channels, compiled.graph)
 
-        next_ready =
-          Scheduler.add_channel_tasks(
-            compiled.plan,
-            schedule.ready,
-            updated_channels
-          )
+      Stream.emit_tasks(run, outcome.events)
+      Stream.emit_step(run, ready, public_step_update, scheduled_state)
 
-        versions_seen = Execution.mark_versions_seen(run.versions_seen, completed, run.channel_versions)
+      metadata = %{
+        source: "loop",
+        step: run.step,
+        run_id: run.run_id,
+        nodes: completed,
+        next: Replay.ready_names(next_ready),
+        next_tasks: Replay.checkpoint_next_records(next_ready, compiled.graph),
+        tasks: Replay.checkpoint_task_records(outcome.events),
+        interrupts: [],
+        channel_versions: channel_versions,
+        versions_seen: versions_seen,
+        updated_channels: updated_channels,
+        step_update: public_step_update
+      }
 
-        channel_versions =
-          Execution.next_channel_versions(
-            compiled.checkpointer,
-            run.channel_versions,
-            updated_channels,
-            compiled.graph
-          )
+      with {:ok, config, known_checkpoint} <-
+             CheckpointIO.write_checkpoint(compiled, run.config, scheduled_state, metadata, run.known_checkpoint) do
+        Stream.emit_checkpoint(run, config, scheduled_state)
 
-        Stream.emit_tasks(run, outcome.events)
-        Stream.emit_step(run, ready, public_step_update, scheduled_state)
+        case TaskCollector.interrupt_for(compiled.interrupt_after, completed, %{run | state: scheduled_state}, :after) do
+          nil ->
+            {:continue,
+             %{
+               run
+               | state: scheduled_state,
+                 ready: next_ready,
+                 config: config,
+                 known_checkpoint: known_checkpoint,
+                 channel_versions: channel_versions,
+                 versions_seen: versions_seen,
+                 task_trigger_versions: channel_versions,
+                 replay_pending_writes: [],
+                 replay_routes: [],
+                 replayed_channels: [],
+                 skip_interrupt_before?: false,
+                 continued_from: nil,
+                 step: run.step + 1
+             }}
 
-        metadata = %{
-          source: "loop",
-          step: run.step,
-          run_id: run.run_id,
-          nodes: completed,
-          next: Replay.ready_names(next_ready),
-          next_tasks: Replay.checkpoint_next_records(next_ready, compiled.graph),
-          tasks: Replay.checkpoint_task_records(outcome.events),
-          interrupts: [],
-          channel_versions: channel_versions,
-          versions_seen: versions_seen,
-          updated_channels: updated_channels,
-          step_update: public_step_update
-        }
-
-        case CheckpointIO.write_checkpoint(compiled, run.config, scheduled_state, metadata, run.known_checkpoint) do
-          {:ok, config, known_checkpoint} ->
-            Stream.emit_checkpoint(run, config, scheduled_state)
-
-            case interrupted_after(%{run | state: scheduled_state}, completed) do
-              nil ->
-                {:continue,
-                 %{
-                   run
-                   | state: scheduled_state,
-                     ready: next_ready,
-                     config: config,
-                     known_checkpoint: known_checkpoint,
-                     channel_versions: channel_versions,
-                     versions_seen: versions_seen,
-                     task_trigger_versions: channel_versions,
-                     replay_pending_writes: [],
-                     replay_routes: [],
-                     replayed_channels: [],
-                     skip_interrupt_before?: false,
-                     continued_from: nil,
-                     step: run.step + 1
-                 }}
-
-              interrupt ->
-                {:halt, {:interrupted, interrupt}}
-            end
-
-          {:error, %Error{} = error} ->
-            {:halt, {:error, error}}
+          interrupt ->
+            {:halt, {:interrupted, interrupt}}
         end
-
-      {:error, %Error{} = error} ->
-        {:halt, {:error, error}}
+      end
+    end
+    |> case do
+      {:error, %Error{} = error} -> {:halt, {:error, error}}
+      transition -> transition
     end
   end
 
@@ -155,7 +129,4 @@ defmodule BeamWeaver.Graph.Execution.StepTransition do
 
   defp interrupted_before(run, ready),
     do: TaskCollector.interrupt_for(run.compiled.interrupt_before, ready, run, :before)
-
-  defp interrupted_after(run, ready),
-    do: TaskCollector.interrupt_for(run.compiled.interrupt_after, ready, run, :after)
 end

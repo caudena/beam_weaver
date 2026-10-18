@@ -34,13 +34,8 @@ defmodule BeamWeaver.Compaction.CutPoint do
   end
 
   defp protected_ids(events, active_ids) do
-    active = MapSet.new(active_ids)
-
-    events
-    |> Enum.filter(& &1.protected)
-    |> Enum.map(& &1.event_id)
-    |> Enum.concat(last_user_ids(events, 2))
-    |> Enum.reduce(active, &MapSet.put(&2, &1))
+    flagged = for event <- events, event.protected, do: event.event_id
+    MapSet.new(active_ids ++ flagged ++ last_user_ids(events, 2))
   end
 
   defp last_user_ids(events, count) do
@@ -79,16 +74,13 @@ defmodule BeamWeaver.Compaction.CutPoint do
       |> Enum.flat_map(&tool_call_ids/1)
       |> MapSet.new()
 
-    events
-    |> Enum.filter(fn event ->
-      event.lane_event_ordinal >= ordinal or
-        Enum.any?(tool_call_ids(event), &MapSet.member?(retained_call_ids, &1))
-    end)
-    |> List.first()
-    |> case do
-      nil -> ordinal
-      event -> event.lane_event_ordinal
-    end
+    first =
+      Enum.find(events, fn event ->
+        event.lane_event_ordinal >= ordinal or
+          Enum.any?(tool_call_ids(event), &MapSet.member?(retained_call_ids, &1))
+      end)
+
+    if first, do: first.lane_event_ordinal, else: ordinal
   end
 
   defp tool_call_ids(%InputEvent{tool: %{} = tool}) do

@@ -60,9 +60,7 @@ defmodule BeamWeaver.Graph.ModuleRunner do
 
   defp compile(module, declared, opts) do
     compile_opts =
-      @compile_options
-      |> Enum.map(&{&1, Keyword.get(opts, &1, declared[&1])})
-      |> Enum.reject(fn {_name, value} -> is_nil(value) end)
+      for(name <- @compile_options, value <- [Keyword.get(opts, name, declared[name])], value != nil, do: {name, value})
       |> Keyword.put(:name, Keyword.get(opts, :name, declared[:name] || inspect(module)))
 
     case module.graph() do

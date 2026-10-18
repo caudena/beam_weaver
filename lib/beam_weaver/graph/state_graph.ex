@@ -128,11 +128,7 @@ defmodule BeamWeaver.Graph.StateGraph do
     end_node = N.normalize_node(end_node)
 
     graph
-    |> maybe_record_duplicate(
-      :edge,
-      {start_node, end_node},
-      edge_exists?(graph, start_node, end_node)
-    )
+    |> maybe_record_duplicate(:edge, {start_node, end_node}, end_node in Map.get(graph.edges, start_node, []))
     |> maybe_add_entry(start_node, end_node)
     |> maybe_add_finish(start_node, end_node)
     |> put_edge(start_node, end_node)
@@ -230,17 +226,6 @@ defmodule BeamWeaver.Graph.StateGraph do
     }
   end
 
-  @spec put_entry_point(t(), Graph.node_name()) :: t()
-  defp put_entry_point(%__MODULE__{} = graph, node) do
-    node = N.normalize_node(node)
-    %{graph | entry_points: Enum.uniq(graph.entry_points ++ [node])}
-  end
-
-  @spec put_finish_point(t(), Graph.node_name()) :: t()
-  defp put_finish_point(%__MODULE__{} = graph, node) do
-    %{graph | finish_points: MapSet.put(graph.finish_points, N.normalize_node(node))}
-  end
-
   defp put_edge(graph, start_node, end_node)
        when start_node in ["__start__", "__end__"] or end_node == "__end__",
        do: graph
@@ -280,15 +265,15 @@ defmodule BeamWeaver.Graph.StateGraph do
   defp add_dependency_edges(graph, %NodeSpec{name: node, deps: deps}),
     do: add_join(graph, deps, node, [])
 
-  defp maybe_add_entry(graph, "__start__", end_node), do: put_entry_point(graph, end_node)
+  defp maybe_add_entry(graph, "__start__", end_node),
+    do: %{graph | entry_points: Enum.uniq(graph.entry_points ++ [end_node])}
+
   defp maybe_add_entry(graph, _start_node, _end_node), do: graph
 
-  defp maybe_add_finish(graph, start_node, "__end__"), do: put_finish_point(graph, start_node)
-  defp maybe_add_finish(graph, _start_node, _end_node), do: graph
+  defp maybe_add_finish(graph, start_node, "__end__"),
+    do: %{graph | finish_points: MapSet.put(graph.finish_points, start_node)}
 
-  defp edge_exists?(graph, start_node, end_node) do
-    end_node in Map.get(graph.edges, start_node, [])
-  end
+  defp maybe_add_finish(graph, _start_node, _end_node), do: graph
 
   defp maybe_record_duplicate(graph, _kind, _value, false), do: graph
 

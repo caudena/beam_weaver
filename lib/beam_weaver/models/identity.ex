@@ -61,37 +61,20 @@ defmodule BeamWeaver.Models.Identity do
 
   defp function_value(_model, _function), do: nil
 
-  defp provider_from_module(%module{}) do
-    cond do
-      module in [
-        BeamWeaver.OpenAI.ChatModel,
-        BeamWeaver.OpenAI.ChatCompletionsModel,
-        BeamWeaver.OpenAI.ResponsesModel
-      ] ->
-        "openai"
+  @module_providers %{
+    BeamWeaver.OpenAI.ChatModel => "openai",
+    BeamWeaver.OpenAI.ChatCompletionsModel => "openai",
+    BeamWeaver.OpenAI.ResponsesModel => "openai",
+    BeamWeaver.Anthropic.ChatModel => "anthropic",
+    BeamWeaver.XAI.ChatModel => "xai",
+    BeamWeaver.XAI.ChatCompletionsModel => "xai",
+    BeamWeaver.Moonshot.ChatModel => "moonshot",
+    BeamWeaver.ZAI.ChatModel => "zai",
+    BeamWeaver.DeepSeek.ChatModel => "deepseek",
+    BeamWeaver.DeepSeek.ResponsesModel => "deepseek",
+    BeamWeaver.Models.FakeChatModel => "fake"
+  }
 
-      module == BeamWeaver.Anthropic.ChatModel ->
-        "anthropic"
-
-      module in [BeamWeaver.XAI.ChatModel, BeamWeaver.XAI.ChatCompletionsModel] ->
-        "xai"
-
-      module == BeamWeaver.Moonshot.ChatModel ->
-        "moonshot"
-
-      module == BeamWeaver.ZAI.ChatModel ->
-        "zai"
-
-      module in [BeamWeaver.DeepSeek.ChatModel, BeamWeaver.DeepSeek.ResponsesModel] ->
-        "deepseek"
-
-      module == BeamWeaver.Models.FakeChatModel ->
-        "fake"
-
-      true ->
-        nil
-    end
-  end
-
+  defp provider_from_module(%module{}), do: @module_providers[module]
   defp provider_from_module(_model), do: nil
 end

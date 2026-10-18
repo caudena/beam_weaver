@@ -215,7 +215,7 @@ defmodule BeamWeaver.Agent.Middleware.Filesystem do
   end
 
   defp file_change?(call),
-    do: to_string(MapAccess.get(call, :name)) in @file_change_tools and match?({:ok, _path}, changed_path(call))
+    do: tool_name(call) in @file_change_tools and match?({:ok, _path}, changed_path(call))
 
   defp changed_path(call), do: call |> MapAccess.get(:args, %{}) |> MapAccess.get(:file_path) |> clean_path()
 
@@ -234,15 +234,15 @@ defmodule BeamWeaver.Agent.Middleware.Filesystem do
     Message.tool(
       "Error: parallel file changes to the same path are not allowed; change the file again in a later turn.",
       tool_call_id: Helpers.tool_call_id(call),
-      name: to_string(MapAccess.get(call, :name)),
+      name: tool_name(call),
       metadata: %{status: "error", error_type: :parallel_file_changes}
     )
   end
 
   defp evict_tool_result?(%__MODULE__{tool_token_limit_before_evict: nil}, _request), do: false
 
-  defp evict_tool_result?(%__MODULE__{}, %ToolCallRequest{} = request),
-    do: tool_name(request) not in @tools_excluded_from_evict
+  defp evict_tool_result?(%__MODULE__{}, %ToolCallRequest{tool_call: call}),
+    do: tool_name(call) not in @tools_excluded_from_evict
 
   defp intercept_large_tool_result(
          %__MODULE__{} = middleware,
@@ -401,13 +401,8 @@ defmodule BeamWeaver.Agent.Middleware.Filesystem do
 
   defp truncate_evicted_human_message(message), do: message
 
-  defp tag_evicted_human_message(%Message{} = message, file_path) do
-    metadata =
-      message.metadata
-      |> Map.put(:offloaded_to, file_path)
-
-    %{message | id: message.id || ID.uuidv7(), metadata: metadata}
-  end
+  defp tag_evicted_human_message(%Message{} = message, file_path),
+    do: %{message | id: message.id || ID.uuidv7(), metadata: Map.put(message.metadata, :offloaded_to, file_path)}
 
   defp evicted_to(%Message{metadata: metadata}) when is_map(metadata),
     do: Map.get(metadata, :offloaded_to)
@@ -416,23 +411,18 @@ defmodule BeamWeaver.Agent.Middleware.Filesystem do
 
   defp maybe_attach_command(result, nil), do: result
 
-  defp maybe_attach_command({:ok, %ModelResponse{} = response}, %Command{} = command),
-    do: %ExtendedModelResponse{model_response: response, command: command}
+  defp maybe_attach_command({:ok, response}, command)
+       when is_struct(response, ModelResponse) or is_struct(response, ExtendedModelResponse),
+       do: maybe_attach_command(response, command)
 
   defp maybe_attach_command(%ModelResponse{} = response, %Command{} = command),
     do: %ExtendedModelResponse{model_response: response, command: command}
 
-  defp maybe_attach_command({:ok, %ExtendedModelResponse{} = response}, %Command{} = command),
-    do: %{response | command: merge_commands(response.command, command)}
-
   defp maybe_attach_command(%ExtendedModelResponse{} = response, %Command{} = command),
     do: %{response | command: merge_commands(response.command, command)}
 
-  defp maybe_attach_command(%Message{} = message, %Command{} = command),
-    do: %ExtendedModelResponse{
-      model_response: %ModelResponse{messages: [message]},
-      command: command
-    }
+  defp maybe_attach_command(%Message{} = message, command),
+    do: maybe_attach_command(%ModelResponse{messages: [message]}, command)
 
   defp maybe_attach_command(result, _command), do: result
 
@@ -504,7 +494,5 @@ defmodule BeamWeaver.Agent.Middleware.Filesystem do
     end)
   end
 
-  defp tool_name(%ToolCallRequest{tool_call: %{name: name}}), do: to_string(name)
-  defp tool_name(%ToolCallRequest{tool_call: %{"name" => name}}), do: to_string(name)
-  defp tool_name(_request), do: ""
+  defp tool_name(call), do: to_string(MapAccess.get(call, :name))
 end

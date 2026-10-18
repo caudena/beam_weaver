@@ -120,14 +120,9 @@ defmodule BeamWeaver.Sandbox.CommandRunner do
   # a short grace, then SIGKILL, regardless of the command's own `:term_grace`.
   defp kill_group(%{os_pid: os_pid, term_grace: term_grace}) do
     signal_group(os_pid, "TERM")
-    Process.sleep(guardian_grace(term_grace))
+    Process.sleep(min(term_grace, @term_grace_ms))
     signal_group(os_pid, "KILL")
   end
-
-  defp guardian_grace(term_grace) when is_integer(term_grace) and term_grace >= 0,
-    do: min(term_grace, @term_grace_ms)
-
-  defp guardian_grace(_term_grace), do: @term_grace_ms
 
   # The deadline passed before the shell reported ready. Wait until it does:
   # signalling its process group any earlier is unreliable, and a command that
@@ -225,15 +220,9 @@ defmodule BeamWeaver.Sandbox.CommandRunner do
   end
 
   defp split_ready(buffered, marker) do
-    case :binary.match(buffered, marker) do
-      {offset, size} ->
-        prefix = binary_part(buffered, 0, offset)
-        suffix_offset = offset + size
-        suffix = binary_part(buffered, suffix_offset, byte_size(buffered) - suffix_offset)
-        {:ok, prefix <> suffix}
-
-      :nomatch ->
-        :pending
+    case :binary.split(buffered, marker) do
+      [prefix, suffix] -> {:ok, prefix <> suffix}
+      [_pending] -> :pending
     end
   end
 
@@ -258,30 +247,12 @@ defmodule BeamWeaver.Sandbox.CommandRunner do
   defp stderr_redirect(:merge), do: []
 
   defp port_options(command, opts) do
-    [
-      :binary,
-      :exit_status,
-      :hide,
-      :in,
-      :use_stdio,
-      {:args, [~c"-c", String.to_charlist(command)]}
-    ]
-    |> maybe_put_stderr_to_stdout(Keyword.get(opts, :stderr, :merge))
-    |> maybe_put_cd(Keyword.get(opts, :cd))
-    |> maybe_put_env(command_env(Keyword.get(opts, :env, []), Keyword.get(opts, :inherit_env, false)))
-  end
+    env = command_env(Keyword.get(opts, :env, []), Keyword.get(opts, :inherit_env, false))
+    cd = Keyword.get(opts, :cd)
 
-  defp maybe_put_stderr_to_stdout(options, :merge), do: [:stderr_to_stdout | options]
-  defp maybe_put_stderr_to_stdout(options, _stderr), do: options
-
-  defp maybe_put_cd(options, nil), do: options
-  defp maybe_put_cd(options, cwd), do: [{:cd, String.to_charlist(cwd)} | options]
-
-  defp maybe_put_env(options, []), do: options
-
-  defp maybe_put_env(options, env) do
-    env = Enum.map(env, fn {key, value} -> {String.to_charlist(key), env_value(value)} end)
-    [{:env, env} | options]
+    [:binary, :exit_status, :hide, :in, :use_stdio, {:args, [~c"-c", String.to_charlist(command)]}, {:env, env}] ++
+      if(Keyword.get(opts, :stderr, :merge) == :merge, do: [:stderr_to_stdout], else: []) ++
+      if(cd, do: [{:cd, String.to_charlist(cd)}], else: [])
   end
 
   # A port's `:env` only changes the environment the command inherits from the
@@ -299,7 +270,7 @@ defmodule BeamWeaver.Sandbox.CommandRunner do
             do: {name, nil}
       end
 
-    unset ++ Enum.to_list(env)
+    for {key, value} <- unset ++ Enum.to_list(env), do: {String.to_charlist(key), env_value(value)}
   end
 
   defp base_env?("LC_" <> _locale), do: true

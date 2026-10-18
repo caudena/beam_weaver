@@ -52,10 +52,10 @@ defmodule BeamWeaver.Google.Tools do
     do: %{"mcpServers" => Options.normalize_option_list(List.wrap(servers))}
 
   @doc false
-  def render_tools(nil, _opts), do: {:ok, []}
-  def render_tools([], _opts), do: {:ok, []}
+  def render_tools(nil), do: {:ok, []}
+  def render_tools([]), do: {:ok, []}
 
-  def render_tools(tools, _opts) when is_list(tools) do
+  def render_tools(tools) when is_list(tools) do
     {builtins, custom} = Enum.split_with(tools, &builtin_tool?/1)
 
     declarations = Enum.map(custom, &function_declaration/1)
@@ -69,27 +69,22 @@ defmodule BeamWeaver.Google.Tools do
   defp function_declarations(declarations), do: [%{"functionDeclarations" => declarations}]
 
   @doc false
-  def render_tool_choice(nil, _tools, _opts), do: {:ok, nil}
-  def render_tool_choice(false, _tools, _opts), do: {:ok, nil}
-  def render_tool_choice(:validated, _tools, _opts), do: {:ok, function_calling_config("VALIDATED")}
-  def render_tool_choice("validated", _tools, _opts), do: {:ok, function_calling_config("VALIDATED")}
-  def render_tool_choice(:auto, _tools, _opts), do: {:ok, function_calling_config("AUTO")}
-  def render_tool_choice("auto", _tools, _opts), do: {:ok, function_calling_config("AUTO")}
-  def render_tool_choice(:none, _tools, _opts), do: {:ok, function_calling_config("NONE")}
-  def render_tool_choice("none", _tools, _opts), do: {:ok, function_calling_config("NONE")}
-  def render_tool_choice(:any, tools, opts), do: render_tool_choice(:required, tools, opts)
-  def render_tool_choice("any", tools, opts), do: render_tool_choice(:required, tools, opts)
-  def render_tool_choice(:required, _tools, _opts), do: {:ok, function_calling_config("ANY")}
-  def render_tool_choice("required", _tools, _opts), do: {:ok, function_calling_config("ANY")}
-  def render_tool_choice(%{name: name}, tools, opts), do: render_tool_choice(name, tools, opts)
+  def render_tool_choice(choice) when choice in [nil, false], do: {:ok, nil}
 
-  def render_tool_choice(%{"name" => name}, tools, opts),
-    do: render_tool_choice(name, tools, opts)
+  def render_tool_choice(choice) when choice in [:validated, "validated"],
+    do: {:ok, function_calling_config("VALIDATED")}
 
-  def render_tool_choice(name, _tools, _opts) when is_binary(name),
-    do: {:ok, function_calling_config("ANY", [name])}
+  def render_tool_choice(choice) when choice in [:auto, "auto"], do: {:ok, function_calling_config("AUTO")}
+  def render_tool_choice(choice) when choice in [:none, "none"], do: {:ok, function_calling_config("NONE")}
 
-  def render_tool_choice(choice, _tools, _opts),
+  def render_tool_choice(choice) when choice in [:any, "any", :required, "required"],
+    do: {:ok, function_calling_config("ANY")}
+
+  def render_tool_choice(%{name: name}), do: render_tool_choice(name)
+  def render_tool_choice(%{"name" => name}), do: render_tool_choice(name)
+  def render_tool_choice(name) when is_binary(name), do: {:ok, function_calling_config("ANY", [name])}
+
+  def render_tool_choice(choice),
     do: {:error, Error.new(:invalid_tool_choice, "Google tool_choice is invalid", %{choice: choice})}
 
   defp function_declaration(tool) when is_map(tool) and not is_struct(tool) do

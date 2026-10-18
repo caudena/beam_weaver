@@ -1,6 +1,7 @@
 defmodule BeamWeaver.Graph.Execution.ChannelLookup do
   @moduledoc false
 
+  alias BeamWeaver.Core.Error
   alias BeamWeaver.Graph.Channels.UntrackedValue
   alias BeamWeaver.Graph.StateGraph
 
@@ -89,6 +90,19 @@ defmodule BeamWeaver.Graph.Execution.ChannelLookup do
         _other ->
           false
       end
+  end
+
+  # Managed values are computed by the runtime: no update may write one.
+  @spec check_managed_writes(StateGraph.t(), [map()]) :: :ok | {:error, Error.t()}
+  def check_managed_writes(%StateGraph{managed: managed}, _updates) when managed == %{}, do: :ok
+
+  def check_managed_writes(%StateGraph{managed: managed}, updates) do
+    managed_keys = MapSet.new(Map.keys(managed), &to_string/1)
+
+    case Enum.find_value(updates, fn update -> Enum.find(Map.keys(update), &(to_string(&1) in managed_keys)) end) do
+      nil -> :ok
+      key -> {:error, Error.new(:invalid_update, "managed graph values are read-only", %{key: key})}
+    end
   end
 
   @spec public_state(StateGraph.t(), map()) :: map()

@@ -113,39 +113,28 @@ defmodule BeamWeaver.ShellPolicy do
   # command or the part of a command the policy can't read.
   @probes ["x", "beam_weaver_probe"]
 
+  @defaults [
+    allow: [],
+    deny: [],
+    allow_compound: false,
+    allow_opaque: false,
+    cwd: nil,
+    env: %{},
+    inherit_env: false,
+    timeout: 5_000,
+    max_output_bytes: 20_000,
+    stderr: :merge,
+    empty_output: nil,
+    truncation_indicator: nil,
+    redactions: [],
+    executor: nil
+  ]
+
+  @fields Keyword.keys(@defaults)
+
   # `env` can carry credentials meant only for the commands.
   @derive {Inspect, except: [:env]}
-  defstruct allow: [],
-            deny: [],
-            allow_compound: false,
-            allow_opaque: false,
-            cwd: nil,
-            env: %{},
-            inherit_env: false,
-            timeout: 5_000,
-            max_output_bytes: 20_000,
-            stderr: :merge,
-            empty_output: nil,
-            truncation_indicator: nil,
-            redactions: [],
-            executor: nil
-
-  @fields [
-    :allow,
-    :deny,
-    :allow_compound,
-    :allow_opaque,
-    :cwd,
-    :env,
-    :inherit_env,
-    :timeout,
-    :max_output_bytes,
-    :stderr,
-    :empty_output,
-    :truncation_indicator,
-    :redactions,
-    :executor
-  ]
+  defstruct @defaults
 
   @type stderr_policy :: :merge | :separate | :discard
 
@@ -344,7 +333,7 @@ defmodule BeamWeaver.ShellPolicy do
 
     if rules == [],
       do: {:refuse, {:compound, line.text}},
-      else: first_refusal(line.commands, &allow_member(policy, &1, rules, line.text))
+      else: Enum.find_value(line.commands, :ok, &with(:ok <- allow_member(policy, &1, rules, line.text), do: nil))
   end
 
   defp allow_member(policy, node, rules, line_text) do
@@ -426,15 +415,6 @@ defmodule BeamWeaver.ShellPolicy do
 
   defp shift({start, stop}, base), do: {start - base, stop - base}
 
-  defp first_refusal(nodes, fun) do
-    Enum.reduce_while(nodes, :ok, fn node, :ok ->
-      case fun.(node) do
-        :ok -> {:cont, :ok}
-        refusal -> {:halt, refusal}
-      end
-    end)
-  end
-
   defp regex?(rule), do: match?(%Regex{}, rule)
   defp rule?(rule), do: is_binary(rule) or regex?(rule)
 
@@ -459,15 +439,9 @@ defmodule BeamWeaver.ShellPolicy do
         true
 
       true ->
-        command
-        |> binary_part(core_size, byte_size(command) - core_size)
-        |> String.first()
-        |> whitespace?()
+        String.first(binary_part(command, core_size, byte_size(command) - core_size)) in [" ", "\t", "\n", "\r"]
     end
   end
-
-  defp whitespace?(value) when value in [" ", "\t", "\n", "\r"], do: true
-  defp whitespace?(_value), do: false
 
   defp describe(:denied), do: "it matches a deny rule"
   defp describe(:too_deep), do: "it nests commands more than #{@max_depth} levels deep"
@@ -488,24 +462,20 @@ defmodule BeamWeaver.ShellPolicy do
 
   defp valid_env?(_env), do: false
 
-  defp valid_redactions?(redactions) when is_list(redactions) do
-    Enum.all?(redactions, fn
-      {%Regex{}, replacement} when is_binary(replacement) -> true
-      %{pattern: %Regex{}, replacement: replacement} when is_binary(replacement) -> true
-      %{"pattern" => %Regex{}, "replacement" => replacement} when is_binary(replacement) -> true
-      _other -> false
-    end)
-  end
+  defp valid_redactions?(redactions), do: is_list(redactions) and Enum.all?(redactions, &redaction/1)
 
-  defp valid_redactions?(_redactions), do: false
+  defp normalize_redactions(redactions), do: Enum.map(redactions, &redaction/1)
 
-  defp normalize_redactions(redactions) do
-    Enum.map(redactions, fn
-      {%Regex{} = regex, replacement} -> {regex, replacement}
-      %{pattern: %Regex{} = regex, replacement: replacement} -> {regex, replacement}
-      %{"pattern" => %Regex{} = regex, "replacement" => replacement} -> {regex, replacement}
-    end)
-  end
+  # A redaction as `{regex, replacement}`, or nil.
+  defp redaction({%Regex{} = regex, replacement}) when is_binary(replacement), do: {regex, replacement}
+
+  defp redaction(%{pattern: %Regex{} = regex, replacement: replacement}) when is_binary(replacement),
+    do: {regex, replacement}
+
+  defp redaction(%{"pattern" => %Regex{} = regex, "replacement" => replacement}) when is_binary(replacement),
+    do: {regex, replacement}
+
+  defp redaction(_other), do: nil
 
   defp validate_keys(opts) do
     unknown =

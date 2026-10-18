@@ -30,7 +30,7 @@ defmodule BeamWeaver.Agent.Middleware.ToolEmulator do
     tools = Keyword.get(opts, :tools)
 
     %__MODULE__{
-      tools: normalize_tools(tools),
+      tools: Helpers.tool_names(tools),
       emulate_all?: is_nil(tools),
       model: opts |> Keyword.get(:model, @default_model) |> Helpers.chat_model!(),
       prompt_template: Keyword.get(opts, :prompt_template, @default_prompt_template)
@@ -73,19 +73,6 @@ defmodule BeamWeaver.Agent.Middleware.ToolEmulator do
     |> String.replace("{tool}", tool_name(request))
     |> String.replace("{description}", tool_description(request))
     |> String.replace("{args}", inspect(tool_args(request)))
-  end
-
-  defp normalize_tools(nil), do: nil
-
-  defp normalize_tools(tools) do
-    tools
-    |> List.wrap()
-    |> Enum.map(fn
-      tool when is_binary(tool) -> tool
-      tool when is_atom(tool) -> Atom.to_string(tool)
-      tool -> Tool.name(tool)
-    end)
-    |> MapSet.new()
   end
 
   defp tool_description(%ToolCallRequest{tool: nil}), do: "No description available"

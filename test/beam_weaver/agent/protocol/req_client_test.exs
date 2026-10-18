@@ -13,13 +13,18 @@ defmodule BeamWeaver.Agent.Protocol.ReqClientTest do
     )
   end
 
-  test "req client encodes async task path segments and normalizes JSON bodies" do
-    parent = self()
+  # A request function that sends the test each request and answers with `body`.
+  defp recorder(body) do
+    test = self()
 
-    request_fun = fn opts ->
-      send(parent, {:request_opts, opts})
-      {:ok, %{status: 200, body: ~s({"id":"task/with spaces","status":"running"})}}
+    fn opts ->
+      send(test, {:request_opts, opts})
+      {:ok, %{status: 200, body: body}}
     end
+  end
+
+  test "req client encodes async task path segments and normalizes JSON bodies" do
+    request_fun = recorder(~s({"id":"task/with spaces","status":"running"}))
 
     assert {:ok, %{"id" => "task/with spaces", "status" => "running"}} =
              ReqClient.check_task(subagent(), "task/with spaces", request_fun: request_fun)
@@ -31,12 +36,7 @@ defmodule BeamWeaver.Agent.Protocol.ReqClientTest do
   end
 
   test "req client sends start update and cancel request shapes through injected request function" do
-    parent = self()
-
-    request_fun = fn opts ->
-      send(parent, {:request_opts, opts})
-      {:ok, %{status: 200, body: %{"status" => "ok"}}}
-    end
+    request_fun = recorder(%{"status" => "ok"})
 
     assert {:ok, %{"status" => "ok"}} =
              ReqClient.start_task(subagent(), %{input: %{messages: []}}, request_fun: request_fun)
@@ -61,13 +61,6 @@ defmodule BeamWeaver.Agent.Protocol.ReqClientTest do
   end
 
   test "req client sends the subagent name and the parent's thread as run metadata, without trace ids" do
-    test = self()
-
-    request_fun = fn opts ->
-      send(test, {:request_opts, opts})
-      {:ok, %{status: 200, body: %{"status" => "ok"}}}
-    end
-
     parent = %{
       thread_id: "ticket-42",
       run_id: "parent-run",
@@ -77,7 +70,7 @@ defmodule BeamWeaver.Agent.Protocol.ReqClientTest do
       trace_run_id: "trace-run-1"
     }
 
-    opts = [request_fun: request_fun, parent: parent]
+    opts = [request_fun: recorder(%{"status" => "ok"}), parent: parent]
     metadata = %{subagent_name: "researcher", parent_thread_id: "ticket-42"}
 
     assert {:ok, _body} =
@@ -105,13 +98,6 @@ defmodule BeamWeaver.Agent.Protocol.ReqClientTest do
   end
 
   test "req client leaves out a parent thread it doesn't have" do
-    test = self()
-
-    request_fun = fn opts ->
-      send(test, {:request_opts, opts})
-      {:ok, %{status: 200, body: %{"status" => "ok"}}}
-    end
-
     parent = %{
       thread_id: nil,
       run_id: nil,
@@ -121,7 +107,9 @@ defmodule BeamWeaver.Agent.Protocol.ReqClientTest do
       trace_run_id: nil
     }
 
-    assert {:ok, _body} = ReqClient.start_task(subagent(), %{input: %{}}, request_fun: request_fun, parent: parent)
+    assert {:ok, _body} =
+             ReqClient.start_task(subagent(), %{input: %{}}, request_fun: recorder(%{"status" => "ok"}), parent: parent)
+
     assert_received {:request_opts, opts}
     assert opts[:json] == %{input: %{}, metadata: %{subagent_name: "researcher"}}
   end

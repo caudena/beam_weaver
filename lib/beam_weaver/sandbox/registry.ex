@@ -277,12 +277,15 @@ defmodule BeamWeaver.Sandbox.Registry do
 
   defp validate_lifecycle_options(%ProviderSpec{} = spec, opts) do
     unsupported =
-      []
-      |> maybe_unsupported(spec, opts, :sandbox_id, :sandbox_id)
-      |> maybe_unsupported(spec, opts, :snapshot_id, :snapshot)
-      |> maybe_unsupported(spec, opts, :snapshot_name, :snapshot)
-      |> maybe_unsupported(spec, opts, :mounts, :mounts)
-      |> maybe_unsupported(spec, opts, :working_dir, :working_dir)
+      for {option, capability} <- [
+            sandbox_id: :sandbox_id,
+            snapshot_id: :snapshot,
+            snapshot_name: :snapshot,
+            mounts: :mounts,
+            working_dir: :working_dir
+          ],
+          Keyword.has_key?(opts, option) and not ProviderSpec.capability?(spec, capability),
+          do: option
 
     case unsupported do
       [] ->
@@ -295,16 +298,10 @@ defmodule BeamWeaver.Sandbox.Registry do
            "sandbox provider does not support requested lifecycle options",
            %{
              provider: spec.id,
-             options: Enum.reverse(unsupported)
+             options: unsupported
            }
          )}
     end
-  end
-
-  defp maybe_unsupported(unsupported, spec, opts, option, capability) do
-    if Keyword.has_key?(opts, option) and not ProviderSpec.capability?(spec, capability),
-      do: [option | unsupported],
-      else: unsupported
   end
 
   defp validate_sandbox_backend(sandbox, spec) do

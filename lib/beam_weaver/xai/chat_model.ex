@@ -75,7 +75,6 @@ defmodule BeamWeaver.XAI.ChatModel do
       opts
       |> Keyword.put(:model, model)
       |> Keyword.put(:profile, profile)
-      |> BeamWeaver.MapShape.put_present(:max_output_tokens, Keyword.get(opts, :max_output_tokens))
     )
   end
 

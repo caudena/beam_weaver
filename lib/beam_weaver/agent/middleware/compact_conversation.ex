@@ -178,9 +178,9 @@ defmodule BeamWeaver.Agent.Middleware.CompactConversation do
     else
       {to_summarize, _recent} = Enum.split(messages, cutoff)
 
-      with {:ok, rendered} <- render_messages(to_summarize),
-           {:ok, summary} <- create_summary(middleware, to_summarize),
-           {file_path, files_update} <- offload_history(middleware, input, rendered) do
+      with {:ok, summary} <- create_summary(middleware, to_summarize) do
+        {file_path, files_update} = offload_history(middleware, input, Summarization.history_text(to_summarize))
+
         summary_message =
           Message.user(summary_text(summary, file_path),
             id: ID.uuidv7(),
@@ -282,13 +282,6 @@ defmodule BeamWeaver.Agent.Middleware.CompactConversation do
     case Filesystem.write(middleware.backend, file_path, rendered, opts) do
       %Filesystem.WriteResult{error: nil, files_update: files_update} -> {file_path, files_update}
       _error -> {nil, nil}
-    end
-  end
-
-  defp render_messages(messages) do
-    case Utils.buffer_string(messages) do
-      {:ok, rendered} -> {:ok, rendered}
-      _error -> {:ok, inspect(messages)}
     end
   end
 

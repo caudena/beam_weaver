@@ -82,11 +82,7 @@ defmodule BeamWeaver.DeepSeek.Options do
     format = effective_response_format(model, opts)
     opts = Keyword.drop(opts, [:response_format, :structured_output])
 
-    if structured_output_format?(format) do
-      Keyword.put(opts, :response_format, format)
-    else
-      opts
-    end
+    if is_nil(format) or text_format?(format), do: opts, else: Keyword.put(opts, :response_format, format)
   end
 
   defp build_body(model, messages, tools, response_format, opts) do
@@ -140,19 +136,15 @@ defmodule BeamWeaver.DeepSeek.Options do
   end
 
   defp response_format(model, opts) do
-    case effective_response_format(model, opts) do
-      %{"type" => type} when type in [:text, "text"] ->
-        {:ok, nil, nil}
+    format = effective_response_format(model, opts)
 
-      %{type: type} when type in [:text, "text"] ->
-        {:ok, nil, nil}
-
-      other ->
-        JsonObjectFormat.normalize(other,
+    if text_format?(format),
+      do: {:ok, nil, nil},
+      else:
+        JsonObjectFormat.normalize(format,
           error_message: "DeepSeek Chat Completions supports JSON object response_format only",
           error_details: %{provider: :deepseek, api: :chat_completions}
         )
-    end
   end
 
   defp render_tools(tools) when is_list(tools) do
@@ -437,8 +429,7 @@ defmodule BeamWeaver.DeepSeek.Options do
     option(model, opts, :response_format) || option(model, opts, :structured_output)
   end
 
-  defp structured_output_format?(nil), do: false
-  defp structured_output_format?(%{"type" => type}) when type in [:text, "text"], do: false
-  defp structured_output_format?(%{type: type}) when type in [:text, "text"], do: false
-  defp structured_output_format?(_format), do: true
+  defp text_format?(%{"type" => type}) when type in [:text, "text"], do: true
+  defp text_format?(%{type: type}) when type in [:text, "text"], do: true
+  defp text_format?(_format), do: false
 end

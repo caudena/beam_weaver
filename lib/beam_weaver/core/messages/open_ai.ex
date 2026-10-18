@@ -58,7 +58,7 @@ defmodule BeamWeaver.Core.Messages.OpenAI do
         |> put_if_present("name", message.name)
         |> put_if(Keyword.get(opts, :include_id, false), "id", message.id)
         |> put_tool_call_id(message)
-        |> put_assistant_tool_calls(message, opts)
+        |> put_assistant_tool_calls(message)
         |> put_refusal(message)
 
       block ->
@@ -258,7 +258,7 @@ defmodule BeamWeaver.Core.Messages.OpenAI do
 
   defp put_tool_call_id(map, _message), do: map
 
-  defp put_assistant_tool_calls(map, %Message{role: :assistant} = message, _opts) do
+  defp put_assistant_tool_calls(map, %Message{role: :assistant} = message) do
     calls =
       (message.tool_calls || [])
       |> Kernel.++(content_tool_calls(message.content))
@@ -271,33 +271,21 @@ defmodule BeamWeaver.Core.Messages.OpenAI do
     end
   end
 
-  defp put_assistant_tool_calls(map, _message, _opts), do: map
+  defp put_assistant_tool_calls(map, _message), do: map
 
-  defp content_tool_calls(content) when is_list(content) do
-    content
-    |> Enum.filter(&tool_call_content_block?/1)
-    |> Enum.map(&content_tool_call/1)
-  end
+  defp content_tool_calls(content) when is_list(content),
+    do: for(block <- content, tool_call_content_block?(block), do: content_tool_call(block))
 
   defp content_tool_calls(_content), do: []
 
+  # A call without an id is never a duplicate.
   defp deduplicate_tool_calls(calls) do
-    calls
-    |> Enum.reduce({[], MapSet.new()}, fn call, {deduped, seen} ->
+    Enum.uniq_by(calls, fn call ->
       case tool_call_request_id(call) do
-        id when is_binary(id) and id != "" ->
-          if MapSet.member?(seen, id) do
-            {deduped, seen}
-          else
-            {[call | deduped], MapSet.put(seen, id)}
-          end
-
-        _missing ->
-          {[call | deduped], seen}
+        id when is_binary(id) and id != "" -> id
+        _missing -> make_ref()
       end
     end)
-    |> elem(0)
-    |> Enum.reverse()
   end
 
   defp content_tool_call(%{type: :tool_use} = block) do
@@ -343,7 +331,7 @@ defmodule BeamWeaver.Core.Messages.OpenAI do
   defp put_refusal(map, _message), do: map
 
   defp user_tool_result(%Message{role: :user, content: [block]}) when is_map(block) do
-    if Map.get(block, :type) == :tool_result, do: block, else: nil
+    if Map.get(block, :type) == :tool_result, do: block
   end
 
   defp user_tool_result(_message), do: nil

@@ -510,6 +510,23 @@ defmodule BeamWeaver.OpenAI.StreamingTest do
            )
   end
 
+  test "typed events of a chat-completions body end with one Done that carries the usage sent after the finish reason" do
+    usage = %{"prompt_tokens" => 3, "completion_tokens" => 2, "total_tokens" => 5}
+
+    body =
+      [
+        %{"choices" => [%{"index" => 0, "delta" => %{"content" => "hi"}}]},
+        %{"choices" => [%{"index" => 0, "delta" => %{}, "finish_reason" => "stop"}]},
+        %{"choices" => [], "usage" => usage}
+      ]
+      |> Enum.map_join("\n\n", &("data: " <> BeamWeaver.JSON.encode!(&1)))
+
+    events = Streaming.typed_events(body)
+
+    assert [%Events.Done{usage: ^usage}] = for(%Envelope{event: %Events.Done{} = done} <- events, do: done)
+    assert %Envelope{event: %Events.Done{}} = List.last(events)
+  end
+
   test "Responses usage-only completion preserves nested and unknown usage metadata" do
     body = """
     event: response.completed

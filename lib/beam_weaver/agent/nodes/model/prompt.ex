@@ -144,11 +144,7 @@ defmodule BeamWeaver.Agent.Nodes.Model.Prompt do
   def makes_call?(_message, _id), do: false
 
   def validate_chat_history(messages) do
-    tool_results =
-      messages
-      |> Enum.filter(&match?(%Message{role: :tool}, &1))
-      |> Enum.map(& &1.tool_call_id)
-      |> MapSet.new()
+    tool_results = for %Message{role: :tool, tool_call_id: id} <- messages, into: MapSet.new(), do: id
 
     missing =
       for %Message{role: :assistant, tool_calls: tool_calls} <- messages,
@@ -210,23 +206,13 @@ defmodule BeamWeaver.Agent.Nodes.Model.Prompt do
 
   @runtime_model_opt_blocklist [:tools, :context, :cache, :assistant_name, :tool_timeout]
 
-  defp runtime_model_opts(%{model_opts: opts}), do: sanitize_runtime_model_opts(opts)
+  defp runtime_model_opts(%{model_opts: opts}) when is_list(opts) or is_map(opts) do
+    opts
+    |> Enum.filter(fn {key, _value} -> is_atom(key) end)
+    |> Keyword.drop(@runtime_model_opt_blocklist)
+  end
+
   defp runtime_model_opts(_runtime), do: []
-
-  defp sanitize_runtime_model_opts(opts) when is_list(opts) do
-    opts
-    |> Enum.filter(fn {key, _value} -> is_atom(key) end)
-    |> Keyword.drop(@runtime_model_opt_blocklist)
-  end
-
-  defp sanitize_runtime_model_opts(opts) when is_map(opts) do
-    opts
-    |> Enum.filter(fn {key, _value} -> is_atom(key) end)
-    |> Keyword.new()
-    |> Keyword.drop(@runtime_model_opt_blocklist)
-  end
-
-  defp sanitize_runtime_model_opts(_opts), do: []
 
   def prompt_messages(nil), do: []
   def prompt_messages(messages) when is_list(messages), do: messages

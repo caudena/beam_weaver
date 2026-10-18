@@ -88,7 +88,10 @@ defmodule BeamWeaver.Memory.Query do
     offset = Keyword.get(opts, :offset, 0)
 
     namespaces
-    |> Enum.filter(&(namespace_path_match?(&1, prefix, :prefix) and namespace_path_match?(&1, suffix, :suffix)))
+    |> Enum.filter(
+      &(wildcard_match?(Enum.take(&1, length(prefix)), prefix) and
+          wildcard_match?(Enum.take(&1, -length(suffix)), suffix))
+    )
     |> Enum.map(&truncate_namespace(&1, max_depth))
     |> Enum.uniq()
     |> Enum.sort()
@@ -97,22 +100,6 @@ defmodule BeamWeaver.Memory.Query do
   end
 
   def namespace_prefix?(namespace, prefix), do: List.starts_with?(namespace, prefix)
-
-  defp namespace_path_match?(_namespace, [], _type), do: true
-
-  defp namespace_path_match?(namespace, path, :prefix) do
-    length(namespace) >= length(path) and
-      namespace
-      |> Enum.take(length(path))
-      |> wildcard_match?(path)
-  end
-
-  defp namespace_path_match?(namespace, path, :suffix) do
-    length(namespace) >= length(path) and
-      namespace
-      |> Enum.take(-length(path))
-      |> wildcard_match?(path)
-  end
 
   def matches_filter?(_item, filter) when filter in [nil, %{}], do: true
 
@@ -237,13 +224,11 @@ defmodule BeamWeaver.Memory.Query do
     [prefix: prefix, suffix: suffix, max_depth: op.max_depth, limit: op.limit, offset: op.offset]
   end
 
+  # Whether the parts of a namespace match a pattern's, where "*" matches any
+  # part. A namespace shorter than the pattern doesn't match.
   defp wildcard_match?(values, pattern) do
-    Enum.zip(values, pattern)
-    |> Enum.all?(fn
-      {_value, "*"} -> true
-      {value, value} -> true
-      _other -> false
-    end)
+    length(values) == length(pattern) and
+      Enum.all?(Enum.zip(values, pattern), fn {value, part} -> part == "*" or value === part end)
   end
 
   defp truncate_namespace(namespace, nil), do: namespace
@@ -254,19 +239,34 @@ defmodule BeamWeaver.Memory.Query do
   defp nested_value_at(value, []), do: value
 
   defp nested_value_at(map, [key | rest]) when is_map(map) do
-    cond do
-      Map.has_key?(map, key) ->
-        nested_value_at(Map.fetch!(map, key), rest)
-
-      Enum.any?(Map.keys(map), &(to_string(&1) == key)) ->
-        nested_value_at(map[Enum.find(Map.keys(map), &(to_string(&1) == key))], rest)
-
-      true ->
-        :missing
+    case fetch_key(map, key) do
+      {:ok, value} -> nested_value_at(value, rest)
+      :error -> :missing
     end
   end
 
   defp nested_value_at(_value, _path), do: :missing
+
+  # A struct has the fields of its JSON form, as the Postgres store keeps it,
+  # and none when it has no JSON form.
+  defp fetch_key(%_{} = struct, key) do
+    with {:ok, json} <- BeamWeaver.JSON.encode(struct),
+         %{} = map <- BeamWeaver.JSON.decode!(json) do
+      fetch_key(map, key)
+    else
+      _other -> :error
+    end
+  end
+
+  # The value under `key`, or else under the first key whose string is `key`.
+  defp fetch_key(map, key) do
+    with :error <- Map.fetch(map, key) do
+      case Enum.find_value(Map.keys(map), &(to_string(&1) == key and {:ok, &1})) do
+        {:ok, map_key} -> {:ok, map[map_key]}
+        nil -> :error
+      end
+    end
+  end
 
   defp compare(:missing, _expected), do: false
 
@@ -301,7 +301,8 @@ defmodule BeamWeaver.Memory.Query do
   end
 
   def tokenize_path(tokens) when is_list(tokens) do
-    normalize_token_list(tokens)
+    normalized = Enum.map(tokens, &normalize_token/1)
+    if :error in normalized, do: :error, else: {:ok, Enum.map(normalized, fn {:ok, token} -> token end)}
   end
 
   defp do_tokenize([], tokens, current), do: {:ok, finalize_token(tokens, current)}
@@ -310,7 +311,7 @@ defmodule BeamWeaver.Memory.Query do
     do: do_tokenize(rest, finalize_token(tokens, current), "")
 
   defp do_tokenize(["[" | rest], tokens, current) do
-    with {inside, rest} when inside != nil <- take_until(rest, "]"),
+    with {inside, ["]" | rest]} <- Enum.split_while(rest, &(&1 != "]")),
          {:ok, token} <- inside |> Enum.join() |> bracket_token() do
       do_tokenize(rest, [token | finalize_token(tokens, current)], "")
     else
@@ -319,7 +320,7 @@ defmodule BeamWeaver.Memory.Query do
   end
 
   defp do_tokenize(["{" | rest], tokens, current) do
-    with {inside, rest} when inside != nil <- take_until(rest, "}"),
+    with {inside, ["}" | rest]} <- Enum.split_while(rest, &(&1 != "}")),
          options when options != [] <-
            inside |> Enum.join() |> String.split(",", trim: true) |> Enum.map(&String.trim/1),
          true <- Enum.all?(options, &(&1 != "")) do
@@ -336,14 +337,6 @@ defmodule BeamWeaver.Memory.Query do
   defp finalize_token(tokens, "*"), do: [:wildcard | tokens]
   defp finalize_token(tokens, current), do: [{:key, current} | tokens]
 
-  defp take_until(chars, terminator), do: do_take_until(chars, terminator, [])
-
-  defp do_take_until([], _terminator, _acc), do: {nil, []}
-  defp do_take_until([terminator | rest], terminator, acc), do: {Enum.reverse(acc), rest}
-
-  defp do_take_until([char | rest], terminator, acc),
-    do: do_take_until(rest, terminator, [char | acc])
-
   defp bracket_token("*"), do: {:ok, :wildcard}
 
   defp bracket_token(value) do
@@ -355,19 +348,6 @@ defmodule BeamWeaver.Memory.Query do
 
   defp normalize_path(path) when is_binary(path) or is_list(path), do: tokenize_path(path)
   defp normalize_path(_path), do: :error
-
-  defp normalize_token_list(tokens) do
-    Enum.reduce_while(tokens, {:ok, []}, fn token, {:ok, acc} ->
-      case normalize_token(token) do
-        {:ok, normalized} -> {:cont, {:ok, [normalized | acc]}}
-        :error -> {:halt, :error}
-      end
-    end)
-    |> case do
-      {:ok, normalized} -> {:ok, Enum.reverse(normalized)}
-      :error -> :error
-    end
-  end
 
   defp normalize_token({:key, key}) when is_binary(key), do: {:ok, {:key, key}}
   defp normalize_token({:index, index}) when is_integer(index), do: {:ok, {:index, index}}
@@ -438,15 +418,9 @@ defmodule BeamWeaver.Memory.Query do
   end
 
   defp extract_key(map, key) when is_map(map) do
-    cond do
-      Map.has_key?(map, key) ->
-        [Map.fetch!(map, key)]
-
-      Enum.any?(Map.keys(map), &(to_string(&1) == key)) ->
-        [map[Enum.find(Map.keys(map), &(to_string(&1) == key))]]
-
-      true ->
-        []
+    case fetch_key(map, key) do
+      {:ok, value} -> [value]
+      :error -> []
     end
   end
 
@@ -481,20 +455,9 @@ defmodule BeamWeaver.Memory.Query do
     end
   end
 
-  defp query_texts(item) do
-    [
-      Map.get(item, :value),
-      Map.get(item, :metadata, %{}) || %{}
-    ]
-    |> Enum.flat_map(&string_values/1)
-  end
+  defp query_texts(item), do: Enum.flat_map([item.value, item.metadata || %{}], &string_values/1)
 
-  defp json_text(value) do
-    value
-    |> json_search_value()
-    |> sort_json_value()
-    |> BeamWeaver.JSON.encode!()
-  end
+  defp json_text(value), do: value |> json_search_value() |> BeamWeaver.JSON.encode!()
 
   defp json_search_value(%_struct{} = value) do
     case BeamWeaver.JSON.encode(value) do
@@ -537,14 +500,4 @@ defmodule BeamWeaver.Memory.Query do
     Protocol.UndefinedError -> :error
     ArgumentError -> :error
   end
-
-  defp sort_json_value(map) when is_map(map) do
-    map
-    |> Enum.sort_by(fn {key, _value} -> to_string(key) end)
-    |> Enum.map(fn {key, value} -> {to_string(key), sort_json_value(value)} end)
-    |> Map.new()
-  end
-
-  defp sort_json_value(list) when is_list(list), do: Enum.map(list, &sort_json_value/1)
-  defp sort_json_value(value), do: value
 end

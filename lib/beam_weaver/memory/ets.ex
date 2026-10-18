@@ -138,7 +138,7 @@ defmodule BeamWeaver.Memory.ETS do
   def search(%__MODULE__{} = store, namespace, opts) do
     items = live_items(store)
 
-    case vector_scores(store, namespace, items, opts) do
+    case vector_scores(store, namespace, opts) do
       {:ok, scores} -> items |> Query.vector_search_items(namespace, scores, opts) |> maybe_refresh(store, opts)
       :skip -> items |> Query.search_items(namespace, opts) |> maybe_refresh(store, opts)
       {:error, _error} = error -> error
@@ -231,9 +231,10 @@ defmodule BeamWeaver.Memory.ETS do
   defp embed_documents(%{embed: embed}, texts) when is_struct(embed), do: EmbeddingModel.embed_documents(embed, texts)
   defp embed_documents(_config, texts), do: {:ok, Enum.map(texts, &fallback_vector/1)}
 
-  defp vector_scores(%__MODULE__{index_config: nil}, _namespace, _items, _opts), do: :skip
+  defp vector_scores(%__MODULE__{index_config: nil}, _namespace, _opts), do: :skip
 
-  defp vector_scores(%__MODULE__{} = store, namespace, items, opts) do
+  # Records without vectors get no score.
+  defp vector_scores(%__MODULE__{} = store, namespace, opts) do
     query = Keyword.get(opts, :query)
 
     if is_nil(query) do
@@ -242,19 +243,12 @@ defmodule BeamWeaver.Memory.ETS do
       query = to_string(query)
 
       with {:ok, query_vector} <- embed_query(store.index_config, query) do
-        indexed_scores =
+        scores =
           for {{item_namespace, _key} = item_key, entries} <- :ets.tab2list(store.vectors),
               Query.namespace_prefix?(item_namespace, namespace),
-              do: {item_key, best_score(query_vector, entries)}
+              do: {item_key, entries |> Enum.map(&cosine(query_vector, &1.vector)) |> Enum.max(fn -> nil end)}
 
-        indexed_keys = MapSet.new(indexed_scores, fn {key, _score} -> key end)
-
-        nil_scores =
-          items
-          |> Enum.reject(&MapSet.member?(indexed_keys, {&1.namespace, &1.key}))
-          |> Enum.map(&{{&1.namespace, &1.key}, nil})
-
-        {:ok, indexed_scores ++ nil_scores}
+        {:ok, scores}
       end
     end
   end
@@ -262,15 +256,8 @@ defmodule BeamWeaver.Memory.ETS do
   defp embed_query(%{embed: embed}, query) when is_struct(embed), do: EmbeddingModel.embed_query(embed, query)
   defp embed_query(_config, query), do: {:ok, fallback_vector(query)}
 
-  defp best_score(query_vector, entries) do
-    entries
-    |> Enum.map(&cosine(query_vector, &1.vector))
-    |> Enum.max(fn -> nil end)
-  end
-
   defp fallback_vector(text) do
-    text = String.downcase(to_string(text))
-    chars = String.to_charlist(text)
+    chars = text |> String.downcase() |> String.to_charlist()
 
     for bucket <- 0..63 do
       Enum.count(chars, &(rem(&1, 64) == bucket))

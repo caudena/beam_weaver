@@ -16,7 +16,7 @@ defmodule BeamWeaver.Checkpoint.Ecto.Rows do
 
     Enum.map(checkpoint_rows, fn row ->
       tuple = base_tuple_from_row(saver, row)
-      pending = Map.get(pending_by_key, tuple_key(tuple), empty_pending())
+      pending = Map.get(pending_by_key, checkpoint_key(tuple.config["configurable"]), empty_pending())
       parent_pending = Map.get(pending_by_key, parent_key(tuple), empty_pending())
 
       tuple
@@ -100,8 +100,6 @@ defmodule BeamWeaver.Checkpoint.Ecto.Rows do
   defp write_key(row) do
     {row.thread_id, row.checkpoint_ns, row.checkpoint_id, row.task_id, row.write_index}
   end
-
-  defp tuple_key(tuple), do: checkpoint_key(tuple.config["configurable"])
 
   defp parent_key(%{parent_config: %{} = parent_config}),
     do: checkpoint_key(parent_config["configurable"])

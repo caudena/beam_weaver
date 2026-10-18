@@ -61,7 +61,7 @@ defmodule BeamWeaver.Anthropic.Tools do
 
     tool
     |> to_anthropic_tool(render_opts)
-    |> merge_options(merge_opts)
+    |> Map.merge(BeamWeaver.MapShape.stringify_entries(merge_opts))
   end
 
   @doc "Builds a text editor server tool."
@@ -140,7 +140,7 @@ defmodule BeamWeaver.Anthropic.Tools do
   end
 
   defp normalize_tool_map(%{"type" => type} = tool, _opts) when is_binary(type) do
-    if builtin_tool?(tool), do: tool, else: maybe_openai_tool(tool)
+    if type in ["function", "custom"], do: maybe_openai_tool(tool), else: tool
   end
 
   defp normalize_tool_map(%{"name" => _name, "input_schema" => _schema} = tool, _opts), do: tool
@@ -169,12 +169,6 @@ defmodule BeamWeaver.Anthropic.Tools do
 
   defp maybe_openai_tool(tool), do: tool
 
-  defp builtin_tool?(%{"type" => type}) when is_binary(type) do
-    type not in ["function", "custom"]
-  end
-
-  defp builtin_tool?(_tool), do: false
-
   defp server_tool(opts, type, defaults \\ []) do
     {type, opts} = Keyword.pop(opts, :type, type)
     build(type, Keyword.merge(defaults, opts))
@@ -184,10 +178,6 @@ defmodule BeamWeaver.Anthropic.Tools do
     opts
     |> BeamWeaver.MapShape.stringify_entries()
     |> Map.put("type", type)
-  end
-
-  defp merge_options(tool, opts) do
-    Map.merge(tool, BeamWeaver.MapShape.stringify_entries(opts))
   end
 
   defp render_opts(opts) do

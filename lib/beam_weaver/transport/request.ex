@@ -73,18 +73,11 @@ defmodule BeamWeaver.Transport.Request do
   def normalize_headers(headers) when is_map(headers) or is_list(headers) do
     headers
     |> Enum.flat_map(fn
-      {key, value} -> normalize_header(key, value)
+      {key, values} when is_list(values) -> Enum.map(values, &normalize_header_pair(key, &1))
+      {key, value} -> [normalize_header_pair(key, value)]
       other when is_binary(other) -> []
     end)
     |> Enum.sort()
-  end
-
-  defp normalize_header(key, values) when is_list(values) do
-    Enum.map(values, &normalize_header_pair(key, &1))
-  end
-
-  defp normalize_header(key, value) do
-    [normalize_header_pair(key, value)]
   end
 
   defp normalize_header_pair(key, value) do

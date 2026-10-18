@@ -80,11 +80,11 @@ defmodule BeamWeaver.Stream.Subgraphs do
   defp direct_child_paths(events, scope) do
     scope_length = length(scope)
 
-    events
-    |> Enum.map(&Namespace.normalize(Map.get(&1, :namespace, []), stringify: true))
-    |> Enum.filter(&(length(&1) > scope_length and Enum.take(&1, scope_length) == scope))
-    |> Enum.map(&Enum.take(&1, scope_length + 1))
-    |> Enum.uniq()
+    for event <- events,
+        path = Namespace.normalize(Map.get(event, :namespace, []), stringify: true),
+        length(path) > scope_length and Enum.take(path, scope_length) == scope,
+        uniq: true,
+        do: Enum.take(path, scope_length + 1)
   end
 
   defp build_run(path, events) do

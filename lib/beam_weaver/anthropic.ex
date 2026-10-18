@@ -16,7 +16,8 @@ defmodule BeamWeaver.Anthropic do
   @spec chat_model(keyword()) :: ChatModel.t()
   def chat_model(opts \\ []) do
     opts
-    |> provider_opts()
+    |> Keyword.put_new(:api_key, Config.get([:anthropic, :api_key]))
+    |> Keyword.put_new_lazy(:base_url, fn -> Config.get([:anthropic, :base_url]) end)
     |> put_count_tokens_endpoint()
     |> ChatModel.new()
   end
@@ -26,12 +27,6 @@ defmodule BeamWeaver.Anthropic do
   """
   @spec tools() :: module()
   def tools, do: Tools
-
-  defp provider_opts(opts) do
-    opts
-    |> Keyword.put_new(:api_key, Config.get([:anthropic, :api_key]))
-    |> Keyword.put_new_lazy(:base_url, fn -> Config.get([:anthropic, :base_url]) end)
-  end
 
   defp put_count_tokens_endpoint(opts) do
     case Keyword.get(opts, :endpoint) do

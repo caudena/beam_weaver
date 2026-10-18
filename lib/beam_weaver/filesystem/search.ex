@@ -9,16 +9,11 @@ defmodule BeamWeaver.Filesystem.Search do
   def immediate_entries(files, path) do
     prefix = if path == "/", do: "/", else: path <> "/"
 
-    files
-    |> Map.keys()
-    |> Enum.filter(&String.starts_with?(&1, prefix))
-    |> Enum.map(fn file_path ->
+    for file_path <- Map.keys(files), String.starts_with?(file_path, prefix), uniq: true do
       rest = String.replace_prefix(file_path, prefix, "")
       [name | _tail] = String.split(rest, "/", parts: 2)
-      child_path = if path == "/", do: "/" <> name, else: path <> "/" <> name
-      {child_path, String.contains?(rest, "/")}
-    end)
-    |> Enum.uniq()
+      {prefix <> name, String.contains?(rest, "/")}
+    end
     |> Enum.sort_by(&elem(&1, 0))
     |> Enum.map(fn {entry_path, dir?} ->
       %FileInfo{path: entry_path, is_dir: dir?, size: file_size(files[entry_path])}

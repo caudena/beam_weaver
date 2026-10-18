@@ -10,6 +10,7 @@ defmodule BeamWeaver.Serialization.JSON.Decoder do
   @type_tag "__beam_weaver_type__"
   @atom_keys_tag "__beam_weaver_atom_keys__"
   @plain_map_tag "map"
+  @calendar_types %{"datetime" => DateTime, "naive_datetime" => NaiveDateTime, "date" => Date, "time" => Time}
 
   def decode(%{@type_tag => @plain_map_tag, "entries" => entries}, registry)
       when is_list(entries) do
@@ -24,60 +25,23 @@ defmodule BeamWeaver.Serialization.JSON.Decoder do
   end
 
   def decode(%{@type_tag => "binary", "base64" => value}, _registry) when is_binary(value) do
-    case Base.decode64(value) do
-      {:ok, binary} ->
-        {:ok, binary}
-
-      :error ->
-        {:error, Error.new(:serialization_error, "encoded binary payload is not valid base64")}
-    end
+    with :error <- Base.decode64(value),
+         do: {:error, Error.new(:serialization_error, "encoded binary payload is not valid base64")}
   end
 
-  def decode(%{@type_tag => "datetime", "value" => value}, _registry)
-      when is_binary(value) do
-    case DateTime.from_iso8601(value) do
-      {:ok, datetime, _offset} ->
-        {:ok, datetime}
+  def decode(%{@type_tag => tag, "value" => value}, _registry)
+      when is_map_key(@calendar_types, tag) and is_binary(value) do
+    module = @calendar_types[tag]
+
+    case module.from_iso8601(value) do
+      {:ok, decoded, _offset} ->
+        {:ok, decoded}
+
+      {:ok, decoded} ->
+        {:ok, decoded}
 
       {:error, reason} ->
-        {:error,
-         Error.new(:serialization_error, "encoded DateTime is invalid", %{
-           reason: inspect(reason)
-         })}
-    end
-  end
-
-  def decode(%{@type_tag => "naive_datetime", "value" => value}, _registry)
-      when is_binary(value) do
-    case NaiveDateTime.from_iso8601(value) do
-      {:ok, datetime} ->
-        {:ok, datetime}
-
-      {:error, reason} ->
-        {:error,
-         Error.new(:serialization_error, "encoded NaiveDateTime is invalid", %{
-           reason: inspect(reason)
-         })}
-    end
-  end
-
-  def decode(%{@type_tag => "date", "value" => value}, _registry) when is_binary(value) do
-    case Date.from_iso8601(value) do
-      {:ok, date} ->
-        {:ok, date}
-
-      {:error, reason} ->
-        {:error, Error.new(:serialization_error, "encoded Date is invalid", %{reason: inspect(reason)})}
-    end
-  end
-
-  def decode(%{@type_tag => "time", "value" => value}, _registry) when is_binary(value) do
-    case Time.from_iso8601(value) do
-      {:ok, time} ->
-        {:ok, time}
-
-      {:error, reason} ->
-        {:error, Error.new(:serialization_error, "encoded Time is invalid", %{reason: inspect(reason)})}
+        {:error, Error.new(:serialization_error, "encoded #{inspect(module)} is invalid", %{reason: inspect(reason)})}
     end
   end
 
@@ -192,30 +156,16 @@ defmodule BeamWeaver.Serialization.JSON.Decoder do
   # An exception's `__exception__` field comes from its module, like
   # `__struct__`.
   defp decode_struct_fields(map, module, registry) do
-    allowed =
-      module.__struct__()
-      |> Map.from_struct()
-      |> Map.delete(:__exception__)
-      |> Map.keys()
-      |> MapSet.new()
+    allowed = module.__struct__() |> Map.from_struct() |> Map.delete(:__exception__) |> Map.keys()
 
-    map
-    |> Enum.reduce_while({:ok, %{}}, fn {key, value}, {:ok, acc} ->
-      atom_key = existing_field(key, allowed)
+    fields = for {key, value} <- map, field = Enum.find(allowed, &(Atom.to_string(&1) == key)), do: {field, value}
 
-      if atom_key do
-        case decode(value, registry) do
-          {:ok, decoded} -> {:cont, {:ok, Map.put(acc, atom_key, decoded)}}
-          {:error, %Error{} = error} -> {:halt, {:error, error}}
-        end
-      else
-        {:cont, {:ok, acc}}
-      end
-    end)
-  end
+    decoded =
+      Result.traverse(fields, fn {field, value} ->
+        with {:ok, decoded} <- decode(value, registry), do: {:ok, {field, decoded}}
+      end)
 
-  defp existing_field(key, allowed) when is_binary(key) do
-    Enum.find(allowed, &(Atom.to_string(&1) == key))
+    with {:ok, pairs} <- decoded, do: {:ok, Map.new(pairs)}
   end
 
   defp decode_struct(BeamWeaver.Core.Message, fields) do

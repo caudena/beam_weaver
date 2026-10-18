@@ -57,7 +57,7 @@ defmodule BeamWeaver.Moonshot.Tools do
 
   defp render_chat_tool(tool) when is_map(tool) and not is_struct(tool) do
     tool = BeamWeaver.MapShape.stringify_keys(tool)
-    if builtin_tool?(tool), do: {:ok, tool}, else: render_function_tool(tool)
+    if tool["type"] == "builtin_function", do: {:ok, tool}, else: render_function_tool(tool)
   end
 
   defp render_chat_tool(tool), do: render_function_tool(tool)
@@ -91,9 +91,6 @@ defmodule BeamWeaver.Moonshot.Tools do
   end
 
   def web_search_tool?(_tool), do: false
-
-  defp builtin_tool?(%{"type" => "builtin_function"}), do: true
-  defp builtin_tool?(_tool), do: false
 
   defp validate_tool(%{"type" => type} = tool) when is_binary(type) do
     cond do

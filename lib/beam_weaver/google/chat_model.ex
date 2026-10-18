@@ -126,13 +126,9 @@ defmodule BeamWeaver.Google.ChatModel do
          :ok <- validate_builtin_tools(model, requested_tools),
          {:ok, {system, contents}} <- Messages.encode_messages(messages, opts),
          :ok <- validate_final_turn(model, contents),
-         {:ok, tools} <- Tools.render_tools(requested_tools, opts),
+         {:ok, tools} <- Tools.render_tools(requested_tools),
          {:ok, tool_config} <-
-           Tools.render_tool_choice(
-             effective_tool_choice(opts, requested_tools, requested_tool_choice),
-             requested_tools,
-             opts
-           ) do
+           Tools.render_tool_choice(effective_tool_choice(opts, requested_tools, requested_tool_choice)) do
       tool_config = tool_config(model, opts, tool_config)
 
       body =
@@ -155,17 +151,10 @@ defmodule BeamWeaver.Google.ChatModel do
     with {:ok, {system, contents}} <- Messages.encode_messages(messages, opts) do
       request =
         %{"contents" => contents}
-        |> Options.put_optional("systemInstruction", Options.empty_to_nil(system))
-        |> Options.put_optional("generationConfig", Options.empty_to_nil(generation_config(model, opts)))
+        |> Options.put_optional("systemInstruction", system)
+        |> Options.put_optional("generationConfig", generation_config(model, opts))
 
-      body =
-        if map_size(request) > 1 do
-          %{"generateContentRequest" => request}
-        else
-          request
-        end
-
-      {:ok, body}
+      {:ok, if(map_size(request) > 1, do: %{"generateContentRequest" => request}, else: request)}
     end
   end
 
@@ -373,41 +362,14 @@ defmodule BeamWeaver.Google.ChatModel do
     end
   end
 
+  # The model's parameters, every struct field but these, with the call's.
+  @non_param_fields ~w(model base_url endpoint api_key default_headers extra_body labels profile tokenizer param_policy
+                       streaming include_response_headers transport transport_opts timeout)a
+
   defp request_params(model, opts) do
     model
     |> Map.from_struct()
-    |> Map.take([
-      :candidate_count,
-      :temperature,
-      :top_k,
-      :top_p,
-      :frequency_penalty,
-      :presence_penalty,
-      :max_output_tokens,
-      :stop_sequences,
-      :logprobs,
-      :response_logprobs,
-      :response_mime_type,
-      :response_schema,
-      :response_json_schema,
-      :response_format_config,
-      :response_modalities,
-      :media_resolution,
-      :seed,
-      :thinking_level,
-      :thinking_budget,
-      :include_thoughts,
-      :safety_settings,
-      :cached_content,
-      :image_config,
-      :speech_config,
-      :generation_config,
-      :tool_config,
-      :include_server_side_tool_invocations,
-      :retrieval_config,
-      :service_tier,
-      :store
-    ])
+    |> Map.drop(@non_param_fields)
     |> Map.merge(Map.new(opts))
     |> Map.delete(:metadata)
   end

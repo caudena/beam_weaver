@@ -72,7 +72,7 @@ defmodule BeamWeaver.Agent.ValidationNode do
 
   defp schema_entry!(%Tool{} = tool), do: {Tool.name(tool), Tool.input_schema(tool)}
 
-  defp schema_entry!(tool) when is_map(tool) do
+  defp schema_entry!(tool) when is_map(tool) and not is_struct(tool) do
     name = Map.get(tool, :name) || Map.get(tool, "name")
 
     schema =
@@ -111,10 +111,7 @@ defmodule BeamWeaver.Agent.ValidationNode do
   defp extract_from_messages(messages, shape) do
     messages
     |> Enum.reverse()
-    |> Enum.find(fn
-      %Message{role: :assistant} -> true
-      _other -> false
-    end)
+    |> Enum.find(&match?(%Message{role: :assistant}, &1))
     |> case do
       %Message{tool_calls: tool_calls} when is_list(tool_calls) -> {:ok, tool_calls, shape}
       _other -> {:ok, [], shape}
@@ -155,7 +152,7 @@ defmodule BeamWeaver.Agent.ValidationNode do
   defp valid_call_message(%__MODULE__{success: :silent}, _call), do: nil
 
   defp valid_call_message(%__MODULE__{}, call) do
-    Message.tool(format_valid_args(call.args),
+    Message.tool(BeamWeaver.JSON.encode_or_inspect(call.args),
       tool_call_id: call.id,
       name: call.name,
       metadata: %{status: "success"}
@@ -178,13 +175,6 @@ defmodule BeamWeaver.Agent.ValidationNode do
       name: Input.tool_call_name(call),
       args: Input.tool_call_args(call)
     }
-  end
-
-  defp format_valid_args(args) do
-    case BeamWeaver.JSON.encode(args) do
-      {:ok, json} -> json
-      {:error, _error} -> inspect(args)
-    end
   end
 
   defp format_error(%__MODULE__{format_error: formatter}, %Error{} = error, call)

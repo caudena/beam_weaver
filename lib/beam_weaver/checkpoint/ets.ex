@@ -223,10 +223,9 @@ defmodule BeamWeaver.Checkpoint.ETS do
     end)
 
     source_records
-    |> Enum.group_by(fn {namespace, _checkpoint_id, _record} -> namespace end)
-    |> Enum.each(fn {namespace, records} ->
-      highest = records |> Enum.map(fn {_namespace, _id, record} -> record.commit_order end) |> Enum.max()
-      :ets.insert(saver.counter, {{:commit_order, target_thread_id, namespace}, highest})
+    |> Enum.group_by(&elem(&1, 0), fn {_namespace, _id, record} -> record.commit_order end)
+    |> Enum.each(fn {namespace, orders} ->
+      :ets.insert(saver.counter, {{:commit_order, target_thread_id, namespace}, Enum.max(orders)})
     end)
 
     :ok
@@ -295,35 +294,24 @@ defmodule BeamWeaver.Checkpoint.ETS do
   defp put_pending_writes(saver, records) when is_list(records) do
     parents = Map.new(records, &{checkpoint_key(&1), stored_parent_key(saver, &1)})
 
-    keys =
-      records
-      |> MapSet.new(&checkpoint_key/1)
-      |> MapSet.union(MapSet.new(for {_key, parent_key} <- parents, parent_key, do: parent_key))
+    keys = MapSet.new(Map.keys(parents) ++ for({_key, parent_key} <- parents, parent_key, do: parent_key))
 
-    pending =
-      saver
-      |> checkpoint_writes(keys)
-      |> Enum.reduce(%{}, fn
-        {{thread, namespace, checkpoint, task, index}, {channel, value, path}}, acc ->
-          key = {thread, namespace, checkpoint}
+    writes =
+      for {{thread, namespace, checkpoint, task, index}, {channel, value, path}} <- checkpoint_writes(saver, keys),
+          MapSet.member?(keys, {thread, namespace, checkpoint}) do
+        %PendingWrite{
+          thread_id: thread,
+          checkpoint_ns: namespace,
+          checkpoint_id: checkpoint,
+          task_id: task,
+          index: index,
+          channel: channel,
+          value: value,
+          path: path || ""
+        }
+      end
 
-          if MapSet.member?(keys, key) do
-            write = %PendingWrite{
-              thread_id: thread,
-              checkpoint_ns: namespace,
-              checkpoint_id: checkpoint,
-              task_id: task,
-              index: index,
-              channel: channel,
-              value: value,
-              path: path || ""
-            }
-
-            Map.update(acc, key, [write], &[write | &1])
-          else
-            acc
-          end
-      end)
+    pending = Enum.group_by(writes, &{&1.thread_id, &1.checkpoint_ns, &1.checkpoint_id})
 
     Enum.map(records, fn record ->
       key = checkpoint_key(record)
@@ -510,8 +498,12 @@ defmodule BeamWeaver.Checkpoint.ETS do
       # order and its parent.
       {order, parent_config} =
         case :ets.lookup(saver.checkpoints, key) do
-          [{^key, record}] -> {record.commit_order, record.parent_config}
-          [] -> {next_commit_order(saver, thread_id, namespace), parent_config(stored_config, parent_id)}
+          [{^key, record}] ->
+            {record.commit_order, record.parent_config}
+
+          [] ->
+            parent_config = parent_id && put_in(stored_config, ["configurable", "checkpoint_id"], parent_id)
+            {next_commit_order(saver, thread_id, namespace), parent_config}
         end
 
       record = %{
@@ -531,12 +523,6 @@ defmodule BeamWeaver.Checkpoint.ETS do
     else
       {:error, Error.new(:invalid_checkpoint, "checkpoint config requires thread_id")}
     end
-  end
-
-  defp parent_config(_config, nil), do: nil
-
-  defp parent_config(config, parent_id) do
-    put_in(config, ["configurable", "checkpoint_id"], parent_id)
   end
 
   defp prepare_batch(saver, entries) do
@@ -567,7 +553,7 @@ defmodule BeamWeaver.Checkpoint.ETS do
     writes
     |> Enum.with_index()
     |> Result.traverse(fn {write, index} ->
-      case normalize_batch_write(write, default_task, default_path) do
+      case Batch.write(write, default_task, default_path) do
         {:ok, task_id, write_index, channel, value, path} ->
           {:ok, {{thread_id, namespace, checkpoint_id, task_id, write_index || index}, {channel, value, path}}}
 
@@ -576,22 +562,6 @@ defmodule BeamWeaver.Checkpoint.ETS do
       end
     end)
   end
-
-  defp normalize_batch_write(%PendingWrite{} = write, _task, _path),
-    do: {:ok, write.task_id, write.index, to_string(write.channel), write.value, write.path || ""}
-
-  defp normalize_batch_write({task, channel, value, path}, _default_task, _default_path)
-       when is_binary(task),
-       do: {:ok, task, nil, to_string(channel), value, to_string(path || "")}
-
-  defp normalize_batch_write({task, channel, value}, _default_task, default_path)
-       when is_binary(task),
-       do: {:ok, task, nil, to_string(channel), value, to_string(default_path || "")}
-
-  defp normalize_batch_write({channel, value}, task, path),
-    do: {:ok, task, nil, to_string(channel), value, to_string(path || "")}
-
-  defp normalize_batch_write(_write, _task, _path), do: :error
 
   defp ensure_new_keys(saver, prepared) do
     keys = Enum.map(prepared, & &1.key)

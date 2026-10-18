@@ -1922,6 +1922,10 @@ embeddings](docs/testing.md#fake-embeddings).
 
 #### Agents
 
+- Model-call error details and structured-output traces show a model given
+  as a string by that string. Before, the details showed `"nil"`.
+- `Messages.Utils.trim/2` treats `include_system: nil` like leaving the
+  option out. Before, it raised `BadBooleanError`.
 - An agent whose model can't take images or PDFs keeps working once its
   thread holds them, such as after `read_file` returned one: the model gets a
   notice in their place. Before, every later call failed with
@@ -1994,6 +1998,19 @@ embeddings](docs/testing.md#fake-embeddings).
 
 #### Middleware
 
+- A `wrap_model_call` middleware can set the request's model to a
+  `"provider:model"` string, as in
+  `ModelRequest.override(request, model: "openai:gpt-5.5")`. The call
+  creates that model with its provider profile and sends it the request's
+  model options. A value that is no model returns `:invalid_agent_model`,
+  and a string that doesn't resolve returns its own error, both with the
+  request's `model_request` details. Before, the run failed with
+  `:agent_model_error` and no request details.
+- `Summarization.new/1` raises `ArgumentError` for a `keep` given as a list,
+  `{:all, …}` or `{:any, …}`. Before, it built, and the first summary
+  raised `FunctionClauseError`.
+- `ToolEmulator` emulates the tools given in `tools:` as modules. Before, it
+  stored the module name instead of the tool's name and never emulated them.
 - A model call whose middleware rewrites the thread, with an `Overwrite` of
   `messages` in an `ExtendedModelResponse` command, keeps the other messages
   the call saves: a message the rewrite kept takes its edit, a new message is
@@ -2168,6 +2185,10 @@ embeddings](docs/testing.md#fake-embeddings).
 
 #### Human review, checkpoints and resuming
 
+- `Checkpoint.put_many/3` on Ecto keeps the task id of a
+  `{task_id, channel, value}` write and accepts
+  `{task_id, channel, value, path}`, as ETS does. Before, it stored task id
+  `"checkpoint"` and raised `FunctionClauseError` on the 4-tuple.
 - A new message sent to a thread whose tool calls wait for review cancels
   the review. Each call of that turn that hasn't run gets a failed tool
   result, "Tool call send_email with id call_1 was not run: a new message
@@ -2421,6 +2442,15 @@ embeddings](docs/testing.md#fake-embeddings).
 
 #### Streaming
 
+- A model's typed event stream ends with one `Done`, carrying the usage, on
+  OpenAI, xAI, Moonshot (Kimi), Z.ai and DeepSeek Chat Completions when the
+  provider sends the usage in a chunk of its own after the finish reason,
+  and on Anthropic when a stream has more than one `message_delta`; so do
+  the events `OpenAI.Streaming.typed_events/1` makes of a whole Chat
+  Completions body. Gemini's `Done` carries the usage too, its
+  `usageMetadata`. Before, these streams ended with one `Done` per such
+  chunk or event, and only the last had the final usage; Gemini's had no
+  usage.
 - `stream_events/3` without `live: true` returned the steps in reverse order
   and each step's state events reversed, wrapped the model's `Token`,
   `MessageChunk` and `Done` events in `Events.Custom`, repeated each
@@ -2456,6 +2486,14 @@ embeddings](docs/testing.md#fake-embeddings).
 
 #### Memory, storage and caching
 
+- `Memory.search/3` on ETS matches a filter on a struct field by the
+  struct's JSON form, as Postgres stores it, and a struct with no JSON
+  form, such as a `URI`, matches nothing. Before, the search raised
+  `UndefinedFunctionError`.
+- `Migrations.up/1` on Postgres with `version: 0` migrates nothing and
+  creates no tables, as on SQLite. Before, it created the tables of schema
+  version 1 and then raised `UndefinedFunctionError` looking for a version 0
+  migration.
 - `Checkpoint.Ecto` gives a checkpoint saved without an id, as every graph and
   agent run saves them, a UUIDv7 id. The ids came from a counter that starts
   again whenever the VM boots, so a thread that continued after a restart or
@@ -2541,6 +2579,13 @@ embeddings](docs/testing.md#fake-embeddings).
 
 #### Tracing and telemetry
 
+- Redaction of trace inputs, metadata and outputs keeps a map key or pair
+  key that isn't a string, atom, number or charlist, such as `{:a, 1}`, and
+  still redacts the value under it. Before, `Tracing.start_run/2` with
+  `inputs: %{{:a, 1} => 1}` raised `Protocol.UndefinedError`.
+- A traced model call whose reply has a `response_metadata.transport` that
+  isn't a map, such as a streamed agent call, records no request id. Before,
+  finishing the trace run raised `FunctionClauseError`.
 - The local trace store no longer grows without bound: every graph run added
   about six runs that stayed until the node restarted. A run whose process
   exits before finishing it, such as a node or tool task killed at its
@@ -2591,6 +2636,21 @@ embeddings](docs/testing.md#fake-embeddings).
 
 #### Retrieval, prompts and parsers
 
+- A vector store `$contain` filter ignores case on ETS, as on Postgres,
+  and on Postgres takes `%`, `_` and `\` in the value literally. Before,
+  ETS was case-sensitive and Postgres read those characters as wildcards,
+  so `"0% o"` also matched `"500 off"`.
+- On Postgres, `$like` and `$contain` match string values and `$contain`
+  also matches a list element, as on ETS; other values match neither, and
+  `$not` around them matches documents without the key. Before, Postgres
+  matched numbers, booleans, lists and objects by their JSON text, so
+  `$like: "12"` matched the number 12 and `$contain: "red"` matched
+  `%{"red" => 1}`.
+- An ETS vector search scores embeddings with very large or very small
+  values. Before, a value such as `1.0e300` raised `ArithmeticError`.
+- The ETS vector store's `$like` filter matches as Postgres `ILIKE` does: the
+  whole value, ignoring case, with `%`, `_` and backslash escapes. Before, it
+  also matched any value containing the pattern.
 - Incremental and full indexing cleanup no longer deletes a source's old
   chunks when its new chunks failed to write; they stay searchable until a
   later run writes the new ones. Before, a failed batch left the source with
@@ -2615,6 +2675,9 @@ embeddings](docs/testing.md#fake-embeddings).
 
 #### Tools
 
+- `ValidationNode.new/2`, and so `validate_tools true`, takes tools given as
+  structs of a `use BeamWeaver.Tool` module. Before, it raised
+  `ArgumentError`.
 - `Core.Tool.invoke/3` with a tool-call input (`type: "tool_call"`) returns
   a tool's `%Graph.Command{}` as it is, as it does for plain arguments.
   Before, it came back as a tool message whose content was the command's
@@ -2643,6 +2706,11 @@ embeddings](docs/testing.md#fake-embeddings).
 
 #### Filesystem and sandboxes
 
+- `Sandbox.read/3` and `Sandbox.ls/3` on a Docker sandbox return an error
+  result for a relative or invalid path, as the other operations do, and
+  every Docker file operation returns `"invalid_path"` for a path that isn't
+  valid UTF-8. Before, read and ls raised `ArgumentError` on a relative path,
+  and read raised `ErlangError` on a path that isn't UTF-8.
 - A `Composite` with a route below a folder of its default backend, such as
   `/workspace/memories/`, lists and searches it from every folder above it:
   `ls /` shows `/workspace`, `ls /workspace` shows `/workspace/memories`, and
@@ -2742,6 +2810,27 @@ embeddings](docs/testing.md#fake-embeddings).
 
 #### Models and providers
 
+- OpenAI, xAI and DeepSeek Responses requests leave a nil field of
+  `reasoning:` out of the body, and leave `reasoning` out when no field is
+  left, as if no `reasoning:` were given, so `reasoning: %{effort: nil}`
+  falls back to `reasoning_effort:`. Before, the body sent
+  `"reasoning": {"effort": null}`.
+- DeepSeek's typed Chat Completions stream ends with one `Message` that
+  carries the usage, followed by one `Done`, and a stream without choices
+  ends with its `Done`, as on the other providers. Before, when DeepSeek
+  sent the finish reason and the usage in separate chunks, the stream had
+  two `Message` events, and the first had no usage; a stream without choices
+  ended with an `Error`.
+- `Models.init_chat_model/2`, `init_embeddings/2` and `init_decision_model/2`
+  return `{:error, %Error{type: :invalid_model}}` when `:model` is not an
+  identifier. Before, a keyword list or map never returned, and an integer
+  raised `FunctionClauseError`.
+- `Provider.Replay.restore/2` returns `{:error, %Error{type:
+  :invalid_provider_replay}}` for an OpenAI reasoning block with an unknown
+  provider field. Before, it raised `FunctionClauseError`.
+- OpenAI GPT-6 requests treat `reasoning: %{effort: nil}` as no effort.
+  Before, the request failed with "GPT-6 reasoning effort is not supported
+  by this model".
 - Chat Completions requests (OpenAI, xAI, Moonshot, Z.ai and
   OpenAI-compatible services) send a tool result's images and PDFs in a user
   message right after the run of tool results, each under a line naming its
@@ -2782,7 +2871,7 @@ embeddings](docs/testing.md#fake-embeddings).
   Chat Completions, Anthropic, Moonshot (Kimi), Z.ai and xAI Chat Completions
   models. The typed event stream of these models
   (`ChatModel.stream_typed_events/3` and `stream_events/3`) now ends with a
-  `Message` event holding the complete reply, followed by the `Done` events:
+  `Message` event holding the complete reply, followed by one `Done`:
   on Moonshot and Z.ai the reply `stream_response/3` returns, on the others
   the reply decoded as for a call without streaming, xAI's with its
   `reasoning_content` and `citations` metadata. An agent's streamed reply
@@ -3033,6 +3122,9 @@ embeddings](docs/testing.md#fake-embeddings).
 
 #### Compaction engine
 
+- `Compaction.compact/2` returns `:current_input_item_too_large` when every
+  event is protected. Before, it returned `:nothing_to_compact`, or with a
+  previous summary it reused that summary without calling the model.
 - `Compaction.compact/2` no longer forgets a lane's last compaction when the
   state was built with `State.new/1` and `record_success`, which let
   automatic compaction run again right away.

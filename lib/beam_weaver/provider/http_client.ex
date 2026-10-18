@@ -205,13 +205,10 @@ defmodule BeamWeaver.Provider.HTTPClient do
   def transport_opts(%__MODULE__{} = client, %Request{} = request, opts) do
     timeout = Keyword.get(opts, :timeout, client.timeout)
 
-    transport_opts = client.transport_opts |> Keyword.merge(opts) |> Keyword.put(:timeout, timeout)
-
-    Keyword.put(
-      transport_opts,
-      :beam_weaver_http_metadata,
-      HTTPMetadata.build(client.provider, request, timeout: Keyword.get(transport_opts, :timeout))
-    )
+    client.transport_opts
+    |> Keyword.merge(opts)
+    |> Keyword.put(:timeout, timeout)
+    |> Keyword.put(:beam_weaver_http_metadata, HTTPMetadata.build(client.provider, request, timeout: timeout))
   end
 
   defp headers(%__MODULE__{} = client, opts) do

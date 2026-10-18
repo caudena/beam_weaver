@@ -20,9 +20,7 @@ defmodule BeamWeaver.RateLimitPolicy do
           timeout: timeout()
         }
 
-  def new(opts \\ [])
-  def new(%__MODULE__{} = policy), do: validate(policy)
-  def new(opts), do: Policy.build(__MODULE__, opts, @fields, &validate/1)
+  def new(opts \\ []), do: Policy.build(__MODULE__, opts, @fields, &validate/1)
 
   def new!(opts \\ []), do: opts |> new() |> Policy.bang()
 

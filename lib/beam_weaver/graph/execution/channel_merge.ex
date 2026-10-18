@@ -265,7 +265,7 @@ defmodule BeamWeaver.Graph.Execution.ChannelMerge do
   defp put_step_value(step_update, _key, @skip), do: step_update
   defp put_step_value(step_update, key, value), do: Map.put(step_update, key, value)
 
-  defp apply_state_value(state, key, @delete), do: delete_state_key(state, key)
+  defp apply_state_value(state, key, @delete), do: state |> delete_state_key_aliases(key) |> Map.delete(key)
   defp apply_state_value(state, key, value), do: put_state_key(state, key, value)
 
   # Fires every join whose upstream nodes have all arrived: its channel leaves
@@ -329,12 +329,6 @@ defmodule BeamWeaver.Graph.Execution.ChannelMerge do
     state
     |> delete_state_key_aliases(key)
     |> Map.put(key, value)
-  end
-
-  defp delete_state_key(state, key) do
-    state
-    |> delete_state_key_aliases(key)
-    |> Map.delete(key)
   end
 
   defp delete_state_key_aliases(state, key) when is_atom(key) do

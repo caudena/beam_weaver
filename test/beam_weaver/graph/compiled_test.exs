@@ -238,13 +238,8 @@ defmodule BeamWeaver.Graph.CompiledTest do
 
   test "compiled graph loads unloaded context schema modules before falling back to type schema" do
     module = Module.concat(__MODULE__, :"UnloadedContextSchema#{System.unique_integer([:positive])}")
-    tmp_dir = Path.join(System.tmp_dir!(), "beam_weaver_graph_schema_#{System.unique_integer([:positive])}")
-    source_file = Path.join(tmp_dir, "unloaded_context_schema.ex")
 
-    File.mkdir_p!(tmp_dir)
-
-    File.write!(source_file, """
-    defmodule #{inspect(module)} do
+    compile_on_path!(module, """
       def __beam_weaver_schema__ do
         %{
           "type" => "object",
@@ -252,18 +247,7 @@ defmodule BeamWeaver.Graph.CompiledTest do
           "required" => ["value"]
         }
       end
-    end
     """)
-
-    assert {_output, 0} = System.cmd("elixirc", ["-o", tmp_dir, source_file], stderr_to_stdout: true)
-    true = Code.prepend_path(String.to_charlist(tmp_dir))
-
-    on_exit(fn ->
-      :code.purge(module)
-      :code.delete(module)
-      Code.delete_path(String.to_charlist(tmp_dir))
-      File.rm_rf(tmp_dir)
-    end)
 
     :code.purge(module)
     :code.delete(module)
@@ -285,30 +269,14 @@ defmodule BeamWeaver.Graph.CompiledTest do
 
   test "compiled graph surfaces context schema module load failures" do
     module = Module.concat(__MODULE__, :"UnloadableContextSchema#{System.unique_integer([:positive])}")
-    tmp_dir = Path.join(System.tmp_dir!(), "beam_weaver_bad_graph_schema_#{System.unique_integer([:positive])}")
-    source_file = Path.join(tmp_dir, "unloadable_context_schema.ex")
 
-    File.mkdir_p!(tmp_dir)
-
-    File.write!(source_file, """
-    defmodule #{inspect(module)} do
+    compile_on_path!(module, """
       @on_load :boom
 
       def boom, do: :erlang.error(:on_load_failed)
 
       def __beam_weaver_schema__, do: %{"type" => "object"}
-    end
     """)
-
-    assert {_output, 0} = System.cmd("elixirc", ["-o", tmp_dir, source_file], stderr_to_stdout: true)
-    true = Code.prepend_path(String.to_charlist(tmp_dir))
-
-    on_exit(fn ->
-      :code.purge(module)
-      :code.delete(module)
-      Code.delete_path(String.to_charlist(tmp_dir))
-      File.rm_rf(tmp_dir)
-    end)
 
     graph =
       Graph.new(context_schema: module)
@@ -930,20 +898,7 @@ defmodule BeamWeaver.Graph.CompiledTest do
   end
 
   test "update_state routes guarded edges from the manual node update" do
-    checkpointer = CheckpointETS.new()
-
-    graph =
-      Graph.new()
-      |> Graph.add_node(:route, fn state -> %{route: state.route} end)
-      |> Graph.add_node(:left, fn _state -> %{path: :left} end)
-      |> Graph.add_node(:right, fn _state -> %{path: :right} end)
-      |> Graph.add_edge(Graph.start(), :route)
-      |> Graph.add_edge(:route, :left, when: %{route: :left})
-      |> Graph.add_edge(:route, :right, when: %{route: :right})
-      |> Graph.add_edge(:left, Graph.end_node())
-      |> Graph.add_edge(:right, Graph.end_node())
-      |> Graph.compile!(checkpointer: checkpointer)
-
+    graph = guarded_route_graph(checkpointer: CheckpointETS.new())
     config = %{"configurable" => %{"thread_id" => "manual-update-guarded-route"}}
 
     assert {:ok, %{path: :left}} = Compiled.invoke(graph, %{route: :left}, config: config)
@@ -965,20 +920,7 @@ defmodule BeamWeaver.Graph.CompiledTest do
   end
 
   test "update_state infers guarded-edge source nodes" do
-    checkpointer = CheckpointETS.new()
-
-    graph =
-      Graph.new()
-      |> Graph.add_node(:route, fn state -> %{route: state.route} end)
-      |> Graph.add_node(:left, fn _state -> %{path: :left} end)
-      |> Graph.add_node(:right, fn _state -> %{path: :right} end)
-      |> Graph.add_edge(Graph.start(), :route)
-      |> Graph.add_edge(:route, :left, when: %{route: :left})
-      |> Graph.add_edge(:route, :right, when: %{route: :right})
-      |> Graph.add_edge(:left, Graph.end_node())
-      |> Graph.add_edge(:right, Graph.end_node())
-      |> Graph.compile!(checkpointer: checkpointer, interrupt_after: [:route])
-
+    graph = guarded_route_graph(checkpointer: CheckpointETS.new(), interrupt_after: [:route])
     config = %{"configurable" => %{"thread_id" => "manual-update-infer-guarded-route"}}
 
     assert {:interrupted, %{timing: :after, nodes: ["route"]}} =
@@ -1122,31 +1064,7 @@ defmodule BeamWeaver.Graph.CompiledTest do
   end
 
   test "failed supersteps persist successful task writes as pending writes" do
-    parent = self()
-    checkpointer = CheckpointETS.new()
-
-    graph =
-      Graph.new()
-      |> Graph.add_node(:fanout, fn _state ->
-        [
-          %Send{node: :ok, update: %{value: "pending"}},
-          %Send{node: :fail, update: %{attempt: 1}}
-        ]
-      end)
-      |> Graph.add_node(:ok, fn state ->
-        send(parent, :ok_ran)
-        %{kept: state[:value]}
-      end)
-      |> Graph.add_node(:fail, fn state ->
-        if state[:retry_ok],
-          do: %{observed: "#{state[:kept]}:#{state[:attempt]}"},
-          else: {:error, Error.new(:node_failed, "boom")}
-      end)
-      |> Graph.add_edge(Graph.start(), :fanout)
-      |> Graph.add_edge(:ok, Graph.end_node())
-      |> Graph.add_edge(:fail, Graph.end_node())
-      |> Graph.compile!(checkpointer: checkpointer)
-
+    graph = ok_and_failing_sends(%Send{node: :ok, update: %{value: "pending"}})
     config = %{"configurable" => %{"thread_id" => "pending-writes"}}
 
     assert {:error, %Error{type: :node_failed}} = Compiled.invoke(graph, %{}, config: config)
@@ -1189,35 +1107,11 @@ defmodule BeamWeaver.Graph.CompiledTest do
   end
 
   test "send timeout is checkpointed and replayed with pending writes" do
-    parent = self()
-    checkpointer = CheckpointETS.new()
-
-    graph =
-      Graph.new()
-      |> Graph.add_node(:fanout, fn _state ->
-        [
-          %Send{node: :ok, update: %{value: "pending"}, timeout: 250},
-          %Send{node: :fail, update: %{attempt: 1}}
-        ]
-      end)
-      |> Graph.add_node(:ok, fn state ->
-        send(parent, :timeout_ok_ran)
-        %{kept: state[:value]}
-      end)
-      |> Graph.add_node(:fail, fn state ->
-        if state[:retry_ok],
-          do: %{observed: "#{state[:kept]}:#{state[:attempt]}"},
-          else: {:error, Error.new(:node_failed, "boom")}
-      end)
-      |> Graph.add_edge(Graph.start(), :fanout)
-      |> Graph.add_edge(:ok, Graph.end_node())
-      |> Graph.add_edge(:fail, Graph.end_node())
-      |> Graph.compile!(checkpointer: checkpointer)
-
+    graph = ok_and_failing_sends(%Send{node: :ok, update: %{value: "pending"}, timeout: 250})
     config = %{"configurable" => %{"thread_id" => "pending-writes-send-timeout"}}
 
     assert {:error, %Error{type: :node_failed}} = Compiled.invoke(graph, %{}, config: config)
-    assert_receive :timeout_ok_ran
+    assert_receive :ok_ran
 
     assert {:ok, snapshot} = Compiled.get_state(graph, config)
 
@@ -1242,7 +1136,7 @@ defmodule BeamWeaver.Graph.CompiledTest do
     assert {:ok, %{observed: "pending:1"}} =
              Compiled.invoke(graph, %{retry_ok: true}, config: config)
 
-    refute_receive :timeout_ok_ran, 50
+    refute_receive :ok_ran, 50
   end
 
   test "a failing node waits for its siblings and persists their writes" do
@@ -1288,6 +1182,69 @@ defmodule BeamWeaver.Graph.CompiledTest do
     refute_receive :slow_ok_finished, 50
   end
 
+  defp answer_graph(opts \\ []) do
+    Graph.new(opts)
+    |> Graph.add_node(:answer, fn _state -> %{answer: 42} end)
+    |> Graph.add_edge(Graph.start(), :answer)
+    |> Graph.add_edge(:answer, Graph.end_node())
+    |> Graph.compile!()
+  end
+
+  # Compiles `module` with `body` into a directory on the code path, without
+  # loading it.
+  defp compile_on_path!(module, body) do
+    tmp_dir = Path.join(System.tmp_dir!(), "beam_weaver_graph_schema_#{System.unique_integer([:positive])}")
+    source_file = Path.join(tmp_dir, "schema.ex")
+
+    File.mkdir_p!(tmp_dir)
+    File.write!(source_file, "defmodule #{inspect(module)} do\n#{body}end\n")
+
+    assert {_output, 0} = System.cmd("elixirc", ["-o", tmp_dir, source_file], stderr_to_stdout: true)
+    true = Code.prepend_path(String.to_charlist(tmp_dir))
+
+    on_exit(fn ->
+      :code.purge(module)
+      :code.delete(module)
+      Code.delete_path(String.to_charlist(tmp_dir))
+      File.rm_rf(tmp_dir)
+    end)
+  end
+
+  defp guarded_route_graph(compile_opts) do
+    Graph.new()
+    |> Graph.add_node(:route, fn state -> %{route: state.route} end)
+    |> Graph.add_node(:left, fn _state -> %{path: :left} end)
+    |> Graph.add_node(:right, fn _state -> %{path: :right} end)
+    |> Graph.add_edge(Graph.start(), :route)
+    |> Graph.add_edge(:route, :left, when: %{route: :left})
+    |> Graph.add_edge(:route, :right, when: %{route: :right})
+    |> Graph.add_edge(:left, Graph.end_node())
+    |> Graph.add_edge(:right, Graph.end_node())
+    |> Graph.compile!(compile_opts)
+  end
+
+  # A step whose `ok` task (`ok_send`) finishes and whose `fail` task fails
+  # until a run brings `retry_ok`.
+  defp ok_and_failing_sends(ok_send) do
+    parent = self()
+
+    Graph.new()
+    |> Graph.add_node(:fanout, fn _state -> [ok_send, %Send{node: :fail, update: %{attempt: 1}}] end)
+    |> Graph.add_node(:ok, fn state ->
+      send(parent, :ok_ran)
+      %{kept: state[:value]}
+    end)
+    |> Graph.add_node(:fail, fn state ->
+      if state[:retry_ok],
+        do: %{observed: "#{state[:kept]}:#{state[:attempt]}"},
+        else: {:error, Error.new(:node_failed, "boom")}
+    end)
+    |> Graph.add_edge(Graph.start(), :fanout)
+    |> Graph.add_edge(:ok, Graph.end_node())
+    |> Graph.add_edge(:fail, Graph.end_node())
+    |> Graph.compile!(checkpointer: CheckpointETS.new())
+  end
+
   # A node that reports its pid and then blocks until it is killed.
   defp hanging_node(parent) do
     fn _state ->
@@ -1321,12 +1278,7 @@ defmodule BeamWeaver.Graph.CompiledTest do
     refute function_exported?(Compiled, :stream, 3)
     refute function_exported?(Compiled, :async_stream, 3)
 
-    graph =
-      Graph.new()
-      |> Graph.add_node(:answer, fn _state -> %{answer: 42} end)
-      |> Graph.add_edge(Graph.start(), :answer)
-      |> Graph.add_edge(:answer, Graph.end_node())
-      |> Graph.compile!()
+    graph = answer_graph()
 
     assert {:ok, events} = Compiled.stream_events(graph, %{})
 
@@ -1416,12 +1368,7 @@ defmodule BeamWeaver.Graph.CompiledTest do
   end
 
   test "stream_events returns typed envelopes with graph metadata" do
-    graph =
-      Graph.new(name: "TypedStreamGraph")
-      |> Graph.add_node(:answer, fn _state -> %{answer: 42} end)
-      |> Graph.add_edge(Graph.start(), :answer)
-      |> Graph.add_edge(:answer, Graph.end_node())
-      |> Graph.compile!()
+    graph = answer_graph(name: "TypedStreamGraph")
 
     assert {:ok, events} = Compiled.stream_events(graph, %{})
 
@@ -1452,12 +1399,7 @@ defmodule BeamWeaver.Graph.CompiledTest do
   end
 
   test "stream_events wraps typed graph events with lifecycle metadata" do
-    graph =
-      Graph.new(name: "LifecycleGraph")
-      |> Graph.add_node(:answer, fn _state -> %{answer: 42} end)
-      |> Graph.add_edge(Graph.start(), :answer)
-      |> Graph.add_edge(:answer, Graph.end_node())
-      |> Graph.compile!()
+    graph = answer_graph(name: "LifecycleGraph")
 
     assert {:ok, events} =
              Compiled.stream_events(graph, %{}, run_id: "run-1", metadata: %{source: :test})
@@ -1491,12 +1433,7 @@ defmodule BeamWeaver.Graph.CompiledTest do
   end
 
   test "graph execution generates UUIDv7 run IDs by default" do
-    graph =
-      Graph.new(name: "GeneratedRunIdGraph")
-      |> Graph.add_node(:answer, fn _state -> %{answer: 42} end)
-      |> Graph.add_edge(Graph.start(), :answer)
-      |> Graph.add_edge(:answer, Graph.end_node())
-      |> Graph.compile!()
+    graph = answer_graph(name: "GeneratedRunIdGraph")
 
     assert {:ok, events} = Compiled.stream_events(graph, %{})
 

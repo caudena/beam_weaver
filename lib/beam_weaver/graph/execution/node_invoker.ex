@@ -321,7 +321,7 @@ defmodule BeamWeaver.Graph.Execution.NodeInvoker do
   # (`checkpointer: true`), where the call adds to that thread.
   defp put_subgraph_thread(opts, compiled, runtime, received) do
     cond do
-      Keyword.has_key?(opts, :resume) or Keyword.get(opts, :continue_from_checkpoint?, false) ->
+      continues_own_run?(opts) ->
         opts
 
       rerun?(runtime) ->
@@ -361,13 +361,13 @@ defmodule BeamWeaver.Graph.Execution.NodeInvoker do
 
   defp project_first_input(_spec, runtime, _graph), do: {:ok, runtime}
 
-  defp maybe_put_subgraph_resume(opts, %{scratchpad: %{resume_values: [_first | _rest] = values}}) do
-    Keyword.put(opts, :resume, subgraph_resume(values))
-  end
+  defp maybe_put_subgraph_resume(opts, %{scratchpad: %{resume_values: [single]}}),
+    do: Keyword.put(opts, :resume, single)
+
+  defp maybe_put_subgraph_resume(opts, %{scratchpad: %{resume_values: [_first | _rest] = values}}),
+    do: Keyword.put(opts, :resume, values)
 
   defp maybe_put_subgraph_resume(opts, _runtime), do: opts
-  defp subgraph_resume([single]), do: single
-  defp subgraph_resume(values), do: values
 
   # The subgraph sends its events to the parent's stream as it runs.
   defp maybe_collect_subgraph_stream(opts, %{

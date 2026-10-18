@@ -25,14 +25,8 @@ defmodule BeamWeaver.Graph.Execution.Collection do
   def new, do: %__MODULE__{}
 
   @spec add_result(t(), map(), TaskResult.t()) :: t()
-  def add_result(%__MODULE__{} = collection, entry, %TaskResult{status: :ok} = result) do
-    add_normalized_result(
-      collection,
-      entry,
-      %{update: result.update, updates: result.updates, sends: result.sends, next: result.next},
-      result.events
-    )
-  end
+  def add_result(%__MODULE__{} = collection, entry, %TaskResult{status: :ok} = result),
+    do: add_normalized_result(collection, entry, result, result.events)
 
   def add_result(
         %__MODULE__{} = collection,
@@ -58,7 +52,8 @@ defmodule BeamWeaver.Graph.Execution.Collection do
         events: collection.events ++ events,
         pending_writes:
           collection.pending_writes ++
-            task_pending_writes(entry, updates) ++ [TaskWrite.route(entry.prepared, route)]
+            Enum.flat_map(updates, &TaskWrite.from_update(entry.prepared, &1)) ++
+            [TaskWrite.route(entry.prepared, route)]
     }
   end
 
@@ -103,9 +98,5 @@ defmodule BeamWeaver.Graph.Execution.Collection do
       {:error, %Error{} = error} ->
         {:halt, halt(collection, :error, error)}
     end
-  end
-
-  defp task_pending_writes(entry, updates) when is_list(updates) do
-    Enum.flat_map(updates, &TaskWrite.from_update(entry.prepared, &1))
   end
 end

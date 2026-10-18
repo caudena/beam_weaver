@@ -11,9 +11,7 @@ defmodule BeamWeaver.Migrations.Postgres.Util do
     |> Enum.map_join(".", &~s("#{String.replace(&1, "\"", "\"\"")}"))
   end
 
-  def index(_prefix, table, suffix), do: quote_name(index_name(table, suffix))
-
-  defp index_name(table, suffix) do
+  def index(table, suffix) do
     base =
       table
       |> to_string()
@@ -21,7 +19,7 @@ defmodule BeamWeaver.Migrations.Postgres.Util do
       |> List.last()
       |> String.replace(~r/[^A-Za-z0-9_]/, "_")
 
-    "#{base}_#{suffix}"
+    quote_name("#{base}_#{suffix}")
   end
 
   def drop_table(%{opts: opts} = spec),
@@ -41,12 +39,4 @@ defmodule BeamWeaver.Migrations.Postgres.Util do
       do: :inner_product
 
   def normalize_distance(_distance), do: :cosine
-
-  def format_index_with(value, _opts) when is_binary(value), do: value
-
-  def format_index_with(value, _opts) when is_list(value) and value != [] do
-    Enum.map_join(value, ", ", fn {key, option_value} -> "#{key} = #{option_value}" end)
-  end
-
-  def format_index_with(_value, opts), do: Keyword.fetch!(opts, :default)
 end

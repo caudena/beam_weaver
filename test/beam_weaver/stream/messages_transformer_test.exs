@@ -21,10 +21,13 @@ defmodule BeamWeaver.Stream.MessagesTransformerTest do
     assert [%MessageStream{message_id: "run-1"}] = MessagesTransformer.streams(t)
   end
 
-  test "full protocol lifecycle accumulates text and finalizes output" do
+  test "full protocol lifecycle accumulates text, finalizes output and cleans active routing" do
     assert {:ok, t, _emitted} =
              MessagesTransformer.process_many(MessagesTransformer.new(), lifecycle("hello world"))
 
+    assert t.by_run == %{}
+    assert t.open_order == []
+    assert [%MessageStream{message_id: "run-1"}] = t.completed
     assert [%MessageStream{done: true} = stream] = MessagesTransformer.streams(t)
     assert MessageStream.text(stream) == "hello world"
 
@@ -63,15 +66,6 @@ defmodule BeamWeaver.Stream.MessagesTransformerTest do
     assert Enum.map(stream.events, &event_name/1) ==
              ["message-start"] ++
                List.duplicate("content-block-delta", 1_000) ++ ["message-finish"]
-  end
-
-  test "message-finish cleans active routing while preserving completed streams" do
-    assert {:ok, t, _emitted} =
-             MessagesTransformer.process_many(MessagesTransformer.new(), lifecycle("done"))
-
-    assert t.by_run == %{}
-    assert t.open_order == []
-    assert [%MessageStream{message_id: "run-1"}] = t.completed
   end
 
   test "protocol lifecycle routes by payload message_id when metadata run_id is absent" do
@@ -389,31 +383,20 @@ defmodule BeamWeaver.Stream.MessagesTransformerTest do
   end
 
   defp proto(payload, opts \\ []) do
-    run_id = Keyword.get(opts, :run_id, "run-1")
-    node = Keyword.get(opts, :node, "llm")
-    namespace = Keyword.get(opts, :namespace, [])
-
-    %{
-      "type" => "event",
-      "method" => "messages",
-      "params" => %{
-        "namespace" => namespace,
-        "timestamp" => 1,
-        "data" => {payload, %{"node" => node, "run_id" => run_id}}
-      }
-    }
+    metadata = %{"node" => Keyword.get(opts, :node, "llm"), "run_id" => Keyword.get(opts, :run_id, "run-1")}
+    protocol_event(payload, metadata, Keyword.get(opts, :namespace, []))
   end
 
   defp protocol_without_run_id(payload) do
     protocol_event(payload, %{"node" => "llm"})
   end
 
-  defp protocol_event(payload, metadata) do
+  defp protocol_event(payload, metadata, namespace \\ []) do
     %{
       "type" => "event",
       "method" => "messages",
       "params" => %{
-        "namespace" => [],
+        "namespace" => namespace,
         "timestamp" => 1,
         "data" => {payload, metadata}
       }
@@ -421,20 +404,8 @@ defmodule BeamWeaver.Stream.MessagesTransformerTest do
   end
 
   defp whole_message(%Message{} = message, opts) do
-    %{
-      "type" => "event",
-      "method" => "messages",
-      "params" => %{
-        "namespace" => Keyword.get(opts, :namespace, []),
-        "timestamp" => 1,
-        "data" =>
-          {message,
-           %{
-             "node" => Keyword.get(opts, :node, "node"),
-             "run_id" => Keyword.get(opts, :run_id, message.id)
-           }}
-      }
-    }
+    metadata = %{"node" => Keyword.get(opts, :node, "node"), "run_id" => Keyword.get(opts, :run_id, message.id)}
+    protocol_event(message, metadata, Keyword.get(opts, :namespace, []))
   end
 
   defp event_name(%{"event" => event}), do: event

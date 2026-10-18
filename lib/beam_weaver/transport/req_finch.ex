@@ -267,16 +267,10 @@ defmodule BeamWeaver.Transport.ReqFinch do
   defp normalize_private(private) when is_map(private), do: Map.to_list(private)
   defp normalize_private(private) when is_list(private), do: private
 
-  defp maybe_put_beam_weaver_metadata(private, nil), do: private
-
-  defp maybe_put_beam_weaver_metadata(private, metadata) when is_map(metadata) do
-    Keyword.update(private, :beam_weaver, metadata, &merge_metadata(&1, metadata))
-  end
+  defp maybe_put_beam_weaver_metadata(private, metadata) when is_map(metadata),
+    do: Keyword.update(private, :beam_weaver, metadata, &if(is_map(&1), do: Map.merge(&1, metadata), else: metadata))
 
   defp maybe_put_beam_weaver_metadata(private, _metadata), do: private
-
-  defp merge_metadata(existing, metadata) when is_map(existing), do: Map.merge(existing, metadata)
-  defp merge_metadata(_existing, metadata), do: metadata
 
   defp maybe_put_body(options, %Request{json: json}) when not is_nil(json) do
     Keyword.put(options, :json, json)

@@ -50,12 +50,14 @@ defmodule BeamWeaver.Core.Tool.Injected do
   defp normalize_source(source) when source in @sources, do: {:ok, source}
   defp normalize_source(source) when source in @source_names, do: {:ok, String.to_existing_atom(source)}
 
-  defp normalize_source({state, field_or_path})
-       when state in [:state, "state"] do
+  defp normalize_source({state, field_or_path}) when state in [:state, "state"] do
     if valid_state_field_or_path?(field_or_path) do
       {:ok, {:state, field_or_path}}
     else
-      invalid_state_source(field_or_path)
+      {:error,
+       Error.new(:invalid_tool, "state injected source must name a field or non-empty path", %{
+         source: inspect({:state, field_or_path})
+       })}
     end
   end
 
@@ -74,11 +76,4 @@ defmodule BeamWeaver.Core.Tool.Injected do
   end
 
   defp valid_state_field_or_path?(_field_or_path), do: false
-
-  defp invalid_state_source(field_or_path) do
-    {:error,
-     Error.new(:invalid_tool, "state injected source must name a field or non-empty path", %{
-       source: inspect({:state, field_or_path})
-     })}
-  end
 end

@@ -36,8 +36,8 @@ defmodule BeamWeaver.Graph.Introspection do
       branches: branch_metadata(graph),
       waiting_edges: waiting_edge_metadata(graph),
       channels: channel_metadata(graph),
-      input_channels: input_channels(graph),
-      output_channels: output_channels(graph),
+      input_channels: schema_or_public_channels(graph, graph.input_schema),
+      output_channels: schema_or_public_channels(graph, graph.output_schema),
       hidden_channels: hidden_channels(graph),
       managed: managed_metadata(graph),
       subgraphs: subgraphs(graph),
@@ -66,40 +66,19 @@ defmodule BeamWeaver.Graph.Introspection do
 
   defp edge_metadata(graph) do
     explicit =
-      graph.edges
-      |> Enum.flat_map(fn {source, targets} ->
-        Enum.map(
-          targets,
-          &%{source: source, target: &1, kind: :edge, conditional: false, data: nil}
-        )
-      end)
+      for {source, targets} <- graph.edges,
+          target <- targets,
+          do: %{source: source, target: target, kind: :edge, conditional: false, data: nil}
 
     guarded =
-      graph.guarded_edges
-      |> Enum.flat_map(fn {source, specs} ->
-        Enum.map(specs, fn spec ->
-          %{
-            source: source,
-            target: spec.target,
-            kind: :guarded,
-            conditional: true,
-            data: %{
-              when: spec.match,
-              max_runs: spec.max_runs,
-              default: spec.default?
-            }
-          }
-        end)
-      end)
+      for {source, specs} <- graph.guarded_edges, spec <- specs do
+        data = %{when: spec.match, max_runs: spec.max_runs, default: spec.default?}
+        %{source: source, target: spec.target, kind: :guarded, conditional: true, data: data}
+      end
 
-    destinations =
-      graph.nodes
-      |> Enum.flat_map(fn {source, spec} ->
-        destination_edges(source, spec.destinations)
-      end)
+    destinations = Enum.flat_map(graph.nodes, fn {source, spec} -> destination_edges(source, spec.destinations) end)
 
-    (explicit ++ guarded ++ destinations)
-    |> Enum.sort_by(&{&1.source, &1.target})
+    Enum.sort_by(explicit ++ guarded ++ destinations, &{&1.source, &1.target})
   end
 
   defp destination_edges(_source, destinations) when destinations in [nil, [], %{}], do: []
@@ -155,44 +134,16 @@ defmodule BeamWeaver.Graph.Introspection do
     end)
   end
 
-  defp input_channels(graph) do
-    graph.input_schema
-    |> schema_keys()
-    |> case do
-      [] ->
-        graph.channels
-        |> Map.keys()
-        |> Enum.reject(&hidden_channel?(graph, &1))
-        |> Enum.map(&to_string/1)
-        |> Enum.sort()
-
-      keys ->
-        keys
-    end
-  end
-
-  defp output_channels(graph) do
-    public =
-      graph.channels
-      |> Map.keys()
-      |> Enum.reject(&hidden_channel?(graph, &1))
-      |> Enum.map(&to_string/1)
-
-    graph.output_schema
-    |> schema_keys()
-    |> case do
-      [] -> Enum.sort(public)
+  # The keys of the schema, or every channel callers see when it has none.
+  defp schema_or_public_channels(graph, schema) do
+    case schema_keys(schema) do
+      [] -> Enum.sort(for key <- Map.keys(graph.channels), not hidden_channel?(graph, key), do: to_string(key))
       keys -> keys
     end
   end
 
-  defp hidden_channels(graph) do
-    graph.channels
-    |> Map.keys()
-    |> Enum.filter(&hidden_channel?(graph, &1))
-    |> Enum.map(&to_string/1)
-    |> Enum.sort()
-  end
+  defp hidden_channels(graph),
+    do: Enum.sort(for key <- Map.keys(graph.channels), hidden_channel?(graph, key), do: to_string(key))
 
   defp hidden_channel?(graph, key) do
     Map.get(graph.channel_visibility, key, :public) in [:private, :private_checkpointed] or
@@ -205,13 +156,7 @@ defmodule BeamWeaver.Graph.Introspection do
     end)
   end
 
-  defp subgraphs(graph) do
-    graph.nodes
-    |> Enum.filter(fn {_name, spec} -> spec.kind == :subgraph end)
-    |> Map.new(fn {name, spec} -> {name, spec.metadata} end)
-  end
-
-  defp schema_keys(nil), do: []
+  defp subgraphs(graph), do: for({name, %{kind: :subgraph} = spec} <- graph.nodes, into: %{}, do: {name, spec.metadata})
 
   defp schema_keys(schema) when is_map(schema),
     do: schema |> Map.keys() |> Enum.map(&to_string/1) |> Enum.sort()
@@ -237,25 +182,17 @@ defmodule BeamWeaver.Graph.Renderer do
       |> Enum.sort_by(fn {name, _node} -> name end)
       |> Enum.map(fn {name, node} -> "  #{node_id(name)}[\"#{escape(name)}:#{node.kind}\"]" end)
 
-    edge_lines =
-      graph.edges
-      |> Enum.map(fn edge -> "  #{node_id(edge.source)} --> #{node_id(edge.target)}" end)
+    edge_lines = for edge <- graph.edges, do: "  #{node_id(edge.source)} --> #{node_id(edge.target)}"
 
     branch_lines =
-      graph.branches
-      |> Enum.flat_map(fn branch ->
-        Enum.map(branch.path_map, fn {route, target} ->
-          "  #{node_id(branch.source)} -- \"#{escape(route)}\" --> #{node_id(target)}"
-        end)
-      end)
+      for branch <- graph.branches,
+          {route, target} <- branch.path_map,
+          do: "  #{node_id(branch.source)} -- \"#{escape(route)}\" --> #{node_id(target)}"
 
     waiting_lines =
-      graph.waiting_edges
-      |> Enum.flat_map(fn waiting ->
-        Enum.map(waiting.upstream, fn upstream ->
-          "  #{node_id(upstream)} -. \"wait:#{escape(waiting.id)}\" .-> #{node_id(waiting.target)}"
-        end)
-      end)
+      for waiting <- graph.waiting_edges,
+          upstream <- waiting.upstream,
+          do: "  #{node_id(upstream)} -. \"wait:#{escape(waiting.id)}\" .-> #{node_id(waiting.target)}"
 
     Enum.join(["graph TD" | node_lines ++ edge_lines ++ branch_lines ++ waiting_lines], "\n")
   end
@@ -265,16 +202,12 @@ defmodule BeamWeaver.Graph.Renderer do
     edge_lines = Enum.map(graph.edges, &"#{&1.source} -> #{&1.target}")
 
     branch_lines =
-      Enum.flat_map(graph.branches, fn branch ->
-        Enum.map(branch.path_map, fn {route, target} ->
-          "#{branch.source} -[#{route}]-> #{target}"
-        end)
-      end)
+      for branch <- graph.branches, {route, target} <- branch.path_map, do: "#{branch.source} -[#{route}]-> #{target}"
 
     waiting_lines =
-      Enum.flat_map(graph.waiting_edges, fn waiting ->
-        Enum.map(waiting.upstream, &"#{&1} -[wait:#{waiting.id}]-> #{waiting.target}")
-      end)
+      for waiting <- graph.waiting_edges,
+          upstream <- waiting.upstream,
+          do: "#{upstream} -[wait:#{waiting.id}]-> #{waiting.target}"
 
     case edge_lines ++ branch_lines ++ waiting_lines do
       [] -> graph.nodes |> Map.keys() |> Enum.sort() |> Enum.join("\n")

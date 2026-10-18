@@ -76,7 +76,7 @@ defmodule BeamWeaver.Schema do
     title = Module.get_attribute(env.module, :beam_weaver_schema_title) || schema_default_title(env.module)
     description = Module.get_attribute(env.module, :beam_weaver_schema_description) || ""
     strict? = Module.get_attribute(env.module, :beam_weaver_schema_strict) == true
-    fields = Module.get_attribute(env.module, :beam_weaver_schema_fields) || []
+    fields = Module.get_attribute(env.module, :beam_weaver_schema_fields)
     schema = object_schema(Enum.reverse(fields), title, description, strict?)
 
     quote do
@@ -226,8 +226,7 @@ defmodule BeamWeaver.Schema do
     end
   end
 
-  @doc false
-  def ensure_schema_module_compiled(module) do
+  defp ensure_schema_module_compiled(module) do
     case Code.ensure_compiled(module) do
       {:module, _module} ->
         :ok

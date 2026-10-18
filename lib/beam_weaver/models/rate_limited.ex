@@ -41,27 +41,24 @@ defmodule BeamWeaver.Models.RateLimited do
   end
 
   defp acquire(%__MODULE__{policy: %RateLimitPolicy{} = policy}, opts) do
-    limiter = Keyword.get(opts, :rate_limiter, policy.limiter)
+    acquire_opts = [timeout: policy.timeout, key: policy.key]
 
-    if is_nil(limiter) do
-      {:error, Error.new(:rate_limiter_required, "rate-limited model requires a limiter")}
-    else
-      do_acquire(limiter, policy)
+    case Keyword.get(opts, :rate_limiter, policy.limiter) do
+      nil ->
+        {:error, Error.new(:rate_limiter_required, "rate-limited model requires a limiter")}
+
+      %module{} = limiter ->
+        if function_exported?(module, :acquire, 3) do
+          module.acquire(limiter, policy.amount, acquire_opts)
+        else
+          {:error,
+           Error.new(:invalid_rate_limiter, "custom rate limiter must implement acquire/3", %{
+             module: module
+           })}
+        end
+
+      limiter ->
+        RateLimiter.acquire(limiter, policy.amount, acquire_opts)
     end
-  end
-
-  defp do_acquire(%{__struct__: module} = limiter, policy) do
-    if function_exported?(module, :acquire, 3) do
-      module.acquire(limiter, policy.amount, timeout: policy.timeout, key: policy.key)
-    else
-      {:error,
-       Error.new(:invalid_rate_limiter, "custom rate limiter must implement acquire/3", %{
-         module: module
-       })}
-    end
-  end
-
-  defp do_acquire(limiter, policy) do
-    RateLimiter.acquire(limiter, policy.amount, timeout: policy.timeout, key: policy.key)
   end
 end

@@ -34,32 +34,21 @@ defmodule BeamWeaver.Checkpoint.DeltaCompaction do
     end
   end
 
-  # The ids `keep_latest` keeps in each namespace: the latest checkpoint and
-  # the ones before it that its delta channels still read. A subgraph call's
-  # namespace whose top-level checkpoint goes is dropped whole: the call is
-  # over.
-  @spec keep_latest(%{String.t() => [map()]}) :: %{String.t() => MapSet.t()}
-  def keep_latest(namespaces) do
-    root_kept = namespaces |> Map.get("", []) |> keep_ids()
-
-    Map.new(namespaces, fn {namespace, records} ->
-      if finished_call?(namespace, records, root_kept),
-        do: {namespace, MapSet.new()},
-        else: {namespace, keep_ids(records)}
-    end)
-  end
-
   # What `keep_latest` does to a thread: the `{namespace, id}` checkpoints it
   # deletes, and the kept ones whose parent goes, which become the first of
-  # their thread so their lineage can still be copied.
+  # their thread so their lineage can still be copied. It keeps in each
+  # namespace the latest checkpoint and the ones before it that its delta
+  # channels still read. A subgraph call's namespace whose top-level
+  # checkpoint goes is dropped whole: the call is over.
   @spec prune_plan(%{String.t() => [map()]}) :: {[{String.t(), String.t()}], [{String.t(), String.t()}]}
   def prune_plan(namespaces) do
-    keep = keep_latest(namespaces)
+    root_kept = namespaces |> Map.get("", []) |> keep_ids()
 
-    for {namespace, records} <- namespaces, record <- records, reduce: {[], []} do
+    for {namespace, records} <- namespaces,
+        kept = if(finished_call?(namespace, records, root_kept), do: MapSet.new(), else: keep_ids(records)),
+        record <- records,
+        reduce: {[], []} do
       {removals, roots} ->
-        kept = keep[namespace]
-
         cond do
           not MapSet.member?(kept, record.id) -> {[{namespace, record.id} | removals], roots}
           record.parent_id && not MapSet.member?(kept, record.parent_id) -> {removals, [{namespace, record.id} | roots]}
@@ -151,7 +140,11 @@ defmodule BeamWeaver.Checkpoint.DeltaCompaction do
     chain
     |> Enum.flat_map(fn record ->
       counters = MapAccess.get(record.metadata, "counters_since_delta_snapshot", %{})
-      snapshots = for {channel, value} <- channel_values(record), DeltaSnapshot.snapshot?(value), do: channel
+
+      snapshots =
+        for {channel, value} <- Map.get(record.checkpoint, "channel_values", %{}),
+            DeltaSnapshot.snapshot?(value),
+            do: channel
 
       map_keys(counters) ++ map_keys(Map.get(record.checkpoint, "channel_deltas", %{})) ++ snapshots
     end)
@@ -176,8 +169,6 @@ defmodule BeamWeaver.Checkpoint.DeltaCompaction do
   # A subgraph namespace that holds one call: a task's id follows its node's
   # name in one of its segments.
   defp task_namespace?(namespace), do: namespace != "" and String.contains?(namespace, ":")
-
-  defp channel_values(record), do: Map.get(record.checkpoint, "channel_values", %{})
 
   defp map_keys(map) when is_map(map), do: Map.keys(map)
   defp map_keys(_value), do: []

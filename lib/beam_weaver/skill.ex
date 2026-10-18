@@ -109,8 +109,7 @@ defmodule BeamWeaver.Skill do
          {:ok, disable_model_invocation} <-
            optional_boolean(frontmatter, "disable-model-invocation", false),
          {:ok, user_invocable} <- optional_boolean(frontmatter, "user-invocable", true),
-         {:ok, context} <- context(frontmatter),
-         :ok <- valid_text(body, :body) do
+         {:ok, context} <- context(frontmatter) do
       {:ok,
        %__MODULE__{
          name: name,
@@ -195,29 +194,22 @@ defmodule BeamWeaver.Skill do
   defp split_document(_document), do: invalid("skill document must start with YAML frontmatter")
 
   defp split_after_open(rest, newline) do
-    closing = newline <> "---" <> newline
+    closing_at_eof = newline <> "---"
 
-    case :binary.match(rest, closing) do
-      {offset, length} ->
-        yaml = binary_part(rest, 0, offset)
-        body_offset = offset + length
-        {:ok, yaml, binary_part(rest, body_offset, byte_size(rest) - body_offset)}
+    case :binary.split(rest, closing_at_eof <> newline) do
+      [yaml, body] ->
+        {:ok, yaml, body}
 
-      :nomatch ->
-        closing_at_eof = newline <> "---"
-
-        if String.ends_with?(rest, closing_at_eof) do
-          yaml_size = byte_size(rest) - byte_size(closing_at_eof)
-          {:ok, binary_part(rest, 0, yaml_size), ""}
-        else
-          invalid("skill frontmatter is not terminated")
-        end
+      [_unterminated] ->
+        if String.ends_with?(rest, closing_at_eof),
+          do: {:ok, String.replace_suffix(rest, closing_at_eof, ""), ""},
+          else: invalid("skill frontmatter is not terminated")
     end
   end
 
   defp validate_frontmatter_bytes(yaml) do
     if byte_size(yaml) <= @max_frontmatter_bytes,
-      do: valid_text(yaml, :frontmatter),
+      do: :ok,
       else: invalid("skill frontmatter exceeds the byte limit")
   end
 

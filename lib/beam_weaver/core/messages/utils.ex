@@ -220,7 +220,6 @@ defmodule BeamWeaver.Core.Messages.Utils do
       | content: content,
         tool_calls: left.tool_calls ++ right.tool_calls,
         metadata: Map.merge(left.metadata, right.metadata),
-        response_metadata: left.response_metadata,
         usage_metadata: merge_usage_metadata(left.usage_metadata, right.usage_metadata)
     }
   end

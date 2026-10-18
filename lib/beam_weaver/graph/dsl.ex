@@ -10,18 +10,14 @@ defmodule BeamWeaver.Graph.DSL do
                    run_timeout)a
 
   # In-memory adapters whose `new` creates ETS tables, with the declaration
-  # that takes each and its database-backed counterpart.
+  # that takes each, its database-backed counterpart, and what every call
+  # loses when that declaration builds a new one.
   @in_memory_adapters %{
-    BeamWeaver.Checkpoint.ETS => {:checkpointer, "saver", "BeamWeaver.Checkpoint.Ecto"},
-    BeamWeaver.Memory.ETS => {:store, "store", "BeamWeaver.Memory.Ecto"},
-    BeamWeaver.Cache.ETS => {:cache, "cache", "BeamWeaver.Cache.Ecto"}
-  }
-
-  # What every call loses when its declaration builds a new adapter.
-  @in_memory_losses %{
-    checkpointer: "every call starts its thread over and get_state/1 finds nothing",
-    store: "what one call saves is gone in the next",
-    cache: "nothing one call caches is found by the next"
+    BeamWeaver.Checkpoint.ETS =>
+      {:checkpointer, "saver", "BeamWeaver.Checkpoint.Ecto",
+       "every call starts its thread over and get_state/1 finds nothing"},
+    BeamWeaver.Memory.ETS => {:store, "store", "BeamWeaver.Memory.Ecto", "what one call saves is gone in the next"},
+    BeamWeaver.Cache.ETS => {:cache, "cache", "BeamWeaver.Cache.Ecto", "nothing one call caches is found by the next"}
   }
 
   def imports do
@@ -306,11 +302,11 @@ defmodule BeamWeaver.Graph.DSL do
   defp call_line({_call, meta, _args}, env), do: Keyword.get(meta, :line, env.line)
 
   defp in_memory_adapter_message(module, declaration, adapter, call) do
-    {option, noun, durable} = Map.fetch!(@in_memory_adapters, adapter)
+    {option, noun, durable, loss} = Map.fetch!(@in_memory_adapters, adapter)
 
     {loss, keep} =
       if declaration == option do
-        {Map.fetch!(@in_memory_losses, option),
+        {loss,
          "pass it to each call with `#{option}: #{noun}`; or declare a function that returns it, " <>
            "such as `#{option} MyApp.Storage.#{option}()`"}
       else

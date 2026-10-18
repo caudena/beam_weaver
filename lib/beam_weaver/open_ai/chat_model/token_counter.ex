@@ -121,13 +121,7 @@ defmodule BeamWeaver.OpenAI.ChatModel.TokenCounter do
   defp count_tokenized_term(_tokenizer, value, _opts) when value in [nil, [], %{}], do: {:ok, 0}
 
   defp count_tokenized_term(tokenizer, value, opts) do
-    text =
-      case BeamWeaver.JSON.encode(value) do
-        {:ok, json} -> json
-        {:error, _reason} -> inspect(value)
-      end
-
-    Tokenizer.count_tokens(tokenizer, text, opts)
+    Tokenizer.count_tokens(tokenizer, BeamWeaver.JSON.encode_or_inspect(value), opts)
   end
 
   defp count_optional_text(_tokenizer, nil, _opts), do: {:ok, 0}
