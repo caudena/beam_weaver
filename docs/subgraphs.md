@@ -1,51 +1,66 @@
 # Subgraphs
 
-A subgraph is a compiled graph, a graph module or an agent, used as one node
-of another graph. Use one to reuse a workflow in several graphs, to keep each part small
-and testable on its own, or to run an agent as one step of a larger workflow
-with its checkpoints, interrupts and events in the same run.
+A graph or agent can be one node of a larger graph. Use this to compose
+workflows while preserving nested events, checkpoints and interrupts.
+Choose an explicit state boundary so one component does not accidentally
+write another's internal data.
+
+## Map state in and out
+
+This model-free example nests an eligibility check:
+
+```elixir
+defmodule MyApp.Eligibility do
+  use BeamWeaver.Graph
+
+  graph do
+    node :check, fn %{amount: amount} -> %{eligible: amount > 0 and amount <= 100} end
+    edge start(), :check
+    edge :check, finish()
+  end
+end
+
+alias BeamWeaver.Graph
+alias BeamWeaver.Graph.Compiled
+
+workflow =
+  Graph.new()
+  |> Graph.add_node(:eligibility, MyApp.Eligibility,
+    input: fn %{order: order} -> %{amount: order.total} end,
+    output: fn %{eligible: eligible} -> %{eligible: eligible} end
+  )
+  |> Graph.add_edge(Graph.start(), :eligibility)
+  |> Graph.add_edge(:eligibility, Graph.end_node())
+  |> Graph.compile!()
+
+{:ok, state} = Compiled.invoke(workflow, %{order: %{id: "A-1001", total: 40}})
+true = state.eligible
+%{id: "A-1001", total: 40} = state.order
+false = Map.has_key?(state, :amount)
+```
+
+`input:` accepts a key list or mapping function. `output:` accepts a function
+returning the parent update, or an atom under which to store the child result.
+These mappings also work for ordinary nodes.
+
+## Shared keys
+
+Without mappings, the child reads parent state and returns the changes it
+made. For list/map reducer keys, additive changes are applied once rather
+than re-appending the entire inherited value. Overwrites and removals instead
+replace the relevant parent value. Child input/output schemas further restrict
+which keys cross the boundary.
+
+Shared state is convenient for small components with the same contract.
+Mappings make reusable components easier to evolve and prevent incidental
+state from becoming a public dependency.
+
+The child contributes one note; the inherited note is not appended a second time:
 
 ```elixir
 alias BeamWeaver.Graph
 alias BeamWeaver.Graph.Compiled
 
-refund_check =
-  Graph.new(name: "RefundCheck")
-  |> Graph.add_node(:check_amount, fn %{amount: amount} -> %{refund_ok: amount <= 100} end)
-  |> Graph.add_edge(Graph.start(), :check_amount)
-  |> Graph.add_edge(:check_amount, Graph.end_node())
-  |> Graph.compile!()
-
-reply = fn %{refund_ok: ok} ->
-  %{reply: if(ok, do: "Your refund is approved.", else: "A manager will review your refund.")}
-end
-
-triage =
-  Graph.new()
-  |> Graph.add_node(:refund_check, refund_check)
-  |> Graph.add_node(:reply, reply)
-  |> Graph.add_edge(Graph.start(), :refund_check)
-  |> Graph.add_edge(:refund_check, :reply)
-  |> Graph.add_edge(:reply, Graph.end_node())
-  |> Graph.compile!()
-
-{:ok, state} = Compiled.invoke(triage, %{order_id: "A-1001", amount: 40})
-state.reply
-#=> "Your refund is approved."
-```
-
-## Shared keys
-
-When the parent and the subgraph use the same keys, add the compiled graph as
-a node, as above. The subgraph starts from the parent's state and runs to its
-end, and the keys it changed become the node's update. That is all
-`refund_check` needs: it reads `amount` and writes `refund_ok`.
-
-For a key with a [reducer](graph_state.md#reducers) in the parent, the update
-holds only what the subgraph added, the new end of a list or the new entries
-of a map, so the parent's reducer applies it once:
-
-```elixir
 review =
   Graph.new(name: "Review")
   |> Graph.add_reducer(:notes, &(&1 ++ &2))
@@ -66,106 +81,64 @@ Compiled.invoke(ticket, %{amount: 40, notes: ["opened by Ada"]})
 #=> {:ok, %{amount: 40, notes: ["opened by Ada", "reviewed $40"]}}
 ```
 
-Any other change to such a key, such as an `Overwrite` or a removed message,
-replaces the parent's value. A subgraph with an `input_schema:` receives only
-those keys, and one with an `output_schema:` passes back only those.
-
-Shared keys suit small subgraphs that work on the parent's own data. When the
-subgraph has keys of its own, map the state in and out instead.
-
-## Map state in and out
-
-`input:` decides what the subgraph receives and `output:` what the parent gets
-back. Here the parent keeps the order in a nested map and names the result
-differently:
-
-```elixir
-refunds =
-  Graph.new()
-  |> Graph.add_node(:refund_check, refund_check,
-    input: fn %{order: order} -> %{amount: order.total} end,
-    output: fn %{refund_ok: ok} -> %{approved: ok} end
-  )
-  |> Graph.add_edge(Graph.start(), :refund_check)
-  |> Graph.add_edge(:refund_check, Graph.end_node())
-  |> Graph.compile!()
-
-Compiled.invoke(refunds, %{order: %{id: "A-1001", total: 250}})
-#=> {:ok, %{order: %{id: "A-1001", total: 250}, approved: false}}
-```
-
-| Option | Value | Effect |
-| --- | --- | --- |
-| `input:` | a list of keys | The subgraph receives only those keys. |
-| `input:` | `fn state -> map end` | The subgraph receives the map the function returns. |
-| `output:` | an atom | The parent stores the subgraph's final state under that key. |
-| `output:` | `fn result -> update end` | The parent merges the update the function returns. |
-
-The same options work on any node, not only subgraphs.
-
 ## Agents as subgraphs
 
-An agent module can be a node too, like a graph module: add the module, and
-each time the node runs the agent's graph runs as a subgraph. Here the parent maps its ticket to the
-agent's `messages` and the agent's last message back to a reply:
+After [Installation](installation.md), an agent can perform the writing step
+using a real OpenAI model and supplied facts:
 
 ```elixir
-alias BeamWeaver.Core.Message
-
-defmodule MyApp.SupportAgent do
+defmodule MyApp.ExplainDecision do
   use BeamWeaver.Agent
 
-  model "fake:chat", responses: ["Your order A-1001 shipped on Monday."]
-  system_prompt "You are Acme's support agent."
+  model "openai:gpt-5.4-mini", max_tokens: 256, timeout: 60_000
+  system_prompt "Explain the supplied eligibility result briefly. Do not claim a refund was executed."
 end
 
-desk =
+with_agent =
   Graph.new()
-  |> Graph.add_node(:support, MyApp.SupportAgent,
-    input: fn %{ticket: ticket} -> %{messages: [ticket]} end,
-    output: fn %{messages: messages} -> %{reply: messages |> List.last() |> Message.text()} end,
-    timeout: 120_000
+  |> Graph.add_node(:explain, MyApp.ExplainDecision,
+    input: fn %{eligible: eligible} -> %{messages: ["Eligibility check result: #{eligible}."]} end,
+    output: fn %{messages: messages} -> %{explanation: messages |> List.last() |> BeamWeaver.Core.Message.text()} end,
+    timeout: 90_000
   )
-  |> Graph.add_edge(Graph.start(), :support)
-  |> Graph.add_edge(:support, Graph.end_node())
+  |> Graph.add_edge(Graph.start(), :explain)
+  |> Graph.add_edge(:explain, Graph.end_node())
   |> Graph.compile!()
 
-{:ok, state} = Compiled.invoke(desk, %{ticket: "Where is my order A-1001?"})
-state.reply
-#=> "Your order A-1001 shipped on Monday."
+{:ok, explained} = Compiled.invoke(with_agent, %{eligible: true})
+true = byte_size(explained.explanation) > 0
 ```
 
-The agent's tools, middleware and interrupts all run inside the `support`
-node, and its declarations are read each time it runs. Nodes have no time
-limit by default; if you give the agent node a `timeout:`, leave it enough
-time for a whole agent run. When the parent keeps the conversation in a `messages` key of
-its own, with `BeamWeaver.Graph.Messages.state_schema/1`, leave out `input:`
-and `output:`: the agent reads the conversation, and its new messages are
-added to it. A graph module works the same way: both kinds of module
-implement the `BeamWeaver.Graph` behaviour, whose `compiled_graph/1`, such as
-`MyApp.SupportAgent.compiled_graph([])`, returns the module's compiled graph
-when you need it as a value.
+The agent's full loop runs inside that node. Size the node timeout for all
+model/tool turns and retries. Both graph and agent modules implement the graph
+behavior through `compiled_graph/1`.
 
-You can also call `Compiled.invoke/3` or `MyApp.SupportAgent.invoke/2` from an
-ordinary node function. That is simpler, but the call is a separate run: its
-checkpoints, interrupts and events don't become part of the parent's run.
+Calling `Agent.invoke` or `Compiled.invoke` inside a plain node function is
+also possible, but creates a separate run. Its interrupts and checkpoints do
+not automatically become the parent's nested execution.
 
 ## Checkpoint namespaces
 
-A subgraph saves its checkpoints with the parent's checkpointer, under its own
-namespace in the same thread. The subgraph's `checkpointer:` compile option
-decides how:
+Child checkpoint behavior is selected when compiling the child:
 
-| `checkpointer:` | Behaviour |
+| Child `checkpointer:` | Behavior |
 | --- | --- |
-| left out | Each call starts fresh, under a namespace such as `"notes:<task id>"`. |
-| `true` | The node keeps one namespace, `"notes"`, so its state carries over between calls on the same thread. |
-| `false` | The subgraph saves no checkpoints. |
-| a saver | The subgraph uses its own storage. |
+| Omitted | Fresh task-specific namespace using the parent's saver |
+| `true` | Stable node namespace, retaining child state across thread calls |
+| `false` | No child checkpoint persistence |
+| A saver | Explicit child storage |
 
-Here the `notes` subgraph remembers every note taken on the thread:
+The parent still needs a saver for durable orchestration. Do not run a
+stateful `checkpointer: true` child concurrently against the same thread and
+namespace without application coordination. Inspect `checkpoint_ns` in
+history to distinguish parent and child snapshots.
+
+A stable child namespace retains its own notes over two parent calls:
 
 ```elixir
+alias BeamWeaver.Graph
+alias BeamWeaver.Graph.Compiled
+
 notes =
   Graph.new(name: "Notes")
   |> Graph.add_reducer(:notes, &(&1 ++ &2))
@@ -193,31 +166,40 @@ state.ticket_notes
 #=> ["Where is A-1001?", "Refund for A-1001"]
 ```
 
-The thread's history holds checkpoints for both graphs, told apart by
-`checkpoint_ns`:
+History identifies the parent and stable child namespaces:
 
 ```elixir
+alias BeamWeaver.Graph
+alias BeamWeaver.Graph.Compiled
+
 history = Compiled.get_state_history(desk, config)
 
 history
 |> Enum.map(&get_in(&1.config, ["configurable", "checkpoint_ns"]))
 |> Enum.uniq()
 |> Enum.sort()
+
 #=> ["", "notes"]
 ```
 
-Don't run the same `checkpointer: true` subgraph twice in parallel on one
-thread: both runs would write to the same namespace.
-[Checkpoints and Time Travel](checkpoints.md) shows how to read and replay
-history.
-
 ## Interrupts in a subgraph
 
-An interrupt inside a subgraph pauses the whole run. The parent returns
-`{:interrupted, interrupt}`, and you resume through the parent, which resumes
-the subgraph where it stopped:
+A child interrupt pauses the parent. Resume through the parent with the same
+thread/checkpointer and fresh context. Parallel child pauses are exposed in
+`interrupt.interrupts`; answer by interrupt ID.
+
+While a child waits, the parent may receive other state updates. The child
+resumes its own saved state and returns only its changes, preserving unrelated
+parent updates. To edit the child itself, select its checkpoint namespace
+when updating state. [Checkpoints](checkpoints.md) and
+[Human Review](human_in_the_loop.md) cover those operations.
+
+Create a child that asks for approval, then invoke its parent:
 
 ```elixir
+alias BeamWeaver.Graph
+alias BeamWeaver.Graph.Compiled
+
 approval =
   Graph.new(name: "Approval")
   |> Graph.add_node(:ask, fn %{amount: amount} ->
@@ -242,24 +224,22 @@ interrupt.value
 #=> %{question: "Refund $40?"}
 ```
 
+Resume through the parent:
+
 ```elixir
+alias BeamWeaver.Graph
+alias BeamWeaver.Graph.Compiled
+
 Compiled.resume(refund_desk, "yes", config: config)
 #=> {:ok, %{amount: 40, approved: true, refunded: true}}
 ```
 
-A subgraph that pauses in several nodes at once pauses the parent with all
-of them: `interrupt.interrupts` and `get_state/1` on the parent list each
-pause. Answer them with a map from interrupt id to answer, all at once or one
-at a time, as for
-[several pauses in one graph](human_in_the_loop.md#several-pauses-at-once).
-
-While the subgraph waits, the parent's state can change: other nodes of the
-same step finish, `Compiled.update_state/4` edits it, or the `Command` that
-resumes the run carries an `update`. The subgraph still resumes where it
-stopped, with the state it had, and its update holds only what it changed,
-so those changes stay:
+An unrelated parent edit survives child continuation:
 
 ```elixir
+alias BeamWeaver.Graph
+alias BeamWeaver.Graph.Compiled
+
 paused = %{"configurable" => %{"thread_id" => "ticket-44"}}
 {:interrupted, _interrupt} = Compiled.invoke(refund_desk, %{amount: 40}, config: paused)
 {:ok, _config} = Compiled.update_state(refund_desk, paused, %{note: "Customer called back."})
@@ -268,13 +248,12 @@ Compiled.resume(refund_desk, "yes", config: paused)
 #=> {:ok, %{amount: 40, note: "Customer called back.", approved: true, refunded: true}}
 ```
 
-To change what the paused subgraph itself sees, edit its own state: pass
-its namespace from the thread's history as `checkpoint_ns` to
-`Compiled.update_state/4` on the parent graph. The subgraph resumes with the
-edit, and since it changed `amount`, its update carries the new value back
-to the parent:
+To change the child input itself, select its saved namespace:
 
 ```elixir
+alias BeamWeaver.Graph
+alias BeamWeaver.Graph.Compiled
+
 edited = %{"configurable" => %{"thread_id" => "ticket-45"}}
 {:interrupted, _interrupt} = Compiled.invoke(refund_desk, %{amount: 40}, config: edited)
 
@@ -291,14 +270,20 @@ Compiled.resume(refund_desk, "yes", config: edited)
 #=> {:ok, %{amount: 50, approved: true, refunded: true}}
 ```
 
-[Human-in-the-Loop](human_in_the_loop.md) covers interrupts in detail.
-
 ## Jump to a parent node
 
-A node inside a subgraph can route the parent: return a `Command` with
-`graph: Command.parent()`, and its `goto` names a node of the parent graph:
+A child can return `Graph.Command` with `graph: Command.parent()` and a `goto`
+naming a parent node. Declare that destination on the parent's child node for
+static validation. The jump replaces the node's ordinary outgoing route.
+Use explicit escalation paths rather than assuming the parent will infer
+what a child result means.
+
+Amounts above the local threshold jump directly to the parent manager node:
 
 ```elixir
+alias BeamWeaver.Graph
+alias BeamWeaver.Graph.Compiled
+
 alias BeamWeaver.Graph.Command
 
 escalate = fn %{amount: amount} ->
@@ -327,31 +312,19 @@ Compiled.invoke(routing, %{amount: 250})
 #=> {:ok, %{amount: 250, handled_by: :manager}}
 ```
 
-Like any `goto`, it replaces the subgraph node's own edges: the `:auto` edge
-is not taken.
-
 ## Stream a subgraph
 
-A subgraph's events arrive in the parent's stream. Each event envelope has a
-`namespace`: `[]` for the parent, and the path of node names for a subgraph,
-such as `["refund_check"]`:
+Events carry the path of nested node names in `namespace`; parent events use
+`[]`. A child failure first fails its parent node, whose retry/error handler
+may recover it. Only an unrecovered run failure produces the terminal `Error`.
+`Stream.Subgraphs.from_events/2` summarizes nested outcomes from task events.
+
+Consume once and inspect the namespaces from the nested eligibility workflow defined at the start of this page:
 
 ```elixir
-{:ok, events} = Compiled.stream_events(triage, %{amount: 40}, live: true)
-
-events |> Enum.map(& &1.namespace) |> Enum.uniq() |> Enum.sort()
-#=> [[], ["refund_check"]]
+{:ok, events} = BeamWeaver.Graph.Compiled.stream_events(workflow, %{order: %{id: "A-1001", total: 40}}, live: true)
+namespaces = events |> Enum.map(& &1.namespace) |> Enum.uniq()
+true = [] in namespaces
+true = Enum.any?(namespaces, &(&1 != []))
+IO.inspect(namespaces)
 ```
-
-Nested subgraphs get longer paths, such as `["middle", "inner"]`. See
-[Streaming](streaming.md) for the event types. A subgraph that fails sends no
-`Error` event of its own; [Streaming](streaming.md#subgraphs) shows how to
-tell how each subgraph ended.
-
-## Reference
-
-- [`BeamWeaver.Graph`](https://hexdocs.pm/beam_weaver/BeamWeaver.Graph.html): `add_node/4` with `input:` and `output:`, and the behaviour of graph and agent modules
-- [`BeamWeaver.Graph.Compiled`](https://hexdocs.pm/beam_weaver/BeamWeaver.Graph.Compiled.html): run graphs and read their history
-- [`BeamWeaver.Agent`](https://hexdocs.pm/beam_weaver/BeamWeaver.Agent.html): `compiled_graph/2` turns an agent into a graph
-- [`BeamWeaver.Graph.Command`](https://hexdocs.pm/beam_weaver/BeamWeaver.Graph.Command.html): `parent/0` routes the parent graph
-- [`BeamWeaver.Stream.Envelope`](https://hexdocs.pm/beam_weaver/BeamWeaver.Stream.Envelope.html): event envelopes and their `namespace`

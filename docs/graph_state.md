@@ -1,42 +1,60 @@
-# Graph State
+# State and Channels
 
-Every graph run reads and writes one state map, and each node returns only the
-keys it changes; by default a write replaces the key's value. Give a key a
-reducer or a channel when writes should add up, when parallel nodes write the
-same key, or when a key should stay out of the result.
+Every graph has one state map. Nodes return updates, and each key's channel
+decides how to apply them. Start with ordinary keys; add a reducer when several
+nodes contribute to one value. A graph needs no model unless its nodes call one.
+
+
+Run this page’s examples in order in one IEx session; later blocks reuse the modules and values defined earlier.
+
+## Declare how state merges
+
+Run this complete graph in IEx:
+
+```elixir
+defmodule MyApp.ReviewState do
+  use BeamWeaver.Graph
+
+  graph do
+    state do
+      channel :notes, merge: :list
+      channel :checks, merge: :map
+    end
+
+    node :order, fn _state -> %{notes: ["Order checked"], checks: %{order: true}} end
+    node :policy, fn _state -> %{notes: ["Policy checked"], checks: %{policy: true}} end
+    edge start(), :order
+    edge start(), :policy
+    edge :order, finish()
+    edge :policy, finish()
+  end
+end
+
+{:ok, state} = MyApp.ReviewState.invoke(%{})
+["Order checked", "Policy checked"] = Enum.sort(state.notes)
+%{order: true, policy: true} = state.checks
+```
+
+Both nodes write in the same step. List and map reducers merge those writes.
+A plain key uses `LastValue` and accepts one write per step; multiple writes
+fail with `:invalid_update` instead of choosing an accidental winner.
+
+## Updates replace values
+
+Return only changed keys. Unwritten values remain. An ordinary key's update
+replaces its value; nested maps are not recursively merged unless you choose
+that reducer. Returning full state from every parallel branch creates needless
+write conflicts and can attempt to update managed values.
+
+Two branches writing one ordinary key produce an explicit conflict:
 
 ```elixir
 alias BeamWeaver.Graph
 alias BeamWeaver.Graph.Compiled
 
-refund_checks =
-  Graph.new()
-  |> Graph.add_reducer(:flags, &(&1 ++ &2))
-  |> Graph.add_node(:fraud_check, fn _state -> %{flags: ["fraud: clear"]} end)
-  |> Graph.add_node(:policy_check, fn %{amount: amount} ->
-    %{flags: ["policy: #{if amount <= 100, do: "auto-approve", else: "ask a manager"}"]}
-  end)
-  |> Graph.add_edge(Graph.start(), :fraud_check)
-  |> Graph.add_edge(Graph.start(), :policy_check)
-  |> Graph.add_edge(:fraud_check, Graph.end_node())
-  |> Graph.add_edge(:policy_check, Graph.end_node())
-  |> Graph.compile!()
+alias BeamWeaver.Core.Message
+alias BeamWeaver.Graph.Channels.LastValue
 
-{:ok, state} = Compiled.invoke(refund_checks, %{amount: 40, flags: []})
-Enum.sort(state.flags)
-#=> ["fraud: clear", "policy: auto-approve"]
-```
-
-Both checks run in the same step and write `flags`; the reducer appends both
-writes instead of failing.
-
-## Updates replace values
-
-A node returns a map of the keys it changes. A write replaces the key's value,
-and keys that nobody writes keep theirs. Two nodes may not write the same plain
-key in the same step, because BeamWeaver can't tell which write should win:
-
-```elixir
 clash =
   Graph.new()
   |> Graph.add_node(:fraud_check, fn _state -> %{status: "clear"} end)
@@ -51,23 +69,26 @@ Compiled.invoke(clash, %{})
 #=> {:error, %BeamWeaver.Core.Error{type: :invalid_update, details: %{channel: :status}}}
 ```
 
-Write different keys, or give the key a reducer.
-
 ## Reducers
 
-`Graph.add_reducer/3` gives a key a function of two arguments. BeamWeaver calls
-it with the current value and each write, in order, and stores the result. The
-first write to an empty key is stored as it is, so pass a starting value in
-the input when the reducer needs one.
+`Graph.add_reducer(graph, key, function)` installs a two-argument reducer:
+current value plus one write. List append, `Map.merge/2`, sum and maximum are
+common choices. Supply initial state when the reducer requires it; an empty
+key's first write becomes its value directly.
 
-| To | Reducer |
-| --- | --- |
-| Append to a list | `&(&1 ++ &2)` |
-| Merge maps | `&Map.merge/2` |
-| Add up numbers | `&+/2` |
-| Keep the largest | `&max/2` |
+Prefer associative operations for parallel aggregation. If order matters,
+include an explicit position in each result and sort after collecting.
+`:list` and `:map` DSL channels provide empty initial collections.
+
+Use separate reducers for the map and the count:
 
 ```elixir
+alias BeamWeaver.Graph
+alias BeamWeaver.Graph.Compiled
+
+alias BeamWeaver.Core.Message
+alias BeamWeaver.Graph.Channels.LastValue
+
 review =
   Graph.new()
   |> Graph.add_reducer(:checks, &Map.merge/2)
@@ -86,28 +107,39 @@ Compiled.invoke(review, %{checks: %{}, checks_run: 0})
 
 ## Messages
 
-For a conversation, use `BeamWeaver.Graph.Messages.state_schema/1`. Its
-`messages` key appends new messages, turns plain strings into user messages,
-and replaces a message that has the same id:
+Conversation state needs ID-aware merging rather than ordinary list append:
 
 ```elixir
 alias BeamWeaver.Core.Message
+alias BeamWeaver.Graph
+alias BeamWeaver.Graph.Compiled
 
 chat =
-  Graph.new(state_schema: BeamWeaver.Graph.Messages.state_schema())
-  |> Graph.add_node(:greet, fn _state -> %{messages: [Message.assistant("Hi Ada! Which order?")]} end)
-  |> Graph.add_edge(Graph.start(), :greet)
-  |> Graph.add_edge(:greet, Graph.end_node())
+  Graph.new(state_schema: Graph.Messages.state_schema())
+  |> Graph.add_node(:reply, fn _state -> %{messages: [Message.assistant("Which order should I check?")]} end)
+  |> Graph.add_edge(Graph.start(), :reply)
+  |> Graph.add_edge(:reply, Graph.end_node())
   |> Graph.compile!()
 
-{:ok, state} = Compiled.invoke(chat, %{messages: ["Hello"]})
-Enum.map(state.messages, &{&1.role, Message.text(&1)})
-#=> [{:user, "Hello"}, {:assistant, "Hi Ada! Which order?"}]
+{:ok, conversation} = Compiled.invoke(chat, %{messages: ["Hello"]})
+[:user, :assistant] = Enum.map(conversation.messages, & &1.role)
+true = Enum.all?(conversation.messages, &is_binary(&1.id))
 ```
 
-To delete a message, write `BeamWeaver.Graph.Messages.remove/1` with its id:
+`Graph.Messages.state_schema/1` normalizes messages, appends new IDs and
+replaces existing IDs. `remove/1` deletes a known message ID; an unknown ID is
+an invalid update. `remove_all/0` resets history before new messages are added.
+Agents already use this message-aware channel.
+
+Remove a message by its assigned ID:
 
 ```elixir
+alias BeamWeaver.Graph
+alias BeamWeaver.Graph.Compiled
+
+alias BeamWeaver.Core.Message
+alias BeamWeaver.Graph.Channels.LastValue
+
 forget =
   Graph.new(state_schema: BeamWeaver.Graph.Messages.state_schema())
   |> Graph.add_node(:forget, fn %{messages: [first | _rest]} ->
@@ -122,29 +154,36 @@ Enum.map(state.messages, &Message.text/1)
 #=> ["Refund order A-1001"]
 ```
 
-Removing an id that isn't in the list fails the run with an
-`:invalid_update` error. Agents keep their conversation in a key like this
-one. [Messages](messages.md) describes the message struct.
-
 ## Channels
 
-Behind every key is a channel, which decides how writes merge. A plain key uses
-`LastValue`, and `Graph.add_reducer/3` creates a `BinaryOperatorAggregate`.
-Choose another channel with `Graph.add_channel/4`, or declare keys up front with
-`Graph.new(state_schema: %{key => Graph.channel(channel, opts)})`. Each
-channel is a module, such as `BeamWeaver.Graph.Channels.Topic`:
+Use `Graph.channel/2` in `state_schema:` or `add_channel/4` in the builder for
+specialized behavior. Function-based channels use `{module, function}`.
 
-| Channel | Merges the writes of a step by | Use it for |
+| Channel | Behavior | Typical use |
 | --- | --- | --- |
-| `LastValue` | keeping the only write; two writes fail | most keys (the default) |
-| `BinaryOperatorAggregate` | folding them through a function; `initial:` sets the start | totals, lists, maps |
-| `Topic` | collecting them into a list, which lasts one step; `accumulate: true` keeps every step's writes | events from several nodes |
-| `AnyValue` | keeping the last one, without failing on several | a value parallel branches agree on |
-| `EphemeralValue` | keeping the only write for one step | a signal for the next node only |
-| `UntrackedValue` | keeping the value for the run but never checkpointing it | clients, handles, large scratch data |
-| `DeltaChannel` | calling its function with the list of writes; checkpoints store only the writes | long lists that only grow |
+| `LastValue` | One write per step | Ordinary state |
+| `BinaryOperatorAggregate` | Fold writes with a reducer | Lists, maps, totals |
+| `Topic` | Collect step writes; `accumulate: true` retains prior steps | Event collections |
+| `AnyValue` | Accept multiple writes, retain the last | Values whose writers agree |
+| `EphemeralValue` | Keep a write for the next step | Short-lived signals |
+| `UntrackedValue` | Keep a run-local value without checkpointing | Clients or transient handles |
+| `DeltaChannel` | Reconstruct values from recorded writes | Growing histories |
+
+Non-accumulating topics and ephemeral values clear after the following step
+unless written again. Untracked data must be supplied again after recovery.
+Delta writes and their `prepare:` transformation must be replay-safe:
+preparing an already-prepared write must not change it. Message delta channels
+assign stable IDs before persistence.
+
+An accumulating topic records each step while the numeric channel sums amounts:
 
 ```elixir
+alias BeamWeaver.Graph
+alias BeamWeaver.Graph.Compiled
+
+alias BeamWeaver.Core.Message
+alias BeamWeaver.Graph.Channels.LastValue
+
 alias BeamWeaver.Graph.Channels.{BinaryOperatorAggregate, Topic}
 
 audit =
@@ -165,54 +204,44 @@ Compiled.invoke(audit, %{})
 #=> {:ok, %{events: ["refunded $40", "emailed Ada"], refunded: 40}}
 ```
 
-A `Topic` without `accumulate:` and an `EphemeralValue` hold what one step
-wrote: the nodes of the next step read it, and it is cleared after that step
-unless a node writes it again.
-
-A `DeltaChannel` rebuilds its value from the writes saved in earlier
-checkpoints whenever a thread is read, so a write must read back the same
-every time. Its `prepare:` option takes a function that prepares each write
-before it is applied, streamed or saved; a prepared write can go through it
-again and must come back unchanged. `BeamWeaver.Graph.Messages.delta_channel/1`
-uses it to give each message its id once.
-
-A channel that needs a function takes a `{module, function}` tuple. The same
-forms work with `Graph.add_channel/4`:
-`Graph.add_channel(graph, :refunded, {BinaryOperatorAggregate, &+/2}, initial: 0)`.
-A [graph module](graphs.md#static-graphs-as-modules) declares its channels in
-`state do` with `merge: :last | :list | :map | reducer`.
-
 ## Overwrite a reducer
 
-Wrap a write in `BeamWeaver.Graph.Overwrite` to replace the value without
-calling the reducer, for example to reset a list:
+Use `Graph.Overwrite` for an intentional replacement:
 
 ```elixir
-alias BeamWeaver.Graph.Overwrite
-
-notes =
+reset =
   Graph.new()
-  |> Graph.add_reducer(:notes, &(&1 ++ &2))
-  |> Graph.add_node(:call_carrier, fn _state -> %{notes: ["called the carrier"]} end)
-  |> Graph.add_node(:close, fn _state -> %{notes: Overwrite.new(["ticket closed"])} end)
-  |> Graph.add_edge(Graph.start(), :call_carrier)
-  |> Graph.add_edge(:call_carrier, :close)
+  |> Graph.add_reducer(:notes, &Kernel.++/2)
+  |> Graph.add_node(:close, fn _ -> %{notes: Graph.Overwrite.new(["Closed"])} end)
+  |> Graph.add_edge(Graph.start(), :close)
   |> Graph.add_edge(:close, Graph.end_node())
   |> Graph.compile!()
 
-Compiled.invoke(notes, %{notes: ["opened by Ada"]})
-#=> {:ok, %{notes: ["ticket closed"]}}
+{:ok, %{notes: ["Closed"]}} = Compiled.invoke(reset, %{notes: ["Opened", "Reviewed"]})
 ```
 
-A key accepts one overwrite per step, and the overwrite drops the step's other
-writes to the key.
+One overwrite is allowed per key per step; it supersedes other writes to that
+key in the same step. Make that precedence deliberate.
 
 ## Private keys
 
-A private channel is visible to nodes but left out of the result and out of
-checkpoints. Use it for intermediate values that callers should not see:
+`Graph.private_channel/2` exposes data to nodes but excludes it from ordinary
+output and, by default, checkpoints. `checkpoint: true` keeps private
+bookkeeping across thread calls while still hiding it from the output.
+
+Private is a visibility convention, not encryption or tenant isolation.
+Do not put nonserializable handles in checkpointed channels. Agent tools using
+generic state injection omit private keys; explicit key injection can access them.
+
+Nodes can use the score, but the caller receives only the public decision:
 
 ```elixir
+alias BeamWeaver.Graph
+alias BeamWeaver.Graph.Compiled
+
+alias BeamWeaver.Core.Message
+alias BeamWeaver.Graph.Channels.LastValue
+
 alias BeamWeaver.Graph.Channels.LastValue
 
 scoring =
@@ -230,18 +259,22 @@ Compiled.invoke(scoring, %{})
 #=> {:ok, %{decision: :approve}}
 ```
 
-`Graph.add_channel(graph, :risk_score, LastValue, visibility: :private)` does
-the same. For bookkeeping that belongs to a thread rather than a run,
-`Graph.private_channel(LastValue, checkpoint: true)` still keeps the key out
-of the result but saves it in checkpoints, so the next run on the thread
-starts from its value.
-
 ## Keys that start nodes
 
-A channel's `subscribers:` option runs those nodes whenever the key is
-written, without an edge:
+A channel's `subscribers:` schedules named nodes when that key is written.
+This is data-driven scheduling without an explicit edge. Keep subscriptions
+visible in the workflow design so a state update cannot unexpectedly trigger
+an external action. Ordinary retry and idempotency rules still apply.
+
+Writing the alert schedules its subscriber:
 
 ```elixir
+alias BeamWeaver.Graph
+alias BeamWeaver.Graph.Compiled
+
+alias BeamWeaver.Core.Message
+alias BeamWeaver.Graph.Channels.LastValue
+
 alerts =
   Graph.new(state_schema: %{alert: Graph.channel(LastValue, subscribers: [:notify_manager])})
   |> Graph.add_node(:check_refund, fn %{amount: amount} ->
@@ -258,14 +291,20 @@ state.notified
 
 ## Managed values
 
-A managed value is a key the runtime fills in for each node. Nodes can read
-it but not write it, and it is never saved.
-`BeamWeaver.Graph.Managed.RemainingSteps` holds the number of steps left before
-the [recursion limit](graphs.md#recursion-limit), and
-`BeamWeaver.Graph.Managed.IsLastStep` whether this is the last one. A loop can
-use them to stop cleanly instead of failing:
+`Graph.managed(RemainingSteps)` and `Graph.managed(IsLastStep)` supply runtime
+budget information to nodes. Managed values are read-only and not saved.
+Use them to return a controlled partial result before hitting the recursion
+limit. A write to a managed key fails.
+
+Use the remaining budget to stop a polling loop deliberately:
 
 ```elixir
+alias BeamWeaver.Graph
+alias BeamWeaver.Graph.Compiled
+
+alias BeamWeaver.Core.Message
+alias BeamWeaver.Graph.Channels.LastValue
+
 alias BeamWeaver.Graph.Managed.RemainingSteps
 
 polling =
@@ -284,18 +323,22 @@ state.status
 #=> "no news after 4 polls"
 ```
 
-With a limit of five steps, the fourth poll sees two steps left and hands over
-to `give_up`, which uses the last step. Writing to a managed key fails the run.
-
 ## Input and output schemas
 
-`input_schema:` and `output_schema:` on `Graph.new/1` name the keys a graph
-accepts and returns. Other input keys are dropped, and the result keeps only
-the output keys. BeamWeaver filters by the keys; the values describe them for
-`BeamWeaver.Graph.Compiled.get_input_json_schema/1` and
-`BeamWeaver.Graph.Compiled.get_output_json_schema/1`.
+Graph `input_schema:` and `output_schema:` define the keys crossing the graph
+boundary. Undeclared keys are filtered; schema descriptions also support
+`Compiled.get_input_json_schema/1` and `get_output_json_schema/1`.
+They are not a substitute for validating domain values in your nodes.
+
+Only the declared output crosses the graph boundary:
 
 ```elixir
+alias BeamWeaver.Graph
+alias BeamWeaver.Graph.Compiled
+
+alias BeamWeaver.Core.Message
+alias BeamWeaver.Graph.Channels.LastValue
+
 triage =
   Graph.new(input_schema: %{subject: :string}, output_schema: %{reply: :string})
   |> Graph.add_node(:classify, fn %{subject: subject} ->
@@ -311,33 +354,43 @@ Compiled.invoke(triage, %{subject: "Refund for order A-1001", debug: true})
 #=> {:ok, %{reply: "Routed to the billing queue."}}
 ```
 
+## UI state
+
+`BeamWeaver.Graph.UI` stores component-name/props messages in an ID-aware
+channel. New IDs append; existing IDs replace (or merge props when requested);
+removal markers delete. Runtime push/delete helpers emit UI events and return
+data for a node update. They do not provide a frontend renderer or persist
+state merely by emitting an event. Your client owns allowed components and
+safe rendering of props.
+
+Push a component description and include it in the node update. A later write with the same ID updates its props:
+
+```elixir
+alias BeamWeaver.Graph
+alias BeamWeaver.Graph.{Compiled, UI}
+
+flow =
+  Graph.new(state_schema: UI.state_schema())
+  |> Graph.add_node(:show, fn _state, runtime ->
+    {:ok, card} = UI.push_ui_message(runtime, "order-card", %{status: "checking"}, id: "order-A-1001")
+    %{ui: [card]}
+  end)
+  |> Graph.add_node(:update, fn _ ->
+    %{ui: [UI.message("order-card", %{status: "shipped"}, id: "order-A-1001", merge: true)]}
+  end)
+  |> Graph.add_edge(Graph.start(), :show)
+  |> Graph.add_edge(:show, :update)
+  |> Graph.add_edge(:update, Graph.end_node())
+  |> Graph.compile!()
+
+{:ok, result} = Compiled.invoke(flow, %{})
+[%{id: "order-A-1001", props: %{status: "shipped"}}] = result.ui
+[] = UI.reducer(result.ui, [UI.remove("order-A-1001")])
+```
+
 ## Which one to use
 
-| You want | Use |
-| --- | --- |
-| A value that one node sets | a plain key |
-| Results of parallel nodes in one list | `&(&1 ++ &2)`, or `merge: :list` in a module |
-| Results of parallel nodes by name | `&Map.merge/2`, or `merge: :map` in a module |
-| A running total | `&+/2` |
-| A conversation | `BeamWeaver.Graph.Messages.state_schema/1` |
-| To reset a key that has a reducer | `Overwrite` |
-| Intermediate data callers shouldn't see | `Graph.private_channel/2` |
-| A connection or handle that can't be saved | `UntrackedValue` |
-| A signal only the next node reads | `EphemeralValue` |
-| The number of steps left | `Graph.managed(RemainingSteps)` |
-
-[Workflow Patterns](workflow_patterns.md) puts these keys to work in graphs
-that call models.
-
-## Reference
-
-- [`BeamWeaver.Graph`](https://hexdocs.pm/beam_weaver/BeamWeaver.Graph.html): `add_reducer/3`, `add_channel/4`, `channel/2`, `private_channel/2`, `managed/2`
-- [`BeamWeaver.Graph.Messages`](https://hexdocs.pm/beam_weaver/BeamWeaver.Graph.Messages.html): a `messages` key for conversations
-- [`BeamWeaver.Graph.Overwrite`](https://hexdocs.pm/beam_weaver/BeamWeaver.Graph.Overwrite.html): replace a value without its reducer
-- [`BeamWeaver.Graph.Channels.LastValue`](https://hexdocs.pm/beam_weaver/BeamWeaver.Graph.Channels.LastValue.html): the default channel
-- [`BeamWeaver.Graph.Channels.BinaryOperatorAggregate`](https://hexdocs.pm/beam_weaver/BeamWeaver.Graph.Channels.BinaryOperatorAggregate.html): reducer channel
-- [`BeamWeaver.Graph.Channels.Topic`](https://hexdocs.pm/beam_weaver/BeamWeaver.Graph.Channels.Topic.html): collect writes into a list
-- [`BeamWeaver.Graph.Channels.UntrackedValue`](https://hexdocs.pm/beam_weaver/BeamWeaver.Graph.Channels.UntrackedValue.html): values that are never checkpointed
-- [`BeamWeaver.Graph.Channels.EphemeralValue`](https://hexdocs.pm/beam_weaver/BeamWeaver.Graph.Channels.EphemeralValue.html): values that last one step
-- [`BeamWeaver.Graph.Channel`](https://hexdocs.pm/beam_weaver/BeamWeaver.Graph.Channel.html): behaviour for writing your own channel
-- [`BeamWeaver.Graph.Managed.RemainingSteps`](https://hexdocs.pm/beam_weaver/BeamWeaver.Graph.Managed.RemainingSteps.html): steps left before the recursion limit
+Choose a plain key for one writer, a reducer for combined results, the message
+channel for conversations, a private channel for hidden bookkeeping and an
+untracked channel for data that must never be restored from storage.
+[Subgraphs](subgraphs.md) explains how updates cross nested state boundaries.

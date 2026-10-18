@@ -1,10 +1,16 @@
 defmodule BeamWeaver.DeepSeek.ResponsesModel do
-  @moduledoc """
-  DeepSeek OpenAI-compatible Responses API model.
+  @moduledoc ~S"""
+  DeepSeek Responses model implementing the BeamWeaver chat contract.
 
-  DeepSeek exposes this API for `deepseek-flash`, its compatibility aliases,
-  and `deepseek-v4-pro`, and keeps it stateless. Unsupported state, media, and silently ignored
-  compatibility parameters are rejected before transport.
+  Prefer `BeamWeaver.Models.init_chat_model/2` for provider-prefixed identifiers,
+  then call `BeamWeaver.Core.ChatModel` or declare the model in an agent.
+  Construction does not contact the provider. Model/profile options describe
+  local compatibility; account access is established only by a real request.
+
+  See [DeepSeek](providers/deepseek.md) for endpoint-specific parameters, reasoning,
+  media and tools. Preserve complete messages for multi-turn replay. Streaming
+  consumers must enumerate once and handle terminal errors; display text is not
+  a lossless representation of a native provider turn.
   """
 
   use BeamWeaver.Provider.RedactedInspect
@@ -124,6 +130,7 @@ defmodule BeamWeaver.DeepSeek.ResponsesModel do
          :ok <- validate_instructions(body),
          :ok <- validate_required_input(body),
          :ok <- validate_tools(body["tools"]),
+         :ok <- validate_tool_model(body["model"], body["tools"]),
          :ok <- validate_input_items(body["input"], body["tools"]),
          :ok <- BeamWeaver.DeepSeek.Vision.validate_request(body, :responses),
          :ok <- validate_call_pairs(body["input"]),
@@ -384,6 +391,19 @@ defmodule BeamWeaver.DeepSeek.ResponsesModel do
     {:error, Error.new(:invalid_request, "DeepSeek Responses tools must be a list")}
   end
 
+  defp validate_tool_model("deepseek-v4-pro", _tools), do: :ok
+
+  defp validate_tool_model(model, tools) do
+    if declared_web_search?(tools) do
+      error(:unsupported_feature, "DeepSeek hosted web search requires deepseek-v4-pro",
+        model: model,
+        feature: :web_search
+      )
+    else
+      :ok
+    end
+  end
+
   defp validate_call_pairs(items) do
     with :ok <- validate_pair_type(items, "function_call", "function_call_output"),
          do: validate_pair_type(items, "custom_tool_call", "custom_tool_call_output")
@@ -514,7 +534,7 @@ defmodule BeamWeaver.DeepSeek.ResponsesModel do
   end
 
   defp validate_tool_choice(%{"type" => type} = choice, tools, _reasoning)
-       when type in ["web_search", "web_search_2025_08_26"] do
+       when type == "web_search" do
     if declared_web_search?(tools), do: :ok, else: undeclared_tool_choice(choice, type)
   end
 
@@ -545,7 +565,7 @@ defmodule BeamWeaver.DeepSeek.ResponsesModel do
     do: Enum.any?(tools || [], &match?(%{"type" => "function", "name" => ^name}, &1))
 
   defp declared_web_search?(tools),
-    do: Enum.any?(tools || [], &match?(%{"type" => type} when type in ["web_search", "web_search_2025_08_26"], &1))
+    do: Enum.any?(tools || [], &match?(%{"type" => type} when type == "web_search", &1))
 
   defp apply_patch_declared?(tools),
     do: Enum.any?(tools || [], &match?(%{"type" => "custom", "name" => "apply_patch"}, &1))

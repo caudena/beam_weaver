@@ -3,7 +3,7 @@ defmodule BeamWeaver.Migrations do
   Versioned database migrations for BeamWeaver durable adapters.
 
   Call `up/1` and `down/1` from application-owned `Ecto.Migration` modules.
-  [Storage](storage.md#create-the-tables) shows repository startup, a complete
+  [Storage](storage.md#postgresql-setup) shows repository startup, a complete
   migration, and execution against the database. Migration functions require
   Ecto's migration runner; they are not standalone table-creation functions.
 

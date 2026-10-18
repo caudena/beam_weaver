@@ -160,8 +160,14 @@ defmodule BeamWeaver.Sandbox.LocalProvider do
 end
 
 defmodule BeamWeaver.Sandbox.Registry do
-  @moduledoc """
-  Registry for native sandbox providers.
+  @moduledoc ~S"""
+  Explicit sandbox-provider catalog and validated adapter construction.
+
+  Register ProviderSpec values in a registry, fetch/list metadata, then build
+  through the selected provider. Lifecycle options are checked against declared
+  capabilities before provider construction. The registry is a value owned by
+  your application, not a background scheduler or a hosted sandbox account.
+  [Sandboxes](sandboxes.md#provider-registry) explains adapter ownership.
   """
 
   alias BeamWeaver.Core.Error

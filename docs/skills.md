@@ -1,278 +1,244 @@
 # Skills
 
-A skill is a folder with a `SKILL.md` file: instructions for one kind of task,
-plus any scripts, templates or reference files it needs. The agent sees a
-short description of each skill and reads a skill in full only when a task
-calls for it, so it can have many skills without a longer prompt on every
-call.
+A skill packages task instructions and supporting files in a folder with
+`SKILL.md`. The agent sees a short description first and reads the full
+procedure when needed. Use skills for repeatable procedures; use tools for
+application-enforced actions and memory files for short always-loaded notes.
+
+Complete [Installation](installation.md). This example uses a real OpenAI
+model and a skill stored in the thread's filesystem.
+
+
+Run this page’s examples in order in one IEx session; later blocks reuse the modules and values defined earlier.
+
+## Give an agent a procedure
 
 ```elixir
-refund_policy = """
+skill_text = """
 ---
 name: refund-policy
-description: Decide whether an order qualifies for a refund and how much. Use for refund and return questions.
+description: Explain the sample damaged-goods refund policy. Use for damaged delivery questions.
 ---
+# Damaged goods
 
-# Refund policy
-
-1. Damaged or missing items: full refund, no return needed.
-2. Unwanted items: refund within 30 days of delivery, minus shipping.
-3. Refunds over $500 need a manager; say so instead of promising one.
+Read the customer report. A damaged item is eligible for a full refund after
+staff approval. Explain eligibility; do not claim a payment has been made.
 """
 
-defmodule MyApp.SupportResearcher do
+defmodule MyApp.SkilledAgent do
   use BeamWeaver.Agent
 
-  alias BeamWeaver.Models.FakeChatModel
-
-  model "fake:chat",
-    responses: [
-      FakeChatModel.tool_call("read_file", %{"file_path" => "/skills/refund-policy/SKILL.md"}),
-      "Your mug arrived broken, so you get a full refund and don't need to send it back."
-    ]
-
-  system_prompt "You are Acme's support researcher."
+  model "openai:gpt-5.4-mini", max_tokens: 512, timeout: 60_000
+  system_prompt "Read the relevant SKILL.md before answering a policy question."
   filesystem BeamWeaver.Filesystem.State.new()
   skills ["/skills"]
 end
 
 {:ok, result} =
-  MyApp.SupportResearcher.invoke(%{
-    messages: ["My mug arrived broken. Can I get my money back?"],
-    files: %{"/skills/refund-policy/SKILL.md" => refund_policy}
+  MyApp.SkilledAgent.invoke(%{
+    messages: ["My mug arrived broken. Read the refund-policy skill and explain what I am eligible for."],
+    files: %{"/skills/refund-policy/SKILL.md" => skill_text}
   })
 
-result.messages |> Enum.find(&(&1.role == :tool)) |> BeamWeaver.Core.Message.text()
-#=> "---\nname: refund-policy\n" <> _
+read = Enum.find(result.messages, &(&1.role == :tool and &1.name == "read_file"))
+true = read != nil
+true = BeamWeaver.Core.Message.text(read) =~ "staff approval"
+answer = result.messages |> List.last() |> BeamWeaver.Core.Message.text()
+true = String.downcase(answer) =~ "refund"
 ```
 
-`skills ["/skills"]` lists the skills under `/skills` in the agent's system
-prompt. The question matched the description of `refund-policy`, so the model
-read the skill with `read_file` and answered from it. Here the skill is a file
-in the thread's state, passed in with `files:`;
-[Where skills live](#where-skills-live) keeps skills in a directory or a
-memory store instead.
+The tool result establishes that the procedure was actually read. The sample
+policy is teaching data. A skill's text guides the model; it does not itself
+enforce approval or authorize a real refund.
 
 ## Write a skill
 
-Name the folder after the skill and put `SKILL.md` in it, next to any files
-the skill refers to:
+Use a folder whose name matches the skill, with `SKILL.md` and any supporting
+scripts, templates or references beside it. Frontmatter precedes Markdown.
 
-```text
-skills/
-├── refund-policy/
-│   └── SKILL.md
-└── order-export/
-    ├── SKILL.md
-    └── export.sh
-```
-
-`SKILL.md` starts with YAML frontmatter, followed by the instructions in
-Markdown:
-
-| Field | Meaning |
+| Field | Contract |
 | --- | --- |
-| `name` | Required. Lowercase letters, digits and hyphens, at most 64 characters, the same as the folder's name. |
-| `description` | Required. What the skill is for and when to use it: the model picks skills by this text, so make it specific. A description over 1,024 bytes is cut to that length, with a logged warning. |
-| `license`, `compatibility` | Optional. Shown to the model next to the description. |
-| `allowed-tools` | Optional. Tool names, separated by spaces or commas, or a YAML list of them, shown to the model as advice. It doesn't limit which tools the agent may call. |
-| `metadata` | Optional. A map of strings for your own use. |
+| `name` | Required; lowercase letters/digits/hyphens, at most 64 characters, matching folder name |
+| `description` | Required; explain when to use it; overlong descriptions are truncated with a warning |
+| `license`, `compatibility` | Optional discovery metadata |
+| `allowed-tools` | Advisory tool names, not an enforced permission policy |
+| `metadata` | Optional string-keyed metadata |
 
-In the body, name the supporting files by path and say
-when to use them, such as "run `/skills/order-export/export.sh` for more than
-100 orders", so the agent opens them only when it needs them.
-
-`BeamWeaver.Skill.parse/2` checks a `SKILL.md` the way the agent does and
-returns `{:ok, %BeamWeaver.Skill{}}` or the reason it fails. Call it in a test
-to catch a broken skill before an agent skips it:
+Write steps with inputs, expected outputs and completion criteria. Identify
+supporting files explicitly and tell the agent when to read or run them.
+Do not bury authorization in prose when it belongs in a tool or review rule.
 
 ```elixir
-BeamWeaver.Skill.parse("---\nname: Refund Policy\ndescription: Refunds.\n---\n")
-#=> {:error, %BeamWeaver.Core.Error{type: :invalid_skill, message: "skill name is invalid"}}
+{:ok, skill} = BeamWeaver.Skill.parse(skill_text)
+"refund-policy" = skill.name
+```
+
+The parser also supports literal `$ARGUMENTS` substitution through `render/2`.
+It does not execute shell substitutions or treat arbitrary template syntax as
+code. Pass a binary argument string; the renderer substitutes it literally.
+
+Render literal invocation arguments without interpreting them as shell code:
+
+```elixir
+{:ok, template} =
+  BeamWeaver.Skill.parse(
+    "---\nname: order-note\ndescription: Write an order note.\n---\nWrite a note about $ARGUMENTS."
+  )
+
+{:ok, rendered} = BeamWeaver.Skill.render(template, "A-1001")
+true = rendered =~ "Write a note about A-1001."
 ```
 
 ## What the model sees
 
-Before the first model call of every run, the agent reads the frontmatter of
-each skill and adds a section like this to its system prompt:
+At the start of a run, discovery adds skill names, descriptions and paths to
+the prompt. Full instructions remain in files until read. Invalid/unloadable
+skills are reported in discovery information rather than silently becoming
+working procedures. Changed files are discovered on subsequent runs.
 
-```text
-**Available Skills:**
-
-- **refund-policy**: Decide whether an order qualifies for a refund and how much. Use for refund and return questions.
-  -> Read `/skills/refund-policy/SKILL.md` for full instructions
-
-**How to Use Skills (Progressive Disclosure):**
-
-Check whether the user's task matches an available skill. When it does, read the listed `SKILL.md` path with `read_file` before using the skill.
-```
-
-The section also names the folders it searched and lists each skill it
-couldn't load, with the reason. A skill costs a line or two of prompt until
-the model reads it, and because the list is read on every run, a new or
-changed skill shows up on the next run, even in the same thread.
+Keep descriptions specific so the model can choose among similar skills.
+A huge skill catalog still costs prompt space even with progressive loading.
 
 ## Skill sources
 
-`skills` takes a list of sources:
+`skills` accepts a directory of skills, a single skill folder or a
+`{path, label}` source. When names collide, later sources override earlier
+ones. Put general procedures first and tenant/team overrides later.
 
-| Source | Loads |
-| --- | --- |
-| `"/skills"` | every folder in `/skills` that has a `SKILL.md` |
-| `"/skills/refund-policy"` | that one skill |
-| `{"/skills/support_team", "Support team"}` | the folder's skills, with a label for the prompt |
+Declare a filesystem so the model has `read_file`. Without it, discovery can
+read state-backed skill metadata while the model lacks the tool to open the
+procedure.
 
-When two sources hold a skill with the same name, the later source wins. List
-general skills first and more specific ones after them, so a team can replace
-a company-wide skill with its own version:
+Put general procedures first and a team override later. This example reads the actual overridden procedure:
 
 ```elixir
 defmodule MyApp.TeamSkillsAgent do
   use BeamWeaver.Agent
-
-  model "fake:chat", responses: ["Ready."]
+  model "openai:gpt-5.4-mini", max_tokens: 512, timeout: 60_000
+  system_prompt "Read the refund-policy skill before answering."
   filesystem BeamWeaver.Filesystem.State.new()
-  skills [{"/skills/acme", "Acme"}, {"/skills/support_team", "Support team"}]
+  skills [{"/skills/shared", "Shared"}, {"/skills/team", "Team"}]
 end
 
-{:ok, result} = MyApp.TeamSkillsAgent.invoke(%{messages: ["Reply with the word ready."]})
-true = is_binary(result.messages |> List.last() |> BeamWeaver.Core.Message.text())
-```
+team_policy = String.replace(skill_text, "full refund after", "replacement after")
 
-Declare a `filesystem` with `skills`. The agent reads the list of skills
-through it, and its file tools let the model open them. Without a
-`filesystem`, the skills come from the thread's state and the model has no
-`read_file` to open one.
+{:ok, result} =
+  MyApp.TeamSkillsAgent.invoke(%{
+    messages: ["Read refund-policy and explain the policy for damaged deliveries."],
+    files: %{
+      "/skills/shared/refund-policy/SKILL.md" => skill_text,
+      "/skills/team/refund-policy/SKILL.md" => team_policy
+    }
+  })
+
+read = Enum.find(result.messages, &(&1.role == :tool and &1.name == "read_file"))
+true = BeamWeaver.Core.Message.text(read) =~ "replacement after"
+```
 
 ## Where skills live
 
-Skills are files, so they live wherever the agent's filesystem keeps them
-([Filesystem](filesystem.md)). Skills that ship with your application belong
-in a directory, mounted read-only:
+Bundled skills can live under `priv/skills` in your application and be mounted
+read-only through a Local/Composite backend. Editable team/tenant skills can
+live in `Filesystem.Store`, backed by ETS or persistent memory storage.
+A store namespace function selects the authenticated tenant.
 
-```elixir
-defmodule MyApp.SupportResearcher do
-  use BeamWeaver.Agent
+Uploads replace existing files. Validate new skill text and supporting paths
+before exposing it. Keep shared procedures read-only to ordinary agent tasks
+when modification is not part of their authority.
 
-  alias BeamWeaver.Filesystem
-
-  model "anthropic:claude-sonnet-4-6"
-
-  filesystem Filesystem.Composite.new(
-               routes: %{"/skills/" => Filesystem.Local.new(root: Path.join(System.tmp_dir!(), "support_skills"))}
-             )
-
-  filesystem_permissions [Filesystem.Permission.new(operations: [:write], paths: ["/skills/**"], mode: :deny)]
-  skills ["/skills"]
-end
-```
-
-For this standalone example, create the `support_skills/refund-policy` directory
-beneath the temporary directory and put `SKILL.md` there. In an OTP application,
-use `Application.app_dir(:my_app, "priv/skills")` for bundled skills. The agent finds the file at
-`/skills/refund-policy/SKILL.md`, and its other files stay in the thread's
-state. Skills you edit while the application runs, or keep per customer, fit a
-memory store. Upload them once, and every run reads the current version:
+Load a procedure into an application-owned store and use it through a mounted route:
 
 ```elixir
 store = BeamWeaver.Memory.ETS.new()
 library = BeamWeaver.Filesystem.Store.new(store: store, namespace: ["acme", "skills"])
-[%{error: nil}] = BeamWeaver.Filesystem.upload_files(library, [{"/refund-policy/SKILL.md", refund_policy}])
+[%{error: nil}] = BeamWeaver.Filesystem.upload_files(library, [{"/refund-policy/SKILL.md", skill_text}])
 
-defmodule MyApp.SupportResearcher do
-  use BeamWeaver.Agent
+{:ok, agent} =
+  BeamWeaver.Agent.build(
+    model: "openai:gpt-5.4-mini",
+    model_opts: [max_tokens: 512, timeout: 60_000],
+    system_prompt: "Read the refund-policy SKILL.md before answering.",
+    filesystem: BeamWeaver.Filesystem.Composite.new(routes: %{"/skills/" => library}),
+    skills: ["/skills"]
+  )
 
-  alias BeamWeaver.Filesystem
-  alias BeamWeaver.Models.FakeChatModel
+{:ok, result} =
+  BeamWeaver.Agent.invoke(agent, %{messages: ["Read refund-policy. What happens after a damaged delivery?"]})
 
-  model "fake:chat",
-    responses: [
-      FakeChatModel.tool_call("read_file", %{"file_path" => "/skills/refund-policy/SKILL.md"}),
-      "Your mug arrived broken, so you get a full refund."
-    ]
-
-  filesystem Filesystem.Composite.new(routes: %{"/skills/" => Filesystem.Store.new(namespace: ["acme", "skills"])})
-  filesystem_permissions [Filesystem.Permission.new(operations: [:write], paths: ["/skills/**"], mode: :deny)]
-  skills ["/skills"]
-end
-
-{:ok, result} = MyApp.SupportResearcher.invoke(%{messages: ["My mug arrived broken."]}, store: store)
-result.messages |> Enum.find(&(&1.role == :tool)) |> BeamWeaver.Core.Message.text()
-#=> "---\nname: refund-policy\n" <> _
+true =
+  Enum.any?(
+    result.messages,
+    &(&1.role == :tool and &1.name == "read_file" and BeamWeaver.Core.Message.text(&1) =~ "staff approval")
+  )
 ```
-
-`upload_files/3` replaces a skill that already exists. A `namespace:` function
-gives each customer or team their own library; see
-[Memory Files](memory_files.md#one-set-of-files-per-customer). The store must
-be a `Memory.ETS` for now (see [Filesystem](filesystem.md#a-memory-store)).
 
 ## Skills for subagents
 
-The built-in `general-purpose` subagent gets the parent's skills and file
-tools. A subagent module of your own loads the `skills` it declares through
-its own `filesystem`, as it does when it runs on its own. To give it the
-parent's skills and files instead, ask for them on its `subagent` line with
-`base_middleware:`. It then loads its own `skills` declaration, or the
-parent's if it has none, from the parent's filesystem:
+The general-purpose worker inherits parent skills and file tools. An explicit
+child normally uses its own declarations. Request parent filesystem/skills
+middleware through `base_middleware:` when inheritance is intended; a spec's
+`skills:` can override the source list. Remote async agents load their skills
+in their own service environment.
+
+An explicit specialist requests the parent’s file and skill capabilities. The captured answer comes from a real delegated run:
 
 ```elixir
-defmodule MyApp.PolicyExpert do
+defmodule MyApp.SkilledPolicyChild do
   use BeamWeaver.Agent
-
-  description "Answers questions about the return policy."
-  model "fake:chat", responses: ["Returns are accepted within 30 days."]
+  name "policy_reader"
+  description "Reads the refund-policy skill and explains its procedure."
+  model "openai:gpt-5.4-mini", max_tokens: 512, timeout: 60_000
+  system_prompt "Read the refund-policy SKILL.md before answering."
 end
 
-defmodule MyApp.SkilledSupervisorAgent do
+defmodule MyApp.SkillSupervisor do
   use BeamWeaver.Agent
+  model "openai:gpt-5.4-mini", max_tokens: 512, timeout: 60_000
+  system_prompt "Delegate policy questions to policy_reader exactly once."
 
-  model "fake:chat", responses: ["Ready."]
+  middleware [
+    {BeamWeaver.Agent.Middleware.ToolChoice,
+     choice: fn request ->
+       if Enum.any?(request.messages, &(&1.role == :tool)),
+         do: :none,
+         else: %{type: "function", function: %{name: "task"}}
+     end}
+  ]
+
   filesystem BeamWeaver.Filesystem.State.new()
   skills ["/skills"]
 
   subagents do
-    subagent MyApp.PolicyExpert,
+    subagent MyApp.SkilledPolicyChild,
+      capture_output: :policy,
       base_middleware: [BeamWeaver.Agent.Middleware.Skills, BeamWeaver.Agent.Middleware.Filesystem]
+
+    include [BeamWeaver.Agent.GeneralPurposeSubagentProfile.new(enabled: false)]
   end
 end
 
-{:ok, result} = MyApp.SkilledSupervisorAgent.invoke(%{messages: ["Reply with the word ready."]})
-true = is_binary(result.messages |> List.last() |> BeamWeaver.Core.Message.text())
-```
+{:ok, result} =
+  MyApp.SkillSupervisor.invoke(%{
+    messages: ["Read the skill and explain the damaged-delivery refund procedure."],
+    files: %{"/skills/refund-policy/SKILL.md" => skill_text}
+  })
 
-`skills: [...]` on the same line replaces both. A subagent started with
-`async_subagents` runs on another server and loads its skills there. See
-[Subagents](subagents.md).
+true = is_binary(result.subagent_outputs["policy"])
+true = String.downcase(result.subagent_outputs["policy"]) =~ "approval"
+```
 
 ## Skills that run scripts
 
-Any filesystem lets the agent read a skill's scripts and templates. Running a
-script needs the `execute` tool, from a filesystem that runs commands:
-`BeamWeaver.Filesystem.LocalShell` for development, or
-`BeamWeaver.Filesystem.Sandbox` to isolate the commands
-([Sandboxes](sandboxes.md)). A command sees only the files of the backend
-that runs it, not files mounted from other backends, so keep such skills in
-that backend, or copy them in with `BeamWeaver.Filesystem.upload_files/3`
-before the run. Logic your application can run itself, such as a database
-query, is simpler and safer as a [tool](tools.md).
+Reading a script requires file tools; executing it requires an executable
+backend. A command sees that backend's actual files, not every virtual mount
+in a composite filesystem. Copy required scripts into the execution backend
+or keep them there. [Sandboxes](sandboxes.md) explains execution policies and
+resource ownership.
 
 ## Skills, memory files or tools?
 
-| | Skills | Memory files | Tools |
-| --- | --- | --- | --- |
-| In every prompt | the name and description | the whole file | the name, description and arguments |
-| Use for | procedures and reference that some tasks need | short rules and facts for every task | actions and data from your systems |
-| Changed by | you, as files | you, and the agent with `edit_file` | your code |
-| Enforced | no, the model follows them | no, the model follows them | yes, your code runs |
-
-Most deep agents use all three: tools to act, a [memory file](memory_files.md)
-for house rules, and skills for the procedures behind them. Move a long
-section of a memory file into a skill when only some tasks need it.
-
-## Reference
-
-- [`BeamWeaver.Agent.Middleware.Skills`](https://hexdocs.pm/beam_weaver/BeamWeaver.Agent.Middleware.Skills.html): loads skills and adds the list to the system prompt
-- [`BeamWeaver.Skill`](https://hexdocs.pm/beam_weaver/BeamWeaver.Skill.html): parses and checks `SKILL.md` files
-- [`BeamWeaver.Filesystem.Store`](https://hexdocs.pm/beam_weaver/BeamWeaver.Filesystem.Store.html): skills kept in a memory store
-- [`BeamWeaver.Filesystem.Composite`](https://hexdocs.pm/beam_weaver/BeamWeaver.Filesystem.Composite.html): a skills folder mounted next to other files
-- [`BeamWeaver.Agent.Subagent.Spec`](https://hexdocs.pm/beam_weaver/BeamWeaver.Agent.Subagent.Spec.html): subagent options such as `base_middleware` and `skills`
+| Mechanism | Best for | Enforcement |
+| --- | --- | --- |
+| Skill | Procedure loaded for relevant tasks | Model follows instructions |
+| Memory file | Short notes/instructions needed each run | Model follows reference text |
+| Tool | Data access or a concrete action | Your application executes and validates it |

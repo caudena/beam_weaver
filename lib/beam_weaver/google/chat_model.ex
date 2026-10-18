@@ -1,6 +1,16 @@
 defmodule BeamWeaver.Google.ChatModel do
-  @moduledoc """
-  Google Gemini Developer API chat model implementation.
+  @moduledoc ~S"""
+  Google chat model implementing the BeamWeaver chat contract.
+
+  Prefer `BeamWeaver.Models.init_chat_model/2` for provider-prefixed identifiers,
+  then call `BeamWeaver.Core.ChatModel` or declare the model in an agent.
+  Construction does not contact the provider. Model/profile options describe
+  local compatibility; account access is established only by a real request.
+
+  See [Google](providers/google.md) for endpoint-specific parameters, reasoning,
+  media and tools. Preserve complete messages for multi-turn replay. Streaming
+  consumers must enumerate once and handle terminal errors; display text is not
+  a lossless representation of a native provider turn.
   """
 
   use BeamWeaver.Provider.RedactedInspect
@@ -104,6 +114,10 @@ defmodule BeamWeaver.Google.ChatModel do
     Client.stream_events(client(model), model.model, body, opts)
   end
 
+  @doc """
+  Calls Gemini countTokens for normalized messages, system instruction and generation configuration.
+  Returns {:ok, integer} or a provider error; this does not perform inference.
+  """
   def count_tokens(%__MODULE__{} = model, input, opts \\ []) do
     with {:ok, messages} <- LanguageModel.normalize_chat_input(input),
          {:ok, body} <- count_tokens_body(model, messages, opts),
@@ -147,6 +161,9 @@ defmodule BeamWeaver.Google.ChatModel do
     end
   end
 
+  @doc """
+  Builds a countTokens body, using a model-qualified generateContentRequest when instructions/options require it.
+  """
   def count_tokens_body(%__MODULE__{} = model, messages, opts \\ []) do
     with {:ok, {system, contents}} <- Messages.encode_messages(messages, opts) do
       request =
@@ -154,7 +171,12 @@ defmodule BeamWeaver.Google.ChatModel do
         |> Options.put_optional("systemInstruction", system)
         |> Options.put_optional("generationConfig", generation_config(model, opts))
 
-      {:ok, if(map_size(request) > 1, do: %{"generateContentRequest" => request}, else: request)}
+      body =
+        if map_size(request) > 1,
+          do: %{"generateContentRequest" => Map.put(request, "model", "models/" <> model.model)},
+          else: request
+
+      {:ok, body}
     end
   end
 

@@ -20,7 +20,15 @@ defmodule BeamWeaver.RateLimiter do
   @callback acquire(server(), amount(), keyword()) :: result()
 
   @doc """
-  Starts a token bucket under the BeamWeaver rate limiter supervisor.
+  Starts a permanent token bucket under the BeamWeaver rate limiter supervisor.
+
+  The bucket outlives its caller. Use `DynamicSupervisor.terminate_child/2`
+  with the registered supervisor name BeamWeaver.RateLimiter.Supervisor
+  and the returned PID to remove a temporary bucket. Stopping the GenServer
+  directly causes the supervisor to restart it.
+
+  For application-owned lifetime, add `BeamWeaver.RateLimiter.TokenBucket`
+  to your own supervisor instead. See [Rate Limiting](rate_limiting.md).
   """
   @spec start_bucket(keyword()) :: DynamicSupervisor.on_start_child()
   def start_bucket(opts \\ []) do

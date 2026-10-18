@@ -1,6 +1,17 @@
 defmodule BeamWeaver.VectorStore do
-  @moduledoc """
-  Vector store behaviour and facade.
+  @moduledoc ~S"""
+  Embed, store and retrieve source documents through explicit vector-store adapters.
+
+  Text search methods use the store's embedding model; vector-input methods
+  accept an already-computed query vector. Keep model/dimensions consistent
+  between ingestion and search. Returned documents retain IDs/source metadata;
+  scored variants return document/score pairs. Scores are not universal
+  confidence values and need application-specific calibration.
+
+  Filters and namespaces must enforce the intended tenant/data boundary.
+  `as_retriever/2` packages search defaults into the retriever contract.
+  [Retrieval](retrieval.md) demonstrates relevant-source assertions with real
+  embeddings; [Storage](storage.md) covers PostgreSQL/pgvector setup.
   """
 
   alias BeamWeaver.Adapter.Dispatch
@@ -11,18 +22,39 @@ defmodule BeamWeaver.VectorStore do
   alias BeamWeaver.Telemetry.AdapterEvent
   alias BeamWeaver.Telemetry.AdapterHelpers
 
+  @doc """
+  Embeds and persists documents, returning their stored IDs or an error.
+  """
   @callback add_documents(term(), [Document.t()], keyword()) ::
               {:ok, [String.t()]} | {:error, Error.t()}
+  @doc """
+  Removes the supplied document IDs from the store namespace.
+  """
   @callback delete(term(), [String.t()], keyword()) :: :ok | {:error, Error.t()}
+  @doc """
+  Embeds the query and returns the nearest matching documents, subject to k and filters.
+  """
   @callback similarity_search(term(), String.t(), keyword()) ::
               {:ok, [Document.t()]} | {:error, Error.t()}
+  @doc """
+  Returns nearest documents with adapter similarity scores.
+  """
   @callback similarity_search_with_score(term(), String.t(), keyword()) ::
               {:ok, [{Document.t(), number()}]} | {:error, Error.t()}
+  @doc """
+  Searches using a precomputed query vector without embedding the query again.
+  """
   @callback similarity_search_by_vector(term(), [number()], keyword()) ::
               {:ok, [Document.t()]} | {:error, Error.t()}
+  @doc """
+  Selects query-relevant documents while balancing diversity through fetch_k/lambda options.
+  """
   @callback max_marginal_relevance_search(term(), String.t(), keyword()) ::
               {:ok, [Document.t()]} | {:error, Error.t()}
 
+  @doc """
+  Builds or uses a store, inserts the supplied documents and returns {:ok, store}.
+  """
   def from_documents(store_or_module, documents, opts \\ []) do
     with {:ok, store} <- build_store(store_or_module, opts),
          {:ok, _ids} <- add_documents(store, documents, opts) do
@@ -30,6 +62,9 @@ defmodule BeamWeaver.VectorStore do
     end
   end
 
+  @doc """
+  Builds or uses a store and inserts text with optional metadata/IDs.
+  """
   def from_texts(store_or_module, texts, opts \\ []) do
     with {:ok, store} <- build_store(store_or_module, opts),
          {:ok, _ids} <- add_texts(store, texts, opts) do
@@ -37,6 +72,9 @@ defmodule BeamWeaver.VectorStore do
     end
   end
 
+  @doc """
+  Returns the configured embedding dependency, or nil when the store exposes none.
+  """
   def embedding(%{embedding: embedding}), do: {:ok, embedding}
   def embedding(_store), do: {:ok, nil}
 
@@ -61,6 +99,9 @@ defmodule BeamWeaver.VectorStore do
     end
   end
 
+  @doc """
+  Constructs documents from texts, metadata/metadatas and optional IDs, then embeds and stores them.
+  """
   def add_texts(store, texts, opts \\ []) do
     texts = List.wrap(texts)
     metadata = Keyword.get(opts, :metadatas, Keyword.get(opts, :metadata))
@@ -73,6 +114,9 @@ defmodule BeamWeaver.VectorStore do
     add_documents(store, documents, opts)
   end
 
+  @doc """
+  Removes the supplied document IDs from the store namespace.
+  """
   def delete(store, ids, opts \\ []) do
     ids = List.wrap(ids)
     result = store_call(store, :delete, [ids, opts])
@@ -80,9 +124,15 @@ defmodule BeamWeaver.VectorStore do
     result
   end
 
+  @doc """
+  Fetches stored documents by ID when supported; unsupported adapters return an error.
+  """
   def get_by_ids(store, ids, opts \\ []),
     do: Dispatch.call(store, :get_by_ids, [List.wrap(ids), opts], dispatch_opts("vector store cannot fetch by ids"))
 
+  @doc """
+  Dispatches similarity, score-threshold or MMR retrieval using a validated search type.
+  """
   def search(store, query, search_type, opts \\ []) do
     case normalize_search_type(search_type) do
       {:ok, :similarity} ->
@@ -99,11 +149,20 @@ defmodule BeamWeaver.VectorStore do
     end
   end
 
+  @doc """
+  Embeds the query and returns the nearest matching documents, subject to k and filters.
+  """
   def similarity_search(store, query, opts \\ []), do: run_search(store, :similarity_search, query, query, opts)
 
+  @doc """
+  Returns nearest documents with adapter similarity scores.
+  """
   def similarity_search_with_score(store, query, opts \\ []),
     do: run_search(store, :similarity_search_with_score, query, query, opts)
 
+  @doc """
+  Filters scored results by score_threshold when supplied; it does not recalibrate scores.
+  """
   def similarity_search_with_relevance_scores(store, query, opts \\ []) do
     threshold = Keyword.get(opts, :score_threshold)
 
@@ -111,9 +170,15 @@ defmodule BeamWeaver.VectorStore do
          do: {:ok, Enum.filter(scored, fn {_doc, score} -> is_nil(threshold) or score >= threshold end)}
   end
 
+  @doc """
+  Searches using a precomputed query vector without embedding the query again.
+  """
   def similarity_search_by_vector(store, vector, opts \\ []),
     do: run_search(store, :similarity_search_by_vector, vector, nil, opts)
 
+  @doc """
+  Returns scored precomputed-vector results where the adapter supports this operation.
+  """
   def similarity_search_with_score_by_vector(store, vector, opts \\ []) do
     optional_search(
       store,
@@ -124,9 +189,15 @@ defmodule BeamWeaver.VectorStore do
     )
   end
 
+  @doc """
+  Selects query-relevant documents while balancing diversity through fetch_k/lambda options.
+  """
   def max_marginal_relevance_search(store, query, opts \\ []),
     do: run_search(store, :max_marginal_relevance_search, query, query, opts)
 
+  @doc """
+  Runs MMR on a precomputed vector when supported by the adapter.
+  """
   def max_marginal_relevance_search_by_vector(store, vector, opts \\ []) do
     optional_search(
       store,
@@ -137,6 +208,9 @@ defmodule BeamWeaver.VectorStore do
     )
   end
 
+  @doc """
+  Builds a retriever with validated search policy defaults; later calls can override supported request settings.
+  """
   def as_retriever(store, opts \\ []) do
     struct(BeamWeaver.VectorStore.Retriever,
       store: store,

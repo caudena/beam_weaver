@@ -1,6 +1,16 @@
 defmodule BeamWeaver.OpenAI do
-  @moduledoc """
-  OpenAI provider namespace for non-Azure first-skeleton support.
+  @moduledoc ~S"""
+  Responses and Chat Completions, with separate embedding, decision and image operations.
+
+  Constructors return configured values; invocation makes the provider request.
+  Load credentials into `config :beam_weaver, :openai` in your application's
+  runtime configuration. Explicit connection options override configured defaults.
+  See the [OpenAI guide](providers/openai.md) for an executed request, endpoint
+  choices, supported options and account/resource requirements.
+
+  Native tool helpers construct declarations. Hosted tools execute at the provider;
+  client actions require an application executor. Keep full returned messages
+  for continuation and inspect outcomes rather than HTTP success alone.
   """
 
   alias BeamWeaver.Config

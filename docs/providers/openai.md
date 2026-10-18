@@ -1,367 +1,302 @@
 # OpenAI
 
-BeamWeaver calls OpenAI's Responses API by default
-(`BeamWeaver.OpenAI.ChatModel`) and its Chat Completions API when you ask for
-it (`BeamWeaver.OpenAI.ChatCompletionsModel`). The same provider gives you
-embeddings (`BeamWeaver.OpenAI.EmbeddingModel`), typed decisions
-(`BeamWeaver.OpenAI.DecisionModel`), OpenAI's built-in tools such as web
-search (`BeamWeaver.OpenAI.ToolCalling`), image generation and a moderation
-middleware.
+BeamWeaver uses Responses by default and also supports Chat Completions,
+embeddings, typed decisions, image generation and moderation. A shared provider
+name does not mean those endpoints accept the same fields or tool types.
 
-## Setup
+## Setup and first request
+
+Save this in your application's `config/runtime.exs`:
 
 ```elixir
-# config/runtime.exs
 import Config
-
-config :beam_weaver, :openai, api_key: System.get_env("OPENAI_API_KEY")
+config :beam_weaver, :openai, api_key: System.fetch_env!("OPENAI_API_KEY")
 ```
-
-Export `OPENAI_API_KEY`. The same group takes `organization:` and `project:`
-to bill requests to an OpenAI organization or project, and `base_url:` to send
-every request through a proxy or gateway.
-
-## Models
-
-| Model | Kind | Input tokens | Output tokens | Tools | Structured output | Reasoning | Inputs |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| `openai:gpt-4.1` | chat | 1,047,576 | 32,768 | yes | yes | — | text, image, PDF |
-| `openai:gpt-5` | chat | 400,000 | 128,000 | yes | yes | yes | text, image, PDF |
-| `openai:gpt-5-mini` | chat | 400,000 | 128,000 | yes | yes | yes | text, image, PDF |
-| `openai:gpt-5-nano` | chat | 400,000 | 128,000 | yes | yes | yes | text, image, PDF |
-| `openai:gpt-5.4` | chat | 1,050,000 | 128,000 | yes | yes | yes | text, image, PDF |
-| `openai:gpt-5.4-mini` | chat | 400,000 | 128,000 | yes | yes | yes | text, image, PDF |
-| `openai:gpt-5.4-nano` | chat | 400,000 | 128,000 | yes | yes | yes | text, image, PDF |
-| `openai:gpt-5.4-pro` | chat | 1,050,000 | 128,000 | yes | yes | yes | text, image, PDF |
-| `openai:gpt-5.5` | chat | 1,050,000 | 128,000 | yes | yes | yes | text, image, PDF |
-| `openai:gpt-5.5-pro` | chat | 1,050,000 | 128,000 | yes | yes | yes | text, image, PDF |
-| `openai:gpt-5.6-luna` | chat | 1,050,000 | 128,000 | yes | yes | yes | text, image, PDF |
-| `openai:gpt-5.6-sol` | chat | 1,050,000 | 128,000 | yes | yes | yes | text, image, PDF |
-| `openai:gpt-5.6-terra` | chat | 1,050,000 | 128,000 | yes | yes | yes | text, image, PDF |
-| `openai:gpt-6-astra` | chat | 1,050,000 | 128,000 | yes | yes | yes | text, image, PDF |
-| `openai:gpt-6-luna` | chat, decision | 1,050,000 | 128,000 | yes | yes | yes | text, image, PDF |
-| `openai:gpt-6-sol` | chat | 1,050,000 | 128,000 | yes | yes | yes | text, image, PDF |
-| `openai:gpt-6.1-sol` | chat | 922,000 | 128,000 | yes | yes | yes | text, image, PDF |
-| `openai:text-embedding-3-large` | embedding | 8,191 | — | — | — | — | text |
-| `openai:text-embedding-3-small` | embedding | 8,191 | — | — | — | — | text |
-
-Older ids, such as `gpt-4o` or `o3`, are rejected with an error that names
-the replacement.
-
-## Usage
-
-Name the model on the agent's `model` line, with any options after it:
 
 ```elixir
-defmodule MyApp.SupportAgent do
-  use BeamWeaver.Agent
-
-  model "openai:gpt-5.4-mini", reasoning_effort: :low, timeout: 120_000
-  system_prompt "You are Acme's support agent. Answer in two sentences."
-end
-
-{:ok, result} = MyApp.SupportAgent.invoke(%{messages: ["Where is my order A-1001?"]})
+alias BeamWeaver.Core.{ChatModel, Message}
+{:ok, model} = BeamWeaver.Models.init_chat_model("openai:gpt-5.4-mini", max_tokens: 256, timeout: 60_000)
+{:ok, reply} = ChatModel.invoke(model, "Explain parcel tracking in one sentence.")
+true = byte_size(Message.text(reply)) > 0
+true = reply.usage_metadata.total_tokens > 0
 ```
 
-Tools, middleware and memory work as in [Agents](../agents.md). To call the
-model without an agent, build it with `BeamWeaver.Models.init_chat_model/2`
-(see [Models](../models.md)):
-
-```elixir
-{:ok, model} = BeamWeaver.Models.init_chat_model("openai:gpt-5.4-mini")
-{:ok, reply} = BeamWeaver.Core.ChatModel.invoke(model, "Write a one-line apology for a late order.")
-BeamWeaver.Core.Message.text(reply)
-```
-
-## Options
-
-| Option | What it does |
-| --- | --- |
-| `api` | `:responses` (default) or `:chat_completions`. |
-| `reasoning_effort` | How hard a reasoning model thinks: `:none`, `:minimal`, `:low`, `:medium`, `:high`, `:xhigh` or `:max`. Each model accepts a subset, and BeamWeaver rejects the others before the request. |
-| `reasoning` | The full reasoning setting, such as `%{effort: :high, summary: :auto}`. |
-| `verbosity` | Answer length: `:low`, `:medium` or `:high`. |
-| `max_tokens` | Output cap, sent in the field each API and model expects. |
-| `service_tier` | Processing tier, such as `:flex` or `:priority`. |
-| `prompt_cache_key`, `prompt_cache_options` | Prompt caching; see below. |
-| `store` | Whether OpenAI keeps the response on its side. |
-| `metadata` | Up to 16 key-value pairs that OpenAI keeps with a stored response (see `store`), to find it later through its API or dashboard: keys of at most 64 characters, and string values of at most 512. Anything else returns an `:unsupported_model_param` error before the request. It is OpenAI's request field; trace data goes in `trace_metadata:` (see [Tracing](../tracing.md#name-and-tag-a-run)). |
-| `use_previous_response_id` | `true` sends only the messages after the last reply OpenAI stored, with its id as `previous_response_id`, on Responses. A reply from another provider (after a fallback, say) or made with `store: false` is never continued: it is sent with the rest of the history. |
-| `base_url` | The API root, for a proxy. Defaults to `https://api.openai.com/v1`. |
-| `endpoint` | The full URL to call, for a proxy or an [OpenAI-compatible server](../providers.md#openai-compatible-servers). |
-
-The options shared by every provider, such as `timeout`, are on
-[Providers](../providers.md#options-for-every-provider).
+The same identifier works in an agent's model declaration. `organization:`
+and `project:` select account billing context; `base_url:` changes the API
+root. Keep trace labels separate from native request metadata.
 
 ## Responses or Chat Completions
 
-The Responses API is the default, and OpenAI's newer features need it. Ask for
-Chat Completions with `api: :chat_completions`, for example to match a service
-that speaks only that API:
+Responses carries native output items, hosted tools and continuation IDs.
+Use Chat Completions when your target endpoint requires that contract:
 
 ```elixir
-defmodule MyApp.SupportAgent do
-  use BeamWeaver.Agent
+{:ok, chat} =
+  BeamWeaver.Models.init_chat_model("openai:gpt-5.4-mini", api: :chat_completions, max_tokens: 256, timeout: 60_000)
 
-  model "openai:gpt-5.4-mini", api: :chat_completions, timeout: 120_000
-  system_prompt "You are Acme's support agent."
-end
-
-{:ok, result} = MyApp.SupportAgent.invoke(%{messages: ["Reply with the word ready."]})
-true = byte_size(result.messages |> List.last() |> BeamWeaver.Core.Message.text()) > 0
+{:ok, reply} = ChatModel.invoke(chat, "Write a brief greeting.")
+true = byte_size(Message.text(reply)) > 0
 ```
 
-Some newer models restrict tools on Chat Completions, and BeamWeaver rejects
-the request before sending it: GPT-6 Astra and GPT-6.1 Sol take tools only on
-Responses, and GPT-5.6, GPT-6 Sol and GPT-6 Luna take them on Chat Completions
-only with `reasoning_effort: :none`. Reasoning summaries and built-in tools
-are rejected on Chat Completions too.
+Some newer models restrict Chat Completions tools: Astra and GPT-6.1 Sol
+require Responses; GPT-5.6, GPT-6 Sol and Luna require nonreasoning mode for
+that endpoint's tools. Local profiles validate these combinations. Hosted
+tools and reasoning summaries use Responses. Tool-returned media on Chat
+Completions is carried in a following user message rather than a text-only
+tool result.
 
-A Chat Completions tool message takes only text, so an image or PDF a tool
-returns, such as one from `read_file`, goes in a user message right after the
-tool results, under a line naming its call. On Responses it stays in the tool
-result.
+## Options
 
-## Reasoning
+| Option | Meaning |
+| --- | --- |
+| `api:` | `:responses` or `:chat_completions` |
+| `reasoning_effort:` / `reasoning:` | Model-supported effort and reasoning controls |
+| `verbosity:` | Supported low/medium/high answer verbosity |
+| `max_tokens:` | Native output-token cap |
+| `service_tier:` | Provider processing tier |
+| `store:` | Remote response storage policy |
+| `use_previous_response_id:` | Continue eligible stored Responses replies |
+| `prompt_cache_key:`, `prompt_cache_options:` | Prefix cache controls where supported |
+| `metadata:` | Native OpenAI stored-response metadata |
+| `endpoint:` | Full endpoint override |
 
-Reasoning models think before they answer. `reasoning_effort` trades speed and
-cost for depth; `reasoning` also asks for a summary of the model's thinking:
+Metadata is bounded to 16 string pairs with documented key/value limits.
+Application trace labels use `trace_metadata:` instead. Unknown/unsupported
+parameters fail locally. Sampling support depends on the model and reasoning
+mode; do not copy temperature options indiscriminately between generations.
+
+## Reasoning and continuation
+
+Set only effort levels accepted by the selected profile. Returned reasoning
+lives in content blocks and is excluded from `Message.text/1`. Preserve full
+messages for replay. Reasoning can consume the output budget before visible
+text, so choose token/time limits appropriate to the task.
+
+GPT-6 Responses can accept configuration-update input blocks for supported
+mid-conversation effort changes. Additional-tool input blocks can add tools
+at a point in the conversation. These are native Responses features, not
+portable chat options. A configuration update is carried in conversation
+content; ordinary `reasoning_effort:` configures the model request itself.
+
+With `use_previous_response_id`, BeamWeaver continues only compatible stored
+replies. Other-provider replies and `store: false` replies remain full history.
+Remote continuation does not replace your application's checkpoint ownership.
+
+Configure reasoning effort for an actual call, and read only its visible answer:
 
 ```elixir
-defmodule MyApp.SupportAgent do
-  use BeamWeaver.Agent
+{:ok, reasoning} =
+  BeamWeaver.Models.init_chat_model("openai:gpt-5.4-mini", reasoning_effort: :low, max_tokens: 512, timeout: 60_000)
 
-  model "openai:gpt-5.4", reasoning: %{effort: :high, summary: :auto}, timeout: 120_000
-  system_prompt "You are Acme's support agent."
-end
-
-{:ok, result} = MyApp.SupportAgent.invoke(%{messages: ["Reply with the word ready."]})
-true = byte_size(result.messages |> List.last() |> BeamWeaver.Core.Message.text()) > 0
+{:ok, reply} = BeamWeaver.Core.ChatModel.invoke(reasoning, "What is 19 + 23? Give the result briefly.")
+true = BeamWeaver.Core.Message.text(reply) =~ "42"
 ```
-
-The summary arrives as a `%{type: :reasoning}` block in the reply's `content`,
-which `BeamWeaver.Core.Message.text/1` skips. Reasoning tokens are counted in
-`usage_metadata.output_token_details.reasoning`. Raise `timeout` for high
-effort: the default of 15 seconds is often too short.
-
-Changing `reasoning_effort` partway through a conversation starts the prompt
-cache over. GPT-6 models can take the new effort in a `configuration_update`
-block instead, which applies from its message on and keeps the cached prefix:
-
-```elixir
-BeamWeaver.Core.Message.user([
-  %{type: :configuration_update, reasoning: %{effort: :high}},
-  "Now analyze the failure modes."
-])
-```
-
-The Responses API also takes tools added partway through, in an
-`additional_tools` block on a system message, such as
-`Message.system([%{type: :additional_tools, role: "developer", tools: [...]}])`.
-Both blocks go as input items of their own, just before the rest of their
-message. Chat Completions has neither: an `additional_tools` block there
-returns an `:unsupported_feature` error.
 
 ## Built-in tools
 
-OpenAI runs hosted tools such as web search and code interpreter on its
-servers. Each helper in `BeamWeaver.OpenAI.ToolCalling` returns a declaration:
+Hosted tools run on OpenAI's infrastructure. This call verifies a search item
+in the actual response:
 
 ```elixir
-BeamWeaver.OpenAI.ToolCalling.web_search()
-#=> %{"type" => "web_search_preview"}
-```
-
-Pass declarations with `tools:` on a direct model call:
-
-```elixir
-alias BeamWeaver.OpenAI.ToolCalling
-
-{:ok, model} = BeamWeaver.Models.init_chat_model("openai:gpt-5.4-mini")
-
-{:ok, reply} =
-  BeamWeaver.Core.ChatModel.invoke(model, "What changed in the latest Elixir release?",
-    tools: [ToolCalling.web_search(), ToolCalling.code_interpreter()]
+{:ok, searched} =
+  ChatModel.invoke(
+    model,
+    "Use web search to find the official Elixir programming language website. Return its URL.",
+    tools: [BeamWeaver.OpenAI.ToolCalling.web_search()]
   )
+
+true = byte_size(Message.text(searched)) > 0
+true = Enum.any?(List.wrap(searched.content), &(Map.get(&1, :type) == :web_search_call))
 ```
 
-The search shows up as a `:web_search_call` block in `reply.content`, and its
-sources as `annotations` on the text block. The other helpers are
-`file_search/2` (with vector store ids), `image_generation/1`, `mcp/3` (a
-remote MCP server) and `tool_search/1`.
+Other helpers describe code interpreter, file search, image generation,
+remote MCP and tool search. File search requires actual vector-store IDs;
+remote MCP requires an actual server and its authorization/setup.
 
-`apply_patch/1` and `custom/2` declare client tools: the model requests an
-action and your application must execute it and return the result. Adding
-either declaration does not give a BeamWeaver agent an implementation of
-that action. Use [Tools](../tools.md) for actions your agent executes.
-OpenAI's [Apply Patch guide](https://developers.openai.com/api/docs/guides/tools-apply-patch)
-describes the application-side executor.
-
-An agent offers built-in tools next to its own when they are in its model
-options; OpenAI runs the hosted tools, and the agent runs its `tools`:
-
-```elixir
-defmodule MyApp.Tools.LookupOrder do
-  use BeamWeaver.Tool
-  name "lookup_order"
-  description "Get an order's status."
-  schema do
-    field :order_id, :string
-  end
-  @impl true
-  def invoke(_tool, %{"order_id" => id}, _opts), do: {:ok, "Order #{id} shipped."}
-end
-
-defmodule MyApp.SupportAgent do
-  use BeamWeaver.Agent
-
-  model "openai:gpt-5.4-mini", tools: [BeamWeaver.OpenAI.ToolCalling.web_search()], timeout: 120_000
-  system_prompt "You are Acme's support agent. Search the web for carrier outages."
-  tools [MyApp.Tools.LookupOrder]
-end
-
-{:ok, result} = MyApp.SupportAgent.invoke(%{messages: ["Reply with the word ready."]})
-true = byte_size(result.messages |> List.last() |> BeamWeaver.Core.Message.text()) > 0
-```
+`apply_patch` and custom tools declare client actions. Your application must
+execute requests and send results; adding the declaration does not implement
+a file editor. Agent `tools` execute through BeamWeaver; native hosted tools
+belong in model call options. See [Tools](../tools.md) and OpenAI's
+[function-calling contract](https://developers.openai.com/api/docs/guides/function-calling).
 
 ## Prompt caching
 
-OpenAI caches long prompt prefixes on its own; a `prompt_cache_key` sends
-requests with the same prefix to the same cache. In an agent,
-`prompt_caching true` derives the key from the agent's name, the model and the
-system prompt:
+Long eligible prefixes may be cached. `prompt_caching` derives a stable routing
+key; explicit prompt-cache options are model-specific. Inspect actual
+`input_token_details.cache_read` usage to establish a hit. Short examples can
+return zero. [Caching](../caching.md) links a repeated-call example and explains
+invalidation versus full-answer caching.
+
+The agent declaration configures caching hints. Measure the returned cache-read count; this short call is not expected to force a cache hit:
 
 ```elixir
-defmodule MyApp.SupportAgent do
+defmodule MyApp.CachedPolicyAgent do
   use BeamWeaver.Agent
-
-  model "openai:gpt-5.4-mini", timeout: 120_000
-  system_prompt "You are Acme's support agent. Follow the refund policy below. ..."
+  model "openai:gpt-5.4-mini", max_tokens: 128, timeout: 60_000
+  system_prompt "Refunds take five business days. Answer briefly from this policy."
   prompt_caching true
 end
 
-{:ok, result} = MyApp.SupportAgent.invoke(%{messages: ["Reply with the word ready."]})
-true = byte_size(result.messages |> List.last() |> BeamWeaver.Core.Message.text()) > 0
+{:ok, result} = MyApp.CachedPolicyAgent.invoke(%{messages: ["How long do refunds take?"]})
+reply = List.last(result.messages)
+true = byte_size(BeamWeaver.Core.Message.text(reply)) > 0
+IO.inspect(get_in(reply.usage_metadata, [:input_token_details, :cache_read]) || 0, label: "Cached input tokens")
 ```
 
-On a direct call, build a key with `BeamWeaver.PromptCache.key/4` and pass it
-as `prompt_cache_key:`. `prompt_cache_options:`, such as
-`%{mode: :explicit, ttl: "30m"}`, turns on explicit caching on models that
-offer it. Cached input tokens are reported in
-`reply.usage_metadata.input_token_details.cache_read`. See
-[Caching](../caching.md).
+## Compact a conversation
+
+The standalone compaction endpoint accepts the full current input window and
+returns the next window. It is separate from graph checkpoints:
+
+```elixir
+client = BeamWeaver.OpenAI.Client.new(timeout: 120_000)
+input = [%{"role" => "user", "content" => "Remember order A-1001 arrives Thursday. Acknowledge briefly."}]
+
+{:ok, initial} =
+  BeamWeaver.OpenAI.Client.responses(client, %{
+    "model" => "gpt-5.4-mini",
+    "input" => input,
+    "max_output_tokens" => 128,
+    "store" => false
+  })
+
+{:ok, compacted} =
+  BeamWeaver.OpenAI.Client.compact(client, %{
+    "model" => "gpt-5.4-mini",
+    "input" => input ++ initial["output"]
+  })
+
+true = Enum.any?(compacted["output"], &(&1["type"] == "compaction"))
+
+{:ok, continued} =
+  BeamWeaver.OpenAI.Client.responses(client, %{
+    "model" => "gpt-5.4-mini",
+    "max_output_tokens" => 256,
+    "input" => compacted["output"] ++ [%{"role" => "user", "content" => "Which order arrives on which day?"}]
+  })
+
+{:ok, continued_message} = BeamWeaver.OpenAI.Messages.response_to_message(continued)
+true = Message.text(continued_message) =~ "A-1001"
+true = String.downcase(Message.text(continued_message)) =~ "thursday"
+```
+
+Keep the complete returned output, including retained messages and opaque
+compaction items. `Client.compact_response/4` can first retrieve the full
+input/output of an accessible stored response. See OpenAI's
+[compaction contract](https://developers.openai.com/api/docs/guides/compaction).
 
 ## Embeddings
 
 ```elixir
 {:ok, embeddings} = BeamWeaver.Models.init_embeddings("openai:text-embedding-3-small", dimensions: 512)
-{:ok, vector} = BeamWeaver.Core.EmbeddingModel.embed_query(embeddings, "Where is my order?")
+{:ok, vector} = BeamWeaver.Core.EmbeddingModel.embed_query(embeddings, "When will my refund arrive?")
+512 = length(vector)
+true = Enum.all?(vector, &is_number/1)
 ```
 
-[Retrieval](../retrieval.md) shows embeddings in a vector store.
+Use the same dimensions/model for documents and queries. [Retrieval](../retrieval.md)
+checks relevance with real embeddings; [Storage](../storage.md) covers pgvector.
 
 ## Decisions
 
-GPT-6 Luna also answers OpenAI's Decisions API, in public beta: typed
-questions about some state, answered with probabilities instead of text.
-`init_decision_model/2` creates the decision model, and
-`BeamWeaver.Core.DecisionModel.invoke/3` asks it the questions:
+GPT-6 Luna's Decisions integration returns typed answers/probabilities:
 
 ```elixir
 alias BeamWeaver.OpenAI.Decisions.Question
-
-{:ok, luna} = BeamWeaver.Models.init_decision_model("openai:gpt-6-luna")
+{:ok, decision_model} = BeamWeaver.Models.init_decision_model("openai:gpt-6-luna", timeout: 60_000)
 
 {:ok, response} =
-  BeamWeaver.Core.DecisionModel.invoke(luna, %{
-    state: "Stripe has failed to connect for three days. Help ASAP.",
+  BeamWeaver.Core.DecisionModel.invoke(decision_model, %{
+    state: "Checkout crashes for every customer. Nobody can pay.",
     questions: %{
-      urgent: Question.predicate(instructions: "Is this request urgent?"),
       team:
         Question.choice(
-          instructions: "Which team should handle this request?",
-          choices: %{"billing" => "Payments and subscriptions.", "technical" => "Bugs and integrations."}
-        ),
-      mood: Question.score(instructions: "How frustrated is the customer?", levels: ["Calm", "Concerned", "Angry"])
+          instructions: "Which team owns fixing this software outage?",
+          choices: %{"engineering" => "Software failures and outages", "billing" => "Invoice corrections"}
+        )
     }
   })
 
-response.answers["team"].choice
+"engineering" = response.answers["team"].choice
 ```
 
-A predicate is answered with a `probability`, a choice with the chosen value,
-the probability of each value and a `confidence`, and a score with the
-expected level counted from 0, which may fall between two levels. A choice
-takes 2 to 255 values, strings or booleans. A question the model declines
-gets a `BeamWeaver.OpenAI.Decisions.RefusalAnswer`.
+Predicate questions return a probability; choice questions return choice,
+confidence and probabilities; score questions return an expected zero-based
+level. Handle refusals explicitly. State can contain supported text/images;
+unsupported media must first be represented appropriately. Decisions usage
+and billing differ from chat output; inspect the returned decision response
+rather than reading it as an assistant message.
 
-`state` is a string, user messages with text and images, or other data such
-as a conversation or a map, which goes as JSON text with the images of its
-messages in place. Images are data URLs or HTTP(S) URLs, at most 128 a
-request; turn files, audio and other content into text first. The API doesn't
-bill output tokens, so `response.metadata.cost` counts input only.
-[`TypeSafeModelRouter`](typesafe.md#route-an-agent) and
-[`AutoMode`](../guardrails.md#block-risky-tool-calls) take Luna as their
-`classifier:`.
+Predicate and score questions share the same typed decision request. Their fields differ from the choice result above:
+
+```elixir
+{:ok, assessment} =
+  BeamWeaver.Core.DecisionModel.invoke(decision_model, %{
+    state: "Checkout is completely broken for every customer. Nobody can buy anything.",
+    questions: %{
+      urgent: Question.predicate(instructions: "Is this an urgent service outage?"),
+      severity:
+        Question.score(
+          instructions: "Rate how much purchasing is affected.",
+          levels: ["Not affected", "Partly affected", "Completely blocked"]
+        )
+    }
+  })
+
+IO.inspect(assessment.answers, label: "Typed predicate and score answers")
+true = assessment.answers["urgent"].probability > 0.5
+true = assessment.answers["severity"].score > 1.5
+```
 
 ## Images and moderation
 
-`BeamWeaver.OpenAI.generate_image/2` calls the Images API and returns OpenAI's
-response, with each image base64-encoded:
+Image generation is a separate endpoint. This verifies returned bytes rather
+than treating a successful response tuple as an image:
 
 ```elixir
-{:ok, response} = BeamWeaver.OpenAI.generate_image("A cardboard box with a smile", size: "1024x1024")
-[%{"b64_json" => png} | _] = response["data"]
+{:ok, response} = BeamWeaver.OpenAI.generate_image("A plain red square on a white background", size: "1024x1024")
+[%{"b64_json" => encoded} | _] = response["data"]
+{:ok, bytes} = Base.decode64(encoded)
+true = byte_size(bytes) > 1_000
 ```
 
-`BeamWeaver.Agent.Middleware.OpenAIModeration` checks each user message
-before the model sees it, and each answer after, with OpenAI's moderation
-endpoint. When something is flagged, the run ends with a refusal:
+`OpenAIModeration` middleware checks configured input/output text through the
+moderation endpoint. It is separate from tool authorization and stream
+redaction; [Guardrails](../guardrails.md) explains those boundaries.
 
-```elixir
-defmodule MyApp.SupportAgent do
-  use BeamWeaver.Agent
+## Models
 
-  model "openai:gpt-5.4-mini", timeout: 120_000
-  system_prompt "You are Acme's support agent."
-  middleware [BeamWeaver.Agent.Middleware.OpenAIModeration]
-end
+Limits are local profile data. A dash means not applicable or not recorded,
+not an unlimited allowance.
 
-{:ok, result} = MyApp.SupportAgent.invoke(%{messages: ["Reply with the word ready."]})
-true = byte_size(result.messages |> List.last() |> BeamWeaver.Core.Message.text()) > 0
-```
+| Model | Input / output tokens | Operations and capabilities |
+| --- | --- | --- |
+| `openai:gpt-4.1` | 1,047,576 / 32,768 | chat; text, image, PDF; tools; structured output |
+| `openai:gpt-5` | 400,000 / 128,000 | chat; text, image, PDF; tools; structured output; reasoning |
+| `openai:gpt-5-mini` | 400,000 / 128,000 | chat; text, image, PDF; tools; structured output; reasoning |
+| `openai:gpt-5-nano` | 400,000 / 128,000 | chat; text, image, PDF; tools; structured output; reasoning |
+| `openai:gpt-5.4` | 1,050,000 / 128,000 | chat; text, image, PDF; tools; structured output; reasoning |
+| `openai:gpt-5.4-mini` | 400,000 / 128,000 | chat; text, image, PDF; tools; structured output; reasoning |
+| `openai:gpt-5.4-nano` | 400,000 / 128,000 | chat; text, image, PDF; tools; structured output; reasoning |
+| `openai:gpt-5.4-pro` | 1,050,000 / 128,000 | chat; text, image, PDF; tools; structured output; reasoning |
+| `openai:gpt-5.5` | 1,050,000 / 128,000 | chat; text, image, PDF; tools; structured output; reasoning |
+| `openai:gpt-5.5-pro` | 1,050,000 / 128,000 | chat; text, image, PDF; tools; structured output; reasoning |
+| `openai:gpt-5.6-luna` | 1,050,000 / 128,000 | chat; text, image, PDF; tools; structured output; reasoning |
+| `openai:gpt-5.6-sol` | 1,050,000 / 128,000 | chat; text, image, PDF; tools; structured output; reasoning |
+| `openai:gpt-5.6-terra` | 1,050,000 / 128,000 | chat; text, image, PDF; tools; structured output; reasoning |
+| `openai:gpt-6-astra` | 1,050,000 / 128,000 | chat; text, image, PDF; tools; structured output; reasoning |
+| `openai:gpt-6-luna` | 1,050,000 / 128,000 | chat, decision; text, image, PDF; tools; structured output; reasoning |
+| `openai:gpt-6-sol` | 1,050,000 / 128,000 | chat; text, image, PDF; tools; structured output; reasoning |
+| `openai:gpt-6.1-sol` | 922,000 / 128,000 | chat; text, image, PDF; tools; structured output; reasoning |
+| `openai:text-embedding-3-large` | 8,191 / — | embedding; text |
+| `openai:text-embedding-3-small` | 8,191 / — | embedding; text |
 
-## Limitations
 
-- Azure OpenAI is not supported.
-- GPT-5 models ignore `temperature` unless `reasoning_effort` is `:none`, and
-  BeamWeaver drops it without an error. GPT-6 models return an error instead:
-  GPT-6 Sol and Luna take it only with `reasoning_effort: :none`, and GPT-6
-  Astra and GPT-6.1 Sol not at all.
-- OpenAI's hosted multi-agent and programmatic tool calling have no
-  BeamWeaver wrapper.
+Profiles include aliases and access-controlled models; account access is not
+implied. Azure routing and OpenAI managed-agent resources are outside this
+integration. The operations described on this page are the implemented
+integration; other OpenAI services require their own client integration.
 
-## Testing
+## Further reading
 
-In tests, use `"fake:chat"` instead of an OpenAI model; it needs no key (see
-[Testing](../testing.md)). To check the exact requests your code sends,
-answer them from a cassette with `transport: BeamWeaver.Transport.Replay`
-and `transport_opts: [cassette_path: "test/cassettes/openai.yml"]`;
-[Replay provider responses](../testing.md#replay-provider-responses) shows
-how to write one. To test code that asks GPT-6 Luna for decisions, build it
-with `BeamWeaver.OpenAI.decision_model/1` and a `transport:` that returns a
-fixed answer, as [TypeSafe's testing section](typesafe.md#testing) shows.
-
-## Reference
-
-- [OpenAI function calling](https://developers.openai.com/api/docs/guides/function-calling): provider API contract
-
-- [`BeamWeaver.OpenAI`](https://hexdocs.pm/beam_weaver/BeamWeaver.OpenAI.html): constructors, images and moderation
-- [`BeamWeaver.OpenAI.ChatModel`](https://hexdocs.pm/beam_weaver/BeamWeaver.OpenAI.ChatModel.html): the Responses API model
-- [`BeamWeaver.OpenAI.ChatCompletionsModel`](https://hexdocs.pm/beam_weaver/BeamWeaver.OpenAI.ChatCompletionsModel.html): the Chat Completions model
-- [`BeamWeaver.OpenAI.EmbeddingModel`](https://hexdocs.pm/beam_weaver/BeamWeaver.OpenAI.EmbeddingModel.html): embeddings
-- [`BeamWeaver.OpenAI.DecisionModel`](https://hexdocs.pm/beam_weaver/BeamWeaver.OpenAI.DecisionModel.html): the Decisions API model
-- [`BeamWeaver.OpenAI.Decisions.Question`](https://hexdocs.pm/beam_weaver/BeamWeaver.OpenAI.Decisions.Question.html): predicate, choice and score questions
-- [`BeamWeaver.OpenAI.ToolCalling`](https://hexdocs.pm/beam_weaver/BeamWeaver.OpenAI.ToolCalling.html): built-in tool declarations
-- [`BeamWeaver.Agent.Middleware.OpenAIModeration`](https://hexdocs.pm/beam_weaver/BeamWeaver.Agent.Middleware.OpenAIModeration.html): moderation for agents
-- [`BeamWeaver.PromptCache`](https://hexdocs.pm/beam_weaver/BeamWeaver.PromptCache.html): prompt-cache keys
+Use [Testing](../testing.md) for scripted model behavior and replay. The examples above use the native endpoints described alongside each operation.

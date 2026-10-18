@@ -1,26 +1,18 @@
 defmodule BeamWeaver.Agent.Subagent.Compiled do
-  @moduledoc """
-  A whole agent run as a subagent.
+  @moduledoc ~S"""
+  Run an existing agent definition as a child without spec-style tool inheritance.
 
-  `agent` is an agent module or an agent built with
-  `BeamWeaver.Agent.build/1`; it runs with all its own declarations and
-  doesn't take the parent's tools or review rules. It uses the parent's
-  checkpointer and store when it has none of its own, and the parent's
-  recursion limit unless `recursion_limit` is set here or declared by the
-  agent module.
+  `agent` is a module or a value from `BeamWeaver.Agent.build/1`. Its own tools,
+  middleware and review rules remain authoritative; parent `base_middleware`
+  options do not rebuild it. Parent storage and recursion limits are used only
+  where the child has none of its own.
 
-      {:ok, agent} = BeamWeaver.Agent.build(model: "fake:chat", model_opts: [responses: ["Ready."]])
-      specialist = %BeamWeaver.Agent.Subagent.Compiled{
-        name: "order_historian",
-        description: "Summarizes a customer's order history.",
-        agent: agent
-      }
-      {:ok, result} = BeamWeaver.Agent.invoke(specialist.agent, %{messages: ["Hello"]})
-      result.messages |> List.last() |> BeamWeaver.Core.Message.text()
-      #=> "Ready."
-
-  `capture_output` and `inherit_messages` work as for
-  `BeamWeaver.Agent.Subagent.Spec`. See [Subagents](subagents.md).
+  Use `capture_output` to retain the answer in parent state and
+  `inherit_messages` when the child deliberately needs parent conversational
+  context. These options have the same meaning as on
+  `BeamWeaver.Agent.Subagent.Spec`. A compiled child is an execution definition,
+  not an already-completed result. [Subagents](subagents.md#compiled-subagents)
+  explains selection and lifecycle.
   """
 
   defstruct [

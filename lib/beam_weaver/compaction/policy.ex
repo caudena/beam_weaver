@@ -2,10 +2,8 @@ defmodule BeamWeaver.Compaction.Policy do
   @moduledoc """
   Validated limits and thresholds for application-owned compaction.
 
-  The default `:portable` mode uses the BeamWeaver semantic compactor. The
-  `:native` value is reserved for an application-selected provider contract;
-  the current engine rejects it with `:native_compaction_unsupported` rather
-  than guessing provider behavior.
+  The supported `:portable` mode uses the BeamWeaver semantic compactor.
+  Provider-native compaction uses its separate provider API contract.
 
   Timeout and retry fields are policy inputs for the owning application. The
   pure engine bounds its own summary/repair work but cannot enforce timeouts or

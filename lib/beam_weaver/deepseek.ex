@@ -1,6 +1,16 @@
 defmodule BeamWeaver.DeepSeek do
-  @moduledoc """
-  DeepSeek provider namespace.
+  @moduledoc ~S"""
+  Chat Completions and stateless Responses, plus native client operations.
+
+  Constructors return configured values; invocation makes the provider request.
+  Load credentials into `config :beam_weaver, :deepseek` in your application's
+  runtime configuration. Explicit connection options override configured defaults.
+  See the [DeepSeek guide](providers/deepseek.md) for an executed request, endpoint
+  choices, supported options and account/resource requirements.
+
+  Native tool helpers construct declarations. Hosted tools execute at the provider;
+  client actions require an application executor. Keep full returned messages
+  for continuation and inspect outcomes rather than HTTP success alone.
   """
 
   alias BeamWeaver.Config

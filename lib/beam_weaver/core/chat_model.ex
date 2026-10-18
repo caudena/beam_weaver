@@ -1,27 +1,30 @@
 defmodule BeamWeaver.Core.ChatModel do
-  @moduledoc """
-  Calls chat models, and the behaviour that chat model structs implement.
+  @moduledoc ~S"""
+  Provider-neutral chat invocation, batching and streaming contract.
+
+  Inputs normalize to messages. A successful invocation returns an assistant
+  `BeamWeaver.Core.Message`; a provider/validation failure returns an error.
+  A direct call can request tools but does not execute them. Use
+  `BeamWeaver.Agent` for the full model/tool loop.
 
   ```elixir
-  alias BeamWeaver.Core.{ChatModel, Message}
-
-  model = BeamWeaver.Models.init_chat_model!("fake:chat", responses: ["Order A-1001 shipped on Monday."])
-
-  {:ok, reply} = ChatModel.invoke(model, [Message.user("Where is my order A-1001?")])
-  reply.content
-  #=> "Order A-1001 shipped on Monday."
+  model = BeamWeaver.Models.init_chat_model!("openai:gpt-5.4-mini", max_tokens: 128, timeout: 60_000)
+  {:ok, reply} = BeamWeaver.Core.ChatModel.invoke(model, "Explain tracking numbers briefly.")
+  true = byte_size(BeamWeaver.Core.Message.text(reply)) > 0
   ```
 
-  `invoke/3` returns one assistant message, `stream/3` and
-  `stream_typed_events/3` stream the reply, and `batch/3` sends several
-  requests one after another. Options such as `tools:`, `temperature:` and `max_tokens:`
-  apply to one call. `trace_metadata:` adds a map to the call's trace run and
-  is never sent; `metadata:` is a field of the provider's request, on the APIs
-  that have one. Get a model from `BeamWeaver.Models.init_chat_model/2`; see
-  [Models](models.md).
+  Configure provider credentials as in [Installation](installation.md).
+  Preserve full returned messages for continuation: display text can omit
+  reasoning signatures, tool calls and native provider state.
 
-  A provider of your own implements `c:invoke/3`, and optionally the streaming
-  callbacks, on its model struct.
+  Typed streams return envelopes with incremental output and terminal outcomes.
+  Consume streams once and inspect error events; successful construction is not
+  successful inference. Batching returns per-input outcomes in input order.
+  See [Models](models.md), [Messages](messages.md) and [Streaming](streaming.md).
+
+  Adapters implement the callbacks below. The facade normalizes inputs and
+  checks compatibility before dispatch; custom transports and replay can replace
+  HTTP for controlled tests without establishing live-provider availability.
   """
 
   alias BeamWeaver.Core.Error

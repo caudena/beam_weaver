@@ -1,9 +1,9 @@
 # Deep agent examples
 
 A deep agent is an ordinary BeamWeaver agent with planning, files, skills,
-memory and subagents turned on. Each script here builds one with
-`BeamWeaver.Agent.build/1` and runs it against a live model. At the end it
-checks that the agent called the tools the example is about, and fails if not.
+memory and subagents turned on. These scripts exercise complete tasks with live models and local business
+fixtures. They check successful tool results, relevant arguments and produced
+artifacts; a model claiming completion is not sufficient.
 
 ```bash
 mix examples.live --model openai:gpt-5.4-mini --only examples/deepagents/deep_research.exs
@@ -11,9 +11,10 @@ mix examples.live --model openai:gpt-5.4-mini --only examples/deepagents/deep_re
 
 The files an agent reads and writes live in
 `<tmp>/beam_weaver_examples/<provider>/deepagents/<example>/`, and every run
-starts from a fresh copy. Tools that would reach the outside world (web
-search, a database, a remote agent server) return canned data, so runs are
-repeatable.
+starts from a fresh copy. Business tools use the local datasets/services described in each script.
+For example, research uses fixed teaching passages and cover generation copies
+a bundled placeholder image. These examples verify model integration and
+workflow behavior; they do not claim those fixture services are live products.
 
 `support/support.exs` adds what all of them share:
 
@@ -29,8 +30,8 @@ repeatable.
 |---|---|---|
 | `async_subagent_server.exs` | Start a task on a remote agent server and check on it later | `start_async_task`, `check_async_task` |
 | `better_harness.exs` | Tune another agent's prompt file and run its evals; writes allowed only to declared files | `edit_file` or `write_file`, `run_evals` |
-| `content_builder_agent.exs` | Brand memory, writing skills, a researcher subagent and a cover-image tool | `generate_cover`, `write_file` |
-| `deep_research.exs` | A research lead that hands each question to a researcher subagent with web search | `task` |
+| `content_builder_agent.exs` | Brand memory, writing skills, a researcher and a fixture cover-image tool | `generate_cover`, `write_file` |
+| `deep_research.exs` | A research lead that hands each question to a researcher subagent with fixed teaching search passages | `task` |
 | `deploy_coding_agent.exs` | Fix a failing test in a project on disk; writes allowed under `/workspace` only | `read_file`, `edit_file` or `write_file` |
 | `deploy_content_writer.exs` | Two memory files (team policy and user preferences) shape a saved draft | `write_file` |
 | `deploy_gtm_agent.exs` | A subagent in the conversation plus an async subagent in the background | `task`, `start_async_task` |

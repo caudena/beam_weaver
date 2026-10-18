@@ -1,4 +1,4 @@
-# Build an Agent
+# Build a Support Agent
 
 Give an agent an order lookup tool, inspect its work, and continue the
 conversation. Start from the Mix application and OpenAI configuration in
@@ -29,7 +29,11 @@ defmodule MyApp.Tools.LookupOrder do
     {:ok, %{order_id: id, status: "not_found"}}
   end
 end
+```
 
+Start `iex -S mix` and check the action directly before involving a model:
+
+```elixir
 {:ok, %{status: "shipped", delivery_day: "Thursday"}} =
   BeamWeaver.Core.Tool.invoke(MyApp.Tools.LookupOrder, %{"order_id" => "A-1001"})
 ```
@@ -52,6 +56,7 @@ defmodule MyApp.SupportAgent do
   use BeamWeaver.Agent
 
   model "openai:gpt-5.4-mini", max_tokens: 512, timeout: 60_000
+
   system_prompt "Look up orders before answering questions about them. Report the returned delivery day. Never invent a status."
 
   tools do
@@ -71,14 +76,18 @@ bounds graph steps, not tokens or wall-clock time.
 
 ## Ask and inspect
 
-In `iex -S mix`, run:
+After saving both files, restart `iex -S mix` (or run `recompile()` in an
+existing session), then run:
 
 ```elixir
 {:ok, result} = MyApp.SupportAgent.invoke(%{messages: ["Look up order A-1001. Which day will it arrive?"]})
 
 calls = for message <- result.messages, call <- message.tool_calls || [], do: call
 true = Enum.any?(calls, &(&1.name == "lookup_order" and &1.args["order_id"] == "A-1001"))
-true = Enum.any?(result.messages, &(&1.role == :tool))
+call = Enum.find(calls, &(&1.name == "lookup_order" and &1.args["order_id"] == "A-1001"))
+tool_result = Enum.find(result.messages, &(&1.role == :tool and &1.tool_call_id == call.id))
+true = tool_result != nil
+true = BeamWeaver.Core.Message.text(tool_result) =~ "Thursday"
 
 answer = result.messages |> List.last() |> BeamWeaver.Core.Message.text()
 true = String.contains?(answer, "Thursday")
@@ -111,6 +120,15 @@ process that creates them, so this saver lives as long as your IEx process.
 Do not create a new saver inside a DSL declaration: declarations are evaluated
 on each call. Use database-backed storage for history that must survive a
 restart; [Storage](storage.md) includes repository setup and migrations.
+
+## Handle failures before extending the agent
+
+The `{:ok, result}` matches above make a broken setup visible immediately.
+An application boundary must also handle `{:error, error}` and
+`{:interrupted, interrupt}`. A missing order is application data; a provider
+outage is an execution error. Do not turn either into an invented delivery
+date. The [agent lifecycle guide](agents.md#run-an-agent) explains the result
+contract and [Human Review](human_in_the_loop.md) explains continuation.
 
 ## Extend the agent
 

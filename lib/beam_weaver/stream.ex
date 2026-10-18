@@ -19,29 +19,33 @@ defprotocol BeamWeaver.Stream.Finalize do
 end
 
 defmodule BeamWeaver.Stream do
-  @moduledoc """
-  Typed events from agents, graphs and models.
+  @moduledoc ~S"""
+  Typed event envelopes for model, agent and graph execution.
 
-  A stream is an enumerable of `BeamWeaver.Stream.Envelope` structs. Each
-  envelope holds an `event`, one of the structs in `BeamWeaver.Stream.Events`,
-  and where it came from: the run, the node and the namespace.
+  A live stream is lazy: each enumeration starts work. The consuming process
+  owns the run; stopping consumption cancels it. Collect once if several
+  consumers need to inspect the same events.
 
   ```elixir
-  alias BeamWeaver.Stream.{Envelope, Events}
-
-  defmodule MyApp.Greeter do
+  defmodule MyApp.StreamedGreeting do
     use BeamWeaver.Agent
-
-    model "fake:chat", responses: ["Hello there, Ada."], stream: true
+    model "openai:gpt-5.4-mini", stream: true, max_tokens: 128, timeout: 60_000
   end
 
-  {:ok, events} = MyApp.Greeter.stream_events(%{messages: ["Hi, I'm Ada."]}, live: true)
-  for %Envelope{event: %Events.Token{text: text}} <- events, into: "", do: text
-  #=> "Hello there, Ada."
+  {:ok, stream} = MyApp.StreamedGreeting.stream_events(%{messages: ["Say hello briefly."]}, live: true)
+  events = Enum.to_list(stream)
+  false = Enum.any?(events, &match?(%{event: %BeamWeaver.Stream.Events.Error{}}, &1))
+  text = for %{event: %BeamWeaver.Stream.Events.Token{text: text}} <- events, into: "", do: text
+  true = byte_size(text) > 0
   ```
 
-  This module also builds events (`event/2`, `envelope/2`) for code that emits
-  its own. See [Streaming](streaming.md).
+  Configure OpenAI as in [Installation](installation.md). `Done` ends a model
+  call, not necessarily an agent run. Tokens from a failed/retried attempt are
+  provisional. Handle interrupts and failures before declaring completion.
+
+  `event/2` constructs typed event data; `envelope/2` adds source identity.
+  `event_mode/1` classifies channels used by stream-mode filtering. See
+  [Streaming](streaming.md) for final messages, task ownership and nested runs.
   """
 
   alias BeamWeaver.Core.Error

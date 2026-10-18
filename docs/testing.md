@@ -1,199 +1,181 @@
-# Testing
+# Testing Your Application
 
-BeamWeaver tests run offline: a scripted fake model stands in for the
-provider, and tools, middleware hooks and graph nodes are functions you call
-directly. Use the patterns on this page in ExUnit to test agents and
-workflows quickly, without an API key or a network connection.
+Use deterministic models to test your application's decisions, tool execution,
+state and failure handling. Use live integrations to check the actual provider,
+model and credentials. They answer different questions; neither replaces the
+other.
+
+Fake models are introduced here specifically for tests. Product guides use
+real providers or ordinary deterministic Elixir workflows.
+
+## Test an agent with ExUnit
+
+Save this complete module as `test/support_agent_test.exs`. A normal Mix test
+project already starts ExUnit in `test/test_helper.exs`; run it with
+`mix test test/support_agent_test.exs`.
+
+```elixir
+defmodule MyApp.SupportAgentTest do
+  use ExUnit.Case, async: true
+  alias BeamWeaver.Core.Message
+
+  defmodule Lookup do
+    use BeamWeaver.Tool
+    name "lookup_order"
+    description "Read the test order."
+
+    schema do
+      field :order_id, :string
+    end
+
+    @impl true
+    def invoke(_tool, %{"order_id" => "A-1001"}, _opts), do: {:ok, "Thursday"}
+  end
+
+  defmodule SupportAgent do
+    use BeamWeaver.Agent
+    alias BeamWeaver.Models.FakeChatModel
+
+    model "fake:chat",
+      responses: [
+        FakeChatModel.tool_call("lookup_order", %{"order_id" => "A-1001"}),
+        "The order arrives Thursday.",
+        "You asked about A-1001."
+      ],
+      parent: self()
+
+    system_prompt "Look up orders before answering."
+    tools [MyApp.SupportAgentTest.Lookup]
+  end
+
+  test "executes the requested action and preserves its result" do
+    {:ok, result} = SupportAgent.invoke(%{messages: ["Check A-1001."]})
+    [_, request, tool_result, answer] = result.messages
+    [call] = request.tool_calls
+    assert call.args == %{"order_id" => "A-1001"}
+    assert tool_result.tool_call_id == call.id
+    assert Message.text(tool_result) == "Thursday"
+    assert Message.text(answer) == "The order arrives Thursday."
+    assert_received {:fake_chat_model_call, [system | _], opts}
+    assert Message.text(system) =~ "Look up orders"
+    assert Enum.any?(opts[:tools], &(BeamWeaver.Core.Tool.name(&1) == "lookup_order"))
+  end
+
+  test "continues only the selected thread" do
+    saver = BeamWeaver.Checkpoint.ETS.new()
+    opts = [checkpointer: saver, config: %{"configurable" => %{"thread_id" => "order"}}]
+    {:ok, first} = SupportAgent.invoke(%{messages: ["Check A-1001."]}, opts)
+    {:ok, second} = SupportAgent.invoke(%{messages: ["What did I ask?"]}, opts)
+    assert length(second.messages) > length(first.messages)
+    assert Message.text(List.last(second.messages)) == "You asked about A-1001."
+  end
+end
+```
+
+Exact text assertions are appropriate for scripted fixtures. For live model
+answers, check required facts, schema, tool arguments and side effects rather
+than one wording. Do not count a requested tool call as executed unless its
+successful result or observable side effect exists.
+
+## Script the model
+
+`FakeChatModel` supports text, complete messages, `tool_call/2`,
+`tool_calls/1` and `final/1` structured answers. Each entry is a model turn.
+The conversation's `metadata.fake_turn` advances the script; a new conversation
+starts over, and the last entry repeats after exhaustion.
+
+Extra calls from retries or structured formatting affect turn position.
+Inspect `fake_turn` if a test receives the wrong scripted answer.
+`usage_metadata:` supplies fixture counters; those counters are not evidence
+of provider billing or a cache hit.
+
+## Check what the model received
+
+`parent: self()` sends `{:fake_chat_model_call, messages, opts}` to the caller
+for each request. Agent model declarations evaluate in the invoking process,
+so it identifies the test process. Assert the prompt, offered tools and
+request options that matter to your application.
+
+For streaming, put `stream: true` on the agent model declaration. The fake
+reports `:fake_chat_model_stream` and emits deterministic word chunks.
+Real provider chunks can split anywhere, so consumer code should not depend
+on those fixture boundaries.
+
+A constructed fake can record one direct invocation in the current process:
+
+```elixir
+model = BeamWeaver.Models.init_chat_model!("fake:chat", responses: ["Ready."], parent: self())
+{:ok, _reply} = BeamWeaver.Core.ChatModel.invoke(model, "Hello")
+
+receive do
+  {:fake_chat_model_call, messages, _opts} ->
+    "Hello" = BeamWeaver.Core.Message.text(List.last(messages))
+after
+  1_000 -> raise "No model invocation was observed"
+end
+```
+
+## Simulate provider failures
+
+A configured `error:` fails every request. This example proves the retry
+budget by counting observed attempts:
 
 ```elixir
 import ExUnit.Assertions
 
-alias BeamWeaver.Core.Message
-
-defmodule MyApp.Tools.LookupOrder do
-  use BeamWeaver.Tool
-
-  name "lookup_order"
-  description "Look up the shipping status of an order by its id."
-
-  schema do
-    field :order_id, :string, description: "The order id"
-  end
-
-  @impl true
-  def invoke(_tool, %{"order_id" => order_id}, _opts), do: {:ok, "Order #{order_id} shipped on Monday."}
-end
-
-defmodule MyApp.SupportAgent do
-  use BeamWeaver.Agent
-
-  alias BeamWeaver.Models.FakeChatModel
-
-  model "fake:chat",
-    responses: [
-      FakeChatModel.tool_call("lookup_order", %{"order_id" => "A-1001"}),
-      "Your order A-1001 shipped on Monday.",
-      "You're welcome, Ada!"
-    ]
-
-  system_prompt "You are Acme's support agent. Look orders up before you answer."
-  tools [MyApp.Tools.LookupOrder]
-end
-
-{:ok, result} = MyApp.SupportAgent.invoke(%{messages: ["Where is my order A-1001?"]})
-
-assert [_question, %{tool_calls: [call]}, tool_result, answer] = result.messages
-{call.args, Message.text(tool_result), Message.text(answer)}
-#=> {%{"order_id" => "A-1001"}, "Order A-1001 shipped on Monday.", "Your order A-1001 shipped on Monday."}
-```
-
-The script fixes what the model says, so the test checks everything around
-it: the tool ran with the model's arguments, its result reached the
-conversation, and the answer came back. [ExUnit tips](#exunit-tips) shows a
-whole test module.
-
-## Script the model
-
-Each entry of `responses:` is one model turn: a text, a
-`FakeChatModel.tool_call/2` or `FakeChatModel.tool_calls/1` turn, a
-`FakeChatModel.final/1` structured answer, or a message (see
-[Fake models](models.md#fake-models)). The fake model reads the turn from the
-conversation: each reply records its entry's position in `metadata.fake_turn`,
-and the next reply takes the next entry. Within one run the entries play in
-order, and the last one repeats once the script runs out.
-
-A new conversation starts again at the first entry, while a conversation that
-continues on its thread continues the script. Here the third entry answers a
-follow-up on the same thread:
-
-```elixir
-saver = BeamWeaver.Checkpoint.ETS.new()
-opts = [checkpointer: saver, config: %{"configurable" => %{"thread_id" => "ticket-42"}}]
-
-{:ok, _first} = MyApp.SupportAgent.invoke(%{messages: ["Where is my order A-1001?"]}, opts)
-{:ok, second} = MyApp.SupportAgent.invoke(%{messages: ["Thanks!"]}, opts)
-
-for %{role: :assistant} = reply <- second.messages, do: {reply.metadata.fake_turn, Message.text(reply)}
-#=> [{0, ""}, {1, "Your order A-1001 shipped on Monday."}, {2, "You're welcome, Ada!"}]
-```
-
-Assistant messages you pass in yourself count as turns already played. When
-the script and the conversation get out of step, for example because
-structured output added a model call, `fake_turn` shows which entry produced
-which reply.
-
-## Check what the model received
-
-With `parent:`, the fake model sends `{:fake_chat_model_call, messages, opts}`
-to a process on every call. `messages` is what a provider would receive,
-system prompt first, and `opts[:tools]` holds the tools on offer, so you can
-test what prompts and middleware do to a request:
-
-```elixir
-defmodule MyApp.PlanAgent do
-  use BeamWeaver.Agent
-
-  alias BeamWeaver.Agent.Middleware.DynamicPrompt
-
-  model BeamWeaver.Models.init_chat_model!("fake:chat", responses: ["Returns are free on Pro."], parent: self())
-  tools [MyApp.Tools.LookupOrder]
-  middleware [{DynamicPrompt, prompt: &__MODULE__.prompt/2}]
-
-  def prompt(_state, runtime), do: "You are Acme's support agent. The customer is on the #{runtime.context.plan} plan."
-end
-
-{:ok, _result} = MyApp.PlanAgent.invoke(%{messages: ["Are returns free?"]}, context: %{plan: :pro})
-assert_received {:fake_chat_model_call, [system, question], opts}
-{Message.text(system), Message.text(question), Enum.map(opts[:tools], &BeamWeaver.Core.Tool.name/1)}
-#=> {"You are Acme's support agent. The customer is on the pro plan.", "Are returns free?", ["lookup_order"]}
-```
-
-BeamWeaver evaluates the `model` line each time the agent runs, in the
-process that calls `invoke/2`, so `self()` is your test, whether you write
-`parent: self()` inside the `model` expression, as here, or after a model
-string, as in `model "fake:chat", responses: [...], parent: self()`. To stream,
-put `stream: true` after the expression, as in
-`model BeamWeaver.Models.init_chat_model!("fake:chat", parent: self()), stream: true`
-(inside `init_chat_model!/2` it has no effect); the model then sends
-`{:fake_chat_model_stream, messages, opts}` instead.
-
-## Simulate provider failures
-
-`error:` makes every call fail, the way a provider outage would. Test what
-your agent does then: the error that `invoke/2` returns, its retries, or its
-fallback. Here the `parent:` messages show three attempts, the first call and
-two retries:
-
-```elixir
 defmodule MyApp.OutageAgent do
   use BeamWeaver.Agent
-
-  model BeamWeaver.Models.init_chat_model!("fake:chat",
-          error: BeamWeaver.Core.Error.new(:rate_limit, "Too many requests"),
-          parent: self()
-        )
-
+  model "fake:chat", error: BeamWeaver.Core.Error.new(:rate_limit, "Busy"), parent: self()
   middleware [{BeamWeaver.Agent.Middleware.ModelRetry, max_retries: 2}]
 end
 
-outcome = MyApp.OutageAgent.invoke(%{messages: ["Where is my order A-1001?"]})
-
-for _attempt <- 1..3, do: assert_received({:fake_chat_model_call, _messages, _opts})
-refute_received {:fake_chat_model_call, _messages, _opts}
-outcome
-#=> {:error, %BeamWeaver.Core.Error{type: :rate_limit, message: "Too many requests"}}
+{:error, error} = MyApp.OutageAgent.invoke(%{messages: ["Hello"]})
+:rate_limit = error.type
+for _ <- 1..3, do: assert_received({:fake_chat_model_call, _, _})
+refute_received {:fake_chat_model_call, _, _}
 ```
 
-`ModelRetry` doesn't wait between attempts unless you set `initial_delay`; if
-your agent sets one, read it from config so tests don't sleep. To test that a
-backup model takes over, give `ModelFallback` a scripted fallback, as in
-[Built-in Middleware](builtin_middleware.md#modelfallback).
+Also test nonretryable errors, exhausted limits and fallback selection. Use
+zero delays in deterministic test policy rather than adding sleeps to make
+assertions pass. Verify which provider/model supplied a live fallback result.
 
-## Test streaming
+## Choose the model from config
 
-With `stream: true`, the fake model streams each reply word by word, as a
-provider does. Without `live: true`, `stream_events/2` returns the events as a
-list once the run ends, in the order a live stream sends them, so you can
-assert on them directly:
+A production agent can read your application's model setting in its `model`
+declaration. Set a real provider in runtime config and a scripted model in
+test config. If a test changes application environment at runtime, restore
+its prior value on exit and use `async: false`, because that environment is
+node-wide.
 
-```elixir
-defmodule MyApp.StreamingAgent do
-  use BeamWeaver.Agent
-
-  model "fake:chat", stream: true, responses: ["Your order A-1001 shipped on Monday."]
-end
-
-{:ok, events} = MyApp.StreamingAgent.stream_events(%{messages: ["Where is my order A-1001?"]})
-
-for %{event: %BeamWeaver.Stream.Events.Token{text: text}} <- events, do: text
-#=> ["Your ", "order ", "A-1001 ", "shipped ", "on ", "Monday."]
-```
-
-Match `ToolStart`, `ToolFinish` and the other events the same way;
-[Streaming](streaming.md) lists them. To test code that reads a live stream,
-pass `live: true` and read the stream once with `Enum.to_list/1`: every pass
-over a live stream starts a new run.
+Prefer explicit constructed agents/models or per-test dependencies when you
+can avoid shared configuration. New savers/stores belong in each test's setup;
+their ETS tables disappear with the test owner. Never create shared mutable
+resources inside a declaration evaluated for every invocation.
 
 ## Test tools and middleware
 
-Tools and middleware hooks are plain functions, so most of their tests need
-no agent. `BeamWeaver.Core.Tool.invoke/3` runs a tool with the arguments a
-model would send, schema checks included:
+Call `Core.Tool.invoke/3` with string-keyed model arguments and explicit
+atom-keyed injected values. Check argument validation and actual data access.
+Call middleware hooks with a state/runtime or a request/handler fixture, then
+exercise important ordering through an agent.
 
-```elixir
-BeamWeaver.Core.Tool.invoke(MyApp.Tools.LookupOrder, %{})
-#=> {:error, %BeamWeaver.Core.Error{type: :invalid_input, details: %{missing: ["order_id"]}}}
-```
-
-[Tools](tools.md#call-a-tool-directly) shows injected arguments, and
-[Middleware](middleware.md#test-middleware) how to call each kind of hook.
+Only use `async: true` when the whole test is isolated. Fake models alone do
+not make shared named processes, registries, files or application config safe
+for concurrent tests.
 
 ## Emulate tools with side effects
 
-Some tools act on the world: they issue refunds or send email. The
-`ToolEmulator` middleware answers calls to the tools you name with a model
-instead of running them, and the rest of the agent runs as usual. Script that
-model too:
+`ToolEmulator` replaces selected action execution with a scripted/model-generated
+result. Specify `tools:` narrowly; without it every tool can be emulated.
+Mark and inspect `metadata.emulated?` so an emulator cannot be mistaken for a
+successful real integration. Model-generated emulator output is invented test
+data, not evidence that a payment, message or external write occurred.
+
+For unit tests, an injected application dependency or a deterministic handler
+is often simpler. Keep real external side-effect tests in an explicitly
+controlled integration environment.
+
+A tool emulator replaces only the selected side effect. The real tool raises here so the example fails if it is accidentally executed:
 
 ```elixir
 defmodule MyApp.Tools.IssueRefund do
@@ -220,73 +202,65 @@ defmodule MyApp.RefundAgent do
   model "fake:chat",
     responses: [FakeChatModel.tool_call("issue_refund", %{"order_id" => "A-1001"}), "Your refund is on its way."]
 
-  tools [MyApp.Tools.LookupOrder, MyApp.Tools.IssueRefund]
+  tools [MyApp.Tools.IssueRefund]
+
   middleware [
     {ToolEmulator,
-     tools: ["issue_refund"],
-     model: BeamWeaver.Models.init_chat_model!("fake:chat", responses: ["Refunded A-1001."])}
+     tools: ["issue_refund"], model: BeamWeaver.Models.init_chat_model!("fake:chat", responses: ["Refunded A-1001."])}
   ]
 end
 
 {:ok, result} = MyApp.RefundAgent.invoke(%{messages: ["Please refund order A-1001."]})
 refund = Enum.find(result.messages, &(&1.role == :tool))
-{Message.text(refund), refund.metadata.emulated?}
+{BeamWeaver.Core.Message.text(refund), refund.metadata.emulated?}
 #=> {"Refunded A-1001.", true}
 ```
 
-Calls to other tools run for real. Without the `tools:` option every call is
-emulated, and without `model:` each one returns `"Emulated response"`. The
-emulating model receives the tool's name, description and arguments, so a real
-model such as `"openai:gpt-5.4-mini"` can invent plausible results while the
-real tool isn't built yet.
+## Test streaming
 
-## Test graphs
+Consume a live stream once. Assert relevant typed events and final outcomes,
+including terminal errors, retries and interrupts. An enumerable returned
+without consumption has performed no work. A model `Done` event does not
+necessarily finish an agent's multi-turn run. [Streaming](streaming.md) defines
+ownership and cancellation behavior.
 
-A graph node is a function, and a graph module runs like an agent. This
-triage graph classifies a ticket and pauses before a refund:
+For application consumer tests, deterministic word chunks let you assert the emitted sequence:
 
 ```elixir
-defmodule MyApp.TicketTriage do
-  use BeamWeaver.Graph
+defmodule MyApp.StreamingAgent do
+  use BeamWeaver.Agent
 
-  alias BeamWeaver.Graph
-
-  def graph do
-    Graph.new()
-    |> Graph.add_node(:classify, &classify/1)
-    |> Graph.add_node(:approve, &approve/1)
-    |> Graph.add_edge(Graph.start(), :classify)
-    |> Graph.add_edge(:classify, :approve, when: %{category: :billing})
-    |> Graph.add_edge(:approve, Graph.end_node())
-  end
-
-  def classify(%{subject: subject}), do: %{category: if(subject =~ ~r/refund/i, do: :billing, else: :general)}
-  def approve(%{order_id: order_id}), do: %{approved: Graph.interrupt("Refund order #{order_id}?") == "yes"}
+  model "fake:chat", stream: true, responses: ["Your order A-1001 shipped on Monday."]
 end
 
-assert MyApp.TicketTriage.classify(%{subject: "Refund for A-1001"}) == %{category: :billing}
+{:ok, events} = MyApp.StreamingAgent.stream_events(%{messages: ["Where is my order A-1001?"]})
 
-opts = [checkpointer: BeamWeaver.Checkpoint.ETS.new(), config: %{"configurable" => %{"thread_id" => "ticket-43"}}]
-{:interrupted, interrupt} = MyApp.TicketTriage.invoke(%{subject: "Refund for A-1001", order_id: "A-1001"}, opts)
-assert interrupt.value == "Refund order A-1001?"
-
-MyApp.TicketTriage.resume("yes", opts)
-#=> {:ok, %{category: :billing, approved: true}}
+for %{event: %BeamWeaver.Stream.Events.Token{text: text}} <- events, do: text
+#=> ["Your ", "order ", "A-1001 ", "shipped ", "on ", "Monday."]
 ```
 
-The test checks a node on its own, then runs the graph to the pause and
-resumes it as a person would. Give nodes that call a model a scripted fake
-model too, and see [Validate a graph](graphs.md#validate-a-graph) to check
-a graph's shape.
+## Test graphs and human review
+
+Test node functions directly, then representative routes and joins. Validate
+parallel reducers and partial-failure continuation. For human review, assert
+the initial interrupt, pending arguments, unchanged side-effect state before
+approval and actual approved/rejected behavior after resume.
+
+Use the production storage adapter for persistence/restart integration checks.
+An ETS-only test cannot prove database migrations or cross-process durability.
 
 ## Fake embeddings
 
-`"fake:embedding"` gives each text a fixed vector, so indexing and search run
-without a provider. The vectors carry no meaning: test that your code embeds
-the right texts and gets results back, not which result comes first. With the
-fake, a question about refunds may well find the shipping text:
+`fake:embedding` deterministically maps text to vectors without semantic meaning.
+Use it to test indexing plumbing, IDs and error handling. Its `parent:` option
+reports embedded query/document inputs; `dimensions:` controls fixture shape.
+Use real embeddings and known relevant/irrelevant sources to assess ranking,
+as in [Retrieval](retrieval.md).
+
+Fake vectors verify wiring and requested operations, not semantic relevance:
 
 ```elixir
+import ExUnit.Assertions
 alias BeamWeaver.VectorStore
 
 {:ok, embeddings} = BeamWeaver.Models.init_embeddings("fake:embedding", parent: self())
@@ -300,75 +274,10 @@ length(results)
 #=> 1
 ```
 
-`parent:` also reports `{:fake_embedding_documents, texts, opts}` for each
-batch of documents. `dimensions:` sets the vector size (3 by default), and
-`error:` makes every call fail. See [Retrieval](retrieval.md).
-
-## ExUnit tips
-
-A test module for the support agent, with its own saver for each test:
-
-```elixir
-defmodule MyApp.SupportAgentTest do
-  use ExUnit.Case, async: true
-
-  setup do
-    saver = BeamWeaver.Checkpoint.ETS.new()
-    %{opts: [checkpointer: saver, config: %{"configurable" => %{"thread_id" => "ticket-42"}}]}
-  end
-
-  test "answers a follow-up on the same thread", %{opts: opts} do
-    {:ok, _first} = MyApp.SupportAgent.invoke(%{messages: ["Where is my order A-1001?"]}, opts)
-    {:ok, second} = MyApp.SupportAgent.invoke(%{messages: ["Thanks!"]}, opts)
-
-    assert BeamWeaver.Core.Message.text(List.last(second.messages)) == "You're welcome, Ada!"
-  end
-end
-```
-
-- Run agent tests with `async: true`: a fake model keeps no state between
-  calls.
-- Create savers and stores in `setup` and pass them with `checkpointer:` and
-  `store:`. An ETS saver belongs to the test process that created it, so it
-  is deleted when the test ends, and every test can use the same thread id.
-- `parent:` messages wait in the test's mailbox; take them with
-  `assert_received`, in the order the calls happened.
-
-## Choose the model from config
-
-Your application's agents use a real model, so tests need a way to swap it.
-BeamWeaver evaluates the `model` declaration each time the agent runs, so it
-can read the application environment:
-
-```elixir
-defmodule MyApp.ConfiguredSupportAgent do
-  use BeamWeaver.Agent
-
-  model Application.fetch_env!(:my_app, :support_model)
-  system_prompt "You are Acme's support agent. Look orders up before you answer."
-  tools [MyApp.Tools.LookupOrder]
-end
-```
-
-```elixir
-# config/config.exs
-config :my_app, :support_model, "anthropic:claude-haiku-4-5"
-
-# config/test.exs
-config :my_app, :support_model, "fake:chat"
-```
-
-Without a script, `"fake:chat"` answers every call with an empty message,
-which is enough for tests that don't depend on the answer. To script a test,
-build the model with `BeamWeaver.Models.init_chat_model!/2` in `setup`, store
-it with `Application.put_env/3`, and restore `"fake:chat"` in `on_exit/1`.
-The environment is global, so such a test module must use `async: false`.
-
 ## Replay provider responses
 
-To test the requests your application sends to a real provider, give a
-provider model the replay transport. It answers from a cassette, a YAML file
-of requests and their recorded responses, and never opens a connection:
+Replay tests the adapter's request shape and decoding without contacting the
+provider. This complete cassette uses synthetic nonsecret content:
 
 ```elixir
 cassette = """
@@ -383,94 +292,44 @@ responses:
     string: '{"status": "completed", "output": [{"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "Order A-1001 shipped on Monday."}]}]}'
 """
 
-path = Path.join(System.tmp_dir!(), "order_status.yml")
+path = Path.join(System.tmp_dir!(), "beam-weaver-cassette-#{System.unique_integer([:positive])}.yml")
 File.write!(path, cassette)
 
-{:ok, model} =
-  BeamWeaver.Models.init_chat_model("openai:gpt-5.4-mini",
-    api_key: "test-key",
-    transport: BeamWeaver.Transport.Replay,
-    transport_opts: [cassette_path: path]
-  )
+try do
+  {:ok, model} =
+    BeamWeaver.Models.init_chat_model("openai:gpt-5.4-mini",
+      api_key: "test-key",
+      transport: BeamWeaver.Transport.Replay,
+      transport_opts: [cassette_path: path]
+    )
 
-{:ok, reply} = BeamWeaver.Core.ChatModel.invoke(model, "Where is my order A-1001?")
-Message.text(reply)
-#=> "Order A-1001 shipped on Monday."
+  {:ok, reply} = BeamWeaver.Core.ChatModel.invoke(model, "Where is my order A-1001?")
+  "Order A-1001 shipped on Monday." = BeamWeaver.Core.Message.text(reply)
+  {:error, error} = BeamWeaver.Core.ChatModel.invoke(model, "A different question")
+  :cassette_mismatch = error.details.reason
+after
+  File.rm!(path)
+end
 ```
 
-In your project, keep cassettes in a directory such as `test/cassettes/`. A
-request matches an interaction when its method, URL and JSON body match. The
-body is compared as JSON, so key order and spacing don't matter, a `uri` of
-`'**REDACTED**'` matches any URL, and headers are not compared, so cassettes
-hold no API key. Cassettes may be gzipped (`.yml.gz`).
+Matching compares method, URL and JSON body, independent of JSON key order.
+Headers are not matched; never retain credentials in cassettes. Gzipped YAML
+is supported. A mismatch returns request/expected details to help diagnose the
+fixture. BeamWeaver does not include an automatic recorder.
 
-A request that matches nothing fails with a `:transport_error` whose
-`details.reason` is `:cassette_mismatch`; `details.request` shows the request
-and `details.expected` the ones the cassette holds:
+Replay success proves the stored interaction was matched and decoded. It does
+not prove the model still exists, the credential works or the live endpoint
+accepts that request.
 
-```elixir
-BeamWeaver.Core.ChatModel.invoke(model, "Where is my order A-1002?")
-#=> {:error, %BeamWeaver.Core.Error{type: :transport_error, details: %{reason: :cassette_mismatch}}}
-```
+## Live integration checks
 
-BeamWeaver has no recorder, so that is how you write a cassette: put in the
-response you expect, run the test, and copy the request body from
-`details.request`.
-An agent needs one interaction per model call. To build responses in code,
-write your own transport, as on the [TypeSafe](providers/typesafe.md#testing)
-page.
+Check real provider response and model identity, nonempty/structured output,
+required tool arguments/results, stream completion and any storage or artifact
+changes. Do not silently fall back to another provider while claiming the
+selected one passed. Keep missing credentials and unavailable resources
+visible as incomplete verification.
 
-## Verify the documentation
-
-The example-verification commands execute the code printed in these guides,
-API docs and example scripts separately from `mix test`. Scenarios run in
-separate BEAM processes:
-
-```bash
-mix docs.verify --all
-mix docs.verify --all --only storage
-mix docs.live --only providers_openai
-mix docs.verify --provider google --only quickstart
-mix docs.verify --model openai:gpt-5.4-mini --only quickstart
-mix docs.verify --all --scripts --only examples/react_agent.exs
-```
-
-`--only` filters a page slug or script path. `--scenario` filters named
-scenarios. `--provider` selects scenarios whose providers are in the supplied
-comma-separated list. For documentation, `--model` filters by a model actually
-written in the example. For generic example scripts, it selects the model
-passed to the script. `--service postgres,docker` enables those
-requirements; `--all` enables all services. `--timeout` bounds each scenario
-or script in seconds (300 by default).
-
-A complete unfiltered `--all` run includes the example scripts and a fresh
-consumer of the built package. Individual scripts can also be selected with
-`--scripts`. Live examples read credentials from the environment or the
-checkout's `.env`. Missing credentials are recorded as blocked, not silently
-removed. PostgreSQL scenarios use disposable pgvector containers; they never
-fall back to a database from your environment. Docker must be running.
-
-Each run writes a report and logs beneath `_build/docs_verify/runs/`; the
-latest report is also `_build/docs_verify/report.json`. Records include the
-actual source code, its location, prerequisites and execution status. The
-API inventory lists public members, documentation status and guide references.
-Compilation-only fragments, errors and missing prerequisites cannot produce
-successful execution coverage.
-
-The documentation targets 1.0.0. Testing the built package in a fresh app
-proves local release readiness; it does not prove that the Hex dependency can
-be installed before publication. The report keeps the public installation
-check separate and the full verifier reports it as incomplete until verified.
-
-The verifier groups related examples into scenarios using separate test
-configuration. Each scenario starts a fresh VM with all its prerequisites
-enabled together, so it cannot inherit another example's state.
-
-## Reference
-
-- [`BeamWeaver.Models.FakeChatModel`](https://hexdocs.pm/beam_weaver/BeamWeaver.Models.FakeChatModel.html): the scripted chat model
-- [`BeamWeaver.Models.FakeEmbeddingModel`](https://hexdocs.pm/beam_weaver/BeamWeaver.Models.FakeEmbeddingModel.html): deterministic embeddings
-- [`BeamWeaver.Agent.Middleware.ToolEmulator`](https://hexdocs.pm/beam_weaver/BeamWeaver.Agent.Middleware.ToolEmulator.html): answers tool calls with a model
-- [`BeamWeaver.Core.Tool`](https://hexdocs.pm/beam_weaver/BeamWeaver.Core.Tool.html): `invoke/3` runs a tool without a model
-- [`BeamWeaver.Transport.Replay`](https://hexdocs.pm/beam_weaver/BeamWeaver.Transport.Replay.html): answers provider requests from a cassette
-- [`BeamWeaver.Transport`](https://hexdocs.pm/beam_weaver/BeamWeaver.Transport.html): the behaviour for your own transports
+The repository's existing `mix examples.live` and `mix docs.verify` commands
+run examples separately from the library test suite. [Examples](examples.md)
+explains their selectors and reports. No documentation-specific tests need to
+be installed in your application.

@@ -1,6 +1,11 @@
 defmodule BeamWeaver.Google.Tools do
-  @moduledoc """
-  Google Gemini tool declaration helpers.
+  @moduledoc ~S"""
+  Construct Gemini-native tool declarations without executing tools.
+
+  Search, code execution and other hosted services execute at Google when the
+  model selects them. File-search and MCP declarations require actual resources.
+  Computer-use declarations require an application-side browser/desktop executor.
+  See [Google Gemini](providers/google.md#built-in-tools) for a real search call.
   """
 
   import BeamWeaver.MapShape, only: [put_present: 3]
@@ -25,12 +30,24 @@ defmodule BeamWeaver.Google.Tools do
                                                 "unevaluatedProperties"
                                               ])
 
+  @doc """
+  Declares hosted Google Search; inspect response grounding to verify actual use.
+  """
   def google_search(opts \\ %{}), do: %{"googleSearch" => Options.stringify_keys(Map.new(opts))}
 
+  @doc """
+  Declares Google Maps grounding where supported by the selected model/account.
+  """
   def google_maps(opts \\ %{}), do: %{"googleMaps" => Options.stringify_keys(Map.new(opts))}
 
+  @doc """
+  Declares hosted code execution where supported.
+  """
   def code_execution(opts \\ %{}), do: %{"codeExecution" => Options.stringify_keys(Map.new(opts))}
 
+  @doc """
+  Declares search over actual File Search store names supplied by the application.
+  """
   def file_search(store_names, opts \\ []) do
     config =
       opts
@@ -41,10 +58,19 @@ defmodule BeamWeaver.Google.Tools do
     %{"fileSearch" => config}
   end
 
+  @doc """
+  Declares URL-context retrieval for provider-supported public content.
+  """
   def url_context(opts \\ %{}), do: %{"urlContext" => Options.stringify_keys(Map.new(opts))}
 
+  @doc """
+  Declares client computer actions; the application must execute them and return results.
+  """
   def computer_use(opts \\ %{}), do: %{"computerUse" => Options.stringify_keys(Map.new(opts))}
 
+  @doc """
+  Declares configured MCP servers; their access and execution prerequisites remain external.
+  """
   def mcp_servers(servers),
     do: %{"mcpServers" => Options.normalize_option_list(List.wrap(servers))}
 

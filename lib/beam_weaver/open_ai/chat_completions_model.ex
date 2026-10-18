@@ -1,6 +1,16 @@
 defmodule BeamWeaver.OpenAI.ChatCompletionsModel do
-  @moduledoc """
-  OpenAI Chat Completions chat model implementation.
+  @moduledoc ~S"""
+  OpenAI Chat Completions model implementing the BeamWeaver chat contract.
+
+  Prefer `BeamWeaver.Models.init_chat_model/2` for provider-prefixed identifiers,
+  then call `BeamWeaver.Core.ChatModel` or declare the model in an agent.
+  Construction does not contact the provider. Model/profile options describe
+  local compatibility; account access is established only by a real request.
+
+  See [OpenAI](providers/openai.md) for endpoint-specific parameters, reasoning,
+  media and tools. Preserve complete messages for multi-turn replay. Streaming
+  consumers must enumerate once and handle terminal errors; display text is not
+  a lossless representation of a native provider turn.
   """
 
   use BeamWeaver.Provider.RedactedInspect

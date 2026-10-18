@@ -732,15 +732,16 @@ defmodule BeamWeaver.DeepSeek.ModelTest do
     assert error.message =~ "declared tool"
 
     web_search = Tools.web_search()
+    search_model = ResponsesModel.new(model: "deepseek-v4-pro")
 
     assert {:ok, _body} =
-             ResponsesModel.request_body(model, message,
+             ResponsesModel.request_body(search_model, message,
                tools: [web_search],
                tool_choice: %{type: "web_search"}
              )
 
     assert {:error, error} =
-             ResponsesModel.request_body(model, message, tool_choice: %{type: "web_search"})
+             ResponsesModel.request_body(search_model, message, tool_choice: %{type: "web_search"})
 
     assert error.message =~ "declared tool"
   end

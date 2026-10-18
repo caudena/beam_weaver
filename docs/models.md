@@ -1,305 +1,209 @@
-# Models
+# Models and Provider Calls
 
-A chat model takes a conversation and returns the next assistant message.
-Agents call their model for you; call a model directly for single tasks such as
-summarizing or classifying text.
+Use an agent when the model should select and execute tools. Call a chat model
+directly for a single completion, extraction or classification. Both paths
+use the same provider adapters and message types.
+
+Complete [Installation](installation.md) and configure OpenAI before running
+this page's examples in order.
+
+
+Run this page’s examples in order in one IEx session; later blocks reuse the modules and values defined earlier.
+
+## Call a model
 
 ```elixir
 alias BeamWeaver.Core.{ChatModel, Message}
 
-{:ok, model} = BeamWeaver.Models.init_chat_model("fake:chat", responses: ["Your order is on its way."])
-
-{:ok, reply} = ChatModel.invoke(model, "Where is my order A-1001?")
-Message.text(reply)
-#=> "Your order is on its way."
+{:ok, model} = BeamWeaver.Models.init_chat_model("openai:gpt-5.4-mini", max_tokens: 256, timeout: 60_000)
+{:ok, reply} = ChatModel.invoke(model, "Explain what an order tracking number is in one sentence.")
+text = Message.text(reply)
+true = byte_size(text) > 0
+IO.puts(text)
 ```
 
-`"fake:chat"` is a scripted model built into BeamWeaver, so the examples on
-this page run without an API key. [Fake models](#fake-models) shows how to
-script it.
+Initialization validates the identifier and options; **the invocation makes
+the network request**. Successful construction does not verify credentials,
+model access or account balance. `init_chat_model!/2` raises on construction
+errors; the non-bang version returns an error tuple.
 
 ## Name a model
 
-A model is named `"provider:model"`, such as `"anthropic:claude-haiku-4-5"`.
-The providers are `openai`, `anthropic`, `google`, `xai`, `deepseek`,
-`moonshot` and `zai`, plus `fake` for tests. [Providers](providers.md) lists
-the models of each one, and this task prints every model BeamWeaver knows:
+Always use `provider:model`. Chat providers are OpenAI, Anthropic, Google,
+xAI, DeepSeek, Moonshot and Z.ai. TypeSafe supplies decision models, not a
+chat backend. See [Providers](providers.md) for supported operations.
 
 ```bash
 mix beam_weaver.models.profiles
-mix beam_weaver.models.profiles --provider anthropic
+mix beam_weaver.models.profiles --provider google
 ```
 
-Always write the prefix. A few bare names are recognized (`gpt-*` for OpenAI,
-`claude-*` for Anthropic, `grok-*` for xAI), Gemini,
-Kimi, GLM and DeepSeek names are rejected without theirs, and any other bare
-name is taken as an OpenAI model:
-
-```elixir
-BeamWeaver.Models.init_chat_model("gemini-3.5-flash")
-#=> {:error, %BeamWeaver.Core.Error{type: :invalid_model}}
-```
+This lists checked-in profiles, not your account's live entitlements. A few
+bare prefixes can be inferred, but explicit provider names avoid ambiguity.
+An identifier's presence in a profile does not grant access to that model.
 
 ## Create a model
 
-`BeamWeaver.Models.init_chat_model/2` returns `{:ok, model}` or
-`{:error, %BeamWeaver.Core.Error{}}`; `BeamWeaver.Models.init_chat_model!/2`
-returns the model or raises. Creating a model doesn't contact the provider.
+Choose constructor options when you initialize a model. Supply request-only
+options such as `tools:` and `tool_choice:` on the call. Unknown or unsupported
+options produce errors rather than silently disappearing.
 
-```elixir
-{:ok, haiku} = BeamWeaver.Models.init_chat_model("anthropic:claude-haiku-4-5", temperature: 0.2, max_tokens: 1_024)
-
-mini = BeamWeaver.Models.init_chat_model!("openai:gpt-5.4-mini", timeout: 60_000)
-```
-
-### Common options
-
-| Option | Meaning |
+| Option | Purpose |
 | --- | --- |
-| `api_key:` | Overrides the key from your configuration (see [API keys](#api-keys)). |
-| `temperature:` | Sampling temperature, for models that accept it. |
-| `max_tokens:`, `max_output_tokens:` | The longest reply; every provider takes both names. |
-| `timeout:` | How long to wait for the provider, in milliseconds (15 seconds by default). |
-| `top_p:` | Nucleus sampling. |
-| `stream:` | `true` makes an agent stream this model's replies. |
-| `extra_body:` | Raw request fields for provider features BeamWeaver doesn't model. |
-| `profile:` | Replaces the model's profile (see [Model profiles](#model-profiles)). |
+| `api_key:` | Override application credentials for this instance |
+| `max_tokens:`, `max_output_tokens:` | Bound generated tokens |
+| `timeout:` | Provider request timeout in milliseconds; default 15,000 |
+| `temperature:`, `top_p:` | Sampling controls where the model supports them |
+| `stream:` | Request incremental output when used by an agent |
+| `extra_body:` | Additional native request fields; the provider still validates them |
+| `profile:` | Explicit capability/limit metadata for this instance |
 
-Each provider page lists its own options, such as reasoning effort, thinking
-and prompt caching. An option the provider doesn't take is an error, so a
-misspelled one never goes unnoticed:
-
-```elixir
-BeamWeaver.Models.init_chat_model("fake:chat", temprature: 0.2)
-#=> {:error, %BeamWeaver.Core.Error{type: :unsupported_model_param, details: %{params: [:temprature]}}}
-```
-
-Options that belong to a call, such as `tools:` or `tool_choice:`, go with
-each call instead (see [Call a model](#call-a-model)).
+Options differ by model as well as provider. Check the provider guide before
+combining reasoning controls, sampling controls and output limits.
 
 ## Models in agents
 
-An agent's `model` declaration takes a `"provider:model"` string and options,
-or a model you created. BeamWeaver creates the model from the string and also
-passes the options on each call:
+An agent accepts a model identifier or a constructed model. Declaration
+options are applied to model calls. Per-run `model_opts:` overrides let you
+adjust a request without defining another agent:
 
 ```elixir
-defmodule MyApp.ConfiguredModelAgent do
-  use BeamWeaver.Agent
-
-  model "openai:gpt-5.4-mini", temperature: 0.2, timeout: 60_000
-end
-
-{:ok, result} = MyApp.ConfiguredModelAgent.invoke(%{messages: ["Reply with the word ready."]})
-true = is_binary(result.messages |> List.last() |> BeamWeaver.Core.Message.text())
-```
-
-`timeout:` also limits the agent's model step, so raise it for long replies.
-Call options can go there too, such as `tools:` with a provider's built-in
-tools, which the agent offers next to its own (see the provider pages). To
-change options for a single run, pass `model_opts:` to `invoke/2`.
-
-Providers don't retry failed calls on their own. In an agent, the
-`ModelRetry` middleware retries temporary errors such as timeouts and rate
-limits, and `ModelFallback` tries other models when a call fails. A fallback
-is a `"provider:model"` string or, as here, a model value with its own
-options:
-
-```elixir
-defmodule MyApp.SupportAgent do
-  use BeamWeaver.Agent
-
-  alias BeamWeaver.Agent.Middleware.ModelFallback
-
-  model "fake:chat", error: BeamWeaver.Core.Error.new(:rate_limit, "Too many requests")
-
-  middleware [
-    {ModelFallback, fallbacks: [BeamWeaver.Models.init_chat_model!("fake:chat", responses: ["The backup model answered."])]}
-  ]
-end
-
-{:ok, result} = MyApp.SupportAgent.invoke(%{messages: ["Where is my order A-1001?"]})
-result.messages |> List.last() |> Message.text()
-#=> "The backup model answered."
-```
-
-The first middleware in the list wraps the others. List `ModelFallback`
-before `ModelRetry`, and each model gets all its attempts before the next one
-takes over:
-
-```elixir
-defmodule MyApp.FallbackAgent do
+defmodule MyApp.BriefAgent do
   use BeamWeaver.Agent
 
   model "openai:gpt-5.4-mini", max_tokens: 256, timeout: 60_000
-  middleware [
-    {BeamWeaver.Agent.Middleware.ModelFallback, fallbacks: ["anthropic:claude-haiku-4-5"]},
-    {BeamWeaver.Agent.Middleware.ModelRetry, max_attempts: 3}
-  ]
+  system_prompt "Give concise explanations."
 end
 
-{:ok, result} = MyApp.FallbackAgent.invoke(%{messages: ["Reply with the word ready."]})
-true = is_binary(result.messages |> List.last() |> BeamWeaver.Core.Message.text())
+{:ok, result} =
+  MyApp.BriefAgent.invoke(%{messages: ["What is a tracking number?"]},
+    model_opts: [max_tokens: 128]
+  )
+
+true = byte_size(result.messages |> List.last() |> Message.text()) > 0
 ```
 
-[Built-in Middleware](builtin_middleware.md) lists the retry options.
-
-### Images and PDFs
-
-An agent sends each model only the images and PDFs it can take. When the
-thread holds an image, such as one `read_file` returned, and the model's
-built-in profile has `image_inputs: false` (DeepSeek V4 Pro, say), the
-request carries a short notice in its place:
-`[An image was left out: this model doesn't take images.]`. An inline PDF
-goes the same way by `pdf_inputs`, with the notice naming the file. Only the
-request changes: the thread keeps the media, so a fallback or a later model
-that takes it gets it. Subagents do the same, and the check runs after the
-agent's own middleware, on the model that `ModelFallback` picked.
-
-A model with a `profile:` you declared yourself, or one BeamWeaver has no
-profile for, gets the media as it is. Declaring a profile is also how to send
-the media when BeamWeaver's profile is wrong for a model.
+The model's `timeout:` also bounds the agent's model step. A whole run can
+contain several calls, so use `run_timeout` for its total budget.
 
 ### Defaults for agent models
 
-`BeamWeaver.Agent.ProviderProfile` registers default options for every agent
-model of a provider, or of one model. Register them once, when your
-application starts:
+`BeamWeaver.Agent.ProviderProfile` registers application-wide defaults by
+provider or model. Register them once during application startup. Model-level
+defaults override provider defaults, and declaration options override both.
+They apply to agent model identifiers; directly constructed models do not
+inherit them. Register defaults before starting work, as in the example below.
+
+Register application defaults once at startup, then run an agent that inherits them. Explicit declarations still win:
 
 ```elixir
 alias BeamWeaver.Agent.ProviderProfile
 
-:ok = ProviderProfile.register_provider_profile("anthropic", ProviderProfile.new(init_kwargs: [timeout: 60_000]))
-:ok = ProviderProfile.register_provider_profile("anthropic:claude-haiku-4-5", ProviderProfile.new(init_kwargs: [temperature: 0.2]))
+:ok =
+  ProviderProfile.register_provider_profile(
+    "openai:gpt-5.4-mini",
+    ProviderProfile.new(init_kwargs: [max_tokens: 128, timeout: 60_000])
+  )
+
+defmodule MyApp.DefaultedAgent do
+  use BeamWeaver.Agent
+  model "openai:gpt-5.4-mini"
+  system_prompt "Answer briefly."
+end
+
+{:ok, result} = MyApp.DefaultedAgent.invoke(%{messages: ["Say hello."]})
+true = byte_size(BeamWeaver.Core.Message.text(List.last(result.messages))) > 0
 ```
 
-The defaults apply when an agent's `model` is a `"provider:model"` string. A
-model-level entry adds to its provider's entry, and the options in the `model`
-declaration win over both. Models you create with `init_chat_model/2` don't
-use them.
+### Images and PDFs
 
-## Call a model
+Agents adapt requests when built-in model profiles say images or PDFs are
+unsupported: the request contains an omission notice while saved history
+retains the original media. This allows a later compatible model to read it.
+The adaptation follows fallback selection. Explicit custom profiles and
+unknown profiles do not receive that automatic omission policy.
 
-`BeamWeaver.Core.ChatModel.invoke/3` takes a string, which becomes a user
-message, or a list of messages (see [Messages](messages.md)). It returns
-`{:ok, reply}` or `{:error, %BeamWeaver.Core.Error{}}`:
+Direct model calls validate their own supported inputs. Use
+[Messages](messages.md) and the provider guide for actual media formats.
+
+## Batch and concurrency
+
+`ChatModel.batch/3` returns one result per input in input order. For explicit
+parallelism, use `Task.async_stream/3` and choose a concurrency limit compatible
+with your provider's quota:
 
 ```elixir
-history = [
-  Message.system("You are Acme's support agent. Answer in one sentence."),
-  Message.user("Where is my order A-1001?")
-]
+results =
+  ["Define a parcel in one sentence.", "Define a tracking number in one sentence."]
+  |> Task.async_stream(&ChatModel.invoke(model, &1), max_concurrency: 2, timeout: 70_000)
+  |> Enum.map(fn {:ok, {:ok, message}} -> Message.text(message) end)
 
-{:ok, reply} = ChatModel.invoke(model, history)
-{reply.role, Message.text(reply)}
-#=> {:assistant, "Your order is on its way."}
+2 = length(results)
+true = Enum.all?(results, &(byte_size(&1) > 0))
 ```
 
-The third argument takes call options, such as `temperature:` for one call or
-`tools:` to offer the model tools. A model only asks for tool calls; it doesn't
-run them. [Messages](messages.md#tool-calls-and-tool-results) shows the round
-trip, and an [agent](agents.md) runs it for you.
+In production, also handle task exits and individual model errors. A task
+timeout and a provider request timeout are separate limits.
 
-`BeamWeaver.Core.ChatModel.batch/3` calls the model once per input, in order,
-and returns the results in the same order:
+## Stream a reply
 
 ```elixir
-ChatModel.batch(model, ["Where is order A-1001?", "Where is order A-1002?"])
-#=> [{:ok, %BeamWeaver.Core.Message{role: :assistant}}, {:ok, %BeamWeaver.Core.Message{role: :assistant}}]
+{:ok, stream} = ChatModel.stream_typed_events(model, "Explain tracking numbers briefly.")
+events = Enum.to_list(stream)
+false = Enum.any?(events, &match?(%{event: %BeamWeaver.Stream.Events.Error{}}, &1))
+text = for %{event: %BeamWeaver.Stream.Events.Token{text: text}} <- events, into: "", do: text
+true = byte_size(text) > 0
 ```
 
-To call a provider in parallel, use `Task.async_stream/3`:
+Consume the stream to execute it. Retain the collected events if you need to
+inspect them more than once. Do not assume a constructed stream is evidence
+of a successful request. [Streaming](streaming.md) explains ownership,
+cancellation, partial failures and UI integration.
 
-```elixir
-["Where is order A-1001?", "Where is order A-1002?"]
-|> Task.async_stream(&ChatModel.invoke(model, &1), timeout: 60_000)
-|> Enum.map(fn {:ok, {:ok, reply}} -> Message.text(reply) end)
-#=> ["Your order is on its way.", "Your order is on its way."]
-```
+## Errors
 
-### Stream a reply
+Calls return `{:error, %BeamWeaver.Core.Error{}}` on failure. Inspect `type`
+for application handling and `details` for provider status, code and
+retryability. A live stream can fail after returning `{:ok, stream}`; its
+terminal `Error` event carries the failure.
 
-`BeamWeaver.Core.ChatModel.stream_typed_events/3` returns the reply as a
-stream of typed events, such as `Token` for text as it arrives, `Message` for
-the whole reply, and `Done` at the end. The fake model streams one word at a
-time:
+| Type | Typical response |
+| --- | --- |
+| `:authentication`, `:permission_denied` | Correct credentials or access |
+| `:not_found`, `:invalid_request`, `:unsupported_model_param` | Correct model or request options |
+| `:rate_limit`, `:server_error`, `:connection`, `:timeout` | Retry only within a bounded policy |
+| `:context_overflow` | Reduce or compact the input |
+| `:billing_exhausted` | Resolve the account's billing or usage limit |
+| `:content_filter` | Handle the rejected request without an automatic identical retry |
+| `:transport_error`, `:http_error` | Inspect transport/status details |
 
-```elixir
-{:ok, events} = ChatModel.stream_typed_events(model, "Where is my order A-1001?")
+Provider adapters do not independently retry calls. Add `ModelRetry` to an
+agent or implement a bounded direct-call policy. `ModelFallback` can choose
+another model after failure. With fallback outside retry, each model gets
+its own retry budget; see [Built-in Middleware](builtin_middleware.md).
 
-for %BeamWeaver.Stream.Envelope{event: %BeamWeaver.Stream.Events.Token{text: text}} <- events, do: text
-#=> ["Your ", "order ", "is ", "on ", "its ", "way."]
-```
-
-If the provider fails, for example because the model is overloaded, the stream
-has an `Error` event instead of `Message` and `Done`, even when the failure
-comes partway through the reply. The error is the one the same failure gets
-without streaming, with the same type and `details.retryable`. A failure whose
-code no provider documents counts as a server error, which `ModelRetry`
-retries; the first time a provider sends such a code, BeamWeaver logs a
-warning that names the provider and the code, so you can report it. A call
-that BeamWeaver rejects before sending it, such as one without an API key,
-returns `{:error, error}` instead of a stream.
-
-Z.ai and DeepSeek report some failures with the reply's finish reason instead
-of an error: Z.ai's `network_error` (its inference failed) and `sensitive`
-(its safety review blocked the reply), and DeepSeek's
-`insufficient_system_resource` and `aborted`. Such a call fails too, with or
-without streaming: `sensitive` is a `:content_filter` error that isn't retried,
-the others are server errors that `ModelRetry` retries. A reply that ends for
-any other reason, such as its length limit or OpenAI's content filter, is still
-a reply; its `status` says why it ended.
-
-To stream from an agent, add `stream: true` to its model options and call
-`stream_events/2` with `live: true`. [Streaming](streaming.md) covers events,
-chunks and tool-call deltas.
-
-### Errors
-
-A failed call's `type` says what went wrong, the same for every provider, and
-`details.retryable` whether trying again can help. `details.status` and
-`details.code` keep the provider's HTTP status and error code:
-
-| Type | When | Retryable |
-|---|---|---|
-| `:invalid_request` | the provider rejects the request (HTTP 400 or 422) | no |
-| `:authentication` | the API key is wrong (401; a 400 from Gemini and xAI) | no |
-| `:permission_denied` | the key may not use the model or feature (403) | no |
-| `:not_found` | the model doesn't exist (404) | no |
-| `:rate_limit` | too many requests (429) | yes |
-| `:server_error` | the provider failed or is overloaded (5xx) | yes |
-| `:connection` | the request got no response | yes |
-| `:timeout` | the request ran past its timeout | yes |
-| `:context_overflow` | the prompt doesn't fit the model's context window | no |
-| `:billing_exhausted` | credits, a spend limit or a usage limit ran out | no |
-| `:content_filter` | Z.ai's or Kimi's content filter blocked the request | no |
-
-Any other HTTP status is an `:http_error`, retryable for 408, 409 and 425. A
-request the transport refuses, such as one that matches no cassette in a test,
-is a `:transport_error`. `ModelRetry` retries only the retryable errors (see
-[Built-in Middleware](builtin_middleware.md#modelretry)).
-
-### Cache and rate-limit a model
-
-`BeamWeaver.Models.cached/3` wraps a model so that repeated requests are
-answered from a cache, and `BeamWeaver.Models.with_rate_limiter/2` wraps it so
-that calls wait for a rate limiter. You use the wrapped model like any other.
-See [Caching](caching.md) and [Rate Limiting](rate_limiting.md).
+Some APIs signal failure in a stream event or finish reason rather than an
+HTTP error. BeamWeaver normalizes documented inference failures. A normal
+length-limited reply is still a reply: inspect its status and completeness.
+Never infer success from HTTP status alone.
 
 ## Reasoning
 
-Reasoning models work through a problem before they answer. Each provider
-names its reasoning controls differently:
+Reasoning configuration is provider-specific:
 
-| Provider | Options |
+| Provider | Controls |
 | --- | --- |
-| OpenAI, xAI | `reasoning_effort:`, or `reasoning:` as a map |
-| Anthropic | `reasoning_effort:` (or `effort:`) and `thinking:` |
-| Google | `thinking_level:` or `thinking_budget:`, and `include_thoughts:` |
-| DeepSeek, Z.ai | `thinking:` and `reasoning_effort:` |
-| Moonshot | `thinking:` on Kimi K2 models, `reasoning_effort:` on Kimi K3 |
+| OpenAI, xAI | `reasoning_effort:` or a `reasoning:` map, where supported |
+| Anthropic | `thinking:` and `reasoning_effort:` / `effort:` |
+| Google | `thinking_level:` or `thinking_budget:`, plus `include_thoughts:` |
+| DeepSeek, Z.ai | `thinking:` and model-supported reasoning effort |
+| Moonshot | `thinking:` for Kimi K2; reasoning effort for Kimi K3 |
 
-Set them when you create the model, or per call:
+Profiles expose accepted effort levels and defaults. Returned reasoning, when
+provided, uses content blocks; do not assume every provider returns it or
+that it is suitable for display to end users.
+
+Reasoning controls belong on a model that accepts them; invoke it to verify the request:
 
 ```elixir
 {:ok, reasoning_model} = BeamWeaver.Models.init_chat_model("openai:gpt-5.4-mini", reasoning_effort: :low)
@@ -307,139 +211,75 @@ Set them when you create the model, or per call:
 true = byte_size(BeamWeaver.Core.Message.text(reasoning_reply)) > 0
 ```
 
-A model's profile lists the efforts it takes in `reasoning_effort_levels`, and
-the one it uses when you name none in `reasoning_effort_default`; the provider
-pages say more. When a provider returns its reasoning, the reply's content
-holds `:reasoning` blocks (see [Messages](messages.md)).
-
 ## Model profiles
 
-Every known model has a profile: its context window, output limit, and the
-features it supports, such as tools, structured output, streaming, reasoning
-and image input. `BeamWeaver.Provider.Compatibility.supports?/2` checks a
-feature on a model, a profile, or a `{provider, model}` pair:
+Profiles describe context/output limits and capabilities, including tools,
+structured output, streaming and media. They are local compatibility data:
 
 ```elixir
-alias BeamWeaver.Provider.Compatibility
-
-[
-  Compatibility.supports?({:anthropic, "claude-haiku-4-5"}, :image_input),
-  Compatibility.supports?(model, :tool_calling),
-  Compatibility.supports?(model, :reasoning)
-]
-#=> [true, true, false]
+true = BeamWeaver.Provider.Compatibility.supports?(model, :tool_calling)
+true = model.profile.max_input_tokens > 0
 ```
 
-`BeamWeaver.Provider.Compatibility.features/0` lists the feature names. The
-profile itself is `model.profile`, a `BeamWeaver.Models.Profile` struct with
-fields such as `max_input_tokens` and `max_output_tokens`.
+Use `BeamWeaver.Provider.Compatibility.features/0` for valid feature names.
+Calls validate model parameters and requested capabilities against the
+profile. Unknown identifiers may receive family defaults or be rejected,
+depending on the provider. Do not invent a model ID to bypass validation.
 
-BeamWeaver checks each call against the profile before it sends anything. A
-call that asks for a feature the model lacks fails at once. The fake model has
-no reasoning, so it rejects a reasoning effort:
-
-```elixir
-ChatModel.invoke(model, "Where is my order A-1001?", reasoning_effort: :high)
-#=> {:error, %BeamWeaver.Core.Error{type: :unsupported_feature, details: %{feature: :reasoning}}}
-```
-
-Every provider also rejects a call option the profile doesn't list, such as
-`top_k:`, with an `:unsupported_model_param` error, and checks values the
-profile lists, such as a model's reasoning efforts. An agent sends its model
-options on every call, so this applies to them too.
-
-A model name BeamWeaver doesn't know yet gets its family's profile (such as
-`claude-*` or `gemini-*`), or else a bare one with tools and structured output
-switched off; OpenAI, DeepSeek and Z.ai reject some unknown names. Pass
-`profile:` to override a model's limits in your application. Start from its
-existing profile so its other capabilities remain accurate:
-
-```elixir
-base_model = BeamWeaver.Models.init_chat_model!("openai:gpt-5.4-mini")
-
-{:ok, constrained_model} =
-  BeamWeaver.Models.init_chat_model("openai:gpt-5.4-mini",
-    profile: %{base_model.profile | max_input_tokens: 8_000}
-  )
-
-8_000 = constrained_model.profile.max_input_tokens
-{:ok, reply} = ChatModel.invoke(constrained_model, "Reply with OK.")
-true = byte_size(BeamWeaver.Core.Message.text(reply)) > 0
-```
+A `profile:` override changes local metadata, not provider capabilities or
+account access. Start from the existing profile and override only facts you
+have established about your deployment.
 
 ## Embeddings
 
-An embedding model turns text into vectors for [retrieval](retrieval.md#embeddings).
-`BeamWeaver.Models.init_embeddings/2` creates one, and
-`BeamWeaver.Core.EmbeddingModel` embeds documents and queries:
-
-```elixir
-alias BeamWeaver.Core.EmbeddingModel
-
-{:ok, embeddings} = BeamWeaver.Models.init_embeddings("fake:embedding")
-
-{:ok, vectors} = EmbeddingModel.embed_documents(embeddings, ["Refunds take 5 days.", "Orders ship in 2 days."])
-{:ok, vector} = EmbeddingModel.embed_query(embeddings, "How long do refunds take?")
-
-{length(vectors), length(vector)}
-#=> {2, 3}
-```
-
-`"fake:embedding"` returns the same 3-number vector for the same text (set
-`dimensions:` to change the size). Its vectors carry no meaning, so search
-results with it come back in arbitrary order. A real embedding model reads its key from the provider's config group, like a
-chat model:
+Embedding models map text to vectors for retrieval. Use a real embedding
+model when assessing search quality:
 
 ```elixir
 {:ok, embeddings} = BeamWeaver.Models.init_embeddings("openai:text-embedding-3-small")
+
+{:ok, vectors} =
+  BeamWeaver.Core.EmbeddingModel.embed_documents(
+    embeddings,
+    ["Refunds take five days.", "Orders ship in two days."]
+  )
+
+{:ok, query} = BeamWeaver.Core.EmbeddingModel.embed_query(embeddings, "When will my refund arrive?")
+2 = length(vectors)
+true = length(query) > 0
+true = Enum.all?(vectors, &(length(&1) == length(query)))
 ```
+
+Keep the same embedding model and dimensions for stored documents and queries.
+[Retrieval](retrieval.md) covers indexing and search; provider guides list
+available embedding integrations.
 
 ## Token usage
 
-Replies carry the token counts the provider reports in `usage_metadata`:
-`input_tokens`, `output_tokens` and `total_tokens`, plus provider details
-such as `input_token_details` (cache reads) and `output_token_details`
-(reasoning tokens) when the provider sends them. The
-fake model reports whatever you give it:
+Provider replies carry `usage_metadata`: input, output and total tokens,
+plus cache/reasoning details when available. Counts describe actual reported
+usage, not a prediction of the next call.
 
 ```elixir
-{:ok, counted} =
-  BeamWeaver.Models.init_chat_model("fake:chat",
-    responses: ["Your order is on its way."],
-    usage_metadata: %{input_tokens: 12, output_tokens: 6, total_tokens: 18}
-  )
-
-{:ok, reply} = ChatModel.invoke(counted, "Where is my order A-1001?")
-reply.usage_metadata
-#=> %{input_tokens: 12, output_tokens: 6, total_tokens: 18}
+true = reply.usage_metadata.total_tokens > 0
+usage = BeamWeaver.Agent.Usage.from_messages(result.messages)
+true = usage.model_calls > 0
 ```
 
-`BeamWeaver.Agent.Usage.from_messages/1` adds up the replies in an agent's
-`result.messages`:
-
-```elixir
-usage = BeamWeaver.Agent.Usage.from_messages([Message.user("Hi"), reply, reply])
-{usage.total_tokens, usage.model_calls}
-#=> {36, 2}
-```
-
-`BeamWeaver.Models.UsageCost.calculate/3` turns usage into a cost with the
-prices in a model's profile. [Tracing](tracing.md) records usage for every
-model call.
+`BeamWeaver.Models.UsageCost.calculate/3` estimates cost using profile prices.
+Actual billing depends on provider pricing and account terms. [Tracing](tracing.md)
+records per-call usage and attribution.
 
 ## Decision models
 
-Decision models answer typed questions about a piece of state instead of
-writing text: a choice between options, a score on a scale, or true or false.
-`BeamWeaver.Models.init_decision_model/2` creates one, such as TypeSafe's
-`"typesafe:jev-1.13.0"` or OpenAI's `"openai:gpt-6-luna"`, and
-`BeamWeaver.Core.DecisionModel.invoke/3` asks it the questions. Each provider
-has its own questions; see [TypeSafe](providers/typesafe.md) and
-[OpenAI](providers/openai.md#decisions).
+Decision models answer typed questions instead of generating chat text.
+`init_decision_model/2` supports the OpenAI and TypeSafe integrations.
+`BeamWeaver.Core.DecisionModel` supplies question constructors, `choose/4` and
+`probability/4`; handle refusal as well as successful answers and errors.
+Use the complete [OpenAI](providers/openai.md#decisions) or
+[TypeSafe](providers/typesafe.md) example for its native question contract.
 
-Code that works with either provider builds its question with
-`DecisionModel.choice_question/3` or `DecisionModel.yes_no_question/2`, then
-asks it with `DecisionModel.choose/4` or `DecisionModel.probability/4`:
+A decision model returns a typed probability rather than a chat sentence:
 
 ```elixir
 alias BeamWeaver.Core.DecisionModel
@@ -455,62 +295,16 @@ case DecisionModel.probability(model, "I want my money back for order A-1001.", 
 end
 ```
 
-[`TypeSafeModelRouter`](providers/typesafe.md#route-an-agent) and
-[`AutoMode`](guardrails.md#block-risky-tool-calls) ask their `classifier:` this
-way.
-
 ## API keys
 
-Providers read their API key from the application configuration. Load the keys
-from the environment in `config/runtime.exs`:
-
-```elixir
-import Config
-
-config :beam_weaver, :openai, api_key: System.get_env("OPENAI_API_KEY")
-config :beam_weaver, :anthropic, api_key: System.get_env("ANTHROPIC_API_KEY")
-config :beam_weaver, :google, api_key: System.get_env("GOOGLE_API_KEY")
-```
-
-The other providers use their prefix as the key, such as `:xai`.
-[Providers](providers.md) covers the setup and options of each provider.
+Load credentials into **your application's** runtime configuration. A library's
+own `config/runtime.exs` is not loaded by a consumer. Each provider reads its
+application group, such as `config :beam_weaver, :openai, api_key: ...`.
+[Configuration](configuration.md) covers precedence and deployment setup.
 
 ## Fake models
 
-`"fake:chat"` replies from a script instead of a provider. Each entry of
-`responses:` is one reply: the first reply in a conversation is the first
-entry, the next reply the second, and the last entry repeats once the script
-runs out.
-
-| Entry | The model's reply |
-| --- | --- |
-| `"Your order is on its way."` | This text. |
-| `FakeChatModel.tool_call("lookup_order", %{"order_id" => "A-1001"})` | A call to one tool. |
-| `FakeChatModel.tool_calls([{"lookup_order", %{...}}, ...])` | Calls to several tools at once. |
-| `FakeChatModel.final(%{"category" => "shipping"})` | A structured answer (see [Structured Output](structured_output.md)). |
-| a `%BeamWeaver.Core.Message{}` | This message. |
-
-Other options: `stream: true` makes an agent stream the reply word by word,
-`usage_metadata:` adds token counts, `parent:` sends every request to a
-process, and `error:` makes every call fail:
-
-```elixir
-{:ok, failing} =
-  BeamWeaver.Models.init_chat_model("fake:chat", error: BeamWeaver.Core.Error.new(:rate_limit, "Too many requests"))
-
-ChatModel.invoke(failing, "Where is my order A-1001?")
-#=> {:error, %BeamWeaver.Core.Error{type: :rate_limit}}
-```
-
-[Testing](testing.md) shows how to test agents with fake models.
-
-## Reference
-
-- [`BeamWeaver.Models`](https://hexdocs.pm/beam_weaver/BeamWeaver.Models.html): create chat, embedding and decision models
-- [`BeamWeaver.Core.ChatModel`](https://hexdocs.pm/beam_weaver/BeamWeaver.Core.ChatModel.html): call, batch and stream chat models
-- [`BeamWeaver.Core.EmbeddingModel`](https://hexdocs.pm/beam_weaver/BeamWeaver.Core.EmbeddingModel.html): embed documents and queries
-- [`BeamWeaver.Provider.Compatibility`](https://hexdocs.pm/beam_weaver/BeamWeaver.Provider.Compatibility.html): check what a model supports
-- [`BeamWeaver.Models.Profile`](https://hexdocs.pm/beam_weaver/BeamWeaver.Models.Profile.html): model capability data
-- [`BeamWeaver.Agent.Usage`](https://hexdocs.pm/beam_weaver/BeamWeaver.Agent.Usage.html): token totals for an agent run
-- [`BeamWeaver.Models.FakeChatModel`](https://hexdocs.pm/beam_weaver/BeamWeaver.Models.FakeChatModel.html): the scripted chat model
-- [`BeamWeaver.Models.FakeEmbeddingModel`](https://hexdocs.pm/beam_weaver/BeamWeaver.Models.FakeEmbeddingModel.html): the deterministic embedding model
+Fake chat and embedding models belong in deterministic application tests.
+Fake embeddings carry no semantic meaning. [Testing](testing.md) explains
+scripts, request assertions and replay; use live integrations to validate
+actual provider behavior.

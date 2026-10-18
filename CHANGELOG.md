@@ -40,6 +40,13 @@ the run fails with the last error, with `attempts` in its details.
 `handle_errors: false` fails the run on the first failing answer. See
 [Structured Output](docs/structured_output.md#validation-errors-and-retries).
 
+**An agent module's declarations.** `BeamWeaver.Agent.declarations/1`
+returns what an agent module declares, as a map with the option names of
+`build/1`, evaluated when it is called: read its model or system prompt, or
+pass it to `build/1` with one declaration changed to build the same agent with
+other instructions. See [Agents built at
+runtime](docs/agents.md#agents-built-at-runtime).
+
 **More context types.** `context_schema` fields accept `:float`, `:decimal`,
 `:date`, `:time`, `:utc_datetime`, `:naive_datetime`, `{:list, type}` and
 `{:union, types}`. `:float` and `:date` fields used to reject every value. See

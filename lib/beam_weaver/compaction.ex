@@ -3,7 +3,7 @@ defmodule BeamWeaver.Compaction do
   Provider-neutral conversation compaction with application-owned persistence.
 
   The engine accepts one validated, ordered conversation lane and returns a
-  pure `BeamWeaver.Compaction.Result`. It may call the request's renderer and
+  `BeamWeaver.Compaction.Result` value. It may call the request's renderer and
   summarizer functions, but it starts no process and owns no provider,
   database, checkpoint pointer, or recovery loop.
 

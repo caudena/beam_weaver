@@ -1,10 +1,16 @@
 defmodule BeamWeaver.TextSplitter do
-  @moduledoc """
-  Text splitter facade using explicit Elixir structs.
+  @moduledoc ~S"""
+  Construct explicit text splitters and turn source material into retrieval chunks.
 
-  The facade keeps construction ergonomic while each splitter is a normal
-  behaviour-backed struct. Each splitter carries its own options, including its
-  tokenizer (see `from_tokenizer/2`); there are no global tokenizer settings.
+  Character splitters use size/overlap measured by their length function; token
+  splitters use an explicitly supplied or configured tokenizer. Header/syntax
+  splitters preserve selected document boundaries. Choose a representation that
+  keeps the source context required to answer your application's questions.
+
+  split_documents and stream_text expose lazy collections; consume them to do
+  the work. Document metadata and parent identity are retained. URL loading
+  has a separate policy/transport boundary, while file paths remain the caller's
+  responsibility. See [Retrieval](retrieval.md#text-splitters).
   """
 
   alias BeamWeaver.TextSplitter.Documents
@@ -12,28 +18,96 @@ defmodule BeamWeaver.TextSplitter do
   alias BeamWeaver.TextSplitter.RecursiveJSON
   alias BeamWeaver.TextSplitter.Shared
 
+  @doc """
+  Splits one text into an ordered list of text chunks according to the adapter configuration.
+  """
   @callback split_text(term(), String.t()) :: [String.t()]
 
   defstruct Shared.common_fields()
 
+  @doc """
+  Constructs a separator-based character splitter with size/overlap options.
+  """
   def character(opts \\ []), do: BeamWeaver.TextSplitter.Character.new(opts)
+
+  @doc """
+  Constructs a prose splitter that tries progressively finer separators.
+  """
   def recursive_character(opts \\ []), do: BeamWeaver.TextSplitter.RecursiveCharacter.new(opts)
+
+  @doc """
+  Constructs a Markdown-aware recursive splitter.
+  """
   def markdown(opts \\ []), do: BeamWeaver.TextSplitter.Markdown.new(opts)
+
+  @doc """
+  Constructs a heading-based Markdown splitter with heading metadata.
+  """
   def markdown_headers(opts \\ []), do: BeamWeaver.TextSplitter.MarkdownHeaders.new(opts)
+
+  @doc """
+  Constructs a splitter that respects Markdown syntax structure.
+  """
   def markdown_syntax(opts \\ []), do: BeamWeaver.TextSplitter.MarkdownSyntax.new(opts)
+
+  @doc """
+  Constructs an HTML-oriented text splitter.
+  """
   def html(opts \\ []), do: BeamWeaver.TextSplitter.HTML.new(opts)
+
+  @doc """
+  Constructs an HTML heading splitter that retains heading metadata.
+  """
   def html_headers(opts \\ []), do: BeamWeaver.TextSplitter.HTMLHeaders.new(opts)
+
+  @doc """
+  Constructs an HTML splitter that preserves configured semantic elements.
+  """
   def html_semantic(opts \\ []), do: BeamWeaver.TextSplitter.HTMLSemantic.new(opts)
+
+  @doc """
+  Alias for recursive_json/1.
+  """
   def json(opts \\ []), do: recursive_json(opts)
+
+  @doc """
+  Constructs a splitter for JSON values; use the JSON-specific split functions.
+  """
   def recursive_json(opts \\ []), do: BeamWeaver.TextSplitter.RecursiveJSON.new(opts)
+
+  @doc """
+  Constructs a LaTeX-aware recursive splitter.
+  """
   def latex(opts \\ []), do: BeamWeaver.TextSplitter.LaTeX.new(opts)
+
+  @doc """
+  Constructs a source-code splitter using configured language/separator options.
+  """
   def code(opts \\ []), do: BeamWeaver.TextSplitter.Code.new(opts)
+
+  @doc """
+  Constructs a Python-aware source splitter.
+  """
   def python(opts \\ []), do: BeamWeaver.TextSplitter.Python.new(opts)
+
+  @doc """
+  Constructs a JSX-aware source splitter.
+  """
   def jsx(opts \\ []), do: BeamWeaver.TextSplitter.JSX.new(opts)
+
+  @doc """
+  Constructs a token-based splitter; chunk size/overlap are token counts.
+  """
   def token(opts \\ []), do: BeamWeaver.TextSplitter.Token.new(opts)
 
+  @doc """
+  Constructs a recursive splitter using the language separator set.
+  """
   def from_language(language, opts \\ []), do: recursive_character_from_language(language, opts)
 
+  @doc """
+  Applies language separators while retaining definition boundaries.
+  """
   def recursive_character_from_language(language, opts \\ []) do
     opts
     |> Keyword.put(:separators, get_separators_for_language(language))
@@ -42,22 +116,40 @@ defmodule BeamWeaver.TextSplitter do
     |> recursive_character()
   end
 
+  @doc """
+  Returns the separator set used for the named source language.
+  """
   def get_separators_for_language(language), do: Language.separators(language)
 
+  @doc """
+  Constructs a token splitter with an explicit tokenizer dependency.
+  """
   def from_tokenizer(tokenizer, opts \\ []), do: token(Keyword.put(opts, :tokenizer, tokenizer))
 
+  @doc """
+  Splits one text value into chunks through the configured splitter.
+  """
   def split_text(%__MODULE__{} = splitter, text) when is_binary(text),
     do: Shared.split_text(splitter, text)
 
   def split_text(%module{} = splitter, text) when is_binary(text),
     do: module.split_text(splitter, text)
 
+  @doc """
+  Splits a JSON value into smaller JSON values.
+  """
   def split_json(%RecursiveJSON{} = splitter, json_data, opts \\ []),
     do: RecursiveJSON.split_json(splitter, json_data, opts)
 
+  @doc """
+  Splits a JSON value and renders the resulting chunks as JSON text.
+  """
   def split_json_text(%RecursiveJSON{} = splitter, json_data, opts \\ []),
     do: RecursiveJSON.split_json_text(splitter, json_data, opts)
 
+  @doc """
+  Wraps split JSON values as retrieval documents.
+  """
   def create_json_documents(%RecursiveJSON{} = splitter, json_values, opts \\ []),
     do: RecursiveJSON.create_json_documents(splitter, json_values, opts)
 

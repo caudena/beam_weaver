@@ -1,10 +1,17 @@
 defmodule BeamWeaver.Memory do
-  @moduledoc """
-  Long-term memory store helpers.
+  @moduledoc ~S"""
+  Namespaced records shared across conversations through explicit store adapters.
 
-  Memory stores are independent from graph checkpoints. Checkpoints persist a
-  thread's execution state; memory stores persist namespaced application data
-  across threads and runs.
+  A record is addressed by namespace parts and key. Construct namespaces from
+  trusted application identity: prefix search includes descendant namespaces,
+  so a broad prefix can cross collection boundaries. Checkpoints and memory are
+  separate; storing a record does not automatically insert it in a model prompt.
+
+  Values should be JSON-friendly for consistent persistent storage. TTL options
+  use minutes, while cache TTLs use milliseconds. ETS records live with their
+  owner; Ecto records live in the configured PostgreSQL repository.
+  See [Long-Term Memory](long_term_memory.md) for real save/recall and semantic
+  search examples, and [Storage](storage.md) for migrations and retention.
   """
 
   alias BeamWeaver.Adapter.Dispatch
@@ -23,12 +30,21 @@ defmodule BeamWeaver.Memory do
   @type namespace :: [String.t() | atom()] | String.t() | atom()
   @type key :: String.t() | atom()
 
+  @doc """
+  Writes/replaces one value and metadata; returns {:ok, Memory.Item} or an error. ttl is minutes.
+  """
   @spec put(store(), namespace(), key(), term(), keyword()) :: {:ok, map()} | {:error, term()}
   def put(store, namespace, key, value, opts \\ []), do: item_call(store, :put, namespace, key, [value, opts])
 
+  @doc """
+  Returns {:ok, item}, :error for absence/expiry, or a storage error.
+  """
   @spec get(store(), namespace(), key()) :: {:ok, map()} | :error | {:error, term()}
   def get(store, namespace, key), do: item_call(store, :get, namespace, key, [])
 
+  @doc """
+  Deletes one key; missing keys are ignored by the built-in adapters.
+  """
   @spec delete(store(), namespace(), key()) :: :ok | {:error, term()}
   def delete(store, namespace, key), do: item_call(store, :delete, namespace, key, [])
 
@@ -120,6 +136,9 @@ defmodule BeamWeaver.Memory do
     end
   end
 
+  @doc """
+  Searches a namespace prefix, including descendants. Returns items or an error; default page size is 10.
+  """
   @spec search(store(), namespace(), keyword()) :: [map()] | {:error, term()}
   def search(store, namespace, opts \\ []) do
     namespace = normalize_namespace(namespace)
@@ -135,6 +154,9 @@ defmodule BeamWeaver.Memory do
     result
   end
 
+  @doc """
+  Lists namespaces with optional prefix, suffix, depth and pagination filters.
+  """
   @spec list_namespaces(store(), keyword()) :: [[String.t()]] | {:error, term()}
   def list_namespaces(store, opts \\ []) do
     opts =
@@ -185,6 +207,9 @@ defmodule BeamWeaver.Memory do
     result
   end
 
+  @doc """
+  Removes expired records through the adapter's optional sweep capability.
+  """
   @spec sweep_expired(store(), keyword()) ::
           {:ok, non_neg_integer()} | :ok | {:error, Error.t()}
   def sweep_expired(store, opts \\ []) do
@@ -193,6 +218,9 @@ defmodule BeamWeaver.Memory do
     result
   end
 
+  @doc """
+  Deletes entries according to adapter retention options; unsupported retention returns an error.
+  """
   @spec prune(store(), keyword()) :: {:ok, non_neg_integer()} | {:error, Error.t()}
   def prune(store, opts \\ []) do
     opts =
@@ -211,6 +239,9 @@ defmodule BeamWeaver.Memory do
     result
   end
 
+  @doc """
+  Validates and normalizes namespace parts; empty parts and dots are rejected.
+  """
   @spec normalize_namespace(namespace()) :: [String.t()]
   def normalize_namespace(namespace), do: Query.normalize_namespace(namespace)
 

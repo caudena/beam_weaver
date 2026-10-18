@@ -1,6 +1,16 @@
 defmodule BeamWeaver.ZAI.ChatModel do
-  @moduledoc """
-  Z.ai GLM Chat Completions chat model implementation.
+  @moduledoc ~S"""
+  ZAI chat model implementing the BeamWeaver chat contract.
+
+  Prefer `BeamWeaver.Models.init_chat_model/2` for provider-prefixed identifiers,
+  then call `BeamWeaver.Core.ChatModel` or declare the model in an agent.
+  Construction does not contact the provider. Model/profile options describe
+  local compatibility; account access is established only by a real request.
+
+  See [ZAI](providers/zai.md) for endpoint-specific parameters, reasoning,
+  media and tools. Preserve complete messages for multi-turn replay. Streaming
+  consumers must enumerate once and handle terminal errors; display text is not
+  a lossless representation of a native provider turn.
   """
 
   use BeamWeaver.Provider.RedactedInspect
@@ -80,6 +90,9 @@ defmodule BeamWeaver.ZAI.ChatModel do
          do: {:ok, body |> ChatCompletionsWire.put_stream_usage(model, opts) |> MapShape.put_optional("tools", tools)}
   end
 
+  @doc """
+  Returns a local approximate count; no Z.ai counting request is made.
+  """
   def count_tokens(%__MODULE__{}, input, _opts \\ []),
     do: {:ok, LanguageModel.count_tokens_approximately(input)}
 

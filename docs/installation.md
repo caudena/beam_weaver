@@ -25,7 +25,8 @@ def deps do
 end
 ```
 
-Then install dependencies:
+Keep this entry alongside your existing dependencies; do not replace the
+whole dependency list in an established application. Then install dependencies:
 
 ```bash
 mix deps.get
@@ -50,6 +51,8 @@ Set `OPENAI_API_KEY` in the environment of the process that runs your app.
 Keep its value out of source control. BeamWeaver reads **application
 configuration**; your application is responsible for loading credentials.
 A dependency's `config/runtime.exs` is not loaded into a consuming application.
+The library does not automatically load your `.env`; export the key through
+your shell or deployment secret mechanism before starting Mix.
 
 ## Use Google instead
 
@@ -79,16 +82,22 @@ Start your application:
 iex -S mix
 ```
 
-At the prompt, initialize a model. This checks the identifier and options;
-it does **not** send a request or establish that the API key is valid:
+The following check uses OpenAI. If you configured only Google, use the
+[complete Google example](quickstart.md#use-google) instead.
+At the prompt, initialize a model and make a real request. Initialization
+checks the identifier/options; invocation checks the configured integration:
 
 ```elixir
-{:ok, model} = BeamWeaver.Models.init_chat_model("openai:gpt-5.4-mini")
-model.model
-#=> "gpt-5.4-mini"
+{:ok, model} = BeamWeaver.Models.init_chat_model("openai:gpt-5.4-mini", max_tokens: 128, timeout: 60_000)
+{:ok, reply} = BeamWeaver.Core.ChatModel.invoke(model, "Reply briefly with a greeting.")
+answer = BeamWeaver.Core.Message.text(reply)
+true = is_binary(answer) and byte_size(answer) > 0
+IO.puts(answer)
 ```
 
-Continue to the [Quickstart](quickstart.md) to make a real request, then
+You should see a greeting. Its exact wording can vary. A real request uses
+your provider account. Continue to the [Quickstart](quickstart.md) to wrap a
+model in an agent module, then
 [Build an Agent](tutorial.md) to give the model a tool.
 
 ## Troubleshooting

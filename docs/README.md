@@ -1,46 +1,56 @@
 # BeamWeaver
 
-BeamWeaver is an Elixir library for AI agents and durable workflows. An agent
-lets a model choose tools and produce an answer. A graph executes the steps
-you define. Both run inside your application and support streaming,
-checkpoints and pauses for human input.
+Build agents and durable workflows inside an Elixir application. Define tools
+as modules, give a model a bounded set of actions, and inspect what it did.
+Use graphs when your application should choose the steps explicitly.
 
-These guides describe the refactored **1.0.0** API. See the
+You need basic Elixir and Mix knowledge. No prior agent-framework experience
+is assumed. These guides target **1.0.0**; check the
 [release status](installation.md#release-status) before installing from Hex.
 
-## Start here
+## Start with a working application
 
-1. [Installation](installation.md): create a Mix application and configure credentials.
-2. [Quickstart](quickstart.md): make your first real OpenAI or Google call.
-3. [Build an Agent](tutorial.md): add a tool, inspect the model's work and continue a conversation.
-4. [Concepts](concepts.md): understand state, threads, context, agents and graphs.
-5. [Testing](testing.md): verify your application with scripted models and replay.
+1. [Install and configure](installation.md) a Mix application and provider key.
+2. [Run your first agent](quickstart.md) against OpenAI or Google.
+3. [Build a support agent](tutorial.md) with an order tool and conversation history.
+4. Read [How BeamWeaver Works](concepts.md) to connect the runtime concepts.
 
-You need basic Elixir and Mix knowledge. No previous agent-framework
-experience is assumed. Examples state their setup and expected behavior;
-model-generated wording can vary.
+Examples say where code belongs and what to observe. Live answers can vary in
+wording; the guides check facts, tool results and state where those matter.
+The [testing guide](testing.md) introduces scripted models for application tests.
 
-## Choose a capability
+## Learn the DSLs
 
-| Your application needs | Read |
+| You are defining | Guide |
 | --- | --- |
-| Model-selected actions | [Agents](agents.md), [Tools](tools.md) |
-| A validated answer shape | [Structured Output](structured_output.md) |
-| Conversation history or user preferences | [Short-Term Memory](short_term_memory.md), [Long-Term Memory](long_term_memory.md) |
-| Progress and partial output | [Streaming](streaming.md) |
-| Approval before a sensitive action | [Human-in-the-Loop](human_in_the_loop.md) |
-| Planning, files, skills or delegated work | [Deep Agents](deep_agents.md) |
-| Explicit steps, branches and parallelism | [Graphs](graphs.md), [Workflow Patterns](workflow_patterns.md) |
-| Restart recovery and durable state | [Checkpoints](checkpoints.md), [Storage](storage.md) |
-| Search over your documents | [Retrieval](retrieval.md) |
-| Operational configuration and diagnostics | [Configuration](configuration.md), [Going to Production](going_to_production.md), [Tracing](tracing.md) |
+| Model, instructions, tools and execution policy | [Agent DSL](agents.md) |
+| An action and its input contract | [Tool DSL](tools.md) |
+| A structured final answer | [Schema DSL](structured_output.md) |
+| Hooks around model and tool calls | [Middleware DSL](middleware.md) |
+| Steps, branches, joins and state channels | [Graph DSL](graphs.md) and [State](graph_state.md) |
 
-## Reference and runnable projects
+## Add the capability your task needs
 
-The guides teach behaviors and link to the public API reference. The
-[Agents](agents.md) and [Graphs](graphs.md) guides cover the DSLs; the
-[provider guides](providers.md) cover all supported backends and their
-differences. [Examples](examples.md) lists complete scripts for further study.
+| Need | Next guide |
+| --- | --- |
+| Trusted caller or tenant data | [Runtime Context](runtime_context.md) |
+| Progress in a UI | [Streaming](streaming.md) |
+| Conversation history | [Conversation History](short_term_memory.md) |
+| Facts shared across conversations | [Long-Term Memory](long_term_memory.md) |
+| Human approval before actions | [Human Review](human_in_the_loop.md) |
+| Files, planning, procedures and delegation | [Compose a Deep Agent](deep_agents.md) |
+| Answers grounded in your documents | [Retrieval](retrieval.md) |
+| Explicit orchestration | [Workflow Patterns](workflow_patterns.md) |
+| Recovery and persistent state | [Checkpoints](checkpoints.md), [Storage](storage.md) |
 
-BeamWeaver can export traces to [WeaveScope](https://weavescope.com).
-[Tracing](tracing.md) covers local inspection and exporter configuration.
+## Ship and operate
+
+[Production Integration](going_to_production.md) connects supervision,
+authorization, persistence, budgets and shutdown. [Tracing](tracing.md) explains
+local inspection and export to WeaveScope. [Configuration](configuration.md)
+separates application settings from model options and per-request data.
+
+Use the [provider reference](providers.md) for endpoint-specific features.
+The guides include complete code, options and result contracts inline.
+[Runnable Examples](examples.md) provides a task index and optional downloadable
+scripts; you can follow the guides entirely on this documentation site.

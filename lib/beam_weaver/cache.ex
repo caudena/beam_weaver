@@ -17,11 +17,26 @@ defmodule BeamWeaver.Cache do
   @type metadata :: map()
   @type lookup_result :: {:hit, term(), metadata()} | :miss | {:error, Error.t()}
 
+  @doc """
+  Read one entry, preserving miss versus adapter failure.
+  """
   @callback lookup(term(), namespace(), key(), keyword()) :: lookup_result()
+  @doc """
+  Store a value; ttl options use milliseconds.
+  """
   @callback put(term(), namespace(), key(), term(), keyword()) :: :ok | {:error, Error.t()}
+  @doc """
+  Remove one entry, returning an error if storage fails.
+  """
   @callback delete(term(), namespace(), key(), keyword()) :: :ok | {:error, Error.t()}
+  @doc """
+  Clear one namespace or all entries when namespace is nil.
+  """
   @callback clear(term(), namespace() | nil, keyword()) :: :ok | {:error, Error.t()}
 
+  @doc """
+  Returns {:hit, value, metadata}, :miss or an adapter error. Expired entries are misses.
+  """
   @spec lookup(term(), namespace(), key(), keyword()) :: lookup_result()
   def lookup(cache, namespace, key, opts \\ []) do
     emit(cache, :lookup, %{count: 1}, %{namespace: namespace, key: key})
@@ -43,6 +58,9 @@ defmodule BeamWeaver.Cache do
     end
   end
 
+  @doc """
+  Stores a namespaced value with optional metadata and TTL in milliseconds.
+  """
   @spec put(term(), namespace(), key(), term(), keyword()) :: :ok | {:error, Error.t()}
   def put(cache, namespace, key, value, opts \\ []),
     do: write(cache, :put, [namespace, key, value, opts], %{namespace: namespace, key: key})
@@ -54,10 +72,16 @@ defmodule BeamWeaver.Cache do
   def update(cache, namespace, key, value, opts \\ []),
     do: put(cache, namespace, key, value, opts)
 
+  @doc """
+  Removes one namespaced entry through the adapter.
+  """
   @spec delete(term(), namespace(), key(), keyword()) :: :ok | {:error, Error.t()}
   def delete(cache, namespace, key, opts \\ []),
     do: write(cache, :delete, [namespace, key, opts], %{namespace: namespace, key: key})
 
+  @doc """
+  Clears one namespace, or the entire cache when namespace is nil.
+  """
   @spec clear(term(), namespace() | nil, keyword()) :: :ok | {:error, Error.t()}
   def clear(cache, namespace \\ nil, opts \\ []), do: write(cache, :clear, [namespace, opts], %{namespace: namespace})
 
@@ -119,6 +143,9 @@ defmodule BeamWeaver.Cache do
     end)
   end
 
+  @doc """
+  Removes expired entries through the optional sweep capability.
+  """
   @spec sweep_expired(term(), keyword()) :: {:ok, non_neg_integer()} | :ok | {:error, Error.t()}
   def sweep_expired(cache, opts \\ []) do
     result = BeamWeaver.Adapter.Sweepable.sweep_expired(cache, opts)
@@ -132,6 +159,9 @@ defmodule BeamWeaver.Cache do
     result
   end
 
+  @doc """
+  Applies adapter retention; unsupported retention remains an explicit error.
+  """
   @spec prune(term(), keyword()) :: {:ok, non_neg_integer()} | {:error, Error.t()}
   def prune(cache, opts \\ []) do
     result = BeamWeaver.Adapter.Retainable.prune(cache, opts)

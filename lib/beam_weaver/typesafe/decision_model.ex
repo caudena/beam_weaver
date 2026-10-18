@@ -1,8 +1,13 @@
 defmodule BeamWeaver.TypeSafe.DecisionModel do
-  @moduledoc """
-  Jev decision model. Evaluate `state` and named `questions` with
-  `BeamWeaver.Core.DecisionModel.invoke/3` or
-  `BeamWeaver.Core.DecisionModel.batch/3`.
+  @moduledoc ~S"""
+  Jev evaluation of state against named typed questions.
+
+  Invoke through BeamWeaver.Core.DecisionModel with state and questions. Results
+  contain string-keyed typed answers, served/requested model identity and usage.
+  Question validation happens before HTTP execution. Confidence and probability
+  require calibration; neither establishes correctness on its own.
+  Use the [TypeSafe guide](providers/typesafe.md) for a real request and routing
+  behavior, including explicit acceptance/fallback checks.
   """
 
   use BeamWeaver.Provider.RedactedInspect

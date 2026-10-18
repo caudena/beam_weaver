@@ -1,6 +1,16 @@
 defmodule BeamWeaver.Anthropic.Client do
-  @moduledoc """
-  Anthropic Messages API client built on `BeamWeaver.Transport`.
+  @moduledoc ~S"""
+  Native Anthropic HTTP client using `BeamWeaver.Transport`.
+
+  Use this layer when your application owns provider request/response shapes.
+  It accepts native bodies and returns decoded provider data or tagged errors;
+  the model facade supplies portable message normalization and compatibility
+  checks. Transport/replay overrides do not establish live provider access.
+
+  Configure this client's credentials for its actual endpoint. Keep raw request
+  headers/bodies out of logs. Stream consumers own consumption and cancellation;
+  collected-response helpers wait for completion. The [Anthropic guide](providers/anthropic.md)
+  identifies the implemented endpoints and external-resource lifetimes.
   """
 
   use BeamWeaver.Provider.RedactedInspect
@@ -52,6 +62,9 @@ defmodule BeamWeaver.Anthropic.Client do
 
   @type t :: %__MODULE__{}
 
+  @doc """
+  Builds client connection settings from explicit options and provider application configuration; makes no request.
+  """
   @spec new(keyword()) :: t()
   def new(opts \\ []) do
     base_url = Keyword.get(opts, :base_url) || Config.get([:anthropic, :base_url], @default_base_url)
@@ -71,20 +84,32 @@ defmodule BeamWeaver.Anthropic.Client do
     )
   end
 
+  @doc """
+  Sends a native JSON request and returns the decoded provider payload or a tagged HTTP/transport error.
+  """
   @spec messages(t(), map(), keyword()) :: {:ok, map()} | {:error, Error.t()}
   def messages(%__MODULE__{} = client, body, opts \\ []) when is_map(body),
     do: client |> do_request(body, opts) |> ResponseDecoder.json([header_fields: @header_fields] ++ decoder_opts(opts))
 
+  @doc """
+  Sends a streaming request and returns text deltas. Consume the returned enumerable to execute streaming work.
+  """
   @spec messages_stream(t(), map(), keyword()) ::
           {:ok, Enumerable.t()} | {:error, Error.t()}
   def messages_stream(%__MODULE__{} = client, body, opts \\ []) when is_map(body),
     do: do_stream(client, body, opts, &Streaming.text_deltas/1)
 
+  @doc """
+  Collects the streaming provider response into its final decoded native payload, or returns an error.
+  """
   @spec messages_stream_response(t(), map(), keyword()) ::
           {:ok, map()} | {:error, Error.t()}
   def messages_stream_response(%__MODULE__{} = client, body, opts \\ []) when is_map(body),
     do: client |> http_client(opts) |> HTTPClient.collect_sse(body, opts, &decode_stream(&1, opts))
 
+  @doc """
+  Returns the endpoint's streaming lifecycle events; use the typed model facade for a portable event contract.
+  """
   @spec messages_stream_events(t(), map(), keyword()) ::
           {:ok, Enumerable.t()} | {:error, Error.t()}
   def messages_stream_events(%__MODULE__{} = client, body, opts \\ []) when is_map(body),
@@ -92,6 +117,9 @@ defmodule BeamWeaver.Anthropic.Client do
 
   # The stream ends with the complete reply, decoded like a reply from
   # `messages/3`, followed by its `Done` event.
+  @doc """
+  Sends a streaming request and returns typed event envelopes. Consume once and handle terminal errors.
+  """
   @spec messages_stream_typed_events(t(), map(), keyword()) ::
           {:ok, Enumerable.t()} | {:error, Error.t()}
   def messages_stream_typed_events(%__MODULE__{} = client, body, opts \\ []) when is_map(body) or is_binary(body) do
@@ -111,6 +139,9 @@ defmodule BeamWeaver.Anthropic.Client do
     )
   end
 
+  @doc """
+  Calls the provider counting/estimation endpoint with a native body; returns decoded provider data or an error.
+  """
   @spec count_tokens(t(), map(), keyword()) :: {:ok, map()} | {:error, Error.t()}
   def count_tokens(%__MODULE__{} = client, body, opts \\ []) when is_map(body) do
     client
@@ -118,11 +149,17 @@ defmodule BeamWeaver.Anthropic.Client do
     |> ResponseDecoder.json(decoder_opts(opts))
   end
 
+  @doc """
+  Builds the normalized transport request for inspection or explicit dispatch; does not send it.
+  """
   @spec request(t(), map(), keyword()) :: BeamWeaver.Transport.Request.t()
   def request(%__MODULE__{} = client, body, opts \\ []) do
     client |> http_client(opts) |> HTTPClient.request(body, opts)
   end
 
+  @doc """
+  Builds the native URL for the selected model/action without sending a request.
+  """
   @spec endpoint(String.t(), String.t()) :: String.t()
   def endpoint(base_url, path), do: Compat.endpoint(base_url, path)
 

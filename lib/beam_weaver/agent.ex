@@ -1,82 +1,70 @@
 defmodule BeamWeaver.Agent do
   @moduledoc ~S"""
-  Agent modules: a chat model, instructions and tools that run in a loop until
-  the model answers.
+  Declare an agent whose model selects tools and produces an answer.
+
+  An agent module is a reusable definition. Each invocation evaluates its
+  declarations, builds the loop with current options and returns completed
+  state, an interrupt or an error. Configure the provider in your application
+  as described in [Installation](installation.md).
 
   ```elixir
-  defmodule MyApp.Tools.LookupOrder do
+  defmodule MyApp.OrderLookup do
     use BeamWeaver.Tool
-
-    name "lookup_order"
-    description "Look up the shipping status of an order by its id."
-
+    name "order_lookup"
+    description "Read the sample order's delivery day."
     schema do
       field :order_id, :string
     end
-
     @impl true
-    def invoke(_tool, %{"order_id" => order_id}, _opts), do: {:ok, "Order #{order_id} shipped on Monday."}
+    def invoke(_tool, %{"order_id" => "A-1001"}, _opts), do: {:ok, "Thursday"}
+    def invoke(_tool, _input, _opts), do: {:error, "Order not found"}
   end
 
   defmodule MyApp.SupportAgent do
     use BeamWeaver.Agent
-
-    alias BeamWeaver.Models.FakeChatModel
-
-    model "fake:chat",
-      responses: [
-        FakeChatModel.tool_call("lookup_order", %{"order_id" => "A-1001"}),
-        "Your order A-1001 shipped on Monday."
-      ]
-
-    system_prompt "You are Acme's support agent."
-    tools [MyApp.Tools.LookupOrder]
+    model "openai:gpt-5.4-mini", max_tokens: 256, timeout: 60_000
+    system_prompt "Call order_lookup for order questions and use its result."
+    tools [MyApp.OrderLookup]
+    recursion_limit 10
   end
 
-  {:ok, result} = MyApp.SupportAgent.invoke(%{messages: ["Where is my order A-1001?"]})
-  result.messages |> List.last() |> BeamWeaver.Core.Message.text()
-  #=> "Your order A-1001 shipped on Monday."
+  {:ok, state} = MyApp.SupportAgent.invoke(%{messages: ["When does A-1001 arrive?"]})
+  tool_result = Enum.find(state.messages, &(&1.role == :tool and &1.name == "order_lookup"))
+  "Thursday" = BeamWeaver.Core.Message.text(tool_result)
+  true = state.messages |> List.last() |> BeamWeaver.Core.Message.text() |> String.contains?("Thursday")
   ```
 
-  `use BeamWeaver.Agent` gives the module `invoke/2`, `stream_events/2`,
-  `resume/2`, `resume_review/2` and `get_state/1`, which call the functions
-  of the same name in this module.
+  ## Module and runtime interfaces
 
-  ## Declarations
+  `use BeamWeaver.Agent` supplies `invoke/2`, `stream_events/2`, `resume/2`,
+  `resume_review/2`, `get_state/1` and `compiled_graph/1`. The functions in this
+  module accept the agent module or a `BeamWeaver.Agent.Built` value first.
+  Use `build/1` for definitions assembled from runtime data and `declarations/1`
+  to derive build options from a module.
 
-  | Declaration | What it does |
-  | --- | --- |
-  | `model "provider:model", opts` | The chat model and its options. |
-  | `system_prompt "..."` | Instructions sent ahead of the conversation. |
-  | `tools [...]`, or `tools do tool Mod end` | Tools the model may call. |
-  | `middleware [...]`, or `middleware do use Mod, opts end` | Code around model and tool calls. |
-  | `response_schema Schema, opts` | A structured final answer, in `structured_response`. |
-  | `context_schema do field ... end` | The fields of the per-call `context:`. |
-  | `interrupt_on %{"tool_name" => true}` | Pauses before those tools for human review. |
-  | `recursion_limit 50` | The most steps one run may take. |
-  | `tool_timeout`, `step_timeout`, `run_timeout` | Time limits, in milliseconds, for each tool call, each step and the whole run. |
-  | `name "..."`, `description "..."` | The agent's name and what it does. |
-  | `filesystem`, `skills`, `memory`, `subagents`, `async_subagents` | Deep agent capabilities. |
-  | `compact_conversation`, `overflow_recovery`, `prompt_caching` | Context and cost management. |
-  | `capability_profile :auto` | Applies the capability profile of the agent's model. |
+  ## Declaration lifecycle
 
-  Declarations, including the options after `model "..."`, are evaluated each
-  time the agent runs, so they can read your configuration. For the same
-  reason, storage you declare must outlive the call: a module that creates an
-  ETS saver, store or cache in a declaration, such as
-  `checkpointer BeamWeaver.Checkpoint.ETS.new()`, doesn't compile, because
-  every call would get a new, empty one. Create it once and pass it per call
-  with `checkpointer:`, `store:` or `cache:`, or declare storage kept in your
-  database, such as `BeamWeaver.Checkpoint.Ecto`.
+  Model, prompt, tools, middleware and storage expressions are evaluated per
+  invocation. Tool/schema module declarations are compiled contracts instead.
+  ETS tables and processes need owners that outlive the calls using them:
+  create them under supervision or in the caller and pass existing values.
+  Direct ETS construction in a repeated storage declaration is rejected.
+  Database adapter structs refer to an independently supervised repository.
 
-  Every agent module declares a model. A module that runs a graph of your own
-  nodes instead is a graph module, with `use BeamWeaver.Graph`. An agent
-  module implements the `BeamWeaver.Graph` behaviour too, so it runs as a
-  node of a graph, and its `c:BeamWeaver.Graph.compiled_graph/1` compiles
-  the agent loop.
+  Per-call context is not persisted. Supply current context on every invocation
+  and resume. Reuse the checkpointer and thread ID to continue conversation state.
 
-  The [Agents](agents.md) guide covers each declaration, and
-  [Deep Agents](deep_agents.md) covers the capabilities.
+  ## Results and capabilities
+
+  `{:ok, state}` means the run completed, not necessarily that every requested
+  business action succeeded. Inspect tool outcomes or `structured_response`.
+  `{:interrupted, interrupt}` requires review/input; `{:error, error}` exposes
+  an execution failure.
+
+  The [Agent DSL guide](agents.md) organizes every declaration by concern and
+  explains call overrides. [Tools](tools.md), [Structured Output](structured_output.md),
+  [Middleware](middleware.md) and [Deep Agents](deep_agents.md) cover composition.
+  An agent also implements the graph behavior and can run as a subgraph.
   """
 
   alias BeamWeaver.Agent.Built
@@ -84,8 +72,11 @@ defmodule BeamWeaver.Agent do
   alias BeamWeaver.Core.Error
   alias BeamWeaver.Graph.Compiled
 
+  @typedoc "Initial state or new thread input; messages accept strings and Message values."
   @type input :: map()
+  @typedoc "A module defined with use BeamWeaver.Agent."
   @type agent_module :: module()
+  @typedoc "A validated runtime definition returned by build/1."
   @type built_agent :: Built.t()
 
   @doc false
@@ -290,6 +281,34 @@ defmodule BeamWeaver.Agent do
   """
   @spec build(keyword() | map()) :: {:ok, Built.t()} | {:error, Error.t()}
   defdelegate build(opts), to: BeamWeaver.Agent.Builder
+
+  @doc """
+  Returns an agent module's declarations as a map with the option names of
+  `build/1`: `:model`, `:model_opts`, `:system_prompt`, `:tools` and the rest.
+  An option the module doesn't declare holds its default. The declarations
+  are evaluated when this is called, as on each invocation.
+
+  Change one and pass the map to `build/1` to build the same agent with other
+  instructions or another model:
+
+      defmodule MyApp.BaseAgent do
+        use BeamWeaver.Agent
+        model "openai:gpt-5.4-mini", max_tokens: 128, timeout: 60_000
+        system_prompt "Reply briefly."
+      end
+
+      declared = BeamWeaver.Agent.declarations(MyApp.BaseAgent)
+      {:ok, agent} = BeamWeaver.Agent.build(%{declared | system_prompt: "Reply in French."})
+      {:ok, result} = BeamWeaver.Agent.invoke(agent, %{messages: ["Say hello."]})
+      answer = result.messages |> List.last() |> BeamWeaver.Core.Message.text()
+      true = String.contains?(String.downcase(answer), "bonjour")
+
+  `execution_mode`, which only applies when the module runs as a subagent,
+  isn't among them. Raises `ArgumentError` for a module that isn't an agent
+  module.
+  """
+  @spec declarations(agent_module()) :: map()
+  defdelegate declarations(agent_module), to: BeamWeaver.Agent.Builder
 
   @doc """
   Runs an agent until the model answers.

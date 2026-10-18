@@ -1,6 +1,16 @@
 defmodule BeamWeaver.Core.EmbeddingModel do
-  @moduledoc """
-  Behaviour for embedding model providers.
+  @moduledoc ~S"""
+  Embedding-provider behavior and validated text-to-vector calls.
+
+  `embed_documents/3` returns one vector per input document, except when the
+  model's explicit skip-empty policy excludes empty strings. `embed_query/3`
+  returns one vector. Returned vectors must be nonempty numeric lists.
+
+  Use the same model and dimensions for indexing and querying. Shape validation
+  does not establish semantic relevance, consistent dimensions across every
+  stored record, or index compatibility; those belong to the caller/store.
+  [Retrieval](retrieval.md) demonstrates real embeddings and relevant-source
+  assertions. Fake embeddings are only deterministic test data.
   """
 
   alias BeamWeaver.Core.Error

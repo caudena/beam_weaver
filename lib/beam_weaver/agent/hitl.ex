@@ -1,10 +1,17 @@
 defmodule BeamWeaver.Agent.HITL do
-  @moduledoc """
-  Framework-agnostic human-in-the-loop review payload helpers.
+  @moduledoc ~S"""
+  Build UI-independent human-review data and resume decisions.
 
-  These helpers deliberately avoid any web/server dependency. Phoenix, LiveView,
-  CLI, or custom applications can render the plain data returned here and pass
-  decisions back through `BeamWeaver.Agent.resume_review/3`.
+  `from_interrupt/1` parses a batched tool-review interrupt into action requests
+  and allowed-decision configurations. `to_map/1` makes those values suitable
+  for JSON presentation. `decision/2` constructs a reviewer response; the runtime
+  validates it against the currently pending action on resume.
+
+  Authenticate the reviewer and bind submissions to the current thread/review
+  revision in your application. A stale decision must not authorize newly
+  pending work. Context must be supplied again when resuming.
+  [Human Review](human_in_the_loop.md) demonstrates approval, edits and rejection
+  with observable action results.
   """
 
   import BeamWeaver.MapShape, only: [reject_nil_values: 1]
@@ -69,6 +76,10 @@ defmodule BeamWeaver.Agent.HITL do
           }
   end
 
+  @doc """
+  Parses a batched review interrupt; returns {:ok, review} or an error of type :invalid_hitl_review.
+  Per-call approvals use the individual interrupt values and ID-keyed decisions.
+  """
   @spec from_interrupt(map() | struct()) :: {:ok, Review.t()} | {:error, Error.t()}
   def from_interrupt(interrupt) when is_map(interrupt) do
     value = Map.get(interrupt, :value, Map.get(interrupt, "value", %{}))
@@ -92,6 +103,9 @@ defmodule BeamWeaver.Agent.HITL do
   def from_interrupt(_interrupt),
     do: {:error, Error.new(:invalid_hitl_review, "expected an interrupt map")}
 
+  @doc """
+  Converts a review, action, rule or decision struct to plain map data, omitting nil fields.
+  """
   @spec to_map(Review.t() | Decision.t() | ActionRequest.t() | ReviewConfig.t()) :: map()
   def to_map(%Review{} = review) do
     %{
@@ -149,6 +163,11 @@ defmodule BeamWeaver.Agent.HITL do
   def resume_value(answers) when is_map(answers),
     do: Map.new(answers, fn {interrupt_id, decision} -> {interrupt_id, decision_map(decision)} end)
 
+  @doc """
+  Builds an approve, edit, reject or respond decision.
+  Use edited_action: for an edit and message: for rejection or a supplied result.
+  Construction does not validate permission to act; resume validates the pending review.
+  """
   def decision(type, opts \\ []) do
     %Decision{
       type: type,

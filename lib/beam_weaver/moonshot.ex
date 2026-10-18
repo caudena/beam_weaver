@@ -1,6 +1,16 @@
 defmodule BeamWeaver.Moonshot do
-  @moduledoc """
-  Moonshot/Kimi provider namespace.
+  @moduledoc ~S"""
+  Kimi Chat Completions with model-specific reasoning and tool contracts.
+
+  Constructors return configured values; invocation makes the provider request.
+  Load credentials into `config :beam_weaver, :moonshot` in your application's
+  runtime configuration. Explicit connection options override configured defaults.
+  See the [Moonshot guide](providers/moonshot.md) for an executed request, endpoint
+  choices, supported options and account/resource requirements.
+
+  Native tool helpers construct declarations. Hosted tools execute at the provider;
+  client actions require an application executor. Keep full returned messages
+  for continuation and inspect outcomes rather than HTTP success alone.
   """
 
   alias BeamWeaver.Config

@@ -1,10 +1,10 @@
 defmodule BeamWeaver.Agent.Middleware.AsyncSubagents do
   @moduledoc """
-  Minimal Agent Protocol async-subagent tool surface.
+  Starts, checks, updates and cancels application-owned asynchronous tasks.
 
-  The first implementation keeps task metadata in graph state and is designed
-  so an HTTP client adapter can be plugged in without changing the agent-facing
-  tools.
+  Task metadata is kept in graph state; the configured client owns remote
+  scheduling, persistence and cancellation. A stored task ID is not proof of
+  completion. Refresh status before presenting a result.
 
   It adds nothing to the system prompt unless given `system_prompt:`, which
   adds that text followed by the list of async subagents.

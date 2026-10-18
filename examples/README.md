@@ -2,7 +2,7 @@
 
 Start with the [Quickstart](../docs/quickstart.md) and
 [Build an Agent](../docs/tutorial.md) if you are new to the library. These
-scripts demonstrate complete behaviors: tool calls, streaming, human review,
+scripts are complete runs with explicit setup and outcome checks: tool calls, streaming, human review,
 state, retrieval, graphs, persistence and longer agent workflows.
 
 Run commands from a repository checkout after `mix deps.get`. Set provider
@@ -43,5 +43,5 @@ mix docs.verify --all
 The full documentation verifier executes guide and API examples, the scripts,
 and a fresh consumer of the built package. Reports distinguish execution from
 missing prerequisites and retain the pending public Hex installation check
-until release. The [testing guide](../docs/testing.md#verify-the-documentation)
+until release. The [example index](../docs/examples.md#understand-verification-results)
 explains selectors and report contents.

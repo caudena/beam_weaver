@@ -1,10 +1,15 @@
 defmodule BeamWeaver.VectorStore.EctoPostgres do
-  @moduledoc """
-  SQL-boundary Postgres/pgvector vector store adapter.
+  @moduledoc ~S"""
+  PostgreSQL/pgvector storage behind an application-owned Ecto repository.
 
-  The adapter deliberately avoids Ecto schemas. Callers provide a Repo and a
-  query module compatible with `Ecto.Adapters.SQL.query/3`, which keeps the SQL
-  boundary explicit for applications that wrap or instrument database calls.
+  Required constructor options are repo and embedding. Table, prefix, namespace,
+  dimensions and distance must match your migration and ingestion/query model.
+  The default query module is Ecto.Adapters.SQL; a compatible query module can
+  instrument the SQL boundary. Construction does not start a repo or create tables.
+
+  Documents are replaced by namespace/ID. Preserve stable source/chunk IDs when
+  reindexing and explicitly remove obsolete content. See [Storage](storage.md)
+  and [Retrieval](retrieval.md).
   """
 
   @behaviour BeamWeaver.VectorStore

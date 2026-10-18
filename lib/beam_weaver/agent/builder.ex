@@ -21,6 +21,16 @@ defmodule BeamWeaver.Agent.Builder do
     end
   end
 
+  # An agent module's declarations, evaluated now, under the names of the
+  # options above: what `build/1` takes to build the same agent.
+  @spec declarations(module()) :: map()
+  def declarations(module) when is_atom(module) do
+    unless BeamWeaver.Behaviour.exported?(module, :__beam_weaver_agent_spec__, 0),
+      do: raise(ArgumentError, "#{inspect(module)} is not an agent module: `use BeamWeaver.Agent` in it")
+
+    module.__beam_weaver_agent_spec__() |> Map.from_struct() |> Map.take(@options)
+  end
+
   # Checks the options as `build/1` does and returns the spec it would
   # compile, without compiling the graph. A parent agent checks its subagents
   # this way when it is built; a `task` call builds the one it runs.

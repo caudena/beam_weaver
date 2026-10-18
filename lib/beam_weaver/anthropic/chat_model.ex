@@ -1,6 +1,16 @@
 defmodule BeamWeaver.Anthropic.ChatModel do
-  @moduledoc """
-  Anthropic Messages API chat model implementation.
+  @moduledoc ~S"""
+  Anthropic chat model implementing the BeamWeaver chat contract.
+
+  Prefer `BeamWeaver.Models.init_chat_model/2` for provider-prefixed identifiers,
+  then call `BeamWeaver.Core.ChatModel` or declare the model in an agent.
+  Construction does not contact the provider. Model/profile options describe
+  local compatibility; account access is established only by a real request.
+
+  See [Anthropic](providers/anthropic.md) for endpoint-specific parameters, reasoning,
+  media and tools. Preserve complete messages for multi-turn replay. Streaming
+  consumers must enumerate once and handle terminal errors; display text is not
+  a lossless representation of a native provider turn.
   """
 
   use BeamWeaver.Provider.RedactedInspect
@@ -96,6 +106,9 @@ defmodule BeamWeaver.Anthropic.ChatModel do
     do: ModelResolution.resolve(model, opts)
 
   @spec count_tokens(t(), term(), keyword()) :: {:ok, non_neg_integer()} | {:error, Error.t()}
+  @doc """
+  Asks Anthropic to count normalized input tokens. Returns a count or provider error without generating an answer.
+  """
   def count_tokens(%__MODULE__{} = model, input, opts \\ []) do
     with {:ok, model} <- resolve_invocation_model(model, opts),
          {:ok, messages} <- LanguageModel.normalize_chat_input(input),

@@ -72,18 +72,18 @@ defmodule BeamWeaver.Agent.CapabilityProfile do
     get_capability_profile(other) || new(name: other)
   end
 
-  @doc "Returns built-in harness profile keys."
+  @doc "Returns built-in capability profile keys."
   @spec builtin_keys() :: [String.t()]
   def builtin_keys, do: Map.keys(builtin_profiles()) |> Enum.sort()
 
-  @doc "Registers or merges a harness profile under a provider or provider:model key."
+  @doc "Registers or merges a capability profile under a provider or provider:model key."
   @spec register_capability_profile(String.t() | atom(), __MODULE__.t() | term()) :: :ok
   def register_capability_profile(key, profile) do
     ProfileRegistry.register(@registry_key, builtin_profiles(), key, builtin(profile), &merge/2)
   end
 
   @doc """
-  Looks up a harness profile for a provider or provider:model spec.
+  Looks up a capability profile for a provider or provider:model spec.
 
   Exact model profiles are layered on top of provider-level profiles.
   Malformed specs return `nil` instead of falling back to the provider half.
@@ -95,7 +95,7 @@ defmodule BeamWeaver.Agent.CapabilityProfile do
     ProfileRegistry.lookup(@registry_key, builtin_profiles(), spec, &merge/2)
   end
 
-  @doc "Returns the harness profile that best matches a raw or resolved model."
+  @doc "Returns the capability profile that best matches a raw or resolved model."
   @spec for_model(term(), String.t() | nil) :: __MODULE__.t()
   def for_model(model, spec \\ nil),
     do: ProfileRegistry.for_model(model, spec, &get_capability_profile/1) || new(name: :default)

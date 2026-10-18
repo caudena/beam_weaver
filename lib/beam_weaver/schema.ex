@@ -72,7 +72,7 @@ defmodule BeamWeaver.Schema do
   @doc "When true, disallows additional object properties in the declared schema."
   defmacro strict(value), do: quote(do: @beam_weaver_schema_strict(unquote(value)))
 
-  @doc "Declares a named field and its type. Use required: true for mandatory structured-output fields; see [Structured Output](structured_output.md)."
+  @doc "Declares a named field and its type. Fields are required by default; use required: false for optional values. See [Structured Output](structured_output.md)."
   defmacro field(name_ast, type_ast, opts \\ []) do
     name = literal_field_name!(__CALLER__, name_ast)
     type = literal_field_type!(__CALLER__, type_ast)

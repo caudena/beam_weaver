@@ -1,6 +1,14 @@
 defmodule BeamWeaver.Cache.ETS do
-  @moduledoc """
-  ETS cache adapter for local workflows, tests, and supervised applications.
+  @moduledoc ~S"""
+  Process-owned in-memory cache with optional entry-count retention.
+
+  `new/1` creates an ETS set. Reuse the returned adapter; its entries disappear
+  with the owner process. `visibility:` controls ETS visibility and
+  `max_entries:` (or `maxsize:`) bounds retained entries, evicting the oldest
+  when adding beyond the limit.
+
+  Entry TTL is milliseconds through `BeamWeaver.Cache.put/5`; hits do not
+  refresh it. Use the cache facade for operations and cleanup. See [Caching](caching.md).
   """
 
   @behaviour BeamWeaver.Cache

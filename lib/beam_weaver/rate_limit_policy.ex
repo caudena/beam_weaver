@@ -1,6 +1,12 @@
 defmodule BeamWeaver.RateLimitPolicy do
-  @moduledoc """
-  Explicit rate-limit policy for model/provider/tool operations.
+  @moduledoc ~S"""
+  Admission settings for a model wrapper or service operation.
+
+  limiter is a live bucket/name or compatible adapter; amount is a positive
+  request weight (default 1), key selects an adapter-defined quota and timeout
+  bounds waiting in milliseconds (default 5,000). Construction validates policy
+  shape; it does not start the limiter or establish a distributed quota.
+  See [Rate Limiting](rate_limiting.md).
   """
 
   alias BeamWeaver.Core.Error

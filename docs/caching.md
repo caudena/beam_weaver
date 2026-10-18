@@ -1,162 +1,122 @@
 # Caching
 
-A cache answers a repeated request with a stored result instead of doing the
-work again. BeamWeaver caches the results of graph nodes and model calls in a
-cache adapter you choose, and `prompt_caching true` turns on provider prompt
-caching, which makes the stable start of a long prompt cheaper to send again.
+There are three distinct caches: graph-node results, complete model answers
+and provider prompt prefixes. The first two can skip work; provider prefix
+caching still makes a model request. Choose keys and invalidation based on
+what affects the result.
+
+Complete [Installation](installation.md) for the OpenAI examples below.
+
+
+Run this page’s examples in order in one IEx session; later blocks reuse the modules and values defined earlier.
 
 ## Cache a graph node
 
-Give a node `cache:` and pass a cache adapter with the call. Here the
-`classify` node asks a model for the ticket's category, and the second run
-with the same subject gets the category from the cache:
-
 ```elixir
-defmodule MyApp.TicketTriage do
+defmodule MyApp.CachedClassifier do
   use BeamWeaver.Graph
-
   alias BeamWeaver.Core.{ChatModel, Message}
-  alias BeamWeaver.Graph
 
-  def graph do
-    Graph.new()
-    |> Graph.add_node(:classify, &classify/1, cache: [ttl: :timer.hours(24)])
-    |> Graph.add_node(:reply, &reply/1)
-    |> Graph.add_edge(Graph.start(), :classify)
-    |> Graph.add_edge(:classify, :reply)
-    |> Graph.add_edge(:reply, Graph.end_node())
+  graph do
+    node :classify, &__MODULE__.classify/1, cache: [ttl: 60_000]
+    edge start(), :classify
+    edge :classify, finish()
   end
 
   def classify(%{subject: subject}) do
-    model = BeamWeaver.Models.init_chat_model!("fake:chat", responses: ["billing"])
-    {:ok, answer} = ChatModel.invoke(model, [Message.user("Classify this ticket: " <> subject)])
-    %{category: Message.text(answer)}
-  end
+    model = BeamWeaver.Models.init_chat_model!("openai:gpt-5.4-mini", max_tokens: 128, timeout: 60_000)
 
-  def reply(%{category: category}), do: %{reply: "Routed to the #{category} queue."}
+    with {:ok, reply} <-
+           ChatModel.invoke(model, "Classify as billing or shipping. Reply only with that word. Ticket: #{subject}") do
+      %{category: reply |> Message.text() |> String.trim() |> String.downcase()}
+    end
+  end
 end
 
 cache = BeamWeaver.Cache.ETS.new()
-input = %{subject: "Refund for order A-1001"}
-
-{:ok, _first} = MyApp.TicketTriage.invoke(input, cache: cache)
-{:ok, events} = MyApp.TicketTriage.stream_events(input, cache: cache, live: true)
-
-for %{event: %BeamWeaver.Stream.Events.Task{kind: :cache_hit, node: node}} <- events, do: node
-#=> ["classify"]
+input = %{subject: "I was charged twice for order A-1001."}
+{:ok, first} = MyApp.CachedClassifier.invoke(input, cache: cache)
+"billing" = first.category
+{:ok, stream} = MyApp.CachedClassifier.stream_events(input, cache: cache, live: true)
+events = Enum.to_list(stream)
+true = Enum.any?(events, &match?(%{event: %BeamWeaver.Stream.Events.Task{kind: :cache_hit, node: "classify"}}, &1))
+false = Enum.any?(events, &match?(%{event: %BeamWeaver.Stream.Events.Error{}}, &1))
 ```
 
-The first run called the model and saved what `classify` returned. The second
-run found that result, skipped the node, and reported a `:cache_hit` task event.
-The `reply` node has no `cache:`, so it ran both times. Only a node that
-returns is cached: one that fails or pauses runs again on the next call, and
-so does one whose `error_handler:` supplied the result.
+The first call uses the provider; the second reports an actual node cache hit.
+Only successful normal node results are cached. Failure, interruption and
+error-handler recovery do not become normal cached node results.
 
 ## Choose the cache key
 
-By default the key is the graph, the node and the whole state the node
-receives, so any change in the state is a different request. When the state
-also carries data that doesn't affect the answer, such as when a ticket
-arrived, key on what does:
+The default key includes graph, node and input state. A custom `key:` receives
+`{graph, node, state}`; `namespace:` separates versions of your policy or prompt.
+`ttl:` is milliseconds and a hit does not extend it. Metadata can accompany
+an entry.
+
+Include every dependency that affects the answer: tenant, source revision,
+model/prompt version and relevant configuration. If the node reads mutable
+external state absent from the key, a cache can return stale or cross-tenant
+data. Do not cache side-effecting actions as a substitute for idempotency.
+
+This key varies with the tenant and source revision, while ignoring an unrelated UI field:
 
 ```elixir
 alias BeamWeaver.Graph
 alias BeamWeaver.Graph.Compiled
+cache = BeamWeaver.Cache.ETS.new()
 
-classify = fn %{subject: subject} -> %{category: if(subject =~ ~r/refund/i, do: "billing", else: "general")} end
-by_subject = fn {_graph, _node, state} -> state.subject end
-
-triage =
+graph =
   Graph.new()
-  |> Graph.add_node(:classify, classify, cache: [key: by_subject, namespace: :classify_v1])
-  |> Graph.add_edge(Graph.start(), :classify)
-  |> Graph.add_edge(:classify, Graph.end_node())
-  |> Graph.compile!(cache: BeamWeaver.Cache.ETS.new())
+  |> Graph.add_node(:quote, fn %{tenant: tenant} -> %{quote: "Quote for #{tenant}"} end,
+    cache: [namespace: "quote-v1", key: fn {_graph, _node, state} -> {state.tenant, state.revision} end]
+  )
+  |> Graph.add_edge(Graph.start(), :quote)
+  |> Graph.add_edge(:quote, Graph.end_node())
+  |> Graph.compile!(cache: cache)
 
-{:ok, _first} = Compiled.invoke(triage, %{subject: "Refund for A-1001", received_at: 1})
-{:ok, events} = Compiled.stream_events(triage, %{subject: "Refund for A-1001", received_at: 2}, live: true)
-
-for %{event: %BeamWeaver.Stream.Events.Task{kind: :cache_hit, node: node}} <- events, do: node
-#=> ["classify"]
+{:ok, %{quote: "Quote for acme"}} = Compiled.invoke(graph, %{tenant: "acme", revision: 1, ui: "compact"})
+{:ok, events} = Compiled.stream_events(graph, %{tenant: "acme", revision: 1, ui: "wide"})
+true = Enum.any?(events, &match?(%{event: %BeamWeaver.Stream.Events.Task{kind: :cache_hit}}, &1))
 ```
-
-`cache:` on a node takes `true` for the defaults, a keyword list, or a
-`BeamWeaver.CachePolicy`:
-
-| Option | Meaning | Default |
-| --- | --- | --- |
-| `ttl:` | How long an entry lives, in milliseconds from when the node ran; a hit doesn't extend it | forever |
-| `key:` | A function of `{graph, node, state}`, or `{module, function, args}`, that returns the key | the whole tuple |
-| `namespace:` | Keeps entries apart; change it to drop old results, for example when the prompt changes | `:default` |
-| `metadata:` | A map stored with each entry | `%{}` |
-
-Cache only nodes whose result depends on their input alone. A node that reads
-the clock, a database or a random number would replay a stale answer.
 
 ## Where the cache lives
 
-The adapter comes with the call, as `cache:` on `invoke/2` or
-`stream_events/2`, or with `Graph.compile/2` for a compiled graph. A graph with
-cached nodes and no adapter refuses to run:
+Provide an explicit cache adapter per module invocation or when compiling a
+graph. Cached nodes without one fail with `:explicit_cache_required`.
+ETS belongs to its creating process; Ecto uses PostgreSQL and the cache
+migration in [Storage](storage.md). Call options can override declared adapters.
+
+## Cache model answers
+
+`Models.cached/3` reuses a full answer for the same model inputs/options:
 
 ```elixir
-MyApp.TicketTriage.invoke(input)
-#=> {:error, %BeamWeaver.Core.Error{type: :explicit_cache_required}}
+alias BeamWeaver.Core.{ChatModel, Message}
+model = BeamWeaver.Models.init_chat_model!("openai:gpt-5.4-mini", max_tokens: 128, timeout: 60_000)
+cached = BeamWeaver.Models.cached(model, BeamWeaver.Cache.ETS.new(), ttl: 60_000)
+{:ok, original} = ChatModel.invoke(cached, "Define a parcel briefly.")
+{:ok, replayed} = ChatModel.invoke(cached, "Define a parcel briefly.")
+true = byte_size(Message.text(original)) > 0
+true = Message.text(replayed) == Message.text(original)
+0 = replayed.usage_metadata.total_cost
 ```
 
-`BeamWeaver.Cache.ETS` keeps entries in memory on one node; create it once,
-like a checkpointer. `BeamWeaver.Cache.Ecto` keeps them in Postgres and is a
-plain struct, so a graph module can declare it:
-
-Before running the database examples on this page, set `DATABASE_URL` to
-an empty PostgreSQL database reserved for examples, then run this setup in
-the same IEx session. The verification command creates a disposable database.
-
-```elixir
-defmodule MyApp.Repo do
-  use Ecto.Repo, otp_app: :my_app, adapter: Ecto.Adapters.Postgres
-end
-
-{:ok, _repo} = MyApp.Repo.start_link(url: System.fetch_env!("DATABASE_URL"), pool_size: 2, log: false)
-
-defmodule MyApp.CreateAgentTables do
-  use Ecto.Migration
-
-  def up, do: BeamWeaver.Migrations.up(adapters: [:checkpoint, :memory, :cache])
-  def down, do: BeamWeaver.Migrations.down(adapters: [:cache, :memory, :checkpoint])
-end
-
-:ok = Ecto.Migrator.up(MyApp.Repo, 1, MyApp.CreateAgentTables, log: false)
-```
-
-```elixir
-defmodule MyApp.TicketTriage do
-  use BeamWeaver.Graph
-
-  alias BeamWeaver.Graph
-
-  cache BeamWeaver.Cache.Ecto.new(repo: MyApp.Repo)
-
-  def graph do
-    Graph.new()
-    |> Graph.add_node(:classify, &classify/1, cache: [ttl: :timer.hours(24)])
-    |> Graph.add_edge(Graph.start(), :classify)
-    |> Graph.add_edge(:classify, Graph.end_node())
-  end
-
-  def classify(_state), do: %{category: "billing"}
-end
-```
-
-A `cache:` passed with a call replaces the declared one, which is how tests use
-an ETS cache. Create the Postgres table with
-`BeamWeaver.Migrations.up(adapters: [:cache])`; see [Storage](storage.md).
+A cached response reports zero new cost; its retained token counts describe
+the stored answer, not fresh provider consumption. Cache replay streaming is
+not a second live provider stream. Use this wrapper only when reuse is correct
+for the request's freshness and ownership requirements.
 
 ## Expiry and size
 
-An entry with a `ttl:` is skipped once it expires and deleted when it is next
-read. `BeamWeaver.Cache.sweep_expired/2` deletes all expired entries at once;
-run it from a periodic job:
+Cache `ttl:` is in milliseconds. The bulk `Cache.set_many/3` convenience
+accepts `{value, ttl_seconds}` pairs and converts those seconds to milliseconds. Expired entries are missed and can be swept with
+`Cache.sweep_expired/2`. ETS `max_entries:` bounds growth; cleanup and pruning
+capabilities depend on the adapter. `lookup`, `put`, `delete` and `clear` also
+support direct application caching. Check hit/miss telemetry when diagnosing
+unexpected work or stale results.
+
+Exercise TTL and capacity operations directly:
 
 ```elixir
 orders = BeamWeaver.Cache.ETS.new()
@@ -168,109 +128,56 @@ BeamWeaver.Cache.sweep_expired(orders)
 #=> {:ok, 2}
 ```
 
-`BeamWeaver.Cache.ETS.new(max_entries: 10_000)` caps an ETS cache: each new
-entry over the limit drops the oldest one.
+## Prompt caching
 
-`BeamWeaver.Cache.lookup/4`, `put/5`, `delete/4` and `clear/3` are the same
-calls the graph makes, so your own code can cache with the same adapter. Every
-lookup emits a `[:beam_weaver, :cache, :hit]` or `[:beam_weaver, :cache, :miss]`
-telemetry event (see [Tracing](tracing.md#metrics-with-telemetry)).
+Provider caching reuses eligible prefixes while generating a new response.
+The `prompt_caching` declaration configures supported provider hints:
 
-## Cache model answers
+| Provider | Integration behavior |
+| --- | --- |
+| Anthropic | Cache-control marker on instructions |
+| OpenAI, Moonshot | Prompt cache key |
+| xAI | Prompt cache key/conversation header as supported by the endpoint |
+| Google, DeepSeek, Z.ai | Automatic prefix caching; no marker added by this middleware |
 
-`BeamWeaver.Models.cached/3` wraps a model so that the same messages and
-options get the stored answer. Options such as `ttl:` apply to every entry. A
-cached answer comes back with `total_cost` set to 0:
+Google also exposes explicit cached-content resources; its provider guide
+shows creation, use and deletion. Caching requirements and account behavior
+remain provider-specific. A declaration does not guarantee a hit.
+
+Keys include scope, model and prompt; `scope:` and `version:` customize
+invalidation. Keep stable content before changing per-request content. Avoid
+moving trusted instructions into untrusted user text merely to improve a hit rate.
+
+## Check prompt cache hits
+
+Read `usage_metadata.input_token_details.cache_read` from real replies.
+A zero/missing value is not a verified hit. Do not test caching by inventing
+usage metadata or by initializing a model without calling it.
+
+Hits can depend on prefix length, expiry and provider routing.
+
+Make two real calls with the same substantial prefix and report the provider’s measured cache reads. Zero means no hit was observed in that call:
 
 ```elixir
 alias BeamWeaver.Core.{ChatModel, Message}
 
 model =
-  BeamWeaver.Models.init_chat_model!("fake:chat",
-    responses: ["Refunds reach your card in 5 to 7 business days."],
-    usage_metadata: %{input_tokens: 42, output_tokens: 12, total_tokens: 54, total_cost: 0.0003}
+  BeamWeaver.Models.init_chat_model!("openai:gpt-5.4-mini",
+    max_tokens: 128,
+    timeout: 60_000,
+    prompt_cache_key: "beamweaver-refund-guide-v1"
   )
 
-cached_model = BeamWeaver.Models.cached(model, BeamWeaver.Cache.ETS.new(), ttl: :timer.hours(1))
-question = [Message.user("How long do refunds take?")]
+prefix =
+  "Answer briefly from the following policy.\n" <>
+    String.duplicate("Refunds take five business days. Do not promise same-day refunds.\n", 160)
 
-{:ok, first} = ChatModel.invoke(cached_model, question)
-{:ok, second} = ChatModel.invoke(cached_model, question)
-{first.usage_metadata.total_cost, second.usage_metadata.total_cost}
-#=> {0.0003, 0}
+usage =
+  for _ <- 1..2 do
+    {:ok, reply} = ChatModel.invoke(model, [Message.system(prefix), Message.user("How long do refunds take?")])
+    true = byte_size(Message.text(reply)) > 0
+    get_in(reply.usage_metadata, [:input_token_details, :cache_read]) || 0
+  end
+
+IO.inspect(usage, label: "Observed cached input tokens per call")
 ```
-
-A cached model works anywhere a model does, including as an agent's `model`.
-
-## Prompt caching
-
-Providers can reuse the start of a request they have seen recently, usually
-the system prompt and the tool definitions, and charge less for those tokens.
-`prompt_caching true` adds the `BeamWeaver.Agent.Middleware.PromptCaching`
-middleware, which sends what each provider needs:
-
-| Provider | What `prompt_caching` sends |
-| --- | --- |
-| Anthropic | A `cache_control` marker on the system prompt |
-| OpenAI, Moonshot | A `prompt_cache_key` that names the prompt |
-| xAI | A `prompt_cache_key` and the `x-grok-conv-id` header; on Chat Completions only the header |
-| Google, DeepSeek, Z.ai | Nothing: they cache repeated prefixes on their own |
-
-```elixir
-defmodule MyApp.CachedSupportAgent do
-  use BeamWeaver.Agent
-
-  model "anthropic:claude-haiku-4-5"
-  system_prompt "You are Acme's support agent. Follow the refund policy below. ..."
-  prompt_caching true
-end
-
-{:ok, result} = MyApp.CachedSupportAgent.invoke(%{messages: ["Reply with the word ready."]})
-true = is_binary(result.messages |> List.last() |> BeamWeaver.Core.Message.text())
-```
-
-The cache key comes from a scope (the agent's name by default), the model and
-the system prompt. `prompt_caching scope: "support", version: "v2"` sets them
-yourself; change `version:` to start fresh. A cache only helps while the start
-of the prompt stays the same, so keep per-user data such as names and dates
-out of the system prompt and put it in the messages. The provider pages cover
-each provider's options and limits; for example
-[Anthropic](providers/anthropic.md) and [OpenAI](providers/openai.md).
-
-## Check prompt cache hits
-
-Providers report cached input tokens in the answer's usage, and BeamWeaver
-puts them under `input_token_details.cache_read` whichever provider sent them.
-The fake model below is scripted to report what a provider would send:
-
-```elixir
-defmodule MyApp.SupportAgent do
-  use BeamWeaver.Agent
-
-  model "fake:chat",
-    responses: ["Order A-1001 shipped on Monday."],
-    usage_metadata: %{input_tokens: 2_140, output_tokens: 9, input_token_details: %{cache_read: 2_048}}
-
-  system_prompt "You are Acme's support agent."
-  prompt_caching true
-end
-
-{:ok, result} = MyApp.SupportAgent.invoke(%{messages: ["Where is order A-1001?"]})
-answer = List.last(result.messages)
-get_in(answer.usage_metadata, [:input_token_details, :cache_read])
-#=> 2048
-```
-
-A first call usually reports no `cache_read`, and later calls within the
-provider's cache lifetime report most of the prompt. Traces record the same
-usage for every model call (see [Tracing](tracing.md)).
-
-## Reference
-
-- [`BeamWeaver.Cache`](https://hexdocs.pm/beam_weaver/BeamWeaver.Cache.html): the cache contract and functions
-- [`BeamWeaver.CachePolicy`](https://hexdocs.pm/beam_weaver/BeamWeaver.CachePolicy.html): key, namespace and lifetime of node cache entries
-- [`BeamWeaver.Cache.ETS`](https://hexdocs.pm/beam_weaver/BeamWeaver.Cache.ETS.html): in-memory cache
-- [`BeamWeaver.Cache.Ecto`](https://hexdocs.pm/beam_weaver/BeamWeaver.Cache.Ecto.html): Postgres cache
-- [`BeamWeaver.Models`](https://hexdocs.pm/beam_weaver/BeamWeaver.Models.html): `cached/3`
-- [`BeamWeaver.Agent.Middleware.PromptCaching`](https://hexdocs.pm/beam_weaver/BeamWeaver.Agent.Middleware.PromptCaching.html): provider prompt caching for agents
-- [`BeamWeaver.PromptCache`](https://hexdocs.pm/beam_weaver/BeamWeaver.PromptCache.html): stable prompt cache keys

@@ -1,201 +1,133 @@
 # Moonshot (Kimi)
 
-BeamWeaver calls Moonshot's Kimi models through their OpenAI-compatible Chat
-Completions API with `BeamWeaver.Moonshot.ChatModel`. It supports reasoning,
-function tools (including Kimi K3's forced and dynamically loaded tools),
-structured output, prompt cache keys, token estimates, and image and video
-input; `BeamWeaver.Moonshot.Tools` builds Kimi-specific tool declarations.
+Moonshot's Kimi integration uses Chat Completions. Thinking controls, forced
+tool choice and structured output vary by model generation; choose the model
+and options together.
 
-## Setup
+## Setup and first request
 
 ```elixir
-# config/runtime.exs
 import Config
-
 config :beam_weaver, :moonshot, api_key: System.get_env("MOONSHOT_API_KEY") || System.fetch_env!("KIMI_API_KEY")
 ```
 
-Export `MOONSHOT_API_KEY`. To use another Moonshot host, set `base_url:` in
-the same group.
-
-## Models
-
-| Model | Kind | Input tokens | Output tokens | Tools | Structured output | Reasoning | Inputs |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| `moonshot:kimi-k2.6` | chat | 262,144 | — | yes | yes | yes | text, image, video |
-| `moonshot:kimi-k2.7-code` | chat | 262,144 | — | yes | yes | yes | text, image, video |
-| `moonshot:kimi-k2.7-code-highspeed` | chat | 262,144 | — | yes | yes | yes | text, image, video |
-| `moonshot:kimi-k3` | chat | 1,048,576 | 1,048,576 | yes | yes | yes | text, image, video |
-
-Kimi ids always need the `moonshot:` prefix. Discontinued Kimi ids are
-rejected with an error that names `kimi-k3` as the replacement.
-
-## Usage
-
-Name the model on the agent's `model` line, with any options after it:
+Place configuration in your application's runtime file, then run:
 
 ```elixir
-defmodule MyApp.SupportAgent do
-  use BeamWeaver.Agent
+alias BeamWeaver.Core.{ChatModel, Message}
 
-  model "moonshot:kimi-k3", timeout: 120_000
-  system_prompt "You are Acme's support agent. Answer in two sentences."
-end
+{:ok, model} =
+  BeamWeaver.Models.init_chat_model("moonshot:kimi-k2.6",
+    thinking: %{type: :disabled},
+    max_tokens: 512,
+    timeout: 120_000
+  )
 
-{:ok, result} = MyApp.SupportAgent.invoke(%{messages: ["Where is my order A-1001?"]})
+{:ok, reply} = ChatModel.invoke(model, "Explain parcel tracking in one sentence.")
+true = byte_size(Message.text(reply)) > 0
+true = reply.usage_metadata.total_tokens > 0
 ```
 
-Tools, middleware and memory work as in [Agents](../agents.md). To call the
-model without an agent, build it with `BeamWeaver.Models.init_chat_model/2`
-(see [Models](../models.md)):
+Use `moonshot:` explicitly. Long reasoning tasks need appropriate provider
+and whole-run timeouts. Preserve full returned messages for subsequent tool rounds.
 
-```elixir
-{:ok, model} = BeamWeaver.Models.init_chat_model("moonshot:kimi-k3")
-{:ok, reply} = BeamWeaver.Core.ChatModel.invoke(model, "Write a one-line apology for a late order.")
-BeamWeaver.Core.Message.text(reply)
-```
+## Model-specific behavior
 
-## Options
-
-| Option | What it does |
+| Family | Thinking and tools |
 | --- | --- |
-| `reasoning_effort` | Kimi K3 always reasons and accepts only `:max`. |
-| `thinking` | `%{type: :enabled}` or `%{type: :disabled}` on K2.6. K2.7 Code models always think; K3 rejects the option. |
-| `max_tokens` | Output cap, sent as `max_completion_tokens`. |
-| `prompt_cache_key` | A key that routes requests with the same prefix to the same cache. |
-| `base_url` | The API root, for a proxy or another host. Defaults to `https://api.moonshot.ai/v1`. |
+| K2.6 | Thinking can be enabled/disabled; forced/named tools require thinking off |
+| K2.7 Code | Thinking remains enabled; forced tool choice is unavailable |
+| K3 | Always reasons at max effort; supports required tool choice and dynamic tools |
 
-The options shared by every provider, such as `timeout`, are on
-[Providers](../providers.md#options-for-every-provider), except sampling:
-Kimi models use fixed sampling values, and BeamWeaver rejects any other
-`temperature` or `top_p` before the request.
-
-Moonshot takes no request metadata, so `metadata:` returns an
-`:unsupported_model_param` error before the request; trace data goes in
-`trace_metadata:` (see [Tracing](../tracing.md#name-and-tag-a-run)).
-
-## Reasoning
-
-Kimi K3 always reasons at full effort. On K2.6 you choose:
-
-```elixir
-defmodule MyApp.SupportAgent do
-  use BeamWeaver.Agent
-
-  model "moonshot:kimi-k2.6", thinking: %{type: :disabled}, timeout: 120_000
-  system_prompt "You are Acme's support agent."
-end
-
-{:ok, result} = MyApp.SupportAgent.invoke(%{messages: ["Reply with the word ready."]})
-true = byte_size(result.messages |> List.last() |> BeamWeaver.Core.Message.text()) > 0
-```
-
-The reasoning text arrives as `%{type: :reasoning}` blocks in the reply's
-`content`, which `BeamWeaver.Core.Message.text/1` skips. Agents send it back
-with tool results unchanged, as Kimi requires.
+Sampling values are fixed for these profiles; unsupported temperature/top-p
+values fail locally. `max_tokens:` maps to the native completion budget.
+`base_url:` chooses the native root/gateway. Request metadata is unsupported;
+use `trace_metadata:` for application tracing.
 
 ## Tools on K3
 
-Kimi K3 accepts `tool_choice: :required`, to force a tool call. K2.6
-takes `:required` or a named tool only with thinking disabled, and the K2.7
-Code models take neither. K3 can also load tools partway through a
-conversation:
-`BeamWeaver.Moonshot.Tools.dynamic_message/1` returns a system message that
-adds them at that point. Here it adds the `lookup_order` tool from the
-[tutorial](../tutorial.md):
+Dynamic tool messages add tools partway through a conversation. This example
+checks the returned call and executes it locally:
 
 ```elixir
-defmodule MyApp.Tools.LookupOrder do
-  use BeamWeaver.Tool
-  name "lookup_order"
-  description "Get the status of an order."
-  schema do
-    field :order_id, :string
-  end
-  @impl true
-  def invoke(_tool, %{"order_id" => id}, _opts), do: {:ok, "Order #{id} shipped on Monday."}
-end
+tool =
+  BeamWeaver.Core.Tool.from_function!(
+    name: "delivery_day",
+    description: "Read the delivery day for an order.",
+    input_schema: %{
+      "type" => "object",
+      "properties" => %{"order_id" => %{"type" => "string"}},
+      "required" => ["order_id"]
+    },
+    handler: fn %{"order_id" => "A-1001"}, _ -> {:ok, "Thursday"} end
+  )
 
-alias BeamWeaver.Core.Message
-
-messages = [
-  Message.user("Where is my order A-1001?"),
-  BeamWeaver.Moonshot.Tools.dynamic_message([MyApp.Tools.LookupOrder])
-]
-
-{:ok, model} = BeamWeaver.Models.init_chat_model("moonshot:kimi-k3")
-{:ok, reply} = BeamWeaver.Core.ChatModel.invoke(model, messages)
-reply.tool_calls
+{:ok, k3} = BeamWeaver.Models.init_chat_model("moonshot:kimi-k3", max_tokens: 4_096, timeout: 120_000)
+messages = [Message.user("Call delivery_day for A-1001."), BeamWeaver.Moonshot.Tools.dynamic_message([tool])]
+{:ok, requested} = ChatModel.invoke(k3, messages)
+[call] = requested.tool_calls
+"delivery_day" = call.name
+%{"order_id" => "A-1001"} = call.args
+{:ok, result} = BeamWeaver.Core.Tool.invoke(tool, call)
+"Thursday" = Message.text(result)
 ```
 
-Other Kimi models reject dynamic tool messages before the request.
+Other Kimi models reject this dynamic declaration mechanism. Use ordinary
+agent tools for a static tool set. The native `$web_search` helper has a
+restricted K2.6 nonthinking contract and is not an agent-managed search tool;
+do not assume adding it gives an agent a working web-search executor.
 
 ## Structured output and caching
 
-An agent's `response_schema` works on every Kimi model (see
-[Structured Output](../structured_output.md)). K3 and the K2.7 Code models get
-the schema as a JSON Schema response format. K2.6 ignores that format,
-so BeamWeaver sends it JSON mode with the schema in a system message, and
-checks the reply against the schema. With the tool strategy, BeamWeaver forces
-the schema tool only where Kimi allows a forced tool choice; elsewhere the
-request offers just that tool.
+K3 and K2.7 Code use JSON Schema response formats. K2.6 uses JSON-object mode
+with schema instructions and local checks. The schema-tool strategy can force
+a call only where the model permits it. See
+[Structured Output](../structured_output.md) for the validation boundary.
 
-Kimi caches repeated prompt prefixes. In an agent, `prompt_caching true` sets
-a `prompt_cache_key` derived from the agent's name, the model and the system
-prompt; on a direct call, pass `prompt_cache_key:` yourself. Cached tokens are
-reported in `usage_metadata.input_token_details.cache_read`. See
-[Caching](../caching.md).
+`prompt_caching` supplies a prompt cache key. Hits are observed through
+`usage_metadata.input_token_details.cache_read`, not guaranteed by configuration.
 
 ## Images and video
 
-Kimi models read images and video. Pass a `data:` URL, or an `ms://`
-reference to a file uploaded to Moonshot; other URLs are rejected before the
-request:
+Use inline data URLs or `ms://` references from actual Moonshot uploads.
+Arbitrary remote media URLs are not accepted by this integration. From a
+checkout with the bundled fixtures:
 
 ```elixir
-alias BeamWeaver.Core.{ContentBlock, Message}
+alias BeamWeaver.Core.ContentBlock
 
 question =
   Message.user([
-    ContentBlock.text("What colour is shown in this video? Answer in one word."),
+    ContentBlock.text("What single colour fills this video?"),
     ContentBlock.video(url: "data:video/mp4;base64," <> Base.encode64(File.read!("examples/fixtures/red-square.mp4")))
   ])
 
-{:ok, model} = BeamWeaver.Models.init_chat_model("moonshot:kimi-k3")
-{:ok, reply} = BeamWeaver.Core.ChatModel.invoke(model, [question])
-true = String.contains?(String.downcase(Message.text(reply)), "red")
+{:ok, reply} = ChatModel.invoke(k3, [question])
+true = reply |> Message.text() |> String.downcase() |> String.contains?("red")
 ```
 
-An image a tool returns, such as one from `read_file`, goes in a user
-message right after the tool results, with the tool's text left in the tool
-message. Kimi takes no files such as PDFs, in a tool result or anywhere else:
-they return an `:unsupported_feature` error before the request.
+Images returned by tools are carried in a following user message alongside
+the textual tool result. PDF/file inputs are not supported. Token estimates
+use `Moonshot.ChatModel.count_tokens/3`. Files, Batch and Balance management
+require Moonshot's API outside this wrapper.
 
-`BeamWeaver.Moonshot.ChatModel.count_tokens/3` estimates a request's input
-tokens with Moonshot's estimate endpoint.
+## Models
 
-## Limitations
+Limits are local profile data. A dash means not applicable or not recorded,
+not an unlimited allowance.
 
-- Sampling values are fixed by Kimi and can't be changed.
-- Kimi's `$web_search` built-in (`BeamWeaver.Moonshot.Tools.web_search/1`)
-  works only on K2.6 with thinking disabled, and agents can't run it.
-  Kimi lists it as being updated.
-- Moonshot's Files, Batch and Balance APIs have no BeamWeaver wrapper; upload
-  files with Moonshot's own API, then refer to them with `ms://` URLs.
+| Model | Input / output tokens | Operations and capabilities |
+| --- | --- | --- |
+| `moonshot:kimi-k2.6` | 262,144 / — | chat; text, image, video; tools; structured output; reasoning |
+| `moonshot:kimi-k2.7-code` | 262,144 / — | chat; text, image, video; tools; structured output; reasoning |
+| `moonshot:kimi-k2.7-code-highspeed` | 262,144 / — | chat; text, image, video; tools; structured output; reasoning |
+| `moonshot:kimi-k3` | 1,048,576 / 1,048,576 | chat; text, image, video; tools; structured output; reasoning |
 
-## Testing
 
-In tests, use `"fake:chat"` instead of a Kimi model; it needs no key (see
-[Testing](../testing.md)). To check the exact requests your code sends,
-answer them from a cassette with `transport: BeamWeaver.Transport.Replay`
-and `transport_opts: [cassette_path: "test/cassettes/moonshot.yml"]`;
-[Replay provider responses](../testing.md#replay-provider-responses) shows
-how to write one.
+Profiles describe local compatibility. Pin the model you have validated and
+review replacement guidance for discontinued identifiers; changing a model
+is an application decision, not a silent compatibility fallback.
 
-## Reference
+## Further reading
 
-- [Kimi tool calls](https://platform.kimi.ai/docs/guide/use-kimi-api-to-complete-tool-calls): provider API contract
-
-- [`BeamWeaver.Moonshot`](https://hexdocs.pm/beam_weaver/BeamWeaver.Moonshot.html): constructors
-- [`BeamWeaver.Moonshot.ChatModel`](https://hexdocs.pm/beam_weaver/BeamWeaver.Moonshot.ChatModel.html): the Kimi chat model and token estimates
-- [`BeamWeaver.Moonshot.Tools`](https://hexdocs.pm/beam_weaver/BeamWeaver.Moonshot.Tools.html): web search and dynamic tool declarations
+The official [Kimi tool-call guide](https://platform.kimi.ai/docs/guide/use-kimi-api-to-complete-tool-calls) describes native tool rounds. [Testing](../testing.md) covers deterministic application tests.

@@ -1,5 +1,13 @@
 defmodule BeamWeaver.TypeSafe.Client do
-  @moduledoc "TypeSafe System One HTTP client using BeamWeaver's shared transport."
+  @moduledoc ~S"""
+  HTTP connection and account model discovery for TypeSafe Jev decisions.
+
+  Use BeamWeaver.TypeSafe.DecisionModel for typed evaluation and decoding.
+  list_models/2 queries account availability without changing local profiles.
+  Configure credentials for the intended base URL and keep raw headers out of
+  logs. A model-list response is not evidence of successful decision inference.
+  See [TypeSafe](providers/typesafe.md).
+  """
 
   use BeamWeaver.Provider.RedactedInspect
 
@@ -12,6 +20,9 @@ defmodule BeamWeaver.TypeSafe.Client do
   defstruct [:http, base_url: "https://api.typesafe.ai"]
   @type t :: %__MODULE__{}
 
+  @doc """
+  Builds client connection settings from explicit options and provider application configuration; makes no request.
+  """
   def new(opts \\ []) do
     opts = if is_map(opts), do: Map.to_list(opts), else: opts
     base_url = Config.option(opts, :base_url, [:typesafe, :base_url], "https://api.typesafe.ai")

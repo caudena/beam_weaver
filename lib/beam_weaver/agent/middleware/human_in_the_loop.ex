@@ -17,7 +17,7 @@ defmodule BeamWeaver.Agent.Middleware.HumanInTheLoop do
   `:invalid_human_decision`, and the call waits for another answer. The run
   pauses on the first interrupt, and its `interrupts` lists them all.
 
-  An edit leaves the model's call in its message and runs the reviewer's call
+  In batched mode, an edit leaves the model's call in its message and runs the reviewer's call
   in its place, which may name another tool. The result starts with
   `:edit_notice`, which tells the model a reviewer replaced the call and what
   ran instead. A rejection answers the call with a tool message that says the

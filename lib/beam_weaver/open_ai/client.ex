@@ -1,6 +1,16 @@
 defmodule BeamWeaver.OpenAI.Client do
-  @moduledoc """
-  Small OpenAI Responses API client built on `BeamWeaver.Transport`.
+  @moduledoc ~S"""
+  Native OpenAI HTTP client using `BeamWeaver.Transport`.
+
+  Use this layer when your application owns provider request/response shapes.
+  It accepts native bodies and returns decoded provider data or tagged errors;
+  the model facade supplies portable message normalization and compatibility
+  checks. Transport/replay overrides do not establish live provider access.
+
+  Configure this client's credentials for its actual endpoint. Keep raw request
+  headers/bodies out of logs. Stream consumers own consumption and cancellation;
+  collected-response helpers wait for completion. The [OpenAI guide](providers/openai.md)
+  identifies the implemented endpoints and external-resource lifetimes.
   """
 
   use BeamWeaver.Provider.RedactedInspect
@@ -159,11 +169,56 @@ defmodule BeamWeaver.OpenAI.Client do
     do: get(client, "responses/#{response_id}/input_items", opts)
 
   @doc """
-  Compacts a Responses API response when the provider supports it.
+  Compacts a full supplied conversation through `POST /responses/compact`.
+
+  The native body includes `model` and `input`, with optional instructions.
+  Preserve the complete returned `output` as the next conversation window;
+  it can contain retained messages as well as encrypted compaction items.
+  This operation does not accept a response ID in its endpoint path.
+  """
+  def compact(%__MODULE__{} = client, body, opts \\ []) when is_map(body),
+    do: client |> http(endpoint(client, "responses/compact"), opts) |> post(body, opts)
+
+  @doc """
+  Compacts the full input and output of a stored response.
+
+  Retrieves the stored response and all input-item pages in chronological
+  order, then calls `compact/3`. `body` supplies native compact options and
+  can override the inferred model or input. Retrieval requires a response
+  still accessible to this account; no provider-side state is assumed for
+  responses created with `store: false`.
   """
   def compact_response(%__MODULE__{} = client, response_id, body \\ %{}, opts \\ [])
-      when is_binary(response_id) and is_map(body),
-      do: client |> http(endpoint(client, "responses/#{response_id}/compact"), opts) |> post(body, opts)
+      when is_binary(response_id) and is_map(body) do
+    with {:ok, response} <- retrieve_response(client, response_id, opts),
+         {:ok, input} <- compact_input(client, response_id, nil, [], MapSet.new(), opts) do
+      defaults = %{"model" => response["model"], "input" => input ++ (response["output"] || [])}
+      compact(client, Map.merge(defaults, body), opts)
+    end
+  end
+
+  defp compact_input(client, response_id, cursor, pages, seen, opts) do
+    params = [{"order", "asc"}, {"limit", "100"}]
+    params = if cursor, do: params ++ [{"after", cursor}], else: params
+    path = "responses/#{response_id}/input_items?" <> URI.encode_query(params)
+
+    with {:ok, %{"data" => items} = page} when is_list(items) <- get(client, path, opts) do
+      if page["has_more"] == true do
+        next = page["last_id"]
+
+        if is_binary(next) and next != "" and not MapSet.member?(seen, next) do
+          compact_input(client, response_id, next, [items | pages], MapSet.put(seen, next), opts)
+        else
+          {:error, Error.new(:invalid_provider_response, "response input pagination did not advance")}
+        end
+      else
+        {:ok, [items | pages] |> Enum.reverse() |> List.flatten()}
+      end
+    else
+      {:error, _} = error -> error
+      _ -> {:error, Error.new(:invalid_provider_response, "response input items must contain a data list")}
+    end
+  end
 
   @doc """
   Returns the OpenAI API URL for `path` under a client's (or a raw) base URL.

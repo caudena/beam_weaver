@@ -1,6 +1,16 @@
 defmodule BeamWeaver.Google.Client do
-  @moduledoc """
-  Google Gemini Developer API client built on `BeamWeaver.Transport`.
+  @moduledoc ~S"""
+  Native Google HTTP client using `BeamWeaver.Transport`.
+
+  Use this layer when your application owns provider request/response shapes.
+  It accepts native bodies and returns decoded provider data or tagged errors;
+  the model facade supplies portable message normalization and compatibility
+  checks. Transport/replay overrides do not establish live provider access.
+
+  Configure this client's credentials for its actual endpoint. Keep raw request
+  headers/bodies out of logs. Stream consumers own consumption and cancellation;
+  collected-response helpers wait for completion. The [Google guide](providers/google.md)
+  identifies the implemented endpoints and external-resource lifetimes.
   """
 
   use BeamWeaver.Provider.RedactedInspect
@@ -28,6 +38,9 @@ defmodule BeamWeaver.Google.Client do
 
   @type t :: %__MODULE__{}
 
+  @doc """
+  Builds client connection settings from explicit options and provider application configuration; makes no request.
+  """
   @spec new(keyword()) :: t()
   def new(opts \\ []) do
     %__MODULE__{
@@ -42,6 +55,9 @@ defmodule BeamWeaver.Google.Client do
     }
   end
 
+  @doc """
+  Sends a native JSON request and returns the decoded provider payload or a tagged HTTP/transport error.
+  """
   @spec generate_content(t(), String.t(), map(), keyword()) :: {:ok, map()} | {:error, Error.t()}
   def generate_content(%__MODULE__{} = client, model, body, opts \\ []) do
     client
@@ -50,6 +66,9 @@ defmodule BeamWeaver.Google.Client do
     |> decode_result(opts)
   end
 
+  @doc """
+  Calls the provider counting/estimation endpoint with a native body; returns decoded provider data or an error.
+  """
   @spec count_tokens(t(), String.t(), map(), keyword()) :: {:ok, map()} | {:error, Error.t()}
   def count_tokens(%__MODULE__{} = client, model, body, opts \\ []) do
     client
@@ -58,6 +77,9 @@ defmodule BeamWeaver.Google.Client do
     |> ResponseDecoder.json(decoder_opts(opts))
   end
 
+  @doc """
+  Sends a streaming request and returns text deltas. Consume the returned enumerable to execute streaming work.
+  """
   @spec stream_text(t(), String.t(), map(), keyword()) :: {:ok, Enumerable.t()} | {:error, Error.t()}
   def stream_text(%__MODULE__{} = client, model, body, opts \\ []) do
     client
@@ -65,6 +87,9 @@ defmodule BeamWeaver.Google.Client do
     |> HTTPClient.stream_sse(body, opts, &Streaming.text_deltas/1, &decode_result(&1, opts))
   end
 
+  @doc """
+  Collects the streaming provider response into its final decoded native payload, or returns an error.
+  """
   @spec stream_response(t(), String.t(), map(), keyword()) :: {:ok, map()} | {:error, Error.t()}
   def stream_response(%__MODULE__{} = client, model, body, opts \\ []) do
     client
@@ -72,6 +97,9 @@ defmodule BeamWeaver.Google.Client do
     |> HTTPClient.collect_sse(body, opts, &decode_sse_result(&1, opts))
   end
 
+  @doc """
+  Sends a streaming request and returns typed event envelopes. Consume once and handle terminal errors.
+  """
   @spec stream_events(t(), String.t(), map() | binary(), keyword()) ::
           {:ok, Enumerable.t()} | {:error, Error.t()}
   def stream_events(%__MODULE__{} = client, model, body, opts \\ []) do
@@ -89,10 +117,16 @@ defmodule BeamWeaver.Google.Client do
     )
   end
 
+  @doc """
+  Builds the normalized transport request for inspection or explicit dispatch; does not send it.
+  """
   @spec request(t(), String.t(), atom(), map() | binary(), keyword()) :: Request.t()
   def request(%__MODULE__{} = client, model, action, body, opts \\ []),
     do: client |> http(model, action, opts) |> HTTPClient.request(body, opts)
 
+  @doc """
+  Builds the native URL for the selected model/action without sending a request.
+  """
   def endpoint(%__MODULE__{base_url: base_url}, model, action) do
     base = String.trim_trailing(base_url, "/")
     encoded_model = URI.encode(model, &URI.char_unreserved?/1)

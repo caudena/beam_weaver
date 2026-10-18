@@ -1,6 +1,16 @@
 defmodule BeamWeaver.Anthropic do
-  @moduledoc """
-  Anthropic provider namespace.
+  @moduledoc ~S"""
+  Claude Messages, supported native tools, compaction and provider token counting.
+
+  Constructors return configured values; invocation makes the provider request.
+  Load credentials into `config :beam_weaver, :anthropic` in your application's
+  runtime configuration. Explicit connection options override configured defaults.
+  See the [Anthropic guide](providers/anthropic.md) for an executed request, endpoint
+  choices, supported options and account/resource requirements.
+
+  Native tool helpers construct declarations. Hosted tools execute at the provider;
+  client actions require an application executor. Keep full returned messages
+  for continuation and inspect outcomes rather than HTTP success alone.
   """
 
   alias BeamWeaver.Anthropic.ChatModel

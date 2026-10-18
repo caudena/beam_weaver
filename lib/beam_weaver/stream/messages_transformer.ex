@@ -1,10 +1,11 @@
 defmodule BeamWeaver.Stream.MessageStream do
-  @moduledoc """
-  Projection of one streamed assistant message.
+  @moduledoc ~S"""
+  Immutable projection of one assistant message's stream events and text.
 
-  An immutable struct with the message's protocol events, its text deltas (see
-  `text/1`) and, once done, the final message (see `output/1`). It can be
-  reduced, inspected, and passed through normal Elixir streams.
+  The value contains observed deltas, protocol events and any final message or
+  error. output/1 can synthesize a message from collected text when no final
+  provider message exists, so its success is not proof the provider completed.
+  Inspect lifecycle/error evidence before displaying a final answer.
   """
 
   alias BeamWeaver.Core.Message
@@ -39,12 +40,18 @@ defmodule BeamWeaver.Stream.MessageStream do
           metadata: map()
         }
 
+  @doc """
+  Returns collected text deltas in emission order.
+  """
   @spec text(t()) :: String.t()
   def text(%__MODULE__{text_deltas: deltas, text_deltas_reversed?: true}),
     do: deltas |> Enum.reverse() |> Enum.join("")
 
   def text(%__MODULE__{text_deltas: deltas}), do: Enum.join(deltas, "")
 
+  @doc """
+  Returns the final message or synthesizes one from collected text; returns an error when the projection failed.
+  """
   @spec output(t()) :: {:ok, Message.t()} | {:error, term()} | nil
   def output(%__MODULE__{error: error}) when not is_nil(error), do: {:error, error}
   def output(%__MODULE__{output: %Message{} = message}), do: {:ok, message}
@@ -52,6 +59,9 @@ defmodule BeamWeaver.Stream.MessageStream do
   def output(%__MODULE__{} = stream),
     do: {:ok, Message.assistant(text(stream), id: stream.message_id)}
 
+  @doc """
+  Returns the projected message, raising when output/1 reports an error.
+  """
   @spec output!(t()) :: Message.t()
   def output!(%__MODULE__{} = stream) do
     case output(stream) do

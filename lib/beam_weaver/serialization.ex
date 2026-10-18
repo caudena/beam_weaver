@@ -190,17 +190,29 @@ defmodule BeamWeaver.Serialization.JSON do
 end
 
 defmodule BeamWeaver.Serialization do
-  @moduledoc """
-  Safe public serialization facade.
+  @moduledoc ~S"""
+  Encode durable application values through an explicit allowlisted codec.
+
+  `dump/2` and `load/2` operate on encoded binaries. `dump_value/2` and
+  `load_value/2` operate on the JSON-compatible tagged representation. Return
+  values distinguish unsupported input from decoding failure; do not persist a
+  success marker when serialization failed.
+
+  The default JSON codec retains supported Elixir types without arbitrary term
+  loading or new atom creation. Application structs require stable registry
+  tags. Pass the same codec/registry/key configuration when writing and reading.
+  [Storage](storage.md#serialization) explains migration and encryption lifetimes.
   """
 
   alias BeamWeaver.Serialization.Config
 
+  @doc "Serializes a supported value to {:ok, binary}, or returns a typed codec error."
   def dump(value, opts \\ []) do
     config = config(opts)
     config.codec.dump(value, Config.codec_opts(config))
   end
 
+  @doc "Decodes a binary using the configured allowlisted codec; returns {:ok, value} or an error."
   def load(binary, opts \\ []) do
     config = config(opts)
     config.codec.load(binary, Config.codec_opts(config))

@@ -1080,6 +1080,7 @@ defmodule BeamWeaver.Google.ChatModelTest do
             path: "/models/gemini-3.5-flash:countTokens",
             json: %{
               "generateContentRequest" => %{
+                "model" => "models/gemini-3.5-flash",
                 "contents" => [%{"role" => "user", "parts" => [%{"text" => "count me"}]}],
                 "systemInstruction" => %{"parts" => [%{"text" => "be terse"}]}
               }
@@ -1091,6 +1092,31 @@ defmodule BeamWeaver.Google.ChatModelTest do
 
     messages = [BeamWeaver.Core.Message.system("be terse"), BeamWeaver.Core.Message.user("count me")]
     assert {:ok, 7} = ChatModel.count_tokens(model, messages)
+  end
+
+  test "token counting includes the model when generation options require a wrapped request" do
+    model =
+      ChatModel.new(
+        model: "gemini-3.5-flash",
+        api_key: "google-secret",
+        max_output_tokens: 128,
+        transport: BeamWeaver.TestSupport.Conformance.Fakes.Transport,
+        transport_opts: [
+          expect: %{
+            path: "/models/gemini-3.5-flash:countTokens",
+            json: %{
+              "generateContentRequest" => %{
+                "model" => "models/gemini-3.5-flash",
+                "contents" => [%{"role" => "user", "parts" => [%{"text" => "count me"}]}],
+                "generationConfig" => %{"maxOutputTokens" => 128}
+              }
+            }
+          },
+          body: %{"totalTokens" => 4}
+        ]
+      )
+
+    assert {:ok, 4} = ChatModel.count_tokens(model, "count me")
   end
 
   defp with_config(group, values, fun) do

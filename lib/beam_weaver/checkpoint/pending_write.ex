@@ -5,7 +5,7 @@ defmodule BeamWeaver.Checkpoint.PendingWrite do
   Checkpoint adapters expose pending writes as plain `{task_id, channel, value}`
   tuples through `:pending_writes` (see `tuple/1`). This struct also carries the
   metadata the graph execution runtime needs for deterministic replay,
-  namespaces, and future channel-specific reconstruction.
+  namespaces, and channel-specific reconstruction.
   """
 
   defstruct [

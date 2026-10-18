@@ -1,7 +1,8 @@
 defmodule BeamWeaver.Models.FakeChatModel do
   @moduledoc ~S"""
-  A scripted chat model for tests, examples and documentation. It needs no API
-  key and always answers the same way.
+  A scripted chat model for deterministic application tests. It needs no API
+  key; responses are selected from the supplied conversation state. It does
+  not establish live provider availability or model quality.
 
   Script a conversation with `responses:`, one entry per model turn:
 

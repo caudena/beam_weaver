@@ -1,6 +1,16 @@
 defmodule BeamWeaver.ZAI.Client do
-  @moduledoc """
-  Z.ai OpenAI-compatible API client built on `BeamWeaver.Transport`.
+  @moduledoc ~S"""
+  Native ZAI HTTP client using `BeamWeaver.Transport`.
+
+  Use this layer when your application owns provider request/response shapes.
+  It accepts native bodies and returns decoded provider data or tagged errors;
+  the model facade supplies portable message normalization and compatibility
+  checks. Transport/replay overrides do not establish live provider access.
+
+  Configure this client's credentials for its actual endpoint. Keep raw request
+  headers/bodies out of logs. Stream consumers own consumption and cancellation;
+  collected-response helpers wait for completion. The [ZAI guide](providers/zai.md)
+  identifies the implemented endpoints and external-resource lifetimes.
   """
 
   use BeamWeaver.Provider.RedactedInspect
@@ -30,6 +40,9 @@ defmodule BeamWeaver.ZAI.Client do
 
   @type t :: %__MODULE__{}
 
+  @doc """
+  Builds client connection settings from explicit options and provider application configuration; makes no request.
+  """
   @spec new(keyword()) :: t()
   def new(opts \\ []) do
     base_url = Compat.configured_url(opts, :base_url, [:zai, :base_url], @default_base_url)
@@ -47,10 +60,16 @@ defmodule BeamWeaver.ZAI.Client do
     }
   end
 
+  @doc """
+  Sends a native JSON request and returns the decoded provider payload or a tagged HTTP/transport error.
+  """
   @spec chat_completions(t(), map(), keyword()) :: {:ok, map()} | {:error, Error.t()}
   def chat_completions(%__MODULE__{} = client, body, opts \\ []) when is_map(body),
     do: client |> http(client.chat_completions_endpoint, opts) |> OpenAIClient.post(body, opts, decoder())
 
+  @doc """
+  Sends a streaming request and returns text deltas. Consume the returned enumerable to execute streaming work.
+  """
   @spec chat_completions_stream(t(), map(), keyword()) :: {:ok, Enumerable.t()} | {:error, Error.t()}
   def chat_completions_stream(%__MODULE__{} = client, body, opts \\ []) when is_map(body) do
     client
@@ -58,6 +77,9 @@ defmodule BeamWeaver.ZAI.Client do
     |> OpenAIClient.stream_text(body, opts, decoder(), &OpenAICompatibleStreaming.text_deltas/1)
   end
 
+  @doc """
+  Collects the streaming provider response into its final decoded native payload, or returns an error.
+  """
   @spec chat_completions_stream_response(t(), map(), keyword()) ::
           {:ok, BeamWeaver.Core.Message.t()} | {:error, Error.t()}
   def chat_completions_stream_response(%__MODULE__{} = client, body, opts \\ []) when is_map(body) do
@@ -66,6 +88,9 @@ defmodule BeamWeaver.ZAI.Client do
     |> OpenAIClient.collect_chat_message(body, opts, decoder())
   end
 
+  @doc """
+  Sends a streaming request and returns typed event envelopes. Consume once and handle terminal errors.
+  """
   @spec chat_completions_stream_typed_events(t(), map(), keyword()) ::
           {:ok, Enumerable.t()} | {:error, Error.t()}
   def chat_completions_stream_typed_events(%__MODULE__{} = client, body, opts \\ []) when is_map(body) do
@@ -74,6 +99,9 @@ defmodule BeamWeaver.ZAI.Client do
     |> OpenAIClient.stream_chat_message(body, opts, decoder())
   end
 
+  @doc """
+  Builds the normalized transport request for inspection or explicit dispatch; does not send it.
+  """
   @spec request(t(), map(), keyword()) :: Request.t()
   def request(%__MODULE__{} = client, body, opts \\ []) when is_map(body),
     do: client |> http(client.endpoint, opts) |> HTTPClient.request(body, opts)

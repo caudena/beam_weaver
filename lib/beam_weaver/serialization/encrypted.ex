@@ -4,7 +4,7 @@ defmodule BeamWeaver.Serialization.Encrypted do
 
   This codec keeps the default safe JSON wire format as the plaintext payload
   and encrypts it only when callers opt in with an explicit 32-byte key. It is a
-  checkpoint/store adapter concern, not a global serialization side effect.
+  checkpoint/cache adapter concern, not a global serialization side effect.
 
   Select it in a serialization config, with the key as `:encryption_key` (raw)
   or `:encryption_key_base64`:

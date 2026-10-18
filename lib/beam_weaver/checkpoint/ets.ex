@@ -1,10 +1,14 @@
 defmodule BeamWeaver.Checkpoint.ETS do
-  @moduledoc """
-  ETS implementation of `BeamWeaver.Checkpoint.Saver`.
+  @moduledoc ~S"""
+  Process-owned in-memory checkpoint saver.
 
-  This adapter is intended for tests, local workflows, and lightweight
-  supervised deployments. It uses the same saver contract as the Ecto/Postgres
-  adapter, so graph and agent code never branch on storage backend.
+  Create it once and reuse it for every call on the intended threads. ETS tables
+  disappear when their owner exits; this adapter does not survive a restart.
+  A long-lived supervised owner can share the saver on one node. Do not allocate
+  it in a per-invocation agent/graph declaration.
+
+  The saver contract matches the database adapter. Use `BeamWeaver.Checkpoint`
+  for history operations and [Storage](storage.md) for durable alternatives.
   """
 
   @behaviour BeamWeaver.Checkpoint.Saver

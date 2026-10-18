@@ -1,6 +1,17 @@
 defmodule BeamWeaver.Sandbox.Interpreter.Session do
-  @moduledoc """
-  Supervised process wrapper for explicit interpreter adapters.
+  @moduledoc ~S"""
+  Own an explicitly configured interpreter adapter in a GenServer session.
+
+  start_link is suitable for supervision; start creates an unlinked process.
+  The caller supplies the adapter and owns eventual close/cleanup. Evaluation
+  has a millisecond timeout (default 30,000); snapshots are bounded to
+  max_snapshot_bytes (default 1,000,000).
+
+  Timeouts and raised adapter failures retain prior state. An adapter can
+  explicitly return updated state with an error, in which case that state is
+  retained. Snapshot restoration requires the same adapter identity. The OTP
+  session provides lifecycle control, not operating-system isolation.
+  See [Sandboxes](sandboxes.md#interpreters).
   """
 
   use GenServer
@@ -20,31 +31,49 @@ defmodule BeamWeaver.Sandbox.Interpreter.Session do
 
   @type t :: pid()
 
+  @doc """
+  Starts a linked session with the required adapter and its options.
+  """
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
     GenServer.start_link(__MODULE__, opts)
   end
 
+  @doc """
+  Starts an unlinked session; the application must close or supervise its lifetime.
+  """
   @spec start(keyword()) :: GenServer.on_start()
   def start(opts) do
     GenServer.start(__MODULE__, opts)
   end
 
+  @doc """
+  Evaluates code under the adapter contract and returns a result or typed error.
+  """
   @spec eval(t(), String.t(), keyword()) :: {:ok, term()} | {:error, Error.t()}
   def eval(pid, code, opts \\ []) when is_pid(pid) and is_binary(code) do
     GenServer.call(pid, {:eval, code, opts}, call_timeout(pid, opts))
   end
 
+  @doc """
+  Returns a bounded tagged snapshot when the adapter supports snapshots.
+  """
   @spec snapshot(t(), keyword()) :: {:ok, Snapshot.t()} | {:error, Error.t()}
   def snapshot(pid, opts \\ []) when is_pid(pid) do
     GenServer.call(pid, {:snapshot, opts}, call_timeout(pid, opts))
   end
 
+  @doc """
+  Restores a compatible snapshot; rejects a different adapter or unsupported restore operation.
+  """
   @spec restore(t(), Snapshot.t(), keyword()) :: :ok | {:error, Error.t()}
   def restore(pid, %Snapshot{} = snapshot, opts \\ []) when is_pid(pid) do
     GenServer.call(pid, {:restore, snapshot, opts}, call_timeout(pid, opts))
   end
 
+  @doc """
+  Closes the adapter/session; an already-exited session is treated as closed.
+  """
   @spec close(t(), keyword()) :: :ok
   def close(pid, opts \\ []) when is_pid(pid) do
     GenServer.call(pid, {:close, opts}, call_timeout(pid, opts))

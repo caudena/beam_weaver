@@ -1,6 +1,14 @@
 defmodule BeamWeaver.Graph.Runtime do
-  @moduledoc """
-  Runtime context passed to graph nodes.
+  @moduledoc ~S"""
+  Per-node execution context, supplied as the second argument to two-arity nodes.
+
+  Carries trusted caller context, run configuration, store/checkpointer handles,
+  execution metadata and a stream writer. Read attempt/step identity from
+  `execution`; do not persist process handles as ordinary checkpoint state.
+
+  Message/UI helpers emit events and return data that a node can also place in
+  its state update. Emission alone does not persist that data. See
+  [Streaming](streaming.md) and [State](graph_state.md).
   """
 
   alias BeamWeaver.Graph.ExecutionInfo

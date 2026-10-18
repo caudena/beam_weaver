@@ -97,7 +97,7 @@ defmodule BeamWeaver.OpenAI.ToolCalling do
   end
 
   @doc """
-  Builds a custom tool declaration.
+  Builds a custom client-tool declaration; no action executor is supplied.
   """
   @spec custom(String.t(), keyword()) :: map()
   def custom(name, opts \\ []) when is_binary(name) do
@@ -115,7 +115,7 @@ defmodule BeamWeaver.OpenAI.ToolCalling do
   end
 
   @doc """
-  Builds an OpenAI apply_patch built-in tool declaration.
+  Builds an apply_patch client-tool declaration. The application must execute patches and return results.
   """
   @spec apply_patch(keyword()) :: map()
   def apply_patch(opts \\ []) do

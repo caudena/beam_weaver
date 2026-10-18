@@ -1,320 +1,211 @@
-# Structured Output
+# Schema DSL and Structured Output
 
-Structured output makes an agent finish with data in a shape you define,
-instead of prose you have to parse. Use it when code reads the answer: to
-route a ticket, fill in a form, or extract fields from text.
+Use structured output when application code needs fields it can validate and
+act on. A response schema describes the agent's final answer; a tool schema
+describes an action's input.
+
+Complete [Installation](installation.md). Define these modules in IEx or save
+them under `lib/my_app/`, then run the calls in order with your OpenAI key.
+
+## Extract a typed answer
 
 ```elixir
-defmodule MyApp.Schemas.Triage do
+defmodule MyApp.Ticket do
   use BeamWeaver.Schema
 
-  description "How to route a support ticket."
-
-  field :category, :string, enum: ["shipping", "billing", "other"], description: "What the ticket is about"
-  field :priority, :string, enum: ["low", "high"]
-  field :order_id, :string, required: false, description: "The order id, if the customer gave one"
+  description "Facts explicitly stated in a support ticket."
+  field :category, :string, enum: ["shipping", "billing", "other"]
+  field :order_id, :string
+  field :summary, :string
 end
 
-defmodule MyApp.SupportAgent do
+defmodule MyApp.TriageAgent do
   use BeamWeaver.Agent
 
-  alias BeamWeaver.Models.FakeChatModel
-
-  model "fake:chat",
-    responses: [FakeChatModel.final(%{category: "shipping", priority: "high", order_id: "A-1001"})]
-
-  system_prompt "Triage the customer's message."
-  response_schema MyApp.Schemas.Triage
+  model "openai:gpt-5.4-mini", max_tokens: 512, timeout: 60_000
+  system_prompt "Extract the order ID verbatim. Delivery questions belong to shipping."
+  response_schema MyApp.Ticket
 end
 
-{:ok, result} = MyApp.SupportAgent.invoke(%{messages: ["My order A-1001 never arrived!"]})
-result.structured_response
-#=> %{"category" => "shipping", "priority" => "high", "order_id" => "A-1001"}
+{:ok, result} = MyApp.TriageAgent.invoke(%{messages: ["Where is order A-1001? It has not arrived."]})
+%{"category" => "shipping", "order_id" => "A-1001", "summary" => summary} = result.structured_response
+true = is_binary(summary) and byte_size(summary) > 0
 ```
 
-`FakeChatModel.final/1` scripts the structured answer, so this runs without an
-API key. With a real model, the model fills in the fields.
+Read `result.structured_response`, a map with string keys. Generated wording
+can vary; assert the fields your application actually relies on.
 
 ## Define a schema
 
-A schema is a module with `use BeamWeaver.Schema`. Each `field` has a name, a
-type and options:
+`use BeamWeaver.Schema` builds JSON Schema at module compilation.
+`json_schema/0` returns the schema sent to the provider.
 
-| Type | JSON |
+| Declaration | Purpose |
 | --- | --- |
-| `:string`, `:integer`, `:number`, `:boolean` | The matching JSON type. |
-| `{:array, type}` | A list of values of that type, such as `{:array, :string}`. |
-| another schema module | A nested object. |
+| `title "ticket"` | Name the schema; the default comes from the module name |
+| `description "..."` | Explain what the answer represents |
+| `field :name, type, opts` | Declare a field |
+| `strict true` | Forbid additional object properties |
 
-| Option | Effect |
-| --- | --- |
-| `required: false` | The field may be missing. Fields are required by default. |
-| `description: "..."` | Tells the model what to put there. |
-| `enum: [...]` | The allowed values. |
-| `nullable: true` | The value may be `null`. |
-| `default: value` | A default the model sees in the schema. |
-
-The module can also set a `title`, which names the schema (by default, the
-module name in snake case, here `"triage"`), a `description`, and `strict true`
-to forbid extra keys. `json_schema/0` returns the JSON Schema that the model
-receives:
+Types include `:string`, `:integer`, `:number`, `:boolean`,
+`{:array, type}` and another schema module for a nested object. Fields are
+required by default. Options include `required: false`, `nullable: true`,
+`enum:`, `description:` and `default:`. A default is schema metadata; check
+the returned value rather than assuming the provider fills it in.
+Descriptions guide the model; business rules belong in your application.
 
 ```elixir
-MyApp.Schemas.Triage.json_schema()["required"]
-#=> ["category", "priority"]
+schema = MyApp.Ticket.json_schema()
+true = Enum.sort(schema["required"]) == ["category", "order_id", "summary"]
+true = schema["properties"]["category"]["enum"] == ["shipping", "billing", "other"]
 ```
 
-Write descriptions for the model: they are the only instructions it gets for
-each field. When a schema comes from data instead of code, `response_schema`
-also takes a JSON Schema map.
+`response_schema` also accepts a JSON Schema map. Optional fields omitted by
+the model remain absent; optional fields returned as null are dropped from
+the normalized response.
 
 ## Strategies
 
-A model can return structured data in two ways: as JSON, through the
-provider's native structured output, or as the arguments of a tool call.
-`strategy:` picks the way:
-
-| Strategy | How the answer comes back |
+| Strategy | Behavior |
 | --- | --- |
-| `:auto` (default) | Provider-native output when the model supports it, otherwise the tool strategy. |
-| `:provider` | The provider's native structured output: a reply whose text is JSON that matches the schema. It falls back to the tool strategy when the model can't do it. |
-| `:tool` | The model calls a tool named after the schema; the call's arguments are the answer. It works with any model that calls tools, and forces the call where the model allows a forced tool choice. |
+| `:auto` | Use native provider output where supported, otherwise a schema tool |
+| `:provider` | Prefer native output; fall back to a schema tool when unavailable |
+| `:tool` | Ask the model to call a tool whose arguments match the answer schema |
 
-The check uses the model's profile (see [Models](models.md#model-profiles)):
-native output needs `:structured_output`, and native output in an agent that
-also has tools needs `:structured_output_with_tools`. Use `:auto` unless you
-need one strategy in particular.
+Selection uses the [model profile](models.md#model-profiles). Native output
+alongside ordinary tools requires `:structured_output_with_tools` as well as
+`:structured_output`.
 
-With the tool strategy, the conversation shows the tool call and a tool
-message that records the answer:
+Select the tool strategy explicitly when that is your integration contract:
 
 ```elixir
-defmodule MyApp.SupportAgent do
+defmodule MyApp.ToolTriageAgent do
   use BeamWeaver.Agent
 
-  alias BeamWeaver.Models.FakeChatModel
-
-  model "fake:chat",
-    responses: [FakeChatModel.final(%{category: "shipping", priority: "high", order_id: "A-1001"})]
-
-  system_prompt "Triage the customer's message."
-  response_schema MyApp.Schemas.Triage, strategy: :tool
+  model "openai:gpt-5.4-mini", max_tokens: 512, timeout: 60_000
+  system_prompt "Extract the order ID verbatim. Duplicate charges belong to billing."
+  response_schema MyApp.Ticket, strategy: :tool, max_retries: 2
 end
 
-{:ok, result} = MyApp.SupportAgent.invoke(%{messages: ["My order A-1001 never arrived!"]})
-Enum.map(result.messages, & &1.role)
-#=> [:user, :assistant, :tool]
+{:ok, result} = MyApp.ToolTriageAgent.invoke(%{messages: ["Order A-1001 was charged twice."]})
+%{"category" => "billing", "order_id" => "A-1001"} = result.structured_response
+true = Enum.any?(result.messages, &(&1.role == :tool))
 ```
 
-`response_schema` takes these options besides `strategy:`:
-
-| Option | Effect |
-| --- | --- |
-| `name:` | Names the schema, and the tool in the tool strategy. Overrides the schema's title. |
-| `description:` | Replaces the schema's description. |
-| `strict:` | Native output asks the provider for strict schema adherence unless you pass `strict: false`. |
-| `tool_message_content:` | The text of the tool message that records the answer (tool strategy). |
-| `handle_errors: false` | Fails the run on an answer that fails the schema, instead of asking the model again (tool strategy; see [Validation errors and retries](#validation-errors-and-retries)). |
-| `max_retries:` | How many times the model may answer again after an answer that fails the schema (tool strategy, default 2). |
-
-`response_format` declares the same thing with a strategy you build from a
-schema, such as `BeamWeaver.Agent.StructuredOutput.tool(schema_map)` for a
-JSON Schema map with a `"title"`. [Agents built at runtime](agents.md#agents-built-at-runtime)
-take the same values, or a schema module, as their `response_format:` option.
-
-## Read the result
-
-`result.structured_response` holds the answer as a map with string keys, the
-way the JSON came back. Optional fields the model left out are missing, and
-optional fields it set to `null` are dropped. Match on the keys you need:
-
-```elixir
-case result.structured_response do
-  %{"priority" => "high", "category" => category} -> {:escalate, category}
-  %{"category" => category} -> {:queue, category}
-end
-#=> {:escalate, "shipping"}
-```
+Other options are `name:`, `description:`, `strict:` and
+`tool_message_content:`. `response_format` accepts a strategy built by
+`BeamWeaver.Agent.StructuredOutput`. Runtime-built agents use the
+`response_format:` option for either a schema or a strategy.
 
 ## Structured output with tools
 
-An agent with tools first works through its tool calls. When the model has an
-answer, BeamWeaver calls it once more and asks for the structured answer. A
-script for it has three turns:
+Add ordinary tools as usual. The model can gather facts before answering.
+Models supporting native structured output with tools finish within the
+normal loop; other combinations need an additional formatting call. Account
+for that call in latency, token budgets and recursion limits.
+
+Check successful tool results when the task requires an action. A valid
+answer alone does not prove an action happened. The complete
+[structured-output example](https://github.com/caudena/beam_weaver/blob/master/examples/structured_output_agent.exs)
+checks an order lookup and its structured answer.
+
+Look up the sample order before producing the typed answer. Verify the tool result as well as the final schema:
 
 ```elixir
-defmodule MyApp.Tools.LookupOrder do
+defmodule MyApp.LookupStatus do
   use BeamWeaver.Tool
-
-  name "lookup_order"
-  description "Look up the shipping status of an order by its id."
+  name "lookup_status"
+  description "Read the delivery status of sample order A-1001."
 
   schema do
-    field :order_id, :string, description: "The order id"
+    field :order_id, :string
   end
 
   @impl true
-  def invoke(_tool, %{"order_id" => order_id}, _opts), do: {:ok, "Order #{order_id} is lost in transit."}
+  def invoke(_tool, %{"order_id" => "A-1001"}, _opts), do: {:ok, "A-1001 was damaged in transit."}
 end
 
-defmodule MyApp.SupportAgent do
+defmodule MyApp.InformedTriage do
   use BeamWeaver.Agent
-
-  alias BeamWeaver.Models.FakeChatModel
-
-  model "fake:chat",
-    responses: [
-      FakeChatModel.tool_call("lookup_order", %{"order_id" => "A-1001"}),
-      "Order A-1001 is lost in transit, so this is urgent.",
-      FakeChatModel.final(%{category: "shipping", priority: "high", order_id: "A-1001"})
-    ]
-
-  system_prompt "Look the order up, then triage the ticket."
-  tools [MyApp.Tools.LookupOrder]
-  response_schema MyApp.Schemas.Triage
+  model "openai:gpt-5.4-mini", max_tokens: 512, timeout: 60_000
+  system_prompt "Use lookup_status for the order before triaging. Describe the returned status in the summary."
+  tools [MyApp.LookupStatus]
+  response_schema MyApp.Ticket
 end
 
-{:ok, result} = MyApp.SupportAgent.invoke(%{messages: ["My order A-1001 never arrived!"]})
-{result.structured_response["priority"], Enum.map(result.messages, & &1.role)}
-#=> {"high", [:user, :assistant, :tool, :assistant, :assistant]}
+{:ok, result} = MyApp.InformedTriage.invoke(%{messages: ["Check A-1001 and triage its delivery issue."]})
+%{"category" => "shipping", "order_id" => "A-1001", "summary" => summary} = result.structured_response
+true = String.downcase(summary) =~ "damaged"
+true = Enum.any?(result.messages, &(&1.role == :tool and &1.name == "lookup_status"))
 ```
-
-The messages are the tool call, its result, the model's answer, and the
-structured answer. A model whose profile has `:structured_output_with_tools`
-with the `:auto` or `:provider` strategy skips the extra call: its last reply
-in the tool loop is the structured answer.
 
 ## Validation errors and retries
 
-BeamWeaver checks the top level of each answer against the schema: required
-fields must be there, and values must have the declared JSON types. Nested
-objects and list items aren't checked. With native output, an answer that
-fails the check fails the run:
+BeamWeaver validates required top-level keys and basic JSON types. It does
+not recursively validate nested objects or array items, nor enforce every
+constraint such as enum, numeric bounds or patterns. Strict provider schemas
+supply additional enforcement. Validate critical business rules yourself.
+
+| Error | Meaning |
+| --- | --- |
+| `:structured_output_parse_error` | The answer is not valid JSON |
+| `:structured_output_validation_error` | Required keys or top-level types do not match |
+| `:missing_structured_output` | No schema-tool answer arrived |
+| `:multiple_structured_outputs` | Several schema-tool answers arrived |
+
+The tool strategy feeds invalid answers back for up to `max_retries` retries
+(default 2). `handle_errors: false` returns the first error; a string or
+function customizes feedback. Native output validation errors fail directly.
+
+`BeamWeaver.Agent.Middleware.StructuredOutputRetry` retries failed answers
+across strategies. Set `handle_errors: false` to let errors reach it.
+Its `max_retries:` defaults to 1; `feedback:` controls the correction prompt.
+Budget the total attempts if you combine retry policies. Failed answers and
+correction messages remain in saved history.
+
+Select the tool strategy and bound its correction attempts. This real call verifies the configured extraction; malformed-answer tests belong in the Testing guide:
 
 ```elixir
-defmodule MyApp.SupportAgent do
+defmodule MyApp.ToolStrategyTriage do
   use BeamWeaver.Agent
-
-  alias BeamWeaver.Models.FakeChatModel
-
-  model "fake:chat", responses: [FakeChatModel.final(%{category: "shipping"})]
-  response_schema MyApp.Schemas.Triage
+  model "openai:gpt-5.4-mini", max_tokens: 512, timeout: 60_000
+  system_prompt "Extract the ticket facts. Delivery issues belong to shipping."
+  response_schema MyApp.Ticket, strategy: :tool, max_retries: 2
 end
 
-MyApp.SupportAgent.invoke(%{messages: ["My order A-1001 never arrived!"]})
-#=> {:error, %BeamWeaver.Core.Error{type: :structured_output_validation_error, details: %{missing: ["priority"]}}}
+{:ok, result} = MyApp.ToolStrategyTriage.invoke(%{messages: ["Where is order A-1001? It has not arrived."]})
+%{"category" => "shipping", "order_id" => "A-1001"} = result.structured_response
 ```
-
-The other error types are `:structured_output_parse_error`, for a reply that
-is not valid JSON, and, with the tool strategy, `:multiple_structured_outputs`,
-when the model gives several answers at once, and `:missing_structured_output`,
-when it answers in text instead of calling the schema's tool (a model that
-ignores the forced tool call, or can't be forced, such as Kimi with thinking
-on).
-
-With the tool strategy, the model gets a failing answer back as an error tool
-message that says what is wrong (a user message, for an answer that called no
-tool), and answers again. After `max_retries` failing answers in a row (2 by
-default), the run fails with the last error, whose `details` count the
-`attempts`. Here the second answer is valid:
-
-```elixir
-defmodule MyApp.SupportAgent do
-  use BeamWeaver.Agent
-
-  alias BeamWeaver.Models.FakeChatModel
-
-  model "fake:chat",
-    responses: [
-      FakeChatModel.final(%{category: "shipping"}),
-      FakeChatModel.final(%{category: "shipping", priority: "high"})
-    ]
-
-  response_schema MyApp.Schemas.Triage, strategy: :tool
-end
-
-{:ok, result} = MyApp.SupportAgent.invoke(%{messages: ["My order A-1001 never arrived!"]})
-error = Enum.find(result.messages, &(&1.role == :tool))
-{BeamWeaver.Core.Message.text(error), result.structured_response["priority"]}
-#=> {"Structured output error: structured response is missing required keys (priority). Fix it and answer again.", "high"}
-```
-
-`handle_errors: false` fails the run on the first failing answer instead; a
-string or a function of the `%BeamWeaver.Core.Error{}` replaces the text of
-the error message.
-
-The check doesn't enforce `enum`, number ranges or patterns. Providers that
-honor strict schemas enforce them; otherwise check those rules in your code.
-
-To give the model another chance, add the `StructuredOutputRetry` middleware.
-It adds the failed answer and the error to the conversation and calls the
-model again, up to `max_retries` times (1 by default), so the model sees what
-it got wrong. Set `handle_errors: false` so that errors reach the middleware
-with every strategy. A script for it has the failed answer, then the
-corrected one:
-
-```elixir
-defmodule MyApp.SupportAgent do
-  use BeamWeaver.Agent
-
-  alias BeamWeaver.Models.FakeChatModel
-
-  model "fake:chat",
-    responses: [
-      FakeChatModel.final(%{category: "shipping"}),
-      FakeChatModel.final(%{category: "shipping", priority: "high"})
-    ]
-
-  middleware [BeamWeaver.Agent.Middleware.StructuredOutputRetry]
-  response_schema MyApp.Schemas.Triage, handle_errors: false
-end
-
-{:ok, result} = MyApp.SupportAgent.invoke(%{messages: ["My order A-1001 never arrived!"]})
-{result.structured_response, Enum.map(result.messages, & &1.role)}
-#=> {%{"category" => "shipping", "priority" => "high"}, [:user, :assistant, :user, :assistant]}
-```
-
-The saved thread keeps the failed answer and the error after it: a user
-message here, or a tool message for each tool call when the answer came
-through the tool strategy. `feedback:` replaces the error text the model
-gets: a string, in which `{error}` stands for the error message, or a
-function that takes the `%BeamWeaver.Core.Error{}` and returns the text.
 
 ## Without an agent
 
-For structured data from one model call, pass `response_format:` to
-`BeamWeaver.Core.ChatModel.invoke/3`: a `name:` and the schema as JSON Schema
-under `schema:`. A model with native structured output answers in that
-schema, and the decoded answer is in the reply's `metadata.parsed`:
+For one extraction call, use the model interface directly:
 
 ```elixir
-alias BeamWeaver.Core.ChatModel
-alias BeamWeaver.Models.FakeChatModel
+{:ok, model} = BeamWeaver.Models.init_chat_model("openai:gpt-5.4-mini", max_tokens: 512, timeout: 60_000)
+format = %{name: "ticket", schema: MyApp.Ticket.json_schema()}
 
-{:ok, model} = BeamWeaver.Models.init_chat_model("fake:chat", responses: [FakeChatModel.final(%{category: "billing", priority: "low"})])
-format = %{name: "triage", schema: MyApp.Schemas.Triage.json_schema()}
+{:ok, reply} =
+  BeamWeaver.Core.ChatModel.invoke(
+    model,
+    "Extract this ticket: Where is order A-1001? Use category shipping.",
+    response_format: format
+  )
 
-{:ok, reply} = ChatModel.invoke(model, "I was charged twice for order A-1001.", response_format: format)
-reply.metadata.parsed
-#=> %{"category" => "billing", "priority" => "low"}
+%{"category" => "shipping", "order_id" => "A-1001"} = reply.metadata.parsed
 ```
 
-The rest of this page is what an agent adds: a strategy that suits each
-model, the check of the answer against the schema, and the retries.
+Direct calls return provider-decoded output in `metadata.parsed`. They do not
+add the agent's strategy selection, validation loop or retry middleware.
+
+## Read the result
+
+Pattern-match mandatory fields, then validate domain constraints. Schema
+conformance is a data-format guarantee, not evidence that every fact is
+correct. Ground factual answers in the input or successful tool results.
 
 ## Test with the fake model
 
-`FakeChatModel.final/1` answers the way each request asks: with JSON for
-native structured output, or with a call to the schema's tool for the tool
-strategy. The same script therefore works with every strategy. To test how
-your code handles a bad answer, script one that breaks the schema, as in
-[Validation errors and retries](#validation-errors-and-retries).
-[Testing](testing.md) covers fake models in more depth.
-
-## Reference
-
-- [`BeamWeaver.Schema`](https://hexdocs.pm/beam_weaver/BeamWeaver.Schema.html): declare schemas with `field`
-- [`BeamWeaver.Agent.StructuredOutput`](https://hexdocs.pm/beam_weaver/BeamWeaver.Agent.StructuredOutput.html): the `auto`, `tool` and `provider` strategies
-- [`BeamWeaver.Agent.Middleware.StructuredOutputRetry`](https://hexdocs.pm/beam_weaver/BeamWeaver.Agent.Middleware.StructuredOutputRetry.html): retry answers that fail validation
-- [`BeamWeaver.Core.ChatModel`](https://hexdocs.pm/beam_weaver/BeamWeaver.Core.ChatModel.html): `invoke/3` with `response_format:` for direct model calls
-- [`BeamWeaver.Models.FakeChatModel`](https://hexdocs.pm/beam_weaver/BeamWeaver.Models.FakeChatModel.html): script structured answers with `final/1`
+`BeamWeaver.Models.FakeChatModel.final/1` supplies valid or malformed answers
+in application tests. [Testing](testing.md) explains scripted responses and
+request assertions. Keep a live integration check for the production model.

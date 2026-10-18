@@ -1,70 +1,94 @@
-# Examples
+# Runnable Examples
 
-The repository's `examples/` folder holds runnable scripts, from a one-tool
-agent to deep agents with subagents, skills and files. Run one to see a
-feature work end to end with a real model, or copy one as a starting point.
+The guides contain complete inline examples, including setup, invocation and
+observable results. The downloadable scripts below are optional companion files. Start with
+[Your First Agent](quickstart.md) and [Build a Support Agent](tutorial.md) if
+you are new to the library.
+
+## Find an inline example
+
+| Task | Complete guide examples |
+| --- | --- |
+| Create an agent and give it an order tool | [Support-agent tutorial](tutorial.md) |
+| Validate inputs, update state, return artifacts | [Tools](tools.md) |
+| Retry, select tools, bound calls and redact data | [Built-in Middleware](builtin_middleware.md) |
+| Stream to a UI and handle tool progress | [Streaming](streaming.md) |
+| Approve, edit, reject or review each call | [Human Review](human_in_the_loop.md) |
+| Delegate, capture output and manage async work | [Subagents](subagents.md) |
+| Read and write files; run commands | [Filesystem](filesystem.md), [Sandboxes](sandboxes.md) |
+| Persist conversations and customer preferences | [Conversation History](short_term_memory.md), [Long-Term Memory](long_term_memory.md) |
+| Search documents with real embeddings | [Retrieval](retrieval.md) |
+| Route, join and improve work in bounded loops | [Workflow Patterns](workflow_patterns.md) |
+| Replay, fork or recover a saved workflow | [Checkpoints](checkpoints.md), [Durable Execution](durable_execution.md) |
+| Configure databases and migrations | [Storage](storage.md) |
+| Trace and export actual runs | [Tracing](tracing.md) |
 
 ## Run an example
 
-Clone the repository, export the key for your provider, and run a script from
-the project root:
+From a repository checkout, install dependencies and configure a provider key
+in your environment or the checkout's untracked `.env`. The example runner
+loads that file; a consuming application configures credentials itself.
 
 ```bash
-git clone https://github.com/caudena/beam_weaver.git
-cd beam_weaver
 mix deps.get
-export OPENAI_API_KEY=...
-mix run examples/react_agent.exs
+mix examples.live --model openai:gpt-5.4-mini --only examples/react_agent.exs
+mix examples.live --provider google --only examples/streaming_agent.exs
 ```
 
-```text
-The weather in Nicosia is sunny and 25°C.
-Tools called: get_weather
-```
+The weather example calls a local fixture tool with a real model. It proves
+the model/tool integration, not access to a weather service. Script comments
+identify fixture-backed business tools and required external resources.
 
-Each live script whose agent has tools ends by checking that the agent called
-them, and fails if it did not. `BEAM_WEAVER_EXAMPLES_MODEL` picks the provider
-and model (default `openai:gpt-5.4-mini`):
+| Provider | Credential variables |
+| --- | --- |
+| OpenAI | `OPENAI_API_KEY` |
+| Anthropic | `ANTHROPIC_API_KEY` |
+| Google | `GOOGLE_API_KEY` or `GEMINI_API_KEY` |
+| xAI | `XAI_API_KEY` |
+| DeepSeek | `DEEPSEEK_API_KEY` |
+| Moonshot | `MOONSHOT_API_KEY` or `KIMI_API_KEY` |
+| Z.ai | `ZAI_API_KEY` |
+| TypeSafe | `TYPESAFE_API_KEY` or `TYPESAFE_API` |
+
+Choose models explicitly with `--model`; use `--provider` for runner defaults.
+TypeSafe runs decision-specific examples rather than generic chat scripts.
+Some scripts require more than one provider, as stated in their setup.
+
+## Run a selection or the full matrix
 
 ```bash
-mix examples.live --model anthropic:claude-haiku-4-5 --only examples/react_agent.exs
+mix examples.live --provider openai,google
+mix examples.live --provider openai --offline
+mix examples.live --provider moonshot --only deepagents/ --timeout 600
+mix examples.live
 ```
 
-| Provider | Key | Model in `mix examples.live` |
-|---|---|---|
-| OpenAI | `OPENAI_API_KEY` | `openai:gpt-5.4-mini` |
-| Anthropic | `ANTHROPIC_API_KEY` | `anthropic:claude-haiku-4-5` |
-| Google Gemini | `GOOGLE_API_KEY` or `GEMINI_API_KEY` | `google:gemini-3.5-flash` |
-| xAI | `XAI_API_KEY` | `xai:grok-4.3` |
-| Moonshot (Kimi) | `MOONSHOT_API_KEY` or `KIMI_API_KEY` | `moonshot:kimi-k2.6` |
-| Z.ai | `ZAI_API_KEY` | `zai:glm-5.3-flash` |
-| DeepSeek | `DEEPSEEK_API_KEY` | `deepseek:deepseek-flash` |
-| TypeSafe | `TYPESAFE_API_KEY` or `TYPESAFE_API` | Decision-model scripts; no generic chat model |
+The unfiltered command requests every manifest provider and fails for missing
+credentials. `--jobs` controls concurrency and `--timeout` is seconds per
+script. Generic live scripts run across applicable chat providers; pinned
+scripts use their actual provider. Offline scripts exercise local behavior.
+Transient provider failures can receive one bounded retry; failed behavioral
+assertions are not silently converted into passes.
 
-Offline scripts need no key. [Testing](testing.md) introduces scripted fake
-models; the [Quickstart](quickstart.md) uses a real provider.
+## Understand verification results
 
-## Run them all
+Each run retains per-attempt logs, JSON results and provider HTTP evidence
+under `_build/examples_live/runs/`. A successful process exit is insufficient:
+a live example must receive a successful inference response from its required
+provider and pass its behavioral assertions. Unconsumed streams, constructors,
+model lists and fixtures cannot substitute for inference.
 
-`mix examples.live` requests every configured provider in its manifest and
-fails if a requested provider has no key. Use `--provider` to select a subset.
-It runs each applicable script and prints a pass/fail table. Keys come from the environment or a `.env`
-file and are never printed. Each run keeps a JSON report, per-attempt logs and
-HTTP evidence in `_build/examples_live/runs/`. A successful exit alone does not
-pass a live run: the runner must observe a successful inference response from
-each provider the example requires.
+Tool assertions check successful results and relevant arguments. Other checks
+cover structured answers, streamed events, approval/resume, saved memory and
+actual files. A provider response alone does not establish all those behaviors.
 
-```bash
-mix examples.live                              # every manifest provider; all keys required
-mix examples.live --provider openai,anthropic  # only these providers
-mix examples.live --model anthropic:claude-sonnet-4-6 --only deepagents/
-```
-
-`--offline` adds the offline scripts; `--jobs` and `--timeout` set concurrency
-and seconds per script. A script that fails because the provider was briefly
-over capacity or unreachable (a retryable rate limit, server error, lost
-connection or timeout) runs once more after 15 seconds; a script that fails on
-its own checks, such as a tool the model didn't call, does not. `mix test` compiles every script and runs the offline ones.
+The existing `mix docs.verify --all` command additionally executes guide and
+inline API examples and a fresh consumer of the built package. Use `--only`
+for a page/script substring, `--scenario` for a scenario, `--provider` or
+`--model` for provider/model selection and `--service postgres,docker` for
+service requirements. Missing prerequisites remain incomplete in reports.
+Public Hex installation is separate and remains pending until the target
+release is published and installed successfully.
 
 ## Agents and tools
 
@@ -123,26 +147,19 @@ lists each one with the tools it must call.
 | [openai_apply_patch_tool.exs](https://github.com/caudena/beam_weaver/blob/master/examples/openai_apply_patch_tool.exs) | The `apply_patch` tool request and replay | offline |
 | [openai_json_http_error.exs](https://github.com/caudena/beam_weaver/blob/master/examples/openai_json_http_error.exs) | Provider error details kept on an HTTP error | offline |
 | [openai_gpt6_controls.exs](https://github.com/caudena/beam_weaver/blob/master/examples/openai_gpt6_controls.exs) | Access programs and cache prewarming | OpenAI |
-| [auto_mode_agent.exs](https://github.com/caudena/beam_weaver/blob/master/examples/auto_mode_agent.exs) | GPT-6 Luna lets a file deletion the user asked for run and blocks one nobody asked for | OpenAI |
+| [auto_mode_agent.exs](https://github.com/caudena/beam_weaver/blob/master/examples/auto_mode_agent.exs) | GPT-6 Luna permits a requested fixture deletion call and blocks an unrequested one | OpenAI |
 | [anthropic_opus55_compaction.exs](https://github.com/caudena/beam_weaver/blob/master/examples/anthropic_opus55_compaction.exs) | Server-side compaction and its replay | Anthropic |
 | [deepseek.exs](https://github.com/caudena/beam_weaver/blob/master/examples/deepseek.exs) | Chat, Responses, fill-in-the-middle and the Anthropic-style endpoint | DeepSeek |
 | [typesafe_dynamic_routing.exs](https://github.com/caudena/beam_weaver/blob/master/examples/typesafe_dynamic_routing.exs) | Route each request to a fast or a strong model with a classifier | TypeSafe and OpenAI; `--offline` |
 | [zai_media.exs](https://github.com/caudena/beam_weaver/blob/master/examples/zai_media.exs) | Send an image, a PDF and a video to GLM-5.3-Flash | Z.ai |
 
-## Known provider limitations
+## Choose a useful integration check
 
-- **Z.ai** GLM-5.3 models always think and reject `thinking: %{type: "disabled"}`;
-  the examples set `reasoning_effort: "low"` instead on the models whose profile
-  takes it. GLM-5.1 and older take no effort and think at their default.
-- **xAI** `mix examples.live` uses `xai:grok-4.3`. With
-  `xai:grok-4.20-0309-non-reasoning` (and, less often,
-  `xai:grok-4.20-0309-reasoning`), deep agents sometimes say they saved a file
-  without calling a write tool; the tool check catches it.
-- **Kimi** thinks before every reply, so deep agents take minutes; add `--timeout 600`.
+Use the actual provider/model, storage adapter and execution backend that you
+deploy. For media examples, use the bundled fixtures and create/delete remote
+resources as the script demonstrates. For retrieval, assert expected sources
+with real embeddings. For caching, inspect observed cache reads; zero is not
+a cache hit. For generated work, inspect the actual artifact.
 
-## Reference
-
-- [`BeamWeaver.Agent`](https://hexdocs.pm/beam_weaver/BeamWeaver.Agent.html): define, build and run agents
-- [`BeamWeaver.Tool`](https://hexdocs.pm/beam_weaver/BeamWeaver.Tool.html): define tools as modules
-- [`BeamWeaver.Agent.Middleware.ModelCallLimit`](https://hexdocs.pm/beam_weaver/BeamWeaver.Agent.Middleware.ModelCallLimit.html): cap model calls per run or thread
-- [`BeamWeaver.Agent.Middleware.ToolCallLimit`](https://hexdocs.pm/beam_weaver/BeamWeaver.Agent.Middleware.ToolCallLimit.html): cap tool calls per run or thread
+[Testing Your Application](testing.md) covers deterministic application tests;
+[Production Integration](going_to_production.md) covers deployment ownership.

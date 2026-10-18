@@ -33,13 +33,17 @@ defmodule BeamWeaver.Provider.ChatModel do
       alias BeamWeaver.Provider.ChatModel.Options, as: ChatOptions
       alias BeamWeaver.Provider.ChatRuntime
 
+      @doc "Returns the native model identifier configured on this instance."
       @spec model_name(t()) :: String.t()
       def model_name(%__MODULE__{model: model}), do: model
 
+      @doc "Resolves whether this call requests streaming from model and call options."
       @spec should_stream?(t(), keyword()) :: boolean()
       def should_stream?(%__MODULE__{} = model, opts \\ []), do: ChatOptions.should_stream?(model, opts)
 
+      @doc "Returns the native model identifier used by provider dispatch."
       def model_id(%__MODULE__{model: model}), do: model
+      @doc "Returns local capability metadata, not a live account-entitlement check."
       def profile(%__MODULE__{profile: profile}), do: profile
 
       @impl BeamWeaver.Core.ChatModel
@@ -57,6 +61,7 @@ defmodule BeamWeaver.Provider.ChatModel do
              do: ChatRuntime.stream(__MODULE__, model, messages, opts)
       end
 
+      @doc "Collects a provider stream into its completed decoded response, or returns an error."
       def stream_response(%__MODULE__{} = model, messages, opts \\ []) do
         with {:ok, model} <- resolve_invocation_model(model, opts),
              do: ChatRuntime.stream_response(__MODULE__, model, messages, opts)

@@ -1,84 +1,49 @@
 # Google Gemini
 
-BeamWeaver calls Gemini models through the Gemini Developer API with
-`BeamWeaver.Google.ChatModel`. It supports thinking, Google's built-in tools
-such as Google Search and code execution (`BeamWeaver.Google.Tools`),
-context caching, token counting, and image, PDF, audio and video input.
+BeamWeaver uses the Gemini Developer API for chat, thinking, supported hosted
+tools, media input, token counting and cached-content references. Vertex AI
+routing and media-generation models are separate APIs outside this adapter.
 
-## Setup
+## Setup and first request
 
 ```elixir
-# config/runtime.exs
 import Config
-
-config :beam_weaver, :google, api_key: System.get_env("GOOGLE_API_KEY")
+config :beam_weaver, :google, api_key: System.fetch_env!("GOOGLE_API_KEY")
 ```
 
-Export `GOOGLE_API_KEY`, a Gemini API key.
-
-## Models
-
-| Model | Kind | Input tokens | Output tokens | Tools | Structured output | Reasoning | Inputs |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| `google:gemini-3.1-flash-lite` | chat | 1,048,576 | 65,536 | yes | yes | yes | text, image, PDF, audio, video |
-| `google:gemini-3.1-pro-preview` | chat | 1,048,576 | 65,536 | yes | yes | yes | text, image, PDF, audio, video |
-| `google:gemini-3.5-flash` | chat | 1,048,576 | 65,536 | yes | yes | yes | text, image, PDF, audio, video |
-| `google:gemini-3.5-flash-lite` | chat | 1,048,576 | 65,536 | yes | yes | yes | text, image, PDF, audio, video |
-| `google:gemini-3.6-flash` | chat | 1,048,576 | 65,536 | yes | yes | yes | text, image, PDF, audio, video |
-| `google:gemini-3.7-flash` | chat | 1,048,576 | 65,536 | yes | yes | yes | text, image, PDF, audio, video |
-| `google:gemini-3.8-flash` | chat | 1,048,576 | 65,536 | yes | yes | yes | text, image, PDF, audio, video |
-
-Gemini ids always need the `google:` prefix; a bare `gemini-3.5-flash` is
-rejected.
-
-## Usage
-
-Name the model on the agent's `model` line, with any options after it:
+Save configuration in your application runtime file, then make a real request:
 
 ```elixir
-defmodule MyApp.SupportAgent do
-  use BeamWeaver.Agent
-
-  model "google:gemini-3.5-flash", max_output_tokens: 4_096, timeout: 120_000
-  system_prompt "You are Acme's support agent. Answer in two sentences."
-end
-
-{:ok, result} = MyApp.SupportAgent.invoke(%{messages: ["Where is my order A-1001?"]})
+alias BeamWeaver.Core.{ChatModel, Message}
+{:ok, model} = BeamWeaver.Models.init_chat_model("google:gemini-3.5-flash", max_output_tokens: 1_024, timeout: 60_000)
+{:ok, reply} = ChatModel.invoke(model, "Explain parcel tracking in one sentence.")
+true = byte_size(Message.text(reply)) > 0
+true = reply.usage_metadata.total_tokens > 0
 ```
 
-Tools, middleware and memory work as in [Agents](../agents.md). To call the
-model without an agent, build it with `BeamWeaver.Models.init_chat_model/2`
-(see [Models](../models.md)):
+Use the same identifier in an agent declaration. Gemini IDs require `google:`.
+Keep complete messages when continuing function calls; native parts can carry
+provider state beyond display text.
 
-```elixir
-{:ok, model} = BeamWeaver.Models.init_chat_model("google:gemini-3.5-flash", timeout: 60_000)
-{:ok, reply} = BeamWeaver.Core.ChatModel.invoke(model, "Write a one-line apology for a late order.")
-BeamWeaver.Core.Message.text(reply)
-```
+## Options and thinking
 
-An image or PDF a tool returns, such as one from `read_file`, goes in the
-function response's parts, which Gemini 3 models read.
-
-## Options
-
-| Option | What it does |
+| Option | Purpose |
 | --- | --- |
-| `max_output_tokens` | Output cap; `max_tokens` is the same option. |
-| `thinking_level` | How much the model thinks: `:low`, `:medium` or `:high`, and `:minimal` on some models. Gemini 3.7 and 3.8 Flash reject `:minimal` before the request. |
-| `thinking_budget` | A token budget for thinking, on models that take one. |
-| `include_thoughts` | `true` returns a summary of the model's thinking. |
-| `cached_content` | The name of a Gemini cached-content resource. See below. |
-| `safety_settings` | Safety thresholds, such as `%{"HARM_CATEGORY_DANGEROUS_CONTENT" => "BLOCK_ONLY_HIGH"}`. |
-| `stop_sequences` | Strings that end the answer; `stop` is the same option. |
-| `base_url` | The API root, for a proxy. Defaults to `https://generativelanguage.googleapis.com/v1beta`. |
+| `max_output_tokens:` / `max_tokens:` | Output budget |
+| `thinking_level:` | Supported level for the chosen model |
+| `thinking_budget:` | Token budget only where supported |
+| `include_thoughts:` | Request returned thought summaries |
+| `cached_content:` | Actual cached-content resource name |
+| `safety_settings:` | Native category thresholds |
+| `stop_sequences:` / `stop:` | Stop text |
+| `base_url:` | Developer API root |
 
-The options shared by every provider, such as `timeout`, are on
-[Providers](../providers.md#options-for-every-provider).
+Newer Flash profiles restrict sampling and use thinking levels rather than
+budgets. Validate the exact model's options instead of assuming all Gemini
+versions accept the same controls. `Message.text/1` excludes reasoning blocks;
+usage can report reasoning tokens separately.
 
-## Thinking
-
-Gemini models think before they answer. Set how much with `thinking_level`,
-and ask for a summary with `include_thoughts`:
+Thinking controls are model-specific. This complete agent requests thoughts and invokes the configured model:
 
 ```elixir
 defmodule MyApp.SupportAgent do
@@ -92,128 +57,111 @@ end
 true = byte_size(result.messages |> List.last() |> BeamWeaver.Core.Message.text()) > 0
 ```
 
-The summary arrives as a `%{type: :reasoning}` block in the reply's
-`content`, which `BeamWeaver.Core.Message.text/1` skips. Thinking tokens are
-counted in `usage_metadata.output_token_details.reasoning`.
-
-Gemini 3.6, 3.7 and 3.8 Flash and Gemini 3.5 Flash-Lite accept only
-`thinking_level`: BeamWeaver rejects `thinking_budget` and the sampling options
-`temperature`, `top_p` and `top_k` for them before the request is sent. Gemini
-3.5 Flash, 3.1 Flash-Lite and 3.1 Pro Preview also take `thinking_budget` and
-sampling options.
-
 ## Built-in tools
 
-Google runs hosted tools such as search and code execution on its servers.
-Each helper in `BeamWeaver.Google.Tools` returns a plain declaration:
+Google runs supported search/code tools on its servers. This call checks
+actual grounding metadata from search:
 
 ```elixir
-BeamWeaver.Google.Tools.google_search()
-#=> %{"googleSearch" => %{}}
-```
-
-Pass declarations with `tools:` on a direct model call, mixed with your own
-tools if you like:
-
-```elixir
-alias BeamWeaver.Google.Tools
-
-{:ok, model} = BeamWeaver.Models.init_chat_model("google:gemini-3.5-flash", timeout: 60_000)
-
-{:ok, reply} =
-  BeamWeaver.Core.ChatModel.invoke(model, "Which carriers deliver to Iceland?",
-    tools: [Tools.google_search(), Tools.url_context()]
+{:ok, searched} =
+  ChatModel.invoke(
+    model,
+    "Use Google Search to find the official Elixir programming language website and cite it.",
+    tools: [BeamWeaver.Google.Tools.google_search()]
   )
+
+true = byte_size(Message.text(searched)) > 0
+true = is_map(searched.response_metadata.grounding_metadata)
+true = map_size(searched.response_metadata.grounding_metadata) > 0
 ```
 
-The other helpers are `google_maps/1`, `code_execution/1`, `file_search/2`
-(with File Search store names) and `mcp_servers/1`.
+Other helpers include URL context, Maps, code execution, file search and MCP
+servers. File search needs actual store resources. A computer-use declaration
+requires your application's browser/desktop executor and returned action
+results; BeamWeaver does not supply that executor.
 
-`computer_use/1` declares computer-use actions, but your application must
-provide the browser or desktop executor and return action results. BeamWeaver
-does not supply that executor. See Google's
-[Computer Use guide](https://ai.google.dev/gemini-api/docs/computer-use).
-
-An agent offers built-in tools next to its own when they are in its model
-options:
-
-```elixir
-defmodule MyApp.SupportAgent do
-  use BeamWeaver.Agent
-
-  model "google:gemini-3.5-flash", tools: [BeamWeaver.Google.Tools.google_search()], timeout: 120_000
-  system_prompt "You are Acme's support agent. Search the web for carrier outages."
-end
-
-{:ok, result} = MyApp.SupportAgent.invoke(%{messages: ["Reply with the word ready."]})
-true = byte_size(result.messages |> List.last() |> BeamWeaver.Core.Message.text()) > 0
-```
+Hosted tools belong in model call options. Ordinary agent tools use the
+[Tool DSL](../tools.md). Supported image/PDF tool results are carried in
+Gemini function-response parts.
 
 ## Context caching
 
-Gemini caches repeated prompt prefixes on its own, and reports the cached
-tokens in `usage_metadata.input_token_details.cache_read`. For a large,
-stable context, such as a policy manual, create a cached-content resource with
-Google's API and pass its name; BeamWeaver doesn't create or expire these
-resources. The following example creates one with a short TTL, uses it,
-and deletes it even if the model call fails. See Google's
-[caching API](https://ai.google.dev/api/caching) for resource limits:
+Automatic prefix caching reports usage when a hit occurs. Explicit caching
+requires a resource created through Google's API. From a configured checkout,
+this creates a short-lived resource, uses it and deletes it:
 
 ```elixir
 root = "https://generativelanguage.googleapis.com/v1beta"
 headers = [{"x-goog-api-key", System.fetch_env!("GOOGLE_API_KEY")}]
-policy = String.duplicate("Acme accepts returns within 30 days. Opened items must include all parts.\n", 400)
+policy = String.duplicate("Returns are accepted within 30 days. Opened items must include all parts.\n", 400)
 
-cache = Req.post!(root <> "/cachedContents",
-  headers: headers,
-  json: %{model: "models/gemini-3.5-flash", ttl: "300s",
-          contents: [%{role: "user", parts: [%{text: policy}]}]},
-  retry: false, receive_timeout: 60_000
-)
-true = cache.status in 200..299
-name = Map.fetch!(cache.body, "name")
+created =
+  Req.post!(root <> "/cachedContents",
+    headers: headers,
+    json: %{model: "models/gemini-3.5-flash", ttl: "300s", contents: [%{role: "user", parts: [%{text: policy}]}]},
+    retry: false,
+    receive_timeout: 60_000
+  )
+
+true = created.status in 200..299
+name = Map.fetch!(created.body, "name")
 
 try do
-  {:ok, model} = BeamWeaver.Models.init_chat_model("google:gemini-3.5-flash", cached_content: name, timeout: 60_000)
-  {:ok, reply} = BeamWeaver.Core.ChatModel.invoke(model, "How many days do I have to return an item?")
-  true = String.contains?(BeamWeaver.Core.Message.text(reply), "30")
+  {:ok, cached} =
+    BeamWeaver.Models.init_chat_model("google:gemini-3.5-flash",
+      cached_content: name,
+      max_tokens: 1_024,
+      timeout: 60_000
+    )
+
+  {:ok, reply} = ChatModel.invoke(cached, "How many days do I have to return an item?")
+  true = Message.text(reply) =~ "30"
+  true = get_in(reply.usage_metadata, [:input_token_details, :cache_read]) > 0
 after
-  response = Req.delete!(root <> "/" <> name, headers: headers, retry: false)
-  true = response.status in 200..299
+  deleted = Req.delete!(root <> "/" <> name, headers: headers, retry: false)
+  true = deleted.status in 200..299
 end
 ```
 
-`prompt_caching true` has no effect on Gemini. See [Caching](../caching.md).
+The application owns resource creation/expiry/deletion; the model option only
+references it. `prompt_caching` adds no marker for Gemini. See the official
+[caching API](https://ai.google.dev/api/caching) for resource constraints.
 
-## Token counting
+## Media and token counting
 
-`BeamWeaver.Google.ChatModel.count_tokens/3` asks Gemini how many input tokens
-a request uses:
+Gemini profiles support text, image, PDF, audio and video inputs. Use actual
+supported media bytes or resources, not fabricated IDs. [Messages](../messages.md)
+explains content blocks; the model's profile validates capability compatibility.
 
 ```elixir
-{:ok, model} = BeamWeaver.Models.init_chat_model("google:gemini-3.5-flash", timeout: 60_000)
-{:ok, tokens} = BeamWeaver.Google.ChatModel.count_tokens(model, "Where is my order A-1001?")
+{:ok, tokens} = BeamWeaver.Google.ChatModel.count_tokens(model, "Check order A-1001.")
+true = is_integer(tokens) and tokens > 0
 ```
 
-## Limitations
+Counting calls the provider but does not generate an answer. Safety filtering
+can affect completion even on HTTP success; inspect the provider outcome and
+terminal stream events.
 
-- Only the Gemini Developer API: Vertex AI is not supported.
-- BeamWeaver doesn't create, list or delete cached-content resources.
-- Image, audio and video generation models have no BeamWeaver wrapper.
+## Models
 
-## Testing
+Limits are local profile data. A dash means not applicable or not recorded,
+not an unlimited allowance.
 
-In tests, use `"fake:chat"` instead of a Gemini model; it needs no key (see
-[Testing](../testing.md)). To check the exact requests your code sends,
-answer them from a cassette with `transport: BeamWeaver.Transport.Replay`
-and `transport_opts: [cassette_path: "test/cassettes/google.yml"]`;
-[Replay provider responses](../testing.md#replay-provider-responses) shows
-how to write one.
+| Model | Input / output tokens | Operations and capabilities |
+| --- | --- | --- |
+| `google:gemini-3.1-flash-lite` | 1,048,576 / 65,536 | chat; text, image, PDF, audio, video; tools; structured output; reasoning |
+| `google:gemini-3.1-pro-preview` | 1,048,576 / 65,536 | chat; text, image, PDF, audio, video; tools; structured output; reasoning |
+| `google:gemini-3.5-flash` | 1,048,576 / 65,536 | chat; text, image, PDF, audio, video; tools; structured output; reasoning |
+| `google:gemini-3.5-flash-lite` | 1,048,576 / 65,536 | chat; text, image, PDF, audio, video; tools; structured output; reasoning |
+| `google:gemini-3.6-flash` | 1,048,576 / 65,536 | chat; text, image, PDF, audio, video; tools; structured output; reasoning |
+| `google:gemini-3.7-flash` | 1,048,576 / 65,536 | chat; text, image, PDF, audio, video; tools; structured output; reasoning |
+| `google:gemini-3.8-flash` | 1,048,576 / 65,536 | chat; text, image, PDF, audio, video; tools; structured output; reasoning |
 
-## Reference
 
-- [Gemini caching API](https://ai.google.dev/api/caching): provider API contract
+The table is local capability metadata, not account entitlement. Preview
+identifiers and aliases can have different availability from stable models.
+Use a model you have exercised with your actual inputs and tools.
 
-- [`BeamWeaver.Google`](https://hexdocs.pm/beam_weaver/BeamWeaver.Google.html): constructors
-- [`BeamWeaver.Google.ChatModel`](https://hexdocs.pm/beam_weaver/BeamWeaver.Google.ChatModel.html): the Gemini model and token counting
-- [`BeamWeaver.Google.Tools`](https://hexdocs.pm/beam_weaver/BeamWeaver.Google.Tools.html): built-in tool declarations
+## Further reading
+
+[Testing](../testing.md) covers deterministic application tests and replay. Live requests above check the configured Google integration.

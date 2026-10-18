@@ -1,27 +1,27 @@
 # Compaction Engine
 
-`BeamWeaver.Compaction` shortens a conversation that your application stores
-itself: it keeps the newest turns word for word, has your summarizer condense
-the older ones, checks the summary against its sources, and returns a
-checkpoint for you to save. Use it when transcripts live in your own tables;
-for an agent's own thread, use [Context Management](context_management.md)
-instead.
+Use `BeamWeaver.Compaction` when your application owns the transcript and
+provider calls. It produces a source-linked summary checkpoint and retained
+recent events. Your application decides how to render the next request and
+atomically activate the candidate. For an agent's built-in conversation,
+use [Context Management](context_management.md) instead.
+
+
+Run this page’s examples in order in one IEx session; later blocks reuse the modules and values defined earlier.
 
 ## A first compaction
 
-Your application turns its stored rows into source events, and gives the
-engine two functions: `render/2`, which builds the exact request your
-application would send the model, and `summarize/1`, which calls a model. Here
-a plain function stands in for the model, so the example runs without one:
+Complete [Installation](installation.md). This example uses a real OpenAI
+summarizer. Repeated background text makes the sample large enough to exercise
+compaction with a small demonstration policy.
 
 ```elixir
-defmodule MyApp.Transcript do
-  alias BeamWeaver.Compaction.Canonical
-  alias BeamWeaver.Core.ID
+defmodule MyApp.TranscriptCompaction do
+  alias BeamWeaver.Compaction.{Canonical, Semantic}
+  alias BeamWeaver.Core.{ChatModel, ID, Message}
 
-  # Turns stored chat rows into the source events of one conversation lane.
-  def events(lane_id, rows, first_seq \\ 1) do
-    for {{role, text}, seq} <- Enum.with_index(rows, first_seq) do
+  def events(lane_id, rows) do
+    for {{role, text}, seq} <- Enum.with_index(rows, 1) do
       provenance = %{"origin" => Atom.to_string(role)}
 
       %{
@@ -39,315 +39,262 @@ defmodule MyApp.Transcript do
     end
   end
 
-  # The exact text sent to the model: the summary so far, then the kept turns.
   def render(semantic, events) do
-    summary = if semantic, do: "Summary: " <> Enum.map_join(semantic.critical_context, " ", & &1["text"]) <> "\n", else: ""
-    {:ok, summary <> Enum.map_join(events, "", &"#{&1.role}: #{&1.content}\n")}
+    summary = if semantic, do: JSON.encode!(Semantic.to_map(semantic)) <> "\n", else: ""
+    {:ok, summary <> Enum.map_join(events, "\n", &"#{&1.role}: #{&1.content}")}
   end
 
-  # Stands in for a summary model: keeps the first sentence of every turn.
   def summarize(payload) do
-    earlier = if payload.previous_semantic, do: payload.previous_semantic.critical_context, else: []
-    notes = for event <- payload.events, do: %{"text" => first_sentence(event.content), "source_event_ids" => [event.event_id]}
+    model = BeamWeaver.Models.init_chat_model!("openai:gpt-5.4-mini", max_tokens: 2_048, timeout: 60_000)
+    indexed = Enum.with_index(payload.events)
+    sources = Map.new(indexed, fn {event, index} -> {index, event.event_id} end)
+    input = Enum.map(indexed, fn {event, index} -> %{event_index: index, text: event.content} end)
 
-    {:ok,
-     %{
-       "version" => 1,
-       "objective" => [],
-       "user_requests" => [],
-       "constraints" => [],
-       "decisions" => [],
-       "progress" => %{"completed" => [], "active" => [], "blocked" => [], "pending" => []},
-       "critical_context" => earlier ++ notes,
-       "errors" => [],
-       "artifact_refs" => [],
-       "coverage" => %{
-         "first_chat_seq" => payload.covered_range.first_chat_seq,
-         "last_chat_seq" => payload.covered_range.last_chat_seq
-       }
-     }}
+    schema = %{
+      "type" => "object",
+      "additionalProperties" => false,
+      "required" => ["facts"],
+      "properties" => %{
+        "facts" => %{
+          "type" => "array",
+          "items" => %{
+            "type" => "object",
+            "additionalProperties" => false,
+            "required" => ["event_index", "text"],
+            "properties" => %{"event_index" => %{"type" => "integer"}, "text" => %{"type" => "string"}}
+          }
+        }
+      }
+    }
+
+    messages = [
+      Message.system(
+        "Extract at most six distinct order facts. Omit repetitive background. Each fact must cite the supplied event_index containing it."
+      ),
+      Message.user(JSON.encode!(input))
+    ]
+
+    with {:ok, reply} <- ChatModel.invoke(model, messages, response_format: %{name: "facts", schema: schema}) do
+      notes =
+        for fact <- reply.metadata.parsed["facts"],
+            do: %{"text" => fact["text"], "source_event_ids" => [Map.fetch!(sources, fact["event_index"])]}
+
+      earlier = if payload.previous_semantic, do: payload.previous_semantic.critical_context, else: []
+
+      {:ok,
+       %{
+         "version" => 1,
+         "objective" => [],
+         "user_requests" => [],
+         "constraints" => [],
+         "decisions" => [],
+         "progress" => %{"completed" => [], "active" => [], "blocked" => [], "pending" => []},
+         "critical_context" => earlier ++ notes,
+         "errors" => [],
+         "artifact_refs" => [],
+         "coverage" => payload.covered_range
+       }, reply.usage_metadata}
+    end
   end
-
-  defp first_sentence(text), do: text |> String.split(~r/(?<=[.?!])\s/, parts: 2) |> hd()
 end
-```
 
-Then build a request for one conversation and compact it:
-
-```elixir
 alias BeamWeaver.Compaction
-alias BeamWeaver.Compaction.{Request, State}
+alias BeamWeaver.Compaction.{Canonical, Request}
 alias BeamWeaver.Core.ID
-
-rows = [
-  {:user, "Where is order A-1001? I ordered it last week."},
-  {:assistant, "Order A-1001 arrives on Thursday. It left our warehouse on Monday, and the courier delivers between 9:00 and 17:00."},
-  {:user, "Can I still change the delivery address? I'll be at work that day."},
-  {:assistant, "Yes, until Wednesday at noon. Use the link in your shipping email, or I can change it for you now."},
-  {:user, "Please send it to my office: Rua Augusta 12, Lisbon."},
-  {:assistant, "Done, order A-1001 now goes to Rua Augusta 12, Lisbon. A confirmation email with the new address is on its way."},
-  {:user, "When does order A-1002 ship? Thanks for your help!"},
-  {:assistant, "Order A-1002 ships on Friday. It comes from our Porto warehouse, so it should reach you on Monday."}
-]
-
 lane_id = ID.uuidv7()
-events = MyApp.Transcript.events(lane_id, rows)
-{:ok, rendered} = MyApp.Transcript.render(nil, events)
+background = String.duplicate("The customer portal displays the same tracking details and contact instructions. ", 12)
+rows = for n <- 1..6, role <- [:user, :assistant], do: {role, "Order A-100#{n} arrives Thursday. " <> background}
+events = MyApp.TranscriptCompaction.events(lane_id, rows)
+{:ok, rendered} = MyApp.TranscriptCompaction.render(nil, events)
 
 {:ok, request} =
   Request.new(%{
     request_id: ID.uuidv7(),
     trigger: :manual,
-    thread_id: "ticket-42",
+    thread_id: "compaction-demo",
     run_id: ID.uuidv7(),
     root_turn_id: ID.uuidv7(),
     run_agent_id: lane_id,
     checkpoint_namespace: "root",
     provider_connection_id: "openai-main",
-    destination_identity_hash: BeamWeaver.Compaction.Canonical.hash(%{"provider" => "openai", "model" => "gpt-5.4-mini"}),
-    # A small window and small limits, so that a short chat compacts.
-    model_profile: %{context_limit_kind: :separate_input, max_input_tokens: 16_000, max_output_tokens: 1_000},
-    policy: %{recent_tail_min_tokens: 100, recent_tail_max_tokens: 300, minimum_total_reclaim_tokens: 100},
+    destination_identity_hash: Canonical.hash(%{"provider" => "openai", "model" => "gpt-5.4-mini"}),
+    model_profile: BeamWeaver.Models.init_chat_model!("openai:gpt-5.4-mini").profile,
+    policy: %{recent_tail_min_tokens: 100, recent_tail_max_tokens: 500, minimum_total_reclaim_tokens: 100},
     rendered_request: rendered,
     events: events,
     rehydration_state: %{},
-    render: &MyApp.Transcript.render/2,
-    summarize: &MyApp.Transcript.summarize/1
+    render: &MyApp.TranscriptCompaction.render/2,
+    summarize: &MyApp.TranscriptCompaction.summarize/1
   })
 
 {:ok, result} = Compaction.compact(%{}, request)
-{:ok, context} = MyApp.Transcript.render(result.compaction_checkpoint.semantic, result.retained_events)
-
-{result.status, context}
-#=> {:compacted,
-#    "Summary: Where is order A-1001? Order A-1001 arrives on Thursday. Can I still change the delivery address? Yes, until Wednesday at noon.\nuser: Please send it to my office: Rua Augusta 12, Lisbon.\n" <> _}
+:compacted = result.status
+true = result.tokens_after < result.tokens_before
+true = result.tokens_reclaimed > 0
+true = length(result.retained_events) < length(events)
+{:ok, next_request} = MyApp.TranscriptCompaction.render(result.compaction_checkpoint.semantic, result.retained_events)
+true = next_request =~ "Thursday"
 ```
 
-The engine kept the last two user turns and the answers after them, summarized
-the four turns before, and rendered the result to check that it is smaller.
-It didn't save anything: the checkpoint in `result` is a candidate until your
-application stores it and switches the conversation to it.
+The callback asks the model for facts with integer source indices, then maps
+those indices to actual event IDs in code. The sample transcript contains
+order facts, so the other semantic collections stay empty; a general
+conversation summarizer must also preserve requests, constraints and progress.
+
+A returned checkpoint is a **candidate**, not an activated conversation.
+This example validates source shape, summary coverage and actual reduction,
+but does not persist anything.
 
 ## When to use it
 
-Agents keep their thread in checkpointed state, and the summarization
-middleware or `compact_conversation` shorten it for you. The Compaction
-Engine is for the other case: your application stores the transcript, for
-example as rows of a chat app, calls the model itself, and decides when to
-compact. The engine is a plain function. It starts no process, stores nothing
-and calls no provider: everything that touches a model or a database happens
-in your callbacks and your transaction.
+The engine starts no processes and owns no database or provider client.
+Callbacks perform rendering and summarization. This separates context
+transformation from your application's storage, locking and job lifecycle.
+Use it when those are already controlled by your application.
 
 ## How a compaction runs
 
-`BeamWeaver.Compaction.compact/2` takes `%{}` and a request, and then:
+The engine measures the rendered request, protects the recent tail and active
+inputs, projects oversized old tool results, summarizes the remaining older
+events, validates the summary, then renders again to verify useful reduction.
+It can return `:pruned` without summarization when projection alone suffices.
 
-1. Measures the rendered request against the model's context window.
-2. Picks a recent tail to keep word for word: roughly `recent_tail_ratio` of
-   the window, always including the last two user turns, protected events,
-   and both halves of a tool call.
-3. Shrinks large tool results in the older part to an excerpt. If that alone
-   frees enough room, it stops with `:pruned`.
-4. Calls `summarize` for the older part, in up to three chunks, each with the
-   summary so far.
-5. Validates each summary, and asks the summarizer once more if one is
-   invalid (one repair per compaction).
-6. Renders the summary and the tail, and checks that the result is small
-   enough: at most 70% of the window, and at least 15% and
-   `minimum_total_reclaim_tokens` smaller than before.
-
-The policy holds these numbers; its defaults suit real context windows:
-
-| Policy option | Meaning | Default |
-| --- | --- | --- |
-| `trigger_ratio` | Share of the window at which `:auto` compaction starts | `0.85` |
-| `recent_tail_ratio`, `recent_tail_min_tokens`, `recent_tail_max_tokens` | Size of the kept tail | `0.10`, `8_000`, `32_000` |
-| `post_compaction_target_ratio` | Largest share of the window the result may use | `0.70` |
-| `minimum_total_reclaim_tokens`, `minimum_total_reclaim_ratio` | Least a compaction must save | `8_192`, `0.15` |
-| `maximum_schema_repairs` | Extra summarizer calls after an invalid summary | `1` |
-| `maximum_auto_compactions_per_root_turn` | Automatic compactions per user turn; a new `root_turn_id` starts the count again | `3` |
+Default policy triggers automatic work at 85% of the context limit and targets
+70% afterward. It keeps a tail around 10% of the window, bounded by 8,000 and
+32,000 tokens, and normally requires at least 8,192 tokens and 15% reduction.
+The demonstration above deliberately overrides those large-workload defaults.
 
 ## Source events
 
-Each event is one message of the conversation, all from one lane: one
-`run_agent_id` and `checkpoint_namespace`, the same as the request's. A
-request takes up to 10,000 events.
+Each request covers one lane: one `run_agent_id` and checkpoint namespace.
+Events carry UUIDv7 IDs, increasing chat positions/ordinals, roles, content,
+provenance and canonical content/provenance hashes. Those hashes establish
+which source material a summary or projection refers to.
 
-| Field | Meaning |
-| --- | --- |
-| `event_id` | A UUIDv7, such as `BeamWeaver.Core.ID.uuidv7/0` makes; summaries cite it |
-| `chat_seq`, `lane_event_ordinal` | Positions from 1; ordinals must strictly increase |
-| `role` | `:user`, `:assistant` or `:tool` |
-| `content` | The text, up to 1 MiB |
-| `tool` | For a tool result, a map with its `call_id`; an assistant event lists its calls under `calls`. A call and its result stay together. |
-| `artifact_ids` | Ids of durable copies of the content, up to 128 |
-| `provenance`, `provenance_sha256` | Where the event came from, and its hash |
-| `content_hash` | Hash of `content`, `tool`, `artifact_ids` and `truncated` |
-| `token_count` | Optional size; otherwise the size of the event as JSON |
-| `protected` | `true` keeps the event, and everything after it, word for word |
-
-`BeamWeaver.Compaction.Canonical.hash/1` makes both hashes from canonical
-JSON, so they don't depend on map order. Mark the current user input with
-`protected: true` or list it in the request's `active_input_event_ids`.
+Tool-call/result pairs must remain associated. `artifact_ids` identify durable
+copies of large results; `protected: true` or `active_input_event_ids` protects
+current input from summarization. Preserve source IDs across retries and
+subsequent compactions.
 
 ## The request
 
-| Field | Meaning |
-| --- | --- |
-| `request_id` | Becomes the checkpoint id; reuse it when you retry the same attempt |
-| `trigger` | `:manual`, `:auto`, `:overflow` or `:model_switch_preflight` |
-| `thread_id`, `run_id`, `root_turn_id` | Your ids for the conversation, the run and the user's turn |
-| `provider_connection_id`, `destination_identity_hash` | The connection and the model destination this context is for; the hash is 64 hex characters |
-| `model_profile` | The window: `context_limit_kind: :separate_input` with `max_input_tokens`, or `:shared_input_output` with `max_context_tokens` |
-| `requested_max_output_tokens` | With a shared window, the output tokens to keep free (default 0) |
-| `rendered_request` | The request you would send now, as `render/2` builds it |
-| `events`, `active_input_event_ids` | The lane's events in order, and the current input |
-| `parent_checkpoint_id`, `previous_semantic` | The active checkpoint and its summary, on later compactions |
-| `rehydration_state` | Exact data to keep beside the summary, such as a to-do list revision |
-| `policy`, `anti_thrash`, `focus` | Policy options, the lane's state for automatic compaction, and a hint for the summary |
+Supply the exact current `rendered_request`, source events, model context
+limits and a renderer that matches your actual next provider request.
+Identity fields bind the attempt to a thread, run, root user turn and model
+destination. For shared input/output windows, reserve requested output tokens.
+Unknown context limits fail instead of being guessed.
 
-A real model's profile has these limits: use `model.profile` from
-`BeamWeaver.Models.init_chat_model!/2`, or
-`BeamWeaver.Models.ProfileRegistry.fetch/2`. A profile without them fails
-with `:unknown_context_limit` rather than guess. Sizes are counted
-conservatively as one token per byte of the rendered request.
+`previous_semantic` and `parent_checkpoint_id` connect later attempts to the
+active checkpoint. `rehydration_state` carries exact application data alongside
+the summary. `focus` can guide summarization without changing source facts.
+Context budgeting conservatively counts rendered bytes; it is not the
+provider's billing tokenizer.
 
 ## The summarizer
 
-`summarize/1` receives a map with the `events` to summarize (with string
-roles), the `previous_semantic` summary or `nil`, the `covered_range` the
-summary must state as its `coverage`, a `maximum_output_tokens` budget, and an
-optional `focus`. It returns `{:ok, summary}` or `{:ok, summary, usage}`, where
-the summary is a map or a JSON string.
+The payload includes events, previous semantic state, exact covered range and
+an output budget. Return a semantic map or JSON text, optionally with usage.
+`Semantic.json_schema/0` describes objectives, user requests, constraints,
+decisions, progress, critical context, errors, artifact references and coverage.
 
-The summary has a closed shape, and `BeamWeaver.Compaction.Semantic.json_schema/0`
-returns it as JSON Schema: `objective`, `user_requests`, `constraints`,
-`decisions`, `progress` (`completed`, `active`, `blocked`, `pending`),
-`critical_context`, `errors`, `artifact_refs`, `coverage` and `version: 1`.
-The engine rejects a summary that:
-
-- cites an event id that is neither in `events` nor in the previous summary,
-- quotes a user request that isn't word for word in the cited user message,
-- states a `coverage` other than `covered_range`,
-- has unknown fields, duplicate entries, or more than 128 KiB.
-
-When a summary is rejected, the summarizer gets one more call with
-`repair: %{invalid_output: ..., error: ...}` in the payload. Copy the entries
-of `previous_semantic` that still matter into the new summary, since it
-replaces the old one. `user_requests` are the exception: each must quote a
-user message in the current `events`. A summarizer that calls a model:
-
-```elixir
-defmodule MyApp.CompactionModel do
-  alias BeamWeaver.Compaction.Semantic
-  alias BeamWeaver.Core.{ChatModel, Message}
-
-  @instructions """
-  Summarize the conversation events as JSON that matches this schema. Cite
-  event ids in source_event_ids, and quote user requests exactly.
-  """
-
-  def summarize(payload) do
-    model = BeamWeaver.Models.init_chat_model!("openai:gpt-5.4-mini")
-    schema = JSON.encode!(Semantic.json_schema())
-    messages = [Message.system(@instructions <> schema), Message.user(JSON.encode!(payload))]
-
-    with {:ok, reply} <- ChatModel.invoke(model, messages) do
-      {:ok, Message.text(reply), reply.usage_metadata}
-    end
-  end
-end
-```
-
-The engine doesn't enforce the policy's `provider_timeout_ms`: set timeouts
-on the model call yourself. Exceptions in `render/2` and `summarize/1` come
-back as errors.
+Validation checks schema shape, source IDs, exact user excerpts, coverage,
+duplicates and size. Invalid output receives a bounded repair attempt.
+These checks do not prove every paraphrased fact is correct; evaluate summary
+quality against application requirements. Set provider timeouts inside your
+callback; the engine does not enforce a provider timeout for you.
 
 ## Results
 
-`compact/2` returns `{:ok, result}` with one of three statuses:
+| Status | Meaning |
+| --- | --- |
+| `:skipped` | Automatic compaction suppressed; no checkpoint |
+| `:pruned` | Projection alone reclaimed enough space |
+| `:compacted` | A summary plus retained tail reclaimed enough space |
 
-| Status | Meaning | Summarizer called | Checkpoint |
-| --- | --- | --- | --- |
-| `:skipped` | An `:auto` attempt that wasn't needed; the reason is in `provider_usage.suppression` | No | `nil` |
-| `:pruned` | Shrinking large tool results freed enough room | No | Yes |
-| `:compacted` | The older turns were summarized | Yes | Yes |
-
-The result also has the `retained_events` to send after the summary,
-`tokens_before`, `tokens_after` and `tokens_reclaimed`, the summarizer's
-usage, and the lane's state for automatic compaction as `anti_thrash` (see
-[Automatic compaction](#automatic-compaction)). Everything else is
-`{:error, %BeamWeaver.Core.Error{}}`; the common types are
-`:ineffective_compaction` (the result wasn't small enough; save the state in
-its `details.anti_thrash`, see [Automatic compaction](#automatic-compaction)),
-`:invalid_compaction_semantic` (the summary failed validation twice),
-`:compaction_provider_error` (the summarizer raised or returned something
-other than a summary or a `BeamWeaver.Core.Error`, which comes back as it is),
-`:missing_compaction_artifact`, `:compaction_input_too_large` and
-`:invalid_compaction_request`.
+Results include token estimates, retained events, candidate checkpoint,
+provider usage and anti-thrashing state. Errors include ineffective reduction,
+invalid semantic output, missing artifacts and invalid/oversized requests.
+Inspect error details before retrying.
 
 ## Save and activate the checkpoint
 
-`BeamWeaver.Compaction.Checkpoint.to_map/1` turns the checkpoint into a map
-that you can store as JSON. Save it and point the conversation at it in one
-transaction, and only if nobody moved the conversation since you built the
-request. Here a `generation` column serves as that fence:
+In one application transaction, save the candidate idempotently and update
+the conversation's active checkpoint only if its expected parent/revision
+still matches. Use an optimistic revision check or equivalent concurrency
+control. A stored candidate alone is not current state.
+
+If another writer advanced the conversation, do not activate the stale
+candidate. Reload and construct a new request. If the same candidate is
+already active, the original attempt succeeded.
+
+The following in-memory owner demonstrates an atomic revision check and idempotent activation. Its lifetime is the owner process; use a database transaction with the same invariants for durable conversations:
 
 ```elixir
-defmodule MyApp.Repo do
-  use Ecto.Repo, otp_app: :my_app, adapter: Ecto.Adapters.Postgres
-end
+defmodule MyApp.CompactionHead do
+  def activate(owner, expected_revision, checkpoint, anti_thrash) do
+    Agent.get_and_update(owner, fn state ->
+      cond do
+        state.active_id == checkpoint.checkpoint_id ->
+          {{:ok, state.revision}, state}
 
-defmodule MyApp.Conversations do
-  import Ecto.Query
+        state.revision != expected_revision ->
+          {{:error, :stale_conversation}, state}
 
-  alias BeamWeaver.Compaction.{Checkpoint, State}
+        true ->
+          {:ok, recorded} = BeamWeaver.Compaction.State.record_success(anti_thrash, checkpoint)
 
-  def activate(conversation_id, generation, %Checkpoint{} = checkpoint, %State{} = state) do
-    {:ok, state} = State.record_success(state, checkpoint)
+          updated = %{
+            state
+            | revision: state.revision + 1,
+              active_id: checkpoint.checkpoint_id,
+              checkpoints:
+                Map.put(
+                  state.checkpoints,
+                  checkpoint.checkpoint_id,
+                  BeamWeaver.Compaction.Checkpoint.to_map(checkpoint)
+                ),
+              anti_thrash: recorded
+          }
 
-    MyApp.Repo.transact(fn ->
-      MyApp.Repo.insert_all("compaction_checkpoints", [%{id: checkpoint.checkpoint_id, data: Checkpoint.to_map(checkpoint)}],
-        on_conflict: :nothing
-      )
-
-      moved =
-        from(c in "conversations", where: c.id == ^conversation_id and c.generation == ^generation)
-        |> MyApp.Repo.update_all(
-          set: [active_checkpoint_id: checkpoint.checkpoint_id, compaction_state: Map.from_struct(state), generation: generation + 1]
-        )
-
-      case moved do
-        {1, _} -> {:ok, checkpoint.checkpoint_id}
-        {0, _} -> {:error, :stale_conversation}
+          {{:ok, updated.revision}, updated}
       end
     end)
   end
 end
-```
 
-A returned result, a summary, or a saved row doesn't make a checkpoint
-current; only your transaction does. If it fails with a stale conversation,
-leave the candidate as it is and build a new request from the new state.
+{:ok, owner} = Agent.start_link(fn -> %{revision: 0, active_id: nil, checkpoints: %{}, anti_thrash: nil} end)
+
+try do
+  {:ok, 1} = MyApp.CompactionHead.activate(owner, 0, result.compaction_checkpoint, result.anti_thrash)
+  {:ok, 1} = MyApp.CompactionHead.activate(owner, 0, result.compaction_checkpoint, result.anti_thrash)
+  1 = Agent.get(owner, &map_size(&1.checkpoints))
+after
+  Agent.stop(owner)
+end
+```
 
 ## Compact again later
 
-The conversation now continues from the summary and the retained turns. For
-the next compaction, send those turns with the new ones, and pass the active
-checkpoint as the parent:
+Render the active semantic checkpoint plus retained events and new events.
+Pass the active checkpoint as parent and carry its semantic state forward.
+Keep sequence numbers increasing; do not reassign event IDs or turn old
+summary text into fabricated source events.
+
+Append new events with increasing sequence numbers and use the prior checkpoint as the parent. This performs a second real summary:
 
 ```elixir
 checkpoint = result.compaction_checkpoint
+last_seq = Enum.max_by(events, & &1.chat_seq).chat_seq
+new_rows = for n <- 7..12, role <- [:user, :assistant], do: {role, "Order B-#{n} arrives Friday. " <> background}
 
-more = [
-  {:user, "Could you add gift wrap to order A-1002? It's a birthday present."},
-  {:assistant, "Gift wrap is added to order A-1002 at no extra cost. It still ships on Friday."},
-  {:user, "Great. What is your return window?"},
-  {:assistant, "You can return items within 30 days of delivery."}
-]
+new_events =
+  MyApp.TranscriptCompaction.events(lane_id, new_rows)
+  |> Enum.map(fn event ->
+    %{event | chat_seq: event.chat_seq + last_seq, lane_event_ordinal: event.lane_event_ordinal + last_seq}
+  end)
 
-lane = result.retained_events ++ MyApp.Transcript.events(lane_id, more, 9)
-{:ok, rendered} = MyApp.Transcript.render(checkpoint.semantic, lane)
+lane = result.retained_events ++ new_events
+{:ok, rendered} = MyApp.TranscriptCompaction.render(checkpoint.semantic, lane)
 
 next = %{
   request
@@ -359,89 +306,46 @@ next = %{
 }
 
 {:ok, second} = Compaction.compact(%{}, next)
-{second.status, second.compaction_checkpoint.parent_checkpoint_id == checkpoint.checkpoint_id}
-#=> {:compacted, true}
+:compacted = second.status
+true = second.compaction_checkpoint.parent_checkpoint_id == checkpoint.checkpoint_id
 ```
-
-The new summary carries the old one forward and covers the turns that were
-kept last time. Keep `chat_seq` and the ordinals growing across compactions.
 
 ## Automatic compaction
 
-With `trigger: :auto`, the engine first checks whether compaction is due: it
-skips without calling the summarizer while the request is below
-`trigger_ratio` of the window, or when the lane's
-`BeamWeaver.Compaction.State` says it compacted too recently. Keep one state
-per conversation and pass it as `anti_thrash`. Every result returns it as
-`result.anti_thrash`; record the activated checkpoint on it with
-`State.record_success/2` and save it with the checkpoint (`activate/4` above
-does):
+Keep `Compaction.State` per conversation lane. Pass it as `anti_thrash`, record
+success only after activation, and observe new tokens as context grows.
+The returned state or an ineffective-compaction error's state governs the
+next attempt. Suppression includes insufficient growth, a low request size,
+per-turn limits, rapid refill and pending cancellation. A new root turn resets
+the per-turn allowance; it does not erase the active summary.
+
+After activating a successful candidate, retain the anti-thrashing state. An unchanged small lane needs no immediate automatic summary:
 
 ```elixir
-{:ok, state} = State.record_success(second.anti_thrash, second.compaction_checkpoint)
-
-{:ok, skipped} = Compaction.compact(%{}, %{next | trigger: :auto, request_id: ID.uuidv7(), anti_thrash: state})
-{skipped.status, skipped.provider_usage}
-#=> {:skipped, %{suppression: :insufficient_new_tokens}}
+{:ok, anti_thrash} = BeamWeaver.Compaction.State.record_success(second.anti_thrash, second.compaction_checkpoint)
+{:ok, skipped} = Compaction.compact(%{}, %{next | request_id: ID.uuidv7(), trigger: :auto, anti_thrash: anti_thrash})
+:skipped = skipped.status
+IO.inspect(skipped.provider_usage, label: "Automatic compaction suppression")
 ```
-
-Update the state with `State.observe_new_tokens/2` as the conversation grows.
-The other reasons to skip are `:below_trigger`, `:automatic_limit`,
-`:rapid_refill` and `:cancellation_pending`. `:rapid_refill` follows an
-attempt that failed with `:ineffective_compaction`: save the error's
-`details.anti_thrash` as the lane's state, and automatic compaction waits
-until `State.observe_new_tokens/2` reports new context. `:automatic_limit`
-counts the automatic compactions of one user turn: a request with a new
-`root_turn_id` starts again at zero. Record a success only after your transaction activated
-the checkpoint, so a failed activation doesn't count. A state loaded from
-JSON goes back through `State.new/1`.
 
 ## Large tool results
 
-A tool result over 2 KiB in the summarized part is replaced by its first and
-last KiB: the event's `content` becomes `nil`, and `tool.result_excerpt` holds
-the excerpt. The full result must already be stored somewhere durable, listed
-in the event's `artifact_ids`; otherwise compaction fails with
-`:missing_compaction_artifact`. The checkpoint's `projection_manifest` records
-each replacement, and `BeamWeaver.Compaction.ToolProjection.replay/2` rebuilds
-the shortened events from the originals and checks every hash, for example
-when you rebuild a conversation after a restart.
+Old tool results larger than the projection threshold retain excerpts instead
+of full content. Their full contents must already have durable artifact IDs;
+otherwise compaction fails. The checkpoint's projection manifest plus
+`ToolProjection.replay/2` reconstructs the same projection from originals
+and verifies source identity.
 
 ## Recovery
 
-The engine can't know what happened to a provider call or a transaction after
-a crash, so your application keeps enough records to tell:
-
-- Allocate `request_id` once per attempt and reuse it on retry; it is the
-  checkpoint id, so saving is idempotent.
-- If you don't know whether the summary call completed, don't send a second
-  one blindly; check your records first.
-- If a checkpoint was saved but not activated, activate it only if its parent
-  is still the active checkpoint.
-- If the conversation already points at the same checkpoint, the attempt
-  succeeded; return that.
-- If the active checkpoint changed, keep the candidate unused and start over.
+Allocate a request ID once and reuse it for the same attempt. Reconcile
+ambiguous provider completion or transaction outcomes before making another
+summary request. Keep source events and candidate checkpoints until activation
+or abandonment is resolved. Compaction does not supply a scheduler.
 
 ## Limits
 
-- 10,000 events per request; 1 MiB of content and 128 artifact ids per event.
-- 1 MiB of `rehydration_state` as canonical JSON; 128 KiB per summary.
-- A `focus` of up to 2,000 bytes.
-- At most three summarizer calls per compaction, plus one repair.
-- Only the `:portable` mode exists; `mode: :native` fails with
-  `:native_compaction_unsupported`.
-
-## Reference
-
-- [`BeamWeaver.Compaction`](https://hexdocs.pm/beam_weaver/BeamWeaver.Compaction.html): `compact/2`
-- [`BeamWeaver.Compaction.Request`](https://hexdocs.pm/beam_weaver/BeamWeaver.Compaction.Request.html): the request and its callbacks
-- [`BeamWeaver.Compaction.InputEvent`](https://hexdocs.pm/beam_weaver/BeamWeaver.Compaction.InputEvent.html): one source event
-- [`BeamWeaver.Compaction.Policy`](https://hexdocs.pm/beam_weaver/BeamWeaver.Compaction.Policy.html): thresholds and limits
-- [`BeamWeaver.Compaction.Semantic`](https://hexdocs.pm/beam_weaver/BeamWeaver.Compaction.Semantic.html): the summary shape and its JSON Schema
-- [`BeamWeaver.Compaction.Result`](https://hexdocs.pm/beam_weaver/BeamWeaver.Compaction.Result.html): what `compact/2` returns
-- [`BeamWeaver.Compaction.Checkpoint`](https://hexdocs.pm/beam_weaver/BeamWeaver.Compaction.Checkpoint.html): the checkpoint to save and activate
-- [`BeamWeaver.Compaction.State`](https://hexdocs.pm/beam_weaver/BeamWeaver.Compaction.State.html): per-conversation state for automatic compaction
-- [`BeamWeaver.Compaction.Canonical`](https://hexdocs.pm/beam_weaver/BeamWeaver.Compaction.Canonical.html): canonical JSON and hashes
-- [`BeamWeaver.Compaction.ToolProjection`](https://hexdocs.pm/beam_weaver/BeamWeaver.Compaction.ToolProjection.html): shortened tool results and their replay
-- [`BeamWeaver.Compaction.RehydrationState`](https://hexdocs.pm/beam_weaver/BeamWeaver.Compaction.RehydrationState.html): exact state kept beside the summary
-- [`BeamWeaver.ContextBudget`](https://hexdocs.pm/beam_weaver/BeamWeaver.ContextBudget.html): how a request is measured against a context window
+Requests allow 10,000 events, up to 1 MiB per event, 128 artifact IDs per event,
+1 MiB of rehydration state, 128 KiB of semantic output and 2,000 bytes of focus.
+Summarization is bounded to three chunks plus one repair. Portable compaction
+is the supported mode; provider-native context mechanisms are separate.

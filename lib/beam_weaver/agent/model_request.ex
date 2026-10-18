@@ -1,6 +1,15 @@
 defmodule BeamWeaver.Agent.ModelRequest do
-  @moduledoc """
-  Immutable model-call request passed through agent middleware.
+  @moduledoc ~S"""
+  The request a model wrapper receives before invoking its handler.
+
+  Contains the selected model, messages, system instructions, offered tools,
+  response format, model options, state and runtime. Use `override/2` to derive
+  a changed request. Replacing tools through that function also updates the
+  execution registry; directly changing the tools field does not.
+
+  Request edits affect a model call rather than implicitly rewriting saved
+  conversation state. Runtime context is available through `runtime.context`.
+  See [Middleware](middleware.md) for wrapper ordering and authorization boundaries.
   """
 
   alias BeamWeaver.Core.Message
@@ -31,9 +40,15 @@ defmodule BeamWeaver.Agent.ModelRequest do
           model_opts: keyword()
         }
 
+  @doc """
+  Builds a request from keyword fields using the same normalization as override/2.
+  """
   @spec new(keyword()) :: t()
   def new(opts \\ []) when is_list(opts), do: override(%__MODULE__{}, opts)
 
+  @doc """
+  Returns combined system-message text, or nil when no system instructions exist.
+  """
   @spec system_prompt(t()) :: String.t() | nil
   def system_prompt(%__MODULE__{system_message: nil}), do: nil
 

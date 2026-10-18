@@ -1,10 +1,16 @@
 defmodule BeamWeaver.Checkpoint do
-  @moduledoc """
-  Public helpers for graph checkpoint savers.
+  @moduledoc ~S"""
+  Read, write, fork and retain graph checkpoint history through explicit savers.
 
-  Checkpoint savers are adapter structs that implement
-  `BeamWeaver.Checkpoint.Saver`. The graph runtime depends on this contract, not
-  on ETS, Ecto, or any other backend-specific module.
+  A saver is a struct implementing `BeamWeaver.Checkpoint.Saver`. Use these
+  facade functions for normalized results and telemetry. Prefer `fetch_tuple/2`
+  and `list_result/3` when storage failure must be handled as a value; legacy
+  convenience reads can raise rather than disguising failures as absence.
+
+  A config identifies thread, namespace and optionally an exact checkpoint.
+  Writes create history; they do not make external actions transactional.
+  Retention must preserve delta dependencies needed to reconstruct later state.
+  See [Checkpoints](checkpoints.md) and [Storage](storage.md).
   """
 
   alias BeamWeaver.Checkpoint.Normalization
@@ -21,6 +27,9 @@ defmodule BeamWeaver.Checkpoint do
   @type versions :: map()
   @type writes :: [{String.t(), term()} | {String.t(), String.t(), term()}]
 
+  @doc """
+  Returns the stored checkpoint payload or nil. Storage errors raise; use fetch_tuple/2 for tagged errors.
+  """
   @spec get(saver(), config()) :: checkpoint() | nil
   def get(saver, config) do
     case get_tuple(saver, config) do
@@ -29,6 +38,9 @@ defmodule BeamWeaver.Checkpoint do
     end
   end
 
+  @doc """
+  Returns the normalized checkpoint tuple map or nil. Storage errors raise rather than returning absence.
+  """
   @spec get_tuple(saver(), config()) :: map() | nil
   def get_tuple(saver, config) do
     case fetch_tuple(saver, config) do
@@ -74,6 +86,9 @@ defmodule BeamWeaver.Checkpoint do
     normalized
   end
 
+  @doc """
+  Returns the tuple projected as Checkpoint.Record, or nil; storage errors follow get_tuple/2.
+  """
   @spec get_record(saver(), config()) :: Record.t() | nil
   def get_record(saver, config) do
     case get_tuple(saver, config) do
@@ -82,6 +97,9 @@ defmodule BeamWeaver.Checkpoint do
     end
   end
 
+  @doc """
+  Returns newest-first typed records using the same filters as list/3.
+  """
   @spec list_records(saver(), config() | nil, keyword()) :: [Record.t()]
   def list_records(saver, config \\ nil, opts \\ []) do
     saver
@@ -89,6 +107,9 @@ defmodule BeamWeaver.Checkpoint do
     |> Enum.map(&Record.from_tuple/1)
   end
 
+  @doc """
+  Returns newest-first checkpoint tuples. Supports limit, before and metadata filters; storage errors raise.
+  """
   @spec list(saver(), config() | nil, keyword()) :: [map()]
   def list(saver, config \\ nil, opts \\ []) do
     case list_result(saver, config, opts) do
@@ -125,6 +146,9 @@ defmodule BeamWeaver.Checkpoint do
     normalized
   end
 
+  @doc """
+  Stores one checkpoint with metadata/channel versions and returns its identifying config.
+  """
   @spec put(saver(), config(), checkpoint(), metadata(), versions()) ::
           {:ok, config()} | {:error, term()}
   def put(saver, config, checkpoint, metadata, new_versions) do
@@ -132,6 +156,9 @@ defmodule BeamWeaver.Checkpoint do
     call_saver(saver, :put, args, 1, config)
   end
 
+  @doc """
+  Persists a task's pending channel writes under the selected checkpoint and task path.
+  """
   @spec put_writes(saver(), config(), writes(), String.t(), String.t()) ::
           :ok | {:error, term()}
   def put_writes(saver, config, writes, task_id, task_path \\ "") do
@@ -139,6 +166,10 @@ defmodule BeamWeaver.Checkpoint do
     call_saver(saver, :put_writes, [config, writes, task_id, task_path], length(writes), config, metadata)
   end
 
+  @doc """
+  Atomically persists a checkpoint and pending writes when supported by the saver.
+  Returns :atomic_checkpoint_write_unsupported rather than performing a non-atomic fallback.
+  """
   @spec put_checkpoint_with_writes(
           saver(),
           config(),
@@ -274,6 +305,9 @@ defmodule BeamWeaver.Checkpoint do
   defp raise_checkpoint_error!(%Error{} = error), do: raise(RuntimeError, error.message)
   defp raise_checkpoint_error!(error), do: raise(RuntimeError, inspect(error))
 
+  @doc """
+  Reads the earlier writes required to reconstruct the selected delta channels.
+  """
   @spec get_delta_channel_history(saver(), config(), [term()], keyword()) :: map()
   def get_delta_channel_history(saver, config, channel_names, opts \\ []) do
     saver.__struct__.get_delta_channel_history(
@@ -284,24 +318,39 @@ defmodule BeamWeaver.Checkpoint do
     )
   end
 
+  @doc """
+  Deletes the selected thread history. Authorize this destructive operation in the application.
+  """
   @spec delete_thread(saver(), String.t()) :: :ok | {:error, term()}
   def delete_thread(saver, thread_id),
     do: call_saver(saver, :delete_thread, [thread_id], 1, %{"configurable" => %{"thread_id" => thread_id}})
 
+  @doc """
+  Deletes selected run history only when the saver can preserve later delta dependencies.
+  """
   @spec delete_for_runs(saver(), [String.t()]) :: :ok | {:error, term()}
   def delete_for_runs(saver, run_ids) when is_list(run_ids),
     do: call_saver(saver, :delete_for_runs, [run_ids], length(run_ids), %{}, %{run_ids: run_ids})
 
+  @doc """
+  Copies a thread and its stored history to a target thread through the saver.
+  """
   @spec copy_thread(saver(), String.t(), String.t()) :: :ok | {:error, term()}
   def copy_thread(saver, source_thread_id, target_thread_id) do
     metadata = %{source_thread_id: source_thread_id, target_thread_id: target_thread_id}
     call_saver(saver, :copy_thread, [source_thread_id, target_thread_id], 1, %{}, metadata)
   end
 
+  @doc """
+  Applies saver retention to selected threads, preserving state dependencies for continuation.
+  """
   @spec prune(saver(), [String.t()], keyword()) :: :ok | {:error, term()}
   def prune(saver, thread_ids, opts \\ []),
     do: call_saver(saver, :prune, [thread_ids, opts], length(thread_ids), %{}, %{thread_ids: thread_ids})
 
+  @doc """
+  Obtains the next channel version through the saver's version policy.
+  """
   @spec next_version(saver(), term(), term() | nil) :: term()
   def next_version(saver, current, channel), do: Saver.next_version(saver, current, channel)
 

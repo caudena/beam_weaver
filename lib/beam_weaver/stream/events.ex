@@ -198,8 +198,12 @@ defmodule BeamWeaver.Stream.Events.Error do
 end
 
 defmodule BeamWeaver.Stream.Events.Done do
-  @moduledoc """
-  Terminal event carrying final result or usage metadata when available.
+  @moduledoc ~S"""
+  A model stream's completed result/usage event.
+
+  An agent can make more model calls after this event, for example after tools.
+  Do not interpret Done alone as completion of the entire agent or graph run.
+  Check the run's terminal error/interrupt state and end of enumeration.
   """
 
   defstruct [:result, :usage, metadata: %{}]

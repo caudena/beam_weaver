@@ -427,24 +427,44 @@ defmodule BeamWeaver.OpenAI.ResponsesTest do
     assert length(body["input"]) == 3
   end
 
-  test "Responses lifecycle helpers use GET/POST endpoints and decode provider payloads" do
+  test "Responses lifecycle helpers retrieve and compact the complete stored conversation" do
+    first = %{"type" => "message", "role" => "user", "content" => "Remember A-1001."}
+    second = %{"type" => "message", "role" => "user", "content" => "It arrives Thursday."}
+
+    answer = %{
+      "type" => "message",
+      "role" => "assistant",
+      "content" => [
+        %{"type" => "output_text", "text" => "A-1001 arrives Thursday."}
+      ]
+    }
+
+    compacted = %{
+      "object" => "response.compaction",
+      "output" => [
+        %{"type" => "compaction", "encrypted_content" => "encrypted-fixture"}
+      ]
+    }
+
+    body = %{"model" => "gpt-5.4-mini", "input" => [first, second, answer], "instructions" => "Keep order IDs."}
+
     interactions = [
       %{
         method: "GET",
         uri: "https://api.openai.com/v1/responses/resp_123",
-        response: %{"id" => "resp_123", "status" => "completed"}
+        response: %{"id" => "resp_123", "model" => "gpt-5.4-mini", "output" => [answer]}
       },
       %{
         method: "GET",
-        uri: "https://api.openai.com/v1/responses/resp_123/input_items",
-        response: %{"object" => "list", "data" => [%{"id" => "msg_1"}]}
+        uri: "https://api.openai.com/v1/responses/resp_123/input_items?order=asc&limit=100",
+        response: %{"data" => [first], "has_more" => true, "last_id" => "msg_1"}
       },
       %{
-        method: "POST",
-        uri: "https://api.openai.com/v1/responses/resp_123/compact",
-        request: %{"strategy" => "auto"},
-        response: %{"id" => "resp_compact", "status" => "completed"}
-      }
+        method: "GET",
+        uri: "https://api.openai.com/v1/responses/resp_123/input_items?order=asc&limit=100&after=msg_1",
+        response: %{"data" => [second], "has_more" => false}
+      },
+      %{method: "POST", uri: "https://api.openai.com/v1/responses/compact", request: body, response: compacted}
     ]
 
     client =
@@ -454,14 +474,8 @@ defmodule BeamWeaver.OpenAI.ResponsesTest do
         transport_opts: [cassette_path: write_gzip_cassette(interactions)]
       )
 
-    assert {:ok, %{"id" => "resp_123", "status" => "completed"}} =
-             Client.retrieve_response(client, "resp_123")
-
-    assert {:ok, %{"data" => [%{"id" => "msg_1"}]}} =
-             Client.list_response_input_items(client, "resp_123")
-
-    assert {:ok, %{"id" => "resp_compact"}} =
-             Client.compact_response(client, "resp_123", %{"strategy" => "auto"})
+    assert {:ok, ^compacted} = Client.compact_response(client, "resp_123", %{"instructions" => "Keep order IDs."})
+    assert {:ok, ^compacted} = Client.compact(client, body)
   end
 
   defp write_gzip_cassette(interactions) when is_list(interactions) do

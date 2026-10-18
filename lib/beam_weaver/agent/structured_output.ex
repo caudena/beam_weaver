@@ -1,6 +1,17 @@
 defmodule BeamWeaver.Agent.StructuredOutput do
-  @moduledoc """
-  Structured response strategies for agent model calls.
+  @moduledoc ~S"""
+  Construct and resolve final-answer strategies for agents.
+
+  `auto/2` prefers a compatible native provider response and otherwise uses a
+  schema tool. `provider/2` expresses a native preference, with compatibility
+  fallback during strategy selection. `tool/2` requests the answer as tool
+  arguments and can feed validation failures back to the model.
+
+  Schemas can be BeamWeaver schema modules or supported JSON Schema forms.
+  Normalized answers use string keys. Local validation checks required top-level
+  keys and basic types, not every nested constraint or business rule.
+  Use the [Schema DSL guide](structured_output.md) for executable real-provider
+  examples, option precedence and retry behavior.
   """
 
   alias BeamWeaver.Agent.StructuredOutput.AutoStrategy
@@ -17,6 +28,9 @@ defmodule BeamWeaver.Agent.StructuredOutput do
 
   @auto_opts [:name, :description, :strict, :tool_message_content, :handle_errors, :max_retries]
 
+  @doc """
+  Builds an automatic strategy; compatibility selection occurs against the actual model and tools.
+  """
   @spec auto(term(), keyword()) :: AutoStrategy.t()
   def auto(schema, opts \\ []),
     do: %AutoStrategy{schema: schema, opts: opts |> List.wrap() |> Keyword.take(@auto_opts)}
@@ -48,12 +62,18 @@ defmodule BeamWeaver.Agent.StructuredOutput do
     }
   end
 
+  @doc """
+  Builds a provider-native preference with optional name, description and strict settings.
+  """
   @spec provider(term(), keyword()) :: ProviderStrategy.t()
   def provider(schema, opts \\ []) do
     spec = Schema.schema_spec(schema, Keyword.take(opts, [:name, :description, :strict]))
     %ProviderStrategy{schema: schema, schema_spec: spec, strict: Keyword.get(opts, :strict)}
   end
 
+  @doc """
+  Normalizes a schema or strategy; nil disables structured output.
+  """
   @spec normalize(term()) :: nil | AutoStrategy.t() | ToolStrategy.t() | ProviderStrategy.t()
   def normalize(nil), do: nil
   def normalize(%AutoStrategy{} = strategy), do: strategy
@@ -64,6 +84,9 @@ defmodule BeamWeaver.Agent.StructuredOutput do
   def normalize(%ProviderStrategy{} = strategy), do: strategy
   def normalize(schema), do: auto(schema)
 
+  @doc """
+  Selects the effective strategy for the model profile and whether ordinary tools are present.
+  """
   @spec effective_strategy(term(), term(), [term()]) :: term()
   def effective_strategy(response_format, model, tools) do
     response_format
@@ -71,10 +94,16 @@ defmodule BeamWeaver.Agent.StructuredOutput do
     |> elem(0)
   end
 
+  @doc """
+  Returns the selected strategy together with its compatibility-policy details.
+  """
   @spec effective_strategy_info(term(), term(), [term()]) :: {term(), struct()}
   def effective_strategy_info(response_format, model, tools),
     do: Policy.choose(response_format, model, tools)
 
+  @doc """
+  Builds schema-answer tools for tool strategies; provider strategies add no such tools.
+  """
   @spec setup_tools(term()) :: [Tool.t()]
   def setup_tools(%AutoStrategy{schema: schema}), do: setup_tools(tool(schema))
 

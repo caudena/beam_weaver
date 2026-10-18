@@ -10,7 +10,7 @@ defmodule BeamWeaver.DeepSeek.Tools do
 
   @function_name ~r/^[A-Za-z0-9_-]{1,128}$/
   @max_tools 128
-  @responses_tool_types ["function", "web_search", "web_search_2025_08_26"]
+  @responses_tool_types ["function", "web_search"]
 
   @doc "Builds an OpenAI-compatible function tool declaration."
   @spec function(term(), keyword()) :: map()
@@ -22,7 +22,7 @@ defmodule BeamWeaver.DeepSeek.Tools do
     |> Map.merge(BeamWeaver.MapShape.stringify_entries(extra_opts))
   end
 
-  @doc "Builds a DeepSeek Responses web-search declaration."
+  @doc "Builds a hosted web-search declaration for DeepSeek V4 Pro Responses. Flash does not execute this tool."
   @spec web_search(keyword()) :: map()
   def web_search(opts \\ []) do
     type = Keyword.get(opts, :type, "web_search")
@@ -33,7 +33,7 @@ defmodule BeamWeaver.DeepSeek.Tools do
     |> Map.put("type", to_string(type))
   end
 
-  @doc "Builds the Responses API custom apply_patch declaration supported by DeepSeek."
+  @doc "Builds a Responses apply_patch client declaration; the application executes the patch and returns its result."
   @spec apply_patch(keyword()) :: map()
   def apply_patch(opts \\ []), do: ToolCalling.custom("apply_patch", opts)
 

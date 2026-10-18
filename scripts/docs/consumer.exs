@@ -93,9 +93,6 @@ defmodule BeamWeaver.Docs.Consumer do
       end
       {bindings, env}
     end)
-    :ok = Ecto.Migrator.up(MyApp.Repo, 2, MyApp.Repo.Migrations.AddBeamWeaver, log: false)
-    :ok = Ecto.Migrator.up(MyApp.Repo, 3, MyApp.Repo.Migrations.UpgradeBeamWeaverMemory, log: false)
-    :ok = Ecto.Migrator.up(MyApp.Repo, 4, MyApp.Repo.Migrations.AddHelpCenterIndex, log: false)
     :ok = BeamWeaver.Migrations.verify_migrated!(repo: MyApp.Repo, adapters: [:checkpoint, :memory, :cache, :vector_store])
     """
 

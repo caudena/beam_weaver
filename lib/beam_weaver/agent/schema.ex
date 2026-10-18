@@ -1,6 +1,15 @@
 defmodule BeamWeaver.Agent.Schema do
-  @moduledoc """
-  Small explicit schema helpers for agent DSL declarations.
+  @moduledoc ~S"""
+  Runtime field contracts for agent context, input and output state.
+
+  Fields are optional unless `required: true`, unlike tool/response schema fields.
+  Context validation runs before model execution. Input/output schemas describe
+  application state, not the model's structured answer; use `BeamWeaver.Schema`
+  and `response_schema` for that separate contract.
+
+  `merge_schema/2` layers right-hand fields over left-hand fields. Validation
+  returns :ok or a typed error identifying invalid data. See
+  [Runtime Context](runtime_context.md) and [Agents](agents.md#declarations).
   """
 
   alias BeamWeaver.Core.Error
@@ -31,9 +40,15 @@ defmodule BeamWeaver.Agent.Schema do
     }
   end
 
+  @doc """
+  Merges field maps with right-hand entries winning; nil behaves as an empty map.
+  """
   @spec merge_schema(map() | nil, map() | nil) :: map()
   def merge_schema(left, right), do: Map.merge(left || %{}, right || %{})
 
+  @doc """
+  Checks context fields and returns :invalid_context for invalid caller data.
+  """
   @spec validate_context(map() | nil, term()) :: :ok | {:error, Error.t()}
   def validate_context(nil, _context), do: :ok
   def validate_context(schema, nil), do: validate_context(schema, %{})
@@ -79,10 +94,16 @@ defmodule BeamWeaver.Agent.Schema do
 
   defp atomize_declared_keys(_schema, context), do: context
 
+  @doc """
+  Checks state input against an explicit field schema.
+  """
   @spec validate_input(map() | nil, term()) :: :ok | {:error, Error.t()}
   def validate_input(schema, input),
     do: validate_value_schema(schema, input, :invalid_agent_input, "agent input")
 
+  @doc """
+  Checks the final state against an explicit output field schema.
+  """
   @spec validate_output(map() | nil, term()) :: :ok | {:error, Error.t()}
   def validate_output(schema, output),
     do: validate_value_schema(schema, output, :invalid_agent_output, "agent output")
@@ -90,6 +111,9 @@ defmodule BeamWeaver.Agent.Schema do
   # `tool_set` holds the tools the model was offered on its latest call, for
   # the tools node; tools can't be saved, so `tool_set_names` keeps their
   # names in the thread's checkpoints, for a run that continues from one.
+  @doc """
+  Builds the agent runtime's message, private-bookkeeping and managed-step channels.
+  """
   @spec default_state_schema(boolean()) :: map()
   def default_state_schema(structured_response?) do
     schema = %{

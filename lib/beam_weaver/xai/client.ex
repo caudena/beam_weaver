@@ -1,6 +1,16 @@
 defmodule BeamWeaver.XAI.Client do
-  @moduledoc """
-  xAI OpenAI-compatible API client built on `BeamWeaver.Transport`.
+  @moduledoc ~S"""
+  Native XAI HTTP client using `BeamWeaver.Transport`.
+
+  Use this layer when your application owns provider request/response shapes.
+  It accepts native bodies and returns decoded provider data or tagged errors;
+  the model facade supplies portable message normalization and compatibility
+  checks. Transport/replay overrides do not establish live provider access.
+
+  Configure this client's credentials for its actual endpoint. Keep raw request
+  headers/bodies out of logs. Stream consumers own consumption and cancellation;
+  collected-response helpers wait for completion. The [XAI guide](providers/xai.md)
+  identifies the implemented endpoints and external-resource lifetimes.
   """
 
   use BeamWeaver.Provider.RedactedInspect
@@ -47,7 +57,7 @@ defmodule BeamWeaver.XAI.Client do
   @type t :: %__MODULE__{}
 
   @doc """
-  Builds a client from keyword options and xAI environment defaults.
+  Builds a client from keyword options and xAI application-configuration defaults.
   """
   @spec new(keyword()) :: t()
   def new(opts \\ []) do
@@ -68,26 +78,44 @@ defmodule BeamWeaver.XAI.Client do
     }
   end
 
+  @doc """
+  Sends a native JSON request and returns the decoded provider payload or a tagged HTTP/transport error.
+  """
   @spec responses(t(), map(), keyword()) :: {:ok, map()} | {:error, Error.t()}
   def responses(%__MODULE__{} = client, body, opts \\ []) when is_map(body),
     do: client |> http(client.endpoint, opts) |> OpenAIClient.post(body, opts, decoder())
 
+  @doc """
+  Sends a native JSON request and returns the decoded provider payload or a tagged HTTP/transport error.
+  """
   @spec post_json(t(), String.t(), map(), keyword()) :: {:ok, map()} | {:error, Error.t()}
   def post_json(%__MODULE__{} = client, endpoint, body, opts \\ []) when is_binary(endpoint) and is_map(body),
     do: client |> http(endpoint, opts) |> OpenAIClient.post(body, Keyword.put(opts, :endpoint, endpoint), decoder())
 
+  @doc """
+  Sends a streaming request and returns text deltas. Consume the returned enumerable to execute streaming work.
+  """
   @spec responses_stream(t(), map(), keyword()) :: {:ok, Enumerable.t()} | {:error, Error.t()}
   def responses_stream(%__MODULE__{} = client, body, opts \\ []) when is_map(body),
     do: client |> http(client.endpoint, opts) |> OpenAIClient.stream_text(body, opts, decoder())
 
+  @doc """
+  Collects the streaming provider response into its final decoded native payload, or returns an error.
+  """
   @spec responses_stream_response(t(), map(), keyword()) :: {:ok, map()} | {:error, Error.t()}
   def responses_stream_response(%__MODULE__{} = client, body, opts \\ []) when is_map(body),
     do: client |> http(client.endpoint, opts) |> OpenAIClient.collect_response(body, opts, decoder())
 
+  @doc """
+  Returns the endpoint's streaming lifecycle events; use the typed model facade for a portable event contract.
+  """
   @spec responses_stream_events(t(), map(), keyword()) :: {:ok, Enumerable.t()} | {:error, Error.t()}
   def responses_stream_events(%__MODULE__{} = client, body, opts \\ []) when is_map(body),
     do: client |> http(client.endpoint, opts) |> OpenAIClient.stream_lifecycle(body, opts, decoder())
 
+  @doc """
+  Sends a streaming request and returns typed event envelopes. Consume once and handle terminal errors.
+  """
   @spec responses_stream_typed_events(t(), map(), keyword()) :: {:ok, Enumerable.t()} | {:error, Error.t()}
   def responses_stream_typed_events(%__MODULE__{} = client, body, opts \\ []) when is_map(body) do
     client
@@ -109,14 +137,23 @@ defmodule BeamWeaver.XAI.Client do
     end)
   end
 
+  @doc """
+  Sends a native JSON request and returns the decoded provider payload or a tagged HTTP/transport error.
+  """
   @spec chat_completions(t(), map(), keyword()) :: {:ok, map()} | {:error, Error.t()}
   def chat_completions(%__MODULE__{} = client, body, opts \\ []) when is_map(body),
     do: client |> http(client.chat_completions_endpoint, opts) |> OpenAIClient.post(body, opts, decoder())
 
+  @doc """
+  Sends a streaming request and returns text deltas. Consume the returned enumerable to execute streaming work.
+  """
   @spec chat_completions_stream(t(), map(), keyword()) :: {:ok, Enumerable.t()} | {:error, Error.t()}
   def chat_completions_stream(%__MODULE__{} = client, body, opts \\ []) when is_map(body),
     do: client |> http(client.chat_completions_endpoint, opts) |> OpenAIClient.stream_text(body, opts, decoder())
 
+  @doc """
+  Collects the streaming provider response into its final decoded native payload, or returns an error.
+  """
   @spec chat_completions_stream_response(t(), map(), keyword()) :: {:ok, map()} | {:error, Error.t()}
   def chat_completions_stream_response(%__MODULE__{} = client, body, opts \\ []) when is_map(body) do
     client
@@ -126,6 +163,9 @@ defmodule BeamWeaver.XAI.Client do
 
   # Like a Responses stream, the stream ends with the complete reply, decoded
   # like a reply from `chat_completions/3`, followed by its `Done` events.
+  @doc """
+  Sends a streaming request and returns typed event envelopes. Consume once and handle terminal errors.
+  """
   @spec chat_completions_stream_typed_events(t(), map(), keyword()) ::
           {:ok, Enumerable.t()} | {:error, Error.t()}
   def chat_completions_stream_typed_events(%__MODULE__{} = client, body, opts \\ []) when is_map(body) do
@@ -156,6 +196,9 @@ defmodule BeamWeaver.XAI.Client do
     end
   end
 
+  @doc """
+  Builds the normalized transport request for inspection or explicit dispatch; does not send it.
+  """
   @spec request(t(), map(), keyword()) :: Request.t()
   def request(%__MODULE__{} = client, body, opts \\ []) when is_map(body),
     do: client |> http(client.endpoint, opts) |> HTTPClient.request(body, opts)

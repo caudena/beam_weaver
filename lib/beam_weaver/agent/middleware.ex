@@ -1,39 +1,45 @@
 defmodule BeamWeaver.Agent.Middleware do
   @moduledoc ~S"""
-  Behaviour for agent middleware.
+  Hooks around agent state transitions, model calls and tool execution.
 
-  `use BeamWeaver.Agent.Middleware` and define any of the hooks. Every callback
-  receives the middleware itself first: the struct for struct middleware, or
-  the module for module middleware.
+  Implement only the callbacks your policy needs. State hooks return changed
+  keys, nil, a routing jump or an error. Wrappers receive a request and a
+  handler; calling the handler performs the underlying operation.
 
-      defmodule MyApp.LogMiddleware do
-        use BeamWeaver.Agent.Middleware
-        require Logger
+  ```elixir
+  defmodule MyApp.CountTurns do
+    use BeamWeaver.Agent.Middleware
+    @impl true
+    def after_model(_middleware, state, _runtime),
+      do: %{completed_turns: Map.get(state, :completed_turns, 0) + 1}
+  end
 
-        @impl true
-        def before_model(_middleware, state, _runtime) do
-          Logger.info("calling the model with #{length(state.messages)} messages")
-          nil
-        end
-      end
+  defmodule MyApp.InstrumentedAgent do
+    use BeamWeaver.Agent
+    model "openai:gpt-5.4-mini", max_tokens: 128, timeout: 60_000
+    middleware [MyApp.CountTurns]
+  end
 
-      defmodule MyApp.LoggedAgent do
-        use BeamWeaver.Agent
-        model "fake:chat", responses: ["Ready."]
-        middleware [MyApp.LogMiddleware]
-      end
+  {:ok, state} = MyApp.InstrumentedAgent.invoke(%{messages: ["Say hello."]})
+  1 = state.completed_turns
+  ```
 
-      {:ok, result} = MyApp.LoggedAgent.invoke(%{messages: ["Hello"]})
-      result.messages |> List.last() |> BeamWeaver.Core.Message.text()
-      #=> "Ready."
+  Configure OpenAI as in [Installation](installation.md). The example counts
+  completed model turns, not individual attempts inside a retry wrapper.
 
-  An agent's middleware entry can be a module, a struct, or `{module, opts}`.
-  `{module, opts}` is built with `module.new(opts)` when the module defines
-  `new/1`, and with `struct!/2` when it defines a struct. A bare module is
-  built the same way with no options, so `MyApp.Limit` and `{MyApp.Limit, []}`
-  are the same entry; a module without `new/1` or a struct is used as is.
-  `name/1`, `state_schema/1`, `context_schema/1`, `tools/1`, and
-  `requires_checkpointer?/1` have defaults that a middleware can override.
+  ## Ordering and construction
+
+  Before hooks run in list order, after hooks in reverse order and wrappers
+  nest with the first entry outermost. A boundary hook is not an unconditional
+  cleanup callback. Own resources with explicit lifecycle/try-after handling.
+
+  Entries are modules, structs or `{module, opts}`. Construction uses `new/1`
+  where available, otherwise the module's struct; a bare module uses defaults.
+  Every instance with state hooks needs a unique name. Return only changed
+  state keys so managed/read-only values are not written accidentally.
+
+  See [Middleware](middleware.md) for request overrides, routing and channels,
+  and [Built-in Middleware](builtin_middleware.md) for reusable policies.
   """
 
   alias BeamWeaver.Agent.Middleware.Hooks
@@ -51,16 +57,49 @@ defmodule BeamWeaver.Agent.Middleware do
           | {:jump, jump_target(), map()}
           | BeamWeaver.Graph.Command.t()
 
+  @doc """
+  Returns a unique middleware identity for graph node naming.
+  """
   @callback name(t()) :: atom() | String.t()
+  @doc """
+  Declares middleware-owned channels and reducers; return nil when none are needed.
+  """
   @callback state_schema(t()) :: map() | nil
+  @doc """
+  Declares required/optional trusted context fields for preflight validation.
+  """
   @callback context_schema(t()) :: map() | nil
+  @doc """
+  Returns tools contributed by this middleware instance.
+  """
   @callback tools(t()) :: [term()]
+  @doc """
+  Returns true when the middleware needs saved continuation, such as a review pause.
+  """
   @callback requires_checkpointer?(t()) :: boolean()
+  @doc """
+  Runs at the entry of an invocation and returns only state changes or routing/error data.
+  """
   @callback before_agent(t(), state :: map(), BeamWeaver.Graph.Runtime.t()) :: hook_result()
+  @doc """
+  Runs before a model turn; return changed keys rather than the whole state.
+  """
   @callback before_model(t(), state :: map(), BeamWeaver.Graph.Runtime.t()) :: hook_result()
+  @doc """
+  Runs after a model turn, before tool routing, in reverse middleware order.
+  """
   @callback after_model(t(), state :: map(), BeamWeaver.Graph.Runtime.t()) :: hook_result()
+  @doc """
+  Runs on the normal finishing path; it is not guaranteed cleanup after every failure or jump.
+  """
   @callback after_agent(t(), state :: map(), BeamWeaver.Graph.Runtime.t()) :: hook_result()
+  @doc """
+  Receives a ModelRequest and handler. Return the handler response/error or an intentional replacement.
+  """
   @callback wrap_model_call(t(), BeamWeaver.Agent.ModelRequest.t(), handler :: function()) :: term()
+  @doc """
+  Receives a ToolCallRequest and handler. Replacement tool messages must answer the original call ID.
+  """
   @callback wrap_tool_call(t(), BeamWeaver.Agent.ToolCallRequest.t(), handler :: function()) :: term()
 
   @optional_callbacks before_agent: 3,

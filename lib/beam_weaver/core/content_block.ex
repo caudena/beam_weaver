@@ -1,6 +1,15 @@
 defmodule BeamWeaver.Core.ContentBlock do
-  @moduledoc """
-  Typed content blocks used by messages and streaming chunks.
+  @moduledoc ~S"""
+  Typed text, media, citation and reasoning values inside messages.
+
+  Constructors create data; they do not upload files, fetch URLs or validate
+  account access. Provider codecs decide which representations the selected
+  model accepts. Inline media uses actual encoded bytes with a MIME type;
+  remote resource IDs must belong to the intended provider/account.
+
+  Keep native signed/encrypted reasoning when continuing a provider conversation.
+  `Message.text/1` is a display projection and omits that material. See
+  [Messages and Media](messages.md) for a real image request and tool-result flow.
   """
 
   import BeamWeaver.MapAccess, only: [get: 2]
@@ -90,16 +99,54 @@ defmodule BeamWeaver.Core.ContentBlock do
   @spec known_types() :: [atom()]
   def known_types, do: @known_types
 
+  @doc """
+  Builds text content with optional metadata.
+  """
   def text(text, metadata \\ %{}), do: %Text{text: text, metadata: metadata}
+
+  @doc """
+  Builds explicitly plain-text content with optional metadata.
+  """
   def plain_text(text, metadata \\ %{}), do: %PlainText{text: text, metadata: metadata}
+
+  @doc """
+  Builds image data from URL, provider file ID or base64 data/MIME fields. It performs no upload.
+  """
   def image(opts), do: struct(Image, opts)
+
+  @doc """
+  Builds audio content; acceptance and supported encodings depend on the selected provider.
+  """
   def audio(opts), do: struct(Audio, opts)
+
+  @doc """
+  Builds video content; acceptance and supported encodings depend on the selected provider.
+  """
   def video(opts), do: struct(Video, opts)
+
+  @doc """
+  Builds file content with data/URL or an actual uploaded file ID and optional filename.
+  """
   def file(opts), do: struct(File, opts)
+
+  @doc """
+  Builds reasoning content. Preserve replay metadata when copying native provider reasoning.
+  """
   def reasoning(text, metadata \\ %{}), do: %Reasoning{reasoning: text, metadata: metadata}
+
+  @doc """
+  Builds citation data with source URL/title/text and optional range metadata.
+  """
   def citation(opts), do: struct(Citation, opts)
+
+  @doc """
+  Builds a tool-result block with correlation ID, content and optional artifact.
+  """
   def tool_result(opts), do: struct(ToolResult, opts)
 
+  @doc """
+  Preserves an unrecognized provider content type and its value without claiming portable support.
+  """
   def unknown(provider_type, value, metadata \\ %{}),
     do: %Unknown{provider_type: provider_type, value: value, metadata: metadata}
 

@@ -11,9 +11,15 @@ defmodule BeamWeaver.Retriever do
   alias BeamWeaver.Core.Error
   alias BeamWeaver.Core.Tool
 
+  @doc """
+  Find documents for a query using the supplied request options; preserve source metadata and return errors explicitly.
+  """
   @callback retrieve(term(), String.t(), keyword()) ::
               {:ok, [Document.t()]} | {:error, Error.t()}
 
+  @doc """
+  Returns {:ok, documents} or an error for a text query. Adapter exceptions normalize to :retriever_error.
+  """
   def retrieve(retriever, query, opts \\ [])
 
   def retrieve(retriever, query, opts) when is_binary(query) do

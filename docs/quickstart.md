@@ -1,4 +1,4 @@
-# Quickstart
+# Your First Agent
 
 Make a real model call from an Elixir module. This page assumes you have
 completed [Installation](installation.md), including the provider key.
@@ -21,7 +21,8 @@ end
 selects the provider and model; the options limit this example's output and
 request time. `system_prompt` supplies instructions on each model call.
 No tools are available yet, so the agent can explain what information it
-needs but cannot look up an order.
+needs but cannot look up an order. Save only the module in the source file;
+the invocation blocks below belong in IEx or your application call site.
 
 ## Run it
 
@@ -38,7 +39,8 @@ The wording varies. Expect a request for information such as an order number.
 `result.messages` contains the conversation, including the user's message
 and the model's answer. Reading that result does not make another API call.
 
-For a running application, handle all three return shapes:
+The simple match above is useful in IEx. At an application boundary, handle
+all three return shapes so failures and review pauses are visible:
 
 ```elixir
 outcome =

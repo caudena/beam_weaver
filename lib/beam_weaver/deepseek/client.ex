@@ -1,6 +1,16 @@
 defmodule BeamWeaver.DeepSeek.Client do
-  @moduledoc """
-  Raw client for DeepSeek's native, OpenAI-compatible, and Anthropic-compatible APIs.
+  @moduledoc ~S"""
+  Native DeepSeek HTTP client using `BeamWeaver.Transport`.
+
+  Use this layer when your application owns provider request/response shapes.
+  It accepts native bodies and returns decoded provider data or tagged errors;
+  the model facade supplies portable message normalization and compatibility
+  checks. Transport/replay overrides do not establish live provider access.
+
+  Configure this client's credentials for its actual endpoint. Keep raw request
+  headers/bodies out of logs. Stream consumers own consumption and cancellation;
+  collected-response helpers wait for completion. The [DeepSeek guide](providers/deepseek.md)
+  identifies the implemented endpoints and external-resource lifetimes.
   """
 
   use BeamWeaver.Provider.RedactedInspect
@@ -101,6 +111,9 @@ defmodule BeamWeaver.DeepSeek.Client do
     }
   end
 
+  @doc """
+  Sends a native JSON request and returns the decoded provider payload or a tagged HTTP/transport error.
+  """
   @spec chat_completions(t(), map(), keyword()) :: {:ok, map()} | {:error, Error.t()}
   def chat_completions(%__MODULE__{} = client, body, opts \\ []) when is_map(body) do
     client
@@ -109,6 +122,9 @@ defmodule BeamWeaver.DeepSeek.Client do
     |> ResponseDecoder.json(opts)
   end
 
+  @doc """
+  Sends a streaming request and returns text deltas. Consume the returned enumerable to execute streaming work.
+  """
   @spec chat_completions_stream(t(), map(), keyword()) :: {:ok, Enumerable.t()} | {:error, Error.t()}
   def chat_completions_stream(%__MODULE__{} = client, body, opts \\ []) when is_map(body) do
     client
@@ -116,6 +132,9 @@ defmodule BeamWeaver.DeepSeek.Client do
     |> stream(body, opts, &OpenAICompatibleStreaming.text_deltas/1)
   end
 
+  @doc """
+  Collects the streaming provider response into its final decoded native payload, or returns an error.
+  """
   @spec chat_completions_stream_response(t(), map(), keyword()) :: {:ok, map()} | {:error, Error.t()}
   def chat_completions_stream_response(%__MODULE__{} = client, body, opts \\ []) when is_map(body) do
     client
@@ -123,6 +142,9 @@ defmodule BeamWeaver.DeepSeek.Client do
     |> HTTPClient.collect_sse(body, opts, &ResponseDecoder.chat_completions_stream_response(&1, opts))
   end
 
+  @doc """
+  Sends a streaming request and returns typed event envelopes. Consume once and handle terminal errors.
+  """
   @spec chat_completions_stream_typed_events(t(), map(), keyword()) ::
           {:ok, Enumerable.t()} | {:error, Error.t()}
   def chat_completions_stream_typed_events(%__MODULE__{} = client, body, opts \\ []) when is_map(body) do
@@ -135,6 +157,9 @@ defmodule BeamWeaver.DeepSeek.Client do
     )
   end
 
+  @doc """
+  Sends a native JSON request and returns the decoded provider payload or a tagged HTTP/transport error.
+  """
   @spec responses(t(), map(), keyword()) :: {:ok, map()} | {:error, Error.t()}
   def responses(%__MODULE__{} = client, body, opts \\ []) when is_map(body) do
     client
@@ -143,10 +168,16 @@ defmodule BeamWeaver.DeepSeek.Client do
     |> ResponseDecoder.json(opts)
   end
 
+  @doc """
+  Sends a streaming request and returns text deltas. Consume the returned enumerable to execute streaming work.
+  """
   @spec responses_stream(t(), map(), keyword()) :: {:ok, Enumerable.t()} | {:error, Error.t()}
   def responses_stream(%__MODULE__{} = client, body, opts \\ []) when is_map(body),
     do: client |> http(client.responses_endpoint, opts) |> stream(body, opts, &OpenAIStreaming.text_deltas/1)
 
+  @doc """
+  Collects the streaming provider response into its final decoded native payload, or returns an error.
+  """
   @spec responses_stream_response(t(), map(), keyword()) :: {:ok, map()} | {:error, Error.t()}
   def responses_stream_response(%__MODULE__{} = client, body, opts \\ []) when is_map(body) do
     client
@@ -154,14 +185,23 @@ defmodule BeamWeaver.DeepSeek.Client do
     |> HTTPClient.collect_sse(body, opts, &ResponseDecoder.responses_stream_response(&1, opts))
   end
 
+  @doc """
+  Returns the endpoint's streaming lifecycle events; use the typed model facade for a portable event contract.
+  """
   @spec responses_stream_events(t(), map(), keyword()) :: {:ok, Enumerable.t()} | {:error, Error.t()}
   def responses_stream_events(%__MODULE__{} = client, body, opts \\ []) when is_map(body),
     do: client |> http(client.responses_endpoint, opts) |> stream(body, opts, &OpenAIStreaming.lifecycle_events/1)
 
+  @doc """
+  Sends a streaming request and returns typed event envelopes. Consume once and handle terminal errors.
+  """
   @spec responses_stream_typed_events(t(), map(), keyword()) :: {:ok, Enumerable.t()} | {:error, Error.t()}
   def responses_stream_typed_events(%__MODULE__{} = client, body, opts \\ []) when is_map(body),
     do: client |> http(client.responses_endpoint, opts) |> typed_stream(body, opts, &deepseek_responses_typed_events/1)
 
+  @doc """
+  Sends a native JSON request and returns the decoded provider payload or a tagged HTTP/transport error.
+  """
   @spec completions(t(), map(), keyword()) :: {:ok, map()} | {:error, Error.t()}
   def completions(%__MODULE__{} = client, body, opts \\ []) when is_map(body) do
     client
@@ -170,10 +210,16 @@ defmodule BeamWeaver.DeepSeek.Client do
     |> ResponseDecoder.json(opts)
   end
 
+  @doc """
+  Sends a streaming request and returns text deltas. Consume the returned enumerable to execute streaming work.
+  """
   @spec completions_stream(t(), map(), keyword()) :: {:ok, Enumerable.t()} | {:error, Error.t()}
   def completions_stream(%__MODULE__{} = client, body, opts \\ []) when is_map(body),
     do: client |> http(client.completions_endpoint, opts) |> stream(body, opts, &OpenAIStreaming.text_deltas/1)
 
+  @doc """
+  Collects the streaming provider response into its final decoded native payload, or returns an error.
+  """
   @spec completions_stream_response(t(), map(), keyword()) :: {:ok, map()} | {:error, Error.t()}
   def completions_stream_response(%__MODULE__{} = client, body, opts \\ []) when is_map(body) do
     client
@@ -181,14 +227,23 @@ defmodule BeamWeaver.DeepSeek.Client do
     |> HTTPClient.collect_sse(body, opts, &ResponseDecoder.completions_stream_response(&1, opts))
   end
 
+  @doc """
+  Lists provider model data; this does not execute inference or alter local profiles.
+  """
   @spec models(t(), keyword()) :: {:ok, map()} | {:error, Error.t()}
   def models(%__MODULE__{} = client, opts \\ []),
     do: client |> http(client.models_endpoint, opts) |> HTTPClient.get(opts) |> ResponseDecoder.json(opts)
 
+  @doc """
+  Reads native account balance data with the configured credentials.
+  """
   @spec balance(t(), keyword()) :: {:ok, map()} | {:error, Error.t()}
   def balance(%__MODULE__{} = client, opts \\ []),
     do: client |> http(client.balance_endpoint, opts) |> HTTPClient.get(opts) |> ResponseDecoder.json(opts)
 
+  @doc """
+  Sends a native JSON request and returns the decoded provider payload or a tagged HTTP/transport error.
+  """
   @spec anthropic_messages(t(), map(), keyword()) :: {:ok, map()} | {:error, Error.t()}
   def anthropic_messages(%__MODULE__{} = client, body, opts \\ []) when is_map(body) do
     client
@@ -197,10 +252,16 @@ defmodule BeamWeaver.DeepSeek.Client do
     |> ResponseDecoder.json(opts)
   end
 
+  @doc """
+  Sends a streaming request and returns text deltas. Consume the returned enumerable to execute streaming work.
+  """
   @spec anthropic_messages_stream(t(), map(), keyword()) :: {:ok, Enumerable.t()} | {:error, Error.t()}
   def anthropic_messages_stream(%__MODULE__{} = client, body, opts \\ []) when is_map(body),
     do: client |> anthropic_http(opts) |> stream(body, opts, &AnthropicStreaming.text_deltas/1)
 
+  @doc """
+  Collects the streaming provider response into its final decoded native payload, or returns an error.
+  """
   @spec anthropic_messages_stream_response(t(), map(), keyword()) :: {:ok, map()} | {:error, Error.t()}
   def anthropic_messages_stream_response(%__MODULE__{} = client, body, opts \\ []) when is_map(body) do
     client
@@ -208,10 +269,16 @@ defmodule BeamWeaver.DeepSeek.Client do
     |> HTTPClient.collect_sse(body, opts, &ResponseDecoder.anthropic_stream_response(&1, opts))
   end
 
+  @doc """
+  Returns the endpoint's streaming lifecycle events; use the typed model facade for a portable event contract.
+  """
   @spec anthropic_messages_stream_events(t(), map(), keyword()) :: {:ok, Enumerable.t()} | {:error, Error.t()}
   def anthropic_messages_stream_events(%__MODULE__{} = client, body, opts \\ []) when is_map(body),
     do: client |> anthropic_http(opts) |> stream(body, opts, &AnthropicStreaming.lifecycle_events/1)
 
+  @doc """
+  Sends a streaming request and returns typed event envelopes. Consume once and handle terminal errors.
+  """
   @spec anthropic_messages_stream_typed_events(t(), map(), keyword()) ::
           {:ok, Enumerable.t()} | {:error, Error.t()}
   def anthropic_messages_stream_typed_events(%__MODULE__{} = client, body, opts \\ []) when is_map(body),

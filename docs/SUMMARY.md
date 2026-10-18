@@ -2,74 +2,71 @@
 
 * [Overview](README.md)
 
-## Get Started
+## Learn BeamWeaver
 
 * [Installation](installation.md)
-* [Quickstart](quickstart.md)
-* [Build an Agent](tutorial.md)
-* [Concepts](concepts.md)
-* [Examples](examples.md)
+* [Your First Agent](quickstart.md)
+* [Build a Support Agent](tutorial.md)
+* [How BeamWeaver Works](concepts.md)
+* [Runnable Examples](examples.md)
 
-## Agents
+## Build Agents
 
-* [Agents](agents.md)
-* [Models](models.md)
-* [Messages](messages.md)
-* [Tools](tools.md)
-* [Structured Output](structured_output.md)
-* [Middleware](middleware.md)
-* [Built-in Middleware](builtin_middleware.md)
+* [Agent DSL and Lifecycle](agents.md)
+* [Models and Provider Calls](models.md)
+* [Messages and Media](messages.md)
+* [Tool DSL](tools.md)
+* [Schema DSL and Structured Output](structured_output.md)
 * [Runtime Context](runtime_context.md)
 * [Streaming](streaming.md)
 
-## Memory and Context
+## Control Agent Behavior
 
-* [Short-Term Memory](short_term_memory.md)
+* [Middleware DSL](middleware.md)
+* [Built-in Middleware](builtin_middleware.md)
+* [Human Review](human_in_the_loop.md)
+* [Guardrails](guardrails.md)
+* [Capability Profiles](profiles.md)
+
+## Remember and Manage Context
+
+* [Conversation History](short_term_memory.md)
 * [Long-Term Memory](long_term_memory.md)
 * [Memory Files](memory_files.md)
 * [Context Management](context_management.md)
+* [Compaction Engine](compaction_engine.md)
 
-## Oversight and Safety
+## Give Agents a Workspace
 
-* [Human-in-the-Loop](human_in_the_loop.md)
-* [Guardrails](guardrails.md)
-
-## Deep Agents
-
-* [Deep Agents](deep_agents.md)
+* [Compose a Deep Agent](deep_agents.md)
 * [Filesystem](filesystem.md)
 * [Skills](skills.md)
 * [Subagents](subagents.md)
 * [Sandboxes](sandboxes.md)
-* [Capability Profiles](profiles.md)
+* [Retrieval](retrieval.md)
 
-## Graphs
+## Build Workflows
 
-* [Graphs](graphs.md)
-* [Graph State](graph_state.md)
+* [Graph DSL](graphs.md)
+* [State and Channels](graph_state.md)
 * [Workflow Patterns](workflow_patterns.md)
 * [Subgraphs](subgraphs.md)
 * [Checkpoints and Time Travel](checkpoints.md)
 * [Durable Execution](durable_execution.md)
 
-## Retrieval
+## Run in Production
 
-* [Retrieval](retrieval.md)
-
-## Production
-
-* [Going to Production](going_to_production.md)
+* [Production Integration](going_to_production.md)
 * [Configuration](configuration.md)
-* [Testing](testing.md)
-* [Tracing](tracing.md)
 * [Storage](storage.md)
+* [Tracing](tracing.md)
 * [Caching](caching.md)
 * [Rate Limiting](rate_limiting.md)
-* [Compaction Engine](compaction_engine.md)
+* [Testing Your Application](testing.md)
 
-## Providers
+## Provider Reference
 
-* [Providers](providers.md)
+* [Choose a Provider](providers.md)
   * [OpenAI](providers/openai.md)
   * [Anthropic](providers/anthropic.md)
   * [Google Gemini](providers/google.md)

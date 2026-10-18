@@ -1,11 +1,11 @@
 defmodule BeamWeaver.Graph.ServerInfo do
-  @moduledoc """
-  Server-side graph metadata exposed to nodes and tool runtimes.
+  @moduledoc ~S"""
+  Application-supplied server metadata available at graph runtime boundaries.
 
-  A plain struct with the assistant id, graph id and authenticated user.
-  `from_configurable/1` builds it from the run config's configurable map
-  (`:assistant_id`, `:graph_id`, `:auth_user`) and returns `nil` when none of
-  them are set.
+  Holds assistant/graph identifiers and an application-authenticated user value.
+  `from_configurable/1` reads those fields from run configuration and returns nil
+  when absent. It does not authenticate or authorize the supplied identity;
+  trusted application code must establish it before starting a run.
   """
 
   defmodule User do

@@ -2,9 +2,9 @@
 
 [![ci](https://github.com/caudena/beam_weaver/actions/workflows/ci.yml/badge.svg)](https://github.com/caudena/beam_weaver/actions/workflows/ci.yml)
 
-Build AI agents and durable workflows in Elixir. Define tools as modules,
-give an agent a model and instructions, and run it inside your application.
-Use explicit graphs when your application should control the steps.
+Build AI agents and durable workflows inside your Elixir application.
+Declare an agent, expose application actions as typed tools, and inspect its
+results. Use the graph DSL for explicit steps, branches and parallel work.
 
 These docs target **1.0.0**. The Hex dependency `{:beam_weaver, "~> 1.0.0"}`
 becomes installable when that release is published. See
@@ -12,7 +12,9 @@ becomes installable when that release is published. See
 
 ## Your first agent
 
-After configuring OpenAI in your application's `config/runtime.exs`:
+Follow [Installation](docs/installation.md) to create a Mix application and
+configure OpenAI. Then define this module under `lib/my_app/` and run the
+invocation in `iex -S mix`:
 
 ```elixir
 defmodule MyApp.SupportAgent do
@@ -28,11 +30,12 @@ true = is_binary(answer) and byte_size(answer) > 0
 IO.puts(answer)
 ```
 
-The [Quickstart](docs/quickstart.md) explains each line and includes a Google
-alternative. [Build an Agent](docs/tutorial.md) adds a real tool, verifies
-that the model called it, and continues the conversation.
+The [Quickstart](docs/quickstart.md) explains the result and offers a Google
+alternative. [Build a Support Agent](docs/tutorial.md) adds an order lookup,
+checks its actual result and continues the conversation. Then use the
+[concepts guide](docs/concepts.md) to connect agents, state and resource lifetimes.
 
-## Build from the pieces you need
+## Learn, extend and operate
 
 | Capability | Guide |
 | --- | --- |
@@ -56,14 +59,13 @@ and replay transports support deterministic application tests.
 
 ## Documentation and examples
 
-- [Guides](https://docs.weavescope.com/beamweaver)
-- [API reference](https://hexdocs.pm/beam_weaver)
+- [Public guides and inline examples](https://docs.weavescope.com/beamweaver)
 - [Runnable examples](docs/examples.md)
 - [Changelog](CHANGELOG.md)
 
-Run `mix test` for deterministic checks and `mix docs.verify --all` for
-isolated documentation execution, including required live providers and
-services. The verification report identifies failures and unmet prerequisites;
+When contributing to BeamWeaver, run `mix test` for deterministic checks and
+`mix docs.verify --all` for isolated documentation execution, including
+required live providers and services. The verification report identifies failures and unmet prerequisites;
 compilation alone is not reported as executed coverage.
 
 Apache-2.0. See [LICENSE](https://github.com/caudena/beam_weaver/blob/master/LICENSE).

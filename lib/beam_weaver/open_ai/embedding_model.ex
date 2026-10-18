@@ -1,6 +1,12 @@
 defmodule BeamWeaver.OpenAI.EmbeddingModel do
-  @moduledoc """
-  OpenAI embeddings implementation for the first non-Azure provider surface.
+  @moduledoc ~S"""
+  OpenAI text embeddings through the embedding-model contract.
+
+  Use `BeamWeaver.Models.init_embeddings/2`, then
+  `BeamWeaver.Core.EmbeddingModel.embed_documents/3` or `embed_query/3`.
+  Configure actual credentials; construction alone performs no request.
+  Optional dimensions must be supported by the selected model and match the
+  index and query vectors. See [Retrieval](retrieval.md).
   """
 
   use BeamWeaver.Provider.RedactedInspect

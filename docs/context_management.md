@@ -1,175 +1,120 @@
 # Context Management
 
-A model only reads what fits in its context window, and every token in it
-costs time and money. Context management keeps long runs small: it summarizes
-old messages, clears old tool results, moves large results into files, and
-recovers when a request is still too large.
+Context management decides what a model reads as conversations and tool
+results grow. Choose what to preserve before the provider's context window
+is exhausted. Model context is a working set; keep authoritative data in
+storage or tools that can retrieve it again.
 
-```elixir
-defmodule MyApp.SupportAgent do
-  use BeamWeaver.Agent
 
-  alias BeamWeaver.Agent.Middleware.Summarization
+Run this page’s examples in order in one IEx session; later blocks reuse the modules and values defined earlier.
 
-  model "fake:chat",
-    responses: [
-      "Order A-1001 shipped on Monday.",
-      "It arrives on Thursday.",
-      "Yes, you can change it until Wednesday.",
-      "You're welcome, Ada!"
-    ]
+## Choose a technique
 
-  system_prompt "You are Acme's support agent."
-
-  middleware [
-    {Summarization,
-     model:
-       BeamWeaver.Models.init_chat_model!("fake:chat",
-         responses: ["Ada asked about order A-1001: it shipped on Monday and arrives on Thursday."]
-       ),
-     trigger: {:messages, 6},
-     keep: {:messages, 2}}
-  ]
-end
-
-saver = BeamWeaver.Checkpoint.ETS.new()
-opts = [checkpointer: saver, config: %{"configurable" => %{"thread_id" => "ticket-42"}}]
-
-for question <- ["Where is order A-1001?", "When will it arrive?", "Can I change the address?"] do
-  {:ok, _result} = MyApp.SupportAgent.invoke(%{messages: [question]}, opts)
-end
-
-{:ok, result} = MyApp.SupportAgent.invoke(%{messages: ["Thanks!"]}, opts)
-Enum.map(result.messages, &BeamWeaver.Core.Message.text/1)
-#=> ["Conversation summary:\nAda asked about order A-1001: it shipped on Monday and arrives on Thursday.",
-#    "Yes, you can change it until Wednesday.", "Thanks!", "You're welcome, Ada!"]
-```
-
-Before the fourth model call the thread had seven messages, so the
-summarization middleware replaced the oldest five with a summary written by
-its own model.
+| Need | Technique | Changes future saved history? |
+| --- | --- | --- |
+| Keep a recent request window | Trim in a model wrapper | No |
+| Retain the gist of old turns | Summarization | Yes |
+| Hide obsolete tool output | ContextEditing | No |
+| Keep large output available without sending it all | Filesystem offloading | Yes; full data is in a file |
+| Let the agent mark a task boundary | `compact_conversation` | Yes; history is archived |
+| Recover after an oversized request | `overflow_recovery` | On successful recovery |
+| Reduce cost of a stable prefix | Prompt caching | No; context size is unchanged |
+| Isolate a large subtask | Subagents | Parent receives a concise result |
 
 ## Summarize old messages
 
-`BeamWeaver.Agent.Middleware.Summarization` checks the thread before every
-model call. When `trigger:` is reached, it asks its model to summarize all but
-the newest messages, then saves the thread as one user message with the
-summary followed by the messages it kept. It never separates a tool call from
-its result.
-
-| Option | Meaning | Default |
-| --- | --- | --- |
-| `model:` | The model that writes summaries, often a small one | required without `summarizer:` |
-| `summarizer:` | A function that writes the summary instead: it takes the messages to summarize and returns the text, `{:ok, text}` or `{:error, error}` | none |
-| `trigger:` | `{:messages, n}`, `{:tokens, n}`, or `{:fraction, f}` of `max_input_tokens:`; a list triggers on any of them | `{:messages, 20}` |
-| `keep:` | How much to keep word for word: `{:messages, n}`, `{:tokens, n}` or `{:fraction, f}` | `{:messages, 8}` |
-| `max_input_tokens:` | The context window of the agent's model, which fractions are taken of; required with a fraction | none |
-| `summary_prompt:` | The instruction for the summary; `{messages}` is replaced with the old messages | `"Summarize this conversation:\n\n{messages}"` |
-| `trim_tokens_to_summarize:` | How much of the old messages the summary model reads, in tokens from the newest; `nil` for all of them | `4_000` |
-
-With a real provider:
+Complete [Installation](installation.md). This example deliberately uses a
+small message threshold so you can observe a real summary being created:
 
 ```elixir
 defmodule MyApp.SummarizingAgent do
   use BeamWeaver.Agent
 
   model "openai:gpt-5.4-mini", max_tokens: 256, timeout: 60_000
+  system_prompt "Acknowledge supplied facts briefly. Retain order IDs and delivery dates."
+
   middleware [
     {BeamWeaver.Agent.Middleware.Summarization,
-     model: "openai:gpt-5.4-mini", trigger: {:tokens, 50_000}, keep: {:messages, 20}}
+     model: BeamWeaver.Models.init_chat_model!("openai:gpt-5.4-mini", max_tokens: 512, timeout: 60_000),
+     trigger: {:messages, 6},
+     keep: {:messages, 2}}
   ]
 end
 
-{:ok, result} = MyApp.SummarizingAgent.invoke(%{messages: ["Reply with the word ready."]})
-true = is_binary(result.messages |> List.last() |> BeamWeaver.Core.Message.text())
+saver = BeamWeaver.Checkpoint.ETS.new()
+opts = [checkpointer: saver, config: %{"configurable" => %{"thread_id" => "summary-demo"}}]
+
+for fact <- ["Order A-1001 arrives Thursday.", "The delivery address is Lisbon.", "Contact me by email."] do
+  {:ok, _} = MyApp.SummarizingAgent.invoke(%{messages: [fact]}, opts)
+end
+
+{:ok, result} = MyApp.SummarizingAgent.invoke(%{messages: ["What is the order ID and delivery day?"]}, opts)
+summary = result.messages |> hd() |> BeamWeaver.Core.Message.text()
+true = String.starts_with?(summary, "Conversation summary:")
+true = summary =~ "A-1001"
+true = length(result.messages) < 8
+answer = result.messages |> List.last() |> BeamWeaver.Core.Message.text()
+true = answer =~ "A-1001"
+true = String.downcase(answer) =~ "thursday"
 ```
 
-A summary call that fails is tried up to 3 times, a second or more apart,
-unless its error says retrying can't help, such as a bad API key (see
-[Models](models.md#errors)). One over the summary model's context window is
-tried once more with the middle of the old messages cut out. When it still
-fails, the run returns the error and the thread stays as it was.
+The middleware summarizes older messages before a model call and retains the
+recent window without splitting tool-call/result pairs. The summary replaces
+those messages in subsequent state; older checkpoints may still retain them.
+For request-only trimming, see [Conversation History](short_term_memory.md#trim-before-each-model-call).
 
-A model call that the provider rejects as too long for the model also
-summarizes the thread, whether `trigger:` was reached or not; see
-[Recover from context overflow errors](#recover-from-context-overflow-errors).
+| Option | Meaning |
+| --- | --- |
+| `model:` or `summarizer:` | Summary model, or a function returning text / `{:ok, text}` |
+| `trigger:` | Message count, token count or fraction of a supplied context limit; a list means any trigger |
+| `keep:` | Recent message/token count or fraction to preserve |
+| `max_input_tokens:` | Context limit required for fraction-based middleware settings |
+| `summary_prompt:` | Summary instructions; `{messages}` is replaced by source text |
+| `trim_tokens_to_summarize:` | Bound the summary input; default 4,000, `nil` means all |
 
-The old messages are gone from the thread for good; only the summary carries
-them on. To keep them out of the prompt but not out of the thread, trim
-instead (see [Short-Term Memory](short_term_memory.md#trim-before-each-model-call)).
+Defaults are a 20-message trigger and eight retained messages. A summary can
+omit details; verify preservation of facts important to your application.
+Summary calls have bounded retries for retryable errors. Persistent failure
+returns an error without activating the proposed history change.
 
 ## Clear old tool results
 
-Results of earlier tool calls often stop mattering once the model has used
-them. `BeamWeaver.Agent.Middleware.ContextEditing` replaces all but the newest
-`keep:` results with `[cleared]` in what the model sees, once the conversation
-passes `trigger:` tokens. The thread keeps the full results:
+`BeamWeaver.Agent.Middleware.ContextEditing` replaces older model-visible
+results with a placeholder after its token trigger. `keep:` selects how many
+recent results remain. `clear_tool_inputs:` can also remove old arguments;
+`placeholder:` customizes replacement text. Saved history keeps the original
+values. This is useful for verbose search results already consumed by a model.
+
+This request-only transformation keeps the newest result and replaces the older one:
 
 ```elixir
-defmodule MyApp.Tools.LookupOrder do
-  use BeamWeaver.Tool
-
-  name "lookup_order"
-  description "Look up the shipping status of an order by its id."
-
-  schema do
-    field :order_id, :string, description: "The order id"
-  end
-
-  @impl true
-  def invoke(_tool, %{"order_id" => order_id}, _opts), do: {:ok, "Order #{order_id} shipped on Monday."}
-end
-
-defmodule MyApp.SupportAgent do
-  use BeamWeaver.Agent
-
-  alias BeamWeaver.Models.FakeChatModel
-
-  model "fake:chat",
-    responses: [
-      FakeChatModel.tool_call("lookup_order", %{"order_id" => "A-1001"}),
-      FakeChatModel.tool_call("lookup_order", %{"order_id" => "A-1002"}),
-      FakeChatModel.tool_call("lookup_order", %{"order_id" => "A-1003"}),
-      "All three orders shipped on Monday."
-    ]
-
-  system_prompt "You are Acme's support agent."
-  tools [MyApp.Tools.LookupOrder]
-
-  # Small numbers to show the effect; the defaults are 100,000 tokens and 3 results.
-  middleware [{BeamWeaver.Agent.Middleware.ContextEditing, trigger: 20, keep: 1}]
-end
-
-{:ok, result} = MyApp.SupportAgent.invoke(%{messages: ["Where are orders A-1001, A-1002 and A-1003?"]})
-result.messages |> Enum.filter(&(&1.role == :tool)) |> length()
-#=> 3
-```
-
-`BeamWeaver.Agent.Middleware.ContextEditing.clear_tool_uses/2` applies the
-same edit to a list of messages, so you can see what the last model call
-received:
-
-```elixir
+alias BeamWeaver.Core.Message
 alias BeamWeaver.Agent.Middleware.ContextEditing
 
-result.messages
-|> ContextEditing.clear_tool_uses(trigger: 20, keep: 1)
-|> Enum.filter(&(&1.role == :tool))
-|> Enum.map(&BeamWeaver.Core.Message.text/1)
-#=> ["[cleared]", "[cleared]", "Order A-1003 shipped on Monday."]
-```
+messages = [
+  Message.user("Where are A-1001 and A-1002?"),
+  Message.assistant("", tool_calls: [%{id: "call_1", name: "lookup_order", args: %{"order_id" => "A-1001"}}]),
+  Message.tool("Order A-1001 shipped on Monday.", tool_call_id: "call_1"),
+  Message.assistant("", tool_calls: [%{id: "call_2", name: "lookup_order", args: %{"order_id" => "A-1002"}}]),
+  Message.tool("Order A-1002 shipped on Tuesday.", tool_call_id: "call_2")
+]
 
-`exclude_tools:` lists tools whose results are never cleared, and
-`placeholder:` changes the replacement text.
+messages |> ContextEditing.clear_tool_uses(trigger: 0, keep: 1) |> Enum.map(&Message.text/1)
+#=> ["Where are A-1001 and A-1002?", "", "[cleared]", "", "Order A-1002 shipped on Tuesday."]
+```
 
 ## Move large tool results into files
 
-An agent with a `filesystem` saves any tool result over about 20,000 tokens
-(80,000 characters) to `/large_tool_results/<tool call id>`, or under a
-generated name when the result has no call id, and gives the model a preview
-of its first and last lines instead. The preview says when it leaves lines
-out, and when it cuts lines longer than 1,000 characters. The model reads the
-rest with `read_file`, a page at a time, or searches it with `grep`:
+Filesystem middleware can offload large tool results into `/large_tool_results/`
+and put a preview/path in the conversation. The agent can read the file later.
+Configure thresholds for your workload and choose a backend with the required
+lifetime. A state-backed archive survives only as long as its saved state.
+
+Media handling is separate: a compatible model receives images/PDFs as media,
+while incompatible built-in profiles can receive omission notices. See
+[Models](models.md#images-and-pdfs) and [Filesystem](filesystem.md).
+
+The local exporter returns 5,000 sample rows. The real model receives an archive reference, and the full data remains in the filesystem:
 
 ```elixir
 defmodule MyApp.Tools.OrderHistory do
@@ -192,97 +137,40 @@ end
 defmodule MyApp.SupportAgent do
   use BeamWeaver.Agent
 
-  alias BeamWeaver.Models.FakeChatModel
+  model "openai:gpt-5.4-mini", max_tokens: 512, timeout: 60_000
 
-  model "fake:chat",
-    responses: [
-      FakeChatModel.tool_call("order_history", %{"customer_id" => "ada"}),
-      "Ada has 5,000 orders, and all of them shipped."
-    ]
-
-  system_prompt "You are Acme's support agent."
+  system_prompt "Call order_history once for the supplied sample customer. Then report that the export is available; do not reread it."
   tools [MyApp.Tools.OrderHistory]
   filesystem BeamWeaver.Filesystem.State.new()
 end
 
-{:ok, result} = MyApp.SupportAgent.invoke(%{messages: ["How many orders does Ada have?"]})
+{:ok, result} =
+  MyApp.SupportAgent.invoke(%{messages: ["Export the sample order history for customer ada. Call order_history once."]})
 
 tool_message = Enum.find(result.messages, &(&1.role == :tool))
-tool_message |> BeamWeaver.Core.Message.text() |> String.split("\n") |> hd()
-#=> "Tool result too large, the result of this tool call call_0_0 was saved in the filesystem at this path: /large_tool_results/call_0_0"
+true = BeamWeaver.Core.Message.text(tool_message) =~ "/large_tool_results/"
+
+true =
+  Enum.any?(result.files, fn {path, file} ->
+    String.starts_with?(path, "/large_tool_results/") and file.content =~ "order_id,status,shipped_on"
+  end)
 ```
-
-The thread keeps the preview, and the file holds the full result. A user
-message over about 50,000 tokens is saved the same way, under
-`/conversation_history/`. `BeamWeaver.Agent.Middleware.Filesystem` sets both
-limits; see [Built-in Middleware](builtin_middleware.md) and
-[Filesystem](filesystem.md).
-
-Results of the file tools themselves are never moved; `ls`, `glob`, `grep` and
-`read_file` stop at 80,000 characters instead, and a `read_file` page that
-stops short of the end of the file says the offset to read on from. An image
-or a PDF that `read_file` returns reaches the model as a content block, not as
-base64 text, and a model that can't take it gets a short notice in its place;
-see [Models](models.md#images-and-pdfs).
 
 ## Let the agent compact itself
 
-`compact_conversation` gives the agent a `compact_conversation` tool that
-takes no arguments. The model calls it when it moves on to an unrelated task;
-the tool summarizes all but the newest messages, and the old messages are
-saved to a file under `/conversation_history/`:
+`compact_conversation true` adds a no-argument tool and automatic summarization
+using the agent's model. Options can supply a different `model:` or
+`summarizer:`, `minimum_messages:` and `keep_messages:`. The tool archives
+replaced history under `/conversation_history/` and leaves a summary pointing
+to it. Declare filesystem access if the agent should read that archive.
 
-```elixir
-defmodule MyApp.SupportAgent do
-  use BeamWeaver.Agent
+Automatic summarization settings belong under `summarization:`;
+`summarization: false` leaves only the tool. Defaults are 20 messages before
+compaction and eight retained messages. Pending compaction is checkpointed
+and applied before the next model call, including after a pause/resume.
+Subagents inherit enabled summarization with budgets based on their own model.
 
-  alias BeamWeaver.Models
-  alias BeamWeaver.Models.FakeChatModel
-
-  model "fake:chat",
-    responses: [
-      FakeChatModel.tool_call("lookup_order", %{"order_id" => "A-1001"}),
-      "Order A-1001 shipped on Monday.",
-      FakeChatModel.tool_call("compact_conversation", %{}),
-      "Yes, you can return the jacket within 30 days."
-    ]
-
-  system_prompt "You are Acme's support agent."
-  tools [MyApp.Tools.LookupOrder]
-
-  compact_conversation model: Models.init_chat_model!("fake:chat", responses: ["Order A-1001 shipped on Monday."]),
-                       minimum_messages: 4,
-                       keep_messages: 2
-end
-
-opts = [checkpointer: saver, config: %{"configurable" => %{"thread_id" => "ticket-43"}}]
-
-{:ok, _first} = MyApp.SupportAgent.invoke(%{messages: ["Where is order A-1001?"]}, opts)
-{:ok, result} = MyApp.SupportAgent.invoke(%{messages: ["Thanks! Can I return a jacket?"]}, opts)
-
-result.messages |> hd() |> BeamWeaver.Core.Message.text()
-#=> "Conversation summary:\nOrder A-1001 shipped on Monday.\n\nThe messages this summary replaces were saved in full to /conversation_history/" <> _
-```
-
-In the second call the model compacted before it answered, so the thread now
-starts with the summary. The tool does nothing until the thread has
-`minimum_messages:` messages (default 20), and it keeps the newest
-`keep_messages:` (default 8). Declare a `filesystem` as well if the agent
-should be able to read the saved history back. The summary ends by naming
-that file. The summary call is retried as automatic summarization's is (see
-[above](#summarize-old-messages)), and a `summarizer:` function can write the
-tool's summaries instead of `model:`. `compact_conversation true` uses the
-agent's own model for the summaries. The tool's description tells the model
-when to call it, and nothing about the tool goes into the system prompt
-unless `system_prompt:` gives a section to add.
-
-`compact_conversation` also turns on automatic summarization, the
-`Summarization` middleware [above](#summarize-old-messages), with the same
-`model:` and `summarizer:`: by default it summarizes at 20 messages, keeps the
-newest 8, and, like the tool, summarizes all the old messages
-(`trim_tokens_to_summarize: nil`). Its
-settings go in their own list under `summarization:`, and
-`summarization: false` leaves only the tool:
+Configure model-driven compaction with an explicit summary model. This small request checks configuration; the next block triggers a compaction:
 
 ```elixir
 defmodule MyApp.CompactingAgent do
@@ -299,40 +187,60 @@ end
 true = is_binary(result.messages |> List.last() |> BeamWeaver.Core.Message.text())
 ```
 
-A fraction here is taken of the agent model's context window. When the model
-compacts, the compaction applies before the next model call, and automatic
-summarization runs only if the compacted thread still reaches its trigger.
-The pending compaction is saved with the thread, so a run that pauses or stops
-between the tool call and the next model call applies it, once, when it
-continues.
-The agent's subagents summarize automatically only when the agent itself
-does, and take the fraction of their own model's context window.
+This complete tool-driven example supplies enough history to compact, requires the compaction tool once, and checks the archived transcript:
+
+```elixir
+defmodule MyApp.ManualCompaction do
+  use BeamWeaver.Agent
+  model "openai:gpt-5.4-mini", max_tokens: 512, timeout: 60_000
+  system_prompt "Compact the earlier conversation using compact_conversation, then confirm completion."
+
+  compact_conversation model:
+                         BeamWeaver.Models.init_chat_model!("openai:gpt-5.4-mini", max_tokens: 512, timeout: 60_000),
+                       minimum_messages: 4,
+                       keep_messages: 2
+
+  middleware [
+    {BeamWeaver.Agent.Middleware.ToolChoice,
+     choice: fn request ->
+       if Enum.any?(request.messages, &(&1.role == :tool)), do: :none, else: :required
+     end}
+  ]
+end
+
+alias BeamWeaver.Core.Message
+
+history = [
+  Message.user("Order A-1001 arrives Thursday."),
+  Message.assistant("A-1001 arrives Thursday."),
+  Message.user("My contact preference is email."),
+  Message.assistant("Email is preferred."),
+  Message.user("Compact this earlier conversation now.")
+]
+
+{:ok, compacted} = MyApp.ManualCompaction.invoke(%{messages: history})
+true = Enum.any?(compacted.files, fn {path, _} -> String.starts_with?(path, "/conversation_history/") end)
+true = BeamWeaver.Core.Message.text(hd(compacted.messages)) =~ "Conversation summary:"
+```
 
 ## Recover from context overflow errors
 
-A request can still be too long for the model: one tool result can be huge,
-or the thread can outgrow the context window before it reaches the
-summarization trigger. Two things recover when the provider rejects a model
-call as too long, and each retries the call once.
+Summarization can react to a provider's context-overflow error even if its
+normal trigger has not fired. It summarizes and retries once; unsuccessful
+recovery does not replace saved history.
 
-Automatic summarization, a `Summarization` middleware or the one that
-`compact_conversation` turns on, summarizes the thread as its trigger would,
-whether the trigger was reached or not, and sends the call once more. When
-that call succeeds, the summary is saved as an automatic one is; when it is
-rejected too, the run returns its error and the thread stays as it was.
-`trigger: nil`, and `summarization: false` under `compact_conversation`, turn
-this off with the rest of automatic summarization. Subagents that summarize
-do the same.
+`overflow_recovery` first shrinks a large trailing batch of tool results:
+large output is archived, previews replace it and oversized file reads are
+clipped. Its default trailing-result budget is 5,000 tokens, configurable
+with `keep: {:tokens, n}` or a model-window fraction. The reduced state is
+committed only after a successful retry.
 
-`overflow_recovery` is a safety net for the call right after a large batch of
-tool results. When the provider rejects the request as too long, it shrinks
-those trailing tool results and retries once: large results are saved to
-files under `/large_tool_results/` and replaced with a short preview, and
-`read_file` results are cut to their first 4,000 characters. When the retry
-succeeds, the shrunk results replace the full ones in the saved thread, so
-the next call doesn't overflow again; with the default
-`BeamWeaver.Filesystem.State` filesystem, the saved files join the thread's
-files.
+When both policies are enabled, tool-result reduction precedes summarization.
+The coordinated path makes at most two retry calls with one summary. It does
+not replace proactive limits. Disabling automatic summarization also disables
+its overflow summarization path.
+
+Enable bounded overflow recovery on the actual model. This small input stays below the window:
 
 ```elixir
 defmodule MyApp.OverflowRecoveryAgent do
@@ -346,26 +254,14 @@ end
 true = is_binary(result.messages |> List.last() |> BeamWeaver.Core.Message.text())
 ```
 
-It shrinks a trailing batch only when it is over 5,000 tokens;
-`overflow_recovery keep: {:tokens, n}`, or `{:fraction, f}` of the model's
-context window, changes that. It acts only after a request has failed, while
-offloading and summarization keep requests small in the first place: use
-overflow recovery in addition to them, not instead.
-
-With both, the tool results are shrunk first, wherever the two are in the
-middleware list, since that loses none of the history: the thread is
-summarized only when the call is still too long with the results shrunk, or
-when there were none to shrink, and that last call keeps them shrunk. A
-rejected call is retried at most twice, with one summary. The agent gives its
-`Summarization` to `OverflowRecovery` (its `summarization:` option), which
-runs both steps, and that `Summarization` leaves overflows to it
-(`on_overflow: false`).
-
 ## Cache the prompt prefix
 
-Prompt caching doesn't make the context smaller, but it makes a long, stable
-prefix (system prompt, tools, memory files) cheaper and faster to send again.
-`prompt_caching true` marks it cacheable for providers that support it:
+`prompt_caching` configures supported provider caching. It reduces repeated
+prefix processing when a cache hit occurs; it does not increase context limits.
+Keep stable instructions before changing request data and inspect reported
+cache-read usage. See [Caching](caching.md).
+
+Keep stable instructions ahead of changing user input:
 
 ```elixir
 defmodule MyApp.CachedPromptAgent do
@@ -379,48 +275,15 @@ end
 true = is_binary(result.messages |> List.last() |> BeamWeaver.Core.Message.text())
 ```
 
-Keep the start of the prompt identical between calls to get cache hits. See
-[Caching](caching.md).
-
 ## Isolate work in subagents
 
-A subagent runs a self-contained task, such as reading a long policy, in its
-own context window and returns only its final answer. The parent's thread
-gets one tool result instead of every search and file read the task needed.
-See [Subagents](subagents.md).
-
-## Choose a technique
-
-| Technique | Turn it on with | The saved thread | Extra model calls |
-| --- | --- | --- | --- |
-| Summarize old messages | `Summarization` middleware | Summary and newest messages | One per summary |
-| Clear old tool results | `ContextEditing` middleware | Unchanged | None |
-| Move large results into files | `filesystem` | Preview, full result in a file | None |
-| Agent compacts itself | `compact_conversation` | Summary and newest messages | One per compaction |
-| Recover from overflow | `overflow_recovery` | Preview, full result in a file | One retry |
-| Cache the prompt prefix | `prompt_caching` | Unchanged | None |
-| Delegate to subagents | `subagents` | Only the subagent's answer | The subagent's own |
-
-A long-running agent usually combines several: a `filesystem` for large
-results, summarization for long threads, and `overflow_recovery` as the last
-resort.
+A subagent can read a large document in its own conversation and return a
+focused result. The parent avoids importing every intermediate search or file
+read. Delegation still consumes model calls and needs explicit completion,
+error and budget handling. See [Subagents](subagents.md).
 
 ## The Compaction Engine
 
-Everything above works on an agent's own thread. If your application stores
-conversations itself, for example as rows in your own tables,
-`BeamWeaver.Compaction` compacts them for you: you give it the ordered
-conversation and callbacks that render and summarize it, and it returns a
-candidate checkpoint, the summary plus the turns to keep, for you to save in
-your own transaction. It starts no processes and stores nothing. See
-[Compaction Engine](compaction_engine.md).
-
-## Reference
-
-- [`BeamWeaver.Agent.Middleware.Summarization`](https://hexdocs.pm/beam_weaver/BeamWeaver.Agent.Middleware.Summarization.html): summarizes old messages
-- [`BeamWeaver.Agent.Middleware.ContextEditing`](https://hexdocs.pm/beam_weaver/BeamWeaver.Agent.Middleware.ContextEditing.html): clears old tool results from the model's view
-- [`BeamWeaver.Agent.Middleware.Filesystem`](https://hexdocs.pm/beam_weaver/BeamWeaver.Agent.Middleware.Filesystem.html): file tools and offloading of large results
-- [`BeamWeaver.Agent.Middleware.CompactConversation`](https://hexdocs.pm/beam_weaver/BeamWeaver.Agent.Middleware.CompactConversation.html): the `compact_conversation` tool
-- [`BeamWeaver.Agent.Middleware.OverflowRecovery`](https://hexdocs.pm/beam_weaver/BeamWeaver.Agent.Middleware.OverflowRecovery.html): retries after context overflow errors
-- [`BeamWeaver.Agent.Middleware.PromptCaching`](https://hexdocs.pm/beam_weaver/BeamWeaver.Agent.Middleware.PromptCaching.html): provider prompt caching
-- [`BeamWeaver.Compaction`](https://hexdocs.pm/beam_weaver/BeamWeaver.Compaction.html): compaction for transcripts your application stores
+For transcripts owned by your application rather than an agent checkpointer,
+use [Compaction Engine](compaction_engine.md). It returns a candidate semantic
+checkpoint; your application owns rendering, provider calls and atomic activation.

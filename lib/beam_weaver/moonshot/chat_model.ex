@@ -1,6 +1,16 @@
 defmodule BeamWeaver.Moonshot.ChatModel do
-  @moduledoc """
-  Moonshot/Kimi Chat Completions chat model implementation.
+  @moduledoc ~S"""
+  Moonshot chat model implementing the BeamWeaver chat contract.
+
+  Prefer `BeamWeaver.Models.init_chat_model/2` for provider-prefixed identifiers,
+  then call `BeamWeaver.Core.ChatModel` or declare the model in an agent.
+  Construction does not contact the provider. Model/profile options describe
+  local compatibility; account access is established only by a real request.
+
+  See [Moonshot](providers/moonshot.md) for endpoint-specific parameters, reasoning,
+  media and tools. Preserve complete messages for multi-turn replay. Streaming
+  consumers must enumerate once and handle terminal errors; display text is not
+  a lossless representation of a native provider turn.
   """
 
   use BeamWeaver.Provider.RedactedInspect
@@ -94,6 +104,9 @@ defmodule BeamWeaver.Moonshot.ChatModel do
   end
 
   @spec count_tokens(t(), term(), keyword()) :: {:ok, non_neg_integer()} | {:error, term()}
+  @doc """
+  Asks Moonshot's estimate endpoint for the input token count; this is separate from inference.
+  """
   def count_tokens(%__MODULE__{} = model, input, opts \\ []) do
     with {:ok, messages} <- LanguageModel.normalize_chat_input(input),
          {:ok, body} <- token_count_body(model, messages, opts),

@@ -1,130 +1,128 @@
-# Concepts
+# How BeamWeaver Works
 
-An agent chooses actions with a model. A graph follows the workflow you define.
-Both operate on state, can stream progress, and can save checkpoints. The
-[Quickstart](quickstart.md) runs an agent; [Build an Agent](tutorial.md) adds
-a tool and conversation history.
+An agent and a graph share the same execution foundation. The difference is
+who chooses the next action: a model inside an agent, or the workflow your
+application defines. Start with the [quickstart](quickstart.md) if you want
+to run code before reading the concepts.
 
-## Agents
+## Follow one agent request
 
-An agent module uses `BeamWeaver.Agent` and declares a model. On each turn,
-BeamWeaver sends the conversation and available tools to that model. The model
-can answer or request tool calls. BeamWeaver executes those calls, adds their
-results to the conversation, and calls the model again. The run finishes when
-the model answers without requesting another tool, or stops on a limit,
-interrupt or error.
+A caller supplies messages and trusted context. BeamWeaver evaluates the
+agent's declarations, prepares instructions/tools and invokes the model.
+The model either answers or requests actions. Requested tools execute in
+Elixir; their results return to the model. The loop ends with an answer,
+an interrupt or an error, subject to the configured limits.
 
-A tool is ordinary application code with a model-visible name, description
-and input schema. Tool declarations make an action available; they do not
-force the model to choose it. Verify calls and arguments when the action
-matters to your application. See [Agents](agents.md) and [Tools](tools.md).
+A model cannot read your database merely because its prompt mentions orders.
+It needs a tool or supplied data. A tool declaration makes an action available;
+it does not prove the model called it. Inspect successful results when the
+action matters.
 
-## Graphs
+## Separate the five kinds of data
 
-A graph gives you control of the steps. A node receives state and returns the
-keys it changes. Edges determine which nodes can run next. Conditional edges
-branch on results, and joins wait for multiple branches. The graph DSL keeps
-these declarations together in `graph do`; the builder API also supports
-graphs assembled from data.
+| Data | Who supplies it | Lifetime/use |
+| --- | --- | --- |
+| Instructions | Application and configured capabilities | Guide each model call |
+| Messages | User, model and tool results | Conversation history |
+| State | Input plus node/tool/middleware updates | Working data, optionally checkpointed |
+| Context | Trusted application caller | One invocation; resend on resume |
+| Config | Application runtime settings | Select thread/checkpoint and execution options |
 
-Agents and graphs compose: a graph node may invoke an agent, and an agent's
-own model/tool loop is implemented as a graph. Choose explicit nodes when
-your application must enforce an order; choose an agent when the model should
-decide which available actions are needed. See [Graphs](graphs.md).
+`messages` is a state key with ID-aware merging. Other keys can replace,
+accumulate or use specialized channels. Context is not automatically a model
+message and is not saved as conversational state. See [Messages](messages.md),
+[Runtime Context](runtime_context.md) and [State](graph_state.md).
 
-## State and messages
+## Understand the DSL lifecycle
 
-State is the map a run reads and updates. For agents, its `messages` key
-contains the conversation. Messages have roles such as `:user`, `:assistant`
-and `:tool`, plus content and optional tool calls. Plain strings passed in
-`messages` become user messages. Media uses content blocks.
+Agent and graph declarations describe how to build a run and are evaluated
+when invoked. They can read application configuration. Tool and schema
+modules describe their contracts at compilation.
 
-Each state key has a merge rule. A plain value is replaced by a write;
-reducers combine writes, and channels support other behaviors such as
-accumulation or transient values. Parallel nodes writing the same key need
-an appropriate merge rule. See [Messages](messages.md) and
-[Graph State](graph_state.md).
+Resource creation needs a separate owner. Repeated declarations must not create
+a fresh ETS table or container every call. Pass existing resources through
+options or reference supervised services. A database adapter struct is a
+handle to a repo, not the process that owns its connections.
+
+## Agents, tools and schemas
+
+An agent combines a model, instructions, tools and policy. A tool describes
+an action's arguments and executes application code. A response schema
+constrains the final answer consumed by your application. These are separate
+contracts even when all use field declarations.
+
+Tool and response fields are required by default. Agent context fields are
+optional unless explicitly required. Model-supplied JSON arguments use string
+keys; injected runtime values use their declared atom keys.
+
+## Graphs and channels
+
+A graph node reads state and returns changed keys. Edges select subsequent
+nodes. A superstep runs currently ready nodes in parallel, then merges their
+updates. Several writers to one key need a reducer or another suitable
+channel. A join waits for its prerequisite branches.
+
+Graphs can include agents as nested workflows. Dynamic sends distribute work
+known only at runtime. Use explicit graph structure where order and routing
+must be controlled by application code.
 
 ## Threads and checkpoints
 
-A thread ID identifies a conversation or workflow history. A checkpointer
-saves state and pending work after steps. Reusing the saver and thread ID
-continues that history. Without a checkpointer, a later invocation has no
-saved state to load.
+A thread ID identifies saved workflow/conversation history. A checkpoint
+records state plus what remains to run. Reusing storage and thread identity
+continues that history; fresh calls without storage have no past to load.
 
-ETS storage is local to one node and belongs to the process that created it.
-It is useful in development and tests. Database-backed storage survives that
-process and application restarts. A checkpoint is evidence of recorded state;
-it does not make an external side effect transactional. Retried or resumed
-work must handle those effects deliberately. See
-[Checkpoints](checkpoints.md), [Storage](storage.md) and
-[Durable Execution](durable_execution.md).
+ETS data disappears with its owner process. Database storage can survive
+restarts, but your application must schedule continuation. External actions
+may repeat after an ambiguous failure: checkpointing is not an exactly-once
+payment or messaging guarantee. See [Durable Execution](durable_execution.md).
 
-## Memory
+## Memory and context management
 
-| Kind | What it retains | Where to learn more |
-| --- | --- | --- |
-| Short-term memory | A thread's conversation and state, through checkpoints | [Short-Term Memory](short_term_memory.md) |
-| Long-term memory | Namespaced records shared across conversations | [Long-Term Memory](long_term_memory.md) |
-| Memory files | Instructions and notes read from configured paths | [Memory Files](memory_files.md) |
+Conversation history belongs to a thread. Long-term memory stores namespaced
+records across threads. Memory files load short Markdown notes into prompts.
+Saving a record does not automatically expose it to the model; a tool or prompt
+function must retrieve it.
 
-These mechanisms have different lifetimes. A memory store does not replace a
-checkpointer, and saving data in either does not automatically insert all of
-it into the model's prompt.
+Context management changes the material sent to a finite model window:
+request trimming, summarization, file offloading and delegation. Some policies
+change saved history; others only change the request. Prompt caching can reduce
+repeated prefix processing but does not make the context window larger.
 
-## Context management
+## Middleware and human review
 
-A model has a finite context window. Context policies choose what to send:
-trim or summarize history, move large results into files, and recover from
-oversized requests. The stored conversation and the request sent to a model
-need not be identical. See [Context Management](context_management.md).
+Middleware surrounds model/tool calls and state transitions. It can adjust
+requests, select actions, retry failures or impose limits. Before hooks run
+forward, after hooks backward, and wrappers nest. Ordering is part of behavior.
 
-The [Compaction Engine](compaction_engine.md) provides a separate compaction
-interface for applications that manage their own transcripts.
+An interrupt records a pause. Your application displays the request, obtains
+an authorized decision and resumes the correct saved run. Context must be
+supplied again. Tool review and dynamic graph input have different resume APIs.
 
-## Middleware
+## Streams and task ownership
 
-Middleware runs around model and tool calls. It can adjust instructions,
-select tools, retry requests, impose limits, redact data or interrupt an
-action. Capability declarations add middleware for you; explicit middleware
-lets you configure or extend those behaviors. Ordering matters when wrappers
-interact. See [Middleware](middleware.md) and
-[Built-in Middleware](builtin_middleware.md).
+A live stream starts work when consumed. Reading it twice can execute the
+workflow twice. The consumer owns the run; stopping consumption cancels it.
+Tokens are provisional until the corresponding model attempt completes.
+Handle errors and interrupts as well as text.
 
-## Runtime context
+For UI work, consume in a task and send selected events to the view. For work
+that must outlive the view, use a durable job owner. See [Streaming](streaming.md).
 
-Runtime context carries per-call application data such as a user, tenant or
-permission set. Pass it with `context:`; tools and middleware can read it.
-It is not automatically a model-visible message. Keep authentication and
-authorization in your application, and expose only the data the model needs.
-See [Runtime Context](runtime_context.md).
+## Deep agents and delegation
 
-## Streaming and interrupts
+A deep agent adds planning, workspace files, skills, memory or subagents to an
+ordinary agent. Capabilities add tools and instructions; they do not replace
+application permissions. Children can inherit selected context/state/tools,
+so define their boundaries explicitly.
 
-Streaming exposes typed events as a run progresses: model output, tool calls,
-state changes and completion. Consume the stream to perform the work, and
-handle cancellation and errors explicitly. See [Streaming](streaming.md).
+## Providers and verification
 
-An interrupt pauses execution and returns a value your application can show
-to a person. Tool review uses `resume_review`; other interrupts use `resume`.
-The application must retain the thread identity and resume the right run.
-See [Human-in-the-Loop](human_in_the_loop.md).
+A `provider:model` identifier selects an adapter and model. Local model profiles
+validate known capabilities and parameters. They do not establish account access
+or live availability. Actual calls establish the provider integration;
+application assertions establish that the requested work happened.
 
-## Deep agents
-
-A deep agent is an agent with capabilities for longer tasks: a task list,
-filesystem, skills, memory files, subagents or code execution. There is no
-separate deep-agent runtime type. Add the capabilities the task needs, then
-use the same invocation, streaming and checkpoint interfaces. See
-[Deep Agents](deep_agents.md).
-
-## Models and providers
-
-A model identifier names a provider and model, such as
-`"openai:gpt-5.4-mini"`. Model profiles describe supported features and limits;
-BeamWeaver uses them to validate requests and select compatible behavior.
-Account access and service availability are separate from profile validation.
-
-Provider-specific features are documented in [Providers](providers.md).
-Use scripted models and replay for deterministic application tests, and live
-calls to check your integration with a provider. See [Testing](testing.md).
+Use fake models for deterministic application tests, real embeddings for search
+quality and live provider calls for endpoint behavior. [Testing](testing.md)
+explains these boundaries.

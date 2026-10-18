@@ -1,6 +1,16 @@
 defmodule BeamWeaver.ZAI do
-  @moduledoc """
-  Z.ai provider namespace.
+  @moduledoc ~S"""
+  GLM Chat Completions with reasoning, streamed arguments and supported media input.
+
+  Constructors return configured values; invocation makes the provider request.
+  Load credentials into `config :beam_weaver, :zai` in your application's
+  runtime configuration. Explicit connection options override configured defaults.
+  See the [ZAI guide](providers/zai.md) for an executed request, endpoint
+  choices, supported options and account/resource requirements.
+
+  Native tool helpers construct declarations. Hosted tools execute at the provider;
+  client actions require an application executor. Keep full returned messages
+  for continuation and inspect outcomes rather than HTTP success alone.
   """
 
   alias BeamWeaver.Config

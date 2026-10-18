@@ -1,6 +1,15 @@
 defmodule BeamWeaver.Core.Tool do
-  @moduledoc """
-  Tool contract and helper struct for executable model tools.
+  @moduledoc ~S"""
+  Execute and inspect tools through a common application-code contract.
+
+  Use BeamWeaver.Tool for module declarations or from_function/1 for runtime
+  handlers. Model-facing arguments use string keys; injected runtime data is
+  supplied separately under declared atom keys and excluded from public schemas.
+
+  invoke/3 parses/validates input before dispatch. A tool-call input carries
+  correlation identity so the result can answer the right model request.
+  Application authorization and idempotency remain inside the tool/data layer.
+  See [Tools](tools.md) for live execution, artifacts and state updates.
   """
 
   import BeamWeaver.MapShape, only: [put_present: 3]
@@ -14,22 +23,70 @@ defmodule BeamWeaver.Core.Tool do
   alias BeamWeaver.Tracing.Options, as: TraceOptions
   alias BeamWeaver.Tracing.Runner, as: TraceRunner
 
+  @doc """
+  Returns the model-visible action name.
+  """
   @callback name(term()) :: String.t()
+  @doc """
+  Explains when to call the action and what its result means.
+  """
   @callback description(term()) :: String.t()
+  @doc """
+  Returns the input contract used for tool validation and provider rendering.
+  """
   @callback input_schema(term()) :: map()
+  @doc """
+  Maps application-only argument names to runtime injection sources.
+  """
   @callback injected(term()) :: map()
+  @doc """
+  Reports whether successful execution can end the agent loop without another model turn.
+  """
   @callback return_direct(term()) :: boolean()
+  @doc """
+  Selects ordinary content or content-plus-artifact handling.
+  """
   @callback response_format(term()) :: atom() | map() | nil
+  @doc """
+  Optionally describes structured action output; it is separate from an agent response schema.
+  """
   @callback output_schema(term()) :: map() | nil
+  @doc """
+  Optionally customizes action-error presentation.
+  """
   @callback handle_tool_error(term()) :: boolean() | String.t() | (Error.t() -> term()) | nil
+  @doc """
+  Optionally customizes invalid-input presentation.
+  """
   @callback handle_validation_error(term()) ::
               boolean() | String.t() | (Error.t() -> term()) | nil
+  @doc """
+  Parses raw arguments before normal schema validation.
+  """
   @callback parse_args(term(), map()) :: :ok | {:ok, map()} | {:error, term()}
+  @doc """
+  Controls scheduling beside adjacent tool calls; it is not a cross-run database lock.
+  """
   @callback concurrent?(term()) :: boolean()
+  @doc """
+  Sets the model-visible text truncation limit.
+  """
   @callback max_result_chars(term()) :: pos_integer() | :unlimited
+  @doc """
+  Returns tool-selection/trace tags.
+  """
   @callback tags(term()) :: [atom() | String.t()]
+  @doc """
+  Returns application/tool-selection metadata.
+  """
   @callback metadata(term()) :: map()
+  @doc """
+  Returns native declaration fields for provider rendering.
+  """
   @callback provider_opts(term()) :: keyword() | map()
+  @doc """
+  Executes normalized model arguments and supplied injected values. Return {:ok, value} or {:error, reason}.
+  """
   @callback invoke(term(), map(), keyword()) :: {:ok, term()} | {:error, Error.t() | term()}
 
   @defaults [
@@ -393,7 +450,11 @@ defmodule BeamWeaver.Core.Tool do
   end
 
   @doc """
-  Invokes a tool after validating required input keys.
+  Invokes a tool after parsing and validating its input schema.
+
+  Map input returns the normalized handler result. Tool-call input preserves
+  correlation in a tool message/result. String error reasons normalize to
+  Core.Error values; direct module-handler exceptions can still raise.
   """
   @spec invoke(term(), map(), keyword()) :: {:ok, term()} | {:error, Error.t()}
   def invoke(tool, input, opts \\ []) do

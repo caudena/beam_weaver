@@ -41,16 +41,37 @@ defmodule BeamWeaver.Checkpoint.Saver do
           optional(:pending_write_paths) => list()
         }
 
+  @doc """
+  Read an exact or latest checkpoint tuple, returning nil only when absent. Do not turn storage failure into absence.
+  """
   @callback get_tuple(saver(), config()) :: checkpoint_tuple() | nil
+  @doc """
+  Return newest-first checkpoint tuples honoring config, limit, before and metadata filters.
+  """
   @callback list(saver(), config() | nil, keyword()) :: [checkpoint_tuple()]
+  @doc """
+  Optional tagged read returning {:ok, tuple_or_nil} or a storage error.
+  """
   @callback fetch_tuple(saver(), config()) ::
               {:ok, checkpoint_tuple() | nil} | {:error, term()}
+  @doc """
+  Optional tagged history read that distinguishes empty history from storage failure.
+  """
   @callback list_result(saver(), config() | nil, keyword()) ::
               {:ok, [checkpoint_tuple()]} | {:error, term()}
+  @doc """
+  Persist checkpoint data and versions and return a config containing its checkpoint ID.
+  """
   @callback put(saver(), config(), checkpoint(), metadata(), versions()) ::
               {:ok, config()} | {:error, term()}
+  @doc """
+  Persist pending task writes so successful siblings need not repeat after partial failure.
+  """
   @callback put_writes(saver(), config(), list(), String.t(), String.t()) ::
               :ok | {:error, term()}
+  @doc """
+  Optional atomic checkpoint-plus-pending-writes operation; all data commits together.
+  """
   @callback put_checkpoint_with_writes(
               saver(),
               config(),
@@ -60,15 +81,39 @@ defmodule BeamWeaver.Checkpoint.Saver do
               list(),
               keyword()
             ) :: {:ok, config()} | {:error, term()}
+  @doc """
+  Optional atomic batch; do not report success after only part of the batch commits.
+  """
   @callback put_many(saver(), [map()], keyword()) ::
               {:ok, [config()]} | {:error, term()}
+  @doc """
+  Optional copy of bounded checkpoint lineage into a distinct thread.
+  """
   @callback fork_at(saver(), config(), String.t(), keyword()) ::
               {:ok, config()} | {:error, term()}
+  @doc """
+  Return earlier channel writes needed to rebuild delta values in the selected lineage.
+  """
   @callback get_delta_channel_history(saver(), config(), [String.t()], keyword()) :: map()
+  @doc """
+  Remove all checkpoint state belonging to the thread.
+  """
   @callback delete_thread(saver(), String.t()) :: :ok | {:error, term()}
+  @doc """
+  Remove selected runs while rejecting deletion that would break retained delta history.
+  """
   @callback delete_for_runs(saver(), [String.t()]) :: :ok | {:error, term()}
+  @doc """
+  Copy source thread history into the target thread.
+  """
   @callback copy_thread(saver(), String.t(), String.t()) :: :ok | {:error, term()}
+  @doc """
+  Apply the requested retention strategy while keeping required reconstruction dependencies.
+  """
   @callback prune(saver(), [String.t()], keyword()) :: :ok | {:error, term()}
+  @doc """
+  Return a monotonically advancing version for the channel.
+  """
   @callback next_version(saver(), term(), term() | nil) :: term()
 
   @optional_callbacks fetch_tuple: 2,

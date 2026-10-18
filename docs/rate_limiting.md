@@ -1,71 +1,110 @@
 # Rate Limiting
 
-A rate limiter caps how often your application calls a provider or another
-outside API, so a burst of traffic waits its turn instead of failing with the
-provider's rate-limit errors. `BeamWeaver.RateLimiter` is an in-memory token
-bucket that you call before each request.
+Rate limiting controls admission to a provider or service before work starts.
+BeamWeaver's token bucket is an in-memory process. It can delay a burst or
+reject excess work; it is not a distributed account-wide quota service.
 
-## Take tokens from a bucket
+
+Run this page’s examples in order in one IEx session; later blocks reuse the modules and values defined earlier.
+
+## Wrap a real model
+
+After [Installation](installation.md), create a bucket once and reuse it with
+the model. This call consumes one token and actually contacts OpenAI:
 
 ```elixir
 alias BeamWeaver.RateLimiter
+{:ok, limiter} = RateLimiter.start_bucket(capacity: 2, initial_tokens: 2, refill_interval: 60_000)
 
-{:ok, limiter} = RateLimiter.start_bucket(capacity: 2, initial_tokens: 2, refill_interval: :timer.minutes(1))
+try do
+  model =
+    BeamWeaver.Models.init_chat_model!("openai:gpt-5.4-mini", max_tokens: 128, timeout: 60_000)
+    |> BeamWeaver.Models.with_rate_limiter(limiter: limiter)
 
-:ok = RateLimiter.acquire(limiter)
-:ok = RateLimiter.acquire(limiter)
-RateLimiter.acquire(limiter, 1, mode: :reject)
-#=> {:error, %BeamWeaver.RateLimiter.Error{type: :rate_limited}}
+  {:ok, reply} = BeamWeaver.Core.ChatModel.invoke(model, "Explain rate limiting in one sentence.")
+  true = byte_size(BeamWeaver.Core.Message.text(reply)) > 0
+  %{tokens: 1} = RateLimiter.snapshot(limiter)
+  :ok = RateLimiter.acquire(limiter)
+  {:error, error} = RateLimiter.acquire(limiter, 1, mode: :reject)
+  :rate_limited = error.type
+after
+  DynamicSupervisor.terminate_child(BeamWeaver.RateLimiter.Supervisor, limiter)
+end
 ```
 
-The bucket holds up to `capacity` tokens and gets `refill_amount` new ones
-every `refill_interval`. Each call takes one token, or `amount` with
-`acquire(limiter, amount)`. The third call found the bucket empty and was
-turned away.
+`start_bucket/1` starts a permanent child under BeamWeaver’s rate-limiter
+supervisor. Stop a temporary bucket with `DynamicSupervisor.terminate_child/2`,
+as above; stopping its GenServer alone makes the supervisor restart it.
+
+The wrapped model works for direct calls and as an agent's model. Keep the
+limiter alive for the workload it governs; creating a fresh bucket per request
+would reset the budget.
+
+## Take tokens from a bucket
 
 | Option | Meaning | Default |
 | --- | --- | --- |
-| `capacity:` | The most tokens the bucket holds, which is the largest burst | `1` |
-| `refill_amount:` | Tokens added at each refill | the capacity |
-| `refill_interval:` | Milliseconds between refills | `1000` |
-| `initial_tokens:` | Tokens at start | `0` |
-| `name:` | A registered name, to call the bucket from anywhere | none |
+| `capacity:` | Maximum stored tokens/burst | 1 |
+| `refill_amount:` | Tokens added per refill | Capacity |
+| `refill_interval:` | Refill period in milliseconds | 1,000 |
+| `initial_tokens:` | Available tokens at startup | 0 |
+| `name:` | Registered process name | None |
 
-`capacity: 60, refill_interval: :timer.minutes(1)` allows 60 calls a minute,
-all at once if they come at once. `capacity: 10, refill_amount: 1` allows one
-call a second on average, with bursts of up to 10.
+Acquire one token per request or an explicit amount for weighted work. This
+is a token-bucket rate, not a strict rolling-minute counter. A full bucket can
+permit an immediate burst, followed by later refill allowance.
+
+Acquire weighted tokens and inspect the remaining capacity. This local example needs no provider:
+
+```elixir
+alias BeamWeaver.RateLimiter
+{:ok, bucket} = RateLimiter.start_bucket(capacity: 3, initial_tokens: 3, refill_interval: 60_000)
+
+try do
+  :ok = RateLimiter.acquire(bucket, 2)
+  %{tokens: 1} = RateLimiter.snapshot(bucket)
+  {:error, %{type: :amount_exceeds_capacity}} = RateLimiter.acquire(bucket, 4, mode: :reject)
+  :ok
+after
+  DynamicSupervisor.terminate_child(BeamWeaver.RateLimiter.Supervisor, bucket)
+end
+```
 
 ## When a call is limited
 
-By default `acquire/3` waits in line until a refill brings enough tokens, for
-up to `timeout:` milliseconds (5,000 by default), and then gives up:
+`mode: :wait` queues until tokens are available or the timeout expires
+(default 5,000 ms). `mode: :reject` returns `:rate_limited` immediately.
+An amount larger than capacity returns `:amount_exceeds_capacity`.
+
+Waiting callers leave the queue if they exit. A smaller new request that fits
+available tokens can proceed while a larger request waits; do not assume
+strict fairness across different weights. `snapshot/1` reports token and queue
+counts for diagnosis.
+
+An empty bucket can reject immediately or wait until a deadline:
 
 ```elixir
-RateLimiter.acquire(limiter, 1, timeout: 20)
-#=> {:error, %BeamWeaver.RateLimiter.Error{type: :timeout}}
-```
+{:ok, bucket} = BeamWeaver.RateLimiter.start_bucket(capacity: 1, initial_tokens: 0, refill_interval: 60_000)
 
-| Mode | When the bucket is empty |
-| --- | --- |
-| `mode: :wait` (default) | Waits for a refill until `timeout:`; then `:timeout` |
-| `mode: :reject` | Returns `:rate_limited` at once |
-
-Waiting callers are served in the order they came, but a new call that fits
-the tokens left is served at once, even while a larger request waits. A
-caller that exits while it waits leaves the line, so it doesn't use up tokens.
-Asking for more than `capacity` fails with `:amount_exceeds_capacity`.
-`BeamWeaver.RateLimiter.snapshot/1` shows the tokens left and the callers
-waiting:
-
-```elixir
-RateLimiter.snapshot(limiter)
-#=> %{tokens: 0, queued: 0, capacity: 2}
+try do
+  {:error, %{type: :rate_limited}} = BeamWeaver.RateLimiter.acquire(bucket, 1, mode: :reject)
+  {:error, limited} = BeamWeaver.RateLimiter.acquire(bucket, 1, timeout: 20)
+  IO.inspect(limited.type, label: "Waiting deadline result")
+  %{queued: 0} = BeamWeaver.RateLimiter.snapshot(bucket)
+after
+  DynamicSupervisor.terminate_child(BeamWeaver.RateLimiter.Supervisor, bucket)
+end
 ```
 
 ## Limit model calls in an agent
 
-A middleware takes a token before every model call. Start the bucket under a
-name, so the middleware can find it:
+Use the wrapped model, or a `wrap_model_call/3` hook that acquires before
+calling its handler. If retry middleware wraps admission, every retried attempt
+must acquire again. Give retries an actual delay so they do not immediately
+hit the same empty bucket. Account for time spent waiting in the whole-run
+budget, in addition to provider timeout.
+
+A wrapper admits each provider attempt through the shared named limiter:
 
 ```elixir
 defmodule MyApp.ModelRateLimit do
@@ -89,31 +128,27 @@ end
 defmodule MyApp.SupportAgent do
   use BeamWeaver.Agent
 
-  model "fake:chat", responses: ["Order A-1001 shipped on Monday."]
+  model "openai:gpt-5.4-mini", max_tokens: 128, timeout: 60_000
   system_prompt "You are Acme's support agent."
   middleware [{MyApp.ModelRateLimit, timeout: 20}]
 end
 
-{:ok, _bucket} =
+{:ok, bucket} =
   RateLimiter.start_bucket(name: MyApp.ModelLimiter, capacity: 1, initial_tokens: 1, refill_interval: :timer.minutes(1))
 
 {:ok, _result} = MyApp.SupportAgent.invoke(%{messages: ["Where is order A-1001?"]})
-MyApp.SupportAgent.invoke(%{messages: ["And order A-1002?"]})
-#=> {:error, %BeamWeaver.Core.Error{type: :rate_limited}}
+{:error, %BeamWeaver.Core.Error{type: :rate_limited}} = MyApp.SupportAgent.invoke(%{messages: ["And order A-1002?"]})
+DynamicSupervisor.terminate_child(BeamWeaver.RateLimiter.Supervisor, bucket)
 ```
-
-The first call took the only token; the second waited 20 milliseconds and
-failed. The middleware works the same for streamed runs. `:rate_limited` counts
-as a temporary error: list the `ModelRetry` middleware before this one and it
-retries the call, as it retries a provider's own rate-limit errors (see
-[Built-in Middleware](builtin_middleware.md)). Give `ModelRetry` an
-`initial_delay:`, or its retries come at once and find the bucket still empty.
 
 ## Limit a tool
 
-A tool that calls an outside API takes its token the same way. When it returns
-an error, the model reads that the tool failed and can try again later or
-answer without it:
+A tool can acquire from its service's bucket before making an external call.
+Return a meaningful error when admission fails so the model can explain or
+choose another action. Admission is not a reservation that rolls back an
+already-completed side effect. Keep mutating tool retries idempotent.
+
+A tool can guard its own service independently of model admission:
 
 ```elixir
 defmodule MyApp.Tools.SearchHelpCenter do
@@ -138,11 +173,40 @@ defmodule MyApp.Tools.SearchHelpCenter do
 end
 ```
 
+Start the tool’s limiter and execute the local help-center lookup:
+
+```elixir
+{:ok, bucket} =
+  BeamWeaver.RateLimiter.start_bucket(
+    name: MyApp.HelpCenterLimiter,
+    capacity: 1,
+    initial_tokens: 1,
+    refill_interval: 60_000
+  )
+
+try do
+  {:ok, text} = BeamWeaver.Core.Tool.invoke(MyApp.Tools.SearchHelpCenter, %{"query" => "refund"})
+  true = text =~ "5 to 7 business days"
+  %{tokens: 0} = BeamWeaver.RateLimiter.snapshot(bucket)
+after
+  DynamicSupervisor.terminate_child(BeamWeaver.RateLimiter.Supervisor, bucket)
+end
+```
+
 ## Run buckets in production
 
-Start each bucket in your supervision tree, so it restarts with your
-application. A bucket's child id is its `name:`, so several buckets can share
-one supervisor:
+Supervise named `RateLimiter.TokenBucket` children. Distinct names give them
+distinct child IDs. On restart, initial token settings apply again; choose
+whether an immediate burst is appropriate.
+
+Provider quotas can differ by account, model, request count and token volume.
+Separate buckets accordingly. For token-based budgets, acquire a conservative
+estimated amount and understand that estimates are not provider accounting.
+With multiple application nodes, allocate quotas per node or implement a
+shared limiter. `Models.with_rate_limiter/2` can use a custom adapter exposing
+`acquire/3` through its policy.
+
+Add these children to your application supervisor. The standalone version below starts and stops a temporary supervisor:
 
 ```elixir
 children = [
@@ -150,39 +214,19 @@ children = [
   {BeamWeaver.RateLimiter.TokenBucket, name: MyApp.HelpCenterLimiter, capacity: 5, refill_interval: 1_000}
 ]
 
-Enum.map(children, &Supervisor.child_spec(&1, []).id)
-#=> [MyApp.ModelLimiter, MyApp.HelpCenterLimiter]
-```
+{:ok, supervisor} = Supervisor.start_link(children, strategy: :one_for_one)
 
-Providers limit requests and tokens per minute, per API key and per model, and
-their limits differ by account tier; their pages and your account settings
-list yours. Use one bucket per key and model you call. A bucket counts calls,
-not tokens: for a tokens-per-minute limit, size the bucket in thousands of
-tokens and take `div(estimated_tokens, 1_000) + 1` per call. Buckets live on
-one node, so with several nodes give each node its share of the limit.
+try do
+  true = is_pid(Process.whereis(MyApp.ModelLimiter))
+  true = is_pid(Process.whereis(MyApp.HelpCenterLimiter))
+after
+  Supervisor.stop(supervisor)
+end
+```
 
 ## Wrap a model
 
-`BeamWeaver.Models.with_rate_limiter/2` wraps a model so that every call takes
-a token from a bucket first. Use the wrapped model directly or as an agent's
-`model`:
-
-```elixir
-{:ok, model_limiter} = RateLimiter.start_bucket(capacity: 10, initial_tokens: 10)
-
-model =
-  "fake:chat"
-  |> BeamWeaver.Models.init_chat_model!(responses: ["Order A-1001 shipped on Monday."])
-  |> BeamWeaver.Models.with_rate_limiter(limiter: model_limiter)
-
-{:ok, reply} = BeamWeaver.Core.ChatModel.invoke(model, "Where is order A-1001?")
-BeamWeaver.Core.Message.text(reply)
-#=> "Order A-1001 shipped on Monday."
-```
-
-## Reference
-
-- [`BeamWeaver.RateLimiter`](https://hexdocs.pm/beam_weaver/BeamWeaver.RateLimiter.html): starting buckets and taking tokens
-- [`BeamWeaver.RateLimiter.TokenBucket`](https://hexdocs.pm/beam_weaver/BeamWeaver.RateLimiter.TokenBucket.html): the token bucket process and its options
-- [`BeamWeaver.RateLimiter.Error`](https://hexdocs.pm/beam_weaver/BeamWeaver.RateLimiter.Error.html): `:rate_limited`, `:timeout` and other failures
-- [`BeamWeaver.Agent.Middleware`](https://hexdocs.pm/beam_weaver/BeamWeaver.Agent.Middleware.html): `wrap_model_call/3` for limits around model calls
+`Models.with_rate_limiter/2` takes a limiter/policy and preserves the wrapped
+model interface, including supported decision-model operations. A per-call
+`rate_limiter:` can override the policy's limiter. Missing or invalid limiter
+configuration is an explicit error, not unlimited operation.

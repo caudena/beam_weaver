@@ -120,6 +120,14 @@ defmodule BeamWeaver.Agent.DeclarationsTest do
     model "fake:chat", responses: [FakeChatModel.tool_call("lookup_order", %{}), "I can't look orders up."]
   end
 
+  defmodule PromptedAgent do
+    use BeamWeaver.Agent
+
+    model "fake:chat", responses: ["Hello."], parent: self()
+    system_prompt "Reply briefly."
+    tools [BeamWeaver.Agent.DeclarationsTest.Echo]
+  end
+
   defmodule TimeoutsAgent do
     use BeamWeaver.Agent
 
@@ -253,6 +261,37 @@ defmodule BeamWeaver.Agent.DeclarationsTest do
       assert {:ok, result} = ModelOptsAgent.invoke(%{messages: ["Echo hi"]})
       assert Enum.map(result.messages, &Message.text/1) == ["Echo hi", "", "hi", "Echoed."]
       assert_received {:fake_chat_model_call, _messages, _opts}
+    end
+  end
+
+  describe "declarations/1" do
+    test "gives a module's declarations as build/1 options, evaluated when it is called" do
+      Process.put(:declarations_test_reply, "read when declarations/1 ran")
+      declared = Agent.declarations(ModelOptionsAgent)
+
+      assert declared.model == "fake:chat"
+      assert declared.model_opts[:responses] == ["read when declarations/1 ran"]
+      assert declared.system_prompt == nil
+      refute Map.has_key?(declared, :module)
+      refute Map.has_key?(declared, :execution_mode)
+    end
+
+    test "builds the same agent with one declaration replaced" do
+      declared = Agent.declarations(PromptedAgent)
+      assert declared.system_prompt == "Reply briefly."
+      assert declared.tools == [Echo]
+
+      assert {:ok, agent} = Agent.build(%{declared | system_prompt: "Reply in French."})
+      assert {:ok, result} = Agent.invoke(agent, %{messages: ["Hi"]})
+      assert Message.text(List.last(result.messages)) == "Hello."
+
+      assert_received {:fake_chat_model_call, [%Message{role: :system} = system | _messages], _opts}
+      assert Message.text(system) =~ "Reply in French."
+      refute Message.text(system) =~ "Reply briefly."
+    end
+
+    test "raises for a module that isn't an agent module" do
+      assert_raise ArgumentError, ~r/is not an agent module/, fn -> Agent.declarations(Echo) end
     end
   end
 

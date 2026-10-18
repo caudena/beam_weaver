@@ -1,130 +1,125 @@
 # Configuration
 
-Configure BeamWeaver in your application's `config/runtime.exs`. Keep
-credentials there and pass request-specific values as invocation options.
-An installed dependency's own configuration files do not configure your app.
+Keep provider credentials and deployment defaults in your application's
+runtime configuration. Put model behavior on model constructors/declarations,
+and request identity/state selection on invocation options. A dependency's
+config files do not configure a consuming application.
 
 ## Configuration and call options
 
-A provider's application configuration supplies credentials and connection
-defaults. Model constructors and invocation options carry the settings for
-that model or request. For example, `max_tokens` belongs on a model, while a
-thread ID belongs on an invocation; neither is a global `:beam_weaver` key.
+Create `config/runtime.exs` in the application that runs the agent:
 
 ```elixir
 import Config
-
-config :beam_weaver, :openai,
-  api_key: System.fetch_env!("OPENAI_API_KEY")
+config :beam_weaver, :openai, api_key: System.fetch_env!("OPENAI_API_KEY")
 ```
+
+Export the credential before starting Mix or load it through your deployment
+secret mechanism. BeamWeaver reads application configuration; it does not
+implicitly load a consumer's `.env`.
 
 ```elixir
 {:ok, model} = BeamWeaver.Models.init_chat_model("openai:gpt-5.4-mini", max_tokens: 128, timeout: 60_000)
-{:ok, reply} = BeamWeaver.Core.ChatModel.invoke(model, "Reply with the word ready.")
+{:ok, reply} = BeamWeaver.Core.ChatModel.invoke(model, "Reply with a brief greeting.")
 true = byte_size(BeamWeaver.Core.Message.text(reply)) > 0
 ```
 
-[`BeamWeaver.Config`](https://hexdocs.pm/beam_weaver/BeamWeaver.Config.html)
-reads grouped application configuration. Blank strings are treated as missing.
-Where an API uses `BeamWeaver.Config.option/4`, an explicitly supplied option wins over
-application configuration, including an explicit `nil`. Check the constructor
-reference for its supported options; provider-specific URL resolution may
-apply its own fallback for an empty endpoint.
+| Setting | Belongs in |
+| --- | --- |
+| Provider key and base URL | Provider application group or explicit constructor options |
+| Model, output limit and reasoning controls | Model constructor/agent declaration |
+| Thread ID and checkpoint selection | Invocation `config:` |
+| Authenticated caller and request dependencies | Invocation `context:` |
+| Saver/store/cache | Application-owned resource passed to the run |
+| Retry and tool policy | Middleware or node options |
+| Whole-run and step budgets | Agent/graph declaration or invocation options |
+
+`BeamWeaver.Config` reads grouped settings and treats blank strings as missing.
+APIs using `BeamWeaver.Config.option/4` let an explicit option win, including explicit nil.
+Endpoint constructors may have additional empty-value fallback rules. Use the
+specific API's documented options rather than inventing global feature keys.
 
 ## Provider groups
 
-| Group | Credentials and connection options | Guide |
-| --- | --- | --- |
-| `:openai` | `api_key`, `organization`, `project`, `base_url` | [OpenAI](providers/openai.md) |
-| `:google` | `api_key`, `base_url` | [Google](providers/google.md) |
-| `:anthropic` | `api_key`, `base_url` | [Anthropic](providers/anthropic.md) |
-| `:deepseek` | `api_key`, `base_url`, `beta_base_url`, `anthropic_base_url` | [DeepSeek](providers/deepseek.md) |
-| `:moonshot` | `api_key`, `base_url` | [Moonshot](providers/moonshot.md) |
-| `:xai` | `api_key`, `base_url` | [xAI](providers/xai.md) |
-| `:zai` | `api_key`, `base_url` | [Z.ai](providers/zai.md) |
-| `:typesafe` | `api_key`, `base_url` | [TypeSafe](providers/typesafe.md) |
+| Group | Credentials and connection settings |
+| --- | --- |
+| `:openai` | `api_key`, `organization`, `project`, `base_url` |
+| `:google`, `:anthropic` | `api_key`, `base_url` |
+| `:deepseek` | `api_key`, `base_url`, `beta_base_url`, `anthropic_base_url` |
+| `:moonshot`, `:xai`, `:zai`, `:typesafe` | `api_key`, `base_url` |
 
-Provider clients use their built-in service URL unless you configure a
-replacement. API keys have no built-in default. A custom URL is useful for
-a gateway; it does not imply that every gateway supports the provider's
-features. Never embed keys in agent modules or log them with request options.
-
-## Tracing
-
-Local run storage retains up to 10,000 finished/running records by default;
-running records are retained even when the limit is exceeded. `max_runs: 0`
-retains only active runs. Configure a different retention count:
-
-```elixir
-import Config
-
-config :beam_weaver, :tracing, max_runs: 1_000
-```
-
-The `:tracing` group also accepts `exporter` and `exporter_opts` for a custom
-exporter. The `:weave_scope` group configures the built-in WeaveScope exporter:
-`endpoint`, `api_key`, `version` and `otp_app` identify the destination and
-application version. Configure these before application startup so the
-export queue starts with the intended settings. See [Tracing](tracing.md)
-for delivery, redaction and exporter examples.
-
-Queue settings also belong in `:weave_scope` and are read at startup:
-
-| Key | Default | Meaning |
-| --- | --- | --- |
-| `transport` | `Req` | HTTP transport implementing `post/2`. |
-| `batch_size` | `200` | Maximum observations per batch. |
-| `flush_interval` | `250` | Milliseconds between background flushes. |
-| `max_items` | `100_000` | Buffered observations before overflow handling. |
-| `max_batch_bytes` | `6_000_000` | Maximum encoded batch size. |
-| `max_inflight` | `2` | Concurrent uploads. |
-| `overflow` | `:block` | Backpressure; alternatives are `:drop_oldest` and `:drop_newest`. |
-| `retry_delay` | `100` | Initial retry delay in milliseconds. |
-| `backoff` | `2.0` | Retry delay multiplier. |
-| `jitter` | `0.0` | Retry jitter. |
-| `max_attempts` | `5` | Upload attempts before a dead letter. |
-| `shutdown` | `120_000` | Milliseconds allowed to drain during shutdown. |
-| `redactor` | Built-in credential redaction | Function applied before export. |
-
-
-## Transport pools
-
-The `:transport` group controls isolated connection pools:
-
-| Key | Default | Meaning |
-| --- | --- | --- |
-| `max_isolated_pools` | `16` | Maximum isolated origin/settings pools. |
-| `isolated_pool_idle_timeout` | `60_000` | Milliseconds before an idle pool is stopped. |
-
-Both values must be positive integers. Configure them before startup.
-Normal model timeouts, retries and connection options are configured through
-the model or transport API, not by inventing additional application keys.
-
-## Execution
-
-The `:execution` key `delta_max_supersteps_since_snapshot` defaults to `5_000`.
-It limits delta replay between snapshots. Per-run limits such as
-`recursion_limit`, `step_timeout` and `run_timeout` belong on the agent/graph
-or its invocation. See [Durable Execution](durable_execution.md) and
-[Graph State](graph_state.md).
-
-## Provider registration
-
-The `:providers` group accepts provider adapter modules or provider/spec pairs.
-BeamWeaver loads these registrations during application startup. For explicit
-runtime registration use
-[`BeamWeaver.Provider.Registry`](https://hexdocs.pm/beam_weaver/BeamWeaver.Provider.Registry.html).
-Custom models implement the appropriate chat, embedding or decision contract;
-see [Models](models.md).
+The [provider guides](providers.md) cover operation-specific options and
+endpoint differences. Default service URLs exist; default credentials do not.
+A gateway URL does not make every native feature available through it.
 
 ## Your application's resources
 
-Configure Ecto repositories under your own application's OTP name. Supply
-checkpointers, memory stores and caches explicitly to the agent or graph.
-They are not global provider settings. [Storage](storage.md) covers repository
-startup, migrations, serialization and retention.
+Configure repos under your own OTP application name and supervise them before
+storage users. Model initialization does not create an Ecto repo or migrate
+its schema. [Storage](storage.md) contains complete setup.
 
-The repository's `:test` and `:examples` groups support development scripts;
-they are not application feature switches. Test selection uses Mix command
-arguments. In tests, use explicit constructor arguments, fake models or your
-application's configuration to choose behavior.
+Keep shared ETS resources, rate limiters and workspace owners alive for their
+intended scope. Declaration evaluation is per-call; avoid creating a new
+resource on every invocation. [Production Integration](going_to_production.md)
+explains ownership and shutdown.
+
+## Provider registration
+
+The `:providers` setting accepts adapter modules or provider/spec pairs loaded
+at startup. `BeamWeaver.Provider.Registry` supports explicit registration.
+Custom adapters implement the appropriate chat, embedding or decision contract;
+registering a prefix does not automatically implement those operations.
+
+Agent `ProviderProfile` defaults and behavioral `CapabilityProfile` registries
+are node-wide. Set shared policies at startup and pass request-specific
+variations explicitly rather than mutating a registry per request.
+
+## Tracing
+
+Local trace retention defaults to 10,000 records, while active records are
+retained even when that budget is exceeded. Zero retains only active runs:
+
+```elixir
+import Config
+config :beam_weaver, :tracing, max_runs: 1_000
+```
+
+The `:tracing` group also accepts `exporter` and `exporter_opts`.
+The `:weave_scope` group configures endpoint, key, version, OTP application and
+queue behavior. Configure it before application startup.
+
+| Queue setting | Default | Meaning |
+| --- | --- | --- |
+| `transport` | `Req` | HTTP implementation of `post/2` |
+| `batch_size` | 200 | Observations per upload |
+| `flush_interval` | 250 | Milliseconds between background flushes |
+| `max_items` | 100,000 | Buffered observations |
+| `max_batch_bytes` | 6,000,000 | Encoded upload limit |
+| `max_inflight` | 2 | Concurrent uploads |
+| `overflow` | `:block` | Backpressure; drop-oldest/newest alternatives trade data for availability |
+| `retry_delay`, `backoff`, `jitter` | 100 ms, 2.0, 0.0 | Upload retry timing |
+| `max_attempts` | 5 | Attempts before dead-letter handling |
+| `shutdown` | 120,000 | Milliseconds allowed for shutdown drain |
+| `redactor` | Built-in credential redaction | Pre-export data transformation |
+
+[Tracing](tracing.md) explains delivery checks, queue monitoring and the
+limits of redaction. A large buffer remains in-memory and is not durable
+storage for an extended outage.
+
+## Transport pools
+
+The `:transport` group accepts `max_isolated_pools` (default 16) and
+`isolated_pool_idle_timeout` (default 60,000 ms). Both must be positive integers.
+These bound isolated origin/settings pools, such as validated URL fetches.
+Ordinary provider request timeouts belong on the model/transport request.
+
+## Execution
+
+`:execution` accepts `delta_max_supersteps_since_snapshot` (default 5,000)
+for delta replay between snapshots. Per-run recursion/time limits remain
+agent/graph options. See [State and Channels](graph_state.md) and
+[Durable Execution](durable_execution.md).
+
+Repository-only `:test` and `:examples` settings support development scripts.
+Use explicit test arguments, fakes and application configuration for your own
+behavior; do not make production correctness depend on runner settings.

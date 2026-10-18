@@ -1,6 +1,6 @@
 defmodule BeamWeaver.Agent.Protocol.Client do
   @moduledoc """
-  Minimal Agent Protocol client behaviour for async subagents: start, check, update and cancel remote runs.
+  Client contract for starting, checking, updating and cancelling asynchronous agent runs.
 
   Every callback gets `parent:` in its opts, which says which agent made the
   call (see `t:parent/0`). The caller of the parent's run sets its thread

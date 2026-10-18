@@ -1,15 +1,20 @@
 defmodule BeamWeaver.Graph.Compiled do
-  @moduledoc """
-  A graph compiled with `BeamWeaver.Graph.compile/2`, ready to run.
+  @moduledoc ~S"""
+  Execute and inspect a validated graph with explicit storage and limits.
 
-  `invoke/3` runs it to the end, `stream_events/3` streams typed events,
-  `resume/3` continues an interrupted thread, and `get_state/2`,
-  `get_state_history/3` and `update_state/4` read and change checkpointed
-  threads. See [Graphs](graphs.md) and [Checkpoints](checkpoints.md).
+  `invoke/3` returns completed state, an interrupt or an error. `stream_events/3`
+  provides collected or lazy live events. `resume/3` continues saved work;
+  state/history/update functions operate through the configured checkpointer.
 
-  With a checkpointer, an empty input means "no new input": when the thread's
-  last run stopped before its end, at a breakpoint or in a crash, `invoke/3`
-  and `stream_events/3` continue that run.
+  On a stopped thread, empty input means no new turn and continues pending work.
+  On a completed thread, invocation can start another run; inspect the snapshot
+  before using this as a recovery loop. `resume/3` with no pending work instead
+  returns current state.
+
+  Compiled definitions contain reusable configuration, not an executing process.
+  The caller or stream consumer owns execution. Use distinct thread identities
+  for independent batch work. See [Graphs](graphs.md), [Checkpoints](checkpoints.md)
+  and [Streaming](streaming.md).
   """
 
   alias BeamWeaver.Cache
@@ -45,6 +50,10 @@ defmodule BeamWeaver.Graph.Compiled do
           store: struct() | nil
         }
 
+  @doc """
+  Runs the compiled graph with state or a Command. Returns {:ok, state},
+  {:interrupted, interrupt}, or {:error, error}; opts include context, config and limits.
+  """
   def invoke(compiled, input, opts \\ [])
 
   @spec invoke(t(), map() | Command.t(), keyword()) ::
@@ -54,11 +63,19 @@ defmodule BeamWeaver.Graph.Compiled do
   def invoke(_compiled, _input, _opts),
     do: {:error, Error.new(:invalid_input, "graph input must be a map")}
 
+  @doc """
+  Runs inputs sequentially and returns one tagged outcome per input in input order.
+  """
   @spec batch(t(), [map()], keyword()) :: [term()]
   def batch(%__MODULE__{} = compiled, inputs, opts \\ []) when is_list(inputs) do
     Enum.map(inputs, &Runtime.invoke(compiled, &1, opts))
   end
 
+  @doc """
+  Returns a lazy concurrent result stream of {input_index, outcome} pairs.
+  Options include max_concurrency and task timeout; task exits use an unknown index.
+  Do not run concurrent inputs against the same mutable thread without coordination.
+  """
   @spec batch_as_completed(t(), [map()], keyword()) ::
           {:ok, Enumerable.t()} | {:error, Error.t()}
   def batch_as_completed(%__MODULE__{} = compiled, inputs, opts \\ []) when is_list(inputs) do
@@ -190,36 +207,57 @@ defmodule BeamWeaver.Graph.Compiled do
     end
   end
 
+  @doc """
+  Returns graph introspection data for nodes, edges and rendering.
+  """
   @spec get_graph(t(), keyword()) :: Introspection.t()
   def get_graph(%__MODULE__{} = compiled, opts \\ []) do
     Introspection.from_compiled(compiled, opts)
   end
 
+  @doc """
+  Returns JSON Schema describing declared runtime context.
+  """
   @spec get_context_json_schema(t()) :: map()
   def get_context_json_schema(%__MODULE__{graph: %{context_schema: context_schema}}) do
     Schema.to_json_schema(context_schema)
   end
 
+  @doc """
+  Returns JSON Schema describing declared graph input keys.
+  """
   @spec get_input_json_schema(t()) :: map()
   def get_input_json_schema(%__MODULE__{graph: %{input_schema: input_schema}}) do
     Schema.to_json_schema(input_schema)
   end
 
+  @doc """
+  Returns JSON Schema describing declared graph output keys.
+  """
   @spec get_output_json_schema(t()) :: map()
   def get_output_json_schema(%__MODULE__{graph: %{output_schema: output_schema}}) do
     Schema.to_json_schema(output_schema)
   end
 
+  @doc """
+  Renders graph introspection as Mermaid text; it does not execute nodes.
+  """
   @spec draw_mermaid(t(), keyword()) :: String.t()
   def draw_mermaid(%__MODULE__{} = compiled, opts \\ []) do
     compiled |> get_graph(opts) |> Renderer.to_mermaid(opts)
   end
 
+  @doc """
+  Renders graph topology as text without executing it.
+  """
   @spec draw_ascii(t(), keyword()) :: String.t()
   def draw_ascii(%__MODULE__{} = compiled, opts \\ []) do
     compiled |> get_graph(opts) |> Renderer.to_ascii(opts)
   end
 
+  @doc """
+  Renders a PNG through the configured renderer; returns bytes or a renderer error.
+  """
   @spec draw_png(t(), keyword()) :: {:ok, binary()} | {:error, Error.t()}
   def draw_png(%__MODULE__{} = compiled, opts \\ []) do
     compiled |> get_graph(opts) |> Renderer.to_png(opts)

@@ -1,5 +1,13 @@
 defmodule BeamWeaver.Filesystem.Local do
-  @moduledoc "Virtual-root filesystem backend for trusted local development and CI."
+  @moduledoc ~S"""
+  Map virtual file paths into an application-owned local directory.
+
+  The root is created if needed. File operations reject escaping paths and
+  symlinks outside it, but this is not an operating-system sandbox. Direct
+  application access and other processes can still modify the directory.
+  Use a dedicated root, coordinate writers and apply file-tool permissions where
+  needed. No execute tool is provided by this backend.
+  """
 
   use BeamWeaver.Filesystem
 

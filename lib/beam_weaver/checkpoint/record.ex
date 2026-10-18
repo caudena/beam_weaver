@@ -35,8 +35,9 @@ defmodule BeamWeaver.Checkpoint.Record do
   @moduledoc """
   Typed checkpoint tuple projection.
 
-  Existing saver callbacks keep returning map-compatible tuples. This struct is
-  the stable typed shape for conformance tests, exporters, and future adapters.
+  Projects saver tuple maps into named fields for application inspection,
+  exporters and adapter implementations. It does not write or activate a
+  checkpoint; use BeamWeaver.Checkpoint for storage operations.
   """
 
   alias BeamWeaver.Checkpoint.Metadata

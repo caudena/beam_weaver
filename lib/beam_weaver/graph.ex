@@ -1,84 +1,56 @@
 defmodule BeamWeaver.Graph do
   @moduledoc ~S"""
-  Builds workflows from nodes and edges.
+  Define workflows with explicit nodes, routes, joins and state channels.
 
-  A node is a function that receives the state and returns a map of the keys
-  it changes. Edges say which node runs next. Build a graph with the functions
-  in this module, compile it, and run it with `BeamWeaver.Graph.Compiled`:
-
-  ```elixir
-  alias BeamWeaver.Graph
-  alias BeamWeaver.Graph.Compiled
-  alias BeamWeaver.Graph.Compiler
-
-  triage =
-    Graph.new()
-    |> Graph.add_node(:classify, fn %{subject: subject} ->
-      %{category: if(subject =~ ~r/refund/i, do: :billing, else: :general)}
-    end)
-    |> Graph.add_node(:reply, fn %{category: category} -> %{reply: "Routed to the #{category} queue."} end)
-    |> Graph.add_edge(Graph.start(), :classify)
-    |> Graph.add_edge(:classify, :reply)
-    |> Graph.add_edge(:reply, Graph.end_node())
-    |> Graph.compile!()
-
-  {:ok, state} = Compiled.invoke(triage, %{subject: "Refund for order A-1001"})
-  state.reply
-  #=> "Routed to the billing queue."
-  ```
-
-  The [Graphs](graphs.md) guide covers routing, parallel branches, `Command`
-  and `Send`; [Graph State](graph_state.md) covers how updates merge.
-
-  ## Graph modules
-
-  In an application, define a graph in a module with `use BeamWeaver.Graph`,
-  and return the builder from `c:graph/0`:
+  Use the module DSL for application-defined topology. Nodes are ordinary
+  functions returning changed state keys; this workflow needs no model:
 
   ```elixir
   defmodule MyApp.Triage do
     use BeamWeaver.Graph
 
-    alias BeamWeaver.Graph
-
-    def graph do
-      Graph.new()
-      |> Graph.add_node(:classify, &classify/1)
-      |> Graph.add_edge(Graph.start(), :classify)
-      |> Graph.add_edge(:classify, Graph.end_node())
+    graph do
+      node :classify, fn %{subject: subject} ->
+        %{category: if(subject =~ ~r/refund/i, do: :billing, else: :shipping)}
+      end
+      node :route, fn %{category: category} -> %{queue: Atom.to_string(category)} end
+      edge start(), :classify
+      edge :classify, :route
+      edge :route, finish()
     end
-
-    def classify(%{subject: subject}), do: %{category: if(subject =~ ~r/refund/i, do: :billing, else: :general)}
   end
 
-  {:ok, state} = MyApp.Triage.invoke(%{subject: "Refund for order A-1001"})
-  state.category
-  #=> :billing
+  {:ok, %{queue: "billing"}} = MyApp.Triage.invoke(%{subject: "Refund for A-1001"})
   ```
 
-  The module gets `invoke/2`, `stream_events/2`, `resume/2` and
-  `get_state/1`, which take the options of the functions of the same name in
-  `BeamWeaver.Graph.Compiled`, and compile the graph on each call with that
-  call's `checkpointer:`, `store:` and `cache:`. Instead of defining
-  `graph/0`, a module can declare its nodes and edges; see
-  [Static graphs as modules](graphs.md#static-graphs-as-modules).
+  ## DSL and builder
 
-  | Declaration | What it does |
-  | --- | --- |
-  | `checkpointer`, `store`, `cache` | The storage the graph compiles with when a call brings none. |
-  | `interrupt_before [...]`, `interrupt_after [...]` | Pauses the run before or after these nodes; `interrupts before: [...], after: [...]` declares both. |
-  | `recursion_limit 50` | The most steps one run may take. |
-  | `step_timeout`, `run_timeout` | Time limits, in milliseconds, for each step and the whole run. |
-  | `name "..."` | The compiled graph's name. |
+  Inside `graph do`, `node` declares work, `edge` routes updates, `join` waits
+  for branches and `state do` declares `channel` merge rules. `reducer` supplies
+  an explicit two-argument merge function. `start()` and `finish()` name entry
+  and exit boundaries. Routing supports `when:`, `default:` and `max_runs:`.
 
-  Declarations are evaluated each time the module runs. For that reason, a
-  declaration that creates an ETS saver, store or cache, such as
-  `checkpointer BeamWeaver.Checkpoint.ETS.new()`, doesn't compile: create it
-  once and pass it per call, or declare storage kept in your database.
+  Use the builder functions below for topology computed from data. A module may
+  return a builder from `c:graph/0` instead of declaring nodes; choose one style
+  per module. `compile/2` returns a compiled graph or error; `compile!/2` raises.
+  Compiled values execute through `BeamWeaver.Graph.Compiled`.
 
-  A graph module implements this module's behaviour, and so does an agent
-  module (`use BeamWeaver.Agent`). Either one runs as a node of another graph,
-  and `c:compiled_graph/1` compiles it with a call's options.
+  ## Lifecycle
+
+  Graph modules provide invoke, streaming, resume and state-inspection functions
+  and compile with each call's options. Storage and limit declarations evaluate
+  per invocation. Do not allocate fresh ETS storage in a repeated declaration;
+  pass application-owned resources instead.
+
+  Nodes ready in one superstep run concurrently. Their updates merge through
+  channels; multiple writes to an ordinary key are invalid. Checkpoints retain
+  completed progress and pending work, not arbitrary process state. Retried or
+  resumed nodes start from their beginning and need idempotent external actions.
+
+  Agents and graph modules share the graph behavior and can be composed as
+  subgraphs. [Graph DSL](graphs.md), [State](graph_state.md),
+  [Subgraphs](subgraphs.md) and [Durable Execution](durable_execution.md)
+  provide complete examples and operational rules.
   """
 
   alias BeamWeaver.Core.Error
@@ -270,7 +242,7 @@ defmodule BeamWeaver.Graph do
     end
   end
 
-  @doc "Lists the problems `compile/2` would report, without compiling."
+  @doc "Returns a Validation.Report with diagnostics, without compiling. Use validate_static: true for reachability checks."
   @spec validation_report(t(), keyword()) :: BeamWeaver.Graph.Validation.Report.t()
   def validation_report(graph, opts \\ []), do: BeamWeaver.Graph.Validation.report(graph, opts)
 

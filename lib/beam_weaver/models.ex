@@ -1,20 +1,26 @@
 defmodule BeamWeaver.Models do
-  @moduledoc """
-  Creates chat, embedding and decision models from `"provider:model"` strings,
-  and wraps models with tools, a cache or a rate limiter.
+  @moduledoc ~S"""
+  Construct chat, embedding and decision models from explicit provider identifiers.
+
+  Initialization resolves an adapter and validates its supported options. It
+  makes no inference request and does not establish account access. Configure
+  credentials in the consuming application's runtime config.
 
   ```elixir
-  {:ok, model} = BeamWeaver.Models.init_chat_model("fake:chat", responses: ["Hello, Ada."])
-  {:ok, reply} = BeamWeaver.Core.ChatModel.invoke(model, [BeamWeaver.Core.Message.user("Hi, I'm Ada.")])
-  reply.content
-  #=> "Hello, Ada."
+  {:ok, model} = BeamWeaver.Models.init_chat_model("openai:gpt-5.4-mini", max_tokens: 128, timeout: 60_000)
+  {:ok, reply} = BeamWeaver.Core.ChatModel.invoke(model, "Say hello briefly.")
+  true = byte_size(BeamWeaver.Core.Message.text(reply)) > 0
   ```
 
-  The prefix picks the provider (`openai`, `anthropic`, `google`, `xai`,
-  `deepseek`, `moonshot`, `zai`, `typesafe`, or `fake` for tests) and the rest
-  is the provider's model id. Options such as `temperature:`, `max_tokens:` and
-  `timeout:` follow the id; API keys come from your application config. See
-  [Models](models.md) and [Providers](providers.md).
+  Use `init_embeddings/2` for vectors and `init_decision_model/2` for typed
+  questions. Those capabilities are provider-specific; a chat integration does
+  not imply embeddings or decisions. Bang constructors raise on invalid input.
+
+  `cached/3` and `with_rate_limiter/2` wrap supported model interfaces using
+  explicit application-owned cache/limiter resources. Caching can skip a model
+  call; rate limiting delays or rejects admission. See [Models](models.md),
+  [Caching](caching.md) and [Rate Limiting](rate_limiting.md).
+  Fake models are for deterministic [application tests](testing.md).
   """
 
   alias BeamWeaver.Core.Error

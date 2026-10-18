@@ -57,8 +57,8 @@ defmodule BeamWeaver.Agent.Subagent.StreamTransformer do
   status, events, values and updates, and the runs of its own subagents. A run
   is matched to its events by the `tool_call_id` in their envelope metadata.
 
-  The streaming example in [Subagents](subagents.md) defines the parent,
-  specialists and input before collecting events. Pass that stream to
+  Collect the parent stream once as described in [Subagents](subagents.md#streaming).
+  Pass the collected events to
   `process_many/2`, then call `finalize/1` to close any still-running summaries.
 
   It also reads Agent Protocol events, where a subagent run's namespace is

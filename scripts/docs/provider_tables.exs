@@ -1,6 +1,5 @@
 # Renders the model tables in docs/providers.md and docs/providers/*.md from
-# the checked-in model profiles. `mix docs.providers` rewrites them; the docs
-# lint fails when they are stale.
+# the checked-in model profiles. `mix docs.providers` rewrites them.
 #
 # The page title identifies the provider, and the table header identifies the
 # generated table. No build metadata is embedded in the reader-facing page.
@@ -53,8 +52,8 @@ defmodule BeamWeaver.Docs.ProviderTables do
       end
 
     table = render(name)
-    header = table |> String.split("\n", parts: 2) |> hd()
-    pattern = Regex.compile!("^" <> Regex.escape(header) <> "\\n(?:\\|[^\\n]*\\|\\n)+", "m")
+    first_column = if name == "provider-overview", do: "Provider", else: "Model"
+    pattern = Regex.compile!("^\\| #{first_column} \\|[^\\n]*\\n(?:\\|[^\\n]*\\|\\n)+", "m")
 
     case Regex.scan(pattern, text) do
       [_match] -> Regex.replace(pattern, text, fn _old -> table end)
@@ -69,21 +68,23 @@ defmodule BeamWeaver.Docs.ProviderTables do
         chat = Enum.filter(models, &("chat" in kinds(&1)))
 
         [
-          "[#{label}](providers/#{provider}.md)",
-          "`#{provider}:`",
+          "[#{label}](providers/#{provider}.md) (`#{provider}:`)",
           models
           |> Enum.flat_map(&kinds/1)
           |> Enum.frequencies()
           |> Enum.sort()
           |> Enum.map_join(", ", fn {kind, n} -> "#{n} #{kind}" end),
-          coverage(chat, :tool_calling),
-          coverage(chat, :structured_output, :structured_output_with_tools),
-          coverage(chat, :reasoning),
-          coverage(chat, :image_input)
+          if(chat == [],
+            do: "Typed decisions; no chat model",
+            else:
+              "Tools: #{coverage(chat, :tool_calling)}; " <>
+                "structured output: #{coverage(chat, :structured_output, :structured_output_with_tools)}; " <>
+                "reasoning: #{coverage(chat, :reasoning)}; images: #{coverage(chat, :image_input)}"
+          )
         ]
       end
 
-    table(["Provider", "Prefix", "Model IDs", "Tools", "Structured output", "Reasoning", "Image input"], rows)
+    table(["Provider", "Model IDs", "Chat capabilities"], rows)
   end
 
   def render("provider-models " <> provider) do
@@ -93,17 +94,22 @@ defmodule BeamWeaver.Docs.ProviderTables do
       for row <- rows(provider) do
         [
           "`#{provider}:#{row.model}`",
-          Enum.join(kinds(row), ", "),
-          tokens(row.max_input_tokens),
-          tokens(row.max_output_tokens),
-          yes(row.features[:tool_calling]),
-          yes(row.features[:structured_output] or row.features[:structured_output_with_tools]),
-          yes(row.features[:reasoning]),
-          inputs(row)
+          "#{tokens(row.max_input_tokens)} / #{tokens(row.max_output_tokens)}",
+          Enum.join(kinds(row), ", ") <> "; " <> inputs(row) <> features(row)
         ]
       end
 
-    table(["Model", "Kind", "Input tokens", "Output tokens", "Tools", "Structured output", "Reasoning", "Inputs"], rows)
+    table(["Model", "Input / output tokens", "Operations and capabilities"], rows)
+  end
+
+  defp features(row) do
+    [
+      {row.features[:tool_calling], "tools"},
+      {row.features[:structured_output] or row.features[:structured_output_with_tools], "structured output"},
+      {row.features[:reasoning], "reasoning"}
+    ]
+    |> Enum.filter(&elem(&1, 0))
+    |> Enum.map_join("", &("; " <> elem(&1, 1)))
   end
 
   defp rows(provider), do: Enum.filter(Compatibility.matrix(), &(&1.provider == provider))
@@ -144,9 +150,6 @@ defmodule BeamWeaver.Docs.ProviderTables do
   defp tokens(count),
     do:
       count |> Integer.to_string() |> String.reverse() |> String.replace(~r/(\d{3})(?=\d)/, "\\1,") |> String.reverse()
-
-  defp yes(true), do: "yes"
-  defp yes(_other), do: "—"
 
   defp table(header, rows) do
     [header, Enum.map(header, fn _column -> "---" end) | rows]

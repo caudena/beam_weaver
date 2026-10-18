@@ -1,207 +1,123 @@
 # Capability Profiles
 
-A capability profile holds per-model tuning for a deep agent: text to add to
-the system prompt, tools to hide, new tool descriptions, extra middleware, and
-settings for the general-purpose subagent. Use profiles when an agent runs on
-several models and each model works best with its own adjustments.
+Capability profiles tune agent behavior for a model: prompt additions, tool
+visibility, descriptions and middleware. They are separate from **model
+profiles**, which describe provider capabilities and context limits.
+Use [Models](models.md#model-profiles) for compatibility metadata.
 
-```elixir
-alias BeamWeaver.Agent.CapabilityProfile
 
-profile = CapabilityProfile.get_capability_profile("anthropic:claude-sonnet-4-6")
-profile.prompt_suffix
-#=> "<use_parallel_tool_calls>\nWhen tool calls are independent, make them in parallel.\n" <> _
-```
-
-An agent applies a profile with the `capability_profile` declaration, as in
-[Apply a profile](#apply-a-profile); without it, profiles are only data.
-
-## What a profile holds
-
-| Field | Holds | What `capability_profile` does with it |
-| --- | --- | --- |
-| `prompt_suffix` | text for the system prompt | adds it after your `system_prompt`, or after the prompt a `DynamicPrompt` middleware builds |
-| `base_system_prompt` | a system prompt | uses it when the agent declares no `system_prompt` |
-| `excluded_tools` | tool names to hide from the model | adds them to `exclude_tools` |
-| `tool_descriptions` | new tool descriptions, by tool name | adds them to `tool_descriptions`; the agent's own win |
-| `middleware` | extra middleware, or a function that returns it | runs it after the agent's `middleware`; an entry of the same module in the agent's list wins |
-| `excluded_middleware` | middleware to leave out | nothing; read it in your own code |
-| `general_purpose_subagent` | a description and prompt for the general-purpose subagent | nothing; see [a subagent of your own](#the-general-purpose-subagent) |
-
-## Built-in profiles
-
-BeamWeaver ships profiles for Anthropic and OpenAI models. The Anthropic ones
-ask for parallel tool calls, reading before making claims, and a check of each
-tool result; the OpenAI ones ask GPT-5 models to work like an autonomous
-engineer. `CapabilityProfile.builtin_keys/0` lists them:
-
-```elixir
-CapabilityProfile.builtin_keys() |> Enum.filter(&String.starts_with?(&1, "openai"))
-#=> ["openai:gpt-5.4", "openai:gpt-5.4-mini", "openai:gpt-5.5"]
-```
-
-A key is a provider, such as `"anthropic"`, or a provider and a model; a model
-without its own profile gets its provider's. The provider ends at the first
-colon, so a model id with colons of its own, such as an OpenAI fine-tune's,
-gets its provider's profile too. For other providers
-`get_capability_profile/1` returns `nil`, and `CapabilityProfile.for_model/2`
-an empty profile, so an agent that applies its model's profile works with any
-model.
+Run this page’s examples in order in one IEx session; later blocks reuse the modules and values defined earlier.
 
 ## Apply a profile
 
-`capability_profile :auto` applies the profile of the agent's model: with
-`model "anthropic:claude-sonnet-4-6"`, the built-in Anthropic text goes after
-the system prompt. `capability_profile` also takes a profile you build, such
-as one tuned for your own tools:
+After [Installation](installation.md), this real OpenAI agent uses a local
+profile to add a response convention:
 
 ```elixir
-defmodule MyApp.SupportResearcher do
+defmodule MyApp.ProfiledAgent do
   use BeamWeaver.Agent
 
-  alias BeamWeaver.Agent.CapabilityProfile
-  alias BeamWeaver.Models.FakeChatModel
+  model "openai:gpt-5.4-mini", max_tokens: 128, timeout: 60_000
+  system_prompt "Follow the response convention supplied below."
 
-  model "fake:chat",
-    responses: [
-      FakeChatModel.tool_call("glob", %{"pattern" => "*.md", "path" => "/policies"}),
-      "Damaged items get a full refund."
-    ]
-
-  system_prompt "You are Acme's support researcher."
-  filesystem BeamWeaver.Filesystem.State.new()
-  capability_profile profile()
-
-  def profile do
-    CapabilityProfile.new(
-      prompt_suffix: "Search with grep before you read whole files.",
-      excluded_tools: ["glob"],
-      tool_descriptions: %{"grep" => "Search Acme's policy files for exact text."}
-    )
-  end
+  capability_profile BeamWeaver.Agent.CapabilityProfile.new(
+                       prompt_suffix: "When asked for the readiness marker, reply exactly PROFILE_READY."
+                     )
 end
 
-{:ok, result} = MyApp.SupportResearcher.invoke(%{messages: ["Do I get a refund for a broken mug?"]})
-result.messages |> Enum.find(&(&1.role == :tool)) |> BeamWeaver.Core.Message.text()
-#=> "Tool error: tool is not registered" <> _
+{:ok, result} = MyApp.ProfiledAgent.invoke(%{messages: ["Return the readiness marker."]})
+"PROFILE_READY" = result.messages |> List.last() |> BeamWeaver.Core.Message.text() |> String.trim()
 ```
 
-The profile hid `glob`, so the model's call was refused; it also added its
-text after the system prompt and gave `grep` a new description. A
-`BeamWeaver.Agent.CapabilityProfileConfig` works too. Like every declaration,
-`capability_profile` is evaluated each time the agent runs, so a profile you
-register later applies from the next call.
+`capability_profile :auto` selects a registered profile using the model
+identifier. Without a declaration, a profile is data and does not change an
+agent. Declarations are re-evaluated on each invocation.
 
-## Define your own
+## What a profile holds
 
-Register profiles once, when your application starts. Registering a key that
-already has a profile, built-in or yours, merges the new one into it:
+| Field | Applied behavior |
+| --- | --- |
+| `base_system_prompt` | Used when the agent has no explicit system prompt |
+| `prompt_suffix` | Added to the agent's prompt |
+| `excluded_tools` | Merged into hidden tools |
+| `tool_descriptions` | Model-visible description overrides; agent-specific values win |
+| `middleware` | Additional middleware; explicit agent entries of the same module win |
+| `excluded_middleware` | Data for application policy; not automatically enforced |
+| `general_purpose_subagent` | Configuration to explicitly include in subagent declarations |
+
+A prompt suffix guides behavior but cannot grant capabilities an API lacks.
+Tool-side authorization still applies independently of profile selection.
+
+## Built-in profiles
+
+Inspect the registry instead of copying a list that can drift:
 
 ```elixir
 alias BeamWeaver.Agent.CapabilityProfile
-
-acme_tuning = CapabilityProfile.new(tool_descriptions: %{"grep" => "Search Acme's policy files for exact text."})
-:ok = CapabilityProfile.register_capability_profile("anthropic:claude-sonnet-4-6", acme_tuning)
+profile = CapabilityProfile.get_capability_profile("anthropic:claude-sonnet-4-6")
+true = byte_size(profile.prompt_suffix) > 0
 ```
 
-When two profiles merge, the newer or more specific one wins: its prompt texts
-replace the others, tool descriptions and middleware merge by tool name and
-module, and excluded tools and middleware add up. A model's profile merges
-over its provider's the same way, and so does `CapabilityProfile.merge/2`. The
-registry is shared by the whole node, so don't register profiles per request.
+```elixir
+keys = CapabilityProfile.builtin_keys()
+true = "openai:gpt-5.4-mini" in keys
+```
 
-To keep profiles in a config file or a database, use
-`BeamWeaver.Agent.CapabilityProfileConfig`: it holds every field but
-middleware, reads string keys, and `to_map/1` turns it back into a map:
+Lookup first considers provider/model data and falls back to provider tuning.
+Unsupported providers can have no registered entry; `for_model/2` returns an
+empty profile in that case. Keys are split at the first colon, preserving
+model IDs that contain additional colons.
+
+## Define your own
+
+Construct a profile locally, as above, when one agent needs it. Register a
+shared profile once during application startup with
+`register_capability_profile/2`; the registry is node-wide, so registration
+inside a request affects other callers.
+
+A newer/more specific profile overrides prompt text, merges descriptions by
+tool name and middleware by module, and combines excluded entries.
+`merge/2` exposes that composition explicitly.
+
+For database or file configuration, use `CapabilityProfileConfig`:
 
 ```elixir
 alias BeamWeaver.Agent.CapabilityProfileConfig
-
 config = CapabilityProfileConfig.from_map(%{"system_prompt_suffix" => "Be brief.", "excluded_tools" => ["execute"]})
-
-CapabilityProfileConfig.to_capability_profile(config).excluded_tools
-#=> ["execute"]
+["execute"] = CapabilityProfileConfig.to_capability_profile(config).excluded_tools
 ```
+
+The serializable config omits executable middleware. Validate persisted
+configuration before applying it to a running agent.
 
 ## The general-purpose subagent
 
-An agent with `subagents` can also hand work to a built-in `general-purpose`
-subagent: a fresh copy of the agent with the parent's model, tools, file tools
-and skills, and a generic prompt. It applies the parent's profile as the
-parent does: the profile's `prompt_suffix` goes after its prompt, and the
-profile's hidden tools, tool descriptions and middleware apply to it too. A
-profile's
-`general_purpose_subagent` is a `BeamWeaver.Agent.GeneralPurposeSubagentProfile`
-with a `description` and a `system_prompt` for it, and `enabled: false` to
-leave it out. List it with the subagents to apply it:
+A parent with subagents can offer a built-in `general-purpose` worker. A
+`GeneralPurposeSubagentProfile` controls its enabled state, description and
+prompt when included in the subagent declaration list. Merely storing that
+field in a capability profile does not install it.
+
+A custom subagent named `"general-purpose"` replaces the built-in worker.
+Its spec controls model/tools and inherited base middleware. Explicit
+subagents do not automatically receive every parent policy; declare the
+capabilities they require. See [Subagents](subagents.md).
+
+Customize the worker’s instructions and actually delegate to it:
 
 ```elixir
-defmodule MyApp.PolicyExpert do
+defmodule MyApp.ProfiledSupervisor do
   use BeamWeaver.Agent
-  description "Answers return-policy questions."
-  model "fake:chat", responses: ["Returns are accepted within 30 days."]
-end
-
-defmodule MyApp.ProfiledSupervisorAgent do
-  use BeamWeaver.Agent
-
-  model "anthropic:claude-sonnet-4-6"
-
-  subagents do
-    subagent MyApp.PolicyExpert
-    include [CapabilityProfile.for_model("anthropic:claude-sonnet-4-6").general_purpose_subagent]
-  end
-end
-
-{:ok, result} = MyApp.ProfiledSupervisorAgent.invoke(%{messages: ["Reply with the word ready."]})
-true = is_binary(result.messages |> List.last() |> BeamWeaver.Core.Message.text())
-```
-
-To change more than its texts, such as its model, declare a subagent named
-`"general-purpose"`, which takes the built-in one's place:
-
-```elixir
-defmodule MyApp.SupportResearcher do
-  use BeamWeaver.Agent
-
-  alias BeamWeaver.Agent.CapabilityProfile
-  alias BeamWeaver.Agent.Subagent
-  alias BeamWeaver.Models.FakeChatModel
-
-  model "fake:chat",
-    responses: [
-      FakeChatModel.tool_call("task", %{"subagent_type" => "general-purpose", "description" => "List refund rules."}),
-      "Damaged items get a full refund."
-    ]
+  model "openai:gpt-5.4-mini", max_tokens: 512, timeout: 60_000
+  system_prompt "Delegate the supplied calculation to general-purpose exactly once."
 
   subagents [
-    Subagent.Spec.new(
-      name: "general-purpose",
-      description: profile().general_purpose_subagent.description,
-      system_prompt: profile().general_purpose_subagent.system_prompt,
-      model: BeamWeaver.Models.init_chat_model!("fake:chat", responses: ["Damaged items: full refund."])
+    BeamWeaver.Agent.GeneralPurposeSubagentProfile.new(
+      system_prompt: "Solve the supplied task briefly. Include the numeric result."
     )
   ]
-
-  def profile do
-    gp = %{description: "Researches one support question.", system_prompt: "Answer in two sentences."}
-    CapabilityProfile.new(general_purpose_subagent: gp)
-  end
 end
 
-{:ok, result} = MyApp.SupportResearcher.invoke(%{messages: ["What is the refund policy?"]})
-result.messages |> Enum.find(&(&1.role == :tool)) |> BeamWeaver.Core.Message.text()
-#=> "Damaged items: full refund."
+{:ok, result} = MyApp.ProfiledSupervisor.invoke(%{messages: ["Ask general-purpose to calculate 19 + 23."]})
+reply = Enum.find(result.messages, &(&1.role == :tool and &1.name == "task"))
+true = BeamWeaver.Core.Message.text(reply) =~ "42"
 ```
-
-Your subagent gets only what its spec gives it: without `model:` or `tools:`
-it uses the parent's, `base_middleware: [:deepagents]` adds the built-in
-one's file tools, skills and summarization, and it applies a profile only
-when it declares `capability_profile:`. See [Subagents](subagents.md).
-
-## Reference
-
-- [`BeamWeaver.Agent.CapabilityProfile`](https://hexdocs.pm/beam_weaver/BeamWeaver.Agent.CapabilityProfile.html): profiles, the registry and the built-in profiles
-- [`BeamWeaver.Agent.CapabilityProfileConfig`](https://hexdocs.pm/beam_weaver/BeamWeaver.Agent.CapabilityProfileConfig.html): profiles as plain maps for configuration
-- [`BeamWeaver.Agent.GeneralPurposeSubagentProfile`](https://hexdocs.pm/beam_weaver/BeamWeaver.Agent.GeneralPurposeSubagentProfile.html): settings for the general-purpose subagent
-- [`BeamWeaver.Agent.Subagent.Spec`](https://hexdocs.pm/beam_weaver/BeamWeaver.Agent.Subagent.Spec.html): a subagent declared from options

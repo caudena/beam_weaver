@@ -1,398 +1,184 @@
 # Streaming
 
-`stream_events/2` reports a run while it happens: the model's text as it is
-written, tool calls as they start and finish, state updates, and progress
-events of your own. Use it to show an answer word by word in a UI or a
-terminal, or to tell people what an agent is doing.
+Streaming lets your application show progress while an agent works: text,
+tool activity, state changes and your own events. It also changes ownership:
+the process consuming a live stream owns the run.
+
+Complete [Installation](installation.md). Run these blocks in order in IEx.
 
 ## Stream an answer
 
-Give the model `stream: true`, then call `stream_events/2` with `live: true`:
+This real OpenAI call uses a local policy tool that emits a progress event:
 
 ```elixir
-defmodule MyApp.Tools.LookupOrder do
+defmodule MyApp.PolicySearch do
   use BeamWeaver.Tool
 
-  name "lookup_order"
-  description "Look up the shipping status of an order by its id."
+  name "policy_search"
+  description "Read the refund timing policy."
+  injected :runtime, :tool_runtime
 
   schema do
-    field :order_id, :string, description: "The order id"
+    field :query, :string
   end
 
   @impl true
-  def invoke(_tool, %{"order_id" => order_id}, _opts), do: {:ok, "Order #{order_id} shipped on Monday."}
+  def invoke(_tool, %{runtime: runtime}, _opts) do
+    BeamWeaver.Core.ToolRuntime.emit_output_delta(runtime, "Reading the refund policy")
+    {:ok, "Refunds take five business days."}
+  end
 end
 
-defmodule MyApp.SupportAgent do
+defmodule MyApp.StreamingAgent do
   use BeamWeaver.Agent
 
-  alias BeamWeaver.Models.FakeChatModel
-
-  model "fake:chat",
-    stream: true,
-    responses: [
-      FakeChatModel.tool_call("lookup_order", %{"order_id" => "A-1001"}),
-      "Your order A-1001 shipped on Monday. Tracking went to ada@example.com."
-    ]
-
-  system_prompt "You are Acme's support agent. Look orders up before you answer."
-  tools [MyApp.Tools.LookupOrder]
+  model "openai:gpt-5.4-mini", stream: true, max_tokens: 256, timeout: 60_000
+  system_prompt "Call policy_search for refund questions, then explain its result."
+  tools [MyApp.PolicySearch]
 end
 
 alias BeamWeaver.Stream.Events
+{:ok, stream} = MyApp.StreamingAgent.stream_events(%{messages: ["How long do refunds take?"]}, live: true)
+events = Enum.to_list(stream)
+false = Enum.any?(events, &match?(%{event: %Events.Error{}}, &1))
 
-{:ok, events} =
-  MyApp.SupportAgent.stream_events(%{messages: ["Where is my order A-1001?"]}, live: true)
+%{event: %{tool_call_id: call_id}} =
+  Enum.find(events, &match?(%{event: %Events.ToolStart{tool_name: "policy_search"}}, &1))
 
-for %{event: %Events.Token{text: text}} <- events, do: text
-#=> ["Your ", "order ", "A-1001 ", "shipped ", "on ", "Monday. " | _]
+true = Enum.any?(events, &match?(%{event: %Events.ToolFinish{tool_call_id: ^call_id}}, &1))
+true = Enum.any?(events, &match?(%{event: %Events.ToolDelta{}}, &1))
+text = for %{event: %Events.Token{text: text}} <- events, into: "", do: text
+true = byte_size(text) > 0
+IO.puts(text)
 ```
 
-Each item in `events` is an envelope, and its `event` field holds a typed
-event. `Token` events carry the model's text a piece at a time: the fake
-model sends a word per token, real providers a few characters. In a terminal,
-`IO.write(text)` each one as it arrives.
-
-`stream: true` asks the model to stream. Without it the answer still arrives,
-but in one piece. Provider models take the same option:
-`model "anthropic:claude-haiku-4-5", stream: true`.
-
-## Events
-
-`events` is an `Enumerable` of `%BeamWeaver.Stream.Envelope{}` structs. The
-envelope says where an event came from (`node`, `namespace`, `step`,
-`run_id`), and its `event` is one of the structs in `BeamWeaver.Stream.Events`:
-
-| Event | Fields | Sent when |
-|---|---|---|
-| `Token` | `text` | the model writes a piece of text |
-| `MessageChunk` | `chunk` | the same piece as a message chunk, plus reasoning or tool-call pieces when the provider sends them |
-| `Message` | `message` | a whole message joins the conversation |
-| `ToolStart` | `tool_call_id`, `tool_name`, `input` | a tool starts |
-| `ToolDelta` | `tool_call_id`, `delta` | a running tool reports progress |
-| `ToolFinish` | `tool_call_id`, `output` | a tool returns |
-| `ToolError` | `tool_call_id`, `message`, `error_type` | a tool fails; the model sees the error and goes on |
-| `GraphUpdate` | `update` | a step ends; the changes are keyed by node name |
-| `GraphValue` | `value` | a step ends; this is the whole state |
-| `Custom` | `payload` | your code emits an event |
-| `Done` | `usage` | a streamed model call ends (`stream: true`) |
-| `Error` | `error` | the run fails; nothing follows it |
-| `Debug` | `payload` | the stream starts or stops, the run pauses, or a model call fails |
-
-`Task` events report each node's start and finish (both arrive once the node
-is done), and `Checkpoint` events the state after each step. Match on the
-events you need and skip the rest. This builds a progress log from the tool
-events:
-
-```elixir
-Enum.flat_map(events, fn
-  %{event: %Events.ToolStart{tool_name: name, input: input}} -> ["calling #{name} with #{inspect(input)}"]
-  %{event: %Events.ToolFinish{output: output}} -> ["got: #{output}"]
-  _other -> []
-end)
-#=> ["calling lookup_order with %{\"order_id\" => \"A-1001\"}", "got: Order A-1001 shipped on Monday."]
-```
-
-Several tool calls in one turn run at the same time, so their events can
-interleave; use `tool_call_id` to tell them apart.
-
-`BeamWeaver.Stream.event_mode/1` sorts events into channels: `:messages`
-(text and messages), `:tools`, `:updates`, `:values`, `:custom`, `:tasks`,
-`:checkpoints`, `:lifecycle` and `:debug` (which also holds `Done` and
-`Error`). Use it to keep one kind of event:
-
-```elixir
-events
-|> Enum.filter(&(BeamWeaver.Stream.event_mode(&1.event) == :tools))
-|> length()
-#=> 2
-```
-
-To have the run send only some kinds of events, pass their channels as
-`stream_mode:`. The others are never sent, which saves copying the whole
-state to your process at every step when you only show text:
-
-```elixir
-{:ok, chosen} =
-  MyApp.SupportAgent.stream_events(%{messages: ["Where is my order A-1001?"]},
-    live: true,
-    stream_mode: [:messages, :tools]
-  )
-
-chosen |> Enum.map(&BeamWeaver.Stream.event_mode(&1.event)) |> Enum.uniq()
-#=> [:messages, :tools]
-```
-
-The default, `:events`, sends every event. `:debug` also selects `Task` and
-`Checkpoint` events, and a run that fails still ends with its `Error` event.
+Use `Enum.each/2` and `IO.write/1` on token events to display text as it arrives.
+This example collects once so subsequent inspections do not repeat the run.
+Token boundaries vary by provider; a token event need not contain a whole word.
 
 ## Live streams
 
-With `live: true`, `stream_events/2` returns at once and the agent runs while
-you read the events. The stream is lazy:
+Two options control different things: `stream: true` requests incremental
+model output; `live: true` returns an enumerable that runs while you consume it.
+Without model streaming, the agent can still report tools and state changes,
+but model text arrives as a whole reply.
 
-- The run starts when you start reading it, and every pass over `events`
-  starts a new run. Use `Enum.to_list/1` once if you need the events twice.
-- If you stop reading early, for example with `Enum.find/2`, BeamWeaver
-  cancels the run.
-- The run belongs to the process that reads the stream and stops if that
-  process exits.
+A live stream is lazy. Each enumeration starts a run. Enumerating it twice
+can make two sets of API calls and repeat tool side effects. If you need
+several views, materialize it once or dispatch events from a single consumer.
+Stopping enumeration early cancels the run; so does the consumer process
+exiting. Cancellation cannot undo an external side effect already performed.
+
+Without `live: true`, the call runs to completion and returns a collected
+list. An interrupted collected run returns `{:interrupted, interrupt}` with
+`interrupt.events`; failure returns `{:error, error}`.
+
+## Events
+
+Each item is a `BeamWeaver.Stream.Envelope` with an `event`, `run_id`, `node`,
+`namespace` and `step`. Use identifiers to correlate concurrent work.
+
+| Event | Purpose |
+| --- | --- |
+| `Token` | Incremental model text in `text` |
+| `MessageChunk` | Text, reasoning or partial tool-call data in `chunk` |
+| `Message` | A completed message in `message` |
+| `ToolStart`, `ToolDelta`, `ToolFinish`, `ToolError` | Tool lifecycle and progress, correlated by `tool_call_id` |
+| `GraphUpdate`, `GraphValue` | Per-node updates or state values |
+| `Custom` | Application-defined `payload` |
+| `Task`, `Checkpoint` | Graph execution and persistence events |
+| `Done` | A streamed **model call** ended; an agent can make another call |
+| `Debug` | Lifecycle information, model-call failure or an interrupt |
+| `Error` | The entire run failed |
+
+`BeamWeaver.Stream.event_mode/1` classifies events. `stream_mode:` limits
+emission to channels such as `:messages`, `:tools`, `:updates`, `:values`,
+`:custom`, `:tasks`, `:checkpoints`, `:lifecycle` and `:debug`.
+The default `:events` includes all channels. Terminal failures remain visible
+when filtering. Restrict channels when you do not need full state snapshots.
+
+Filter the already-collected events from the first example without starting another run:
 
 ```elixir
-first_call = Enum.find(events, &match?(%{event: %Events.ToolStart{}}, &1))
-first_call.event.input
-#=> %{"order_id" => "A-1001"}
+tool_events = Enum.filter(events, &(BeamWeaver.Stream.event_mode(&1.event) == :tools))
+true = Enum.any?(tool_events, &match?(%{event: %Events.ToolStart{}}, &1))
+true = Enum.any?(tool_events, &match?(%{event: %Events.ToolFinish{}}, &1))
+IO.inspect(Enum.map(tool_events, & &1.event.__struct__), label: "Tool event types")
 ```
-
-Without `live: true`, `stream_events/2` runs to the end and then returns the
-same events, in the same order, as a list. Use it when nothing needs the
-events while the run works, such as in tests and batch jobs:
-
-```elixir
-{:ok, collected} = MyApp.SupportAgent.stream_events(%{messages: ["Where is my order A-1001?"]})
-
-for %{event: %Events.ToolFinish{output: output}} <- collected, do: output
-#=> ["Order A-1001 shipped on Monday."]
-```
-
-A run that pauses returns `{:interrupted, interrupt}` instead, with its events
-in `interrupt.events`, and a run that fails returns `{:error, error}`.
 
 ## The final answer
 
-`Message` events carry whole messages, so the last assistant message is the
-answer:
+Use tokens for provisional UI text and completed messages as the authoritative
+copy. Do not append a complete message after already displaying its tokens.
 
 ```elixir
-Enum.reduce(events, nil, fn
-  %{event: %Events.Message{message: %{role: :assistant} = message}}, _answer ->
-    BeamWeaver.Core.Message.text(message)
+answers =
+  for %{event: %Events.Message{message: %{role: :assistant} = message}} <- events,
+      message.tool_calls in [nil, []],
+      do: BeamWeaver.Core.Message.text(message)
 
-  _event, answer ->
-    answer
-end)
-#=> "Your order A-1001 shipped on Monday. Tracking went to ada@example.com."
+answer = List.last(answers)
+true = is_binary(answer) and byte_size(answer) > 0
 ```
 
-Show `Token` text while the run is going and treat the `Message` as the
-finished copy; don't append its text again. If you only need the answer and
-not the progress, `invoke/2` is simpler.
-
-## Redact a stream
-
-Events are plain data, so you can change them with `Stream.map/2` and
-`Stream.filter/2` before they leave your application. This masks order ids
-token by token:
-
-```elixir
-events
-|> Stream.filter(&match?(%{event: %Events.Token{}}, &1))
-|> Enum.map_join(fn %{event: token} -> String.replace(token.text, ~r/A-\d+/, "[order]") end)
-#=> "Your order [order] shipped on Monday. Tracking went to ada@example.com."
-```
-
-A value can be split across two tokens, and a rule that looks at one token at
-a time misses it. `BeamWeaver.Agent.Middleware.PII.stream_transform/1` holds
-back the most recent text until the model's reply ends, so it can redact
-values that span tokens:
-
-```elixir
-{redact, pending} = BeamWeaver.Agent.Middleware.PII.stream_transform(type: :email, strategy: :redact)
-
-safe_events =
-  events
-  |> Stream.transform(pending, fn envelope, pending ->
-    {{:ok, out}, pending} = redact.(envelope, pending)
-    {List.wrap(out), pending}
-  end)
-  |> Enum.to_list()
-
-for %{event: %Events.Token{text: text}} <- safe_events, into: "", do: text
-#=> "Your order A-1001 shipped on Monday. Tracking went to [REDACTED_EMAIL]."
-```
-
-`Token` and `MessageChunk` events carry the same text, and the transform holds
-each back separately, so the whole stream can go through it. The message
-chunks come out redacted too:
-
-```elixir
-for %{event: %Events.MessageChunk{chunk: chunk}} <- safe_events, into: "", do: chunk.content
-#=> "Your order A-1001 shipped on Monday. Tracking went to [REDACTED_EMAIL]."
-```
-
-The transform also edits the reasoning and tool-call arguments a model
-streams, a whole `Message`, tool events and state snapshots (`GraphValue`).
-Use it even when the agent has PII middleware: the middleware edits the text
-of the saved message once the model finishes, but tokens go out while the
-model writes, and the middleware leaves tool-call arguments and reasoning as
-they are. See [Guardrails](guardrails.md#redact-personal-data).
+End of enumeration means the stream ended; inspect terminal errors and
+interrupts before treating that as successful completion. A `Done` event
+belongs to a model call, not necessarily the whole agent run.
 
 ## Errors
 
-A run that fails doesn't raise in the middle of your loop. The stream ends
-with an `Error` event that holds the reason. Here a fake model that always
-fails stands in for a provider outage:
+A live run can fail after `stream_events/2` returned successfully. Handle
+`Events.Error` inside the consumer. Invalid setup can instead return an error
+before a stream is created.
 
-```elixir
-defmodule MyApp.OfflineAgent do
-  use BeamWeaver.Agent
+A failed model attempt emits a debug payload with `type: :model_call_failed`.
+Retry or fallback middleware can then start another attempt. Already emitted
+tokens from the failed attempt are provisional and must not be presented as
+part of the final answer. Clear or replace that attempt's UI text. A tool
+failure is different: `ToolError` normally goes back to the model for recovery.
 
-  model "fake:chat",
-    stream: true,
-    error: BeamWeaver.Core.Error.new(:provider_error, "upstream timed out")
-end
-
-{:ok, events} = MyApp.OfflineAgent.stream_events(%{messages: ["Where is my order A-1001?"]}, live: true)
-
-events |> Enum.to_list() |> List.last()
-#=> %{event: %Events.Error{error: %BeamWeaver.Core.Error{type: :provider_error}}}
-```
-
-Without `live: true` the same run returns the error:
-
-```elixir
-MyApp.OfflineAgent.stream_events(%{messages: ["Where is my order A-1001?"]})
-#=> {:error, %BeamWeaver.Core.Error{type: :provider_error}}
-```
-
-A provider can also fail partway through a reply, after some of it has
-streamed: Anthropic, for example, ends the stream with an `overloaded_error`
-event. The model call then fails with the error the same failure gets without
-streaming, so `ModelRetry` retries an overload, a rate limit or a server
-error, but not a content filter, an invalid request, a context overflow or an
-exhausted quota (see [Built-in Middleware](builtin_middleware.md)).
-
-A model call that fails sends a `Debug` event whose payload is
-`%{type: :model_call_failed, error: error}` (in the `:debug` channel, like
-`Done`). The tokens the call sent stay in the stream, but they are not part of
-the answer, and the cut-off reply is not saved. When middleware such as
-`ModelRetry` or `ModelFallback` calls a model again, its tokens follow and the
-run goes on: only a run that fails ends with an `Error` event. Here the
-agent's model is down and a fallback model answers:
-
-```elixir
-defmodule MyApp.ResilientAgent do
-  use BeamWeaver.Agent
-
-  alias BeamWeaver.Agent.Middleware
-
-  model "fake:chat",
-    stream: true,
-    error: BeamWeaver.Core.Error.new(:provider_error, "upstream timed out")
-
-  middleware [
-    {Middleware.ModelFallback,
-     fallbacks: [BeamWeaver.Models.init_chat_model!("fake:chat", stream: true, responses: ["Your order shipped on Monday."])]}
-  ]
-end
-
-{:ok, events} = MyApp.ResilientAgent.stream_events(%{messages: ["Where is my order A-1001?"]}, live: true)
-
-Enum.flat_map(events, fn
-  %{event: %Events.Debug{payload: %{type: :model_call_failed, error: error}}} -> [{:failed, error.type}]
-  %{event: %Events.Token{text: text}} -> [text]
-  %{event: %Events.Error{}} -> [:run_failed]
-  _other -> []
-end)
-#=> [{:failed, :provider_error}, "Your ", "order ", "shipped ", "on ", "Monday."]
-```
-
-Tool failures are different: they arrive as `ToolError` events, the model
-reads the error, and the run goes on. When the call itself is invalid, for
-example when an agent that needs a checkpointer has none, `stream_events/2`
-returns `{:error, error}` before anything runs.
+[Built-in Middleware](builtin_middleware.md) describes retry policies.
+[Testing](testing.md) shows how to reproduce failure paths deterministically.
 
 ## Tool progress and custom events
 
-A tool can report progress while it works. Inject the tool runtime and call
-`BeamWeaver.Core.ToolRuntime.emit_output_delta/2`; each call becomes a
-`ToolDelta` event. Add such a tool to the agent:
+The tool above uses `BeamWeaver.Core.ToolRuntime.emit_output_delta/2`.
+For arbitrary progress payloads, a graph node's second argument is a runtime
+whose `stream_writer` emits custom events:
 
 ```elixir
-defmodule MyApp.Tools.SearchHelpCenter do
-  use BeamWeaver.Tool
-
-  name "search_help_center"
-  description "Search Acme's help center for articles about a topic."
-
-  schema do
-    field :query, :string, description: "What to search for"
-  end
-
-  injected :tool_runtime, :tool_runtime
-
-  @impl true
-  def invoke(_tool, %{"query" => query} = input, _opts) do
-    BeamWeaver.Core.ToolRuntime.emit_output_delta(input.tool_runtime, "Searching for #{query}...")
-    {:ok, "Refunds reach your card within 5 business days."}
-  end
-end
-
-defmodule MyApp.SupportAgent do
-  use BeamWeaver.Agent
-
-  alias BeamWeaver.Models.FakeChatModel
-
-  model "fake:chat",
-    stream: true,
-    responses: [
-      FakeChatModel.tool_call("search_help_center", %{"query" => "refund timing"}),
-      "Refunds reach your card within 5 business days."
-    ]
-
-  tools [MyApp.Tools.LookupOrder, MyApp.Tools.SearchHelpCenter]
-end
-
-{:ok, events} = MyApp.SupportAgent.stream_events(%{messages: ["How long do refunds take?"]}, live: true)
-
-for %{event: %Events.ToolDelta{delta: delta}} <- events, do: delta
-#=> ["Searching for refund timing..."]
-```
-
-A real search tool would query a vector store; see
-[Retrieval](retrieval.md#agentic-retrieval).
-
-For anything else, emit your own events. A graph node that takes a second
-argument gets the run's `BeamWeaver.Graph.Runtime`, and every value you pass
-to its `stream_writer` arrives as a `Custom` event:
-
-```elixir
-defmodule MyApp.TicketTriage do
+defmodule MyApp.ProgressGraph do
   use BeamWeaver.Graph
 
-  alias BeamWeaver.Graph
-
-  def graph do
-    Graph.new()
-    |> Graph.add_node(:classify, &classify/2)
-    |> Graph.add_edge(Graph.start(), :classify)
-    |> Graph.add_edge(:classify, Graph.end_node())
+  graph do
+    node :classify, &__MODULE__.classify/2
+    edge start(), :classify
+    edge :classify, finish()
   end
 
-  def classify(%{subject: subject}, runtime) do
-    runtime.stream_writer.(%{stage: "classifying", subject: subject})
-    %{category: if(subject =~ ~r/refund/i, do: :billing, else: :general)}
+  def classify(_state, runtime) do
+    runtime.stream_writer.(%{stage: "classifying"})
+    %{category: "billing"}
   end
 end
 
-{:ok, events} = MyApp.TicketTriage.stream_events(%{subject: "Refund for A-1001"}, live: true)
-
-for %{event: %Events.Custom{payload: payload}} <- events, do: payload
-#=> [%{stage: "classifying", subject: "Refund for A-1001"}]
+{:ok, stream} = MyApp.ProgressGraph.stream_events(%{}, live: true)
+progress = for %{event: %Events.Custom{payload: payload}} <- stream, do: payload
+[%{stage: "classifying"}] = progress
 ```
 
-A tool can do the same: declare `injected :runtime, :runtime` and call
-`input.runtime.stream_writer.(payload)`. Middleware state hooks get the same
-runtime as their last argument, and wrap hooks find it in `request.runtime`.
+Tools can inject `:runtime` for the same writer. Middleware state hooks receive
+it directly; wrapper hooks read `request.runtime`.
 
 ## Tool-call arguments
 
-Some providers stream a tool call's arguments in pieces, inside
-`MessageChunk` events (`chunk.tool_call_chunks`). Read the pieces to show a
-call while the model forms it, and merge the chunks with
-`BeamWeaver.Stream.Finalize.finalize/1` to get the finished call. Here two
-hand-made chunks stand in for a provider stream:
+`MessageChunk` can contain partial JSON arguments in `tool_call_chunks`.
+They are display data until complete; never execute an action from a partial
+argument string. Agents assemble the call for you. Direct model consumers
+can use `BeamWeaver.Stream.Finalize.finalize/1` to merge chunks into a message.
+Use call IDs and indices to keep simultaneous calls separate.
+
+Tool arguments can span arbitrary chunk boundaries. Assemble them before parsing/executing:
 
 ```elixir
 alias BeamWeaver.Core.Messages
@@ -409,139 +195,182 @@ chunks = [
 #=> {"lookup_order", %{"order_id" => "A-1001"}}
 ```
 
-From a live stream, collect the chunks with
-`for %{event: %Events.MessageChunk{chunk: chunk}} <- events, do: chunk`. An
-agent merges them itself: the finished call is on the `Message` event that
-follows.
-
 ## When the run pauses
 
-If the run stops for human review, the live stream sends a `Debug` event
-whose payload is `%{type: :interrupt, interrupt: interrupt}`, and then the
-stream ends. Without `live: true`, `stream_events/2` returns
-`{:interrupted, interrupt}`, with the events in `interrupt.events`.
-Pass that `interrupt` to the review helpers and resume the run as shown in
-[Human-in-the-Loop](human_in_the_loop.md). When the node described the answer
-it expects, `interrupt.response_schema` holds it as JSON schema, for your app
-to build its form from; see
-[Check the answer](human_in_the_loop.md#check-the-answer).
+A live interrupt arrives as a debug payload with `type: :interrupt` and an
+`interrupt` value, then the stream ends. Display its review request and resume
+using the original thread/checkpointer plus fresh caller context. When
+provided, `interrupt.response_schema` describes the expected form data.
+See [Human Review](human_in_the_loop.md).
+
+## Redact a stream
+
+A sensitive value can span tokens. Replacing text inside each token separately
+can leak it. `BeamWeaver.Agent.Middleware.PII.stream_transform/1` buffers text
+until it can apply the configured policy and also transforms message chunks,
+whole messages, tool data and state snapshots.
+
+Apply the transform before events leave your server. PII middleware on saved
+messages alone does not protect already-emitted tokens. [Guardrails](guardrails.md)
+explains the distinction and redaction strategies.
+
+The transform buffers text across chunk boundaries. Supply a synthetic email in two chunks to see that boundary handled:
+
+```elixir
+alias BeamWeaver.Stream.{Envelope, Events}
+{transform, pending} = BeamWeaver.Agent.Middleware.PII.stream_transform(type: :email, strategy: :redact)
+
+source = [
+  %Envelope{event: %Events.Token{text: "Contact ada@"}},
+  %Envelope{event: %Events.Token{text: "example.com for help."}},
+  %Envelope{event: %Events.Done{}}
+]
+
+safe =
+  source
+  |> Stream.transform(pending, fn envelope, acc ->
+    {{:ok, emitted}, acc} = transform.(envelope, acc)
+    {List.wrap(emitted), acc}
+  end)
+  |> Enum.to_list()
+
+text = for %{event: %Events.Token{text: part}} <- safe, into: "", do: part
+false = text =~ "ada@example.com"
+true = text =~ "[REDACTED_EMAIL]"
+```
 
 ## Subgraphs
 
-The events of a [subgraph](subgraphs.md) arrive in its parent's stream, with
-the path of node names that leads to it as their `namespace`, such as
-`["refund_check"]`; the run's own events have `namespace: []`. A subgraph that
-fails sends no `Error` event, since only a run that fails ends with one, at the
-top level. The node that ran the subgraph fails instead: its `Task` event, in
-the parent's namespace, has `kind: :error` and the error as its `payload`, and
-the run fails with that error unless the node's `retry:` or `error_handler:`
-recovers. A collected stream of a failed run returns only the error, so read a
-live one to see its events:
+Subgraph events retain the path of node names in `namespace`. Parent events
+use `[]`. A subgraph failure is first a node failure; retry or an error handler
+may recover it. Only an unrecovered top-level failure ends with `Error`.
 
-```elixir
-alias BeamWeaver.Graph
-
-refund_check =
-  Graph.new(name: "RefundCheck")
-  |> Graph.add_node(:check_amount, fn %{amount: amount} ->
-    if amount > 0, do: %{refund_ok: amount <= 100}, else: {:error, "the amount must be positive"}
-  end)
-  |> Graph.add_edge(Graph.start(), :check_amount)
-  |> Graph.add_edge(:check_amount, Graph.end_node())
-  |> Graph.compile!()
-
-triage =
-  Graph.new()
-  |> Graph.add_node(:refund_check, refund_check)
-  |> Graph.add_edge(Graph.start(), :refund_check)
-  |> Graph.add_edge(:refund_check, Graph.end_node())
-  |> Graph.compile!()
-
-{:ok, events} = Graph.Compiled.stream_events(triage, %{amount: -5}, live: true)
-events = Enum.to_list(events)
-
-for %{event: %Events.Error{}, namespace: namespace} <- events, do: namespace
-#=> [[]]
-```
-
-`BeamWeaver.Stream.Subgraphs.from_events/2` sums up each subgraph run in a
-stream. Its `status` is how the subgraph's node ended: `:completed`, `:failed`
-with the error's message, or `:interrupted` when it paused. A subgraph that the
-node's `retry:` ran again until it succeeded is `:completed`. Here the node
-failed:
-
-```elixir
-for run <- BeamWeaver.Stream.Subgraphs.from_events(events), do: {run.path, run.status, run.error}
-#=> [{["refund_check"], :failed, "the amount must be positive"}]
-```
-
-`BeamWeaver.Stream.Lifecycle.from_events/2` turns the same summaries into
-`Lifecycle` events in each subgraph's namespace: `:started`, then its status.
-Both read the `Task` events, which the default stream mode and the `:tasks` and
-`:debug` modes include.
+`BeamWeaver.Stream.Subgraphs.from_events/2` summarizes paths and statuses.
+`BeamWeaver.Stream.Lifecycle.from_events/2` produces lifecycle events from
+those summaries. Keep `Task` events when using either helper.
 
 ## Push tokens to a LiveView
 
-Read the stream in its own process and send each token to the process that
-shows it. A Phoenix LiveView stays responsive this way, and because the task
-is linked to it, the run stops when the user leaves:
+Consume the stream in a supervised task rather than in the LiveView callback.
+Send only UI events to the LiveView: provisional text, completed messages,
+review requests and failures. Correlate messages with a run ID so events from
+an older request cannot overwrite a newer answer.
+
+Tie task cancellation explicitly to your application's lifecycle. A normal
+process exit does not automatically terminate every linked process. Cancel
+work when the view disconnects if it belongs to that view; use a persistent
+job owner when it must continue. Keep final state in a checkpointer rather
+than only in a socket assignment.
+
+This complete bridge uses a supervised task and monitors the receiving process. A LiveView can handle the tagged messages in `handle_info/2`; on disconnect, the monitor stops the worker. Only one process enumerates the stream:
 
 ```elixir
 defmodule MyApp.ChatStream do
-  alias BeamWeaver.Stream.Events
+  def start(supervisor, receiver, question) do
+    owner = make_ref()
 
-  # Sends {:token, text} messages to `pid`, :retry when a model call fails
-  # (the text it sent is not part of the answer), then :done or
-  # {:error, error}.
-  def start(question, pid) do
-    Task.start_link(fn ->
-      {:ok, events} = MyApp.SupportAgent.stream_events(%{messages: [question]}, live: true)
+    {:ok, worker} =
+      Task.Supervisor.start_child(supervisor, fn ->
+        receiver_ref = Process.monitor(receiver)
 
-      Enum.each(events, fn
-        %{event: %Events.Token{text: text}} -> send(pid, {:token, text})
-        %{event: %Events.Debug{payload: %{type: :model_call_failed}}} -> send(pid, :retry)
-        %{event: %Events.Error{error: error}} -> send(pid, {:error, error})
-        _other -> :ok
+        task =
+          Task.Supervisor.async_nolink(supervisor, fn ->
+            case MyApp.StreamingAgent.stream_events(%{messages: [question]}, live: true) do
+              {:ok, stream} ->
+                Enum.each(stream, &send(receiver, {:agent_event, owner, &1}))
+                :stream_ended
+
+              other ->
+                other
+            end
+          end)
+
+        receive do
+          {ref, result} when ref == task.ref ->
+            Process.demonitor(ref, [:flush])
+            Process.demonitor(receiver_ref, [:flush])
+            send(receiver, {:agent_stream_finished, owner, result})
+
+          {:DOWN, ^receiver_ref, :process, ^receiver, _} ->
+            Task.shutdown(task, :brutal_kill)
+
+          {:DOWN, ref, :process, _pid, reason} when ref == task.ref ->
+            send(receiver, {:agent_stream_finished, owner, {:error, reason}})
+        end
       end)
 
-      send(pid, :done)
-    end)
+    {:ok, worker, owner}
+  end
+end
+
+{:ok, supervisor} = Task.Supervisor.start_link()
+
+try do
+  {:ok, _worker, run_ref} = MyApp.ChatStream.start(supervisor, self(), "How long do refunds take?")
+
+  receive do
+    {:agent_stream_finished, ^run_ref, :stream_ended} -> :ok
+    {:agent_stream_finished, ^run_ref, other} -> raise inspect(other)
+  after
+    120_000 -> raise "Stream did not finish"
   end
 
-  # In the LiveView:
-  #
-  #     def handle_event("ask", %{"question" => question}, socket) do
-  #       {:ok, _pid} = MyApp.ChatStream.start(question, self())
-  #       {:noreply, assign(socket, answer: "")}
-  #     end
-  #
-  #     def handle_info({:token, text}, socket),
-  #       do: {:noreply, update(socket, :answer, &(&1 <> text))}
-  #
-  #     def handle_info(:retry, socket), do: {:noreply, assign(socket, answer: "")}
-end
-
-{:ok, _pid} = MyApp.ChatStream.start("How long do refunds take?", self())
-
-receive do
-  {:token, text} -> text
+  receive do
+    {:agent_event, ^run_ref, %{event: %BeamWeaver.Stream.Events.ToolFinish{}}} -> :ok
+  after
+    0 -> raise "No tool completion was delivered"
+  end
 after
-  1_000 -> :timeout
+  Supervisor.stop(supervisor)
 end
-#=> "Refunds "
 ```
 
-Send only what the page needs, such as tokens and errors, and leave the rest
-of the events on the server.
+## Custom producers and backpressure
 
-## Reference
+`BeamWeaver.Stream.Mux` combines caller-owned producers through a bounded queue.
+A `Stream.Sink` lets a producer emit and check cancellation; child sinks attach
+nested namespaces. `Stream.Policy` chooses blocking, drop-newest, drop-oldest
+or error behavior on overflow. Size the buffer and emission timeout for the
+consumer; dropping events can make an otherwise complete run impossible to
+reconstruct from its stream.
 
-- [`BeamWeaver.Agent`](https://hexdocs.pm/beam_weaver/BeamWeaver.Agent.html): `stream_events/3` for agents
-- [`BeamWeaver.Graph`](https://hexdocs.pm/beam_weaver/BeamWeaver.Graph.html): graph modules, whose `stream_events/2` takes the same options
-- [`BeamWeaver.Stream`](https://hexdocs.pm/beam_weaver/BeamWeaver.Stream.html): `event_mode/1` and stream helpers
-- [`BeamWeaver.Stream.Envelope`](https://hexdocs.pm/beam_weaver/BeamWeaver.Stream.Envelope.html): the wrapper around every event
-- [`BeamWeaver.Stream.Events`](https://hexdocs.pm/beam_weaver/BeamWeaver.Stream.Events.html): the event structs
-- [`BeamWeaver.Stream.Finalize`](https://hexdocs.pm/beam_weaver/BeamWeaver.Stream.Finalize.html): merges message chunks into a message
-- [`BeamWeaver.Core.ToolRuntime`](https://hexdocs.pm/beam_weaver/BeamWeaver.Core.ToolRuntime.html): `emit_output_delta/2` for tool progress
-- [`BeamWeaver.Graph.Runtime`](https://hexdocs.pm/beam_weaver/BeamWeaver.Graph.Runtime.html): the runtime with `stream_writer`
-- [`BeamWeaver.Agent.Middleware.PII`](https://hexdocs.pm/beam_weaver/BeamWeaver.Agent.Middleware.PII.html): `stream_transform/1` for redacting streams
+Heartbeats are opt-in progress signals, not evidence that a model/tool finished.
+Read-side `MessagesTransformer`, `Transformers` and lifecycle/subgraph helpers
+project collected events without starting work. A synthesized message from
+partial deltas is not a substitute for a completed provider outcome.
+
+Producer forms select the callback argument:
+
+| Entry | Callback receives |
+| --- | --- |
+| `fn emit -> ... end` | A one-argument emission function |
+| `{name, function}` | An emission function, with a named producer |
+| `{:sink, name, function}` | A `Stream.Sink` for child namespaces and cancellation checks |
+
+`max_buffer:` defaults to 256 items, `emit_timeout:` to 5,000 ms, and the
+whole-stream `timeout:` to infinity. Choose explicit budgets for application
+work. Two producers can share a bounded stream while retaining separate
+namespaces. All events below are consumed once:
+
+```elixir
+alias BeamWeaver.Stream.{Mux, Sink, Events}
+
+producers =
+  for name <- ["orders", "policy"] do
+    {:sink, name,
+     fn sink ->
+       child = Sink.child(sink, namespace: [name])
+       :ok = Sink.emit(child, %Events.Custom{payload: %{source: name, status: "ready"}})
+     end}
+  end
+
+items = Mux.stream(producers, max_buffer: 4, overflow: :block, timeout: 5_000) |> Enum.to_list()
+
+ready =
+  for %{event: %Events.Custom{payload: %{source: source}}, namespace: namespace} <- items,
+      do: {source, namespace}
+
+true = {"orders", ["orders"]} in ready
+true = {"policy", ["policy"]} in ready
+false = Enum.any?(items, &match?(%{event: %Events.Error{}}, &1))
+```

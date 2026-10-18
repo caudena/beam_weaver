@@ -1,32 +1,36 @@
 defmodule BeamWeaver do
-  @moduledoc """
-  BeamWeaver builds LLM agents and workflows in Elixir.
+  @moduledoc ~S"""
+  Agents, tools and durable graph workflows for Elixir applications.
+
+  Start with [Installation](installation.md), then run a real provider call:
 
   ```elixir
-  defmodule MyApp.SupportAgent do
+  defmodule MyApp.FirstAgent do
     use BeamWeaver.Agent
-
-    model "fake:chat", responses: ["Order A-1001 shipped on Monday."]
-    system_prompt "You are Acme's support agent."
+    model "openai:gpt-5.4-mini", max_tokens: 128, timeout: 60_000
+    system_prompt "Explain concepts briefly."
   end
 
-  {:ok, result} = MyApp.SupportAgent.invoke(%{messages: ["Where is my order A-1001?"]})
-  result.messages |> List.last() |> BeamWeaver.Core.Message.text()
-  #=> "Order A-1001 shipped on Monday."
+  {:ok, result} = MyApp.FirstAgent.invoke(%{messages: ["What is parcel tracking?"]})
+  answer = result.messages |> List.last() |> BeamWeaver.Core.Message.text()
+  true = byte_size(answer) > 0
   ```
 
-  Where to start:
+  Configure OpenAI in the consuming application's runtime configuration before
+  invocation. Construction/compilation alone does not authenticate a provider.
 
-    * `BeamWeaver.Agent` - agent modules: a model, instructions and tools.
-    * `BeamWeaver.Tool` - tools the model can call.
-    * `BeamWeaver.Graph` - workflows built from nodes and edges.
-    * `BeamWeaver.Models` - models from any provider, named `"provider:model"`.
-    * `BeamWeaver.Checkpoint` and `BeamWeaver.Memory` - threads and long-term memory.
-    * `BeamWeaver.Stream` - events while a run progresses.
+  ## Choose an interface
 
-  The [Quickstart](quickstart.md) makes a real OpenAI or Google call.
-  [Build an Agent](tutorial.md) adds a tool and conversation history.
-  The scripted model above is for deterministic tests; [Testing](testing.md)
-  explains how to assert tool calls and results without a network request.
+  * `BeamWeaver.Agent`: model-selected tool loops and capability declarations.
+  * `BeamWeaver.Tool` and `BeamWeaver.Schema`: action inputs and typed answers.
+  * `BeamWeaver.Graph`: explicit nodes, routes, joins and state channels.
+  * `BeamWeaver.Models`: chat, embedding and decision model constructors.
+  * `BeamWeaver.Checkpoint` and `BeamWeaver.Memory`: thread and cross-thread state.
+  * `BeamWeaver.Stream` and `BeamWeaver.Tracing`: progress and execution evidence.
+
+  The [support-agent tutorial](tutorial.md) introduces tools and conversation
+  history. [Production Integration](going_to_production.md) explains resource
+  ownership, authorization, budgets and recovery. Scripted models belong in
+  [application tests](testing.md).
   """
 end

@@ -1,425 +1,198 @@
-# Deep Agents
+# Compose a Deep Agent
 
-A deep agent is an ordinary agent with more capabilities switched on: a task
-list to plan with, files for notes and large results, skills, memory files,
-and subagents for self-contained work. Use one for long tasks with many
-steps, such as researching a customer's problem across orders and policies
-before answering.
+A deep agent is an ordinary agent with a workspace and capabilities for
+longer tasks: planning, files, skills, memory and delegation. There is no
+separate runtime or hidden orchestration service. Add only what the task needs.
+
+Complete [Installation](installation.md). This example makes real OpenAI
+calls, reads supplied policy data and creates a note in thread state.
+
+
+Run this page’s examples in order in one IEx session; later blocks reuse the modules and values defined earlier.
+
+## Plan, read and write
 
 ```elixir
-defmodule MyApp.Tools.LookupOrder do
-  use BeamWeaver.Tool
-
-  name "lookup_order"
-  description "Look up the shipping status of an order by its id."
-
-  schema do
-    field :order_id, :string, description: "The order id"
-  end
-
-  @impl true
-  def invoke(_tool, %{"order_id" => order_id}, _opts),
-    do: {:ok, "Order #{order_id} was delivered on Monday. The customer reported a broken mug."}
-end
-
 defmodule MyApp.SupportResearcher do
   use BeamWeaver.Agent
 
-  alias BeamWeaver.Models.FakeChatModel
+  model "openai:gpt-5.4-mini", max_tokens: 1_024, timeout: 60_000
 
-  model "fake:chat",
-    responses: [
-      FakeChatModel.tool_call("write_todos", %{
-        "todos" => [
-          %{"content" => "Look up order A-1001", "status" => "in_progress"},
-          %{"content" => "Write notes for the refunds team", "status" => "pending"}
-        ]
-      }),
-      FakeChatModel.tool_call("lookup_order", %{"order_id" => "A-1001"}),
-      FakeChatModel.tool_calls([
-        {"write_file",
-         %{"file_path" => "/notes/A-1001.md", "content" => "Delivered Monday, mug broken. Offer a full refund.\n"}},
-        {"write_todos",
-         %{
-           "todos" => [
-             %{"content" => "Look up order A-1001", "status" => "completed"},
-             %{"content" => "Write notes for the refunds team", "status" => "completed"}
-           ]
-         }}
-      ]),
-      "Order A-1001 arrived with a broken mug, so Ada gets a full refund. My notes are in /notes/A-1001.md."
-    ]
+  system_prompt """
+  For a support investigation: write a task list, read the supplied policy,
+  write a factual note, then mark the tasks completed. Do not claim a refund
+  was paid. Use only the policy and customer facts provided.
+  """
 
-  system_prompt "You are Acme's support researcher. Plan with write_todos, keep notes in /notes, then answer."
-  tools [MyApp.Tools.LookupOrder]
-  middleware [BeamWeaver.Agent.Middleware.TodoList]
   filesystem BeamWeaver.Filesystem.State.new()
+  middleware [BeamWeaver.Agent.Middleware.TodoList]
+  recursion_limit 30
+  run_timeout 180_000
 end
 
-{:ok, result} = MyApp.SupportResearcher.invoke(%{messages: ["Ada's order A-1001 arrived broken. What can we offer?"]})
+saver = BeamWeaver.Checkpoint.ETS.new()
+opts = [checkpointer: saver, config: %{"configurable" => %{"thread_id" => "investigation-A-1001"}}]
 
-result.todos
-#=> [
-#     %{content: "Look up order A-1001", status: "completed"},
-#     %{content: "Write notes for the refunds team", status: "completed"}
-#   ]
+{:ok, result} =
+  MyApp.SupportResearcher.invoke(
+    %{
+      messages: [
+        "Investigate broken mug order A-1001. Read /policies/refunds.md and save a note at /notes/A-1001.md. Complete your task list."
+      ],
+      files: %{"/policies/refunds.md" => "Damaged goods are eligible for a full refund after staff approval.\n"}
+    },
+    opts
+  )
+
+true = result.todos != []
+true = Enum.all?(result.todos, &(&1.status == "completed"))
+note = result.files["/notes/A-1001.md"].content
+true = note =~ "A-1001"
+true = String.downcase(note) =~ "refund"
+true = Enum.any?(result.messages, &(&1.role == :tool and &1.name == "read_file"))
 ```
 
-The scripted model writes a two-step plan with `write_todos`, looks the order
-up, saves a note with `write_file` while it marks both steps done, and
-answers. The plan and the files are part of the result, next to the messages:
-
-```elixir
-result.files["/notes/A-1001.md"].content
-#=> "Delivered Monday, mug broken. Offer a full refund.\n"
-```
-
-`TodoList` gave the agent the `write_todos` tool and keeps the plan in
-`todos`. `filesystem` gave it file tools, and `BeamWeaver.Filesystem.State`
-keeps the files in the thread's state under `files`. With a checkpointer,
-both carry over to the next call on the same thread.
+Inspect artifacts and state, not just the final answer. A model can say it
+saved a note without doing so; the checks above read the actual file and plan.
+The policy is a local example dataset, not a live business policy service.
 
 ## One agent, more capabilities
 
-There is no separate deep-agent type. `MyApp.SupportResearcher` is an agent
-module like any other: it runs with `invoke/2`, streams, pauses for review and
-saves checkpoints. Each capability is one declaration, or one middleware, that
-adds tools and keys in the state, and some add a section of the system prompt:
+| Capability | Declaration or middleware | Guide |
+| --- | --- | --- |
+| Task list | `TodoList` | Below |
+| File tools | `filesystem` | [Filesystem](filesystem.md) |
+| Path rules | `filesystem_permissions` | [Permissions](filesystem.md#permissions) |
+| On-demand procedures | `skills` | [Skills](skills.md) |
+| Short persistent instructions | `memory` | [Memory Files](memory_files.md) |
+| Delegated tasks | `subagents`, `async_subagents` | [Subagents](subagents.md) |
+| Context policy | `compact_conversation`, `overflow_recovery` | [Context Management](context_management.md) |
+| Commands | An executable filesystem or `ShellTool` | [Sandboxes](sandboxes.md) |
+| Approval | `interrupt_on` | [Human Review](human_in_the_loop.md) |
+| Model tuning | `capability_profile` | [Capability Profiles](profiles.md) |
 
-| Capability | Turn it on with | The model gets | Guide |
-| --- | --- | --- | --- |
-| Planning | `middleware [BeamWeaver.Agent.Middleware.TodoList]` | `write_todos` | [below](#plan-with-a-task-list) |
-| Files | `filesystem BeamWeaver.Filesystem.State.new()` | `ls`, `read_file`, `write_file`, `edit_file`, `glob`, `grep` | [Filesystem](filesystem.md) |
-| File rules | `filesystem_permissions [...]` | an error for paths it may not use | [Filesystem](filesystem.md) |
-| Skills | `skills ["/skills"]` | a list of skills to read when they apply | [Skills](skills.md) |
-| Memory files | `memory ["/AGENTS.md"]` | the files in its system prompt | [Memory Files](memory_files.md) |
-| Subagents | `subagents do subagent MyApp.PolicyExpert end` | `task` | [Subagents](subagents.md) |
-| Background subagents | `async_subagents [...]` | `start_async_task` and four more | [Subagents](subagents.md) |
-| Context management | `compact_conversation true`, `overflow_recovery true` | `compact_conversation` | [Context Management](context_management.md) |
-| Code execution | a filesystem that runs commands | `execute` | [Sandboxes](sandboxes.md) |
-| Human review | `interrupt_on %{"issue_refund" => true}` | a pause before those tools run | [Human-in-the-Loop](human_in_the_loop.md) |
-| Per-model tuning | a capability profile | depends on the profile | [Capability Profiles](profiles.md) |
-
-Switch on only what a task needs: the model reads every capability's tools,
-and the prompt sections some of them add, on every call. The next guides take
-the capabilities in turn: [Filesystem](filesystem.md), [Skills](skills.md),
-[Subagents](subagents.md), [Sandboxes](sandboxes.md) and
-[Capability Profiles](profiles.md).
+Each capability adds tools, state or prompt instructions. More capabilities
+mean more model-visible choices and more possible side effects.
 
 ## Plan with a task list
 
-`BeamWeaver.Agent.Middleware.TodoList` gives the model the `write_todos` tool
-and tells it to plan tasks of three or more steps. Each call replaces the
-whole list. An item has `content` and a `status` of `"pending"`,
-`"in_progress"` or `"completed"`; any other status is rejected, and the model
-gets the error back.
+`TodoList` exposes `write_todos`. Each call replaces the entire list; items
+have content and pending/in_progress/completed status. Concurrent task-list
+writes in one model turn are rejected so the model can submit one coherent
+update. The default state key is `todos`.
 
-The list lives in the state under `todos`, so it is in the result, in every
-checkpoint, and in stream events, where a UI can show progress (see
-[Watch a long run](#watch-a-long-run)). The model may write the list once per
-turn: when it calls `write_todos` twice at once, both calls fail with an error
-that asks for a single call.
+Options include `state_key:`, `tool_name:`, `tool_description:` and
+`system_prompt:`. A plan is model-maintained progress, not independent evidence
+that each task happened. Verify the promised outputs separately.
 
-`TodoList` takes these options:
-
-| Option | Default | What it changes |
-| --- | --- | --- |
-| `state_key` | `:todos` | the state key that holds the list |
-| `system_prompt` | when and how to plan | the section added to the system prompt |
-| `tool_description` | how to use the statuses | the description of the tool |
-| `tool_name` | `"write_todos"` | the tool's name, which the default `system_prompt` and errors use |
+Use a different state key when your application calls the list a plan. The agent must write the completed task:
 
 ```elixir
 defmodule MyApp.PlanningAgent do
   use BeamWeaver.Agent
-
-  model "fake:chat", responses: ["Ready."]
+  model "openai:gpt-5.4-mini", max_tokens: 512, timeout: 60_000
+  system_prompt "Record the requested tasks with write_todos before replying."
   middleware [{BeamWeaver.Agent.Middleware.TodoList, state_key: :plan}]
 end
 
-{:ok, result} = MyApp.PlanningAgent.invoke(%{messages: ["Reply with the word ready."]})
-true = is_binary(result.messages |> List.last() |> BeamWeaver.Core.Message.text())
+{:ok, plan_result} = MyApp.PlanningAgent.invoke(%{messages: ["Record one completed task: Read supplied policy."]})
+[%{content: content, status: "completed"}] = plan_result.plan
+"Read supplied policy" = String.trim_trailing(content, ".")
 ```
-
-A subagent keeps its own list. The parent never sees it, only the subagent's
-answer.
 
 ## Keep the plan and files between calls
 
-With a checkpointer and a thread id, the plan and the files are saved with the
-thread, so the next call on the thread starts with them. `get_state/1` reads
-them without running the agent:
-
 ```elixir
-saver = BeamWeaver.Checkpoint.ETS.new()
-opts = [checkpointer: saver, config: %{"configurable" => %{"thread_id" => "ticket-42"}}]
-
-{:ok, final} = MyApp.SupportResearcher.invoke(%{messages: ["Ada's order A-1001 arrived broken. What can we offer?"]}, opts)
-true = is_list(final.messages)
-
 {:ok, snapshot} = MyApp.SupportResearcher.get_state(opts)
-{length(snapshot.values.todos), Map.keys(snapshot.values.files)}
-#=> {2, ["/notes/A-1001.md"]}
+true = snapshot.values.files["/notes/A-1001.md"].content == note
+true = snapshot.values.todos == result.todos
 ```
 
-In production, `Checkpoint.Ecto` keeps the thread, its plan and its files
-across restarts (see [Checkpoints and Time Travel](checkpoints.md)). Files in
-`Filesystem.State` belong to one thread. For files that every thread should
-see, such as a team's playbook or a customer's history, keep them in a
-directory or a memory store instead (see [Filesystem](filesystem.md)).
+State-backed plans/files are per-thread and follow checkpoint durability.
+This example's ETS data disappears with its owner process. Shared data needs
+a persistent filesystem or memory-store namespace; restart recovery needs
+a database saver. See [Storage](storage.md).
 
 ## How capabilities combine
 
-Each declaration adds middleware. BeamWeaver adds it in this order, ahead of
-the middleware you list yourself:
+Capability middleware is assembled before explicitly listed middleware.
+The declared order covers skills, filesystem, subagents, compaction/overflow,
+async delegation, tool selection, prompt caching, memory and human review.
+An explicit middleware entry usually replaces the same capability module;
+missing options can inherit declaration settings. Tool-selection exclusions
+are cumulative rather than replaced.
 
-1. `skills`
-2. `filesystem`, with its `filesystem_permissions`
-3. `subagents`
-4. `compact_conversation`, then `overflow_recovery`
-5. `async_subagents`
-6. `exclude_tools` and `tool_descriptions`
-7. `prompt_caching`
-8. `memory`
-9. `interrupt_on`
-10. your `middleware` list, in its own order
+`DynamicPrompt` supplies the base prompt before capability sections are added.
+When you customize prompt or middleware assembly, inspect the actual request
+and ensure required policy sections still reach the model.
 
-The order shows in the system prompt. Your `system_prompt` comes first, then
-the sections of the capabilities that add one, in the order above, then the
-sections of your own middleware. The agent at the top of this page sends its
-prompt, the file tools section, then the `write_todos` section. A
-`BeamWeaver.Agent.Middleware.DynamicPrompt` in your list takes the place of
-`system_prompt`, and the sections still follow it. The model's tools come in
-the same order, followed by the tools you declared.
-
-Two rules follow from how the middleware is put together:
-
-- **Your entry wins.** If your `middleware` list names a module that a
-  declaration would add, such as `BeamWeaver.Agent.Middleware.Filesystem`,
-  BeamWeaver drops the declared one and keeps yours. Options you leave out
-  of a `Filesystem`, `Skills`, `Memory`, `CompactConversation` or
-  `OverflowRecovery` entry written as `{module, opts}` (or the bare module)
-  come from the declarations: its `backend` is the declared `filesystem`,
-  and a `Filesystem` entry also gets `filesystem_permissions` (see
-  [Filesystem](filesystem.md#change-the-large-result-limits)). The
-  `ToolSelection` that `exclude_tools` adds is the exception: it runs before a
-  `ToolSelection` of yours, and both apply.
-- **Some capabilities read files.** `skills`, `memory`,
-  `compact_conversation` and `overflow_recovery` read and write through the
-  agent's `filesystem`. Without one they use the thread's state, and the agent
-  gets no file tools, so it can't open a skill or edit a memory file. Declare
-  a `filesystem` with them.
+Skills and memory can read state files without a filesystem declaration, but
+the model needs file tools to open skills or edit notes. Declare a filesystem
+when those actions are part of the task.
 
 ## Context management
 
-A long run collects more messages and tool results than a context window
-holds. With a `filesystem`, tool results over about 20,000 tokens are saved to
-files under `/large_tool_results/` and the model reads them back a page at a
-time. `compact_conversation true` summarizes older history once the thread
-gets long, and gives the model a `compact_conversation` tool to do it between
-tasks. `overflow_recovery true` retries a request that a provider rejects as
-too long. See [Context Management](context_management.md).
-
-```elixir
-defmodule MyApp.LongRunningAgent do
-  use BeamWeaver.Agent
-
-  model "anthropic:claude-sonnet-4-6"
-  filesystem BeamWeaver.Filesystem.State.new()
-  compact_conversation true
-  overflow_recovery true
-end
-
-{:ok, result} = MyApp.LongRunningAgent.invoke(%{messages: ["Reply with the word ready."]})
-true = is_binary(result.messages |> List.last() |> BeamWeaver.Core.Message.text())
-```
+Offload large tool results into files, retain a recent conversation window and
+summarize older material. Use overflow recovery as a fallback when a provider
+still rejects an oversized request. Keep source material retrievable: a
+summary is not a lossless archive. [Context Management](context_management.md)
+shows an actual compaction trigger.
 
 ## Code execution
 
-When the filesystem can run commands, the agent also gets an `execute` tool
-that runs a shell command and returns its output and exit code. `BeamWeaver.Filesystem.LocalShell`
-runs commands on your machine, for development only;
-`BeamWeaver.Filesystem.Sandbox` runs them in a sandbox, such as a Docker
-container. File permissions don't limit what a command does, so pause before
-commands that matter with `interrupt_on %{"execute" => true}`. To allow only
-a short list of commands instead of a full shell, use the `ShellTool`
-middleware, which requires a policy ([Sandboxes](sandboxes.md#shell-tool-and-policies)).
+An executable backend adds `execute`. LocalShell and local sandboxes run as
+your application user; file-tool permissions do not constrain shell commands.
+Use a suitable isolated runtime and explicit command policy for the work you
+allow. [Sandboxes](sandboxes.md) covers lifecycle and boundary differences.
 
 ## Human review
 
-`interrupt_on` pauses the run before the tools you name, including deep-agent
-tools such as `write_file`, `execute` and `task`, so a person can approve,
-edit or reject the call. The paused run waits in the checkpointer and
-continues with `resume_review/2`:
-
-```elixir
-defmodule MyApp.ReviewedFileAgent do
-  use BeamWeaver.Agent
-
-  model "anthropic:claude-sonnet-4-6"
-  filesystem BeamWeaver.Filesystem.State.new()
-  interrupt_on %{"write_file" => true}
-end
-
-saver = BeamWeaver.Checkpoint.ETS.new()
-{:ok, result} = MyApp.ReviewedFileAgent.invoke(%{messages: ["Reply with the word ready."]},
-  checkpointer: saver, config: %{"configurable" => %{"thread_id" => "configuration-example"}})
-true = is_binary(result.messages |> List.last() |> BeamWeaver.Core.Message.text())
-```
-
-A pause inside a subagent pauses the parent too: the parent returns the
-subagent's review, and resuming the parent resumes the subagent
-([Subagents](subagents.md#human-review)). Subagents use the parent's
-`interrupt_on` rules unless they set their own. See
-[Human-in-the-Loop](human_in_the_loop.md).
+Review file writes, commands or domain actions with `interrupt_on` when the
+application requires approval. Pauses need checkpoint storage. Nested review
+propagates to the parent, which resumes through the same thread. Approval
+must be tied to the actual proposed arguments, not a narrative plan.
 
 ## Subagents
 
-`subagents` gives the agent a `task` tool. The model calls it with a
-description of the work and the name of a subagent, which runs in its own
-context window and returns only its final answer. The parent's thread grows
-by one tool result instead of every search and file read the work needed. A
-`general-purpose` subagent, a copy of the parent with its tools, files and
-skills but no task list, is available too unless you turn it off. For work
-that outlasts a request, `async_subagents` starts a task on another agent
-server and gives the model tools to check on it, update it or cancel it. See
-[Subagents](subagents.md).
-
-```elixir
-defmodule MyApp.PolicyExpert do
-  use BeamWeaver.Agent
-  description "Answers questions about the return policy."
-  model "fake:chat", responses: ["Returns are accepted within 30 days."]
-end
-
-defmodule MyApp.DelegatingAgent do
-  use BeamWeaver.Agent
-
-  model "anthropic:claude-sonnet-4-6"
-
-  subagents do
-    subagent MyApp.PolicyExpert
-  end
-end
-
-{:ok, result} = MyApp.DelegatingAgent.invoke(%{messages: ["Reply with the word ready."]})
-true = is_binary(result.messages |> List.last() |> BeamWeaver.Core.Message.text())
-```
+Delegate a bounded question with a clear output contract. A synchronous child
+returns a final result to the parent; remote async tasks require explicit
+status/result handling. Include the relevant source data in the task and
+check the result before using it. [Subagents](subagents.md) explains shared
+files, context, captured outputs and review inheritance.
 
 ## Watch a long run
 
-A deep agent can work for minutes. `stream_events/2` reports each step while
-it happens: tool calls, file writes, and every new version of the plan. The
-plan arrives in the state updates of the `tools` step:
+Stream tool events and graph updates to show work in progress. Plan updates
+come through state changes; file operations and delegation have tool events.
+A completed task-list item does not guarantee the workflow completed.
+Handle terminal errors and interrupts, and use [Tracing](tracing.md) to inspect
+provider attempts, tools and child runs afterward.
+
+Collect a new investigation stream once and inspect real tool progress and final saved artifacts:
 
 ```elixir
-alias BeamWeaver.Stream.Events
+stream_opts = [checkpointer: saver, config: %{"configurable" => %{"thread_id" => "streamed-investigation"}}, live: true]
 
-{:ok, events} =
-  MyApp.SupportResearcher.stream_events(%{messages: ["Ada's order A-1001 arrived broken. What can we offer?"]},
-    live: true
+{:ok, stream} =
+  MyApp.SupportResearcher.stream_events(
+    %{
+      messages: [
+        "Investigate broken mug A-1002. Read /policies/refunds.md, write /notes/A-1002.md, and complete your task list."
+      ],
+      files: %{"/policies/refunds.md" => "Damaged goods qualify for a full refund after staff approval."}
+    },
+    stream_opts
   )
 
-for %{event: %Events.GraphUpdate{update: %{"tools" => %{todos: todos}}}} <- events,
-    do: Enum.map(todos, & &1.status)
-#=> [["in_progress", "pending"], ["completed", "completed"]]
+events = Enum.to_list(stream)
+true = Enum.any?(events, &match?(%{event: %BeamWeaver.Stream.Events.ToolFinish{}}, &1))
+{:ok, saved} = MyApp.SupportResearcher.get_state(Keyword.delete(stream_opts, :live))
+true = saved.values.files["/notes/A-1002.md"].content =~ "A-1002"
 ```
-
-A UI can redraw a checklist from each update and show `ToolStart` events as
-"Reading /skills/refund-policy/SKILL.md…". [Streaming](streaming.md) lists
-every event. To look back at a run, with each model call, tool call and
-subagent run in one tree, use [Tracing](tracing.md).
-
-## Use a real model
-
-Swap the scripted model for a provider model and drop the script: the model
-now decides when to plan, which files to write and when to delegate. This
-version also keeps its files in a directory, reads skills and a memory file,
-compacts long threads, and can ask a policy expert:
-
-Before running the database examples on this page, set `DATABASE_URL` to
-an empty PostgreSQL database reserved for examples, then run this setup in
-the same IEx session. The verification command creates a disposable database.
-
-```elixir
-defmodule MyApp.Repo do
-  use Ecto.Repo, otp_app: :my_app, adapter: Ecto.Adapters.Postgres
-end
-
-{:ok, _repo} = MyApp.Repo.start_link(url: System.fetch_env!("DATABASE_URL"), pool_size: 2, log: false)
-
-defmodule MyApp.CreateAgentTables do
-  use Ecto.Migration
-
-  def up, do: BeamWeaver.Migrations.up(adapters: [:checkpoint, :memory, :cache])
-  def down, do: BeamWeaver.Migrations.down(adapters: [:cache, :memory, :checkpoint])
-end
-
-:ok = Ecto.Migrator.up(MyApp.Repo, 1, MyApp.CreateAgentTables, log: false)
-```
-
-```elixir
-defmodule MyApp.PolicyExpert do
-  use BeamWeaver.Agent
-
-  name "policy_expert"
-  description "Answers questions about Acme's refund and return policies."
-  model "anthropic:claude-haiku-4-5"
-  system_prompt "You are Acme's policy expert. Answer in two sentences and name the rule you applied."
-end
-
-defmodule MyApp.SupportResearcher do
-  use BeamWeaver.Agent
-
-  model "anthropic:claude-sonnet-4-6", timeout: 120_000
-  system_prompt "You are Acme's support researcher. Plan with write_todos, keep notes in /notes, then answer."
-
-  tools [MyApp.Tools.LookupOrder]
-  middleware [BeamWeaver.Agent.Middleware.TodoList]
-  filesystem BeamWeaver.Filesystem.Local.new(root: Path.join(System.tmp_dir!(), "support_researcher"))
-  filesystem_permissions [BeamWeaver.Filesystem.Permission.new(operations: [:write], paths: ["/skills/**"], mode: :deny)]
-  skills ["/skills"]
-  memory ["/AGENTS.md"]
-  compact_conversation true
-
-  subagents do
-    subagent MyApp.PolicyExpert
-  end
-end
-
-opts = [
-  checkpointer: BeamWeaver.Checkpoint.Ecto.new(repo: MyApp.Repo),
-  config: %{"configurable" => %{"thread_id" => "ticket-42"}}
-]
-
-{:ok, final} = MyApp.SupportResearcher.invoke(%{messages: ["Ada's order A-1001 arrived broken. What can we offer?"]}, opts)
-true = is_list(final.messages)
-```
-
-The agent sees the directory as `/`: its notes land in
-`support_researcher/notes` under the system temporary directory, its memory is `AGENTS.md` there, and
-the permission rule lets it read the skills in `skills/` but not change them.
-A deep agent makes many model calls per run, so give slow models a generous
-`timeout` and cap runaway loops with `recursion_limit`, or with the
-`ModelCallLimit` middleware and a `run_limit` that leaves room for the work
-([Built-in Middleware](builtin_middleware.md#modelcalllimit)).
 
 ## Test a deep agent
 
-Test a deep agent the way this page runs one: script the fake model's tool
-calls, then assert on what the agent did, such as `result.todos`,
-`result.files` and the tool messages, rather than on the wording of the
-built-in instructions, which can change between versions. Seed the files a
-test needs, such as skills or a memory file, with `files:` in the input. See
-[Testing](testing.md).
-
-## Reference
-
-- [`BeamWeaver.Agent`](https://hexdocs.pm/beam_weaver/BeamWeaver.Agent.html): the agent DSL, including the capability declarations
-- [`BeamWeaver.Agent.Middleware.TodoList`](https://hexdocs.pm/beam_weaver/BeamWeaver.Agent.Middleware.TodoList.html): the `write_todos` planning tool
-- [`BeamWeaver.Tools.Todo`](https://hexdocs.pm/beam_weaver/BeamWeaver.Tools.Todo.html): the tool behind `write_todos`
-- [`BeamWeaver.Agent.Middleware.Filesystem`](https://hexdocs.pm/beam_weaver/BeamWeaver.Agent.Middleware.Filesystem.html): the file tools and large-result offloading
-- [`BeamWeaver.Agent.Middleware.Skills`](https://hexdocs.pm/beam_weaver/BeamWeaver.Agent.Middleware.Skills.html): the skills list in the system prompt
-- [`BeamWeaver.Agent.Middleware.Memory`](https://hexdocs.pm/beam_weaver/BeamWeaver.Agent.Middleware.Memory.html): memory files in the system prompt
-- [`BeamWeaver.Agent.Middleware.Subagents`](https://hexdocs.pm/beam_weaver/BeamWeaver.Agent.Middleware.Subagents.html): the `task` tool
-- [`BeamWeaver.Filesystem`](https://hexdocs.pm/beam_weaver/BeamWeaver.Filesystem.html): the filesystem behaviour and its backends
+For application tests, script model actions and assert actual files, task
+state, delegated outputs and tool arguments. Keep representative live checks
+for model behavior. [Testing](testing.md) covers deterministic setup;
+[Examples](examples.md) lists complete larger projects.

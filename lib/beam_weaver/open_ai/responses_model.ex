@@ -1,10 +1,16 @@
 defmodule BeamWeaver.OpenAI.ResponsesModel do
-  @moduledoc """
-  Explicit OpenAI Responses API chat model.
+  @moduledoc ~S"""
+  OpenAI Responses model implementing the BeamWeaver chat contract.
 
-  `BeamWeaver.OpenAI.ChatModel` remains source-compatible and uses the same
-  implementation. This module gives applications a clear API-specific model
-  struct without changing the existing default.
+  Prefer `BeamWeaver.Models.init_chat_model/2` for provider-prefixed identifiers,
+  then call `BeamWeaver.Core.ChatModel` or declare the model in an agent.
+  Construction does not contact the provider. Model/profile options describe
+  local compatibility; account access is established only by a real request.
+
+  See [OpenAI](providers/openai.md) for endpoint-specific parameters, reasoning,
+  media and tools. Preserve complete messages for multi-turn replay. Streaming
+  consumers must enumerate once and handle terminal errors; display text is not
+  a lossless representation of a native provider turn.
   """
 
   use BeamWeaver.Provider.RedactedInspect

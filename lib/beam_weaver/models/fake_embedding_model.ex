@@ -1,6 +1,7 @@
 defmodule BeamWeaver.Models.FakeEmbeddingModel do
   @moduledoc """
-  Deterministic embedding model for tests, examples, and documentation.
+  Embedding fixtures for deterministic application tests. These vectors do not
+  establish semantic search quality.
 
   ```elixir
   {:ok, embeddings} = BeamWeaver.Models.init_embeddings("fake:embedding")

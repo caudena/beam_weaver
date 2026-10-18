@@ -27,13 +27,22 @@ defmodule BeamWeaver.Graph.UI do
   @type remove_message :: %{required(:type) => :remove_ui, required(:id) => String.t()}
   @type message :: ui_message() | remove_message()
 
+  @doc """
+  Returns the ui state channel declaration with an empty-list default.
+  """
   @spec state_schema(keyword()) :: map()
   def state_schema(opts \\ []), do: %{ui: channel(opts)}
 
+  @doc """
+  Builds the ID-aware UI-message reducer channel.
+  """
   @spec channel(keyword()) :: Graph.channel_spec()
   def channel(opts \\ []),
     do: Graph.channel({BinaryOperatorAggregate, &reducer/2}, Keyword.put_new(opts, :initial, []))
 
+  @doc """
+  Creates component-name/props data with a stable supplied or generated ID. No component is rendered here.
+  """
   @spec message(String.t(), map(), keyword()) :: ui_message()
   def message(name, props, opts \\ []) when is_binary(name) and is_map(props) do
     metadata =
@@ -51,9 +60,15 @@ defmodule BeamWeaver.Graph.UI do
     }
   end
 
+  @doc """
+  Creates an ID-based UI removal marker.
+  """
   @spec remove(String.t()) :: remove_message()
   def remove(id) when is_binary(id), do: %{type: :remove_ui, id: id}
 
+  @doc """
+  Emits UI-message data through the runtime writer and returns it for inclusion in state.
+  """
   @spec push_ui_message(Runtime.t(), String.t(), map(), keyword()) ::
           {:ok, ui_message()} | {:error, Error.t()}
   def push_ui_message(%Runtime{} = runtime, name, props, opts \\ []) do
@@ -75,6 +90,9 @@ defmodule BeamWeaver.Graph.UI do
       {:error, Error.new(:invalid_ui_message, Exception.message(exception))}
   end
 
+  @doc """
+  Emits an ID-based UI removal and returns its marker for inclusion in state.
+  """
   @spec delete_ui_message(Runtime.t(), String.t(), keyword()) ::
           {:ok, remove_message()} | {:error, Error.t()}
   def delete_ui_message(%Runtime{} = runtime, id, opts \\ []) when is_binary(id) do
@@ -89,6 +107,9 @@ defmodule BeamWeaver.Graph.UI do
     {:ok, remove}
   end
 
+  @doc """
+  Appends new IDs, updates existing IDs and applies removals. merge metadata merges props; unknown removal IDs raise.
+  """
   @spec reducer(term(), term()) :: [message()]
   def reducer(left, right) do
     left = ui_list(left)
