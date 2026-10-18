@@ -84,7 +84,14 @@ or a model you created. BeamWeaver creates the model from the string and also
 passes the options on each call:
 
 ```elixir
-model "openai:gpt-5.4-mini", temperature: 0.2, timeout: 60_000
+defmodule MyApp.ConfiguredModelAgent do
+  use BeamWeaver.Agent
+
+  model "openai:gpt-5.4-mini", temperature: 0.2, timeout: 60_000
+end
+
+{:ok, result} = MyApp.ConfiguredModelAgent.invoke(%{messages: ["Reply with the word ready."]})
+true = is_binary(result.messages |> List.last() |> BeamWeaver.Core.Message.text())
 ```
 
 `timeout:` also limits the agent's model step, so raise it for long replies.
@@ -121,10 +128,18 @@ before `ModelRetry`, and each model gets all its attempts before the next one
 takes over:
 
 ```elixir
-middleware [
-  {BeamWeaver.Agent.Middleware.ModelFallback, fallbacks: ["anthropic:claude-haiku-4-5"]},
-  {BeamWeaver.Agent.Middleware.ModelRetry, max_attempts: 3}
-]
+defmodule MyApp.FallbackAgent do
+  use BeamWeaver.Agent
+
+  model "openai:gpt-5.4-mini", max_tokens: 256, timeout: 60_000
+  middleware [
+    {BeamWeaver.Agent.Middleware.ModelFallback, fallbacks: ["anthropic:claude-haiku-4-5"]},
+    {BeamWeaver.Agent.Middleware.ModelRetry, max_attempts: 3}
+  ]
+end
+
+{:ok, result} = MyApp.FallbackAgent.invoke(%{messages: ["Reply with the word ready."]})
+true = is_binary(result.messages |> List.last() |> BeamWeaver.Core.Message.text())
 ```
 
 [Built-in Middleware](builtin_middleware.md) lists the retry options.
@@ -287,7 +302,9 @@ names its reasoning controls differently:
 Set them when you create the model, or per call:
 
 ```elixir
-{:ok, model} = BeamWeaver.Models.init_chat_model("openai:gpt-5.4-mini", reasoning_effort: :low)
+{:ok, reasoning_model} = BeamWeaver.Models.init_chat_model("openai:gpt-5.4-mini", reasoning_effort: :low)
+{:ok, reasoning_reply} = BeamWeaver.Core.ChatModel.invoke(reasoning_model, "What is 2 + 2?")
+true = byte_size(BeamWeaver.Core.Message.text(reasoning_reply)) > 0
 ```
 
 A model's profile lists the efforts it takes in `reasoning_effort_levels`, and
@@ -334,13 +351,20 @@ options on every call, so this applies to them too.
 A model name BeamWeaver doesn't know yet gets its family's profile (such as
 `claude-*` or `gemini-*`), or else a bare one with tools and structured output
 switched off; OpenAI, DeepSeek and Z.ai reject some unknown names. Pass
-`profile:` to describe a new model yourself:
+`profile:` to override a model's limits in your application. Start from its
+existing profile so its other capabilities remain accurate:
 
 ```elixir
-{:ok, model} =
-  BeamWeaver.Models.init_chat_model("openai:future-model",
-    profile: %{max_input_tokens: 400_000, tool_calling: true, structured_output: true, streaming: true}
+base_model = BeamWeaver.Models.init_chat_model!("openai:gpt-5.4-mini")
+
+{:ok, constrained_model} =
+  BeamWeaver.Models.init_chat_model("openai:gpt-5.4-mini",
+    profile: %{base_model.profile | max_input_tokens: 8_000}
   )
+
+8_000 = constrained_model.profile.max_input_tokens
+{:ok, reply} = ChatModel.invoke(constrained_model, "Reply with OK.")
+true = byte_size(BeamWeaver.Core.Message.text(reply)) > 0
 ```
 
 ## Embeddings

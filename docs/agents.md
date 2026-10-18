@@ -59,7 +59,14 @@ To use a real model, change the `model` line. The script goes away, because the
 model now decides what to do:
 
 ```elixir
-model "anthropic:claude-haiku-4-5", temperature: 0.2, timeout: 60_000
+defmodule MyApp.RealSupportAgent do
+  use BeamWeaver.Agent
+
+  model "anthropic:claude-haiku-4-5", temperature: 0.2, timeout: 60_000
+end
+
+{:ok, result} = MyApp.RealSupportAgent.invoke(%{messages: ["Reply with the word ready."]})
+true = is_binary(result.messages |> List.last() |> BeamWeaver.Core.Message.text())
 ```
 
 BeamWeaver evaluates every declaration each time the agent runs, not when the
@@ -69,7 +76,16 @@ fake model while production uses a real one (see
 [Testing](testing.md#choose-the-model-from-config)):
 
 ```elixir
-model Application.fetch_env!(:my_app, :support_model), timeout: Application.get_env(:my_app, :model_timeout, 60_000)
+Application.put_env(:my_app, :support_model, "openai:gpt-5.4-mini")
+
+defmodule MyApp.ConfiguredSupportAgent do
+  use BeamWeaver.Agent
+
+  model Application.fetch_env!(:my_app, :support_model), timeout: Application.get_env(:my_app, :model_timeout, 60_000)
+end
+
+{:ok, result} = MyApp.ConfiguredSupportAgent.invoke(%{messages: ["Reply with the word ready."]})
+true = is_binary(result.messages |> List.last() |> BeamWeaver.Core.Message.text())
 ```
 
 ## Declarations
@@ -96,27 +112,41 @@ model Application.fetch_env!(:my_app, :support_model), timeout: Application.get_
 the same agent:
 
 ```elixir
-model "fake:chat"
+defmodule MyApp.ListSupportAgent do
+  use BeamWeaver.Agent
 
-tools [MyApp.Tools.LookupOrder]
+  model "fake:chat", responses: ["Ready."]
 
-middleware [
-  BeamWeaver.Agent.Middleware.ModelRetry,
-  {BeamWeaver.Agent.Middleware.ModelCallLimit, run_limit: 10}
-]
+  tools [MyApp.Tools.LookupOrder]
+
+  middleware [
+    BeamWeaver.Agent.Middleware.ModelRetry,
+    {BeamWeaver.Agent.Middleware.ModelCallLimit, run_limit: 10}
+  ]
+end
+
+{:ok, result} = MyApp.ListSupportAgent.invoke(%{messages: ["Reply with the word ready."]})
+true = is_binary(result.messages |> List.last() |> BeamWeaver.Core.Message.text())
 ```
 
 ```elixir
-model "fake:chat"
+defmodule MyApp.BlockSupportAgent do
+  use BeamWeaver.Agent
 
-tools do
-  tool MyApp.Tools.LookupOrder
+  model "fake:chat", responses: ["Ready."]
+
+  tools do
+    tool MyApp.Tools.LookupOrder
+  end
+
+  middleware do
+    use BeamWeaver.Agent.Middleware.ModelRetry
+    use BeamWeaver.Agent.Middleware.ModelCallLimit, run_limit: 10
+  end
 end
 
-middleware do
-  use BeamWeaver.Agent.Middleware.ModelRetry
-  use BeamWeaver.Agent.Middleware.ModelCallLimit, run_limit: 10
-end
+{:ok, result} = MyApp.BlockSupportAgent.invoke(%{messages: ["Reply with the word ready."]})
+true = is_binary(result.messages |> List.last() |> BeamWeaver.Core.Message.text())
 ```
 
 In a block, `include some_list` adds a whole list, such as the tools a helper
@@ -126,14 +156,12 @@ its `tools/1`; other tools take no options.
 [Built-in Middleware](builtin_middleware.md) covers each middleware module and
 its options.
 
-{% hint style="warning" %}
-**Declared storage must outlive the call.** Declarations are evaluated on
-every call, so a saver declared as `checkpointer BeamWeaver.Checkpoint.ETS.new()`
-would be a new, empty table each time, and the agent would forget every
-thread. A module that creates an ETS saver, store or cache in a declaration
-doesn't compile. Create them once, in your supervision tree or a test's
-`setup`, and pass them per call with `checkpointer:`, `store:` and `cache:`.
-{% endhint %}
+> **Declared storage must outlive the call.** Declarations are evaluated on
+> every call, so a saver declared as `checkpointer BeamWeaver.Checkpoint.ETS.new()`
+> would be a new, empty table each time, and the agent would forget every
+> thread. A module that creates an ETS saver, store or cache in a declaration
+> doesn't compile. Create them once, in your supervision tree or a test's
+> `setup`, and pass them per call with `checkpointer:`, `store:` and `cache:`.
 
 Declare storage that lives in a database, so every call reaches the same
 data, or a function that returns storage you created once, such as
@@ -141,9 +169,40 @@ data, or a function that returns storage you created once, such as
 a new ETS saver or store each time, the agent logs a warning on its first
 call.
 
+Before running the database examples on this page, set `DATABASE_URL` to
+an empty PostgreSQL database reserved for examples, then run this setup in
+the same IEx session. The verification command creates a disposable database.
+
 ```elixir
-checkpointer BeamWeaver.Checkpoint.Ecto.new(repo: MyApp.Repo)
-store BeamWeaver.Memory.Ecto.new(repo: MyApp.Repo)
+defmodule MyApp.Repo do
+  use Ecto.Repo, otp_app: :my_app, adapter: Ecto.Adapters.Postgres
+end
+
+{:ok, _repo} = MyApp.Repo.start_link(url: System.fetch_env!("DATABASE_URL"), pool_size: 2, log: false)
+
+defmodule MyApp.CreateAgentTables do
+  use Ecto.Migration
+
+  def up, do: BeamWeaver.Migrations.up(adapters: [:checkpoint, :memory, :cache])
+  def down, do: BeamWeaver.Migrations.down(adapters: [:cache, :memory, :checkpoint])
+end
+
+:ok = Ecto.Migrator.up(MyApp.Repo, 1, MyApp.CreateAgentTables, log: false)
+```
+
+```elixir
+defmodule MyApp.PersistentAgent do
+  use BeamWeaver.Agent
+
+  model "openai:gpt-5.4-mini", max_tokens: 128, timeout: 60_000
+  checkpointer BeamWeaver.Checkpoint.Ecto.new(repo: MyApp.Repo)
+  store BeamWeaver.Memory.Ecto.new(repo: MyApp.Repo)
+end
+
+opts = [config: %{"configurable" => %{"thread_id" => "persistent-agent"}}]
+{:ok, first} = MyApp.PersistentAgent.invoke(%{messages: ["Hello"]}, opts)
+{:ok, second} = MyApp.PersistentAgent.invoke(%{messages: ["Hello again"]}, opts)
+true = length(second.messages) > length(first.messages)
 ```
 
 ### Deep agent declarations

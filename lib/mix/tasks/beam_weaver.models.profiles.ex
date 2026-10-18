@@ -2,11 +2,11 @@ defmodule Mix.Tasks.BeamWeaver.Models.Profiles do
   @moduledoc """
   Prints deterministic model profile data.
 
-      mix beam_weaver.models.profiles
-      mix beam_weaver.models.profiles --provider openai
-      mix beam_weaver.models.profiles --json
-      mix beam_weaver.models.profiles --refresh --provider anthropic --data-dir priv/model_profiles
-      mix beam_weaver.models.profiles --refresh --provider anthropic --data-dir priv/model_profiles --source-json path/to/api.json --yes
+  ```bash
+  mix beam_weaver.models.profiles
+  mix beam_weaver.models.profiles --provider openai
+  mix beam_weaver.models.profiles --json
+  ```
 
   `--refresh` writes a local `profiles.json` artifact from models.dev-style
   provider data. Use `--source-json` for a checked-in or downloaded source file,

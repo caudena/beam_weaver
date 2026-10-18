@@ -645,13 +645,43 @@ defmodule BeamWeaver.Anthropic.ChatModel.RequestBuilder do
     exception -> {:error, Error.new(:invalid_response_format, Exception.message(exception))}
   end
 
-  defp structured_output_format(%{"type" => "json_schema", "schema" => _schema} = format), do: format
+  defp structured_output_format(format) do
+    format =
+      case format do
+        %{"type" => "json_schema", "schema" => _} -> format
+        %{type: "json_schema", schema: _} -> Options.stringify_keys(format)
+        other -> %{"type" => "json_schema", "schema" => Options.stringify_keys(output_schema(other))}
+      end
 
-  defp structured_output_format(%{type: "json_schema", schema: _schema} = format),
-    do: Options.stringify_keys(format)
+    Map.update!(format, "schema", &close_output_objects/1)
+  end
 
-  defp structured_output_format(format),
-    do: %{"type" => "json_schema", "schema" => Options.stringify_keys(output_schema(format))}
+  # Anthropic requires closed objects even when the application's schema did
+  # not opt into strict field declarations. Keep optional fields optional and
+  # preserve explicit constraints; OpenAI's required/nullable conversion does
+  # not apply to this provider.
+  defp close_output_objects(schema) when is_map(schema) do
+    schema =
+      Map.new(schema, fn
+        {key, children} when key in ["properties", "$defs", "definitions", "patternProperties"] and is_map(children) ->
+          {key, Map.new(children, fn {name, child} -> {name, close_output_objects(child)} end)}
+
+        {key, children} when key in ["anyOf", "oneOf", "allOf", "prefixItems"] and is_list(children) ->
+          {key, Enum.map(children, &close_output_objects/1)}
+
+        {key, child} when key in ["items", "additionalProperties"] ->
+          {key, close_output_objects(child)}
+
+        pair ->
+          pair
+      end)
+
+    if Enum.any?(List.wrap(schema["type"]), &(&1 in ["object", :object])) or Map.has_key?(schema, "properties"),
+      do: Map.put_new(schema, "additionalProperties", false),
+      else: schema
+  end
+
+  defp close_output_objects(value), do: value
 
   defp output_schema(%{"type" => "json_schema", "json_schema" => %{"schema" => schema}}), do: schema
   defp output_schema(%{type: "json_schema", json_schema: %{schema: schema}}), do: schema

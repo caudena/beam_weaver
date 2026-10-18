@@ -335,15 +335,13 @@ defmodule BeamWeaver.Tracing.LifecycleTest do
           api_key: "xai-nope",
           x_grok_conv_id: "xai-conv",
           prompt_cache_key: "xai-cache",
-          reasoning_effort: :low,
-          search_parameters: %{mode: "auto"}
+          reasoning_effort: :low
         ),
         [],
         %{
           x_grok_conv_id: "xai-conv",
           prompt_cache_key: "xai-cache",
-          reasoning_effort: :low,
-          search_parameters: %{mode: "auto"}
+          reasoning_effort: :low
         }
       },
       {

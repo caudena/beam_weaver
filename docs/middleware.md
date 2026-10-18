@@ -393,26 +393,40 @@ retried before the next one is tried.
 tuple, or a struct you built:
 
 ```elixir
-model "anthropic:claude-haiku-4-5"
+defmodule MyApp.ListMiddlewareAgent do
+  use BeamWeaver.Agent
 
-middleware [
-  MyApp.Metrics,
-  {BeamWeaver.Agent.Middleware.ModelRetry, max_retries: 2},
-  BeamWeaver.Agent.Middleware.PII.new(type: :email)
-]
+  model "anthropic:claude-haiku-4-5"
+
+  middleware [
+    MyApp.Metrics,
+    {BeamWeaver.Agent.Middleware.ModelRetry, max_retries: 2},
+    BeamWeaver.Agent.Middleware.PII.new(type: :email)
+  ]
+end
+
+{:ok, result} = MyApp.ListMiddlewareAgent.invoke(%{messages: ["Reply with the word ready."]})
+true = is_binary(result.messages |> List.last() |> BeamWeaver.Core.Message.text())
 ```
 
 The same with a block, where `use` takes the module and its options and
 `include` adds a list built elsewhere:
 
 ```elixir
-model "anthropic:claude-haiku-4-5"
+defmodule MyApp.BlockMiddlewareAgent do
+  use BeamWeaver.Agent
 
-middleware do
-  use MyApp.Metrics
-  use BeamWeaver.Agent.Middleware.ModelRetry, max_retries: 2
-  use BeamWeaver.Agent.Middleware.PII, type: :email
+  model "anthropic:claude-haiku-4-5"
+
+  middleware do
+    use MyApp.Metrics
+    use BeamWeaver.Agent.Middleware.ModelRetry, max_retries: 2
+    use BeamWeaver.Agent.Middleware.PII, type: :email
+  end
 end
+
+{:ok, result} = MyApp.BlockMiddlewareAgent.invoke(%{messages: ["Reply with the word ready."]})
+true = is_binary(result.messages |> List.last() |> BeamWeaver.Core.Message.text())
 ```
 
 For `{module, options}`, BeamWeaver calls `module.new(options)` when the

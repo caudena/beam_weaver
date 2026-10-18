@@ -4,10 +4,11 @@
 
 ## Get Started
 
+* [Installation](installation.md)
 * [Quickstart](quickstart.md)
+* [Build an Agent](tutorial.md)
 * [Concepts](concepts.md)
 * [Examples](examples.md)
-* [Coming from LangChain](coming_from_langchain.md)
 
 ## Agents
 
@@ -58,6 +59,7 @@
 ## Production
 
 * [Going to Production](going_to_production.md)
+* [Configuration](configuration.md)
 * [Testing](testing.md)
 * [Tracing](tracing.md)
 * [Storage](storage.md)

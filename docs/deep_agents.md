@@ -130,8 +130,15 @@ that asks for a single call.
 | `tool_name` | `"write_todos"` | the tool's name, which the default `system_prompt` and errors use |
 
 ```elixir
-model "fake:chat"
-middleware [{BeamWeaver.Agent.Middleware.TodoList, state_key: :plan}]
+defmodule MyApp.PlanningAgent do
+  use BeamWeaver.Agent
+
+  model "fake:chat", responses: ["Ready."]
+  middleware [{BeamWeaver.Agent.Middleware.TodoList, state_key: :plan}]
+end
+
+{:ok, result} = MyApp.PlanningAgent.invoke(%{messages: ["Reply with the word ready."]})
+true = is_binary(result.messages |> List.last() |> BeamWeaver.Core.Message.text())
 ```
 
 A subagent keeps its own list. The parent never sees it, only the subagent's
@@ -147,8 +154,8 @@ them without running the agent:
 saver = BeamWeaver.Checkpoint.ETS.new()
 opts = [checkpointer: saver, config: %{"configurable" => %{"thread_id" => "ticket-42"}}]
 
-{:ok, _result} =
-  MyApp.SupportResearcher.invoke(%{messages: ["Ada's order A-1001 arrived broken. What can we offer?"]}, opts)
+{:ok, final} = MyApp.SupportResearcher.invoke(%{messages: ["Ada's order A-1001 arrived broken. What can we offer?"]}, opts)
+true = is_list(final.messages)
 
 {:ok, snapshot} = MyApp.SupportResearcher.get_state(opts)
 {length(snapshot.values.todos), Map.keys(snapshot.values.files)}
@@ -214,10 +221,17 @@ tasks. `overflow_recovery true` retries a request that a provider rejects as
 too long. See [Context Management](context_management.md).
 
 ```elixir
-model "anthropic:claude-sonnet-4-6"
-filesystem BeamWeaver.Filesystem.State.new()
-compact_conversation true
-overflow_recovery true
+defmodule MyApp.LongRunningAgent do
+  use BeamWeaver.Agent
+
+  model "anthropic:claude-sonnet-4-6"
+  filesystem BeamWeaver.Filesystem.State.new()
+  compact_conversation true
+  overflow_recovery true
+end
+
+{:ok, result} = MyApp.LongRunningAgent.invoke(%{messages: ["Reply with the word ready."]})
+true = is_binary(result.messages |> List.last() |> BeamWeaver.Core.Message.text())
 ```
 
 ## Code execution
@@ -239,9 +253,18 @@ edit or reject the call. The paused run waits in the checkpointer and
 continues with `resume_review/2`:
 
 ```elixir
-model "anthropic:claude-sonnet-4-6"
-filesystem BeamWeaver.Filesystem.State.new()
-interrupt_on %{"issue_refund" => true, "write_file" => true}
+defmodule MyApp.ReviewedFileAgent do
+  use BeamWeaver.Agent
+
+  model "anthropic:claude-sonnet-4-6"
+  filesystem BeamWeaver.Filesystem.State.new()
+  interrupt_on %{"write_file" => true}
+end
+
+saver = BeamWeaver.Checkpoint.ETS.new()
+{:ok, result} = MyApp.ReviewedFileAgent.invoke(%{messages: ["Reply with the word ready."]},
+  checkpointer: saver, config: %{"configurable" => %{"thread_id" => "configuration-example"}})
+true = is_binary(result.messages |> List.last() |> BeamWeaver.Core.Message.text())
 ```
 
 A pause inside a subagent pauses the parent too: the parent returns the
@@ -263,11 +286,24 @@ server and gives the model tools to check on it, update it or cancel it. See
 [Subagents](subagents.md).
 
 ```elixir
-model "anthropic:claude-sonnet-4-6"
-
-subagents do
-  subagent MyApp.PolicyExpert
+defmodule MyApp.PolicyExpert do
+  use BeamWeaver.Agent
+  description "Answers questions about the return policy."
+  model "fake:chat", responses: ["Returns are accepted within 30 days."]
 end
+
+defmodule MyApp.DelegatingAgent do
+  use BeamWeaver.Agent
+
+  model "anthropic:claude-sonnet-4-6"
+
+  subagents do
+    subagent MyApp.PolicyExpert
+  end
+end
+
+{:ok, result} = MyApp.DelegatingAgent.invoke(%{messages: ["Reply with the word ready."]})
+true = is_binary(result.messages |> List.last() |> BeamWeaver.Core.Message.text())
 ```
 
 ## Watch a long run
@@ -301,6 +337,27 @@ now decides when to plan, which files to write and when to delegate. This
 version also keeps its files in a directory, reads skills and a memory file,
 compacts long threads, and can ask a policy expert:
 
+Before running the database examples on this page, set `DATABASE_URL` to
+an empty PostgreSQL database reserved for examples, then run this setup in
+the same IEx session. The verification command creates a disposable database.
+
+```elixir
+defmodule MyApp.Repo do
+  use Ecto.Repo, otp_app: :my_app, adapter: Ecto.Adapters.Postgres
+end
+
+{:ok, _repo} = MyApp.Repo.start_link(url: System.fetch_env!("DATABASE_URL"), pool_size: 2, log: false)
+
+defmodule MyApp.CreateAgentTables do
+  use Ecto.Migration
+
+  def up, do: BeamWeaver.Migrations.up(adapters: [:checkpoint, :memory, :cache])
+  def down, do: BeamWeaver.Migrations.down(adapters: [:cache, :memory, :checkpoint])
+end
+
+:ok = Ecto.Migrator.up(MyApp.Repo, 1, MyApp.CreateAgentTables, log: false)
+```
+
 ```elixir
 defmodule MyApp.PolicyExpert do
   use BeamWeaver.Agent
@@ -319,7 +376,7 @@ defmodule MyApp.SupportResearcher do
 
   tools [MyApp.Tools.LookupOrder]
   middleware [BeamWeaver.Agent.Middleware.TodoList]
-  filesystem BeamWeaver.Filesystem.Local.new(root: "/var/lib/acme/support_researcher")
+  filesystem BeamWeaver.Filesystem.Local.new(root: Path.join(System.tmp_dir!(), "support_researcher"))
   filesystem_permissions [BeamWeaver.Filesystem.Permission.new(operations: [:write], paths: ["/skills/**"], mode: :deny)]
   skills ["/skills"]
   memory ["/AGENTS.md"]
@@ -335,11 +392,12 @@ opts = [
   config: %{"configurable" => %{"thread_id" => "ticket-42"}}
 ]
 
-MyApp.SupportResearcher.invoke(%{messages: ["Ada's order A-1001 arrived broken. What can we offer?"]}, opts)
+{:ok, final} = MyApp.SupportResearcher.invoke(%{messages: ["Ada's order A-1001 arrived broken. What can we offer?"]}, opts)
+true = is_list(final.messages)
 ```
 
 The agent sees the directory as `/`: its notes land in
-`/var/lib/acme/support_researcher/notes`, its memory is `AGENTS.md` there, and
+`support_researcher/notes` under the system temporary directory, its memory is `AGENTS.md` there, and
 the permission rule lets it read the skills in `skills/` but not change them.
 A deep agent makes many model calls per run, so give slow models a generous
 `timeout` and cap runaway loops with `recursion_limit`, or with the

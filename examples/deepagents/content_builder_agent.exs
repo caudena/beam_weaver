@@ -42,14 +42,18 @@ defmodule BeamWeaver.Examples.DeepAgents.ContentBuilderAgent.GenerateCover do
   @impl true
   def invoke(_tool, %{"prompt" => prompt}, _opts) do
     slug = prompt |> String.downcase() |> String.replace(~r/[^a-z0-9]+/, "-") |> String.slice(0, 40)
-    {:ok, "Saved the cover image to /images/#{String.trim(slug, "-")}.png"}
+    relative = "images/#{String.trim(slug, "-")}.png"
+    path = Path.join(BeamWeaver.Examples.DeepAgents.Support.root("content_builder"), relative)
+    File.mkdir_p!(Path.dirname(path))
+    # A reproducible placeholder; a production tool would call an image API.
+    File.cp!(Path.expand("../fixtures/red-square.png", __DIR__), path)
+    {:ok, "Saved the placeholder cover image to /#{relative}"}
   end
 end
 
 defmodule BeamWeaver.Examples.DeepAgents.ContentBuilderAgent do
   alias BeamWeaver.Agent
   alias BeamWeaver.Agent.Subagent.Spec
-  alias BeamWeaver.Core.Message
   alias BeamWeaver.Examples.DeepAgents.ContentBuilderAgent.GenerateCover
   alias BeamWeaver.Examples.DeepAgents.ContentBuilderAgent.WebSearch
   alias BeamWeaver.Examples.DeepAgents.Support
@@ -91,12 +95,14 @@ defmodule BeamWeaver.Examples.DeepAgents.ContentBuilderAgent do
         ]
       })
 
-    IO.puts(Message.text(List.last(messages)))
+    IO.puts(Support.assert_text!(List.last(messages)))
 
     for post <- Path.wildcard(Path.join(root, "posts/*.md")),
         do: IO.puts("\n#{Path.relative_to(post, root)}:\n#{File.read!(post)}")
 
     Support.assert_tools_called!(messages, ["generate_cover", "write_file"])
+    Support.assert_files!(Path.join(root, "posts/*.md"))
+    Support.assert_files!(Path.join(root, "images/*.png"))
   end
 
   defp seed_memory_and_skills!(root) do

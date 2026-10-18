@@ -210,6 +210,8 @@ show.("Memories of ada before this run:")
 
 # Every call is a new conversation; what carries over is in the store.
 saved = converse.("ada", "I'm vegetarian and I live in Lisbon. Please remember both.")
+saved_values = Memory.search(store, ada, limit: 50) |> Enum.map_join(" ", & &1.value["content"]) |> String.downcase()
+true = String.contains?(saved_values, "vegetarian") and String.contains?(saved_values, "lisbon")
 converse.("ada", "Suggest a dinner for tonight.")
 converse.("bob", "Suggest a dinner for tonight.")
 
@@ -230,6 +232,11 @@ show.("Memories of ada after the application edited them:")
 
 converse.("ada", "Where do I live, and is there anything you should avoid cooking for me?")
 forgot = converse.("ada", "Please forget where I live.")
+
+false =
+  Enum.any?(Memory.search(store, ada, limit: 50), &String.contains?(String.downcase(&1.value["content"]), "porto"))
+
+[] = Memory.search(store, ["users", "bob", "memories"])
 
 show.("Memories of ada at the end:")
 

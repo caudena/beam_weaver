@@ -34,11 +34,13 @@ defmodule BeamWeaver.Examples.DeepAgents.Support do
   At most 16 model calls and 24 tool calls per run. Pass them to subagent specs
   too (`middleware: Support.limits()`); a subagent is a separate agent.
   """
-  def limits, do: [ModelCallLimit.new(run_limit: 16), ToolCallLimit.new(run_limit: 24)]
+  def limits, do: [ModelCallLimit.new(run_limit: 16), ToolCallLimit.new(run_limit: 24), Support.tool_log()]
 
   def model, do: Support.model()
 
   defdelegate assert_tools_called!(messages, expected), to: Support
+  defdelegate assert_text!(value), to: Support
+  defdelegate assert_files!(pattern), to: Support
 
   @doc "The directory that holds one example's files."
   def root(name), do: Support.tmp_dir(Path.join("deepagents", name))

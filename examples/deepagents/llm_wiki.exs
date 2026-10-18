@@ -32,7 +32,6 @@ end
 
 defmodule BeamWeaver.Examples.DeepAgents.LlmWiki do
   alias BeamWeaver.Agent
-  alias BeamWeaver.Core.Message
   alias BeamWeaver.Examples.DeepAgents.LlmWiki.WikiQuery
   alias BeamWeaver.Examples.DeepAgents.Support
   alias BeamWeaver.Filesystem.Local
@@ -70,9 +69,10 @@ defmodule BeamWeaver.Examples.DeepAgents.LlmWiki do
         ]
       })
 
-    IO.puts(Message.text(List.last(messages)))
+    IO.puts(Support.assert_text!(List.last(messages)))
     IO.puts("\n/wiki/beamweaver.md:\n#{File.read!(Path.join(root, "wiki/beamweaver.md"))}")
     Support.assert_tools_called!(messages, ["wiki_query", ["edit_file", "write_file"]])
+    true = String.contains?(File.read!(Path.join(root, "wiki/beamweaver.md")), "supervised OTP processes")
   end
 end
 

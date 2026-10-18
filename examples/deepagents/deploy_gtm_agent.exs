@@ -52,7 +52,6 @@ defmodule BeamWeaver.Examples.DeepAgents.DeployGtmAgent do
   alias BeamWeaver.Agent
   alias BeamWeaver.Agent.Subagent.AsyncSpec
   alias BeamWeaver.Agent.Subagent.Spec
-  alias BeamWeaver.Core.Message
   alias BeamWeaver.Examples.DeepAgents.DeployGtmAgent.CompetitorAnalysis
   alias BeamWeaver.Examples.DeepAgents.DeployGtmAgent.PipelineClient
   alias BeamWeaver.Examples.DeepAgents.Support
@@ -94,8 +93,8 @@ defmodule BeamWeaver.Examples.DeepAgents.DeployGtmAgent do
         ]
       })
 
-    IO.puts(Message.text(List.last(messages)))
-    Support.assert_tools_called!(messages, ["task", "start_async_task"])
+    IO.puts(Support.assert_text!(List.last(messages)))
+    Support.assert_tools_called!(messages, ["task", "competitor_analysis", "start_async_task"])
   end
 end
 

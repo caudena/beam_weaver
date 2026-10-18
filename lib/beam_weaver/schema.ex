@@ -4,15 +4,21 @@ defmodule BeamWeaver.Schema do
 
   Use this module when a schema is part of your public agent contract:
 
-      defmodule MyApp.Schemas.FactsOutput do
-        use BeamWeaver.Schema
+  ```elixir
+  defmodule MyApp.Schemas.Answer do
+    use BeamWeaver.Schema
 
-        title "facts_output"
-        description "Extracted entity facts and client requests."
-        strict true
+    title "answer"
+    description "A short answer with its confidence."
+    strict true
+    field :answer, :string, required: true
+    field :confidence, :number, required: true
+  end
 
-        field :entity_facts, {:array, MyApp.Schemas.EntityFact}, required: true
-      end
+  schema = BeamWeaver.Schema.to_json_schema(MyApp.Schemas.Answer)
+  schema["properties"]["answer"]["type"]
+  #=> "string"
+  ```
 
   Runtime code consumes schemas through `to_json_schema/1`. Maps are returned as
   JSON schema maps; schema modules can expose `json_schema/0`, `schema/0`, or the
@@ -59,10 +65,14 @@ defmodule BeamWeaver.Schema do
     end
   end
 
+  @doc "Names the schema presented to the model. Defaults to a name derived from the module."
   defmacro title(value), do: quote(do: @beam_weaver_schema_title(unquote(value)))
+  @doc "Describes the structured value the model should produce."
   defmacro description(value), do: quote(do: @beam_weaver_schema_description(unquote(value)))
+  @doc "When true, disallows additional object properties in the declared schema."
   defmacro strict(value), do: quote(do: @beam_weaver_schema_strict(unquote(value)))
 
+  @doc "Declares a named field and its type. Use required: true for mandatory structured-output fields; see [Structured Output](structured_output.md)."
   defmacro field(name_ast, type_ast, opts \\ []) do
     name = literal_field_name!(__CALLER__, name_ast)
     type = literal_field_type!(__CALLER__, type_ast)
@@ -87,6 +97,7 @@ defmodule BeamWeaver.Schema do
   end
 
   @spec to_json_schema(term()) :: map()
+  @doc "Returns JSON Schema for a schema module, struct, or schema map. See [Structured Output](structured_output.md)."
   def to_json_schema(schema) when is_map(schema), do: schema
 
   def to_json_schema(type) when type in @primitive_types do

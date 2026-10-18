@@ -354,12 +354,19 @@ changes it: `description:` and `system_prompt:` replace its texts, and
 `enabled: false` leaves it out:
 
 ```elixir
-model "fake:chat"
+defmodule MyApp.SpecialistsOnlyAgent do
+  use BeamWeaver.Agent
 
-subagents do
-  subagent MyApp.PolicyExpert
-  include [BeamWeaver.Agent.GeneralPurposeSubagentProfile.new(enabled: false)]
+  model "fake:chat", responses: ["Ready."]
+
+  subagents do
+    subagent MyApp.PolicyExpert
+    include [BeamWeaver.Agent.GeneralPurposeSubagentProfile.new(enabled: false)]
+  end
 end
+
+{:ok, result} = MyApp.SpecialistsOnlyAgent.invoke(%{messages: ["Reply with the word ready."]})
+true = is_binary(result.messages |> List.last() |> BeamWeaver.Core.Message.text())
 ```
 
 A subagent of your own named `general-purpose` replaces it
@@ -379,13 +386,54 @@ A subagent of your own named `general-purpose` replaces it
 `:research_then_generate` suits specialists that need tools but must end with
 structured data, because the last call doesn't mix tools with a response
 schema. A refund auditor that looks orders up with the `lookup_order` tool
-from the [Quickstart](quickstart.md) declares:
+declares its tool and final answer schema:
 
 ```elixir
-model "anthropic:claude-haiku-4-5"
-tools [MyApp.Tools.LookupOrder]
-response_schema MyApp.Schemas.RefundDecision
-execution_mode :research_then_generate
+defmodule MyApp.Tools.LookupOrder do
+  use BeamWeaver.Tool
+  name "lookup_order"
+  description "Get the status of a sample order."
+  schema do
+    field :order_id, :string
+  end
+  @impl true
+  def invoke(_tool, %{"order_id" => id}, _opts), do: {:ok, %{order_id: id, status: "shipped"}}
+end
+
+defmodule MyApp.Schemas.RefundDecision do
+  use BeamWeaver.Schema
+  field :approved, :boolean, required: true
+  field :reason, :string, required: true
+end
+
+defmodule MyApp.RefundAuditor do
+  use BeamWeaver.Agent
+
+  name "refund_auditor"
+  description "Looks up an order and returns a structured refund decision."
+  model "anthropic:claude-haiku-4-5"
+  tools [MyApp.Tools.LookupOrder]
+  response_schema MyApp.Schemas.RefundDecision
+  execution_mode :research_then_generate
+end
+
+defmodule MyApp.RefundSupervisor do
+  use BeamWeaver.Agent
+  model "fake:chat", responses: [
+    BeamWeaver.Models.FakeChatModel.tool_call("task", %{
+      "subagent_type" => "refund_auditor",
+      "description" => "Look up A-1001 and approve a refund if it has shipped. Explain the decision."
+    }),
+    "Review complete."
+  ]
+  subagents do
+    subagent MyApp.RefundAuditor
+  end
+end
+
+{:ok, result} = MyApp.RefundSupervisor.invoke(%{messages: ["Review order A-1001."]})
+true = Enum.any?(result.messages, &(&1.role == :tool))
+"Review complete." = result.messages |> List.last() |> BeamWeaver.Core.Message.text()
 ```
 
 ## Context and shared state
@@ -498,6 +546,20 @@ for %{event: %Events.ToolStart{tool_name: tool}, namespace: namespace} <- events
 `BeamWeaver.Agent.Subagent.StreamTransformer` turns such a stream into one
 summary per subagent run, with its status, values and the subagent runs it
 started.
+
+```elixir
+alias BeamWeaver.Agent.Subagent.{RunStream, StreamTransformer}
+
+{:ok, events} = MyApp.SupportResearcher.stream_events(
+  %{messages: ["Please refund order A-1001."]},
+  context: %{customer_id: "cus_ada"}
+)
+transformer = StreamTransformer.new(subagent_names: ["refund_clerk"])
+{:ok, transformer, _updates} = StreamTransformer.process_many(transformer, events)
+[run] = StreamTransformer.finalize(transformer).log
+{:completed, "refund_clerk"} = {run.status, RunStream.name(run)}
+true = is_map(RunStream.output(run))
+```
 
 ## Human review
 

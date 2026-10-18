@@ -117,8 +117,9 @@ defmodule BeamWeaver.Examples.DeepAgents.TextToSqlAgent do
 
     {:ok, %{messages: messages}} = Agent.invoke(agent, %{messages: ["How many customers are from Canada?"]})
 
-    IO.puts(Message.text(List.last(messages)))
+    IO.puts(Support.assert_text!(List.last(messages)))
     Support.assert_tools_called!(messages, ["execute_query"])
+    true = String.match?(Message.text(List.last(messages)), ~r/\b8\b|\beight\b/i)
   end
 end
 

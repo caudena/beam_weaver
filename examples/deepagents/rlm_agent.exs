@@ -21,8 +21,9 @@ defmodule BeamWeaver.Examples.DeepAgents.RlmAgent do
         messages: ["Work out 17 × 23 and 19 × 29 as two separate subtasks, then add the two results."]
       })
 
-    IO.puts(Message.text(List.last(messages)))
+    IO.puts(Support.assert_text!(List.last(messages)))
     Support.assert_tools_called!(messages, ["task"])
+    true = String.contains?(Message.text(List.last(messages)), "942")
   end
 
   def create_rlm_agent(max_depth: depth) do

@@ -12,7 +12,7 @@ input; `BeamWeaver.Moonshot.Tools` builds Kimi-specific tool declarations.
 # config/runtime.exs
 import Config
 
-config :beam_weaver, :moonshot, api_key: System.get_env("MOONSHOT_API_KEY")
+config :beam_weaver, :moonshot, api_key: System.get_env("MOONSHOT_API_KEY") || System.fetch_env!("KIMI_API_KEY")
 ```
 
 Export `MOONSHOT_API_KEY`. To use another Moonshot host, set `base_url:` in
@@ -20,15 +20,12 @@ the same group.
 
 ## Models
 
-<!-- generated: provider-models moonshot -->
 | Model | Kind | Input tokens | Output tokens | Tools | Structured output | Reasoning | Inputs |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| `moonshot:kimi-k2.5` | chat | 262,144 | — | yes | yes | yes | text, image, video |
 | `moonshot:kimi-k2.6` | chat | 262,144 | — | yes | yes | yes | text, image, video |
 | `moonshot:kimi-k2.7-code` | chat | 262,144 | — | yes | yes | yes | text, image, video |
 | `moonshot:kimi-k2.7-code-highspeed` | chat | 262,144 | — | yes | yes | yes | text, image, video |
 | `moonshot:kimi-k3` | chat | 1,048,576 | 1,048,576 | yes | yes | yes | text, image, video |
-<!-- /generated -->
 
 Kimi ids always need the `moonshot:` prefix. Discontinued Kimi ids are
 rejected with an error that names `kimi-k3` as the replacement.
@@ -63,7 +60,7 @@ BeamWeaver.Core.Message.text(reply)
 | Option | What it does |
 | --- | --- |
 | `reasoning_effort` | Kimi K3 always reasons and accepts only `:max`. |
-| `thinking` | `%{type: :enabled}` or `%{type: :disabled}` on K2.6 and K2.5. K2.7 Code models always think; K3 rejects the option. |
+| `thinking` | `%{type: :enabled}` or `%{type: :disabled}` on K2.6. K2.7 Code models always think; K3 rejects the option. |
 | `max_tokens` | Output cap, sent as `max_completion_tokens`. |
 | `prompt_cache_key` | A key that routes requests with the same prefix to the same cache. |
 | `base_url` | The API root, for a proxy or another host. Defaults to `https://api.moonshot.ai/v1`. |
@@ -79,15 +76,18 @@ Moonshot takes no request metadata, so `metadata:` returns an
 
 ## Reasoning
 
-Kimi K3 always reasons at full effort. On K2.6 and K2.5 you choose:
+Kimi K3 always reasons at full effort. On K2.6 you choose:
 
 ```elixir
 defmodule MyApp.SupportAgent do
   use BeamWeaver.Agent
 
-  model "moonshot:kimi-k2.6", thinking: %{type: :disabled}
+  model "moonshot:kimi-k2.6", thinking: %{type: :disabled}, timeout: 120_000
   system_prompt "You are Acme's support agent."
 end
+
+{:ok, result} = MyApp.SupportAgent.invoke(%{messages: ["Reply with the word ready."]})
+true = byte_size(result.messages |> List.last() |> BeamWeaver.Core.Message.text()) > 0
 ```
 
 The reasoning text arrives as `%{type: :reasoning}` blocks in the reply's
@@ -96,15 +96,26 @@ with tool results unchanged, as Kimi requires.
 
 ## Tools on K3
 
-Kimi K3 accepts `tool_choice: :required`, to force a tool call. K2.6 and K2.5
-take `:required` or a named tool only with thinking disabled, and the K2.7
+Kimi K3 accepts `tool_choice: :required`, to force a tool call. K2.6
+takes `:required` or a named tool only with thinking disabled, and the K2.7
 Code models take neither. K3 can also load tools partway through a
 conversation:
 `BeamWeaver.Moonshot.Tools.dynamic_message/1` returns a system message that
 adds them at that point. Here it adds the `lookup_order` tool from the
-[Quickstart](../quickstart.md):
+[tutorial](../tutorial.md):
 
 ```elixir
+defmodule MyApp.Tools.LookupOrder do
+  use BeamWeaver.Tool
+  name "lookup_order"
+  description "Get the status of an order."
+  schema do
+    field :order_id, :string
+  end
+  @impl true
+  def invoke(_tool, %{"order_id" => id}, _opts), do: {:ok, "Order #{id} shipped on Monday."}
+end
+
 alias BeamWeaver.Core.Message
 
 messages = [
@@ -123,8 +134,8 @@ Other Kimi models reject dynamic tool messages before the request.
 
 An agent's `response_schema` works on every Kimi model (see
 [Structured Output](../structured_output.md)). K3 and the K2.7 Code models get
-the schema as a JSON Schema response format. K2.6 and K2.5 ignore that format,
-so BeamWeaver sends them JSON mode with the schema in a system message, and
+the schema as a JSON Schema response format. K2.6 ignores that format,
+so BeamWeaver sends it JSON mode with the schema in a system message, and
 checks the reply against the schema. With the tool strategy, BeamWeaver forces
 the schema tool only where Kimi allows a forced tool choice; elsewhere the
 request offers just that tool.
@@ -146,12 +157,13 @@ alias BeamWeaver.Core.{ContentBlock, Message}
 
 question =
   Message.user([
-    ContentBlock.text("What is damaged in this video?"),
-    ContentBlock.video(url: "ms://file-returns-a1001")
+    ContentBlock.text("What colour is shown in this video? Answer in one word."),
+    ContentBlock.video(url: "data:video/mp4;base64," <> Base.encode64(File.read!("examples/fixtures/red-square.mp4")))
   ])
 
 {:ok, model} = BeamWeaver.Models.init_chat_model("moonshot:kimi-k3")
 {:ok, reply} = BeamWeaver.Core.ChatModel.invoke(model, [question])
+true = String.contains?(String.downcase(Message.text(reply)), "red")
 ```
 
 An image a tool returns, such as one from `read_file`, goes in a user
@@ -166,7 +178,7 @@ tokens with Moonshot's estimate endpoint.
 
 - Sampling values are fixed by Kimi and can't be changed.
 - Kimi's `$web_search` built-in (`BeamWeaver.Moonshot.Tools.web_search/1`)
-  works only on K2.6 and K2.5 with thinking disabled, and agents can't run it.
+  works only on K2.6 with thinking disabled, and agents can't run it.
   Kimi lists it as being updated.
 - Moonshot's Files, Batch and Balance APIs have no BeamWeaver wrapper; upload
   files with Moonshot's own API, then refer to them with `ms://` URLs.
@@ -181,6 +193,8 @@ and `transport_opts: [cassette_path: "test/cassettes/moonshot.yml"]`;
 how to write one.
 
 ## Reference
+
+- [Kimi tool calls](https://platform.kimi.ai/docs/guide/use-kimi-api-to-complete-tool-calls): provider API contract
 
 - [`BeamWeaver.Moonshot`](https://hexdocs.pm/beam_weaver/BeamWeaver.Moonshot.html): constructors
 - [`BeamWeaver.Moonshot.ChatModel`](https://hexdocs.pm/beam_weaver/BeamWeaver.Moonshot.ChatModel.html): the Kimi chat model and token estimates

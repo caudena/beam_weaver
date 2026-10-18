@@ -48,8 +48,10 @@ defmodule BeamWeaver.Examples.HITLPerCallAgent do
 
   model Support.model()
 
-  system_prompt "You are a support agent. Refund orders with issue_refund and find orders with lookup_order; " <>
-                  "call every tool a request needs at once. A person reviews each refund."
+  system_prompt "You are a support agent. Submit every refund requested by the user through issue_refund, " <>
+                  "even when eligibility is unclear: the human reviewer decides which refunds to approve or reject. " <>
+                  "Look up every requested order status with lookup_order. Submit all requested tool calls in your " <>
+                  "first response. Do not decide refund eligibility yourself or invent lookup results."
 
   tools [IssueRefund, LookupOrder]
 
@@ -73,6 +75,8 @@ defmodule BeamWeaver.Examples.HITLPerCallAgent.Reviewer do
         do: HITL.decision(:approve),
         else: HITL.decision(:reject, message: "Only damaged orders get a refund.")
 
+    send(self(), {:reviewed_refund, approval.args["order_id"], decision.type})
+
     IO.puts(
       "Review #{approval.name} #{inspect(approval.args)}, #{length(interrupt.interrupts)} waiting -> #{decision.type}"
     )
@@ -86,14 +90,32 @@ end
 saver = CheckpointETS.new()
 opts = [checkpointer: saver, config: %{"configurable" => %{"thread_id" => "ticket-43"}}]
 
-%{messages: messages} =
+{:interrupted, _} =
+  paused =
   %{
     messages: [
       "Please refund order A-1001, it arrived broken, and refund order A-1002 too. And where is order A-1003?"
     ]
   }
   |> BeamWeaver.Examples.HITLPerCallAgent.invoke(opts)
-  |> BeamWeaver.Examples.HITLPerCallAgent.Reviewer.run(opts)
 
-messages |> List.last() |> Message.text() |> IO.puts()
-Support.assert_tools_called!(messages, ["issue_refund", "lookup_order"])
+%{messages: messages} = BeamWeaver.Examples.HITLPerCallAgent.Reviewer.run(paused, opts)
+
+receive do
+  {:reviewed_refund, "A-1001", :approve} -> :ok
+after
+  0 -> raise "the damaged order never reached approval"
+end
+
+receive do
+  {:reviewed_refund, "A-1002", :reject} -> :ok
+after
+  0 -> raise "the second refund was not rejected"
+end
+
+messages |> List.last() |> Support.assert_text!() |> IO.puts()
+
+Support.assert_tools_called!(messages, [
+  {"issue_refund", %{"order_id" => "A-1001"}},
+  {"lookup_order", %{"order_id" => "A-1003"}}
+])

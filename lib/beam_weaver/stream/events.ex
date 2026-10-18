@@ -36,6 +36,7 @@ defmodule BeamWeaver.Stream.Events do
   stored in each envelope:
 
       alias BeamWeaver.Stream.Events
+      envelope = %BeamWeaver.Stream.Envelope{event: %Events.Token{text: "Hello"}}
 
       case envelope.event do
         %Events.Token{text: delta} -> IO.write(delta)

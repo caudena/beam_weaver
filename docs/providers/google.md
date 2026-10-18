@@ -18,7 +18,6 @@ Export `GOOGLE_API_KEY`, a Gemini API key.
 
 ## Models
 
-<!-- generated: provider-models google -->
 | Model | Kind | Input tokens | Output tokens | Tools | Structured output | Reasoning | Inputs |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | `google:gemini-3.1-flash-lite` | chat | 1,048,576 | 65,536 | yes | yes | yes | text, image, PDF, audio, video |
@@ -28,7 +27,6 @@ Export `GOOGLE_API_KEY`, a Gemini API key.
 | `google:gemini-3.6-flash` | chat | 1,048,576 | 65,536 | yes | yes | yes | text, image, PDF, audio, video |
 | `google:gemini-3.7-flash` | chat | 1,048,576 | 65,536 | yes | yes | yes | text, image, PDF, audio, video |
 | `google:gemini-3.8-flash` | chat | 1,048,576 | 65,536 | yes | yes | yes | text, image, PDF, audio, video |
-<!-- /generated -->
 
 Gemini ids always need the `google:` prefix; a bare `gemini-3.5-flash` is
 rejected.
@@ -41,7 +39,7 @@ Name the model on the agent's `model` line, with any options after it:
 defmodule MyApp.SupportAgent do
   use BeamWeaver.Agent
 
-  model "google:gemini-3.5-flash", max_output_tokens: 4_096
+  model "google:gemini-3.5-flash", max_output_tokens: 4_096, timeout: 120_000
   system_prompt "You are Acme's support agent. Answer in two sentences."
 end
 
@@ -53,7 +51,7 @@ model without an agent, build it with `BeamWeaver.Models.init_chat_model/2`
 (see [Models](../models.md)):
 
 ```elixir
-{:ok, model} = BeamWeaver.Models.init_chat_model("google:gemini-3.5-flash")
+{:ok, model} = BeamWeaver.Models.init_chat_model("google:gemini-3.5-flash", timeout: 60_000)
 {:ok, reply} = BeamWeaver.Core.ChatModel.invoke(model, "Write a one-line apology for a late order.")
 BeamWeaver.Core.Message.text(reply)
 ```
@@ -86,9 +84,12 @@ and ask for a summary with `include_thoughts`:
 defmodule MyApp.SupportAgent do
   use BeamWeaver.Agent
 
-  model "google:gemini-3.8-flash", thinking_level: :high, include_thoughts: true
+  model "google:gemini-3.8-flash", thinking_level: :high, include_thoughts: true, timeout: 120_000
   system_prompt "You are Acme's support agent."
 end
+
+{:ok, result} = MyApp.SupportAgent.invoke(%{messages: ["Reply with the word ready."]})
+true = byte_size(result.messages |> List.last() |> BeamWeaver.Core.Message.text()) > 0
 ```
 
 The summary arrives as a `%{type: :reasoning}` block in the reply's
@@ -103,8 +104,8 @@ sampling options.
 
 ## Built-in tools
 
-Google runs these tools on its side. Each helper in `BeamWeaver.Google.Tools`
-returns a plain declaration:
+Google runs hosted tools such as search and code execution on its servers.
+Each helper in `BeamWeaver.Google.Tools` returns a plain declaration:
 
 ```elixir
 BeamWeaver.Google.Tools.google_search()
@@ -117,7 +118,7 @@ tools if you like:
 ```elixir
 alias BeamWeaver.Google.Tools
 
-{:ok, model} = BeamWeaver.Models.init_chat_model("google:gemini-3.5-flash")
+{:ok, model} = BeamWeaver.Models.init_chat_model("google:gemini-3.5-flash", timeout: 60_000)
 
 {:ok, reply} =
   BeamWeaver.Core.ChatModel.invoke(model, "Which carriers deliver to Iceland?",
@@ -126,9 +127,12 @@ alias BeamWeaver.Google.Tools
 ```
 
 The other helpers are `google_maps/1`, `code_execution/1`, `file_search/2`
-(with File Search store names), `computer_use/1` and `mcp_servers/1`.
-Computer use is not available on Gemini 3.1 Flash-Lite and 3.1 Pro Preview,
-which reject it before the request.
+(with File Search store names) and `mcp_servers/1`.
+
+`computer_use/1` declares computer-use actions, but your application must
+provide the browser or desktop executor and return action results. BeamWeaver
+does not supply that executor. See Google's
+[Computer Use guide](https://ai.google.dev/gemini-api/docs/computer-use).
 
 An agent offers built-in tools next to its own when they are in its model
 options:
@@ -137,9 +141,12 @@ options:
 defmodule MyApp.SupportAgent do
   use BeamWeaver.Agent
 
-  model "google:gemini-3.5-flash", tools: [BeamWeaver.Google.Tools.google_search()]
+  model "google:gemini-3.5-flash", tools: [BeamWeaver.Google.Tools.google_search()], timeout: 120_000
   system_prompt "You are Acme's support agent. Search the web for carrier outages."
 end
+
+{:ok, result} = MyApp.SupportAgent.invoke(%{messages: ["Reply with the word ready."]})
+true = byte_size(result.messages |> List.last() |> BeamWeaver.Core.Message.text()) > 0
 ```
 
 ## Context caching
@@ -148,14 +155,31 @@ Gemini caches repeated prompt prefixes on its own, and reports the cached
 tokens in `usage_metadata.input_token_details.cache_read`. For a large,
 stable context, such as a policy manual, create a cached-content resource with
 Google's API and pass its name; BeamWeaver doesn't create or expire these
-resources:
+resources. The following example creates one with a short TTL, uses it,
+and deletes it even if the model call fails. See Google's
+[caching API](https://ai.google.dev/api/caching) for resource limits:
 
 ```elixir
-defmodule MyApp.SupportAgent do
-  use BeamWeaver.Agent
+root = "https://generativelanguage.googleapis.com/v1beta"
+headers = [{"x-goog-api-key", System.fetch_env!("GOOGLE_API_KEY")}]
+policy = String.duplicate("Acme accepts returns within 30 days. Opened items must include all parts.\n", 400)
 
-  model "google:gemini-3.5-flash", cached_content: "cachedContents/refund-policy-v1"
-  system_prompt "You are Acme's support agent."
+cache = Req.post!(root <> "/cachedContents",
+  headers: headers,
+  json: %{model: "models/gemini-3.5-flash", ttl: "300s",
+          contents: [%{role: "user", parts: [%{text: policy}]}]},
+  retry: false, receive_timeout: 60_000
+)
+true = cache.status in 200..299
+name = Map.fetch!(cache.body, "name")
+
+try do
+  {:ok, model} = BeamWeaver.Models.init_chat_model("google:gemini-3.5-flash", cached_content: name, timeout: 60_000)
+  {:ok, reply} = BeamWeaver.Core.ChatModel.invoke(model, "How many days do I have to return an item?")
+  true = String.contains?(BeamWeaver.Core.Message.text(reply), "30")
+after
+  response = Req.delete!(root <> "/" <> name, headers: headers, retry: false)
+  true = response.status in 200..299
 end
 ```
 
@@ -167,7 +191,7 @@ end
 a request uses:
 
 ```elixir
-{:ok, model} = BeamWeaver.Models.init_chat_model("google:gemini-3.5-flash")
+{:ok, model} = BeamWeaver.Models.init_chat_model("google:gemini-3.5-flash", timeout: 60_000)
 {:ok, tokens} = BeamWeaver.Google.ChatModel.count_tokens(model, "Where is my order A-1001?")
 ```
 
@@ -187,6 +211,8 @@ and `transport_opts: [cassette_path: "test/cassettes/google.yml"]`;
 how to write one.
 
 ## Reference
+
+- [Gemini caching API](https://ai.google.dev/api/caching): provider API contract
 
 - [`BeamWeaver.Google`](https://hexdocs.pm/beam_weaver/BeamWeaver.Google.html): constructors
 - [`BeamWeaver.Google.ChatModel`](https://hexdocs.pm/beam_weaver/BeamWeaver.Google.ChatModel.html): the Gemini model and token counting

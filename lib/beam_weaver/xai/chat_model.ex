@@ -50,7 +50,6 @@ defmodule BeamWeaver.XAI.ChatModel do
             audio: nil,
             store: nil,
             deferred: nil,
-            search_parameters: nil,
             profile: nil,
             tokenizer: nil,
             param_policy: nil,

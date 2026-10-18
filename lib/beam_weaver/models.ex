@@ -271,7 +271,6 @@ defmodule BeamWeaver.Models do
     BeamWeaver.Anthropic.ChatModel,
     BeamWeaver.XAI.ChatModel,
     BeamWeaver.XAI.ChatCompletionsModel,
-    BeamWeaver.XAI.EmbeddingModel,
     BeamWeaver.Moonshot.ChatModel,
     BeamWeaver.ZAI.ChatModel
   ]
@@ -282,7 +281,6 @@ defmodule BeamWeaver.Models do
     BeamWeaver.Moonshot.ChatModel,
     BeamWeaver.ZAI.ChatModel,
     BeamWeaver.OpenAI.EmbeddingModel,
-    BeamWeaver.XAI.EmbeddingModel,
     BeamWeaver.TypeSafe.DecisionModel,
     BeamWeaver.OpenAI.DecisionModel,
     BeamWeaver.Models.FakeChatModel,
@@ -466,8 +464,6 @@ defmodule BeamWeaver.Models do
 
   defp configured_model(opts, BeamWeaver.XAI.ChatCompletionsModel),
     do: BeamWeaver.XAI.chat_completions_model(opts)
-
-  defp configured_model(opts, BeamWeaver.XAI.EmbeddingModel), do: BeamWeaver.XAI.embedding_model(opts)
 
   defp configured_model(opts, module) do
     if function_exported?(module, :new, 1) do

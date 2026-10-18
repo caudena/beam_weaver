@@ -77,6 +77,10 @@ end
     run_timeout: 240_000
   )
 
-messages |> List.last() |> Message.text() |> IO.puts()
+messages |> List.last() |> Support.assert_text!() |> IO.puts()
 IO.puts("Files: #{result |> Map.get(:files, %{}) |> Map.keys() |> Enum.join(", ")}")
 Support.assert_tools_called!(messages, ["write_todos", "task", "write_file"])
+
+for path <- ["/agenda.md", "/status.md", "/risks.md"] do
+  true = Map.has_key?(result.files, path)
+end

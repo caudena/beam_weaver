@@ -34,6 +34,27 @@ store is a plain struct, so you can build it per call or declare it in the
 agent module; a `store:` passed with a call replaces the declared one, which
 is how tests swap in an ETS store:
 
+Before running the database examples on this page, set `DATABASE_URL` to
+an empty PostgreSQL database reserved for examples, then run this setup in
+the same IEx session. The verification command creates a disposable database.
+
+```elixir
+defmodule MyApp.Repo do
+  use Ecto.Repo, otp_app: :my_app, adapter: Ecto.Adapters.Postgres
+end
+
+{:ok, _repo} = MyApp.Repo.start_link(url: System.fetch_env!("DATABASE_URL"), pool_size: 2, log: false)
+
+defmodule MyApp.CreateAgentTables do
+  use Ecto.Migration
+
+  def up, do: BeamWeaver.Migrations.up(adapters: [:checkpoint, :memory, :cache])
+  def down, do: BeamWeaver.Migrations.down(adapters: [:cache, :memory, :checkpoint])
+end
+
+:ok = Ecto.Migrator.up(MyApp.Repo, 1, MyApp.CreateAgentTables, log: false)
+```
+
 ```elixir
 defmodule MyApp.SupportAgent do
   use BeamWeaver.Agent
@@ -353,13 +374,13 @@ returns how many it removed. For Postgres, set a default lifetime and run the
 sweeper under your supervision tree:
 
 ```elixir
-store = BeamWeaver.Memory.Ecto.new(repo: MyApp.Repo, default_ttl: 60 * 24 * 90)
+persistent_store = BeamWeaver.Memory.Ecto.new(repo: MyApp.Repo, default_ttl: 60 * 24 * 90)
 
 children = [
   MyApp.Repo,
   %{
     id: :memory_sweeper,
-    start: {BeamWeaver.Memory.Ecto, :start_ttl_sweeper, [store, [interval: :timer.minutes(10)]]}
+    start: {BeamWeaver.Memory.Ecto, :start_ttl_sweeper, [persistent_store, [interval: :timer.minutes(10)]]}
   }
 ]
 ```

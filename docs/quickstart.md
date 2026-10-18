@@ -1,195 +1,86 @@
 # Quickstart
 
-Build a support agent that looks up orders with a tool, run it without an API
-key, then switch it to a real model. It takes about ten minutes.
+Make a real model call from an Elixir module. This page assumes you have
+completed [Installation](installation.md), including the provider key.
+Calls use your provider account and may incur charges.
 
-## Install
+## Define an agent
 
-Create a project and add BeamWeaver to `mix.exs`:
-
-```bash
-mix new my_app --sup
-cd my_app
-```
-
-```elixir
-def deps do
-  [
-    {:beam_weaver, "~> 1.0.0"}
-  ]
-end
-```
-
-Then run `mix deps.get`. BeamWeaver needs Elixir 1.19 or later.
-
-## Write a tool
-
-A tool is a module the model can call. Its `name`, `description` and `schema`
-tell the model what the tool does and which arguments it takes; `invoke/3`
-does the work. Save this as `lib/my_app/tools/lookup_order.ex`:
-
-```elixir
-defmodule MyApp.Tools.LookupOrder do
-  use BeamWeaver.Tool
-
-  name "lookup_order"
-  description "Look up the shipping status of an order by its id, such as A-1001."
-
-  schema do
-    field :order_id, :string, description: "The order id"
-  end
-
-  @impl true
-  def invoke(_tool, %{"order_id" => order_id}, _opts) do
-    {:ok, "Order #{order_id} shipped on Monday and arrives on Thursday."}
-  end
-end
-```
-
-Arguments arrive under string keys, the way the model sends them as JSON.
-
-## Write the agent
-
-An agent is a module too. It names a model, gives it instructions, and lists
-the tools it may call. Save this as `lib/my_app/support_agent.ex`:
+Save this as `lib/my_app/support_agent.ex`:
 
 ```elixir
 defmodule MyApp.SupportAgent do
   use BeamWeaver.Agent
 
-  alias BeamWeaver.Models.FakeChatModel
-
-  model "fake:chat",
-    responses: [
-      FakeChatModel.tool_call("lookup_order", %{"order_id" => "A-1001"}),
-      "Your order A-1001 shipped on Monday and arrives on Thursday."
-    ]
-
-  system_prompt "You are Acme's support agent. Look orders up before you answer."
-  tools [MyApp.Tools.LookupOrder]
+  model "openai:gpt-5.4-mini", max_tokens: 512, timeout: 60_000
+  system_prompt "You help customers understand orders. Be brief. Do not invent order details."
 end
 ```
 
-`"fake:chat"` is a scripted model built into BeamWeaver. Each entry in
-`responses:` is what it says on one turn: first it calls `lookup_order`, then
-it answers. A fake model needs no key and always behaves the same, so it is
-also what you use in tests.
+`use BeamWeaver.Agent` gives the module its runtime functions. `model`
+selects the provider and model; the options limit this example's output and
+request time. `system_prompt` supplies instructions on each model call.
+No tools are available yet, so the agent can explain what information it
+needs but cannot look up an order.
 
 ## Run it
 
-Start `iex -S mix` and ask a question:
+Start `iex -S mix`, then evaluate:
 
 ```elixir
-{:ok, result} = MyApp.SupportAgent.invoke(%{messages: ["Where is my order A-1001?"]})
-
-result.messages |> List.last() |> BeamWeaver.Core.Message.text()
-#=> "Your order A-1001 shipped on Monday and arrives on Thursday."
+{:ok, result} = MyApp.SupportAgent.invoke(%{messages: ["What information do you need to find my order?"]})
+answer = result.messages |> List.last() |> BeamWeaver.Core.Message.text()
+true = is_binary(answer) and byte_size(answer) > 0
+IO.puts(answer)
 ```
 
-`invoke/2` runs the agent loop until the model answers without calling a
-tool, and returns the final state. The conversation shows each step:
+The wording varies. Expect a request for information such as an order number.
+`result.messages` contains the conversation, including the user's message
+and the model's answer. Reading that result does not make another API call.
+
+For a running application, handle all three return shapes:
 
 ```elixir
-Enum.map(result.messages, & &1.role)
-#=> [:user, :assistant, :tool, :assistant]
+outcome =
+  case MyApp.SupportAgent.invoke(%{messages: ["Can you help me track an order?"]}) do
+    {:ok, state} -> {:answer, state.messages |> List.last() |> BeamWeaver.Core.Message.text()}
+    {:interrupted, review} -> {:waiting_for_review, review}
+    {:error, error} -> {:failed, error.type, error.message}
+  end
+
+{:answer, text} = outcome
+true = byte_size(text) > 0
 ```
 
-1. **user** — your question.
-2. **assistant** — the model asks for `lookup_order` with `order_id: "A-1001"`.
-3. **tool** — BeamWeaver runs the tool and records its result.
-4. **assistant** — the model answers using that result.
+An interrupt means the run paused and needs a resume value; it is not a final
+answer. This simple agent has no interrupt declarations. An error carries a
+type and message you can log or translate into your application's response.
 
-The tool call is on the first assistant message:
+## Use Google
+
+After adding the Google configuration from [Installation](installation.md#use-google-instead),
+this is a complete alternative agent:
 
 ```elixir
-[call] = Enum.at(result.messages, 1).tool_calls
-{call.name, call.args}
-#=> {"lookup_order", %{"order_id" => "A-1001"}}
+defmodule MyApp.GoogleSupportAgent do
+  use BeamWeaver.Agent
+
+  model "google:gemini-3.5-flash", max_tokens: 512, timeout: 60_000
+  system_prompt "You help customers understand orders. Be brief. Do not invent order details."
+end
+
+{:ok, result} = MyApp.GoogleSupportAgent.invoke(%{messages: ["What information do you need to find my order?"]})
+answer = result.messages |> List.last() |> BeamWeaver.Core.Message.text()
+true = is_binary(answer) and byte_size(answer) > 0
+IO.puts(answer)
 ```
 
-## Keep the conversation
-
-By default every `invoke/2` starts fresh. To continue a conversation, give
-the agent a checkpointer and a thread id. The checkpointer saves the state
-after each step; the thread id says which conversation to load:
-
-```elixir
-saver = BeamWeaver.Checkpoint.ETS.new()
-opts = [checkpointer: saver, config: %{"configurable" => %{"thread_id" => "ticket-42"}}]
-
-{:ok, _first} = MyApp.SupportAgent.invoke(%{messages: ["Where is my order A-1001?"]}, opts)
-{:ok, second} = MyApp.SupportAgent.invoke(%{messages: ["Thanks! Which day again?"]}, opts)
-
-length(second.messages)
-#=> 6
-```
-
-The second call saw the whole first exchange. `Checkpoint.ETS` keeps threads
-in memory, in tables owned by the process that created the saver (here, your
-iex shell), so create it once and pass it on every call. In production you
-use `Checkpoint.Ecto` with Postgres or SQLite.
-
-## Use a real model
-
-Now let a real model decide. In `lib/my_app/support_agent.ex`, replace the
-`model "fake:chat", responses: [...]` declaration with a provider model and
-delete the `FakeChatModel` alias. Then create `config/runtime.exs` (`mix new`
-doesn't make a `config` folder) so BeamWeaver reads the API key from the
-environment:
-
-{% tabs %}
-{% tab title="OpenAI" %}
-```elixir
-model "openai:gpt-5.4-mini"
-```
-
-```elixir
-# config/runtime.exs
-import Config
-
-config :beam_weaver, :openai, api_key: System.get_env("OPENAI_API_KEY")
-```
-{% endtab %}
-
-{% tab title="Anthropic" %}
-```elixir
-model "anthropic:claude-haiku-4-5"
-```
-
-```elixir
-# config/runtime.exs
-import Config
-
-config :beam_weaver, :anthropic, api_key: System.get_env("ANTHROPIC_API_KEY")
-```
-{% endtab %}
-
-{% tab title="Google Gemini" %}
-```elixir
-model "google:gemini-3.5-flash"
-```
-
-```elixir
-# config/runtime.exs
-import Config
-
-config :beam_weaver, :google, api_key: System.get_env("GOOGLE_API_KEY")
-```
-{% endtab %}
-{% endtabs %}
-
-Export the key in your shell (for example `export OPENAI_API_KEY=...`),
-restart `iex -S mix` and ask again. Ask about another order, or about
-something unrelated, and see how the model decides when to call the tool.
-[Providers](providers.md) lists every provider and model.
+The agent interface is the same. Provider-specific capabilities and options
+are documented in [Providers](providers.md).
 
 ## Next steps
 
-- [Concepts](concepts.md) explains agents, tools, graphs, threads and memory
-  in one page.
-- [Agents](agents.md) covers everything an agent module can declare.
-- [Tools](tools.md) shows richer tools: injected state, errors, and results
-  for the user.
-- [Human-in-the-Loop](human_in_the_loop.md) pauses the agent for approval
-  before a tool runs, such as issuing a refund.
-- [Examples](examples.md) lists runnable scripts for every feature.
+[Build an Agent](tutorial.md) adds a tool, checks that the model called it,
+and continues the conversation. [Concepts](concepts.md) explains the moving
+parts. [Testing](testing.md) shows how to test without an API key using
+scripted responses and request assertions.

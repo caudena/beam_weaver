@@ -19,7 +19,6 @@ Export `ZAI_API_KEY`.
 
 ## Models
 
-<!-- generated: provider-models zai -->
 | Model | Kind | Input tokens | Output tokens | Tools | Structured output | Reasoning | Inputs |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | `zai:glm-4.6` | chat | 200,000 | 131,072 | yes | yes | yes | text |
@@ -30,7 +29,6 @@ Export `ZAI_API_KEY`.
 | `zai:glm-5.3` | chat | 1,000,000 | 131,072 | yes | yes | yes | text |
 | `zai:glm-5.3-flash` | chat | 1,000,000 | 131,072 | yes | yes | yes | text, image, PDF, video |
 | `zai:glm-5.3-flashx` | chat | 1,000,000 | 131,072 | yes | yes | yes | text, image, PDF, video |
-<!-- /generated -->
 
 These are the chat models Z.ai lists as current. Other GLM ids, such as the
 older `glm-4.5`, are rejected before the request, and every id needs the
@@ -88,9 +86,12 @@ The GLM-5.3 models always think, at `:max` effort unless you choose `:low` or
 defmodule MyApp.SupportAgent do
   use BeamWeaver.Agent
 
-  model "zai:glm-5.2", thinking: %{type: :disabled}
+  model "zai:glm-5.2", thinking: %{type: :disabled}, timeout: 120_000
   system_prompt "You are Acme's support agent."
 end
+
+{:ok, result} = MyApp.SupportAgent.invoke(%{messages: ["Reply with the word ready."]})
+true = byte_size(result.messages |> List.last() |> BeamWeaver.Core.Message.text()) > 0
 ```
 
 The reasoning text arrives as `%{type: :reasoning}` blocks in the reply's
@@ -104,14 +105,41 @@ streamed requests; an agent streams every model call when its model options
 include `stream: true`:
 
 ```elixir
+defmodule MyApp.Tools.LookupOrder do
+  use BeamWeaver.Tool
+
+  name "lookup_order"
+  description "Get an order's shipping status."
+
+  schema do
+    field :order_id, :string, required: true
+  end
+
+  @impl true
+  def invoke(_tool, %{"order_id" => id}, _opts), do: {:ok, "Order #{id} shipped on Monday."}
+end
+
 defmodule MyApp.SupportAgent do
   use BeamWeaver.Agent
 
-  model "zai:glm-5.3", stream: true, tool_stream: true
-  system_prompt "You are Acme's support agent."
+  model "zai:glm-5.3", stream: true, tool_stream: true, timeout: 120_000
+  system_prompt "Look up the order before answering. Call lookup_order exactly once."
+  tools [MyApp.Tools.LookupOrder]
 end
 
 {:ok, events} = MyApp.SupportAgent.stream_events(%{messages: ["Where is my order A-1001?"]}, live: true)
+events = Enum.to_list(events)
+
+alias BeamWeaver.Stream.Events
+
+argument_chunks =
+  for %{event: %Events.ToolCallChunk{chunk: chunk}} <- events,
+      is_binary(chunk.args), do: chunk.args
+%{"order_id" => "A-1001"} = argument_chunks |> Enum.join() |> JSON.decode!()
+[call] = for %{event: %Events.ToolStart{tool_name: "lookup_order"} = call} <- events, do: call
+%{"order_id" => "A-1001"} = call.input
+true = Enum.any?(events, &match?(%{event: %Events.ToolFinish{tool_call_id: id}} when id == call.tool_call_id, &1))
+false = Enum.any?(events, &match?(%{event: %Events.Error{}}, &1))
 ```
 
 On a model without `stream: true`, BeamWeaver rejects `tool_stream` before the
@@ -132,16 +160,19 @@ and `prompt_caching true` has no effect.
 GLM-5.3-Flash and GLM-5.3-FlashX read images, video and PDFs, each as a URL
 or as base64 data, and one message can mix them:
 
+Run this example from a repository checkout, using the bundled
+[example fixtures](https://github.com/caudena/beam_weaver/tree/master/examples/fixtures).
+
 ```elixir
 alias BeamWeaver.Core.{ContentBlock, Message}
 
-label = Base.encode64(File.read!("a1001-label.pdf"))
+label = Base.encode64(File.read!("examples/fixtures/sample.pdf"))
 
 question =
   Message.user([
-    ContentBlock.text("What is damaged in this photo, and where was the parcel sent?"),
-    ContentBlock.image(url: "https://example.com/returns/a1001.jpg"),
-    ContentBlock.file(data: label, mime_type: "application/pdf", filename: "a1001-label.pdf")
+    ContentBlock.text("Name the image colour and quote the text in the PDF."),
+    ContentBlock.image(data: Base.encode64(File.read!("examples/fixtures/red-square.png")), mime_type: "image/png"),
+    ContentBlock.file(data: label, mime_type: "application/pdf", filename: "sample.pdf")
   ])
 
 {:ok, model} = BeamWeaver.Models.init_chat_model("zai:glm-5.3-flash")
@@ -155,14 +186,28 @@ upload returns:
 ```elixir
 alias BeamWeaver.Core.{ContentBlock, Message}
 
-question =
-  Message.user([
-    ContentBlock.text("Which carrier is on this label?"),
-    ContentBlock.file(file_id: "1791644111109-9214b92b4a3c4be69032592ffe6522b3.pdf")
-  ])
+files_url = "https://api.z.ai/api/paas/v4/files"
+headers = [{"authorization", "Bearer " <> System.fetch_env!("ZAI_API_KEY")}]
+upload = Req.post!(files_url,
+  headers: headers,
+  form_multipart: [purpose: "user_data", file: {File.read!("examples/fixtures/sample.pdf"), filename: "sample.pdf"}],
+  retry: false, receive_timeout: 60_000
+)
+true = upload.status in 200..299
+file_id = Map.fetch!(upload.body, "id")
 
-{:ok, model} = BeamWeaver.Models.init_chat_model("zai:glm-5.3-flash")
-{:ok, reply} = BeamWeaver.Core.ChatModel.invoke(model, [question])
+try do
+  question = Message.user([
+    ContentBlock.text("Quote the text in this PDF."),
+    ContentBlock.file(file_id: file_id)
+  ])
+  {:ok, model} = BeamWeaver.Models.init_chat_model("zai:glm-5.3-flash", timeout: 60_000)
+  {:ok, reply} = BeamWeaver.Core.ChatModel.invoke(model, [question])
+  true = String.contains?(String.downcase(Message.text(reply)), "dummy")
+after
+  response = Req.delete!(files_url <> "/" <> URI.encode(file_id), headers: headers, retry: false)
+  true = response.status in 200..299
+end
 ```
 
 Z.ai's own part for a document, `%{"type" => "file", "file" => %{"file_url" => url}}`
@@ -208,6 +253,8 @@ and `transport_opts: [cassette_path: "test/cassettes/zai.yml"]`;
 how to write one.
 
 ## Reference
+
+- [Z.ai file uploads](https://docs.z.ai/api-reference/agents/file-upload): provider API contract
 
 - [`BeamWeaver.ZAI`](https://hexdocs.pm/beam_weaver/BeamWeaver.ZAI.html): constructors
 - [`BeamWeaver.ZAI.ChatModel`](https://hexdocs.pm/beam_weaver/BeamWeaver.ZAI.ChatModel.html): the GLM chat model

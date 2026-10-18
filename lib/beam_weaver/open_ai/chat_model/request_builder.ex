@@ -19,7 +19,7 @@ defmodule BeamWeaver.OpenAI.ChatModel.RequestBuilder do
   @model_fields ~w(top_p frequency_penalty presence_penalty seed parallel_tool_calls user modalities store max_turns
                    prompt_cache_key safety_identifier top_logprobs logprobs)a
   @model_map_fields ~w(access_programs metadata moderation audio prompt_cache_options)a
-  @model_value_fields ~w(service_tier prompt_cache_retention search_parameters)a
+  @model_value_fields ~w(service_tier prompt_cache_retention)a
   @call_fields ~w(background include instructions max_tool_calls truncation)a
   @call_map_fields ~w(stream_options)a
   @call_value_fields ~w(conversation prompt)a
@@ -119,7 +119,6 @@ defmodule BeamWeaver.OpenAI.ChatModel.RequestBuilder do
         :reasoning,
         :reasoning_effort,
         :safety_identifier,
-        :search_parameters,
         :seed,
         :service_tier,
         :store,

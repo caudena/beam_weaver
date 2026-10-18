@@ -129,7 +129,6 @@ defmodule BeamWeaver.Models.ProfileRegistry.Params do
     :reasoning,
     :reasoning_effort,
     :response_format,
-    :search_parameters,
     :service_tier,
     :store,
     :stream,
@@ -155,7 +154,6 @@ defmodule BeamWeaver.Models.ProfileRegistry.Params do
     :presence_penalty,
     :reasoning_effort,
     :response_format,
-    :search_parameters,
     :seed,
     :service_tier,
     :stop,
@@ -171,8 +169,6 @@ defmodule BeamWeaver.Models.ProfileRegistry.Params do
     :web_search_options,
     :x_grok_conv_id
   ]
-
-  @xai_embedding_params [:dimensions, :encoding_format, :preview, :user]
 
   @moonshot_params [
     :frequency_penalty,
@@ -310,7 +306,6 @@ defmodule BeamWeaver.Models.ProfileRegistry.Params do
   def anthropic, do: @anthropic_params
   def xai_responses, do: @xai_responses_params
   def xai_chat_completions, do: @xai_chat_completions_params
-  def xai_embedding, do: @xai_embedding_params
   def moonshot, do: @moonshot_params
   def zai, do: @zai_params
   def deepseek_chat_completions, do: @deepseek_chat_completions_params

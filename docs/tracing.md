@@ -207,8 +207,8 @@ config :beam_weaver,
 | Option | Meaning | Default |
 | --- | --- | --- |
 | `otp_app:` | The application whose version is sent with each trace | `:beam_weaver` |
-| `batch_size:` | Runs per upload | `200` |
-| `max_items:` | Runs waiting in memory for upload | `100_000` |
+| `batch_size:` | Observation events per upload | `200` |
+| `max_items:` | Observation events waiting in memory for upload | `100_000` |
 | `max_attempts:` | Upload attempts before a run becomes a dead letter | `5` |
 | `overflow:` | When the buffer is full: `:block` makes callers wait; `:drop_oldest` or `:drop_newest` drops a run instead | `:block` |
 | `shutdown:` | Milliseconds the queue keeps uploading when the application stops | `120_000` |
@@ -228,6 +228,32 @@ When your application stops, the queue uploads the runs still queued before
 it exits, for up to its `shutdown:` time. A script stops without shutting the
 application down, so a script that exits right after a run should call
 `BeamWeaver.Tracing.flush_exporter/1` first.
+
+## Verify export delivery locally
+
+A local receiver can check the real HTTP request without a hosted account.
+From a repository checkout, load the one-request receiver and send an
+observation through the actual exporter:
+
+```elixir
+Code.require_file("examples/support/http_receiver.exs")
+
+{endpoint, receiver} = BeamWeaver.Examples.HTTPReceiver.start()
+{:ok, run} = BeamWeaver.Tracing.start_run("documentation-export", exporter: nil)
+{:ok, run} = BeamWeaver.Tracing.finish_run(run, outputs: %{answer: "Ready"})
+:ok = BeamWeaver.Tracing.Exporters.WeaveScope.export(:ok, run,
+  endpoint: endpoint, api_key: "local-documentation-fixture")
+
+request = Task.await(receiver, 10_000)
+true = request.method == :POST
+true = request.path == "/api/v1/observations/batch"
+[event] = request.body["events"]
+true = event["observation_id"] == run.id
+```
+
+This verifies serialization and HTTP delivery. Hosted authentication and
+project permissions still depend on your WeaveScope account. The receiver
+closes after one request and retains no data.
 
 ## Your own exporter
 

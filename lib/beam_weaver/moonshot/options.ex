@@ -39,11 +39,6 @@ defmodule BeamWeaver.Moonshot.Options do
       thinking: :toggle,
       reasoning_efforts: [],
       tool_choice_when_thinking: ["auto", "none"]
-    },
-    "kimi-k2.5" => %{
-      thinking: :toggle,
-      reasoning_efforts: [],
-      tool_choice_when_thinking: ["auto", "none"]
     }
   }
 

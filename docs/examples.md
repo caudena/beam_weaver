@@ -27,9 +27,7 @@ them, and fails if it did not. `BEAM_WEAVER_EXAMPLES_MODEL` picks the provider
 and model (default `openai:gpt-5.4-mini`):
 
 ```bash
-export BEAM_WEAVER_EXAMPLES_MODEL=anthropic:claude-haiku-4-5
-export ANTHROPIC_API_KEY=...
-mix run examples/react_agent.exs
+mix examples.live --model anthropic:claude-haiku-4-5 --only examples/react_agent.exs
 ```
 
 | Provider | Key | Model in `mix examples.live` |
@@ -41,18 +39,23 @@ mix run examples/react_agent.exs
 | Moonshot (Kimi) | `MOONSHOT_API_KEY` or `KIMI_API_KEY` | `moonshot:kimi-k2.6` |
 | Z.ai | `ZAI_API_KEY` | `zai:glm-5.3-flash` |
 | DeepSeek | `DEEPSEEK_API_KEY` | `deepseek:deepseek-flash` |
+| TypeSafe | `TYPESAFE_API_KEY` or `TYPESAFE_API` | Decision-model scripts; no generic chat model |
 
-Offline scripts need no key. No key at all yet? The [Quickstart](quickstart.md)
-runs an agent on a scripted fake model.
+Offline scripts need no key. [Testing](testing.md) introduces scripted fake
+models; the [Quickstart](quickstart.md) uses a real provider.
 
 ## Run them all
 
-`mix examples.live` runs every live script on every provider you have a key
-for and prints a pass/fail table. Keys come from the environment or a `.env`
-file and are never printed; output goes to `_build/examples_live/<provider>/`.
+`mix examples.live` requests every configured provider in its manifest and
+fails if a requested provider has no key. Use `--provider` to select a subset.
+It runs each applicable script and prints a pass/fail table. Keys come from the environment or a `.env`
+file and are never printed. Each run keeps a JSON report, per-attempt logs and
+HTTP evidence in `_build/examples_live/runs/`. A successful exit alone does not
+pass a live run: the runner must observe a successful inference response from
+each provider the example requires.
 
 ```bash
-mix examples.live                              # every provider with a key
+mix examples.live                              # every manifest provider; all keys required
 mix examples.live --provider openai,anthropic  # only these providers
 mix examples.live --model anthropic:claude-sonnet-4-6 --only deepagents/
 ```
@@ -74,7 +77,7 @@ its own checks, such as a tool the model didn't call, does not. `mix test` compi
 | [hitl_agent.exs](https://github.com/caudena/beam_weaver/blob/master/examples/hitl_agent.exs) | Pause before a refund, approve it, resume from a checkpoint | live |
 | [hitl_per_call_agent.exs](https://github.com/caudena/beam_weaver/blob/master/examples/hitl_per_call_agent.exs) | Review each refund on its own while lookups run; answer the refunds one at a time | live |
 | [chat_model.exs](https://github.com/caudena/beam_weaver/blob/master/examples/chat_model.exs) | Call a chat model directly, without an agent | live |
-| [prompt_caching.exs](https://github.com/caudena/beam_weaver/blob/master/examples/prompt_caching.exs) | Reuse the provider's prompt cache for a long system prompt | live |
+| [prompt_caching.exs](https://github.com/caudena/beam_weaver/blob/master/examples/prompt_caching.exs) | Compare reported cache-read tokens across repeated live calls | live |
 
 ## Memory, subagents and deep agents
 

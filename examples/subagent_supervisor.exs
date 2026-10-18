@@ -43,6 +43,7 @@ send a new one? - Ada
 {:ok, %{messages: messages} = result} =
   BeamWeaver.Examples.SubagentSupervisor.Agent.invoke(%{messages: ["Triage this email:\n\n" <> email]})
 
-IO.puts(Message.text(List.last(messages)))
+IO.puts(Support.assert_text!(List.last(messages)))
 IO.inspect(result.subagent_outputs, label: "subagent_outputs")
 Support.assert_tools_called!(messages, ["task"])
+true = map_size(result.subagent_outputs) > 0

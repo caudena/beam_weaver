@@ -129,12 +129,19 @@ errors that switch models (default: all). To retry each model before moving to t
 `ModelFallback` before `ModelRetry`:
 
 ```elixir
-model "anthropic:claude-sonnet-4-6"
+defmodule MyApp.FallbackSupportAgent do
+  use BeamWeaver.Agent
 
-middleware [
-  {BeamWeaver.Agent.Middleware.ModelFallback, fallbacks: ["openai:gpt-5.4-mini"]},
-  {BeamWeaver.Agent.Middleware.ModelRetry, max_retries: 2, initial_delay: 500}
-]
+  model "anthropic:claude-sonnet-4-6"
+
+  middleware [
+    {BeamWeaver.Agent.Middleware.ModelFallback, fallbacks: ["openai:gpt-5.4-mini"]},
+    {BeamWeaver.Agent.Middleware.ModelRetry, max_retries: 2, initial_delay: 500}
+  ]
+end
+
+{:ok, result} = MyApp.FallbackSupportAgent.invoke(%{messages: ["Reply with the word ready."]})
+true = is_binary(result.messages |> List.last() |> BeamWeaver.Core.Message.text())
 ```
 
 ### ToolRetry
@@ -386,13 +393,20 @@ of the reply those tools, which `max_tools` doesn't cap. Use a small, fast
 model for this:
 
 ```elixir
-model "anthropic:claude-sonnet-4-6"
-tools [MyApp.Tools.LookupOrder, MyApp.Tools.IssueRefund]
+defmodule MyApp.SelectedToolsAgent do
+  use BeamWeaver.Agent
 
-middleware [
-  {BeamWeaver.Agent.Middleware.ToolSelection,
-   model: "openai:gpt-5.4-mini", max_tools: 3, always_include: ["lookup_order"]}
-]
+  model "anthropic:claude-sonnet-4-6"
+  tools [MyApp.Tools.LookupOrder, MyApp.Tools.IssueRefund]
+
+  middleware [
+    {BeamWeaver.Agent.Middleware.ToolSelection,
+     model: "openai:gpt-5.4-mini", max_tools: 3, always_include: ["lookup_order"]}
+  ]
+end
+
+{:ok, result} = MyApp.SelectedToolsAgent.invoke(%{messages: ["Reply with the word ready."]})
+true = is_binary(result.messages |> List.last() |> BeamWeaver.Core.Message.text())
 ```
 
 The declarations `exclude_tools` and `tool_descriptions` add a
@@ -586,8 +600,15 @@ over `trigger` tokens, keeping the latest `keep` results. The saved state
 keeps the full results; only the model call sees the edit:
 
 ```elixir
-model "anthropic:claude-sonnet-4-6"
-middleware [{BeamWeaver.Agent.Middleware.ContextEditing, trigger: 50_000, keep: 3}]
+defmodule MyApp.EditedContextAgent do
+  use BeamWeaver.Agent
+
+  model "anthropic:claude-sonnet-4-6"
+  middleware [{BeamWeaver.Agent.Middleware.ContextEditing, trigger: 50_000, keep: 3}]
+end
+
+{:ok, result} = MyApp.EditedContextAgent.invoke(%{messages: ["Reply with the word ready."]})
+true = is_binary(result.messages |> List.last() |> BeamWeaver.Core.Message.text())
 ```
 
 `ContextEditing.clear_tool_uses/2` applies the same edit to a list of

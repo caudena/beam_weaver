@@ -68,12 +68,10 @@ BeamWeaver.Sandbox.execute(sandbox, "echo $REPORT_YEAR ${OPENAI_API_KEY:-no key}
 #=> "2026 no key\n"
 ```
 
-{% hint style="warning" %}
-**A local sandbox is not isolation.** Its commands run on your machine as the
-user that runs your application, and can read and change anything that user
-can, including files that hold secrets. Use it for development and tests; run
-untrusted work in Docker or a hosted sandbox.
-{% endhint %}
+> **A local sandbox is not isolation.** Its commands run on your machine as the
+> user that runs your application, and can read and change anything that user
+> can, including files that hold secrets. Use it for development and tests; run
+> untrusted work in Docker or a hosted sandbox.
 
 ## Docker sandbox
 
@@ -111,6 +109,14 @@ defmodule MyApp.SupportResearcher do
 
   model "anthropic:claude-sonnet-4-6"
   filesystem BeamWeaver.Filesystem.Sandbox.new(sandbox: MyApp.SandboxOwner.sandbox())
+end
+
+{:ok, owner} = MyApp.SandboxOwner.start_link(image: "python:3.11-slim")
+try do
+  result = BeamWeaver.Sandbox.execute(MyApp.SandboxOwner.sandbox(), "printf ready", timeout: 5)
+  {0, "ready"} = {result.exit_code, result.output}
+after
+  GenServer.stop(owner)
 end
 ```
 
@@ -316,9 +322,17 @@ milliseconds (default 15 minutes) stops on its own, so a run that never
 finishes doesn't leave it behind:
 
 ```elixir
-middleware [
-  {BeamWeaver.Agent.Middleware.ShellTool, policy: [allow: ["grep", "wc -l"]], workspace_root: "/srv/acme/workspace"}
-]
+defmodule MyApp.ShellAgent do
+  use BeamWeaver.Agent
+
+  model "openai:gpt-5.4-mini", max_tokens: 256, timeout: 60_000
+  middleware [
+    {BeamWeaver.Agent.Middleware.ShellTool, policy: [allow: ["grep", "wc -l"]], workspace_root: System.tmp_dir!()}
+  ]
+end
+
+{:ok, result} = MyApp.ShellAgent.invoke(%{messages: ["Reply with the word ready."]})
+true = is_binary(result.messages |> List.last() |> BeamWeaver.Core.Message.text())
 ```
 
 ## Custom sandbox adapters

@@ -12,7 +12,7 @@ the cheapest chat model that can handle it, through
 # config/runtime.exs
 import Config
 
-config :beam_weaver, :typesafe, api_key: System.get_env("TYPESAFE_API_KEY")
+config :beam_weaver, :typesafe, api_key: System.get_env("TYPESAFE_API_KEY") || System.fetch_env!("TYPESAFE_API")
 ```
 
 Export `TYPESAFE_API_KEY`. As with every provider, a missing key fails before
@@ -20,13 +20,11 @@ any request, with an error of type `:missing_api_key`.
 
 ## Models
 
-<!-- generated: provider-models typesafe -->
 | Model | Kind | Input tokens | Output tokens | Tools | Structured output | Reasoning | Inputs |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | `typesafe:jev-1.13.0` | decision | 64,000 | — | — | — | — | text |
 | `typesafe:jev-latest` | decision | 64,000 | — | — | — | — | text |
 | `typesafe:jev-preview` | decision | 64,000 | — | — | — | — | text |
-<!-- /generated -->
 
 `typesafe:jev-latest` moves to each new release. Pin a version such as
 `typesafe:jev-1.13.0` when you tune questions or thresholds; each response
@@ -122,7 +120,7 @@ defmodule MyApp.SupportAgent do
 
   alias BeamWeaver.Agent.Middleware.TypeSafeModelRouter
 
-  model "openai:gpt-5.4-mini"
+  model "openai:gpt-5.4-mini", timeout: 120_000
   system_prompt "You are Acme's support agent."
 
   middleware [
@@ -198,6 +196,8 @@ Pass such a model as the router's `classifier:` to test routing, with
 `"fake:chat"` models as the choices. See [Testing](../testing.md).
 
 ## Reference
+
+- [TypeSafe API documentation](https://docs.typesafe.ai/introduction): provider API contract
 
 - [`BeamWeaver.TypeSafe.DecisionModel`](https://hexdocs.pm/beam_weaver/BeamWeaver.TypeSafe.DecisionModel.html): the Jev decision model
 - [`BeamWeaver.TypeSafe.Question`](https://hexdocs.pm/beam_weaver/BeamWeaver.TypeSafe.Question.html): choice, score and noul questions

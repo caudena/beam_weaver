@@ -26,6 +26,27 @@ length(snapshot.values.messages)
 In production only the adapter changes. The Ecto adapters are plain structs
 around your repo, so you can build them wherever you need them:
 
+Before running the database examples on this page, set `DATABASE_URL` to
+an empty PostgreSQL database reserved for examples, then run this setup in
+the same IEx session. The verification command creates a disposable database.
+
+```elixir
+defmodule MyApp.Repo do
+  use Ecto.Repo, otp_app: :my_app, adapter: Ecto.Adapters.Postgres
+end
+
+{:ok, _repo} = MyApp.Repo.start_link(url: System.fetch_env!("DATABASE_URL"), pool_size: 2, log: false)
+
+defmodule MyApp.CreateAgentTables do
+  use Ecto.Migration
+
+  def up, do: BeamWeaver.Migrations.up(adapters: [:checkpoint, :memory, :cache])
+  def down, do: BeamWeaver.Migrations.down(adapters: [:cache, :memory, :checkpoint])
+end
+
+:ok = Ecto.Migrator.up(MyApp.Repo, 1, MyApp.CreateAgentTables, log: false)
+```
+
 ```elixir
 opts = [
   checkpointer: BeamWeaver.Checkpoint.Ecto.new(repo: MyApp.Repo),
@@ -82,7 +103,7 @@ Then run `mix ecto.migrate`. A migration per feature works just as well:
 
 | Option | Meaning |
 | --- | --- |
-| `adapters:` | Which tables to create: `:checkpoint` (the default), `:memory`, `:cache`, `:vector_store`, or `:all`. `:record_manager` is the table of the record manager that earlier versions had: `:all` doesn't create it, and `down/1` with `:all` or `:record_manager` drops it. |
+| `adapters:` | Which tables to create: `:checkpoint` (the default), `:memory`, `:cache`, `:vector_store`, or `:all`. |
 | `{adapter, opts}` | An entry with options, such as `{:memory, table: "support_memory"}` or `{:vector_store, dimensions: 1024}`. |
 | `prefix:` | The Postgres schema for the tables, such as `"agents"`. `up/1` creates it unless you pass `create_schema: false`. The default is `public`. |
 | `version:` | For `down/1`: `version: 2` undoes schema version 2 and later and keeps the tables. Without it, `down/1` drops them. |
@@ -137,6 +158,36 @@ end
 
 `BeamWeaver.Migrations` reads the database from the repo; on SQLite it
 supports only `:checkpoint`.
+
+Here is a complete SQLite checkpoint round trip using a temporary database:
+
+```elixir
+defmodule MyApp.SQLiteRepo do
+  use Ecto.Repo, otp_app: :my_app, adapter: Ecto.Adapters.SQLite3
+end
+
+defmodule MyApp.CreateSQLiteCheckpoints do
+  use Ecto.Migration
+  def up, do: BeamWeaver.Migrations.up(adapters: [:checkpoint])
+  def down, do: BeamWeaver.Migrations.down(adapters: [:checkpoint])
+end
+
+database = Path.join(System.tmp_dir!(), "checkpoints-#{System.unique_integer([:positive])}.sqlite3")
+{:ok, repo} = MyApp.SQLiteRepo.start_link(database: database, pool_size: 1, log: false)
+
+try do
+  :ok = Ecto.Migrator.up(MyApp.SQLiteRepo, 1, MyApp.CreateSQLiteCheckpoints, log: false)
+  sqlite_opts = [checkpointer: BeamWeaver.Checkpoint.Ecto.new(repo: MyApp.SQLiteRepo),
+                config: %{"configurable" => %{"thread_id" => "sqlite-example"}}]
+  {:ok, _state} = MyApp.SupportAgent.invoke(%{messages: ["Hello"]}, sqlite_opts)
+  {:ok, snapshot} = MyApp.SupportAgent.get_state(sqlite_opts)
+  true = length(snapshot.values.messages) == 2
+after
+  GenServer.stop(repo)
+  Enum.each([database, database <> "-wal", database <> "-shm"], &File.rm/1)
+end
+```
+
 
 ## The vector store and pgvector
 
@@ -263,13 +314,17 @@ Message.text(message)
 ```
 
 Give the same options to the checkpoint and cache adapters, and they encrypt
-everything they save, loading the key from your runtime configuration:
+everything they save. This example reuses the temporary key above; in an
+application, load a persistent key from your runtime configuration:
 
 ```elixir
-encrypted = [codec: BeamWeaver.Serialization.Encrypted, encryption_key_base64: System.fetch_env!("BEAM_WEAVER_KEY")]
+# Reuse the temporary 32-byte key from the preceding example.
+encrypted = [codec: BeamWeaver.Serialization.Encrypted, encryption_key: key]
 
 checkpointer = BeamWeaver.Checkpoint.Ecto.new(repo: MyApp.Repo, serialization: encrypted)
 cache = BeamWeaver.Cache.Ecto.new(repo: MyApp.Repo, serialization: encrypted)
+:ok = BeamWeaver.Cache.put(cache, "encrypted-docs", "answer", %{answer: "Ready"}, [])
+{:hit, %{answer: "Ready"}, _metadata} = BeamWeaver.Cache.lookup(cache, "encrypted-docs", "answer", [])
 ```
 
 A wrong key fails with `:serialization_error` instead of returning data, and

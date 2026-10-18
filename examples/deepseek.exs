@@ -11,6 +11,7 @@ chat = DeepSeek.chat_model(model: "deepseek-v4-flash", timeout: timeout)
   ChatModel.invoke(chat, [Message.user("Reply with exactly: hello from DeepSeek")], thinking: %{type: "disabled"})
 
 IO.puts("Chat Completions: #{Message.text(chat_message)}")
+true = String.contains?(String.downcase(Message.text(chat_message)), "hello from deepseek")
 
 responses = DeepSeek.responses_model(model: "deepseek-v4-flash", timeout: timeout)
 
@@ -18,6 +19,7 @@ responses = DeepSeek.responses_model(model: "deepseek-v4-flash", timeout: timeou
   ChatModel.invoke(responses, [Message.user("Reply with exactly: hello from Responses")])
 
 IO.puts("Responses: #{Message.text(responses_message)}")
+true = String.contains?(String.downcase(Message.text(responses_message)), "hello from responses")
 
 client = Client.new(timeout: timeout)
 
@@ -30,6 +32,7 @@ client = Client.new(timeout: timeout)
   })
 
 IO.puts("FIM: #{get_in(fim, ["choices", Access.at(0), "text"])}")
+true = byte_size(get_in(fim, ["choices", Access.at(0), "text"])) > 0
 
 {:ok, anthropic} =
   Client.anthropic_messages(client, %{
@@ -47,9 +50,11 @@ anthropic_text =
   end)
 
 IO.puts("Anthropic compatibility: #{anthropic_text}")
+true = String.contains?(String.downcase(anthropic_text), "hello from anthropic")
 
 {:ok, models} = Client.models(client)
 IO.puts("Models endpoint returned #{length(models["data"] || [])} models")
+true = length(models["data"]) > 0
 
 # `Client.balance/2` is also available, but this example deliberately avoids
 # printing account-specific values. See scripts/capture_deepseek_live.exs for

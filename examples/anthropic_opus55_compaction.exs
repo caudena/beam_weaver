@@ -58,4 +58,5 @@ definition = %{
   )
 
 "tool_use" = tool_reply.status
+[%{name: "lookup", args: %{"query" => "code word"}}] = tool_reply.tool_calls
 IO.puts("Claude Opus 5.5 signed compaction, replay, and inline tool requests passed.")

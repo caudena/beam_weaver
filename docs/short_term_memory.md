@@ -212,10 +212,18 @@ asks a model, usually a small and cheap one, to summarize the older messages
 and keeps the newest ones as they are:
 
 ```elixir
-middleware [
-  {BeamWeaver.Agent.Middleware.Summarization,
-   model: "openai:gpt-5.4-mini", trigger: {:tokens, 50_000}, keep: {:messages, 20}}
-]
+defmodule MyApp.SummarizingAgent do
+  use BeamWeaver.Agent
+
+  model "openai:gpt-5.4-mini", max_tokens: 256, timeout: 60_000
+  middleware [
+    {BeamWeaver.Agent.Middleware.Summarization,
+     model: "openai:gpt-5.4-mini", trigger: {:tokens, 50_000}, keep: {:messages, 20}}
+  ]
+end
+
+{:ok, result} = MyApp.SummarizingAgent.invoke(%{messages: ["Reply with the word ready."]})
+true = is_binary(result.messages |> List.last() |> BeamWeaver.Core.Message.text())
 ```
 
 See [Context Management](context_management.md#summarize-old-messages) for
@@ -284,6 +292,27 @@ keys with their own merge rules (see [Middleware](middleware.md) and
 `Checkpoint.ETS` keeps threads in memory, so they are lost when the node
 stops. In production, save them in Postgres or SQLite with
 `Checkpoint.Ecto`:
+
+Before running the database examples on this page, set `DATABASE_URL` to
+an empty PostgreSQL database reserved for examples, then run this setup in
+the same IEx session. The verification command creates a disposable database.
+
+```elixir
+defmodule MyApp.Repo do
+  use Ecto.Repo, otp_app: :my_app, adapter: Ecto.Adapters.Postgres
+end
+
+{:ok, _repo} = MyApp.Repo.start_link(url: System.fetch_env!("DATABASE_URL"), pool_size: 2, log: false)
+
+defmodule MyApp.CreateAgentTables do
+  use Ecto.Migration
+
+  def up, do: BeamWeaver.Migrations.up(adapters: [:checkpoint, :memory, :cache])
+  def down, do: BeamWeaver.Migrations.down(adapters: [:cache, :memory, :checkpoint])
+end
+
+:ok = Ecto.Migrator.up(MyApp.Repo, 1, MyApp.CreateAgentTables, log: false)
+```
 
 ```elixir
 saver = BeamWeaver.Checkpoint.Ecto.new(repo: MyApp.Repo)

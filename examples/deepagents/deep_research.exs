@@ -1,6 +1,6 @@
 # A research lead that delegates: the lead agent splits the question, hands
-# each part to a researcher subagent with web search, and writes the answer
-# with citations from what the researchers return.
+# each part to a researcher subagent and writes an answer grounded in its
+# results. The search tool returns fixed teaching fixtures, not live web pages.
 #
 #   mix run examples/deepagents/deep_research.exs
 
@@ -10,7 +10,7 @@ defmodule BeamWeaver.Examples.DeepAgents.DeepResearch.WebSearch do
   use BeamWeaver.Tool
 
   name "web_search"
-  description "Search the web and return the top results with their URLs and summaries."
+  description "Return fixed demonstration research snippets and their source IDs."
 
   schema do
     field :query, :string, description: "What to search for"
@@ -22,9 +22,8 @@ defmodule BeamWeaver.Examples.DeepAgents.DeepResearch.WebSearch do
     {:ok,
      """
      Results for "#{query}":
-     1. https://example.com/gpu-joins - GPU hash joins run 5-10x faster than CPU joins on large tables.
-     2. https://example.com/columnar-gpu - Columnar layouts let GPUs scan and filter data in parallel.
-     3. https://example.com/pcie-limits - Copying data over PCIe is often the bottleneck for small queries.
+     [gpu-parallelism] Teaching fixture: GPUs can process large scans, filters and hash joins in parallel.
+     [gpu-transfer] Teaching fixture: copying data to the GPU can dominate small queries; limited device memory can force extra transfers.
      """}
   end
 end
@@ -46,7 +45,6 @@ end
 defmodule BeamWeaver.Examples.DeepAgents.DeepResearch do
   alias BeamWeaver.Agent
   alias BeamWeaver.Agent.Subagent.Spec
-  alias BeamWeaver.Core.Message
   alias BeamWeaver.Examples.DeepAgents.DeepResearch.Think
   alias BeamWeaver.Examples.DeepAgents.DeepResearch.WebSearch
   alias BeamWeaver.Examples.DeepAgents.Support
@@ -55,8 +53,11 @@ defmodule BeamWeaver.Examples.DeepAgents.DeepResearch do
     researcher =
       Spec.new(
         name: "researcher",
-        description: "Researches one focused question on the web and returns sourced notes.",
-        system_prompt: "Search the web, reflect with think, then return short notes, each with its source URL.",
+        description: "Answers one focused question using the fixed research snippets.",
+        system_prompt:
+          "Call web_search once, then think once, then return short notes citing the supplied " <>
+            "[gpu-parallelism] or [gpu-transfer] IDs. The snippets are fixed teaching fixtures; repeated searches " <>
+            "return the same data. Use only those snippets and do not invent sources or URLs.",
         tools: [WebSearch, Think],
         model: Support.model(),
         middleware: Support.limits()
@@ -66,11 +67,12 @@ defmodule BeamWeaver.Examples.DeepAgents.DeepResearch do
       Support.create(
         name: "research-lead",
         model: Support.model(),
-        subagents: [researcher],
+        subagents: [researcher, BeamWeaver.Agent.GeneralPurposeSubagentProfile.new(enabled: false)],
         system_prompt: """
-        You lead a research team. You cannot search the web yourself: split the question into \
-        focused parts, give each part to the researcher subagent, then write a short answer that \
-        cites the URLs the researchers found.
+        You lead a demonstration research team using fixed snippets. Call task exactly twice, \
+        both times with subagent_type researcher: once for GPU benefits and once for limitations. \
+        Combine the two reports into a short answer citing [gpu-parallelism] and [gpu-transfer]. \
+        Use only those fixture IDs; do not add external sources or URLs. Finish after those two tasks.
         """
       )
 
@@ -79,8 +81,13 @@ defmodule BeamWeaver.Examples.DeepAgents.DeepResearch do
         messages: ["How do GPUs speed up database queries, and when do they not help? Keep it short."]
       })
 
-    IO.puts(Message.text(List.last(messages)))
-    Support.assert_tools_called!(messages, ["task"])
+    answer = Support.assert_text!(List.last(messages))
+    IO.puts(answer)
+    Support.assert_tools_called!(messages, ["task", "web_search", "think"])
+    tasks = for message <- messages, call <- message.tool_calls, call.name == "task", do: call
+    2 = length(tasks)
+    true = String.contains?(answer, "[gpu-parallelism]") and String.contains?(answer, "[gpu-transfer]")
+    false = String.match?(answer, ~r{https?://})
   end
 end
 

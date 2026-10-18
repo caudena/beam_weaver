@@ -46,13 +46,11 @@ two closest to the question, each still carrying its source. The steps:
 A model then answers from those chunks: your code puts them in the prompt, or
 the agent calls a search tool ([Agentic retrieval](#agentic-retrieval)).
 
-{% hint style="info" %}
-`"fake:embedding"` builds vectors from a hash of the text. It needs no API key
-and always returns the same vectors, but they carry no meaning: a search
-returns the right number of results in an arbitrary order. That's why the
-examples on this page check counts and shapes, not rankings. To rank by
-meaning, use a provider model ([Embeddings](#embeddings)).
-{% endhint %}
+> `"fake:embedding"` builds vectors from a hash of the text. It needs no API key
+> and always returns the same vectors, but they carry no meaning: a search
+> returns the right number of results in an arbitrary order. That's why the
+> examples on this page check counts and shapes, not rankings. To rank by
+> meaning, use a provider model ([Embeddings](#embeddings)).
 
 ## Documents
 
@@ -76,12 +74,13 @@ returns string keys.
 BeamWeaver has no document loaders. Read your sources with plain Elixir, one
 document per file or database row:
 
-<!-- snippet: compile -->
 ```elixir
-articles =
-  for path <- Path.wildcard("priv/help_center/*.md") do
+loaded_articles =
+  for path <- Path.wildcard("examples/fixtures/*.md") do
     Document.new!(File.read!(path), metadata: %{"source" => Path.basename(path)})
   end
+
+true = length(loaded_articles) > 0
 ```
 
 To split a web page, `BeamWeaver.TextSplitter.split_url/3` fetches it and
@@ -107,11 +106,10 @@ from the ones model calls use; while all 16 have a fetch in flight, a fetch
 to another host waits for one to finish (`BeamWeaver.Transport.ReqFinch` shows
 how to raise the limit).
 
-<!-- snippet: compile -->
 ```elixir
 {:ok, page_chunks} =
-  TextSplitter.split_url(TextSplitter.html_headers(), "https://help.acme.example/refunds",
-    url_policy: [allowed_hosts: ["help.acme.example"]]
+  TextSplitter.split_url(TextSplitter.html_headers(), "https://www.w3.org/",
+    url_policy: [allowed_hosts: ["www.w3.org"]]
   )
 ```
 
@@ -172,7 +170,7 @@ with `BeamWeaver.Models.init_embeddings!/2` and a provider model, passing the
 API key with `api_key:`:
 
 ```elixir
-embeddings =
+postgres_embeddings =
   BeamWeaver.Models.init_embeddings!("openai:text-embedding-3-small",
     api_key: System.fetch_env!("OPENAI_API_KEY")
   )
@@ -192,8 +190,9 @@ fake model makes three numbers per text (`dimensions:` changes that), while
 `text-embedding-3-small` makes 1536. Index and search with the same model:
 vectors from different models can't be compared, so changing the model means
 indexing everything again. `mix beam_weaver.models.profiles` lists the
-embedding models BeamWeaver knows, such as `openai:text-embedding-3-large` and
-`xai:v1`.
+embedding profiles BeamWeaver knows. Use an available model such as
+`openai:text-embedding-3-large`. Your embedding model and chat model can use
+different providers.
 
 ## Vector stores
 
@@ -258,13 +257,25 @@ and `"$not"`, and reach into nested maps with a dotted key such as
 pgvector extension, through your Ecto repo. The store is a plain struct, cheap
 to build wherever you need it:
 
-```elixir
-embeddings =
-  BeamWeaver.Models.init_embeddings!("openai:text-embedding-3-small",
-    api_key: System.fetch_env!("OPENAI_API_KEY")
-  )
+Before running the database examples on this page, set `DATABASE_URL` to
+an empty PostgreSQL database reserved for examples, then run this setup in
+the same IEx session. The verification command creates a disposable database.
 
-store = BeamWeaver.VectorStore.EctoPostgres.new(repo: MyApp.Repo, embedding: embeddings)
+```elixir
+defmodule MyApp.Repo do
+  use Ecto.Repo, otp_app: :my_app, adapter: Ecto.Adapters.Postgres
+end
+
+{:ok, _repo} = MyApp.Repo.start_link(url: System.fetch_env!("DATABASE_URL"), pool_size: 2, log: false)
+
+defmodule MyApp.CreateAgentTables do
+  use Ecto.Migration
+
+  def up, do: BeamWeaver.Migrations.up(adapters: [:checkpoint, :memory, :cache])
+  def down, do: BeamWeaver.Migrations.down(adapters: [:cache, :memory, :checkpoint])
+end
+
+:ok = Ecto.Migrator.up(MyApp.Repo, 1, MyApp.CreateAgentTables, log: false)
 ```
 
 A migration creates its table. It also enables the pgvector extension, which
@@ -277,6 +288,13 @@ defmodule MyApp.Repo.Migrations.AddHelpCenterIndex do
   def up, do: BeamWeaver.Migrations.up(adapters: [:vector_store])
   def down, do: BeamWeaver.Migrations.down(adapters: [:vector_store])
 end
+
+:ok = Ecto.Migrator.up(MyApp.Repo, 2, MyApp.Repo.Migrations.AddHelpCenterIndex, log: false)
+postgres_embeddings = BeamWeaver.Models.init_embeddings!("openai:text-embedding-3-small")
+postgres_store = BeamWeaver.VectorStore.EctoPostgres.new(repo: MyApp.Repo, embedding: postgres_embeddings)
+{:ok, _ids} = VectorStore.add_documents(postgres_store, [Document.new!("Refunds take five working days.")])
+{:ok, matches} = VectorStore.similarity_search(postgres_store, "How long does a refund take?", k: 1)
+true = length(matches) == 1
 ```
 
 The vector column holds 1536 numbers, the size `text-embedding-3-small` makes.

@@ -10,18 +10,16 @@ should decide what to do next.
 defmodule MyApp.TicketTriage do
   use BeamWeaver.Graph
 
-  alias BeamWeaver.Graph
+  graph do
+    node :classify, &__MODULE__.classify/1
+    node :billing, &__MODULE__.billing/1
+    node :shipping, &__MODULE__.shipping/1
 
-  def graph do
-    Graph.new()
-    |> Graph.add_node(:classify, &classify/1)
-    |> Graph.add_node(:billing, &billing/1)
-    |> Graph.add_node(:shipping, &shipping/1)
-    |> Graph.add_edge(Graph.start(), :classify)
-    |> Graph.add_edge(:classify, :billing, when: %{category: :billing})
-    |> Graph.add_edge(:classify, :shipping, default: true)
-    |> Graph.add_edge(:billing, Graph.end_node())
-    |> Graph.add_edge(:shipping, Graph.end_node())
+    edge start(), :classify
+    edge :classify, :billing, when: %{category: :billing}
+    edge :classify, :shipping, default: true
+    edge :billing, finish()
+    edge :shipping, finish()
   end
 
   def classify(%{subject: subject}) do
@@ -47,8 +45,14 @@ empty graph, `Graph.add_node/4` adds a node (a name and a function), and
 `Graph.add_edge/3` connects two nodes. `Graph.start()` and `Graph.end_node()`
 mark where a run begins and where it finishes.
 
-In an application, return the builder from `def graph` in a module with
-`use BeamWeaver.Graph`, as above: a graph module. The module gets
+In an application, use `graph do` as above. Inside the block, `start()` and
+`finish()` mark its boundaries, `node` adds a function, and `edge` determines
+what can run next. A `state do` block declares channels; `join` waits for
+multiple branches. See [Graph State](graph_state.md).
+
+For a graph whose structure is computed from data, return the builder from
+`def graph` in a module with `use BeamWeaver.Graph`. Choose one definition
+style per module: declaring nodes and defining `graph/0` together is an error. The module gets
 `invoke/2`, `stream_events/2`, `resume/2` and `get_state/1`, the same
 functions an agent module has, and compiles the graph on each call with that
 call's options, such as its checkpointer.

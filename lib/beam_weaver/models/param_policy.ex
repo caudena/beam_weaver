@@ -79,7 +79,6 @@ defmodule BeamWeaver.Models.ParamPolicy do
                      :seed,
                      :service_tier,
                      :speech_config,
-                     :search_parameters,
                      :speed,
                      :stop,
                      :stop_sequences,

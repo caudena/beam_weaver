@@ -48,7 +48,7 @@ defmodule BeamWeaver.Provider.CredentialsTest do
   end
 
   test "embedding models fail before any request when the API key is missing" do
-    for id <- ["openai:text-embedding-3-small", "xai:v1"] do
+    for id <- ["openai:text-embedding-3-small", "openai:text-embedding-3-large"] do
       model = Models.init_embeddings!(id, transport: RecordingTransport, transport_opts: [parent: self()])
 
       assert {:error, %Error{type: :missing_api_key}} = EmbeddingModel.embed_query(model, "refunds")

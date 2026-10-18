@@ -85,8 +85,10 @@ defmodule BeamWeaver.Examples.DeepAgents.NvidiaDeepAgent do
         context: %{sandbox_type: "cpu"}
       )
 
-    IO.puts(Message.text(List.last(messages)))
-    Support.assert_tools_called!(messages, ["task"])
+    IO.puts(Support.assert_text!(List.last(messages)))
+    Support.assert_tools_called!(messages, ["task", {"run_analysis", %{"dataset" => "/data/transactions.csv"}}])
+    answer = Message.text(List.last(messages))
+    true = Enum.all?(["465", "140", "200"], &String.contains?(answer, &1))
   end
 
   defp seed_data_and_skills!(root) do

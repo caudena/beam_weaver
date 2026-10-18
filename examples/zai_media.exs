@@ -34,4 +34,13 @@ questions = [
 for {label, block, question} <- questions do
   {:ok, reply} = ChatModel.invoke(model, [Message.user([block, ContentBlock.text(question)])])
   IO.puts("#{label}: #{Message.text(reply)}")
+
+  expected =
+    case label do
+      "Image (base64)" -> "red"
+      "PDF (URL)" -> "dummy"
+      "Video (URL)" -> "flower"
+    end
+
+  true = String.contains?(String.downcase(Message.text(reply)), expected)
 end

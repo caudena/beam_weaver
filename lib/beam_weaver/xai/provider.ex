@@ -57,9 +57,6 @@ defmodule BeamWeaver.XAI.Provider do
   end
 
   @impl true
-  def embedding_model(_opts), do: {:ok, BeamWeaver.XAI.EmbeddingModel}
-
-  @impl true
   def profile(model), do: ProfileRegistry.fetch(:xai, model)
 
   @impl true
@@ -68,10 +65,9 @@ defmodule BeamWeaver.XAI.Provider do
 
   @impl true
   def default_model(:chat), do: "grok-4.6"
-  def default_model(:embedding), do: "v1"
   def default_model(_kind), do: nil
 
   @impl true
   def capabilities,
-    do: %{api_families: [:responses, :chat_completions, :embeddings], openai_compatible: true}
+    do: %{api_families: [:responses, :chat_completions], openai_compatible: true}
 end

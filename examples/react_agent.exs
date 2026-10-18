@@ -35,5 +35,8 @@ end
 
 {:ok, %{messages: messages}} = BeamWeaver.Examples.ReactAgent.invoke(%{messages: ["What's the weather in Nicosia?"]})
 
-messages |> List.last() |> Message.text() |> IO.puts()
-Support.assert_tools_called!(messages, ["get_weather"])
+messages |> List.last() |> Support.assert_text!() |> IO.puts()
+
+Support.assert_tools_called!(messages, [
+  {"get_weather", fn args -> String.contains?(String.downcase(args["city"] || ""), "nicosia") end}
+])

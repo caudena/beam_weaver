@@ -106,13 +106,13 @@ defmodule MyApp.SupportAgent do
 
   model "anthropic:claude-sonnet-4-6"
   system_prompt "You are Acme's support agent. Keep /AGENTS.md to one short line per fact."
-  filesystem BeamWeaver.Filesystem.Local.new(root: "/var/lib/acme/support_agent")
+  filesystem BeamWeaver.Filesystem.Local.new(root: Path.join(System.tmp_dir!(), "support_agent_memory"))
   memory ["/AGENTS.md"]
 end
 ```
 
 The agent sees the directory as `/`, so `/AGENTS.md` is
-`/var/lib/acme/support_agent/AGENTS.md`, a file you can open, edit and keep
+`support_agent_memory/AGENTS.md` beneath the temporary directory, a file you can open, edit and keep
 in version control. Paths can't leave the directory: `..` and symlinks that
 point outside it are rejected.
 

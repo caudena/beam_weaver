@@ -77,6 +77,27 @@ result.messages |> List.last() |> BeamWeaver.Core.Message.text()
 In production the checkpointer and the memory store live in your Ecto repo.
 Both are plain structs, so one module can build them for the whole app:
 
+Before running the database examples on this page, set `DATABASE_URL` to
+an empty PostgreSQL database reserved for examples, then run this setup in
+the same IEx session. The verification command creates a disposable database.
+
+```elixir
+defmodule MyApp.Repo do
+  use Ecto.Repo, otp_app: :my_app, adapter: Ecto.Adapters.Postgres
+end
+
+{:ok, _repo} = MyApp.Repo.start_link(url: System.fetch_env!("DATABASE_URL"), pool_size: 2, log: false)
+
+defmodule MyApp.CreateAgentTables do
+  use Ecto.Migration
+
+  def up, do: BeamWeaver.Migrations.up(adapters: [:checkpoint, :memory, :cache])
+  def down, do: BeamWeaver.Migrations.down(adapters: [:cache, :memory, :checkpoint])
+end
+
+:ok = Ecto.Migrator.up(MyApp.Repo, 1, MyApp.CreateAgentTables, log: false)
+```
+
 ```elixir
 defmodule MyApp.AgentStorage do
   def checkpointer, do: BeamWeaver.Checkpoint.Ecto.new(repo: MyApp.Repo)
@@ -137,7 +158,7 @@ if config_env() == :prod do
   config :beam_weaver,
     weave_scope: [
       endpoint: "https://app.weavescope.com",
-      api_key: System.fetch_env!("WEAVESCOPE_API_KEY"),
+      api_key: System.get_env("WEAVESCOPE_API_KEY"),
       otp_app: :my_app
     ]
 end
@@ -195,6 +216,8 @@ own `Task.Supervisor`, and stream its events to the page (see
 [Streaming](streaming.md#push-tokens-to-a-liveview)):
 
 ```elixir
+{:ok, _tasks} = Task.Supervisor.start_link(name: MyApp.AgentTasks)
+
 task =
   Task.Supervisor.async_nolink(MyApp.AgentTasks, fn ->
     MyApp.SupportAgent.invoke(%{messages: ["Where is order A-1001?"]},
@@ -205,7 +228,9 @@ task =
   end)
 
 # A LiveView receives the result as a {ref, result} message in handle_info/2;
-# a background job can wait with Task.await(task, :timer.minutes(5)).
+# a background job can wait for completion:
+{:ok, result} = Task.await(task, :timer.minutes(5))
+true = is_list(result.messages)
 ```
 
 Work that doesn't belong to a request, such as consolidating memories,

@@ -56,10 +56,12 @@ end
 saver = CheckpointETS.new()
 opts = [checkpointer: saver, config: %{"configurable" => %{"thread_id" => "ticket-42"}}]
 
-%{messages: messages} =
+{:interrupted, _} =
+  paused =
   %{messages: ["Order A-1001 arrived broken. Please refund it."]}
   |> BeamWeaver.Examples.HITLAgent.invoke(opts)
-  |> BeamWeaver.Examples.HITLAgent.Reviewer.run(opts)
 
-messages |> List.last() |> Message.text() |> IO.puts()
-Support.assert_tools_called!(messages, ["issue_refund"])
+%{messages: messages} = BeamWeaver.Examples.HITLAgent.Reviewer.run(paused, opts)
+
+messages |> List.last() |> Support.assert_text!() |> IO.puts()
+Support.assert_tools_called!(messages, [{"issue_refund", %{"order_id" => "A-1001"}}])

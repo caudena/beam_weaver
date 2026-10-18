@@ -23,7 +23,6 @@ every request through a proxy or gateway.
 
 ## Models
 
-<!-- generated: provider-models openai -->
 | Model | Kind | Input tokens | Output tokens | Tools | Structured output | Reasoning | Inputs |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | `openai:gpt-4.1` | chat | 1,047,576 | 32,768 | yes | yes | — | text, image, PDF |
@@ -45,7 +44,6 @@ every request through a proxy or gateway.
 | `openai:gpt-6.1-sol` | chat | 922,000 | 128,000 | yes | yes | yes | text, image, PDF |
 | `openai:text-embedding-3-large` | embedding | 8,191 | — | — | — | — | text |
 | `openai:text-embedding-3-small` | embedding | 8,191 | — | — | — | — | text |
-<!-- /generated -->
 
 Older ids, such as `gpt-4o` or `o3`, are rejected with an error that names
 the replacement.
@@ -58,7 +56,7 @@ Name the model on the agent's `model` line, with any options after it:
 defmodule MyApp.SupportAgent do
   use BeamWeaver.Agent
 
-  model "openai:gpt-5.4-mini", reasoning_effort: :low
+  model "openai:gpt-5.4-mini", reasoning_effort: :low, timeout: 120_000
   system_prompt "You are Acme's support agent. Answer in two sentences."
 end
 
@@ -105,9 +103,12 @@ that speaks only that API:
 defmodule MyApp.SupportAgent do
   use BeamWeaver.Agent
 
-  model "openai:gpt-5.4-mini", api: :chat_completions
+  model "openai:gpt-5.4-mini", api: :chat_completions, timeout: 120_000
   system_prompt "You are Acme's support agent."
 end
+
+{:ok, result} = MyApp.SupportAgent.invoke(%{messages: ["Reply with the word ready."]})
+true = byte_size(result.messages |> List.last() |> BeamWeaver.Core.Message.text()) > 0
 ```
 
 Some newer models restrict tools on Chat Completions, and BeamWeaver rejects
@@ -133,6 +134,9 @@ defmodule MyApp.SupportAgent do
   model "openai:gpt-5.4", reasoning: %{effort: :high, summary: :auto}, timeout: 120_000
   system_prompt "You are Acme's support agent."
 end
+
+{:ok, result} = MyApp.SupportAgent.invoke(%{messages: ["Reply with the word ready."]})
+true = byte_size(result.messages |> List.last() |> BeamWeaver.Core.Message.text()) > 0
 ```
 
 The summary arrives as a `%{type: :reasoning}` block in the reply's `content`,
@@ -160,8 +164,8 @@ returns an `:unsupported_feature` error.
 
 ## Built-in tools
 
-OpenAI runs these tools itself, so there is nothing to implement. Each helper
-in `BeamWeaver.OpenAI.ToolCalling` returns a plain declaration:
+OpenAI runs hosted tools such as web search and code interpreter on its
+servers. Each helper in `BeamWeaver.OpenAI.ToolCalling` returns a declaration:
 
 ```elixir
 BeamWeaver.OpenAI.ToolCalling.web_search()
@@ -184,19 +188,40 @@ alias BeamWeaver.OpenAI.ToolCalling
 The search shows up as a `:web_search_call` block in `reply.content`, and its
 sources as `annotations` on the text block. The other helpers are
 `file_search/2` (with vector store ids), `image_generation/1`, `mcp/3` (a
-remote MCP server), `tool_search/1`, `apply_patch/1` and `custom/2`.
+remote MCP server) and `tool_search/1`.
+
+`apply_patch/1` and `custom/2` declare client tools: the model requests an
+action and your application must execute it and return the result. Adding
+either declaration does not give a BeamWeaver agent an implementation of
+that action. Use [Tools](../tools.md) for actions your agent executes.
+OpenAI's [Apply Patch guide](https://developers.openai.com/api/docs/guides/tools-apply-patch)
+describes the application-side executor.
 
 An agent offers built-in tools next to its own when they are in its model
-options; OpenAI runs them, and the agent runs its `tools`:
+options; OpenAI runs the hosted tools, and the agent runs its `tools`:
 
 ```elixir
+defmodule MyApp.Tools.LookupOrder do
+  use BeamWeaver.Tool
+  name "lookup_order"
+  description "Get an order's status."
+  schema do
+    field :order_id, :string
+  end
+  @impl true
+  def invoke(_tool, %{"order_id" => id}, _opts), do: {:ok, "Order #{id} shipped."}
+end
+
 defmodule MyApp.SupportAgent do
   use BeamWeaver.Agent
 
-  model "openai:gpt-5.4-mini", tools: [BeamWeaver.OpenAI.ToolCalling.web_search()]
+  model "openai:gpt-5.4-mini", tools: [BeamWeaver.OpenAI.ToolCalling.web_search()], timeout: 120_000
   system_prompt "You are Acme's support agent. Search the web for carrier outages."
   tools [MyApp.Tools.LookupOrder]
 end
+
+{:ok, result} = MyApp.SupportAgent.invoke(%{messages: ["Reply with the word ready."]})
+true = byte_size(result.messages |> List.last() |> BeamWeaver.Core.Message.text()) > 0
 ```
 
 ## Prompt caching
@@ -210,10 +235,13 @@ system prompt:
 defmodule MyApp.SupportAgent do
   use BeamWeaver.Agent
 
-  model "openai:gpt-5.4-mini"
+  model "openai:gpt-5.4-mini", timeout: 120_000
   system_prompt "You are Acme's support agent. Follow the refund policy below. ..."
   prompt_caching true
 end
+
+{:ok, result} = MyApp.SupportAgent.invoke(%{messages: ["Reply with the word ready."]})
+true = byte_size(result.messages |> List.last() |> BeamWeaver.Core.Message.text()) > 0
 ```
 
 On a direct call, build a key with `BeamWeaver.PromptCache.key/4` and pass it
@@ -281,7 +309,6 @@ bill output tokens, so `response.metadata.cost` counts input only.
 `BeamWeaver.OpenAI.generate_image/2` calls the Images API and returns OpenAI's
 response, with each image base64-encoded:
 
-<!-- snippet: compile -->
 ```elixir
 {:ok, response} = BeamWeaver.OpenAI.generate_image("A cardboard box with a smile", size: "1024x1024")
 [%{"b64_json" => png} | _] = response["data"]
@@ -295,10 +322,13 @@ endpoint. When something is flagged, the run ends with a refusal:
 defmodule MyApp.SupportAgent do
   use BeamWeaver.Agent
 
-  model "openai:gpt-5.4-mini"
+  model "openai:gpt-5.4-mini", timeout: 120_000
   system_prompt "You are Acme's support agent."
   middleware [BeamWeaver.Agent.Middleware.OpenAIModeration]
 end
+
+{:ok, result} = MyApp.SupportAgent.invoke(%{messages: ["Reply with the word ready."]})
+true = byte_size(result.messages |> List.last() |> BeamWeaver.Core.Message.text()) > 0
 ```
 
 ## Limitations
@@ -323,6 +353,8 @@ with `BeamWeaver.OpenAI.decision_model/1` and a `transport:` that returns a
 fixed answer, as [TypeSafe's testing section](typesafe.md#testing) shows.
 
 ## Reference
+
+- [OpenAI function calling](https://developers.openai.com/api/docs/guides/function-calling): provider API contract
 
 - [`BeamWeaver.OpenAI`](https://hexdocs.pm/beam_weaver/BeamWeaver.OpenAI.html): constructors, images and moderation
 - [`BeamWeaver.OpenAI.ChatModel`](https://hexdocs.pm/beam_weaver/BeamWeaver.OpenAI.ChatModel.html): the Responses API model

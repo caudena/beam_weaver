@@ -2,15 +2,10 @@ defmodule BeamWeaver.Migrations do
   @moduledoc """
   Versioned database migrations for BeamWeaver durable adapters.
 
-  Use this module from application-owned Ecto migrations:
-
-      def up do
-        BeamWeaver.Migrations.up(adapters: [:checkpoint, :memory])
-      end
-
-      def down do
-        BeamWeaver.Migrations.down(adapters: [:memory, :checkpoint], version: 1)
-      end
+  Call `up/1` and `down/1` from application-owned `Ecto.Migration` modules.
+  [Storage](storage.md#create-the-tables) shows repository startup, a complete
+  migration, and execution against the database. Migration functions require
+  Ecto's migration runner; they are not standalone table-creation functions.
 
   The default adapter is `:checkpoint`. Pass `adapters: :all` to install every
   durable adapter table. The repository selects the migration dialect:

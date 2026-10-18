@@ -37,7 +37,6 @@ end
 defmodule BeamWeaver.Examples.DeepAgents.AsyncSubagentServer do
   alias BeamWeaver.Agent
   alias BeamWeaver.Agent.Subagent.AsyncSpec
-  alias BeamWeaver.Core.Message
   alias BeamWeaver.Examples.DeepAgents.Support
 
   def run do
@@ -60,7 +59,7 @@ defmodule BeamWeaver.Examples.DeepAgents.AsyncSubagentServer do
         ]
       })
 
-    IO.puts(Message.text(List.last(messages)))
+    IO.puts(Support.assert_text!(List.last(messages)))
     Support.assert_tools_called!(messages, ["start_async_task", "check_async_task"])
   end
 end

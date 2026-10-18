@@ -2,119 +2,68 @@
 
 [![ci](https://github.com/caudena/beam_weaver/actions/workflows/ci.yml/badge.svg)](https://github.com/caudena/beam_weaver/actions/workflows/ci.yml)
 
-BeamWeaver is an Elixir library for building applications on large language
-models (LLMs) such as GPT, Claude and Gemini. You write tools as Elixir
-modules, and an agent lets the model call them in a loop until it can answer.
-Graphs run workflows with steps you define; they survive restarts and can
-pause for a person's approval. Deep agents plan, keep files and hand work to
-subagents. It all runs inside your own application, with streaming and
-tracing built in.
+Build AI agents and durable workflows in Elixir. Define tools as modules,
+give an agent a model and instructions, and run it inside your application.
+Use explicit graphs when your application should control the steps.
 
-**New here?** The [Quickstart](docs/quickstart.md) builds a working agent in
-about ten minutes; you need an API key only for the last step.
+These docs target **1.0.0**. The Hex dependency `{:beam_weaver, "~> 1.0.0"}`
+becomes installable when that release is published. See
+[Installation](docs/installation.md) for application setup and credentials.
 
-**Documentation:** [docs.weavescope.com/beamweaver](https://docs.weavescope.com/beamweaver) ·
-[API reference](https://hexdocs.pm/beam_weaver)
+## Your first agent
 
-## Install
+After configuring OpenAI in your application's `config/runtime.exs`:
 
 ```elixir
-def deps do
-  [
-    {:beam_weaver, "~> 1.0.0"}
-  ]
-end
-```
-
-## An agent with a tool
-
-```elixir
-defmodule MyApp.Tools.LookupOrder do
-  use BeamWeaver.Tool
-
-  name "lookup_order"
-  description "Look up the shipping status of an order by its id."
-
-  schema do
-    field :order_id, :string
-  end
-
-  @impl true
-  def invoke(_tool, %{"order_id" => order_id}, _opts) do
-    {:ok, "Order #{order_id} shipped on Monday."}
-  end
-end
-
 defmodule MyApp.SupportAgent do
   use BeamWeaver.Agent
 
-  model "openai:gpt-5.4-mini"
-  system_prompt "You are Acme's support agent. Look orders up before you answer."
-  tools [MyApp.Tools.LookupOrder]
+  model "openai:gpt-5.4-mini", max_tokens: 512, timeout: 60_000
+  system_prompt "Help customers with orders. Be brief and do not invent order details."
 end
 
-{:ok, result} = MyApp.SupportAgent.invoke(%{messages: ["Where is my order A-1001?"]})
-result.messages |> List.last() |> BeamWeaver.Core.Message.text()
-# e.g. "Your order A-1001 shipped on Monday."
+{:ok, result} = MyApp.SupportAgent.invoke(%{messages: ["What do you need to look up my order?"]})
+answer = result.messages |> List.last() |> BeamWeaver.Core.Message.text()
+true = is_binary(answer) and byte_size(answer) > 0
+IO.puts(answer)
 ```
 
-The tool's `name`, `description` and `schema` tell the model what it does.
-The model decides when to call `lookup_order`; BeamWeaver runs the tool and
-hands the result back until the model has an answer. This example calls
-OpenAI, so it needs an [API key](docs/models.md#api-keys). The
-[Quickstart](docs/quickstart.md) builds the same agent step by step and runs
-it without one.
+The [Quickstart](docs/quickstart.md) explains each line and includes a Google
+alternative. [Build an Agent](docs/tutorial.md) adds a real tool, verifies
+that the model called it, and continues the conversation.
 
-## What you get
+## Build from the pieces you need
 
-| Feature | What it gives you |
+| Capability | Guide |
 | --- | --- |
-| [Agents](docs/agents.md) | Agent modules with a model, tools, instructions and middleware. |
-| [Tools](docs/tools.md) | Typed tool modules, with access to state, runtime context and the memory store. |
-| [Structured output](docs/structured_output.md) | Answers validated against a schema. |
-| [Middleware](docs/builtin_middleware.md) | Retries, model fallback, call limits, PII redaction, summarization, tool selection. |
-| [Memory](docs/long_term_memory.md) | Conversation threads, long-term memory stores, and memory files. |
-| [Human-in-the-loop](docs/human_in_the_loop.md) | Pause before sensitive tool calls; approve, edit or reject, then resume. |
-| [Streaming](docs/streaming.md) | Typed events for tokens, tool calls and state updates. |
-| [Graphs](docs/graphs.md) | Workflows with branches, parallel steps, subgraphs and interrupts. |
-| [Durable execution](docs/durable_execution.md) | Checkpoints in Postgres or SQLite, resume after failures, time travel. |
-| [Deep agents](docs/deep_agents.md) | Planning, a virtual filesystem, skills, subagents and sandboxed code execution. |
-| [Retrieval](docs/retrieval.md) | Text splitters, embeddings, vector stores and retrievers. |
-| [Testing](docs/testing.md) | Scripted fake models and recorded provider responses for fast, offline tests. |
-| [Tracing](docs/tracing.md) | Run trees with token usage and costs, exported to WeaveScope. |
+| Declare agents, typed tools and structured answers | [Agents](docs/agents.md), [Tools](docs/tools.md), [Structured Output](docs/structured_output.md) |
+| Stream progress and integrate per-request context | [Streaming](docs/streaming.md), [Runtime Context](docs/runtime_context.md) |
+| Keep conversations and cross-thread memory | [Short-Term Memory](docs/short_term_memory.md), [Long-Term Memory](docs/long_term_memory.md) |
+| Review actions before they run | [Human-in-the-Loop](docs/human_in_the_loop.md) |
+| Add files, planning, skills and delegation | [Deep Agents](docs/deep_agents.md) |
+| Control workflow steps, branches and parallel work | [Graphs](docs/graphs.md), [Workflow Patterns](docs/workflow_patterns.md) |
+| Persist checkpoints and recover interrupted work | [Storage](docs/storage.md), [Durable Execution](docs/durable_execution.md) |
+| Search documents with embeddings and vector stores | [Retrieval](docs/retrieval.md) |
+| Apply retries, limits, caching and context policies | [Built-in Middleware](docs/builtin_middleware.md), [Context Management](docs/context_management.md) |
+| Test and inspect production behavior | [Testing](docs/testing.md), [Tracing](docs/tracing.md), [Going to Production](docs/going_to_production.md) |
 
 ## Providers
 
-OpenAI, Anthropic, Google Gemini, xAI, DeepSeek, Moonshot (Kimi) and Z.ai chat
-models, OpenAI and xAI embeddings, and TypeSafe decision models. Switching
-provider means changing the model string, and scripted fake models stand in
-for all of them in tests. See [Providers](docs/providers.md).
+OpenAI, Anthropic, Google Gemini, xAI, DeepSeek, Moonshot, Z.ai and TypeSafe.
+The [provider guides](docs/providers.md) distinguish chat, embedding and
+decision models and explain each provider's supported features. Fake models
+and replay transports support deterministic application tests.
 
-## Tracing with WeaveScope
+## Documentation and examples
 
-Every run is traced: agents, graph steps, model calls, tool calls and
-subagents, with tokens, costs and errors. Traces stay local until you add
-[WeaveScope](https://weavescope.com) credentials:
-
-```elixir
-# config/runtime.exs
-config :beam_weaver,
-  weave_scope: [
-    endpoint: "https://app.weavescope.com",
-    api_key: System.fetch_env!("WEAVESCOPE_API_KEY")
-  ]
-```
-
-![WeaveScope tracing view](https://raw.githubusercontent.com/caudena/beam_weaver/master/docs/assets/weavescope-tracing.png)
-
-## Learn more
-
-- [Quickstart](docs/quickstart.md): a working agent in ten minutes, no API key needed.
-- [Concepts](docs/concepts.md): agents, graphs, deep agents, threads and memory on one page.
-- [Examples](docs/examples.md): runnable scripts for every feature.
-- [Coming from LangChain](docs/coming_from_langchain.md): where familiar concepts live in BeamWeaver.
+- [Guides](https://docs.weavescope.com/beamweaver)
+- [API reference](https://hexdocs.pm/beam_weaver)
+- [Runnable examples](docs/examples.md)
 - [Changelog](CHANGELOG.md)
 
-## License
+Run `mix test` for deterministic checks and `mix docs.verify --all` for
+isolated documentation execution, including required live providers and
+services. The verification report identifies failures and unmet prerequisites;
+compilation alone is not reported as executed coverage.
 
 Apache-2.0. See [LICENSE](https://github.com/caudena/beam_weaver/blob/master/LICENSE).

@@ -202,7 +202,7 @@ defmodule BeamWeaver.Models.InitializerTest do
   end
 
   test "init_chat_model accepts explicit Moonshot identifiers but not Kimi aliases" do
-    for model <- ["kimi-k3", "kimi-k2.7-code", "kimi-k2.7-code-highspeed", "kimi-k2.6", "kimi-k2.5"] do
+    for model <- ["kimi-k3", "kimi-k2.7-code", "kimi-k2.7-code-highspeed", "kimi-k2.6"] do
       assert {:ok, %BeamWeaver.Moonshot.ChatModel{model: ^model}} =
                Models.init_chat_model("moonshot:" <> model)
     end

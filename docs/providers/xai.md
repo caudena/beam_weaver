@@ -2,8 +2,7 @@
 
 BeamWeaver calls xAI's Grok models through the Responses API
 (`BeamWeaver.XAI.ChatModel`, the default) or Chat Completions
-(`BeamWeaver.XAI.ChatCompletionsModel`), and xAI embeddings through
-`BeamWeaver.XAI.EmbeddingModel`. It supports reasoning effort, xAI's server
+(`BeamWeaver.XAI.ChatCompletionsModel`). It supports reasoning effort, xAI's server
 tools such as web search and X search (`BeamWeaver.XAI.Tools`), prompt caching,
 stored conversations and the priority tier.
 
@@ -20,7 +19,6 @@ Export `XAI_API_KEY`.
 
 ## Models
 
-<!-- generated: provider-models xai -->
 | Model | Kind | Input tokens | Output tokens | Tools | Structured output | Reasoning | Inputs |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | `xai:grok-4.20-0309-non-reasoning` | chat | 1,000,000 | 30,000 | yes | yes | — | text, image, PDF |
@@ -31,8 +29,6 @@ Export `XAI_API_KEY`.
 | `xai:grok-4.6` | chat | 500,000 | — | yes | yes | yes | text, image, PDF |
 | `xai:grok-4.7` | chat | 500,000 | — | yes | yes | yes | text, image, PDF |
 | `xai:grok-build-0.1` | chat | 256,000 | 30,000 | yes | yes | yes | text, image, PDF |
-| `xai:v1` | embedding | — | — | — | — | — | text |
-<!-- /generated -->
 
 `grok-4.6` is xAI's general-purpose model and BeamWeaver's default for the
 provider. Retired Grok ids are rejected with an error that names the
@@ -58,7 +54,7 @@ model without an agent, build it with `BeamWeaver.Models.init_chat_model/2`
 (see [Models](../models.md)):
 
 ```elixir
-{:ok, model} = BeamWeaver.Models.init_chat_model("xai:grok-4.6")
+{:ok, model} = BeamWeaver.Models.init_chat_model("xai:grok-4.6", timeout: 120_000)
 {:ok, reply} = BeamWeaver.Core.ChatModel.invoke(model, "Write a one-line apology for a late order.")
 BeamWeaver.Core.Message.text(reply)
 ```
@@ -97,9 +93,12 @@ Grok 4.6 reasons at `:high` effort unless you choose another level:
 defmodule MyApp.SupportAgent do
   use BeamWeaver.Agent
 
-  model "xai:grok-4.6", reasoning_effort: :low
+  model "xai:grok-4.6", reasoning_effort: :low, timeout: 120_000
   system_prompt "You are Acme's support agent."
 end
+
+{:ok, result} = MyApp.SupportAgent.invoke(%{messages: ["Reply with the word ready."]})
+true = byte_size(result.messages |> List.last() |> BeamWeaver.Core.Message.text()) > 0
 ```
 
 The reasoning text, when xAI returns it, arrives as `%{type: :reasoning}`
@@ -125,7 +124,7 @@ messages after the last reply xAI stored, with that reply's id as
 ```elixir
 alias BeamWeaver.Core.{ChatModel, Message}
 
-{:ok, model} = BeamWeaver.Models.init_chat_model("xai:grok-4.6")
+{:ok, model} = BeamWeaver.Models.init_chat_model("xai:grok-4.6", timeout: 120_000)
 history = [Message.user("My order number is A-1001.")]
 {:ok, reply} = ChatModel.invoke(model, history, use_previous_response_id: true)
 
@@ -149,8 +148,8 @@ xAI runs these tools on its side. Each helper in `BeamWeaver.XAI.Tools`
 returns a plain declaration:
 
 ```elixir
-BeamWeaver.XAI.Tools.web_search(search_depth: :deep)
-#=> %{"type" => "web_search", "search_depth" => "deep"}
+BeamWeaver.XAI.Tools.web_search()
+#=> %{"type" => "web_search"}
 ```
 
 Pass declarations with `tools:` on a direct model call to the Responses API:
@@ -158,18 +157,18 @@ Pass declarations with `tools:` on a direct model call to the Responses API:
 ```elixir
 alias BeamWeaver.XAI.Tools
 
-{:ok, model} = BeamWeaver.Models.init_chat_model("xai:grok-4.6")
+{:ok, model} = BeamWeaver.Models.init_chat_model("xai:grok-4.6", timeout: 120_000)
 
 {:ok, reply} =
-  BeamWeaver.Core.ChatModel.invoke(model, "What are customers saying about Acme's delivery times?",
-    tools: [Tools.web_search(), Tools.x_search()]
+  BeamWeaver.Core.ChatModel.invoke(model, "Find the official Elixir programming language website and summarize its purpose in one sentence.",
+    tools: [Tools.web_search()]
   )
 ```
 
-The other helpers are `code_execution/1`, `code_interpreter/1`,
-`collections_search/1`, `file_search/1`, `attachment_search/1`, `shell/1`,
-`view_image/1`, `view_x_video/1` and `mcp/3`. Chat Completions takes only
-`live_search/1` and function tools; BeamWeaver rejects the others there.
+The other hosted-tool helpers are `x_search/1`, `code_execution/1`,
+`code_interpreter/1`, `collections_search/1`, `file_search/1` and `mcp/3`.
+Collection and file search require vector store IDs from your account.
+Chat Completions takes function tools. Use the Responses API for hosted search.
 
 An agent offers server tools next to its own when they are in its model
 options:
@@ -178,9 +177,12 @@ options:
 defmodule MyApp.SupportAgent do
   use BeamWeaver.Agent
 
-  model "xai:grok-4.6", tools: [BeamWeaver.XAI.Tools.web_search()]
+  model "xai:grok-4.6", tools: [BeamWeaver.XAI.Tools.web_search()], timeout: 120_000
   system_prompt "You are Acme's support agent. Search the web for carrier outages."
 end
+
+{:ok, result} = MyApp.SupportAgent.invoke(%{messages: ["Reply with the word ready."]})
+true = byte_size(result.messages |> List.last() |> BeamWeaver.Core.Message.text()) > 0
 ```
 
 ## Prompt caching
@@ -194,10 +196,13 @@ only as the header:
 defmodule MyApp.SupportAgent do
   use BeamWeaver.Agent
 
-  model "xai:grok-4.6", api: :chat_completions
+  model "xai:grok-4.6", api: :chat_completions, timeout: 120_000
   system_prompt "You are Acme's support agent. Follow the refund policy below. ..."
   prompt_caching true
 end
+
+{:ok, result} = MyApp.SupportAgent.invoke(%{messages: ["Reply with the word ready."]})
+true = byte_size(result.messages |> List.last() |> BeamWeaver.Core.Message.text()) > 0
 ```
 
 On a direct call, build the key with `BeamWeaver.PromptCache.key/4` and pass it
@@ -207,10 +212,11 @@ See [Caching](../caching.md).
 
 ## Embeddings
 
-```elixir
-{:ok, embeddings} = BeamWeaver.Models.init_embeddings("xai:v1")
-{:ok, vector} = BeamWeaver.Core.EmbeddingModel.embed_query(embeddings, "Where is my order?")
-```
+BeamWeaver does not support xAI embeddings. xAI's [public model
+catalogue](https://docs.x.ai/developers/models) lists no embedding model.
+Use [OpenAI embeddings](openai.md#embeddings) for vector retrieval, including
+when your agent uses a Grok chat model. See [Retrieval](../retrieval.md) for
+a complete example.
 
 ## Limitations
 
@@ -228,9 +234,10 @@ how to write one.
 
 ## Reference
 
+- [xAI function calling](https://docs.x.ai/developers/tools/function-calling): provider API contract
+
 - [`BeamWeaver.XAI`](https://hexdocs.pm/beam_weaver/BeamWeaver.XAI.html): constructors
 - [`BeamWeaver.XAI.ChatModel`](https://hexdocs.pm/beam_weaver/BeamWeaver.XAI.ChatModel.html): the Responses API model
 - [`BeamWeaver.XAI.ChatCompletionsModel`](https://hexdocs.pm/beam_weaver/BeamWeaver.XAI.ChatCompletionsModel.html): the Chat Completions model
-- [`BeamWeaver.XAI.EmbeddingModel`](https://hexdocs.pm/beam_weaver/BeamWeaver.XAI.EmbeddingModel.html): embeddings
 - [`BeamWeaver.XAI.Tools`](https://hexdocs.pm/beam_weaver/BeamWeaver.XAI.Tools.html): server tool declarations
 - [`BeamWeaver.XAI.Client`](https://hexdocs.pm/beam_weaver/BeamWeaver.XAI.Client.html): raw client, including deferred completions

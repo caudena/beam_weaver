@@ -27,9 +27,6 @@ defmodule BeamWeaver.Google.Tools do
 
   def google_search(opts \\ %{}), do: %{"googleSearch" => Options.stringify_keys(Map.new(opts))}
 
-  def google_search_retrieval(opts \\ %{}),
-    do: %{"googleSearchRetrieval" => Options.stringify_keys(Map.new(opts))}
-
   def google_maps(opts \\ %{}), do: %{"googleMaps" => Options.stringify_keys(Map.new(opts))}
 
   def code_execution(opts \\ %{}), do: %{"codeExecution" => Options.stringify_keys(Map.new(opts))}
@@ -186,7 +183,6 @@ defmodule BeamWeaver.Google.Tools do
 
   @builtin_tool_keys %{
     "google_search" => "googleSearch",
-    "google_search_retrieval" => "googleSearchRetrieval",
     "google_maps" => "googleMaps",
     "code_execution" => "codeExecution",
     "file_search" => "fileSearch",

@@ -8,7 +8,6 @@ Code.require_file("support/support.exs", __DIR__)
 
 defmodule BeamWeaver.Examples.DeepAgents.DeployCodingAgent do
   alias BeamWeaver.Agent
-  alias BeamWeaver.Core.Message
   alias BeamWeaver.Examples.DeepAgents.Support
   alias BeamWeaver.Filesystem.Local
   alias BeamWeaver.Filesystem.Permission
@@ -39,9 +38,11 @@ defmodule BeamWeaver.Examples.DeepAgents.DeployCodingAgent do
         messages: ["The test in /workspace/test/greeter_test.exs fails. Fix the code so it passes."]
       })
 
-    IO.puts(Message.text(List.last(messages)))
+    IO.puts(Support.assert_text!(List.last(messages)))
     IO.puts("\n/workspace/lib/greeter.ex:\n#{File.read!(Path.join(root, "workspace/lib/greeter.ex"))}")
     Support.assert_tools_called!(messages, ["read_file", ["edit_file", "write_file"]])
+    Code.compile_file(Path.join(root, "workspace/lib/greeter.ex"))
+    "Hello, Ada!" = apply(Greeter, :hello, ["Ada"])
   end
 
   defp seed_project!(root) do

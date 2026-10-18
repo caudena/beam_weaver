@@ -8,12 +8,24 @@ defmodule BeamWeaver.Agent.Middleware do
 
       defmodule MyApp.LogMiddleware do
         use BeamWeaver.Agent.Middleware
+        require Logger
 
+        @impl true
         def before_model(_middleware, state, _runtime) do
           Logger.info("calling the model with #{length(state.messages)} messages")
           nil
         end
       end
+
+      defmodule MyApp.LoggedAgent do
+        use BeamWeaver.Agent
+        model "fake:chat", responses: ["Ready."]
+        middleware [MyApp.LogMiddleware]
+      end
+
+      {:ok, result} = MyApp.LoggedAgent.invoke(%{messages: ["Hello"]})
+      result.messages |> List.last() |> BeamWeaver.Core.Message.text()
+      #=> "Ready."
 
   An agent's middleware entry can be a module, a struct, or `{module, opts}`.
   `{module, opts}` is built with `module.new(opts)` when the module defines

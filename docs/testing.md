@@ -340,9 +340,8 @@ Your application's agents use a real model, so tests need a way to swap it.
 BeamWeaver evaluates the `model` declaration each time the agent runs, so it
 can read the application environment:
 
-<!-- snippet: compile -->
 ```elixir
-defmodule MyApp.SupportAgent do
+defmodule MyApp.ConfiguredSupportAgent do
   use BeamWeaver.Agent
 
   model Application.fetch_env!(:my_app, :support_model)
@@ -371,7 +370,6 @@ To test the requests your application sends to a real provider, give a
 provider model the replay transport. It answers from a cassette, a YAML file
 of requests and their recorded responses, and never opens a connection:
 
-<!-- snippet: run -->
 ```elixir
 cassette = """
 requests:
@@ -421,6 +419,52 @@ response you expect, run the test, and copy the request body from
 An agent needs one interaction per model call. To build responses in code,
 write your own transport, as on the [TypeSafe](providers/typesafe.md#testing)
 page.
+
+## Verify the documentation
+
+The example-verification commands execute the code printed in these guides,
+API docs and example scripts separately from `mix test`. Scenarios run in
+separate BEAM processes:
+
+```bash
+mix docs.verify --all
+mix docs.verify --all --only storage
+mix docs.live --only providers_openai
+mix docs.verify --provider google --only quickstart
+mix docs.verify --model openai:gpt-5.4-mini --only quickstart
+mix docs.verify --all --scripts --only examples/react_agent.exs
+```
+
+`--only` filters a page slug or script path. `--scenario` filters named
+scenarios. `--provider` selects scenarios whose providers are in the supplied
+comma-separated list. For documentation, `--model` filters by a model actually
+written in the example. For generic example scripts, it selects the model
+passed to the script. `--service postgres,docker` enables those
+requirements; `--all` enables all services. `--timeout` bounds each scenario
+or script in seconds (300 by default).
+
+A complete unfiltered `--all` run includes the example scripts and a fresh
+consumer of the built package. Individual scripts can also be selected with
+`--scripts`. Live examples read credentials from the environment or the
+checkout's `.env`. Missing credentials are recorded as blocked, not silently
+removed. PostgreSQL scenarios use disposable pgvector containers; they never
+fall back to a database from your environment. Docker must be running.
+
+Each run writes a report and logs beneath `_build/docs_verify/runs/`; the
+latest report is also `_build/docs_verify/report.json`. Records include the
+actual source code, its location, prerequisites and execution status. The
+API inventory lists public members, documentation status and guide references.
+Compilation-only fragments, errors and missing prerequisites cannot produce
+successful execution coverage.
+
+The documentation targets 1.0.0. Testing the built package in a fresh app
+proves local release readiness; it does not prove that the Hex dependency can
+be installed before publication. The report keeps the public installation
+check separate and the full verifier reports it as incomplete until verified.
+
+The verifier groups related examples into scenarios using separate test
+configuration. Each scenario starts a fresh VM with all its prerequisites
+enabled together, so it cannot inherit another example's state.
 
 ## Reference
 

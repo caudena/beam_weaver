@@ -9,11 +9,15 @@ defmodule BeamWeaver.Agent.Subagent.Compiled do
   recursion limit unless `recursion_limit` is set here or declared by the
   agent module.
 
-      %BeamWeaver.Agent.Subagent.Compiled{
+      {:ok, agent} = BeamWeaver.Agent.build(model: "fake:chat", model_opts: [responses: ["Ready."]])
+      specialist = %BeamWeaver.Agent.Subagent.Compiled{
         name: "order_historian",
         description: "Summarizes a customer's order history.",
-        agent: MyApp.OrderHistorian
+        agent: agent
       }
+      {:ok, result} = BeamWeaver.Agent.invoke(specialist.agent, %{messages: ["Hello"]})
+      result.messages |> List.last() |> BeamWeaver.Core.Message.text()
+      #=> "Ready."
 
   `capture_output` and `inherit_messages` work as for
   `BeamWeaver.Agent.Subagent.Spec`. See [Subagents](subagents.md).

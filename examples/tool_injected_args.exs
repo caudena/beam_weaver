@@ -26,6 +26,8 @@ defmodule BeamWeaver.Examples.ToolInjectedArgs.RecordEvent do
   def invoke(_tool, %{"event" => event} = input, _opts) do
     workspace = input.context[:workspace]
     messages = Map.get(input.state, :messages, [])
+    "acme-ops" = workspace
+    true = length(messages) > 0
     {:ok, "Logged #{inspect(event)} in workspace #{workspace} (conversation length: #{length(messages)})."}
   end
 end
@@ -44,5 +46,5 @@ end
     context: %{workspace: "acme-ops"}
   )
 
-messages |> List.last() |> Message.text() |> IO.puts()
+messages |> List.last() |> Support.assert_text!() |> IO.puts()
 Support.assert_tools_called!(messages, ["record_event"])

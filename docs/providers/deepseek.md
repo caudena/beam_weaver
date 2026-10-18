@@ -20,14 +20,12 @@ Export `DEEPSEEK_API_KEY`.
 
 ## Models
 
-<!-- generated: provider-models deepseek -->
 | Model | Kind | Input tokens | Output tokens | Tools | Structured output | Reasoning | Inputs |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | `deepseek:deepseek-flash` | chat | 1,048,576 | 393,216 | yes | yes | yes | text, image |
 | `deepseek:deepseek-v4-flash` | chat | 1,048,576 | 393,216 | yes | yes | yes | text, image |
 | `deepseek:deepseek-v4-flash-vision-exp` | chat | 1,048,576 | 393,216 | yes | yes | yes | text, image |
 | `deepseek:deepseek-v4-pro` | chat | 1,048,576 | 393,216 | yes | yes | yes | text |
-<!-- /generated -->
 
 `deepseek-flash` is DeepSeek V4.1 Flash; `deepseek-v4-flash` and
 `deepseek-v4-flash-vision-exp` are older names for the same model. The retired
@@ -123,17 +121,21 @@ validates the answer itself (see [Structured Output](../structured_output.md)).
 Flash reads JPEG, PNG, GIF and WebP images in user messages and tool results;
 V4 Pro is text only:
 
+Run this example from a repository checkout, using the bundled
+[example fixtures](https://github.com/caudena/beam_weaver/tree/master/examples/fixtures).
+
 ```elixir
 alias BeamWeaver.Core.{ContentBlock, Message}
 
 question =
   Message.user([
-    ContentBlock.text("What is damaged in this photo?"),
-    ContentBlock.image(url: "https://example.com/returns/A-1001.jpg")
+    ContentBlock.text("What color fills this image? Reply with one color word."),
+    ContentBlock.image(data: Base.encode64(File.read!("examples/fixtures/red-square.png")), mime_type: "image/png")
   ])
 
 {:ok, model} = BeamWeaver.Models.init_chat_model("deepseek:deepseek-flash")
 {:ok, reply} = BeamWeaver.Core.ChatModel.invoke(model, [question])
+true = String.contains?(String.downcase(Message.text(reply)), "red")
 ```
 
 ## Beta features
@@ -154,7 +156,6 @@ the model continues), and you can send any call there with `beta: true`:
 fill-in-the-middle code completion (which runs without thinking), the model
 list and the account balance:
 
-<!-- snippet: compile -->
 ```elixir
 client = BeamWeaver.DeepSeek.Client.new()
 
@@ -198,6 +199,8 @@ and `transport_opts: [cassette_path: "test/cassettes/deepseek.yml"]`;
 how to write one.
 
 ## Reference
+
+- [DeepSeek tool calls](https://api-docs.deepseek.com/guides/tool_calls/): provider API contract
 
 - [`BeamWeaver.DeepSeek`](https://hexdocs.pm/beam_weaver/BeamWeaver.DeepSeek.html): constructors
 - [`BeamWeaver.DeepSeek.ChatModel`](https://hexdocs.pm/beam_weaver/BeamWeaver.DeepSeek.ChatModel.html): the Chat Completions model

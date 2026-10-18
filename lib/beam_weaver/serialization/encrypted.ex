@@ -9,10 +9,17 @@ defmodule BeamWeaver.Serialization.Encrypted do
   Select it in a serialization config, with the key as `:encryption_key` (raw)
   or `:encryption_key_base64`:
 
-      BeamWeaver.Checkpoint.Ecto.new(
-        repo: MyApp.Repo,
-        serialization: [codec: BeamWeaver.Serialization.Encrypted, encryption_key: key]
-      )
+  ```elixir
+  key = :crypto.strong_rand_bytes(32)
+  opts = [encryption_key: key]
+  {:ok, encrypted} = BeamWeaver.Serialization.Encrypted.dump(%{order_id: "A-1001"}, opts)
+  BeamWeaver.Serialization.Encrypted.load(encrypted, opts)
+  #=> {:ok, %{order_id: "A-1001"}}
+  ```
+
+  Persist the key securely for as long as you need to read the records.
+  Pass the codec and key in an adapter's `serialization:` option; see
+  [Storage](storage.md#encryption).
   """
 
   @behaviour BeamWeaver.Serialization.Codec

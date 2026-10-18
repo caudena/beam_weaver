@@ -452,8 +452,15 @@ end
 ```
 
 ```elixir
-model "anthropic:claude-haiku-4-5"
-tools [MyApp.OrderTools]
+defmodule MyApp.OrderAgent do
+  use BeamWeaver.Agent
+
+  model "anthropic:claude-haiku-4-5"
+  tools [MyApp.OrderTools]
+end
+
+{:ok, result} = MyApp.OrderAgent.invoke(%{messages: ["Reply with the word ready."]})
+true = is_binary(result.messages |> List.last() |> BeamWeaver.Core.Message.text())
 ```
 
 In a `tools do` block, `tool MyApp.OrderTools, region: "eu"` passes the

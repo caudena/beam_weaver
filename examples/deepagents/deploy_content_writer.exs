@@ -8,7 +8,6 @@ Code.require_file("support/support.exs", __DIR__)
 
 defmodule BeamWeaver.Examples.DeepAgents.DeployContentWriter do
   alias BeamWeaver.Agent
-  alias BeamWeaver.Core.Message
   alias BeamWeaver.Examples.DeepAgents.Support
   alias BeamWeaver.Filesystem.Local
 
@@ -30,12 +29,14 @@ defmodule BeamWeaver.Examples.DeepAgents.DeployContentWriter do
     {:ok, %{messages: messages}} =
       Agent.invoke(agent, %{messages: ["Draft a two-sentence announcement for BeamWeaver 1.0 and save it."]})
 
-    IO.puts(Message.text(List.last(messages)))
+    IO.puts(Support.assert_text!(List.last(messages)))
 
     for draft <- Path.wildcard(Path.join(root, "drafts/*")),
         do: IO.puts("\n#{Path.relative_to(draft, root)}:\n#{File.read!(draft)}")
 
     Support.assert_tools_called!(messages, ["write_file"])
+    drafts = Support.assert_files!(Path.join(root, "drafts/*"))
+    true = Enum.any?(drafts, &String.contains?(File.read!(&1), "The BeamWeaver team"))
   end
 end
 

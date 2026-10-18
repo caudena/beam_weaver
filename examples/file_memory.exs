@@ -56,7 +56,9 @@ end
 
 # Two separate conversations: the second one knows the preference only through the file.
 remembered = converse.("Please remember that I want temperatures in Fahrenheit.")
-converse.("How warm is Lisbon usually in May?")
+recalled = converse.("How warm is Lisbon usually in May?")
+true = String.contains?(String.downcase(File.read!(memory_file)), "fahrenheit")
+true = String.match?(Message.text(List.last(recalled)), ~r/fahrenheit|°\s*F\b/i)
 
 IO.puts("Memory file after this run:\n\n#{File.read!(memory_file)}")
 Support.assert_tools_called!(remembered, [["edit_file", "write_file"]])

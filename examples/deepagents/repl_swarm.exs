@@ -12,7 +12,6 @@ defmodule BeamWeaver.Examples.DeepAgents.ReplSwarm do
   alias BeamWeaver.Agent
   alias BeamWeaver.Agent.Middleware.Filesystem
   alias BeamWeaver.Agent.Subagent.Spec
-  alias BeamWeaver.Core.Message
   alias BeamWeaver.Examples.DeepAgents.Support
   alias BeamWeaver.Filesystem.Local
   alias BeamWeaver.Filesystem.Permission
@@ -57,8 +56,9 @@ defmodule BeamWeaver.Examples.DeepAgents.ReplSwarm do
         ]
       })
 
-    IO.puts(Message.text(List.last(messages)))
+    IO.puts(Support.assert_text!(List.last(messages)))
     Support.assert_tools_called!(messages, ["task"])
+    true = Enum.any?(messages, fn message -> Enum.count(message.tool_calls, &(&1.name == "task")) >= 3 end)
   end
 
   defp seed_inbox_and_skill!(root) do

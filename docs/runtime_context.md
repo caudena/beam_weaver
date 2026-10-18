@@ -64,12 +64,10 @@ talked into reading another customer's orders.
 and `resume_review/2`. Put anything there that describes the caller rather
 than the conversation: ids, roles, feature flags, locale.
 
-{% hint style="warning" %}
-Context is not saved with the thread. Pass it again on every call to the same
-thread, including `resume/2` and `resume_review/2` after an interrupt. Without
-it, a resume fails with `:invalid_context` when the context schema has
-required fields; otherwise tools and middleware see `nil`.
-{% endhint %}
+> Context is not saved with the thread. Pass it again on every call to the same
+> thread, including `resume/2` and `resume_review/2` after an interrupt. Without
+> it, a resume fails with `:invalid_context` when the context schema has
+> required fields; otherwise tools and middleware see `nil`.
 
 Subagents receive the context of the agent that calls them
 ([Subagents](subagents.md)).

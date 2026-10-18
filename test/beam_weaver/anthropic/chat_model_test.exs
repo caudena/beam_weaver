@@ -1045,7 +1045,12 @@ defmodule BeamWeaver.Anthropic.ChatModelTest do
       opts = Keyword.merge([tools: [lookup_tool]], StructuredOutput.provider_opts(strategy))
 
       assert {:ok, body} = ChatModel.request_body(model, [Message.user("look it up")], opts)
-      assert body["output_config"]["format"] == %{"type" => "json_schema", "schema" => schema}
+
+      assert body["output_config"]["format"] == %{
+               "type" => "json_schema",
+               "schema" => Map.put(schema, "additionalProperties", false)
+             }
+
       assert [%{"name" => "lookup"}] = body["tools"]
       refute Map.has_key?(body, "tool_choice")
     end
@@ -1110,7 +1115,7 @@ defmodule BeamWeaver.Anthropic.ChatModelTest do
               "messages" => [%{"role" => "user", "content" => "answer"}],
               "stream" => false,
               "output_config" => %{
-                "format" => %{"type" => "json_schema", "schema" => schema}
+                "format" => %{"type" => "json_schema", "schema" => Map.put(schema, "additionalProperties", false)}
               }
             }
           },

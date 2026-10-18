@@ -35,20 +35,14 @@ defmodule BeamWeaver.Models.InitializerConfigTest do
     assert google.api_key == nil
   end
 
-  test "init_embeddings applies the configured OpenAI and xAI API keys" do
+  test "init_embeddings applies the configured OpenAI API key" do
     ConfigHelper.put_config(:openai, api_key: "openai-config-secret")
-    ConfigHelper.put_config(:xai, api_key: "xai-config-secret")
 
-    for {id, header} <- [
-          {"openai:text-embedding-3-small", "Bearer openai-config-secret"},
-          {"xai:v1", "Bearer xai-config-secret"}
-        ] do
-      model = Models.init_embeddings!(id, transport: RecordingTransport, transport_opts: [parent: self()])
-      EmbeddingModel.embed_query(model, "refunds")
+    model = Models.init_embeddings!("openai:text-embedding-3-small", transport_opts())
+    EmbeddingModel.embed_query(model, "refunds")
 
-      assert_received {:transport_request, request}
-      assert {"authorization", header} in request.headers
-    end
+    assert_received {:transport_request, request}
+    assert {"authorization", "Bearer openai-config-secret"} in request.headers
   end
 
   test "OpenAI and Anthropic models use the configured base_url" do

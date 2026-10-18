@@ -8,7 +8,6 @@ Code.require_file("support/support.exs", __DIR__)
 
 defmodule BeamWeaver.Examples.DeepAgents.DownloadingAgents do
   alias BeamWeaver.Agent
-  alias BeamWeaver.Core.Message
   alias BeamWeaver.Examples.DeepAgents.Support
   alias BeamWeaver.Filesystem.Local
 
@@ -29,12 +28,13 @@ defmodule BeamWeaver.Examples.DeepAgents.DownloadingAgents do
     {:ok, %{messages: messages}} =
       Agent.invoke(agent, %{messages: ["Write a tagline for a reusable steel water bottle and save it."]})
 
-    IO.puts(Message.text(List.last(messages)))
+    IO.puts(Support.assert_text!(List.last(messages)))
 
     for draft <- Path.wildcard(Path.join(package, "drafts/*")),
         do: IO.puts("\n#{Path.relative_to(draft, package)}:\n#{File.read!(draft)}")
 
     Support.assert_tools_called!(messages, ["write_file"])
+    Support.assert_files!(Path.join(package, "drafts/*"))
   end
 
   # Stands in for downloading and unpacking an agent package.

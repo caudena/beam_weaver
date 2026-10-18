@@ -73,12 +73,12 @@ defmodule BeamWeaver.Moonshot.ChatModelTest do
            }
   end
 
-  # Kimi K2.6 and K2.5 ignore a json_schema response format and answer in
+  # Kimi K2.6 ignores a json_schema response format and answers in
   # prose, so a schema goes out as JSON mode with the schema in the prompt.
   test "K2 thinking-toggle models send a response schema as JSON mode with the schema in the prompt" do
     schema = %{type: :object, properties: %{answer: %{type: :string}}, required: [:answer]}
 
-    for model <- ["kimi-k2.6", "kimi-k2.5"] do
+    for model <- ["kimi-k2.6"] do
       assert {:ok, body} =
                ChatModel.request_body(
                  ChatModel.new(model: model),
@@ -243,30 +243,6 @@ defmodule BeamWeaver.Moonshot.ChatModelTest do
              )
 
     assert partial_error.type == :invalid_request
-  end
-
-  test "K2.5 uses the same fixed sampling params as K2.6" do
-    assert {:error, temp_error} =
-             ChatModel.request_body(ChatModel.new(model: "kimi-k2.5"), [Message.user("hi")], temperature: 0.2)
-
-    assert temp_error.type == :unsupported_model_param
-    assert temp_error.details.model == "kimi-k2.5"
-    assert temp_error.details.param == :temperature
-    assert temp_error.details.supported == 1.0
-
-    assert {:ok, body} =
-             ChatModel.request_body(ChatModel.new(model: "kimi-k2.5"), [Message.user("hi")],
-               thinking: %{type: :disabled},
-               temperature: 0.6,
-               top_p: 0.95,
-               n: 1,
-               presence_penalty: 0,
-               frequency_penalty: 0
-             )
-
-    assert body["model"] == "kimi-k2.5"
-    assert body["thinking"] == %{"type" => "disabled"}
-    assert body["temperature"] == 0.6
   end
 
   test "K2.7 Code supports only enabled thinking and automatic tool choice" do
@@ -910,7 +886,7 @@ defmodule BeamWeaver.Moonshot.ChatModelTest do
   end
 
   test "model initializer supports Moonshot prefix, rejects aliases, and reports deprecated models" do
-    for model <- ["kimi-k3", "kimi-k2.7-code", "kimi-k2.7-code-highspeed", "kimi-k2.6", "kimi-k2.5"] do
+    for model <- ["kimi-k3", "kimi-k2.7-code", "kimi-k2.7-code-highspeed", "kimi-k2.6"] do
       assert {:ok, %ChatModel{model: ^model}} = Models.init_chat_model("moonshot:" <> model)
     end
 

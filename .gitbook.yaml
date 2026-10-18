@@ -10,6 +10,7 @@ redirects:
   adapters: storage.md
   agent_harness: deep_agents.md
   async_subagents: subagents.md
+  coming_from_langchain: quickstart.md
   compaction: compaction_engine.md
   context_engineering: context_management.md
   core: models.md

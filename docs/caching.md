@@ -108,6 +108,27 @@ MyApp.TicketTriage.invoke(input)
 like a checkpointer. `BeamWeaver.Cache.Ecto` keeps them in Postgres and is a
 plain struct, so a graph module can declare it:
 
+Before running the database examples on this page, set `DATABASE_URL` to
+an empty PostgreSQL database reserved for examples, then run this setup in
+the same IEx session. The verification command creates a disposable database.
+
+```elixir
+defmodule MyApp.Repo do
+  use Ecto.Repo, otp_app: :my_app, adapter: Ecto.Adapters.Postgres
+end
+
+{:ok, _repo} = MyApp.Repo.start_link(url: System.fetch_env!("DATABASE_URL"), pool_size: 2, log: false)
+
+defmodule MyApp.CreateAgentTables do
+  use Ecto.Migration
+
+  def up, do: BeamWeaver.Migrations.up(adapters: [:checkpoint, :memory, :cache])
+  def down, do: BeamWeaver.Migrations.down(adapters: [:cache, :memory, :checkpoint])
+end
+
+:ok = Ecto.Migrator.up(MyApp.Repo, 1, MyApp.CreateAgentTables, log: false)
+```
+
 ```elixir
 defmodule MyApp.TicketTriage do
   use BeamWeaver.Graph
@@ -196,9 +217,16 @@ middleware, which sends what each provider needs:
 | Google, DeepSeek, Z.ai | Nothing: they cache repeated prefixes on their own |
 
 ```elixir
-model "anthropic:claude-haiku-4-5"
-system_prompt "You are Acme's support agent. Follow the refund policy below. ..."
-prompt_caching true
+defmodule MyApp.CachedSupportAgent do
+  use BeamWeaver.Agent
+
+  model "anthropic:claude-haiku-4-5"
+  system_prompt "You are Acme's support agent. Follow the refund policy below. ..."
+  prompt_caching true
+end
+
+{:ok, result} = MyApp.CachedSupportAgent.invoke(%{messages: ["Reply with the word ready."]})
+true = is_binary(result.messages |> List.last() |> BeamWeaver.Core.Message.text())
 ```
 
 The cache key comes from a scope (the agent's name by default), the model and

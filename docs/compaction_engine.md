@@ -294,6 +294,10 @@ transaction, and only if nobody moved the conversation since you built the
 request. Here a `generation` column serves as that fence:
 
 ```elixir
+defmodule MyApp.Repo do
+  use Ecto.Repo, otp_app: :my_app, adapter: Ecto.Adapters.Postgres
+end
+
 defmodule MyApp.Conversations do
   import Ecto.Query
 

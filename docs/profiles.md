@@ -5,7 +5,6 @@ the system prompt, tools to hide, new tool descriptions, extra middleware, and
 settings for the general-purpose subagent. Use profiles when an agent runs on
 several models and each model works best with its own adjustments.
 
-<!-- snippet: run -->
 ```elixir
 alias BeamWeaver.Agent.CapabilityProfile
 
@@ -36,7 +35,6 @@ ask for parallel tool calls, reading before making claims, and a check of each
 tool result; the OpenAI ones ask GPT-5 models to work like an autonomous
 engineer. `CapabilityProfile.builtin_keys/0` lists them:
 
-<!-- snippet: run -->
 ```elixir
 CapabilityProfile.builtin_keys() |> Enum.filter(&String.starts_with?(&1, "openai"))
 #=> ["openai:gpt-5.4", "openai:gpt-5.4-mini", "openai:gpt-5.5"]
@@ -138,12 +136,25 @@ with a `description` and a `system_prompt` for it, and `enabled: false` to
 leave it out. List it with the subagents to apply it:
 
 ```elixir
-model "anthropic:claude-sonnet-4-6"
-
-subagents do
-  subagent MyApp.PolicyExpert
-  include [CapabilityProfile.for_model("anthropic:claude-sonnet-4-6").general_purpose_subagent]
+defmodule MyApp.PolicyExpert do
+  use BeamWeaver.Agent
+  description "Answers return-policy questions."
+  model "fake:chat", responses: ["Returns are accepted within 30 days."]
 end
+
+defmodule MyApp.ProfiledSupervisorAgent do
+  use BeamWeaver.Agent
+
+  model "anthropic:claude-sonnet-4-6"
+
+  subagents do
+    subagent MyApp.PolicyExpert
+    include [CapabilityProfile.for_model("anthropic:claude-sonnet-4-6").general_purpose_subagent]
+  end
+end
+
+{:ok, result} = MyApp.ProfiledSupervisorAgent.invoke(%{messages: ["Reply with the word ready."]})
+true = is_binary(result.messages |> List.last() |> BeamWeaver.Core.Message.text())
 ```
 
 To change more than its texts, such as its model, declare a subagent named

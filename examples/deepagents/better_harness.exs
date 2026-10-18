@@ -40,7 +40,6 @@ end
 
 defmodule BeamWeaver.Examples.DeepAgents.BetterHarness do
   alias BeamWeaver.Agent
-  alias BeamWeaver.Core.Message
   alias BeamWeaver.Examples.DeepAgents.BetterHarness.RunEvals
   alias BeamWeaver.Examples.DeepAgents.Support
   alias BeamWeaver.Filesystem.Local
@@ -83,9 +82,14 @@ defmodule BeamWeaver.Examples.DeepAgents.BetterHarness do
         messages: ["The target agent never cites sources and its answers ramble. Improve its prompt."]
       })
 
-    IO.puts(Message.text(List.last(messages)))
+    IO.puts(Support.assert_text!(List.last(messages)))
     IO.puts("\n/prompt.txt now reads:\n#{File.read!(Path.join(root, "prompt.txt"))}")
     Support.assert_tools_called!(messages, [["edit_file", "write_file"], "run_evals"])
+
+    for split <- ["train", "holdout"] do
+      {:ok, report} = RunEvals.invoke(nil, %{"split" => split}, [])
+      false = String.contains?(report, "FAIL")
+    end
   end
 end
 

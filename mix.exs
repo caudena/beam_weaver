@@ -6,7 +6,7 @@ defmodule BeamWeaver.MixProject do
       app: :beam_weaver,
       version: "1.0.0",
       description:
-        "Elixir-native LangChain, LangGraph, and DeepAgents for traceable LLM apps: OTP workflows, tools, memory, human-in-the-loop, streaming, custom clients/adapters, minimal deps, and WeaveScope tracing.",
+        "AI agents for Elixir: declare an agent in a module, give it tools, memory and middleware, run it across providers, stream it, pause it for human review, and run durable graph workflows on OTP.",
       source_url: "https://github.com/caudena/beam_weaver",
       homepage_url: "https://github.com/caudena/beam_weaver",
       elixir: "~> 1.19",
@@ -19,6 +19,8 @@ defmodule BeamWeaver.MixProject do
     ]
   end
 
+  def cli, do: [preferred_envs: ["docs.live": :dev, "docs.verify": :dev]]
+
   # Run "mix help compile.app" to learn about applications.
   def application do
     [
@@ -30,6 +32,7 @@ defmodule BeamWeaver.MixProject do
   defp deps do
     [
       {:ex_doc, "~> 0.40", only: :dev, runtime: false},
+      {:earmark_parser, "~> 1.4", only: :dev, runtime: false},
       {:ecto_sql, "~> 3.13"},
       {:postgrex, "~> 0.20"},
       {:ecto_sqlite3, "~> 0.25.0", optional: true},
@@ -47,6 +50,7 @@ defmodule BeamWeaver.MixProject do
     "adapters" => "storage",
     "agent_harness" => "deep_agents",
     "async_subagents" => "subagents",
+    "coming_from_langchain" => "quickstart",
     "compaction" => "compaction_engine",
     "context_engineering" => "context_management",
     "core" => "models",
@@ -128,8 +132,18 @@ defmodule BeamWeaver.MixProject do
   defp aliases do
     [
       "docs.providers": ["run --no-start scripts/docs/provider_tables.exs --write"],
-      "examples.live": ["run --no-start scripts/examples/run.exs"]
+      "docs.verify": ["run scripts/docs/run_verify.exs"],
+      "examples.live": ["run --no-start scripts/examples/run.exs"],
+      "docs.live": &docs_live/1
     ]
+  end
+
+  # Runs the documentation examples that call real providers, with the API
+  # keys from the environment or .env: `mix docs.live`, or one page with
+  # `mix docs.live --only docs_live:<slug>`.
+  defp docs_live(args) do
+    args = Enum.map(args, &String.replace_prefix(&1, "docs_live:", ""))
+    Mix.Task.run("docs.verify", ["--service", "live" | args])
   end
 
   defp package do

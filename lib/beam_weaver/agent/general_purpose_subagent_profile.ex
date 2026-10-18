@@ -6,10 +6,15 @@ defmodule BeamWeaver.Agent.GeneralPurposeSubagentProfile do
   `system_prompt` replace the subagent's texts, and `enabled: false` leaves
   it out.
 
-      subagents do
-        subagent MyApp.PolicyExpert
-        include [BeamWeaver.Agent.GeneralPurposeSubagentProfile.new(enabled: false)]
-      end
+  ```elixir
+  profile = BeamWeaver.Agent.GeneralPurposeSubagentProfile.new(enabled: false)
+  BeamWeaver.Agent.GeneralPurposeSubagentProfile.to_map(profile)
+  #=> %{enabled: false}
+  ```
+
+  Put this profile in a `subagents` block with `include [profile]`, alongside
+  explicitly declared specialists. [Subagents](subagents.md#the-general-purpose-subagent)
+  contains complete parent and specialist modules.
 
   A `BeamWeaver.Agent.CapabilityProfile` holds one in its
   `general_purpose_subagent` field. See [Subagents](subagents.md).

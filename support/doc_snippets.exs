@@ -1,38 +1,33 @@
+Code.require_file("../scripts/docs/credentials.exs", __DIR__)
+Code.require_file("../scripts/docs/scenarios.exs", __DIR__)
+
 defmodule BeamWeaver.TestSupport.DocSnippets do
   @moduledoc false
 
-  # Runs or compile-checks every ```elixir block in the guides (README.md and
-  # the pages listed in docs/SUMMARY.md) and in selected moduledocs.
+  # Markdown is the source of executable examples, including public API docs.
+  # Earmark distinguishes indented code from list continuation paragraphs.
   #
-  # Blocks on a page run in order like a notebook: bindings, aliases, imports
-  # and requires carry from one block to the next. A block's mode is detected
-  # from its content and can be set with an HTML comment on the line before the
-  # fence:
+  # `mix docs.verify` executes each scenario in a fresh VM, preserving the
+  # printed MyApp module names and enabling combined prerequisites together.
+  # Only that runner reports per-block execution status.
   #
-  #   <!-- snippet: run | compile | fragment [agent|tool|middleware] | config | mix | skip <reason> -->
+  # Consecutive blocks share bindings within a scenario. Scenario boundaries
+  # and execution overrides live in scripts/docs/scenarios.exs.
+  # Modes: run, live, postgres, docker, config, mix and fragment.
+  # The strict verifier rejects incomplete fragments; dependency
+  # snippets require the separate fresh-consumer package check.
+  # A trailing `#=> pattern` asserts the last expression's result.
   #
-  #   * run      — evaluated (default)
-  #   * compile  — compiled, not run: real providers, API keys, Docker, Postgres
-  #   * fragment — `def`/`@attr`/DSL lines, compiled inside a throwaway module
-  #   * config   — `config/*.exs` content, parsed
-  #   * mix      — `mix.exs` deps/project snippets, parsed
-  #   * skip     — not checked; needs a reason, at most max(1, 5%) of a page
-  #
-  # `MyApp.*` modules are renamed into a per-page namespace so pages can reuse
-  # names, and `MyApp.Repo` maps to the test Postgres repo. Modules from a
-  # compile block are visible to later compile blocks on the page. A run block
-  # ending in a `#=> pattern` comment has its value matched against the pattern.
+  # The runner uses source names in separate OS processes and never supplies
+  # an implicit application repository.
 
   @root Path.expand("..", __DIR__)
-  @modes ~w(run compile fragment config mix skip)
-  @provider_model ~r/"(openai|anthropic|google|gemini|deepseek|moonshot|kimi|xai|zai|typesafe):/
-  @external_services ~r/System\.fetch_env!|Sandbox\.Docker|Checkpoint\.Ecto|Memory\.Ecto|MyApp\.Repo\b/
-  @global_state ~r/Application\.put_env|System\.put_env|:persistent_term\.put|Logger\.configure/
-  @fragment_uses %{
-    "agent" => quote(do: use(BeamWeaver.Agent)),
-    "tool" => quote(do: use(BeamWeaver.Tool)),
-    "middleware" => quote(do: use(BeamWeaver.Agent.Middleware))
-  }
+  @services ~w(live postgres docker)
+  @live ~r/"(openai|anthropic|google|gemini|deepseek|moonshot|kimi|xai|zai|typesafe):|System\.(?:get_env|fetch_env!)\("(?:OPENAI|ANTHROPIC|GOOGLE|GEMINI|XAI|MOONSHOT|KIMI|ZAI|DEEPSEEK|TYPESAFE)_/
+  @postgres ~r/Checkpoint\.Ecto|Memory\.Ecto|Cache\.Ecto|VectorStore\.EctoPostgres|MyApp\.Repo\b/
+  @docker ~r/Sandbox\.Docker/
+  # The API key each provider's live examples read, from the environment or .env.
+
   @ignored_warnings [
     ~r/is unused/,
     ~r/^unused (alias|import|require)/,
@@ -40,24 +35,21 @@ defmodule BeamWeaver.TestSupport.DocSnippets do
     ~r/no behaviour was declared/
   ]
 
-  # Modules whose moduledoc examples are checked like guide pages. Moduledoc
-  # examples use ```elixir fences.
-  @moduledoc_modules [
-    BeamWeaver.Agent,
-    BeamWeaver.Graph,
-    BeamWeaver.Models,
-    BeamWeaver.Core.Message,
-    BeamWeaver.Core.ChatModel,
-    BeamWeaver,
-    BeamWeaver.Tool,
-    BeamWeaver.Stream,
-    BeamWeaver.Models.FakeChatModel,
-    BeamWeaver.Models.FakeEmbeddingModel
-  ]
-
   defmodule Block do
     @moduledoc false
-    defstruct [:file, :line, :code, :mode, :arg, :expect]
+    defstruct [
+      :file,
+      :line,
+      :code,
+      :mode,
+      :arg,
+      :expect,
+      origin: :fenced,
+      source: nil,
+      scenario: "default",
+      requirements: [],
+      providers: []
+    ]
   end
 
   ## Pages
@@ -73,8 +65,28 @@ defmodule BeamWeaver.TestSupport.DocSnippets do
           uniq: true,
           do: path
 
-    ["README.md" | linked] ++ Enum.map(@moduledoc_modules, &{:moduledoc, &1})
+    ["README.md" | linked] ++ api_pages()
   end
+
+  # Discover public API documentation rather than keeping a hand-picked list.
+  def api_pages do
+    Application.load(:beam_weaver)
+
+    for module <- Application.spec(:beam_weaver, :modules) |> Enum.sort(),
+        {:docs_v1, _, _, _, moduledoc, _, entries} <- [Code.fetch_docs(module)],
+        moduledoc != :hidden,
+        page <- [{:moduledoc, module} | for({key, _, _, %{"en" => _}, _} <- entries, do: {:doc, module, key})],
+        blocks(page) != [],
+        do: page
+  end
+
+  def all_pages,
+    do:
+      (pages() ++ Path.wildcard(Path.join(@root, "examples/**/README.md")))
+      |> Enum.map(fn p -> if is_binary(p), do: Path.relative_to(p, @root), else: p end)
+
+  def slug({:doc, module, {kind, name, arity}}),
+    do: (slug({:moduledoc, module}) <> "_#{kind}_#{name}_#{arity}") |> String.replace(~r/[^a-zA-Z0-9_]/, "_")
 
   def slug("README.md"), do: "root_readme"
   def slug("docs/" <> path), do: path |> Path.rootname() |> String.replace(["/", "-"], "_")
@@ -82,50 +94,131 @@ defmodule BeamWeaver.TestSupport.DocSnippets do
   def slug({:moduledoc, module}),
     do: "moduledoc_" <> (module |> Module.split() |> Enum.map_join("_", &Macro.underscore/1))
 
-  def module_suffix(page), do: page |> slug() |> Macro.camelize()
+  def slug(path) when is_binary(path), do: path |> Path.rootname() |> String.replace(["/", "-", "."], "_")
 
-  def async?(page), do: not Enum.any?(blocks(page), &Regex.match?(@global_state, &1.code))
+  @doc """
+  Configures each provider's API key for the live run, from the environment or
+  the repository's `.env` (which never overrides a variable already set).
+  """
+  defdelegate configure_live_providers!(), to: BeamWeaver.Docs.Credentials
 
   ## Parsing
 
   def blocks({:moduledoc, module}) do
-    {:docs_v1, anno, _lang, _format, %{"en" => doc}, _meta, _docs} = Code.fetch_docs(module)
+    case Code.fetch_docs(module) do
+      {:docs_v1, anno, _, _, %{"en" => doc}, _, _} -> parse_api(doc, module, anno)
+      _ -> []
+    end
+  end
+
+  def blocks({:doc, module, key}) do
+    {:docs_v1, _, _, _, _, _, entries} = Code.fetch_docs(module)
+    {^key, anno, _, %{"en" => doc}, _} = List.keyfind(entries, key, 0)
+    parse_api(doc, module, anno)
+  end
+
+  def blocks(path) do
+    absolute = Path.expand(path, @root)
+    file = Path.relative_to(absolute, @root)
+    markdown = File.read!(absolute)
+    BeamWeaver.Docs.Scenarios.annotate(markdown, file, parse_markdown(markdown, file))
+  end
+
+  defp parse_api(doc, module, anno) do
     source = module.module_info(:compile)[:source] |> to_string() |> Path.relative_to(@root)
     parse_markdown(doc, source, :erl_anno.line(anno) + 1)
   end
 
-  def blocks(path), do: path |> Path.expand(@root) |> File.read!() |> parse_markdown(path)
-
   @doc "The checked blocks of a markdown text; `first_line` is the file line of its first line."
   def parse_markdown(markdown, file, first_line \\ 1) do
-    markdown
-    |> String.split("\n")
-    |> Enum.with_index(first_line)
-    |> collect(file, nil, [])
+    lines = markdown |> String.split("\n") |> Enum.with_index(first_line)
+
+    rendered = rendered_code_blocks(markdown)
+
+    lines
+    |> collect(file, [], rendered)
+    |> Enum.filter(fn block -> block.origin != :indented or String.trim(block.source) in rendered end)
   end
 
-  defp collect([], _file, _marker, acc), do: Enum.reverse(acc)
+  defp rendered_code_blocks(markdown) do
+    {_status, ast, _messages} = EarmarkParser.as_ast(markdown)
+    collect_rendered_code(ast)
+  end
 
-  defp collect([{line, n} | rest], file, marker, acc) do
+  defp collect_rendered_code(nodes) when is_list(nodes), do: Enum.flat_map(nodes, &collect_rendered_code/1)
+
+  defp collect_rendered_code({"pre", _, [{"code", _, text, _}], _}),
+    do: [text |> IO.iodata_to_binary() |> String.trim()]
+
+  defp collect_rendered_code({_tag, _, children, _}), do: collect_rendered_code(children)
+  defp collect_rendered_code(_text), do: []
+
+  defp collect([], _file, acc, _rendered), do: Enum.reverse(acc)
+
+  defp collect([{line, n} | rest], file, acc, rendered) do
     cond do
-      match = Regex.run(~r/^\s*<!--\s*snippet:\s*(\w+)\s*(.*?)\s*-->\s*$/, line) ->
-        [_, mode, arg] = match
-        collect(rest, file, {mode, arg, n}, acc)
-
-      match = Regex.run(~r/^(\s*)```elixir\s*$/, line) ->
+      match = Regex.run(~r/^(\s*)```(?:elixir|iex)\s*$/, line) ->
         [_, indent] = match
         {code, rest} = take_fence(rest, indent, [])
-        marker = if match?({_, _, marker_line} when marker_line == n - 1, marker), do: marker
-        collect(rest, file, nil, [block(file, n + 1, code, marker) | acc])
+        collect(rest, file, [block(file, n + 1, iex_code(code)) | acc], rendered)
+
+      String.starts_with?(line, "    ") and String.trim(line) != "" ->
+        {code, rest} = take_indented([{line, n} | rest], [])
+
+        if String.trim(Enum.join(code, "\n")) in rendered do
+          entry = %{block(file, n, iex_code(code)) | origin: :indented, source: Enum.join(code, "\n")}
+          collect(rest, file, [entry | acc], rendered)
+        else
+          collect(rest, file, acc, rendered)
+        end
 
       match = Regex.run(~r/^(\s*)```/, line) ->
         [_, indent] = match
         {_code, rest} = take_fence(rest, indent, [])
-        collect(rest, file, nil, acc)
+        collect(rest, file, acc, rendered)
 
       true ->
-        collect(rest, file, marker, acc)
+        collect(rest, file, acc, rendered)
     end
+  end
+
+  defp take_indented([{line, n} | rest], acc) do
+    if String.starts_with?(line, "    ") or String.trim(line) == "" do
+      take_indented(rest, [String.replace_prefix(line, "    ", "") | acc])
+    else
+      {Enum.reverse(acc), [{line, n} | rest]}
+    end
+  end
+
+  defp take_indented([], acc), do: {Enum.reverse(acc), []}
+
+  defp iex_code(lines) do
+    if Enum.any?(lines, &String.starts_with?(&1, "iex>")) do
+      lines
+      |> Enum.reduce({[], [], []}, fn line, {acc, code, output} ->
+        cond do
+          String.starts_with?(line, "iex>") ->
+            acc = acc ++ iex_assertion(code, output)
+            {acc, [String.replace_prefix(line, "iex> ", "")], []}
+
+          String.starts_with?(line, "...>") ->
+            {acc, code ++ [String.replace_prefix(line, "...> ", "")], output}
+
+          true ->
+            {acc, code, output ++ [line]}
+        end
+      end)
+      |> then(fn {acc, code, output} -> acc ++ iex_assertion(code, output) end)
+    else
+      lines
+    end
+  end
+
+  defp iex_assertion([], _output), do: []
+
+  defp iex_assertion(code, output) do
+    output = Enum.join(output, "\n") |> String.trim()
+    if output == "", do: code, else: ["true = (" <> Enum.join(code, "\n") <> ") == (" <> output <> ")"]
   end
 
   defp take_fence([], _indent, acc), do: {Enum.reverse(acc), []}
@@ -136,17 +229,32 @@ defmodule BeamWeaver.TestSupport.DocSnippets do
       else: take_fence(rest, indent, [String.replace_prefix(line, indent, "") | acc])
   end
 
-  defp block(file, line, code_lines, marker) do
+  defp block(file, line, code_lines) do
     code = Enum.join(code_lines, "\n")
 
-    {mode, arg} =
-      case marker do
-        {mode, arg, _line} when mode in @modes -> {mode, arg}
-        {mode, _arg, _marker_line} -> {"invalid", "unknown snippet mode #{inspect(mode)}"}
-        nil -> detect(code)
-      end
+    {mode, arg} = detect(code)
 
-    %Block{file: file, line: line, code: code, mode: mode, arg: arg, expect: expectation(code_lines)}
+    requirements =
+      if(Regex.match?(@live, code), do: ["live"], else: []) ++
+        if(Regex.match?(@postgres, code), do: ["postgres"], else: []) ++
+        if(Regex.match?(@docker, code), do: ["docker"], else: []) ++
+        if mode in @services, do: [mode], else: []
+
+    providers =
+      for [_, provider] <- Regex.scan(~r/"(openai|anthropic|google|deepseek|moonshot|xai|zai|typesafe):/, code),
+          uniq: true,
+          do: provider
+
+    %Block{
+      file: file,
+      line: line,
+      code: code,
+      mode: mode,
+      arg: arg,
+      expect: expectation(code_lines),
+      requirements: Enum.uniq(requirements),
+      providers: providers
+    }
   end
 
   defp detect(code) do
@@ -161,7 +269,9 @@ defmodule BeamWeaver.TestSupport.DocSnippets do
       mix_snippet?(forms) -> {"mix", ""}
       Enum.any?(forms, &agent_dsl_call?/1) -> {"fragment", "agent"}
       Enum.any?(forms, &match?({form, _, _} when form in [:def, :defp, :defmacro, :@, :use], &1)) -> {"fragment", ""}
-      Regex.match?(@provider_model, code) or Regex.match?(@external_services, code) -> {"compile", ""}
+      Regex.match?(@docker, code) -> {"docker", ""}
+      Regex.match?(@postgres, code) -> {"postgres", ""}
+      Regex.match?(@live, code) -> {"live", ""}
       true -> {"run", ""}
     end
   end
@@ -200,87 +310,115 @@ defmodule BeamWeaver.TestSupport.DocSnippets do
 
   ## Running
 
-  def run_page!(page), do: run_blocks!(blocks(page), page)
-
-  @doc "Checks a markdown text as if it were the page `file`."
-  def run_markdown!(markdown, file), do: markdown |> parse_markdown(file) |> run_blocks!(file)
-
-  @doc """
-  Whether a block on `page` defines an ExUnit test module. ExUnit runs only the
-  test modules defined while the test files load (one defined later fails with
-  "cannot add module ... after the suite starts running"), so
-  test/docs_test.exs checks such a page as it loads, with `check_page/1`.
-  """
-  def defines_test_modules?(page), do: Enum.any?(blocks(page), &defines_test_module?/1)
-
-  @doc "Runs `page` in a process of its own; returns `:ok` or `{:error, message}` instead of raising."
-  def check_page(page) do
-    fn ->
-      try do
-        run_page!(page)
-      rescue
-        error in ExUnit.AssertionError -> {:error, error.message}
-      catch
-        kind, reason -> {:error, Exception.format(kind, reason, __STACKTRACE__)}
-      end
-    end
-    |> Task.async()
-    |> Task.await(:infinity)
-  end
-
-  defp defines_test_module?(%Block{code: code}), do: String.contains?(code, "use ExUnit.Case")
-
-  defp run_blocks!(blocks, page) do
-    check_skips!(page, blocks)
-    namespace = Module.concat(DocSnippets, module_suffix(page))
-
-    file =
-      case blocks do
-        [%Block{file: file} | _rest] -> file
-        [] -> page_file(page)
-      end
+  @doc "Executes a single scenario and accounts for every block, including dependency failures."
+  def verify_blocks(blocks, page, services, opts \\ []) do
+    # The verifier runs this in a fresh VM: keep the printed module names.
+    namespace = MyApp
 
     state = %{
       binding: [],
-      env: Code.env_for_eval(file: Path.expand(file, @root), line: 1),
+      env: Code.env_for_eval(file: Path.expand(page_file(page), @root), line: 1),
       namespace: namespace,
-      compiled: %{}
+      compiled: %{},
+      services: Enum.map(services, &to_string/1)
     }
 
-    try do
-      Enum.reduce(blocks, state, &check_block!/2)
-    after
-      # ExUnit runs a test module that a page defines on its own schedule, and
-      # purging code kills the processes running it, so such a page keeps its
-      # modules loaded.
-      unless Enum.any?(blocks, &defines_test_module?/1), do: purge_namespace(namespace)
-    end
+    {results, _state, _failed} =
+      Enum.reduce(blocks, {[], state, false}, fn block, {results, state, failed} ->
+        base = %{
+          file: block.file,
+          line: block.line,
+          code: block.code,
+          models:
+            Regex.scan(~r/"((?:openai|google|anthropic|xai|deepseek|moonshot|zai|typesafe):[\w.-]+)"/, block.code)
+            |> Enum.map(&Enum.at(&1, 1))
+            |> Enum.uniq(),
+          scenario: block.scenario,
+          mode: block.mode,
+          requirements: block.requirements,
+          providers: block.providers
+        }
 
-    :ok
+        cond do
+          failed ->
+            {results ++ [Map.merge(base, %{status: "blocked", reason: "An earlier block in this scenario failed"})],
+             state, true}
+
+          missing = Enum.find(block.requirements, &(&1 not in state.services)) ->
+            {results ++ [Map.merge(base, %{status: "blocked", reason: "Missing requirement: #{missing}"})], state, true}
+
+          block.mode in ["compile", "fragment"] or (block.mode == "mix" and opts[:package_verified] != true) ->
+            {results ++
+               [
+                 Map.merge(base, %{
+                   status: "blocked",
+                   reason: "#{block.mode} is not an executable example; supply a complete scenario"
+                 })
+               ], state, true}
+
+          true ->
+            try do
+              next =
+                case block.mode do
+                  "config" ->
+                    apply_config!(block, state)
+
+                  "mix" ->
+                    evaluate_dependencies!(block)
+                    state
+
+                  _ ->
+                    run_block!(block, state)
+                end
+
+              {results ++ [Map.merge(base, %{status: "pass", method: "executed"})], next, false}
+            rescue
+              error -> {results ++ [Map.merge(base, %{status: "fail", reason: Exception.message(error)})], state, true}
+            catch
+              kind, reason ->
+                {results ++ [Map.merge(base, %{status: "fail", reason: Exception.format_banner(kind, reason)})], state,
+                 true}
+            end
+        end
+      end)
+
+    results
   end
+
+  def evaluate_dependencies!(block) do
+    module = Module.concat(__MODULE__, "Dependencies#{System.unique_integer([:positive])}")
+    Code.compile_quoted(quote(do: defmodule(unquote(module), do: unquote(quote!(block)))))
+    deps = apply(module, :deps, [])
+
+    unless Enum.any?(deps, &match?({:beam_weaver, _}, &1)),
+      do: fail!(block, "dependency example does not install BeamWeaver")
+
+    deps
+  end
+
+  defp apply_config!(block, state) do
+    check_config!(block)
+    quoted = block |> quote!() |> rename(state.namespace, %{})
+
+    config =
+      Config.Reader.eval!(Path.expand(block.file, @root), "import Config\n" <> Macro.to_string(quoted), env: :prod)
+
+    Application.put_all_env(config)
+    state
+  end
+
+  def provider_keys, do: BeamWeaver.Docs.Credentials.keys()
+
+  defdelegate missing_credentials(providers), to: BeamWeaver.Docs.Credentials
+
+  defp page_file({:doc, module, _key}), do: page_file({:moduledoc, module})
 
   defp page_file({:moduledoc, module}),
     do: module.module_info(:compile)[:source] |> to_string() |> Path.relative_to(@root)
 
   defp page_file(path), do: path
 
-  defp check_skips!(page, blocks) do
-    skips = Enum.filter(blocks, &(&1.mode == "skip"))
-    cap = max(1, div(length(blocks) * 5, 100))
-
-    for %Block{arg: "", file: file, line: line} <- skips, do: raise("#{file}:#{line}: snippet skip needs a reason")
-    if length(skips) > cap, do: raise("#{inspect(page)}: #{length(skips)} skipped blocks exceed the cap of #{cap}")
-  end
-
-  defp check_block!(%Block{mode: "skip"}, state), do: state
-  defp check_block!(%Block{mode: "invalid", arg: message} = block, _state), do: fail!(block, message)
-
-  defp check_block!(%Block{mode: mode} = block, state) when mode in ["config", "mix"] do
-    _quoted = quote!(block)
-    state
-  end
-
-  defp check_block!(%Block{mode: "run"} = block, state) do
+  defp run_block!(block, state) do
     quoted = block |> quote!() |> rename(state.namespace, state.compiled)
     defined = defined_modules(quoted)
     purge_modules(defined)
@@ -294,6 +432,10 @@ defmodule BeamWeaver.TestSupport.DocSnippets do
       {:ok, {value, binding, env}} ->
         state = %{state | binding: binding, env: env, compiled: Map.drop(state.compiled, local_names(defined, state))}
         if block.expect, do: check_expect!(block, value, state)
+
+        if match?({:error, _}, value) and is_nil(block.expect) and not expected_error_match?(quoted),
+          do: fail!(block, "unasserted error result: #{inspect(value)}")
+
         state
 
       {:error, message} ->
@@ -301,57 +443,87 @@ defmodule BeamWeaver.TestSupport.DocSnippets do
     end
   end
 
-  defp check_block!(%Block{mode: "compile"} = block, state) do
-    compile_ns = Module.concat(state.namespace, "Compile#{block.line}")
-    quoted = quote!(block)
+  defp expected_error_match?(quoted) do
+    case List.last(top_level(quoted)) do
+      {:=, _, [{:error, _}, _]} -> true
+      {:=, _, [{:{}, _, [:error | _]}, _]} -> true
+      _ -> false
+    end
+  end
 
-    own =
-      for {:defmodule, _, [{:__aliases__, _, [:MyApp | rest]} | _]} <- top_level(quoted),
-          into: %{},
-          do: {rest, compile_ns}
+  defp check_config!(block) do
+    quoted =
+      Macro.prewalk(quote!(block), fn
+        {{:., _, [{:__aliases__, _, [:System]}, fun]}, _, [_ | _]} when fun in [:get_env, :fetch_env!] -> "doc-value"
+        form -> form
+      end)
 
-    compiled = Map.merge(state.compiled, own)
-    forms = quoted |> rename(state.namespace, compiled) |> top_level()
+    contents = "import Config\n" <> Macro.to_string(quoted)
 
-    {kept, rest} =
-      Enum.split_with(forms, &match?({form, _, _} when form in [:defmodule, :alias, :import, :require], &1))
-
-    params = for {name, _value} <- state.binding, do: Macro.var(name, nil)
-
-    wrapper =
-      quote do
-        defmodule unquote(Module.concat(compile_ns, Snippet)) do
-          def run(unquote_splicing(params)), do: unquote({:__block__, [], rest ++ [:ok]})
-        end
+    config =
+      case checked(fn -> Config.Reader.eval!(Path.expand(block.file, @root), contents, env: :prod) end) do
+        {:ok, config} -> config
+        {:error, message} -> fail!(block, message)
       end
 
-    compile!(block, {:__block__, [], env_forms(state.env) ++ kept ++ [wrapper]})
-    %{state | compiled: compiled}
+    paths = config_paths()
+
+    unknown =
+      for {key, value} <- Keyword.get(config, :beam_weaver, []), path <- unknown_paths(key, value, paths), do: path
+
+    if unknown != [],
+      do: fail!(block, "config sets keys BeamWeaver doesn't read: #{Enum.map_join(unknown, ", ", &inspect/1)}")
   end
 
-  defp check_block!(%Block{mode: "fragment"} = block, state) do
-    body = block |> quote!() |> rename(state.namespace, state.compiled)
-
-    module =
-      quote do
-        defmodule unquote(Module.concat(state.namespace, "Fragment#{block.line}")) do
-          unquote(Map.get(@fragment_uses, block.arg))
-          unquote(fragment_model(block.arg, body))
-          unquote(body)
-        end
-      end
-
-    compile!(block, {:__block__, [], env_forms(state.env) ++ [module]})
-    state
+  defp unknown_paths(key, value, paths) do
+    case Map.fetch(paths, key) do
+      :error -> [[key]]
+      {:ok, :any} -> []
+      {:ok, keys} -> if Keyword.keyword?(value), do: for({sub, _} <- value, sub not in keys, do: [key, sub]), else: []
+    end
   end
 
-  # Every agent module declares a model; an agent fragment without one gets
-  # the scripted one.
-  defp fragment_model("agent", body) do
-    unless Enum.any?(top_level(body), &match?({:model, _meta, [_ | _]}, &1)), do: quote(do: model("fake:chat"))
+  # The config paths under `:beam_weaver` that lib/ reads: literal paths given
+  # to `Config.get/option/flag?` and `configured_url`, whole groups read with
+  # `Config.group/1`, and `:base_url` for each provider (its endpoints are
+  # built from it).
+  defp config_paths do
+    with nil <- :persistent_term.get({__MODULE__, :config_paths}, nil) do
+      sources = for file <- Path.wildcard(Path.join(@root, "lib/**/*.ex")), do: File.read!(file)
+      literal = ~r/(?:Config\.(?:get|option|flag\?)\((?:\w+, :\w+, )?|configured_url\(\w+, :\w+, )\[(:\w+(?:, :\w+)*)\]/
+
+      found =
+        for(source <- sources, [_, list] <- Regex.scan(literal, source), do: atoms(list)) ++
+          for(source <- sources, [_, key] <- Regex.scan(~r/Config\.group\(:(\w+)/, source), do: [String.to_atom(key)])
+
+      found =
+        found ++
+          for source <- sources,
+              [_, key] <- Regex.scan(~r/setting!\(opts, :\w+, :(\w+),/, source),
+              do: [:transport, String.to_atom(key)]
+
+      paths =
+        Enum.reduce(found, %{}, fn
+          [key], acc ->
+            Map.put(acc, key, :any)
+
+          [key, sub | _], acc ->
+            Map.update(acc, key, [sub], fn
+              :any -> :any
+              keys -> [sub | keys]
+            end)
+        end)
+        |> Map.new(fn
+          {key, keys} when is_list(keys) -> {key, if(:api_key in keys, do: [:base_url | keys], else: keys)}
+          entry -> entry
+        end)
+
+      :persistent_term.put({__MODULE__, :config_paths}, paths)
+      paths
+    end
   end
 
-  defp fragment_model(_arg, _body), do: nil
+  defp atoms(list), do: for(name <- String.split(list, ", "), do: name |> String.trim_leading(":") |> String.to_atom())
 
   defp quote!(%Block{} = block) do
     case Code.string_to_quoted(block.code, file: block.file, line: block.line, columns: true) do
@@ -365,13 +537,6 @@ defmodule BeamWeaver.TestSupport.DocSnippets do
 
   defp message_text({prefix, suffix}), do: prefix <> suffix
   defp message_text(message), do: message
-
-  defp compile!(block, quoted) do
-    case checked(fn -> Code.compile_quoted(quoted, Path.expand(block.file, @root)) end) do
-      {:ok, _modules} -> :ok
-      {:error, message} -> fail!(block, message)
-    end
-  end
 
   # Runs `fun`, turning raised errors and compiler errors or warnings into
   # `{:error, message}`.
@@ -435,9 +600,6 @@ defmodule BeamWeaver.TestSupport.DocSnippets do
     page_parts = alias_parts(namespace)
 
     Macro.prewalk(quoted, fn
-      {:__aliases__, meta, [:MyApp, :Repo]} ->
-        {:__aliases__, meta, [:BeamWeaver, :Test, :PostgresRepo]}
-
       {:__aliases__, meta, [:MyApp | rest]} ->
         case Enum.find(compiled, fn {parts, _ns} -> List.starts_with?(rest, parts) end) do
           {_parts, compile_ns} -> {:__aliases__, meta, alias_parts(compile_ns) ++ rest}
@@ -493,34 +655,11 @@ defmodule BeamWeaver.TestSupport.DocSnippets do
     end)
   end
 
-  @default_requires Code.env_for_eval([]).requires
-
-  defp env_forms(env) do
-    aliases = for {as, module} <- env.aliases, do: quote(do: alias(unquote(module), as: unquote(as)))
-    requires = for module <- env.requires -- @default_requires, do: quote(do: require(unquote(module)))
-
-    imports =
-      for {module, names} <- Enum.group_by(env.functions ++ env.macros, &elem(&1, 0), &elem(&1, 1)),
-          module not in [Kernel, Kernel.SpecialForms],
-          do: quote(do: import(unquote(module), only: unquote(List.flatten(names))))
-
-    requires ++ aliases ++ imports
-  end
-
   defp purge_modules(modules) do
     for module <- modules, :code.is_loaded(module) != false do
       :code.purge(module)
       :code.delete(module)
       :code.purge(module)
     end
-  end
-
-  defp purge_namespace(namespace) do
-    prefix = Atom.to_string(namespace) <> "."
-
-    for {module, _file} <- :code.all_loaded(), String.starts_with?(Atom.to_string(module), prefix) do
-      module
-    end
-    |> purge_modules()
   end
 end

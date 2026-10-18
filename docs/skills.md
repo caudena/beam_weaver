@@ -78,9 +78,7 @@ Markdown:
 | `allowed-tools` | Optional. Tool names, separated by spaces or commas, or a YAML list of them, shown to the model as advice. It doesn't limit which tools the agent may call. |
 | `metadata` | Optional. A map of strings for your own use. |
 
-`argument-hint`, `disable-model-invocation`, `user-invocable` and `context`
-are accepted but don't change what the agent does, and any other field makes
-the skill invalid. In the body, name the supporting files by path and say
+In the body, name the supporting files by path and say
 when to use them, such as "run `/skills/order-export/export.sh` for more than
 100 orders", so the agent opens them only when it needs them.
 
@@ -129,9 +127,16 @@ general skills first and more specific ones after them, so a team can replace
 a company-wide skill with its own version:
 
 ```elixir
-model "fake:chat"
-filesystem BeamWeaver.Filesystem.State.new()
-skills [{"/skills/acme", "Acme"}, {"/skills/support_team", "Support team"}]
+defmodule MyApp.TeamSkillsAgent do
+  use BeamWeaver.Agent
+
+  model "fake:chat", responses: ["Ready."]
+  filesystem BeamWeaver.Filesystem.State.new()
+  skills [{"/skills/acme", "Acme"}, {"/skills/support_team", "Support team"}]
+end
+
+{:ok, result} = MyApp.TeamSkillsAgent.invoke(%{messages: ["Reply with the word ready."]})
+true = is_binary(result.messages |> List.last() |> BeamWeaver.Core.Message.text())
 ```
 
 Declare a `filesystem` with `skills`. The agent reads the list of skills
@@ -154,7 +159,7 @@ defmodule MyApp.SupportResearcher do
   model "anthropic:claude-sonnet-4-6"
 
   filesystem Filesystem.Composite.new(
-               routes: %{"/skills/" => Filesystem.Local.new(root: Application.app_dir(:my_app, "priv/skills"))}
+               routes: %{"/skills/" => Filesystem.Local.new(root: Path.join(System.tmp_dir!(), "support_skills"))}
              )
 
   filesystem_permissions [Filesystem.Permission.new(operations: [:write], paths: ["/skills/**"], mode: :deny)]
@@ -162,7 +167,9 @@ defmodule MyApp.SupportResearcher do
 end
 ```
 
-The agent finds `priv/skills/refund-policy/SKILL.md` at
+For this standalone example, create the `support_skills/refund-policy` directory
+beneath the temporary directory and put `SKILL.md` there. In an OTP application,
+use `Application.app_dir(:my_app, "priv/skills")` for bundled skills. The agent finds the file at
 `/skills/refund-policy/SKILL.md`, and its other files stay in the thread's
 state. Skills you edit while the application runs, or keep per customer, fit a
 memory store. Upload them once, and every run reads the current version:
@@ -209,14 +216,28 @@ parent's skills and files instead, ask for them on its `subagent` line with
 parent's if it has none, from the parent's filesystem:
 
 ```elixir
-model "fake:chat"
-filesystem BeamWeaver.Filesystem.State.new()
-skills ["/skills"]
+defmodule MyApp.PolicyExpert do
+  use BeamWeaver.Agent
 
-subagents do
-  subagent MyApp.PolicyExpert,
-    base_middleware: [BeamWeaver.Agent.Middleware.Skills, BeamWeaver.Agent.Middleware.Filesystem]
+  description "Answers questions about the return policy."
+  model "fake:chat", responses: ["Returns are accepted within 30 days."]
 end
+
+defmodule MyApp.SkilledSupervisorAgent do
+  use BeamWeaver.Agent
+
+  model "fake:chat", responses: ["Ready."]
+  filesystem BeamWeaver.Filesystem.State.new()
+  skills ["/skills"]
+
+  subagents do
+    subagent MyApp.PolicyExpert,
+      base_middleware: [BeamWeaver.Agent.Middleware.Skills, BeamWeaver.Agent.Middleware.Filesystem]
+  end
+end
+
+{:ok, result} = MyApp.SkilledSupervisorAgent.invoke(%{messages: ["Reply with the word ready."]})
+true = is_binary(result.messages |> List.last() |> BeamWeaver.Core.Message.text())
 ```
 
 `skills: [...]` on the same line replaces both. A subagent started with

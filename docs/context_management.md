@@ -70,10 +70,18 @@ its result.
 With a real provider:
 
 ```elixir
-middleware [
-  {BeamWeaver.Agent.Middleware.Summarization,
-   model: "openai:gpt-5.4-mini", trigger: {:tokens, 50_000}, keep: {:messages, 20}}
-]
+defmodule MyApp.SummarizingAgent do
+  use BeamWeaver.Agent
+
+  model "openai:gpt-5.4-mini", max_tokens: 256, timeout: 60_000
+  middleware [
+    {BeamWeaver.Agent.Middleware.Summarization,
+     model: "openai:gpt-5.4-mini", trigger: {:tokens, 50_000}, keep: {:messages, 20}}
+  ]
+end
+
+{:ok, result} = MyApp.SummarizingAgent.invoke(%{messages: ["Reply with the word ready."]})
+true = is_binary(result.messages |> List.last() |> BeamWeaver.Core.Message.text())
 ```
 
 A summary call that fails is tried up to 3 times, a second or more apart,
@@ -277,11 +285,18 @@ settings go in their own list under `summarization:`, and
 `summarization: false` leaves only the tool:
 
 ```elixir
-model "anthropic:claude-sonnet-4-6"
+defmodule MyApp.CompactingAgent do
+  use BeamWeaver.Agent
 
-compact_conversation model: "anthropic:claude-haiku-4-5",
-                     minimum_messages: 10,
-                     summarization: [trigger: {:fraction, 0.8}, keep: {:messages, 20}]
+  model "anthropic:claude-sonnet-4-6"
+
+  compact_conversation model: "anthropic:claude-haiku-4-5",
+                       minimum_messages: 10,
+                       summarization: [trigger: {:fraction, 0.8}, keep: {:messages, 20}]
+end
+
+{:ok, result} = MyApp.CompactingAgent.invoke(%{messages: ["Reply with the word ready."]})
+true = is_binary(result.messages |> List.last() |> BeamWeaver.Core.Message.text())
 ```
 
 A fraction here is taken of the agent model's context window. When the model
@@ -320,8 +335,15 @@ the next call doesn't overflow again; with the default
 files.
 
 ```elixir
-model "anthropic:claude-sonnet-4-6"
-overflow_recovery true
+defmodule MyApp.OverflowRecoveryAgent do
+  use BeamWeaver.Agent
+
+  model "anthropic:claude-sonnet-4-6"
+  overflow_recovery true
+end
+
+{:ok, result} = MyApp.OverflowRecoveryAgent.invoke(%{messages: ["Reply with the word ready."]})
+true = is_binary(result.messages |> List.last() |> BeamWeaver.Core.Message.text())
 ```
 
 It shrinks a trailing batch only when it is over 5,000 tokens;
@@ -346,7 +368,15 @@ prefix (system prompt, tools, memory files) cheaper and faster to send again.
 `prompt_caching true` marks it cacheable for providers that support it:
 
 ```elixir
-prompt_caching true
+defmodule MyApp.CachedPromptAgent do
+  use BeamWeaver.Agent
+
+  model "anthropic:claude-haiku-4-5", max_tokens: 256, timeout: 60_000
+  prompt_caching true
+end
+
+{:ok, result} = MyApp.CachedPromptAgent.invoke(%{messages: ["Reply with the word ready."]})
+true = is_binary(result.messages |> List.last() |> BeamWeaver.Core.Message.text())
 ```
 
 Keep the start of the prompt identical between calls to get cache hits. See

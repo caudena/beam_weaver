@@ -1,7 +1,6 @@
 # Module groups for the HexDocs sidebar, read by `docs/0` in mix.exs. They
 # follow the guide sections in docs/SUMMARY.md, with one group per provider.
-# A module goes to the first group that lists it or matches its pattern;
-# test/docs_lint_test.exs checks that every public module has a group.
+# A module goes to the first group that lists it or matches its pattern.
 [
   Agents: [
     BeamWeaver,

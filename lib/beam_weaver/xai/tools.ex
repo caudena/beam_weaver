@@ -13,21 +13,17 @@ defmodule BeamWeaver.XAI.Tools do
   alias BeamWeaver.Core.Error
 
   @builtin_types [
-    "attachment_search",
     "code_execution",
     "web_search",
     "x_search",
     "code_interpreter",
     "collections_search",
     "file_search",
-    "live_search",
     "mcp",
-    "shell",
-    "view_image",
-    "view_x_video"
+    "shell"
   ]
 
-  @chat_completions_tool_types ["function", "live_search"]
+  @chat_completions_tool_types ["function"]
 
   @doc """
   Converts tools to xAI Responses API declarations.
@@ -82,21 +78,9 @@ defmodule BeamWeaver.XAI.Tools do
   @doc false
   @spec validate_responses_tools([map()]) :: :ok | {:error, Error.t()}
   def validate_responses_tools(tools) do
-    cond do
-      Enum.any?(tools, &(&1["type"] == "live_search")) ->
-        {:error,
-         Error.new(:unsupported_feature, "live_search requires Chat Completions", %{
-           provider: :xai,
-           api: :responses,
-           unsupported: ["live_search"]
-         })}
-
-      Enum.all?(tools, &(is_binary(&1["type"]) and &1["type"] != "")) ->
-        :ok
-
-      true ->
-        {:error, Error.new(:invalid_tool, "xAI tools require a type")}
-    end
+    if Enum.all?(tools, &(is_binary(&1["type"]) and &1["type"] != "")),
+      do: :ok,
+      else: {:error, Error.new(:invalid_tool, "xAI tools require a type")}
   end
 
   @doc false
@@ -140,33 +124,17 @@ defmodule BeamWeaver.XAI.Tools do
   @spec code_execution(keyword()) :: map()
   def code_execution(opts \\ []), do: ToolCalling.build("code_execution", opts)
 
-  @doc "Builds an xAI collections search server tool declaration."
+  @doc "Builds an xAI collections search declaration; pass vector_store_ids: with the collection IDs."
   @spec collections_search(keyword()) :: map()
   def collections_search(opts \\ []), do: ToolCalling.build("collections_search", opts)
 
-  @doc "Builds an xAI file search server tool declaration."
+  @doc "Builds an xAI file search declaration; pass vector_store_ids: with the collection IDs."
   @spec file_search(keyword()) :: map()
   def file_search(opts \\ []), do: ToolCalling.build("file_search", opts)
 
-  @doc "Builds an xAI file attachment search server tool declaration."
-  @spec attachment_search(keyword()) :: map()
-  def attachment_search(opts \\ []), do: ToolCalling.build("attachment_search", opts)
-
-  @doc "Builds an xAI shell server tool declaration."
+  @doc "Builds an xAI shell declaration with the environment supplied in its options."
   @spec shell(keyword()) :: map()
   def shell(opts \\ []), do: ToolCalling.build("shell", opts)
-
-  @doc "Builds an xAI image understanding server tool declaration."
-  @spec view_image(keyword()) :: map()
-  def view_image(opts \\ []), do: ToolCalling.build("view_image", opts)
-
-  @doc "Builds an xAI X video understanding server tool declaration."
-  @spec view_x_video(keyword()) :: map()
-  def view_x_video(opts \\ []), do: ToolCalling.build("view_x_video", opts)
-
-  @doc "Builds an xAI Chat Completions live search server tool declaration."
-  @spec live_search(keyword()) :: map()
-  def live_search(opts \\ []), do: ToolCalling.build("live_search", opts)
 
   @doc "Builds an xAI MCP server tool declaration."
   @spec mcp(String.t(), String.t(), keyword()) :: map()

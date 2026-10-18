@@ -51,7 +51,6 @@ defmodule BeamWeaver.Core.ChatModel do
     :parallel_tool_calls,
     :reasoning,
     :reasoning_effort,
-    :search_parameters,
     :seed,
     :service_tier,
     :stop,

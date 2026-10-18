@@ -46,5 +46,5 @@ end
   BeamWeaver.Examples.StructuredOutputAgent.invoke(%{messages: ["Where is my order A-1001?"]})
 
 IO.inspect(status, label: "structured_response")
-%{"order_id" => "A-1001", "days_until_delivery" => 2} = status
-Support.assert_tools_called!(messages, ["lookup_order"])
+%{"order_id" => "A-1001", "carrier" => "DHL", "days_until_delivery" => 2} = status
+Support.assert_tools_called!(messages, [{"lookup_order", %{"order_id" => "A-1001"}}])

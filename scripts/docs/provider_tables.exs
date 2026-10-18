@@ -2,17 +2,12 @@
 # the checked-in model profiles. `mix docs.providers` rewrites them; the docs
 # lint fails when they are stale.
 #
-# A generated table sits between markers:
-#
-#   <!-- generated: provider-overview -->
-#   <!-- generated: provider-models openai -->
-#   ...
-#   <!-- /generated -->
+# The page title identifies the provider, and the table header identifies the
+# generated table. No build metadata is embedded in the reader-facing page.
 defmodule BeamWeaver.Docs.ProviderTables do
   alias BeamWeaver.Provider.Compatibility
 
   @root Path.expand("../..", __DIR__)
-  @block ~r/(<!-- generated: (provider-overview|provider-models \w+) -->\n)(.*?)(<!-- \/generated -->)/s
   @providers [
     openai: "OpenAI",
     anthropic: "Anthropic",
@@ -45,7 +40,26 @@ defmodule BeamWeaver.Docs.ProviderTables do
   end
 
   def render_page(text) do
-    Regex.replace(@block, text, fn _all, open, name, _old, close -> open <> render(name) <> close end)
+    name =
+      case String.split(text, "\n", parts: 2) |> hd() do
+        "# Providers" ->
+          "provider-overview"
+
+        "# " <> title ->
+          case Enum.find(@providers, fn {_provider, label} -> label == title end) do
+            {provider, _label} -> "provider-models #{provider}"
+            nil -> raise ArgumentError, "Unknown provider page #{inspect(title)}"
+          end
+      end
+
+    table = render(name)
+    header = table |> String.split("\n", parts: 2) |> hd()
+    pattern = Regex.compile!("^" <> Regex.escape(header) <> "\\n(?:\\|[^\\n]*\\|\\n)+", "m")
+
+    case Regex.scan(pattern, text) do
+      [_match] -> Regex.replace(pattern, text, fn _old -> table end)
+      matches -> raise ArgumentError, "Expected one #{name} table, found #{length(matches)}"
+    end
   end
 
   def render("provider-overview") do
@@ -69,7 +83,7 @@ defmodule BeamWeaver.Docs.ProviderTables do
         ]
       end
 
-    table(["Provider", "Prefix", "Models", "Tools", "Structured output", "Reasoning", "Image input"], rows)
+    table(["Provider", "Prefix", "Model IDs", "Tools", "Structured output", "Reasoning", "Image input"], rows)
   end
 
   def render("provider-models " <> provider) do

@@ -104,6 +104,7 @@ defmodule BeamWeaver.Agent do
   @doc false
   defmacro reducer(_key, _reducer), do: DSL.graph_declaration!(__CALLER__, :reducer)
 
+  @doc "Declares the model and constructor options, evaluated on each invocation. See [Models](models.md)."
   defmacro model(expr_ast, opts_ast \\ nil) do
     quote bind_quoted: [expr_ast: Macro.escape(expr_ast), opts_ast: Macro.escape(opts_ast)] do
       @beam_weaver_model expr_ast
@@ -111,7 +112,44 @@ defmodule BeamWeaver.Agent do
     end
   end
 
+  @declaration_docs %{
+    name: "Sets the agent name used in traces and delegation. Defaults to the module name.",
+    description: "Describes the agent to a parent deciding whether to delegate a task.",
+    model_opts: "Sets model options that override options following the model declaration.",
+    validate_tools: "Enables schema validation before tool execution; invalid arguments are returned to the model.",
+    filesystem: "Adds filesystem middleware and tools using the supplied backend. See [Filesystem](filesystem.md).",
+    filesystem_permissions:
+      "Sets ordered path permissions for filesystem tools. See [Filesystem](filesystem.md#permissions).",
+    skills: "Sets directories from which the agent discovers skills. See [Skills](skills.md).",
+    memory: "Sets memory files to load into the agent instructions. See [Memory Files](memory_files.md).",
+    compact_conversation:
+      "Configures history summarization and the compact_conversation tool. See [Context Management](context_management.md).",
+    overflow_recovery:
+      "Configures recovery when a provider rejects an oversized context. See [Context Management](context_management.md).",
+    prompt_caching: "Configures supported provider prompt caching. See [Caching](caching.md).",
+    exclude_tools: "Hides the named tools, including tools supplied by capabilities.",
+    tool_descriptions: "Overrides model-visible descriptions by tool name.",
+    interrupt_on: "Configures human review before named tool calls. See [Human-in-the-Loop](human_in_the_loop.md).",
+    system_prompt: "Sets instructions sent before the conversation on every model call.",
+    checkpointer:
+      "Sets default checkpoint storage. The resource must outlive a call; do not construct ETS storage in the declaration.",
+    store: "Sets default long-term memory storage. The resource must outlive a call.",
+    cache: "Sets default cache storage. The resource must outlive a call.",
+    input_schema: "Sets the input state schema. See [Agents](agents.md) for validation and key filtering.",
+    output_schema: "Sets the final state schema. Structured model answers use response_schema/2 instead.",
+    interrupt_before: "Pauses before the named graph steps. Resume using resume/3.",
+    interrupt_after: "Pauses after the named graph steps. Resume using resume/3.",
+    recursion_limit: "Limits the number of graph supersteps in a run; this is not a token limit.",
+    execution_mode:
+      "Sets subagent execution mode: agent_loop, structured_once or research_then_generate. See [Subagents](subagents.md#execution-modes).",
+    capability_profile: "Selects per-model capability defaults. See [Capability Profiles](profiles.md).",
+    tool_timeout: "Sets the timeout for each tool invocation, in milliseconds.",
+    step_timeout: "Sets the timeout for a graph step, in milliseconds.",
+    run_timeout: "Sets the timeout for the complete run, in milliseconds."
+  }
+
   for {macro_name, attr} <- DSL.simple_macro_fields() do
+    @doc Map.fetch!(@declaration_docs, macro_name)
     defmacro unquote(macro_name)(expr_ast) do
       attr = unquote(attr)
 
@@ -122,6 +160,7 @@ defmodule BeamWeaver.Agent do
   end
 
   for macro_name <- [:tools, :middleware, :subagents, :async_subagents], attr = :"beam_weaver_#{macro_name}" do
+    @doc "Declares #{macro_name} as a list or a block; entries are evaluated on each invocation. See [Agents](agents.md)."
     defmacro unquote(macro_name)(do: block) do
       ast = DSL.block_ast!(__CALLER__, unquote(macro_name), block)
       attr = unquote(attr)
@@ -140,6 +179,7 @@ defmodule BeamWeaver.Agent do
     end
   end
 
+  @doc "Declares a final answer schema with automatic, provider or tool strategy. See [Structured Output](structured_output.md)."
   defmacro response_schema(schema_ast, opts_ast \\ []) do
     response_ast =
       quote do
@@ -154,12 +194,14 @@ defmodule BeamWeaver.Agent do
     end
   end
 
+  @doc "Sets an explicit structured-output strategy."
   defmacro response_format(expr_ast) do
     quote bind_quoted: [expr_ast: Macro.escape(expr_ast)] do
       @beam_weaver_response_format expr_ast
     end
   end
 
+  @doc "Declares the validated per-call context fields. See [Runtime Context](runtime_context.md)."
   defmacro context_schema(do: block) do
     entry_quotes =
       __CALLER__
@@ -181,6 +223,7 @@ defmodule BeamWeaver.Agent do
     end
   end
 
+  @doc "Declares graph step breakpoints with before: and after: lists."
   defmacro interrupts(opts_ast) do
     quote do
       require BeamWeaver.Graph.DSL
@@ -188,6 +231,7 @@ defmodule BeamWeaver.Agent do
     end
   end
 
+  @doc "Declares a field inside a context_schema block. Required fields use required: true."
   defmacro field(_name, _type, _opts \\ []),
     do: DSL.compile_error!(__CALLER__, "field/2 can only be used inside context_schema blocks")
 

@@ -64,14 +64,24 @@ defmodule BeamWeaver.Anthropic.Tools do
     |> Map.merge(BeamWeaver.MapShape.stringify_entries(merge_opts))
   end
 
-  @doc "Builds a text editor server tool."
-  def text_editor(opts \\ []), do: server_tool(opts, "text_editor_20250728")
+  @doc "Builds a text editor client-tool declaration; the application executes edits."
+  def text_editor(opts \\ []), do: server_tool(opts, "text_editor_20250728", name: "str_replace_based_edit_tool")
 
-  @doc "Builds a computer-use server tool."
-  def computer(opts \\ []), do: server_tool(opts, "computer_20250124")
+  @doc """
+  Builds a computer-use client-tool declaration; the application executes actions.
 
-  @doc "Builds a bash server tool."
-  def bash(opts \\ []), do: server_tool(opts, "bash_20250124")
+  Supply `display_width_px:` and `display_height_px:` for the display the
+  application controls. The required tool name defaults to `"computer"`.
+
+  The default revision, `computer_20250124`, supports Claude Haiku 4.5.
+  For Claude Sonnet 4.6, pass `type: "computer_20251124"`. Claude 5.5 models
+  use `computer_toolset/1` instead. See Anthropic's
+  [tool compatibility table](https://platform.claude.com/docs/en/agents-and-tools/tool-use/computer-use-tool#earlier-tool-versions).
+  """
+  def computer(opts \\ []), do: server_tool(opts, "computer_20250124", name: "computer")
+
+  @doc "Builds a bash client-tool declaration; the application executes commands."
+  def bash(opts \\ []), do: server_tool(opts, "bash_20250124", name: "bash")
 
   @doc "Builds a web search server tool."
   def web_search(opts \\ []), do: server_tool(opts, "web_search_20260318", name: "web_search")
@@ -94,8 +104,8 @@ defmodule BeamWeaver.Anthropic.Tools do
   @doc "Builds an MCP toolset declaration."
   def mcp_toolset(opts \\ []), do: build("mcp_toolset", opts)
 
-  @doc "Builds a memory server tool."
-  def memory(opts \\ []), do: server_tool(opts, "memory_20250818")
+  @doc "Builds a memory client-tool declaration; the application supplies storage and operations."
+  def memory(opts \\ []), do: server_tool(opts, "memory_20250818", name: "memory")
 
   @doc "Builds a tool-search server tool."
   def tool_search(opts \\ []), do: server_tool(opts, "tool_search_tool_bm25_20251119")

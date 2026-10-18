@@ -33,7 +33,6 @@ defmodule BeamWeaver.OpenAI.ChatCompletions.Options.Validation do
         :prompt_cache_retention,
         :reasoning_effort,
         :safety_identifier,
-        :search_parameters,
         :seed,
         :service_tier,
         :store,

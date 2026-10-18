@@ -270,24 +270,7 @@ defmodule BeamWeaver.Models.ProfileRegistry.XAI do
           max_output_tokens: 30_000,
           extra: @grok_4_20_extra
         })
-      ),
-    {:xai, "v1"} =>
-      Profile.new(%{
-        provider: :xai,
-        id: "v1",
-        name: "xAI Embedding v1",
-        supported_params: Params.xai_embedding(),
-        text_inputs: true,
-        text_outputs: false,
-        tokenizer: :o200k_base,
-        extra: %{
-          api_family: :embeddings,
-          embedding_model: true,
-          pricing_status: :not_listed_in_public_pricing,
-          pricing_last_checked: "2026-08-27",
-          pricing_source_url: "https://docs.x.ai/developers/pricing"
-        }
-      })
+      )
   }
   def profiles, do: Map.values(@profiles)
 

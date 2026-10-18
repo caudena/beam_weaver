@@ -266,13 +266,23 @@ decisions allowed), `false` (never review), or a map of rules. A map of rules
 always turns review on:
 
 ```elixir
-interrupt_on %{
-  "issue_refund" => %{
-    allowed_decisions: [:approve, :reject],
-    when: fn call -> call.args["amount"] > 100 end,
-    description: fn call, _state -> "Refund $#{call.args["amount"]} for order #{call.args["order_id"]}?" end
+defmodule MyApp.ConditionalReviewAgent do
+  use BeamWeaver.Agent
+
+  model "openai:gpt-5.4-mini", max_tokens: 256, timeout: 60_000
+  interrupt_on %{
+    "issue_refund" => %{
+      allowed_decisions: [:approve, :reject],
+      when: fn call -> call.args["amount"] > 100 end,
+      description: fn call, _state -> "Refund $#{call.args["amount"]} for order #{call.args["order_id"]}?" end
+    }
   }
-}
+end
+
+saver = BeamWeaver.Checkpoint.ETS.new()
+{:ok, result} = MyApp.ConditionalReviewAgent.invoke(%{messages: ["Reply with the word ready."]},
+  checkpointer: saver, config: %{"configurable" => %{"thread_id" => "configuration-example"}})
+true = is_binary(result.messages |> List.last() |> BeamWeaver.Core.Message.text())
 ```
 
 | Key | Meaning |
@@ -665,6 +675,27 @@ subagents, or their own subagents, review tools needs a checkpointer; see
 A small module can own the whole loop. A controller or LiveView calls `ask/2`
 when a message arrives, shows a `{:review, review}` result as a card with a
 button per allowed decision, and calls `decide/2` with the person's choice:
+
+Before running the database examples on this page, set `DATABASE_URL` to
+an empty PostgreSQL database reserved for examples, then run this setup in
+the same IEx session. The verification command creates a disposable database.
+
+```elixir
+defmodule MyApp.Repo do
+  use Ecto.Repo, otp_app: :my_app, adapter: Ecto.Adapters.Postgres
+end
+
+{:ok, _repo} = MyApp.Repo.start_link(url: System.fetch_env!("DATABASE_URL"), pool_size: 2, log: false)
+
+defmodule MyApp.CreateAgentTables do
+  use Ecto.Migration
+
+  def up, do: BeamWeaver.Migrations.up(adapters: [:checkpoint, :memory, :cache])
+  def down, do: BeamWeaver.Migrations.down(adapters: [:cache, :memory, :checkpoint])
+end
+
+:ok = Ecto.Migrator.up(MyApp.Repo, 1, MyApp.CreateAgentTables, log: false)
+```
 
 ```elixir
 defmodule MyApp.RefundDesk do

@@ -17,8 +17,7 @@ defmodule BeamWeaver.OpenAI.ChatCompletions.Options.Body do
   @model_fields ~w(top_p frequency_penalty presence_penalty seed parallel_tool_calls user modalities store
                    prompt_cache_key safety_identifier)a
   @model_map_fields ~w(metadata moderation audio logit_bias prompt_cache_options)a
-  @model_value_fields ~w(service_tier function_call functions prompt_cache_retention verbosity web_search_options
-                         search_parameters)a
+  @model_value_fields ~w(service_tier function_call functions prompt_cache_retention verbosity web_search_options)a
   @call_fields ~w(logprobs top_logprobs n stop)a
   @call_map_fields ~w(stream_options)a
   @call_value_fields ~w(prediction)a

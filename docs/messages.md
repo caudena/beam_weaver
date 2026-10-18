@@ -80,19 +80,19 @@ A `"developer"` role becomes a system message. Agents accept plain strings in
 ## Text and content blocks
 
 Content is a string or a list of blocks. Blocks put images, files and audio
-next to text. Build them with `BeamWeaver.Core.ContentBlock`:
+next to text. This example uses the bundled image from a repository checkout:
 
 ```elixir
 alias BeamWeaver.Core.ContentBlock
 
 photo =
   Message.user([
-    ContentBlock.text("The box arrived damaged. Can I get a refund?"),
-    ContentBlock.image(url: "https://example.com/uploads/box.jpg")
+    ContentBlock.text("What color fills this image?"),
+    ContentBlock.image(data: Base.encode64(File.read!("examples/fixtures/red-square.png")), mime_type: "image/png")
   ])
 
 Message.text(photo)
-#=> "The box arrived damaged. Can I get a refund?"
+#=> "What color fills this image?"
 ```
 
 `Message.text/1` joins the text of a message and skips the other blocks. Use it

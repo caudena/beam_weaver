@@ -19,7 +19,6 @@ request through a proxy or gateway.
 
 ## Models
 
-<!-- generated: provider-models anthropic -->
 | Model | Kind | Input tokens | Output tokens | Tools | Structured output | Reasoning | Inputs |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | `anthropic:claude-fable-5` | chat | 1,000,000 | 128,000 | yes | yes | yes | text, image, PDF |
@@ -41,10 +40,14 @@ request through a proxy or gateway.
 | `anthropic:claude-sonnet-4-6` | chat | 1,000,000 | 128,000 | yes | yes | yes | text, image, PDF |
 | `anthropic:claude-sonnet-5` | chat | 1,000,000 | 128,000 | yes | yes | yes | text, image, PDF |
 | `anthropic:claude-sonnet-5-5` | chat | 1,000,000 | 128,000 | yes | yes | yes | text, image, PDF |
-<!-- /generated -->
 
 Ids without a date, such as `claude-haiku-4-5`, follow Anthropic's latest
 snapshot of that model; dated ids are pinned.
+
+Claude Mythos 5 and 5.1 require access through Anthropic's verification
+programs. Their profiles describe the API contract; they are not available
+to every account. Use Fable for the corresponding generally available model.
+See Anthropic's [model availability](https://platform.claude.com/docs/en/about-claude/models/choosing-a-model).
 
 ## Usage
 
@@ -54,7 +57,7 @@ Name the model on the agent's `model` line, with any options after it:
 defmodule MyApp.SupportAgent do
   use BeamWeaver.Agent
 
-  model "anthropic:claude-haiku-4-5", max_tokens: 4_096
+  model "anthropic:claude-haiku-4-5", max_tokens: 4_096, timeout: 120_000
   system_prompt "You are Acme's support agent. Answer in two sentences."
 end
 
@@ -98,9 +101,12 @@ Sonnet 4.6, take a token budget:
 defmodule MyApp.SupportAgent do
   use BeamWeaver.Agent
 
-  model "anthropic:claude-sonnet-4-6", thinking: %{type: :enabled, budget_tokens: 4_096}
+  model "anthropic:claude-sonnet-4-6", thinking: %{type: :enabled, budget_tokens: 4_096}, timeout: 120_000
   system_prompt "You are Acme's support agent."
 end
+
+{:ok, result} = MyApp.SupportAgent.invoke(%{messages: ["Reply with the word ready."]})
+true = byte_size(result.messages |> List.last() |> BeamWeaver.Core.Message.text()) > 0
 ```
 
 Newer models, from Claude Opus 4.7 and the 5.x family on, decide how much to
@@ -116,6 +122,9 @@ defmodule MyApp.SupportAgent do
   model "anthropic:claude-opus-5-5", reasoning_effort: :high, timeout: 120_000
   system_prompt "You are Acme's support agent."
 end
+
+{:ok, result} = MyApp.SupportAgent.invoke(%{messages: ["Reply with the word ready."]})
+true = byte_size(result.messages |> List.last() |> BeamWeaver.Core.Message.text()) > 0
 ```
 
 Claude Opus 4.5 and 4.6 and Sonnet 4.6 take an effort alongside their
@@ -132,25 +141,33 @@ back, as agents do: Claude needs them to continue after a tool call.
 ## Prompt caching
 
 Anthropic caches only what you mark. In an agent, `prompt_caching true` marks
-the system prompt, so repeated calls read it from the cache:
+the system prompt as eligible for caching. Minimum prompt lengths and cache
+availability still apply; a short tutorial prompt may have no cache usage
+metadata. Inspect reported cache reads rather than assuming a cache hit:
 
 ```elixir
 defmodule MyApp.SupportAgent do
   use BeamWeaver.Agent
 
-  model "anthropic:claude-haiku-4-5"
+  model "anthropic:claude-haiku-4-5", timeout: 120_000
   system_prompt "You are Acme's support agent. Follow the refund policy below. ..."
   prompt_caching true
 end
+
+{:ok, result} = MyApp.SupportAgent.invoke(%{messages: ["Reply with the word ready."]})
+true = byte_size(result.messages |> List.last() |> BeamWeaver.Core.Message.text()) > 0
 ```
 
 On a direct call, set `cache_control: %{type: :ephemeral}` on the model to
 cache the whole prefix, or mark one content block:
 
+Run this example from a repository checkout, using the bundled
+[example fixtures](https://github.com/caudena/beam_weaver/tree/master/examples/fixtures).
+
 ```elixir
 alias BeamWeaver.Core.{ContentBlock, Message}
 
-policy = File.read!("priv/refund_policy.md")
+policy = File.read!("examples/fixtures/refund_policy.md")
 
 messages = [
   Message.user([ContentBlock.text(policy, %{cache_control: %{type: "ephemeral"}})]),
@@ -159,7 +176,7 @@ messages = [
 
 {:ok, model} = BeamWeaver.Models.init_chat_model("anthropic:claude-haiku-4-5")
 {:ok, reply} = BeamWeaver.Core.ChatModel.invoke(model, messages)
-reply.usage_metadata.input_token_details
+Map.get(reply.usage_metadata, :input_token_details, %{})
 ```
 
 Cache reads show up in `usage_metadata.input_token_details.cache_read`. See
@@ -167,13 +184,14 @@ Cache reads show up in `usage_metadata.input_token_details.cache_read`. See
 
 ## Server tools
 
-Anthropic runs these tools on its side. `BeamWeaver.Anthropic.Tools` builds
-the declarations and BeamWeaver adds any beta header they need:
+Anthropic runs hosted tools such as web search and code execution on its
+servers. `BeamWeaver.Anthropic.Tools` builds the declarations and BeamWeaver
+adds any beta header they need:
 
 ```elixir
 alias BeamWeaver.Anthropic.Tools
 
-{:ok, model} = BeamWeaver.Models.init_chat_model("anthropic:claude-sonnet-4-6")
+{:ok, model} = BeamWeaver.Models.init_chat_model("anthropic:claude-sonnet-4-6", timeout: 120_000)
 
 {:ok, reply} =
   BeamWeaver.Core.ChatModel.invoke(model, "Which carriers deliver to Iceland?",
@@ -181,10 +199,20 @@ alias BeamWeaver.Anthropic.Tools
   )
 ```
 
-The other helpers are `web_fetch/1`, `bash/1`, `text_editor/1`, `memory/1`,
-`tool_search/1`, `mcp_toolset/1`, `advisor/1`, `computer_toolset/1` and
-`browser_toolset/1`. A tool a model doesn't offer, such as web fetch on Claude
+Other hosted-tool helpers include `web_fetch/1`, `tool_search/1`,
+`mcp_toolset/1` and `advisor/1`. A tool a model doesn't offer, such as web fetch on Claude
 Opus 5, is rejected before the request.
+
+`bash/1`, `text_editor/1`, `memory/1` and `computer/1` declare client tools.
+Your application must execute their requested actions and return results;
+the declaration alone does not implement them. Anthropic's
+[Bash tool guide](https://platform.claude.com/docs/en/agents-and-tools/tool-use/bash-tool)
+describes that client-side loop. For BeamWeaver-managed file and shell tools,
+see [Filesystem](../filesystem.md) and [Sandboxes](../sandboxes.md).
+
+Computer-use declarations also need display dimensions and a model-compatible
+tool revision: the `computer/1` default is for Haiku 4.5; Sonnet 4.6 needs
+`type: "computer_20251124"`. Claude 5.5 uses `computer_toolset/1` instead.
 
 An agent offers server tools next to its own when they are in its model
 options:
@@ -193,9 +221,12 @@ options:
 defmodule MyApp.SupportAgent do
   use BeamWeaver.Agent
 
-  model "anthropic:claude-sonnet-4-6", tools: [BeamWeaver.Anthropic.Tools.web_search()]
+  model "anthropic:claude-sonnet-4-6", tools: [BeamWeaver.Anthropic.Tools.web_search()], timeout: 120_000
   system_prompt "You are Acme's support agent. Search the web for carrier outages."
 end
+
+{:ok, result} = MyApp.SupportAgent.invoke(%{messages: ["Reply with the word ready."]})
+true = byte_size(result.messages |> List.last() |> BeamWeaver.Core.Message.text()) > 0
 ```
 
 The next request sends a reply's server tool calls and results back exactly
@@ -210,7 +241,7 @@ the summary instead of the full history:
 ```elixir
 alias BeamWeaver.Core.{ChatModel, Message}
 
-{:ok, model} = BeamWeaver.Models.init_chat_model("anthropic:claude-opus-5-5")
+{:ok, model} = BeamWeaver.Models.init_chat_model("anthropic:claude-opus-5-5", timeout: 120_000)
 
 history = [
   Message.user("My order A-1001 arrived damaged."),
@@ -255,6 +286,8 @@ and `transport_opts: [cassette_path: "test/cassettes/anthropic.yml"]`;
 how to write one.
 
 ## Reference
+
+- [Claude structured outputs](https://platform.claude.com/docs/en/build-with-claude/structured-outputs): provider API contract
 
 - [`BeamWeaver.Anthropic`](https://hexdocs.pm/beam_weaver/BeamWeaver.Anthropic.html): constructors
 - [`BeamWeaver.Anthropic.ChatModel`](https://hexdocs.pm/beam_weaver/BeamWeaver.Anthropic.ChatModel.html): the Messages API model and token counting

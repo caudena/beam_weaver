@@ -9,8 +9,15 @@ defmodule BeamWeaver.Examples.Support.ToolLog do
 
   @impl true
   def wrap_tool_call(%__MODULE__{owner: owner}, request, handler) do
-    send(owner, {:beam_weaver_example_tool_call, request.tool_call.name})
-    handler.(request)
+    result = handler.(request)
+
+    if Enum.any?(
+         BeamWeaver.Examples.Support.successful_tool_results(result),
+         &(&1.tool_call_id == request.tool_call.id)
+       ),
+       do: send(owner, {:beam_weaver_example_tool_call, request.tool_call})
+
+    result
   end
 end
 
@@ -27,31 +34,65 @@ defmodule BeamWeaver.Examples.Support do
   @prompt_cache_version "v1"
 
   @doc """
-  Raises unless the agent called every expected tool, and prints the tools it
-  called. An entry is a tool name, or a list of names when any one of them will
+  Raises unless the agent successfully completed every expected tool. An entry
+  is a tool name, `{name, expected_args}`, or a list when any one of them will
   do: `assert_tools_called!(messages, ["task", ["write_file", "edit_file"]])`.
   Before raising, it prints the conversation, one line per message.
   """
   def assert_tools_called!(messages, expected) do
-    called =
-      for(%Message{role: :assistant, tool_calls: calls} <- messages, call <- calls || [], do: call.name) ++
+    results = Enum.map(successful_tool_results(messages), & &1.tool_call_id)
+
+    calls =
+      for(%Message{role: :assistant, tool_calls: calls} <- messages, call <- calls || [], call.id in results, do: call) ++
         logged_tool_calls()
+
+    called = Enum.map(calls, & &1.name)
 
     missing =
       for names <- expected,
           names = List.wrap(names),
-          not Enum.any?(names, &(&1 in called)),
-          do: Enum.join(names, " or ")
+          not Enum.any?(names, fn expected -> Enum.any?(calls, &matches_call?(&1, expected)) end),
+          do: Enum.map_join(names, " or ", &inspect/1)
 
     if missing != [] do
       IO.puts(transcript(messages))
 
-      raise "expected the agent to call #{Enum.join(missing, ", ")}; " <>
-              "it called #{if called == [], do: "no tools", else: Enum.join(Enum.uniq(called), ", ")}"
+      raise "expected successful execution of #{Enum.join(missing, ", ")}; " <>
+              "completed #{if called == [], do: "no tools", else: Enum.join(Enum.uniq(called), ", ")}"
     end
 
     IO.puts("Tools called: #{Enum.join(called, ", ")}")
     called
+  end
+
+  defp matches_call?(call, {name, check}) when is_function(check, 1), do: call.name == name and check.(call.args)
+  defp matches_call?(call, {name, args}), do: call.name == name and Map.take(call.args, Map.keys(args)) == args
+  defp matches_call?(call, name), do: call.name == name
+
+  def successful_tool_results(%Message{role: :tool} = message) do
+    if message.status in [:error, "error"] or
+         (message.metadata || %{})[:status] in [:error, "error"], do: [], else: [message]
+  end
+
+  def successful_tool_results(%BeamWeaver.Graph.Command{update: update}) when is_map(update),
+    do: successful_tool_results(update[:messages] || update["messages"] || [])
+
+  def successful_tool_results({:ok, result}), do: successful_tool_results(result)
+  def successful_tool_results(results) when is_list(results), do: Enum.flat_map(results, &successful_tool_results/1)
+  def successful_tool_results(_result), do: []
+
+  def assert_text!(%Message{} = message), do: assert_text!(Message.text(message))
+
+  def assert_text!(text) when is_binary(text) do
+    if String.trim(text) == "", do: raise("provider returned no answer text")
+    text
+  end
+
+  def assert_files!(pattern) do
+    files = Path.wildcard(pattern) |> Enum.filter(&File.regular?/1)
+    if files == [], do: raise("expected generated files matching #{pattern}")
+    Enum.each(files, &(File.read!(&1) |> assert_text!()))
+    files
   end
 
   @doc """
@@ -64,7 +105,7 @@ defmodule BeamWeaver.Examples.Support do
 
   defp logged_tool_calls do
     receive do
-      {:beam_weaver_example_tool_call, name} -> [name | logged_tool_calls()]
+      {:beam_weaver_example_tool_call, call} -> [call | logged_tool_calls()]
     after
       0 -> []
     end

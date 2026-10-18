@@ -3,14 +3,12 @@ defmodule BeamWeaver.XAI.ChatModelTest do
 
   alias BeamWeaver.Core.ChatModel, as: CoreChatModel
   alias BeamWeaver.Core.ContentBlock
-  alias BeamWeaver.Core.EmbeddingModel, as: CoreEmbeddingModel
   alias BeamWeaver.Core.Message
   alias BeamWeaver.Models
   alias BeamWeaver.Stream.Events
   alias BeamWeaver.XAI.ChatCompletionsModel
   alias BeamWeaver.XAI.ChatModel
   alias BeamWeaver.XAI.Client
-  alias BeamWeaver.XAI.EmbeddingModel
   alias BeamWeaver.Core.Error
   alias BeamWeaver.XAI.Messages
   alias BeamWeaver.XAI.Tools
@@ -182,31 +180,12 @@ defmodule BeamWeaver.XAI.ChatModelTest do
     assert {"x-grok-conv-id", "conv-run"} in request.headers
   end
 
-  test "tool helpers cover xAI Responses and Chat Completions built-ins" do
-    assert Tools.code_execution() == %{"type" => "code_execution"}
-
-    assert Tools.file_search(collection_ids: ["col_1"]) == %{
-             "type" => "file_search",
-             "collection_ids" => ["col_1"]
-           }
-
-    assert Tools.attachment_search() == %{"type" => "attachment_search"}
-    assert Tools.shell() == %{"type" => "shell"}
-    assert Tools.view_image() == %{"type" => "view_image"}
-    assert Tools.view_x_video() == %{"type" => "view_x_video"}
-
-    assert Tools.to_chat_completions_tools([Tools.live_search(search_depth: :deep)]) == [
-             %{"type" => "live_search", "search_depth" => "deep"}
-           ]
-  end
-
-  test "Responses request body supports tools, structured output, reasoning, and search controls" do
+  test "Responses request body supports tools, structured output, reasoning, and turn limits" do
     assert {:ok, body} =
              ChatModel.request_body(
                ChatModel.new(model: "grok-4.3", max_turns: 2, prompt_cache_key: "model-cache"),
                [Message.user("search")],
                tools: [Tools.web_search()],
-               search_parameters: %{mode: :auto},
                response_format: %{
                  name: "Answer",
                  schema: %{type: :object, properties: %{answer: %{type: :string}}}
@@ -220,7 +199,6 @@ defmodule BeamWeaver.XAI.ChatModelTest do
     assert body["reasoning"] == %{"effort" => "high"}
     assert body["max_turns"] == 2
     assert body["prompt_cache_key"] == "model-cache"
-    assert body["search_parameters"] == %{"mode" => "auto"}
     refute Map.has_key?(body, "deferred")
 
     assert {:ok, per_call_body} =
@@ -308,37 +286,20 @@ defmodule BeamWeaver.XAI.ChatModelTest do
     assert :deferred in error.details.params
   end
 
-  test "Responses request body rejects Chat Completions-only live search tools" do
-    assert {:error, error} =
-             ChatModel.request_body(
-               ChatModel.new(model: "grok-4.3"),
-               [Message.user("search")],
-               tools: [Tools.live_search()]
-             )
-
-    assert error.type == :unsupported_feature
-    assert error.details.api == :responses
-    assert error.details.unsupported == ["live_search"]
-  end
-
-  test "Chat Completions request body preserves xAI built-ins and deferred mode" do
+  test "Chat Completions request body preserves extra options and deferred mode" do
     assert {:ok, body} =
              ChatCompletionsModel.request_body(
                ChatCompletionsModel.new(model: "grok-4.3"),
                [Message.user("search")],
-               tools: [Tools.live_search(search_depth: :deep)],
                extra_body: %{custom_param: true},
                deferred: true,
-               search_parameters: %{mode: :auto},
                stream: true
              )
 
     assert body["model"] == "grok-4.3"
     assert body["messages"] == [%{"role" => "user", "content" => "search"}]
-    assert body["tools"] == [%{"type" => "live_search", "search_depth" => "deep"}]
     assert body["custom_param"] == true
     assert body["deferred"] == true
-    assert body["search_parameters"] == %{"mode" => "auto"}
     assert body["stream_options"] == %{"include_usage" => true}
   end
 
@@ -627,45 +588,7 @@ defmodule BeamWeaver.XAI.ChatModelTest do
     assert error.message =~ "input tokens exceed"
   end
 
-  test "embeds through xAI embeddings endpoint" do
-    model =
-      EmbeddingModel.new(
-        api_key: "xai-secret",
-        transport: BeamWeaver.TestSupport.Conformance.Fakes.Transport,
-        transport_opts: [
-          parent: self(),
-          expect: %{
-            method: :post,
-            path: "/v1/embeddings",
-            json: %{
-              "model" => "v1",
-              "input" => "alpha",
-              "encoding_format" => "float",
-              "preview" => true
-            }
-          },
-          body: %{
-            "object" => "list",
-            "model" => "v1",
-            "data" => [
-              %{"index" => 0, "embedding" => [0.1, 0.2], "object" => "embedding"}
-            ],
-            "usage" => %{"prompt_tokens" => 1, "total_tokens" => 1}
-          }
-        ]
-      )
-
-    assert {:ok, [0.1, 0.2]} =
-             CoreEmbeddingModel.embed_query(model, "alpha",
-               encoding_format: :float,
-               preview: true
-             )
-
-    assert_received {:fake_transport_request, request}
-    assert {"authorization", "Bearer xai-secret"} in request.headers
-  end
-
-  test "model initializer supports current xAI identifiers, aliases, deprecations, and embeddings" do
+  test "model initializer resolves xAI chat identifiers" do
     for model <- ["grok-4.6", "grok-4.5", "grok-4.3"] do
       assert {:ok, %ChatModel{model: ^model}} = Models.init_chat_model("xai:" <> model)
     end
@@ -691,9 +614,6 @@ defmodule BeamWeaver.XAI.ChatModelTest do
              Models.init_chat_model("xai:grok-4", api: :chat_completions)
 
     assert chat_completions.__struct__ == ChatCompletionsModel
-
-    assert {:ok, embeddings} = Models.init_embeddings("xai:v1")
-    assert embeddings.__struct__ == EmbeddingModel
   end
 
   test "structured output leaves dynamic empty object maps open for xAI" do

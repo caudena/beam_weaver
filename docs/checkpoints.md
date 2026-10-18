@@ -74,6 +74,27 @@ Postgres or SQLite; [Storage](storage.md) covers its migrations. It is a plain
 struct, so you can build it where you need it, or declare it in the module
 with `checkpointer BeamWeaver.Checkpoint.Ecto.new(repo: MyApp.Repo)`:
 
+Before running the database examples on this page, set `DATABASE_URL` to
+an empty PostgreSQL database reserved for examples, then run this setup in
+the same IEx session. The verification command creates a disposable database.
+
+```elixir
+defmodule MyApp.Repo do
+  use Ecto.Repo, otp_app: :my_app, adapter: Ecto.Adapters.Postgres
+end
+
+{:ok, _repo} = MyApp.Repo.start_link(url: System.fetch_env!("DATABASE_URL"), pool_size: 2, log: false)
+
+defmodule MyApp.CreateAgentTables do
+  use Ecto.Migration
+
+  def up, do: BeamWeaver.Migrations.up(adapters: [:checkpoint, :memory, :cache])
+  def down, do: BeamWeaver.Migrations.down(adapters: [:cache, :memory, :checkpoint])
+end
+
+:ok = Ecto.Migrator.up(MyApp.Repo, 1, MyApp.CreateAgentTables, log: false)
+```
+
 ```elixir
 MyApp.TicketTriage.invoke(%{subject: "Refund for order A-1001"},
   checkpointer: BeamWeaver.Checkpoint.Ecto.new(repo: MyApp.Repo),
@@ -209,12 +230,10 @@ graph |> Compiled.get_state_history(config) |> Enum.map(& &1.metadata["source"])
 #=> ["loop", "fork", "update", "loop", "loop", "input"]
 ```
 
-{% hint style="warning" %}
-**A replay runs your nodes again.** Model calls, API calls and other side
-effects after the checkpoint happen a second time; make them safe to repeat
-(see [Durable Execution](durable_execution.md#determinism-and-side-effects)).
-Replaying a checkpoint whose `next` is empty runs nothing.
-{% endhint %}
+> **A replay runs your nodes again.** Model calls, API calls and other side
+> effects after the checkpoint happen a second time; make them safe to repeat
+> (see [Durable Execution](durable_execution.md#determinism-and-side-effects)).
+> Replaying a checkpoint whose `next` is empty runs nothing.
 
 ## Fork from an earlier checkpoint
 

@@ -6,8 +6,7 @@ ExUnit.start(
 )
 
 # Each test run gets its own temp directory, so suites running at the same time
-# (several checkouts, or CI jobs on one machine) never share scratch paths such
-# as the docs' workspace directories.
+# (several checkouts, or CI jobs on one machine) never share scratch paths.
 test_tmp_dir = Path.join(System.tmp_dir!(), "beam_weaver_test_#{System.pid()}")
 File.mkdir_p!(test_tmp_dir)
 System.put_env("TMPDIR", test_tmp_dir)
@@ -28,4 +27,3 @@ Path.wildcard(Path.expand("../support/conformance/*.exs", __DIR__))
 
 Code.require_file("../support/live_postgres.exs", __DIR__)
 Code.require_file("../support/live_sqlite.exs", __DIR__)
-Code.require_file("../support/doc_snippets.exs", __DIR__)

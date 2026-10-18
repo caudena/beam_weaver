@@ -11,6 +11,7 @@ defmodule BeamWeaver.Models.ProfileRegistry.Moonshot do
   @k3_supported_params [:reasoning_effort | Params.moonshot()] -- [:thinking]
 
   @moonshot_deprecated_models %{
+    "kimi-k2.5" => %{replacement: "kimi-k3", discontinued_at: "2026-08-31"},
     "kimi-latest" => %{
       replacement: "kimi-k3",
       discontinued_at: "2026-01-28"
@@ -177,23 +178,6 @@ defmodule BeamWeaver.Models.ProfileRegistry.Moonshot do
                      batch_input_cache_hit_price_per_mtok: 0.10,
                      batch_input_cache_miss_price_per_mtok: 0.57,
                      batch_output_price_per_mtok: 2.40
-                   })
-               }},
-              {"kimi-k2.5",
-               %{
-                 id: "kimi-k2.5",
-                 name: "Kimi K2.5",
-                 status: :deprecated,
-                 extra:
-                   Map.merge(@base_extra, @thinking_toggle_extra)
-                   |> Map.merge(%{
-                     json_mode_only: true,
-                     pricing_source_url: "https://platform.kimi.ai/docs/pricing/chat-k25",
-                     unavailable_to_new_users: true,
-                     sunset_at: "2026-08-31",
-                     input_cache_hit_price_per_mtok: 0.10,
-                     input_cache_miss_price_per_mtok: 0.60,
-                     output_price_per_mtok: 3.00
                    })
                }}
             ]

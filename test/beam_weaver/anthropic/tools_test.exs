@@ -4,6 +4,24 @@ defmodule BeamWeaver.Anthropic.ToolsTest do
   alias BeamWeaver.Anthropic.Tools
   alias BeamWeaver.Core.Tool
 
+  test "client tool declarations carry the required names through a model request" do
+    messages = [BeamWeaver.Core.Message.user("Help me with this task.")]
+
+    for {model_id, tool, name} <- [
+          {"claude-sonnet-4-6", Tools.bash(), "bash"},
+          {"claude-sonnet-4-6", Tools.text_editor(), "str_replace_based_edit_tool"},
+          {"claude-sonnet-4-6", Tools.memory(), "memory"},
+          {"claude-haiku-4-5", Tools.computer(display_width_px: 1024, display_height_px: 768), "computer"}
+        ] do
+      model = BeamWeaver.Anthropic.ChatModel.new(model: model_id)
+
+      assert {:ok, %{"tools" => [declaration]}} =
+               BeamWeaver.Anthropic.ChatModel.request_body(model, messages, tools: [tool])
+
+      assert declaration["name"] == name
+    end
+  end
+
   test "renders BeamWeaver tools as Anthropic custom tools" do
     tool =
       Tool.from_function!(

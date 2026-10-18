@@ -2,8 +2,9 @@
 
 A provider is a model API that BeamWeaver calls directly over HTTP: OpenAI,
 Anthropic, Google Gemini, DeepSeek, Moonshot (Kimi), xAI, Z.ai and TypeSafe.
-You pick one with a model string and a key in config; agents, tools, graphs and
-streaming work the same on all of them.
+Select a model with a provider-prefixed identifier and credentials in application
+configuration. Chat providers share the agent, tool and streaming interfaces.
+TypeSafe supplies typed decisions, including decisions used to route an agent.
 
 ```elixir
 defmodule MyApp.SupportAgent do
@@ -38,21 +39,21 @@ calling a model directly and reading its profile.
 
 ## Supported providers
 
-<!-- generated: provider-overview -->
-| Provider | Prefix | Models | Tools | Structured output | Reasoning | Image input |
+| Provider | Prefix | Model IDs | Tools | Structured output | Reasoning | Image input |
 | --- | --- | --- | --- | --- | --- | --- |
 | [OpenAI](providers/openai.md) | `openai:` | 17 chat, 1 decision, 2 embedding | all | all | 16 of 17 | all |
 | [Anthropic](providers/anthropic.md) | `anthropic:` | 19 chat | all | 16 of 19 | all | all |
 | [Google Gemini](providers/google.md) | `google:` | 7 chat | all | all | all | all |
-| [xAI](providers/xai.md) | `xai:` | 8 chat, 1 embedding | all | all | 7 of 8 | all |
-| [Moonshot (Kimi)](providers/moonshot.md) | `moonshot:` | 5 chat | all | all | all | all |
+| [xAI](providers/xai.md) | `xai:` | 8 chat | all | all | 7 of 8 | all |
+| [Moonshot (Kimi)](providers/moonshot.md) | `moonshot:` | 4 chat | all | all | all | all |
 | [Z.ai](providers/zai.md) | `zai:` | 8 chat | all | all | all | 2 of 8 |
 | [DeepSeek](providers/deepseek.md) | `deepseek:` | 4 chat | all | all | all | 3 of 4 |
 | [TypeSafe](providers/typesafe.md) | `typesafe:` | 3 decision | — | — | — | — |
-<!-- /generated -->
 
 Run `mix beam_weaver.models.profiles` to print every model id your version
-knows. TypeSafe's Jev is a decision model: it answers typed questions and can
+knows. Counts include accepted aliases and snapshots, so they are not counts
+of distinct models. Provider guides note aliases and access restrictions.
+TypeSafe's Jev is a decision model: it answers typed questions and can
 route an agent between chat models, but cannot run one. In tests, `fake:chat`
 stands in for any provider (see [Testing](testing.md)).
 
@@ -125,13 +126,11 @@ MyApp.SupportAgent.invoke(%{messages: ["Where is my order A-1001?"]},
 )
 ```
 
-{% hint style="warning" %}
-Options on the `model` line are evaluated each time the agent runs, so they
-can read runtime configuration. Keep keys and other secrets in
-`config/runtime.exs` and read them there, as in
-`api_key: Application.fetch_env!(:my_app, :openai_key)`, never as literals in
-the agent module.
-{% endhint %}
+> Options on the `model` line are evaluated each time the agent runs, so they
+> can read runtime configuration. Keep keys and other secrets in
+> `config/runtime.exs` and read them there, as in
+> `api_key: Application.fetch_env!(:my_app, :openai_key)`, never as literals in
+> the agent module.
 
 ## Switching and fallback
 
@@ -180,19 +179,34 @@ refuses to send tools. Always pass `api_key:`, or your configured OpenAI key
 is sent to that server; for a server that needs no key, pass a placeholder,
 since a call without a key fails with `:missing_api_key`:
 
+The following repository example starts a one-request local HTTP fixture.
+Replace its URL with your inference server's endpoint in your application:
+
 ```elixir
+Code.require_file("examples/support/http_receiver.exs")
+{endpoint, receiver} = BeamWeaver.Examples.HTTPReceiver.start(%{
+  "id" => "local-response", "model" => "llama3.1",
+  "choices" => [%{"index" => 0, "finish_reason" => "stop",
+                  "message" => %{"role" => "assistant", "content" => "Ready."}}]
+})
+Application.put_env(:my_app, :local_model_endpoint, endpoint <> "/v1/chat/completions")
+
 defmodule MyApp.LocalAgent do
   use BeamWeaver.Agent
 
   model BeamWeaver.OpenAI.chat_completions_model(
-          model: "llama3.1",
-          endpoint: "http://localhost:11434/v1/chat/completions",
-          api_key: "unused",
-          profile: %{tool_calling: true, max_input_tokens: 128_000}
-        )
-
+    model: "llama3.1",
+    endpoint: Application.fetch_env!(:my_app, :local_model_endpoint),
+    api_key: "unused",
+    profile: %{tool_calling: true, max_input_tokens: 128_000}
+  )
   system_prompt "You are Acme's support agent."
 end
+
+{:ok, result} = MyApp.LocalAgent.invoke(%{messages: ["Reply ready."]})
+"Ready." = result.messages |> List.last() |> BeamWeaver.Core.Message.text()
+request = Task.await(receiver, 10_000)
+true = request.path == "/v1/chat/completions"
 ```
 
 To route a supported provider through a proxy or gateway instead, set

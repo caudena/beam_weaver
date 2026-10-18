@@ -24,7 +24,9 @@ defmodule BeamWeaver do
     * `BeamWeaver.Checkpoint` and `BeamWeaver.Memory` - threads and long-term memory.
     * `BeamWeaver.Stream` - events while a run progresses.
 
-  The [Quickstart](quickstart.md) builds a first agent without an API key, and
-  [Concepts](concepts.md) explains how the pieces fit together.
+  The [Quickstart](quickstart.md) makes a real OpenAI or Google call.
+  [Build an Agent](tutorial.md) adds a tool and conversation history.
+  The scripted model above is for deterministic tests; [Testing](testing.md)
+  explains how to assert tool calls and results without a network request.
   """
 end

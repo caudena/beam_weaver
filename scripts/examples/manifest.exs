@@ -12,11 +12,13 @@
 # Support files that other scripts load are listed under `support:`.
 [
   support: [
+    "examples/support/http_receiver.exs",
     "examples/support.exs",
     "examples/deepagents/support/support.exs",
     "examples/typesafe_routing_prompts.exs"
   ],
   scripts: [
+    {"examples/trace_exporter.exs", run: :offline, tools: false},
     {"examples/async_subagent_protocol_client.exs", run: :offline, tools: false},
     {"examples/basic_graph.exs", run: :offline, tools: false},
     {"examples/branching_waiting_graph.exs", run: :offline, tools: false},
@@ -31,7 +33,8 @@
     {"examples/streaming_tool_call_chunks.exs", run: :offline, tools: false},
     {"examples/openai_responses_tool_roundtrip.exs",
      run: {:pinned, :openai}, tools: true, args: ["--live", "gpt-5.4-mini"], offline_args: []},
-    {"examples/typesafe_dynamic_routing.exs", run: {:pinned, :typesafe}, tools: true, offline_args: ["--offline"]},
+    {"examples/typesafe_dynamic_routing.exs",
+     run: {:pinned, :typesafe}, requires: [:typesafe, :openai], tools: true, offline_args: ["--offline"]},
     {"examples/anthropic_opus55_compaction.exs", run: {:pinned, :anthropic}, tools: false},
     {"examples/deepseek.exs", run: {:pinned, :deepseek}, tools: false},
     {"examples/auto_mode_agent.exs", run: {:pinned, :openai}, tools: true},

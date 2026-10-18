@@ -45,7 +45,6 @@ defmodule BeamWeaver.XAI.ChatCompletionsModel do
             store: nil,
             n: nil,
             deferred: nil,
-            search_parameters: nil,
             stream_usage: true,
             profile: nil,
             tokenizer: nil,

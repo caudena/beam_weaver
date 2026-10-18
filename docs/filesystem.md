@@ -199,12 +199,10 @@ environment instead. Output longer than `max_output_bytes:` (default 100,000)
 keeps its first and last 50,000 bytes, with a line between them that says how
 many bytes were cut, such as `... [48210 bytes cut] ...`.
 
-{% hint style="danger" %}
-`LocalShell` is not a sandbox. Commands run on your machine as the user that
-runs your application, and file permissions don't apply to them. Use it for
-development and trusted tasks only; run anything else in a
-[sandbox](sandboxes.md).
-{% endhint %}
+> `LocalShell` is not a sandbox. Commands run on your machine as the user that
+> runs your application, and file permissions don't apply to them. Use it for
+> development and trusted tasks only; run anything else in a
+> [sandbox](sandboxes.md).
 
 ### A memory store
 
@@ -310,8 +308,15 @@ development. [Sandboxes](sandboxes.md) covers Docker and hosted sandboxes,
 which isolate the commands:
 
 ```elixir
-model "anthropic:claude-sonnet-4-6"
-filesystem BeamWeaver.Filesystem.Sandbox.new(sandbox: BeamWeaver.Sandbox.local(root: "/tmp/acme_workspace"))
+defmodule MyApp.SandboxAgent do
+  use BeamWeaver.Agent
+
+  model "anthropic:claude-sonnet-4-6"
+  filesystem BeamWeaver.Filesystem.Sandbox.new(sandbox: BeamWeaver.Sandbox.local(root: Path.join(System.tmp_dir!(), "acme_workspace")))
+end
+
+{:ok, result} = MyApp.SandboxAgent.invoke(%{messages: ["Reply with the word ready."]})
+true = is_binary(result.messages |> List.last() |> BeamWeaver.Core.Message.text())
 ```
 
 ## Permissions
@@ -582,14 +587,21 @@ The file tools come from `BeamWeaver.Agent.Middleware.Filesystem`. To change
 its options, list it in `middleware` with them:
 
 ```elixir
-model "anthropic:claude-sonnet-4-6"
-filesystem BeamWeaver.Filesystem.State.new()
+defmodule MyApp.FileOffloadingAgent do
+  use BeamWeaver.Agent
 
-middleware [
-  {BeamWeaver.Agent.Middleware.Filesystem,
-   tool_token_limit_before_evict: 5_000,
-   human_message_token_limit_before_evict: nil}
-]
+  model "anthropic:claude-sonnet-4-6"
+  filesystem BeamWeaver.Filesystem.State.new()
+
+  middleware [
+    {BeamWeaver.Agent.Middleware.Filesystem,
+     tool_token_limit_before_evict: 5_000,
+     human_message_token_limit_before_evict: nil}
+  ]
+end
+
+{:ok, result} = MyApp.FileOffloadingAgent.invoke(%{messages: ["Reply with the word ready."]})
+true = is_binary(result.messages |> List.last() |> BeamWeaver.Core.Message.text())
 ```
 
 `tool_token_limit_before_evict` (default 20,000) and
@@ -616,23 +628,34 @@ or your own tables, implements the same callbacks:
 Return failures in the result's `error` field instead of raising; the tools
 pass the error to the model. To give the agent `execute` too, add
 `use BeamWeaver.Filesystem.Executable` and two more callbacks to the module.
-These run each command in a Docker container that mounts the backend's
-directory; `opts` carries the model's `timeout:` in seconds:
+This adapter delegates command execution and its timeout to the Docker
+sandbox. `opts` carries the model's `timeout:` in seconds:
 
 ```elixir
-use BeamWeaver.Filesystem.Executable
+defmodule MyApp.ContainerExecutor do
+  use BeamWeaver.Filesystem.Executable
+  alias BeamWeaver.Filesystem.Executable.ExecuteResult
+  defstruct [:sandbox]
 
-alias BeamWeaver.Filesystem.Executable.ExecuteResult
+  @impl true
+  def id(workspace), do: "container:" <> workspace.sandbox.container
 
-@impl true
-def id(workspace), do: "container:" <> workspace.container
+  @impl true
+  def execute(workspace, command, opts) do
+    result = BeamWeaver.Sandbox.execute(workspace.sandbox, command, opts)
+    struct!(ExecuteResult, Map.from_struct(result))
+  end
+end
 
-@impl true
-def execute(workspace, command, _opts) do
-  {output, exit_code} =
-    System.cmd("docker", ["exec", workspace.container, "sh", "-c", command], stderr_to_stdout: true)
-
-  %ExecuteResult{exit_code: exit_code, output: output}
+sandbox = BeamWeaver.Sandbox.Docker.new(image: "python:3.11-slim") |> BeamWeaver.Sandbox.Docker.start!()
+try do
+  workspace = struct!(MyApp.ContainerExecutor, sandbox: sandbox)
+  result = BeamWeaver.Filesystem.Executable.execute(workspace, "printf ready", timeout: 5)
+  {result.exit_code, result.output}
+  # The result is asserted before the container is stopped.
+  {0, "ready"} = {result.exit_code, result.output}
+after
+  BeamWeaver.Sandbox.Docker.stop(sandbox)
 end
 ```
 

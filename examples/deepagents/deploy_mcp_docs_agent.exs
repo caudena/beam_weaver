@@ -31,7 +31,6 @@ end
 
 defmodule BeamWeaver.Examples.DeepAgents.DeployMcpDocsAgent do
   alias BeamWeaver.Agent
-  alias BeamWeaver.Core.Message
   alias BeamWeaver.Examples.DeepAgents.DeployMcpDocsAgent.SearchDocs
   alias BeamWeaver.Examples.DeepAgents.Support
   alias BeamWeaver.Filesystem.Local
@@ -56,7 +55,7 @@ defmodule BeamWeaver.Examples.DeepAgents.DeployMcpDocsAgent do
     {:ok, %{messages: messages}} =
       Agent.invoke(agent, %{messages: ["How do filesystem backends work in BeamWeaver?"]})
 
-    IO.puts(Message.text(List.last(messages)))
+    IO.puts(Support.assert_text!(List.last(messages)))
     Support.assert_tools_called!(messages, ["search_docs"])
   end
 end

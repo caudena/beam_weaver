@@ -6,9 +6,7 @@ memory and subagents turned on. Each script here builds one with
 checks that the agent called the tools the example is about, and fails if not.
 
 ```bash
-export OPENAI_API_KEY=...
-export BEAM_WEAVER_EXAMPLES_MODEL=openai:gpt-5.4-mini   # the default; any provider:model works
-mix run examples/deepagents/deep_research.exs
+mix examples.live --model openai:gpt-5.4-mini --only examples/deepagents/deep_research.exs
 ```
 
 The files an agent reads and writes live in
@@ -46,4 +44,4 @@ repeatable.
 | `text_to_sql_agent.exs` | Inspect tables, run a read-only query, answer from the rows | `execute_query` |
 
 See [docs/examples.md](../../docs/examples.md) for the other examples and for
-`mix examples.live`, which runs these on every provider you have a key for.
+`mix examples.live`, which runs these on explicitly selected providers and fails when a required key is missing.

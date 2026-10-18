@@ -2,8 +2,18 @@ defmodule BeamWeaver.Provider.MessageCodec do
   @moduledoc """
   Converts single messages to and from a provider's wire format.
 
-      MessageCodec.encode(Message.user("hi"), provider: :anthropic)
-      MessageCodec.decode(response_body, provider: :openai)
+  ```elixir
+  alias BeamWeaver.Core.Message
+  alias BeamWeaver.Provider.MessageCodec
+
+  {:ok, encoded} = MessageCodec.encode(Message.user("hi"), provider: :anthropic)
+  "user" = encoded["role"]
+
+  payload = %{"role" => "assistant", "content" => [%{"type" => "text", "text" => "Hello!"}]}
+  {:ok, reply} = MessageCodec.decode(payload, provider: :anthropic)
+  Message.text(reply)
+  #=> "Hello!"
+  ```
 
   Supported providers: `:openai`, `:anthropic`, and `:google`.
   """

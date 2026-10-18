@@ -42,28 +42,40 @@ defmodule BeamWeaver.Tool do
     end
   end
 
+  @doc "Sets the function name the model calls."
   defmacro name(value), do: quote(do: @beam_weaver_tool_name(unquote(value)))
+  @doc "Describes when and why the model should use this tool."
   defmacro description(value), do: quote(do: @beam_weaver_tool_description(unquote(value)))
 
+  @doc "Selects how the tool result is interpreted; see [Tools](tools.md)."
   defmacro response_format(value),
     do: quote(do: @beam_weaver_tool_response_format(unquote(value)))
 
+  @doc "Describes structured tool output."
   defmacro output_schema(value), do: quote(do: @beam_weaver_tool_output_schema(unquote(value)))
+  @doc "Adds trace tags to tool calls."
   defmacro tags(value), do: quote(do: @beam_weaver_tool_tags(unquote(value)))
+  @doc "Adds trace metadata to tool calls."
   defmacro metadata(value), do: quote(do: @beam_weaver_tool_metadata(unquote(value)))
+  @doc "Adds provider-specific tool declaration options."
   defmacro provider_opts(value), do: quote(do: @beam_weaver_tool_provider_opts(unquote(value)))
+  @doc "Ends the agent loop after this tool returns when enabled."
   defmacro return_direct(value), do: quote(do: @beam_weaver_tool_return_direct(unquote(value)))
+  @doc "Controls whether tool calls may run concurrently."
   defmacro concurrent(value), do: quote(do: @beam_weaver_tool_concurrent(unquote(value)))
 
+  @doc "Sets the maximum number of result characters exposed to the model."
   defmacro max_result_chars(value),
     do: quote(do: @beam_weaver_tool_max_result_chars(unquote(value)))
 
+  @doc "Injects runtime data into the tool under an atom key, without asking the model to supply it. See [Tools](tools.md)."
   defmacro injected(name, source) do
     quote bind_quoted: [name: name, source: source] do
       @beam_weaver_tool_injected {name, source}
     end
   end
 
+  @doc "Declares an injected runtime argument with optional type and field metadata. The application supplies its value."
   defmacro injected(name, source, opts) do
     quote bind_quoted: [name: name, source: source, opts: opts] do
       @beam_weaver_tool_injected {name, source}
@@ -79,8 +91,10 @@ defmodule BeamWeaver.Tool do
     end
   end
 
+  @doc "Groups the fields of the model-visible input schema."
   defmacro schema(do: block), do: block
 
+  @doc "Declares a tool argument. Fields are required unless required: false is supplied."
   defmacro field(name, type, opts \\ []) do
     quote bind_quoted: [name: name, type: type, opts: opts] do
       @beam_weaver_tool_fields {name, type, opts}

@@ -40,27 +40,35 @@ end
   )
 
 # A Token event is a piece of text; a Message event carries a finished message.
-messages =
-  Enum.reduce(events, [], fn %Envelope{event: event}, messages ->
+%{messages: messages, tokens: tokens} =
+  Enum.reduce(events, %{messages: [], tokens: 0}, fn %Envelope{event: event}, acc ->
     case event do
       %Events.Token{text: text} ->
         IO.write(text)
-        messages
+        %{acc | tokens: acc.tokens + 1}
 
       %Events.ToolStart{tool_name: name, input: input} ->
         IO.puts("[calling #{name} with #{inspect(input)}]")
-        messages
+        acc
 
       %Events.Message{message: %Message{} = message} ->
-        messages ++ [message]
+        %{acc | messages: acc.messages ++ [message]}
+
+      %Events.ToolFinish{tool_call_id: id, output: output} ->
+        %{acc | messages: acc.messages ++ [Message.tool(output, tool_call_id: id)]}
 
       %Events.Error{error: error} ->
         raise "the stream failed: #{error.message}"
 
       _other ->
-        messages
+        acc
     end
   end)
 
 IO.puts("")
-Support.assert_tools_called!(messages, ["get_weather"])
+true = tokens > 0
+Support.assert_text!(List.last(messages))
+
+Support.assert_tools_called!(messages, [
+  {"get_weather", fn args -> String.contains?(String.downcase(args["city"] || ""), "lisbon") end}
+])
