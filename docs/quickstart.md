@@ -4,6 +4,8 @@ Make a real model call from an Elixir module. This page assumes you have
 completed [Installation](installation.md), including the provider key.
 Calls use your provider account and may incur charges.
 
+<a name="build-a-basic-agent"></a>
+
 ## Define an agent
 
 Save this as `lib/my_app/support_agent.ex`:

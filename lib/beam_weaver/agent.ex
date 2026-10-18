@@ -303,6 +303,10 @@ defmodule BeamWeaver.Agent do
       answer = result.messages |> List.last() |> BeamWeaver.Core.Message.text()
       true = String.contains?(String.downcase(answer), "bonjour")
 
+  It also works in a module attribute, such as
+  `@model BeamWeaver.Agent.declarations(MyApp.BaseAgent).model`, while the
+  agent module compiles in the same project.
+
   `execution_mode`, which only applies when the module runs as a subagent,
   isn't among them. Raises `ArgumentError` for a module that isn't an agent
   module.

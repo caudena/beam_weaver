@@ -88,9 +88,21 @@ photo =
 true = description |> Message.text() |> String.downcase() |> String.contains?("red")
 ```
 
-For a consumer app, copy [the fixture](https://github.com/caudena/beam_weaver/blob/master/examples/fixtures/red-square.png)
+For a consumer app, copy [the fixture](assets/fixtures/red-square.png)
 to that relative path or use your own image. File reads resolve from the
 process's working directory.
+
+The same downloadable fixtures support the provider walkthroughs. Save them
+under these paths in your application before running the examples:
+
+| Fixture | Save as | Expected content |
+| --- | --- | --- |
+| [PNG image](assets/fixtures/red-square.png) | `examples/fixtures/red-square.png` | A red square |
+| [MP4 video](assets/fixtures/red-square.mp4) | `examples/fixtures/red-square.mp4` | One second of solid red |
+| [PDF document](assets/fixtures/sample.pdf) | `examples/fixtures/sample.pdf` | “Dummy PDF file” |
+
+The image and video were generated for these examples. The PDF is the
+[W3C test document](https://www.w3.org/WAI/ER/tests/xhtml/testfiles/resources/pdf/dummy.pdf).
 
 | Constructor | Input |
 | --- | --- |

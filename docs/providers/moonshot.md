@@ -91,7 +91,8 @@ a call only where the model permits it. See
 
 Use inline data URLs or `ms://` references from actual Moonshot uploads.
 Arbitrary remote media URLs are not accepted by this integration. From a
-checkout with the bundled fixtures:
+checkout with the bundled fixtures, or save [the video](../assets/fixtures/red-square.mp4)
+as `examples/fixtures/red-square.mp4` in your application:
 
 ```elixir
 alias BeamWeaver.Core.ContentBlock

@@ -92,20 +92,20 @@ release is published and installed successfully.
 
 ## Agents and tools
 
-| Script | What it shows | Runs |
+| Example | What it shows | Runs |
 |---|---|---|
 | [react_agent.exs](https://github.com/caudena/beam_weaver/blob/master/examples/react_agent.exs) | An agent calls a tool and answers from the result | live |
 | [tool_injected_args.exs](https://github.com/caudena/beam_weaver/blob/master/examples/tool_injected_args.exs) | A tool receives the agent state and run context the model never sees | live |
 | [structured_output_agent.exs](https://github.com/caudena/beam_weaver/blob/master/examples/structured_output_agent.exs) | Look an order up with a tool, then answer as a map matching a schema | live |
 | [streaming_agent.exs](https://github.com/caudena/beam_weaver/blob/master/examples/streaming_agent.exs) | Print tokens and tool calls while the agent runs | live |
 | [hitl_agent.exs](https://github.com/caudena/beam_weaver/blob/master/examples/hitl_agent.exs) | Pause before a refund, approve it, resume from a checkpoint | live |
-| [hitl_per_call_agent.exs](https://github.com/caudena/beam_weaver/blob/master/examples/hitl_per_call_agent.exs) | Review each refund on its own while lookups run; answer the refunds one at a time | live |
+| [Per-call review](human_in_the_loop.md#one-pause-per-call) | Review each refund on its own while lookups run; answer the refunds one at a time | live |
 | [chat_model.exs](https://github.com/caudena/beam_weaver/blob/master/examples/chat_model.exs) | Call a chat model directly, without an agent | live |
 | [prompt_caching.exs](https://github.com/caudena/beam_weaver/blob/master/examples/prompt_caching.exs) | Compare reported cache-read tokens across repeated live calls | live |
 
 ## Memory, subagents and deep agents
 
-| Script | What it shows | Runs |
+| Example | What it shows | Runs |
 |---|---|---|
 | [file_memory.exs](https://github.com/caudena/beam_weaver/blob/master/examples/file_memory.exs) | Memory in an `AGENTS.md` file the agent edits with file tools | live |
 | [long_term_memory.exs](https://github.com/caudena/beam_weaver/blob/master/examples/long_term_memory.exs) | Memories as store records per user, ETS or Postgres (`--ecto`) | live |
@@ -122,7 +122,7 @@ lists each one with the tools it must call.
 
 ## Graphs
 
-| Script | What it shows | Runs |
+| Example | What it shows | Runs |
 |---|---|---|
 | [basic_graph.exs](https://github.com/caudena/beam_weaver/blob/master/examples/basic_graph.exs) | A one-node graph in a graph module | offline |
 | [branching_waiting_graph.exs](https://github.com/caudena/beam_weaver/blob/master/examples/branching_waiting_graph.exs) | Route with a command and fan out with sends | offline |
@@ -131,7 +131,7 @@ lists each one with the tools it must call.
 
 ## Retrieval, streaming and sandboxes
 
-| Script | What it shows | Runs |
+| Example | What it shows | Runs |
 |---|---|---|
 | [retrieval_indexing_agent.exs](https://github.com/caudena/beam_weaver/blob/master/examples/retrieval_indexing_agent.exs) | Split documents into a vector store and give an agent a search tool, with fake embeddings | offline |
 | [streaming_redaction.exs](https://github.com/caudena/beam_weaver/blob/master/examples/streaming_redaction.exs) | Redact email addresses from a message stream | offline |
@@ -141,17 +141,17 @@ lists each one with the tools it must call.
 
 ## Provider features
 
-| Script | What it shows | Runs |
+| Example | What it shows | Runs |
 |---|---|---|
 | [openai_responses_tool_roundtrip.exs](https://github.com/caudena/beam_weaver/blob/master/examples/openai_responses_tool_roundtrip.exs) | A streamed tool round trip on the Responses API | offline; OpenAI with `--live` |
 | [openai_apply_patch_tool.exs](https://github.com/caudena/beam_weaver/blob/master/examples/openai_apply_patch_tool.exs) | The `apply_patch` tool request and replay | offline |
 | [openai_json_http_error.exs](https://github.com/caudena/beam_weaver/blob/master/examples/openai_json_http_error.exs) | Provider error details kept on an HTTP error | offline |
 | [openai_gpt6_controls.exs](https://github.com/caudena/beam_weaver/blob/master/examples/openai_gpt6_controls.exs) | Access programs and cache prewarming | OpenAI |
-| [auto_mode_agent.exs](https://github.com/caudena/beam_weaver/blob/master/examples/auto_mode_agent.exs) | GPT-6 Luna permits a requested fixture deletion call and blocks an unrequested one | OpenAI |
+| [Auto mode](guardrails.md#block-risky-tool-calls) | GPT-6 Luna permits a requested fixture deletion call and blocks an unrequested one | OpenAI |
 | [anthropic_opus55_compaction.exs](https://github.com/caudena/beam_weaver/blob/master/examples/anthropic_opus55_compaction.exs) | Server-side compaction and its replay | Anthropic |
 | [deepseek.exs](https://github.com/caudena/beam_weaver/blob/master/examples/deepseek.exs) | Chat, Responses, fill-in-the-middle and the Anthropic-style endpoint | DeepSeek |
 | [typesafe_dynamic_routing.exs](https://github.com/caudena/beam_weaver/blob/master/examples/typesafe_dynamic_routing.exs) | Route each request to a fast or a strong model with a classifier | TypeSafe and OpenAI; `--offline` |
-| [zai_media.exs](https://github.com/caudena/beam_weaver/blob/master/examples/zai_media.exs) | Send an image, a PDF and a video to GLM-5.3-Flash | Z.ai |
+| [Z.ai media](providers/zai.md#images-video-and-pdfs) | Send an image, a PDF and a video to GLM-5.3-Flash | Z.ai |
 
 ## Choose a useful integration check
 

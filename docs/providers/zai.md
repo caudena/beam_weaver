@@ -121,11 +121,20 @@ true = text =~ "red"
 true = text =~ "dummy"
 ```
 
-Copy [fixtures](https://github.com/caudena/beam_weaver/tree/master/examples/fixtures)
-into the same relative paths for a consumer app. Remote media URLs must be
+Download [the image](../assets/fixtures/red-square.png) and
+[the PDF](../assets/fixtures/sample.pdf) into the same relative paths for a consumer app. Remote media URLs must be
 fetchable by Z.ai. Tool-returned media is carried in a following user message.
-The [media script](https://github.com/caudena/beam_weaver/blob/master/examples/zai_media.exs)
-also exercises video.
+For video, save [the MP4 fixture](../assets/fixtures/red-square.mp4) as
+`examples/fixtures/red-square.mp4`, then run:
+
+```elixir
+video = ContentBlock.video(
+  data: Base.encode64(File.read!("examples/fixtures/red-square.mp4")),
+  mime_type: "video/mp4"
+)
+{:ok, reply} = ChatModel.invoke(model, [Message.user([ContentBlock.text("What single colour fills this video?"), video])])
+true = reply |> Message.text() |> String.downcase() |> String.contains?("red")
+```
 
 ## Upload and remove a file
 

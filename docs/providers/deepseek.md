@@ -61,7 +61,7 @@ true = reply |> Message.text() |> String.downcase() |> String.contains?("red")
 ```
 
 Images are supported media here; PDF/audio/video input are not. Download/copy
-[fixtures](https://github.com/caudena/beam_weaver/tree/master/examples/fixtures)
+[the image fixture](../assets/fixtures/red-square.png)
 into the same relative path when running outside a checkout.
 
 ## Responses and hosted tools

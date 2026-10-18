@@ -22,11 +22,14 @@ defmodule BeamWeaver.Agent.Builder do
   end
 
   # An agent module's declarations, evaluated now, under the names of the
-  # options above: what `build/1` takes to build the same agent.
+  # options above: what `build/1` takes to build the same agent. Read in a
+  # module attribute, the agent may still be compiling: `ensure_compiled/1`
+  # waits for it there, and only loads it at runtime.
   @spec declarations(module()) :: map()
   def declarations(module) when is_atom(module) do
-    unless BeamWeaver.Behaviour.exported?(module, :__beam_weaver_agent_spec__, 0),
-      do: raise(ArgumentError, "#{inspect(module)} is not an agent module: `use BeamWeaver.Agent` in it")
+    unless match?({:module, _}, Code.ensure_compiled(module)) and
+             function_exported?(module, :__beam_weaver_agent_spec__, 0),
+           do: raise(ArgumentError, "#{inspect(module)} is not an agent module: `use BeamWeaver.Agent` in it")
 
     module.__beam_weaver_agent_spec__() |> Map.from_struct() |> Map.take(@options)
   end

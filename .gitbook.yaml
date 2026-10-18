@@ -42,4 +42,5 @@ redirects:
   semantic_dsl: agents.md
   thinking_in_beamweaver: graphs.md
   time_travel: checkpoints.md
+  todos: deep_agents.md
   workflows_and_agents: workflow_patterns.md

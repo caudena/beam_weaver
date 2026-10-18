@@ -290,6 +290,37 @@ defmodule BeamWeaver.Agent.DeclarationsTest do
       refute Message.text(system) =~ "Reply briefly."
     end
 
+    @tag :tmp_dir
+    test "works in a module attribute while the agent compiles alongside it", %{tmp_dir: tmp_dir} do
+      suffix = System.unique_integer([:positive])
+      agent = "BeamWeaver.Agent.DeclarationsTest.CompiledAgent#{suffix}"
+      reader = "BeamWeaver.Agent.DeclarationsTest.Reader#{suffix}"
+
+      reader_file = Path.join(tmp_dir, "reader.ex")
+      agent_file = Path.join(tmp_dir, "agent.ex")
+
+      File.write!(reader_file, """
+      defmodule #{reader} do
+        @model BeamWeaver.Agent.declarations(#{agent}).model
+        def model, do: @model
+      end
+      """)
+
+      File.write!(agent_file, """
+      defmodule #{agent} do
+        use BeamWeaver.Agent
+
+        model "fake:chat"
+      end
+      """)
+
+      assert {:ok, modules, _warnings} =
+               Kernel.ParallelCompiler.compile([reader_file, agent_file], return_diagnostics: true)
+
+      reader_module = Enum.find(modules, &(inspect(&1) == reader))
+      assert reader_module.model() == "fake:chat"
+    end
+
     test "raises for a module that isn't an agent module" do
       assert_raise ArgumentError, ~r/is not an agent module/, fn -> Agent.declarations(Echo) end
     end

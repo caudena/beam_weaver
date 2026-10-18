@@ -74,6 +74,7 @@ defmodule BeamWeaver.MixProject do
     "semantic_dsl" => "agents",
     "thinking_in_beamweaver" => "graphs",
     "time_travel" => "checkpoints",
+    "todos" => "deep_agents",
     "workflows_and_agents" => "workflow_patterns"
   }
 
