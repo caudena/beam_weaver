@@ -9,11 +9,14 @@ defmodule BeamWeaver.OpenAI.ChatCompletions.Messages.Request do
   alias BeamWeaver.Core.Error
   alias BeamWeaver.OpenAI.MessageParts
   alias BeamWeaver.OpenAI.Messages.Request, as: Responses
+  alias BeamWeaver.Provider.ChatCompletionsWire
   alias BeamWeaver.Result
   alias BeamWeaver.Tool.Renderer
 
   def to_openai_messages(messages) when is_list(messages) do
-    Result.traverse(messages, &to_openai_message/1)
+    messages
+    |> ChatCompletionsWire.move_tool_media()
+    |> Result.traverse(&to_openai_message/1)
   end
 
   def to_openai_messages(_messages) do

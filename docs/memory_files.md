@@ -79,9 +79,9 @@ You can save durable new knowledge by editing the configured memory files when t
 
 The agent changes memory with the ordinary file tools. `edit_file` replaces an
 exact string, which is also how it adds a line, as in the example above.
-`write_file` only creates files: on an existing path the model gets
-`Error: file already exists`. So the agent uses `write_file` to start a new
-file, such as `/notes/lisbon.md`, and `edit_file` after that.
+`write_file` creates a file or replaces a whole one, so the agent uses it to
+start a new file, such as `/notes/lisbon.md`, and `edit_file` to change part
+of a file it keeps.
 
 Say in the system prompt what belongs in each file and how to write it, such
 as "one short line per fact". Only the files listed in `memory` are loaded

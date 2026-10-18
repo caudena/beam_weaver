@@ -5,6 +5,7 @@ defmodule BeamWeaver.Agent.Compiler do
   alias BeamWeaver.Agent.Compiler.Routing
   alias BeamWeaver.Agent.Middleware
   alias BeamWeaver.Agent.Middleware.HumanInTheLoop
+  alias BeamWeaver.Agent.Middleware.OverflowRecovery
   alias BeamWeaver.Agent.Middleware.PII
   alias BeamWeaver.Agent.Middleware.Subagents
   alias BeamWeaver.Agent.Middleware.ToolSelection
@@ -21,6 +22,7 @@ defmodule BeamWeaver.Agent.Compiler do
   alias BeamWeaver.Core.Error
   alias BeamWeaver.Core.Tool
   alias BeamWeaver.Graph
+  alias BeamWeaver.Graph.ChannelSpec
   alias BeamWeaver.Graph.Execution.ChannelLookup
   alias BeamWeaver.Graph.Nodes.ToolNode
   alias BeamWeaver.Graph.Nodes.ValidationNode
@@ -50,6 +52,9 @@ defmodule BeamWeaver.Agent.Compiler do
   def compile_graph(%Spec{} = spec) do
     middleware = raise_on_error(Middleware.normalize_all(spec.middleware))
     response_format = StructuredOutput.normalize(spec.response_format)
+    structured_output? = not is_nil(response_format)
+    state_schema = merge_middleware_state_schema(Schema.default_state_schema(structured_output?), middleware)
+    middleware = Subagents.bind_private_keys(middleware, schema_private_keys(state_schema))
     middleware_tools = Enum.flat_map(middleware, &Middleware.tools/1)
     base_tools = unique_tools(middleware_tools ++ raise_on_error(declared_tools(spec.tools)))
     response_strategy = StructuredOutput.effective_strategy(response_format, spec.model, base_tools)
@@ -64,8 +69,6 @@ defmodule BeamWeaver.Agent.Compiler do
     registered_tools = registered_tools(tools, middleware)
     middleware = HumanInTheLoop.bind_tools(middleware, registered_tools)
     step_costs = step_costs(middleware, spec, separate_structured_response?)
-    structured_output? = not is_nil(response_format)
-    state_schema = merge_middleware_state_schema(Schema.default_state_schema(structured_output?), middleware)
 
     context_schema =
       middleware |> middleware_context_schema() |> Schema.merge_schema(spec.context_schema) |> MapShape.empty_to_nil()
@@ -363,6 +366,14 @@ defmodule BeamWeaver.Agent.Compiler do
     unique_tools(tools ++ selection_tools)
   end
 
+  # The keys a state schema declares private or managed, before there is a
+  # graph to ask.
+  defp schema_private_keys(state_schema) do
+    for {key, %ChannelSpec{visibility: visibility}} <- state_schema,
+        visibility in [:private, :private_checkpointed],
+        do: to_string(key)
+  end
+
   defp private_keys(%StateGraph{} = graph) do
     for key <- Map.keys(graph.channel_visibility) ++ Map.keys(graph.managed),
         ChannelLookup.private_channel?(graph, key) or ChannelLookup.managed_key?(graph, key),
@@ -643,10 +654,13 @@ defmodule BeamWeaver.Agent.Compiler do
   # The structured-response call repeats the whole conversation, so it keeps
   # the prompt-cache middleware: without it the call carries no cache key and
   # pays the uncached price for the context the tool loop just cached. It also
-  # keeps the prompt that `DynamicPrompt` builds, and the `PII` rules, whose
-  # output edits apply to the structured answer like to every other reply.
+  # keeps the prompt that `DynamicPrompt` builds, the `PII` rules, whose
+  # output edits apply to the structured answer like to every other reply, and
+  # `UnsupportedMedia`, so a model that can't take the thread's media gets
+  # notices in this call too.
   defp final_response_middleware(middleware) do
-    Enum.filter(middleware, fn middleware ->
+    middleware
+    |> Enum.filter(fn middleware ->
       match?(%PII{}, middleware) or
         Middleware.name(middleware) in [
           "structured_output_retry",
@@ -654,8 +668,15 @@ defmodule BeamWeaver.Agent.Compiler do
           "model_retry",
           "deepagents_overflow_clip",
           "deepagents_prompt_caching",
-          "dynamic_prompt"
+          "dynamic_prompt",
+          "unsupported_media"
         ]
     end)
+    |> Enum.map(&clip_only/1)
   end
+
+  # Automatic summarization isn't part of that call, so overflow recovery
+  # there only clips, without the summarization the agent gave it.
+  defp clip_only(%OverflowRecovery{} = recovery), do: %{recovery | summarization: nil}
+  defp clip_only(middleware), do: middleware
 end

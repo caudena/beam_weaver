@@ -12,7 +12,9 @@ defmodule BeamWeaver.Moonshot.Messages do
 
   @spec to_chat_messages([Message.t()]) :: {:ok, [map()]} | {:error, Error.t()}
   def to_chat_messages(messages) when is_list(messages) do
-    Result.traverse(messages, &to_chat_message/1)
+    messages
+    |> ChatCompletionsWire.move_tool_media()
+    |> Result.traverse(&to_chat_message/1)
   end
 
   def to_chat_messages(_messages) do

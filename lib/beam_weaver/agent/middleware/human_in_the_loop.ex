@@ -23,6 +23,12 @@ defmodule BeamWeaver.Agent.Middleware.HumanInTheLoop do
   ran instead. A rejection answers the call with a tool message that says the
   user rejected it, with the reviewer's reason when there is one.
 
+  A message that comes in while calls wait for review, as new input or a
+  state update, cancels the review: each call of that turn that hasn't run is
+  answered with an error tool message, right after the turn's assistant
+  message, and the model answers the new message. The review's interrupt is
+  dropped, so a later resume answers only a review pending then.
+
   `interrupt_on` maps tool names to `true`, `false`, or a map of rules. A rule
   map always turns review on: it allows all four decisions unless
   `allowed_decisions` lists fewer. Edited arguments must match the rule's
@@ -32,6 +38,7 @@ defmodule BeamWeaver.Agent.Middleware.HumanInTheLoop do
   use BeamWeaver.Agent.Middleware
 
   alias BeamWeaver.Agent.Middleware.Helpers
+  alias BeamWeaver.Agent.Nodes.Model.Prompt
   alias BeamWeaver.Agent.State
   alias BeamWeaver.Agent.ToolCallRequest
   alias BeamWeaver.Agent.ToolSet
@@ -41,6 +48,7 @@ defmodule BeamWeaver.Agent.Middleware.HumanInTheLoop do
   alias BeamWeaver.Core.Tool
   alias BeamWeaver.Graph
   alias BeamWeaver.Graph.Command
+  alias BeamWeaver.Graph.Overwrite
   alias BeamWeaver.MapShape
 
   @decisions [:approve, :edit, :reject, :respond]
@@ -136,10 +144,10 @@ defmodule BeamWeaver.Agent.Middleware.HumanInTheLoop do
         %Message{tool_calls: calls} = ai_message when is_list(calls) and calls != [] ->
           review = review_requests(middleware, calls, state, runtime)
 
-          if review.action_requests == [] do
-            clear_edits(state)
-          else
-            process_review(middleware, ai_message, calls, review)
+          cond do
+            review.action_requests == [] -> clear_edits(state)
+            Prompt.message_after_turn?(messages, ai_message) -> cancel_review(messages, calls)
+            true -> process_review(middleware, ai_message, calls, review)
           end
 
         _message ->
@@ -153,14 +161,31 @@ defmodule BeamWeaver.Agent.Middleware.HumanInTheLoop do
     if (Map.get(state, @edits) || %{}) != %{}, do: %{@edits => %{}}
   end
 
+  # The new message cancels the review: every call of the turn without a
+  # result gets one that says it didn't run, right after the turn, and the
+  # model answers the new message.
+  defp cancel_review(messages, calls) do
+    answered = for %Message{role: :tool, tool_call_id: id} <- messages, into: MapSet.new(), do: id
+
+    answers =
+      for call <- calls,
+          id = Prompt.tool_call_id(call),
+          not is_nil(id) and not MapSet.member?(answered, id),
+          do: Prompt.cancelled_review_answer(call)
+
+    %{messages: Overwrite.new(Prompt.place_late_results(messages ++ answers)), jump_to: :model}
+  end
+
   @impl true
   def wrap_tool_call(%__MODULE__{interrupt_mode: :per_call} = middleware, %ToolCallRequest{} = request, handler) do
     call = request.tool_call
     config = Map.get(middleware.interrupt_on, tool_call_name(call))
 
-    if config && reviewable?(config, call, request.state, request.runtime),
-      do: review_call(middleware, request, config, handler),
-      else: handler.(request)
+    cond do
+      is_nil(config) or not reviewable?(config, call, request.state, request.runtime) -> handler.(request)
+      came_in_during_review?(request) -> Prompt.cancelled_review_answer(call)
+      true -> review_call(middleware, request, config, handler)
+    end
   end
 
   def wrap_tool_call(%__MODULE__{} = middleware, %ToolCallRequest{} = request, handler) do
@@ -210,6 +235,21 @@ defmodule BeamWeaver.Agent.Middleware.HumanInTheLoop do
       {:error, %Error{} = error} -> throw({:beam_weaver_graph_error, error})
     end
   end
+
+  # A new message cancels a call's own review too. The tools step answers the
+  # call after that message, and the model node moves the answer up to its
+  # turn.
+  defp came_in_during_review?(%ToolCallRequest{state: state, tool_call: call}) when is_map(state) do
+    case State.messages(state) do
+      messages when is_list(messages) ->
+        Prompt.message_after_turn?(messages, Enum.find(messages, &Prompt.makes_call?(&1, Prompt.tool_call_id(call))))
+
+      _other ->
+        false
+    end
+  end
+
+  defp came_in_during_review?(_request), do: false
 
   defp approval_request(middleware, request, config) do
     call = request.tool_call

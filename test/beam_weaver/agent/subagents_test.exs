@@ -594,6 +594,122 @@ defmodule BeamWeaver.Agent.SubagentsTest.Escalation do
   ]
 end
 
+defmodule BeamWeaver.Agent.SubagentsTest.LedgerKeeper do
+  # Keeps a private ledger and reports it when the run ends.
+  use BeamWeaver.Agent.Middleware
+
+  alias BeamWeaver.Graph
+
+  @impl true
+  def name(_middleware), do: :ledger_keeper
+
+  @impl true
+  def state_schema(_middleware), do: %{ledger: Graph.private_channel(BeamWeaver.Graph.Channels.LastValue)}
+
+  @impl true
+  def before_agent(_middleware, _state, _runtime), do: %{ledger: "parent only"}
+
+  @impl true
+  def after_agent(_middleware, state, _runtime) do
+    BeamWeaver.Agent.SubagentsTest.Observer.notify({:parent_ledger, Map.get(state, :ledger)})
+    nil
+  end
+end
+
+defmodule BeamWeaver.Agent.SubagentsTest.WriteLedger do
+  use BeamWeaver.Tool
+
+  alias BeamWeaver.Core.Message
+  alias BeamWeaver.Graph.Command
+
+  name "write_ledger"
+  description "Writes a note in the ledger."
+  injected :tool_call_id, :tool_call_id
+
+  schema do
+    field :note, :string
+  end
+
+  @impl true
+  def invoke(_tool, %{"note" => note, tool_call_id: id}, _opts),
+    do: {:ok, %Command{update: %{ledger: note, messages: [Message.tool("Noted.", tool_call_id: id)]}}}
+end
+
+defmodule BeamWeaver.Agent.SubagentsTest.LedgerWriter do
+  use BeamWeaver.Agent
+
+  alias BeamWeaver.Models.FakeChatModel
+
+  name "ledger_writer"
+  description "Writes a note in its ledger."
+  model "fake:chat", responses: [FakeChatModel.tool_call("write_ledger", %{"note" => "child note"}), "Noted."]
+  tools [BeamWeaver.Agent.SubagentsTest.WriteLedger]
+end
+
+defmodule BeamWeaver.Agent.SubagentsTest.LedgerKeepingDesk do
+  use BeamWeaver.Agent
+
+  alias BeamWeaver.Agent.SubagentsTest
+
+  model %SubagentsTest.DelegateModel{}
+  middleware [SubagentsTest.LedgerKeeper]
+
+  subagents do
+    subagent SubagentsTest.LedgerWriter
+  end
+end
+
+defmodule BeamWeaver.Agent.SubagentsTest.DraftModel do
+  # The parent hands "Write the draft." to the general-purpose subagent, which
+  # writes /draft.md. Each call reports the task it works on and the tools it
+  # was offered, then its system prompt and the tools' descriptions.
+  @behaviour BeamWeaver.Core.ChatModel
+
+  alias BeamWeaver.Agent.SubagentsTest.Observer
+  alias BeamWeaver.Core.Message
+  alias BeamWeaver.Core.Tool
+
+  defstruct []
+
+  @impl true
+  def invoke(%__MODULE__{}, messages, opts) do
+    task = messages |> Enum.filter(&(&1.role == :user)) |> List.last() |> Message.text()
+    tools = Keyword.get(opts, :tools, [])
+    prompt = Enum.map_join(for(%Message{role: :system} = message <- messages, do: message), "\n", &Message.text/1)
+
+    Observer.notify({:offered, task, Enum.map(tools, &Tool.name/1)})
+    Observer.notify({:prompted, task, prompt, Map.new(tools, &{Tool.name(&1), Tool.description(&1)})})
+
+    case {task, Enum.filter(messages, &(&1.role == :tool))} do
+      {"Write the draft.", []} ->
+        args = %{"file_path" => "/draft.md", "content" => "Your refund is on its way."}
+        {:ok, Message.assistant("", tool_calls: [%{id: "write-1", name: "write_file", args: args}])}
+
+      {_task, []} ->
+        args = %{"subagent_type" => "general-purpose", "description" => "Write the draft."}
+        {:ok, Message.assistant("", tool_calls: [%{id: "task-1", name: "task", args: args}])}
+
+      {_task, tool_messages} ->
+        {:ok, Message.assistant(tool_messages |> List.last() |> Message.text())}
+    end
+  end
+end
+
+defmodule BeamWeaver.Agent.SubagentsTest.DraftStamp do
+  # Reports each model call it wraps, with the task the agent works on.
+  use BeamWeaver.Agent.Middleware
+
+  alias BeamWeaver.Core.Message
+
+  def name(_middleware), do: :draft_stamp
+
+  def wrap_model_call(_middleware, request, handler) do
+    task = request.messages |> Enum.filter(&(&1.role == :user)) |> List.last() |> Message.text()
+    BeamWeaver.Agent.SubagentsTest.Observer.notify({:stamped, task})
+    handler.(request)
+  end
+end
+
 defmodule BeamWeaver.Agent.SubagentsTest.AskBudget do
   # Asks for the budget, a whole number, before the model's call.
   use BeamWeaver.Agent.Middleware
@@ -635,11 +751,17 @@ defmodule BeamWeaver.Agent.SubagentsTest do
   use ExUnit.Case, async: false
 
   alias BeamWeaver.Agent
+  alias BeamWeaver.Agent.CapabilityProfile
   alias BeamWeaver.Agent.GeneralPurposeSubagentProfile
   alias BeamWeaver.Agent.HITL
+  alias BeamWeaver.Agent.Middleware.Filesystem
   alias BeamWeaver.Agent.Middleware.ModelCallLimit
+  alias BeamWeaver.Agent.Middleware.Skills
   alias BeamWeaver.Agent.Middleware.Subagents
   alias BeamWeaver.Agent.Middleware.Summarization
+  alias BeamWeaver.Agent.Middleware.TodoList
+  alias BeamWeaver.Agent.Middleware.ToolCallNormalization
+  alias BeamWeaver.Agent.ModelRequest
   alias BeamWeaver.Agent.Subagent.Compiled
   alias BeamWeaver.Agent.Subagent.RunStream
   alias BeamWeaver.Agent.Subagent.Spec
@@ -649,10 +771,13 @@ defmodule BeamWeaver.Agent.SubagentsTest do
   alias BeamWeaver.Agent.SubagentsTest.BusyDesk
   alias BeamWeaver.Agent.SubagentsTest.CompiledDesk
   alias BeamWeaver.Agent.SubagentsTest.DelegatingDesk
+  alias BeamWeaver.Agent.SubagentsTest.DraftModel
+  alias BeamWeaver.Agent.SubagentsTest.DraftStamp
   alias BeamWeaver.Agent.SubagentsTest.Desk
   alias BeamWeaver.Agent.SubagentsTest.GraphProbe
   alias BeamWeaver.Agent.SubagentsTest.LazyDesk
   alias BeamWeaver.Agent.SubagentsTest.LedgerDesk
+  alias BeamWeaver.Agent.SubagentsTest.LedgerKeepingDesk
   alias BeamWeaver.Agent.SubagentsTest.ManagedDesk
   alias BeamWeaver.Agent.SubagentsTest.MisconfiguredDesk
   alias BeamWeaver.Agent.SubagentsTest.PerCallDesk
@@ -773,6 +898,14 @@ defmodule BeamWeaver.Agent.SubagentsTest do
 
       assert :customer in saved
       assert Enum.filter(parent_only, &(&1 in saved)) == []
+    end
+
+    test "and a key the parent keeps private stays the parent's when the subagent writes it" do
+      assert {:ok, result} =
+               LedgerKeepingDesk.invoke(%{messages: ["Note it."]}, context: %{subagent: "ledger_writer"})
+
+      assert tool_texts(result) == ["Noted."]
+      assert_received {:parent_ledger, "parent only"}
     end
 
     test "with its own checkpointer, under the parent's thread" do
@@ -1026,6 +1159,64 @@ defmodule BeamWeaver.Agent.SubagentsTest do
       end
     end
 
+    test "a subagent's own middleware replaces the base_middleware entry of the same module" do
+      # Its own Skills with the `:deepagents` set failed the build with
+      # duplicate declarations, and its own Filesystem with a base one ran
+      # both: two filesystem prompt sections, one set of file tools hidden.
+      own_skills = Skills.new(backend: BeamWeaver.Filesystem.State.new(), skills: ["/expert-skills"])
+      own_files = Filesystem.new(backend: BeamWeaver.Filesystem.State.new())
+
+      experts = [
+        %{name: "skilled", description: "Answers.", base_middleware: [:deepagents], middleware: [own_skills]},
+        %{name: "filer", description: "Answers.", base_middleware: [Filesystem], middleware: [own_files]}
+      ]
+
+      assert {:ok, agent} =
+               Agent.build(
+                 model: "fake:chat",
+                 filesystem: BeamWeaver.Filesystem.State.new(),
+                 skills: ["/skills"],
+                 subagents: experts
+               )
+
+      middleware = Enum.find(agent.spec.middleware, &match?(%Subagents{}, &1))
+
+      entries = fn name, module ->
+        assert {:ok, %Compiled{agent: %Agent.Built{spec: spec}}} = Subagents.build_subagent(middleware, name)
+        Enum.filter(spec.middleware, &is_struct(&1, module))
+      end
+
+      assert entries.("skilled", Skills) == [own_skills]
+      assert entries.("filer", Filesystem) == [own_files]
+    end
+
+    test "the :deepagents set gives file tools and skills, and TodoList adds a task list" do
+      experts = [
+        %{name: "deep", description: "Answers.", base_middleware: [:deepagents]},
+        %{name: "planner", description: "Plans.", base_middleware: [:deepagents, TodoList]}
+      ]
+
+      assert {:ok, agent} =
+               Agent.build(
+                 model: "fake:chat",
+                 filesystem: BeamWeaver.Filesystem.State.new(),
+                 skills: ["/skills"],
+                 subagents: experts
+               )
+
+      middleware = Enum.find(agent.spec.middleware, &match?(%Subagents{}, &1))
+
+      modules = fn name ->
+        assert {:ok, %Compiled{agent: %Agent.Built{spec: spec}}} = Subagents.build_subagent(middleware, name)
+        for %module{} <- spec.middleware, do: module
+      end
+
+      assert Filesystem in modules.("deep")
+      assert Skills in modules.("deep")
+      refute TodoList in modules.("deep")
+      assert TodoList in modules.("planner")
+    end
+
     test "building an agent finds middleware that a subagent lists twice" do
       worker = %{
         name: "worker",
@@ -1069,6 +1260,59 @@ defmodule BeamWeaver.Agent.SubagentsTest do
     end
   end
 
+  describe "what the parent's model reads" do
+    setup do
+      worker =
+        Spec.new(name: "worker", description: "Answers refund questions.", model: %FakeChatModel{response: "30 days."})
+
+      %{subagents: [GeneralPurposeSubagentProfile.new(enabled: false), worker]}
+    end
+
+    test "the task tool's description is short and lists the subagents", %{subagents: subagents} do
+      # It was about 6,900 characters, most of them worked examples.
+      [task] = [subagents: subagents] |> Subagents.new() |> Subagents.tools()
+      description = Tool.description(task)
+
+      assert String.length(description) < 1_200
+      assert description =~ "\n- worker: Answers refund questions.\n"
+      assert description =~ "stateless"
+      refute description =~ "<example>"
+      refute description =~ "{{"
+    end
+
+    test "task_description: replaces the description, with the subagents for %{available_agents}", %{
+      subagents: subagents
+    } do
+      [task] =
+        [subagents: subagents, task_description: "Delegate:\n%{available_agents}"]
+        |> Subagents.new()
+        |> Subagents.tools()
+
+      assert Tool.description(task) == "Delegate:\n- worker: Answers refund questions."
+    end
+
+    test "the system prompt gets no task section unless the middleware is given one", %{subagents: subagents} do
+      {:ok, agent} =
+        Agent.build(
+          model: %FakeChatModel{response: "Hello!", parent: self()},
+          system_prompt: "You are Acme's support agent.",
+          subagents: subagents
+        )
+
+      assert {:ok, _result} = Agent.invoke(agent, %{messages: ["Hi"]})
+      assert_received {:fake_chat_model_call, [%Message{role: :system} = system | _rest], _opts}
+      assert Message.text(system) == "You are Acme's support agent."
+
+      middleware = Subagents.new(subagents: subagents, system_prompt: "Delegate refund questions.")
+      request = ModelRequest.new(system_prompt: "You are Acme's support agent.")
+      assert %ModelRequest{system_message: message} = Subagents.wrap_model_call(middleware, request, & &1)
+
+      assert Message.text(message) ==
+               "You are Acme's support agent.\n\nDelegate refund questions.\n\n" <>
+                 "Available subagent types:\n\n- worker: Answers refund questions."
+    end
+  end
+
   describe "the general-purpose subagent" do
     test "a disabled profile in the subagents list leaves it out" do
       worker = Spec.new(name: "worker", description: "Does work.", model: %FakeChatModel{response: "worked"})
@@ -1089,6 +1333,39 @@ defmodule BeamWeaver.Agent.SubagentsTest do
           subagents: [%{enabled: false} |> GeneralPurposeSubagentProfile.new()]
         )
       end
+    end
+
+    test "it isn't offered a tool the parent excludes" do
+      {:ok, agent} =
+        Agent.build(
+          model: %DraftModel{},
+          filesystem: BeamWeaver.Filesystem.State.new(),
+          exclude_tools: ["write_file"],
+          subagents: [GeneralPurposeSubagentProfile.new()]
+        )
+
+      assert {:ok, result} = Agent.invoke(agent, %{messages: ["Draft a reply."]})
+      assert_received {:offered, "Write the draft.", tools}
+      assert "read_file" in tools
+      refute "write_file" in tools
+      refute Map.has_key?(Map.get(result, :files) || %{}, "/draft.md")
+    end
+
+    test "it keeps the permissions of the parent's own filesystem entry" do
+      deny_writes = BeamWeaver.Filesystem.Permission.new(operations: [:write], paths: ["/**"], mode: :deny)
+
+      {:ok, agent} =
+        Agent.build(
+          model: %DraftModel{},
+          filesystem: BeamWeaver.Filesystem.State.new(),
+          middleware: [{BeamWeaver.Agent.Middleware.Filesystem, permissions: [deny_writes]}],
+          subagents: [GeneralPurposeSubagentProfile.new()]
+        )
+
+      assert {:ok, result} = Agent.invoke(agent, %{messages: ["Draft a reply."]})
+      assert [answer] = tool_texts(result)
+      assert answer =~ ~r/denied/i
+      refute Map.has_key?(Map.get(result, :files) || %{}, "/draft.md")
     end
 
     test "a profile's description and prompt configure it" do
@@ -1114,6 +1391,114 @@ defmodule BeamWeaver.Agent.SubagentsTest do
 
       assert_received {:fake_chat_model_call, [%Message{role: :system} = system | _rest], _opts}
       assert Message.text(system) =~ "Answer in two sentences."
+    end
+
+    test "it has no task list" do
+      {:ok, agent} =
+        Agent.build(
+          model: %DraftModel{},
+          filesystem: BeamWeaver.Filesystem.State.new(),
+          subagents: [GeneralPurposeSubagentProfile.new()]
+        )
+
+      assert {:ok, _result} = Agent.invoke(agent, %{messages: ["Draft a reply."]})
+      assert_received {:offered, "Write the draft.", tools}
+      assert "write_file" in tools
+      refute "write_todos" in tools
+    end
+
+    test "it sees the tool descriptions the parent sets" do
+      {:ok, agent} =
+        Agent.build(
+          model: %DraftModel{},
+          filesystem: BeamWeaver.Filesystem.State.new(),
+          tool_descriptions: %{"write_file" => "Save a reply draft for Acme support."},
+          subagents: [GeneralPurposeSubagentProfile.new()]
+        )
+
+      assert {:ok, _result} = Agent.invoke(agent, %{messages: ["Draft a reply."]})
+
+      assert_received {:prompted, "Write the draft.", _prompt,
+                       %{"write_file" => "Save a reply draft for Acme support."}}
+    end
+
+    test "it gets the parent's capability profile: its prompt text, tools and middleware" do
+      profile =
+        CapabilityProfile.new(
+          prompt_suffix: "Keep drafts under 50 words.",
+          tool_descriptions: %{"read_file" => "Read an Acme support file."},
+          middleware: [DraftStamp]
+        )
+
+      {:ok, agent} =
+        Agent.build(
+          model: %DraftModel{},
+          filesystem: BeamWeaver.Filesystem.State.new(),
+          capability_profile: profile,
+          subagents: [GeneralPurposeSubagentProfile.new()]
+        )
+
+      assert {:ok, _result} = Agent.invoke(agent, %{messages: ["Draft a reply."]})
+      assert_received {:prompted, "Write the draft.", prompt, %{"read_file" => "Read an Acme support file."}}
+      assert prompt =~ "contains the complete answer.\n\nKeep drafts under 50 words.\n\n"
+      assert_received {:stamped, "Write the draft."}
+    end
+
+    test "it runs the parent's own entries for its capabilities, and none of the parent's other middleware" do
+      files = BeamWeaver.Filesystem.State.new()
+      own_files = Filesystem.new(backend: files, tool_token_limit_before_evict: 5_000)
+      own_summary = Summarization.new(model: %FakeChatModel{response: "Summary."}, trigger: {:messages, 50})
+      own_normalization = ToolCallNormalization.new(max_argument_chars: 500)
+      researcher = %{name: "researcher", description: "Researches.", base_middleware: [:deepagents]}
+
+      {:ok, agent} =
+        Agent.build(
+          model: "fake:chat",
+          filesystem: files,
+          middleware: [
+            own_files,
+            {Skills, skills: ["/team-skills"]},
+            own_summary,
+            own_normalization,
+            {ModelCallLimit, run_limit: 5}
+          ],
+          subagents: [researcher]
+        )
+
+      middleware = Enum.find(agent.spec.middleware, &match?(%Subagents{}, &1))
+
+      entries = fn name, module ->
+        assert {:ok, %Compiled{agent: %Agent.Built{spec: spec}}} = Subagents.build_subagent(middleware, name)
+        Enum.filter(spec.middleware, &(is_struct(&1, module) or match?({^module, _opts}, &1)))
+      end
+
+      assert entries.("general-purpose", Filesystem) == [own_files]
+      assert [{Skills, opts}] = entries.("general-purpose", Skills)
+      assert {opts[:skills], opts[:backend]} == {["/team-skills"], files}
+      assert entries.("general-purpose", Summarization) == [own_summary]
+      assert entries.("general-purpose", ToolCallNormalization) == [own_normalization]
+      assert entries.("general-purpose", ModelCallLimit) == []
+
+      # A declared subagent keeps its own capabilities.
+      assert [%Filesystem{} = researcher_files] = entries.("researcher", Filesystem)
+      refute researcher_files == own_files
+      assert entries.("researcher", Summarization) == []
+    end
+
+    test "the parent's own entry in place of a profile's middleware takes that place in it too" do
+      profile = CapabilityProfile.new(middleware: [ModelCallLimit.new(run_limit: 9)])
+
+      {:ok, agent} =
+        Agent.build(
+          model: "fake:chat",
+          capability_profile: profile,
+          middleware: [ModelCallLimit.new(run_limit: 5)],
+          subagents: [GeneralPurposeSubagentProfile.new()]
+        )
+
+      middleware = Enum.find(agent.spec.middleware, &match?(%Subagents{}, &1))
+      assert {:ok, %Compiled{agent: %Agent.Built{spec: spec}}} = Subagents.build_subagent(middleware, "general-purpose")
+      assert [%ModelCallLimit{run_limit: 5}] = Enum.filter(spec.middleware, &is_struct(&1, ModelCallLimit))
     end
   end
 
@@ -1251,6 +1636,42 @@ defmodule BeamWeaver.Agent.SubagentsTest do
       refute_received {:refunded, "A-2"}
       refute_received {:refunded, "A-1"}
       assert tool_texts(result) == ["Refunded both."]
+    end
+
+    test "a new message while a subagent's review waits cancels the review, and the parent answers it" do
+      opts = thread("review-new-message")
+
+      assert {:interrupted, _interrupt} = Desk.invoke(%{messages: ["Refund A-1, please."]}, opts)
+      assert {:ok, result} = Desk.invoke(%{messages: ["Never mind."]}, opts)
+      refute_received {:refunded, _order}
+
+      assert Enum.map(result.messages, & &1.role) == [:user, :assistant, :tool, :user, :assistant]
+
+      assert [%Message{status: "error", tool_call_id: "call_0_0"} = cancelled] =
+               Enum.filter(result.messages, &(&1.role == :tool))
+
+      assert Message.text(cancelled) ==
+               "Tool call task with id call_0_0 was not run: a new message came in while it waited for review."
+
+      assert {:ok, snapshot} = Desk.get_state(opts)
+      assert snapshot.interrupts == []
+      assert Enum.map(snapshot.values.messages, & &1.role) == Enum.map(result.messages, & &1.role)
+    end
+
+    test "a new message cancels parallel subagents' reviews, and a finished sibling's answer stays with its turn" do
+      opts = thread("review-parallel-new-message")
+
+      assert {:interrupted, _first} = BusyDesk.invoke(%{messages: ["Refund A-1 and A-2."]}, opts)
+      assert received_model_calls("historian") == 1
+
+      assert {:ok, result} = BusyDesk.invoke(%{messages: ["Stop."]}, opts)
+      refute_received {:refunded, _order}
+      assert received_model_calls("historian") == 0
+
+      assert Enum.map(result.messages, & &1.role) == [:user, :assistant, :tool, :tool, :tool, :user, :assistant]
+      assert [a1, "Three orders.", a2] = tool_texts(result)
+      assert a1 =~ "was not run: a new message came in while it waited for review."
+      assert a2 =~ "was not run: a new message came in while it waited for review."
     end
 
     test "decisions that don't fit the subagent's review fail the parent's resume" do

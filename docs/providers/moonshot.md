@@ -154,6 +154,11 @@ question =
 {:ok, reply} = BeamWeaver.Core.ChatModel.invoke(model, [question])
 ```
 
+An image a tool returns, such as one from `read_file`, goes in a user
+message right after the tool results, with the tool's text left in the tool
+message. Kimi takes no files such as PDFs, in a tool result or anywhere else:
+they return an `:unsupported_feature` error before the request.
+
 `BeamWeaver.Moonshot.ChatModel.count_tokens/3` estimates a request's input
 tokens with Moonshot's estimate endpoint.
 

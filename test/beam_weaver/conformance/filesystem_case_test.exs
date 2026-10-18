@@ -178,7 +178,8 @@ defmodule BeamWeaver.TestSupport.Conformance.FilesystemCaseTest do
                 "grep in / found the text of /secrets/key.txt, which a rule denies, in /notes/key.txt, /notes/vault/key.txt",
                 "grep in /notes found the text of /secrets/key.txt, which a rule denies, in /notes/key.txt, /notes/vault/key.txt",
                 "write_file /notes/vault/new.txt wrote /secrets/new.txt, which a rule denies",
-                "edit_file /notes/key.txt changed /secrets/key.txt, which a rule denies"
+                "edit_file /notes/key.txt changed /secrets/key.txt, which a rule denies",
+                "write_file /notes/key.txt replaced /secrets/key.txt, which a rule denies"
               ]}
   end
 

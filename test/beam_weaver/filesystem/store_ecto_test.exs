@@ -66,7 +66,10 @@ defmodule BeamWeaver.Filesystem.StoreEctoTest do
     assert [%{content: "- Prefers email.\n", error: nil}, %{content: ^png, error: nil}] =
              Filesystem.download_files(files, ["/AGENTS.md", "/logo.png"])
 
-    assert %Filesystem.WriteResult{error: "file already exists"} = Filesystem.write(files, "/AGENTS.md", "again")
+    assert %Filesystem.WriteResult{error: nil} = Filesystem.write(files, "/logo.png", "now text")
+
+    assert %Filesystem.ReadResult{file_data: %Filesystem.FileData{content: "now text", encoding: "utf-8"}} =
+             Filesystem.read(files, "/logo.png")
   end
 
   test "a failed store write is reported, not lost", %{store: store, table: table} do

@@ -26,23 +26,23 @@ every request through a proxy or gateway.
 <!-- generated: provider-models openai -->
 | Model | Kind | Input tokens | Output tokens | Tools | Structured output | Reasoning | Inputs |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| `openai:gpt-4.1` | chat | 1,047,576 | 32,768 | yes | yes | — | text, image |
-| `openai:gpt-5` | chat | 400,000 | 128,000 | yes | yes | yes | text, image |
-| `openai:gpt-5-mini` | chat | 400,000 | 128,000 | yes | yes | yes | text, image |
-| `openai:gpt-5-nano` | chat | 400,000 | 128,000 | yes | yes | yes | text, image |
-| `openai:gpt-5.4` | chat | 1,050,000 | 128,000 | yes | yes | yes | text, image |
-| `openai:gpt-5.4-mini` | chat | 400,000 | 128,000 | yes | yes | yes | text, image |
-| `openai:gpt-5.4-nano` | chat | 400,000 | 128,000 | yes | yes | yes | text, image |
-| `openai:gpt-5.4-pro` | chat | 1,050,000 | 128,000 | yes | yes | yes | text, image |
-| `openai:gpt-5.5` | chat | 1,050,000 | 128,000 | yes | yes | yes | text, image |
-| `openai:gpt-5.5-pro` | chat | 1,050,000 | 128,000 | yes | yes | yes | text, image |
-| `openai:gpt-5.6-luna` | chat | 1,050,000 | 128,000 | yes | yes | yes | text, image |
-| `openai:gpt-5.6-sol` | chat | 1,050,000 | 128,000 | yes | yes | yes | text, image |
-| `openai:gpt-5.6-terra` | chat | 1,050,000 | 128,000 | yes | yes | yes | text, image |
-| `openai:gpt-6-astra` | chat | 1,050,000 | 128,000 | yes | yes | yes | text, image |
-| `openai:gpt-6-luna` | chat, decision | 1,050,000 | 128,000 | yes | yes | yes | text, image |
-| `openai:gpt-6-sol` | chat | 1,050,000 | 128,000 | yes | yes | yes | text, image |
-| `openai:gpt-6.1-sol` | chat | 922,000 | 128,000 | yes | yes | yes | text, image |
+| `openai:gpt-4.1` | chat | 1,047,576 | 32,768 | yes | yes | — | text, image, PDF |
+| `openai:gpt-5` | chat | 400,000 | 128,000 | yes | yes | yes | text, image, PDF |
+| `openai:gpt-5-mini` | chat | 400,000 | 128,000 | yes | yes | yes | text, image, PDF |
+| `openai:gpt-5-nano` | chat | 400,000 | 128,000 | yes | yes | yes | text, image, PDF |
+| `openai:gpt-5.4` | chat | 1,050,000 | 128,000 | yes | yes | yes | text, image, PDF |
+| `openai:gpt-5.4-mini` | chat | 400,000 | 128,000 | yes | yes | yes | text, image, PDF |
+| `openai:gpt-5.4-nano` | chat | 400,000 | 128,000 | yes | yes | yes | text, image, PDF |
+| `openai:gpt-5.4-pro` | chat | 1,050,000 | 128,000 | yes | yes | yes | text, image, PDF |
+| `openai:gpt-5.5` | chat | 1,050,000 | 128,000 | yes | yes | yes | text, image, PDF |
+| `openai:gpt-5.5-pro` | chat | 1,050,000 | 128,000 | yes | yes | yes | text, image, PDF |
+| `openai:gpt-5.6-luna` | chat | 1,050,000 | 128,000 | yes | yes | yes | text, image, PDF |
+| `openai:gpt-5.6-sol` | chat | 1,050,000 | 128,000 | yes | yes | yes | text, image, PDF |
+| `openai:gpt-5.6-terra` | chat | 1,050,000 | 128,000 | yes | yes | yes | text, image, PDF |
+| `openai:gpt-6-astra` | chat | 1,050,000 | 128,000 | yes | yes | yes | text, image, PDF |
+| `openai:gpt-6-luna` | chat, decision | 1,050,000 | 128,000 | yes | yes | yes | text, image, PDF |
+| `openai:gpt-6-sol` | chat | 1,050,000 | 128,000 | yes | yes | yes | text, image, PDF |
+| `openai:gpt-6.1-sol` | chat | 922,000 | 128,000 | yes | yes | yes | text, image, PDF |
 | `openai:text-embedding-3-large` | embedding | 8,191 | — | — | — | — | text |
 | `openai:text-embedding-3-small` | embedding | 8,191 | — | — | — | — | text |
 <!-- /generated -->
@@ -115,6 +115,11 @@ the request before sending it: GPT-6 Astra and GPT-6.1 Sol take tools only on
 Responses, and GPT-5.6, GPT-6 Sol and GPT-6 Luna take them on Chat Completions
 only with `reasoning_effort: :none`. Reasoning summaries and built-in tools
 are rejected on Chat Completions too.
+
+A Chat Completions tool message takes only text, so an image or PDF a tool
+returns, such as one from `read_file`, goes in a user message right after the
+tool results, under a line naming its call. On Responses it stays in the tool
+result.
 
 ## Reasoning
 

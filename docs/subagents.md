@@ -74,12 +74,15 @@ it. When you know the steps in advance, use a [graph](graphs.md).
 | Argument | Meaning |
 | --- | --- |
 | `subagent_type` | The name of the subagent to run, such as `"policy_expert"`. |
-| `description` | The whole assignment. It becomes the subagent's only user message, so it must hold every detail the subagent needs and say what to answer with. |
+| `description` | The whole assignment. It becomes the subagent's only user message, unless the subagent has `inherit_messages: true`, so it must hold every detail the subagent needs and say what to answer with. |
 
-The tool's description lists every subagent's name and description, and the
-system prompt gets a short guide on when to delegate. Write each subagent's
-`description` for the parent's model: what the subagent is for and when to
-use it.
+The tool's description lists every subagent's name and description, with a
+few notes on writing a task; a subagent with `inherit_messages: true` is
+marked as one that sees the conversation. `subagents` adds nothing to the
+system prompt.
+Write each subagent's `description` for the parent's model: what the subagent
+is for and when to use it. Say in the parent's `system_prompt` when to
+delegate.
 
 The parent gets back one tool message: the subagent's last assistant text, or
 its [structured answer](#structured-output) as JSON, with the subagent's name
@@ -110,7 +113,9 @@ subagents. From the parent it takes only what it leaves out:
 It runs its own middleware, not the parent's. To share middleware such as
 `ModelRetry` or a PII filter, declare it on both, for example from a function
 that returns the list. `base_middleware:` gives a subagent file tools, a task
-list or skills built from the parent's settings and files.
+list or skills built from the parent's settings and files. A middleware of the
+same module in the subagent's own list replaces the one built from the
+parent's, and runs where its own list puts it.
 
 Options after the module replace what `subagent` reads from it, as in
 `subagent MyApp.PolicyExpert, tools: [], name: "refund_judge"`:
@@ -122,9 +127,9 @@ Options after the module replace what `subagent` reads from it, as in
 | `name:`, `description:`, `system_prompt:` | Replace the module's values. |
 | `capture_output:` | Keeps the answer in the parent's state instead ([Captured outputs](#captured-outputs)). |
 | `execution_mode:` | How the subagent runs ([Execution modes](#execution-modes)). |
-| `inherit_messages: true` | Starts the subagent with the parent's conversation, without tool calls and their results, before the task. |
+| `inherit_messages: true` | Starts the subagent with the parent's conversation, without tool calls and their results. The task follows it, after a note that the subagent continues that conversation and should use its facts. |
 | `interrupt_on:` | Review rules for the subagent's tools; `false` turns the parent's off ([Human review](#human-review)). |
-| `base_middleware:` | Capabilities built from the parent's settings: `BeamWeaver.Agent.Middleware.Filesystem` (file tools), `BeamWeaver.Agent.Middleware.Skills`, `BeamWeaver.Agent.Middleware.TodoList`, or `:deepagents` for the general-purpose set. |
+| `base_middleware:` | Capabilities built from the parent's settings: `BeamWeaver.Agent.Middleware.Filesystem` (file tools), `BeamWeaver.Agent.Middleware.Skills`, `BeamWeaver.Agent.Middleware.TodoList` (a task list), or `:deepagents` for the general-purpose subagent's set: file tools, skills, and the parent's summarization and `compact_conversation` tool. |
 | `filesystem:`, `permissions:`, `skills:` | The subagent's filesystem, path rules and skills, also for `base_middleware:` ([Subagent permissions](filesystem.md#subagent-permissions), [Skills for subagents](skills.md#skills-for-subagents)). |
 
 Every other declaration works as an option too, such as `recursion_limit: 20`;
@@ -323,12 +328,26 @@ first call.
 
 ## The general-purpose subagent
 
-Every agent with `subagents` also gets a subagent named `general-purpose`. It
-runs the parent's model with the parent's `tools`, a task list
-(`write_todos`), the [file tools](filesystem.md) on the parent's files and
-rules, and the parent's skills. Its prompt tells it to finish the task on its
-own and put the whole answer in its final message, so the parent's model can
-hand it any self-contained chunk of work.
+Every agent with `subagents` also gets a subagent named `general-purpose`,
+which works as a copy of the parent. It runs the parent's model with the
+parent's `tools`, the [file tools](filesystem.md) on the parent's files and
+rules, the parent's skills, and the parent's summarization and
+`compact_conversation` tool when it has them; it has no task list. What tunes
+the parent's tools and prompt tunes it too:
+
+- the tools the parent hides with `exclude_tools` and the descriptions it sets
+  with `tool_descriptions`;
+- the parent's [capability profile](profiles.md): its text after the
+  subagent's prompt, its hidden tools, descriptions and middleware;
+- the parent's own `Filesystem`, `Skills`, `Summarization`,
+  `CompactConversation` and `ToolCallNormalization` entries in `middleware`,
+  in place of the ones the subagent would build, and the parent's own entry
+  that replaces a middleware of the profile.
+
+The parent's other middleware, such as a `ModelCallLimit`, stays the
+parent's. The subagent's prompt tells it to finish the task on its own and
+put the whole answer in its final message, so the parent's model can hand it
+any self-contained chunk of work.
 
 A `BeamWeaver.Agent.GeneralPurposeSubagentProfile` in the subagents list
 changes it: `description:` and `system_prompt:` replace its texts, and
@@ -540,6 +559,12 @@ run again. Decisions that don't fit the review fail the resume with
 subagents, or their own subagents, review tools refuses to run without a
 checkpointer.
 
+A new message to the parent while a subagent's review waits cancels that
+review, as it does for the parent's own tools: the `task` call gets a failed
+result that says it didn't run, a subagent that already finished keeps its
+answer, and the parent's model answers the new message. See [A new message
+cancels the review](human_in_the_loop.md#a-new-message-cancels-the-review).
+
 ## Async subagents
 
 An async subagent runs a task in the background, on another server or
@@ -607,9 +632,10 @@ same thread can check it:
 #=> {"No duplicate refunds for Ada.", "The audit is done: no duplicate refunds."}
 ```
 
-Async subagents give the parent five tools, separate from `task`, and a system
-prompt that tells its model to start a task, give the user the task id, and
-not poll:
+Async subagents give the parent five tools, separate from `task`. Their
+descriptions carry the guidance: give the user the full task id, don't poll,
+and call again for a status, since one read earlier may be out of date.
+Nothing is added to the system prompt:
 
 | Tool | Arguments | Does |
 | --- | --- | --- |
@@ -617,23 +643,56 @@ not poll:
 | `check_async_task` | `task_id` | Fetches the task's status and result. |
 | `update_async_task` | `task_id`, `message` | Sends the task more instructions. |
 | `cancel_async_task` | `task_id` | Cancels the task. |
-| `list_async_tasks` | `status_filter` (optional) | Lists the thread's tasks, refreshing the unfinished ones. |
+| `list_async_tasks` | `status_filter` (optional) | Lists the thread's tasks, refreshing every one that isn't final. |
+
+To add a section to the system prompt, pass `system_prompt:` to
+`BeamWeaver.Agent.Middleware.AsyncSubagents.new/1` along with `subagents:`,
+and list it in `middleware` in place of `async_subagents`. The section is your
+text followed by the list of async subagents.
 
 The client's `start_task/3` gets
 `%{assistant_id: graph_id, input: %{messages: [%{role: "user", content: description}]}}`,
 and the task id is the `thread_id`, `task_id`, `id` or `run_id` of its reply.
 Each callback returns `{:ok, map}` with a `status`, plus a `result` when the
-work is done; `success`, `complete`, `completed`, `error`, `timeout`,
-`interrupted` and `cancelled` are final.
+work is done; `success`, `complete`, `completed`, `error`, `timeout` and
+`cancelled` are final, and listing doesn't fetch them again. An `interrupted`
+task isn't final: a person can resume it on the server, so checking and
+listing fetch its status as they do for a running task.
 
-Give an async subagent `url: "https://agents.acme.example"` instead of a
-`client:`, and BeamWeaver uses `BeamWeaver.Agent.Protocol.ReqClient`, which
+Every callback also gets `parent:` in its opts, a map that says which agent
+made the call. With it, a client can run the subagent in its parent's
+sandbox, nest the subagent's trace under the parent's, or find a parent's
+tasks:
+
+| Key | Holds |
+| --- | --- |
+| `thread_id` | The parent's thread, from the `config:` of its run; `nil` without one. |
+| `run_id` | The parent's run. |
+| `tool_call_id` | The async tool call that makes this call. |
+| `subagent_name` | The subagent's `name`, as the parent declared it. |
+| `trace_id`, `trace_run_id` | The parent's trace and the trace run of that tool call; `nil` outside a traced run. |
+
+Each call builds the map again, so `check_task/3` gets the `tool_call_id` of
+the check. To nest the subagent's runs under the parent's trace, start them with
+`BeamWeaver.Tracing.start_run(name, trace_id: trace_id, parent_id: trace_run_id)`.
+Whoever calls the parent sets its thread config, so a client or a server that
+acts on these values, for example to reconnect to a sandbox, checks first that
+the caller may use that thread.
+
+An async subagent needs a `client:` or a `url:`; an agent with one that has
+neither fails to build. Give an async subagent
+`url: "https://agents.acme.example"` instead of a `client:`, and BeamWeaver
+uses `BeamWeaver.Agent.Protocol.ReqClient`, which
 sends `POST /runs` to start, `GET /runs/:task_id` to check,
 `POST /runs/:task_id/input` with `%{message: ...}` to update and
 `POST /runs/:task_id/cancel` to cancel, each with the `headers:` you declare.
-Any server that answers those requests can run the work; so can a client of
-your own that starts supervised work in your application, such as a
-`Task.Supervisor` child or an Oban job.
+The start and update requests also carry `metadata` with the
+`subagent_name` and the parent's `parent_thread_id` (left out when the parent
+has no thread), merged into any `metadata` already in the body; the trace ids
+don't leave your application. Any server that answers those requests can run
+the work; so can a client of your own that starts supervised work in your
+application, such as a `Task.Supervisor` child or an Oban job, and gets the
+whole `parent:` map.
 
 ## Best practices
 

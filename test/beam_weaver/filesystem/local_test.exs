@@ -94,6 +94,19 @@ defmodule BeamWeaver.Filesystem.LocalTest do
              Tool.invoke(grep, %{"pattern" => "TOKEN"})
   end
 
+  test "grep leaves out binary files and .git directories, keeping the text matches", %{root: root} do
+    File.write!(Path.join(root, "cache.db"), <<0xFF, 0xFE, "TOKEN", 0x00, 0xC3>>)
+    File.mkdir_p!(Path.join(root, "docs/.git/objects"))
+    File.write!(Path.join(root, "docs/.git/objects/pack"), "TOKEN in git\n")
+    grep = backend_tool(Local.new(root: root), "grep")
+
+    assert {:ok, ~s([{"line":1,"path":"/docs/guide.md","text":"TOKEN inside"}])} =
+             Tool.invoke(grep, %{"pattern" => "TOKEN"})
+
+    assert {:ok, ~s([{"line":1,"path":"/docs/.git/objects/pack","text":"TOKEN in git"}])} =
+             Tool.invoke(grep, %{"pattern" => "TOKEN", "path" => "/docs/.git"})
+  end
+
   test "glob and grep work in a directory whose name has glob characters", %{tmp_dir: tmp_dir} do
     root = Path.join(tmp_dir, "notes [draft] {v2}")
     File.mkdir_p!(root)
@@ -109,6 +122,18 @@ defmodule BeamWeaver.Filesystem.LocalTest do
 
   test "a malformed glob pattern is an error result", %{root: root} do
     assert %Filesystem.GlobResult{error: "invalid_pattern"} = Filesystem.glob(Local.new(root: root), "{a,b", path: "/")
+  end
+
+  test "LocalShell keeps the start and the end of long command output", %{root: root} do
+    shell = LocalShell.new(root: root, max_output_bytes: 1_024)
+
+    assert %Filesystem.Executable.ExecuteResult{exit_code: 3, output: output, truncated: true} =
+             Filesystem.Executable.execute(
+               shell,
+               "head -c 1500 /dev/zero | tr '\\0' a; head -c 1500 /dev/zero | tr '\\0' b; exit 3"
+             )
+
+    assert output == :binary.copy("a", 512) <> "\n... [1976 bytes cut] ...\n" <> :binary.copy("b", 512)
   end
 
   defp backend_tool(backend, name),

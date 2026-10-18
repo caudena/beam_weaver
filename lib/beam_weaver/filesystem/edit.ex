@@ -4,8 +4,15 @@ defmodule BeamWeaver.Filesystem.Edit do
   @spec replacement(binary(), binary(), binary(), boolean()) ::
           {:ok, pos_integer(), binary()} | {:error, :not_found | :invalid_options | String.t()}
   def replacement(content, old, new, replace_all?)
+
+  # An empty string is at every position of every file, so it names no edit.
+  def replacement(content, "", new, replace_all?)
+      when is_binary(content) and is_binary(new) and is_boolean(replace_all?),
+      do: {:error, "old_string must not be empty"}
+
+  def replacement(content, old, new, replace_all?)
       when is_binary(content) and is_binary(old) and is_binary(new) and is_boolean(replace_all?) do
-    occurrences = if old == "", do: 0, else: length(:binary.matches(content, old))
+    occurrences = length(:binary.matches(content, old))
 
     cond do
       occurrences == 0 -> {:error, :not_found}

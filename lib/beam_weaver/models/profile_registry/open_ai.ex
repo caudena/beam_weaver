@@ -51,6 +51,7 @@ defmodule BeamWeaver.Models.ProfileRegistry.OpenAI do
     image_inputs: true,
     image_url_inputs: true,
     image_tool_message: true,
+    pdf_inputs: true,
     audio_inputs: false,
     reasoning_output: true,
     tokenizer: :o200k_base

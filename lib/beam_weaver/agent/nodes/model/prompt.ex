@@ -64,6 +64,85 @@ defmodule BeamWeaver.Agent.Nodes.Model.Prompt do
     end)
   end
 
+  # A message that comes in while a turn's tool calls wait for review cancels
+  # the review, and each call that hasn't run gets this answer instead.
+  def cancelled_review_answer(call) do
+    id = tool_call_id(call)
+    name = Map.get(call, :name) || "unknown"
+
+    Message.tool(
+      "Tool call #{name} with id #{id} was not run: a new message came in while it waited for review.",
+      tool_call_id: id,
+      name: name,
+      status: "error",
+      metadata: %{status: "error", error_type: :review_cancelled}
+    )
+  end
+
+  # A tool result that sits after a message newer than its call moves up to
+  # the results of its call's turn, where providers expect it. A step that
+  # runs again after a new message came in, such as one that cancels a
+  # review, answers its calls after that message.
+  def place_late_results(messages) do
+    case late_results(messages) do
+      [] -> messages
+      late -> insert_after_turns(messages -- late, Map.new(late, &{&1.tool_call_id, &1}))
+    end
+  end
+
+  # One pass: a result is late when a message other than a tool result came
+  # after its call's turn.
+  defp late_results(messages) do
+    {late, _turns, _last} =
+      messages
+      |> Enum.with_index()
+      |> Enum.reduce({[], %{}, -1}, fn
+        {%Message{role: :tool, tool_call_id: id} = result, _index}, {late, turns, last} ->
+          if Map.get(turns, id, last) < last, do: {[result | late], turns, last}, else: {late, turns, last}
+
+        {message, index}, {late, turns, _last} ->
+          {late, Map.merge(turns, Map.new(call_ids(message), &{&1, index})), index}
+      end)
+
+    Enum.reverse(late)
+  end
+
+  defp call_ids(%Message{role: :assistant, tool_calls: calls}) when is_list(calls),
+    do: for(call <- calls, id = tool_call_id(call), not is_nil(id), do: id)
+
+  defp call_ids(_message), do: []
+
+  # Each turn's answers go after the tool results that follow it, in the
+  # order of its calls.
+  defp insert_after_turns(messages, answers) do
+    {placed, pending} =
+      Enum.flat_map_reduce(messages, [], fn
+        %Message{role: :tool} = message, pending -> {[message], pending}
+        message, pending -> {pending ++ [message], turn_answers(message, answers)}
+      end)
+
+    placed ++ pending
+  end
+
+  defp turn_answers(%Message{role: :assistant, tool_calls: calls}, answers) when is_list(calls),
+    do: for(call <- calls, answer = Map.get(answers, tool_call_id(call)), do: answer)
+
+  defp turn_answers(_message, _answers), do: []
+
+  # A message other than a tool result after `turn` came in while the turn's
+  # calls waited.
+  def message_after_turn?(messages, turn) do
+    messages
+    |> Enum.drop_while(&(&1 != turn))
+    |> Enum.drop(1)
+    |> Enum.any?(&(not match?(%Message{role: :tool}, &1)))
+  end
+
+  def makes_call?(%Message{role: :assistant, tool_calls: calls}, id) when is_list(calls),
+    do: Enum.any?(calls, &(tool_call_id(&1) == id))
+
+  def makes_call?(_message, _id), do: false
+
   def validate_chat_history(messages) do
     tool_results =
       messages

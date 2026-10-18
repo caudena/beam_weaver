@@ -129,6 +129,22 @@ middleware [
 
 [Built-in Middleware](builtin_middleware.md) lists the retry options.
 
+### Images and PDFs
+
+An agent sends each model only the images and PDFs it can take. When the
+thread holds an image, such as one `read_file` returned, and the model's
+built-in profile has `image_inputs: false` (DeepSeek V4 Pro, say), the
+request carries a short notice in its place:
+`[An image was left out: this model doesn't take images.]`. An inline PDF
+goes the same way by `pdf_inputs`, with the notice naming the file. Only the
+request changes: the thread keeps the media, so a fallback or a later model
+that takes it gets it. Subagents do the same, and the check runs after the
+agent's own middleware, on the model that `ModelFallback` picked.
+
+A model with a `profile:` you declared yourself, or one BeamWeaver has no
+profile for, gets the media as it is. Declaring a profile is also how to send
+the media when BeamWeaver's profile is wrong for a model.
+
 ### Defaults for agent models
 
 `BeamWeaver.Agent.ProviderProfile` registers default options for every agent

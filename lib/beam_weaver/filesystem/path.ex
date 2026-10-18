@@ -40,6 +40,113 @@ defmodule BeamWeaver.Filesystem.Path do
 
   def clean_pattern(_pattern), do: {:error, "invalid_pattern"}
 
+  # The glob rule of `glob` and of grep's `glob:` filter, as a pattern for
+  # the path below the directory searched: a pattern without `/` matches a
+  # name at any depth, so `*.py` is `**/*.py`; one with `/` matches the path
+  # from that directory, and a leading `/` only anchors it there, so `/*.py`
+  # matches its top-level files.
+  def search_pattern("/" <> pattern), do: String.trim_leading(pattern, "/")
+  def search_pattern(""), do: ""
+
+  def search_pattern(pattern) when is_binary(pattern),
+    do: if(String.contains?(pattern, "/"), do: pattern, else: "**/" <> pattern)
+
+  def search_pattern(pattern), do: pattern
+
+  # Grep's `glob:` filter as a `search_pattern/1`, or `nil` to search every
+  # file when there is none.
+  def grep_pattern(glob) when glob in [nil, ""], do: nil
+  def grep_pattern(glob), do: search_pattern(glob)
+
+  # A `search_pattern/1` as a regular expression for the path below the
+  # directory searched, which POSIX extended syntax, as `find -regex` reads
+  # it, and Elixir's `Regex` read alike: `**/` is any number of folders, `**`
+  # anything, `*` and `?` stay within one name, `[...]` is a class, one that
+  # starts with `!` or `^` excludes its members, `{a,b}` is either, and `\`
+  # makes the next character literal. An unclosed `[` or `{` is an invalid
+  # pattern.
+  def glob_regex(pattern) when is_binary(pattern), do: glob_regex(pattern, 0, [])
+
+  defp glob_regex("", 0, acc), do: {:ok, acc |> Enum.reverse() |> IO.iodata_to_binary()}
+  defp glob_regex("", _depth, _acc), do: {:error, "invalid_pattern"}
+  defp glob_regex("**/" <> rest, depth, acc), do: glob_regex(rest, depth, ["(.*/)?" | acc])
+  defp glob_regex("**" <> rest, depth, acc), do: glob_regex(rest, depth, [".*" | acc])
+  defp glob_regex("*" <> rest, depth, acc), do: glob_regex(rest, depth, ["[^/]*" | acc])
+  defp glob_regex("?" <> rest, depth, acc), do: glob_regex(rest, depth, ["[^/]" | acc])
+  defp glob_regex("{" <> rest, depth, acc), do: glob_regex(rest, depth + 1, ["(" | acc])
+  defp glob_regex("}" <> rest, depth, acc) when depth > 0, do: glob_regex(rest, depth - 1, [")" | acc])
+  defp glob_regex("," <> rest, depth, acc) when depth > 0, do: glob_regex(rest, depth, ["|" | acc])
+
+  defp glob_regex(<<"\\", char::utf8, rest::binary>>, depth, acc),
+    do: glob_regex(rest, depth, [regex_literal(<<char::utf8>>) | acc])
+
+  defp glob_regex("[" <> rest, depth, acc) do
+    case glob_class(rest) do
+      {:class, "", members, rest} -> glob_regex(rest, depth, ["[" <> class_members(members) <> "]" | acc])
+      {:class, _excluded, members, rest} -> glob_regex(rest, depth, ["[^/" <> class_members(members) <> "]" | acc])
+      :literal -> glob_regex(rest, depth, ["\\[" | acc])
+      :unclosed -> {:error, "invalid_pattern"}
+    end
+  end
+
+  defp glob_regex(<<char::utf8, rest::binary>>, depth, acc),
+    do: glob_regex(rest, depth, [regex_literal(<<char::utf8>>) | acc])
+
+  # The class that `rest`, what follows a `[`, starts with. A `]` right after
+  # `[` or `[!` is a member, not the end, so `[]` alone is the two literal
+  # characters.
+  defp glob_class(rest) do
+    case Regex.run(~r/\A([!^]?)(\]?[^\]]*)\](.*)\z/s, rest) do
+      [_all, _excluded, "", _rest] -> :literal
+      [_all, excluded, members, rest] -> {:class, excluded, members, rest}
+      nil -> :unclosed
+    end
+  end
+
+  # A `\` among a class's members is literal in POSIX syntax and an escape in
+  # Elixir's; doubled, it is a literal backslash in both.
+  defp class_members(members), do: String.replace(members, "\\", "\\\\")
+
+  @regex_specials [".", "^", "$", "+", "*", "?", "(", ")", "|", "{", "}", "[", "]", "\\"]
+
+  defp regex_literal(char) when char in @regex_specials, do: "\\" <> char
+  defp regex_literal(char), do: char
+
+  # A matcher for `glob_regex/1`'s pattern, or its error.
+  def glob_matcher(""), do: {:ok, &(&1 == "")}
+
+  def glob_matcher(pattern) do
+    with {:ok, source} <- glob_regex(pattern) do
+      regex = Regex.compile!("\\A" <> source <> "\\z", "u")
+      {:ok, &Regex.match?(regex, &1)}
+    end
+  end
+
+  # `pattern` for a directory walk with `Path.wildcard/2`, which has no
+  # excluding classes and reads class members its own way: each class
+  # becomes `?`, so the walk finds every file the pattern can match, and
+  # `glob_matcher/1` picks the ones it does.
+  def walk_pattern(pattern), do: walk_pattern(pattern, 0, [])
+
+  defp walk_pattern("", _depth, acc), do: acc |> Enum.reverse() |> IO.iodata_to_binary()
+
+  defp walk_pattern(<<"\\", char::utf8, rest::binary>>, depth, acc),
+    do: walk_pattern(rest, depth, [<<"\\", char::utf8>> | acc])
+
+  defp walk_pattern("{" <> rest, depth, acc), do: walk_pattern(rest, depth + 1, ["{" | acc])
+  defp walk_pattern("}" <> rest, depth, acc) when depth > 0, do: walk_pattern(rest, depth - 1, ["}" | acc])
+  defp walk_pattern("}" <> rest, depth, acc), do: walk_pattern(rest, depth, ["\\}" | acc])
+  defp walk_pattern("," <> rest, 0, acc), do: walk_pattern(rest, 0, ["\\," | acc])
+
+  defp walk_pattern("[" <> rest, depth, acc) do
+    case glob_class(rest) do
+      {:class, _excluded, _members, rest} -> walk_pattern(rest, depth, ["?" | acc])
+      _literal -> walk_pattern(rest, depth, ["\\[" | acc])
+    end
+  end
+
+  defp walk_pattern(<<char::utf8, rest::binary>>, depth, acc), do: walk_pattern(rest, depth, [<<char::utf8>> | acc])
+
   def virtual_to_real(root, path), do: root |> real_root() |> resolve_virtual(path)
 
   # `root` with its symlinks resolved, to resolve many paths under it with

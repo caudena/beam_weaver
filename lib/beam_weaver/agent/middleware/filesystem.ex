@@ -10,19 +10,22 @@ defmodule BeamWeaver.Agent.Middleware.Filesystem do
   use BeamWeaver.Agent.Middleware
 
   alias BeamWeaver.Agent.ExtendedModelResponse
+  alias BeamWeaver.Agent.Middleware.Helpers
   alias BeamWeaver.Agent.Middleware.Offload
   alias BeamWeaver.Agent.ModelRequest
   alias BeamWeaver.Agent.ModelResponse
   alias BeamWeaver.Agent.ToolCallRequest
   alias BeamWeaver.Core.ID
   alias BeamWeaver.Core.Message
+  alias BeamWeaver.Core.Tool
   alias BeamWeaver.Filesystem
-  alias BeamWeaver.Filesystem.Executable
+  alias BeamWeaver.Filesystem.Path, as: FsPath
   alias BeamWeaver.Filesystem.State
   alias BeamWeaver.Graph
   alias BeamWeaver.Graph.Channels.BinaryOperatorAggregate
   alias BeamWeaver.Graph.Command
   alias BeamWeaver.Graph.Overwrite
+  alias BeamWeaver.MapAccess
   alias BeamWeaver.MapShape
   alias BeamWeaver.Tools.Filesystem, as: FilesystemTools
 
@@ -33,29 +36,44 @@ defmodule BeamWeaver.Agent.Middleware.Filesystem do
   @tool_token_limit_before_evict 20_000
   @human_message_token_limit_before_evict 50_000
   @tools_excluded_from_evict ~w(ls glob grep read_file edit_file write_file)
+  @file_change_tools ~w(write_file edit_file)
 
-  @filesystem_system_prompt """
+  @conventions_prompt """
   ## Following Conventions
 
   - Read files before editing - understand existing content before making changes
   - Mimic existing style, naming conventions, and patterns
+  """
 
-  ## Filesystem Tools `ls`, `read_file`, `write_file`, `edit_file`, `glob`, `grep`
+  @file_tools [
+    {"ls", "list files in a directory (requires absolute path)"},
+    {"read_file", "read a file from the filesystem"},
+    {"write_file", "create a file, or replace one, in the filesystem"},
+    {"edit_file", "edit a file in the filesystem"},
+    {"glob", ~s|find files matching a pattern (e.g., "**/*.ex")|},
+    {"grep", "search files for literal text, not a regex"}
+  ]
+
+  @file_tools_prompt """
+  ## Filesystem Tools %{tool_names}
 
   You have access to a filesystem which you can interact with using these tools.
   All file paths must start with a /. Follow the tool docs for the available tools, and use pagination (offset/limit) when reading large files.
 
-  - ls: list files in a directory (requires absolute path)
-  - read_file: read a file from the filesystem
-  - write_file: write to a file in the filesystem
-  - edit_file: edit a file in the filesystem
-  - glob: find files matching a pattern (e.g., "**/*.ex")
-  - grep: search for text within files
+  %{tool_lines}
+  """
 
+  @large_tool_results_prompt """
   ## Large Tool Results
 
-  When a tool result is too large, it may be offloaded into the filesystem instead of being returned inline. In those cases, use `read_file` to inspect the saved result in chunks, or use `grep` within `%{large_tool_results_prefix}/` if you need to search across offloaded tool results and do not know the exact file path. Offloaded tool results are stored under `%{large_tool_results_prefix}/<tool_call_id>`.
+  When a tool result is too large, it may be offloaded into the filesystem instead of being returned inline. In those cases, %{how_to_read}. Offloaded tool results are stored under `%{large_tool_results_prefix}/<tool_call_id>`.
   """
+
+  @offloaded_result_readers [
+    {"read_file", "use `read_file` to inspect the saved result in chunks"},
+    {"grep",
+     "use `grep` within `%{large_tool_results_prefix}/` if you need to search across offloaded tool results and do not know the exact file path"}
+  ]
 
   @execution_system_prompt """
   ## Execute Tool `execute`
@@ -72,7 +90,7 @@ defmodule BeamWeaver.Agent.Middleware.Filesystem do
 
   You can read the full content using the read_file tool with pagination (offset and limit parameters).
 
-  Here is a preview showing the head and tail of the content:
+  Here is a preview showing the head and tail of the content%{preview_notes}:
 
   %{content_sample}
   """
@@ -137,25 +155,88 @@ defmodule BeamWeaver.Agent.Middleware.Filesystem do
     {messages, command} = evict_and_truncate_human_messages(middleware, request)
 
     request =
-      ModelRequest.override(request,
+      request
+      |> ModelRequest.override(
         messages: messages,
-        system_message: append_prompt(request.system_message, system_prompt(middleware))
+        system_message: append_prompt(request.system_message, system_prompt(middleware, request))
       )
+      |> with_grep_description()
 
     request
     |> handler.()
     |> maybe_attach_command(command)
   end
 
+  # grep's description points to `execute` for a real regex only while the
+  # call offers `execute`. A description set with `tool_descriptions` stays.
+  defp with_grep_description(%ModelRequest{tools: tools} = request) when is_list(tools) do
+    execute? = "execute" in Helpers.tool_names(tools)
+    described = Enum.map(tools, &describe_grep(&1, execute?))
+
+    if described == tools, do: request, else: ModelRequest.override(request, tools: described)
+  end
+
+  defp with_grep_description(request), do: request
+
+  defp describe_grep(%Tool{name: "grep", description: description} = tool, execute?) do
+    if description in [FilesystemTools.grep_description(true), FilesystemTools.grep_description(false)],
+      do: %{tool | description: FilesystemTools.grep_description(execute?)},
+      else: tool
+  end
+
+  defp describe_grep(tool, _execute?), do: tool
+
   @impl true
   def wrap_tool_call(%__MODULE__{} = middleware, %ToolCallRequest{} = request, handler) do
-    result = handler.(request)
-
-    if evict_tool_result?(middleware, request) do
-      intercept_large_tool_result(middleware, result, request)
+    if same_file_changed_earlier?(request) do
+      same_file_error(request)
     else
-      result
+      result = handler.(request)
+
+      if evict_tool_result?(middleware, request),
+        do: intercept_large_tool_result(middleware, result, request),
+        else: result
     end
+  end
+
+  # The calls of one model reply run at the same time, so two changes to one
+  # file would race: only the first of them runs.
+  defp same_file_changed_earlier?(%ToolCallRequest{tool_call: call, state: state}) do
+    with true <- file_change?(call),
+         %Message{tool_calls: [_ | _] = calls} <- last_assistant_message(state) do
+      path = changed_path(call)
+
+      calls
+      |> Enum.take_while(&(Helpers.tool_call_id(&1) != Helpers.tool_call_id(call)))
+      |> Enum.any?(&(file_change?(&1) and changed_path(&1) == path))
+    else
+      _other -> false
+    end
+  end
+
+  defp file_change?(call),
+    do: to_string(MapAccess.get(call, :name)) in @file_change_tools and match?({:ok, _path}, changed_path(call))
+
+  defp changed_path(call), do: call |> MapAccess.get(:args, %{}) |> MapAccess.get(:file_path) |> clean_path()
+
+  defp clean_path(path) when is_binary(path), do: FsPath.clean_path(path)
+  defp clean_path(_path), do: :error
+
+  defp last_assistant_message(state) do
+    state
+    |> MapAccess.get(:messages, [])
+    |> List.wrap()
+    |> Enum.reverse()
+    |> Enum.find(&match?(%Message{role: :assistant}, &1))
+  end
+
+  defp same_file_error(%ToolCallRequest{tool_call: call}) do
+    Message.tool(
+      "Error: parallel file changes to the same path are not allowed; change the file again in a later turn.",
+      tool_call_id: Helpers.tool_call_id(call),
+      name: to_string(MapAccess.get(call, :name)),
+      metadata: %{status: "error", error_type: :parallel_file_changes}
+    )
   end
 
   defp evict_tool_result?(%__MODULE__{tool_token_limit_before_evict: nil}, _request), do: false
@@ -228,8 +309,10 @@ defmodule BeamWeaver.Agent.Middleware.Filesystem do
     end
   end
 
+  # A result without a call id gets a name of its own, so the next one doesn't
+  # find the path taken and stay inline.
   defp offload_tool_message(middleware, message, content, request, state_files_override) do
-    tool_call_id = message.tool_call_id || tool_call_id(request.tool_call) || "unknown"
+    tool_call_id = message.tool_call_id || tool_call_id(request.tool_call) || ID.uuidv7()
 
     file_path =
       middleware.large_tool_results_prefix <> "/" <> Offload.sanitize_tool_call_id(tool_call_id)
@@ -304,11 +387,10 @@ defmodule BeamWeaver.Agent.Middleware.Filesystem do
   defp truncate_evicted_human_message(%Message{role: :user} = message) do
     case evicted_to(message) do
       path when is_binary(path) and path != "" ->
+        {sample, notes} = message |> Message.text() |> Offload.preview()
+
         replacement =
-          Offload.format_notice(@too_large_human_msg,
-            file_path: path,
-            content_sample: Offload.content_preview(Message.text(message))
-          )
+          Offload.format_notice(@too_large_human_msg, file_path: path, preview_notes: notes, content_sample: sample)
 
         %{message | content: Offload.evicted_content(message, replacement)}
 
@@ -365,17 +447,47 @@ defmodule BeamWeaver.Agent.Middleware.Filesystem do
     }
   end
 
-  defp system_prompt(%__MODULE__{system_prompt: prompt}) when is_binary(prompt), do: prompt
+  defp system_prompt(%__MODULE__{system_prompt: prompt}, _request) when is_binary(prompt), do: prompt
 
-  defp system_prompt(%__MODULE__{} = middleware) do
-    prompt =
-      @filesystem_system_prompt
-      |> String.trim()
-      |> String.replace("%{large_tool_results_prefix}", middleware.large_tool_results_prefix)
+  # The sections describe the tools this call offers, which `exclude_tools`
+  # and other tool filters may have narrowed.
+  defp system_prompt(%__MODULE__{} = middleware, %ModelRequest{} = request) do
+    offered = Helpers.tool_names(request.tools || [])
+    file_tools = Enum.filter(@file_tools, fn {name, _description} -> name in offered end)
+    execute? = "execute" in offered
 
-    if Executable.executable?(middleware.backend),
-      do: prompt <> "\n\n" <> String.trim(@execution_system_prompt),
-      else: prompt
+    sections = [
+      (file_tools != [] or execute?) && @conventions_prompt,
+      file_tools_prompt(file_tools),
+      large_tool_results_prompt(middleware, offered),
+      execute? && @execution_system_prompt
+    ]
+
+    case Enum.filter(sections, &is_binary/1) do
+      [] -> nil
+      sections -> Enum.map_join(sections, "\n\n", &String.trim/1)
+    end
+  end
+
+  defp file_tools_prompt([]), do: nil
+
+  defp file_tools_prompt(file_tools) do
+    Offload.format_notice(@file_tools_prompt,
+      tool_names: Enum.map_join(file_tools, ", ", fn {name, _description} -> "`#{name}`" end),
+      tool_lines: Enum.map_join(file_tools, "\n", fn {name, description} -> "- #{name}: #{description}" end)
+    )
+  end
+
+  # Only the tools that can read a saved result are named, and without one
+  # there is nothing to say.
+  defp large_tool_results_prompt(middleware, offered) do
+    ways = for {name, how} <- @offloaded_result_readers, name in offered, do: how
+
+    if ways != [] do
+      @large_tool_results_prompt
+      |> Offload.format_notice(how_to_read: Enum.join(ways, ", or "))
+      |> Offload.format_notice(large_tool_results_prefix: middleware.large_tool_results_prefix)
+    end
   end
 
   defp command_messages(update) when is_map(update) do

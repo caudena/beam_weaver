@@ -11,6 +11,13 @@ defmodule BeamWeaver.Agent.Middleware.OverflowRecovery do
   thread, and with `BeamWeaver.Filesystem.State` the saved files are added to
   the thread's files, so later calls don't send the full results again.
 
+  With `:summarization`, a call that still overflows once its results are
+  clipped, or that has nothing to clip, is sent once more with the thread
+  summarized, and keeps the results clipped. An agent with automatic
+  summarization (`BeamWeaver.Agent.Middleware.Summarization`) as well gives
+  it here, so the two can be listed in any order. A call that overflows is
+  sent at most twice more.
+
   Options:
 
     * `:keep` - how large the trailing batch may be before it is clipped:
@@ -21,6 +28,8 @@ defmodule BeamWeaver.Agent.Middleware.OverflowRecovery do
     * `:backend` - the filesystem the results are saved to.
     * `:token_counter` - `:approximate` or a function of a message list.
     * `:large_tool_results_prefix` - the directory for the saved results.
+    * `:summarization` - a `BeamWeaver.Agent.Middleware.Summarization` that
+      summarizes the thread when clipping isn't enough.
   """
 
   use BeamWeaver.Agent.Middleware
@@ -28,6 +37,7 @@ defmodule BeamWeaver.Agent.Middleware.OverflowRecovery do
   alias BeamWeaver.Agent.ExtendedModelResponse
   alias BeamWeaver.Agent.Middleware.Helpers
   alias BeamWeaver.Agent.Middleware.Offload
+  alias BeamWeaver.Agent.Middleware.Summarization
   alias BeamWeaver.Agent.ModelRequest
   alias BeamWeaver.Agent.ModelResponse
   alias BeamWeaver.Agent.State, as: AgentState
@@ -41,6 +51,7 @@ defmodule BeamWeaver.Agent.Middleware.OverflowRecovery do
   alias BeamWeaver.MapAccess
   alias BeamWeaver.MapShape
   alias BeamWeaver.Options
+  alias BeamWeaver.Provider.ResponseDecoder
 
   @chars_per_token 4
   @default_keep {:tokens, 5_000}
@@ -61,7 +72,8 @@ defmodule BeamWeaver.Agent.Middleware.OverflowRecovery do
             token_counter: :approximate,
             large_tool_results_prefix: nil,
             state_key: :files,
-            retry?: true
+            retry?: true,
+            summarization: nil
 
   @type t :: %__MODULE__{
           messages: [Message.t()],
@@ -74,7 +86,8 @@ defmodule BeamWeaver.Agent.Middleware.OverflowRecovery do
           token_counter: term(),
           large_tool_results_prefix: String.t() | nil,
           state_key: atom(),
-          retry?: boolean()
+          retry?: boolean(),
+          summarization: struct() | nil
         }
 
   def new(opts \\ []) do
@@ -90,7 +103,8 @@ defmodule BeamWeaver.Agent.Middleware.OverflowRecovery do
       token_counter: Keyword.get(opts, :token_counter, :approximate),
       large_tool_results_prefix: Keyword.get(opts, :large_tool_results_prefix),
       state_key: Keyword.get(opts, :state_key, :files),
-      retry?: Keyword.get(opts, :retry, true)
+      retry?: Keyword.get(opts, :retry, true),
+      summarization: Keyword.get(opts, :summarization)
     }
   end
 
@@ -101,17 +115,15 @@ defmodule BeamWeaver.Agent.Middleware.OverflowRecovery do
   def wrap_model_call(%__MODULE__{retry?: false}, %ModelRequest{} = request, handler),
     do: handler.(request)
 
+  # A call that overflows is sent once more with its trailing tool results
+  # clipped, and then, with `:summarization`, once more with the thread
+  # summarized.
   def wrap_model_call(%__MODULE__{} = middleware, %ModelRequest{} = request, handler) do
-    case handler.(request) do
-      {:error, %Error{} = error} = result ->
-        if context_overflow?(error) do
-          retry_after_clip(middleware, request, handler, result)
-        else
-          result
-        end
-
-      other ->
-        other
+    with {:overflow, overflow} <- sent(handler.(request)),
+         {:overflow, overflow, request, send} <- send_clipped(middleware, request, handler, overflow) do
+      send_summarized(middleware, request, send) || overflow
+    else
+      {:sent, result} -> result
     end
   end
 
@@ -166,11 +178,29 @@ defmodule BeamWeaver.Agent.Middleware.OverflowRecovery do
     end
   end
 
-  defp retry_after_clip(%__MODULE__{} = middleware, %ModelRequest{} = request, handler, original) do
-    backend = middleware.backend || State.new()
+  @doc false
+  # Whether a model call failed because the request is over the model's
+  # context window. A model that doesn't decode its errors, or a proxy that
+  # passes an overflow on as a bad request, leaves only the message to tell
+  # an overflow apart.
+  @spec context_overflow?(Error.t()) :: boolean()
+  def context_overflow?(%Error{type: :context_overflow}), do: true
+  def context_overflow?(%Error{message: message}), do: ResponseDecoder.context_overflow_message?(message)
 
+  # An overflow goes on to the next step of the recovery; any other result is
+  # the call's.
+  defp sent({:error, %Error{} = error} = result),
+    do: if(context_overflow?(error), do: {:overflow, result}, else: {:sent, result})
+
+  defp sent(result), do: {:sent, result}
+
+  # Sends `request` with its trailing tool results clipped. When that
+  # overflows too, the clipped request goes on to be summarized, sent through
+  # a handler that saves the clip with the reply; when there is nothing to
+  # clip, the request goes on as it is.
+  defp send_clipped(%__MODULE__{} = middleware, %ModelRequest{} = request, handler, overflow) do
     result =
-      clip_tail(request.messages, backend,
+      clip_tail(request.messages, middleware.backend || State.new(),
         keep: middleware.keep,
         max_input_tokens: middleware.max_input_tokens,
         token_counter: middleware.token_counter,
@@ -181,16 +211,34 @@ defmodule BeamWeaver.Agent.Middleware.OverflowRecovery do
       )
 
     if result.clipped? do
-      request
-      |> ModelRequest.override(
-        messages: result.messages,
-        state: MapShape.put_present(request.state || %{}, middleware.state_key, result.files_update)
-      )
-      |> handler.()
-      |> save_clip(middleware, request, result)
+      clipped =
+        ModelRequest.override(request,
+          messages: result.messages,
+          state: clipped_state(middleware, request.state || %{}, result)
+        )
+
+      send = &(&1 |> handler.() |> save_clip(middleware, request, result))
+
+      with {:overflow, overflow} <- sent(send.(clipped)), do: {:overflow, overflow, clipped, send}
     else
-      original
+      {:overflow, overflow, request, handler}
     end
+  end
+
+  defp send_summarized(%__MODULE__{summarization: nil}, _request, _send), do: nil
+
+  defp send_summarized(%__MODULE__{summarization: summarization}, request, send),
+    do: Summarization.send_summarized(summarization, request, send)
+
+  # The clipped call sees the thread as it is saved when the call succeeds,
+  # with the clipped results and their files, so that a summary of it keeps
+  # them clipped.
+  defp clipped_state(%__MODULE__{} = middleware, state, result) do
+    clipped = Map.new(result.replacements, &{&1.id, &1})
+
+    state
+    |> Map.put(:messages, Enum.map(AgentState.messages(state), &Map.get(clipped, &1.id, &1)))
+    |> Offload.put_files_update(middleware.state_key, result.files_update)
   end
 
   # A successful retry also saves the clipped results in place of the full
@@ -210,19 +258,6 @@ defmodule BeamWeaver.Agent.Middleware.OverflowRecovery do
   end
 
   defp save_clip(other, _middleware, _request, _result), do: other
-
-  defp context_overflow?(%Error{type: :context_overflow}), do: true
-
-  defp context_overflow?(%Error{message: message}) when is_binary(message) do
-    normalized = String.downcase(message)
-
-    String.contains?(normalized, "context window") or
-      String.contains?(normalized, "context length") or
-      String.contains?(normalized, "maximum context") or
-      String.contains?(normalized, "prompt is too long")
-  end
-
-  defp context_overflow?(_error), do: false
 
   defp maybe_clip_tail(messages, backend, opts, start, tail) do
     threshold =
@@ -316,7 +351,7 @@ defmodule BeamWeaver.Agent.Middleware.OverflowRecovery do
 
   defp offload_tool_message(%Message{} = message, backend, opts, files_acc) do
     content = Message.text(message)
-    tool_call_id = message.tool_call_id || "unknown"
+    tool_call_id = message.tool_call_id || ID.uuidv7()
 
     prefix =
       Keyword.get(opts, :large_tool_results_prefix) ||

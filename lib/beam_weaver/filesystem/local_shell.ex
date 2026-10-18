@@ -17,6 +17,7 @@ defmodule BeamWeaver.Filesystem.LocalShell do
   alias BeamWeaver.Filesystem
   alias BeamWeaver.Filesystem.Executable
   alias BeamWeaver.Filesystem.Local
+  alias BeamWeaver.Sandbox.OutputBuffer
   alias BeamWeaver.Tools.Shell.CommandRunner
 
   # `env` can carry credentials meant only for the commands.
@@ -51,10 +52,10 @@ defmodule BeamWeaver.Filesystem.LocalShell do
              cd: backend.root,
              env: backend.env,
              inherit_env: backend.inherit_env,
-             timeout: timeout
+             timeout: timeout,
+             into: %OutputBuffer{max_bytes: backend.max_output_bytes}
            ) do
-        {:ok, output, exit_code} ->
-          {output, truncated?} = truncate(output, backend.max_output_bytes)
+        {:ok, {output, truncated?}, exit_code} ->
           %Executable.ExecuteResult{exit_code: exit_code, output: output, truncated: truncated?}
 
         {:timeout, _kill_attempted?} ->
@@ -111,12 +112,4 @@ defmodule BeamWeaver.Filesystem.LocalShell do
     do: backend |> filesystem() |> Filesystem.canonical_paths(paths, opts)
 
   defp filesystem(%__MODULE__{root: root}), do: Local.new(root: root)
-
-  defp truncate(output, :unlimited), do: {output, false}
-
-  defp truncate(output, max_bytes) when is_integer(max_bytes) and byte_size(output) > max_bytes do
-    {binary_part(output, 0, max_bytes) <> "\n\n... Output truncated at #{max_bytes} bytes.", true}
-  end
-
-  defp truncate(output, _max_bytes), do: {output, false}
 end

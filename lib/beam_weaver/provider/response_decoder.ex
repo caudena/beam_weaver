@@ -184,24 +184,36 @@ defmodule BeamWeaver.Provider.ResponseDecoder do
 
   defp billing_exhausted?(_status, _error, _message), do: false
 
-  defp default_context_overflow?(400, provider_error, message) do
+  # Some OpenAI-compatible servers answer an overflow with a 413 or 422, which
+  # other errors share, so those count only when the error says overflow.
+  defp default_context_overflow?(status, provider_error, message) when status in [400, 413, 422] do
     error_field(provider_error, "code") in ["context_length_exceeded", "prompt_too_long"] or
       context_overflow_message?(message)
   end
 
   defp default_context_overflow?(_status, _provider_error, _message), do: false
 
-  defp context_overflow_message?(message) when is_binary(message) do
+  @doc false
+  # Whether an error message says the prompt is over the context window, in
+  # the words of OpenAI, Anthropic, or an OpenAI-compatible server such as
+  # llama.cpp, LiteLLM or Text Generation Inference.
+  def context_overflow_message?(message) when is_binary(message) do
     String.contains?(String.downcase(message), [
       "context window",
       "context length",
+      "maximum context",
+      "exceeds the available context size",
+      "context limit exceeded",
+      "contextwindowexceedederror",
       "prompt is too long",
       "input tokens exceed",
-      "too many tokens"
+      "too many tokens",
+      "`inputs` tokens + `max_new_tokens` must be",
+      "`inputs` must have less than"
     ])
   end
 
-  defp context_overflow_message?(_message), do: false
+  def context_overflow_message?(_message), do: false
 
   def attach_headers(decoded, %Response{} = response, opts) do
     fields = Keyword.get(opts, :header_fields, [])

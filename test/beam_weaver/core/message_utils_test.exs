@@ -54,6 +54,22 @@ defmodule BeamWeaver.Core.MessageUtilsTest do
     assert {:ok, ^expected} = BeamWeaver.OpenAI.ChatModel.count_tokens(model, messages, tools: [struct_tool])
   end
 
+  test "a file, audio or video block counts as one media item, not as the length of its data" do
+    data = Base.encode64(:crypto.strong_rand_bytes(300_000))
+
+    for block <- [
+          %BeamWeaver.Core.ContentBlock.File{data: data, mime_type: "application/pdf", filename: "r.pdf"},
+          %BeamWeaver.Core.ContentBlock.Audio{data: data, mime_type: "audio/wav"},
+          %BeamWeaver.Core.ContentBlock.Video{data: data, mime_type: "video/mp4"}
+        ] do
+      message = Message.tool([%BeamWeaver.Core.ContentBlock.Text{text: "File /r.pdf"}], tool_call_id: "read-1")
+      message = %{message | content: message.content ++ [block]}
+
+      assert {:ok, tokens} = Utils.count_tokens_approximately([message], tokens_per_image: 85)
+      assert tokens < 200
+    end
+  end
+
   test "Message.from converts strings, tuples, maps, and messages" do
     assert {:ok, %Message{role: :user, content: "hello"}} = Message.from("hello")
     assert {:ok, %Message{role: :assistant, content: "hi"}} = Message.from({"assistant", "hi"})

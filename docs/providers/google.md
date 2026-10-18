@@ -58,6 +58,9 @@ model without an agent, build it with `BeamWeaver.Models.init_chat_model/2`
 BeamWeaver.Core.Message.text(reply)
 ```
 
+An image or PDF a tool returns, such as one from `read_file`, goes in the
+function response's parts, which Gemini 3 models read.
+
 ## Options
 
 | Option | What it does |

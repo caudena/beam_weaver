@@ -16,6 +16,7 @@ defmodule BeamWeaver.Filesystem.Conformance do
 
   @secret "beam-weaver-link-check-secret"
   @note "beam-weaver-link-check-note"
+  @replacement "beam-weaver-link-check-replacement"
 
   @doc """
   Checks that permission rules see through `backend`'s symlinks.
@@ -28,8 +29,8 @@ defmodule BeamWeaver.Filesystem.Conformance do
   and `notes/todo.md`, links `notes/key.txt` to `secrets/key.txt` and
   `notes/vault` to `secrets`, and gives the file tools a rule that denies
   `secrets/**`. Then reading, listing and searching the secret through the
-  links must be denied, and so must writing and editing through them, while
-  `notes/todo.md` and new files in `notes` stay allowed.
+  links must be denied, and so must creating, replacing or editing a file
+  through them, while `notes/todo.md` and new files in `notes` stay allowed.
 
   Returns `:ok`, or `{:error, problems}` with a sentence for each problem.
   """
@@ -208,7 +209,23 @@ defmodule BeamWeaver.Filesystem.Conformance do
           nil
       end
 
-    Enum.reject([write_problem, edit_problem], &is_nil/1)
+    # `write_file` replaces a file that exists, so the link to the secret must
+    # be denied too. It runs last: a leak replaces the secret's text.
+    replaced = run(tools, "write_file", %{"file_path" => paths.key_link, "content" => @replacement})
+
+    replace_problem =
+      cond do
+        String.contains?(content(backend, paths.key), @replacement) ->
+          "write_file #{paths.key_link} replaced #{paths.key}, which a rule denies"
+
+        replaced != "Error: Permission denied writing #{paths.key_link}" ->
+          "write_file #{paths.key_link} wasn't denied: #{describe(replaced)}"
+
+        true ->
+          nil
+      end
+
+    Enum.reject([write_problem, edit_problem, replace_problem], &is_nil/1)
   end
 
   # What no rule denies must stay open, so a backend can't pass by denying

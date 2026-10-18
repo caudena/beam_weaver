@@ -5,6 +5,7 @@ defmodule BeamWeaver.Agent.Middleware.Memory do
 
   alias BeamWeaver.Agent.ModelRequest
   alias BeamWeaver.Filesystem
+  alias BeamWeaver.Filesystem.FileDataUtils
   alias BeamWeaver.Filesystem.State
   alias BeamWeaver.Graph
 
@@ -84,10 +85,12 @@ defmodule BeamWeaver.Agent.Middleware.Memory do
       limit: 10_000
     ]
 
+    # An empty memory file reads as the backends' empty-file reminder, which
+    # is no memory.
     for path <- middleware.paths,
         %Filesystem.ReadResult{error: nil, file_data: %Filesystem.FileData{content: content}} <-
           [Filesystem.read(middleware.backend, path, opts)],
-        content not in [nil, ""],
+        content not in [nil, "", FileDataUtils.empty_content_warning()],
         into: %{},
         do: {path, content}
   end

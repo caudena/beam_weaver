@@ -186,7 +186,8 @@ defmodule BeamWeaver.Agent.SummarizationTest do
 
   # Answers "compacted(...)" to the compact_conversation tool's prompt and
   # "summarized(...)" to automatic summarization's, naming the [mN] tags of
-  # the messages it summarized.
+  # the messages it summarized. The tool's summary then says where those
+  # messages were saved.
   defmodule TaggingSummaryModel do
     @behaviour BeamWeaver.Core.ChatModel
 
@@ -237,8 +238,8 @@ defmodule BeamWeaver.Agent.SummarizationTest do
     kept = for i <- 12..18, do: "[m#{i}] note #{i}"
     summary = "Conversation summary:\ncompacted(" <> Enum.map_join(0..11, ",", &"m#{&1}") <> ")"
 
-    assert [^summary | rest] = Enum.map(result.messages, &Message.text/1)
-    assert [_first_call, [_system, ^summary | second_call_rest]] = model_calls()
+    assert [^summary <> _saved_to | rest] = Enum.map(result.messages, &Message.text/1)
+    assert [_first_call, [^summary <> _saved_to | second_call_rest]] = model_calls()
     assert Enum.take(rest, 7) == kept
     assert Enum.take(second_call_rest, 7) == kept
     assert List.last(rest) == "Done."
@@ -270,8 +271,8 @@ defmodule BeamWeaver.Agent.SummarizationTest do
     assert {:ok, result} = BeamWeaver.Agent.invoke(agent, %{messages: ["[m0] hello", "[m1] more", "[m2] the task"]})
 
     assert [_first, second, _third, fourth] = model_calls()
-    assert Enum.slice(second, 1, 2) == ["Conversation summary:\ncompacted(m0,m1)", "[m2] the task"]
-    assert Enum.at(fourth, 1) == "Conversation summary:\nsummarized(m2)"
+    assert ["Conversation summary:\ncompacted(m0,m1)" <> _saved_to, "[m2] the task"] = Enum.take(second, 2)
+    assert hd(fourth) == "Conversation summary:\nsummarized(m2)"
     assert hd(result.messages) |> Message.text() == "Conversation summary:\nsummarized(m2)"
   end
 
@@ -288,7 +289,7 @@ defmodule BeamWeaver.Agent.SummarizationTest do
     assert %{messages: %Overwrite{value: [summary | kept]}, _summarization_event: nil} =
              CompactConversation.before_model(middleware, state, nil)
 
-    assert Message.text(summary) == "Conversation summary:\ncompacted(m0,m1,m2)"
+    assert "Conversation summary:\ncompacted(m0,m1,m2)" <> _saved_to = Message.text(summary)
     assert Enum.map(kept, & &1.id) == ["id-3", "id-4", tool_message.id]
 
     summarized = [Message.user("Conversation summary:\nsummarized(m0,m1,m2,m3)"), List.last(messages), tool_message]
@@ -330,22 +331,204 @@ defmodule BeamWeaver.Agent.SummarizationTest do
     assert %{cutoff_index: 4, summary_message: %Message{}} = pending_compaction(saver, config)
 
     assert {:ok, result} = BeamWeaver.Agent.resume(agent, nil, opts)
-    assert [_first_call, [_system, ^summary, "[m4] note 4" | _rest]] = model_calls()
+    assert [_first_call, [^summary <> _saved_to, "[m4] note 4" | _rest]] = model_calls()
 
-    assert [^summary, "[m4] note 4", "", "Conversation compacted." <> _, "Done."] =
+    assert [^summary <> _saved_to, "[m4] note 4", "", "Conversation compacted." <> _, "Done."] =
              Enum.map(result.messages, &Message.text/1)
 
     assert pending_compaction(saver, config) == nil
 
     assert {:ok, result} = BeamWeaver.Agent.invoke(agent, %{messages: ["[m5] note 5"]}, opts)
 
-    assert [^summary, "[m4] note 4", "", "Conversation compacted." <> _, "Done.", "[m5] note 5", "Still done."] =
+    assert [
+             ^summary <> _saved_to,
+             "[m4] note 4",
+             "",
+             "Conversation compacted." <> _,
+             "Done.",
+             "[m5] note 5",
+             "Still done."
+           ] =
              Enum.map(result.messages, &Message.text/1)
   end
 
   defp pending_compaction(saver, config) do
     %{checkpoint: %{"channel_values" => values}} = BeamWeaver.Checkpoint.get_tuple(saver, config)
     Map.get(values, :_summarization_event)
+  end
+
+  # Fails as a provider does when the request is too long for the model, with
+  # `overflow` as its error, when more than `max_messages` messages follow
+  # the system prompt; otherwise `model` answers. The text of the messages of
+  # each call goes to `parent`.
+  defmodule WindowModel do
+    @behaviour BeamWeaver.Core.ChatModel
+
+    alias BeamWeaver.Core.Error
+    alias BeamWeaver.Core.Message
+    alias BeamWeaver.Models.FakeChatModel
+
+    defstruct [
+      :parent,
+      model: %FakeChatModel{response: "Answer."},
+      max_messages: 4,
+      overflow: {:context_overflow, "prompt is too long"}
+    ]
+
+    @impl true
+    def invoke(%__MODULE__{} = model, messages, opts) do
+      sent = for %Message{role: role} = message <- messages, role != :system, do: Message.text(message)
+      send(model.parent, {:agent_call, sent})
+
+      if length(sent) > model.max_messages do
+        {type, text} = model.overflow
+        {:error, Error.new(type, text, %{status: 400, retryable: false})}
+      else
+        FakeChatModel.invoke(model.model, messages, opts)
+      end
+    end
+  end
+
+  defp agent_calls do
+    receive do
+      {:agent_call, texts} -> [texts | agent_calls()]
+    after
+      0 -> []
+    end
+  end
+
+  defp summary_prompts do
+    receive do
+      {:fake_chat_model_call, [prompt], _opts} -> [Message.text(prompt) | summary_prompts()]
+    after
+      0 -> []
+    end
+  end
+
+  defp notes(range), do: for(i <- range, do: "[m#{i}] note #{i}")
+
+  describe "a model call over the context window" do
+    test "summarizes the history once, short of the trigger, and is tried again" do
+      overflows = [
+        {:context_overflow, "prompt is too long"},
+        # A proxy that passes the overflow on as a bad request, in its own words.
+        {:invalid_request, "litellm.ContextWindowExceededError: litellm.BadRequestError: prompt too long"}
+      ]
+
+      for overflow <- overflows do
+        {:ok, agent} =
+          BeamWeaver.Agent.build(
+            model: %WindowModel{parent: self(), overflow: overflow},
+            compact_conversation: [
+              model: %TaggingSummaryModel{},
+              summarization: [trigger: {:messages, 50}, keep: {:messages, 2}]
+            ]
+          )
+
+        assert {:ok, result} = BeamWeaver.Agent.invoke(agent, %{messages: notes(0..5)})
+
+        summary = "Conversation summary:\nsummarized(m0,m1,m2,m3)"
+        assert [notes(0..5), [summary, "[m4] note 4", "[m5] note 5"]] == agent_calls()
+        assert [summary, "[m4] note 4", "[m5] note 5", "Answer."] == Enum.map(result.messages, &Message.text/1)
+      end
+    end
+
+    test "returns the error of a second overflow, without saving the summary" do
+      saver = BeamWeaver.Checkpoint.ETS.new()
+      opts = [checkpointer: saver, config: %{"configurable" => %{"thread_id" => "overflow-twice"}}]
+
+      {:ok, agent} =
+        BeamWeaver.Agent.build(
+          model: %WindowModel{parent: self(), max_messages: 2},
+          middleware: [
+            {Summarization,
+             model: %FakeChatModel{parent: self(), response: "Earlier notes."},
+             trigger: {:messages, 50},
+             keep: {:messages, 3}}
+          ]
+        )
+
+      assert {:error, %BeamWeaver.Core.Error{type: :context_overflow}} =
+               BeamWeaver.Agent.invoke(agent, %{messages: notes(0..5)}, opts)
+
+      assert [_first, ["Conversation summary:\nEarlier notes." | _kept]] = agent_calls()
+      assert [_one_summary] = summary_prompts()
+
+      assert {:ok, %{values: %{messages: messages}}} = BeamWeaver.Agent.get_state(agent, opts)
+      assert Enum.map(messages, &Message.text/1) == notes(0..5)
+    end
+
+    test "is left alone when automatic summarization is off" do
+      for summarization <- [false, [trigger: nil]] do
+        {:ok, agent} =
+          BeamWeaver.Agent.build(
+            model: %WindowModel{parent: self()},
+            compact_conversation: [model: %TaggingSummaryModel{}, summarization: summarization]
+          )
+
+        assert {:error, %BeamWeaver.Core.Error{type: :context_overflow}} =
+                 BeamWeaver.Agent.invoke(agent, %{messages: notes(0..5)})
+
+        assert [_one_call] = agent_calls()
+      end
+    end
+
+    test "is left to the caller with on_overflow: false" do
+      summarization =
+        Summarization.new(summarizer: fn _messages -> flunk("summarized") end, keep: {:messages, 1}, on_overflow: false)
+
+      thread = [Message.user("Hi, I'm Ada.", id: "m1"), Message.user("How many orders do I have?", id: "m2")]
+      request = %BeamWeaver.Agent.ModelRequest{messages: thread, state: %{messages: thread}}
+      overflow = {:error, BeamWeaver.Core.Error.new(:context_overflow, "prompt is too long")}
+
+      assert Summarization.wrap_model_call(summarization, request, fn _request -> overflow end) == overflow
+    end
+
+    test "summarizes the history of a subagent with summarization too" do
+      researcher_model = %FakeChatModel{
+        responses: [
+          FakeChatModel.tool_call("noop", %{"n" => 1}),
+          FakeChatModel.tool_call("noop", %{"n" => 2}),
+          "Found it."
+        ]
+      }
+
+      researcher = %{
+        name: "researcher",
+        description: "Researches.",
+        model: %WindowModel{parent: self(), model: researcher_model},
+        tools: [Noop],
+        base_middleware: [:deepagents]
+      }
+
+      parent_model = %FakeChatModel{
+        responses: [
+          FakeChatModel.tool_call("task", %{"description" => "Look it up.", "subagent_type" => "researcher"}),
+          "Done."
+        ]
+      }
+
+      {:ok, agent} =
+        BeamWeaver.Agent.build(
+          model: parent_model,
+          subagents: [researcher],
+          compact_conversation: [
+            model: %TaggingSummaryModel{},
+            summarization: [trigger: {:messages, 50}, keep: {:messages, 2}]
+          ]
+        )
+
+      assert {:ok, result} = BeamWeaver.Agent.invoke(agent, %{messages: ["Find the order."]})
+      assert Enum.find(result.messages, &(&1.role == :tool)) |> Message.text() == "Found it."
+
+      assert [
+               _first,
+               _second,
+               [_task, _, "noop 1 done", _, "noop 2 done"],
+               ["Conversation summary:" <> _, _, "noop 2 done"]
+             ] =
+               agent_calls()
+    end
   end
 
   defp xai_summary_model do
@@ -386,7 +569,7 @@ defmodule BeamWeaver.Agent.SummarizationTest do
     assert {:ok, %BeamWeaver.Graph.Command{update: %{_summarization_event: %{summary_message: compacted}}}} =
              BeamWeaver.Core.Tool.invoke(tool, %{state: %{messages: messages(3)}, tool_call_id: "call-1"})
 
-    assert Message.text(compacted) == "Conversation summary:\nThe customer asked about orders."
+    assert "Conversation summary:\nThe customer asked about orders.\n\n" <> _saved_to = Message.text(compacted)
     assert_received {:fake_transport_request, %{json: body}}
     refute Map.has_key?(body, "metadata")
   end

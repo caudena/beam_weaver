@@ -21,8 +21,10 @@ defmodule BeamWeaver.Agent.Subagent.Spec do
     * `base_middleware` - capabilities built from the parent's settings:
       `BeamWeaver.Agent.Middleware.Filesystem`,
       `BeamWeaver.Agent.Middleware.Skills`,
-      `BeamWeaver.Agent.Middleware.TodoList`, or `:deepagents` for all of
-      them.
+      `BeamWeaver.Agent.Middleware.TodoList`, or `:deepagents` for the
+      general-purpose subagent's set: file tools, skills, and the parent's
+      summarization and `compact_conversation` settings, without a task
+      list.
 
   `from_agent_module/2` reads every declaration of an agent module, so the
   subagent runs as the module declares it. Agent modules may name each other,

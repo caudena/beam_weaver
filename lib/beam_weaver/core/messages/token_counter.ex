@@ -50,12 +50,15 @@ defmodule BeamWeaver.Core.Messages.TokenCounter do
       %ContentBlock.PlainText{text: text}, {chars, images} ->
         {chars + String.length(to_string(text || "")), images}
 
-      %ContentBlock.Image{}, {chars, images} ->
+      # A media block counts as a fixed number of tokens, as an image does: the
+      # length of its base64 data says nothing about what the model reads.
+      %media{}, {chars, images}
+      when media in [ContentBlock.Image, ContentBlock.File, ContentBlock.Audio, ContentBlock.Video] ->
         {chars, images + tokens_per_image}
 
       block, {chars, images} when is_map(block) ->
         case Map.get(block, :type) do
-          type when type in [:image, :image_url, :input_image] ->
+          type when type in [:image, :image_url, :input_image, :file, :input_file, :audio, :input_audio, :video] ->
             {chars, images + tokens_per_image}
 
           type when type in [:text, :plain_text, :input_text, :output_text] ->

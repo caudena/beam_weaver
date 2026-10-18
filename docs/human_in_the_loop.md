@@ -175,6 +175,64 @@ MyApp.SupportAgent.resume_review(decisions, opts) |> tool_result.()
 #=> "A manager refunded the order by phone."
 ```
 
+## A new message cancels the review
+
+The customer may write again before anyone has decided. A new message to a
+thread that waits for a review cancels the review: each call of that turn
+that hasn't run gets a failed tool result that says so, and the model answers
+the new message. The result goes right after the model's call, where
+providers expect it, before the new message:
+
+```elixir
+defmodule MyApp.SupportAgent do
+  use BeamWeaver.Agent
+
+  alias BeamWeaver.Models.FakeChatModel
+
+  model "fake:chat",
+    responses: [
+      FakeChatModel.tool_call("issue_refund", %{"order_id" => "A-1001", "amount" => 25}),
+      "Understood. Order A-1001 stays as it is."
+    ]
+
+  system_prompt "You are Acme's support agent."
+  tools [MyApp.Tools.IssueRefund]
+  interrupt_on %{"issue_refund" => true}
+end
+
+opts = pause_ticket.("ticket-49")
+{:ok, result} = MyApp.SupportAgent.invoke(%{messages: ["Actually, I'll keep the order."]}, opts)
+
+for message <- result.messages, do: {message.role, BeamWeaver.Core.Message.text(message)}
+#=> [
+#     {:user, "Please refund $25 for order A-1001."},
+#     {:assistant, ""},
+#     {:tool, "Tool call issue_refund with id call_0_0 was not run: a new message came in while it waited for review."},
+#     {:user, "Actually, I'll keep the order."},
+#     {:assistant, "Understood. Order A-1001 stays as it is."}
+#   ]
+```
+
+The cancelled review is no longer pending. A decision sent afterwards
+answers whatever review is pending then; here none is, so nothing runs and
+the thread stays as it is:
+
+```elixir
+{:ok, after_decision} = MyApp.SupportAgent.resume_review([HITL.decision(:approve)], opts)
+after_decision.messages == result.messages
+#=> true
+```
+
+A message added with `BeamWeaver.Graph.Compiled.update_state/4` while the
+review waits cancels it the same way, also when a decision follows. With
+[one pause per call](#one-pause-per-call), every call that still waits is
+cancelled, and the calls that already ran keep their results. A
+[subagent's](subagents.md#human-review) review is cancelled too: its `task`
+call gets the failed result. A history you pass in yourself, with a call that
+has no result, still fails with
+`:invalid_chat_history`: only a review that a new message interrupts is
+answered for you.
+
 ## Stream a run that pauses
 
 With `stream_events/2` and `live: true`, a pause arrives as a `Debug` event
@@ -640,7 +698,10 @@ end
 ```
 
 Use the ticket id as the thread id, so each conversation keeps its own
-history and its own pending review. Record who decided what in your own
+history and its own pending review. A message that arrives through `ask/2`
+while a review is pending cancels that review (see
+[A new message cancels the review](#a-new-message-cancels-the-review)), and
+the card it showed no longer applies. Record who decided what in your own
 tables if you need an audit trail.
 
 ## Reference

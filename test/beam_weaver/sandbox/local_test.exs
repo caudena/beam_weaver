@@ -132,6 +132,25 @@ defmodule BeamWeaver.Sandbox.LocalTest do
              Sandbox.read(sandbox, path, offset: 0, limit: 0)
   end
 
+  test "text reads slice lines as the other backends do: no extra line for the final newline, \\r\\n read as \\n",
+       %{sandbox: sandbox, root: root} do
+    content = "one\r\ntwo\rthree\n"
+    assert %Sandbox.WriteResult{error: nil} = Sandbox.write(sandbox, "/lines.txt", content)
+    local = BeamWeaver.Filesystem.Local.new(root: root)
+
+    for {opts, expected} <- [
+          {[], "one\ntwo\nthree"},
+          {[offset: 2], "three"},
+          {[offset: 1, limit: 1], "two"},
+          {[offset: -1, limit: 1], "one"}
+        ] do
+      assert %Sandbox.ReadResult{file_data: %{"content" => ^expected}} = Sandbox.read(sandbox, "/lines.txt", opts)
+
+      assert %BeamWeaver.Filesystem.ReadResult{file_data: %{content: ^expected}} =
+               BeamWeaver.Filesystem.read(local, "/lines.txt", opts)
+    end
+  end
+
   test "glob marks directories and supports hidden and character-class patterns", %{
     sandbox: sandbox,
     root: root
@@ -174,6 +193,20 @@ defmodule BeamWeaver.Sandbox.LocalTest do
              Sandbox.grep(sandbox, "needle", path: base, glob: "*.py")
   end
 
+  test "grep leaves out binary files and .git directories, keeping the text matches", %{sandbox: sandbox} do
+    Sandbox.upload_files(sandbox, [
+      {"/repo/notes.md", "TODO: ship it\n"},
+      {"/repo/cache.db", <<0xFF, 0xFE, "TODO", 0x00, 0xC3>>},
+      {"/repo/.git/objects/pack", "TODO in git\n"}
+    ])
+
+    assert %Sandbox.GrepResult{matches: [%{"path" => "/repo/notes.md", "line" => 1}]} =
+             Sandbox.grep(sandbox, "TODO", path: "/repo")
+
+    assert %Sandbox.GrepResult{matches: [%{"path" => "/repo/.git/objects/pack"}]} =
+             Sandbox.grep(sandbox, "TODO", path: "/repo/.git")
+  end
+
   test "binary reads return the whole file, whatever the line window", %{sandbox: sandbox, root: root} do
     path = Path.join(root, "image.bin")
     content = :binary.copy(<<0, 1, 2, 255>>, 1_000)
@@ -191,9 +224,12 @@ defmodule BeamWeaver.Sandbox.LocalTest do
     assert %Sandbox.EditResult{error: "is_directory"} = Sandbox.edit(sandbox, "/a_dir", "a", "b")
   end
 
-  test "an empty old string is not found, even in an empty file", %{sandbox: sandbox} do
+  test "an empty old string is rejected, even in an empty file", %{sandbox: sandbox} do
     assert %Sandbox.WriteResult{error: nil} = Sandbox.write(sandbox, "/empty.txt", "")
-    assert %Sandbox.EditResult{error: "string not found"} = Sandbox.edit(sandbox, "/empty.txt", "", "text")
+
+    assert %Sandbox.EditResult{error: "old_string must not be empty"} =
+             Sandbox.edit(sandbox, "/empty.txt", "", "text")
+
     assert {:ok, ""} = File.read(Path.join(sandbox.root, "empty.txt"))
   end
 
@@ -351,14 +387,16 @@ defmodule BeamWeaver.Sandbox.LocalTest do
     assert byte_size(output) == 500 * 1024
   end
 
-  test "execute caps command output while preserving exit status", %{root: root} do
+  test "execute keeps the start and the end of long output, and the exit status", %{root: root} do
     sandbox = Sandbox.local(root: root, max_output_bytes: 1_024)
 
-    assert %Sandbox.ExecuteResult{exit_code: 0, output: output, truncated: true} =
-             Sandbox.execute(sandbox, "python3 -c \"import sys; sys.stdout.write('x' * 2048)\"")
+    assert %Sandbox.ExecuteResult{exit_code: 3, output: output, truncated: true} =
+             Sandbox.execute(
+               sandbox,
+               "python3 -c \"import sys; sys.stdout.write('a' * 1500 + 'b' * 1500); sys.exit(3)\""
+             )
 
-    assert byte_size(output) == 1_024
-    assert output == :binary.copy("x", 1_024)
+    assert output == :binary.copy("a", 512) <> "\n... [1976 bytes cut] ...\n" <> :binary.copy("b", 512)
   end
 
   test "large upload and download preserve bytes and report expected size", %{sandbox: sandbox} do

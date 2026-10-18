@@ -4,23 +4,31 @@ defmodule BeamWeaver.Agent.Middleware.CompactConversation do
   its conversation on demand.
 
   The tool summarizes older messages with the configured model, keeps the most
-  recent ones, and saves the summarized messages to a file. The summary takes
-  their place before the next model call, unless something rewrote the thread
-  in between, such as a `Summarization` listed before this middleware. The
-  pending compaction is saved with the thread (with a checkpointer), so a run
-  that pauses or stops after the tool call applies it, once, when it continues.
+  recent ones, and saves the summarized messages to a file, whose path the
+  summary ends with. The summary call is retried as automatic summarization's
+  is (see `BeamWeaver.Agent.Middleware.Summarization`), including once with the
+  middle of the old messages cut out when they are over the summary model's
+  context window. The summary takes their place before the next model call,
+  unless something rewrote the thread in between, such as a `Summarization`
+  listed before this middleware. The pending compaction is saved with the
+  thread (with a checkpointer), so a run that pauses or stops after the tool
+  call applies it, once, when it continues.
 
   Options:
 
-    * `:model` - the model that writes the summary. Required.
+    * `:model` - the model that writes the summary, a model value or a
+      `"provider:model"` string. Required without `:summarizer`.
+    * `:summarizer` - a function that writes the summary instead of `:model`:
+      it takes the messages to summarize and returns the summary text, or
+      `{:ok, text}` or `{:error, error}`.
     * `:minimum_messages` - the tool does nothing until the thread has this
       many messages (20 by default; `nil` for no minimum).
     * `:keep_messages` - how many of the newest messages to keep word for word
       (8 by default).
     * `:backend` - the filesystem the summarized messages are saved to.
     * `:conversation_history_prefix` - the directory for those files.
-    * `:system_prompt` - the prompt section that tells the model about the
-      tool; `nil` leaves it out.
+    * `:system_prompt` - a section to add to the system prompt about the
+      tool, none by default: the tool's description says when to use it.
 
   The `compact_conversation` agent declaration adds this middleware and, after
   it, automatic summarization (`BeamWeaver.Agent.Middleware.Summarization`),
@@ -30,8 +38,9 @@ defmodule BeamWeaver.Agent.Middleware.CompactConversation do
   use BeamWeaver.Agent.Middleware
 
   alias BeamWeaver.Agent.Middleware.Helpers
+  alias BeamWeaver.Agent.Middleware.Summarization
   alias BeamWeaver.Agent.ModelRequest
-  alias BeamWeaver.Core.ChatModel
+  alias BeamWeaver.Core.Error
   alias BeamWeaver.Core.ID
   alias BeamWeaver.Core.Message
   alias BeamWeaver.Core.Messages.Utils
@@ -46,27 +55,21 @@ defmodule BeamWeaver.Agent.Middleware.CompactConversation do
 
   import BeamWeaver.Agent.Middleware.Helpers, only: [append_prompt: 2, artifact_prefix: 2]
 
-  @system_prompt """
-  ## Compact conversation Tool `compact_conversation`
-
-  You have access to a `compact_conversation` tool. This tool refreshes your context window to reduce context bloat and costs.
-
-  You should use the tool when:
-  - The user asks to move on to a completely new task for which previous context is likely irrelevant.
-  - You have finished extracting or synthesizing a result and previous working context is no longer needed.
-  """
+  @summary_prompt "Summarize this conversation concisely:\n\n{messages}"
 
   defstruct model: nil,
+            summarizer: nil,
             backend: State.new(),
             state_key: :files,
             event_key: :_summarization_event,
             minimum_messages: 20,
             keep_messages: 8,
             conversation_history_prefix: "/conversation_history",
-            system_prompt: @system_prompt
+            system_prompt: nil
 
   @options [
     :model,
+    :summarizer,
     :backend,
     :state_key,
     :event_key,
@@ -79,9 +82,14 @@ defmodule BeamWeaver.Agent.Middleware.CompactConversation do
   def new(opts \\ []) do
     validate_options!(opts)
     backend = Keyword.get(opts, :backend, State.new())
+    model = opts |> Keyword.get(:model) |> Helpers.chat_model!()
+    summarizer = Keyword.get(opts, :summarizer)
+    # Raises without a model or a summarizer function.
+    summarization(model, summarizer)
 
     %__MODULE__{
-      model: Keyword.fetch!(opts, :model),
+      model: model,
+      summarizer: summarizer,
       backend: backend,
       state_key: Keyword.get(opts, :state_key, :files),
       event_key: Keyword.get(opts, :event_key, :_summarization_event),
@@ -93,7 +101,7 @@ defmodule BeamWeaver.Agent.Middleware.CompactConversation do
           :conversation_history_prefix,
           artifact_prefix(backend, "conversation_history")
         ),
-      system_prompt: Keyword.get(opts, :system_prompt, @system_prompt)
+      system_prompt: Keyword.get(opts, :system_prompt)
     }
   end
 
@@ -123,7 +131,10 @@ defmodule BeamWeaver.Agent.Middleware.CompactConversation do
       Tool.from_function!(
         name: "compact_conversation",
         description:
-          "Compact the conversation by summarizing older messages into a concise summary. This tool takes no arguments.",
+          "Compact the conversation by summarizing older messages into a concise summary, to free up context. " <>
+            "Use it when the user moves on to a new task that the earlier conversation has no bearing on, or once " <>
+            "you have finished extracting or synthesizing a result and no longer need the work that led to it. " <>
+            "This tool takes no arguments.",
         input_schema: %{"type" => "object", "properties" => %{}},
         injected: %{state: :state, tool_call_id: :tool_call_id, tool_runtime: :tool_runtime},
         handler: fn input, _opts -> run_compact(middleware, input) end,
@@ -168,10 +179,10 @@ defmodule BeamWeaver.Agent.Middleware.CompactConversation do
       {to_summarize, _recent} = Enum.split(messages, cutoff)
 
       with {:ok, rendered} <- render_messages(to_summarize),
-           {:ok, summary} <- create_summary(middleware, rendered),
+           {:ok, summary} <- create_summary(middleware, to_summarize),
            {file_path, files_update} <- offload_history(middleware, input, rendered) do
         summary_message =
-          Message.user("Conversation summary:\n" <> summary,
+          Message.user(summary_text(summary, file_path),
             id: ID.uuidv7(),
             metadata: %{conversation_history_path: file_path}
           )
@@ -237,16 +248,28 @@ defmodule BeamWeaver.Agent.Middleware.CompactConversation do
   defp eligible?(%__MODULE__{minimum_messages: minimum}, messages),
     do: length(messages) >= minimum
 
-  defp create_summary(%__MODULE__{} = middleware, rendered) do
-    prompt = Message.user("Summarize this conversation concisely:\n\n" <> rendered)
+  # The summary is written as automatic summarization writes its own, with
+  # the same retries, from all the messages it replaces.
+  defp create_summary(%__MODULE__{} = middleware, messages) do
+    summarization = summarization(middleware.model, middleware.summarizer)
 
-    case ChatModel.invoke(middleware.model, [prompt], trace_metadata: %{source: :compact_conversation}) do
-      {:ok, %Message{} = message} -> {:ok, Message.text(message)}
-      {:error, error} -> {:error, error.message}
+    case Summarization.summary(summarization, messages, source: :compact_conversation) do
+      {:ok, summary} -> {:ok, summary}
+      {:error, %Error{message: message}} -> {:error, message}
     end
   rescue
     exception -> {:error, Exception.message(exception)}
   end
+
+  defp summarization(model, summarizer),
+    do: Summarization.new(model: model, summarizer: summarizer, summary_prompt: @summary_prompt, trigger: nil)
+
+  # The model can read the replaced messages back only if it knows where
+  # they were saved.
+  defp summary_text(summary, nil), do: "Conversation summary:\n" <> summary
+
+  defp summary_text(summary, file_path),
+    do: summary_text(summary, nil) <> "\n\nThe messages this summary replaces were saved in full to #{file_path}."
 
   defp offload_history(%__MODULE__{} = middleware, input, rendered) do
     file_path = middleware.conversation_history_prefix <> "/" <> ID.uuidv7() <> ".md"

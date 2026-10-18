@@ -65,6 +65,7 @@ its result.
 | `keep:` | How much to keep word for word: `{:messages, n}`, `{:tokens, n}` or `{:fraction, f}` | `{:messages, 8}` |
 | `max_input_tokens:` | The context window of the agent's model, which fractions are taken of; required with a fraction | none |
 | `summary_prompt:` | The instruction for the summary; `{messages}` is replaced with the old messages | `"Summarize this conversation:\n\n{messages}"` |
+| `trim_tokens_to_summarize:` | How much of the old messages the summary model reads, in tokens from the newest; `nil` for all of them | `4_000` |
 
 With a real provider:
 
@@ -80,6 +81,10 @@ unless its error says retrying can't help, such as a bad API key (see
 [Models](models.md#errors)). One over the summary model's context window is
 tried once more with the middle of the old messages cut out. When it still
 fails, the run returns the error and the thread stays as it was.
+
+A model call that the provider rejects as too long for the model also
+summarizes the thread, whether `trigger:` was reached or not; see
+[Recover from context overflow errors](#recover-from-context-overflow-errors).
 
 The old messages are gone from the thread for good; only the summary carries
 them on. To keep them out of the prompt but not out of the thread, trim
@@ -152,10 +157,11 @@ result.messages
 ## Move large tool results into files
 
 An agent with a `filesystem` saves any tool result over about 20,000 tokens
-(80,000 characters) to `/large_tool_results/<tool call id>` and gives the
-model a preview of its first and last lines instead. The model reads the rest
-with `read_file`, a page at a time, or searches it with `grep`. Results of the
-file tools themselves are never moved:
+(80,000 characters) to `/large_tool_results/<tool call id>`, or under a
+generated name when the result has no call id, and gives the model a preview
+of its first and last lines instead. The preview says when it leaves lines
+out, and when it cuts lines longer than 1,000 characters. The model reads the
+rest with `read_file`, a page at a time, or searches it with `grep`:
 
 ```elixir
 defmodule MyApp.Tools.OrderHistory do
@@ -204,6 +210,13 @@ message over about 50,000 tokens is saved the same way, under
 limits; see [Built-in Middleware](builtin_middleware.md) and
 [Filesystem](filesystem.md).
 
+Results of the file tools themselves are never moved; `ls`, `glob`, `grep` and
+`read_file` stop at 80,000 characters instead, and a `read_file` page that
+stops short of the end of the file says the offset to read on from. An image
+or a PDF that `read_file` returns reaches the model as a content block, not as
+base64 text, and a model that can't take it gets a short notice in its place;
+see [Models](models.md#images-and-pdfs).
+
 ## Let the agent compact itself
 
 `compact_conversation` gives the agent a `compact_conversation` tool that
@@ -240,19 +253,26 @@ opts = [checkpointer: saver, config: %{"configurable" => %{"thread_id" => "ticke
 {:ok, result} = MyApp.SupportAgent.invoke(%{messages: ["Thanks! Can I return a jacket?"]}, opts)
 
 result.messages |> hd() |> BeamWeaver.Core.Message.text()
-#=> "Conversation summary:\nOrder A-1001 shipped on Monday."
+#=> "Conversation summary:\nOrder A-1001 shipped on Monday.\n\nThe messages this summary replaces were saved in full to /conversation_history/" <> _
 ```
 
 In the second call the model compacted before it answered, so the thread now
 starts with the summary. The tool does nothing until the thread has
 `minimum_messages:` messages (default 20), and it keeps the newest
 `keep_messages:` (default 8). Declare a `filesystem` as well if the agent
-should be able to read the saved history back. `compact_conversation true`
-uses the agent's own model for the summaries.
+should be able to read the saved history back. The summary ends by naming
+that file. The summary call is retried as automatic summarization's is (see
+[above](#summarize-old-messages)), and a `summarizer:` function can write the
+tool's summaries instead of `model:`. `compact_conversation true` uses the
+agent's own model for the summaries. The tool's description tells the model
+when to call it, and nothing about the tool goes into the system prompt
+unless `system_prompt:` gives a section to add.
 
 `compact_conversation` also turns on automatic summarization, the
 `Summarization` middleware [above](#summarize-old-messages), with the same
-`model:`: by default it summarizes at 20 messages and keeps the newest 8. Its
+`model:` and `summarizer:`: by default it summarizes at 20 messages, keeps the
+newest 8, and, like the tool, summarizes all the old messages
+(`trim_tokens_to_summarize: nil`). Its
 settings go in their own list under `summarization:`, and
 `summarization: false` leaves only the tool:
 
@@ -275,6 +295,20 @@ does, and take the fraction of their own model's context window.
 
 ## Recover from context overflow errors
 
+A request can still be too long for the model: one tool result can be huge,
+or the thread can outgrow the context window before it reaches the
+summarization trigger. Two things recover when the provider rejects a model
+call as too long, and each retries the call once.
+
+Automatic summarization, a `Summarization` middleware or the one that
+`compact_conversation` turns on, summarizes the thread as its trigger would,
+whether the trigger was reached or not, and sends the call once more. When
+that call succeeds, the summary is saved as an automatic one is; when it is
+rejected too, the run returns its error and the thread stays as it was.
+`trigger: nil`, and `summarization: false` under `compact_conversation`, turn
+this off with the rest of automatic summarization. Subagents that summarize
+do the same.
+
 `overflow_recovery` is a safety net for the call right after a large batch of
 tool results. When the provider rejects the request as too long, it shrinks
 those trailing tool results and retries once: large results are saved to
@@ -295,6 +329,15 @@ It shrinks a trailing batch only when it is over 5,000 tokens;
 context window, changes that. It acts only after a request has failed, while
 offloading and summarization keep requests small in the first place: use
 overflow recovery in addition to them, not instead.
+
+With both, the tool results are shrunk first, wherever the two are in the
+middleware list, since that loses none of the history: the thread is
+summarized only when the call is still too long with the results shrunk, or
+when there were none to shrink, and that last call keeps them shrunk. A
+rejected call is retried at most twice, with one summary. The agent gives its
+`Summarization` to `OverflowRecovery` (its `summarization:` option), which
+runs both steps, and that `Summarization` leaves overflows to it
+(`on_overflow: false`).
 
 ## Cache the prompt prefix
 

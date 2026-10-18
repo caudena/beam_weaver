@@ -104,6 +104,37 @@ defmodule BeamWeaver.Provider.ResponseDecoderTest do
     end
   end
 
+  # OpenAI-compatible servers word an overflow their own way, and some answer
+  # it with a 413 or 422, so those statuses count when the message says so.
+  test "context overflow errors of OpenAI-compatible servers" do
+    for {status, message} <- [
+          {400, "the request exceeds the available context size, try increasing it"},
+          {400, "litellm.ContextWindowExceededError: litellm.BadRequestError: prompt too long"},
+          {400, "Context limit exceeded for model"},
+          {413, "prompt is too long: 250000 tokens > 200000 maximum"},
+          {422, "This model's maximum context length is 4096 tokens."}
+        ] do
+      response = Response.new(status: status, body: BeamWeaver.JSON.encode!(%{"error" => %{"message" => message}}))
+
+      assert %Error{type: :context_overflow, details: %{status: ^status, retryable: false}} =
+               ResponseDecoder.http_error(response, provider: :openai)
+    end
+  end
+
+  # Text Generation Inference answers with the message in a plain `error`
+  # string and a 422.
+  test "context overflow errors of Text Generation Inference" do
+    for message <- [
+          "Input validation error: `inputs` tokens + `max_new_tokens` must be <= 4096. Given: 5000 `inputs` tokens and 100 `max_new_tokens`",
+          "Input validation error: `inputs` must have less than 4096 tokens. Given: 5000"
+        ] do
+      body = BeamWeaver.JSON.encode!(%{"error" => message, "error_type" => "validation"})
+
+      assert %Error{type: :context_overflow, details: %{status: 422}} =
+               ResponseDecoder.http_error(Response.new(status: 422, body: body), provider: :openai)
+    end
+  end
+
   test "json decodes successful responses and can attach response headers" do
     response =
       Response.new(

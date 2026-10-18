@@ -174,6 +174,7 @@ defmodule BeamWeaver.AgentCapabilitiesTest do
   alias BeamWeaver.Core.ToolRuntime
   alias BeamWeaver.Filesystem
   alias BeamWeaver.Filesystem.Composite
+  alias BeamWeaver.Filesystem.FileDataUtils
   alias BeamWeaver.Filesystem.Local
   alias BeamWeaver.Filesystem.LocalShell
   alias BeamWeaver.Filesystem.Permission
@@ -413,6 +414,75 @@ defmodule BeamWeaver.AgentCapabilitiesTest do
     assert %Filesystem.FileData{content: "ship it"} = files["/work/plan.md"]
   end
 
+  describe "file changes made in one model turn" do
+    test "to different files all apply" do
+      files = %{"/a.md" => "old a\n", "/b.md" => "old b\n"}
+      first = {"edit_file", %{"file_path" => "/a.md", "old_string" => "old a", "new_string" => "new a"}}
+
+      for {second, path, content} <- [
+            {{"edit_file", %{"file_path" => "/b.md", "old_string" => "old b", "new_string" => "new b"}}, "/b.md",
+             "new b\n"},
+            {{"write_file", %{"file_path" => "/c.md", "content" => "new c"}}, "/c.md", "new c"}
+          ] do
+        agent = file_agent([FakeChatModel.tool_calls([first, second]), "Done."])
+
+        assert {:ok, result} = Agent.invoke(agent, %{messages: ["Update the notes."], files: files})
+        assert file_text(result, "/a.md") == "new a\n"
+        assert file_text(result, path) == content
+      end
+    end
+
+    test "to the same file: only the first applies, and the others are refused" do
+      calls = [
+        {"edit_file", %{"file_path" => "/a.md", "old_string" => "old a", "new_string" => "first"}},
+        {"edit_file", %{"file_path" => "/./a.md", "old_string" => "old a", "new_string" => "second"}},
+        {"write_file", %{"file_path" => "/a.md", "content" => "third"}}
+      ]
+
+      agent = file_agent([FakeChatModel.tool_calls(calls), "Done."])
+
+      assert {:ok, result} = Agent.invoke(agent, %{messages: ["Update the notes."], files: %{"/a.md" => "old a\n"}})
+      assert file_text(result, "/a.md") == "first\n"
+
+      assert [edited, refused, refused] =
+               for(%Message{role: :tool} = message <- result.messages, do: Message.text(message))
+
+      assert edited =~ "Edited /a.md"
+      assert refused =~ "parallel file changes to the same path"
+    end
+  end
+
+  test "state backend edits return only the file they change" do
+    files = %{"/a.md" => FileDataUtils.file_data("a"), "/b.md" => FileDataUtils.file_data("b")}
+
+    assert %Filesystem.EditResult{files_update: update} =
+             State.edit(State.new(), "/a.md", "a", "A", state: %{files: files})
+
+    assert Map.keys(update) == ["/a.md"]
+
+    assert %Filesystem.WriteResult{files_update: update} =
+             State.write(State.new(), "/c.md", "c", state: %{files: files})
+
+    assert Map.keys(update) == ["/c.md"]
+  end
+
+  test "tool call normalization gives calls without an id one no other call of the thread has" do
+    reply = Message.assistant("", tool_calls: [%{name: "lookup", args: %{}}, %{name: "lookup", args: %{}}])
+    handler = fn _request -> {:ok, %ModelResponse{messages: [reply]}} end
+    middleware = Middleware.ToolCallNormalization.new()
+
+    ids =
+      for _turn <- 1..2,
+          {:ok, %ModelResponse{messages: [patched]}} =
+            Middleware.ToolCallNormalization.wrap_model_call(middleware, ModelRequest.new([]), handler),
+          call <- patched.tool_calls,
+          do: call.id
+
+    assert length(ids) == 4
+    assert ids == Enum.uniq(ids)
+    assert Enum.all?(ids, &(&1 =~ ~r/^[A-Za-z0-9_-]{1,64}$/))
+  end
+
   test "filesystem permissions deny matching operations before backend access" do
     permission =
       Permission.new(
@@ -494,7 +564,7 @@ defmodule BeamWeaver.AgentCapabilitiesTest do
 
   test "filesystem middleware injects filesystem and execution instructions" do
     middleware = Middleware.Filesystem.new(backend: LocalShell.new(root: tmp_root()))
-    request = ModelRequest.new(system_prompt: "base")
+    request = ModelRequest.new(system_prompt: "base", tools: Middleware.Filesystem.tools(middleware))
 
     assert %ModelRequest{system_message: %Message{content: prompt}} =
              Middleware.Filesystem.wrap_model_call(middleware, request, & &1)
@@ -723,7 +793,7 @@ defmodule BeamWeaver.AgentCapabilitiesTest do
              Middleware.CompactConversation.before_model(middleware, state, %{})
 
     assert {:ok, [summary | recent]} = Overwrite.get(overwrite)
-    assert %Message{role: :user, content: "Conversation summary:\nshort summary"} = summary
+    assert %Message{role: :user, content: "Conversation summary:\nshort summary\n\n" <> _saved_to} = summary
 
     assert [
              %Message{role: :assistant, tool_calls: [%ToolCall{id: "call-1"}]},
@@ -801,15 +871,17 @@ defmodule BeamWeaver.AgentCapabilitiesTest do
     assert content =~ "Nothing to compact"
   end
 
-  test "compact conversation middleware injects the compact tool prompt" do
-    middleware = Middleware.CompactConversation.new(model: %FakeChatModel{response: "ok"})
+  test "compact conversation middleware adds a prompt section only when given one" do
     request = ModelRequest.new(system_prompt: "base")
+    middleware = Middleware.CompactConversation.new(model: %FakeChatModel{response: "ok"})
 
-    assert %ModelRequest{system_message: %Message{content: prompt}} =
+    assert %ModelRequest{system_message: %Message{content: "base"}} =
              Middleware.CompactConversation.wrap_model_call(middleware, request, & &1)
 
-    assert prompt =~ "base"
-    assert prompt =~ "compact_conversation"
+    middleware = %{middleware | system_prompt: "Compact between tasks."}
+
+    assert %ModelRequest{system_message: %Message{content: "base\n\nCompact between tasks."}} =
+             Middleware.CompactConversation.wrap_model_call(middleware, request, & &1)
   end
 
   test "prompt caching middleware marks Anthropic system prompt only" do
@@ -980,13 +1052,13 @@ defmodule BeamWeaver.AgentCapabilitiesTest do
     refute "execute" in tool_names
   end
 
-  test "filesystem backend blocks symlink escapes and lists missing directories as empty" do
+  test "filesystem backend blocks symlink escapes and reports a missing directory" do
     root = tmp_root()
     outside = tmp_root()
     File.write!(Path.join(outside, "secret.txt"), "secret")
     backend = Local.new(root: root)
 
-    assert %Filesystem.LsResult{entries: []} = Filesystem.ls(backend, "/missing")
+    assert %Filesystem.LsResult{error: "file_not_found"} = Filesystem.ls(backend, "/missing")
 
     case File.ln_s(Path.join(outside, "secret.txt"), Path.join(root, "secret-link.txt")) do
       :ok ->
@@ -1258,7 +1330,7 @@ defmodule BeamWeaver.AgentCapabilitiesTest do
     parent = self()
 
     assert_raise ArgumentError, fn ->
-      ProviderProfile.register_provider_profile("#{provider}:bad:shape", ProviderProfile.new())
+      ProviderProfile.register_provider_profile("#{provider}:", ProviderProfile.new())
     end
 
     assert :ok =
@@ -1374,7 +1446,7 @@ defmodule BeamWeaver.AgentCapabilitiesTest do
                args: %{"query" => "abcde\n\n... argument truncated at 5 bytes."}
              },
              %ToolCall{
-               id: "call_1",
+               id: "call_" <> _generated,
                name: "raw",
                args: %{"input" => "not j\n\n... argument truncated at 5 bytes."}
              }
@@ -1453,6 +1525,22 @@ defmodule BeamWeaver.AgentCapabilitiesTest do
     assert prompt =~ "/project/AGENTS.md\n\nProject memory"
     assert :binary.match(prompt, "/user/AGENTS.md") < :binary.match(prompt, "/project/AGENTS.md")
     assert user_pos == 2
+  end
+
+  test "memory middleware leaves an empty memory file out of the prompt" do
+    files = %{"/AGENTS.md" => %Filesystem.FileData{encoding: "utf-8", content: ""}}
+    middleware = Middleware.Memory.new(backend: State.new(), memory: ["/AGENTS.md"])
+
+    assert %{memory_contents: contents} = Middleware.Memory.before_model(middleware, %{files: files}, %{})
+    assert contents == %{}
+
+    request = ModelRequest.new(state: %{memory_contents: contents})
+
+    assert %ModelRequest{system_message: %Message{content: prompt}} =
+             Middleware.Memory.wrap_model_call(middleware, request, & &1)
+
+    assert prompt =~ "(No memory loaded)"
+    refute prompt =~ "empty contents"
   end
 
   test "memory middleware passes runtime to store-backed namespace factories" do
@@ -1642,7 +1730,7 @@ defmodule BeamWeaver.AgentCapabilitiesTest do
     assert_receive {:fake_chat_model_call, _messages, opts}
     tool_names = opts |> Keyword.fetch!(:tools) |> Enum.map(&Tool.name/1)
 
-    assert "write_todos" in tool_names
+    refute "write_todos" in tool_names
     assert "read_file" in tool_names
     assert "write_file" in tool_names
   end
@@ -1676,7 +1764,54 @@ defmodule BeamWeaver.AgentCapabilitiesTest do
 
     assert_receive {:fake_chat_model_call, messages, _opts}
     assert Enum.any?(messages, &match?(%Message{role: :user, content: "parent source context"}, &1))
-    assert Enum.any?(messages, &match?(%Message{role: :user, content: "use the inherited source context"}, &1))
+
+    # The task follows a note that the conversation above is the parent's,
+    # which the subagent continues.
+    assert %Message{role: :user, content: task} = List.last(messages)
+    assert task =~ ~r/^\[The messages above are the conversation so far, which you continue as the subagent/
+    assert String.ends_with?(task, "Your task is below.]\n\nuse the inherited source context")
+  end
+
+  test "the task tool's list marks the subagents that see the parent's conversation" do
+    middleware =
+      Middleware.Subagents.new(
+        model: %FakeChatModel{response: "done"},
+        subagents: [
+          %Spec{name: "worker", description: "Works on the case.", inherit_messages: true},
+          %Spec{name: "researcher", description: "Researches."}
+        ]
+      )
+
+    description = middleware |> Middleware.Subagents.tools() |> hd() |> Map.fetch!(:description)
+
+    assert description =~
+             "- worker: Works on the case. (sees your conversation so far, without tool calls and their results: no need to repeat it in the description)\n"
+
+    assert description =~ "- researcher: Researches.\n"
+    assert description =~ "Each call is stateless, unless the agent's line says it sees your conversation:"
+  end
+
+  test "a subagent that inherits an empty conversation gets the task alone" do
+    middleware =
+      Middleware.Subagents.new(
+        model: %FakeChatModel{response: "done", parent: self()},
+        summarization: false,
+        compact_conversation: false,
+        subagents: [%Spec{name: "worker", description: "Worker", inherit_messages: true, base_middleware: []}]
+      )
+
+    task_tool = middleware |> Middleware.Subagents.tools() |> hd()
+
+    assert {:ok, _command} =
+             Tool.invoke(task_tool, %{
+               "subagent_type" => "worker",
+               "description" => "start fresh",
+               state: %{messages: []},
+               tool_call_id: "call-empty"
+             })
+
+    assert_receive {:fake_chat_model_call, messages, _opts}
+    assert [%Message{role: :user, content: "start fresh"}] = Enum.reject(messages, &(&1.role == :system))
   end
 
   test "inherited subagent messages exclude parent tool protocol messages" do
@@ -1724,10 +1859,10 @@ defmodule BeamWeaver.AgentCapabilitiesTest do
     assert Enum.any?(messages, &match?(%Message{role: :user, content: "parent source context"}, &1))
     assert Enum.any?(messages, &match?(%Message{role: :assistant, content: "stable parent answer"}, &1))
 
-    assert Enum.any?(
-             messages,
-             &match?(%Message{role: :user, content: "use inherited context without parent task protocol"}, &1)
-           )
+    assert messages
+           |> List.last()
+           |> Message.text()
+           |> String.ends_with?("use inherited context without parent task protocol")
 
     refute Enum.any?(messages, &match?(%Message{role: :tool}, &1))
 
@@ -2125,7 +2260,7 @@ defmodule BeamWeaver.AgentCapabilitiesTest do
 
     assert_receive {:research_then_generate_call, [:system, :user], research_tools, false}
     assert "lookup" in research_tools
-    assert "write_todos" in research_tools
+    refute "write_todos" in research_tools
     assert "read_file" in research_tools
 
     assert_receive {:research_then_generate_call, [:system, :user, :assistant, :tool], research_tools, false}
@@ -2366,11 +2501,12 @@ defmodule BeamWeaver.AgentCapabilitiesTest do
     assert %{messages: [%Message{name: "task", content: "child result"}]} = update
   end
 
-  test "subagent middleware injects task guidance and available agent names" do
+  test "subagent middleware injects the given task guidance and available agent names" do
     middleware =
       Middleware.Subagents.new(
         model: %FakeChatModel{response: "child done"},
         summarization: false,
+        system_prompt: "Use the `task` tool for research.",
         subagents: [
           %Spec{
             name: "worker",
@@ -2516,7 +2652,8 @@ defmodule BeamWeaver.AgentCapabilitiesTest do
             name: "research",
             description: "Research",
             graph_id: "graph",
-            url: "http://agent"
+            url: "http://agent",
+            client: BeamWeaver.AgentCapabilitiesTest.AsyncClientFake
           }
         ]
       )
@@ -2525,7 +2662,6 @@ defmodule BeamWeaver.AgentCapabilitiesTest do
     start_tool = Enum.find(tools, &(Tool.name(&1) == "start_async_task"))
     update_tool = Enum.find(tools, &(Tool.name(&1) == "update_async_task"))
     cancel_tool = Enum.find(tools, &(Tool.name(&1) == "cancel_async_task"))
-    check_tool = Enum.find(tools, &(Tool.name(&1) == "check_async_task"))
 
     assert {:ok, %Command{update: %{async_tasks: tasks}}} =
              Tool.invoke(start_tool, %{
@@ -2555,11 +2691,6 @@ defmodule BeamWeaver.AgentCapabilitiesTest do
              })
 
     assert cancelled[task_id].status == "cancelled"
-
-    assert {:ok, encoded} =
-             Tool.invoke(check_tool, %{"task_id" => task_id, state: %{async_tasks: cancelled}})
-
-    assert %{"status" => "cancelled"} = BeamWeaver.JSON.decode!(encoded)
   end
 
   test "async subagent tools can call a minimal Agent Protocol client" do
@@ -2681,16 +2812,18 @@ defmodule BeamWeaver.AgentCapabilitiesTest do
     assert msg.content =~ "remote-run"
   end
 
-  test "async subagent middleware injects guidance and validates duplicate names" do
+  test "async subagent middleware injects the guidance it is given and validates duplicate names" do
     middleware =
       Middleware.AsyncSubagents.new(
         subagents: [
           %AsyncSpec{
             name: "remote",
             description: "Remote worker",
-            graph_id: "graph"
+            graph_id: "graph",
+            url: "http://agent"
           }
-        ]
+        ],
+        system_prompt: "Hand long jobs to a remote worker."
       )
 
     request = ModelRequest.new(system_prompt: "base")
@@ -2699,14 +2832,14 @@ defmodule BeamWeaver.AgentCapabilitiesTest do
              Middleware.AsyncSubagents.wrap_model_call(middleware, request, & &1)
 
     assert prompt =~ "base"
-    assert prompt =~ "Async subagents"
+    assert prompt =~ "Hand long jobs to a remote worker."
     assert prompt =~ "remote: Remote worker"
 
     assert_raise ArgumentError, ~r/duplicate async subagent names/, fn ->
       Middleware.AsyncSubagents.new(
         subagents: [
-          %AsyncSpec{name: "dup", description: "One", graph_id: "one"},
-          %AsyncSpec{name: "dup", description: "Two", graph_id: "two"}
+          %AsyncSpec{name: "dup", description: "One", graph_id: "one", url: "http://one"},
+          %AsyncSpec{name: "dup", description: "Two", graph_id: "two", url: "http://two"}
         ]
       )
     end
@@ -2720,7 +2853,8 @@ defmodule BeamWeaver.AgentCapabilitiesTest do
                  %AsyncSpec{
                    name: "remote",
                    description: "Remote worker",
-                   graph_id: "graph"
+                   graph_id: "graph",
+                   url: "http://agent"
                  }
                ]
              )
@@ -2732,6 +2866,20 @@ defmodule BeamWeaver.AgentCapabilitiesTest do
 
     assert "start_async_task" in tool_names
     assert "list_async_tasks" in tool_names
+  end
+
+  defp file_agent(responses) do
+    {:ok, agent} =
+      Agent.build(model: BeamWeaver.Models.init_chat_model!("fake:chat", responses: responses), filesystem: State.new())
+
+    agent
+  end
+
+  defp file_text(result, path) do
+    case result.files[path] do
+      %Filesystem.FileData{content: content} -> content
+      content -> content
+    end
   end
 
   defp tmp_root do

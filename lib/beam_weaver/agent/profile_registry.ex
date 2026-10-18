@@ -43,8 +43,8 @@ defmodule BeamWeaver.Agent.ProfileRegistry do
     provider = ModelResolver.get_model_provider(model)
 
     cond do
-      provider && identifier && not String.contains?(identifier, ":") ->
-        get.("#{provider}:#{identifier}") || get.(provider)
+      provider && identifier ->
+        get.(model_key(provider, identifier)) || get.(provider)
 
       identifier && String.contains?(identifier, ":") ->
         get.(identifier)
@@ -55,6 +55,14 @@ defmodule BeamWeaver.Agent.ProfileRegistry do
       true ->
         nil
     end
+  end
+
+  # A model's id names its provider only when it starts with it: other colons
+  # are part of the id.
+  defp model_key(provider, identifier) do
+    if String.starts_with?(identifier, provider <> ":"),
+      do: identifier,
+      else: "#{provider}:#{identifier}"
   end
 
   @spec maybe_put_map(map(), atom(), term()) :: map()
@@ -70,11 +78,13 @@ defmodule BeamWeaver.Agent.ProfileRegistry do
   defp exact_profiles(registry_key, builtin_profiles),
     do: Map.merge(builtin_profiles, :persistent_term.get(registry_key, %{}))
 
+  # A key is a provider, or a provider and a model split at the first colon:
+  # a model id, such as a fine-tune's, may have colons of its own.
   defp profile_key(key) when is_atom(key) or is_binary(key) do
     key = to_string(key)
-    parts = String.split(key, ":")
+    parts = String.split(key, ":", parts: 2)
 
-    if key == String.trim(key) and length(parts) <= 2 and "" not in parts,
+    if key == String.trim(key) and "" not in parts,
       do: {:ok, key, parts},
       else: :error
   end

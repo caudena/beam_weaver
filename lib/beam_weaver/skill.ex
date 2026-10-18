@@ -16,6 +16,8 @@ defmodule BeamWeaver.Skill do
 
   alias BeamWeaver.Core.Error
 
+  require Logger
+
   @schema_version 1
   @max_document_bytes 524_288
   @max_frontmatter_bytes 16_384
@@ -95,8 +97,7 @@ defmodule BeamWeaver.Skill do
          :ok <- validate_fields(frontmatter),
          {:ok, name} <- required_string(frontmatter, "name", 64),
          :ok <- validate_name(name, Keyword.get(opts, :expected_name)),
-         {:ok, description} <-
-           required_string(frontmatter, "description", @max_description_bytes),
+         {:ok, description} <- description(frontmatter, name),
          {:ok, license} <-
            optional_string(frontmatter, "license", @max_optional_string_bytes),
          {:ok, compatibility} <-
@@ -281,6 +282,33 @@ defmodule BeamWeaver.Skill do
     end
   end
 
+  # A description over the limit is cut to it, so a skill whose description
+  # runs long still loads: the description is only the text the model picks
+  # skills by.
+  defp description(frontmatter, name) do
+    with {:ok, description} <- required_string(frontmatter, "description", @max_frontmatter_bytes),
+         do: {:ok, cut_description(description, name)}
+  end
+
+  defp cut_description(description, _name) when byte_size(description) <= @max_description_bytes,
+    do: description
+
+  defp cut_description(description, name) do
+    cut = description |> binary_part(0, @max_description_bytes) |> whole_characters() |> String.trim_trailing()
+
+    Logger.warning(
+      "Skill #{inspect(name)} has a #{byte_size(description)}-byte description, over the limit of " <>
+        "#{@max_description_bytes}; only its first #{byte_size(cut)} bytes are kept."
+    )
+
+    cut
+  end
+
+  # Drops the bytes of a character the cut split.
+  defp whole_characters(text) do
+    if String.valid?(text), do: text, else: whole_characters(binary_part(text, 0, byte_size(text) - 1))
+  end
+
   defp required_string(frontmatter, field, maximum) do
     if is_binary(Map.get(frontmatter, field)),
       do: optional_string(frontmatter, field, maximum),
@@ -295,9 +323,16 @@ defmodule BeamWeaver.Skill do
       value when is_binary(value) ->
         value = String.trim(value)
 
-        if byte_size(value) in 1..maximum and String.valid?(value),
-          do: {:ok, value},
-          else: invalid("skill #{field} is invalid", field)
+        cond do
+          byte_size(value) > maximum ->
+            invalid("skill #{field} is #{byte_size(value)} bytes, over the limit of #{maximum}", field)
+
+          value != "" and String.valid?(value) ->
+            {:ok, value}
+
+          true ->
+            invalid("skill #{field} is invalid", field)
+        end
 
       _other ->
         invalid("skill #{field} must be a string", field)
@@ -347,28 +382,39 @@ defmodule BeamWeaver.Skill do
     end
   end
 
+  # A string of names separated by spaces or commas, or a YAML list of names.
   defp allowed_tools(frontmatter) do
     case Map.get(frontmatter, "allowed-tools") do
       nil ->
         {:ok, []}
 
       value when is_binary(value) ->
-        values = String.split(value, ~r/[\s,]+/u, trim: true)
+        value |> String.split(~r/[\s,]+/u, trim: true) |> valid_allowed_tools()
 
-        if length(values) <= @max_allowed_tools and
-             length(values) == MapSet.size(MapSet.new(values)) and
-             Enum.all?(values, fn tool ->
-               byte_size(tool) in 1..@max_allowed_tool_bytes and String.valid?(tool)
-             end) do
-          {:ok, values}
-        else
-          invalid("skill allowed-tools is invalid", "allowed-tools")
-        end
+      values when is_list(values) ->
+        if Enum.all?(values, &is_binary/1),
+          do: values |> Enum.map(&String.trim/1) |> Enum.reject(&(&1 == "")) |> valid_allowed_tools(),
+          else: invalid_allowed_tools_shape()
 
       _other ->
-        invalid("skill allowed-tools must be a string", "allowed-tools")
+        invalid_allowed_tools_shape()
     end
   end
+
+  defp valid_allowed_tools(values) do
+    if length(values) <= @max_allowed_tools and
+         length(values) == MapSet.size(MapSet.new(values)) and
+         Enum.all?(values, fn tool ->
+           byte_size(tool) in 1..@max_allowed_tool_bytes and String.valid?(tool)
+         end) do
+      {:ok, values}
+    else
+      invalid("skill allowed-tools is invalid", "allowed-tools")
+    end
+  end
+
+  defp invalid_allowed_tools_shape,
+    do: invalid("skill allowed-tools must be a string or a list of strings", "allowed-tools")
 
   defp context(frontmatter) do
     case Map.get(frontmatter, "context", "inline") do

@@ -172,7 +172,8 @@ so the URL must be public; when Z.ai can't fetch or read a file, the call
 fails with an `:invalid_request` error (HTTP 400) whose Z.ai code is
 `"1210"`. The other GLM models take text only, and every model rejects audio;
 a block a model can't take returns an `:unsupported_feature` error before the
-request. The
+request. Z.ai's tool messages take only text, so media a tool returns goes in
+a user message right after the tool results. The
 [zai_media.exs](https://github.com/caudena/beam_weaver/blob/master/examples/zai_media.exs)
 example sends an image, a PDF and a video.
 

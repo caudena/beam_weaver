@@ -252,33 +252,98 @@ end
 defmodule BeamWeaver.Sandbox.OutputBuffer do
   @moduledoc false
 
-  defstruct chunks: [], bytes: 0, max_bytes: 0, truncated?: false
+  # Collects a command's output, up to `max_bytes` (or `:unlimited`). Longer
+  # output keeps its first and its last half, with a line between them that
+  # says how many bytes were cut, so the end of a build or test log survives
+  # too. Neither half ends in part of a UTF-8 character. The tail is a list of
+  # chunks, newest first, cut back to the last half only once it holds twice
+  # as much, so output that arrives in many small chunks isn't copied over
+  # and over.
+  defstruct head: [], head_bytes: 0, tail: [], tail_bytes: 0, bytes: 0, max_bytes: :unlimited
 
   def collect(%__MODULE__{} = buffer, chunk) do
     chunk = IO.iodata_to_binary(chunk)
-    chunk_size = byte_size(chunk)
+    buffer = %{buffer | bytes: buffer.bytes + byte_size(chunk)}
 
-    cond do
-      chunk_size == 0 ->
+    case buffer.max_bytes do
+      :unlimited ->
+        %{buffer | head: [chunk | buffer.head]}
+
+      max_bytes ->
+        {head, tail} = split(chunk, div(max_bytes, 2) - buffer.head_bytes)
+
         buffer
-
-      buffer.bytes >= buffer.max_bytes ->
-        %{buffer | truncated?: true}
-
-      buffer.bytes + chunk_size <= buffer.max_bytes ->
-        %{buffer | chunks: [chunk | buffer.chunks], bytes: buffer.bytes + chunk_size}
-
-      true ->
-        remaining = buffer.max_bytes - buffer.bytes
-        prefix = binary_part(chunk, 0, remaining)
-
-        %{buffer | chunks: [prefix | buffer.chunks], bytes: buffer.max_bytes, truncated?: true}
+        |> add_head(head)
+        |> add_tail(tail, max_bytes - div(max_bytes, 2))
     end
   end
 
   def finish(%__MODULE__{} = buffer) do
-    {buffer.chunks |> Enum.reverse() |> IO.iodata_to_binary(), buffer.truncated?}
+    head = buffer.head |> Enum.reverse() |> IO.iodata_to_binary()
+    tail = buffer.tail |> Enum.reverse() |> IO.iodata_to_binary()
+
+    if buffer.max_bytes == :unlimited or buffer.bytes <= buffer.max_bytes do
+      {head <> tail, false}
+    else
+      head = drop_partial_end(head)
+      tail = tail |> last_bytes(buffer.max_bytes - div(buffer.max_bytes, 2)) |> drop_partial_start(0)
+      cut = buffer.bytes - byte_size(head) - byte_size(tail)
+      {head <> "\n... [#{cut} bytes cut] ...\n" <> tail, true}
+    end
   end
+
+  defp split(chunk, room) when byte_size(chunk) <= room, do: {chunk, ""}
+  defp split(chunk, room) when room <= 0, do: {"", chunk}
+  defp split(chunk, room), do: {binary_part(chunk, 0, room), binary_part(chunk, room, byte_size(chunk) - room)}
+
+  defp add_head(buffer, ""), do: buffer
+
+  defp add_head(buffer, chunk),
+    do: %{buffer | head: [chunk | buffer.head], head_bytes: buffer.head_bytes + byte_size(chunk)}
+
+  defp add_tail(buffer, "", _tail_max), do: buffer
+
+  defp add_tail(buffer, chunk, tail_max) do
+    tail = [chunk | buffer.tail]
+    tail_bytes = buffer.tail_bytes + byte_size(chunk)
+
+    if tail_bytes > 2 * tail_max do
+      kept = tail |> Enum.reverse() |> IO.iodata_to_binary() |> last_bytes(tail_max)
+      %{buffer | tail: [kept], tail_bytes: byte_size(kept)}
+    else
+      %{buffer | tail: tail, tail_bytes: tail_bytes}
+    end
+  end
+
+  defp last_bytes(bytes, count) when byte_size(bytes) <= count, do: bytes
+  defp last_bytes(bytes, count), do: binary_part(bytes, byte_size(bytes) - count, count)
+
+  # Drops a character that the cut left unfinished at the end: the last lead
+  # byte within the last four bytes says how long its character is.
+  defp drop_partial_end(bytes) do
+    size = byte_size(bytes)
+
+    Enum.find_value(1..min(size, 4)//1, bytes, fn back ->
+      <<byte>> = binary_part(bytes, size - back, 1)
+
+      cond do
+        byte in 0x80..0xBF -> nil
+        back < utf8_length(byte) -> binary_part(bytes, 0, size - back)
+        true -> bytes
+      end
+    end)
+  end
+
+  # Drops the rest of a character the cut began in the middle of.
+  defp drop_partial_start(<<byte, rest::binary>>, dropped) when byte in 0x80..0xBF and dropped < 3,
+    do: drop_partial_start(rest, dropped + 1)
+
+  defp drop_partial_start(bytes, _dropped), do: bytes
+
+  defp utf8_length(byte) when byte in 0xC0..0xDF, do: 2
+  defp utf8_length(byte) when byte in 0xE0..0xEF, do: 3
+  defp utf8_length(byte) when byte in 0xF0..0xF7, do: 4
+  defp utf8_length(_byte), do: 1
 end
 
 defimpl Collectable, for: BeamWeaver.Sandbox.OutputBuffer do
@@ -306,6 +371,7 @@ defmodule BeamWeaver.Sandbox.Local do
 
   use BeamWeaver.Sandbox
 
+  alias BeamWeaver.Filesystem.Edit
   alias BeamWeaver.Filesystem.FileDataUtils
   alias BeamWeaver.Filesystem.Path, as: FilesystemPath
   alias BeamWeaver.Sandbox
@@ -341,12 +407,10 @@ defmodule BeamWeaver.Sandbox.Local do
   @impl true
   def write(%__MODULE__{} = sandbox, path, content, _opts) do
     with {:ok, resolved} <- resolve(sandbox, path),
-         {:exists, false} <- {:exists, File.exists?(resolved)},
          :ok <- File.mkdir_p(Path.dirname(resolved)),
          :ok <- File.write(resolved, IO.iodata_to_binary(content)) do
       %Sandbox.WriteResult{path: path, error: nil}
     else
-      {:exists, true} -> %Sandbox.WriteResult{path: path, error: "file already exists"}
       {:error, reason} -> %Sandbox.WriteResult{path: path, error: FileDataUtils.error_string(reason)}
     end
   end
@@ -389,32 +453,21 @@ defmodule BeamWeaver.Sandbox.Local do
 
   @impl true
   def edit(%__MODULE__{} = sandbox, path, old, new, opts) do
-    replace_all? = Keyword.get(opts, :replace_all, false)
-
     with {:ok, resolved} <- resolve(sandbox, path),
          {:ok, content} <- File.read(resolved) do
-      occurrences = count_occurrences(content, old)
+      case Edit.replacement(content, old, new, Keyword.get(opts, :replace_all, false)) do
+        {:ok, occurrences, updated} ->
+          :ok = File.write!(resolved, updated)
+          %Sandbox.EditResult{path: path, occurrences: occurrences, error: nil}
 
-      cond do
-        occurrences == 0 ->
+        {:error, :not_found} ->
           %Sandbox.EditResult{path: path, occurrences: 0, error: "string not found"}
 
-        occurrences > 1 and not replace_all? ->
-          %Sandbox.EditResult{path: path, occurrences: occurrences, error: "multiple occurrences"}
+        {:error, "multiple occurrences" = error} ->
+          %Sandbox.EditResult{path: path, occurrences: count_occurrences(content, old), error: error}
 
-        true ->
-          updated =
-            if replace_all?,
-              do: String.replace(content, old, new),
-              else: String.replace(content, old, new, global: false)
-
-          :ok = File.write!(resolved, updated)
-
-          %Sandbox.EditResult{
-            path: path,
-            occurrences: if(replace_all?, do: occurrences, else: 1),
-            error: nil
-          }
+        {:error, error} ->
+          %Sandbox.EditResult{path: path, occurrences: 0, error: FileDataUtils.error_string(error)}
       end
     else
       {:error, reason} ->
@@ -456,7 +509,8 @@ defmodule BeamWeaver.Sandbox.Local do
     base = Keyword.get(opts, :path, "/")
 
     with {:ok, resolved} <- resolve(sandbox, base),
-         {:ok, paths} <- safe_wildcard(resolved, pattern) do
+         :ok <- exists(resolved),
+         {:ok, paths} <- search(resolved, FilesystemPath.search_pattern(pattern)) do
       matches =
         paths
         |> Enum.filter(&safe_resolved_path?(sandbox, &1))
@@ -476,25 +530,45 @@ defmodule BeamWeaver.Sandbox.Local do
   def grep(%__MODULE__{} = sandbox, pattern, opts) do
     base = Keyword.get(opts, :path, "/")
 
-    include =
-      opts |> Keyword.get(:glob, Keyword.get(opts, :include, "**/*")) |> normalize_grep_glob()
+    include = FilesystemPath.grep_pattern(Keyword.get(opts, :glob, Keyword.get(opts, :include))) || "**/*"
 
     with {:ok, resolved} <- resolve(sandbox, base),
-         {:ok, paths} <- safe_wildcard(resolved, include) do
-      matches =
-        paths
-        |> Enum.filter(&safe_resolved_path?(sandbox, &1))
-        |> Enum.reject(&File.dir?/1)
-        |> Enum.flat_map(&grep_file(&1, pattern, resolved, base, host_path?(sandbox, base)))
-
+         :ok <- exists(resolved),
+         {:ok, matches} <- grep_files(sandbox, resolved, base, include, pattern) do
       %Sandbox.GrepResult{matches: matches}
     else
       {:error, reason} -> %Sandbox.GrepResult{error: FileDataUtils.error_string(reason)}
     end
   end
 
-  # `Path.wildcard/2` raises on a malformed pattern such as `{a`; return an
-  # error result instead of crashing the tool call.
+  defp exists(resolved), do: if(File.exists?(resolved), do: :ok, else: {:error, :enoent})
+
+  # Grep searches the file `base` names, or the files below the folder that
+  # `include` picks.
+  defp grep_files(sandbox, resolved, base, include, pattern) do
+    if File.regular?(resolved) do
+      {:ok, grep_file(resolved, pattern, Path.dirname(resolved), Path.dirname(base), host_path?(sandbox, base))}
+    else
+      with {:ok, paths} <- search(resolved, include) do
+        {:ok,
+         paths
+         |> Enum.filter(&safe_resolved_path?(sandbox, &1))
+         |> Enum.reject(&(File.dir?(&1) or git_path?(&1, resolved)))
+         |> Enum.flat_map(&grep_file(&1, pattern, resolved, base, host_path?(sandbox, base)))}
+      end
+    end
+  end
+
+  # The paths under `resolved` that `pattern` matches: the walk finds every
+  # path the pattern can match, and the glob rule keeps the ones it does.
+  defp search(resolved, pattern) do
+    with {:ok, match?} <- FilesystemPath.glob_matcher(pattern),
+         {:ok, paths} <- safe_wildcard(resolved, FilesystemPath.walk_pattern(pattern)),
+         do: {:ok, Enum.filter(paths, &match?.(Path.relative_to(&1, resolved)))}
+  end
+
+  # `Path.wildcard/2` raises on a malformed pattern; return an error result
+  # instead of crashing the tool call.
   defp safe_wildcard(resolved, pattern) do
     {:ok, resolved |> Path.join(pattern) |> Path.wildcard(match_dot: true)}
   rescue
@@ -590,10 +664,7 @@ defmodule BeamWeaver.Sandbox.Local do
     cond do
       bytes == "" ->
         %Sandbox.ReadResult{
-          file_data: %{
-            "content" => "System reminder: File exists but has empty contents",
-            "encoding" => "utf-8"
-          }
+          file_data: %{"content" => FileDataUtils.empty_content_warning(), "encoding" => "utf-8"}
         }
 
       FileDataUtils.binary_content?(bytes) and byte_size(bytes) > sandbox.max_binary_preview ->
@@ -608,56 +679,39 @@ defmodule BeamWeaver.Sandbox.Local do
 
       true ->
         %Sandbox.ReadResult{
-          file_data: %{"content" => slice_lines(bytes, opts), "encoding" => "utf-8"}
+          file_data: %{"content" => FileDataUtils.slice_lines(bytes, opts), "encoding" => "utf-8"}
         }
     end
   end
 
-  defp slice_lines(bytes, opts) do
-    lines = bytes |> String.split("\n") |> Enum.drop(Keyword.get(opts, :offset, 0))
-    lines |> Enum.take(Keyword.get(opts, :limit) || length(lines)) |> Enum.join("\n")
-  end
+  # Grep searches text: version control internals and binary files are left
+  # out, as text search tools leave them out.
+  defp git_path?(path, resolved_base), do: ".git" in Path.split(Path.relative_to(path, resolved_base))
 
   defp grep_file(path, pattern, resolved_base, requested_base, host_path?) do
-    case File.read(path) do
-      {:ok, content} ->
-        content
-        |> String.split("\n")
-        |> Enum.with_index(1)
-        |> Enum.flat_map(fn {line, line_number} ->
-          if String.contains?(line, pattern),
-            do: [
-              %{
-                "path" => grep_path(path, requested_base, resolved_base, host_path?),
-                "relative_path" => Path.relative_to(path, resolved_base),
-                "line" => line_number,
-                "text" => line
-              }
-            ],
-            else: []
-        end)
-
-      _error ->
-        []
+    with {:ok, content} <- File.read(path),
+         false <- FileDataUtils.binary_content?(content) do
+      content
+      |> String.split("\n")
+      |> Enum.with_index(1)
+      |> Enum.flat_map(fn {line, line_number} ->
+        if String.contains?(line, pattern),
+          do: [
+            %{
+              "path" => grep_path(path, requested_base, resolved_base, host_path?),
+              "relative_path" => Path.relative_to(path, resolved_base),
+              "line" => line_number,
+              "text" => line
+            }
+          ],
+          else: []
+      end)
+    else
+      _binary_or_error -> []
     end
   end
 
-  defp normalize_grep_glob(pattern) do
-    cond do
-      pattern in [nil, ""] -> "**/*"
-      String.starts_with?(pattern, "**/") -> pattern
-      String.contains?(pattern, "/") -> pattern
-      true -> Path.join("**", pattern)
-    end
-  end
-
-  defp count_occurrences(_content, ""), do: 0
-
-  defp count_occurrences(content, needle) do
-    content
-    |> :binary.matches(needle)
-    |> length()
-  end
+  defp count_occurrences(content, needle), do: content |> :binary.matches(needle) |> length()
 
   defp host_path?(%__MODULE__{root: root}, path) when is_binary(path) do
     expanded = Path.expand(path)

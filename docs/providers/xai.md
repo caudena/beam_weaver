@@ -23,14 +23,14 @@ Export `XAI_API_KEY`.
 <!-- generated: provider-models xai -->
 | Model | Kind | Input tokens | Output tokens | Tools | Structured output | Reasoning | Inputs |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| `xai:grok-4.20-0309-non-reasoning` | chat | 1,000,000 | 30,000 | yes | yes | — | text, image |
-| `xai:grok-4.20-0309-reasoning` | chat | 1,000,000 | 30,000 | yes | yes | yes | text, image |
-| `xai:grok-4.20-multi-agent-0309` | chat | 1,000,000 | 30,000 | yes | yes | yes | text, image |
-| `xai:grok-4.3` | chat | 1,000,000 | 30,000 | yes | yes | yes | text, image |
-| `xai:grok-4.5` | chat | 500,000 | 30,000 | yes | yes | yes | text, image |
-| `xai:grok-4.6` | chat | 500,000 | — | yes | yes | yes | text, image |
-| `xai:grok-4.7` | chat | 500,000 | — | yes | yes | yes | text, image |
-| `xai:grok-build-0.1` | chat | 256,000 | 30,000 | yes | yes | yes | text, image |
+| `xai:grok-4.20-0309-non-reasoning` | chat | 1,000,000 | 30,000 | yes | yes | — | text, image, PDF |
+| `xai:grok-4.20-0309-reasoning` | chat | 1,000,000 | 30,000 | yes | yes | yes | text, image, PDF |
+| `xai:grok-4.20-multi-agent-0309` | chat | 1,000,000 | 30,000 | yes | yes | yes | text, image, PDF |
+| `xai:grok-4.3` | chat | 1,000,000 | 30,000 | yes | yes | yes | text, image, PDF |
+| `xai:grok-4.5` | chat | 500,000 | 30,000 | yes | yes | yes | text, image, PDF |
+| `xai:grok-4.6` | chat | 500,000 | — | yes | yes | yes | text, image, PDF |
+| `xai:grok-4.7` | chat | 500,000 | — | yes | yes | yes | text, image, PDF |
+| `xai:grok-build-0.1` | chat | 256,000 | 30,000 | yes | yes | yes | text, image, PDF |
 | `xai:v1` | embedding | — | — | — | — | — | text |
 <!-- /generated -->
 
@@ -84,6 +84,10 @@ request metadata, so `metadata:` returns that error too: from
 `init_chat_model/2` for a model created with it, and from a call that sends
 it. Trace data goes in `trace_metadata:` (see
 [Tracing](../tracing.md#name-and-tag-a-run)).
+
+A Chat Completions tool message takes only text, so on Chat Completions an
+image or PDF a tool returns goes in a user message right after the tool
+results. On Responses it stays in the tool result.
 
 ## Reasoning
 

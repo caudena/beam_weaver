@@ -12,6 +12,10 @@ defmodule BeamWeaver.Models.ProfileRegistry.Fake do
         name: "Fake chat model",
         responses_api: true,
         chat_completions_api: true,
+        # A scripted model takes any input.
+        image_inputs: true,
+        image_url_inputs: true,
+        pdf_inputs: true,
         tool_calling: true,
         tool_choice: true,
         parallel_tool_calls: true,

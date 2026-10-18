@@ -81,6 +81,7 @@ defmodule BeamWeaver.Models.ProfileRegistry.XAI do
     text_inputs: true,
     image_inputs: true,
     image_url_inputs: true,
+    pdf_inputs: true,
     text_outputs: true,
     reasoning_output: true,
     tool_calling: true,

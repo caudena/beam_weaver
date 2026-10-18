@@ -55,7 +55,7 @@
     BeamWeaver.Agent.ModelResponse,
     BeamWeaver.Agent.ExtendedModelResponse,
     BeamWeaver.Agent.ToolCallRequest,
-    ~r/^BeamWeaver\.Agent\.Middleware\.(ContextEditing|DynamicPrompt|ModelCallLimit|ModelFallback|ModelRetry|PII|StructuredOutputRetry|ToolCallLimit|ToolCallNormalization|ToolChoice|ToolError|ToolRetry|ToolSelection)/,
+    ~r/^BeamWeaver\.Agent\.Middleware\.(ContextEditing|DynamicPrompt|ModelCallLimit|ModelFallback|ModelRetry|PII|StructuredOutputRetry|ToolCallLimit|ToolCallNormalization|ToolChoice|ToolError|ToolRetry|ToolSelection|UnsupportedMedia)/,
     BeamWeaver.RetryPolicy,
     BeamWeaver.RetryPredicates
   ],

@@ -17,7 +17,9 @@ defmodule BeamWeaver.ZAI.Messages do
   # the other models take text only. A `nil` profile allows media.
   @spec to_chat_messages([Message.t()], Profile.t() | nil) :: {:ok, [map()]} | {:error, Error.t()}
   def to_chat_messages(messages, profile) when is_list(messages) do
-    Result.traverse(messages, &to_chat_message(&1, profile))
+    messages
+    |> ChatCompletionsWire.move_tool_media()
+    |> Result.traverse(&to_chat_message(&1, profile))
   end
 
   def to_chat_messages(_messages, _profile) do

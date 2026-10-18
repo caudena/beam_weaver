@@ -82,7 +82,7 @@ defmodule BeamWeaver.Filesystem.StateStoreTest do
       backend = Composite.new(default: State.new(), routes: %{"/scratch/" => State.new()})
       write = backend |> FilesystemTools.tools() |> Enum.find(&(Tool.name(&1) == "write_file"))
 
-      assert {:ok, %Command{update: %{files: files}}} =
+      assert {:ok, %Command{update: %{files: written}}} =
                Tool.invoke(write, %{
                  "file_path" => "/scratch/draft.md",
                  "content" => "draft",
@@ -90,10 +90,12 @@ defmodule BeamWeaver.Filesystem.StateStoreTest do
                  tool_call_id: "call-write"
                })
 
-      assert %Filesystem.FileData{content: "draft"} = files["/scratch/draft.md"]
-      refute Map.has_key?(files, "/draft.md")
+      assert %Filesystem.FileData{content: "draft"} = written["/scratch/draft.md"]
+      refute Map.has_key?(written, "/draft.md")
 
-      opts = [state: %{files: files}]
+      # The write's update holds only the file it wrote; the files channel
+      # merges it into the state's files.
+      opts = [state: %{files: Map.merge(%{"/notes.md" => "default file"}, written)}]
 
       assert %Filesystem.ReadResult{file_data: %Filesystem.FileData{content: "draft"}} =
                Filesystem.read(backend, "/scratch/draft.md", opts)
@@ -109,7 +111,7 @@ defmodule BeamWeaver.Filesystem.StateStoreTest do
       assert %Filesystem.GrepResult{matches: [%{path: "/scratch/draft.md", line: 1}]} =
                Filesystem.grep(backend, "draft", opts)
 
-      assert %Filesystem.WriteResult{error: "file already exists"} =
+      assert %Filesystem.WriteResult{error: nil, files_update: %{"/scratch/draft.md" => %{content: "again"}}} =
                Filesystem.write(backend, "/scratch/draft.md", "again", opts)
     end
 
@@ -122,12 +124,13 @@ defmodule BeamWeaver.Filesystem.StateStoreTest do
 
       assert Map.keys(files) == ["/a/b/x.md"]
 
-      assert %Filesystem.EditResult{path: "/a/x.md", files_update: files} =
-               backend
-               |> Filesystem.write("/a/x.md", "y", state: %{files: files})
-               |> then(&Filesystem.edit(backend, "/a/x.md", "y", "z", state: %{files: &1.files_update}))
+      assert %Filesystem.WriteResult{path: "/a/x.md", files_update: written} =
+               Filesystem.write(backend, "/a/x.md", "y", state: %{files: files})
 
-      assert Map.keys(files) == ["/a/b/x.md", "/a/x.md"]
+      assert %Filesystem.EditResult{path: "/a/x.md", files_update: edited} =
+               Filesystem.edit(backend, "/a/x.md", "y", "z", state: %{files: Map.merge(files, written)})
+
+      assert Map.keys(edited) == ["/a/x.md"]
     end
 
     test "an agent writing under a State route saves the file at the path it asked for" do
@@ -216,6 +219,39 @@ defmodule BeamWeaver.Filesystem.StateStoreTest do
                Filesystem.write(backend, "/policies/refunds.md", "30 days", state: %{})
 
       assert {:ok, %{value: %{"content" => "30 days"}}} = Memory.get(store, ["policies"], "refunds.md")
+    end
+  end
+
+  test "reading an empty file gives the reminder a file on disk gives" do
+    root = Path.join(System.tmp_dir!(), "beam_weaver_empty_read_#{System.unique_integer([:positive])}")
+    on_exit(fn -> File.rm_rf(root) end)
+    local = Filesystem.Local.new(root: root)
+    File.write!(Path.join(root, "empty.md"), "")
+    assert %Filesystem.ReadResult{file_data: %{content: reminder}} = Filesystem.read(local, "/empty.md")
+    assert reminder =~ "empty contents"
+
+    store = Store.new(store: Memory.ETS.new(), namespace: ["empty"])
+    assert [%{error: nil}] = Filesystem.upload_files(store, [{"/empty.md", ""}])
+
+    assert %Filesystem.ReadResult{file_data: %{content: ^reminder}} =
+             Filesystem.read(State.new(), "/empty.md", state: %{files: %{"/empty.md" => ""}})
+
+    assert %Filesystem.ReadResult{file_data: %{content: ^reminder}} = Filesystem.read(store, "/empty.md")
+  end
+
+  describe "Composite" do
+    test "ls and search at / return the error of a backend that fails" do
+      opts = [path: "/", state: %{files: %{"/scratch/a.md" => "x"}}]
+      failing_default = Composite.new(default: Store.new(), routes: %{"/scratch/" => State.new()})
+
+      assert %Filesystem.LsResult{error: "missing_store"} = Filesystem.ls(failing_default, "/", opts)
+      assert %Filesystem.GlobResult{error: "missing_store"} = Filesystem.glob(failing_default, "**/*", opts)
+      assert %Filesystem.GrepResult{error: "missing_store"} = Filesystem.grep(failing_default, "x", opts)
+
+      failing_route = Composite.new(default: State.new(), routes: %{"/memories/" => Store.new()})
+
+      assert %Filesystem.GlobResult{error: "missing_store"} = Filesystem.glob(failing_route, "**/*", opts)
+      assert %Filesystem.GrepResult{error: "missing_store"} = Filesystem.grep(failing_route, "x", opts)
     end
   end
 

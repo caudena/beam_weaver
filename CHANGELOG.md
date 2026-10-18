@@ -47,6 +47,37 @@ the run fails with the last error, with `attempts` in its details.
 
 #### Middleware
 
+**Summarize on context overflow.** When automatic summarization is on, a
+model call that the provider rejects as too long for the model summarizes the
+thread, whether the trigger was reached or not, and is sent once more. The
+summary is saved as an automatic one is when that call succeeds; a second
+overflow returns the error. With `overflow_recovery` as well, the agent
+gives its `Summarization` to `OverflowRecovery` (the new `summarization:`
+option), which clips the trailing tool results first and summarizes only
+when that isn't enough, wherever the two are in the middleware list; that
+`Summarization` leaves overflows to it (the new `on_overflow: false`).
+Subagents that summarize do the same. See [Context
+Management](docs/context_management.md#recover-from-context-overflow-errors).
+
+**Media a model can't take is left out.** Before each model call, every
+agent and subagent replaces the images and inline PDFs in user and tool
+messages that the called model's built-in profile says it can't take
+(`image_inputs`, `pdf_inputs`) with a short notice, such as `[report.pdf was
+left out: this model doesn't take PDFs.]`. The new `UnsupportedMedia`
+middleware runs after the agent's own, so it checks the model that
+`ModelFallback` picked, and the thread keeps the media. A model with a
+`profile:` of your own, or none, gets the media as it is. See
+[Models](docs/models.md#images-and-pdfs).
+
+**A summarizer function for `compact_conversation`.** The
+`compact_conversation` declaration and `CompactConversation` take
+`summarizer:`, a function of the messages to summarize that returns the
+summary text, `{:ok, text}` or `{:error, error}`, as `Summarization` does.
+It writes the tool's summaries instead of `model:`, and, like the
+declaration's `model:`, the automatic summaries of the agent and its
+subagents unless `summarization:` sets its own. See [Context
+Management](docs/context_management.md#let-the-agent-compact-itself).
+
 **ToolError.** The new `ToolError` middleware decides what the model reads
 when a tool fails, or stops the run instead: its `on_error:` function takes
 the error and the tool call request, and returns the text or `nil`. `tools:`
@@ -157,6 +188,17 @@ Execution](docs/durable_execution.md#what-survives-a-crash) and [Deploys and
 resuming runs](docs/going_to_production.md#deploys-and-resuming-runs).
 
 #### Subagents and deep agents
+
+**Async subagents know who launched them.** Every
+`BeamWeaver.Agent.Protocol.Client` callback gets `parent:` in its opts: the
+parent's `thread_id` and `run_id`, the `tool_call_id` of the async tool call,
+the `subagent_name`, and the parent's `trace_id` and `trace_run_id`. A client
+can use them to run the subagent in its parent's sandbox, nest its trace
+under the parent's or find a parent's tasks.
+`BeamWeaver.Agent.Protocol.ReqClient` sends the `subagent_name` and the
+`parent_thread_id` as `metadata` when it starts or updates a task; trace ids
+stay in the application. See
+[Subagents](docs/subagents.md#async-subagents).
 
 **The general-purpose subagent, configured.** A
 `BeamWeaver.Agent.GeneralPurposeSubagentProfile` in a `subagents` list
@@ -354,6 +396,15 @@ the milliseconds it keeps uploading when the application stops (default
 with telemetry](docs/tracing.md#metrics-with-telemetry).
 
 #### Tools, filesystem and sandboxes
+
+**The exit code of `execute`, for your code.** A command that the `execute`
+tool ran comes back as a tool message whose `metadata.exit_code` is its exit
+code as an integer, so code using the agent needn't parse the
+`[Command failed with exit code 1]` line. The key is left out when the
+backend doesn't know the exit code, and a call whose command timed out or
+couldn't run has no `exit_code`. A failed command is still a successful call
+(`metadata.status` is `"success"`), and a long output moved into a file keeps
+the metadata. See [Sandboxes](docs/sandboxes.md#exit-codes).
 
 **The tool's own error text.** Tool error messages from the tool node carry
 the tool's own error text in `metadata.error_message`, next to the
@@ -716,6 +767,22 @@ embeddings](docs/testing.md#fake-embeddings).
 
 #### Middleware
 
+- `CompactConversation` no longer adds a section about the
+  `compact_conversation` tool to the system prompt by default; the tool's
+  description says when to use it. `system_prompt:` still adds a section of
+  your own.
+- The automatic summarization that the `compact_conversation` declaration
+  turns on, for the agent and its subagents, summarizes all the old messages,
+  as the tool does. Set `summarization: [trim_tokens_to_summarize: n]` to read
+  only the newest `n` tokens of them. Before, it read the newest 4,000 tokens
+  only, so the start of a long thread, often the original task, was left out
+  of the summary. `Summarization` declared on its own keeps 4,000.
+- The summary the `compact_conversation` tool writes ends with a line naming
+  the file the messages it replaces were saved to ("The messages this
+  summary replaces were saved in full to /conversation_history/<id>.md."), so
+  the model can read them back. Before, the path was only in the message's
+  metadata, which the model never sees. Match the start of the summary text
+  instead of all of it.
 - A middleware hook's update is written as returned, through each key's
   reducer, even when a value equals the current one. Return only the keys you
   change: returning the whole state now fails with `:invalid_update`, because
@@ -792,6 +859,29 @@ embeddings](docs/testing.md#fake-embeddings).
 
 #### Subagents and deep agents
 
+- `Subagents` adds nothing to the system prompt by default. Pass
+  `system_prompt:` to `Agent.Middleware.Subagents` for a section of your own;
+  the list of subagents follows your text. The `task` tool's description is a
+  short set of usage notes with the list of subagents, instead of about 6,900
+  characters of worked examples; `task_description:` still replaces it.
+- The general-purpose subagent, and any subagent with
+  `base_middleware: [:deepagents]`, no longer gets a task list
+  (`write_todos`). Add `Agent.Middleware.TodoList` to its `base_middleware:`
+  or its `middleware` to give it one.
+- `AsyncSubagents` adds nothing to the system prompt by default; the tool
+  descriptions carry the guidance. `start_async_task` tells the model to give
+  the user the full task id and stop, and to check on the task only when the
+  user asks, never in a loop. Pass `system_prompt:` to `AsyncSubagents.new/1`,
+  listed in `middleware`, to add a section of your own; the list of async
+  subagents follows your text. Before, every agent with async subagents got an
+  "Async subagents" section with that guidance.
+- An async subagent needs a `client:` or a `url:`: an agent with one that
+  has neither fails to build with `:invalid_agent` (`AsyncSubagents.new/1`
+  raises `ArgumentError`). An `%AsyncSpec{}` written as a struct with a
+  `url:` now gets `Agent.Protocol.ReqClient`, as one built with
+  `AsyncSpec.new/1` does. Before, a subagent without either was accepted:
+  `start_async_task` made up an id and the task stayed `"running"` forever,
+  and a struct with a `url:` never called its server.
 - `subagent MyApp.Module` runs the module as it declares itself: the options
   after `model`, `filesystem`, `skills`, `memory`, its own `subagents`,
   `recursion_limit`, `checkpointer`, `tool_timeout`, `step_timeout`,
@@ -847,6 +937,16 @@ embeddings](docs/testing.md#fake-embeddings).
 
 #### Human review, checkpoints and resuming
 
+- A new message to a thread paused on a tool-call review, its own or a
+  subagent's, no longer leaves the review pending: `invoke/3` and
+  `stream_events/3` answer the waiting calls as not run and return the
+  model's reply instead of `{:interrupted, interrupt}`, and `get_state/2`
+  lists no interrupt for it. A `resume_review/3` sent for that review
+  afterwards answers only a review pending then; on a thread with none it
+  changes nothing and returns the thread's state. A decision sent after
+  `update_state/4` added a message to the thread isn't applied either.
+  Before, the review paused again and a later decision ran the call. Resume a
+  review before sending a new message when its decision should count.
 - An `:edit` decision leaves the model's call in its message and runs the
   reviewer's call in its place, which may name another tool. The result starts
   with a note that a reviewer replaced the call, followed by the call that
@@ -1132,6 +1232,72 @@ embeddings](docs/testing.md#fake-embeddings).
 
 #### Filesystem and sandboxes
 
+- `glob` and grep's `glob:` read a pattern the same way on every backend: a
+  pattern without `/` matches a file's name at any depth below the path
+  searched, so `*.py` finds `/src/app/main.py`; one with `/` matches the path
+  from there (`src/**/*.py`), and a leading `/` anchors it there, so `/*.py`
+  matches only top-level files. `[abc]`, `[a-z]` and `[!a]` or `[^a]` are
+  character classes, `{md,txt}` matches either, `\` makes the next character
+  literal, and an unclosed `[` or `{` is the error `invalid_pattern`. A
+  `Composite` searched from `/` reads a pattern with `/` from `/`, its routes
+  included. See [Glob patterns](docs/filesystem.md#glob-patterns). Before,
+  `*.py` matched only top-level files in `State`, `Store`, `Local`,
+  `LocalShell` and the local sandbox's `glob`, but any depth in its `grep`
+  and in Docker's `glob`, and Docker missed `/top.py` for `**/*.py` and
+  matched nothing for `/*.py`. `State` and `Store` read classes, `{a,b}` and
+  `\` as plain text, and `Local`, `LocalShell` and the local sandbox read
+  `[!a]` as "`!` or `a`", the opposite of what it asks for. Permission rules
+  keep their wildcards (`*`, `?`, `**`, `{a,b}`).
+- `ls`, `glob` and `grep` of a path that doesn't exist return the error
+  `file_not_found` on every backend, and `grep` with a file as its `path`
+  searches that file. Before, `State`, `Store`, `Local`, `LocalShell` and a
+  `Composite` returned an empty list for a missing path (the local sandbox's
+  `ls` and Docker's `glob` and `grep` already gave the error, and Docker's
+  `ls` gave `find`'s message), and `Local`, `LocalShell` and the local
+  sandbox found nothing when `path` was a file.
+- `write/4`, and so the `write_file` tool, replaces a file that exists on
+  every backend, and the tool's description and the filesystem prompt say
+  so. In `State` and `Store` the file keeps its creation time, and text
+  written over a binary file is stored as text. Writing over a directory is
+  still an error. Before, writing to an existing path returned the error
+  `file already exists`.
+- When `execute` output is over its limit, `LocalShell`, the local sandbox
+  and the Docker sandbox keep its first and last halves, with a line between
+  them such as `... [48210 bytes cut] ...`, so the end of a build or test log
+  survives; `truncated` is still set. Before, they kept only the first bytes,
+  and `LocalShell` and Docker added `... Output truncated at N bytes.`.
+- `read_file` returns at most 80,000 characters, cut at a whole line, and a
+  page that stops short of the end of the file ends with the lines it shows
+  and the offset to read on from, such as `[Showing lines 1-2000. The file
+  continues: read again with offset 2000.]`. A single longer line is cut and
+  the note says so. Before, a page looked like the whole file, and one long
+  line could return megabytes even with `limit: 1`.
+- `read_file` returns an image (PNG, JPEG, GIF, WebP) or a PDF as a tool
+  message whose content is a short notice and an image or file content block
+  with its media type; any other binary file is a short notice with its size.
+  Before, every binary file was an `"image"` block with no media type, which
+  an agent turned into base64 JSON text in the tool message.
+- `ls`, `glob` and `grep` results stop at 80,000 characters, after the last
+  whole entry that fits, and end with a note that says how many results they
+  show and asks the model to narrow the search with a more specific path or
+  pattern. Before, these results were never cut or moved into a file, so a
+  search over 20,000 files put 1.5 MB of JSON in the thread.
+- `read_file` rejects a negative `offset` and a `limit` below 1, and an
+  `offset` past the last line of a file returns an error such as
+  `Error: offset 50 is past the end of /notes.md (3 lines)`. Before, negative
+  values passed (`Sandbox.Local` read them from the end of the file), and a
+  page past the end returned `""` like an empty file.
+- `edit` returns the error `"old_string must not be empty"` for an empty
+  `old_string` on every backend. Before, `Filesystem.State`, `Store`, `Local`
+  and `Sandbox.Local` returned `"string not found"`, and `Sandbox.Docker`
+  raised.
+- Reading an empty file on `Filesystem.State` or `Filesystem.Store` returns
+  `System reminder: File exists but has empty contents`, as the disk and
+  sandbox backends do. Before, it returned `""`.
+- `Filesystem.State.write/4` and `edit/5` return only the file they changed
+  in `files_update`, as `%{path => file_data}`, instead of the whole files
+  map. Merge it into the state's files, as the agent's `files` key does; code
+  that used it as the whole map now gets that one file.
 - `Sandbox.Docker` operations on a sandbox that isn't started return
   `error: "container_not_started"` instead of starting a new container for
   each operation and never removing it. Call `Docker.start!/1` and use the
@@ -1496,7 +1662,7 @@ embeddings](docs/testing.md#fake-embeddings).
   in addition to a `ToolSelection` listed in `middleware`, before it.
 - `DynamicPrompt` runs before the agent's other middleware: it replaces the
   declared `system_prompt`, and the sections that `filesystem`, `memory`,
-  `skills`, `subagents` and middleware such as `TodoList` add follow it. The
+  `skills` and middleware such as `TodoList` add follow it. The
   structured-response call after a tool loop uses its prompt too.
 - `StructuredOutputRetry` puts the failed answer in the retry request,
   followed by the error as a tool message for each of its tool calls (tool
@@ -1509,6 +1675,14 @@ embeddings](docs/testing.md#fake-embeddings).
 
 #### Subagents and deep agents
 
+- A subagent with `inherit_messages: true` gets its task after a note that
+  the conversation above is the parent's, which it continues as the subagent
+  asked for help, using the facts that conversation established. The `task`
+  tool's list marks such a subagent as one that sees the conversation, and
+  its notes say a call is stateless unless the list says otherwise. Before,
+  the task came right after the inherited messages, so the subagent could
+  take the parent's request to delegate as one for itself, and the notes told
+  the model that every call starts from the description alone.
 - `interrupt_on: false` (or `%{}`) on a `subagent` line or spec turns review
   off for that subagent; before, it still took the parent's rules. A subagent
   without `interrupt_on` still takes the parent's.
@@ -1630,6 +1804,21 @@ embeddings](docs/testing.md#fake-embeddings).
 
 #### Filesystem and sandboxes
 
+- `grep` adds a note to an empty result when the pattern looks like a regex
+  (`|`, `.*`, `.+` or a backslash escape such as `\.` or `\d`): grep matches
+  literal text, so the model should search for the literal text, once for
+  each alternative. A search whose matches the read permissions all hid gets
+  no note.
+- `grep`'s description says the pattern is literal text, not a regex, and to
+  run one grep for each of several strings. While the model is offered
+  `execute`, it adds that a real regex needs `execute` with `rg`. The
+  Filesystem middleware picks the description for each model call, and a
+  description set with `tool_descriptions` stays. The system prompt's line
+  for `grep` says it searches for literal text too.
+- A `glob` or `grep` denied without a `path` says that it was checked against
+  `/`, and to retry with a `path` inside an allowed directory (for `glob`,
+  with a `pattern` relative to it). Their `path` no longer has a schema
+  default; leaving it out still searches `/`.
 - The `execute` file tool returns the command's output followed by its exit
   code, such as `[Command failed with exit code 1]`, and after a timeout an
   error that says the command was stopped, instead of only the output (and an
@@ -1687,6 +1876,39 @@ embeddings](docs/testing.md#fake-embeddings).
 
 #### Agents
 
+- An agent whose model can't take images or PDFs keeps working once its
+  thread holds them, such as after `read_file` returned one: the model gets a
+  notice in their place. Before, every later call failed with
+  `:unsupported_feature`, a fallback to such a model too.
+
+- Counting a thread's tokens approximately counts a file, audio or video
+  content block as one media item, as it counts an image. Before, a PDF's
+  block was counted by its base64 data, so a 1 MB PDF read as about 330,000
+  tokens and could trigger summarization at once.
+- A tool call that arrives without an id gets a generated one that no other
+  call of the thread has, from `ToolCallNormalization` and for Gemini
+  replies. Before, the ids were `call_<index>` and `call_<tool name>`, so they
+  repeated from one turn to the next: a second large result of the same tool
+  found its file path taken and stayed in the thread.
+- The notice that replaces a large tool result or user message mentions
+  `... [N lines truncated] ...` only when the preview leaves lines out, and
+  says when it cuts lines longer than 1,000 characters. Before, it always
+  mentioned omitted lines and cut long lines without saying so.
+- A large tool result without a tool call id is saved under a generated
+  name, also when `overflow_recovery` clips it. Before, every such result
+  went to `/large_tool_results/unknown`, so the second one found the path
+  taken and stayed in the thread.
+- The filesystem section of the system prompt describes only the tools the
+  model is offered: a tool removed with `exclude_tools` isn't mentioned, the
+  `execute` section needs the `execute` tool, and the large-result guidance
+  names `read_file` and `grep` only when they are there. Before, the prompt
+  listed every file tool and told the model to grep saved results even when
+  `grep` was excluded.
+- Capability and provider profile keys split at the first colon, so a model
+  id with colons of its own, such as an OpenAI fine-tune's `ft:...` id, gets
+  its provider's profile and can have one of its own, from a spec string or
+  a model value. Before, such a model got no profile at all, and registering
+  its key raised `ArgumentError`.
 - Structured output after a tool loop works on Anthropic and Gemini: the extra
   call for the structured answer now ends with a short user instruction
   instead of the model's own reply, which those providers reject. The
@@ -1726,6 +1948,18 @@ embeddings](docs/testing.md#fake-embeddings).
 
 #### Middleware
 
+- A model call whose middleware rewrites the thread, with an `Overwrite` of
+  `messages` in an `ExtendedModelResponse` command, keeps the other messages
+  the call saves: a message the rewrite kept takes its edit, a new message is
+  added, and one the rewrite removed stays removed. Before, the rewrite and
+  the reply were saved and the other messages were lost.
+- The `compact_conversation` tool's summary call is retried as automatic
+  summarization's is: up to 3 times when retrying can help, and once with
+  the middle of the old messages cut out when they are over the summary
+  model's context window. Before, one failed call failed the compaction.
+- An empty memory file, such as an empty `AGENTS.md`, is left out of the
+  system prompt. Before, on the disk and sandbox backends the empty-file
+  reminder was put into the prompt as the file's memory.
 - `ToolRetry`'s `tools:` takes tool modules as well as names; a module used
   to match no tool.
 - `BeamWeaver.Agent.Middleware.ShellTool` works in an agent: its private state
@@ -1806,6 +2040,51 @@ embeddings](docs/testing.md#fake-embeddings).
 
 #### Subagents and deep agents
 
+- The general-purpose subagent works as the parent's twin: it gets the
+  parent's `tool_descriptions`, its capability profile (the prompt suffix,
+  hidden tools, tool descriptions and middleware), and the parent's own
+  `Filesystem`, `Skills`, `Summarization`, `CompactConversation` and
+  `ToolCallNormalization` entries in place of the ones it would build. The
+  parent's other middleware stays the parent's. Before, it saw the default
+  tool descriptions and none of the profile, and built default capabilities
+  however the parent had configured its own.
+- `list_async_tasks` fetches the status of an `interrupted` task, as it does
+  for a running one, so a task a person resumed on the server shows its new
+  status and result. Before, listing took `interrupted` as final and kept
+  showing it until `check_async_task` was called.
+- A subagent's own middleware replaces the `base_middleware:` entry of the
+  same module, as an agent's own entry replaces a capability's, and runs
+  where its own list puts it. Before, its own `Skills` with
+  `base_middleware: [:deepagents]` failed the build with `graph contains
+  duplicate declarations`, and its own `Filesystem` with a base `Filesystem`
+  ran both: two filesystem prompt sections, and one set of file tools hid
+  the other.
+- A `SKILL.md` takes `allowed-tools` as a YAML list, block or flow, as well
+  as a string of names separated by spaces or commas. Before, a list failed
+  with "skill allowed-tools must be a string" and the agent skipped the
+  skill.
+- A `SKILL.md` description over 1,024 bytes is cut to that length, on a
+  character boundary, and the skill loads with a logged warning; another field
+  over its size limit fails with a message that names the field, its size and
+  the limit, such as "skill license is 1100 bytes, over the limit of 1024".
+  Before, the whole skill failed to load, and the message said only "skill
+  description is invalid".
+- Each async subagent tool offers only the arguments it reads, and
+  `start_async_task` requires `subagent_type`; `check_async_task` and
+  `list_async_tasks` tell the model that a status from an earlier call may be
+  out of date. Before, every tool offered all six arguments, including an
+  unused `subagent_name`, and `start_async_task` required only
+  `description`.
+- A subagent no longer overwrites a key the parent keeps private, such as one
+  a middleware declares with `Graph.private_channel/2`: the subagent's value
+  of it stays with the subagent. Before, a subagent that wrote a key of the
+  same name replaced the parent's value when its `task` call returned.
+- The general-purpose subagent leaves out the tools the parent excludes with
+  `exclude_tools`, and its file tools follow the permissions of the parent's
+  own `Agent.Middleware.Filesystem` entry when the parent's `middleware` list
+  has one. Before, it was offered every tool and built its file tools from
+  the declared `filesystem` permissions only, so it could write a file the
+  parent was denied, or call a tool the parent was never offered.
 - The general-purpose subagent and subagents with
   `base_middleware: [:deepagents]` summarize their conversations only when
   the agent does, with its `summarization:` settings and its
@@ -1840,6 +2119,21 @@ embeddings](docs/testing.md#fake-embeddings).
 
 #### Human review, checkpoints and resuming
 
+- A new message sent to a thread whose tool calls wait for review cancels
+  the review. Each call of that turn that hasn't run gets a failed tool
+  result, "Tool call send_email with id call_1 was not run: a new message
+  came in while it waited for review." (`metadata.error_type:
+  :review_cancelled`), right after the assistant message that made the call,
+  and the model answers the new message. A subagent's review that paused the
+  parent is cancelled the same way, through its `task` call, and a subagent
+  that already finished keeps its answer. The thread keeps that order, so the
+  next requests to providers that want a call's result right after the call,
+  such as Anthropic and Chat Completions, succeed. A message added with
+  `update_state/4` while the review waits does the same, and with
+  `interrupt_mode: :per_call` the calls that already ran keep their results.
+  Before, the review paused again, and once it was decided the call's result
+  came after the new message, which those providers rejected on that request
+  and every later one.
 - After `resume_review/3` (or `resume/2`) fails because the resumed node
   returned an error, such as `:invalid_human_decision`, the interrupt stays
   pending: `get_state/1` still lists it, and the next valid resume completes
@@ -2321,6 +2615,56 @@ embeddings](docs/testing.md#fake-embeddings).
 
 #### Filesystem and sandboxes
 
+- A `Composite` with a route below a folder of its default backend, such as
+  `/workspace/memories/`, lists and searches it from every folder above it:
+  `ls /` shows `/workspace`, `ls /workspace` shows `/workspace/memories`, and
+  `glob` and `grep` of `/workspace` search the route too, also when the
+  default backend has nothing else there. Before, `ls /` listed
+  `/workspace/memories` as an entry of `/`, `ls /workspace` left it out, and
+  only a search of `/` searched the route.
+- Docker `grep` finds matches with a glob that has `/`, such as
+  `src/**/*.py`, leaves out binary files and `.git` folders below the path
+  searched, and returns an error for a path that doesn't exist
+  (`file_not_found`), a failed search, or a relative path. Before, a glob with
+  `/` returned `[]`, `.git` was searched, every error came back as `[]`, and a
+  relative path raised.
+- Docker's file operations read the whole output of their commands. Before, a
+  `grep`, `ls` or `read` whose output passed `max_output_bytes` was cut and
+  came back incomplete or as an invalid response.
+- The local sandbox's `read/3` splits lines as the other backends do: a final
+  newline adds no empty line, `\r\n` and `\r` end lines, a negative `offset`
+  reads from the start, and `limit` defaults to 2,000 lines. Before, it
+  returned the final newline, kept `\r`, read a negative `offset` from the
+  end, and returned the whole file when no `limit:` was given.
+- `Filesystem.Conformance.check_symlinks/3` also checks that `write_file`
+  can't replace a denied file through a link.
+- `Filesystem.Composite` returns the error of a backend that fails when it
+  lists `/` or searches `/` with `glob` or `grep`. Before, `ls /` listed only
+  the routes when the default backend failed, and a search of `/` left out a
+  failing backend's matches without an error, so the results looked
+  complete.
+- `grep` on `Filesystem.Local`, `Filesystem.LocalShell` and `Sandbox.Local`
+  leaves out binary files and `.git` folders below the searched directory.
+  Before, one binary file with a matching line made the whole `grep` call
+  fail, losing the matches in text files, and `.git` internals were
+  searched.
+- `Sandbox.Docker.edit/5` changes only the text it replaces, `write/4` of an
+  existing file returns `"file already exists"`, `upload_files/3` replaces
+  existing files, and a bad path in `upload_files/3` or `download_files/3`
+  fails only its own file; a missing file is `"file_not_found"`. Before,
+  `edit/5` rewrote the file from a 2,000-line read, dropping later lines,
+  the final newline and `\r\n` line ends, and reported success without
+  editing a file that isn't UTF-8; writing an existing file returned an
+  empty error, which the model saw as `Error: `; an upload couldn't replace
+  a file; and one bad path raised for the whole batch.
+- Changes to different files in one model turn all apply on
+  `Filesystem.State`, the default filesystem. Before, each `write_file` and
+  `edit_file` call of the turn returned the whole files map and the last one
+  won, so an edit next to another edit or write, or next to a large tool
+  result saved to a file, was undone although its call reported success. A
+  second `write_file` or `edit_file` on a path an earlier call of the same
+  turn changes is now refused with an error, on every backend, so changes to
+  one file can't race.
 - Shell commands that run past their timeout are now stopped together with
   every process they started: their process group gets SIGTERM, then SIGKILL
   one second later. A command is stopped the same way when the process
@@ -2370,6 +2714,28 @@ embeddings](docs/testing.md#fake-embeddings).
 
 #### Models and providers
 
+- Chat Completions requests (OpenAI, xAI, Moonshot, Z.ai and
+  OpenAI-compatible services) send a tool result's images and PDFs in a user
+  message right after the run of tool results, each under a line naming its
+  call, and keep the tool's text in the tool message. Before, OpenAI and xAI
+  dropped the media, and Moonshot and Z.ai sent the blocks' `inspect/1` text,
+  base64 data included, as the tool result.
+- Gemini gets a PDF from a tool result in the function response's parts,
+  with its MIME type, as it gets images. Before, the PDF went into the
+  response JSON as a map holding its base64 data.
+- OpenAI and xAI model profiles, and the `grok-*` family profile, list PDF
+  input, and the fake chat model's profile lists image and PDF input.
+  Before, they had `pdf_inputs: false`, although these APIs take PDFs.
+
+- Context overflow errors from OpenAI-compatible servers are typed
+  `:context_overflow`: llama.cpp's "exceeds the available context size",
+  LiteLLM's `ContextWindowExceededError` and "context limit exceeded", Text
+  Generation Inference's "`inputs` tokens + `max_new_tokens` must be <=" and
+  "`inputs` must have less than", and a 413 or 422 whose message says the
+  prompt is too long. `overflow_recovery` recognizes the same wordings in an
+  error of another type, such as one a proxy passes on. Before, these were
+  `:invalid_request` or `:http_error`, so `overflow_recovery` and the
+  summary's cut-the-middle retry didn't act.
 - An xAI error keeps xAI's message, such as "Incorrect API key provided";
   it used to read "xAI request failed with HTTP 400".
 - Claude Opus 4.8, Fable 5 and Mythos 5 take a system message partway

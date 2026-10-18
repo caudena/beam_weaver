@@ -54,7 +54,7 @@ defmodule BeamWeaver.Agent.Nodes.Model do
   @spec invoke(t(), map(), term()) :: map() | {:error, Error.t()}
   def invoke(%__MODULE__{} = node, state, runtime) when is_map(state) do
     with {:ok, history} <- Prompt.state_messages(state),
-         messages = Prompt.answer_invalid_tool_calls(history),
+         messages = history |> Prompt.place_late_results() |> Prompt.answer_invalid_tool_calls(),
          :ok <- Prompt.validate_chat_history(messages),
          {:ok, system_message} <- Prompt.system_message(node.system_prompt),
          request <- %ModelRequest{
@@ -73,7 +73,8 @@ defmodule BeamWeaver.Agent.Nodes.Model do
       |> forget_tool_set(node)
       |> Response.to_update(
         structured_output: node.structured_output,
-        history: if(messages != history, do: messages)
+        history: if(messages != history, do: messages),
+        thread: history
       )
     end
   end

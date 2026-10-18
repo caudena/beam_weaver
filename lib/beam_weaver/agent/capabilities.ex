@@ -7,6 +7,7 @@ defmodule BeamWeaver.Agent.Capabilities do
   alias BeamWeaver.Agent.Middleware.DynamicPrompt
   alias BeamWeaver.Agent.Middleware.Helpers
   alias BeamWeaver.Agent.Middleware.HumanInTheLoop
+  alias BeamWeaver.Agent.Middleware.OverflowRecovery
   alias BeamWeaver.Agent.Middleware.Summarization
   alias BeamWeaver.Agent.Middleware.ToolSelection
   alias BeamWeaver.Agent.ModelResolver
@@ -33,13 +34,15 @@ defmodule BeamWeaver.Agent.Capabilities do
   def apply(%Spec{} = spec) do
     with {:ok, profile} <- capability_profile(spec),
          {:ok, spec} <- resolve_model(spec),
+         profile = with_extra_middleware(profile),
+         own_middleware = List.wrap(spec.middleware || []),
          spec = apply_profile(spec, profile),
          filesystem = capability_filesystem(spec),
-         {:ok, subagents} <- maybe_subagents(spec, filesystem) do
+         {:ok, subagents} <- maybe_subagents(spec, filesystem, profile, own_middleware) do
       {:ok,
        spec
-       |> add_capability_middleware(filesystem, subagents)
-       |> maybe_default_recursion_limit()}
+       |> maybe_default_recursion_limit()
+       |> add_capability_middleware(filesystem, subagents)}
     end
   rescue
     # The middleware constructors raise for settings they can't take.
@@ -99,6 +102,13 @@ defmodule BeamWeaver.Agent.Capabilities do
      )}
   end
 
+  # A profile's middleware function runs once, so the agent and its
+  # general-purpose subagent get the same middleware from it.
+  defp with_extra_middleware(nil), do: nil
+
+  defp with_extra_middleware(%CapabilityProfile{} = profile),
+    do: %{profile | middleware: CapabilityProfile.materialize_extra_middleware(profile)}
+
   # A profile tunes the agent's own declarations: its prompt text goes after
   # the system prompt, its excluded tools and descriptions join
   # `exclude_tools` and `tool_descriptions` (the agent's own descriptions win),
@@ -141,7 +151,10 @@ defmodule BeamWeaver.Agent.Capabilities do
 
   # Capability middleware goes ahead of the agent's own list. `DynamicPrompt`
   # goes first of all: it replaces the declared `system_prompt`, and every
-  # middleware after it adds its own sections to that prompt.
+  # middleware after it adds its own sections to that prompt. The tool filter
+  # comes next, so the prompt sections see only the tools the model is offered.
+  # `UnsupportedMedia` goes last, innermost, so it checks the model that is
+  # called after a fallback or router has picked it.
   defp add_capability_middleware(%Spec{} = spec, filesystem, subagents) do
     {dynamic_prompts, middleware} =
       spec.middleware
@@ -152,6 +165,7 @@ defmodule BeamWeaver.Agent.Capabilities do
 
     capability_middleware =
       [
+        maybe_tool_filter(spec),
         maybe_skills(spec, filesystem),
         maybe_filesystem(spec, filesystem),
         subagents,
@@ -162,7 +176,6 @@ defmodule BeamWeaver.Agent.Capabilities do
         maybe_overflow_recovery(spec, filesystem),
         maybe_tool_call_normalization(spec),
         maybe_async_subagents(spec),
-        maybe_tool_filter(spec),
         maybe_prompt_caching(spec),
         maybe_memory(spec, filesystem),
         maybe_hitl(spec)
@@ -171,7 +184,39 @@ defmodule BeamWeaver.Agent.Capabilities do
       |> Enum.reject(&is_nil/1)
       |> Enum.reject(&replaced_by_own_entry?(middleware, &1))
 
-    %{spec | middleware: dynamic_prompts ++ capability_middleware ++ middleware}
+    unsupported_media = Enum.reject([Middleware.UnsupportedMedia], &middleware_present?(middleware, &1))
+
+    middleware = summarize_after_clip(dynamic_prompts ++ capability_middleware ++ middleware ++ unsupported_media)
+    %{spec | middleware: middleware}
+  end
+
+  # With both, `OverflowRecovery` summarizes a call that still overflows once
+  # it has clipped the trailing tool results, and `Summarization` leaves
+  # overflows to it, so it doesn't matter which of the two is listed first.
+  defp summarize_after_clip(middleware) do
+    with %OverflowRecovery{retry?: true} = recovery <- built(middleware, OverflowRecovery),
+         %Summarization{} = summarization <- built(middleware, Summarization) do
+      summarization = %{summarization | on_overflow: false}
+      recovery = %{recovery | summarization: summarization}
+
+      Enum.map(middleware, fn entry ->
+        case middleware_key(entry) do
+          OverflowRecovery -> recovery
+          Summarization -> summarization
+          _module -> entry
+        end
+      end)
+    else
+      _either_missing -> middleware
+    end
+  end
+
+  # The list's entry of `module`, built, or `nil`.
+  defp built(middleware, module) do
+    with entry when not is_nil(entry) <- Enum.find(middleware, &(middleware_key(&1) == module)),
+         {:ok, %{__struct__: ^module} = built} <- Middleware.normalize(entry),
+         do: built,
+         else: (_other -> nil)
   end
 
   # An entry of the agent's own list replaces the capability middleware of the
@@ -235,13 +280,29 @@ defmodule BeamWeaver.Agent.Capabilities do
     Middleware.Memory.new(backend: filesystem || State.new(), memory: memory)
   end
 
+  # The filesystem permissions subagents inherit: those of the agent's own
+  # `Filesystem` entry when it has one, which replaces the declared
+  # filesystem, else the declared ones.
+  defp subagent_permissions(%Spec{} = spec) do
+    declared = List.wrap(spec.filesystem_permissions || [])
+
+    Enum.find_value(List.wrap(spec.middleware), declared, fn
+      %Middleware.Filesystem{permissions: permissions} -> permissions
+      {Middleware.Filesystem, opts} when is_list(opts) -> Keyword.get(opts, :permissions, declared)
+      _entry -> nil
+    end)
+  end
+
   # The `task` middleware for the `subagents` declaration, or an
-  # `:invalid_subagent` error naming the subagent that can't be used.
-  defp maybe_subagents(%Spec{subagents: subagents}, _filesystem)
+  # `:invalid_subagent` error naming the subagent that can't be used. The
+  # general-purpose subagent also gets the agent's tool descriptions, its
+  # profile, and its own middleware entries, with the declared filesystem,
+  # to take the ones that replace middleware it would build.
+  defp maybe_subagents(%Spec{subagents: subagents}, _filesystem, _profile, _own_middleware)
        when subagents in [nil, false, []],
        do: {:ok, nil}
 
-  defp maybe_subagents(%Spec{} = spec, filesystem) do
+  defp maybe_subagents(%Spec{} = spec, filesystem, profile, own_middleware) do
     case sync_subagents(spec.subagents) do
       [] ->
         {:ok, nil}
@@ -252,7 +313,11 @@ defmodule BeamWeaver.Agent.Capabilities do
           model: spec.model,
           backend: filesystem || State.new(),
           parent_tools: List.wrap(spec.tools || []),
-          permissions: List.wrap(spec.filesystem_permissions || []),
+          exclude_tools: List.wrap(spec.exclude_tools || []),
+          tool_descriptions: spec.tool_descriptions || %{},
+          capability_profile: profile,
+          parent_middleware: Enum.map(own_middleware, &with_declared_backend(&1, spec, filesystem)),
+          permissions: subagent_permissions(spec),
           skills: List.wrap(spec.skills || []),
           interrupt_on: spec.interrupt_on,
           summarization: subagent_summarization(spec),
@@ -299,20 +364,24 @@ defmodule BeamWeaver.Agent.Capabilities do
   # its `summarization:` option; the other options configure the tool.
   defp maybe_summarization(%Spec{} = spec) do
     if settings = settings(spec.compact_conversation) do
-      model = Keyword.get(settings, :model, spec.model)
-
       case Keyword.get(settings, :summarization, true) do
         false -> nil
-        true -> summarization(spec, model, [])
-        summarization when is_list(summarization) -> summarization(spec, model, summarization)
+        true -> summarization(spec, settings, [])
+        summarization when is_list(summarization) -> summarization(spec, settings, summarization)
       end
     end
   end
 
+  # The declaration's `model:` and `summarizer:` write automatic summaries
+  # too, unless `summarization:` sets its own. A summary covers all the old
+  # messages, as the tool's does, unless `summarization:` trims them.
   # Fractional limits are taken of the agent model's context window.
-  defp summarization(%Spec{} = spec, model, settings) do
-    settings
-    |> Keyword.put_new(:model, model)
+  defp summarization(%Spec{} = spec, declaration, settings) do
+    declaration
+    |> Keyword.take([:summarizer])
+    |> Keyword.merge(settings)
+    |> Keyword.put_new(:model, Keyword.get(declaration, :model, spec.model))
+    |> Keyword.put_new(:trim_tokens_to_summarize, nil)
     |> Keyword.put_new(:max_input_tokens, max_input_tokens(spec.model))
     |> Summarization.new()
   end
@@ -410,10 +479,9 @@ defmodule BeamWeaver.Agent.Capabilities do
   defp subagent_summarization(%Spec{}), do: false
 
   defp with_summary_model(summarization, settings) do
-    case Keyword.fetch(settings, :model) do
-      {:ok, model} -> Keyword.put_new(summarization, :model, model)
-      :error when summarization == [] -> true
-      :error -> summarization
+    case settings |> Keyword.take([:model, :summarizer]) |> Keyword.merge(summarization) do
+      [] -> true
+      summarization -> summarization
     end
   end
 

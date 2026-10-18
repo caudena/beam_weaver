@@ -43,7 +43,9 @@ CapabilityProfile.builtin_keys() |> Enum.filter(&String.starts_with?(&1, "openai
 ```
 
 A key is a provider, such as `"anthropic"`, or a provider and a model; a model
-without its own profile gets its provider's. For other providers
+without its own profile gets its provider's. The provider ends at the first
+colon, so a model id with colons of its own, such as an OpenAI fine-tune's,
+gets its provider's profile too. For other providers
 `get_capability_profile/1` returns `nil`, and `CapabilityProfile.for_model/2`
 an empty profile, so an agent that applies its model's profile works with any
 model.
@@ -127,7 +129,10 @@ CapabilityProfileConfig.to_capability_profile(config).excluded_tools
 
 An agent with `subagents` can also hand work to a built-in `general-purpose`
 subagent: a fresh copy of the agent with the parent's model, tools, file tools
-and skills, a task list of its own, and a generic prompt. A profile's
+and skills, and a generic prompt. It applies the parent's profile as the
+parent does: the profile's `prompt_suffix` goes after its prompt, and the
+profile's hidden tools, tool descriptions and middleware apply to it too. A
+profile's
 `general_purpose_subagent` is a `BeamWeaver.Agent.GeneralPurposeSubagentProfile`
 with a `description` and a `system_prompt` for it, and `enabled: false` to
 leave it out. List it with the subagents to apply it:
@@ -179,8 +184,9 @@ result.messages |> Enum.find(&(&1.role == :tool)) |> BeamWeaver.Core.Message.tex
 ```
 
 Your subagent gets only what its spec gives it: without `model:` or `tools:`
-it uses the parent's, and `base_middleware: [:deepagents]` adds the built-in
-one's task list, file tools and skills. See [Subagents](subagents.md).
+it uses the parent's, `base_middleware: [:deepagents]` adds the built-in
+one's file tools, skills and summarization, and it applies a profile only
+when it declares `capability_profile:`. See [Subagents](subagents.md).
 
 ## Reference
 

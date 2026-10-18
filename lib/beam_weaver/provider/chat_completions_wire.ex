@@ -118,13 +118,62 @@ defmodule BeamWeaver.Provider.ChatCompletionsWire do
        %{
          "role" => "tool",
          "tool_call_id" => call_id,
-         "content" => tool_output(message.content)
+         "content" => tool_content(message)
        }
        |> BeamWeaver.MapShape.put_optional("name", message.name)}
     else
       {:error, BeamWeaver.Core.Error.new(:invalid_tool_message, "tool messages require a tool_call_id or id")}
     end
   end
+
+  defp tool_content(%Message{content: content} = message) when is_list(content) do
+    if Enum.all?(content, &text_block?/1), do: Message.text(message), else: tool_output(content)
+  end
+
+  defp tool_content(%Message{content: content}), do: tool_output(content)
+
+  defp text_block?(block),
+    do: is_binary(block) or is_struct(block, ContentBlock.Text) or is_struct(block, ContentBlock.PlainText)
+
+  @media_blocks [ContentBlock.Image, ContentBlock.File, ContentBlock.Audio, ContentBlock.Video]
+
+  @doc false
+  # A Chat Completions tool message takes text only. The images and files of
+  # a run of tool results go in a user message right after the run, each
+  # under a line naming its call, so every result still follows its call.
+  def move_tool_media(messages) when is_list(messages) do
+    {messages, media} =
+      Enum.flat_map_reduce(messages, [], fn
+        %Message{role: :tool} = message, media ->
+          {message, attached} = split_tool_media(message)
+          {[message], media ++ attached}
+
+        message, media ->
+          {media_message(media) ++ [message], []}
+      end)
+
+    messages ++ media_message(media)
+  end
+
+  defp split_tool_media(%Message{content: content} = message) when is_list(content) do
+    case Enum.split_with(content, &media_block?/1) do
+      {[], _content} ->
+        {message, []}
+
+      {media, rest} ->
+        label = "Attached to the #{message.name || "tool"} result for #{message.tool_call_id || message.id}:"
+        rest = if rest == [], do: [ContentBlock.text("The result is attached in the next message.")], else: rest
+        {%{message | content: rest}, [ContentBlock.text(label) | media]}
+    end
+  end
+
+  defp split_tool_media(message), do: {message, []}
+
+  defp media_block?(%module{}), do: module in @media_blocks
+  defp media_block?(_block), do: false
+
+  defp media_message([]), do: []
+  defp media_message(media), do: [Message.user(media)]
 
   def tool_output(content) when is_binary(content), do: content
 

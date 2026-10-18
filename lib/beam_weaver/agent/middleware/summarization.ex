@@ -13,6 +13,15 @@ defmodule BeamWeaver.Agent.Middleware.Summarization do
   out. When it still fails, the run returns its error and the thread stays
   as it was.
 
+  A model call that fails because the request is over the model's context
+  window summarizes the thread the same way, whether `:trigger` was reached
+  or not, and is sent once more. The summary is saved with the reply when
+  that call succeeds; when it overflows too, the run returns its error. An
+  agent with `BeamWeaver.Agent.Middleware.OverflowRecovery` as well gives it
+  this middleware: it clips the trailing tool results first and summarizes
+  only when the call still overflows, and this middleware leaves overflows
+  to it.
+
   Options:
 
     * `:model` - the model that writes summaries, a model value or a
@@ -35,17 +44,25 @@ defmodule BeamWeaver.Agent.Middleware.Summarization do
       function of a message list.
     * `:trim_tokens_to_summarize` - how many tokens of old messages the summary
       model reads at most (4,000 by default; `nil` for all).
+    * `:on_overflow` - `false` leaves a call over the model's context window
+      to the caller instead of summarizing it (`true` by default).
   """
 
   use BeamWeaver.Agent.Middleware
 
+  alias BeamWeaver.Agent.ExtendedModelResponse
   alias BeamWeaver.Agent.Middleware.Helpers
+  alias BeamWeaver.Agent.Middleware.OverflowRecovery
+  alias BeamWeaver.Agent.ModelRequest
+  alias BeamWeaver.Agent.ModelResponse
+  alias BeamWeaver.Agent.Nodes.Model.Response
   alias BeamWeaver.Agent.State
   alias BeamWeaver.Core.ChatModel
   alias BeamWeaver.Core.Error
   alias BeamWeaver.Core.LanguageModel
   alias BeamWeaver.Core.Message
   alias BeamWeaver.Core.Messages.Utils
+  alias BeamWeaver.Graph.Command
   alias BeamWeaver.Graph.Overwrite
   alias BeamWeaver.RetryPolicy
 
@@ -59,7 +76,8 @@ defmodule BeamWeaver.Agent.Middleware.Summarization do
             max_input_tokens: nil,
             token_counter: :approximate,
             summary_prompt: "Summarize this conversation:\n\n{messages}",
-            trim_tokens_to_summarize: 4_000
+            trim_tokens_to_summarize: 4_000,
+            on_overflow: true
 
   def new(opts \\ []) do
     %__MODULE__{
@@ -71,7 +89,8 @@ defmodule BeamWeaver.Agent.Middleware.Summarization do
       max_input_tokens: Keyword.get(opts, :max_input_tokens),
       token_counter: Keyword.get(opts, :token_counter, :approximate),
       summary_prompt: Keyword.get(opts, :summary_prompt, "Summarize this conversation:\n\n{messages}"),
-      trim_tokens_to_summarize: Keyword.get(opts, :trim_tokens_to_summarize, 4_000)
+      trim_tokens_to_summarize: Keyword.get(opts, :trim_tokens_to_summarize, 4_000),
+      on_overflow: Keyword.get(opts, :on_overflow, true)
     }
     |> validate!()
   end
@@ -89,6 +108,22 @@ defmodule BeamWeaver.Agent.Middleware.Summarization do
     end
   end
 
+  @impl true
+  def wrap_model_call(%__MODULE__{trigger: nil}, %ModelRequest{} = request, handler), do: handler.(request)
+  def wrap_model_call(%__MODULE__{on_overflow: false}, %ModelRequest{} = request, handler), do: handler.(request)
+
+  def wrap_model_call(%__MODULE__{} = middleware, %ModelRequest{} = request, handler) do
+    case handler.(request) do
+      {:error, %Error{} = error} = overflow ->
+        if OverflowRecovery.context_overflow?(error),
+          do: send_summarized(middleware, request, handler) || overflow,
+          else: overflow
+
+      result ->
+        result
+    end
+  end
+
   defp maybe_summarize(%__MODULE__{trigger: nil}, _messages, _token_count), do: %{}
 
   defp maybe_summarize(%__MODULE__{} = middleware, messages, token_count) do
@@ -101,14 +136,67 @@ defmodule BeamWeaver.Agent.Middleware.Summarization do
 
   defp summarize_partition(cutoff, middleware, messages) do
     {old, recent} = Enum.split(messages, cutoff)
-    recent = Utils.strip_reasoning_blocks(recent)
 
-    with {:ok, summary} <- create_summary(middleware, trim_messages_for_summary(middleware, old)) do
-      %{messages: Overwrite.new([Message.user(middleware.summary_prefix <> "\n" <> summary) | recent])}
+    with {:ok, summary} <- summary_message(middleware, old) do
+      %{messages: Overwrite.new([summary | Utils.strip_reasoning_blocks(recent)])}
     end
   end
 
-  defp create_summary(%__MODULE__{summarizer: summarizer}, messages) when is_function(summarizer, 1) do
+  defp summary_message(middleware, old) do
+    with {:ok, summary} <- create_summary(middleware, trim_messages_for_summary(middleware, old), :summarization),
+         do: {:ok, Message.user(middleware.summary_prefix <> "\n" <> summary)}
+  end
+
+  @doc false
+  # Sends `request` with the thread summarized as the trigger would summarize
+  # it, whether it was reached or not, for a call over the model's context
+  # window: the summary takes the place of the messages it covers, and is
+  # saved, before the reply, only when the call succeeds. `nil` when there is
+  # nothing to summarize.
+  @spec send_summarized(struct(), ModelRequest.t(), (ModelRequest.t() -> term())) :: term() | nil
+  def send_summarized(%__MODULE__{} = middleware, %ModelRequest{} = request, handler) do
+    with {:ok, messages} <- Utils.normalize(State.messages(request.state || %{})),
+         cutoff when cutoff > 0 <- retention_cutoff(middleware, messages),
+         {old, recent} = Enum.split(messages, cutoff),
+         {:ok, summary} <- summary_message(middleware, old) do
+      request
+      |> ModelRequest.override(messages: [summary | Utils.strip_reasoning_blocks(unsummarized(request.messages, old))])
+      |> handler.()
+      |> with_summary([summary | Utils.strip_reasoning_blocks(recent)])
+    else
+      {:error, %Error{}} = error -> error
+      _nothing_to_summarize -> nil
+    end
+  end
+
+  # The request's messages without its copies of the summarized ones, which
+  # middleware may have changed for the call, but not their ids.
+  defp unsummarized(request_messages, old) do
+    ids = for %Message{id: id} <- old, not is_nil(id), into: MapSet.new(), do: id
+    Enum.reject(request_messages, &(MapSet.member?(ids, &1.id) or &1 in old))
+  end
+
+  # A call that succeeds saves the summary in place of the thread, with the
+  # reply, and the other messages saved with it, on top.
+  defp with_summary(result, thread) do
+    case Response.normalize_model_result(result) do
+      {:ok, %ModelResponse{} = response} ->
+        %ExtendedModelResponse{model_response: response, command: %Command{update: %{messages: Overwrite.new(thread)}}}
+
+      _error ->
+        result
+    end
+  end
+
+  @doc false
+  # The summary of `messages`, written the way automatic summarization writes
+  # its own, retries included, for the `compact_conversation` tool; `:source`
+  # tags the summary call's trace.
+  @spec summary(struct(), [Message.t()], keyword()) :: {:ok, String.t()} | {:error, Error.t()}
+  def summary(%__MODULE__{} = middleware, messages, opts \\ []),
+    do: create_summary(middleware, messages, Keyword.get(opts, :source, :summarization))
+
+  defp create_summary(%__MODULE__{summarizer: summarizer}, messages, _source) when is_function(summarizer, 1) do
     case summarizer.(messages) do
       {:error, %Error{}} = error ->
         error
@@ -124,14 +212,14 @@ defmodule BeamWeaver.Agent.Middleware.Summarization do
     end
   end
 
-  defp create_summary(%__MODULE__{} = middleware, messages) do
+  defp create_summary(%__MODULE__{} = middleware, messages, source) do
     history = history_text(messages)
 
-    case summarize(middleware, history) do
+    case summarize(middleware, history, source) do
       {:error, %Error{type: :context_overflow}} = error ->
         case cut_middle(middleware, history) do
           nil -> error
-          shorter -> summarize(middleware, shorter)
+          shorter -> summarize(middleware, shorter, source)
         end
 
       result ->
@@ -139,11 +227,11 @@ defmodule BeamWeaver.Agent.Middleware.Summarization do
     end
   end
 
-  defp summarize(middleware, history) do
+  defp summarize(middleware, history, source) do
     prompt = Message.user(String.replace(middleware.summary_prompt, "{messages}", history))
 
     case RetryPolicy.run(@summary_retry, fn ->
-           ChatModel.invoke(middleware.model, [prompt], trace_metadata: %{source: :summarization})
+           ChatModel.invoke(middleware.model, [prompt], trace_metadata: %{source: source})
          end) do
       {:ok, %Message{} = summary} -> {:ok, String.trim(Message.text(summary))}
       error -> error

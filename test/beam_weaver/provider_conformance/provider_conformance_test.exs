@@ -217,7 +217,18 @@ defmodule BeamWeaver.ProviderConformanceTest do
                ChatModel.invoke(model, [Message.user("weather in Paris")], tools: [Fixtures.weather_tool()])
 
       Fixtures.assert_request!(:google, "tool_call")
-      Fixtures.assert_message!(message, Fixtures.load!(:google, "tool_call")["expected"]["message"])
+
+      # The recorded call came without an id, so it has a generated one.
+      assert [%{id: "call_" <> _generated = id}] = message.tool_calls
+
+      expected =
+        update_in(
+          Fixtures.load!(:google, "tool_call")["expected"]["message"],
+          ["tool_calls", Access.at(0)],
+          &Map.merge(&1, %{"id" => id, "call_id" => id, "provider_id" => id})
+        )
+
+      Fixtures.assert_message!(message, expected)
     end
 
     test "provider-native structured output parses JSON response text" do

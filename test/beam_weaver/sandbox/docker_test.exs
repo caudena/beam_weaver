@@ -141,6 +141,161 @@ defmodule BeamWeaver.Sandbox.DockerTest do
     assert is_binary(dangling_error)
   end
 
+  test "write and upload replace an existing file, but not a directory", %{sandbox: sandbox} do
+    assert %Sandbox.WriteResult{error: nil} = Sandbox.write(sandbox, "/notes.md", "first")
+    assert %Sandbox.WriteResult{error: nil} = Sandbox.write(sandbox, "/notes.md", "second")
+    assert [%Sandbox.DownloadResult{content: "second"}] = Sandbox.download_files(sandbox, ["/notes.md"])
+    assert %Sandbox.ExecuteResult{exit_code: 0} = Sandbox.execute(sandbox, "mkdir dir")
+    assert %Sandbox.WriteResult{error: "is_directory"} = Sandbox.write(sandbox, "/dir", "x")
+
+    assert [
+             %Sandbox.UploadResult{path: "/notes.md", error: nil},
+             %Sandbox.UploadResult{path: "/new/a.md", error: nil},
+             %Sandbox.UploadResult{path: "/dir", error: "is_directory"}
+           ] = Sandbox.upload_files(sandbox, [{"/notes.md", "uploaded"}, {"/new/a.md", "a"}, {"/dir", "x"}])
+
+    assert [
+             %Sandbox.DownloadResult{content: "uploaded"},
+             %Sandbox.DownloadResult{content: "a"},
+             %Sandbox.DownloadResult{path: "/missing.md", error: "file_not_found"}
+           ] = Sandbox.download_files(sandbox, ["/notes.md", "/new/a.md", "/missing.md"])
+
+    assert %Sandbox.ExecuteResult{output: ""} = Sandbox.execute(sandbox, "ls dir")
+  end
+
+  test "a bad path fails only its own file in an upload or a download", %{sandbox: sandbox} do
+    assert [
+             %Sandbox.UploadResult{path: "relative.md", error: "sandbox paths must be absolute virtual paths"},
+             %Sandbox.UploadResult{path: "/ok.md", error: nil}
+           ] = Sandbox.upload_files(sandbox, [{"relative.md", "x"}, {"/ok.md", "ok"}])
+
+    assert [
+             %Sandbox.DownloadResult{path: "/../etc/passwd", error: "invalid sandbox path"},
+             %Sandbox.DownloadResult{path: "/ok.md", content: "ok"}
+           ] = Sandbox.download_files(sandbox, ["/../etc/passwd", "/ok.md"])
+  end
+
+  test "edit rejects an empty old_string and changes only the text it replaces", %{sandbox: sandbox} do
+    content = "keep\r\n" <> String.duplicate("line\n", 2_500) <> "old\n"
+    assert [%Sandbox.UploadResult{error: nil}] = Sandbox.upload_files(sandbox, [{"/notes.md", content}])
+
+    assert %Sandbox.EditResult{error: "old_string must not be empty"} = Sandbox.edit(sandbox, "/notes.md", "", "x")
+    assert %Sandbox.EditResult{occurrences: 1, error: nil} = Sandbox.edit(sandbox, "/notes.md", "old", "new")
+    assert %Sandbox.EditResult{error: "file_not_found"} = Sandbox.edit(sandbox, "/missing.md", "old", "new")
+
+    assert [%Sandbox.DownloadResult{content: edited}] = Sandbox.download_files(sandbox, ["/notes.md"])
+    assert edited == String.replace(content, "old", "new")
+  end
+
+  test "glob and grep follow the glob rule, and grep leaves out .git and binary files", %{sandbox: sandbox} do
+    assert %Sandbox.ExecuteResult{exit_code: 0} =
+             Sandbox.execute(
+               sandbox,
+               "mkdir -p src/app docs .git/objects && for f in top.py src/util.py src/app/main.py docs/readme.md " <>
+                 ".git/objects/pack; do echo needle > $f; done && printf 'needle\\0' > src/app/cache.py"
+             )
+
+    fs = BeamWeaver.Filesystem.Sandbox.new(sandbox: sandbox)
+
+    for {path, pattern, expected} <- [
+          {"/", "*.py", ["/src/app/main.py", "/src/util.py", "/top.py"]},
+          {"/", "**/*.py", ["/src/app/main.py", "/src/util.py", "/top.py"]},
+          {"/", "/*.py", ["/top.py"]},
+          {"/", "src/*.py", ["/src/util.py"]},
+          {"/", "/src/*.py", ["/src/util.py"]},
+          {"/", "src/**/*.py", ["/src/app/main.py", "/src/util.py"]},
+          {"/", "{top,util}.py", ["/src/util.py", "/top.py"]},
+          {"/src", "*.py", ["/src/app/main.py", "/src/util.py"]},
+          {"/src", "/*.py", ["/src/util.py"]},
+          {"/src", "app/m?in.py", ["/src/app/main.py"]}
+        ] do
+      assert %BeamWeaver.Filesystem.GlobResult{error: nil, matches: matches} =
+               BeamWeaver.Filesystem.glob(fs, pattern, path: path)
+
+      found = matches |> Enum.map(& &1.path) |> Enum.reject(&(&1 == "/src/app/cache.py")) |> Enum.sort()
+      assert found == expected, "glob #{inspect(pattern)} in #{path}: #{inspect(found)}"
+
+      assert %BeamWeaver.Filesystem.GrepResult{error: nil, matches: matches} =
+               BeamWeaver.Filesystem.grep(fs, "needle", path: path, glob: pattern)
+
+      found = matches |> Enum.map(& &1.path) |> Enum.sort()
+      assert found == expected, "grep with glob #{inspect(pattern)} in #{path}: #{inspect(found)}"
+    end
+
+    assert %BeamWeaver.Filesystem.GrepResult{error: nil, matches: matches} =
+             BeamWeaver.Filesystem.grep(fs, "needle", path: "/")
+
+    assert matches |> Enum.map(&{&1.path, &1.line, &1.text}) |> Enum.sort() == [
+             {"/docs/readme.md", 1, "needle"},
+             {"/src/app/main.py", 1, "needle"},
+             {"/src/util.py", 1, "needle"},
+             {"/top.py", 1, "needle"}
+           ]
+
+    assert %BeamWeaver.Filesystem.GrepResult{error: nil, matches: [%{path: "/.git/objects/pack", line: 1}]} =
+             BeamWeaver.Filesystem.grep(fs, "needle", path: "/.git")
+
+    assert %BeamWeaver.Filesystem.GrepResult{error: nil, matches: [%{path: "/top.py", line: 1}]} =
+             BeamWeaver.Filesystem.grep(fs, "needle", path: "/top.py")
+  end
+
+  test "glob and grep read classes, alternatives and escapes as the other backends do", %{sandbox: sandbox} do
+    assert %Sandbox.ExecuteResult{exit_code: 0} =
+             Sandbox.execute(
+               sandbox,
+               "mkdir -p src && for f in a.py b.py c.py x.ts y.tsx 'lit[ab].py'; do echo needle > \"src/$f\"; done"
+             )
+
+    fs = BeamWeaver.Filesystem.Sandbox.new(sandbox: sandbox)
+
+    for {pattern, expected} <- [
+          {"*.{ts,tsx}", ["/src/x.ts", "/src/y.tsx"]},
+          {"[!a].py", ["/src/b.py", "/src/c.py"]},
+          {"lit\\[ab\\].py", ["/src/lit[ab].py"]},
+          {"a\\*.py", []}
+        ] do
+      assert %BeamWeaver.Filesystem.GlobResult{error: nil, matches: matches} =
+               BeamWeaver.Filesystem.glob(fs, pattern, path: "/src")
+
+      assert matches |> Enum.map(& &1.path) |> Enum.sort() == expected, "glob #{inspect(pattern)}"
+    end
+
+    assert %BeamWeaver.Filesystem.GlobResult{error: "invalid_pattern"} =
+             BeamWeaver.Filesystem.glob(fs, "[ab.py", path: "/src")
+  end
+
+  test "a glob, grep or ls of a path that doesn't exist is an error, not an empty result", %{sandbox: sandbox} do
+    assert %Sandbox.GlobResult{matches: nil, error: "file_not_found"} =
+             Sandbox.glob(sandbox, "*.py", path: "/does/not/exist")
+
+    assert %Sandbox.GrepResult{matches: nil, error: "file_not_found"} =
+             Sandbox.grep(sandbox, "needle", path: "/does/not/exist")
+
+    assert %Sandbox.ListResult{entries: nil, error: "file_not_found"} = Sandbox.ls(sandbox, "/does/not/exist")
+
+    assert %Sandbox.GrepResult{matches: [], error: nil} = Sandbox.grep(sandbox, "needle", path: "/")
+  end
+
+  test "execute keeps the start and the end of long output", %{docker_image: docker_image} do
+    sandbox = Docker.new(image: docker_image, max_output_bytes: 1_024) |> Docker.start!()
+    on_exit(fn -> Docker.stop(sandbox) end)
+
+    assert %Sandbox.ExecuteResult{exit_code: 3, output: output, truncated: true} =
+             Sandbox.execute(
+               sandbox,
+               "head -c 1500 /dev/zero | tr '\\0' a; head -c 1500 /dev/zero | tr '\\0' b; exit 3"
+             )
+
+    assert output == :binary.copy("a", 512) <> "\n... [1976 bytes cut] ...\n" <> :binary.copy("b", 512)
+
+    # The file operations read their commands' whole output.
+    assert [%Sandbox.UploadResult{error: nil}] =
+             Sandbox.upload_files(sandbox, [{"/big.txt", String.duplicate("needle\n", 500)}])
+
+    assert %Sandbox.GrepResult{error: nil, matches: matches} = Sandbox.grep(sandbox, "needle", path: "/")
+    assert length(matches) == 500
+  end
+
   test "execute timeouts stop the command and its background jobs inside the container",
        %{sandbox: sandbox} do
     command = "sleep 60 & echo $! > /tmp/job.pid; echo $$ > /tmp/shell.pid; wait"

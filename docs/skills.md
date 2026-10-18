@@ -73,9 +73,9 @@ Markdown:
 | Field | Meaning |
 | --- | --- |
 | `name` | Required. Lowercase letters, digits and hyphens, at most 64 characters, the same as the folder's name. |
-| `description` | Required, at most 1,024 bytes. What the skill is for and when to use it: the model picks skills by this text, so make it specific. |
+| `description` | Required. What the skill is for and when to use it: the model picks skills by this text, so make it specific. A description over 1,024 bytes is cut to that length, with a logged warning. |
 | `license`, `compatibility` | Optional. Shown to the model next to the description. |
-| `allowed-tools` | Optional. Tool names, separated by spaces, shown to the model as advice. It doesn't limit which tools the agent may call. |
+| `allowed-tools` | Optional. Tool names, separated by spaces or commas, or a YAML list of them, shown to the model as advice. It doesn't limit which tools the agent may call. |
 | `metadata` | Optional. A map of strings for your own use. |
 
 `argument-hint`, `disable-model-invocation`, `user-invocable` and `context`

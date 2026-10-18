@@ -54,6 +54,11 @@ defmodule BeamWeaver.Filesystem.FileDataUtils do
 
   def normalize_file_data(_other), do: nil
 
+  def empty_content_warning, do: @empty_content_warning
+
+  def read_content(%FileData{content: content, encoding: "utf-8"}, _opts) when content in [nil, ""],
+    do: {:ok, @empty_content_warning}
+
   def read_content(%FileData{content: content, encoding: "utf-8"}, opts), do: {:ok, slice_lines(content, opts)}
 
   def read_content(%FileData{content: content, encoding: "base64"}, _opts),
@@ -81,7 +86,10 @@ defmodule BeamWeaver.Filesystem.FileDataUtils do
     end
   end
 
-  defp slice_lines(content, opts) do
+  # `limit` lines of `content` after skipping `offset` lines, as every
+  # backend reads text: `\r\n` and `\r` end lines as `\n` does, and a final
+  # newline ends the last line rather than starting another.
+  def slice_lines(content, opts) do
     offset = opts |> Keyword.get(:offset, 0) |> int_or(0) |> max(0)
     limit = opts |> Keyword.get(:limit, 2_000) |> int_or(2_000)
 

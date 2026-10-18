@@ -4,11 +4,12 @@ defmodule BeamWeaver.Filesystem.State do
 
   Files live in the run's state under `:state_key` (default `:files`), keyed by
   their path. The backend never changes the state itself: `write/4` and
-  `edit/5` return the updated files in their result's `files_update`, which
-  the file tools apply to the state. So `upload_files/3` can't store anything
-  and returns an error for every file: pass files in the agent's input as
-  `files: %{"/notes.md" => "..."}`, or set them with
-  `BeamWeaver.Graph.Compiled.update_state/4`.
+  `edit/5` return the file they changed in their result's `files_update`, as
+  `%{path => file_data}`, which the file tools merge into the state's files,
+  so changes to different files in one step all apply. `upload_files/3`
+  can't store anything for the same reason and returns an error for every
+  file: pass files in the agent's input as `files: %{"/notes.md" => "..."}`,
+  or set them with `BeamWeaver.Graph.Compiled.update_state/4`.
 
   Under a `BeamWeaver.Filesystem.Composite` route, the composite passes the
   route's prefix as the `:route_prefix` option: the backend then sees only the
@@ -36,7 +37,11 @@ defmodule BeamWeaver.Filesystem.State do
   def ls(%__MODULE__{} = backend, path, opts) do
     case FsPath.clean_path(path) do
       {:ok, path} ->
-        %Filesystem.LsResult{entries: backend |> visible_files(opts) |> Search.immediate_entries(path)}
+        files = visible_files(backend, opts)
+
+        if exists?(files, path),
+          do: %Filesystem.LsResult{entries: Search.immediate_entries(files, path)},
+          else: %Filesystem.LsResult{error: "file_not_found"}
 
       {:error, error} ->
         %Filesystem.LsResult{error: error}
@@ -54,19 +59,24 @@ defmodule BeamWeaver.Filesystem.State do
     end
   end
 
+  # Writes the file as text, replacing one that exists; a file it replaces
+  # keeps when it was created.
   @impl true
   def write(%__MODULE__{} = backend, path, content, opts) do
-    with {:ok, path} <- FsPath.clean_path(path),
-         files = files(backend, opts),
-         key = state_path(path, opts),
-         false <- Map.has_key?(files, key) do
-      updated =
-        Map.put(files, key, FileDataUtils.file_data(IO.iodata_to_binary(content), encoding: "utf-8"))
+    case FsPath.clean_path(path) do
+      {:ok, path} ->
+        key = state_path(path, opts)
+        now = FileDataUtils.now()
+        replaced = backend |> files(opts) |> Map.get(key) |> FileDataUtils.normalize_file_data()
+        created_at = (replaced && replaced.created_at) || now
 
-      %Filesystem.WriteResult{path: path, files_update: updated}
-    else
-      true -> %Filesystem.WriteResult{path: path, error: "file already exists"}
-      {:error, error} -> %Filesystem.WriteResult{path: path, error: error}
+        file_data =
+          FileDataUtils.file_data(IO.iodata_to_binary(content), encoding: "utf-8", now: now, created_at: created_at)
+
+        %Filesystem.WriteResult{path: path, files_update: %{key => file_data}}
+
+      {:error, error} ->
+        %Filesystem.WriteResult{path: path, error: error}
     end
   end
 
@@ -86,7 +96,7 @@ defmodule BeamWeaver.Filesystem.State do
       %Filesystem.EditResult{
         path: path,
         occurrences: occurrences,
-        files_update: Map.put(files, key, updated_data)
+        files_update: %{key => updated_data}
       }
     else
       nil ->
@@ -104,9 +114,13 @@ defmodule BeamWeaver.Filesystem.State do
   def glob(%__MODULE__{} = backend, pattern, opts) do
     case FsPath.clean_path(Keyword.get(opts, :path, "/")) do
       {:ok, path} ->
-        %Filesystem.GlobResult{
-          matches: backend |> visible_files(opts) |> Search.glob_files(pattern, path: path)
-        }
+        with files = visible_files(backend, opts),
+             true <- exists?(files, path) || {:error, "file_not_found"},
+             {:ok, matches} <- Search.glob_files(files, pattern, path: path) do
+          %Filesystem.GlobResult{matches: matches}
+        else
+          {:error, error} -> %Filesystem.GlobResult{error: error}
+        end
 
       {:error, error} ->
         %Filesystem.GlobResult{error: error}
@@ -117,12 +131,13 @@ defmodule BeamWeaver.Filesystem.State do
   def grep(%__MODULE__{} = backend, pattern, opts) do
     case FsPath.clean_path(Keyword.get(opts, :path, "/")) do
       {:ok, path} ->
-        matches =
-          backend
-          |> visible_files(opts)
-          |> Search.grep_files(pattern, path: path, glob: Keyword.get(opts, :glob))
-
-        %Filesystem.GrepResult{matches: matches}
+        with files = visible_files(backend, opts),
+             true <- exists?(files, path) || {:error, "file_not_found"},
+             {:ok, matches} <- Search.grep_files(files, pattern, path: path, glob: Keyword.get(opts, :glob)) do
+          %Filesystem.GrepResult{matches: matches}
+        else
+          {:error, error} -> %Filesystem.GrepResult{error: error}
+        end
 
       {:error, error} ->
         %Filesystem.GrepResult{error: error}
@@ -158,6 +173,10 @@ defmodule BeamWeaver.Filesystem.State do
 
   # The files this backend can see, by the paths its callers use: all of them,
   # or under a route prefix only those below it, without the prefix.
+  # A path exists when it is `/`, a file, or a folder that holds a file.
+  defp exists?(_files, "/"), do: true
+  defp exists?(files, path), do: Enum.any?(Map.keys(files), &FsPath.under_path?(&1, path))
+
   defp visible_files(backend, opts) do
     files = files(backend, opts)
 

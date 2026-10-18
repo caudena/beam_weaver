@@ -27,29 +27,38 @@ defmodule BeamWeaver.Filesystem.Search do
 
   def grep_files(files, pattern, opts) do
     base = Keyword.get(opts, :path, "/")
-    glob_match? = matcher(Keyword.get(opts, :glob))
 
-    for {path, data} <- files,
-        Path.under_path?(path, base) and glob_match?.(Path.relative(path, base)),
-        %{encoding: "utf-8", content: content} <- [FileDataUtils.normalize_file_data(data)],
-        {line, line_number} <- content |> String.split("\n") |> Enum.with_index(1),
-        String.contains?(line, pattern),
-        do: %GrepMatch{path: path, line: line_number, text: line}
+    with {:ok, glob_match?} <- search_matcher(opts |> Keyword.get(:glob) |> Path.grep_pattern()) do
+      matches =
+        for {path, data} <- files,
+            Path.under_path?(path, base) and (path == base or glob_match?.(Path.relative(path, base))),
+            %{encoding: "utf-8", content: content} <- [FileDataUtils.normalize_file_data(data)],
+            {line, line_number} <- content |> String.split("\n") |> Enum.with_index(1),
+            String.contains?(line, pattern),
+            do: %GrepMatch{path: path, line: line_number, text: line}
+
+      {:ok, matches}
+    end
   end
 
   def glob_files(files, pattern, opts) do
     base = Keyword.get(opts, :path, "/")
-    pattern_match? = matcher(pattern)
 
-    files
-    |> Map.keys()
-    |> Enum.filter(fn path ->
-      Path.under_path?(path, base) and pattern_match?.(Path.relative(path, base))
-    end)
-    |> Enum.sort()
-    |> Enum.map(fn path -> %FileInfo{path: path, is_dir: false, size: file_size(files[path])} end)
+    with {:ok, pattern_match?} <- pattern |> Path.search_pattern() |> search_matcher() do
+      {:ok,
+       files
+       |> Map.keys()
+       |> Enum.filter(&(Path.under_path?(&1, base) and pattern_match?.(Path.relative(&1, base))))
+       |> Enum.sort()
+       |> Enum.map(fn path -> %FileInfo{path: path, is_dir: false, size: file_size(files[path])} end)}
+    end
   end
 
+  defp search_matcher(nil), do: {:ok, fn _relative -> true end}
+  defp search_matcher(pattern), do: Path.glob_matcher(pattern)
+
+  # Permission rules keep their own wildcards: `*`, `?` and `**`, without
+  # the classes and alternatives of search patterns.
   def wildcard_match?(value, pattern) when is_binary(value), do: matcher(pattern).(value)
 
   defp matcher(nil), do: fn _value -> true end

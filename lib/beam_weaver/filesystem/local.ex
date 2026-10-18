@@ -23,6 +23,7 @@ defmodule BeamWeaver.Filesystem.Local do
     real_root = FsPath.real_root(backend.root)
 
     with {:ok, real, virtual} <- FsPath.resolve_virtual(real_root, path),
+         :ok <- exists(real),
          true <- File.dir?(real),
          {:ok, names} <- File.ls(real) do
       entries =
@@ -56,12 +57,10 @@ defmodule BeamWeaver.Filesystem.Local do
   @impl true
   def write(%__MODULE__{} = backend, path, content, _opts) do
     with {:ok, real, virtual} <- FsPath.virtual_to_real(backend.root, path),
-         false <- File.exists?(real),
          :ok <- File.mkdir_p(Path.dirname(real)),
          :ok <- File.write(real, IO.iodata_to_binary(content)) do
       %Filesystem.WriteResult{path: virtual}
     else
-      true -> %Filesystem.WriteResult{path: path, error: "file already exists"}
       {:error, reason} -> %Filesystem.WriteResult{path: path, error: FileDataUtils.error_string(reason)}
     end
   end
@@ -84,7 +83,7 @@ defmodule BeamWeaver.Filesystem.Local do
 
   @impl true
   def glob(%__MODULE__{} = backend, pattern, opts) do
-    case matches(backend, Keyword.get(opts, :path, "/"), pattern) do
+    case matches(backend, Keyword.get(opts, :path, "/"), FsPath.search_pattern(pattern)) do
       {:ok, matches} -> %Filesystem.GlobResult{matches: Enum.map(matches, &file_info/1)}
       {:error, reason} -> %Filesystem.GlobResult{error: FileDataUtils.error_string(reason)}
     end
@@ -92,7 +91,9 @@ defmodule BeamWeaver.Filesystem.Local do
 
   @impl true
   def grep(%__MODULE__{} = backend, pattern, opts) do
-    case matches(backend, Keyword.get(opts, :path, "/"), Keyword.get(opts, :glob) || "**/*") do
+    glob = FsPath.grep_pattern(Keyword.get(opts, :glob)) || "**/*"
+
+    case grep_targets(backend, Keyword.get(opts, :path, "/"), glob) do
       {:ok, files} -> %Filesystem.GrepResult{matches: Enum.flat_map(files, &grep_file(&1, pattern))}
       {:error, reason} -> %Filesystem.GrepResult{error: FileDataUtils.error_string(reason)}
     end
@@ -137,24 +138,41 @@ defmodule BeamWeaver.Filesystem.Local do
     Enum.map(paths, &FsPath.canonical_path(real_root, &1))
   end
 
-  # The files under the virtual directory `path` that match `pattern`, as
-  # `{real_path, virtual_path}` pairs. The directory's own name is never read
-  # as a pattern, and matches the file tools can't open, such as symlinks to
-  # files outside the root, are left out.
-  defp matches(backend, path, pattern) do
+  # The files under the virtual directory `path` whose path below it matches
+  # `pattern`, as `{real_path, virtual_path}` pairs. The directory's own name
+  # is never read as a pattern, and matches the file tools can't open, such
+  # as symlinks to files outside the root, are left out, as are those whose
+  # path below the directory `skip?` returns true for. The walk finds every
+  # file the pattern can match, and the glob rule keeps the ones it does.
+  defp matches(backend, path, pattern, skip? \\ fn _relative -> false end) do
     real_root = FsPath.real_root(backend.root)
 
     with {:ok, real, virtual} <- FsPath.resolve_virtual(real_root, path),
+         :ok <- exists(real),
          {:ok, pattern} <- FsPath.clean_pattern(pattern),
-         {:ok, relative_paths} <- wildcard(String.trim_leading(pattern, "/"), real) do
+         {:ok, match?} <- FsPath.glob_matcher(pattern),
+         {:ok, relative_paths} <- wildcard(FsPath.walk_pattern(pattern), real) do
       matches =
         relative_paths
+        |> Enum.filter(match?)
+        |> Enum.reject(skip?)
         |> Enum.flat_map(&reachable(real_root, virtual, &1))
         |> Enum.sort_by(fn {_real, match} -> match end)
 
       {:ok, matches}
     end
   end
+
+  # Grep searches the file `path` names, or the files below the folder.
+  defp grep_targets(backend, path, glob) do
+    with {:ok, real, virtual} <- FsPath.resolve_virtual(FsPath.real_root(backend.root), path) do
+      if File.regular?(real),
+        do: {:ok, [{real, virtual}]},
+        else: matches(backend, path, glob, &git_path?/1)
+    end
+  end
+
+  defp exists(real), do: if(File.exists?(real), do: :ok, else: {:error, :enoent})
 
   defp wildcard("", _dir), do: {:ok, []}
 
@@ -190,14 +208,19 @@ defmodule BeamWeaver.Filesystem.Local do
     end
   end
 
+  # Grep searches text: version control internals and binary files are left
+  # out, as text search tools leave them out.
+  defp git_path?(relative), do: ".git" in Path.split(relative)
+
   defp grep_file({real, virtual}, pattern) do
     with false <- File.dir?(real),
-         {:ok, content} <- File.read(real) do
+         {:ok, content} <- File.read(real),
+         false <- FileDataUtils.binary_content?(content) do
       for {line, number} <- content |> String.split("\n") |> Enum.with_index(1),
           String.contains?(line, pattern),
           do: %Filesystem.GrepMatch{path: virtual, line: number, text: line}
     else
-      _directory_or_error -> []
+      _directory_binary_or_error -> []
     end
   end
 end

@@ -52,16 +52,20 @@ filesystem too.
 | Tool | Arguments | What it does |
 | --- | --- | --- |
 | `ls` | `path` | Lists the files and folders directly under `path`. |
-| `read_file` | `file_path`, `offset`, `limit` | Returns a file's text, `limit` lines (default 2,000) from line `offset` (default 0). |
-| `write_file` | `file_path`, `content` | Creates a file. It never overwrites one: an existing path is an error. |
-| `edit_file` | `file_path`, `old_string`, `new_string`, `replace_all` | Replaces exact text. It fails when `old_string` isn't found, or is found more than once without `replace_all: true`. |
-| `glob` | `pattern`, `path` | Lists files under `path` that match a pattern, such as `*.md`, or `**/*.md` at any depth. |
-| `grep` | `pattern`, `path`, `glob` | Finds lines that contain `pattern`, a literal, case-sensitive string. |
-| `execute` | `command`, `timeout` | Runs a shell command and returns its output and exit code. Only backends that can run commands add it. |
+| `read_file` | `file_path`, `offset`, `limit` | Returns a file's text as it is: `limit` lines (default 2,000) after skipping `offset` lines (default 0), and at most 80,000 characters, cut at a whole line. A read that stops short of the end of the file ends with a note, such as `[Showing lines 1-2000. The file continues: read again with offset 2000.]`. An `offset` past the last line is an error that gives the file's length. An image (PNG, JPEG, GIF, WebP) or a PDF comes back as a content block after a short notice; any other binary file as a short notice. |
+| `write_file` | `file_path`, `content` | Creates a file, or replaces an existing one. To change part of a file, use `edit_file`. |
+| `edit_file` | `file_path`, `old_string`, `new_string`, `replace_all` | Replaces exact text. It fails when `old_string` is empty or isn't found, or is found more than once without `replace_all: true`. |
+| `glob` | `pattern`, `path` | Lists the files under `path` that match a [glob pattern](#glob-patterns), such as `*.md`. |
+| `grep` | `pattern`, `path`, `glob` | Finds lines that contain `pattern`, literal, case-sensitive text rather than a regex, in text files, and only in the files that match `glob` when you give one. A `path` that is a file searches that file. Binary files are left out, and in a directory or a sandbox so are `.git` folders below `path`. A search that finds nothing with a pattern that looks like a regex, such as `refund.*days`, ends with a note that grep matches literal text. |
+| `execute` | `command`, `timeout` | Runs a shell command and returns its output and exit code, which your code also finds in the tool message's `metadata.exit_code` ([Sandboxes](sandboxes.md#exit-codes)). Only backends that can run commands add it. |
 
 Paths are absolute and start with `/`, whatever the backend. A call that fails
-returns a short error, such as `Error: file already exists`, so the model can
-try again. `ls`, `glob` and `grep` return JSON:
+returns a short error, such as `Error: string not found` from `edit_file`, so
+the model can try again; `ls`, `glob` and `grep` of a `path` that doesn't
+exist return `Error: file_not_found` rather than an empty list. The calls of one model reply run at the same time,
+so a second `write_file` or `edit_file` on a path that an earlier call of the
+reply changes is refused with an error, and the model changes the file again
+in a later turn. `ls`, `glob` and `grep` return JSON:
 
 ```elixir
 alias BeamWeaver.Core.Message
@@ -72,10 +76,54 @@ JSON.decode!(grep_result)
 #=> [%{"path" => "/policies/refunds.md", "line" => 3, "text" => "Damaged items: full refund, no return needed."}]
 ```
 
+A listing or search over many files stops at 80,000 characters (about 20,000
+tokens), after the last whole entry that fits. A note after the JSON says how
+many of the results it shows and asks the model to narrow the search with a
+more specific path or pattern.
+
 The filesystem also adds a section to the system prompt that explains the
-tools. Tool results over about 20,000 tokens are saved to
+tools the model is offered; a tool taken away with `exclude_tools` isn't
+mentioned. `grep`'s description works the same way: it says the pattern is
+literal text and that the model runs one search for each of several strings,
+and only while the model is offered `execute` does it add that a real regex
+needs `execute` with `rg`. A description you set with `tool_descriptions`
+stays as you wrote it. Tool results over about 20,000 tokens are saved to
 `/large_tool_results/` and the model reads them a page at a time; see
 [Context Management](context_management.md#move-large-tool-results-into-files).
+
+### Glob patterns
+
+`glob` and the `glob` of `grep` read a pattern the same way on every backend.
+A pattern without `/` matches a file's name at any depth below `path`. A
+pattern with `/` matches the file's path from `path`, where `**/` stands for
+any number of folders, and a leading `/` keeps it to `path` itself, so `/*.md`
+matches only the files directly in it. `*` and `?` match within one name,
+`[abc]` and `[a-z]` match one character of the class and `[!a]` or `[^a]` one
+that isn't in it, `{md,txt}` matches either, and `\` makes the next character
+literal, so `lit\[1\].md` matches the file `lit[1].md`. A pattern with an
+unclosed `[` or `{` returns the error `invalid_pattern`:
+
+```elixir
+files = Map.put(policies, "/policies/archive/2019.md", "# Old refunds\n")
+
+for pattern <- ["*.md", "/*.md", "archive/*.md", "**/2019.md"] do
+  %{matches: matches} =
+    BeamWeaver.Filesystem.glob(BeamWeaver.Filesystem.State.new(), pattern, path: "/policies", state: %{files: files})
+
+  {pattern, Enum.map(matches, & &1.path)}
+end
+#=> [
+#     {"*.md", ["/policies/archive/2019.md", "/policies/refunds.md", "/policies/shipping.md"]},
+#     {"/*.md", ["/policies/refunds.md", "/policies/shipping.md"]},
+#     {"archive/*.md", ["/policies/archive/2019.md"]},
+#     {"**/2019.md", ["/policies/archive/2019.md"]}
+#   ]
+```
+
+A `Composite` reads a pattern with `/` from the path searched too: from `/`,
+`policies/*.md` matches the files directly under a `/policies/` route.
+[Permission rules](#permissions) have wildcards of their own: `*`, `?`, `**`
+and `{a,b}`, without classes.
 
 ## Where the files live
 
@@ -147,7 +195,9 @@ BeamWeaver.Filesystem.Executable.execute(shell, "ls notes").output
 Commands don't inherit your application's environment variables, such as API
 keys: they get `PATH`, `HOME`, `LANG`, the `LC_*` variables, `TMPDIR`, `USER`
 and `SHELL`, plus the variables in `env:`. `inherit_env: true` passes the whole
-environment instead. `max_output_bytes:` (default 100,000) cuts long output.
+environment instead. Output longer than `max_output_bytes:` (default 100,000)
+keeps its first and last 50,000 bytes, with a line between them that says how
+many bytes were cut, such as `... [48210 bytes cut] ...`.
 
 {% hint style="danger" %}
 `LocalShell` is not a sandbox. Commands run on your machine as the user that
@@ -235,7 +285,12 @@ Map.keys(result.files)
 The longest matching prefix wins, and paths that match no route go to
 `default` (`State` unless you set it). The model sees one tree: `ls /` lists
 `/policies` next to the default backend's files, and `glob` and `grep` from
-`/` search every backend and return full paths. A `State` route keeps its
+`/` search every backend and return full paths. A route can sit deeper, such
+as `/workspace/memories/`: `ls /` then shows `/workspace`, `ls /workspace`
+shows `/workspace/memories` next to the default backend's files there, and
+a search of `/workspace` searches the route too, even when the default
+backend has nothing else under `/workspace`. If a backend fails, the call
+returns that backend's error instead of partial results. A `State` route keeps its
 files in the thread's `files` under their full paths and sees only the files
 under its prefix:
 
@@ -362,6 +417,12 @@ result.messages |> Enum.find(&(&1.role == :tool)) |> Message.text()
 ```
 
 A denied path also disappears from the results of `ls`, `glob` and `grep`.
+`glob` and `grep` check their `path`, which is `/` when the model leaves it
+out, so with the `rules` above a `glob` of `/workspace/**/*.md` without a
+`path` is denied, although `/workspace` is allowed. When the model left
+`path` out, the error tells it to retry with a `path` inside an allowed
+directory, and for `glob` with a `pattern` relative to it.
+
 The tools stay in the model's tool list; to take a tool away, use
 `exclude_tools ["write_file", "edit_file"]`. Permissions cover only the six
 file tools: not `execute`, not your own tools, and not your application's
@@ -546,9 +607,9 @@ or your own tables, implements the same callbacks:
 | --- | --- |
 | `ls/3` | `%BeamWeaver.Filesystem.LsResult{entries: [%FileInfo{}]}` |
 | `read/3` | `%ReadResult{file_data: %FileData{}}`, honoring the `:offset` and `:limit` options |
-| `write/4` | `%WriteResult{path: path}`, or an error when the file exists |
+| `write/4` | `%WriteResult{path: path}`, replacing a file that exists |
 | `edit/5` | `%EditResult{path: path, occurrences: n}` |
-| `glob/3`, `grep/3` | `%GlobResult{matches: [%FileInfo{}]}`, `%GrepResult{matches: [%GrepMatch{}]}` |
+| `glob/3`, `grep/3` | `%GlobResult{matches: [%FileInfo{}]}`, `%GrepResult{matches: [%GrepMatch{}]}`, matching patterns as in [Glob patterns](#glob-patterns) |
 | `upload_files/3`, `download_files/3` | a list of `%UploadResult{}` or `%DownloadResult{}` |
 | `canonical_paths/3` (optional) | `[{:ok, path}]`: for each path, the path of the file it reaches with symlinks followed. Leave it out when your storage has no links |
 

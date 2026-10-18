@@ -7,8 +7,11 @@ defmodule BeamWeaver.Filesystem.Composite do
   reaches the `/policies/` backend as `/refunds.md`) and gets the prefix as the
   `:route_prefix` option, so a backend that stores files in the shared graph
   state, such as `BeamWeaver.Filesystem.State`, keeps them under their full
-  path. Paths under a route belong to it: listing or searching `/` takes them
-  from the route, not from the default backend.
+  path. Paths under a route belong to it. A folder of the default backend
+  holds the routes below it: listing it shows the next folder on the way to
+  each, a search of it searches them too, and it exists when only a route is
+  below it. When a backend fails such a listing or search, the result is
+  that backend's error.
   """
 
   use BeamWeaver.Filesystem
@@ -16,6 +19,7 @@ defmodule BeamWeaver.Filesystem.Composite do
 
   alias BeamWeaver.Filesystem
   alias BeamWeaver.Filesystem.Executable
+  alias BeamWeaver.Filesystem.Path, as: FsPath
   alias BeamWeaver.Filesystem.State
 
   defstruct default: State.new(), routes: %{}, artifacts_root: "/"
@@ -36,34 +40,51 @@ defmodule BeamWeaver.Filesystem.Composite do
   def executable?(%__MODULE__{} = backend), do: Executable.executable?(backend.default)
 
   @impl true
-  def ls(%__MODULE__{} = backend, "/", opts) do
-    default_entries =
-      backend.default
-      |> Filesystem.ls("/", opts)
-      |> case do
-        %Filesystem.LsResult{error: nil, entries: entries} -> reject_routed(backend, entries || [])
-        _error -> []
-      end
-
-    route_entries =
-      backend.routes
-      |> Map.keys()
-      |> Enum.sort()
-      |> Enum.map(fn prefix ->
-        %Filesystem.FileInfo{path: String.trim_trailing(prefix, "/"), is_dir: true}
-      end)
-
-    %Filesystem.LsResult{entries: Enum.uniq_by(default_entries ++ route_entries, & &1.path)}
-  end
-
-  @impl true
   def ls(%__MODULE__{} = backend, path, opts) do
-    {prefix, inner, stripped} = route(backend, path)
+    case route(backend, path) do
+      {nil, _default, path} ->
+        ls_with_routes(backend, path, opts)
 
-    inner
-    |> Filesystem.ls(stripped, route_opts(opts, prefix))
-    |> prefix_entries(:entries, prefix)
+      {prefix, inner, stripped} ->
+        inner
+        |> Filesystem.ls(stripped, route_opts(opts, prefix))
+        |> prefix_entries(:entries, prefix)
+    end
   end
+
+  defp ls_with_routes(backend, path, opts) do
+    folders = route_folders(backend, path)
+
+    case Filesystem.ls(backend.default, path, opts) do
+      %Filesystem.LsResult{error: nil, entries: entries} ->
+        entries = backend |> reject_routed(entries || []) |> Kernel.++(folders) |> Enum.uniq_by(& &1.path)
+        %Filesystem.LsResult{entries: Enum.sort_by(entries, & &1.path)}
+
+      %Filesystem.LsResult{error: "file_not_found"} when folders != [] ->
+        %Filesystem.LsResult{entries: folders}
+
+      error ->
+        error
+    end
+  end
+
+  # The folders in `path` on the way to the routes below it.
+  defp route_folders(backend, path) do
+    base = folder(path)
+
+    backend.routes
+    |> Map.keys()
+    |> Enum.filter(&String.starts_with?(&1, base))
+    |> Enum.map(fn prefix ->
+      [next | _rest] = prefix |> String.replace_prefix(base, "") |> String.split("/")
+      %Filesystem.FileInfo{path: base <> next, is_dir: true}
+    end)
+    |> Enum.uniq_by(& &1.path)
+    |> Enum.sort_by(& &1.path)
+  end
+
+  defp folder("/"), do: "/"
+  defp folder(path), do: String.trim_trailing(path, "/") <> "/"
 
   @impl true
   def read(%__MODULE__{} = backend, path, opts) do
@@ -73,11 +94,13 @@ defmodule BeamWeaver.Filesystem.Composite do
 
   @impl true
   def glob(%__MODULE__{} = backend, pattern, opts),
-    do: search(backend, &Filesystem.glob/3, pattern, opts, %Filesystem.GlobResult{}, & &1.path)
+    do: search(backend, pattern, opts, %Filesystem.GlobResult{}, & &1.path, &Filesystem.glob/3)
 
   @impl true
-  def grep(%__MODULE__{} = backend, pattern, opts),
-    do: search(backend, &Filesystem.grep/3, pattern, opts, %Filesystem.GrepResult{}, &{&1.path, &1.line})
+  def grep(%__MODULE__{} = backend, pattern, opts) do
+    grep = fn inner, glob, opts -> Filesystem.grep(inner, pattern, Keyword.put(opts, :glob, glob)) end
+    search(backend, Keyword.get(opts, :glob), opts, %Filesystem.GrepResult{}, &{&1.path, &1.line}, grep)
+  end
 
   @impl true
   def write(%__MODULE__{} = backend, path, content, opts) do
@@ -219,36 +242,85 @@ defmodule BeamWeaver.Filesystem.Composite do
 
   defp normalize_artifacts_root(_root), do: "/"
 
-  defp search(backend, fun, pattern, opts, result, sort_key) do
-    case Keyword.get(opts, :path, "/") do
-      "/" ->
-        default_matches =
-          backend.default
-          |> fun.(pattern, Keyword.put(opts, :path, "/"))
-          |> matches()
-          |> then(&reject_routed(backend, &1))
+  # Runs `fun.(backend, glob, opts)`, a glob or grep with the glob pattern
+  # `glob`, in the backends the search path reaches. A search of `/` searches
+  # every backend, and fails with the first backend that fails: matches
+  # without it would look complete.
+  defp search(backend, glob, opts, result, sort_key, fun) do
+    case route(backend, Keyword.get(opts, :path, "/")) do
+      {nil, _default, path} ->
+        search_with_routes(backend, path, glob, opts, result, sort_key, fun)
 
-        route_matches =
-          Enum.flat_map(backend.routes, fn {prefix, inner} ->
-            inner
-            |> fun.(pattern, opts |> route_opts(prefix) |> Keyword.put(:path, "/"))
-            |> matches()
-            |> Enum.map(&prefix_entry(&1, prefix))
-          end)
-
-        %{result | matches: Enum.sort_by(default_matches ++ route_matches, sort_key)}
-
-      path ->
-        {prefix, inner, stripped} = route(backend, path)
-
+      {prefix, inner, stripped} ->
         inner
-        |> fun.(pattern, opts |> route_opts(prefix) |> Keyword.put(:path, stripped))
+        |> fun.(glob, opts |> route_opts(prefix) |> Keyword.put(:path, stripped))
         |> prefix_entries(:matches, prefix)
     end
   end
 
-  defp matches(%{error: nil, matches: matches}), do: matches || []
-  defp matches(_result), do: []
+  # A search of a folder of the default backend searches the routes below
+  # it too. The folder may hold nothing but the way to them.
+  defp search_with_routes(backend, path, glob, opts, result, sort_key, fun) do
+    routes = backend.routes |> Enum.filter(fn {prefix, _inner} -> String.starts_with?(prefix, folder(path)) end)
+
+    [{nil, backend.default} | Enum.sort(routes)]
+    |> Enum.reduce_while({:ok, []}, fn {prefix, inner}, {:ok, found} ->
+      {route_glob, fits?} = route_glob(glob, prefix, path)
+      route_path = if prefix, do: "/", else: path
+
+      case fun.(inner, route_glob, opts |> route_opts(prefix) |> Keyword.put(:path, route_path)) do
+        %{error: nil, matches: matches} ->
+          {:cont, {:ok, found ++ Enum.filter(root_matches(backend, prefix, matches || []), fits?)}}
+
+        %{error: "file_not_found"} when is_nil(prefix) and routes != [] ->
+          {:cont, {:ok, found}}
+
+        %{error: error} ->
+          {:halt, {:error, error}}
+      end
+    end)
+    |> case do
+      {:ok, matches} -> %{result | matches: Enum.sort_by(matches, sort_key)}
+      {:error, error} -> %{result | error: error}
+    end
+  end
+
+  # The glob a route below `path` searches with, and which of its matches,
+  # by their full path, fit the composite's `glob`. A pattern without `/`
+  # matches names, the same in every backend. One with `/` is a path from
+  # `path`: a route it starts with searches the rest, anchored to the
+  # route's root. Any other route can only match it through a wildcard, so
+  # it is searched for the pattern's last segment, and only its matches whose
+  # path from `path` fits the pattern are kept.
+  defp route_glob(glob, prefix, path) do
+    relative = String.trim_leading(to_string(glob), "/")
+    route = prefix && String.replace_prefix(prefix, folder(path), "")
+
+    cond do
+      is_nil(prefix) or is_nil(FsPath.grep_pattern(glob)) or not String.contains?(glob, "/") ->
+        {glob, fn _match -> true end}
+
+      String.starts_with?(relative, route) ->
+        {"/" <> String.replace_prefix(relative, route, ""), fn _match -> true end}
+
+      true ->
+        {relative |> String.split("/") |> List.last(), fits(FsPath.search_pattern(glob), path)}
+    end
+  end
+
+  # Whether a match's path from `path` fits `pattern`; an invalid pattern
+  # fits none, and the routes' searches return its error.
+  defp fits(pattern, path) do
+    case FsPath.glob_matcher(pattern) do
+      {:ok, match?} -> &match?.(FsPath.relative(&1.path, path))
+      {:error, _invalid} -> fn _match -> false end
+    end
+  end
+
+  # The default backend's matches under a route belong to the route; a route's
+  # matches get its prefix.
+  defp root_matches(backend, nil, matches), do: reject_routed(backend, matches)
+  defp root_matches(_backend, prefix, matches), do: Enum.map(matches, &prefix_entry(&1, prefix))
 
   defp prefix_entries(%{error: nil} = result, field, prefix) when is_map_key(result, field),
     do: Map.update!(result, field, fn entries -> Enum.map(entries || [], &prefix_entry(&1, prefix)) end)

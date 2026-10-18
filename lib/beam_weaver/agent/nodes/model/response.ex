@@ -10,6 +10,7 @@ defmodule BeamWeaver.Agent.Nodes.Model.Response do
   alias BeamWeaver.Core.Message
   alias BeamWeaver.Core.Tool
   alias BeamWeaver.Graph.Command
+  alias BeamWeaver.Graph.Messages, as: GraphMessages
   alias BeamWeaver.Graph.Overwrite
   alias BeamWeaver.Transport.Redactor
 
@@ -238,6 +239,10 @@ defmodule BeamWeaver.Agent.Nodes.Model.Response do
     match?({:ok, _encoded}, BeamWeaver.Serialization.dump_value(value))
   end
 
+  # An overwrite of the messages rebuilds the thread, and the graph drops the
+  # other message writes of its step. So the response's other message writes,
+  # and its reply, go into the rebuilt thread; `:thread` is the thread they
+  # were written against.
   def to_update(%ModelResponse{commands: commands} = response, opts) when commands != [] do
     base_update = base_response_update(response, opts)
 
@@ -246,7 +251,10 @@ defmodule BeamWeaver.Agent.Nodes.Model.Response do
         [base_update | commands]
 
       {overwrites, commands} ->
-        Enum.map(overwrites, &append_messages_to_overwrite(&1, response.messages)) ++
+        {commands, writes} = Enum.map_reduce(commands, [], &take_message_writes/2)
+        thread = Keyword.get(opts, :thread) || []
+
+        Enum.map(overwrites, &rebuild_thread(&1, writes, thread, response.messages)) ++
           [Map.delete(base_update, :messages) | commands]
     end
   end
@@ -331,13 +339,32 @@ defmodule BeamWeaver.Agent.Nodes.Model.Response do
 
   defp message_overwrite_command?(_command), do: false
 
-  defp append_messages_to_overwrite(command, []), do: command
+  defp take_message_writes(%Command{update: update} = command, writes) when is_map(update) do
+    case fetch_update_value(update, :messages) do
+      {:ok, key, messages} -> {%{command | update: Map.delete(update, key)}, writes ++ List.wrap(messages)}
+      :error -> {command, writes}
+    end
+  end
 
-  defp append_messages_to_overwrite(%Command{update: update} = command, messages) do
+  defp take_message_writes(command, writes), do: {command, writes}
+
+  # A message the overwrite kept takes its edit, a new message is added, and
+  # one the overwrite removed stays removed. The reply goes last.
+  defp rebuild_thread(command, [], _thread, []), do: command
+
+  defp rebuild_thread(%Command{update: update} = command, writes, thread, reply) do
     {:ok, key, value} = fetch_update_value(update, :messages)
     {:ok, overwritten} = Overwrite.get(value)
-    %{command | update: Map.put(update, key, Overwrite.new(List.wrap(overwritten) ++ messages))}
+    removed = MapSet.difference(message_ids(thread), message_ids(List.wrap(overwritten)))
+    writes = Enum.reject(writes, &removed?(&1, removed))
+
+    %{command | update: Map.put(update, key, Overwrite.new(GraphMessages.add_messages(overwritten, writes) ++ reply))}
   end
+
+  defp removed?(%Message{id: id}, removed), do: MapSet.member?(removed, id)
+  defp removed?(_write, _removed), do: false
+
+  defp message_ids(messages), do: for(%Message{id: id} <- messages, not is_nil(id), into: MapSet.new(), do: id)
 
   defp fetch_update_value(update, key) do
     case Map.fetch(update, key) do

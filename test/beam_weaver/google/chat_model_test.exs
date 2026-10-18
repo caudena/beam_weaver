@@ -625,6 +625,31 @@ defmodule BeamWeaver.Google.ChatModelTest do
     refute Map.has_key?(decoded.response_metadata, "raw_provider_response")
   end
 
+  test "function calls without an id get one that no other call of the thread has" do
+    response = %{
+      "candidates" => [
+        %{
+          "content" => %{
+            "role" => "model",
+            "parts" => [
+              %{"functionCall" => %{"name" => "lookup", "args" => %{"q" => "a"}}},
+              %{"functionCall" => %{"name" => "lookup", "args" => %{"q" => "b"}}}
+            ]
+          }
+        }
+      ]
+    }
+
+    ids =
+      for _turn <- 1..2,
+          {:ok, message} = BeamWeaver.Google.Messages.response_to_message(response),
+          call <- message.tool_calls,
+          do: call.id
+
+    assert length(ids) == 4
+    assert ids == Enum.uniq(ids)
+  end
+
   test "merging streamed responses tolerates chunks without candidates or parts" do
     body = """
     data: {"candidates":[{"content":{"role":"model","parts":[{"text":"hello"}]}}]}

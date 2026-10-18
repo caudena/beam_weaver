@@ -3,6 +3,7 @@ defmodule BeamWeaver.Google.Messages do
 
   alias BeamWeaver.Core.ContentBlock
   alias BeamWeaver.Core.Error
+  alias BeamWeaver.Core.ID
   alias BeamWeaver.Core.Message
   alias BeamWeaver.Core.Messages
   alias BeamWeaver.MapAccess
@@ -338,11 +339,14 @@ defmodule BeamWeaver.Google.Messages do
   defp tool_response(content) when is_binary(content), do: %{"content" => content}
   defp tool_response(content), do: %{"content" => inspect(content)}
 
+  # Gemini takes images and documents such as PDFs inline in a function
+  # response's parts; the rest of the result goes in its `response`.
   defp tool_response_with_media(content) when is_list(content) do
     {media, ordinary} =
       Enum.split_with(content, fn
         %ContentBlock.Image{data: data} when is_binary(data) -> true
-        %{type: :image, data: data} when is_binary(data) -> true
+        %ContentBlock.File{data: data} when is_binary(data) -> true
+        %{type: type, data: data} when type in [:image, :file] and is_binary(data) -> true
         _block -> false
       end)
 
@@ -357,7 +361,7 @@ defmodule BeamWeaver.Google.Messages do
       Enum.map(media, fn block ->
         %{
           "inlineData" => %{
-            "mimeType" => Map.get(block, :mime_type) || "image/png",
+            "mimeType" => Map.get(block, :mime_type) || default_tool_mime_type(block.type),
             "data" => Map.fetch!(block, :data)
           }
         }
@@ -367,6 +371,9 @@ defmodule BeamWeaver.Google.Messages do
   end
 
   defp tool_response_with_media(content), do: {tool_response(content), []}
+
+  defp default_tool_mime_type(:image), do: "image/png"
+  defp default_tool_mime_type(:file), do: "application/pdf"
 
   defp put_function_response_parts(response, []), do: response
   defp put_function_response_parts(response, parts), do: Map.put(response, "parts", parts)
@@ -460,35 +467,21 @@ defmodule BeamWeaver.Google.Messages do
   defp media_type("video/" <> _rest), do: :video
   defp media_type(_mime_type), do: :file
 
+  # Gemini may omit ids, also for repeated calls to one function. A generated
+  # id is unique, so each result stays addressable across the thread.
   defp tool_calls(blocks) do
-    calls = Enum.filter(blocks, &(&1.type == :tool_call))
-    reserved_ids = MapSet.new(calls, & &1[:id])
+    for %{type: :tool_call} = block <- blocks do
+      id = block[:id] || "call_" <> ID.uuidv7()
 
-    {calls, _ids} =
-      Enum.map_reduce(calls, reserved_ids, fn block, ids ->
-        id = block[:id] || available_tool_call_id("call_#{block[:name]}", ids)
-
-        call =
-          Messages.tool_call(
-            id: id,
-            provider_id: id,
-            call_id: id,
-            name: block[:name],
-            thought_signature: block[:thought_signature],
-            args: block[:args] || %{}
-          )
-
-        {call, MapSet.put(ids, id)}
-      end)
-
-    calls
-  end
-
-  # Gemini may omit IDs even for repeated calls to the same function. Keep each
-  # result independently addressable, without colliding with a provider ID.
-  defp available_tool_call_id(base, ids, index \\ 0) do
-    id = if index == 0, do: base, else: "#{base}_#{index}"
-    if MapSet.member?(ids, id), do: available_tool_call_id(base, ids, index + 1), else: id
+      Messages.tool_call(
+        id: id,
+        provider_id: id,
+        call_id: id,
+        name: block[:name],
+        thought_signature: block[:thought_signature],
+        args: block[:args] || %{}
+      )
+    end
   end
 
   defp thought_signature(map) when is_map(map) do

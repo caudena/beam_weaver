@@ -29,14 +29,17 @@ csv = "order,status\nA-1001,refunded\nA-1002,shipped\nA-1003,refunded\n"
 BeamWeaver.Sandbox.upload_files(MyApp.Workspace.sandbox(), [{"/orders.csv", csv}])
 
 {:ok, result} = MyApp.SupportResearcher.invoke(%{messages: ["How many refunds did I get this year?"]})
-result.messages |> Enum.find(&(&1.role == :tool)) |> BeamWeaver.Core.Message.text()
-#=> "2\n[Command succeeded with exit code 0]"
+tool_message = Enum.find(result.messages, &(&1.role == :tool))
+{BeamWeaver.Core.Message.text(tool_message), tool_message.metadata.exit_code}
+#=> {"2\n[Command succeeded with exit code 0]", 0}
 ```
 
 `BeamWeaver.Filesystem.Sandbox` makes the sandbox the agent's filesystem, so
 the agent gets the file tools of [Filesystem](filesystem.md) and an `execute`
 tool that runs a command in the sandbox and returns its output and exit code.
-Your application put `orders.csv` in before the run.
+Your code finds the exit code in the tool message's metadata
+([Exit codes](#exit-codes)). Your application put `orders.csv` in before the
+run.
 
 An agent that runs commands can do anything those commands can. A sandbox
 confines them to a workspace you can throw away, with limits such as no
@@ -49,7 +52,10 @@ input can still run commands inside it ([Security](#security)).
 default `beam_weaver_sandbox` in the system's temp directory) and runs commands
 there with `sh`. File paths are absolute inside the sandbox: `/orders.csv` is
 `orders.csv` in `root`, and `..` or `~` are refused. Commands start in `root`,
-so they use relative paths. `max_output_bytes:` (default 512,000) cuts output.
+so they use relative paths. Output longer than `max_output_bytes:` (default
+512,000) keeps its first and last halves, with a line between them that says
+how many bytes were cut, such as `... [48210 bytes cut] ...`, so the end of a
+long build or test log isn't lost.
 
 Commands don't see your application's environment variables, such as provider
 API keys. They get `PATH`, `HOME`, `LANG`, the `LC_*` variables, `TMPDIR`,
@@ -122,9 +128,11 @@ call `stop/1`.
 one CPU, 1 GB of memory and at most 256 processes, in `/workspace`; `network:`,
 `cpus:`, `memory:`, `pids_limit:` and `root:` change that, and `read_only:`,
 `tmpfs:`, `cap_drop:` and `security_opts:` harden it. Mounts need absolute
-host paths. The file tools run `find`, `grep` and `python3` in the container,
-so pick an image that has them. Plain Docker shares the host's kernel; for
-hostile workloads use a hardened runtime such as gVisor (`runtime: "runsc"`).
+host paths. `max_output_bytes:` (default 100,000) cuts a command's output as
+the local sandbox does. The file tools run GNU `find` and `grep` and `python3`
+in the container, so pick an image that has them, such as a Debian-based one.
+Plain Docker shares the host's kernel; for hostile workloads use a hardened
+runtime such as gVisor (`runtime: "runsc"`).
 
 ## Use a sandbox directly
 
@@ -141,12 +149,32 @@ Sandbox.execute(sandbox, "sh scripts/count.sh", timeout: 10)
 #=> %Sandbox.ExecuteResult{exit_code: 0, output: "2\n", error: nil, truncated: false}
 ```
 
-`write/4` refuses a file that exists, `edit/5` replaces an exact string,
-`read/3` takes `offset:` and `limit:` in lines, and `ls/3`, `glob/3` and
-`grep/3` search. `upload_files/3` and `download_files/3` move many files at
-once, to seed a run and collect its results. Every `execute/3` emits
-`[:beam_weaver, :sandbox, :execute, :start]` and `:stop`, `:timeout` or
-`:exception` telemetry events, with secrets redacted ([Tracing](tracing.md)).
+`write/4` creates a file or replaces one that exists, `edit/5` replaces an
+exact, non-empty string, `read/3` takes `offset:` and `limit:` in lines
+(default 2,000 lines), and `ls/3`, `glob/3` and `grep/3` search, reading
+patterns as the [file tools](filesystem.md#glob-patterns) do.
+`upload_files/3` and `download_files/3` move many files at once, to seed a
+run and collect its results. An upload replaces a file that exists too, and
+each file gets its own result, so a bad path fails only its own file. Every
+`execute/3` emits `[:beam_weaver, :sandbox, :execute, :start]` and `:stop`,
+`:timeout` or `:exception` telemetry events, with secrets redacted
+([Tracing](tracing.md)).
+
+## Exit codes
+
+The agent's `execute` tool gives the model a command's output followed by its
+exit code, such as `[Command failed with exit code 1]`. Your code needn't parse
+that line: the tool message's `metadata.exit_code` holds the exit code as an
+integer, as in the first example. A command that fails is still a successful
+tool call, with `metadata.status` `"success"`, because the model reads the
+output and decides what to do next, so check `exit_code`, not `status`, to
+find failed commands.
+
+`exit_code` is left out when the backend doesn't know the exit code. A call
+whose command timed out or couldn't run, such as when the backend returns an
+error, gives the model the error alone, with no `exit_code`. A long output
+that is moved into a file keeps the metadata
+([Context Management](context_management.md#move-large-tool-results-into-files)).
 
 ## Command timeouts
 
@@ -154,11 +182,9 @@ once, to seed a run and collect its results. Every `execute/3` emits
 does the agent's `execute` tool. A command that runs longer is stopped
 together with every process it started: its process group gets SIGTERM, then
 SIGKILL one second later, inside the container for Docker. The result has
-`exit_code: 124` and `error: "timeout"`. The agent's `execute` tool gives the
-model a command's output followed by its exit code, such as
-`[Command failed with exit code 1]`, and after a timeout an error that says the
-command was stopped. The shell tool below counts its `timeout` in
-milliseconds and stops commands the same way:
+`exit_code: 124` and `error: "timeout"`, and the agent's `execute` tool gives
+the model an error that says the command was stopped. The shell tool below
+counts its `timeout` in milliseconds and stops commands the same way:
 
 ```elixir
 slow = BeamWeaver.Tools.Shell.new(policy: [allow: ["sleep"], timeout: 50])

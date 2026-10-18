@@ -84,7 +84,7 @@ both carry over to the next call on the same thread.
 There is no separate deep-agent type. `MyApp.SupportResearcher` is an agent
 module like any other: it runs with `invoke/2`, streams, pauses for review and
 saves checkpoints. Each capability is one declaration, or one middleware, that
-adds tools, a section of the system prompt, and keys in the state:
+adds tools and keys in the state, and some add a section of the system prompt:
 
 | Capability | Turn it on with | The model gets | Guide |
 | --- | --- | --- | --- |
@@ -100,9 +100,9 @@ adds tools, a section of the system prompt, and keys in the state:
 | Human review | `interrupt_on %{"issue_refund" => true}` | a pause before those tools run | [Human-in-the-Loop](human_in_the_loop.md) |
 | Per-model tuning | a capability profile | depends on the profile | [Capability Profiles](profiles.md) |
 
-Switch on only what a task needs: every capability adds tools and prompt text
-that the model reads on every call. The next guides take the capabilities in
-turn: [Filesystem](filesystem.md), [Skills](skills.md),
+Switch on only what a task needs: the model reads every capability's tools,
+and the prompt sections some of them add, on every call. The next guides take
+the capabilities in turn: [Filesystem](filesystem.md), [Skills](skills.md),
 [Subagents](subagents.md), [Sandboxes](sandboxes.md) and
 [Capability Profiles](profiles.md).
 
@@ -178,9 +178,9 @@ the middleware you list yourself:
 10. your `middleware` list, in its own order
 
 The order shows in the system prompt. Your `system_prompt` comes first, then
-one section per capability in the order above, then the sections of your own
-middleware. The agent at the top of this page sends its prompt, the file tools
-section, then the `write_todos` section. A
+the sections of the capabilities that add one, in the order above, then the
+sections of your own middleware. The agent at the top of this page sends its
+prompt, the file tools section, then the `write_todos` section. A
 `BeamWeaver.Agent.Middleware.DynamicPrompt` in your list takes the place of
 `system_prompt`, and the sections still follow it. The model's tools come in
 the same order, followed by the tools you declared.
@@ -256,10 +256,10 @@ subagent's review, and resuming the parent resumes the subagent
 description of the work and the name of a subagent, which runs in its own
 context window and returns only its final answer. The parent's thread grows
 by one tool result instead of every search and file read the work needed. A
-`general-purpose` subagent, with the parent's tools, a task list and the
-parent's files, is available too unless you turn it off. For work that
-outlasts a request, `async_subagents` starts a task on another agent server
-and gives the model tools to check on it, update it or cancel it. See
+`general-purpose` subagent, a copy of the parent with its tools, files and
+skills but no task list, is available too unless you turn it off. For work
+that outlasts a request, `async_subagents` starts a task on another agent
+server and gives the model tools to check on it, update it or cancel it. See
 [Subagents](subagents.md).
 
 ```elixir

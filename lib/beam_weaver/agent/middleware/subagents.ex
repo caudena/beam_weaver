@@ -28,6 +28,11 @@ defmodule BeamWeaver.Agent.Middleware.Subagents do
       `["tools", "subagent.<name>"]`, with `subagent_name` and `tool_call_id`
       in the envelope metadata.
 
+  It adds nothing to the system prompt unless given `system_prompt:`, which
+  adds that text followed by the list of subagents. `task_description:`
+  replaces the `task` tool's description, with the list of subagents in
+  place of `%{available_agents}`.
+
   The subagents list may hold a `BeamWeaver.Agent.GeneralPurposeSubagentProfile`
   to configure or turn off the built-in `general-purpose` subagent. See
   [Subagents](subagents.md).
@@ -39,6 +44,7 @@ defmodule BeamWeaver.Agent.Middleware.Subagents do
   alias BeamWeaver.Agent.Builder
   alias BeamWeaver.Agent.Built
   alias BeamWeaver.Agent.Capabilities
+  alias BeamWeaver.Agent.CapabilityProfile
   alias BeamWeaver.Agent.Compiler
   alias BeamWeaver.Agent.GeneralPurposeSubagentProfile
   alias BeamWeaver.Agent.Middleware
@@ -52,6 +58,7 @@ defmodule BeamWeaver.Agent.Middleware.Subagents do
   alias BeamWeaver.Agent.Middleware.ToolCallNormalization
   alias BeamWeaver.Agent.ModelRequest
   alias BeamWeaver.Agent.ModelResolver
+  alias BeamWeaver.Agent.Nodes.Model.Prompt
   alias BeamWeaver.Agent.ProviderProfile
   alias BeamWeaver.Agent.Spec, as: AgentSpec
   alias BeamWeaver.Agent.State, as: AgentState
@@ -85,156 +92,33 @@ defmodule BeamWeaver.Agent.Middleware.Subagents do
   In order to complete the objective that the user asks of you, you have access to a number of standard tools.
 
   The calling agent only sees your final assistant message, not your intermediate work, tool results, or status tracking. Ensure your final
-  response contains the complete answer.
+  response contains the complete answer.\
   """
 
   @default_general_purpose_description "General-purpose agent for researching complex questions, searching for files and content, and executing multi-step tasks. When you are searching for a keyword or file and are not confident that you will find the right match in the first few tries use this agent to perform the search for you. This agent has access to all tools as the main agent."
 
-  @task_system_prompt """
-  ## `task` (subagent spawner)
-
-  You have access to a `task` tool to launch short-lived subagents that handle isolated tasks. These agents are ephemeral -- they live only for the duration of the task and return a single result.
-
-  When to use the task tool:
-
-  - When a task is complex and multi-step, and can be fully delegated in isolation
-  - When a task is independent of other tasks and can run in parallel
-  - When a task requires focused reasoning or heavy token/context usage that would bloat the orchestrator thread
-  - When sandboxing improves reliability (e.g. code execution, structured searches, data formatting)
-  - When you only care about the output of the subagent, and not the intermediate steps (ex. performing a lot of research and then returned a synthesized report, performing a series of computations or lookups to achieve a concise, relevant answer.)
-
-  Subagent lifecycle:
-
-  1. **Spawn** -> Provide clear role, instructions, and expected output
-  2. **Run** -> The subagent completes the task autonomously
-  3. **Return** -> The subagent provides a single structured result
-  4. **Reconcile** -> Incorporate or synthesize the result into the main thread
-
-  When NOT to use the task tool:
-
-  - If you need to see the intermediate reasoning or steps after the subagent has completed (the task tool hides them)
-  - If the task is trivial (a few tool calls or simple lookup)
-  - If delegating does not reduce token usage, complexity, or context switching
-  - If splitting would add latency without benefit
-
-  ## Important Task Tool Usage Notes to Remember
-
-  - Whenever possible, parallelize the work that you do. This is true for both tool_calls, and for tasks. Whenever you have independent steps to complete - make tool_calls, or kick off tasks (subagents) in parallel to accomplish them faster. This saves time for the user, which is incredibly important.
-  - Remember to use the `task` tool to silo independent tasks within a multi-part objective.
-  - You should use the `task` tool whenever you have a complex task that will take multiple steps, and is independent from other tasks that the agent needs to complete. These agents are highly competent and efficient.
-  """
-
   @task_description """
-  Launch an ephemeral subagent to handle complex, multi-step independent tasks with an isolated context window.
+  Launch a short-lived subagent to handle a complex, multi-step task in a context window of its own.
 
-  Available agent types and the tools they have access to:
+  Available agent types:
   %{available_agents}
 
-  When using the Task tool, you must specify a subagent_type parameter to select which agent type to use.
-
-  ## Usage notes:
-  1. Launch multiple agents concurrently whenever possible, to maximize performance; to do that, use a single message with multiple tool uses
-  2. When the agent is done, it will return a single message back to you. The result returned by the agent is not visible to the user. To show the user the result, you should send a text message back to the user with a concise summary of the result.
-  3. Each agent invocation is stateless. You will not be able to send additional messages to the agent, nor will the agent be able to communicate with you outside of its final report. Therefore, your prompt should contain a highly detailed task description for the agent to perform autonomously and you should specify exactly what information the agent should return back to you in its final and only message to you.
-  4. The agent's outputs should generally be trusted
-  5. Clearly tell the agent whether you expect it to create content, perform analysis, or just do research (search, file reads, web fetches, etc.), since it is not aware of the user's intent
-  6. If the agent description mentions that it should be used proactively, then you should try your best to use it without the user having to ask for it first. Use your judgement.
-  7. When only the general-purpose agent is provided, you should use it for all tasks. It is great for isolating context and token usage, and completing specific, complex tasks, as it has all the same capabilities as the main agent.
-
-  ### Example usage of the general-purpose agent:
-
-  <example_agent_descriptions>
-  "general-purpose": use this agent for general purpose tasks, it has access to all tools as the main agent.
-  </example_agent_descriptions>
-
-  <example>
-  User: "I want to conduct research on the accomplishments of Lebron James, Michael Jordan, and Kobe Bryant, and then compare them."
-  Assistant: *Uses the task tool in parallel to conduct isolated research on each of the three players*
-  Assistant: *Synthesizes the results of the three isolated research tasks and responds to the User*
-  <commentary>
-  Research is a complex, multi-step task in it of itself.
-  The research of each individual player is not dependent on the research of the other players.
-  The assistant uses the task tool to break down the complex objective into three isolated tasks.
-  Each research task only needs to worry about context and tokens about one player, then returns synthesized information about each player as the Tool Result.
-  This means each research task can dive deep and spend tokens and context deeply researching each player, but the final result is synthesized information, and saves us tokens in the long run when comparing the players to each other.
-  </commentary>
-  </example>
-
-  <example>
-  User: "Analyze a single large code repository for security vulnerabilities and generate a report."
-  Assistant: *Launches a single `task` subagent for the repository analysis*
-  Assistant: *Receives report and integrates results into final summary*
-  <commentary>
-  Subagent is used to isolate a large, context-heavy task, even though there is only one. This prevents the main thread from being overloaded with details.
-  If the user then asks followup questions, we have a concise report to reference instead of the entire history of analysis and tool calls, which is good and saves us time and money.
-  </commentary>
-  </example>
-
-  <example>
-  User: "Schedule two meetings for me and prepare agendas for each."
-  Assistant: *Calls the task tool in parallel to launch two `task` subagents (one per meeting) to prepare agendas*
-  Assistant: *Returns final schedules and agendas*
-  <commentary>
-  Tasks are simple individually, but subagents help silo agenda preparation.
-  Each subagent only needs to worry about the agenda for one meeting.
-  </commentary>
-  </example>
-
-  <example>
-  User: "I want to order a pizza from Dominos, order a burger from McDonald's, and order a salad from Subway."
-  Assistant: *Calls tools directly in parallel to order a pizza from Dominos, a burger from McDonald's, and a salad from Subway*
-  <commentary>
-  The assistant did not use the task tool because the objective is super simple and clear and only requires a few trivial tool calls.
-  It is better to just complete the task directly and NOT use the `task` tool.
-  </commentary>
-  </example>
-
-  ### Example usage with custom agents:
-
-  <example_agent_descriptions>
-  "content-reviewer": use this agent after you are done creating significant content or documents
-  "greeting-responder": use this agent when to respond to user greetings with a friendly joke
-  "research-analyst": use this agent to conduct thorough research on complex topics
-  </example_agent_descriptions>
-
-  <example>
-  user: "Please write a function that checks if a number is prime"
-  assistant: Sure let me write a function that checks if a number is prime
-  assistant: First let me use the Write tool to write a function that checks if a number is prime
-  assistant: I'm going to use the Write tool to write the following code:
-  <code>
-  function isPrime(n) {{
-    if (n <= 1) return false
-    for (let i = 2; i * i <= n; i++) {{
-      if (n % i === 0) return false
-    }}
-    return true
-  }}
-  </code>
-  <commentary>
-  Since significant content was created and the task was completed, now use the content-reviewer agent to review the work
-  </commentary>
-  assistant: Now let me use the content-reviewer agent to review the code
-  assistant: Uses the Task tool to launch with the content-reviewer agent
-  </example>
-
-  <example>
-  user: "Can you help me research the environmental impact of different renewable energy sources and create a comprehensive report?"
-  <commentary>
-  This is a complex research task that would benefit from using the research-analyst agent to conduct thorough analysis
-  </commentary>
-  assistant: I'll help you research the environmental impact of renewable energy sources. Let me use the research-analyst agent to conduct comprehensive research on this topic.
-  assistant: Uses the Task tool to launch with the research-analyst agent, providing detailed instructions about what research to conduct and what format the report should take
-  </example>
-
-  <example>
-  user: "Hello"
-  <commentary>
-  Since the user is greeting, use the greeting-responder agent to respond with a friendly joke
-  </commentary>
-  assistant: "I'm going to use the Task tool to launch with the greeting-responder agent"
-  </example>
+  Set subagent_type to one of these names. Usage notes:
+  - When tasks are independent, launch several agents at once, with several tool calls in one message.
+  - Each call is stateless, unless the agent's line says it sees your conversation: the agent sees only your description and returns one final report. Put every detail it needs in the description, and say exactly what it should return.
+  - The report comes back only to you, not to the user: pass on what matters.
+  - Say whether the agent should create content, analyze, or only research, since it doesn't know the user's intent.
+  - If an agent's description says to use it proactively, do so without waiting to be asked.
+  - When general-purpose is the only agent, use it for any complex, context-heavy task: it has the same capabilities as you.\
   """
+
+  # A subagent that starts from the parent's conversation reads a request in
+  # it to hand work to a subagent as one for itself, so the task says that
+  # already happened, and to use what the conversation established.
+  @inherited_conversation_note "[The messages above are the conversation so far, which you continue as the subagent " <>
+                                 "that was just asked for help. Any request in them to hand work to a subagent already " <>
+                                 "happened: you are that subagent. Use the specific facts, figures and identifiers that " <>
+                                 "conversation established, rather than answering in general terms. Your task is below.]\n\n"
 
   # Keys of the parent's state that stay with the parent, both ways. An
   # agent's private keys don't reach its `task` tool at all.
@@ -256,7 +140,8 @@ defmodule BeamWeaver.Agent.Middleware.Subagents do
             compact_conversation: true,
             host: nil,
             child_mode: :foreground,
-            system_prompt: @task_system_prompt,
+            parent_private_keys: MapSet.new(),
+            system_prompt: nil,
             task_description: @task_description
 
   @doc """
@@ -303,10 +188,21 @@ defmodule BeamWeaver.Agent.Middleware.Subagents do
          compact_conversation: Keyword.get(opts, :compact_conversation, true),
          host: host,
          child_mode: child_mode,
-         system_prompt: Keyword.get(opts, :system_prompt) || @task_system_prompt,
+         system_prompt: Keyword.get(opts, :system_prompt),
          task_description: Keyword.get(opts, :task_description) || @task_description
        }}
     end
+  end
+
+  @doc false
+  # The agent's private and managed keys, which stay the agent's when a
+  # subagent hands its state back.
+  @spec bind_private_keys([term()], [String.t()]) :: [term()]
+  def bind_private_keys(middleware, keys) when is_list(middleware) do
+    Enum.map(middleware, fn
+      %__MODULE__{} = subagents -> %{subagents | parent_private_keys: MapSet.new(keys, &to_string/1)}
+      other -> other
+    end)
   end
 
   @doc false
@@ -429,8 +325,9 @@ defmodule BeamWeaver.Agent.Middleware.Subagents do
   end
 
   @impl true
-  def wrap_model_call(%__MODULE__{system_prompt: nil}, %ModelRequest{} = request, handler),
-    do: handler.(request)
+  def wrap_model_call(%__MODULE__{system_prompt: prompt}, %ModelRequest{} = request, handler)
+      when prompt in [nil, ""],
+      do: handler.(request)
 
   def wrap_model_call(%__MODULE__{} = middleware, %ModelRequest{} = request, handler) do
     prompt =
@@ -577,17 +474,43 @@ defmodule BeamWeaver.Agent.Middleware.Subagents do
     if blank?(name), do: message, else: "subagent #{inspect(name)}: #{message}"
   end
 
+  # The general-purpose subagent works as the main agent does: without the
+  # tools the main agent excludes, with its tool descriptions, filesystem
+  # permissions and capability profile, and with the main agent's own entries
+  # for the middleware it would build.
   defp general_purpose_subagent(opts, %GeneralPurposeSubagentProfile{} = profile) do
+    capability_profile = Keyword.get(opts, :capability_profile)
+
     %Spec{
       name: "general-purpose",
+      exclude_tools: Keyword.get(opts, :exclude_tools, []),
+      tool_descriptions: Keyword.get(opts, :tool_descriptions, %{}),
+      capability_profile: capability_profile,
       description:
         profile.description ||
           Keyword.get(opts, :general_purpose_description, @default_general_purpose_description),
       system_prompt:
         profile.system_prompt || Keyword.get(opts, :general_purpose_system_prompt, @default_subagent_prompt),
-      base_middleware: [:deepagents]
+      base_middleware: [:deepagents],
+      middleware: general_purpose_middleware(Keyword.get(opts, :parent_middleware, []), capability_profile)
     }
   end
+
+  # The middleware the general-purpose subagent builds itself: the
+  # `:deepagents` capabilities and tool call normalization.
+  @general_purpose_modules [Skills, Filesystem, Summarization, CompactConversation, ToolCallNormalization]
+
+  # The main agent's own entries that take the place of middleware the
+  # general-purpose subagent would build or get from the profile. The main
+  # agent's other middleware is its own.
+  defp general_purpose_middleware(parent_middleware, capability_profile) do
+    profile_modules = capability_profile |> profile_middleware() |> Enum.map(&middleware_module/1)
+    replaced = Enum.reject(@general_purpose_modules ++ profile_modules, &is_nil/1)
+    Enum.filter(parent_middleware, &(middleware_module(&1) in replaced))
+  end
+
+  defp profile_middleware(%CapabilityProfile{} = profile), do: CapabilityProfile.materialize_extra_middleware(profile)
+  defp profile_middleware(_profile), do: []
 
   defp check_base_middleware(entries) do
     case Enum.find(List.wrap(entries), &is_binary/1) do
@@ -801,16 +724,40 @@ defmodule BeamWeaver.Agent.Middleware.Subagents do
       :miss ->
         with {:ok, subagent} <- ready_subagent(subagent, middleware),
              {:ok, state} <- run_subagent(subagent, parent_state, description, input) do
-          task_output(input, parent_state, state, subagent, input_hash)
+          task_output(input, parent_state, without_parent_private_keys(state, middleware), subagent, input_hash)
         else
           # The tools node pauses the parent run with the subagent's
           # interrupt, or fails it when the decisions didn't fit.
+          :review_cancelled -> cancelled_review(input)
           {:interrupted, interrupt} -> throw({:beam_weaver_graph_interrupt, interrupt})
           {:resume_error, %Error{} = error} -> throw({:beam_weaver_graph_error, error})
           {:error, %Error{} = error} -> format_subagent_error(error)
         end
     end
   end
+
+  # A message to the parent while the subagent's review waits cancels the
+  # review, as it does for the parent's own tools.
+  defp cancelled_review(input) do
+    answer = Prompt.cancelled_review_answer(%{id: value(input, :tool_call_id), name: "task"})
+    %Command{update: %{messages: [answer]}}
+  end
+
+  defp review_cancelled?(input) do
+    case AgentState.messages(value(input, :state, %{}) || %{}) do
+      messages when is_list(messages) ->
+        id = value(input, :tool_call_id)
+        Prompt.message_after_turn?(messages, Enum.find(messages, &Prompt.makes_call?(&1, id)))
+
+      _other ->
+        false
+    end
+  end
+
+  # A key the parent keeps private stays the parent's: the subagent's value
+  # of it doesn't come back.
+  defp without_parent_private_keys(state, %__MODULE__{parent_private_keys: keys}),
+    do: Map.reject(state, fn {key, _value} -> MapSet.member?(keys, to_string(key)) end)
 
   defp run_host_task(middleware, name, description, input) do
     proposal = %Proposal{
@@ -921,20 +868,26 @@ defmodule BeamWeaver.Agent.Middleware.Subagents do
       {:finished, values} ->
         {:ok, values}
 
-      {:paused, interrupt} ->
-        case resume_value(runtime, interrupt) do
-          {:ok, resume} ->
-            runtime
-            |> with_child_stream(stream_metadata, &Agent.resume(agent, resume, opts ++ &1))
-            |> resume_result()
-
-          :none ->
-            {:interrupted, interrupt}
-        end
+      {:paused, _interrupt} = paused ->
+        if review_cancelled?(input),
+          do: :review_cancelled,
+          else: resume_child(paused, agent, opts, runtime, stream_metadata)
     end
     |> case do
       {:interrupted, interrupt} -> {:interrupted, parent_interrupt(interrupt, stream_metadata)}
       other -> other
+    end
+  end
+
+  defp resume_child({:paused, interrupt}, agent, opts, runtime, stream_metadata) do
+    case resume_value(runtime, interrupt) do
+      {:ok, resume} ->
+        runtime
+        |> with_child_stream(stream_metadata, &Agent.resume(agent, resume, opts ++ &1))
+        |> resume_result()
+
+      :none ->
+        {:interrupted, interrupt}
     end
   end
 
@@ -1087,26 +1040,22 @@ defmodule BeamWeaver.Agent.Middleware.Subagents do
   end
 
   # Every subagent gets tool call normalization, and a `:structured_once` one
-  # a one-call limit, unless its own middleware has one of the same module:
-  # its own `ModelCallLimit` replaces the one-call limit, as an agent's own
-  # entry replaces a capability's.
+  # a one-call limit. An entry of its own middleware replaces the
+  # `base_middleware` or implied entry of the same module, such as its own
+  # `Skills` or `ModelCallLimit`, as an agent's own entry replaces a
+  # capability's, and runs where it is in its own list.
   defp subagent_middleware(subagent, context) do
-    own = List.wrap(subagent.middleware || [])
-    own_modules = Enum.map(own, &middleware_module/1)
-
-    implied =
-      Enum.reject(
-        [ToolCallNormalization.new(), maybe_model_call_limit(context.execution_mode)],
-        &(is_nil(&1) or middleware_module(&1) in own_modules)
-      )
+    own = subagent.middleware |> List.wrap() |> List.flatten() |> Enum.reject(&is_nil/1)
+    own_modules = own |> Enum.map(&middleware_module/1) |> Enum.reject(&is_nil/1)
 
     [
       subagent.base_middleware |> List.wrap() |> Enum.flat_map(&base_middleware_entry(&1, context)),
-      implied,
-      own
+      ToolCallNormalization.new(),
+      maybe_model_call_limit(context.execution_mode)
     ]
     |> List.flatten()
-    |> Enum.reject(&is_nil/1)
+    |> Enum.reject(&(is_nil(&1) or middleware_module(&1) in own_modules))
+    |> Kernel.++(own)
   end
 
   defp middleware_module(%module{}), do: module
@@ -1116,7 +1065,6 @@ defmodule BeamWeaver.Agent.Middleware.Subagents do
 
   defp base_middleware_entry(:deepagents, context) do
     [
-      TodoList.new(),
       maybe_skills(context.backend, context.skills),
       filesystem_middleware(context.backend, context.permissions),
       maybe_summarization(context, context.summarization),
@@ -1233,11 +1181,12 @@ defmodule BeamWeaver.Agent.Middleware.Subagents do
 
   defp maybe_summarization(_context, summarization) when summarization in [nil, false], do: nil
 
-  # Fractional limits are taken of the subagent's model's context window, as
-  # an agent's own are of its model's.
+  # Fractional limits are taken of the subagent's model's context window, and
+  # a summary covers all the old messages, as an agent's own does.
   defp maybe_summarization(context, settings) when is_list(settings) do
     settings
     |> Keyword.put_new(:model, context.model)
+    |> Keyword.put_new(:trim_tokens_to_summarize, nil)
     |> Keyword.put_new_lazy(:max_input_tokens, fn -> context_window(context.model, context.model_opts) end)
     |> Summarization.new()
   end
@@ -1285,10 +1234,13 @@ defmodule BeamWeaver.Agent.Middleware.Subagents do
 
     parent_state
     |> Map.reject(fn {key, _value} -> child_state_excluded_key?(key) end)
-    |> Map.put(:messages, inherited ++ [Message.user(description)])
+    |> Map.put(:messages, inherited ++ [task_message(inherited, description)])
   end
 
   defp child_state(_parent_state, description, _subagent), do: %{messages: [Message.user(description)]}
+
+  defp task_message([], description), do: Message.user(description)
+  defp task_message(_inherited, description), do: Message.user(@inherited_conversation_note <> to_string(description))
 
   defp stable_parent_message?(%Message{role: :tool}), do: false
 

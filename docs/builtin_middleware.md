@@ -456,9 +456,8 @@ Replaces the system prompt on every model call with the result of `prompt`:
 a string, a function of the request, a function of `state` and `runtime`, or
 an `{module, function, args}` tuple. It replaces the agent's
 `system_prompt`, so include the parts of it you want to keep. It runs before
-the other middleware, so the sections that `filesystem`, `memory`, `skills`,
-`subagents` and middleware such as `TodoList` add to the prompt come after
-yours:
+the other middleware, so the sections that `filesystem`, `memory`, `skills`
+and middleware such as `TodoList` add to the prompt come after yours:
 
 ```elixir
 defmodule MyApp.SupportAgent do
@@ -651,8 +650,12 @@ a single `{:messages, n}`, `{:tokens, n}` or `{:fraction, f}`. Unlike
 `ContextEditing`, the summary replaces the history in the saved state. A
 `summarizer:` function of the old messages can write the summary instead of
 a model. A failed summary call is retried unless retrying can't help; when it
-still fails, the run returns the error and keeps the history. See
-[Context Management](context_management.md#summarize-old-messages), which
+still fails, the run returns the error and keeps the history. A model call
+that the provider rejects as too long for the model summarizes the thread
+too, whatever the `trigger`, and is sent once more, unless `on_overflow:
+false` leaves that to the caller (see
+[Context Management](context_management.md#recover-from-context-overflow-errors)).
+See [Context Management](context_management.md#summarize-old-messages), which
 also covers choosing between them.
 
 ## Documented elsewhere
@@ -668,6 +671,7 @@ also covers choosing between them.
 | `SubagentOutputs` | listing it in `middleware`, for your own subagent tools | [Subagents](subagents.md) |
 | `ShellTool` | listing it in `middleware` with a `policy:`, which it requires | [Sandboxes](sandboxes.md) |
 | `ToolEmulator` | listing it in `middleware` | [Testing](testing.md#emulate-tools-with-side-effects) |
+| `UnsupportedMedia` | every agent and subagent, after its own middleware | [Models](models.md#images-and-pdfs) |
 | `PromptCaching` | `prompt_caching` | [Caching](caching.md) |
 | `OverflowRecovery`, `CompactConversation` | `overflow_recovery`, `compact_conversation` | [Context Management](context_management.md) |
 | `AutoMode` | listing it in `middleware` | [Guardrails](guardrails.md#block-risky-tool-calls) |

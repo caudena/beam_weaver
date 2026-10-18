@@ -142,6 +142,7 @@ what the model reads:
 | `{:ok, map_or_list}` | the value encoded as JSON |
 | `{:ok, %BeamWeaver.Core.ToolResult{}}` | its `content`; the artifact stays with your app ([Artifacts](#artifacts)) |
 | `{:ok, {content, artifact}}`, with `response_format :content_and_artifact` | `content`; the artifact stays with your app ([Artifacts](#artifacts)) |
+| `{:ok, %BeamWeaver.Core.Message{role: :tool}}` | its `content`, which can hold content blocks, such as an image from `BeamWeaver.Core.ContentBlock.image/1` |
 | `{:ok, %BeamWeaver.Graph.Command{}}` | its tool message; the rest updates state ([Updating state](#updating-state)) |
 | `{:error, "reason"}` or `{:error, %BeamWeaver.Core.Error{}}` | `Tool error:`, the reason or error message, and the call's arguments |
 
@@ -466,7 +467,7 @@ you switch on in the agent, which also adds instructions to the prompt:
 | Module | Tools | Guide |
 | --- | --- | --- |
 | `BeamWeaver.Tools.Todo` | `write_todos`, a task list in the agent's state | [Deep Agents](deep_agents.md) |
-| `BeamWeaver.Tools.Filesystem` | `ls`, `read_file`, `write_file`, `edit_file`, `glob`, `grep` | [Filesystem](filesystem.md) |
+| `BeamWeaver.Tools.Filesystem` | `ls`, `read_file`, `write_file`, `edit_file`, `glob`, `grep`, and `execute` on a backend that runs commands | [Filesystem](filesystem.md) |
 | `BeamWeaver.Tools.FileSearch` | `file_search` over local files or a retriever | [Retrieval](retrieval.md) |
 | `BeamWeaver.Tools.Shell` | `shell`, limited to the commands a policy allows | [Sandboxes](sandboxes.md) |
 | `BeamWeaver.Tools.Subagents` | `task`, which hands work to a subagent | [Subagents](subagents.md) |

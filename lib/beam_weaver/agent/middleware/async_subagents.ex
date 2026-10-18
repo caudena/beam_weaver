@@ -5,6 +5,12 @@ defmodule BeamWeaver.Agent.Middleware.AsyncSubagents do
   The first implementation keeps task metadata in graph state and is designed
   so an HTTP client adapter can be plugged in without changing the agent-facing
   tools.
+
+  It adds nothing to the system prompt unless given `system_prompt:`, which
+  adds that text followed by the list of async subagents.
+
+  Every client call gets `parent:` in its opts, which says which agent, thread
+  and tool call made it; see `t:BeamWeaver.Agent.Protocol.Client.parent/0`.
   """
 
   use BeamWeaver.Agent.Middleware
@@ -13,37 +19,46 @@ defmodule BeamWeaver.Agent.Middleware.AsyncSubagents do
   alias BeamWeaver.Agent.Protocol.Client
   alias BeamWeaver.Agent.Subagent.AsyncSpec
   alias BeamWeaver.Agent.Subagent.AsyncTask
+  alias BeamWeaver.Checkpoint
   alias BeamWeaver.Core.Message
   alias BeamWeaver.Core.Tool
+  alias BeamWeaver.Core.ToolRuntime
   alias BeamWeaver.Graph
   alias BeamWeaver.Graph.Command
   alias BeamWeaver.MapShape
+  alias BeamWeaver.Tracing
 
   import BeamWeaver.Agent.Middleware.Helpers, only: [append_prompt: 2]
   import BeamWeaver.Agent.Subagent.Helpers, only: [available_agents: 1, value: 2, value: 3]
 
-  @async_task_system_prompt """
-  ## Async subagents
+  # Listing skips these. `interrupted` isn't one: a person can resume the run
+  # on the server, and it runs on.
+  @terminal_statuses ~w(cancelled success error timeout complete completed)
 
-  You have access to async subagent tools that launch background tasks on remote Agent Protocol servers.
+  # Each tool offers only the arguments it reads.
+  @arguments %{
+    "task_id" => %{"type" => "string"},
+    "subagent_type" => %{"type" => "string"},
+    "description" => %{"type" => "string"},
+    "message" => %{"type" => "string"},
+    "status_filter" => %{
+      "type" => "string",
+      "enum" => ["running", "success", "error", "cancelled", "all"]
+    }
+  }
 
-  Use `start_async_task` to launch work and then return control to the user. Use `check_async_task`, `update_async_task`, `cancel_async_task`, and `list_async_tasks` only when the user asks for those follow-up actions.
+  # A status in the conversation was true when it was fetched; the task may
+  # have moved on since.
+  @stale_status_note "A status from an earlier call may be out of date, so call this tool again rather than repeating it."
 
-  Never poll task status in a loop. Always show the full task_id.
-  """
-
-  @terminal_statuses ~w(cancelled success error timeout interrupted complete completed)
-
-  defstruct subagents: [], system_prompt: @async_task_system_prompt
+  defstruct subagents: [], system_prompt: nil
 
   def new(opts \\ []) do
     subagents = opts |> Keyword.get(:subagents, []) |> List.wrap() |> Enum.map(&normalize/1)
     validate_unique_names!(subagents)
+    validate_clients!(subagents)
 
-    %__MODULE__{
-      subagents: subagents,
-      system_prompt: Keyword.get(opts, :system_prompt) || @async_task_system_prompt
-    }
+    %__MODULE__{subagents: subagents, system_prompt: Keyword.get(opts, :system_prompt)}
   end
 
   @impl true
@@ -67,35 +82,37 @@ defmodule BeamWeaver.Agent.Middleware.AsyncSubagents do
       async_tool(
         "start_async_task",
         start_description(middleware.subagents),
-        ["description"],
+        {["subagent_type", "description"], []},
         fn input -> start_task(middleware, input) end
       ),
-      async_tool("check_async_task", "Check asynchronous task status.", ["task_id"], fn input ->
-        check_task(middleware, input)
-      end),
+      async_tool(
+        "check_async_task",
+        "Check asynchronous task status. " <> @stale_status_note,
+        {["task_id"], []},
+        fn input -> check_task(middleware, input) end
+      ),
       async_tool(
         "update_async_task",
         "Append an update to an asynchronous task.",
-        ["task_id", "message"],
+        {["task_id", "message"], []},
         fn input -> update_task(middleware, input) end
       ),
-      async_tool("cancel_async_task", "Cancel an asynchronous task.", ["task_id"], fn input ->
+      async_tool("cancel_async_task", "Cancel an asynchronous task.", {["task_id"], []}, fn input ->
         cancel_task(middleware, input)
       end),
       async_tool(
         "list_async_tasks",
-        "List known asynchronous tasks with live statuses.",
-        [],
-        fn input ->
-          list_tasks(middleware, input)
-        end
+        "List known asynchronous tasks with live statuses. " <> @stale_status_note,
+        {[], ["status_filter"]},
+        fn input -> list_tasks(middleware, input) end
       )
     ]
   end
 
   @impl true
-  def wrap_model_call(%__MODULE__{system_prompt: nil}, %ModelRequest{} = request, handler),
-    do: handler.(request)
+  def wrap_model_call(%__MODULE__{system_prompt: prompt}, %ModelRequest{} = request, handler)
+      when prompt in [nil, ""],
+      do: handler.(request)
 
   def wrap_model_call(%__MODULE__{} = middleware, %ModelRequest{} = request, handler) do
     prompt =
@@ -107,7 +124,9 @@ defmodule BeamWeaver.Agent.Middleware.AsyncSubagents do
     |> handler.()
   end
 
-  defp normalize(%AsyncSpec{} = subagent), do: subagent
+  # A spec written as a struct gets its client from its `url:` as one built
+  # with `AsyncSpec.new/1` does.
+  defp normalize(%AsyncSpec{} = subagent), do: subagent |> Map.from_struct() |> AsyncSpec.new()
   defp normalize(opts), do: AsyncSpec.new(opts)
 
   defp validate_unique_names!(subagents) do
@@ -124,25 +143,23 @@ defmodule BeamWeaver.Agent.Middleware.AsyncSubagents do
     end
   end
 
-  defp async_tool(name, description, required, fun) do
-    properties =
-      %{
-        "task_id" => %{"type" => "string"},
-        "subagent_name" => %{"type" => "string"},
-        "subagent_type" => %{"type" => "string"},
-        "description" => %{"type" => "string"},
-        "message" => %{"type" => "string"},
-        "status_filter" => %{
-          "type" => "string",
-          "enum" => ["running", "success", "error", "cancelled", "all"]
-        }
-      }
+  # Without a client there is no remote run: the task would stay "running"
+  # with nothing behind it.
+  defp validate_clients!(subagents) do
+    case Enum.find(subagents, &is_nil(&1.client)) do
+      nil -> :ok
+      subagent -> raise ArgumentError, "async subagent #{inspect(subagent.name)} needs a client or a url"
+    end
+  end
+
+  defp async_tool(name, description, {required, optional}, fun) do
+    properties = Map.take(@arguments, required ++ optional)
 
     Tool.from_function!(
       name: name,
       description: description,
       input_schema: %{"type" => "object", "properties" => properties, "required" => required},
-      injected: %{state: :state, tool_call_id: :tool_call_id},
+      injected: %{state: :state, tool_call_id: :tool_call_id, tool_runtime: :tool_runtime},
       handler: fn input, _opts -> fun.(input) end,
       metadata: %{integration: :deepagents, kind: :async_subagent}
     )
@@ -161,7 +178,7 @@ defmodule BeamWeaver.Agent.Middleware.AsyncSubagents do
              subagent.client,
              subagent,
              start_payload(subagent, description),
-             []
+             client_opts(input, subagent)
            ) do
         {:ok, remote} ->
           task_id =
@@ -203,7 +220,7 @@ defmodule BeamWeaver.Agent.Middleware.AsyncSubagents do
       {:ok, task} ->
         with {:ok, subagent} <- task_subagent(middleware, task),
              {:ok, remote} <-
-               Client.check_task(subagent.client, subagent, task_id, []) do
+               Client.check_task(subagent.client, subagent, task_id, client_opts(input, subagent)) do
           maybe_task_command(input, "check_async_task", task_id, refresh(task, remote, timestamp()))
         else
           :no_remote_client -> encode_task(task)
@@ -226,7 +243,8 @@ defmodule BeamWeaver.Agent.Middleware.AsyncSubagents do
         updated = task |> Map.update(:updates, [update], &(&1 ++ [update])) |> Map.put(:last_updated_at, now)
 
         with {:ok, subagent} <- task_subagent(middleware, task),
-             {:ok, remote} <- Client.update_task(subagent.client, subagent, task_id, update.message, []) do
+             {:ok, remote} <-
+               Client.update_task(subagent.client, subagent, task_id, update.message, client_opts(input, subagent)) do
           task_command(
             input,
             "update_async_task",
@@ -253,7 +271,7 @@ defmodule BeamWeaver.Agent.Middleware.AsyncSubagents do
         checked = task |> Map.put(:last_checked_at, now) |> Map.put(:last_updated_at, now)
 
         with {:ok, subagent} <- task_subagent(middleware, task),
-             {:ok, remote} <- Client.cancel_task(subagent.client, subagent, task_id, []) do
+             {:ok, remote} <- Client.cancel_task(subagent.client, subagent, task_id, client_opts(input, subagent)) do
           cancelled = checked |> Map.put(:status, remote_status(remote, "cancelled")) |> merge_remote(remote)
           task_command(input, "cancel_async_task", task_id, cancelled)
         else
@@ -272,7 +290,7 @@ defmodule BeamWeaver.Agent.Middleware.AsyncSubagents do
     now = timestamp()
 
     refreshed =
-      Map.new(all_tasks, fn {task_id, task} -> {task_id, live_task(middleware, task, now)} end)
+      Map.new(all_tasks, fn {task_id, task} -> {task_id, live_task(middleware, input, task, now)} end)
 
     filtered = filter_tasks(refreshed, value(input, :status_filter, "all"))
 
@@ -348,6 +366,44 @@ defmodule BeamWeaver.Agent.Middleware.AsyncSubagents do
     }
   end
 
+  # Every client call says which agent made it, so a client can, for example,
+  # run the subagent in its parent's sandbox or nest its trace under the
+  # parent's.
+  defp client_opts(input, %AsyncSpec{name: name}) do
+    tool_runtime = value(input, :tool_runtime)
+
+    [
+      parent:
+        Map.merge(
+          %{
+            thread_id: parent_thread_id(tool_runtime),
+            run_id: parent_run_id(tool_runtime),
+            tool_call_id: value(input, :tool_call_id),
+            subagent_name: name
+          },
+          parent_trace(Tracing.capture_context())
+        )
+    ]
+  end
+
+  defp parent_thread_id(%ToolRuntime{config: config}) when is_map(config) do
+    case Checkpoint.configurable(config) do
+      %{"thread_id" => thread_id} when thread_id not in [nil, ""] -> to_string(thread_id)
+      _configurable -> nil
+    end
+  end
+
+  defp parent_thread_id(_tool_runtime), do: nil
+
+  defp parent_run_id(%ToolRuntime{runtime: %{run_id: run_id}}) when not is_nil(run_id), do: to_string(run_id)
+  defp parent_run_id(_tool_runtime), do: nil
+
+  # The tool call's own trace run, which the subagent's trace can nest under.
+  defp parent_trace(%Tracing.Context{trace_id: trace_id, run_id: run_id}),
+    do: %{trace_id: trace_id, trace_run_id: run_id}
+
+  defp parent_trace(nil), do: %{trace_id: nil, trace_run_id: nil}
+
   defp task_subagent(%__MODULE__{subagents: subagents}, task) do
     name = value(task, :subagent_name)
 
@@ -377,10 +433,12 @@ defmodule BeamWeaver.Agent.Middleware.AsyncSubagents do
       else: checked
   end
 
-  defp live_task(%__MODULE__{} = middleware, task, now) do
+  defp live_task(%__MODULE__{} = middleware, input, task, now) do
+    task_id = value(task, :task_id) || value(task, :id)
+
     with false <- value(task, :status) in @terminal_statuses,
          {:ok, subagent} <- task_subagent(middleware, task),
-         {:ok, remote} <- Client.check_task(subagent.client, subagent, value(task, :task_id) || value(task, :id), []) do
+         {:ok, remote} <- Client.check_task(subagent.client, subagent, task_id, client_opts(input, subagent)) do
       refresh(task, remote, now)
     else
       _other -> task
@@ -437,7 +495,7 @@ defmodule BeamWeaver.Agent.Middleware.AsyncSubagents do
 
   defp start_description(subagents) do
     """
-    Start an async subagent on a remote server. The subagent runs in the background and returns a task ID immediately.
+    Start an async subagent on a remote server. The subagent runs in the background and returns a task ID immediately; the other async task tools take that ID. Give the user the full task ID and stop: check on the task only when the user asks, never in a loop.
 
     Available async agent types:
     #{available_agents(subagents)}
