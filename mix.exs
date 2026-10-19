@@ -5,8 +5,8 @@ defmodule BeamWeaver.MixProject do
     [
       app: :beam_weaver,
       version: "1.0.0",
-      description: "Elixir-native LangChain with harness for traceable LLM apps: OTP workflows, tools, memory, human-in-the-loop, streaming, custom clients/adapters, minimal deps, and WeaveScope tracing.",
-      source_url: "https://github.com/caudena/beam_weaver",
+      description:
+        "Elixir-native LangChain with harness for traceable LLM apps: OTP workflows, tools, memory, human-in-the-loop, streaming, custom clients/adapters, minimal deps, and WeaveScope tracing.",
       source_url: "https://github.com/caudena/beam_weaver",
       homepage_url: "https://github.com/caudena/beam_weaver",
       elixir: "~> 1.19",
