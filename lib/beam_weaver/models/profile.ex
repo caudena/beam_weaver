@@ -2,6 +2,11 @@ defmodule BeamWeaver.Models.Profile do
   @moduledoc """
   Model capability metadata.
 
+  `context_limit_kind` says how the limits apply: `:separate_input` when
+  `max_input_tokens` bounds the request alone, and `:shared_input_output`
+  when the request and its output share `max_context_tokens`.
+  `BeamWeaver.ContextBudget` rejects any other kind.
+
   `reasoning_effort_levels` lists the reasoning efforts a model takes, such as
   `[:low, :medium, :high]`, and is empty when it takes none or BeamWeaver
   doesn't know them. `reasoning_effort_default` is the effort the provider

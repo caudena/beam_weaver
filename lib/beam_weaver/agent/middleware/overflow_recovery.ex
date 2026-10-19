@@ -6,10 +6,12 @@ defmodule BeamWeaver.Agent.Middleware.OverflowRecovery do
   middleware clips the trailing batch of tool results and retries once. A
   generic result is saved to a file under `/large_tool_results/` and replaced
   with a preview of its first and last lines; a `read_file` result is cut to
-  its first 4,000 characters and points back to the file it came from. When
-  the retry succeeds, the clipped results replace the full ones in the saved
-  thread, and with `BeamWeaver.Filesystem.State` the saved files are added to
-  the thread's files, so later calls don't send the full results again.
+  its first 4,000 characters and points back to the file it came from. The
+  previews tell the model to read the rest with `read_file` only when the
+  call offers that tool. When the retry succeeds, the clipped results replace
+  the full ones in the saved thread, and with `BeamWeaver.Filesystem.State`
+  the saved files are added to the thread's files, so later calls don't send
+  the full results again.
 
   With `:summarization`, a call that still overflows once its results are
   clipped, or that has nothing to clip, is sent once more with the thread
@@ -59,8 +61,10 @@ defmodule BeamWeaver.Agent.Middleware.OverflowRecovery do
 
   @read_file_truncation_notice """
 
-  [Output was truncated due to context window size limits. The full content is at %{file_path}. Use read_file with offset and limit parameters to retrieve specific portions. For example, to read the first 100 lines, call read_file with file_path='%{file_path}', offset=0, limit=100.]
+  [Output was truncated due to context window size limits. The full content is at %{file_path}.%{how_to_read}]
   """
+
+  @read_file_how_to_read " Use read_file with offset and limit parameters to retrieve specific portions. For example, to read the first 100 lines, call read_file with file_path='%{file_path}', offset=0, limit=100."
 
   defstruct messages: [],
             replacements: [],
@@ -168,6 +172,8 @@ defmodule BeamWeaver.Agent.Middleware.OverflowRecovery do
   - `:max_input_tokens` - model input token limit for fractional keep settings.
   - `:token_counter` - `:approximate` or a one-arity function.
   - `:large_tool_results_prefix` - virtual output prefix.
+  - `:tools` - the tools the model is offered, default `[]`. The previews tell
+    the model to use `read_file` only when it is one of them.
   - `:state`, `:runtime`, `:store`, `:state_key` - backend write context.
   """
   @spec clip_tail([Message.t()], Filesystem.t(), keyword()) :: t()
@@ -215,6 +221,7 @@ defmodule BeamWeaver.Agent.Middleware.OverflowRecovery do
         max_input_tokens: middleware.max_input_tokens,
         token_counter: middleware.token_counter,
         large_tool_results_prefix: middleware.large_tool_results_prefix,
+        tools: request.tools || [],
         state: request.state || %{},
         runtime: request.runtime,
         state_key: middleware.state_key
@@ -290,7 +297,7 @@ defmodule BeamWeaver.Agent.Middleware.OverflowRecovery do
   defp clip_one(message, tool_call_index, backend, opts, files_acc) do
     case read_file_original_path(message, tool_call_index) do
       path when is_binary(path) and path != "" ->
-        {slice_read_file_message(message, path), files_acc}
+        {slice_read_file_message(message, path, opts), files_acc}
 
       _missing ->
         offload_tool_message(message, backend, opts, files_acc)
@@ -309,8 +316,13 @@ defmodule BeamWeaver.Agent.Middleware.OverflowRecovery do
 
   defp read_file_original_path(_message, _tool_call_index), do: nil
 
-  defp slice_read_file_message(%Message{} = message, path) do
-    notice = String.replace(@read_file_truncation_notice, "%{file_path}", path)
+  defp slice_read_file_message(%Message{} = message, path, opts) do
+    how_to_read = if read_file_offered?(opts), do: @read_file_how_to_read, else: ""
+
+    notice =
+      @read_file_truncation_notice
+      |> Offload.format_notice(how_to_read: how_to_read)
+      |> Offload.format_notice(file_path: path)
 
     %{
       message
@@ -340,7 +352,7 @@ defmodule BeamWeaver.Agent.Middleware.OverflowRecovery do
 
     case Filesystem.write(backend, file_path, content, write_opts) do
       %Filesystem.WriteResult{error: nil, files_update: files_update} ->
-        replacement = Offload.tool_result_notice(tool_call_id, file_path, content)
+        replacement = Offload.tool_result_notice(tool_call_id, file_path, content, read_file_offered?(opts))
 
         {%{message | content: Offload.evicted_content(message, replacement)},
          Offload.merge_files_update(files_acc, files_update)}
@@ -349,6 +361,10 @@ defmodule BeamWeaver.Agent.Middleware.OverflowRecovery do
         {nil, files_acc}
     end
   end
+
+  # Whether the model is offered `read_file`, which the previews then tell it
+  # to read the full result with.
+  defp read_file_offered?(opts), do: "read_file" in Helpers.tool_names(Keyword.get(opts, :tools) || [])
 
   defp backend_opts(opts) do
     [

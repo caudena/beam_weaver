@@ -8,10 +8,12 @@ defmodule BeamWeaver.Agent.Compiler.Routing do
 
   def model_router(state), do: State.jump_to(state) || route_model_messages(state)
 
+  # A tool's jump to the model sends the results to it, also from a tool that
+  # returns directly; a jump to the tools has nothing to run here.
   def tools_router(state) do
     case State.jump_to(state) do
-      :end -> :end
-      _other -> route_tools_result(state)
+      jump when jump in [:end, :model] -> jump
+      _tools_or_none -> route_tools_result(state)
     end
   end
 

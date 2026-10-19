@@ -4,7 +4,9 @@ defmodule BeamWeaver.Agent.Middleware.Filesystem do
   `BeamWeaver.Tools.Filesystem` and a system prompt describing them.
 
   It also writes oversized tool results and user messages to files and shows
-  the model a short preview with the file path instead.
+  the model a short preview with the file path instead. The preview tells the
+  model to read the file with `read_file` only when the call offers that
+  tool.
   """
 
   use BeamWeaver.Agent.Middleware
@@ -15,6 +17,7 @@ defmodule BeamWeaver.Agent.Middleware.Filesystem do
   alias BeamWeaver.Agent.ModelRequest
   alias BeamWeaver.Agent.ModelResponse
   alias BeamWeaver.Agent.ToolCallRequest
+  alias BeamWeaver.Agent.ToolSet
   alias BeamWeaver.Core.ID
   alias BeamWeaver.Core.Message
   alias BeamWeaver.Core.Tool
@@ -88,11 +91,14 @@ defmodule BeamWeaver.Agent.Middleware.Filesystem do
   @too_large_human_msg """
   Message content too large and was saved to the filesystem at: %{file_path}
 
-  You can read the full content using the read_file tool with pagination (offset and limit parameters).
-
-  Here is a preview showing the head and tail of the content%{preview_notes}:
+  %{how_to_read}Here is a preview showing the head and tail of the content%{preview_notes}:
 
   %{content_sample}
+  """
+
+  @read_saved_message """
+  You can read the full content using the read_file tool with pagination (offset and limit parameters).
+
   """
 
   defstruct backend: State.new(),
@@ -324,7 +330,7 @@ defmodule BeamWeaver.Agent.Middleware.Filesystem do
 
     case Filesystem.write(middleware.backend, file_path, content, opts) do
       %Filesystem.WriteResult{error: nil, files_update: files_update} ->
-        replacement = Offload.tool_result_notice(tool_call_id, file_path, content)
+        replacement = Offload.tool_result_notice(tool_call_id, file_path, content, read_file_offered?(request))
         {:ok, %{message | content: Offload.evicted_content(message, replacement)}, files_update}
 
       _error ->
@@ -356,7 +362,7 @@ defmodule BeamWeaver.Agent.Middleware.Filesystem do
         evict_latest_human_message(middleware, request, messages, last_index)
 
       Enum.any?(messages, &(match?(%Message{role: :user}, &1) and evicted_to(&1) not in [nil, ""])) ->
-        {Enum.map(messages, &truncate_evicted_human_message/1), nil}
+        {Enum.map(messages, &truncate_evicted_human_message(&1, read_file_offered?(request))), nil}
 
       true ->
         {messages, nil}
@@ -372,7 +378,7 @@ defmodule BeamWeaver.Agent.Middleware.Filesystem do
       %Filesystem.WriteResult{error: nil, files_update: files_update} ->
         tagged = tag_evicted_human_message(message, file_path)
         tagged_messages = List.replace_at(messages, index, tagged)
-        model_messages = Enum.map(tagged_messages, &truncate_evicted_human_message/1)
+        model_messages = Enum.map(tagged_messages, &truncate_evicted_human_message(&1, read_file_offered?(request)))
 
         update =
           MapShape.put_present(%{messages: Overwrite.new(tagged_messages)}, middleware.state_key, files_update)
@@ -384,13 +390,18 @@ defmodule BeamWeaver.Agent.Middleware.Filesystem do
     end
   end
 
-  defp truncate_evicted_human_message(%Message{role: :user} = message) do
+  defp truncate_evicted_human_message(%Message{role: :user} = message, read_file?) do
     case evicted_to(message) do
       path when is_binary(path) and path != "" ->
         {sample, notes} = message |> Message.text() |> Offload.preview()
 
         replacement =
-          Offload.format_notice(@too_large_human_msg, file_path: path, preview_notes: notes, content_sample: sample)
+          Offload.format_notice(@too_large_human_msg,
+            how_to_read: if(read_file?, do: @read_saved_message, else: ""),
+            file_path: path,
+            preview_notes: notes,
+            content_sample: sample
+          )
 
         %{message | content: Offload.evicted_content(message, replacement)}
 
@@ -399,7 +410,12 @@ defmodule BeamWeaver.Agent.Middleware.Filesystem do
     end
   end
 
-  defp truncate_evicted_human_message(message), do: message
+  defp truncate_evicted_human_message(message, _read_file?), do: message
+
+  # Whether the model is offered `read_file`, which the notices for saved
+  # results and messages then tell it to read them with.
+  defp read_file_offered?(%ModelRequest{tools: tools}), do: "read_file" in Helpers.tool_names(tools || [])
+  defp read_file_offered?(%ToolCallRequest{tool_set: tool_set}), do: "read_file" in ToolSet.names(tool_set)
 
   defp tag_evicted_human_message(%Message{} = message, file_path),
     do: %{message | id: message.id || ID.uuidv7(), metadata: Map.put(message.metadata, :offloaded_to, file_path)}

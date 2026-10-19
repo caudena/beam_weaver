@@ -90,10 +90,13 @@ defmodule BeamWeaver.ContextBudget do
     do: {:error, Error.new(:invalid_rendered_request, "rendered request must be binary")}
 
   @doc """
-  Resolves the usable input limit from the profile's declared limit semantics.
+  Resolves the usable input limit from the profile's `context_limit_kind`.
 
-  Separate input limits subtract provider-reserved tokens. Shared
-  input/output limits also subtract `:requested_max_output_tokens`.
+  `:separate_input` takes `max_input_tokens` less the provider-reserved
+  tokens. `:shared_input_output`, a window the request and its output share,
+  takes `max_context_tokens` less the reserved tokens and
+  `:requested_max_output_tokens`. Any other kind fails with
+  `:unknown_context_limit`.
   """
   @spec effective_input_limit(map() | struct(), keyword()) ::
           {:ok, pos_integer()} | {:error, Error.t()}

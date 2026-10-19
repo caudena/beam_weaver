@@ -70,6 +70,7 @@ defmodule BeamWeaver.Agent do
   alias BeamWeaver.Agent.Built
   alias BeamWeaver.Agent.DSL
   alias BeamWeaver.Core.Error
+  alias BeamWeaver.Graph.Command
   alias BeamWeaver.Graph.Compiled
 
   @typedoc "Initial state or new thread input; messages accept strings and Message values."
@@ -382,4 +383,54 @@ defmodule BeamWeaver.Agent do
   """
   @spec compiled_graph(agent_module(), keyword()) :: {:ok, Compiled.t()} | {:error, Error.t()}
   defdelegate compiled_graph(agent_module, opts \\ []), to: BeamWeaver.Agent.Runner
+
+  @jump_destinations [:end, :model, :tools]
+
+  @doc """
+  Returns a `BeamWeaver.Graph.Command` that applies `update`, then jumps to
+  `destination`, as `{:jump, destination, update}` does from a state hook.
+  `destination` is `:end`, `:model` or `:tools`; anything else raises
+  `ArgumentError`.
+
+    * A tool returns it, or a `wrap_tool_call` wrapper returns it as its
+      result: `:end` ends the run once the round's tool calls have run, and
+      `:model` sends their results to the model, also from a tool that
+      returns directly. The update's messages answer the tool call, as with
+      any command a tool returns.
+    * A `wrap_model_call` wrapper returns it as the `command` of a
+      `BeamWeaver.Agent.ExtendedModelResponse`: the jump follows the
+      model's reply.
+
+  ```elixir
+  defmodule MyApp.CloseTicket do
+    use BeamWeaver.Tool
+
+    name "close_ticket"
+    description "Close a support ticket. The conversation ends with it."
+
+    schema do
+      field :ticket_id, :string
+    end
+
+    @impl true
+    def invoke(_tool, %{"ticket_id" => id}, _opts) do
+      message = BeamWeaver.Core.Message.tool("Ticket \#{id} closed.")
+      {:ok, BeamWeaver.Agent.jump(:end, %{messages: [message]})}
+    end
+  end
+  ```
+
+  See [What hooks return](middleware.md#what-hooks-return).
+  """
+  @spec jump(:end | :model | :tools, map()) :: Command.t()
+  def jump(destination, update \\ %{})
+
+  def jump(destination, update) when destination in @jump_destinations and is_map(update) and not is_struct(update),
+    do: %Command{update: Map.put(update, :jump_to, destination)}
+
+  def jump(destination, update) when destination in @jump_destinations,
+    do: raise(ArgumentError, "jump update must be a map, got: #{inspect(update)}")
+
+  def jump(destination, _update),
+    do: raise(ArgumentError, "jump destination must be :end, :model or :tools, got: #{inspect(destination)}")
 end

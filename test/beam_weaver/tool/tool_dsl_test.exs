@@ -71,6 +71,31 @@ defmodule BeamWeaver.Tool.DSLTest do
     def invoke(_tool, input, _opts), do: {:ok, String.upcase(input.value)}
   end
 
+  # Its schema is built from the struct, which the DSL can't declare.
+  defmodule SectionSearch do
+    use BeamWeaver.Core.Tool
+
+    defstruct sections: ["billing", "shipping", "returns"]
+
+    @impl true
+    def name(_tool), do: "search_section"
+
+    @impl true
+    def description(_tool), do: "Search one section of the help center."
+
+    @impl true
+    def input_schema(%__MODULE__{sections: sections}) do
+      %{
+        "type" => "object",
+        "properties" => %{"query" => %{"type" => "string"}, "section" => %{"type" => "string", "enum" => sections}},
+        "required" => ["query", "section"]
+      }
+    end
+
+    @impl true
+    def invoke(_tool, %{"query" => query, "section" => section}, _opts), do: {:ok, "#{section}: #{query}"}
+  end
+
   test "module DSL compiles to a normal executable tool behaviour" do
     assert Tool.name(SearchDocs) == "search_docs"
     assert Tool.description(%SearchDocs{}) == "Search support documentation"
@@ -156,6 +181,17 @@ defmodule BeamWeaver.Tool.DSLTest do
   test "direct behaviour modules work without the macro" do
     assert {:ok, "ADA"} = Tool.invoke(%DirectTool{}, %{value: "ada"})
     assert Tool.input_schema(%DirectTool{}).required == [:value]
+  end
+
+  test "use BeamWeaver.Core.Tool defaults the optional callbacks and takes a computed schema" do
+    search = %SectionSearch{sections: ["billing", "returns"]}
+
+    assert {:ok, "billing: refund"} = Tool.invoke(search, %{"query" => "refund", "section" => "billing"})
+    assert {:error, %{type: :invalid_input}} = Tool.invoke(search, %{"query" => "refund", "section" => "shipping"})
+    assert Tool.input_schema(search)["properties"]["section"]["enum"] == ["billing", "returns"]
+
+    assert {Tool.injected(search), Tool.return_direct(search), Tool.concurrent?(search)} == {%{}, false, true}
+    assert {Tool.max_result_chars(search), Tool.tags(search), Tool.metadata(search)} == {:unlimited, [], %{}}
   end
 
   test "provider-safe name validation happens while rendering provider schemas" do

@@ -163,8 +163,9 @@ defmodule BeamWeaver.Models.ProfileRegistry.Anthropic do
                         }
                       })
 
+  # The request and the output it asks for share one 1M-token window.
   @claude_5_5_profile Map.merge(@claude_5_1_profile, %{
-                        context_limit_kind: :shared_context,
+                        context_limit_kind: :shared_input_output,
                         max_context_tokens: 1_000_000,
                         last_updated: "2026-10-08",
                         temperature: false,

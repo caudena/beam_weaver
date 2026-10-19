@@ -360,6 +360,58 @@ Supply the constructed tool to an agent and verify its call:
 true = Enum.any?(result.messages, &(&1.role == :tool and &1.name == "search_billing_articles"))
 ```
 
+## Tools with a computed schema
+
+`use BeamWeaver.Tool` fixes the schema when the module compiles. When the
+schema depends on data, such as a struct's fields, call
+`use BeamWeaver.Core.Tool` and write the callbacks yourself. Define
+`name/1`, `description/1`, `input_schema/1` and `invoke/3`; every other
+callback gets a default unless the module defines it. Each callback's first
+argument is the tool, here the struct.
+
+This search tool offers only the sections its struct names:
+
+```elixir
+defmodule MyApp.Tools.SectionSearch do
+  use BeamWeaver.Core.Tool
+
+  defstruct sections: ["billing", "shipping", "returns"]
+
+  @impl true
+  def name(_tool), do: "search_section"
+
+  @impl true
+  def description(_tool), do: "Search one section of Acme's help center."
+
+  @impl true
+  def input_schema(%__MODULE__{sections: sections}) do
+    %{
+      "type" => "object",
+      "properties" => %{
+        "query" => %{"type" => "string"},
+        "section" => %{"type" => "string", "enum" => sections}
+      },
+      "required" => ["query", "section"]
+    }
+  end
+
+  @impl true
+  def invoke(_tool, %{"query" => query, "section" => section}, _opts) do
+    {:ok, "Top #{section} article for #{inspect(query)}: Refunds take 5 business days."}
+  end
+end
+```
+
+List the struct in `tools`, or call it directly. A section it doesn't offer
+fails before `invoke/3`:
+
+```elixir
+search = %MyApp.Tools.SectionSearch{sections: ["billing", "returns"]}
+{:ok, "Top billing article for \"refund\": Refunds take 5 business days."} =
+  Tool.invoke(search, %{"query" => "refund", "section" => "billing"})
+{:error, %{type: :invalid_input}} = Tool.invoke(search, %{"query" => "refund", "section" => "shipping"})
+```
+
 ## Built-in tools
 
 Capability declarations add coordinated tools and instructions: filesystem

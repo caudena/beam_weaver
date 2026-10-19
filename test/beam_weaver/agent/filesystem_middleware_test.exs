@@ -17,26 +17,36 @@ defmodule BeamWeaver.Agent.FilesystemMiddlewareTest do
   describe "the offload notice" do
     test "mentions omitted lines only when lines were omitted" do
       short =
-        Offload.tool_result_notice("call_1", "/large_tool_results/call_1", Enum.map_join(1..8, "\n", &"row #{&1}"))
+        Offload.tool_result_notice(
+          "call_1",
+          "/large_tool_results/call_1",
+          Enum.map_join(1..8, "\n", &"row #{&1}"),
+          true
+        )
 
       refute short =~ "lines truncated"
       assert short =~ "     8\trow 8"
 
       long =
-        Offload.tool_result_notice("call_1", "/large_tool_results/call_1", Enum.map_join(1..30, "\n", &"row #{&1}"))
+        Offload.tool_result_notice(
+          "call_1",
+          "/large_tool_results/call_1",
+          Enum.map_join(1..30, "\n", &"row #{&1}"),
+          true
+        )
 
       assert long =~ "lines of the form `... [N lines truncated] ...` indicate omitted lines"
       assert long =~ "... [20 lines truncated] ..."
     end
 
     test "says when long lines were cut off" do
-      notice = Offload.tool_result_notice("call_1", "/large_tool_results/call_1", String.duplicate("x", 90_000))
+      notice = Offload.tool_result_notice("call_1", "/large_tool_results/call_1", String.duplicate("x", 90_000), true)
 
       refute notice =~ "lines truncated"
       assert notice =~ "lines longer than 1,000 characters are cut off after 1,000 characters"
       assert String.ends_with?(String.trim_trailing(notice), "\t" <> String.duplicate("x", 1_000))
 
-      refute Offload.tool_result_notice("call_1", "/large_tool_results/call_1", "row 1\nrow 2") =~ "cut off"
+      refute Offload.tool_result_notice("call_1", "/large_tool_results/call_1", "row 1\nrow 2", true) =~ "cut off"
     end
   end
 
@@ -59,6 +69,65 @@ defmodule BeamWeaver.Agent.FilesystemMiddlewareTest do
     assert "/large_tool_results/" <> _id = second_path
     refute first_path == second_path
     assert Message.text(notice) =~ second_path
+  end
+
+  defmodule ExportOrders do
+    use BeamWeaver.Tool
+
+    name "export_orders"
+    description "Export all orders as CSV."
+
+    schema do
+    end
+
+    @impl true
+    def invoke(_tool, _input, _opts), do: {:ok, String.duplicate("A-1001,shipped\n", 6_000)}
+  end
+
+  describe "an offloaded result or message" do
+    test "names read_file only when the model is offered it" do
+      big_message = String.duplicate("Order A-1001 arrived damaged. ", 7_000)
+
+      for {excluded, offered?} <- [{[], true}, {["read_file"], false}] do
+        {:ok, agent} =
+          Agent.build(
+            model: %FakeChatModel{responses: [FakeChatModel.tool_call("export_orders"), "Done."], parent: self()},
+            tools: [ExportOrders],
+            filesystem: State.new(),
+            exclude_tools: excluded
+          )
+
+        assert {:ok, %{messages: messages}} = Agent.invoke(agent, %{messages: [big_message]})
+        assert_received {:fake_chat_model_call, [_system, user], _opts}
+
+        assert Message.text(user) =~ "Message content too large"
+        assert Message.text(user) =~ "read_file" == offered?
+
+        notice = messages |> Enum.find(&(&1.role == :tool)) |> Message.text()
+        assert notice =~ "Tool result too large"
+        assert notice =~ "/large_tool_results/"
+        assert notice =~ "read_file" == offered?
+      end
+    end
+
+    test "names read_file only when the call's tool set has it" do
+      middleware = Middleware.Filesystem.new(tool_token_limit_before_evict: 2)
+      big = Enum.map_join(1..12, "\n", &"row #{&1}")
+      handler = fn _request -> Message.tool(big, tool_call_id: "call_1", name: "export_orders") end
+      call = %{id: "call_1", name: "export_orders", args: %{}}
+
+      for {tools, offered?} <- [
+            {[ExportOrders], false},
+            {[ExportOrders | Middleware.Filesystem.tools(middleware)], true}
+          ] do
+        request = %ToolCallRequest{tool_call: call, tool_set: BeamWeaver.Agent.ToolSet.new(tools), state: %{}}
+
+        assert %Command{update: %{messages: [notice]}} =
+                 Middleware.Filesystem.wrap_tool_call(middleware, request, handler)
+
+        assert Message.text(notice) =~ "read_file" == offered?
+      end
+    end
   end
 
   describe "the filesystem prompt" do

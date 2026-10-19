@@ -77,6 +77,11 @@ omit details; verify preservation of facts important to your application.
 Summary calls have bounded retries for retryable errors. Persistent failure
 returns an error without activating the proposed history change.
 
+To summarize a history your application keeps outside an agent run, build
+the middleware with `Summarization.new/1` and call
+`Summarization.summarize/2`; see
+[Built-in Middleware](builtin_middleware.md#summarization).
+
 ## Clear old tool results
 
 `BeamWeaver.Agent.Middleware.ContextEditing` replaces older model-visible

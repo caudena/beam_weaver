@@ -208,7 +208,8 @@ defmodule BeamWeaver.Graph.Compiled do
   end
 
   @doc """
-  Returns graph introspection data for nodes, edges and rendering.
+  Returns graph introspection data for nodes, edges, entry and finish points,
+  and rendering. See `BeamWeaver.Graph.Introspection`.
   """
   @spec get_graph(t(), keyword()) :: Introspection.t()
   def get_graph(%__MODULE__{} = compiled, opts \\ []) do

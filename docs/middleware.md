@@ -92,12 +92,6 @@ message update operations in [Conversation History](short_term_memory.md).
 A jump skips remaining hooks of the current kind. Tool requests still pass
 through the after-model review path before execution.
 
-Model wrappers receive `BeamWeaver.Agent.ModelRequest`. Their handler returns
-`{:ok, BeamWeaver.Agent.ModelResponse}` or an error. Return that result, modify
-it, or short-circuit with an assistant message. Tool wrappers receive
-`BeamWeaver.Agent.ToolCallRequest`; their handler returns a tool message or
-command. A replacement tool message must answer the original `tool_call_id`.
-
 End a suspended-account run before sending a provider request. This is an application policy, not a provider failure:
 
 ```elixir
@@ -128,6 +122,57 @@ end
 
 Enum.map(result.messages, &{&1.role, BeamWeaver.Core.Message.text(&1)})
 #=> [user: "Where is my order?", assistant: "Your account is suspended. Please contact billing."]
+```
+
+Model wrappers receive `BeamWeaver.Agent.ModelRequest`. Their handler returns
+`{:ok, BeamWeaver.Agent.ModelResponse}` or an error. Return that result, modify
+it, or short-circuit with an assistant message. Tool wrappers receive
+`BeamWeaver.Agent.ToolCallRequest`; their handler returns a tool message or
+command. A replacement tool message must answer the original `tool_call_id`.
+
+Wrappers and tools jump with `BeamWeaver.Agent.jump/2`, which returns a
+`BeamWeaver.Graph.Command` holding the update and the jump:
+
+| Returned by | Effect |
+| --- | --- |
+| A tool, or a tool wrapper in place of the tool message | `:end` ends the run after the round's tool calls; `:model` sends their results to the model, also from a tool that returns directly |
+| A model wrapper, as the `command` of a `BeamWeaver.Agent.ExtendedModelResponse` | `:end` or `:model` applies after the reply and skips the `after_model` hooks |
+
+The update's messages must answer the call with a tool message. In a tool,
+`Message.tool/2` without `tool_call_id:` answers the current call; a tool
+wrapper passes `tool_call_id: request.tool_call.id`. This tool ends the run
+with its answer:
+
+```elixir
+defmodule MyApp.Tools.Escalate do
+  use BeamWeaver.Tool
+
+  alias BeamWeaver.Core.Message
+
+  name "escalate"
+  description "Hand the conversation to a human support agent."
+
+  schema do
+    field :reason, :string
+  end
+
+  @impl true
+  def invoke(_tool, _args, _opts),
+    do: {:ok, BeamWeaver.Agent.jump(:end, %{messages: [Message.tool("A support agent will reply by email.")]})}
+end
+
+defmodule MyApp.EscalatingAgent do
+  use BeamWeaver.Agent
+
+  model "openai:gpt-5.4-mini", max_tokens: 256, timeout: 60_000
+  system_prompt "Call escalate when the customer asks for a person."
+  tools [MyApp.Tools.Escalate]
+end
+
+{:ok, result} = MyApp.EscalatingAgent.invoke(%{messages: ["I want to talk to a person."]})
+last = List.last(result.messages)
+:tool = last.role
+"A support agent will reply by email." = BeamWeaver.Core.Message.text(last)
 ```
 
 ## A prompt that depends on the customer
@@ -172,8 +217,8 @@ Do not include secrets merely because they are available in context.
 
 Override `tools:` with `ModelRequest.override/2` when filtering the available
 set. It updates both the model-visible declarations and the execution
-registry. Directly replacing the request's `tools` field only changes what
-the model sees. `ToolSelection` provides allowlists, denylists and selectors.
+registry. Assigning the request's `tools` field directly changes neither.
+`ToolSelection` provides allowlists, denylists and selectors.
 
 For checks on the actual requested arguments, use `wrap_tool_call/3` and call
 its handler only after authorization. A denial can return an error tool

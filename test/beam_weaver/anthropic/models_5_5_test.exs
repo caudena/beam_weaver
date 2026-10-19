@@ -24,7 +24,7 @@ defmodule BeamWeaver.Anthropic.Models55Test do
       assert profile in ProfileRegistry.all()
       assert model.max_tokens == 128_000
       assert profile.max_input_tokens == 1_000_000
-      assert profile.context_limit_kind == :shared_context
+      assert profile.context_limit_kind == :shared_input_output
       assert profile.max_context_tokens == 1_000_000
       assert profile.max_output_tokens == 128_000
       assert profile.release_date == released

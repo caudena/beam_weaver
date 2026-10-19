@@ -4,6 +4,11 @@ defmodule BeamWeaver.Graph.Introspection do
 
   The struct is plain data so it can be rendered, tested, serialized, or used by
   documentation tooling without reaching into graph execution runtime internals.
+
+  `entry_points` holds the nodes that edges from the start lead to, and
+  `finish_points` the nodes with an edge to the end, both sorted. Plain edges
+  from the start or to the end show only there, not in `edges`. Routes a
+  router chooses at run time, such as an agent's, are in `branches`.
   """
 
   alias BeamWeaver.Graph.Compiled
@@ -12,6 +17,8 @@ defmodule BeamWeaver.Graph.Introspection do
     :name,
     nodes: %{},
     edges: [],
+    entry_points: [],
+    finish_points: [],
     branches: [],
     waiting_edges: [],
     channels: %{},
@@ -33,6 +40,8 @@ defmodule BeamWeaver.Graph.Introspection do
       name: compiled.name,
       nodes: node_metadata(graph),
       edges: edge_metadata(graph),
+      entry_points: Enum.sort(graph.entry_points),
+      finish_points: graph.finish_points |> Enum.to_list() |> Enum.sort(),
       branches: branch_metadata(graph),
       waiting_edges: waiting_edge_metadata(graph),
       channels: channel_metadata(graph),

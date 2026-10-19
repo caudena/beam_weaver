@@ -4,8 +4,9 @@ defmodule BeamWeaver.Agent.ModelRequest do
 
   Contains the selected model, messages, system instructions, offered tools,
   response format, model options, state and runtime. Use `override/2` to derive
-  a changed request. Replacing tools through that function also updates the
-  execution registry; directly changing the tools field does not.
+  a changed request. Replacing tools through that function changes both the
+  tools the model sees and the execution registry; assigning the `tools` field
+  directly changes neither.
 
   Request edits affect a model call rather than implicitly rewriting saved
   conversation state. Runtime context is available through `runtime.context`.

@@ -1,7 +1,11 @@
 defmodule BeamWeaver.Agent.MiddlewareJumpTest do
   use ExUnit.Case, async: true
 
+  alias BeamWeaver.Agent
+  alias BeamWeaver.Agent.ExtendedModelResponse
+  alias BeamWeaver.Agent.ModelResponse
   alias BeamWeaver.Core.Message
+  alias BeamWeaver.Graph.Command
   alias BeamWeaver.Models.FakeChatModel
 
   defmodule LookupOrder do
@@ -141,6 +145,159 @@ defmodule BeamWeaver.Agent.MiddlewareJumpTest do
     middleware [BeamWeaver.Agent.MiddlewareJumpTest.LookupFirst]
   end
 
+  defmodule CloseTicket do
+    use BeamWeaver.Tool
+
+    name "close_ticket"
+    description "Close a support ticket. The conversation ends with it."
+
+    schema do
+      field :ticket_id, :string
+    end
+
+    @impl true
+    def invoke(_tool, %{"ticket_id" => id}, _opts),
+      do: {:ok, BeamWeaver.Agent.jump(:end, %{messages: [Message.tool("Ticket #{id} closed.")]})}
+  end
+
+  defmodule DeliveryDay do
+    use BeamWeaver.Tool
+
+    name "delivery_day"
+    description "Read an order's delivery day."
+    return_direct true
+
+    schema do
+      field :order_id, :string
+    end
+
+    # Its answer is the run's answer, unless the order is late: the model
+    # explains that.
+    @impl true
+    def invoke(_tool, %{"order_id" => "A-1001"}, _opts), do: {:ok, "Thursday."}
+
+    def invoke(_tool, %{"order_id" => id}, _opts),
+      do: {:ok, BeamWeaver.Agent.jump(:model, %{messages: [Message.tool("#{id} is late.")]})}
+  end
+
+  defmodule NoRefunds do
+    use BeamWeaver.Agent.Middleware
+
+    # Ends the run instead of running a refund.
+    @impl true
+    def wrap_tool_call(_middleware, %{tool_call: %{name: "refund", id: id}}, _handler),
+      do: BeamWeaver.Agent.jump(:end, %{messages: [Message.tool("Refunds need a human.", tool_call_id: id)]})
+
+    def wrap_tool_call(_middleware, request, handler), do: handler.(request)
+  end
+
+  defmodule Refund do
+    use BeamWeaver.Tool
+
+    name "refund"
+    description "Refund an order."
+
+    schema do
+      field :order_id, :string
+    end
+
+    @impl true
+    def invoke(_tool, _args, _opts), do: {:ok, "Refunded."}
+  end
+
+  defmodule DraftAgain do
+    use BeamWeaver.Agent.Middleware
+
+    # Sends a first draft back to the model once.
+    @impl true
+    def wrap_model_call(_middleware, request, handler) do
+      with {:ok, %ModelResponse{messages: [reply]} = response} <- handler.(request) do
+        if Message.text(reply) == "draft" do
+          %ExtendedModelResponse{
+            model_response: response,
+            command: BeamWeaver.Agent.jump(:model, %{messages: [Message.user("Please give the final answer.")]})
+          }
+        else
+          {:ok, response}
+        end
+      end
+    end
+  end
+
+  defmodule CountReplies do
+    use BeamWeaver.Agent.Middleware
+
+    # Counts the replies that reach the after_model hooks.
+    @impl true
+    def after_model(_middleware, state, _runtime), do: %{replies_seen: Map.get(state, :replies_seen, 0) + 1}
+  end
+
+  defmodule NoToolsToday do
+    use BeamWeaver.Agent.Middleware
+
+    # Ends the run on a reply that calls tools.
+    @impl true
+    def wrap_model_call(_middleware, request, handler) do
+      with {:ok, %ModelResponse{messages: [%Message{tool_calls: [_ | _]}]} = response} <- handler.(request) do
+        %ExtendedModelResponse{model_response: response, command: BeamWeaver.Agent.jump(:end)}
+      end
+    end
+  end
+
+  defmodule CloseTicketAgent do
+    use BeamWeaver.Agent
+
+    model "fake:chat", responses: [FakeChatModel.tool_call("close_ticket", %{"ticket_id" => "T-7"}), "Anything else?"]
+    tools [BeamWeaver.Agent.MiddlewareJumpTest.CloseTicket]
+  end
+
+  defmodule DeliveryDayAgent do
+    use BeamWeaver.Agent
+
+    model "fake:chat",
+      responses: [FakeChatModel.tool_call("delivery_day", %{"order_id" => "A-1002"}), "Sorry, A-1002 is late."]
+
+    tools [BeamWeaver.Agent.MiddlewareJumpTest.DeliveryDay]
+  end
+
+  defmodule NoRefundsAgent do
+    use BeamWeaver.Agent
+
+    model "fake:chat", responses: [FakeChatModel.tool_call("refund", %{"order_id" => "A-1001"}), "Refunded."]
+    tools [BeamWeaver.Agent.MiddlewareJumpTest.Refund]
+    middleware [BeamWeaver.Agent.MiddlewareJumpTest.NoRefunds]
+  end
+
+  defmodule CountedDraftAgainAgent do
+    use BeamWeaver.Agent
+
+    model "fake:chat", responses: ["draft", "Order A-1001 shipped on Monday."]
+
+    middleware [
+      BeamWeaver.Agent.MiddlewareJumpTest.CountReplies,
+      BeamWeaver.Agent.MiddlewareJumpTest.DraftAgain
+    ]
+  end
+
+  defmodule NoToolsTodayAgent do
+    use BeamWeaver.Agent
+
+    model "fake:chat", responses: [FakeChatModel.tool_call("wipe_ledger", %{"scope" => "all"}), "Done."]
+    tools [BeamWeaver.Agent.MiddlewareJumpTest.WipeLedger]
+
+    middleware [
+      BeamWeaver.Agent.MiddlewareJumpTest.CountReplies,
+      BeamWeaver.Agent.MiddlewareJumpTest.NoToolsToday
+    ]
+  end
+
+  defmodule DraftAgainAgent do
+    use BeamWeaver.Agent
+
+    model "fake:chat", responses: ["draft", "Order A-1001 shipped on Monday."]
+    middleware [BeamWeaver.Agent.MiddlewareJumpTest.DraftAgain]
+  end
+
   test "a jump to :model calls the model again, once" do
     assert {:ok, result} = AskAgainAgent.invoke(%{messages: ["Where is order A-1001?"]})
 
@@ -188,5 +345,74 @@ defmodule BeamWeaver.Agent.MiddlewareJumpTest do
              {:tool, "A-1001 shipped on Monday."},
              {:assistant, "Order A-1001 shipped on Monday, so it arrives Thursday."}
            ]
+  end
+
+  describe "jump/2" do
+    test "a tool that returns a jump to :end ends the run with its update" do
+      assert {:ok, result} = CloseTicketAgent.invoke(%{messages: ["Close ticket T-7."]})
+
+      assert Enum.map(result.messages, &{&1.role, Message.text(&1)}) == [
+               {:user, "Close ticket T-7."},
+               {:assistant, ""},
+               {:tool, "Ticket T-7 closed."}
+             ]
+
+      refute Map.has_key?(result, :jump_to)
+    end
+
+    test "a tool that returns directly sends its result to the model with a jump to :model" do
+      assert {:ok, result} = DeliveryDayAgent.invoke(%{messages: ["When does A-1002 arrive?"]})
+
+      assert Enum.map(result.messages, &{&1.role, Message.text(&1)}) == [
+               {:user, "When does A-1002 arrive?"},
+               {:assistant, ""},
+               {:tool, "A-1002 is late."},
+               {:assistant, "Sorry, A-1002 is late."}
+             ]
+    end
+
+    test "a tool wrapper that returns a jump to :end ends the run" do
+      assert {:ok, result} = NoRefundsAgent.invoke(%{messages: ["Refund A-1001."]})
+      assert Enum.map(result.messages, &{&1.role, Message.text(&1)}) |> List.last() == {:tool, "Refunds need a human."}
+    end
+
+    test "a model wrapper's jump to :model gives the model another turn" do
+      assert {:ok, result} = DraftAgainAgent.invoke(%{messages: ["Where is order A-1001?"]})
+
+      assert Enum.map(result.messages, &{&1.role, Message.text(&1)}) == [
+               {:user, "Where is order A-1001?"},
+               {:assistant, "draft"},
+               {:user, "Please give the final answer."},
+               {:assistant, "Order A-1001 shipped on Monday."}
+             ]
+    end
+
+    test "a model wrapper's jump to :model skips the after_model hooks" do
+      assert {:ok, result} = CountedDraftAgainAgent.invoke(%{messages: ["Where is order A-1001?"]})
+
+      assert Enum.map(result.messages, &{&1.role, Message.text(&1)}) == [
+               {:user, "Where is order A-1001?"},
+               {:assistant, "draft"},
+               {:user, "Please give the final answer."},
+               {:assistant, "Order A-1001 shipped on Monday."}
+             ]
+
+      # Only the final answer reached them.
+      assert result.replies_seen == 1
+    end
+
+    test "a model wrapper's jump to :end skips the after_model hooks and the tool calls" do
+      assert {:ok, result} = NoToolsTodayAgent.invoke(%{messages: ["Clean up the ledger."]})
+
+      assert Enum.map(result.messages, & &1.role) == [:user, :assistant]
+      refute Map.has_key?(result, :replies_seen)
+    end
+
+    test "takes :end, :model or :tools" do
+      assert %Command{update: %{jump_to: :tools}} = Agent.jump(:tools)
+      assert %Command{update: %{jump_to: :end, notes: ["closed"]}} = Agent.jump(:end, %{notes: ["closed"]})
+
+      assert_raise ArgumentError, ~r/:end, :model or :tools/, fn -> Agent.jump(:finish, %{}) end
+    end
   end
 end

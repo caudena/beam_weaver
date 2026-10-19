@@ -438,7 +438,8 @@ defmodule BeamWeaver.Agent.Compiler do
   # The `after_model` hooks run last middleware first. A hook's jump to the
   # model or the end (a halt) skips the hooks after it, as in the other hook
   # chains: the jump lasts one step, so a later hook's node couldn't pass it
-  # on. The last hook routes the model's answer.
+  # on. A model wrapper's jump skips all of them the same way. The last hook
+  # routes the model's answer.
   defp connect_after_model(graph, middleware, structured_response_node?) do
     after_model = hook_nodes(middleware, :after_model)
     router_source = List.first(after_model) || @model_node
@@ -452,7 +453,7 @@ defmodule BeamWeaver.Agent.Compiler do
         [first | _rest] = chain ->
           chain
           |> Enum.chunk_every(2, 1, :discard)
-          |> Enum.reduce(Graph.add_edge(graph, @model_node, first), fn [previous, node], graph ->
+          |> Enum.reduce(add_after_model_edge(graph, @model_node, first, jumps), fn [previous, node], graph ->
             add_after_model_edge(graph, previous, node, jumps)
           end)
       end

@@ -6,6 +6,37 @@ defmodule BeamWeaver.Core.Tool do
   handlers. Model-facing arguments use string keys; injected runtime data is
   supplied separately under declared atom keys and excluded from public schemas.
 
+  For a module tool whose schema is computed, which `BeamWeaver.Tool`'s
+  declarations can't express, `use BeamWeaver.Core.Tool` implements this
+  behaviour. Define `name/1`, `description/1`, `input_schema/1` and
+  `invoke/3`; every other callback gets a default unless the module defines
+  it. Each callback's first argument is the tool: the struct, or the module.
+  See [Tools](tools.md#tools-with-a-computed-schema).
+
+      defmodule MyApp.Tools.SectionSearch do
+        use BeamWeaver.Core.Tool
+
+        defstruct sections: ["billing", "returns"]
+
+        @impl true
+        def name(_tool), do: "search_section"
+
+        @impl true
+        def description(_tool), do: "Search one section of the help center."
+
+        @impl true
+        def input_schema(%__MODULE__{sections: sections}) do
+          %{
+            "type" => "object",
+            "properties" => %{"section" => %{"type" => "string", "enum" => sections}},
+            "required" => ["section"]
+          }
+        end
+
+        @impl true
+        def invoke(_tool, %{"section" => section}, _opts), do: {:ok, "Searched #{section}."}
+      end
+
   invoke/3 parses/validates input before dispatch. A tool-call input carries
   correlation identity so the result can answer the right model request.
   Application authorization and idempotency remain inside the tool/data layer.

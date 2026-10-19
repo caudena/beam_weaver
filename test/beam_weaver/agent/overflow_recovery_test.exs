@@ -95,6 +95,58 @@ defmodule BeamWeaver.Agent.OverflowRecoveryTest do
     assert result.files["/large_tool_results/call_1"].content =~ "A-6000,shipped"
   end
 
+  defmodule ReadFile do
+    use BeamWeaver.Tool
+
+    name "read_file"
+    description "Read a file."
+
+    schema do
+    end
+
+    @impl true
+    def invoke(_tool, _input, _opts), do: {:ok, ""}
+  end
+
+  test "the previews name read_file only when the model is offered it" do
+    rows = Enum.map_join(1..5_000, "\n", &"A-#{1000 + &1},shipped")
+
+    messages = [
+      Message.user("Show me Ada's orders.", id: "m1"),
+      Message.assistant("",
+        id: "m2",
+        tool_calls: [
+          %{id: "call_1", name: "read_file", args: %{file_path: "/orders.csv"}},
+          %{id: "call_2", name: "order_history", args: %{}}
+        ]
+      ),
+      Message.tool(rows, id: "m3", tool_call_id: "call_1", name: "read_file"),
+      Message.tool(rows, id: "m4", tool_call_id: "call_2", name: "order_history")
+    ]
+
+    parent = self()
+
+    for {tools, offered?} <- [{[OrderHistory], false}, {[OrderHistory, ReadFile], true}] do
+      request = %BeamWeaver.Agent.ModelRequest{messages: messages, state: %{messages: messages}, tools: tools}
+
+      OverflowRecovery.wrap_model_call(OverflowRecovery.new(), request, fn request ->
+        texts = Enum.map(request.messages, &Message.text/1)
+        send(parent, {:sent, texts})
+
+        if Enum.any?(texts, &(String.length(&1) > 10_000)),
+          do: {:error, Error.new(:context_overflow, "prompt is too long")},
+          else: {:ok, %BeamWeaver.Agent.ModelResponse{messages: [Message.assistant("Ada has 5,000 orders.")]}}
+      end)
+
+      assert [_overflow, [_, _, read, saved]] = sent()
+      assert read =~ "The full content is at /orders.csv"
+      assert saved =~ "saved in the filesystem at this path: /large_tool_results/call_2"
+      assert saved =~ "A-1001,shipped"
+      assert read =~ "read_file" == offered?
+      assert saved =~ "read_file" == offered?
+    end
+  end
+
   # Fails as a provider does for a request too long for the model when a
   # message after the system prompt is over 10,000 characters or there are
   # more than `max_messages` of them; otherwise `model` answers.

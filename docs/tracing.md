@@ -72,6 +72,29 @@ Fields normalize values to strings and omit nested/secret-looking values.
 Direct model calls accept `trace_metadata:` separately from provider options.
 Profile prices can estimate cost; actual provider billing is a separate source.
 
+## Leave a call out
+
+`trace: false` on `BeamWeaver.Core.ChatModel.invoke/3` or
+`BeamWeaver.Core.Tool.invoke/3` records no run for that call, for example a
+health check. Runs the call starts itself, like a model call inside the
+tool, are still recorded, under the caller's run.
+
+```elixir
+{:ok, model} = BeamWeaver.Models.init_chat_model("openai:gpt-5.4-mini", max_tokens: 64, timeout: 60_000)
+
+{{:ok, _reply}, caller_id} =
+  Tracing.with_run("health-check", fn ->
+    reply = BeamWeaver.Core.ChatModel.invoke(model, "Reply with OK.", trace: false)
+    {reply, Tracing.capture_context().run_id}
+  end)
+
+{:ok, %{children: []}} = Tracing.get_tree(caller_id)
+```
+
+An agent or graph run is always recorded. `trace: false` on
+`BeamWeaver.Agent.invoke/3` or a graph's `invoke` turns nothing off; there
+`trace:` only names and tags the run.
+
 ## Trace your own code
 
 ```elixir

@@ -511,6 +511,30 @@ true = answer =~ "A-1001"
 true = String.downcase(answer) =~ "thursday"
 ```
 
+`summarize/2` applies the same `trigger:` and `keep:` to a message list
+outside a run. It returns `{:ok, %{summary: message, kept: messages}}`,
+`:unchanged` when the trigger isn't reached or nothing can be summarized, or
+`{:error, error}`:
+
+```elixir
+alias BeamWeaver.Core.Message
+alias BeamWeaver.Agent.Middleware.Summarization
+
+summarization =
+  Summarization.new(
+    summarizer: fn old -> "The customer asked about #{length(old)} orders." end,
+    trigger: {:messages, 4},
+    keep: {:messages, 1}
+  )
+
+history = for id <- ["A-1001", "A-1002", "A-1003", "A-1004"], do: Message.user("Where is order #{id}?")
+{:ok, %{summary: summary, kept: kept}} = Summarization.summarize(summarization, history)
+Message.text(summary)
+#=> "Conversation summary:\nThe customer asked about 3 orders."
+Enum.map(kept, &Message.text/1)
+#=> ["Where is order A-1004?"]
+```
+
 ## Documented elsewhere
 
 | Middleware | Application capability |

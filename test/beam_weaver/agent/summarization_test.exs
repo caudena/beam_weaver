@@ -157,6 +157,53 @@ defmodule BeamWeaver.Agent.SummarizationTest do
     end
   end
 
+  describe "summarize/2" do
+    test "returns the summary and the kept messages once the trigger is reached" do
+      summarizer = fn messages -> "#{length(messages)} questions about orders." end
+      middleware = Summarization.new(summarizer: summarizer, trigger: {:messages, 4}, keep: {:messages, 1})
+
+      assert {:ok, %{summary: summary, kept: kept}} = Summarization.summarize(middleware, messages(4))
+      assert %Message{role: :user} = summary
+      assert Message.text(summary) == "Conversation summary:\n3 questions about orders."
+      assert Enum.map(kept, &Message.text/1) == ["Question 4"]
+
+      model = %FakeChatModel{responses: ["The customer asked about orders."], parent: self()}
+      middleware = Summarization.new(model: model, trigger: {:messages, 4}, keep: {:messages, 1})
+
+      assert {:ok, %{summary: summary, kept: [kept]}} = Summarization.summarize(middleware, messages(4))
+      assert Message.text(summary) == "Conversation summary:\nThe customer asked about orders."
+      assert Message.text(kept) == "Question 4"
+      assert_received {:fake_chat_model_call, [prompt], _opts}
+      assert Message.text(prompt) =~ "Question 3"
+      refute Message.text(prompt) =~ "Question 4"
+    end
+
+    test "is :unchanged short of the trigger, or with nothing to summarize" do
+      summarizer = fn _messages -> flunk("nothing should be summarized") end
+      model = %FakeChatModel{error: BeamWeaver.Core.Error.new(:unexpected_call, "nothing should be summarized")}
+
+      for middleware <- [Summarization.new(summarizer: summarizer), Summarization.new(model: model)] do
+        middleware = %{middleware | trigger: {:messages, 4}, keep: {:messages, 4}}
+
+        assert Summarization.summarize(middleware, messages(3)) == :unchanged
+        assert Summarization.summarize(middleware, messages(4)) == :unchanged
+        assert Summarization.summarize(%{middleware | trigger: nil}, messages(30)) == :unchanged
+      end
+    end
+
+    test "returns the error of a summary that fails" do
+      unauthorized = BeamWeaver.Core.Error.new(:authentication, "Invalid API key", %{status: 401, retryable: false})
+
+      for middleware <- [
+            Summarization.new(summarizer: fn _messages -> {:error, unauthorized} end),
+            Summarization.new(model: %FakeChatModel{error: unauthorized})
+          ] do
+        middleware = %{middleware | trigger: {:messages, 4}, keep: {:messages, 1}}
+        assert Summarization.summarize(middleware, messages(4)) == {:error, unauthorized}
+      end
+    end
+  end
+
   # A scripted agent model with a 10,000-token context window.
   def agent_model do
     model = BeamWeaver.Models.init_chat_model!("fake:chat", responses: ["Answer."])

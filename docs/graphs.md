@@ -395,9 +395,17 @@ Compiled.invoke(poller, %{polls: 0}, recursion_limit: 5)
 validation also checks reachability and paths to an end. Dynamic routing is
 visible only when destinations are declared.
 
+`Compiled.get_graph/2` returns the topology as data: nodes, edges, branches,
+and the sorted `entry_points` and `finish_points`, the nodes that edges from
+the start lead to and the nodes with an edge to the end. `draw_mermaid/2` and
+`draw_ascii/2` render it.
+
 ```elixir
 %{diagnostics: []} = Graph.validation_report(MyApp.TicketRouter.graph(), validate_static: true)
 {:ok, compiled} = MyApp.TicketRouter.compiled_graph([])
+topology = Compiled.get_graph(compiled)
+["classify"] = topology.entry_points
+["billing", "shipping"] = topology.finish_points
 diagram = Compiled.draw_mermaid(compiled)
 true = is_binary(diagram) and byte_size(diagram) > 0
 ```

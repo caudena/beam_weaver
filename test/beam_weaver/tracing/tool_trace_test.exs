@@ -93,6 +93,30 @@ defmodule BeamWeaver.Tracing.ToolTraceTest do
     assert tool_run.metadata.component == :docs
   end
 
+  test "trace: false records no run for the call, and the runs it starts go under the caller's" do
+    model = %BeamWeaver.Models.FakeChatModel{response: "Ready"}
+
+    tool =
+      Tool.from_function!(
+        name: "ask_model",
+        description: "Ask a model",
+        input_schema: %{type: "object", properties: %{}},
+        handler: fn _input, _opts ->
+          {:ok, reply} = BeamWeaver.Core.ChatModel.invoke(model, "Reply with Ready.")
+          {:ok, Message.text(reply)}
+        end
+      )
+
+    {:ok, caller} = Tracing.start_run("caller", kind: :graph)
+    assert {:ok, %Message{}} = BeamWeaver.Core.ChatModel.invoke(model, "Reply with Ready.", trace: false)
+    assert {:ok, "Ready"} = Tool.invoke(tool, %{}, trace: false)
+    assert {:ok, _finished} = Tracing.finish_run(caller)
+
+    assert tool_runs() == []
+    assert [inner] = Enum.filter(Store.list(), &(&1.kind == :model))
+    assert inner.parent_id == caller.id
+  end
+
   test "handled tool and validation errors finish successfully while unhandled errors fail" do
     handled_validation =
       Tool.from_function!(

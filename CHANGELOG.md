@@ -13,6 +13,11 @@ fixes and documentation.
 
 #### Agents
 
+**Jumps from tools and wrappers.** `BeamWeaver.Agent.jump/2` returns a
+command that applies an update and jumps to `:end`, `:model` or `:tools`,
+for tools, tool wrappers and model wrappers. See
+[Middleware](docs/middleware.md#what-hooks-return).
+
 **Capability profiles.** The `capability_profile` declaration (and
 `BeamWeaver.Agent.build/1` option) applies a
 `BeamWeaver.Agent.CapabilityProfile`: `capability_profile :auto` uses the
@@ -53,6 +58,10 @@ runtime](docs/agents.md#agents-built-at-runtime).
 [Runtime Context](docs/runtime_context.md#declare-the-context-an-agent-needs).
 
 #### Middleware
+
+**Summarize a history directly.** `Summarization.summarize/2` applies the
+middleware's trigger and keep settings to a message list outside a run.
+See [Built-in Middleware](docs/builtin_middleware.md#summarization).
 
 **Summarize on context overflow.** When automatic summarization is on, a
 model call that the provider rejects as too long for the model summarizes the
@@ -230,6 +239,10 @@ them (status, values, updates, nested runs). See
 subagents](docs/subagents.md#declare-subagents).
 
 #### Graphs and streaming
+
+**Entry and finish points.** `Compiled.get_graph/2` now reports sorted
+`entry_points` and `finish_points`. See
+[Graphs](docs/graphs.md#validate-a-graph).
 
 **Graph modules.** `use BeamWeaver.Graph` turns a module into a graph:
 return the builder from `graph/0`, or declare its nodes and edges with
@@ -1929,6 +1942,10 @@ embeddings](docs/testing.md#fake-embeddings).
 
 #### Agents
 
+- A model wrapper's jump to `:model` or `:end` now applies when the agent
+  has after_model hooks, and skips them. Before, the jump was lost.
+- A tool that returns directly now goes to the model when it jumps to
+  `:model`. Before, the run ended.
 - Model-call error details and structured-output traces show a model given
   as a string by that string. Before, the details showed `"nil"`.
 - `Messages.Utils.trim/2` treats `include_system: nil` like leaving the
@@ -2005,6 +2022,10 @@ embeddings](docs/testing.md#fake-embeddings).
 
 #### Middleware
 
+- The notices for tool results and messages saved to files, by the
+  filesystem middleware and by overflow recovery, tell the model to use
+  `read_file` only when the call offers that tool. Before, they named it
+  even when `exclude_tools` removed it or the agent had no such tool.
 - A `wrap_model_call` middleware can set the request's model to a
   `"provider:model"` string, as in
   `ModelRequest.override(request, model: "openai:gpt-5.5")`. The call
@@ -2817,6 +2838,10 @@ embeddings](docs/testing.md#fake-embeddings).
 
 #### Models and providers
 
+- Claude Haiku 5.5 and Sonnet 5.5 declare a window shared by the request and
+  its output, so `ContextBudget` counts the requested output against their
+  1M tokens. Before, they declared a kind `ContextBudget` rejects with
+  `:unknown_context_limit`, so every budgeted call failed before the request.
 - OpenAI, xAI and DeepSeek Responses requests leave a nil field of
   `reasoning:` out of the body, and leave `reasoning` out when no field is
   left, as if no `reasoning:` were given, so `reasoning: %{effort: nil}`
@@ -3152,6 +3177,15 @@ embeddings](docs/testing.md#fake-embeddings).
 
 ### Documentation
 
+- The docs say to change a request's tools with `ModelRequest.override/2`.
+  Before, they said assigning `request.tools` changed what the model sees;
+  it changes nothing.
+- Tools whose schema is computed are documented: `use BeamWeaver.Core.Tool`
+  implements the tool behaviour and fills in the optional callbacks. See
+  [Tools](docs/tools.md).
+- `trace: false` is documented for `ChatModel.invoke/3` and
+  `Tool.invoke/3`, the calls that honour it. See
+  [Tracing](docs/tracing.md).
 - The guides are rewritten and reorganized. A Quickstart builds a first agent
   without an API key, Concepts explains how agents, graphs and deep agents fit
   together, and each feature has one page. New pages cover testing, caching,

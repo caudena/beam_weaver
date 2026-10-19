@@ -5,7 +5,8 @@ defmodule BeamWeaver.Agent.Middleware.Summarization do
   Before each model call it checks `:trigger`; when it is reached, `:model`
   summarizes all but the newest messages and the thread is saved as one user
   message with the summary followed by the messages it kept. A tool call is
-  never separated from its result.
+  never separated from its result. `summarize/2` does the same for a history
+  outside an agent run.
 
   A summary call that fails is tried up to 3 times, a second or more apart,
   unless its error says retrying can't help. One that is over the model's
@@ -100,8 +101,44 @@ defmodule BeamWeaver.Agent.Middleware.Summarization do
 
   @impl true
   def before_model(%__MODULE__{} = middleware, state, _runtime) do
-    messages = State.messages(state)
+    case summarize(middleware, State.messages(state)) do
+      {:ok, %{summary: summary, kept: kept}} -> %{messages: Overwrite.new([summary | kept])}
+      :unchanged -> %{}
+      error -> error
+    end
+  end
 
+  @doc ~S"""
+  Summarizes `messages` as the middleware does before a model call, for a
+  history outside an agent run.
+
+  `:trigger` and `:keep` apply as in an agent. Returns `{:ok, %{summary:
+  summary, kept: kept}}` when it summarized: `summary` is the user message
+  that takes the place of the older messages, and `kept` holds the recent
+  messages that follow it, without their reasoning blocks. Returns
+  `:unchanged` when the trigger isn't reached or there is nothing to
+  summarize, and `{:error, error}` when the summary fails.
+
+      alias BeamWeaver.Agent.Middleware.Summarization
+      alias BeamWeaver.Core.Message
+
+      summarization =
+        Summarization.new(
+          summarizer: fn old -> "The customer asked #{length(old)} questions." end,
+          trigger: {:messages, 4},
+          keep: {:messages, 1}
+        )
+
+      history = for n <- 1..4, do: Message.user("Question #{n}")
+      {:ok, %{summary: summary, kept: kept}} = Summarization.summarize(summarization, history)
+      Message.text(summary)
+      #=> "Conversation summary:\nThe customer asked 3 questions."
+      Enum.map(kept, &Message.text/1)
+      #=> ["Question 4"]
+  """
+  @spec summarize(%__MODULE__{}, [Message.t()]) ::
+          {:ok, %{summary: Message.t(), kept: [Message.t()]}} | :unchanged | {:error, Error.t()}
+  def summarize(%__MODULE__{} = middleware, messages) do
     with {:ok, messages} <- Utils.normalize(messages),
          {:ok, token_count} <- trigger_token_count(middleware, messages) do
       maybe_summarize(middleware, messages, token_count)
@@ -124,21 +161,21 @@ defmodule BeamWeaver.Agent.Middleware.Summarization do
     end
   end
 
-  defp maybe_summarize(%__MODULE__{trigger: nil}, _messages, _token_count), do: %{}
+  defp maybe_summarize(%__MODULE__{trigger: nil}, _messages, _token_count), do: :unchanged
 
   defp maybe_summarize(%__MODULE__{} = middleware, messages, token_count) do
     if should_summarize?(middleware, messages, token_count),
       do: summarize_partition(retention_cutoff(middleware, messages), middleware, messages),
-      else: %{}
+      else: :unchanged
   end
 
-  defp summarize_partition(cutoff, _middleware, _messages) when cutoff <= 0, do: %{}
+  defp summarize_partition(cutoff, _middleware, _messages) when cutoff <= 0, do: :unchanged
 
   defp summarize_partition(cutoff, middleware, messages) do
     {old, recent} = Enum.split(messages, cutoff)
 
     with {:ok, summary} <- summary_message(middleware, old) do
-      %{messages: Overwrite.new([summary | Utils.strip_reasoning_blocks(recent)])}
+      {:ok, %{summary: summary, kept: Utils.strip_reasoning_blocks(recent)}}
     end
   end
 
@@ -215,11 +252,11 @@ defmodule BeamWeaver.Agent.Middleware.Summarization do
   defp create_summary(%__MODULE__{} = middleware, messages, source) do
     history = history_text(messages)
 
-    case summarize(middleware, history, source) do
+    case summarize_history(middleware, history, source) do
       {:error, %Error{type: :context_overflow}} = error ->
         case cut_middle(middleware, history) do
           nil -> error
-          shorter -> summarize(middleware, shorter, source)
+          shorter -> summarize_history(middleware, shorter, source)
         end
 
       result ->
@@ -227,7 +264,7 @@ defmodule BeamWeaver.Agent.Middleware.Summarization do
     end
   end
 
-  defp summarize(middleware, history, source) do
+  defp summarize_history(middleware, history, source) do
     prompt = Message.user(String.replace(middleware.summary_prompt, "{messages}", history))
 
     case RetryPolicy.run(@summary_retry, fn ->

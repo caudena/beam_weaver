@@ -9,19 +9,26 @@ defmodule BeamWeaver.Agent.Middleware.Offload do
   @too_large_tool_msg """
   Tool result too large, the result of this tool call %{tool_call_id} was saved in the filesystem at this path: %{file_path}
 
-  You can read the result from the filesystem by using the read_file tool, but make sure to only read part of the result at a time.
-
-  You can do this by specifying an offset and limit in the read_file tool call. For example, to read the first 100 lines, you can use the read_file tool with offset=0 and limit=100.
-
-  Here is a preview showing the head and tail of the result%{preview_notes}:
+  %{how_to_read}Here is a preview showing the head and tail of the result%{preview_notes}:
 
   %{content_sample}
   """
 
-  def tool_result_notice(tool_call_id, file_path, content) do
+  @read_saved_result """
+  You can read the result from the filesystem by using the read_file tool, but make sure to only read part of the result at a time.
+
+  You can do this by specifying an offset and limit in the read_file tool call. For example, to read the first 100 lines, you can use the read_file tool with offset=0 and limit=100.
+
+  """
+
+  # The notice that replaces a saved tool result. It tells the model to read
+  # the result with `read_file` only when `read_file?`, that is when the
+  # model is offered that tool.
+  def tool_result_notice(tool_call_id, file_path, content, read_file?) do
     {sample, notes} = preview(content)
 
     format_notice(@too_large_tool_msg,
+      how_to_read: if(read_file?, do: @read_saved_result, else: ""),
       tool_call_id: tool_call_id,
       file_path: file_path,
       preview_notes: notes,

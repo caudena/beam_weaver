@@ -9,6 +9,7 @@ defmodule BeamWeaver.Agent.WrapModelCallTest do
   alias BeamWeaver.Core.ChatModel
   alias BeamWeaver.Core.Error
   alias BeamWeaver.Core.Message
+  alias BeamWeaver.Core.Tool
   alias BeamWeaver.Graph.Command
   alias BeamWeaver.Graph.Overwrite
   alias BeamWeaver.Models
@@ -238,11 +239,64 @@ defmodule BeamWeaver.Agent.WrapModelCallTest do
     end
   end
 
+  defmodule OrderStatus do
+    use BeamWeaver.Tool
+
+    name "order_status"
+    description "Read an order's status."
+
+    schema do
+      field :order_id, :string
+    end
+
+    @impl true
+    def invoke(_tool, _args, _opts), do: {:ok, "Shipped."}
+  end
+
+  defmodule RefundOrder do
+    use BeamWeaver.Tool
+
+    name "refund_order"
+    description "Refund an order."
+
+    schema do
+      field :order_id, :string
+    end
+
+    @impl true
+    def invoke(_tool, _args, _opts), do: {:ok, "Refunded."}
+  end
+
+  defmodule HideRefundsMiddleware do
+    use BeamWeaver.Agent.Middleware
+
+    def name(_middleware), do: :hide_refunds
+
+    # Hides refund_order the way the context says: through override/2, or by
+    # assigning the request's tools.
+    def wrap_model_call(_middleware, request, handler) do
+      tools = Enum.reject(request.tools, &(Tool.name(&1) == "refund_order"))
+
+      case request.runtime.context.hide_with do
+        :override -> request |> ModelRequest.override(tools: tools) |> handler.()
+        :assignment -> handler.(%{request | tools: tools})
+      end
+    end
+  end
+
   defmodule OrderAgent do
     use BeamWeaver.Agent
 
     model(%RecordingModel{parent: :context, reply: "ok"})
     middleware([LoggingMiddleware, InnerLoggingMiddleware])
+  end
+
+  defmodule HideRefundsAgent do
+    use BeamWeaver.Agent
+
+    model(%RecordingModel{parent: :context, reply: "ok"})
+    tools([OrderStatus, RefundOrder])
+    middleware([HideRefundsMiddleware])
   end
 
   defmodule RewriteAgent do
@@ -353,6 +407,18 @@ defmodule BeamWeaver.Agent.WrapModelCallTest do
              Agent.invoke(PromptAgent, %{messages: [Message.user("hi")]}, context: %{parent: parent})
 
     assert_receive {:model_call, [%Message{role: :system, content: "native system prompt"} | _], _opts}
+  end
+
+  test "a wrapper changes the tools the model sees with ModelRequest.override/2, not by assigning them" do
+    for {hide_with, offered} <- [override: ["order_status"], assignment: ["order_status", "refund_order"]] do
+      assert {:ok, _state} =
+               Agent.invoke(HideRefundsAgent, %{messages: [Message.user("hi")]},
+                 context: %{parent: self(), hide_with: hide_with}
+               )
+
+      assert_receive {:model_call, _messages, opts}
+      assert Enum.map(opts[:tools], &Tool.name/1) == offered
+    end
   end
 
   test "a model string that middleware puts on the request is created for the call" do
