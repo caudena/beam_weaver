@@ -276,6 +276,32 @@ its value. See [Private keys](docs/graph_state.md#private-keys).
 
 #### Models and providers
 
+**Gemini 4 Argon and automatic continuation.** `google:gemini-4-argon`
+combines long-decode hops into one reply, preserves signatures and tool calls,
+resumes interrupted streams from committed checkpoints, and tracks context size
+separately from billed usage. Explicit output budgets and transport limits are
+preserved. See [Google](docs/providers/google.md#gemini-4-argon).
+
+**DeepSeek Search/Fetch and TypeSafe Jev 1.14.** DeepSeek exposes standalone
+`Client.search/3` and `Client.fetch/3` with request-based pricing. Flash serves
+the October 17 revision. TypeSafe supports Jev 1.14 with its preview alias;
+the stable alias remains on 1.13. See [DeepSeek](docs/providers/deepseek.md#search-and-fetch)
+and [TypeSafe](docs/providers/typesafe.md#models).
+
+**Provider options and usage.** Kimi K3 accepts low/high reasoning effort and
+cache TTL options; Chat Completions accepts logprobs and predicted output.
+xAI accepts safety identifiers, guidelines, Chat cache keys and Responses
+min-p/top-k controls, and preserves generated-file references and current
+context usage. Gemini sends labels at the top level and counts tools/cached
+content. OpenAI Images forwards moderation, safety and legacy format/style/user
+options. DeepSeek Chat rejects zero `top_p`. See the [provider guides](docs/providers.md).
+
+**Model lifecycle and cost estimates.** Deprecated models remain usable until
+retirement, with replacement guidance in their profiles. Cost estimates account
+for cache writes and long-context pricing, including xAI's inclusive threshold
+and input-only embedding costs. See [model selection](docs/models.md#name-a-model)
+and [token usage](docs/models.md#token-usage).
+
 **One set of error types for every provider.** A failed model call's error
 type no longer depends on the provider. It follows the HTTP status:
 `:invalid_request`, `:authentication`, `:billing_exhausted`,
@@ -1693,6 +1719,12 @@ embeddings](docs/testing.md#fake-embeddings).
   or unknown option names that option without showing the others.
 
 ### Changed
+
+- Replace provider-catalog snapshots and repeated per-model assertions with
+  synthetic profiles for initialization, pricing boundaries and capability
+  handling. Keep request/response and execution regressions. Offline example
+  tests now compile and execute each script once; remove source-layout and
+  removed-API reflection checks.
 
 #### Agents
 

@@ -502,8 +502,12 @@ defmodule BeamWeaver.Google.Messages do
     tool_use_prompt =
       usage["toolUsePromptTokenCount"] || usage["tool_use_prompt_token_count"] || 0
 
+    initial_input = usage["initialPromptTokenCount"]
+
     %{
       input_tokens: input,
+      initial_input_tokens: initial_input,
+      context_tokens: if(is_integer(initial_input), do: initial_input + output),
       output_tokens: output,
       total_tokens: total,
       input_token_details:
@@ -538,6 +542,7 @@ defmodule BeamWeaver.Google.Messages do
       model_version: response["modelVersion"],
       model_status: response["modelStatus"],
       finish_reason: candidate["finishReason"],
+      continuation_token: candidate["continuationToken"],
       finish_message: candidate["finishMessage"],
       safety_ratings: candidate["safetyRatings"],
       prompt_feedback: response["promptFeedback"],

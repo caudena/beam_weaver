@@ -389,6 +389,9 @@ defmodule BeamWeaver.DeepSeek.Options do
 
   defp validate_number_range(nil, _param, _min, _max), do: :ok
 
+  defp validate_number_range(value, :top_p, _min, _max) when is_number(value) and value <= 0,
+    do: error(:invalid_request, "DeepSeek top_p must be greater than 0 and at most 1", param: :top_p, value: value)
+
   defp validate_number_range(value, _param, min, max)
        when is_number(value) and value >= min and value <= max,
        do: :ok

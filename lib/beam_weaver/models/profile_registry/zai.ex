@@ -33,7 +33,9 @@ defmodule BeamWeaver.Models.ProfileRegistry.ZAI do
     tool_stream: true,
     x_log_id_header: "x-log-id",
     cost_currency: "USD",
-    pricing_source_url: @pricing_source_url
+    pricing_source_url: @pricing_source_url,
+    pricing_last_checked: "2026-10-19",
+    tool_pricing: %{web_search: %{price_per_request: 0.01}}
   }
 
   @glm_5_3 Profile.new(

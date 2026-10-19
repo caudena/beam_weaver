@@ -135,12 +135,17 @@ not an unlimited allowance.
 | Model | Input / output tokens | Operations and capabilities |
 | --- | --- | --- |
 | `typesafe:jev-1.13.0` | 64,000 / — | decision; text |
+| `typesafe:jev-1.14.0` | 64,000 / — | decision; text |
 | `typesafe:jev-latest` | 64,000 / — | decision; text |
 | `typesafe:jev-preview` | 64,000 / — | decision; text |
 
 
-`jev-latest` and preview are moving aliases. `response.model` records the
-served version. Profile presence is not a guarantee of account availability.
+`jev-preview` resolves to Jev 1.14.0; `jev-latest` resolves to Jev 1.13.0.
+Pin a version for repeatable evaluations, and use `response.model` to identify
+the served version. Both models cost $0.042 per million input tokens, with
+free output, and accept 64K tokens per request and 32K per question. See
+[TypeSafe's model reference](https://docs.typesafe.ai/models) for pricing,
+limits and account availability.
 
 ## Testing
 

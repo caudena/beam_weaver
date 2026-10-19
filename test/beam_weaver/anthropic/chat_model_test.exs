@@ -12,20 +12,20 @@ defmodule BeamWeaver.Anthropic.ChatModelTest do
   alias BeamWeaver.Core.Tool
   alias BeamWeaver.Core.Messages.ToolCall
   alias BeamWeaver.Models
-  alias BeamWeaver.Models.UsageCost
 
-  test "constructor accepts native options, profile defaults, and streaming intent" do
+  test "constructor accepts explicit options and streaming intent" do
     model =
       ChatModel.new(
-        model: "claude-sonnet-4-5",
+        model: "fixture-model",
+        profile: %{max_output_tokens: 123},
         endpoint: "https://proxy.test/v1/messages",
         count_tokens_endpoint: "https://proxy.test/v1/messages/count_tokens"
       )
 
-    assert model.model == "claude-sonnet-4-5"
+    assert model.model == "fixture-model"
     assert model.endpoint == "https://proxy.test/v1/messages"
     assert model.count_tokens_endpoint == "https://proxy.test/v1/messages/count_tokens"
-    assert model.max_tokens == 64_000
+    assert model.max_tokens == 123
 
     assert ChatModel.should_stream?(%ChatModel{streaming: true})
     assert ChatModel.should_stream?(%ChatModel{}, stream: true)
@@ -454,14 +454,6 @@ defmodule BeamWeaver.Anthropic.ChatModelTest do
       assert {:error, %Error{details: %{params: [:reasoning_effort]}}} =
                effort_body([model: "claude-haiku-4-5"], reasoning_effort: :low)
     end
-
-    test "the profile lists the model's levels and default" do
-      assert %{reasoning_effort_levels: [:low, :medium, :high], reasoning_effort_default: :high} =
-               ChatModel.new(model: "claude-opus-4-5").profile
-
-      assert %{reasoning_effort_levels: [], reasoning_effort_default: nil} =
-               ChatModel.new(model: "claude-haiku-4-5").profile
-    end
   end
 
   test "Claude Opus 5 defaults to adaptive thinking and enforces its effort cap" do
@@ -645,57 +637,8 @@ defmodule BeamWeaver.Anthropic.ChatModelTest do
     assert body["output_config"] == %{"effort" => "max"}
   end
 
-  test "Claude Fable 5.1 and Mythos 5.1 expose their exact limits and pricing" do
-    for {model_id, availability} <- [
-          {"claude-fable-5-1", :general_availability},
-          {"claude-mythos-5-1", :invite_only}
-        ] do
-      model = ChatModel.new(model: model_id)
-
-      assert model.max_tokens == 128_000
-      assert model.profile.max_input_tokens == 1_000_000
-      assert model.profile.max_output_tokens == 128_000
-      assert model.profile.extra.availability == availability
-      assert model.profile.extra.input_price_per_mtok == 10.0
-      assert model.profile.extra.output_price_per_mtok == 50.0
-      assert model.profile.extra.cache_read_price_per_mtok == 0.25
-      assert model.profile.extra.cached_input_price_per_mtok == 0.25
-      assert model.profile.extra.batch_cached_input_price_per_mtok == 0.125
-      assert model.profile.extra.prompt_cache_min_tokens == 512
-      assert model.profile.extra.knowledge_cutoff == "2026-06"
-      assert model.profile.extra.training_data_cutoff == "2026-06"
-      assert model.profile.reasoning_effort_levels == [:low, :medium, :high, :xhigh, :max]
-      assert model.profile.extra.tool_choice_modes == [:auto, :none]
-      assert model.profile.structured_output_with_tools
-
-      costs =
-        UsageCost.calculate(model.profile, %{
-          input_tokens: 1_000,
-          output_tokens: 2_000,
-          input_token_details: %{cache_read: 400}
-        })
-
-      assert_in_delta costs.total_cost, 0.1061, 1.0e-12
-    end
-  end
-
-  test "Claude Opus 5.5 profile prices usage and rejects incompatible requests" do
+  test "adaptive-only models reject disabled thinking, forced tools and legacy computer tools" do
     model = ChatModel.new(model: "claude-opus-5-5")
-    profile = model.profile
-
-    assert model.max_tokens == 128_000
-    assert profile.max_input_tokens == 1_000_000
-    assert profile.reasoning_effort_default == :medium
-    assert profile.extra.compaction_on_demand
-    assert profile.extra.input_price_per_mtok == 4.0
-    assert profile.extra.output_price_per_mtok == 20.0
-    assert profile.extra.cache_read_price_per_mtok == 0.2
-    assert profile.extra.cache_write_5m_price_per_mtok == 5.0
-    assert profile.extra.cache_write_1h_price_per_mtok == 8.0
-
-    costs = UsageCost.calculate(profile, %{input_tokens: 1_000_000, output_tokens: 1_000_000})
-    assert_in_delta costs.total_cost, 24.0, 1.0e-12
-
     messages = [Message.user("hello")]
 
     for builder <- [
@@ -1147,8 +1090,6 @@ defmodule BeamWeaver.Anthropic.ChatModelTest do
     assert response.metadata.parsed == %{"value" => "native"}
     assert response.response_metadata.model.requested_model == "claude-fable-5-1"
     assert response.response_metadata.model.profile_id == "claude-fable-5-1"
-    assert response.response_metadata.limits.max_input_tokens == 1_000_000
-    assert response.response_metadata.limits.max_output_tokens == 128_000
     assert_received {:fake_transport_request, _request}
   end
 
@@ -1388,49 +1329,6 @@ defmodule BeamWeaver.Anthropic.ChatModelTest do
     assert error.details.status == 400
     assert error.details.error["type"] == "invalid_request_error"
     assert error.message =~ "prompt is too long"
-  end
-
-  test "model initializer supports explicit and inferred Anthropic identifiers" do
-    for model <- [
-          "claude-haiku-4-5-20251001",
-          "claude-fable-5-1",
-          "claude-mythos-5-1",
-          "claude-opus-4-8",
-          "claude-opus-5",
-          "claude-sonnet-5",
-          "claude-fable-5",
-          "claude-mythos-5"
-        ] do
-      assert {:ok, %ChatModel{model: ^model}} = Models.init_chat_model("anthropic:" <> model)
-    end
-
-    assert {:ok, inferred} = Models.init_chat_model("claude-sonnet-4-6")
-    assert inferred.__struct__ == ChatModel
-  end
-
-  test "model initializer rejects deprecated and retired Anthropic identifiers" do
-    assert {:error, deprecated} =
-             Models.init_chat_model("anthropic:claude-sonnet-4-20250514")
-
-    assert deprecated.type == :deprecated_model
-    assert deprecated.details.provider == :anthropic
-    assert deprecated.details.replacement == "claude-sonnet-4-6"
-    assert deprecated.details.expected == "anthropic:claude-sonnet-4-6"
-    assert deprecated.details.retirement_date == "2026-06-15"
-
-    assert {:error, retired} =
-             Models.init_chat_model("anthropic:claude-3-7-sonnet-20250219")
-
-    assert retired.type == :deprecated_model
-    assert retired.details.replacement == "claude-sonnet-4-6"
-    assert retired.details.retirement_date == "2026-02-19"
-
-    assert {:error, opus} =
-             Models.init_chat_model("anthropic:claude-opus-4-20250514")
-
-    assert opus.type == :deprecated_model
-    assert opus.details.replacement == "claude-opus-4-8"
-    assert opus.details.expected == "anthropic:claude-opus-4-8"
   end
 
   # Anthropic's request metadata has one field, `user_id`, a string of at

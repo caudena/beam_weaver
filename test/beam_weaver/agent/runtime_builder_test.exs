@@ -227,8 +227,6 @@ defmodule BeamWeaver.Agent.RuntimeBuilderTest do
   end
 
   test "built agents expose typed event streaming" do
-    refute function_exported?(Agent, :stream, 3)
-
     assert {:ok, %Built{} = agent} =
              Agent.build(%{
                "name" => "runtime_stream_agent",

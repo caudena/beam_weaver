@@ -11,6 +11,78 @@ defmodule BeamWeaver.Google.ChatModelTest do
   alias BeamWeaver.Models
   alias BeamWeaver.Provider.MessageCodec
 
+  test "profile controls and continuation state survive request and response handling" do
+    profile =
+      BeamWeaver.Models.Profile.new(
+        provider: :google,
+        id: "fixture",
+        reasoning_output: true,
+        supported_params: [:thinking_level, :max_output_tokens, :response_format, :continuation_token],
+        extra: %{thinking_levels: [:low, :high], default_max_output_tokens: 123}
+      )
+
+    model =
+      ChatModel.new(
+        model: "fixture",
+        profile: profile,
+        automatic_continuation: true,
+        thinking_level: :high,
+        api_key: "test-key"
+      )
+
+    assert {:ok, body} = ChatModel.request_body(model, [Message.user("Prove it")], continuation_token: "checkpoint")
+    assert body["continuationToken"] == "checkpoint"
+    assert body["generationConfig"]["thinkingConfig"]["thinkingLevel"] == :high
+    assert {:ok, body} = ChatModel.request_body(model, [Message.user("Return JSON")], response_format: %{type: :object})
+    assert body["generationConfig"]["maxOutputTokens"] == 123
+
+    for opts <- [[cached_content: "cachedContents/123"], [thinking_level: :minimal], [temperature: 0.5]] do
+      assert {:error, %{type: :unsupported_model_param}} = ChatModel.request_body(model, [Message.user("Hello")], opts)
+    end
+
+    response = %{
+      "candidates" => [
+        %{
+          "content" => %{"role" => "model", "parts" => [%{"text" => ""}]},
+          "finishReason" => "CONTINUATION",
+          "continuationToken" => "next-checkpoint"
+        }
+      ]
+    }
+
+    assert {:ok, message} = BeamWeaver.Google.Messages.response_to_message(response)
+    assert message.response_metadata.finish_reason == "CONTINUATION"
+    assert message.response_metadata.continuation_token == "next-checkpoint"
+
+    assert {:ok, invoked} =
+             CoreChatModel.invoke(model, "Prove it",
+               automatic_continuation: false,
+               transport: BeamWeaver.TestSupport.Conformance.Fakes.Transport,
+               transport_opts: [body: response]
+             )
+
+    assert invoked.response_metadata.continuation_token == "next-checkpoint"
+    assert invoked.response_metadata.outcome.remote_status == :paused
+    assert invoked.response_metadata.outcome.turn_disposition == :provider_pause
+    assert invoked.response_metadata.outcome.result_completeness == :absent
+
+    partial = %{message | content: "Part one of the proof"}
+    assert %{remote_status: :paused, result_completeness: :partial} = BeamWeaver.Provider.Outcome.classify(partial)
+
+    sse =
+      "data: " <>
+        Jason.encode!(response) <>
+        "\n\n" <>
+        "data: " <> Jason.encode!(%{"usageMetadata" => %{"totalTokenCount" => 32_800}}) <> "\n\n"
+
+    assert {:ok, streamed} =
+             sse
+             |> BeamWeaver.Google.Streaming.response_from_sse_body()
+             |> BeamWeaver.Google.Messages.response_to_message()
+
+    assert streamed.response_metadata.continuation_token == "next-checkpoint"
+  end
+
   test "namespace and client constructors read Google config defaults and derive endpoints" do
     with_config(
       :google,
@@ -139,7 +211,7 @@ defmodule BeamWeaver.Google.ChatModelTest do
   end
 
   test "structured output requests default to the Gemini profile output limit" do
-    model = ChatModel.new(model: "gemini-3.5-flash")
+    model = ChatModel.new(model: "fixture", profile: %{max_output_tokens: 321})
 
     assert {:ok, body} =
              ChatModel.request_body(
@@ -152,7 +224,7 @@ defmodule BeamWeaver.Google.ChatModelTest do
 
     assert body["generationConfig"]["responseMimeType"] == "application/json"
     assert body["generationConfig"]["responseJsonSchema"]["type"] == "object"
-    assert body["generationConfig"]["maxOutputTokens"] == 65_536
+    assert body["generationConfig"]["maxOutputTokens"] == 321
 
     assert {:ok, explicit_body} =
              ChatModel.request_body(
@@ -455,21 +527,16 @@ defmodule BeamWeaver.Google.ChatModelTest do
            ]
   end
 
-  test "latest Gemini models reject prefilled final model turns" do
+  test "a profile that forbids prefilling rejects non-empty final model turns" do
     tool_call = %ToolCall{id: "call-1", name: "lookup", args: %{"q" => "beam"}}
 
-    for model_id <- [
-          "google:gemini-3.8-flash",
-          "google:gemini-3.7-flash",
-          "google:gemini-3.6-flash",
-          "google:gemini-3.5-flash-lite"
-        ],
-        final_message <- [
+    profile = BeamWeaver.Models.Profile.new(extra: %{prefilled_model_turns: false})
+    model = ChatModel.new(model: "fixture", profile: profile)
+
+    for final_message <- [
           Message.assistant("Translation:"),
           Message.assistant("", tool_calls: [tool_call])
         ] do
-      assert {:ok, model} = Models.init_chat_model(model_id)
-
       assert {:error, error} =
                ChatModel.request_body(model, [Message.user("Translate hello"), final_message])
 
@@ -483,7 +550,8 @@ defmodule BeamWeaver.Google.ChatModelTest do
   end
 
   test "prefilled final model turn validation is profile-scoped and ignores empty turns" do
-    assert {:ok, latest} = Models.init_chat_model("google:gemini-3.6-flash")
+    profile = BeamWeaver.Models.Profile.new(extra: %{prefilled_model_turns: false})
+    latest = ChatModel.new(model: "fixture", profile: profile)
     tool_call = %ToolCall{id: "call-1", name: "lookup", args: %{"q" => "beam"}}
 
     assert {:ok, latest_body} =
@@ -503,7 +571,7 @@ defmodule BeamWeaver.Google.ChatModelTest do
 
     assert List.last(tool_result_body["contents"])["role"] == "user"
 
-    legacy = ChatModel.new(model: "gemini-3.5-flash")
+    legacy = ChatModel.new(model: "fixture", profile: %{extra: %{prefilled_model_turns: true}})
 
     assert {:ok, legacy_body} =
              ChatModel.request_body(legacy, [
@@ -1040,15 +1108,6 @@ defmodule BeamWeaver.Google.ChatModelTest do
     assert {"x-goog-api-key", "google-secret"} in request.headers
   end
 
-  test "model initialization uses google: prefix and rejects bare Gemini aliases" do
-    assert {:ok, model} = Models.init_chat_model("google:gemini-3.5-flash")
-    assert %ChatModel{} = model
-
-    assert {:error, error} = Models.init_chat_model("gemini-3.5-flash")
-    assert error.type == :invalid_model
-    assert error.details.expected == "google:gemini-3.5-flash"
-  end
-
   test "unsupported Gemini 3.5 output modalities fail before transport by default" do
     assert {:ok, model} =
              Models.init_chat_model("google:gemini-3.5-flash",
@@ -1106,6 +1165,28 @@ defmodule BeamWeaver.Google.ChatModelTest do
       )
 
     assert {:ok, 4} = ChatModel.count_tokens(model, "count me")
+  end
+
+  test "labels belong to the request and token counting includes tools and cached context" do
+    model = ChatModel.new(model: "gemini-3.5-flash", labels: %{team: "support"})
+    messages = [Message.user("look it up")]
+    opts = [tools: [Tools.google_search()]]
+
+    assert {:ok, body} = ChatModel.request_body(model, messages, opts)
+    assert body["labels"] == %{"team" => "support"}
+    refute Map.has_key?(body["generationConfig"] || %{}, "labels")
+
+    assert {:ok, %{"generateContentRequest" => count_request} = count_body} =
+             ChatModel.count_tokens_body(model, messages, opts)
+
+    assert count_request["tools"] == [%{"googleSearch" => %{}}]
+    assert count_request["model"] == "models/gemini-3.5-flash"
+    refute Map.has_key?(count_body, "contents")
+
+    assert {:ok, %{"generateContentRequest" => cached_request}} =
+             ChatModel.count_tokens_body(model, messages, cached_content: "cachedContents/example")
+
+    assert cached_request["cachedContent"] == "cachedContents/example"
   end
 
   test "token counting wraps system instruction in a single generateContentRequest" do

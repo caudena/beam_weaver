@@ -100,9 +100,10 @@ defmodule BeamWeaver.Google.Streaming do
     |> merge_responses()
   end
 
-  defp merge_responses([]), do: %{}
+  @doc false
+  def merge_responses([]), do: %{}
 
-  defp merge_responses(responses) do
+  def merge_responses(responses) do
     parts =
       responses
       |> Enum.flat_map(fn response ->

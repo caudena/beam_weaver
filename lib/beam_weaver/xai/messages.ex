@@ -103,11 +103,22 @@ defmodule BeamWeaver.XAI.Messages do
   end
 
   defp put_provider_metadata(message, api) do
-    %{
+    message = %{
       message
       | metadata: put_xai_provider(message.metadata, api),
         response_metadata: put_xai_provider(message.response_metadata, api)
     }
+
+    # Billed totals include all server-side agent steps. Context details describe
+    # only the latest window and must drive context budgeting instead.
+    case get_in(message.response_metadata, [:usage, "context_details"]) do
+      %{"input_tokens" => input, "output_tokens" => output}
+      when is_integer(input) and input >= 0 and is_integer(output) and output >= 0 ->
+        %{message | usage_metadata: Map.put(message.usage_metadata || %{}, :context_tokens, input + output)}
+
+      _other ->
+        message
+    end
   end
 
   defp put_chat_completion_metadata(message, response) do
@@ -115,6 +126,7 @@ defmodule BeamWeaver.XAI.Messages do
       %{}
       |> put_optional(:reasoning_content, reasoning_content(response))
       |> put_optional(:citations, citations(response))
+      |> put_optional(:output_files, response["output_files"])
 
     %{
       message

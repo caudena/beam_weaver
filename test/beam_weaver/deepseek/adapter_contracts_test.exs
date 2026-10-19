@@ -1,4 +1,4 @@
-defmodule BeamWeaver.DeepSeek.V41Test do
+defmodule BeamWeaver.DeepSeek.AdapterContractsTest do
   use ExUnit.Case, async: true
 
   alias BeamWeaver.Core.ContentBlock
@@ -8,7 +8,6 @@ defmodule BeamWeaver.DeepSeek.V41Test do
   alias BeamWeaver.DeepSeek.ResponsesModel
   alias BeamWeaver.Models
   alias BeamWeaver.Models.ProfileRegistry
-  alias BeamWeaver.Models.UsageCost
   alias BeamWeaver.Stream.Envelope
   alias BeamWeaver.Stream.Events
 
@@ -23,46 +22,28 @@ defmodule BeamWeaver.DeepSeek.V41Test do
     end
   end
 
-  @flash_ids ["deepseek-flash", "deepseek-v4-flash", "deepseek-v4-flash-vision-exp"]
-
-  test "V4.1 Flash and compatibility names work through both actual adapters" do
-    assert ChatModel.new().model == "deepseek-flash"
-    assert ResponsesModel.new().model == "deepseek-flash"
-
-    for id <- @flash_ids, api <- [:chat_completions, :responses] do
-      assert {:ok, model} = Models.init_chat_model("deepseek:" <> id, api: api)
-      assert {:ok, body} = model.__struct__.request_body(model, [Message.user("hello")])
-      assert body["model"] == id
-      assert model.profile.image_inputs
-      assert model.profile.extra.model_version == "DeepSeek-V4.1-Flash"
-      assert model.profile.max_input_tokens == 1_048_576
-      assert model.profile.max_output_tokens == 393_216
-    end
-  end
-
   test "image URLs and uploaded image IDs retain native wire shapes" do
-    for id <- @flash_ids do
-      image = ContentBlock.image(url: "https://example.test/red.png", metadata: %{detail: "original"})
-      message = Message.user([ContentBlock.text("Describe"), image])
-      assert {:ok, chat} = ChatModel.request_body(ChatModel.new(model: id), [message])
+    id = "deepseek-flash"
+    image = ContentBlock.image(url: "https://example.test/red.png", metadata: %{detail: "original"})
+    message = Message.user([ContentBlock.text("Describe"), image])
+    assert {:ok, chat} = ChatModel.request_body(ChatModel.new(model: id), [message])
 
-      assert hd(chat["messages"])["content"] == [
-               %{"type" => "text", "text" => "Describe"},
-               %{
-                 "type" => "image_url",
-                 "image_url" => %{"url" => "https://example.test/red.png", "detail" => "original"}
-               }
-             ]
+    assert hd(chat["messages"])["content"] == [
+             %{"type" => "text", "text" => "Describe"},
+             %{
+               "type" => "image_url",
+               "image_url" => %{"url" => "https://example.test/red.png", "detail" => "original"}
+             }
+           ]
 
-      assert {:ok, responses} = ResponsesModel.request_body(ResponsesModel.new(model: id), [message])
-      assert List.last(hd(responses["input"])["content"])["image_url"] == "https://example.test/red.png"
+    assert {:ok, responses} = ResponsesModel.request_body(ResponsesModel.new(model: id), [message])
+    assert List.last(hd(responses["input"])["content"])["image_url"] == "https://example.test/red.png"
 
-      file_message = Message.user([ContentBlock.image(file_id: "file-api-example")])
-      assert {:ok, chat} = ChatModel.request_body(ChatModel.new(model: id), [file_message])
-      assert hd(chat["messages"])["content"] == [%{"type" => "file", "file_id" => "file-api-example"}]
-      assert {:ok, responses} = ResponsesModel.request_body(ResponsesModel.new(model: id), [file_message])
-      assert hd(responses["input"])["content"] == [%{"type" => "input_image", "file_id" => "file-api-example"}]
-    end
+    file_message = Message.user([ContentBlock.image(file_id: "file-api-example")])
+    assert {:ok, chat} = ChatModel.request_body(ChatModel.new(model: id), [file_message])
+    assert hd(chat["messages"])["content"] == [%{"type" => "file", "file_id" => "file-api-example"}]
+    assert {:ok, responses} = ResponsesModel.request_body(ResponsesModel.new(model: id), [file_message])
+    assert hd(responses["input"])["content"] == [%{"type" => "input_image", "file_id" => "file-api-example"}]
   end
 
   test "Responses allows developer and tool-output images and rejects unsupported roles and sources" do
@@ -211,23 +192,6 @@ defmodule BeamWeaver.DeepSeek.V41Test do
       assert replayed["content"] == content
       assert replayed["id"] == "rs_returned"
     end
-  end
-
-  test "cost estimation handles weekdays and historical Flash rates while Pro keeps its own rate" do
-    usage = %{input_tokens: 1_000, cached_tokens: 400, output_tokens: 2_000}
-
-    for id <- @flash_ids do
-      {:ok, profile} = ProfileRegistry.fetch(:deepseek, id)
-      assert_in_delta UsageCost.calculate(profile, usage, at: ~U[2026-09-10 06:00:00Z]).total_cost, 0.0025824, 1.0e-12
-      assert_in_delta UsageCost.calculate(profile, usage, at: ~U[2026-09-12 06:00:00Z]).total_cost, 0.0012912, 1.0e-12
-    end
-
-    {:ok, flash} = ProfileRegistry.fetch(:deepseek, "deepseek-v4-flash")
-    assert_in_delta UsageCost.calculate(flash, usage, at: ~U[2026-09-10 03:59:59Z]).total_cost, 0.0029096, 1.0e-12
-    assert_in_delta UsageCost.calculate(flash, usage, at: ~U[2026-09-10 04:00:00Z]).total_cost, 0.0012912, 1.0e-12
-    {:ok, pro} = ProfileRegistry.fetch(:deepseek, "deepseek-v4-pro")
-    assert_in_delta UsageCost.calculate(pro, usage, at: ~U[2026-09-14 03:59:59Z]).total_cost, 0.0087296, 1.0e-12
-    assert_in_delta UsageCost.calculate(pro, usage, at: ~U[2026-09-14 04:00:00Z]).total_cost, 0.0043648, 1.0e-12
   end
 
   test "a nil model id is reported as unsupported" do

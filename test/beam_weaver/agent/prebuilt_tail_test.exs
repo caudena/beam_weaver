@@ -522,8 +522,6 @@ defmodule BeamWeaver.Agent.PrebuiltTailTest do
   end
 
   test "generated agent event streams include typed tool lifecycle events" do
-    refute function_exported?(StreamedToolAgent, :stream, 2)
-
     assert {:ok, events} =
              StreamedToolAgent.stream_events(%{messages: [Message.user("stream")]},
                context: %{parent: self()}

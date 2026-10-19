@@ -8,6 +8,13 @@ other.
 Fake models are introduced here specifically for tests. Product guides use
 real providers or ordinary deterministic Elixir workflows.
 
+Use test-owned profiles and prices when checking parameter validation, context
+budgets or cost calculations. Assert the resulting request, error, computed
+cost or side effect. Copying a current model's release date, token limits or
+prices into assertions only makes catalog updates require matching test edits.
+Keep concrete model IDs when they select different adapter behavior, and use
+live verification to establish what the provider currently supports.
+
 ## Test an agent with ExUnit
 
 Save this complete module as `test/support_agent_test.exs`. A normal Mix test

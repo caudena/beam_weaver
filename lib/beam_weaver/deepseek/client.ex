@@ -38,6 +38,8 @@ defmodule BeamWeaver.DeepSeek.Client do
             completions_endpoint: @default_base_url <> "/beta/completions",
             models_endpoint: @default_base_url <> "/models",
             balance_endpoint: @default_base_url <> "/user/balance",
+            search_endpoint: @default_base_url <> "/v1/tools/search",
+            fetch_endpoint: @default_base_url <> "/v1/tools/fetch",
             anthropic_messages_endpoint: @default_base_url <> "/anthropic/v1/messages",
             api_key: nil,
             default_headers: [],
@@ -97,6 +99,8 @@ defmodule BeamWeaver.DeepSeek.Client do
       completions_endpoint: Keyword.get(opts, :completions_endpoint, endpoint(beta_base_url, "completions")),
       models_endpoint: Keyword.get(opts, :models_endpoint, endpoint(base_url, "models")),
       balance_endpoint: Keyword.get(opts, :balance_endpoint, endpoint(base_url, "user/balance")),
+      search_endpoint: Keyword.get(opts, :search_endpoint, endpoint(api_root, "v1/tools/search")),
+      fetch_endpoint: Keyword.get(opts, :fetch_endpoint, endpoint(api_root, "v1/tools/fetch")),
       anthropic_messages_endpoint:
         Keyword.get(
           opts,
@@ -240,6 +244,33 @@ defmodule BeamWeaver.DeepSeek.Client do
   @spec balance(t(), keyword()) :: {:ok, map()} | {:error, Error.t()}
   def balance(%__MODULE__{} = client, opts \\ []),
     do: client |> http(client.balance_endpoint, opts) |> HTTPClient.get(opts) |> ResponseDecoder.json(opts)
+
+  @doc """
+  Searches the web using the standalone Search API. Accepts the native body
+  (`query`, optional `count`, `ori_question`, `localization`, `need_content`).
+  Only HTTP 200 responses with non-empty `results` are billable, at $0.75/1,000
+  successful requests. Empty results are returned unchanged.
+  """
+  @spec search(t(), map(), keyword()) :: {:ok, map()} | {:error, Error.t()}
+  def search(%__MODULE__{} = client, body, opts \\ []) when is_map(body) do
+    client
+    |> http(client.search_endpoint, opts)
+    |> HTTPClient.post_json(body, opts)
+    |> ResponseDecoder.json(opts)
+  end
+
+  @doc """
+  Fetches a web page as Markdown using the standalone Fetch API (`%{url: url}`).
+  Only successful requests returning content are billable, at $0.75/1,000
+  requests. Returns the provider's `title` and `content` without rewriting them.
+  """
+  @spec fetch(t(), map(), keyword()) :: {:ok, map()} | {:error, Error.t()}
+  def fetch(%__MODULE__{} = client, body, opts \\ []) when is_map(body) do
+    client
+    |> http(client.fetch_endpoint, opts)
+    |> HTTPClient.post_json(body, opts)
+    |> ResponseDecoder.json(opts)
+  end
 
   @doc """
   Sends a native JSON request and returns the decoded provider payload or a tagged HTTP/transport error.

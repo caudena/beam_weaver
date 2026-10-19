@@ -22,15 +22,15 @@ defmodule BeamWeaver.ExamplesTest do
   for {script, opts} <- @scripts do
     @script script
 
-    test "#{script} compiles" do
-      compile_script!(@script)
-    end
-
     if opts[:run] == :offline or Keyword.has_key?(opts, :offline_args) do
       @args Keyword.get(opts, :offline_args, [])
 
       test "#{script} runs offline" do
         run_script!(@script, @args)
+      end
+    else
+      test "#{script} compiles" do
+        compile_script!(@script)
       end
     end
   end
@@ -70,10 +70,7 @@ defmodule BeamWeaver.ExamplesTest do
         end
       end)
 
-    problems =
-      for diagnostic <- diagnostics,
-          diagnostic.severity == :error or not Enum.any?(@ignored_warnings, &Regex.match?(&1, diagnostic.message)),
-          do: "#{script}:#{line(diagnostic.position)}: #{diagnostic.severity}: #{diagnostic.message}"
+    problems = diagnostic_problems(script, diagnostics)
 
     case result do
       {:ok, modules} -> purge(Enum.map(modules, &elem(&1, 0)))
@@ -90,12 +87,19 @@ defmodule BeamWeaver.ExamplesTest do
     capture_io(fn ->
       try do
         System.argv(args)
-        Code.with_diagnostics(fn -> Code.eval_file(path) end)
+        {_result, diagnostics} = Code.with_diagnostics(fn -> Code.eval_file(path) end)
+        assert diagnostic_problems(script, diagnostics) == []
       after
         System.argv(argv)
         purge(for {module, _file} <- :code.all_loaded(), source(module) == path, do: module)
       end
     end)
+  end
+
+  defp diagnostic_problems(script, diagnostics) do
+    for diagnostic <- diagnostics,
+        diagnostic.severity == :error or not Enum.any?(@ignored_warnings, &Regex.match?(&1, diagnostic.message)),
+        do: "#{script}:#{line(diagnostic.position)}: #{diagnostic.severity}: #{diagnostic.message}"
   end
 
   defp source(module) do

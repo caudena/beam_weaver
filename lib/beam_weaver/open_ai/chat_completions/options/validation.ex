@@ -17,6 +17,7 @@ defmodule BeamWeaver.OpenAI.ChatCompletions.Options.Validation do
         :audio,
         :extra_body,
         :frequency_penalty,
+        :guidelines,
         :function_call,
         :functions,
         :logit_bias,

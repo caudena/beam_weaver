@@ -218,6 +218,10 @@ not an unlimited allowance.
 | `anthropic:claude-sonnet-5-5` | 1,000,000 / 128,000 | chat; text, image, PDF; tools; structured output; reasoning |
 
 
+Sonnet 4.5 is deprecated and scheduled to retire on November 30, 2026, with
+Sonnet 5.5 as its recommended replacement. See Anthropic's
+[retirement schedule](https://platform.claude.com/docs/en/about-claude/model-deprecations).
+
 Undated aliases can follow newer snapshots. Restricted Mythos profiles do not
 imply account entitlement; check Anthropic's
 [model availability](https://platform.claude.com/docs/en/about-claude/models/choosing-a-model).

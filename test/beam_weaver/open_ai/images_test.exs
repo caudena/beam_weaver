@@ -17,9 +17,12 @@ defmodule BeamWeaver.OpenAI.ImagesTest do
 
     assert {:ok, ^response} =
              Images.generate("A blue square",
-               model: "gpt-image-2.5-flare",
+               model: "fixture-image",
                api_key: "test-key",
                quality: "low",
+               moderation: "auto",
+               safety_identifier: "opaque-user",
+               response_format: "b64_json",
                transport: BeamWeaver.TestSupport.Conformance.Fakes.Transport,
                transport_opts: [
                  parent: self(),
@@ -27,9 +30,12 @@ defmodule BeamWeaver.OpenAI.ImagesTest do
                    method: :post,
                    path: "/v1/images/generations",
                    json: %{
-                     "model" => "gpt-image-2.5-flare",
+                     "model" => "fixture-image",
                      "prompt" => "A blue square",
-                     "quality" => "low"
+                     "quality" => "low",
+                     "moderation" => "auto",
+                     "safety_identifier" => "opaque-user",
+                     "response_format" => "b64_json"
                    }
                  },
                  body: response
@@ -41,11 +47,11 @@ defmodule BeamWeaver.OpenAI.ImagesTest do
 
     run =
       Store.list()
-      |> Enum.find(&(&1.name == "openai:gpt-image-2.5-flare:images"))
+      |> Enum.find(&(&1.name == "openai:fixture-image:images"))
 
     assert run.status == :ok
     assert run.metadata.model_provider == "openai"
-    assert run.metadata.model_name == "gpt-image-2.5-flare"
+    assert run.metadata.model_name == "fixture-image"
     assert run.usage == response["usage"]
     assert run.outputs == %{image_count: 1}
     refute inspect(run) =~ "base64-image-bytes"

@@ -42,6 +42,11 @@ DeepSeek receives full history each turn. Chat Completions uses JSON-object
 mode with schema instructions/local checks; Responses supports native JSON
 Schema. See [Structured Output](../structured_output.md) for validation limits.
 
+On Flash, `top_p` takes effect in thinking mode and values below 0.95 are
+treated as 0.95; non-thinking mode fixes it at 1.0. Chat Completions requires
+`0 < top_p <= 1`. Streaming usage arrives on the last content chunk with its
+finish reason, followed by `[DONE]`; a separate usage-only chunk is not required.
+
 ## Images
 
 Flash supports image input; the V4 Pro profile is text-only. From a repository
@@ -91,7 +96,36 @@ strict function tools and prefix completion where the selected model allows it.
 
 ## Raw client
 
-`DeepSeek.Client` exposes FIM completions, model discovery and account balance.
+`DeepSeek.Client` exposes Search, Fetch, FIM completions, model discovery and account balance.
+
+### Search and Fetch
+
+The standalone endpoints work independently of the chat model. Create a client
+from the configured DeepSeek credentials and send native request bodies:
+
+```elixir
+search_client = BeamWeaver.DeepSeek.Client.new(timeout: 60_000)
+{:ok, search} = BeamWeaver.DeepSeek.Client.search(search_client, %{
+  query: "Elixir site:elixir-lang.org",
+  count: 5,
+  need_content: true
+})
+true = is_list(search["results"])
+{:ok, page} = BeamWeaver.DeepSeek.Client.fetch(search_client, %{url: "https://elixir-lang.org/"})
+true = is_binary(page["content"])
+```
+
+`POST /v1/tools/search` and `POST /v1/tools/fetch` each cost **$0.75 per 1,000
+successful requests**. Search is billable only with non-empty `results`; Fetch
+requires returned page content. Failures, empty results and timeouts are free.
+These are request charges, separate from model token usage. The temporary free
+period through October 31 applies to server-side calls through DeepSeek Harness,
+Claude Code and Codex, rather than direct standalone API calls. See the
+[Search & Fetch guide](https://api-docs.deepseek.com/guides/search/) and
+[pricing](https://api-docs.deepseek.com/quick_start/pricing/).
+
+### FIM completions
+
 FIM runs without thinking. This complete call checks actual generated code:
 
 ```elixir
@@ -123,6 +157,10 @@ Repeated prefix caching is automatic; inspect reported cache-read tokens.
 There is no prompt-cache key added by BeamWeaver's caching middleware.
 Request `metadata:` is unsupported; use trace metadata for application labels.
 
+Time-based cost estimates use the registered UTC weekday pricing windows. They
+do not include a Chinese public-holiday calendar; consult DeepSeek's
+[pricing](https://api-docs.deepseek.com/quick_start/pricing/) for holiday exceptions.
+
 ## Models
 
 Limits are local profile data. A dash means not applicable or not recorded,
@@ -136,9 +174,9 @@ not an unlimited allowance.
 | `deepseek:deepseek-v4-pro` | 1,048,576 / 393,216 | chat; text; tools; structured output; reasoning |
 
 
-These are local profiles, including accepted aliases. `deepseek-flash` and
-older V4 Flash aliases can resolve to the same served model. Account access
-and live availability remain separate from profile presence.
+`deepseek-flash` serves DeepSeek V4.1-Flash-1017. The older V4 Flash identifiers
+remain accepted aliases for the same model. Pinning an alias does not freeze
+the provider's underlying model revision.
 
 ## Further reading
 

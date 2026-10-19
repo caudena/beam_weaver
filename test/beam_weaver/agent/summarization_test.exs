@@ -18,6 +18,40 @@ defmodule BeamWeaver.Agent.SummarizationTest do
   # 200 tokens per message, so 5 messages are 1,000 tokens.
   defp counter(messages), do: length(messages) * 200
 
+  test "long decode uses context size instead of cumulative billed tokens to trigger summarization" do
+    middleware =
+      Summarization.new(
+        model: %FakeChatModel{profile: %Profile{provider: :google}},
+        summarizer: fn _messages -> "Earlier discussion." end,
+        trigger: {:tokens, 1_000},
+        keep: {:messages, 1}
+      )
+
+    reply =
+      Message.assistant("Answer",
+        usage_metadata: %{
+          input_tokens: 12_000,
+          output_tokens: 100,
+          total_tokens: 12_100,
+          initial_input_tokens: 100,
+          context_tokens: 200
+        },
+        response_metadata: %{model_provider: "google"}
+      )
+
+    messages = [Message.user("Question"), reply, Message.user("Next")]
+    assert Summarization.before_model(middleware, %{messages: messages}, nil) == %{}
+
+    reply = %{reply | usage_metadata: Map.put(reply.usage_metadata, :context_tokens, 1_100)}
+
+    assert %{messages: %Overwrite{}} =
+             Summarization.before_model(
+               middleware,
+               %{messages: [Message.user("Question"), reply, Message.user("Next")]},
+               nil
+             )
+  end
+
   test "fractional triggers are taken of the agent model's window, not the summary model's" do
     middleware =
       Summarization.new(

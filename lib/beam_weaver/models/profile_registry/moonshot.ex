@@ -7,10 +7,17 @@ defmodule BeamWeaver.Models.ProfileRegistry.Moonshot do
 
   @context_window 262_144
   @k3_context_window 1_048_576
-  @profile_last_updated "2026-07-19"
-  @k3_supported_params [:reasoning_effort | Params.moonshot()] -- [:thinking]
+  @profile_last_updated "2026-10-19"
+  @k3_supported_params [:reasoning_effort, :prompt_cache_options | Params.moonshot()] -- [:thinking]
 
   @moonshot_deprecated_models %{
+    "moonshot-v1-8k" => %{replacement: "kimi-k3", discontinued_at: "2026-08-31"},
+    "moonshot-v1-32k" => %{replacement: "kimi-k3", discontinued_at: "2026-08-31"},
+    "moonshot-v1-128k" => %{replacement: "kimi-k3", discontinued_at: "2026-08-31"},
+    "moonshot-v1-auto" => %{replacement: "kimi-k3", discontinued_at: "2026-08-31"},
+    "moonshot-v1-8k-vision-preview" => %{replacement: "kimi-k3", discontinued_at: "2026-08-31"},
+    "moonshot-v1-32k-vision-preview" => %{replacement: "kimi-k3", discontinued_at: "2026-08-31"},
+    "moonshot-v1-128k-vision-preview" => %{replacement: "kimi-k3", discontinued_at: "2026-08-31"},
     "kimi-k2.5" => %{replacement: "kimi-k3", discontinued_at: "2026-08-31"},
     "kimi-latest" => %{
       replacement: "kimi-k3",
@@ -74,7 +81,7 @@ defmodule BeamWeaver.Models.ProfileRegistry.Moonshot do
     api_family: :chat_completions,
     openai_compatible: true,
     automatic_context_caching: true,
-    pricing_last_checked: "2026-08-27",
+    pricing_last_checked: "2026-10-19",
     partial_mode: true,
     unsupported_api_families: [:responses, :embeddings, :batch, :files],
     sampling_controls: :fixed
@@ -112,7 +119,7 @@ defmodule BeamWeaver.Models.ProfileRegistry.Moonshot do
                  supported_params_by_api: %{
                    chat_completions: @k3_supported_params
                  },
-                 reasoning_effort_levels: [:max],
+                 reasoning_effort_levels: [:low, :high, :max],
                  reasoning_effort_default: :max,
                  extra:
                    Map.merge(@base_extra, @k3_extra)
@@ -185,6 +192,21 @@ defmodule BeamWeaver.Models.ProfileRegistry.Moonshot do
               {{:moonshot, id}, Profile.new(Map.merge(@base_profile, profile))}
             end)
 
+  @profiles Map.new(@profiles, fn {key, profile} ->
+              extra =
+                profile.extra
+                |> Map.put(:input_price_per_mtok, profile.extra.input_cache_miss_price_per_mtok)
+                |> Map.put(:cached_input_price_per_mtok, profile.extra.input_cache_hit_price_per_mtok)
+                |> Map.put(:pricing_source_url, "https://platform.kimi.ai/docs/pricing/chat")
+                |> Map.put(:standalone_tool_pricing, %{
+                  search: %{price_per_1000_requests: 2.0, billing: :successful_nonempty_response},
+                  search_pro: %{price_per_1000_requests: 3.0, billing: :successful_nonempty_response},
+                  fetch: %{price_per_1000_requests: 2.0, billing: :successful_nonempty_response}
+                })
+                |> Map.put(:tool_pricing_source_url, "https://platform.kimi.ai/docs/pricing/websearch")
+
+              {key, %{profile | extra: extra}}
+            end)
   def profiles, do: Map.values(@profiles)
 
   def resolve(model) do

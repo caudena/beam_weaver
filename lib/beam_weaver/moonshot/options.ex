@@ -22,7 +22,7 @@ defmodule BeamWeaver.Moonshot.Options do
   @kimi_model_policies %{
     "kimi-k3" => %{
       thinking: :unsupported,
-      reasoning_efforts: ["max"],
+      reasoning_efforts: ["low", "high", "max"],
       tool_choice_when_thinking: ["auto", "none", "required"]
     },
     "kimi-k2.7-code" => %{
@@ -102,6 +102,10 @@ defmodule BeamWeaver.Moonshot.Options do
       |> put_optional("stream", Keyword.get(opts, :stream, false))
       |> put_optional("stream_options", normalize_option_map(Keyword.get(opts, :stream_options)))
       |> put_optional("prompt_cache_key", option(model, opts, :prompt_cache_key))
+      |> put_optional("prompt_cache_options", normalize_option_map(option(model, opts, :prompt_cache_options)))
+      |> put_optional("logprobs", option(model, opts, :logprobs))
+      |> put_optional("top_logprobs", option(model, opts, :top_logprobs))
+      |> put_optional("prediction", normalize_value(option(model, opts, :prediction)))
       |> put_optional("safety_identifier", option(model, opts, :safety_identifier))
       |> merge_extra_body(extra_body, reserved: @reserved_body_fields)
 
@@ -181,6 +185,10 @@ defmodule BeamWeaver.Moonshot.Options do
         :n,
         :presence_penalty,
         :prompt_cache_key,
+        :prompt_cache_options,
+        :logprobs,
+        :top_logprobs,
+        :prediction,
         :reasoning_effort,
         :response_format,
         :safety_identifier,

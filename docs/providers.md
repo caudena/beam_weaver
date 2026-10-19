@@ -27,12 +27,12 @@ true = byte_size(BeamWeaver.Core.Message.text(reply)) > 0
 | --- | --- | --- |
 | [OpenAI](providers/openai.md) (`openai:`) | 17 chat, 1 decision, 2 embedding | Tools: all; structured output: all; reasoning: 16 of 17; images: all |
 | [Anthropic](providers/anthropic.md) (`anthropic:`) | 19 chat | Tools: all; structured output: 16 of 19; reasoning: all; images: all |
-| [Google Gemini](providers/google.md) (`google:`) | 7 chat | Tools: all; structured output: all; reasoning: all; images: all |
+| [Google Gemini](providers/google.md) (`google:`) | 8 chat | Tools: all; structured output: all; reasoning: all; images: all |
 | [xAI](providers/xai.md) (`xai:`) | 8 chat | Tools: all; structured output: all; reasoning: 7 of 8; images: all |
 | [Moonshot (Kimi)](providers/moonshot.md) (`moonshot:`) | 4 chat | Tools: all; structured output: all; reasoning: all; images: all |
 | [Z.ai](providers/zai.md) (`zai:`) | 8 chat | Tools: all; structured output: all; reasoning: all; images: 2 of 8 |
 | [DeepSeek](providers/deepseek.md) (`deepseek:`) | 4 chat | Tools: all; structured output: all; reasoning: all; images: 3 of 4 |
-| [TypeSafe](providers/typesafe.md) (`typesafe:`) | 3 decision | Typed decisions; no chat model |
+| [TypeSafe](providers/typesafe.md) (`typesafe:`) | 4 decision | Typed decisions; no chat model |
 
 This table describes checked-in model profiles. Counts include aliases and
 snapshots; they are not distinct-model counts or a statement of your account's
@@ -72,6 +72,7 @@ endpoint, not an accidentally inherited production provider key.
 | `max_tokens:` / `max_output_tokens:` | Output budget |
 | `temperature:`, `top_p:` | Only where the selected model accepts them |
 | `extra_body:` | Additional native fields, still subject to server validation |
+| `default_headers:`, `headers:` | Client defaults and per-call HTTP headers |
 | `transport:`, `transport_opts:` | Explicit HTTP/replay adapter |
 | `profile:` | Local compatibility metadata override |
 
@@ -86,7 +87,8 @@ reasoning blocks are replayed only to compatible provider endpoints; preserving
 full message objects lets codecs retain the information they need.
 
 `ModelFallback` changes the model after failure and uses its own credentials.
-`ModelRetry` adds bounded retries; providers do not retry independently.
+`ModelRetry` adds bounded retries for failed calls. Gemini Argon also resumes
+interrupted long-decode hops internally; see [Argon continuation](providers/google.md#gemini-4-argon).
 A fallback success does not establish that the primary integration worked.
 [Built-in Middleware](builtin_middleware.md) explains ordering and budgets.
 

@@ -14,6 +14,9 @@ defmodule BeamWeaver.Models.UsageCost do
   calls without a timestamp use the profile's current canonical rates.
   `long_context_pricing` overrides rates for the entire request when normalized
   total input, including cache reads and writes, exceeds its `threshold_tokens`.
+  The equivalent `higher_context_*` profile fields are also supported, including
+  input/output multipliers. Thresholds are exclusive unless the profile sets
+  `higher_context_threshold_inclusive: true` (xAI).
   """
 
   alias BeamWeaver.Models.Profile
@@ -268,7 +271,42 @@ defmodule BeamWeaver.Models.UsageCost do
           else: pricing
 
       _other ->
-        pricing
+        higher_context_pricing(pricing, input_tokens(usage))
+    end
+  end
+
+  @higher_context_keys [
+    input_price_per_mtok: :higher_context_input_price_per_mtok,
+    cached_input_price_per_mtok: :higher_context_cached_input_price_per_mtok,
+    output_price_per_mtok: :higher_context_output_price_per_mtok,
+    cache_write_5m_price_per_mtok: :higher_context_cache_write_5m_price_per_mtok,
+    cache_write_1h_price_per_mtok: :higher_context_cache_write_1h_price_per_mtok,
+    cache_write_30m_price_per_mtok: :higher_context_cache_write_30m_price_per_mtok
+  ]
+
+  defp higher_context_pricing(pricing, input_tokens) do
+    threshold = Map.get(pricing, :higher_context_pricing_threshold_tokens)
+    inclusive? = Map.get(pricing, :higher_context_threshold_inclusive, false)
+
+    if is_number(threshold) and (input_tokens > threshold or (inclusive? and input_tokens == threshold)) do
+      Enum.reduce(@higher_context_keys, pricing, fn {key, higher_key}, rates ->
+        multiplier_key =
+          if key == :output_price_per_mtok,
+            do: :higher_context_output_multiplier,
+            else: :higher_context_input_multiplier
+
+        price = number(pricing, key)
+        multiplier = number(pricing, multiplier_key)
+        higher_price = number(pricing, higher_key)
+
+        cond do
+          is_number(higher_price) -> Map.put(rates, key, higher_price)
+          is_number(price) and is_number(multiplier) -> Map.put(rates, key, price * multiplier)
+          true -> rates
+        end
+      end)
+    else
+      pricing
     end
   end
 

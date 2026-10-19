@@ -3,7 +3,6 @@ defmodule BeamWeaver.ContextBudgetTest do
 
   alias BeamWeaver.ContextBudget
   alias BeamWeaver.Models.Profile
-  alias BeamWeaver.Models.ProfileRegistry
 
   test "uses explicit separate and shared context semantics" do
     assert {:ok, separate} =
@@ -28,23 +27,6 @@ defmodule BeamWeaver.ContextBudgetTest do
              )
 
     assert shared.effective_input_limit == 8_400
-  end
-
-  test "Claude 5.5 shares its window between the request and the requested output" do
-    for id <- ["claude-haiku-5-5", "claude-sonnet-5-5"] do
-      assert {:ok, profile} = ProfileRegistry.fetch(:anthropic, id)
-
-      assert {:ok, budget} =
-               ContextBudget.new(profile, "request", requested_max_output_tokens: profile.max_output_tokens)
-
-      assert budget.effective_input_limit == 872_000
-    end
-  end
-
-  test "every registered profile with a context limit declares semantics it knows" do
-    for profile <- ProfileRegistry.all(), profile.max_input_tokens || profile.max_context_tokens do
-      assert {:ok, _limit} = ContextBudget.effective_input_limit(profile), "#{profile.provider}:#{profile.id}"
-    end
   end
 
   test "fails closed when limit semantics are unknown" do

@@ -630,6 +630,39 @@ defmodule BeamWeaver.Models.ProfileRegistry.Anthropic do
         })
       )
   }
+  @profiles Map.new(@profiles, fn {key, profile} ->
+              extra =
+                profile.extra
+                |> Map.put(:pricing_last_checked, "2026-10-19")
+                |> Map.put(:pricing_source_url, "https://platform.claude.com/docs/en/about-claude/pricing")
+
+              extra =
+                if price = extra[:cache_read_price_per_mtok],
+                  do: Map.put_new(extra, :cached_input_price_per_mtok, price),
+                  else: extra
+
+              profile = %{profile | extra: extra}
+
+              profile =
+                if profile.id in ["claude-sonnet-4-5", "claude-sonnet-4-5-20250929"] do
+                  %{
+                    profile
+                    | status: :deprecated,
+                      last_updated: "2026-10-19",
+                      extra:
+                        Map.merge(extra, %{
+                          deprecated_at: "2026-09-30",
+                          scheduled_shutdown_date: "2026-11-30",
+                          recommended_replacement: "claude-sonnet-5-5",
+                          lifecycle_source_url: "https://platform.claude.com/docs/en/about-claude/model-deprecations"
+                        })
+                  }
+                else
+                  profile
+                end
+
+              {key, profile}
+            end)
   def profiles, do: Map.values(@profiles)
 
   def resolve(model) do

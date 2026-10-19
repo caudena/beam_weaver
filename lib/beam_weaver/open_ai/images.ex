@@ -10,7 +10,19 @@ defmodule BeamWeaver.OpenAI.Images do
   alias BeamWeaver.Tracing
   alias BeamWeaver.Tracing.Runner
 
-  @request_fields [:size, :quality, :background, :output_format, :output_compression, :n]
+  @request_fields [
+    :size,
+    :quality,
+    :background,
+    :output_format,
+    :output_compression,
+    :n,
+    :moderation,
+    :response_format,
+    :safety_identifier,
+    :style,
+    :user
+  ]
 
   @doc "Generate images and emit the image-model usage as a generation run."
   @spec generate(String.t(), keyword()) :: {:ok, map()} | {:error, term()}

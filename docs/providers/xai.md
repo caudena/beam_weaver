@@ -31,7 +31,10 @@ The same identifier works in an agent's model declaration.
 | `api:` | Responses or Chat Completions |
 | `reasoning_effort:` | A level listed by the selected model profile |
 | `max_tokens:` | Output budget |
-| `prompt_cache_key:` | Responses cache routing |
+| `prompt_cache_key:` | Responses and Chat Completions cache routing |
+| `safety_identifier:` | Opaque end-user identifier on either API |
+| `guidelines:` | Native category/behavior instructions on either API |
+| `min_p:`, `top_k:` | Responses sampling controls |
 | `x_grok_conv_id:` | Conversation header used for cache routing |
 | `use_previous_response_id:` | Continue eligible stored Responses history |
 | `service_tier:` | Native processing tier where available |
@@ -48,6 +51,11 @@ BeamWeaver requests encrypted reasoning content on Responses for reasoning
 models and replays it unchanged. This also permits full-history continuation
 with `store: false`. An explicit raw include override can replace automatic
 include fields, so preserve required items when customizing requests.
+
+Responses usage may include `context_details` for the latest server-side agent
+step. BeamWeaver exposes its input-plus-output count as
+`usage_metadata.context_tokens` for context budgeting while retaining cumulative
+`total_tokens` for billing.
 
 Chat Completions has no equivalent encrypted reasoning field. Do not reduce
 saved messages to visible text when the next request needs provider-native
@@ -88,7 +96,9 @@ Other implemented declarations include X search, code execution, collection/
 file search and remote MCP. Account resources such as vector-store IDs must
 come from actual provisioning. Chat Completions supports function tools;
 use Responses for hosted search. [Tools](../tools.md) explains application-run
-actions and their separate execution loop.
+actions and their separate execution loop. Generated file references returned
+by Chat Completions are available in `response_metadata.output_files`, including
+in collected streams.
 
 ## Stored conversations
 
@@ -119,7 +129,7 @@ true = Message.text(answer) =~ "A-1001"
 ## Prompt caching
 
 The agent's `prompt_caching` declaration derives a stable key. Responses sends
-its key and conversation header; Chat Completions uses the header. Read actual
+its key and conversation header; Chat Completions accepts both as well. Read actual
 cache usage to establish hits. The [caching guide](../caching.md) distinguishes
 provider prefix caching from skipping a whole model call.
 

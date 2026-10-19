@@ -6,8 +6,6 @@ defmodule BeamWeaver.Moonshot.ChatModelTest do
   alias BeamWeaver.Core.Message
   alias BeamWeaver.Core.Tool
   alias BeamWeaver.Core.Messages.ToolCall
-  alias BeamWeaver.Models
-  alias BeamWeaver.Models.UsageCost
   alias BeamWeaver.Moonshot.ChatModel
   alias BeamWeaver.Moonshot.Client
   alias BeamWeaver.Core.Error
@@ -314,12 +312,18 @@ defmodule BeamWeaver.Moonshot.ChatModelTest do
     assert body["tool_choice"] == "required"
     refute Map.has_key?(body, "thinking")
 
+    for effort <- [:low, :high] do
+      assert {:ok, body} =
+               ChatModel.request_body(ChatModel.new(model: "kimi-k3"), [Message.user("hi")], reasoning_effort: effort)
+
+      assert body["reasoning_effort"] == Atom.to_string(effort)
+    end
+
     assert {:error, effort_error} =
-             ChatModel.request_body(ChatModel.new(model: "kimi-k3"), [Message.user("hi")], reasoning_effort: :high)
+             ChatModel.request_body(ChatModel.new(model: "kimi-k3"), [Message.user("hi")], reasoning_effort: :medium)
 
     assert effort_error.type == :unsupported_model_param
     assert effort_error.details.param == :reasoning_effort
-    assert effort_error.details.supported == ["max"]
 
     assert {:error, thinking_error} =
              ChatModel.request_body(ChatModel.new(model: "kimi-k3"), [Message.user("hi")], thinking: %{type: :enabled})
@@ -341,6 +345,30 @@ defmodule BeamWeaver.Moonshot.ChatModelTest do
 
     assert missing_tool_error.type == :invalid_request
     assert missing_tool_error.details.param == :tool_choice
+  end
+
+  test "cache TTL, log probabilities and predicted output reach the provider" do
+    model =
+      ChatModel.new(
+        model: "kimi-k3",
+        prompt_cache_options: %{mode: "implicit", ttl: "5m"},
+        logprobs: true,
+        top_logprobs: 3,
+        prediction: %{type: :content, content: "expected answer"},
+        api_key: "test-key",
+        transport: BeamWeaver.TestSupport.Conformance.Fakes.Transport,
+        transport_opts: [parent: self(), body: %{"choices" => [%{"message" => %{"content" => "answer"}}]}]
+      )
+
+    assert {:ok, _reply} =
+             CoreChatModel.invoke(model, "finish", prompt_cache_options: %{mode: "implicit", ttl: "1h"})
+
+    assert_received {:fake_transport_request, request}
+    body = request.json
+    assert body["prompt_cache_options"] == %{"mode" => "implicit", "ttl" => "1h"}
+    assert body["logprobs"] == true
+    assert body["top_logprobs"] == 3
+    assert body["prediction"] == %{"type" => "content", "content" => "expected answer"}
   end
 
   test "K3 dynamically loads tools through contentless system messages" do
@@ -733,24 +761,6 @@ defmodule BeamWeaver.Moonshot.ChatModelTest do
            }
   end
 
-  test "K3 profile prices both cache-write TTLs" do
-    {:ok, profile} = BeamWeaver.Models.ProfileRegistry.Moonshot.resolve("kimi-k3")
-
-    cost =
-      UsageCost.calculate(profile, %{
-        input_tokens: 1_000,
-        input_token_details: %{
-          cache_read: 200,
-          cache_write: 400,
-          ephemeral_5m_input_tokens: 100,
-          ephemeral_1h_input_tokens: 300
-        },
-        output_tokens: 100
-      })
-
-    assert_in_delta cost.total_cost, 0.00486, 0.000000001
-  end
-
   test "stream_events returns envelopes tagged with Moonshot invocation metadata" do
     body = """
     data: {"id":"chatcmpl_kimi","model":"kimi-k2.6","choices":[{"index":0,"delta":{"reasoning_content":"think"},"finish_reason":null}]}
@@ -883,23 +893,5 @@ defmodule BeamWeaver.Moonshot.ChatModelTest do
       assert error.details.retryable == false
       refute BeamWeaver.RetryPredicates.transient?(error)
     end
-  end
-
-  test "model initializer supports Moonshot prefix, rejects aliases, and reports deprecated models" do
-    for model <- ["kimi-k3", "kimi-k2.7-code", "kimi-k2.7-code-highspeed", "kimi-k2.6"] do
-      assert {:ok, %ChatModel{model: ^model}} = Models.init_chat_model("moonshot:" <> model)
-    end
-
-    assert {:error, invalid} = Models.init_chat_model("kimi-k2.6")
-    assert invalid.type == :invalid_model
-    assert invalid.details.expected == "moonshot:kimi-k2.6"
-
-    assert {:error, unsupported} = Models.init_chat_model("kimi:kimi-k2.6")
-    assert unsupported.type == :unsupported_provider
-
-    assert {:error, deprecated} = Models.init_chat_model("moonshot:kimi-latest")
-    assert deprecated.type == :deprecated_model
-    assert deprecated.details.replacement == "kimi-k3"
-    assert deprecated.details.expected == "moonshot:kimi-k3"
   end
 end

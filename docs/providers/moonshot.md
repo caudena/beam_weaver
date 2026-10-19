@@ -2,7 +2,9 @@
 
 Moonshot's Kimi integration uses Chat Completions. Thinking controls, forced
 tool choice and structured output vary by model generation; choose the model
-and options together.
+and options together. The adapter exposes Chat Completions and token estimation.
+Moonshot's Responses, Anthropic-compatible Messages and standalone Search/Fetch
+APIs require a separate client.
 
 ## Setup and first request
 
@@ -37,12 +39,13 @@ and whole-run timeouts. Preserve full returned messages for subsequent tool roun
 | --- | --- |
 | K2.6 | Thinking can be enabled/disabled; forced/named tools require thinking off |
 | K2.7 Code | Thinking remains enabled; forced tool choice is unavailable |
-| K3 | Always reasons at max effort; supports required tool choice and dynamic tools |
+| K3 | Always reasons; `reasoning_effort:` accepts `:low`, `:high`, or `:max` (default); supports required tool choice and dynamic tools |
 
 Sampling values are fixed for these profiles; unsupported temperature/top-p
 values fail locally. `max_tokens:` maps to the native completion budget.
 `base_url:` chooses the native root/gateway. Request metadata is unsupported;
-use `trace_metadata:` for application tracing.
+use `trace_metadata:` for application tracing. `logprobs:`, `top_logprobs:`
+and `prediction:` pass through to Chat Completions.
 
 ## Tools on K3
 
@@ -86,6 +89,9 @@ a call only where the model permits it. See
 
 `prompt_caching` supplies a prompt cache key. Hits are observed through
 `usage_metadata.input_token_details.cache_read`, not guaranteed by configuration.
+K3 also accepts `prompt_cache_options: %{mode: "implicit", ttl: "1h"}`; the
+default TTL is `"5m"`. Cache writes are reported separately from reads, with
+TTL breakdowns retained from response headers for billing.
 
 ## Images and video
 

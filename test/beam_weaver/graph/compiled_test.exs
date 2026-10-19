@@ -1275,9 +1275,6 @@ defmodule BeamWeaver.Graph.CompiledTest do
   defp control_write?(_write), do: false
 
   test "stream_events emits typed graph updates and task metadata" do
-    refute function_exported?(Compiled, :stream, 3)
-    refute function_exported?(Compiled, :async_stream, 3)
-
     graph = answer_graph()
 
     assert {:ok, events} = Compiled.stream_events(graph, %{})

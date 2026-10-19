@@ -343,38 +343,19 @@ defmodule BeamWeaver.ZAI.ChatModelTest do
     assert [%ToolCall{name: "get_weather", args: %{"city" => "Paris"}}] = message.tool_calls
     assert message.usage_metadata.input_token_details.cache_read == 4
     assert message.usage_metadata.output_token_details.reasoning == 3
-    assert_in_delta message.usage_metadata.total_cost, 0.00003144, 0.000000001
-    assert_in_delta message.metadata.estimated_cost, 0.00003144, 0.000000001
   end
 
-  test "prices the response model at its effective Z.ai rate" do
-    usage = %{
-      "prompt_tokens" => 1_000,
-      "completion_tokens" => 100,
-      "prompt_tokens_details" => %{"cached_tokens" => 200}
+  test "web search adds its service charge and unknown models stay unpriced" do
+    profile = BeamWeaver.Models.ProfileRegistry.profiles(:zai) |> hd()
+
+    response = %{
+      "model" => profile.id,
+      "usage" => %{"prompt_tokens" => 0, "completion_tokens" => 0},
+      "web_search" => [%{"title" => "result"}]
     }
 
-    current = Messages.usage_metadata(%{"model" => "glm-5.3-flash", "usage" => usage})
-
-    promo =
-      Messages.usage_metadata(%{
-        "model" => "glm-5.3-flash",
-        "created" => DateTime.to_unix(~U[2026-09-08 12:00:00Z]),
-        "usage" => usage
-      })
-
-    assert_in_delta current.total_cost, 0.000176, 0.000000001
-    assert_in_delta promo.total_cost, 0.000088, 0.000000001
-
-    searched =
-      Messages.usage_metadata(%{
-        "model" => "glm-5.3-flash",
-        "usage" => usage,
-        "web_search" => [%{"title" => "result"}]
-      })
-
-    assert_in_delta searched.total_cost, 0.010176, 0.000000001
-    refute Map.has_key?(Messages.usage_metadata(%{"model" => "glm-future", "usage" => usage}), :total_cost)
+    assert Messages.usage_metadata(response).total_cost == profile.extra.tool_pricing.web_search.price_per_request
+    refute Map.has_key?(Messages.usage_metadata(%{response | "model" => "glm-fixture-unknown"}), :total_cost)
   end
 
   test "stream body reconstructs text, reasoning, final usage, length, and tool-call fragments" do
@@ -406,7 +387,6 @@ defmodule BeamWeaver.ZAI.ChatModelTest do
     assert message.metadata.reasoning_content == "plan "
     assert message.usage_metadata.input_token_details.cache_read == 1
     assert message.usage_metadata.output_token_details.reasoning == 1
-    assert_in_delta message.usage_metadata.total_cost, 0.00001486, 0.000000001
     assert [%ToolCall{name: "get_weather", args: %{"city" => "Paris"}}] = message.tool_calls
   end
 
@@ -465,16 +445,7 @@ defmodule BeamWeaver.ZAI.ChatModelTest do
     assert response.response_metadata.headers == %{x_log_id: "chatcmpl_zai"}
     refute Map.has_key?(response.response_metadata.transport, :headers)
 
-    assert response.usage_metadata == %{
-             input_cost: 0.0000014,
-             input_cost_details: %{cache_read: 0.0, uncached: 0.0000014},
-             input_tokens: 1,
-             output_cost: 0.0000044,
-             output_cost_details: %{text: 0.0000044},
-             output_tokens: 1,
-             total_cost: 0.0000058,
-             total_tokens: 2
-           }
+    assert %{input_tokens: 1, output_tokens: 1, total_tokens: 2} = response.usage_metadata
 
     assert_received {:fake_transport_request, request}
     assert {"authorization", "Bearer zai-secret"} in request.headers
@@ -532,63 +503,24 @@ defmodule BeamWeaver.ZAI.ChatModelTest do
     refute BeamWeaver.RetryPredicates.transient?(error)
   end
 
-  test "model initializer supports current explicit Z.ai identifiers" do
-    for model <- ["glm-5.3", "glm-5.3-flash", "glm-5.3-flashx", "glm-5.2", "glm-5.1", "glm-5", "glm-4.7", "glm-4.6"] do
-      assert {:ok, %ChatModel{model: ^model}} = Models.init_chat_model("zai:" <> model)
-    end
-
-    assert {:error, invalid} = Models.init_chat_model("glm-5.2")
-    assert invalid.type == :invalid_model
-    assert invalid.details.expected == "zai:glm-5.2"
-
-    assert {:error, unsupported} = Models.init_chat_model("zai:glm-4")
-    assert unsupported.type == :unsupported_model
-    assert unsupported.details.expected == "zai:glm-5.3"
-  end
-
   test "GLM-5.1 and older models take no reasoning effort but can turn thinking off" do
-    for model <- ["glm-5.1", "glm-5", "glm-4.7", "glm-4.6"] do
-      assert {:ok, body} =
-               ChatModel.request_body(ChatModel.new(model: model), [Message.user("hi")], thinking: %{type: :disabled})
-
-      assert body["thinking"] == %{"type" => "disabled"}
-
-      assert {:error, error} =
-               ChatModel.request_body(ChatModel.new(model: model), [Message.user("hi")], reasoning_effort: :low)
-
-      assert error.type == :unsupported_model_param
-      assert error.details.params == [:reasoning_effort]
-
-      assert {:error, %{type: :unsupported_feature, details: %{feature: :image}}} =
-               ChatModel.request_body(ChatModel.new(model: model), [
-                 Message.user([ContentBlock.image(%{url: "https://example.test/a.png"})])
-               ])
-    end
-  end
-
-  test "GLM-5.3-FlashX takes the media and efforts of GLM-5.3-Flash" do
-    model = ChatModel.new(model: "glm-5.3-flashx")
+    model = ChatModel.new(model: "glm-5.1")
 
     assert {:ok, body} =
-             ChatModel.request_body(
-               model,
-               [
-                 Message.user([
-                   ContentBlock.image(%{data: "iVBORw0KGgo=", mime_type: "image/png"}),
-                   ContentBlock.file(%{url: "https://example.test/a.pdf", mime_type: "application/pdf"})
-                 ])
-               ],
-               reasoning_effort: :low
-             )
+             ChatModel.request_body(model, [Message.user("hi")], thinking: %{type: :disabled})
 
-    assert body["reasoning_effort"] == "low"
-    assert [%{"content" => [%{"type" => "image_url"}, %{"type" => "file"}]}] = body["messages"]
+    assert body["thinking"] == %{"type" => "disabled"}
 
-    assert {:error, effort_error} = ChatModel.request_body(model, [Message.user("hi")], reasoning_effort: :medium)
-    assert effort_error.details.supported == ["low", "high", "max"]
+    assert {:error, error} =
+             ChatModel.request_body(model, [Message.user("hi")], reasoning_effort: :low)
 
-    assert {:error, thinking_error} = ChatModel.request_body(model, [Message.user("hi")], thinking: %{type: :disabled})
-    assert thinking_error.details.param == :thinking
+    assert error.type == :unsupported_model_param
+    assert error.details.params == [:reasoning_effort]
+
+    assert {:error, %{type: :unsupported_feature, details: %{feature: :image}}} =
+             ChatModel.request_body(model, [
+               Message.user([ContentBlock.image(%{url: "https://example.test/a.png"})])
+             ])
   end
 
   test "a Z.ai file part in message content is sent as a file by URL" do

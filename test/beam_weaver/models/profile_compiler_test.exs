@@ -10,11 +10,6 @@ defmodule BeamWeaver.Models.ProfileCompilerTest do
         "models" => %{
           "z-model" => %{
             "id" => "z-model",
-            "name" => "Claude Opus 4.6",
-            "status" => "deprecated",
-            "release_date" => "2025-06-01",
-            "last_updated" => "2025-07-01",
-            "open_weights" => false,
             "reasoning" => true,
             "tool_call" => true,
             "tool_call_streaming" => true,
@@ -40,11 +35,6 @@ defmodule BeamWeaver.Models.ProfileCompilerTest do
 
     assert %Profile{provider: :anthropic, id: "z-model", extra: extra} = profile
     assert extra == %{}
-    assert profile.name == "Claude Opus 4.6"
-    assert profile.status == "deprecated"
-    assert profile.release_date == "2025-06-01"
-    assert profile.last_updated == "2025-07-01"
-    assert profile.open_weights == false
     assert profile.max_input_tokens == 200_000
     assert profile.max_output_tokens == 64_000
     assert profile.reasoning_output == true

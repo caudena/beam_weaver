@@ -260,6 +260,11 @@ than treating a successful response tuple as an image:
 true = byte_size(bytes) > 1_000
 ```
 
+`generate_image/2` accepts `size:`, `quality:`, `background:`, `output_format:`,
+`output_compression:`, `n:`, `moderation:` and `safety_identifier:`. Legacy
+`response_format:`, `style:` and `user:` fields are passed through where the
+selected image model supports them.
+
 `OpenAIModeration` middleware checks configured input/output text through the
 moderation endpoint. It is separate from tool authorization and stream
 redaction; [Guardrails](../guardrails.md) explains those boundaries.
@@ -291,6 +296,11 @@ not an unlimited allowance.
 | `openai:text-embedding-3-large` | 8,191 / — | embedding; text |
 | `openai:text-embedding-3-small` | 8,191 / — | embedding; text |
 
+
+GPT-5, GPT-5 Mini and GPT-5 Nano are scheduled to retire on December 11, 2026;
+GPT-4.1 on January 14, 2027; and GPT-5.4 Nano on April 1, 2027. Their profiles
+retain support until retirement and include recommended replacements. See
+OpenAI's [deprecation notices](https://developers.openai.com/api/docs/deprecations).
 
 Profiles include aliases and access-controlled models; account access is not
 implied. Azure routing and OpenAI managed-agent resources are outside this

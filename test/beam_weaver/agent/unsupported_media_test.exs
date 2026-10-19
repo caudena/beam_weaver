@@ -24,12 +24,12 @@ defmodule BeamWeaver.Agent.UnsupportedMediaTest do
     end
   end
 
-  defp profile(provider, id) do
-    {:ok, profile} = ProfileRegistry.fetch(provider, id)
-    profile
-  end
+  # Middleware intentionally trusts only registered profiles. Select by the
+  # capability under test, without depending on a provider's current lineup.
+  defp media_profile(image?, pdf?),
+    do: Enum.find(ProfileRegistry.all(), &(&1.image_inputs == image? and &1.pdf_inputs == pdf?))
 
-  defp text_only, do: profile(:deepseek, "deepseek-v4-pro")
+  defp text_only, do: media_profile(false, false)
 
   defp model(profile, opts \\ []),
     do: struct!(FakeChatModel, Keyword.merge([responses: ["Done."], parent: self(), profile: profile], opts))
@@ -95,16 +95,9 @@ defmodule BeamWeaver.Agent.UnsupportedMediaTest do
   end
 
   test "a model whose built-in profile takes images and PDFs gets them" do
-    assert {:ok, _result} = run(model: model(profile(:anthropic, "claude-haiku-4-5")))
+    assert {:ok, _result} = run(model: model(media_profile(true, true)))
 
     assert [[_text, %ContentBlock.Image{}], [_notice, %ContentBlock.File{}]] = tool_contents(received_messages())
-  end
-
-  test "OpenAI and xAI models get PDFs" do
-    for {provider, id} <- [openai: "gpt-5.4-mini", xai: "grok-4.7", xai: "grok-future"] do
-      assert {:ok, _result} = run(model: model(profile(provider, id)))
-      assert [[_text, %ContentBlock.Image{}], [_notice, %ContentBlock.File{}]] = tool_contents(received_messages())
-    end
   end
 
   test "a profile declared by hand, or none, keeps the media" do
@@ -129,7 +122,7 @@ defmodule BeamWeaver.Agent.UnsupportedMediaTest do
   end
 
   test "a fallback that can't take images gets the notice" do
-    primary = model(profile(:anthropic, "claude-haiku-4-5"), error: Error.new(:provider_error, "Service unavailable"))
+    primary = model(media_profile(true, true), error: Error.new(:provider_error, "Service unavailable"))
     fallback = model(text_only(), responses: ["The fallback answered."])
 
     assert {:ok, result} = run(model: primary, middleware: [{ModelFallback, fallbacks: [fallback]}])

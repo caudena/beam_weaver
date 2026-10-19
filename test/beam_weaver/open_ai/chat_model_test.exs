@@ -8,7 +8,6 @@ defmodule BeamWeaver.OpenAI.ChatModelTest do
   alias BeamWeaver.Models
   alias BeamWeaver.Models.ParamPolicy
   alias BeamWeaver.Models.Profile
-  alias BeamWeaver.Models.UsageCost
   alias BeamWeaver.OpenAI.ChatModel
   alias BeamWeaver.OpenAI.Messages
   alias BeamWeaver.OpenAI.Responses
@@ -49,42 +48,6 @@ defmodule BeamWeaver.OpenAI.ChatModelTest do
     assert ChatModel.should_stream?(%ChatModel{}, stream: true)
   end
 
-  test "constructor resolves OpenAI model profiles without mutable global profile state" do
-    gpt41 = ChatModel.new(model: "gpt-4.1")
-    assert %Profile{provider: :openai, id: "gpt-4.1"} = gpt41.profile
-
-    gpt5 = ChatModel.new(model: "gpt-5")
-    assert %Profile{provider: :openai, id: "gpt-5"} = gpt5.profile
-
-    sol = ChatModel.new(model: "gpt-5.6-sol")
-    assert %Profile{provider: :openai, id: "gpt-5.6-sol"} = sol.profile
-
-    astra = ChatModel.new(model: "gpt-6-astra")
-    assert %Profile{provider: :openai, id: "gpt-6-astra"} = astra.profile
-    assert astra.profile.max_input_tokens == 1_050_000
-    assert astra.profile.max_output_tokens == 128_000
-    assert astra.profile.reasoning_effort_levels == [:low, :medium, :high, :xhigh, :max]
-    assert astra.profile.extra.chat_completions_tool_calling == false
-
-    assert {:ok, %ChatModel{model: "gpt-6-astra"}} =
-             Models.init_chat_model("openai:gpt-6-astra")
-
-    alias_model = ChatModel.new(model: "gpt-5.6")
-    assert alias_model.profile.id == "gpt-5.6"
-
-    changed_copy = %{gpt5.profile | tool_calling: false}
-    refute changed_copy.tool_calling
-    refute ChatModel.new(model: "gpt-5").profile == changed_copy
-
-    override = ChatModel.new(model: "gpt-5", profile: %{tool_calling: false})
-    refute override.profile.tool_calling
-    assert override.profile.extra == %{}
-
-    assert_raise ArgumentError, ~r/OpenAI model is deprecated; use openai:gpt-4.1/, fn ->
-      ChatModel.new(model: "gpt-4")
-    end
-  end
-
   test "token counting includes message structure, media, tools, and tokenizer fallback" do
     messages = [
       Message.user([
@@ -115,20 +78,6 @@ defmodule BeamWeaver.OpenAI.ChatModelTest do
     assert approximate > 100
 
     assert {:ok, 2} = ChatModel.count_tokens(model, "plain text", [])
-  end
-
-  test "OpenAI initializer rejects deprecated o-series and accepts frontier reasoning models" do
-    assert %ChatModel{reasoning_effort: "minimal"} =
-             ChatModel.new(model: "gpt-5", reasoning_effort: "minimal")
-
-    assert {:error, error} =
-             Models.init_chat_model("openai:o1-preview", reasoning_effort: "medium")
-
-    assert error.type == :deprecated_model
-    assert error.details.replacement == "gpt-5"
-
-    assert {:ok, %ChatModel{reasoning_effort: "minimal"}} =
-             Models.init_chat_model("openai:gpt-5", reasoning_effort: "minimal")
   end
 
   test "invokes the Responses API through a replay cassette and decodes assistant text" do
@@ -808,17 +757,8 @@ defmodule BeamWeaver.OpenAI.ChatModelTest do
     end
   end
 
-  test "GPT-6.1 Sol resolves to Responses with documented input limits and cache prices" do
+  test "reasoning-required Responses requests combine tools with structured output" do
     assert {:ok, %ChatModel{} = model} = Models.init_chat_model("openai:gpt-6.1-sol")
-    profile = model.profile
-    assert profile.max_context_tokens == 1_050_000
-    assert profile.max_input_tokens == 922_000
-    assert profile.max_output_tokens == 128_000
-    assert {:ok, 922_000} = BeamWeaver.ContextBudget.effective_input_limit(profile)
-
-    usage = %{input_tokens: 1_000, cached_tokens: 400, cache_write_tokens: 200, output_tokens: 2_000}
-    assert_in_delta UsageCost.calculate(profile, usage).total_cost, 0.02134, 1.0e-12
-
     assert {:ok, body} = ChatModel.request_body(model, [Message.user("use the tools")])
     assert body["model"] == "gpt-6.1-sol"
     refute Map.has_key?(body, "reasoning")
@@ -840,20 +780,9 @@ defmodule BeamWeaver.OpenAI.ChatModelTest do
     end
   end
 
-  test "GPT-6 Sol and Luna profiles price usage and validate Responses requests" do
-    for {model_id, input_price, output_price} <- [
-          {"gpt-6-sol", 2.0, 10.0},
-          {"gpt-6-luna", 0.1, 0.5}
-        ] do
+  test "optional-reasoning models validate Responses request controls" do
+    for model_id <- ["gpt-6-sol", "gpt-6-luna"] do
       assert {:ok, %ChatModel{} = model} = Models.init_chat_model("openai:#{model_id}")
-      assert model.profile.max_input_tokens == 1_050_000
-      assert model.profile.max_output_tokens == 128_000
-      assert model.profile.extra.input_price_per_mtok == input_price
-      assert model.profile.extra.output_price_per_mtok == output_price
-      assert model.profile.reasoning_effort_levels == [:none, :low, :medium, :high, :xhigh, :max]
-
-      costs = UsageCost.calculate(model.profile, %{input_tokens: 1_000_000, output_tokens: 1_000_000})
-      assert_in_delta costs.total_cost, input_price + output_price, 1.0e-12
 
       assert {:ok, body} =
                ChatModel.request_body(model, [Message.user("solve")],

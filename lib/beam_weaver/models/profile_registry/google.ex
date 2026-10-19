@@ -6,14 +6,14 @@ defmodule BeamWeaver.Models.ProfileRegistry.Google do
   alias BeamWeaver.Models.ProfileRegistry
   alias BeamWeaver.Models.ProfileRegistry.Params
 
+  # Verified against Google's model, pricing and deprecation pages on 2026-10-19.
   @deprecated_google_models %{
+    "gemini-2.5-computer-use-preview-10-2025" => %{shutdown_date: "2026-07-28", replacement: "gemini-3.8-flash"},
+    "gemini-3.1-flash-image-preview" => %{shutdown_date: "2026-06-25", replacement: "gemini-nano-banana-2.1"},
+    "gemini-3-pro-image-preview" => %{shutdown_date: "2026-06-25", replacement: "gemini-3-pro-image"},
     "gemini-3.1-flash-lite-preview" => %{
       shutdown_date: "2026-05-25",
       replacement: "gemini-3.1-flash-lite"
-    },
-    "gemini-3-flash-preview" => %{
-      shutdown_date: nil,
-      replacement: "gemini-3.5-flash"
     },
     "gemini-3-pro-preview" => %{
       shutdown_date: "2026-03-09",
@@ -31,33 +31,29 @@ defmodule BeamWeaver.Models.ProfileRegistry.Google do
       shutdown_date: "2025-12-02",
       replacement: "gemini-3.1-pro-preview"
     },
-    "gemini-2.5-flash-image" => %{
-      shutdown_date: "2026-10-02",
-      replacement: "gemini-3.1-flash-image-preview"
-    },
     "gemini-2.5-flash-lite-preview-09-2025" => %{
       shutdown_date: "2026-03-31",
       replacement: "gemini-3.1-flash-lite"
     },
     "gemini-2.5-flash-preview-05-20" => %{
       shutdown_date: "2025-11-18",
-      replacement: "gemini-3.5-flash"
+      replacement: "gemini-3.6-flash"
     },
     "gemini-2.5-flash-image-preview" => %{
       shutdown_date: "2026-01-15",
-      replacement: "gemini-3.1-flash-image-preview"
+      replacement: "gemini-nano-banana-2.1"
     },
     "gemini-2.5-flash-preview-09-25" => %{
       shutdown_date: "2026-02-17",
-      replacement: "gemini-3.5-flash"
+      replacement: "gemini-3.6-flash"
     },
     "gemini-2.0-flash" => %{
       shutdown_date: "2026-06-01",
-      replacement: "gemini-3.5-flash"
+      replacement: "gemini-3.6-flash"
     },
     "gemini-2.0-flash-001" => %{
       shutdown_date: "2026-06-01",
-      replacement: "gemini-3.5-flash"
+      replacement: "gemini-3.6-flash"
     },
     "gemini-2.0-flash-lite" => %{
       shutdown_date: "2026-06-01",
@@ -69,7 +65,7 @@ defmodule BeamWeaver.Models.ProfileRegistry.Google do
     },
     "gemini-2.0-flash-preview-image-generation" => %{
       shutdown_date: "2025-11-14",
-      replacement: "gemini-3.1-flash-image-preview"
+      replacement: "gemini-nano-banana-2.1"
     },
     "gemini-2.0-flash-lite-preview" => %{
       shutdown_date: "2025-12-09",
@@ -81,23 +77,38 @@ defmodule BeamWeaver.Models.ProfileRegistry.Google do
     },
     "gemini-2.0-flash-live-001" => %{
       shutdown_date: "2025-12-09",
-      replacement: "gemini-3.1-flash-live-preview"
-    },
-    "gemini-2.5-flash-native-audio-preview-12-2025" => %{
-      shutdown_date: nil,
-      replacement: "gemini-3.1-flash-live-preview"
+      replacement: "gemini-3.8-live"
     },
     "gemini-live-2.5-flash-preview" => %{
       shutdown_date: "2025-12-09",
-      replacement: "gemini-3.1-flash-live-preview"
+      replacement: "gemini-3.8-live"
+    }
+  }
+
+  @scheduled_google_models %{
+    "gemini-2.5-flash-image" => %{
+      scheduled_shutdown_date: "2027-03-15",
+      recommended_replacement: "gemini-3.1-flash-lite-image"
+    },
+    "gemini-3.1-flash-tts-preview" => %{
+      scheduled_shutdown_date: "2026-11-17",
+      recommended_replacement: "gemini-3.8-flash-tts"
+    },
+    "gemini-3.1-flash-live-preview" => %{
+      scheduled_shutdown_date: "2026-11-17",
+      recommended_replacement: "gemini-3.8-live"
+    },
+    "gemini-2.5-flash-native-audio-preview-12-2025" => %{
+      scheduled_shutdown_date: "2026-11-17",
+      recommended_replacement: "gemini-3.8-live"
     },
     "gemini-2.5-flash-preview-tts" => %{
-      shutdown_date: nil,
-      replacement: "gemini-3.1-flash-tts-preview"
+      scheduled_shutdown_date: "2026-11-17",
+      recommended_replacement: "gemini-3.8-flash-tts"
     },
     "gemini-2.5-pro-preview-tts" => %{
-      shutdown_date: nil,
-      replacement: "gemini-3.1-flash-tts-preview"
+      scheduled_shutdown_date: "2026-11-17",
+      recommended_replacement: "gemini-3.8-flash-tts"
     }
   }
 
@@ -141,7 +152,14 @@ defmodule BeamWeaver.Models.ProfileRegistry.Google do
     priority_inference: true,
     live_api: false,
     grounding_metadata: true,
-    safety_settings: true
+    safety_settings: true,
+    pricing_last_checked: "2026-10-19",
+    pricing_source_url: "https://ai.google.dev/gemini-api/docs/pricing",
+    lifecycle_source_url: "https://ai.google.dev/gemini-api/docs/deprecations",
+    tool_pricing: %{
+      google_search: %{price_per_1000_queries: 14.0, shared_free_queries_per_month: 5_000},
+      google_maps: %{price_per_1000_queries: 14.0, shared_free_queries_per_month: 5_000}
+    }
   }
 
   @gemini_flash_extra Map.merge(@gemini_extra, %{
@@ -163,6 +181,20 @@ defmodule BeamWeaver.Models.ProfileRegistry.Google do
                         regular_input_price_per_mtok: 1.50,
                         regular_cached_input_price_per_mtok: 0.15,
                         regular_output_price_per_mtok: 7.50,
+                        pricing_history: [
+                          %{
+                            effective_at: nil,
+                            input_price_per_mtok: 0.75,
+                            cached_input_price_per_mtok: 0.075,
+                            output_price_per_mtok: 3.75
+                          },
+                          %{
+                            effective_at: "2027-01-01T00:00:00Z",
+                            input_price_per_mtok: 1.50,
+                            cached_input_price_per_mtok: 0.15,
+                            output_price_per_mtok: 7.50
+                          }
+                        ],
                         default_thinking_level: :medium,
                         prefilled_model_turns: false,
                         built_in_tools: [
@@ -177,6 +209,69 @@ defmodule BeamWeaver.Models.ProfileRegistry.Google do
                       })
 
   @profiles %{
+    {:google, "gemini-4-argon"} =>
+      Profile.new(
+        Map.merge(@gemini_profile, %{
+          id: "gemini-4-argon",
+          name: "Gemini 4 Argon",
+          status: :active,
+          last_updated: "2026-10-19",
+          context_limit_kind: :shared_input_output,
+          max_context_tokens: 1_048_576,
+          max_output_tokens: 1_048_576,
+          temperature: false,
+          reasoning_effort_levels: [:low, :medium, :high],
+          reasoning_effort_default: :medium,
+          supported_params: Params.google_argon(),
+          extra:
+            Map.merge(@gemini_extra, %{
+              thinking_levels: [:low, :medium, :high],
+              default_thinking_level: :medium,
+              implicit_caching: true,
+              explicit_caching: false,
+              implicit_cache_min_tokens: 4_096,
+              non_streaming_output_limit: 32_768,
+              streaming_output_limit: 65_536,
+              long_decode_max_output_tokens: 1_048_576,
+              long_decode: :automatic_continuation,
+              default_max_output_tokens: 65_536,
+              recommended_timeout_ms: 1_200_000,
+              input_price_per_mtok: 2.00,
+              cached_input_price_per_mtok: 0.10,
+              output_price_per_mtok: 10.00,
+              batch_input_price_per_mtok: 1.00,
+              batch_cached_input_price_per_mtok: 0.05,
+              batch_output_price_per_mtok: 5.00,
+              flex_input_price_per_mtok: 1.00,
+              flex_cached_input_price_per_mtok: 0.05,
+              flex_output_price_per_mtok: 5.00,
+              priority_input_price_per_mtok: 3.60,
+              priority_cached_input_price_per_mtok: 0.18,
+              priority_output_price_per_mtok: 18.00,
+              introductory_pricing_through: "2026-11-30",
+              regular_input_price_per_mtok: 4.00,
+              regular_cached_input_price_per_mtok: 0.20,
+              regular_output_price_per_mtok: 20.00,
+              pricing_history: [
+                %{
+                  effective_at: nil,
+                  input_price_per_mtok: 2.00,
+                  cached_input_price_per_mtok: 0.10,
+                  output_price_per_mtok: 10.00
+                },
+                %{
+                  effective_at: "2026-12-01T00:00:00Z",
+                  input_price_per_mtok: 4.00,
+                  cached_input_price_per_mtok: 0.20,
+                  output_price_per_mtok: 20.00
+                }
+              ],
+              built_in_tools: [:code_execution, :computer_use, :file_search, :google_maps, :google_search, :url_context],
+              computer_use: :preview,
+              model_source_url: "https://ai.google.dev/gemini-api/docs/models/gemini-4-argon"
+            })
+        })
+      ),
     {:google, "gemini-3.8-flash"} =>
       Profile.new(
         Map.merge(@gemini_profile, %{
@@ -185,18 +280,6 @@ defmodule BeamWeaver.Models.ProfileRegistry.Google do
           status: :active,
           release_date: "2026-09-02",
           last_updated: "2026-09-02",
-          supported_params: Params.google_latest_flash(),
-          extra: Map.put(@gemini_flash_extra, :thinking_levels, [:low, :medium, :high])
-        })
-      ),
-    {:google, "gemini-3.7-flash"} =>
-      Profile.new(
-        Map.merge(@gemini_profile, %{
-          id: "gemini-3.7-flash",
-          name: "Gemini 3.7 Flash",
-          status: :active,
-          release_date: "2026-08-13",
-          last_updated: "2026-08-13",
           supported_params: Params.google_latest_flash(),
           extra: Map.put(@gemini_flash_extra, :thinking_levels, [:low, :medium, :high])
         })
@@ -211,36 +294,6 @@ defmodule BeamWeaver.Models.ProfileRegistry.Google do
           last_updated: "2026-08-27",
           supported_params: Params.google_latest_flash(),
           extra: @gemini_flash_extra
-        })
-      ),
-    {:google, "gemini-3.5-flash"} =>
-      Profile.new(
-        Map.merge(@gemini_profile, %{
-          id: "gemini-3.5-flash",
-          name: "Gemini 3.5 Flash",
-          release_date: "2026-05-19",
-          last_updated: "2026-08-27",
-          supported_params: Params.google(),
-          extra:
-            Map.merge(@gemini_extra, %{
-              knowledge_cutoff: "2025-01",
-              input_price_per_mtok: 1.50,
-              cached_input_price_per_mtok: 0.15,
-              output_price_per_mtok: 9.00,
-              batch_input_price_per_mtok: 0.75,
-              batch_cached_input_price_per_mtok: 0.075,
-              batch_output_price_per_mtok: 4.50,
-              flex_input_price_per_mtok: 0.75,
-              flex_cached_input_price_per_mtok: 0.08,
-              flex_output_price_per_mtok: 4.50,
-              priority_input_price_per_mtok: 2.70,
-              priority_cached_input_price_per_mtok: 0.27,
-              priority_output_price_per_mtok: 16.20,
-              context_cache_storage_price_per_mtok_hour: 1.00,
-              pricing_source_url: "https://ai.google.dev/gemini-api/docs/pricing",
-              built_in_tools: [:code_execution, :computer_use, :file_search, :google_maps, :google_search, :url_context],
-              computer_use: :preview
-            })
         })
       ),
     {:google, "gemini-3.5-flash-lite"} =>
@@ -357,6 +410,14 @@ defmodule BeamWeaver.Models.ProfileRegistry.Google do
         })
       )
   }
+  @profiles Enum.reduce(
+              [{"gemini-3.5-flash", "gemini-3.6-flash"}, {"gemini-3.7-flash", "gemini-3.8-flash"}],
+              @profiles,
+              fn {alias_id, canonical_id}, profiles ->
+                {:ok, profile} = ProfileRegistry.fetch_alias(profiles, :google, alias_id, canonical_id)
+                Map.put(profiles, {:google, alias_id}, %{profile | last_updated: "2026-10-19"})
+              end
+            )
   def profiles, do: Map.values(@profiles)
 
   def resolve(model) do
@@ -376,6 +437,10 @@ defmodule BeamWeaver.Models.ProfileRegistry.Google do
            "Google model is not available through the Gemini API",
            Map.merge(metadata, %{provider: :google, model: model})
          )}
+
+      metadata = @scheduled_google_models[model] ->
+        profile = BeamWeaver.Models.ProfileRegistry.Fallbacks.profile(:google, model)
+        {:ok, %{profile | status: :deprecated, extra: Map.merge(profile.extra, metadata)}}
 
       true ->
         ProfileRegistry.fetch_or_fallback(@profiles, :google, model)

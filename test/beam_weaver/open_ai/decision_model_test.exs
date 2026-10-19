@@ -76,6 +76,18 @@ defmodule BeamWeaver.OpenAI.DecisionModelTest do
         respond: fn _ -> {:ok, Response.new(status: 200, body: body, headers: [{"x-request-id", "req_1"}])} end
       )
 
+    model = %{
+      model
+      | profile: %{
+          model.profile
+          | extra: %{
+              input_price_per_mtok: 2.0,
+              cached_input_price_per_mtok: 0.5,
+              output_price_per_mtok: 4.0
+            }
+        }
+    }
+
     questions = %{
       "urgent" => Question.predicate(instructions: "Is this request urgent?"),
       department: Question.choice(instructions: "Which team?", choices: [{"billing", "Payments."}, {"technical", nil}]),
@@ -130,10 +142,9 @@ defmodule BeamWeaver.OpenAI.DecisionModelTest do
              output_token_details: %{reasoning: 0}
            }
 
-    # Output isn't billed: 600 uncached tokens at $0.10 per million and 400
-    # cached ones at $0.01.
+    # Decisions never bill output, even with a nonzero rate in the supplied profile.
     assert response.metadata.cost.output_cost == 0.0
-    assert_in_delta response.metadata.cost.total_cost, 0.000064, 1.0e-12
+    assert_in_delta response.metadata.cost.total_cost, 0.0014, 1.0e-12
   end
 
   test "boolean choices, refusals and answers of types added since" do

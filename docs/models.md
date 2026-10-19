@@ -42,6 +42,12 @@ This lists checked-in profiles, not your account's live entitlements. A few
 bare prefixes can be inferred, but explicit provider names avoid ambiguity.
 An identifier's presence in a profile does not grant access to that model.
 
+Models scheduled for retirement remain usable until shutdown. Their profiles
+expose `status: :deprecated`, `extra.scheduled_shutdown_date` and
+`extra.recommended_replacement`. Retired identifiers return an error with
+replacement guidance. An unsupported identifier can still be available from
+its provider; BeamWeaver's registry describes the integrations it implements.
+
 ## Create a model
 
 Choose constructor options when you initialize a model. Supply request-only
@@ -177,8 +183,9 @@ terminal `Error` event carries the failure.
 | `:content_filter` | Handle the rejected request without an automatic identical retry |
 | `:transport_error`, `:http_error` | Inspect transport/status details |
 
-Provider adapters do not independently retry calls. Add `ModelRetry` to an
-agent or implement a bounded direct-call policy. `ModelFallback` can choose
+Add `ModelRetry` to an agent or implement a bounded direct-call policy for
+failed requests. [Gemini Argon](providers/google.md#gemini-4-argon) also resumes
+interrupted long-decode hops within a call. `ModelFallback` can choose
 another model after failure. With fallback outside retry, each model gets
 its own retry budget; see [Built-in Middleware](builtin_middleware.md).
 
@@ -266,9 +273,19 @@ usage = BeamWeaver.Agent.Usage.from_messages(result.messages)
 true = usage.model_calls > 0
 ```
 
-`BeamWeaver.Models.UsageCost.calculate/3` estimates cost using profile prices.
-Actual billing depends on provider pricing and account terms. [Tracing](tracing.md)
-records per-call usage and attribution.
+`BeamWeaver.Models.UsageCost.calculate/3` estimates standard token costs from
+profile prices, including cache reads/writes and long-context rates. Embedding
+costs count input tokens only. Pass `at: datetime` to select a registered pricing
+period or time-of-day schedule; without it, the estimator uses the profile's
+default rates.
+
+Tool requests, storage, regional premiums and nonstandard service tiers are
+separate charges. Actual billing depends on provider pricing and account terms.
+[Tracing](tracing.md) records per-call usage and attribution.
+
+For responses spanning multiple provider steps, `total_tokens` is cumulative
+billed usage. Where reported, `context_tokens` describes the active context
+window and is used for summarization decisions.
 
 ## Decision models
 

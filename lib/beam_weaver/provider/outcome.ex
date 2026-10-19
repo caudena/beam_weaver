@@ -69,7 +69,8 @@ defmodule BeamWeaver.Provider.Outcome do
       status == "incomplete" ->
         outcome(:incomplete, :output_limit, :partial)
 
-      status in ["pause_turn", "paused"] ->
+      # Gemini long decode pauses at a checkpoint; partial text is not a final answer.
+      status in ["pause_turn", "paused", "continuation"] ->
         outcome(:paused, :provider_pause, completeness(message))
 
       status in ["requires_action", "tool_use", "tool_calls"] ->

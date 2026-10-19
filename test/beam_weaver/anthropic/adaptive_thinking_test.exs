@@ -1,91 +1,11 @@
-defmodule BeamWeaver.Anthropic.Models55Test do
+defmodule BeamWeaver.Anthropic.AdaptiveThinkingTest do
   use ExUnit.Case, async: true
 
   alias BeamWeaver.Anthropic.ChatModel
   alias BeamWeaver.Anthropic.ChatModel.RequestBuilder
-  alias BeamWeaver.Anthropic.Messages
   alias BeamWeaver.Anthropic.Tools
   alias BeamWeaver.Core.ChatModel, as: CoreChatModel
   alias BeamWeaver.Core.Message
-  alias BeamWeaver.Models
-  alias BeamWeaver.Models.ProfileRegistry
-  alias BeamWeaver.Models.UsageCost
-
-  test "new Claude models initialize and expose checked-in capabilities" do
-    for {id, effort, released} <- [
-          {"claude-haiku-5-5", :medium, "2026-10-07"},
-          {"claude-sonnet-5-5", :high, "2026-09-28"}
-        ] do
-      assert {:ok, model} = Models.init_chat_model("anthropic:" <> id)
-      assert {:ok, inferred} = Models.init_chat_model(id)
-      assert inferred.profile == model.profile
-      assert {:ok, profile} = ProfileRegistry.fetch(:anthropic, id)
-      assert profile == model.profile
-      assert profile in ProfileRegistry.all()
-      assert model.max_tokens == 128_000
-      assert profile.max_input_tokens == 1_000_000
-      assert profile.context_limit_kind == :shared_input_output
-      assert profile.max_context_tokens == 1_000_000
-      assert profile.max_output_tokens == 128_000
-      assert profile.release_date == released
-      assert profile.reasoning_effort_default == effort
-      assert profile.reasoning_effort_levels == [:low, :medium, :high, :xhigh, :max]
-      assert profile.extra.prompt_cache_min_tokens == 512
-      assert profile.extra.batch_max_output_tokens == 300_000
-      assert profile.extra.thinking_display_default == :omitted
-      assert profile.image_inputs and profile.pdf_inputs and profile.reasoning_output
-      assert profile.tool_calling and profile.parallel_tool_calls and profile.streaming
-      assert profile.structured_output and profile.structured_output_with_tools
-      refute profile.temperature
-    end
-  end
-
-  test "Haiku prices all input and output at the tier selected by total prompt length" do
-    profile = ChatModel.new(model: "claude-haiku-5-5").profile
-    assert profile.extra.batch_input_price_per_mtok == 0.05
-    assert profile.extra.batch_output_price_per_mtok == 0.25
-    assert profile.extra.long_context_pricing.batch_input_price_per_mtok == 0.25
-    assert profile.extra.long_context_pricing.batch_output_price_per_mtok == 1.25
-
-    at_boundary = UsageCost.calculate(profile, %{input_tokens: 100_000, output_tokens: 1_000})
-    above_boundary = UsageCost.calculate(profile, %{input_tokens: 100_001, output_tokens: 1_000})
-    assert_in_delta at_boundary.total_cost, 0.0105, 1.0e-12
-    assert_in_delta above_boundary.total_cost, 0.0525005, 1.0e-12
-
-    # Anthropic reports uncached input separately. Normalization includes the
-    # cache reads and both write TTLs in the total used to select the tier.
-    usage =
-      Messages.usage_metadata(%{
-        "input_tokens" => 1,
-        "cache_read_input_tokens" => 90_000,
-        "cache_creation_input_tokens" => 10_000,
-        "cache_creation" => %{"ephemeral_5m_input_tokens" => 6_000, "ephemeral_1h_input_tokens" => 4_000},
-        "output_tokens" => 1_000
-      })
-
-    assert usage.input_tokens == 100_001
-    costs = UsageCost.calculate(profile, usage)
-    assert_in_delta costs.input_cost_details.uncached, 0.0000005, 1.0e-12
-    assert_in_delta costs.input_cost_details.cache_read, 0.0045, 1.0e-12
-    assert_in_delta costs.input_cost_details.cache_write_5m_tokens, 0.00375, 1.0e-12
-    assert_in_delta costs.input_cost_details.cache_write_1h_tokens, 0.004, 1.0e-12
-    assert_in_delta costs.output_cost, 0.0025, 1.0e-12
-    assert_in_delta costs.total_cost, 0.0147505, 1.0e-12
-
-    boundary_costs = UsageCost.calculate(profile, %{usage | input_tokens: 100_000})
-    assert_in_delta boundary_costs.total_cost, 0.00295, 1.0e-12
-
-    # Output length never selects the long-prompt tier.
-    assert UsageCost.calculate(profile, %{input_tokens: 1, output_tokens: 128_000}).output_cost == 0.064
-  end
-
-  test "Sonnet uses the October 7 cache-read reduction and retains dated pricing" do
-    profile = ChatModel.new(model: "claude-sonnet-5-5").profile
-    usage = %{input_tokens: 1_000_000, output_tokens: 1_000, input_token_details: %{cache_read: 1_000_000}}
-    assert_in_delta UsageCost.calculate(profile, usage).total_cost, 0.11, 1.0e-12
-    assert_in_delta UsageCost.calculate(profile, usage, at: ~U[2026-10-06 12:00:00Z]).total_cost, 0.21, 1.0e-12
-    assert_in_delta UsageCost.calculate(profile, usage, at: ~U[2026-10-08 12:00:00Z]).total_cost, 0.11, 1.0e-12
-  end
 
   test "Haiku accepts forced tools with adaptive thinking and disabled thinking through high effort" do
     model = ChatModel.new(model: "claude-haiku-5-5")

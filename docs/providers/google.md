@@ -25,6 +25,51 @@ Use the same identifier in an agent declaration. Gemini IDs require `google:`.
 Keep complete messages when continuing function calls; native parts can carry
 provider state beyond display text.
 
+## Gemini 4 Argon
+
+Use `google:gemini-4-argon` with `thinking_level: :low`, `:medium` (the provider
+default), or `:high`. Its 1,048,576-token window is shared by input, thinking and
+output. BeamWeaver follows continuation checkpoints automatically for ordinary
+invocations, collected responses, and text/typed streams. You receive one combined
+reply with all content, thought signatures, tool calls, and usage. The default
+output budget is 65,536 tokens; set `max_output_tokens:` higher for longer work,
+up to the shared context limit minus your input. `MAX_TOKENS` stops generation:
+BeamWeaver never raises the budget you selected.
+
+Argon uses implicit caching only. `cached_content:` and sampling controls are
+rejected by its strict profile. Current input/cached-input/output rates are
+$2/$0.10/$10 per million tokens through November 30, 2026, then $4/$0.20/$20.
+Use `UsageCost.calculate/3` with `at:` for a dated estimate. See Google's
+[model specification](https://ai.google.dev/gemini-api/docs/models/gemini-4-argon)
+and [pricing](https://ai.google.dev/gemini-api/docs/pricing).
+
+The client uses streaming HTTP internally, even when the caller wants one final
+reply; Argon model constructors default to a 20-minute timeout per request. It preserves the original
+request across hops and sums their billed usage. `usage_metadata.initial_input_tokens`
+is the original prompt size; `context_tokens` is that size plus all generated
+thinking/output. Summarization uses context size instead of cumulative billed
+tokens, which include repeated inputs.
+
+For reliable streaming, chunks are delivered when a checkpoint commits them or
+the stream finishes successfully. This can delay visible output until a checkpoint
+or completion. A dropped stream resumes at its latest checkpoint, discarding
+uncommitted chunks so text is not duplicated. Before any checkpoint, it retries
+the original request. `max_continuation_retries:` defaults to 2 per unfinished
+hop; permanent errors fail immediately. Halting enumeration cancels the active
+request and prevents further hops.
+
+Checkpoint tokens can make the wire response much larger than the visible answer.
+Automatic continuation uses the stream byte limit (64 MiB by default) for each
+HTTP response, rather than the ordinary transport's 5 MB limit. Explicit
+`max_response_bytes:` limits still apply.
+
+Set `automatic_continuation: false` on the model or invocation for manual control.
+Then a `CONTINUATION` response is returned as `provider_pause`, and its
+`response_metadata.continuation_token` can be passed as `continuation_token:`
+with the original messages and generation options. Manual REST calls retain the
+32,768 non-streaming / 65,536 streaming per-request defaults. See Google's
+[long-decode guide](https://ai.google.dev/gemini-api/docs/generate-content/long-decode).
+
 ## Options and thinking
 
 | Option | Purpose |
@@ -36,6 +81,8 @@ provider state beyond display text.
 | `cached_content:` | Actual cached-content resource name |
 | `safety_settings:` | Native category thresholds |
 | `stop_sequences:` / `stop:` | Stop text |
+| `labels:` | Labels sent at the top level of the request |
+| `generation_config:` | Additional native generation controls |
 | `base_url:` | Developer API root |
 
 Newer Flash profiles restrict sampling and use thinking levels rather than
@@ -138,6 +185,10 @@ explains content blocks; the model's profile validates capability compatibility.
 true = is_integer(tokens) and tokens > 0
 ```
 
+Counting sends the same input, system instructions, tools, cached-content reference
+and generation options as generation, wrapped in `generateContentRequest` when
+needed.
+
 Counting calls the provider but does not generate an answer. Safety filtering
 can affect completion even on HTTP success; inspect the provider outcome and
 terminal stream events.
@@ -156,11 +207,14 @@ not an unlimited allowance.
 | `google:gemini-3.6-flash` | 1,048,576 / 65,536 | chat; text, image, PDF, audio, video; tools; structured output; reasoning |
 | `google:gemini-3.7-flash` | 1,048,576 / 65,536 | chat; text, image, PDF, audio, video; tools; structured output; reasoning |
 | `google:gemini-3.8-flash` | 1,048,576 / 65,536 | chat; text, image, PDF, audio, video; tools; structured output; reasoning |
+| `google:gemini-4-argon` | 1,048,576 / 1,048,576 | chat; text, image, PDF, audio, video; tools; structured output; reasoning |
 
 
-The table is local capability metadata, not account entitlement. Preview
-identifiers and aliases can have different availability from stable models.
-Use a model you have exercised with your actual inputs and tools.
+Gemini 3.5 Flash is served by 3.6 Flash, and 3.7 Flash by 3.8 Flash; their
+profiles use the serving models' capabilities and rates. Preview identifiers
+and aliases can have different availability from stable models. See Google's
+[model reference](https://ai.google.dev/gemini-api/docs/models) and
+[retirement schedule](https://ai.google.dev/gemini-api/docs/deprecations).
 
 ## Further reading
 

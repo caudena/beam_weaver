@@ -17,9 +17,9 @@ defmodule BeamWeaver.OpenAI.ChatModel.RequestBuilder do
   # Request fields from the call's option, or else the model's: sent as they
   # are, as maps with string keys, or normalized. Then those only a call sets.
   @model_fields ~w(top_p frequency_penalty presence_penalty seed parallel_tool_calls user modalities store max_turns
-                   prompt_cache_key safety_identifier top_logprobs logprobs)a
+                   prompt_cache_key safety_identifier top_logprobs logprobs min_p top_k)a
   @model_map_fields ~w(access_programs metadata moderation audio prompt_cache_options)a
-  @model_value_fields ~w(service_tier prompt_cache_retention)a
+  @model_value_fields ~w(service_tier prompt_cache_retention guidelines)a
   @call_fields ~w(background include instructions max_tool_calls truncation)a
   @call_map_fields ~w(stream_options)a
   @call_value_fields ~w(conversation prompt)a
@@ -102,11 +102,13 @@ defmodule BeamWeaver.OpenAI.ChatModel.RequestBuilder do
         :deferred,
         :extra_body,
         :frequency_penalty,
+        :guidelines,
         :logprobs,
         :max_completion_tokens,
         :max_output_tokens,
         :max_tokens,
         :max_turns,
+        :min_p,
         :metadata,
         :moderation,
         :modalities,
@@ -124,6 +126,7 @@ defmodule BeamWeaver.OpenAI.ChatModel.RequestBuilder do
         :store,
         :temperature,
         :top_p,
+        :top_k,
         :user,
         :verbosity
       ])

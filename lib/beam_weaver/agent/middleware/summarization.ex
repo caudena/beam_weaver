@@ -419,7 +419,9 @@ defmodule BeamWeaver.Agent.Middleware.Summarization do
     |> Enum.reverse()
     |> Enum.find_value(fn
       %Message{role: :assistant, usage_metadata: usage, response_metadata: response_metadata} ->
-        total_tokens = metadata_value(usage || %{}, :total_tokens)
+        # Long decode bills repeated prompt inputs on every hop. Its context
+        # size is the original input plus generated output, not billed totals.
+        total_tokens = metadata_value(usage || %{}, :context_tokens) || metadata_value(usage || %{}, :total_tokens)
         response_metadata = response_metadata || %{}
 
         message_provider =

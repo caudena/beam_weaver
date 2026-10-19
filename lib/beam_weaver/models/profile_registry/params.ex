@@ -118,17 +118,20 @@ defmodule BeamWeaver.Models.ProfileRegistry.Params do
 
   @xai_responses_params [
     :context_management,
+    :guidelines,
     :include,
     :instructions,
     :max_output_tokens,
     :max_tokens,
     :max_turns,
+    :min_p,
     :parallel_tool_calls,
     :previous_response_id,
     :prompt_cache_key,
     :reasoning,
     :reasoning_effort,
     :response_format,
+    :safety_identifier,
     :service_tier,
     :store,
     :stream,
@@ -137,6 +140,7 @@ defmodule BeamWeaver.Models.ProfileRegistry.Params do
     :text,
     :tool_choice,
     :tools,
+    :top_k,
     :top_p,
     :truncation,
     :use_previous_response_id,
@@ -147,13 +151,16 @@ defmodule BeamWeaver.Models.ProfileRegistry.Params do
   @xai_chat_completions_params [
     :deferred,
     :frequency_penalty,
+    :guidelines,
     :max_completion_tokens,
     :max_tokens,
     :n,
     :parallel_tool_calls,
     :presence_penalty,
+    :prompt_cache_key,
     :reasoning_effort,
     :response_format,
+    :safety_identifier,
     :seed,
     :service_tier,
     :stop,
@@ -172,10 +179,12 @@ defmodule BeamWeaver.Models.ProfileRegistry.Params do
 
   @moonshot_params [
     :frequency_penalty,
+    :logprobs,
     :max_completion_tokens,
     :max_output_tokens,
     :max_tokens,
     :n,
+    :prediction,
     :presence_penalty,
     :prompt_cache_key,
     :response_format,
@@ -189,6 +198,7 @@ defmodule BeamWeaver.Models.ProfileRegistry.Params do
     :thinking,
     :tool_choice,
     :tools,
+    :top_logprobs,
     :top_p
   ]
 
@@ -315,4 +325,6 @@ defmodule BeamWeaver.Models.ProfileRegistry.Params do
   def google_latest_flash do
     @google_params -- [:candidate_count, :temperature, :thinking_budget, :top_k, :top_p]
   end
+
+  def google_argon, do: [:continuation_token | google_latest_flash()] -- [:cached_content]
 end

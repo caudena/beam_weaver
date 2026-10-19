@@ -678,6 +678,8 @@ defmodule BeamWeaver.Core.ChatModel do
 
     %{
       input_tokens: metadata_first(usage, [:input_tokens, :prompt_tokens]),
+      initial_input_tokens: metadata_first(usage, [:initial_input_tokens]),
+      context_tokens: metadata_first(usage, [:context_tokens]),
       output_tokens: metadata_first(usage, [:output_tokens, :completion_tokens]),
       total_tokens: metadata_first(usage, [:total_tokens]),
       cache_read_tokens:

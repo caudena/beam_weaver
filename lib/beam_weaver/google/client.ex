@@ -11,12 +11,19 @@ defmodule BeamWeaver.Google.Client do
   headers/bodies out of logs. Stream consumers own consumption and cancellation;
   collected-response helpers wait for completion. The [Google guide](providers/google.md)
   identifies the implemented endpoints and external-resource lifetimes.
+
+  Gemini 4 Argon follows continuation checkpoints automatically, including on
+  `generate_content/4` (which collects streaming HTTP internally). All hops use
+  the original request and output budget. Set `automatic_continuation: false`
+  for one native request. `max_continuation_retries:` defaults to 2 and bounds
+  reconnects after transient stream failures; it does not limit successful hops.
   """
 
   use BeamWeaver.Provider.RedactedInspect
 
   alias BeamWeaver.Config
   alias BeamWeaver.Core.Error
+  alias BeamWeaver.Google.LongDecode
   alias BeamWeaver.Google.Streaming
   alias BeamWeaver.Provider.HTTPClient
   alias BeamWeaver.Provider.Options, as: ProviderOptions
@@ -60,10 +67,14 @@ defmodule BeamWeaver.Google.Client do
   """
   @spec generate_content(t(), String.t(), map(), keyword()) :: {:ok, map()} | {:error, Error.t()}
   def generate_content(%__MODULE__{} = client, model, body, opts \\ []) do
-    client
-    |> http(model, :generate_content, opts)
-    |> HTTPClient.post_json(body, opts)
-    |> decode_result(opts)
+    if LongDecode.enabled?(model, opts) do
+      stream_response(client, model, body, opts)
+    else
+      client
+      |> http(model, :generate_content, opts)
+      |> HTTPClient.post_json(body, opts)
+      |> decode_result(opts)
+    end
   end
 
   @doc """
@@ -82,9 +93,20 @@ defmodule BeamWeaver.Google.Client do
   """
   @spec stream_text(t(), String.t(), map(), keyword()) :: {:ok, Enumerable.t()} | {:error, Error.t()}
   def stream_text(%__MODULE__{} = client, model, body, opts \\ []) do
-    client
-    |> http(model, :stream_generate_content, opts)
-    |> HTTPClient.stream_sse(body, opts, &Streaming.text_deltas/1, &decode_result(&1, opts))
+    if LongDecode.enabled?(model, opts) do
+      with {:ok, events} <- stream_events(client, model, body, opts) do
+        {:ok,
+         Stream.flat_map(events, fn
+           %BeamWeaver.Stream.Envelope{event: %BeamWeaver.Stream.Events.Token{text: text}} -> [text]
+           %BeamWeaver.Stream.Envelope{event: %BeamWeaver.Stream.Events.Error{} = error} -> [error]
+           _ -> []
+         end)}
+      end
+    else
+      client
+      |> http(model, :stream_generate_content, opts)
+      |> HTTPClient.stream_sse(body, opts, &Streaming.text_deltas/1, &decode_result(&1, opts))
+    end
   end
 
   @doc """
@@ -92,9 +114,13 @@ defmodule BeamWeaver.Google.Client do
   """
   @spec stream_response(t(), String.t(), map(), keyword()) :: {:ok, map()} | {:error, Error.t()}
   def stream_response(%__MODULE__{} = client, model, body, opts \\ []) do
-    client
-    |> http(model, :stream_generate_content, opts)
-    |> HTTPClient.collect_sse(body, opts, &decode_sse_result(&1, opts))
+    if LongDecode.enabled?(model, opts) do
+      with {:ok, events} <- stream_events(client, model, body, opts), do: LongDecode.collect(events)
+    else
+      client
+      |> http(model, :stream_generate_content, opts)
+      |> HTTPClient.collect_sse(body, opts, &decode_sse_result(&1, opts))
+    end
   end
 
   @doc """
@@ -103,6 +129,42 @@ defmodule BeamWeaver.Google.Client do
   @spec stream_events(t(), String.t(), map() | binary(), keyword()) ::
           {:ok, Enumerable.t()} | {:error, Error.t()}
   def stream_events(%__MODULE__{} = client, model, body, opts \\ []) do
+    if LongDecode.enabled?(model, opts) do
+      LongDecode.stream(&raw_stream(client, model, &1, opts), body, opts)
+    else
+      single_stream(client, model, body, opts)
+    end
+  end
+
+  defp raw_stream(client, model, body, opts) do
+    http = http(client, model, :stream_generate_content, opts)
+    # Continuation tokens grow with the context and repeat in checkpoint
+    # frames. Real long decodes can exceed the transport's ordinary 5 MB cap.
+    # Match the configured stream bound, preserving explicit transport limits.
+    maximum =
+      Keyword.get(
+        http.transport_opts,
+        :max_response_bytes,
+        BeamWeaver.Provider.StreamValidator.new(opts).max_transport_bytes
+      )
+
+    opts = Keyword.put_new(opts, :max_response_bytes, maximum)
+
+    finalize = fn _state, response ->
+      with {:ok, headers} <- decode_result({:ok, %{response | body: %{}}}, opts),
+           do: {:ok, LongDecode.raw_end(headers)}
+    end
+
+    http
+    |> HTTPClient.stream_typed_sse(
+      body,
+      opts |> Keyword.put(:parser_finalizer, finalize) |> Keyword.put(:strict_sse, true),
+      &LongDecode.raw_events/2,
+      &decode_result(&1, opts)
+    )
+  end
+
+  defp single_stream(client, model, body, opts) do
     finalize = fn state, response ->
       Streaming.finish_typed_events(state, &decode_result({:ok, %{response | body: &1}}, opts))
     end

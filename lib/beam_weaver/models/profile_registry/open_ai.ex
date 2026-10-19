@@ -469,27 +469,84 @@ defmodule BeamWeaver.Models.ProfileRegistry.OpenAI do
                               end
                             )
 
-  @openai_deprecated_models %{
-    "gpt-daybreak-blue-latest" => "gpt-5.6-sol",
-    "gpt-5-chat-latest" => "gpt-5.5",
-    "gpt-5-chat" => "gpt-5.5",
-    "gpt-4.1-nano" => "gpt-5-nano",
-    "gpt-4.5-preview" => "gpt-5.5",
-    "gpt-4o-mini-search-preview" => "gpt-5.4-mini",
-    "gpt-4o-search-preview" => "gpt-5.4",
-    "gpt-4o-audio-preview" => "gpt-5.4",
-    "gpt-4o-realtime-preview" => "gpt-5.4",
-    "gpt-4-turbo" => "gpt-4.1",
-    "gpt-4-turbo-preview" => "gpt-4.1",
-    "gpt-4" => "gpt-4.1",
-    "gpt-3.5-turbo" => "gpt-5.4-mini",
-    "o4-mini" => "gpt-5-mini",
-    "o3-mini" => "gpt-5-mini",
-    "o1-pro" => "gpt-5.5-pro",
-    "o1" => "gpt-5",
-    "o1-mini" => "gpt-5-mini",
-    "o1-preview" => "gpt-5",
-    "text-embedding-ada-002" => "text-embedding-3-small"
+  @openai_retired_models %{
+    "gpt-5-chat-latest" => %{status: :retired, shutdown_date: "2026-07-23", replacement: "gpt-5.6-sol"},
+    "gpt-5-chat" => %{status: :retired, shutdown_date: "2026-07-23", replacement: "gpt-5.6-sol"},
+    "gpt-5-codex" => %{status: :retired, shutdown_date: "2026-07-23", replacement: "gpt-5.6-sol"},
+    "gpt-5.1-chat-latest" => %{status: :retired, shutdown_date: "2026-07-23", replacement: "gpt-5.6-sol"},
+    "gpt-5.1-codex" => %{status: :retired, shutdown_date: "2026-07-23", replacement: "gpt-5.6-sol"},
+    "gpt-5.1-codex-max" => %{status: :retired, shutdown_date: "2026-07-23", replacement: "gpt-5.6-sol"},
+    "gpt-5.2-codex" => %{status: :retired, shutdown_date: "2026-07-23", replacement: "gpt-5.6-sol"},
+    "o3-deep-research" => %{status: :retired, shutdown_date: "2026-07-23", replacement: "gpt-5.6-sol"},
+    "o3-deep-research-2025-06-26" => %{status: :retired, shutdown_date: "2026-07-23", replacement: "gpt-5.6-sol"},
+    "o4-mini-deep-research" => %{status: :retired, shutdown_date: "2026-07-23", replacement: "gpt-5.6-sol"},
+    "o4-mini-deep-research-2025-06-26" => %{status: :retired, shutdown_date: "2026-07-23", replacement: "gpt-5.6-sol"},
+    "computer-use-preview" => %{status: :retired, shutdown_date: "2026-07-23", replacement: "gpt-5.6-terra"},
+    "computer-use-preview-2025-03-11" => %{status: :retired, shutdown_date: "2026-07-23", replacement: "gpt-5.6-terra"},
+    "gpt-4o-mini-search-preview" => %{status: :retired, shutdown_date: "2026-07-23", replacement: "gpt-5.6-terra"},
+    "gpt-4o-mini-search-preview-2025-03-11" => %{
+      status: :retired,
+      shutdown_date: "2026-07-23",
+      replacement: "gpt-5.6-terra"
+    },
+    "gpt-4o-search-preview" => %{status: :retired, shutdown_date: "2026-07-23", replacement: "gpt-5.6-terra"},
+    "gpt-4o-search-preview-2025-03-11" => %{status: :retired, shutdown_date: "2026-07-23", replacement: "gpt-5.6-terra"},
+    "gpt-5.1-codex-mini" => %{status: :retired, shutdown_date: "2026-07-23", replacement: "gpt-5.6-terra"},
+    "gpt-5.2-chat-latest" => %{status: :retired, shutdown_date: "2026-08-10", replacement: "gpt-5.6-sol"},
+    "gpt-5.3-chat-latest" => %{status: :retired, shutdown_date: "2026-08-10", replacement: "gpt-5.6-sol"},
+    "chatgpt-4o-latest" => %{status: :retired, shutdown_date: "2026-02-17", replacement: "gpt-6-luna"},
+    "codex-mini-latest" => %{status: :retired, shutdown_date: "2026-02-12", replacement: "gpt-6-sol"},
+    "o1-preview" => %{status: :retired, shutdown_date: "2025-07-28", replacement: "gpt-6-sol"},
+    "o1-preview-2024-09-12" => %{status: :retired, shutdown_date: "2025-07-28", replacement: "gpt-6-sol"},
+    "o1-mini" => %{status: :retired, shutdown_date: "2025-10-27", replacement: "gpt-6-luna"},
+    "o1-mini-2024-09-12" => %{status: :retired, shutdown_date: "2025-10-27", replacement: "gpt-6-luna"},
+    "gpt-4.5-preview" => %{status: :retired, shutdown_date: "2025-07-14", replacement: "gpt-6-sol"},
+    "gpt-4.5-preview-2025-02-27" => %{status: :retired, shutdown_date: "2025-07-14", replacement: "gpt-6-sol"}
+  }
+
+  @openai_scheduled_models %{
+    "gpt-4o" => %{status: :deprecated, shutdown_date: "2027-01-14", replacement: "gpt-6-luna"},
+    "gpt-4o-2024-08-06" => %{status: :deprecated, shutdown_date: "2027-01-14", replacement: "gpt-6-luna"},
+    "gpt-4o-2024-11-20" => %{status: :deprecated, shutdown_date: "2027-01-14", replacement: "gpt-6-luna"},
+    "gpt-4o-mini" => %{status: :deprecated, shutdown_date: "2027-01-14", replacement: "gpt-6-luna"},
+    "gpt-4o-mini-2024-07-18" => %{status: :deprecated, shutdown_date: "2027-01-14", replacement: "gpt-6-luna"},
+    "gpt-4.1" => %{status: :deprecated, shutdown_date: "2027-01-14", replacement: "gpt-6-luna"},
+    "gpt-4.1-2025-04-14" => %{status: :deprecated, shutdown_date: "2027-01-14", replacement: "gpt-6-luna"},
+    "gpt-4.1-mini" => %{status: :deprecated, shutdown_date: "2027-01-14", replacement: "gpt-6-luna"},
+    "gpt-4.1-mini-2025-04-14" => %{status: :deprecated, shutdown_date: "2027-01-14", replacement: "gpt-6-luna"},
+    "gpt-5.3-codex" => %{status: :deprecated, shutdown_date: "2027-04-01", replacement: "gpt-6-sol"},
+    "gpt-5.1" => %{status: :deprecated, shutdown_date: "2027-04-01", replacement: "gpt-6-sol"},
+    "gpt-5.4-nano" => %{status: :deprecated, shutdown_date: "2027-04-01", replacement: "gpt-6-luna"},
+    "gpt-5" => %{status: :deprecated, shutdown_date: "2026-12-11", replacement: "gpt-5.6-sol"},
+    "gpt-5-2025-08-07" => %{status: :deprecated, shutdown_date: "2026-12-11", replacement: "gpt-5.6-sol"},
+    "gpt-5-pro" => %{status: :deprecated, shutdown_date: "2026-12-11", replacement: "gpt-5.6-sol"},
+    "gpt-5-pro-2025-10-06" => %{status: :deprecated, shutdown_date: "2026-12-11", replacement: "gpt-5.6-sol"},
+    "o3" => %{status: :deprecated, shutdown_date: "2026-12-11", replacement: "gpt-5.6-sol"},
+    "o3-2025-04-16" => %{status: :deprecated, shutdown_date: "2026-12-11", replacement: "gpt-5.6-sol"},
+    "o3-pro" => %{status: :deprecated, shutdown_date: "2026-12-11", replacement: "gpt-5.6-sol"},
+    "o3-pro-2025-06-10" => %{status: :deprecated, shutdown_date: "2026-12-11", replacement: "gpt-5.6-sol"},
+    "gpt-5-mini" => %{status: :deprecated, shutdown_date: "2026-12-11", replacement: "gpt-5.6-terra"},
+    "gpt-5-mini-2025-08-07" => %{status: :deprecated, shutdown_date: "2026-12-11", replacement: "gpt-5.6-terra"},
+    "gpt-5-nano" => %{status: :deprecated, shutdown_date: "2026-12-11", replacement: "gpt-5.6-luna"},
+    "gpt-5-nano-2025-08-07" => %{status: :deprecated, shutdown_date: "2026-12-11", replacement: "gpt-5.6-luna"},
+    "gpt-3.5-turbo" => %{status: :deprecated, shutdown_date: "2026-10-23", replacement: "gpt-5.6-terra"},
+    "gpt-3.5-turbo-0125" => %{status: :deprecated, shutdown_date: "2026-10-23", replacement: "gpt-5.6-terra"},
+    "o4-mini" => %{status: :deprecated, shutdown_date: "2026-10-23", replacement: "gpt-5.6-terra"},
+    "o4-mini-2025-04-16" => %{status: :deprecated, shutdown_date: "2026-10-23", replacement: "gpt-5.6-terra"},
+    "gpt-4" => %{status: :deprecated, shutdown_date: "2026-10-23", replacement: "gpt-5.6-sol"},
+    "gpt-4-0613" => %{status: :deprecated, shutdown_date: "2026-10-23", replacement: "gpt-5.6-sol"},
+    "gpt-4-1106-preview" => %{status: :deprecated, shutdown_date: "2026-10-23", replacement: "gpt-5.6-sol"},
+    "gpt-4-turbo" => %{status: :deprecated, shutdown_date: "2026-10-23", replacement: "gpt-5.6-sol"},
+    "gpt-4-turbo-2024-04-09" => %{status: :deprecated, shutdown_date: "2026-10-23", replacement: "gpt-5.6-sol"},
+    "gpt-4o-2024-05-13" => %{status: :deprecated, shutdown_date: "2026-10-23", replacement: "gpt-5.6-sol"},
+    "o1" => %{status: :deprecated, shutdown_date: "2026-10-23", replacement: "gpt-5.6-sol"},
+    "o1-2024-12-17" => %{status: :deprecated, shutdown_date: "2026-10-23", replacement: "gpt-5.6-sol"},
+    "o1-pro" => %{status: :deprecated, shutdown_date: "2026-10-23", replacement: "gpt-5.6-sol"},
+    "o1-pro-2025-03-19" => %{status: :deprecated, shutdown_date: "2026-10-23", replacement: "gpt-5.6-sol"},
+    "o3-mini" => %{status: :deprecated, shutdown_date: "2026-10-23", replacement: "gpt-5.6-sol"},
+    "o3-mini-2025-01-31" => %{status: :deprecated, shutdown_date: "2026-10-23", replacement: "gpt-5.6-sol"},
+    "gpt-4.1-nano" => %{status: :deprecated, shutdown_date: "2026-10-23", replacement: "gpt-5.6-luna"},
+    "gpt-4.1-nano-2025-04-14" => %{status: :deprecated, shutdown_date: "2026-10-23", replacement: "gpt-5.6-luna"}
   }
 
   @openai_chat_aliases %{
@@ -528,6 +585,7 @@ defmodule BeamWeaver.Models.ProfileRegistry.OpenAI do
                   extra: %{
                     embedding_dimensions: 1536,
                     input_price_per_mtok: 0.02,
+                    output_price_per_mtok: 0.0,
                     cost_currency: "USD",
                     pricing_source_url: @pricing_source_url
                   }
@@ -543,17 +601,75 @@ defmodule BeamWeaver.Models.ProfileRegistry.OpenAI do
                   extra: %{
                     embedding_dimensions: 3072,
                     input_price_per_mtok: 0.13,
+                    output_price_per_mtok: 0.0,
                     cost_currency: "USD",
                     pricing_source_url: @pricing_source_url
                   }
                 })
             })
+  @profiles Map.new(@profiles, fn {key, profile} ->
+              extra = Map.put(profile.extra, :pricing_last_checked, "2026-10-19")
+
+              extra =
+                if profile.id in ["gpt-6-astra", "gpt-6.1-sol"] do
+                  Map.merge(extra, %{
+                    ultrafast_price_multiplier: 6.0,
+                    ultrafast_access: :limited_preview,
+                    pricing_modes: [:standard, :batch, :flex, :fast, :priority, :ultrafast]
+                  })
+                else
+                  extra
+                end
+
+              extra =
+                if profile.id in ["gpt-5.6-terra", "gpt-5.6-luna"] do
+                  Map.merge(extra, %{
+                    higher_context_pricing_threshold_tokens: 272_000,
+                    higher_context_input_multiplier: 2.0,
+                    higher_context_output_multiplier: 1.5
+                  })
+                else
+                  extra
+                end
+
+              profile = %{profile | extra: extra}
+
+              profile =
+                case @openai_scheduled_models[profile.id] do
+                  nil ->
+                    profile
+
+                  lifecycle ->
+                    %{
+                      profile
+                      | status: :deprecated,
+                        last_updated: "2026-10-19",
+                        extra:
+                          Map.merge(extra, %{
+                            scheduled_shutdown_date: lifecycle.shutdown_date,
+                            recommended_replacement: lifecycle.replacement,
+                            lifecycle_source_url: "https://developers.openai.com/api/docs/deprecations"
+                          })
+                    }
+                end
+
+              {key, profile}
+            end)
   def profiles, do: Map.values(@profiles)
 
   def resolve(model) do
     cond do
-      replacement = @openai_deprecated_models[model] ->
-        ProfileRegistry.deprecated_error(:openai, model, "OpenAI model is deprecated", %{replacement: replacement})
+      metadata = @openai_retired_models[model] ->
+        ProfileRegistry.deprecated_error(:openai, model, "OpenAI model has been retired", metadata)
+
+      model == "text-embedding-ada-002" ->
+        {:error,
+         Error.new(:unsupported_model, "OpenAI embedding model is not in the supported set", %{
+           provider: :openai,
+           model: model,
+           replacement: "text-embedding-3-small",
+           expected: "openai:text-embedding-3-small"
+         })}
 
       canonical_id = @openai_chat_aliases[model] ->
         ProfileRegistry.fetch_alias(@profiles, :openai, model, canonical_id)
@@ -567,16 +683,22 @@ defmodule BeamWeaver.Models.ProfileRegistry.OpenAI do
   end
 
   defp non_frontier_model_error(model) do
-    replacement = Map.get(@openai_non_frontier_replacements, model, "gpt-5.5")
+    lifecycle = Map.get(@openai_scheduled_models, model, %{})
+    replacement = Map.get(lifecycle, :replacement, Map.get(@openai_non_frontier_replacements, model, "gpt-6.1-sol"))
 
     {:error,
-     Error.new(:unsupported_model, "OpenAI chat model is not in the supported frontier set", %{
-       provider: :openai,
-       model: model,
-       replacement: replacement,
-       expected: "openai:#{replacement}",
-       supported: MapSet.to_list(@openai_frontier_ids) |> Enum.sort()
-     })}
+     Error.new(
+       :unsupported_model,
+       "OpenAI chat model is not in the supported frontier set",
+       %{
+         provider: :openai,
+         model: model,
+         replacement: replacement,
+         expected: "openai:#{replacement}",
+         supported: MapSet.to_list(@openai_frontier_ids) |> Enum.sort()
+       }
+       |> Map.merge(lifecycle)
+     )}
   end
 
   defp restricted_chat_model?(model), do: is_binary(model) and String.match?(model, ~r/^(gpt-|o\d)/)

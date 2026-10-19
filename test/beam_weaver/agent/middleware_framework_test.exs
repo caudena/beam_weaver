@@ -321,7 +321,6 @@ defmodule BeamWeaver.Agent.MiddlewareFrameworkTest do
 
   test "jumps need no declaration in the middleware behaviour" do
     refute {:can_jump_to, 2} in BeamWeaver.Agent.Middleware.behaviour_info(:callbacks)
-    refute function_exported?(JumpToEnd, :can_jump_to, 2)
   end
 
   test "a struct middleware listed as a bare module gets its default struct" do

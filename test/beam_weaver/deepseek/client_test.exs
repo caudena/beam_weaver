@@ -88,6 +88,43 @@ defmodule BeamWeaver.DeepSeek.ClientTest do
     assert client.beta_chat_completions_endpoint == "https://gateway.test/deepseek/chat"
   end
 
+  test "standalone Search and Fetch use versioned endpoints and preserve their native results" do
+    for suffix <- ["", "/v1", "/beta", "/anthropic"] do
+      client = Client.new(base_url: "https://deepseek.test" <> suffix)
+      assert client.search_endpoint == "https://deepseek.test/v1/tools/search"
+      assert client.fetch_endpoint == "https://deepseek.test/v1/tools/fetch"
+    end
+
+    body = %{"query" => "Elixir site:elixir-lang.org", "count" => 50, "need_content" => true}
+    result = %{"results" => [%{"title" => "Elixir", "url" => "https://elixir-lang.org", "content" => "# Elixir"}]}
+    client = test_client(response_body: Jason.encode!(result))
+    assert {:ok, ^result} = Client.search(client, body)
+    assert_received {:request, request, _opts}
+    assert request.method == :post
+    assert request.url == "https://deepseek.test/v1/tools/search"
+    assert request.json == body
+    assert {"authorization", "Bearer ds-secret"} in request.headers
+
+    page = %{"title" => "Elixir", "content" => "# Elixir\n\nOfficial site."}
+    client = test_client(response_body: Jason.encode!(page))
+    assert {:ok, ^page} = Client.fetch(client, %{"url" => "https://elixir-lang.org"})
+    assert_received {:request, request, _opts}
+    assert request.url == "https://deepseek.test/v1/tools/fetch"
+    assert request.json == %{"url" => "https://elixir-lang.org"}
+  end
+
+  test "standalone tools preserve empty results, endpoint overrides, and provider failures" do
+    client = %{test_client(response_body: ~s({"results":[]})) | search_endpoint: "https://gateway.test/search"}
+    assert {:ok, %{"results" => []}} = Client.search(client, %{query: "no matches"})
+    assert_received {:request, request, _opts}
+    assert request.url == "https://gateway.test/search"
+
+    client =
+      test_client(status: 404, response_body: ~s({"error":{"message":"No usable page content","type":"not_found"}}))
+
+    assert {:error, %Error{}} = Client.fetch(client, %{url: "https://example.test/missing"})
+  end
+
   test "stable chat uses bearer auth, a 15 second default timeout, and response headers" do
     client =
       test_client(

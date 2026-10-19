@@ -224,6 +224,8 @@ defmodule BeamWeaver.Provider.Response do
 
     %{
       input_tokens: input,
+      initial_input_tokens: first_number(usage, [:initial_input_tokens]),
+      context_tokens: first_number(usage, [:context_tokens]),
       output_tokens: output,
       total_tokens: total,
       cache_read_tokens: cache_read,
@@ -678,7 +680,7 @@ defmodule BeamWeaver.Provider.Response do
   # spelling of the token details one name.
   @usage_keys Map.merge(
                 Map.new(
-                  ~w(input_tokens prompt_tokens output_tokens completion_tokens total_tokens total input_token_details
+                  ~w(input_tokens initial_input_tokens context_tokens prompt_tokens output_tokens completion_tokens total_tokens total input_token_details
                      output_token_details cache_read cache_read_tokens cache_read_input_tokens cache_creation
                      cache_creation_tokens cache_creation_input_tokens cache_write cache_write_tokens
                      ephemeral_5m_input_tokens ephemeral_1h_input_tokens reasoning reasoning_tokens thinking_tokens

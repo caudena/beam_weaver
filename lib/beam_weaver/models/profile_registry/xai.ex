@@ -69,6 +69,9 @@ defmodule BeamWeaver.Models.ProfileRegistry.XAI do
   }
 
   @xai_non_chat_models %{
+    "grok-imagine-image-2.0" => "grok-imagine image APIs are not exposed through chat models",
+    "grok-imagine-video-1.5" => "grok-imagine video APIs are not exposed through chat models",
+    "grok-imagine-video-1.5-lite" => "grok-imagine video APIs are not exposed through chat models",
     "grok-imagine-image" => "grok-imagine image APIs are not exposed through chat models",
     "grok-imagine-image-quality" => "grok-imagine image APIs are not exposed through chat models",
     "grok-imagine-video" => "grok-imagine video APIs are not exposed through chat models"
@@ -272,6 +275,28 @@ defmodule BeamWeaver.Models.ProfileRegistry.XAI do
         })
       )
   }
+  @profiles Map.new(@profiles, fn {key, profile} ->
+              extra =
+                Map.merge(profile.extra, %{
+                  pricing_last_checked: "2026-10-19",
+                  pricing_source_url: "https://docs.x.ai/developers/pricing",
+                  higher_context_threshold_inclusive: true,
+                  tool_pricing: %{
+                    web_search: %{price_per_1000_calls: 5.0},
+                    x_search: %{price_per_1000_posts: 5.0, price_per_1000_profiles: 10.0},
+                    code_execution: %{price_per_1000_calls: 5.0},
+                    attachment_search: %{price_per_1000_calls: 5.0},
+                    collections_search: %{price_per_1000_calls: 2.5}
+                  }
+                })
+
+              extra =
+                if profile.id in ["grok-4.6", "grok-4.7"],
+                  do: Map.put(extra, :regional_processing_multiplier, 1.1),
+                  else: extra
+
+              {key, %{profile | extra: extra}}
+            end)
   def profiles, do: Map.values(@profiles)
 
   def resolve(model) do

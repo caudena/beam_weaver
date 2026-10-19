@@ -32,7 +32,10 @@ defmodule BeamWeaver.Docs.Scenarios do
       {"CapabilityProfile.builtin_keys()", "run"}
     ],
     "docs/testing.md" => [{"cassette = \"\"\"", "run"}],
-    "docs/providers/deepseek.md" => [{"client = BeamWeaver.DeepSeek.Client.new()", "live"}],
+    "docs/providers/deepseek.md" => [
+      {"client = BeamWeaver.DeepSeek.Client.new()", "live"},
+      {"search_client = BeamWeaver.DeepSeek.Client.new(timeout: 60_000)", "live"}
+    ],
     "docs/providers/openai.md" => [{"BeamWeaver.OpenAI.generate_image(", "live"}]
   }
 

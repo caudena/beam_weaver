@@ -11,6 +11,11 @@ defmodule BeamWeaver.Google.ChatModel do
   media and tools. Preserve complete messages for multi-turn replay. Streaming
   consumers must enumerate once and handle terminal errors; display text is not
   a lossless representation of a native provider turn.
+
+  Argon continues automatically and combines its hops into one reply. Set
+  `max_output_tokens:` for the total generation budget (default 65,536),
+  `automatic_continuation: false` to manage checkpoints yourself, or
+  `max_continuation_retries:` to change the default two reconnect attempts.
   """
 
   use BeamWeaver.Provider.RedactedInspect
@@ -59,6 +64,9 @@ defmodule BeamWeaver.Google.ChatModel do
             include_thoughts: nil,
             safety_settings: nil,
             cached_content: nil,
+            continuation_token: nil,
+            automatic_continuation: nil,
+            max_continuation_retries: 2,
             image_config: nil,
             speech_config: nil,
             labels: nil,
@@ -94,13 +102,14 @@ defmodule BeamWeaver.Google.ChatModel do
       |> Keyword.put_new(:api_key, Config.get([:google, :api_key]))
       |> Keyword.put_new(:base_url, Config.get([:google, :base_url]))
       |> Keyword.put(:profile, profile)
+      |> Keyword.put_new(:timeout, Map.get(profile.extra, :recommended_timeout_ms, 15_000))
     )
   end
 
   @impl true
   def stream_events(%__MODULE__{} = model, messages, opts \\ []) do
     with {:ok, body} <- request_body(model, messages, Keyword.put(opts, :stream, true)) do
-      Client.stream_events(client(model), model.model, body, opts)
+      Client.stream_events(client(model), model.model, body, continuation_opts(model, opts))
     end
   end
 
@@ -111,7 +120,7 @@ defmodule BeamWeaver.Google.ChatModel do
 
   @impl true
   def stream_exact_typed_events(%__MODULE__{} = model, body, opts \\ []) when is_binary(body) do
-    Client.stream_events(client(model), model.model, body, opts)
+    Client.stream_events(client(model), model.model, body, continuation_opts(model, opts))
   end
 
   @doc """
@@ -153,6 +162,8 @@ defmodule BeamWeaver.Google.ChatModel do
         |> Options.put_optional("toolConfig", tool_config)
         |> Options.put_optional("safetySettings", safety_settings(model, opts))
         |> Options.put_optional("cachedContent", option(model, opts, :cached_content))
+        |> Options.put_optional("labels", Options.normalize_option_map(option(model, opts, :labels)))
+        |> Options.put_optional("continuationToken", option(model, opts, :continuation_token))
         |> Options.put_optional("serviceTier", option(model, opts, :service_tier))
         |> Options.put_optional("store", option(model, opts, :store))
         |> Options.merge_extra_body(Options.extra_body(model, opts))
@@ -162,15 +173,10 @@ defmodule BeamWeaver.Google.ChatModel do
   end
 
   @doc """
-  Builds a countTokens body, using a model-qualified generateContentRequest when instructions/options require it.
+  Builds a countTokens body from the same input, tools and options used for generation.
   """
   def count_tokens_body(%__MODULE__{} = model, messages, opts \\ []) do
-    with {:ok, {system, contents}} <- Messages.encode_messages(messages, opts) do
-      request =
-        %{"contents" => contents}
-        |> Options.put_optional("systemInstruction", system)
-        |> Options.put_optional("generationConfig", generation_config(model, opts))
-
+    with {:ok, request} <- request_body(model, messages, opts) do
       body =
         if map_size(request) > 1,
           do: %{"generateContentRequest" => Map.put(request, "model", "models/" <> model.model)},
@@ -287,7 +293,6 @@ defmodule BeamWeaver.Google.ChatModel do
       "speechConfig",
       Options.normalize_option_map(option(model, opts, :speech_config))
     )
-    |> Options.put_optional("labels", Options.normalize_option_map(option(model, opts, :labels)))
     |> Options.put_optional(
       "enableEnhancedCivicAnswers",
       option(model, opts, :enable_enhanced_civic_answers)
@@ -341,7 +346,17 @@ defmodule BeamWeaver.Google.ChatModel do
   defp max_output_tokens(model, opts) do
     Keyword.get(opts, :max_output_tokens) || Keyword.get(opts, :max_tokens) ||
       Keyword.get(opts, :max_completion_tokens) || model.max_output_tokens ||
+      default_output_tokens(model, opts) ||
       if(structured_output_request?(model, opts), do: profile_max_output_tokens(model))
+  end
+
+  defp default_output_tokens(model, opts) do
+    if BeamWeaver.Google.LongDecode.enabled?(model.model, continuation_opts(model, opts)) do
+      profile_extra(model, :default_max_output_tokens)
+    else
+      key = if Keyword.get(opts, :stream, false), do: :streaming_output_limit, else: :non_streaming_output_limit
+      profile_extra(model, key)
+    end
   end
 
   defp structured_output_request?(model, opts) do
@@ -386,7 +401,8 @@ defmodule BeamWeaver.Google.ChatModel do
 
   # The model's parameters, every struct field but these, with the call's.
   @non_param_fields ~w(model base_url endpoint api_key default_headers extra_body labels profile tokenizer param_policy
-                       streaming include_response_headers transport transport_opts timeout)a
+                       streaming include_response_headers transport transport_opts timeout automatic_continuation
+                       max_continuation_retries)a
 
   defp request_params(model, opts) do
     model
@@ -408,11 +424,22 @@ defmodule BeamWeaver.Google.ChatModel do
   end
 
   @impl true
-  def send_request(:invoke, model, body, opts), do: Client.generate_content(client(model), model.model, body, opts)
-  def send_request(:stream, model, body, opts), do: Client.stream_text(client(model), model.model, body, opts)
+  def send_request(:invoke, model, body, opts),
+    do: Client.generate_content(client(model), model.model, body, continuation_opts(model, opts))
+
+  def send_request(:stream, model, body, opts),
+    do: Client.stream_text(client(model), model.model, body, continuation_opts(model, opts))
 
   def send_request(:stream_response, model, body, opts),
-    do: Client.stream_response(client(model), model.model, body, opts)
+    do: Client.stream_response(client(model), model.model, body, continuation_opts(model, opts))
+
+  defp continuation_opts(model, opts) do
+    opts = Keyword.put_new(opts, :max_continuation_retries, model.max_continuation_retries)
+
+    if is_nil(model.automatic_continuation),
+      do: opts,
+      else: Keyword.put_new(opts, :automatic_continuation, model.automatic_continuation)
+  end
 
   @impl true
   def decode_response(response, opts), do: Messages.response_to_message(response, opts)

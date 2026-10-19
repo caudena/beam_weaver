@@ -13,7 +13,7 @@ defmodule BeamWeaver.Provider.CallOptionsTest do
           {"openai:gpt-5.4-mini", [stop: ["END"]], :stop},
           {"anthropic:claude-haiku-4-5", [reasoning_effort: :low], :reasoning_effort},
           {"google:gemini-3.5-flash", [reasoning_effort: :low], :reasoning_effort},
-          {"xai:grok-4.6", [top_k: 5], :top_k},
+          {"xai:grok-4.6", [audio: %{voice: "alloy"}], :audio},
           {"moonshot:kimi-k2.6", [top_k: 5], :top_k},
           {"zai:glm-5.2", [top_k: 5], :top_k},
           {"deepseek:deepseek-v4-flash", [top_k: 5], :top_k}

@@ -48,6 +48,7 @@ defmodule BeamWeaver.DeepSeek.Provider do
     %{
       api_families: [:chat_completions, :responses],
       openai_compatible: true,
+      standalone_tools: [:search, :fetch],
       default_api: :chat_completions
     }
   end

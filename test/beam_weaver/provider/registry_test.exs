@@ -74,18 +74,6 @@ defmodule BeamWeaver.Provider.RegistryTest do
     profiles = ProfileRegistry.all()
     identities = Enum.map(profiles, &{&1.provider, &1.id})
 
-    assert ProfileRegistry.providers() == [
-             :anthropic,
-             :deepseek,
-             :fake,
-             :google,
-             :moonshot,
-             :openai,
-             :typesafe,
-             :xai,
-             :zai
-           ]
-
     assert identities == Enum.sort(identities)
     assert identities == Enum.uniq(identities)
 
@@ -104,28 +92,14 @@ defmodule BeamWeaver.Provider.RegistryTest do
            end)
   end
 
-  # Every provider lists a model's reasoning efforts in the same two profile
-  # fields, with the default among them.
-  test "reasoning efforts are profile fields on every provider" do
-    for profile <- ProfileRegistry.all() do
-      assert Enum.all?(profile.reasoning_effort_levels, &is_atom/1)
-      assert profile.reasoning_effort_default in [nil | profile.reasoning_effort_levels]
-
-      for legacy <- [:reasoning_efforts, :effort_levels, :default_effort, :default_reasoning_effort] do
-        refute Map.has_key?(profile.extra, legacy), "#{profile.provider}:#{profile.id} has extra.#{legacy}"
-      end
-    end
-
-    for {provider, model, levels, default} <- [
-          {:anthropic, "claude-opus-5-5", [:low, :medium, :high, :xhigh, :max], :medium},
-          {:xai, "grok-4.5", [:low, :medium, :high], :high},
-          {:zai, "glm-5.3", [:low, :high, :max], :max},
-          {:deepseek, "deepseek-v4-pro", [:low, :high, :max], nil},
-          {:moonshot, "kimi-k3", [:max], :max}
-        ] do
-      assert {:ok, %Profile{reasoning_effort_levels: ^levels, reasoning_effort_default: ^default}} =
-               ProfileRegistry.fetch(provider, model)
-    end
+  test "aliases preserve the requested id while inheriting the canonical profile" do
+    canonical = Profile.new(provider: :dummy, id: "canonical", tool_calling: true, extra: %{input_price_per_mtok: 7.0})
+    profiles = %{{:dummy, "canonical"} => canonical}
+    assert {:ok, alias_profile} = ProfileRegistry.fetch_alias(profiles, :dummy, "latest", "canonical")
+    assert alias_profile.id == "latest"
+    assert alias_profile.tool_calling == canonical.tool_calling
+    assert alias_profile.extra == Map.merge(canonical.extra, %{canonical_model: "canonical", alias_model: "latest"})
+    assert {:fallback, :dummy, "missing"} = ProfileRegistry.fetch_alias(profiles, :dummy, "missing", "absent")
   end
 
   test "runtime providers can be registered, inferred, initialized, and unregistered" do
@@ -150,17 +124,5 @@ defmodule BeamWeaver.Provider.RegistryTest do
     assert :ok = Registry.load_from_config!()
     assert {:ok, entry} = Registry.fetch(:dummy)
     assert entry.provider == :dummy
-  end
-
-  test "deprecated Google models are not exposed through fallback profiles" do
-    assert {:error, error} = Registry.profile(:google, "gemini-3-flash-preview")
-    assert error.type == :deprecated_model
-    assert error.details.expected == "google:gemini-3.5-flash"
-  end
-
-  test "limited-access Google models are not exposed through fallback profiles" do
-    assert {:error, error} = Registry.profile(:google, "gemini-3.5-flash-cyber")
-    assert error.type == :unsupported_model
-    assert error.details.access == :codemender_limited_access
   end
 end

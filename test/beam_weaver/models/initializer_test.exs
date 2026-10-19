@@ -7,9 +7,55 @@ defmodule BeamWeaver.Models.InitializerTest do
   alias BeamWeaver.Models
   alias BeamWeaver.Models.ParamPolicy
   alias BeamWeaver.Models.Profile
-  alias BeamWeaver.Models.ProfileRegistry
   alias BeamWeaver.Tokenizer.OpenAI, as: OpenAITokenizer
   alias BeamWeaver.Tokenizer.StaticVocabulary
+
+  defmodule FixtureRegistry do
+    def fetch(provider, id) do
+      {:ok,
+       Profile.new(
+         provider: provider,
+         id: id,
+         tool_calling: true,
+         streaming: true,
+         supported_params: [:temperature, :max_output_tokens, :tools, :tool_choice, :stream, :stop]
+       )}
+    end
+  end
+
+  defmodule RejectingRegistry do
+    def fetch(_provider, _id), do: {:error, BeamWeaver.Core.Error.new(:deprecated_model, "fixture retired")}
+  end
+
+  defp fixture_model(id, opts \\ []) do
+    Models.init_chat_model(id, Keyword.put(opts, :profile_registry, FixtureRegistry))
+  end
+
+  defp fixture_model!(id, opts), do: fixture_model(id, opts) |> BeamWeaver.Policy.bang()
+
+  test "provider families require explicit prefixes and preserve arbitrary model IDs" do
+    for {provider, id, module} <- [
+          {"google", "gemini-fixture", BeamWeaver.Google.ChatModel},
+          {"moonshot", "kimi-fixture", BeamWeaver.Moonshot.ChatModel},
+          {"zai", "glm-fixture", BeamWeaver.ZAI.ChatModel},
+          {"deepseek", "deepseek-fixture", BeamWeaver.DeepSeek.ChatModel}
+        ] do
+      assert {:ok, model} = fixture_model(provider <> ":" <> id)
+      assert model.__struct__ == module
+      assert model.model == id
+      assert {:error, error} = fixture_model(id)
+      assert error.type == :invalid_model
+      assert error.details.expected == provider <> ":" <> id
+    end
+
+    assert {:ok, %BeamWeaver.Anthropic.ChatModel{}} = fixture_model("claude-fixture")
+    assert {:error, %{type: :unsupported_provider}} = fixture_model("kimi:kimi-fixture")
+  end
+
+  test "registry errors propagate instead of constructing a model" do
+    assert {:error, %{type: :deprecated_model, message: "fixture retired"}} =
+             Models.init_chat_model("fake:retired", profile_registry: RejectingRegistry)
+  end
 
   defmodule TokenCounter do
     def count(value, extra), do: LanguageModel.count_tokens_approximately(value) + extra
@@ -29,61 +75,61 @@ defmodule BeamWeaver.Models.InitializerTest do
   end
 
   test "init_chat_model accepts provider-prefixed and inferred OpenAI identifiers" do
-    assert {:ok, openai} = Models.init_chat_model("openai:gpt-5.4", temperature: 0.2)
+    assert {:ok, openai} = fixture_model("openai:gpt-fixture", temperature: 0.2)
     assert openai.__struct__ == BeamWeaver.OpenAI.ChatModel
-    assert openai.model == "gpt-5.4"
+    assert openai.model == "gpt-fixture"
     assert openai.temperature == 0.2
 
-    assert {:ok, inferred} = Models.init_chat_model("gpt-5.4")
+    assert {:ok, inferred} = fixture_model("gpt-fixture")
     assert inferred.__struct__ == BeamWeaver.OpenAI.ChatModel
   end
 
   test "init_chat_model can select the explicit Chat Completions implementation" do
     assert {:ok, chat_completions} =
-             Models.init_chat_model("openai:gpt-5.4-mini",
+             fixture_model("openai:gpt-fixture",
                api: :chat_completions,
                max_completion_tokens: 64
              )
 
     assert chat_completions.__struct__ == BeamWeaver.OpenAI.ChatCompletionsModel
-    assert chat_completions.model == "gpt-5.4-mini"
+    assert chat_completions.model == "gpt-fixture"
     assert chat_completions.max_completion_tokens == 64
   end
 
   test "init_chat_model rejects options the provider doesn't take" do
-    assert {:error, typo} = Models.init_chat_model("openai:gpt-5.4-mini", temprature: 0.2)
+    assert {:error, typo} = fixture_model("openai:gpt-fixture", temprature: 0.2)
     assert typo.type == :unsupported_model_param
     assert typo.details.params == [:temprature]
     assert typo.details.provider == :openai
 
-    assert {:error, foreign} = Models.init_chat_model("anthropic:claude-haiku-4-5", frequency_penalty: 0.5)
+    assert {:error, foreign} = fixture_model("anthropic:claude-fixture", frequency_penalty: 0.5)
     assert foreign.details.params == [:frequency_penalty]
     refute foreign.message =~ "when you call"
 
-    assert {:error, call_option} = Models.init_chat_model("openai:gpt-5.4-mini", tools: [%{"type" => "web_search"}])
+    assert {:error, call_option} = fixture_model("openai:gpt-fixture", tools: [%{"type" => "web_search"}])
     assert call_option.details.params == [:tools]
     assert call_option.message =~ "pass :tools when you call the model"
 
-    assert {:error, %{details: %{params: [:respones]}}} = Models.init_chat_model("fake:chat", respones: ["Hi"])
-    assert {:ok, _fake} = Models.init_chat_model("fake:chat", responses: ["Hi"], api_key: "unused", timeout: 5_000)
+    assert {:error, %{details: %{params: [:respones]}}} = fixture_model("fake:chat", respones: ["Hi"])
+    assert {:ok, _fake} = fixture_model("fake:chat", responses: ["Hi"], api_key: "unused", timeout: 5_000)
     assert {:error, %{details: %{params: [:temperature]}}} = Models.init_embeddings("fake:embedding", temperature: 0.1)
 
     assert {:error, %{type: :invalid_provider_option, details: %{option: :api}}} =
-             Models.init_chat_model("openai:gpt-5.4-mini", api: :chat_completion)
+             fixture_model("openai:gpt-fixture", api: :chat_completion)
 
     assert {:error, %{details: %{params: [:api]}}} =
-             Models.init_chat_model("anthropic:claude-haiku-4-5", api: :responses)
+             fixture_model("anthropic:claude-fixture", api: :responses)
   end
 
   test "an option error names the provider for every API" do
     for {id, opts, provider} <- [
-          {"openai:gpt-5.4-mini", [api: :chat_completions], :openai},
-          {"xai:grok-4.6", [api: :chat_completions], :xai},
-          {"xai:grok-4.6", [], :xai},
-          {"deepseek:deepseek-v4-flash", [api: :responses], :deepseek}
+          {"openai:gpt-fixture", [api: :chat_completions], :openai},
+          {"xai:grok-fixture", [api: :chat_completions], :xai},
+          {"xai:grok-fixture", [], :xai},
+          {"deepseek:deepseek-fixture", [api: :responses], :deepseek}
         ] do
       assert {:error, %{type: :unsupported_model_param, details: %{provider: ^provider, params: [:temprature]}}} =
-               Models.init_chat_model(id, [{:temprature, 0.2} | opts])
+               fixture_model(id, [{:temprature, 0.2} | opts])
     end
 
     assert {:error, %{details: %{provider: :openai}}} =
@@ -92,152 +138,45 @@ defmodule BeamWeaver.Models.InitializerTest do
 
   test "init_chat_model takes the common names for the output cap and stop sequences" do
     assert %{max_tokens: 1_000, stop_sequences: ["END"]} =
-             Models.init_chat_model!("anthropic:claude-haiku-4-5", max_output_tokens: 1_000, stop: ["END"])
+             fixture_model!("anthropic:claude-fixture", max_output_tokens: 1_000, stop: ["END"])
 
     assert %{max_output_tokens: 1_000, stop_sequences: ["END"]} =
-             Models.init_chat_model!("google:gemini-3.5-flash", max_tokens: 1_000, stop: ["END"])
+             fixture_model!("google:gemini-fixture", max_tokens: 1_000, stop: ["END"])
 
     assert %{max_tokens: 500} =
-             Models.init_chat_model!("anthropic:claude-haiku-4-5", max_tokens: 500, max_output_tokens: 1_000)
+             fixture_model!("anthropic:claude-fixture", max_tokens: 500, max_output_tokens: 1_000)
   end
 
   test "init_chat_model keeps stream: true as the model's default" do
     for id <- [
-          "openai:gpt-5.4-mini",
-          "anthropic:claude-haiku-4-5",
-          "google:gemini-3.5-flash",
-          "xai:grok-4.6",
-          "moonshot:kimi-k2.6",
-          "zai:glm-5.2",
-          "deepseek:deepseek-v4-flash",
+          "openai:gpt-fixture",
+          "anthropic:claude-fixture",
+          "google:gemini-fixture",
+          "xai:grok-fixture",
+          "moonshot:kimi-fixture",
+          "zai:glm-fixture",
+          "deepseek:deepseek-fixture",
           "fake:chat"
         ] do
-      assert %{streaming: true} = Models.init_chat_model!(id, stream: true)
+      assert %{streaming: true} = fixture_model!(id, stream: true)
     end
 
-    assert %{streaming: true} = Models.init_chat_model!("openai:gpt-5.4-mini", api: :chat_completions, stream: true)
-    assert %{streaming: true} = Models.init_chat_model!("xai:grok-4.6", api: :chat_completions, stream: true)
+    assert %{streaming: true} = fixture_model!("openai:gpt-fixture", api: :chat_completions, stream: true)
+    assert %{streaming: true} = fixture_model!("xai:grok-fixture", api: :chat_completions, stream: true)
   end
 
   test "init_options leaves an agent's call options for the calls" do
     opts = [temperature: 0.2, tool_choice: :auto, tools: [%{"type" => "web_search"}], stream: true, timeout: 5_000]
 
-    assert Models.init_options("openai:gpt-5.4-mini", opts) == [temperature: 0.2, stream: true, timeout: 5_000]
-    assert Models.init_options("anthropic:claude-haiku-4-5", stop: ["END"], tool_choice: :auto) == [stop: ["END"]]
-    assert Models.init_options("openai:gpt-5.4-mini", temprature: 0.2) == [temprature: 0.2]
-    assert Models.init_options("openai:gpt-5.4-mini", tool_timeout: 30_000, timeout: 5_000) == [timeout: 5_000]
+    assert Models.init_options("openai:gpt-fixture", opts) == [temperature: 0.2, stream: true, timeout: 5_000]
+    assert Models.init_options("anthropic:claude-fixture", stop: ["END"], tool_choice: :auto) == [stop: ["END"]]
+    assert Models.init_options("openai:gpt-fixture", temprature: 0.2) == [temprature: 0.2]
+    assert Models.init_options("openai:gpt-fixture", tool_timeout: 30_000, timeout: 5_000) == [timeout: 5_000]
   end
 
   test "init_chat_model returns tagged errors for unsupported providers" do
-    assert {:error, error} = Models.init_chat_model("unknown:model")
+    assert {:error, error} = fixture_model("unknown:model")
     assert error.type == :unsupported_provider
-  end
-
-  test "init_chat_model accepts explicit Google identifiers but not bare Gemini aliases" do
-    for model <- [
-          "gemini-3.8-flash",
-          "gemini-3.7-flash",
-          "gemini-3.6-flash",
-          "gemini-3.5-flash-lite",
-          "gemini-3.5-flash",
-          "gemini-3.1-pro-preview",
-          "gemini-3.1-flash-lite"
-        ] do
-      assert {:ok, %BeamWeaver.Google.ChatModel{model: ^model}} =
-               Models.init_chat_model("google:" <> model)
-    end
-
-    assert {:error, error} = Models.init_chat_model("gemini-3.5-flash")
-    assert error.type == :invalid_model
-    assert error.details.expected == "google:gemini-3.5-flash"
-  end
-
-  test "latest Gemini models reject deprecated generation controls" do
-    for model <- [
-          "google:gemini-3.8-flash",
-          "google:gemini-3.7-flash",
-          "google:gemini-3.6-flash",
-          "google:gemini-3.5-flash-lite"
-        ] do
-      assert {:ok, configured} = Models.init_chat_model(model, temperature: 0.2)
-
-      assert {:error, error} =
-               BeamWeaver.Google.ChatModel.request_body(configured, [Message.user("hello")])
-
-      assert error.type == :unsupported_model_param
-      assert error.details.params == [:temperature]
-
-      assert {:ok, configured} = Models.init_chat_model(model, thinking_budget: 512)
-
-      assert {:error, error} =
-               BeamWeaver.Google.ChatModel.request_body(configured, [Message.user("hello")])
-
-      assert error.type == :unsupported_model_param
-      assert error.details.params == [:thinking_budget]
-    end
-  end
-
-  test "Gemini 3.8 Flash resolves to its exact production profile" do
-    assert {:ok, profile} = ProfileRegistry.fetch(:google, "gemini-3.8-flash")
-
-    assert profile.name == "Gemini 3.8 Flash"
-    assert profile.status == :active
-    assert profile.release_date == "2026-09-02"
-    assert profile.max_input_tokens == 1_048_576
-    assert profile.max_output_tokens == 65_536
-    assert profile.extra.default_thinking_level == :medium
-    assert profile.extra.thinking_levels == [:low, :medium, :high]
-    assert profile.extra.input_price_per_mtok == 0.75
-    assert profile.extra.output_price_per_mtok == 3.75
-    assert profile.extra.computer_use == :preview
-  end
-
-  test "init_chat_model rejects limited-access Gemini models before family fallback" do
-    assert {:error, error} = Models.init_chat_model("google:gemini-3.5-flash-cyber")
-    assert error.type == :unsupported_model
-    assert error.details.provider == :google
-    assert error.details.model == "gemini-3.5-flash-cyber"
-    assert error.details.access == :codemender_limited_access
-    assert error.details.reason =~ "governments and trusted partners"
-  end
-
-  test "init_chat_model accepts explicit Moonshot identifiers but not Kimi aliases" do
-    for model <- ["kimi-k3", "kimi-k2.7-code", "kimi-k2.7-code-highspeed", "kimi-k2.6"] do
-      assert {:ok, %BeamWeaver.Moonshot.ChatModel{model: ^model}} =
-               Models.init_chat_model("moonshot:" <> model)
-    end
-
-    assert {:error, bare} = Models.init_chat_model("kimi-k2.6")
-    assert bare.type == :invalid_model
-    assert bare.details.expected == "moonshot:kimi-k2.6"
-
-    assert {:error, unsupported} = Models.init_chat_model("kimi:kimi-k2.6")
-    assert unsupported.type == :unsupported_provider
-  end
-
-  test "init_chat_model accepts explicit Z.ai identifiers but not bare GLM aliases" do
-    for model <- ["glm-5.3", "glm-5.3-flash", "glm-5.3-flashx", "glm-5.2", "glm-5.1", "glm-5", "glm-4.7", "glm-4.6"] do
-      assert {:ok, %BeamWeaver.ZAI.ChatModel{model: ^model}} =
-               Models.init_chat_model("zai:" <> model)
-    end
-
-    assert {:error, bare} = Models.init_chat_model("glm-5.2")
-    assert bare.type == :invalid_model
-    assert bare.details.expected == "zai:glm-5.2"
-
-    assert {:error, bare} = Models.init_chat_model("glm-5.3-flash")
-    assert bare.details.expected == "zai:glm-5.3-flash"
-
-    assert {:error, unsupported} = Models.init_chat_model("zai:glm-4")
-    assert unsupported.type == :unsupported_model
-    assert unsupported.details.expected == "zai:glm-5.3"
-    assert "glm-5.3-flashx" in unsupported.details.supported
-  end
-
-  test "init_chat_model names the prefixed id the caller gave for bare DeepSeek identifiers" do
-    assert {:error, bare} = Models.init_chat_model("deepseek-v4-pro")
-    assert bare.type == :invalid_model
-    assert bare.details.expected == "deepseek:deepseek-v4-pro"
   end
 
   test "initializers reject a model option that is not an identifier" do
@@ -247,23 +186,6 @@ defmodule BeamWeaver.Models.InitializerTest do
         assert {:error, %BeamWeaver.Core.Error{type: :invalid_model}} = init.(%{model: model}, [])
         assert {:error, %BeamWeaver.Core.Error{type: :invalid_model}} = init.([], model: model)
       end
-    end
-  end
-
-  test "init_chat_model rejects discontinued Moonshot identifiers with replacements" do
-    assert {:error, error} = Models.init_chat_model("moonshot:kimi-latest")
-
-    assert error.type == :deprecated_model
-    assert error.details.provider == :moonshot
-    assert error.details.model == "kimi-latest"
-    assert error.details.replacement == "kimi-k3"
-    assert error.details.expected == "moonshot:kimi-k3"
-  end
-
-  test "Google stable 2.5 identifiers remain available without announced shutdowns" do
-    for model <- ["gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.5-pro"] do
-      assert {:ok, initialized} = Models.init_chat_model("google:" <> model)
-      assert initialized.model == model
     end
   end
 
@@ -283,13 +205,6 @@ defmodule BeamWeaver.Models.InitializerTest do
     assert length(vector) == 4
 
     assert {:ok, %{mode: :random}} = Models.init_embeddings("fake:embedding", mode: :random)
-  end
-
-  test "OpenAI embedding profile lookup rejects deprecated ada embeddings" do
-    assert {:error, error} = Models.init_embeddings("openai:text-embedding-ada-002")
-    assert error.type == :deprecated_model
-    assert error.details.replacement == "text-embedding-3-small"
-    assert error.details.expected == "openai:text-embedding-3-small"
   end
 
   test "token counting is explicit through functions, MFA, model callbacks, or approximate fallback" do
@@ -314,7 +229,7 @@ defmodule BeamWeaver.Models.InitializerTest do
   end
 
   test "OpenAI tokenizer adapter gives exact deterministic counts when explicitly supplied" do
-    tokenizer = %OpenAITokenizer{model: "gpt-4o"}
+    tokenizer = %OpenAITokenizer{encoding: :o200k_base}
 
     assert {:ok, [24_912, 2375]} = BeamWeaver.Tokenizer.encode(tokenizer, "hello world")
     assert {:ok, "hello world"} = BeamWeaver.Tokenizer.decode(tokenizer, [24_912, 2375])
@@ -326,8 +241,9 @@ defmodule BeamWeaver.Models.InitializerTest do
     assert {:ok, [15_339, 1917]} =
              BeamWeaver.Tokenizer.encode(%OpenAITokenizer{encoding: :cl100k_base}, "hello world")
 
-    assert {:ok, model} = Models.init_chat_model("openai:gpt-5.4-mini")
-    assert {:ok, %OpenAITokenizer{encoding: :o200k_base}} = Models.tokenizer_for(model.profile)
+    profile = Profile.new(provider: :openai, id: "fixture", tokenizer: :o200k_base)
+    assert {:ok, %OpenAITokenizer{} = configured_tokenizer} = Models.tokenizer_for(profile)
+    model = Models.init_chat_model!("openai:fixture", profile: profile, tokenizer: configured_tokenizer)
     assert {:ok, 6} = LanguageModel.count_tokens({:model, model}, [Message.user("hello world")])
 
     model =
@@ -353,44 +269,12 @@ defmodule BeamWeaver.Models.InitializerTest do
   test "OpenAI tokenizer matches multilingual token-count fixtures" do
     text = "表情符号是\n🦜🔗"
 
-    expected = %{
-      "gpt-4" => 12,
-      "gpt-4-32k" => 12,
-      "gpt-3.5-turbo" => 12,
-      "o1" => 11,
-      "o3" => 11,
-      "gpt-4o" => 11
-    }
+    expected = %{cl100k_base: 12, o200k_base: 11}
 
-    for {model, count} <- expected do
+    for {encoding, count} <- expected do
       assert {:ok, ^count} =
-               BeamWeaver.Tokenizer.count_tokens(%OpenAITokenizer{model: model}, text)
+               BeamWeaver.Tokenizer.count_tokens(%OpenAITokenizer{encoding: encoding}, text)
     end
-  end
-
-  test "OpenAI frontier profiles are strict while unknown non-family models stay permissive" do
-    assert {:ok, gpt5_family} = ProfileRegistry.fetch(:openai, "gpt-5.5")
-
-    assert {:error, error} =
-             ParamPolicy.validate(gpt5_family, [reasoning: %{effort: "low"}], nil, api: :chat_completions)
-
-    assert error.type == :unsupported_model_param
-    assert error.details.params == [:reasoning]
-
-    assert {:ok, unknown} = ProfileRegistry.fetch(:openai, "future-non-family-model")
-    assert :ok = ParamPolicy.validate(unknown, [reasoning: %{effort: "low"}], nil)
-  end
-
-  test "OpenAI chat profile lookup rejects deprecated and non-frontier models" do
-    assert {:error, deprecated} = Models.init_chat_model("openai:o4-mini")
-    assert deprecated.type == :deprecated_model
-    assert deprecated.details.replacement == "gpt-5-mini"
-    assert deprecated.details.expected == "openai:gpt-5-mini"
-
-    assert {:error, unsupported} = Models.init_chat_model("openai:gpt-4o-mini")
-    assert unsupported.type == :unsupported_model
-    assert unsupported.details.replacement == "gpt-5.4-mini"
-    assert "gpt-5.5" in unsupported.details.supported
   end
 
   test "profile overrides and registries are explicit and preserve unknown keys in extra" do

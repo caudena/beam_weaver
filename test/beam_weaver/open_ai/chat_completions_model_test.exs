@@ -203,10 +203,6 @@ defmodule BeamWeaver.OpenAI.ChatCompletionsModelTest do
              )
 
     refute Map.has_key?(deprecated_chat, "temperature")
-
-    assert {:error, error} = Models.init_chat_model("openai:o1-mini", api: :chat_completions)
-    assert error.type == :deprecated_model
-    assert error.details.replacement == "gpt-5-mini"
   end
 
   test "GPT-5.6 Chat Completions function tools require reasoning effort none" do
