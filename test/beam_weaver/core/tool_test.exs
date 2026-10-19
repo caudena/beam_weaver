@@ -203,6 +203,35 @@ defmodule BeamWeaver.Core.ToolTest do
     end
   end
 
+  test "a nullable object or array property accepts nil and validates any other value" do
+    schema = %{
+      "type" => "object",
+      "properties" => %{
+        "filters" => %{
+          "type" => ["object", "null"],
+          "properties" => %{"status" => %{"type" => "string", "enum" => ["open", "shipped"]}},
+          "required" => ["status"],
+          "additionalProperties" => false
+        },
+        "ids" => %{"type" => ["array", "null"], "items" => %{"type" => "integer", "minimum" => 1}}
+      }
+    }
+
+    assert {:ok, %{"filters" => nil, "ids" => nil}} = Tool.normalize_input(schema, %{filters: nil, ids: nil})
+
+    assert {:ok, %{"filters" => %{"status" => "open"}, "ids" => [1, 2]}} =
+             Tool.normalize_input(schema, %{filters: %{status: "open"}, ids: [1, 2]})
+
+    for input <- [
+          %{"filters" => %{"status" => "lost"}},
+          %{"filters" => %{}},
+          %{"filters" => %{"status" => "open", "region" => "eu"}},
+          %{"ids" => [1, 0]}
+        ] do
+      assert {:error, %Error{type: :invalid_input}} = Tool.normalize_input(schema, input)
+    end
+  end
+
   test "applies schema defaults before validating required input" do
     tool =
       Tool.from_function!(

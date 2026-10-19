@@ -10,6 +10,52 @@ defmodule BeamWeaver.ContextBudget do
   always a lower bound. Category input is expressed as exact encoded bytes and
   is allocated deterministically so the displayed categories sum to the final
   estimate.
+
+  ## Accounting methods
+
+  The budget's `method` names the method that produced `estimated_tokens`:
+
+    * `:conservative_utf8`, the default, counts a token per encoded byte. It
+      never under-counts, but for English text it is about four times the
+      real count.
+    * `:local_tokenizer_v1`, selected with
+      `accounting_method: :local_tokenizer_v1`, counts with the profile's
+      tokenizer and adds 10% plus 256 tokens.
+    * `:reported_usage_delta_v2` starts from the input tokens the provider
+      reported for an earlier request and adds the bytes of what changed
+      since. It applies whenever `:reported_usage_baseline` and
+      `:component_descriptors` describe the same components.
+
+  A profile without a tokenizer, such as a Gemini profile, can't count
+  locally. The budget then counts bytes and says why: `method` is
+  `:conservative_utf8` and `fallback_reason` is `:no_tokenizer`, or
+  `:tokenizer_failed` when the tokenizer can't count the request. Otherwise
+  `fallback_reason` is `nil`.
+
+      {:ok, profile} = BeamWeaver.Models.ProfileRegistry.fetch(:google, "gemini-3.5-flash")
+
+      {:ok, budget} =
+        BeamWeaver.ContextBudget.new(profile, "Check order A-1001.", accounting_method: :local_tokenizer_v1)
+
+      budget.method
+      #=> :conservative_utf8
+
+      budget.fallback_reason
+      #=> :no_tokenizer
+
+  `BeamWeaver.Models.with_tokenizer/2` gives a profile a tokenizer: an
+  OpenAI encoding such as `:o200k_base`, or an OpenAI model name. An OpenAI
+  tokenizer can under-count another provider's tokens, so for other models
+  prefer reported usage. `:reported_input_tokens`, the input tokens the
+  provider reported last, is a lower bound for the byte and tokenizer counts.
+
+  For `:reported_usage_delta_v2`, pass `:reported_usage_baseline`, which is
+  `%{version: 2, input_tokens: tokens, components: descriptors}` for the
+  request the provider reported on, and `:component_descriptors`, the same
+  components described for the next request. A descriptor is
+  `%{kind: :exact, bytes: bytes, hash: sha256_hex}` for a part such as the
+  system prompt, or `%{kind: :append, items: [%{id: id, hash: hash, bytes: bytes}]}`
+  for a part that grows, such as the message history.
   """
 
   alias BeamWeaver.Core.Error
@@ -25,6 +71,7 @@ defmodule BeamWeaver.ContextBudget do
     :profile_hash,
     :baseline_input_tokens,
     :delta_tokens,
+    :fallback_reason,
     category_bytes: %{},
     categories: %{}
   ]
@@ -39,6 +86,7 @@ defmodule BeamWeaver.ContextBudget do
           profile_hash: String.t() | nil,
           baseline_input_tokens: non_neg_integer() | nil,
           delta_tokens: non_neg_integer() | nil,
+          fallback_reason: :no_tokenizer | :tokenizer_failed | nil,
           category_bytes: %{optional(atom() | String.t()) => non_neg_integer()},
           categories: %{optional(atom() | String.t()) => non_neg_integer()}
         }
@@ -48,7 +96,9 @@ defmodule BeamWeaver.ContextBudget do
 
   Options are `:trigger_ratio`, `:categories`, `:requested_max_output_tokens`,
   `:accounting_method`, `:reported_input_tokens`, `:reported_usage_baseline`,
-  `:component_descriptors`, and `:profile_hash`.
+  `:component_descriptors`, and `:profile_hash`. See
+  [Accounting methods](#module-accounting-methods) for the accounting options
+  and the budget's `fallback_reason`.
   """
   @spec new(map() | struct(), binary(), keyword()) :: {:ok, t()} | {:error, Error.t()}
   def new(profile, rendered_request, opts \\ [])
@@ -61,10 +111,13 @@ defmodule BeamWeaver.ContextBudget do
          :ok <- validate_ratio(trigger_ratio),
          {:ok, categories} <- normalize_categories(categories),
          {:ok, reported} <- normalize_reported(Keyword.get(opts, :reported_input_tokens, 0)) do
-      {method, local_estimate} = estimate(profile, rendered_request, categories, opts)
+      {method, local_estimate, fallback_reason} = estimate(profile, rendered_request, categories, opts)
 
       {method, version, estimated, baseline, delta} =
         estimate_with_reported_delta(method, local_estimate, reported, opts)
+
+      # Reported usage replaces the local estimate, so no fallback applies.
+      fallback_reason = if method == :conservative_utf8, do: fallback_reason
 
       trigger = max(floor(limit * trigger_ratio), 1)
       category_tokens = allocate_categories(categories, estimated)
@@ -80,6 +133,7 @@ defmodule BeamWeaver.ContextBudget do
          profile_hash: Keyword.get(opts, :profile_hash),
          baseline_input_tokens: baseline,
          delta_tokens: delta,
+         fallback_reason: fallback_reason,
          category_bytes: categories,
          categories: category_tokens
        }}
@@ -142,16 +196,36 @@ defmodule BeamWeaver.ContextBudget do
     do: {:error, Error.new(:invalid_context_budget, "categories must be a map")}
 
   defp estimate(profile, rendered_request, category_bytes, opts) do
-    with :local_tokenizer_v1 <- Keyword.get(opts, :accounting_method, :conservative_utf8),
-         {:ok, tokenizer} <- BeamWeaver.Models.tokenizer_for(profile),
-         {:ok, count} when is_integer(count) and count >= 0 <-
-           BeamWeaver.Core.LanguageModel.count_tokens({:tokenizer, tokenizer}, rendered_request) do
-      {:local_tokenizer_v1, ceil(count * 1.10) + 256}
-    else
+    case Keyword.get(opts, :accounting_method, :conservative_utf8) do
+      :local_tokenizer_v1 ->
+        case tokenizer_count(profile, rendered_request) do
+          {:ok, count} ->
+            {:local_tokenizer_v1, ceil(count * 1.10) + 256, nil}
+
+          {:error, reason} ->
+            {:conservative_utf8, utf8_estimate(rendered_request, category_bytes), reason}
+        end
+
       _conservative ->
-        {:conservative_utf8, max(byte_size(rendered_request), Enum.sum(Map.values(category_bytes)))}
+        {:conservative_utf8, utf8_estimate(rendered_request, category_bytes), nil}
     end
   end
+
+  defp tokenizer_count(profile, rendered_request) do
+    case BeamWeaver.Models.tokenizer_for(profile) do
+      {:ok, tokenizer} ->
+        case BeamWeaver.Core.LanguageModel.count_tokens({:tokenizer, tokenizer}, rendered_request) do
+          {:ok, count} when is_integer(count) and count >= 0 -> {:ok, count}
+          _failed -> {:error, :tokenizer_failed}
+        end
+
+      nil ->
+        {:error, :no_tokenizer}
+    end
+  end
+
+  defp utf8_estimate(rendered_request, category_bytes),
+    do: max(byte_size(rendered_request), Enum.sum(Map.values(category_bytes)))
 
   defp normalize_reported(value) when is_integer(value) and value >= 0, do: {:ok, value}
   defp normalize_reported(nil), do: {:ok, 0}

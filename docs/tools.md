@@ -85,9 +85,11 @@ are evaluated when the module compiles. Fields are required by default;
 | A JSON Schema map | The constraints described by that map |
 
 Options include `description:`, `default:`, `enum:` and `nullable:`.
-Validation rejects missing required values, wrong types, enum violations and
-supported numeric bounds. Union members and date formats are not validated;
-check application-specific constraints in your code.
+A `nullable: true` field also accepts `nil`, which its schema adds to any
+`enum:` values; any other value is checked as usual. Validation rejects
+missing required values, wrong types, enum violations and supported numeric
+bounds. Union members and date formats are not validated; check
+application-specific constraints in your code.
 
 This local help-center example supplies an optional section and a default limit:
 

@@ -143,17 +143,33 @@ defmodule BeamWeaver.Tool.Schema.Fields do
       else: schema
   end
 
-  defp put_nullable(schema, opts) do
-    type = BeamWeaver.MapAccess.get(schema, :type)
-    any_of = BeamWeaver.MapAccess.get(schema, :anyOf)
+  defp put_nullable(schema, opts),
+    do: if(Keyword.get(opts, :nullable, false), do: nullable(schema), else: schema)
 
-    cond do
-      !Keyword.get(opts, :nullable, false) -> schema
-      not is_nil(type) -> Map.put(schema, :type, List.wrap(type) ++ ["null"])
-      is_list(any_of) -> Map.put(schema, :anyOf, any_of ++ [%{type: "null"}])
-      true -> %{anyOf: [schema, %{type: "null"}]}
-    end
-  end
+  # `schema` accepting null as well, under the keys it already uses, so a
+  # hand-written map with string keys keeps them. A type gains `"null"`. A
+  # union gains a null member, since a `"null"` type would rule out its other
+  # members. Anything else becomes a union with null. An enum admits null only
+  # when it lists it. `BeamWeaver.Schema` builds its nullable fields with it too.
+  def nullable(%{type: type} = schema) when not is_nil(type), do: null_enum(%{schema | type: null_type(type)})
+  def nullable(%{"type" => type} = schema) when not is_nil(type), do: null_enum(%{schema | "type" => null_type(type)})
+
+  def nullable(%{anyOf: variants} = schema) when is_list(variants),
+    do: null_enum(%{schema | anyOf: variants ++ [%{type: "null"}]})
+
+  def nullable(%{"anyOf" => variants} = schema) when is_list(variants),
+    do: null_enum(%{schema | "anyOf" => variants ++ [%{"type" => "null"}]})
+
+  def nullable(schema), do: %{anyOf: [schema, %{type: "null"}]}
+
+  defp null_type(type), do: Enum.uniq(List.wrap(type) ++ ["null"])
+
+  defp null_enum(%{enum: values} = schema) when is_list(values), do: %{schema | enum: Enum.uniq(values ++ [nil])}
+
+  defp null_enum(%{"enum" => values} = schema) when is_list(values),
+    do: %{schema | "enum" => Enum.uniq(values ++ [nil])}
+
+  defp null_enum(schema), do: schema
 
   defp put_nested(schema, opts) do
     schema

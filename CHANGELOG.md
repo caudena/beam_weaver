@@ -1942,6 +1942,15 @@ embeddings](docs/testing.md#fake-embeddings).
 
 #### Agents
 
+- A `BeamWeaver.Schema` field takes a JSON Schema map as its type, such as
+  `field :due, %{"type" => "string", "format" => "date"}`. Before, the
+  module didn't compile.
+- A `nullable: true` field of a `BeamWeaver.Schema` lists `nil` among its
+  `enum:` values, so a model can answer null under provider strict schemas
+  and the tool strategy alike. Before, the enum ruled null out.
+- A `nullable: true` union or `:any` field of a `BeamWeaver.Schema` gets a
+  null member and still takes its other values. Before, its schema typed it
+  `"null"` and allowed nothing else.
 - A model wrapper's jump to `:model` or `:end` now applies when the agent
   has after_model hooks, and skips them. Before, the jump was lost.
 - A tool that returns directly now goes to the model when it jumps to
@@ -2703,6 +2712,18 @@ embeddings](docs/testing.md#fake-embeddings).
 
 #### Tools
 
+- A `nullable: true` tool argument accepts `nil`, and its schema lists `nil`
+  among any `enum:` values. Any other value is checked like the plain type,
+  objects and lists included: nested properties, `required`, enums, bounds,
+  items and `additionalProperties`, with nested keys normalized to strings.
+  A hand-written type list such as `["object", "null"]` works the same way,
+  a JSON Schema map written with string keys keeps them, and a type that
+  already allows null lists it once. Before, a nullable enum rejected `nil`,
+  and a nullable object or list passed unchecked.
+- `OpenAI.ToolCalling.function/2` with `strict: true` closes the schema of
+  a tool given as a module, as it does for a struct: no additional
+  properties, and every property required. Before, a module got only
+  `"strict": true`, with its schema left open.
 - `ValidationNode.new/2`, and so `validate_tools true`, takes tools given as
   structs of a `use BeamWeaver.Tool` module. Before, it raised
   `ArgumentError`.
@@ -2838,6 +2859,9 @@ embeddings](docs/testing.md#fake-embeddings).
 
 #### Models and providers
 
+- Gemini sends a file block given by `url:`, and image, audio and video
+  blocks given by `file_id:`, as file data with that URI. Before, they were
+  left out of the request.
 - Claude Haiku 5.5 and Sonnet 5.5 declare a window shared by the request and
   its output, so `ContextBudget` counts the requested output against their
   1M tokens. Before, they declared a kind `ContextBudget` rejects with
@@ -3154,6 +3178,10 @@ embeddings](docs/testing.md#fake-embeddings).
 
 #### Compaction engine
 
+- `ContextBudget.new/3` says when `:local_tokenizer_v1` falls back to byte
+  counting: the budget's new `fallback_reason` field is `:no_tokenizer` or
+  `:tokenizer_failed`, and `nil` otherwise. Before, a profile without a
+  tokenizer, such as Gemini's, counted bytes without saying so.
 - `Compaction.compact/2` returns `:current_input_item_too_large` when every
   event is protected. Before, it returned `:nothing_to_compact`, or with a
   previous summary it reused that summary without calling the model.

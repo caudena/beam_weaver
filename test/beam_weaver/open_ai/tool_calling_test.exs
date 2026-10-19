@@ -25,6 +25,21 @@ defmodule BeamWeaver.OpenAI.ToolCallingTest do
     def invoke(_tool, input, _opts), do: {:ok, input}
   end
 
+  defmodule SearchOrders do
+    use BeamWeaver.Tool
+
+    name("search_orders")
+    description("Search orders by text and status")
+
+    schema do
+      field(:query, :string)
+      field(:status, :string, required: false, enum: ["open", "shipped"])
+    end
+
+    @impl true
+    def invoke(_tool, input, _opts), do: {:ok, input}
+  end
+
   test "builds OpenAI built-in tool declarations from idiomatic helpers" do
     assert ToolCalling.web_search() == %{"type" => "web_search_preview"}
 
@@ -124,6 +139,15 @@ defmodule BeamWeaver.OpenAI.ToolCallingTest do
                "required" => ["query"]
              }
            }
+  end
+
+  test "strict rendering closes a tool module's schema as it does its struct's" do
+    rendered = ToolCalling.function(SearchOrders, strict: true)
+
+    assert rendered == ToolCalling.function(%SearchOrders{}, strict: true)
+    assert rendered["strict"] == true
+    assert rendered["parameters"]["additionalProperties"] == false
+    assert MapSet.new(rendered["parameters"]["required"]) == MapSet.new(["query", "status"])
   end
 
   test "strict BeamWeaver function rendering closes nested provider schemas" do

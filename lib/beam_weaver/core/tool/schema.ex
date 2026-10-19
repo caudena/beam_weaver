@@ -163,16 +163,25 @@ defmodule BeamWeaver.Core.Tool.Schema do
     end
   end
 
+  # A type list such as `["object", "null"]`, which `nullable: true` builds,
+  # checks an object or a list as the plain type does.
   defp normalize_nested_schema(key, value, spec) do
-    case schema_value(spec, :type) do
-      {_type_key, type} when type in [:object, "object"] and is_map(value) ->
+    cond do
+      is_map(value) and not is_struct(value) and "object" in json_types(spec) ->
         with {:error, %Error{} = error} <- normalize(spec, value), do: {:error, put_nested_path(error, key)}
 
-      {_type_key, type} when type in [:array, "array"] and is_list(value) ->
+      is_list(value) and "array" in json_types(spec) ->
         normalize_nested_array(key, value, spec)
 
-      _other ->
+      true ->
         {:ok, value}
+    end
+  end
+
+  defp json_types(spec) do
+    case schema_value(spec, :type) do
+      {_type_key, type} -> for type <- List.wrap(type), is_atom(type) or is_binary(type), do: to_string(type)
+      nil -> []
     end
   end
 

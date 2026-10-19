@@ -55,6 +55,32 @@ defmodule BeamWeaver.Tool.DSLTest do
     def invoke(_tool, input, _opts), do: {:ok, input}
   end
 
+  defmodule FilterOrders do
+    use BeamWeaver.Tool
+
+    name("filter_orders")
+    description("Filter orders by status, tag and date range")
+
+    schema do
+      field(:filters, :object,
+        nullable: true,
+        properties: %{status: %{type: "string", enum: ["open", "shipped"]}, limit: %{type: "integer", maximum: 50}}
+      )
+
+      field(:region, %{type: "object", properties: %{code: %{type: "string"}}, additionalProperties: false},
+        required: false,
+        nullable: true
+      )
+
+      field(:tags, :array, required: false, nullable: true, items: %{type: "string", maxLength: 8})
+      field(:range, {:object, [{:from, :date}, {:to, :date, required: false}]}, required: false, nullable: true)
+      field(:priority, :string, required: false, nullable: true, enum: ["low", "high"])
+    end
+
+    @impl true
+    def invoke(_tool, input, _opts), do: {:ok, input}
+  end
+
   defmodule DirectTool do
     use BeamWeaver.Core.Tool
 
@@ -178,6 +204,66 @@ defmodule BeamWeaver.Tool.DSLTest do
     assert error.message == "tool input is not in enum"
   end
 
+  test "a nullable object or array field accepts nil and validates any other value" do
+    schema = Tool.input_schema(%FilterOrders{})
+
+    assert :ok = Tool.validate_input(schema, %{filters: nil, region: nil, tags: nil, range: nil})
+
+    assert {:ok, %{"filters" => %{"status" => "open", "limit" => 10}, "range" => %{"from" => "2026-10-01"}}} =
+             Tool.normalize_input(schema, %{
+               filters: %{status: "open", limit: 10},
+               region: %{code: "eu"},
+               tags: ["rush"],
+               range: %{from: "2026-10-01"}
+             })
+
+    for {input, message} <- [
+          {%{filters: %{status: "lost"}}, "tool input is not in enum"},
+          {%{filters: %{limit: 51}}, "number is too large"},
+          {%{filters: nil, region: %{code: "eu", zone: "west"}}, "tool input contains unknown keys"},
+          {%{filters: nil, tags: ["much-too-long"]}, "string is too long"},
+          {%{filters: nil, range: %{to: "2026-10-31"}}, "tool input is missing required keys"}
+        ] do
+      assert {:error, %{type: :invalid_input, message: ^message}} = Tool.validate_input(schema, input)
+    end
+  end
+
+  test "a nullable enum field lists nil among its values and accepts it" do
+    schema = Tool.input_schema(%FilterOrders{})
+
+    assert schema.properties["priority"].enum == ["low", "high", nil]
+    assert :ok = Tool.validate_input(schema, %{filters: nil, priority: nil})
+
+    assert {:error, %{message: "tool input is not in enum"}} =
+             Tool.validate_input(schema, %{filters: nil, priority: "urgent"})
+  end
+
+  test "provider tool schemas keep nil in a nullable field's enum" do
+    messages = [BeamWeaver.Core.Message.user("List open orders.")]
+
+    bodies =
+      for module <- [
+            BeamWeaver.OpenAI.ChatModel,
+            BeamWeaver.OpenAI.ChatCompletionsModel,
+            BeamWeaver.Anthropic.ChatModel,
+            BeamWeaver.Google.ChatModel,
+            BeamWeaver.XAI.ChatModel,
+            BeamWeaver.XAI.ChatCompletionsModel
+          ] do
+        assert {:ok, body} = module.request_body(module.new([]), messages, tools: [FilterOrders])
+        {module, body["tools"]}
+      end
+
+    strict = [
+      {:openai_strict, BeamWeaver.OpenAI.ToolCalling.function(%FilterOrders{}, strict: true)},
+      {:anthropic_strict, BeamWeaver.Anthropic.Tools.function(%FilterOrders{}, strict: true)}
+    ]
+
+    for {renderer, rendered} <- bodies ++ strict do
+      assert priority_enums(rendered) == [["low", "high", nil]], inspect(renderer)
+    end
+  end
+
   test "direct behaviour modules work without the macro" do
     assert {:ok, "ADA"} = Tool.invoke(%DirectTool{}, %{value: "ada"})
     assert Tool.input_schema(%DirectTool{}).required == [:value]
@@ -221,4 +307,9 @@ defmodule BeamWeaver.Tool.DSLTest do
     assert with_args =~ "query"
     refute with_args =~ "runtime"
   end
+
+  defp priority_enums(%{"properties" => %{"priority" => %{"enum" => enum}}}), do: [enum]
+  defp priority_enums(%{} = map), do: Enum.flat_map(Map.values(map), &priority_enums/1)
+  defp priority_enums(list) when is_list(list), do: Enum.flat_map(list, &priority_enums/1)
+  defp priority_enums(_value), do: []
 end

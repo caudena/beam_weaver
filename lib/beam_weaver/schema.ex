@@ -72,12 +72,17 @@ defmodule BeamWeaver.Schema do
   @doc "When true, disallows additional object properties in the declared schema."
   defmacro strict(value), do: quote(do: @beam_weaver_schema_strict(unquote(value)))
 
-  @doc "Declares a named field and its type. Fields are required by default; use required: false for optional values. See [Structured Output](structured_output.md)."
+  @doc """
+  Declares a named field and its type. Fields are required by default; use
+  `required: false` for optional values. `nullable: true` also accepts null,
+  and adds `nil` to the field's `enum:` values. See
+  [Structured Output](structured_output.md).
+  """
   defmacro field(name_ast, type_ast, opts \\ []) do
     name = literal_field_name!(__CALLER__, name_ast)
     type = literal_field_type!(__CALLER__, type_ast)
 
-    quote bind_quoted: [name: name, type: type, opts: opts] do
+    quote bind_quoted: [name: name, type: Macro.escape(type), opts: opts] do
       @beam_weaver_schema_fields {name, type, opts}
     end
   end
@@ -197,11 +202,7 @@ defmodule BeamWeaver.Schema do
   end
 
   defp maybe_nullable(schema, false), do: schema
-
-  defp maybe_nullable(schema, true) do
-    type = Map.get(schema, "type")
-    Map.put(schema, "type", Enum.uniq(List.wrap(type) ++ ["null"]))
-  end
+  defp maybe_nullable(schema, true), do: BeamWeaver.Tool.Schema.Fields.nullable(schema)
 
   defp maybe_put(schema, key, value, true), do: put_present(schema, key, value)
   defp maybe_put(schema, _key, _value, false), do: schema

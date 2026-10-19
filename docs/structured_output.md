@@ -48,10 +48,12 @@ can vary; assert the fields your application actually relies on.
 | `strict true` | Forbid additional object properties |
 
 Types include `:string`, `:integer`, `:number`, `:boolean`,
-`{:array, type}` and another schema module for a nested object. Fields are
+`{:array, type}`, another schema module for a nested object, and a JSON
+Schema map such as `%{"type" => "string", "format" => "date"}`. Fields are
 required by default. Options include `required: false`, `nullable: true`,
-`enum:`, `description:` and `default:`. A default is schema metadata; check
-the returned value rather than assuming the provider fills it in.
+`enum:`, `description:` and `default:`. A `nullable: true` field also accepts
+null, and adds `nil` to its `enum:` values. A default is schema metadata;
+check the returned value rather than assuming the provider fills it in.
 Descriptions guide the model; business rules belong in your application.
 
 ```elixir

@@ -402,6 +402,46 @@ defmodule BeamWeaver.Google.ChatModelTest do
            ]
   end
 
+  test "request body sends images, audio and video given by file_id as file data" do
+    file = "https://generativelanguage.googleapis.com/v1beta/files/abc123"
+
+    for {block, mime_type} <- [
+          {BeamWeaver.Core.ContentBlock.image(file_id: file, mime_type: "image/jpeg"), "image/jpeg"},
+          {BeamWeaver.Core.ContentBlock.audio(file_id: file, mime_type: "audio/wav"), "audio/wav"},
+          {BeamWeaver.Core.ContentBlock.video(file_id: file, mime_type: "video/webm"), "video/webm"}
+        ] do
+      assert {:ok, body} =
+               ChatModel.request_body(%ChatModel{model: "gemini-3.5-flash"}, [Message.user([block])])
+
+      assert [%{"parts" => [%{"fileData" => %{"mimeType" => ^mime_type, "fileUri" => ^file}}]}] = body["contents"]
+    end
+  end
+
+  test "request body sends a file given by URL as file data" do
+    url = "https://acme.example/manuals/returns.pdf"
+
+    assert {:ok, body} =
+             ChatModel.request_body(
+               %ChatModel{model: "gemini-3.5-flash"},
+               [
+                 Message.user([
+                   BeamWeaver.Core.ContentBlock.text("Summarize the returns policy."),
+                   BeamWeaver.Core.ContentBlock.file(url: url, mime_type: "application/pdf")
+                 ])
+               ]
+             )
+
+    assert body["contents"] == [
+             %{
+               "role" => "user",
+               "parts" => [
+                 %{"text" => "Summarize the returns policy."},
+                 %{"fileData" => %{"mimeType" => "application/pdf", "fileUri" => url}}
+               ]
+             }
+           ]
+  end
+
   test "request body does not merge unrelated adjacent user turns" do
     assert {:ok, body} =
              ChatModel.request_body(

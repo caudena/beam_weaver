@@ -192,6 +192,10 @@ defmodule BeamWeaver.Examples.LiveRunner do
       |> Map.take(Enum.flat_map(@providers, fn {_name, config} -> config[:keys] end) ++ ["BEAM_WEAVER_POSTGRES_URL"])
       |> then(&if(job.model, do: Map.put(&1, "BEAM_WEAVER_EXAMPLES_MODEL", job.model), else: &1))
       |> Map.put("TMPDIR", scratch)
+      # The worker runs `mix run --no-compile`, so it must use the build this
+      # process compiled. `mix test` doesn't export MIX_ENV, and a child left
+      # in `dev` finds no compiled app on a fresh checkout.
+      |> Map.put("MIX_ENV", to_string(Mix.env()))
       |> Map.put_new("LANG", env["LANG"] || "en_US.UTF-8")
       |> Enum.map(fn {key, value} -> {String.to_charlist(key), String.to_charlist(value)} end)
 

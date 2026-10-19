@@ -110,6 +110,7 @@ The image and video were generated for these examples. The PDF is the
 | `ContentBlock.image(url: url)` | A reachable image URL |
 | `ContentBlock.image(data: base64, mime_type: type)` | Inline image bytes |
 | `ContentBlock.file(data: base64, mime_type: type, filename: name)` | Inline file, such as a PDF |
+| `ContentBlock.file(url: url, mime_type: type)` | A file the provider downloads from a URL |
 | `ContentBlock.file(file_id: id, ...)` | A resource already uploaded to that provider |
 | `ContentBlock.audio(...)`, `ContentBlock.video(...)` | Provider-supported audio/video input |
 | `ContentBlock.reasoning(text)` | Reasoning content |
@@ -119,6 +120,9 @@ filename encoded as base64. Check input support with
 `BeamWeaver.Provider.Compatibility.supports?/2`; the provider guide explains
 which formats and upload endpoints are supported. An uploaded resource ID is
 provider/account-specific. Delete resources your application no longer needs.
+
+With `url:`, the provider downloads the file itself, so the URL must be one
+it can reach and accepts. Gemini also takes a Files API URI this way.
 
 ## Tool calls and tool results
 

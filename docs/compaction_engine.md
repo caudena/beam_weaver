@@ -188,7 +188,9 @@ Unknown context limits fail instead of being guessed.
 active checkpoint. `rehydration_state` carries exact application data alongside
 the summary. `focus` can guide summarization without changing source facts.
 Context budgeting conservatively counts rendered bytes; it is not the
-provider's billing tokenizer.
+provider's billing tokenizer. `BeamWeaver.ContextBudget` describes counting
+with a tokenizer or from provider-reported usage, and the byte count it falls
+back to when the profile has no tokenizer.
 
 ## The summarizer
 

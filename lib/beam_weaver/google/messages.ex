@@ -165,16 +165,16 @@ defmodule BeamWeaver.Google.Messages do
     do: [%{"text" => text} |> put_thought_signature(thought_signature(metadata))]
 
   defp part(%ContentBlock.Image{} = block),
-    do: media_part(block.url, block.data, block.mime_type || "image/png")
+    do: media_part(block.file_id || block.url, block.data, block.mime_type || "image/png")
 
   defp part(%ContentBlock.Audio{} = block),
-    do: media_part(block.url, block.data, block.mime_type || "audio/mpeg")
+    do: media_part(block.file_id || block.url, block.data, block.mime_type || "audio/mpeg")
 
   defp part(%ContentBlock.Video{} = block),
-    do: media_part(block.url, block.data, block.mime_type || "video/mp4")
+    do: media_part(block.file_id || block.url, block.data, block.mime_type || "video/mp4")
 
   defp part(%ContentBlock.File{} = block),
-    do: media_part(block.file_id, block.data, block.mime_type || "application/octet-stream")
+    do: media_part(block.file_id || block.url, block.data, block.mime_type || "application/octet-stream")
 
   defp part(%ContentBlock.Reasoning{reasoning: text, metadata: metadata}) do
     [%{"thought" => true, "text" => text} |> put_thought_signature(thought_signature(metadata))]

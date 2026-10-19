@@ -80,6 +80,7 @@ defmodule BeamWeaver.ContextBudgetTest do
              )
 
     assert budget.method == :local_tokenizer_v1
+    assert budget.fallback_reason == nil
     assert budget.estimated_tokens == 300
     assert budget.profile_hash == String.duplicate("a", 64)
     assert budget.category_bytes == %{"system" => 3, "memory_history" => 1}
@@ -95,7 +96,29 @@ defmodule BeamWeaver.ContextBudgetTest do
              ContextBudget.new(profile, request, accounting_method: :local_tokenizer_v1)
 
     assert budget.method == :conservative_utf8
+    assert budget.fallback_reason == :no_tokenizer
     assert budget.estimated_tokens == byte_size(request)
+  end
+
+  test "a tokenizer that cannot count falls back to UTF-8 bytes and says why" do
+    profile = %{
+      context_limit_kind: :separate_input,
+      max_input_tokens: 10_000,
+      tokenizer: %BeamWeaver.Tokenizer.OpenAI{}
+    }
+
+    assert {:ok, budget} = ContextBudget.new(profile, "request", accounting_method: :local_tokenizer_v1)
+
+    assert budget.method == :conservative_utf8
+    assert budget.fallback_reason == :tokenizer_failed
+    assert budget.estimated_tokens == 7
+  end
+
+  test "byte accounting that was asked for is no fallback" do
+    assert {:ok, budget} = ContextBudget.new(%Profile{max_input_tokens: 10_000}, "request")
+
+    assert budget.method == :conservative_utf8
+    assert budget.fallback_reason == nil
   end
 
   test "missing compatible provider usage contributes no lower bound" do
@@ -160,6 +183,22 @@ defmodule BeamWeaver.ContextBudgetTest do
     assert budget.baseline_input_tokens == 1_000
     assert budget.delta_tokens == 25
     assert budget.estimated_tokens == 1_025
+  end
+
+  test "reported usage needs no tokenizer, so a profile without one reports no fallback" do
+    hash = String.duplicate("a", 64)
+    components = %{"system" => %{kind: :exact, bytes: 400, hash: hash}}
+
+    assert {:ok, budget} =
+             ContextBudget.new(%Profile{max_input_tokens: 100_000}, String.duplicate("x", 400),
+               accounting_method: :local_tokenizer_v1,
+               reported_usage_baseline: %{version: 2, input_tokens: 90, components: components},
+               component_descriptors: components
+             )
+
+    assert budget.method == :reported_usage_delta_v2
+    assert budget.estimated_tokens == 90
+    assert budget.fallback_reason == nil
   end
 
   test "changed, shortened, and reordered components charge their full current bytes" do
